@@ -54,6 +54,7 @@ export default function AiEndpoints() {
   }, [qc]);
 
   const list = endpoints.data ?? [];
+  const hasEndpoints = list.length > 0;
   const totalRequests = list.reduce((a, e) => a + e.requests_24h, 0);
   const totalCacheHits = list.reduce((a, e) => a + e.cache_hits_24h, 0);
   const tokensIn = summary.data?.tokens_in ?? 0;
@@ -91,11 +92,11 @@ export default function AiEndpoints() {
         <MetricTile label="Requests (24h)" value={fmtInt(totalRequests)} />
         <MetricTile
           label="Tokens in/out (24h)"
-          value={`${fmtInt(tokensIn)} → ${fmtInt(tokensOut)}`}
+          value={hasEndpoints ? `${fmtInt(tokensIn)} → ${fmtInt(tokensOut)}` : "—"}
         />
         <MetricTile
           label="Cost estimate (24h)"
-          value={fmtUsd(totalUsd)}
+          value={hasEndpoints ? fmtUsd(totalUsd) : "—"}
           tooltip="Estimates from the bundled pricing table — operator-overridable."
         />
         <MetricTile

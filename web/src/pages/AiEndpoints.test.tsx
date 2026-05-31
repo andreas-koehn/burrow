@@ -77,6 +77,16 @@ describe("AI endpoints page (§4.19)", () => {
     ).toBeInTheDocument();
   });
 
+  it("does not show cost-summary tokens when there are no AI endpoints (L-6)", async () => {
+    server.use(
+      http.get("/api/v1/ai/endpoints", () => HttpResponse.json([])),
+    );
+    mount();
+    await screen.findByText(/no ai endpoints yet/i);
+    const tokensTile = screen.getByText(/tokens in\/out/i).closest(".metric-tile")!;
+    expect(within(tokensTile).getByText("—")).toBeInTheDocument();
+  });
+
   it("shows an error notice with Retry on failure and recovers when clicked", async () => {
     server.use(
       http.get("/api/v1/ai/endpoints", () =>
