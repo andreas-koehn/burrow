@@ -213,6 +213,8 @@ export default function Webhooks() {
       {/* P0-10: render the Webhooks table unconditionally; the empty state
           becomes an in-table row so Playwright + the page-head CTA agree on
           the same affordance (P2-4 dedup). */}
+      <section className="card">
+        <h2>Configured webhooks</h2>
       <div className="table-wrap">
         <table className="data" aria-label="Webhooks">
           <thead>
@@ -269,6 +271,7 @@ export default function Webhooks() {
           </tbody>
         </table>
       </div>
+      </section>
 
       <section className="card">
         <h2>Recent deliveries</h2>
@@ -278,14 +281,24 @@ export default function Webhooks() {
               <tr><th>When</th><th>Event</th><th>Status</th><th>Latency</th></tr>
             </thead>
             <tbody>
-              {(deliveries.data ?? []).map((d) => (
-                <tr key={d.id}>
-                  <td className="mono small">{d.ts}</td>
-                  <td className="mono">{d.event}</td>
-                  <td className="mono">{d.status_code}</td>
-                  <td className="mono">{d.latency_ms} ms</td>
+              {!deliveries.data ? (
+                <tr><td colSpan={4}><SkeletonRows n={3} /></td></tr>
+              ) : deliveries.data.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="muted">
+                    No deliveries yet. Burrow records each webhook POST and its response here.
+                  </td>
                 </tr>
-              ))}
+              ) : (
+                deliveries.data.map((d) => (
+                  <tr key={d.id}>
+                    <td className="mono small">{d.ts}</td>
+                    <td className="mono">{d.event}</td>
+                    <td className="mono">{d.status_code}</td>
+                    <td className="mono">{d.latency_ms} ms</td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>

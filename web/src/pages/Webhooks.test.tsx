@@ -104,6 +104,21 @@ describe("Webhooks (§4.26)", () => {
     });
   });
 
+  it("shows an empty-state row in Recent deliveries when there are none (D-7/L-9)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
+      const u = String(url);
+      if (u.includes("/webhooks/deliveries")) {
+        return new Response(JSON.stringify([]), { status: 200 }) as Response;
+      }
+      if (u.includes("/webhooks")) {
+        return new Response(JSON.stringify([]), { status: 200 }) as Response;
+      }
+      return new Response("[]", { status: 200 }) as Response;
+    });
+    renderApp(<Webhooks />);
+    expect(await screen.findByText(/no deliveries yet/i)).toBeInTheDocument();
+  });
+
   it("Docs link has link-inline class so it reads as clickable (C4)", async () => {
     mount();
     await waitFor(() => screen.getByRole("heading", { name: "Webhooks" }));
