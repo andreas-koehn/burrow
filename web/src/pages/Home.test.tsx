@@ -56,4 +56,114 @@ describe("Home (Overview)", () => {
       expect(tiles[2].querySelector(".value")?.textContent).toBe("3");
     });
   });
+
+  // ---- Alerts strip ----
+
+  describe("SMTP alert", () => {
+    it("shows SMTP alert when settings is empty (admin, smtp.host absent)", async () => {
+      // Seed: settings={} → smtp.host absent → alert should appear
+      renderApp(<Home />);
+      await screen.findByRole("heading", { name: "Overview" });
+      await waitFor(() => {
+        expect(
+          screen.getByText(/email isn't (set up|configured)/i),
+        ).toBeInTheDocument();
+      });
+      // The alert must contain a link to /settings
+      const link = screen.getByRole("link", { name: /set up email/i });
+      expect(link).toBeInTheDocument();
+      expect(link).toHaveAttribute("href", "/settings");
+    });
+
+    it("hides SMTP alert when smtp.host is set", async () => {
+      server.use(
+        http.get("/api/v1/settings", () =>
+          HttpResponse.json({ "smtp.host": "smtp.example.com" }),
+        ),
+      );
+      renderApp(<Home />);
+      await screen.findByRole("heading", { name: "Overview" });
+      await waitFor(() => {
+        expect(screen.queryByText(/email isn't (set up|configured)/i)).toBeNull();
+      });
+    });
+  });
+
+  describe("Budget alert", () => {
+    it("shows no budget alert when no budget is exceeded (seed)", async () => {
+      renderApp(<Home />);
+      await screen.findByRole("heading", { name: "Overview" });
+      await waitFor(() => {
+        expect(screen.queryByText(/budget.*exceeded/i)).toBeNull();
+      });
+    });
+
+    it("shows budget alert when a budget is exceeded", async () => {
+      server.use(
+        http.get("/api/v1/budgets", () =>
+          HttpResponse.json([
+            {
+              id: "b1",
+              scope: "global",
+              subject_id: "",
+              daily_usd: 1,
+              action_on_exceed: "alert_webhook",
+              alert_webhook_id: null,
+              current_usd: 5,
+              exceeded: true,
+            },
+          ]),
+        ),
+      );
+      renderApp(<Home />);
+      await screen.findByRole("heading", { name: "Overview" });
+      await waitFor(() => {
+        expect(screen.getByText(/budget.*exceeded/i)).toBeInTheDocument();
+      });
+      const link = screen.getByRole("link", { name: /view budgets/i });
+      expect(link).toBeInTheDocument();
+      expect(link).toHaveAttribute("href", "/cost");
+    });
+  });
+
+  describe("Cert alert", () => {
+    it("shows no cert alert when all domains are active and far from expiry (seed)", async () => {
+      renderApp(<Home />);
+      await screen.findByRole("heading", { name: "Overview" });
+      await waitFor(() => {
+        expect(screen.queryByText(/certificate is expiring/i)).toBeNull();
+      });
+    });
+
+    it("shows cert alert when a domain has status cert_expiring", async () => {
+      server.use(
+        http.get("/api/v1/services/:id/domains", () =>
+          HttpResponse.json([
+            {
+              id: "d1",
+              service_id: "svc_web01",
+              hostname: "x.example.com",
+              cert_sha256: "abc123",
+              not_before: new Date().toISOString(),
+              not_after: new Date().toISOString(),
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              status: "cert_expiring",
+              status_updated_at: new Date().toISOString(),
+            },
+          ]),
+        ),
+      );
+      renderApp(<Home />);
+      await screen.findByRole("heading", { name: "Overview" });
+      await waitFor(() => {
+        expect(
+          screen.getByText(/custom-domain certificate is expiring/i),
+        ).toBeInTheDocument();
+      });
+      const link = screen.getByRole("link", { name: /review/i });
+      expect(link).toBeInTheDocument();
+      expect(link.getAttribute("href")).toMatch(/\/services\/svc_/);
+    });
+  });
 });
