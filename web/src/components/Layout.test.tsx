@@ -168,4 +168,17 @@ describe("Layout nav role-gating", () => {
       expect(screen.queryByRole("link", { name: "Provisioning" })).toBeNull();
     });
   });
+
+  it("Home nav link is present with href '/' and is the first nav link inside the sidebar (task 1.1)", async () => {
+    renderLayout("user");
+    // Wait for auth to settle
+    await screen.findByRole("link", { name: /^account$/i });
+    const homeLink = screen.getByRole("link", { name: /^home$/i });
+    expect(homeLink).toBeInTheDocument();
+    expect(homeLink).toHaveAttribute("href", "/");
+    // Home must be the first link inside the <nav> sidebar (skip-to-content is outside nav)
+    const sidebar = screen.getByRole("navigation", { name: "Main" });
+    const navLinks = Array.from(sidebar.querySelectorAll("a"));
+    expect(navLinks[0]).toBe(homeLink);
+  });
 });

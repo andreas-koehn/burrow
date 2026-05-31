@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Moon, Sun, Waypoints, KeyRound, Users, UserCircle, LogOut, Boxes, ShieldCheck,
   ServerCog, Globe, Sparkles, DollarSign, Database, ShieldAlert, Search, ScrollText,
-  Webhook as WebhookIcon, Bot,
+  Webhook as WebhookIcon, Bot, LayoutDashboard,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { Button, cx } from "@/components/ds";
@@ -71,6 +71,11 @@ export function Layout() {
         </div>
 
         <div className="sidebar-nav">
+          <NavLink to="/" end className={navItem}>
+            <span className="nav-icon"><LayoutDashboard size={16} /></span>
+            <span className="nav-label">Home</span>
+          </NavLink>
+
           <div className="nav-group">
             <div className="nav-group-title">Tunneling</div>
             <NavLink to="/clients" className={navItem}>

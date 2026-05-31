@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { RequireAuth } from "@/auth/RequireAuth";
 import { Layout } from "@/components/Layout";
 import Login from "@/pages/Login";
+import Home from "@/pages/Home";
 import Tunnels from "@/pages/Tunnels";
 import Services from "@/pages/Services";
 import Tokens from "@/pages/Tokens";
@@ -34,7 +35,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route element={<RequireAuth><Layout /></RequireAuth>}>
-        <Route path="/" element={<Tunnels />} />
+        <Route path="/" element={<Home />} />
         <Route path="/tunnels" element={<Tunnels />} />
         <Route path="/services" element={<Services />} />
         <Route path="/ai/endpoints" element={<AiEndpoints />} />
