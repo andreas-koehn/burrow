@@ -102,6 +102,10 @@ export default function Services() {
         subtitle="Durable services exposed through this relay, with their access configuration."
         actions={<Button variant="primary" size="sm" onClick={() => { setNewOpen(true); setNsErr(null); }}>+ New service</Button>}
       />
+      <ErrorNotice variant="info" role="note">
+        Services are the durable saved config and access mode. When a client is connected, the
+        live link appears in <Link to="/tunnels">Tunnels</Link>.
+      </ErrorNotice>
 
       {error ? (
         <ErrorNotice

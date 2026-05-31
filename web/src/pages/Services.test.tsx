@@ -80,6 +80,20 @@ describe("Services page", () => {
     await waitFor(() => expect(screen.getByRole("table", { name: /services/i })).toBeInTheDocument());
   });
 
+  // P3A.2 — Services explainer
+  it("shows a durable-config explainer with a link to /tunnels (role=note, NOT alert)", async () => {
+    mount();
+    // explainer is always rendered — wait for it after mount
+    const explainer = await screen.findByText(/durable saved config/i);
+    expect(explainer).toBeInTheDocument();
+    // must contain a link to /tunnels
+    const wrapper = explainer.closest("[role='note']") ?? explainer.parentElement!;
+    const link = wrapper.querySelector("a[href='/tunnels']");
+    expect(link).not.toBeNull();
+    // must NOT be a role=alert (that role is reserved for the error notice)
+    expect(screen.queryByRole("alert", { name: /durable saved config/i })).toBeNull();
+  });
+
   it("creates a new service via the + New service dialog and shows a success toast", async () => {
     mount();
     // Wait for initial data to load (table must be present first)

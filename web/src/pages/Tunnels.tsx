@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
-import { Badge, Button, Dialog, Input, PageHeader, SkeletonRows } from "@/components/ds";
+import { Badge, Button, Dialog, ErrorNotice, Input, PageHeader, SkeletonRows } from "@/components/ds";
 import type { AccessMode } from "@/lib/contract";
 import { AccessModePanel, type AccessModePanelHandle } from "@/components/AccessModePanel";
 import { Toaster } from "@/components/ui/sonner";
@@ -121,6 +122,10 @@ export default function Tunnels() {
   return (
     <div className="tunnels-page">
       <PageHeader title="Tunnels" />
+      <ErrorNotice variant="info" role="note">
+        Tunnels are the live connections a client is holding right now. Their saved config and
+        access mode live in <Link to="/services">Services</Link>.
+      </ErrorNotice>
       <div className="toolbar-row">
         <Input
           type="search"
@@ -205,7 +210,16 @@ export default function Tunnels() {
               {sorted.map((t) => (
                 <tr key={t.id}>
                   <td className={t.name ? "col-name" : "col-name muted-em"}>
-                    {t.name || "—"}
+                    {t.type === "http" && t.service_id ? (
+                      <Link
+                        to={`/services/${t.service_id}`}
+                        aria-label={`Open service ${t.name}`}
+                      >
+                        {t.name || "—"}
+                      </Link>
+                    ) : (
+                      t.name || "—"
+                    )}
                   </td>
                   <td><Badge nodot>{t.type}</Badge></td>
                   <td className="col-remote">

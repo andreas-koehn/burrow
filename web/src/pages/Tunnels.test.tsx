@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import Tunnels from "./Tunnels";
 
 class FakeES {
@@ -24,7 +25,11 @@ class FakeES {
 
 function setup() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={qc}><Tunnels /></QueryClientProvider>);
+  render(
+    <MemoryRouter initialEntries={["/tunnels"]}>
+      <QueryClientProvider client={qc}><Tunnels /></QueryClientProvider>
+    </MemoryRouter>
+  );
   return qc;
 }
 
@@ -160,5 +165,49 @@ describe("Tunnels", () => {
     expect(screen.queryByRole("columnheader", { name: /^in$/i })).toBeNull();
     expect(screen.queryByRole("columnheader", { name: /^out$/i })).toBeNull();
     expect(screen.getByRole("columnheader", { name: /traffic/i })).toBeInTheDocument();
+  });
+
+  // P3A.1 — Tunnels explainer
+  it("shows a live-connections explainer with a link to /services (role=note, NOT alert)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("[]", { status: 200 }) as any
+    );
+    setup();
+    // The explainer text must be present
+    const explainer = await screen.findByText(/live connections/i);
+    expect(explainer).toBeInTheDocument();
+    // It must contain (or be near) a link to /services
+    const container = explainer.closest("[role='note']") ?? explainer.parentElement!;
+    const link = container.querySelector("a[href='/services']");
+    expect(link).not.toBeNull();
+    // The explainer is NOT a role=alert region
+    expect(screen.queryByRole("alert", { name: /live connections/i })).toBeNull();
+  });
+
+  // P3A.3 — Tunnel row → durable Service drill-down link
+  it("http tunnel with service_id has an 'Open service' link to /services/<service_id>", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([
+        { id: "th1", name: "web", type: "http", remote_port: 0, local_addr: "127.0.0.1:3000",
+          hostname: "k7p2qx.tunnels.example.com", access_mode: "open",
+          bytes_in: 0, bytes_out: 0, connected: true, service_id: "svc_web01" },
+      ]), { status: 200 }) as any
+    );
+    setup();
+    await screen.findByText("web");
+    const link = screen.getByRole("link", { name: /open service web/i });
+    expect(link).toHaveAttribute("href", "/services/svc_web01");
+  });
+
+  it("tcp tunnel without service_id does NOT render an 'Open service' link", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([
+        { id: "tt1", name: "pg", type: "tcp", remote_port: 9000, local_addr: "127.0.0.1:5432",
+          bytes_in: 0, bytes_out: 0, connected: true },
+      ]), { status: 200 }) as any
+    );
+    setup();
+    await screen.findByText("pg");
+    expect(screen.queryByRole("link", { name: /open service/i })).toBeNull();
   });
 });
