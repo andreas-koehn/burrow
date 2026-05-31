@@ -3,9 +3,15 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { apiFetch, downloadFile, ApiError } from "@/lib/api";
-import { Button, Input, PageHeader, SkeletonRows } from "@/components/ds";
+import { Badge, Button, Input, PageHeader, SkeletonRows } from "@/components/ds";
 import type { AuditEvent } from "@/lib/contract";
 import { formatTimestampWithTooltip } from "@/lib/format";
+
+const RESULT_BADGE: Record<AuditEvent["result"], string> = {
+  ok: "status-connected",
+  denied: "status-idle",
+  error: "status-suspended",
+};
 
 function Row({ e }: { e: AuditEvent }) {
   const [open, setOpen] = useState(false);
@@ -20,12 +26,12 @@ function Row({ e }: { e: AuditEvent }) {
         <td className="mono small">{e.actor_email}</td>
         <td className="mono">{e.action}</td>
         <td className="mono">{e.subject_label}</td>
-        <td>{e.result}</td>
+        <td><Badge kind={RESULT_BADGE[e.result]}>{e.result}</Badge></td>
         <td className="mono small">{e.source_ip}</td>
       </tr>
       {open && (
         <tr>
-          <td colSpan={7}>
+          <td colSpan={7} className="audit-detail">
             <pre className="mono small">{JSON.stringify(e.payload, null, 2)}</pre>
             <p className="muted mono small">
               prev_hash: {e.prev_hash} · hash: {e.hash}

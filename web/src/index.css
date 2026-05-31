@@ -2227,6 +2227,13 @@ td.empty-cell { text-align: center; padding: 1rem 0; }
 .cert-validation-status .ok  { color: var(--success, oklch(0.60 0.17 145)); }
 .cert-validation-status .err { color: var(--destructive); }
 
+/* Audit expanded detail — distinct inset surface + accent so it reads as
+   nested detail, not another flat row (D-6/L-8). */
+.audit-page table.data td.audit-detail {
+  background: var(--muted);
+  border-left: 2px solid color-mix(in oklch, var(--primary) 45%, var(--border));
+}
+
 /* OpenAPI viewer page — full-height iframe wrapper */
 .openapi-viewer-page {
   display: flex;
