@@ -6,9 +6,10 @@ import { db, resetDb } from "@/mocks/db";
 import Settings from "@/pages/Settings";
 
 describe("Settings / SMTP", () => {
-  it("shows the unconfigured notice initially", async () => {
+  it("shows the unconfigured notice initially (P6B.2 — corrected copy)", async () => {
     renderApp(<Settings />);
-    expect(await screen.findByText(/Email isn't set up yet/i)).toBeInTheDocument();
+    expect(await screen.findByText(/password resets/i)).toBeInTheDocument();
+    expect(screen.queryByText(/invites are disabled/i)).not.toBeInTheDocument();
   });
 
   it("saves whitelisted SMTP settings", async () => {

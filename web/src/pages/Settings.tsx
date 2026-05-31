@@ -112,7 +112,7 @@ export default function Settings() {
 
       <section className="account-section" aria-labelledby="sec-smtp">
         <div className="section-head"><div className="left"><h2 id="sec-smtp">Email / SMTP</h2></div></div>
-        {!configured && <p role="status" className="notice-inline">Email isn't set up yet. User invites are disabled until you configure and test SMTP.</p>}
+        {!configured && <p role="status" className="notice-inline">Email isn't set up — password resets and test emails are unavailable until you configure SMTP.</p>}
         <form className="pw-form" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
           <FormFieldGroup>
             <FormField label="SMTP server" htmlFor="smtp-host" w="full">

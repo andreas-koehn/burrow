@@ -29,7 +29,7 @@ export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: ()
       open={open}
       onOpenChange={(o) => { if (!o) { reset(); onClose(); } }}
       title="Create user"
-      description="They'll be able to sign in to this relay."
+      description="They'll be able to sign in to this relay. They sign in with the password you set here — Burrow does not email an invitation."
       footer={
         <>
           <Button variant="ghost" onClick={() => { reset(); onClose(); }}>Cancel</Button>
