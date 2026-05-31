@@ -108,6 +108,18 @@ describe("Tokens", () => {
     expect(btn.className).toMatch(/destructive/);
   });
 
+  it("no token row carries a persistent is-hover highlight (L-misc)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([
+        { id: "t1", name: "laptop", created_at: "2024-01-15T10:00:00Z", last_used: null },
+        { id: "t2", name: "server", created_at: "2024-03-01T08:00:00Z", last_used: "2024-06-01T09:30:00Z" },
+      ]), { status: 200 }) as any
+    );
+    setup();
+    const table = await screen.findByRole("table", { name: /tokens/i });
+    table.querySelectorAll("tbody tr").forEach((r) => expect(r.classList.contains("is-hover")).toBe(false));
+  });
+
   it("Revoke opens a confirm dialog; Cancel does NOT call DELETE (C2)", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url: any, opts?: RequestInit) => {
       const u = String(url);
