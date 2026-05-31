@@ -40,6 +40,8 @@ export function Layout() {
   const { theme, toggleTheme } = useTheme();
   const { user } = useAuth();
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteKey, setPaletteKey] = useState(0);
+  const openPalette = () => { setPaletteKey((k) => k + 1); setPaletteOpen(true); };
   async function logout() {
     try { await apiFetch("/auth/logout", { method: "POST" }); } catch { /* ignore */ }
     qc.clear();
@@ -70,7 +72,7 @@ export function Layout() {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        setPaletteOpen(true);
+        openPalette();
       }
     };
     window.addEventListener("keydown", handler);
@@ -89,7 +91,7 @@ export function Layout() {
           {/* ⌘K search affordance */}
           <button
             className="nav-item"
-            onClick={() => setPaletteOpen(true)}
+            onClick={openPalette}
             aria-label="Search"
             style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer" }}
           >
@@ -229,6 +231,7 @@ export function Layout() {
       </main>
 
       <CommandPalette
+        key={paletteKey}
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
         isAdmin={isAdmin}

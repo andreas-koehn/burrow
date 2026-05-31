@@ -10,16 +10,20 @@ describe("InfoHint", () => {
     ).toBeInTheDocument();
   });
 
-  it("button aria-describedby matches the tooltip id when open", () => {
+  it("button aria-describedby always points at the tooltip id (stable association)", () => {
     render(<InfoHint label="Service" content="durable config" />);
     const button = screen.getByRole("button", { name: /what is service\?/i });
-
-    // Open the tooltip via focus
-    fireEvent.focus(button);
-
-    const tooltip = screen.getByRole("tooltip");
-    expect(tooltip).toBeInTheDocument();
+    // The tooltip span is always in the DOM (hidden=true to include hidden elements)
+    const tooltip = screen.getByRole("tooltip", { hidden: true });
     expect(button.getAttribute("aria-describedby")).toBe(tooltip.id);
+  });
+
+  it("tooltip span is always present in the DOM (hidden when closed)", () => {
+    render(<InfoHint label="Service" content="durable config" />);
+    // Query with hidden:true so we find it even when the hidden attr is set
+    const tooltip = screen.getByRole("tooltip", { hidden: true });
+    expect(tooltip).toBeInTheDocument();
+    expect(tooltip).toHaveAttribute("hidden");
   });
 
   it("tooltip content is visible and associated after focus", () => {
@@ -28,33 +32,42 @@ describe("InfoHint", () => {
 
     fireEvent.focus(button);
 
-    expect(screen.getByRole("tooltip")).toHaveTextContent("durable config");
+    // When open, tooltip is no longer hidden — getByRole without hidden:true works
+    const tooltip = screen.getByRole("tooltip");
+    expect(tooltip).toHaveTextContent("durable config");
+    expect(tooltip).not.toHaveAttribute("hidden");
   });
 
-  it("tooltip is not in the DOM when closed", () => {
+  it("tooltip is hidden (not absent) when closed", () => {
     render(<InfoHint label="Service" content="durable config" />);
-    expect(screen.queryByRole("tooltip")).toBeNull();
+    // Always in DOM; use hidden:true to find it
+    const tooltip = screen.getByRole("tooltip", { hidden: true });
+    expect(tooltip).toHaveAttribute("hidden");
   });
 
-  it("Escape key hides the tooltip", () => {
+  it("Escape key hides the tooltip (sets hidden attr)", () => {
     render(<InfoHint label="Service" content="durable config" />);
     const button = screen.getByRole("button", { name: /what is service\?/i });
 
     fireEvent.focus(button);
-    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    // After focus: visible, no hidden attr
+    expect(screen.getByRole("tooltip")).not.toHaveAttribute("hidden");
 
     fireEvent.keyDown(button, { key: "Escape" });
-    expect(screen.queryByRole("tooltip")).toBeNull();
+    // After Escape: still in DOM, but hidden attr set
+    expect(screen.getByRole("tooltip", { hidden: true })).toHaveAttribute("hidden");
   });
 
-  it("mouseenter/mouseleave toggle the tooltip", () => {
+  it("mouseenter/mouseleave toggle the hidden attribute", () => {
     render(<InfoHint label="Service" content="durable config" />);
     const button = screen.getByRole("button", { name: /what is service\?/i });
 
     fireEvent.mouseEnter(button);
-    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    // Visible after mouseenter
+    expect(screen.getByRole("tooltip")).not.toHaveAttribute("hidden");
 
     fireEvent.mouseLeave(button);
-    expect(screen.queryByRole("tooltip")).toBeNull();
+    // Hidden after mouseleave — use hidden:true to query
+    expect(screen.getByRole("tooltip", { hidden: true })).toHaveAttribute("hidden");
   });
 });

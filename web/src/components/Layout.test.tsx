@@ -252,4 +252,41 @@ describe("Layout ⌘K command palette (P6A.3)", () => {
     // Option accessible name includes the group label "Access control" so match broadly.
     expect(await screen.findByRole("option", { name: /users/i })).toBeInTheDocument();
   });
+
+  it("⌘K reopen resets palette query (stale-query bug fix)", async () => {
+    renderLayout("admin");
+    await screen.findByRole("link", { name: /^account$/i });
+
+    // Open via Ctrl+K
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    });
+    await screen.findByRole("dialog");
+
+    // Type a query that would narrow the list
+    const input = screen.getByRole("searchbox");
+    fireEvent.change(input, { target: { value: "zzz" } });
+    // "No matches" confirms the query filtered everything out
+    expect(screen.getByText(/no matches/i)).toBeInTheDocument();
+
+    // Close via Escape on the input
+    fireEvent.keyDown(input, { key: "Escape" });
+    // Wait for dialog to close
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    // Reopen via Ctrl+K — must reset state
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    });
+    await screen.findByRole("dialog");
+
+    // After reopen the search input should be empty (query reset)
+    const inputAfterReopen = screen.getByRole("searchbox");
+    expect(inputAfterReopen).toHaveValue("");
+    // And the full list is visible again (not filtered)
+    expect(screen.queryByText(/no matches/i)).not.toBeInTheDocument();
+    expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
+  });
 });

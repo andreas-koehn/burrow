@@ -30,11 +30,9 @@ export function InfoHint({ label, content, className }: InfoHintProps) {
       >
         <Info size={13} aria-hidden="true" />
       </button>
-      {open && (
-        <span role="tooltip" id={id} className="info-hint-pop">
-          {content}
-        </span>
-      )}
+      <span role="tooltip" id={id} className="info-hint-pop" hidden={!open}>
+        {content}
+      </span>
     </span>
   );
 }

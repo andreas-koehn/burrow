@@ -21,26 +21,18 @@ interface PaletteItem {
   path: string;
 }
 
-interface CommandPaletteBodyProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  isAdmin: boolean;
-  hasAiEndpoints: boolean;
-  firstHttpServiceId?: string;
-}
-
 /**
- * Inner stateful body.  Rendered with key={openCount} by CommandPalette so
- * that query/focusIdx reset to their initial values each time the palette
- * opens — without needing a setState-in-effect pattern.
+ * Command palette — query/focusIdx reset on every open because Layout passes
+ * key={paletteKey} (incremented by openPalette()) so React remounts the whole
+ * component fresh regardless of which open path was used (⌘K or Search button).
  */
-function CommandPaletteBody({
+export function CommandPalette({
   open,
   onOpenChange,
   isAdmin,
   hasAiEndpoints,
   firstHttpServiceId,
-}: CommandPaletteBodyProps) {
+}: CommandPaletteProps) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [focusIdx, setFocusIdx] = useState(0);
@@ -66,7 +58,7 @@ function CommandPaletteBody({
 
   // Build the item list: static destinations + entity matches.
   // Wrapped in useMemo so the array reference is stable and doesn't cause
-  // the useCallback below to re-create on every render (fix B).
+  // the useCallback below to re-create on every render.
   const allItems = useMemo<PaletteItem[]>(() => {
     const destinations = destinationsFor({ isAdmin, hasAiEndpoints, firstHttpServiceId });
 
@@ -144,92 +136,59 @@ function CommandPaletteBody({
   );
 
   return (
-    <div
-      style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 400 }}
-      onKeyDown={handleKeyDown}
-    >
-      <Input
-        autoFocus
-        role="searchbox"
-        aria-label="Search"
-        placeholder="Search…"
-        value={query}
-        // Fix A: reset focusIdx in the onChange handler, not in a useEffect
-        onChange={(e) => { setQuery(e.target.value); setFocusIdx(0); }}
-      />
+    <Dialog open={open} onOpenChange={onOpenChange} title="Jump to…">
+      <div
+        style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 400 }}
+        onKeyDown={handleKeyDown}
+      >
+        <Input
+          autoFocus
+          role="searchbox"
+          aria-label="Search"
+          placeholder="Search…"
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setFocusIdx(0); }}
+        />
 
-      {allItems.length === 0 ? (
-        <div
-          style={{
-            padding: "12px 16px",
-            color: "var(--muted-foreground)",
-            fontSize: "0.875rem",
-            textAlign: "center",
-          }}
-        >
-          No matches
-        </div>
-      ) : (
-        <div
-          className="menu"
-          role="listbox"
-          aria-label="Navigation destinations"
-          style={{ maxHeight: 360, overflowY: "auto" }}
-        >
-          {allItems.map((item, i) => (
-            <div
-              key={item.key}
-              role="option"
-              aria-selected={i === focusIdx}
-              className={`menu-item${i === focusIdx ? " is-focus" : ""}`}
-              onMouseEnter={() => setFocusIdx(i)}
-              onClick={() => activate(item.path)}
-              style={{ cursor: "pointer" }}
-            >
-              <span style={{ flex: 1 }}>{item.label}</span>
-              {item.group !== "Results" && (
-                <span className="shortcut" style={{ fontSize: "0.75rem", color: "var(--muted-foreground)" }}>
-                  {item.group}
-                </span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-export function CommandPalette({
-  open,
-  onOpenChange,
-  isAdmin,
-  hasAiEndpoints,
-  firstHttpServiceId,
-}: CommandPaletteProps) {
-  // `openCount` increments each time the palette opens.  We pass it as the
-  // `key` to CommandPaletteBody so React remounts the body — resetting
-  // query and focusIdx — without any setState-in-effect (fix A).
-  const [openCount, setOpenCount] = useState(0);
-
-  const handleOpenChange = useCallback(
-    (next: boolean) => {
-      if (next) setOpenCount((c) => c + 1);
-      onOpenChange(next);
-    },
-    [onOpenChange],
-  );
-
-  return (
-    <Dialog open={open} onOpenChange={handleOpenChange} title="Jump to…">
-      <CommandPaletteBody
-        key={openCount}
-        open={open}
-        onOpenChange={handleOpenChange}
-        isAdmin={isAdmin}
-        hasAiEndpoints={hasAiEndpoints}
-        firstHttpServiceId={firstHttpServiceId}
-      />
+        {allItems.length === 0 ? (
+          <div
+            style={{
+              padding: "12px 16px",
+              color: "var(--muted-foreground)",
+              fontSize: "0.875rem",
+              textAlign: "center",
+            }}
+          >
+            No matches
+          </div>
+        ) : (
+          <div
+            className="menu"
+            role="listbox"
+            aria-label="Navigation destinations"
+            style={{ maxHeight: 360, overflowY: "auto" }}
+          >
+            {allItems.map((item, i) => (
+              <div
+                key={item.key}
+                role="option"
+                aria-selected={i === focusIdx}
+                className={`menu-item${i === focusIdx ? " is-focus" : ""}`}
+                onMouseEnter={() => setFocusIdx(i)}
+                onClick={() => activate(item.path)}
+                style={{ cursor: "pointer" }}
+              >
+                <span style={{ flex: 1 }}>{item.label}</span>
+                {item.group !== "Results" && (
+                  <span className="shortcut" style={{ fontSize: "0.75rem", color: "var(--muted-foreground)" }}>
+                    {item.group}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </Dialog>
   );
 }
