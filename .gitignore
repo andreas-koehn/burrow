@@ -43,3 +43,6 @@ design/
 /web/test-results/
 /web/playwright-report/
 /web/.playwright/
+
+# Screenshot harness output (artifacts — the script is the deliverable)
+/screenshots/

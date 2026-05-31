@@ -81,6 +81,11 @@ tasks:
     cmds:
       - bash test/manual/smoke-user.sh
 
+  screenshots:capture:
+    desc: Capture all Burrow UI views + key modals in light + dark mode (requires the e2e lab running)
+    cmds:
+      - node tools/capture-screenshots.mjs
+
   e2e:lab:
     desc: Bring up the full e2e lab and print access credentials + endpoints
     cmds:
