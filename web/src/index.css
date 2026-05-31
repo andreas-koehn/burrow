@@ -2242,6 +2242,44 @@ td.empty-cell { text-align: center; padding: 1rem 0; }
   border-left: 2px solid color-mix(in oklch, var(--primary) 45%, var(--border));
 }
 
+/* ── Home page — quick actions + explainer ──────────────────────────────── */
+.home-quick-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.home-explainer {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.5rem;
+  margin-top: 1.5rem;
+  color: var(--card-foreground);
+}
+
+.home-explainer h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.home-explainer ol {
+  margin: 0;
+  padding-left: 1.5rem;
+}
+
+.home-explainer li {
+  margin-bottom: 0.5rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+.home-explainer li:last-child {
+  margin-bottom: 0;
+}
+
 /* OpenAPI viewer page — full-height iframe wrapper */
 .openapi-viewer-page {
   display: flex;

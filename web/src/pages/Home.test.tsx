@@ -126,6 +126,46 @@ describe("Home (Overview)", () => {
     });
   });
 
+  // ---- Quick actions ----
+
+  describe("Quick actions", () => {
+    it("renders 'Connect a client' link pointing to /clients/connect", async () => {
+      renderApp(<Home />);
+      await screen.findByRole("heading", { name: "Overview" });
+      const link = screen.getByRole("link", { name: /connect a client/i });
+      expect(link).toBeInTheDocument();
+      expect(link).toHaveAttribute("href", "/clients/connect");
+    });
+
+    it("renders 'New service' link pointing to /services", async () => {
+      renderApp(<Home />);
+      await screen.findByRole("heading", { name: "Overview" });
+      const link = screen.getByRole("link", { name: /new service/i });
+      expect(link).toBeInTheDocument();
+      expect(link).toHaveAttribute("href", "/services");
+    });
+  });
+
+  // ---- Explainer ----
+
+  describe("How Burrow works explainer", () => {
+    it("renders the 'How Burrow works' heading", async () => {
+      renderApp(<Home />);
+      await screen.findByRole("heading", { name: "Overview" });
+      expect(screen.getByText(/how burrow works/i)).toBeInTheDocument();
+    });
+
+    it("mentions Clients, Services, and Tunnels in the explainer section", async () => {
+      renderApp(<Home />);
+      await screen.findByRole("heading", { name: "Overview" });
+      const explainer = document.querySelector(".home-explainer");
+      expect(explainer).not.toBeNull();
+      expect(explainer!.textContent).toMatch(/clients/i);
+      expect(explainer!.textContent).toMatch(/services/i);
+      expect(explainer!.textContent).toMatch(/tunnels/i);
+    });
+  });
+
   describe("Cert alert", () => {
     it("shows no cert alert when all domains are active and far from expiry (seed)", async () => {
       renderApp(<Home />);

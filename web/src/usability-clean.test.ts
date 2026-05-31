@@ -28,6 +28,21 @@ describe("usability-clean — notice-inline is token-based (Cl-2 pre-condition)"
 
 // --- Pending: converted to real assertions as each phase lands ---
 
-it.todo("Cl-1: Home uses .card/.metric-tile DS primitives, no one-off styles (Phase 1)");
+describe("usability-clean — .home-explainer is token-based (Cl-1)", () => {
+  it(".home-explainer exists in index.css and uses only var(-- tokens for colour properties", () => {
+    // Extract the .home-explainer rule block
+    const rule = css.match(/\.home-explainer\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule, ".home-explainer rule not found in index.css").not.toBe("");
+
+    // Must reference at least one CSS custom-property token
+    expect(rule).toContain("var(--");
+    // Must not use bare hex colour literals
+    expect(rule).not.toMatch(/#[0-9a-fA-F]{3,6}\b/);
+    // Must not use bare rgb() colour literals
+    expect(rule).not.toMatch(/\brgb\(/);
+    // Must not use bare oklch() colour literals (tokens wrap them)
+    expect(rule).not.toMatch(/\boklch\(/);
+  });
+});
 it.todo("Cl-2: alerts strip uses .notice-inline tints, no new color literal (Phase 1)");
 it.todo("Cl-3: ⌘K palette reuses .dialog idiom, role=dialog present (Phase 6)");

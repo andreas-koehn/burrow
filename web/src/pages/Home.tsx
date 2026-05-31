@@ -1,6 +1,6 @@
 import { useQuery, useQueries } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { PageHeader, MetricStrip, MetricTile, ErrorNotice } from "@/components/ds";
+import { PageHeader, MetricStrip, MetricTile, ErrorNotice, Button } from "@/components/ds";
 import { useAuth } from "@/auth/useAuth";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
@@ -101,9 +101,20 @@ export default function Home() {
     return `${formatBytes(totalIn)} / ${formatBytes(totalOut)}`;
   })();
 
+  const quickActions = (
+    <div className="home-quick-actions">
+      <Link to="/clients/connect">
+        <Button variant="primary" size="sm">Connect a client</Button>
+      </Link>
+      <Link to="/services">
+        <Button variant="secondary" size="sm">New service</Button>
+      </Link>
+    </div>
+  );
+
   return (
     <div className="home-page">
-      <PageHeader title="Overview" subtitle="Your relay at a glance." />
+      <PageHeader title="Overview" subtitle="Your relay at a glance." actions={quickActions} />
 
       <MetricStrip ariaLabel="Overview">
         <MetricTile
@@ -170,6 +181,30 @@ export default function Home() {
           )}
         </div>
       )}
+
+      <section className="home-explainer">
+        <h2>How Burrow works</h2>
+        <ol>
+          <li>
+            Run <code>burrow connect</code> on your machine — this registers it as a{" "}
+            <strong>Client</strong> on the relay. Clients are machines running{" "}
+            <code>burrow connect</code> that expose local services through this relay.
+          </li>
+          <li>
+            Each Client exposes one or more local ports through durable{" "}
+            <strong>Services</strong>. A Service is the saved configuration
+            (access mode + hostname) that persists even when no client is connected.
+          </li>
+          <li>
+            A live connection to a Service is a <strong>Tunnel</strong>. Tunnels exist
+            only while the client is connected and actively forwarding traffic.
+          </li>
+          <li>
+            Add an access mode (API key, mTLS) or point a Service at an
+            OpenAI-compatible upstream to unlock the AI gateway.
+          </li>
+        </ol>
+      </section>
     </div>
   );
 }
