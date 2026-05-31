@@ -1567,7 +1567,8 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
 }
 .metric-tile .label {
   font-size: 12px;
-  color: var(--muted-foreground);
+  color: color-mix(in oklch, var(--muted-foreground) 60%, var(--foreground));
+  font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -1579,7 +1580,7 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
 .metric-tile .sub {
   font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--muted-foreground);
+  color: color-mix(in oklch, var(--muted-foreground) 70%, var(--foreground));
 }
 
 /* PageHeader — replaces 22+ hand-rolled .page-head blocks. Single

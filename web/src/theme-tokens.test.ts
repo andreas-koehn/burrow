@@ -49,3 +49,13 @@ describe("design tokens — notice banner tints (L-4)", () => {
     expect(css).toMatch(/\.notice-inline\.ok\s*\{/);
   });
 });
+
+describe("design tokens — metric tile contrast (L-20)", () => {
+  it("metric label/sub mix toward foreground instead of bare muted-foreground", () => {
+    const label = css.match(/\.metric-tile \.label\s*\{[^}]*\}/)?.[0] ?? "";
+    const sub = css.match(/\.metric-tile \.sub\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(label).toContain("color-mix(in oklch, var(--muted-foreground)");
+    expect(label).toContain("font-weight: 500");
+    expect(sub).toContain("color-mix(in oklch, var(--muted-foreground)");
+  });
+});
