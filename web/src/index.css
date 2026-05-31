@@ -1996,6 +1996,13 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   margin: 0;
 }
 
+/* .cmd-block.wrap — wrapping variant for long CLI commands */
+.cmd-block.wrap {
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: visible;
+}
+
 /* .link — inline text styled as a clickable link (button variant) */
 .link {
   background: none;

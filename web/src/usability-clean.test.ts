@@ -46,3 +46,11 @@ describe("usability-clean — .home-explainer is token-based (Cl-1)", () => {
 });
 it.todo("Cl-2: alerts strip uses .notice-inline tints, no new color literal (Phase 1)");
 it.todo("Cl-3: ⌘K palette reuses .dialog idiom, role=dialog present (Phase 6)");
+
+describe("usability-clean — .cmd-block.wrap variant exists (P2.1)", () => {
+  it(".cmd-block.wrap rule exists in index.css with pre-wrap and break-all", () => {
+    expect(css).toContain(".cmd-block.wrap");
+    expect(css).toContain("pre-wrap");
+    expect(css).toContain("break-all");
+  });
+});

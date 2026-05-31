@@ -1,27 +1,67 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Copy } from "lucide-react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, FormField, FormFieldGroup, Input, PageHeader } from "@/components/ds";
+import { Button, FormField, FormFieldGroup, Input, Select, Badge, PageHeader } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
-import type { NewToken } from "@/lib/contract";
+import { useAuth } from "@/auth/useAuth";
+import type { NewToken, ClientView } from "@/lib/contract";
 
 interface ConnectInfo { server: string }
+
+const PROTOCOL_OPTIONS = [
+  { value: "tcp", label: "TCP" },
+  { value: "http", label: "HTTP" },
+];
 
 function copy(text: string) {
   void navigator.clipboard?.writeText(text);
   toast.success("Copied.");
 }
 
+// Build the CLI command from real field values.
+// tcp:  burrow connect --server <ep> --token <tok> --local <local> [--remote <n>] --name <name>
+// http: burrow connect --server <ep> --token <tok> --local <local> --type http --name <name>
+function buildCmd(opts: {
+  endpoint: string;
+  token: string;
+  local: string;
+  remote: string;
+  protocol: string;
+  name: string;
+}): string {
+  const { endpoint, token, local, remote, protocol, name } = opts;
+  const parts = [
+    "burrow connect",
+    `--server ${endpoint}`,
+    `--token ${token}`,
+    `--local ${local}`,
+  ];
+  if (protocol === "tcp" && remote.trim() !== "") {
+    parts.push(`--remote ${remote.trim()}`);
+  }
+  if (protocol === "http") {
+    parts.push("--type http");
+  }
+  parts.push(`--name ${name}`);
+  return parts.join(" ");
+}
+
 export default function ConnectClient() {
   const [name, setName] = useState("");
   const [reveal, setReveal] = useState(false);
   const [error, setError] = useState("");
-  // P1-2: the control-plane endpoint lives on a different port from the
-  // dashboard (e.g. :7000 control vs :8080 dashboard). Ask the relay for the
-  // correct host:port; fall back to window.location.host on 404 or error so
-  // legacy/standalone deploys still produce a copyable command.
+  // P2.2 — expose fields
+  const [local, setLocal] = useState("127.0.0.1:3000");
+  const [remote, setRemote] = useState("");
+  const [protocol, setProtocol] = useState("tcp");
+
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+
+  // P1-2: control-plane endpoint from relay; fall back to window.location.host
   const ci = useQuery({
     queryKey: ["connect-info"],
     queryFn: () => apiFetch<ConnectInfo>("/clients/connect-info"),
@@ -37,12 +77,33 @@ export default function ConnectClient() {
   });
 
   const tok = mint.data;
+
+  // P2.3 — command built from real fields; masked vs unmasked
+  const maskedToken = tok ? "bur_••••••••" : "";
+  const realToken = tok?.token ?? "";
+
   const cmd = tok
-    ? `burrow connect --server ${endpoint} --token ${reveal ? tok.token : "bur_••••••••"} --local 127.0.0.1:3000 --remote 9000 --name ${name}`
+    ? buildCmd({ endpoint, token: reveal ? realToken : maskedToken, local, remote, protocol, name })
     : "";
   const cmdToCopy = tok
-    ? `burrow connect --server ${endpoint} --token ${tok.token} --local 127.0.0.1:3000 --remote 9000 --name ${name}`
+    ? buildCmd({ endpoint, token: realToken, local, remote, protocol, name })
     : "";
+
+  // P2.5 — success-loop poller (admin only)
+  const { data: clientsData } = useQuery({
+    queryKey: ["clients"],
+    queryFn: () => apiFetch<ClientView[]>("/clients"),
+    enabled: !!tok && isAdmin,
+    refetchInterval: (query) => {
+      const d = query.state.data as ClientView[] | undefined;
+      const alreadyConnected = d?.some((c) => c.token_name === name) ?? false;
+      return alreadyConnected ? false : 3000;
+    },
+    retry: false,
+  });
+
+  const matched = clientsData?.find((c) => c.token_name === name);
+  const connected = !!matched;
 
   return (
     <div className="account-page">
@@ -50,6 +111,12 @@ export default function ConnectClient() {
         title="Connect a client"
         subtitle="Bring a machine online so it can expose a local service through this Burrow relay."
       />
+
+      {/* P2.6 — page-level explainer */}
+      <p className="muted" style={{ marginBottom: "var(--space-4)" }}>
+        A client is a machine running <code>burrow connect</code>. Name it, choose what it exposes,
+        then run the command on that machine.
+      </p>
 
       <section className="account-section" aria-labelledby="ob-1">
         <div className="section-head"><div className="left"><h2 id="ob-1">Name this client</h2></div></div>
@@ -82,6 +149,59 @@ export default function ConnectClient() {
         {error && <p role="alert" className="field-error">{error}</p>}
       </section>
 
+      {/* P2.2 — What to expose section */}
+      <section className="account-section" aria-labelledby="ob-expose">
+        <div className="section-head"><div className="left"><h2 id="ob-expose">What to expose</h2></div></div>
+        <FormFieldGroup>
+          <FormField
+            label="Local address"
+            htmlFor="ob-local"
+            w="md"
+            help="host:port of the app on the client machine"
+          >
+            <Input
+              id="ob-local"
+              aria-label="Local address"
+              value={local}
+              onChange={(e) => setLocal(e.target.value)}
+              placeholder="127.0.0.1:3000"
+            />
+          </FormField>
+          <FormField
+            label="Public port"
+            htmlFor="ob-remote"
+            w="sm"
+            help="requested public port — leave blank for auto; ignored for HTTP"
+          >
+            <Input
+              id="ob-remote"
+              aria-label="Public port"
+              type="number"
+              value={remote}
+              onChange={(e) => setRemote(e.target.value)}
+              placeholder="auto"
+              disabled={protocol === "http"}
+            />
+          </FormField>
+          <FormField
+            label="Protocol"
+            htmlFor="ob-protocol"
+            w="sm"
+            help="TCP for raw ports, HTTP for web apps"
+          >
+            <Select
+              id="ob-protocol"
+              options={PROTOCOL_OPTIONS}
+              value={protocol}
+              onChange={(v) => {
+                setProtocol(v);
+                if (v === "http") setRemote("");
+              }}
+            />
+          </FormField>
+        </FormFieldGroup>
+      </section>
+
       {tok && (
         <>
           <section className="account-section" aria-labelledby="ob-2">
@@ -89,7 +209,13 @@ export default function ConnectClient() {
             <p role="status" className="notice-inline">Store this token now. Burrow doesn't keep a copy you can retrieve later — if you lose it, mint a new one for this client.</p>
             <div className="field">
               <label>Server endpoint</label>
-              <code className="mono">{endpoint}</code>
+              {/* P2.6 — inline endpoint explainer */}
+              <span className="row row-center gap-2">
+                <code className="mono">{endpoint}</code>
+                <span className="muted" style={{ fontSize: "0.8em" }}>
+                  This is the relay's reachable address — a client on another machine must be able to reach it.
+                </span>
+              </span>
             </div>
             <div className="field">
               <label>Client token</label>
@@ -112,8 +238,9 @@ export default function ConnectClient() {
 
           <section className="account-section" aria-labelledby="ob-3">
             <div className="section-head"><div className="left"><h2 id="ob-3">Install &amp; run</h2></div></div>
+            {/* P2.4 — wrapped command + copy */}
             <div className="row gap-2">
-              <pre className="cmd-block flex-1"><code>{cmd}</code></pre>
+              <pre className="cmd-block wrap flex-1"><code>{cmd}</code></pre>
               <button
                 type="button"
                 className="icon-btn"
@@ -122,6 +249,24 @@ export default function ConnectClient() {
               >
                 <Copy size={13} />
               </button>
+            </div>
+
+            {/* P2.5 — success loop status region */}
+            <div role="status" style={{ marginTop: "var(--space-4)" }}>
+              {isAdmin ? (
+                connected && matched ? (
+                  <span className="row row-center gap-2">
+                    <Badge kind="status-connected">connected</Badge>
+                    <span>✓ <strong>{name}</strong> connected</span>
+                    <Link to={`/clients/${matched.session_id}`}>View client</Link>
+                    <Link to="/clients">Back to Clients</Link>
+                  </span>
+                ) : (
+                  <span className="muted">Waiting for <strong>{name}</strong> to connect…</span>
+                )
+              ) : (
+                <span className="muted">Your client will appear under Clients once it connects.</span>
+              )}
             </div>
           </section>
         </>
