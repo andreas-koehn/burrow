@@ -208,6 +208,7 @@ export const handlers = [
     const g = gate(request, { admin: true }); if (g) return g;
     return json(db.clients.map(({ services: _services, ...v }) => v));
   }),
+  http.get("/api/v1/clients/connect-info", ({ request }) => gate(request) ?? json({ server: db.connectServer })),
   http.get("/api/v1/clients/:id", ({ request, params }) => {
     const g = gate(request, { admin: true }); if (g) return g;
     const c = db.clients.find((x) => x.session_id === params.id);

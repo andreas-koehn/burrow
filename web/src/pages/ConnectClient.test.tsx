@@ -27,4 +27,12 @@ describe("Connect a client", () => {
     await userEvent.click(screen.getByRole("button", { name: /generate token/i }));
     expect(await screen.findByText(/burrow connect/i)).toHaveTextContent(/--name edge-01/);
   });
+
+  it("shows the relay server endpoint from connect-info in the install command", async () => {
+    mount();
+    await userEvent.type(screen.getByLabelText(/client name/i), "edge-01");
+    await userEvent.click(screen.getByRole("button", { name: /generate token/i }));
+    await screen.findByText(/^bur_/);
+    expect(await screen.findByText("relay.example.com:7000")).toBeInTheDocument();
+  });
 });
