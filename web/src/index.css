@@ -1392,7 +1392,7 @@ button.sort-header:focus-visible {
 
 .pw-form {
   display: grid;
-  grid-template-columns: minmax(0, 420px);
+  grid-template-columns: minmax(0, var(--input-w-lg));
   gap: 14px;
 }
 .pw-form .actions {

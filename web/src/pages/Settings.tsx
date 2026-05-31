@@ -115,21 +115,21 @@ export default function Settings() {
         {!configured && <p role="status" className="notice-inline">Email isn't set up yet. User invites are disabled until you configure and test SMTP.</p>}
         <form className="pw-form" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
           <FormFieldGroup>
-            <FormField label="SMTP server" htmlFor="smtp-host" w="lg">
+            <FormField label="SMTP server" htmlFor="smtp-host" w="full">
               <Input id="smtp-host" value={form["smtp.host"] ?? ""} onChange={(e) => set("smtp.host", e.target.value)} placeholder="smtp.example.com" />
             </FormField>
             <FormField label="Port" htmlFor="smtp-port" w="sm">
               <Input id="smtp-port" inputMode="numeric" value={form["smtp.port"] ?? ""} onChange={(e) => set("smtp.port", e.target.value)} placeholder="587" />
             </FormField>
-            <FormField label="Encryption" htmlFor="smtp-enc" w="md">
+            <FormField label="Encryption" htmlFor="smtp-enc" w="full">
               <Select id="smtp-enc"
                 options={[{ value: "starttls", label: "STARTTLS" }, { value: "implicit", label: "Implicit TLS" }, { value: "none", label: "None" }]}
                 value={form["smtp.tls"] ?? "starttls"} onChange={(v) => set("smtp.tls", v)} />
             </FormField>
-            <FormField label="Username" htmlFor="smtp-user" w="md">
+            <FormField label="Username" htmlFor="smtp-user" w="full">
               <Input id="smtp-user" value={form["smtp.username"] ?? ""} onChange={(e) => set("smtp.username", e.target.value)} placeholder="burrow@example.com" />
             </FormField>
-            <FormField label="From address" htmlFor="smtp-from" w="lg">
+            <FormField label="From address" htmlFor="smtp-from" w="full">
               <Input id="smtp-from" value={form["smtp.from"] ?? ""} onChange={(e) => set("smtp.from", e.target.value)} placeholder="burrow@example.com" />
             </FormField>
           </FormFieldGroup>
@@ -144,10 +144,9 @@ export default function Settings() {
           <Button variant="secondary" size="sm" onClick={() => setShowTest(true)}>Send test email</Button>
         ) : (
           <div className="row row-end gap-2">
-            <div className="field">
-              <label htmlFor="smtp-test-to">Test recipient</label>
+            <FormField label="Test recipient" htmlFor="smtp-test-to" w="full">
               <Input id="smtp-test-to" value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="you@example.com" />
-            </div>
+            </FormField>
             <Button variant="secondary" size="sm" disabled={test.isPending} onClick={() => { setTestError(""); test.mutate(); }}>
               {test.isPending ? "Testing…" : "Test now"}
             </Button>

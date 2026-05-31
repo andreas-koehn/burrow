@@ -68,3 +68,10 @@ describe("design tokens — dialog scrim (D-1/L-14)", () => {
     expect(rule).not.toContain("border-radius: inherit");
   });
 });
+
+describe("design tokens — form width (D-11/L-12)", () => {
+  it("pw-form track is aligned to the lg input token, not a 420px magic number", () => {
+    const rule = css.match(/\.pw-form\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toContain("minmax(0, var(--input-w-lg))");
+  });
+});

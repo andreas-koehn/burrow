@@ -54,6 +54,17 @@ describe("Settings / nav cards", () => {
   });
 });
 
+describe("Settings / SMTP form width (D-11/L-12)", () => {
+  it("SMTP form fields share one width class (no ragged right edge) (D-11/L-12)", async () => {
+    renderApp(<Settings />);
+    await screen.findByLabelText(/SMTP server/i);
+    const fields = [...document.querySelectorAll(".pw-form .form-field")];
+    const widths = fields.map(f => [...f.classList].find(c => c.startsWith("w-")));
+    const nonPort = widths.filter(w => w !== "w-sm");
+    expect(new Set(nonPort).size).toBe(1);
+  });
+});
+
 describe("Settings / Privacy — connection_logs.rollup_include_top_ips toggle (v0.5.1 Q12)", () => {
   afterEach(() => resetDb());
 
