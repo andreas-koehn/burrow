@@ -581,6 +581,9 @@ table.data td.col-id, table.data td.col-endpoint, table.data td.col-time {
 }
 table.data td.col-actions { width: 40px; text-align: right; padding-right: 8px; }
 
+/* Right-align numeric table columns so digits line up by magnitude (L-11). */
+table.data th.col-num, table.data td.col-num { text-align: right; }
+
 /* P0-4 — Name cells that navigate to a detail page get a visual link hint
    while keeping the cell layout intact. */
 table.data td.link-row a {

@@ -185,4 +185,36 @@ describe("Connection logs page (§v0.5.0 Part E)", () => {
       expect(screen.queryByText("svc_web01")).toBeNull();
     });
   });
+
+  it("renders STATUS as a colored badge and right-aligns numeric columns (D-10/L-8/L-11)", async () => {
+    // The seed contains rows with status "closed_clean" (first seeded row).
+    // closed_clean → status-connected (green), rejected → status-suspended (red),
+    // closed_error → status-suspended, closed_idle → status-idle (amber).
+    mount();
+    await screen.findByRole("table", { name: /connection logs/i });
+
+    // (a) A STATUS cell should render a <span class="badge status-connected">
+    //     for a closed_clean row. Find the badge inside the status cell.
+    await waitFor(() => {
+      // The seed's first row has status "closed_clean"; findAllByText finds all badge spans.
+      const badges = document.querySelectorAll("td[data-status='closed_clean'] span.badge");
+      expect(badges.length).toBeGreaterThan(0);
+      expect(badges[0]).toHaveClass("status-connected");
+    });
+
+    // Also verify a rejected row maps to status-suspended.
+    const rejectedBadges = document.querySelectorAll("td[data-status='rejected'] span.badge");
+    expect(rejectedBadges.length).toBeGreaterThan(0);
+    expect(rejectedBadges[0]).toHaveClass("status-suspended");
+
+    // (b) The "Duration" column header must carry the col-num class.
+    const durHeader = screen.getByRole("columnheader", { name: /^duration$/i });
+    expect(durHeader).toHaveClass("col-num");
+
+    // Bytes in and Bytes out headers also get col-num.
+    const bytesInHeader = screen.getByRole("columnheader", { name: /^bytes in$/i });
+    expect(bytesInHeader).toHaveClass("col-num");
+    const bytesOutHeader = screen.getByRole("columnheader", { name: /^bytes out$/i });
+    expect(bytesOutHeader).toHaveClass("col-num");
+  });
 });

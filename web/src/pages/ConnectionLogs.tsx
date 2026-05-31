@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiFetch, downloadFile } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
 import { Button, Badge, EmptyState, PageHeader, SkeletonRows } from "@/components/ds";
-import type { ConnectionLog, ConnectionLogRollup, ConnectionLogKind, Service } from "@/lib/contract";
+import type { ConnectionLog, ConnectionLogRollup, ConnectionLogKind, ConnectionLogStatus, Service } from "@/lib/contract";
 
 // Translate date-range preset to since/until ISO strings.
 function presetRange(preset: string): { since: string; until: string } {
@@ -44,6 +44,22 @@ const KIND_LABELS: Record<ConnectionLogKind, string> = {
   tcp_proxy: "TCP proxy",
   control: "Control",
 };
+
+// Status badge kind mapping — maps onto the existing status-* CSS variants.
+const STATUS_LABELS: Record<ConnectionLogStatus, string> = {
+  closed_clean: "closed_clean",
+  closed_idle: "closed_idle",
+  closed_error: "closed_error",
+  rejected: "rejected",
+};
+function statusClass(status: ConnectionLogStatus): string {
+  switch (status) {
+    case "closed_clean": return "status-connected";
+    case "closed_idle":  return "status-idle";
+    case "closed_error": return "status-suspended";
+    case "rejected":     return "status-suspended";
+  }
+}
 
 export default function ConnectionLogs() {
   const [kindFilter, setKindFilter] = useState<ConnectionLogKind | "">("");
@@ -295,9 +311,9 @@ export default function ConnectionLogs() {
                     <th>Kind</th>
                     <th>Service</th>
                     <th>Source IP</th>
-                    <th>Duration</th>
-                    <th>Bytes in</th>
-                    <th>Bytes out</th>
+                    <th className="col-num">Duration</th>
+                    <th className="col-num">Bytes in</th>
+                    <th className="col-num">Bytes out</th>
                     <th>Status</th>
                     <th>Reason</th>
                   </tr>
@@ -311,10 +327,10 @@ export default function ConnectionLogs() {
                       </td>
                       <td className="small">{serviceMap.get(r.service_id)?.name ?? <span className="mono">{r.service_id}</span>}</td>
                       <td className="mono small">{r.source_ip}</td>
-                      <td className="mono small">{r.duration_ms}ms</td>
-                      <td className="mono small">{fmtBytes(r.bytes_in)}</td>
-                      <td className="mono small">{fmtBytes(r.bytes_out)}</td>
-                      <td>{r.status}</td>
+                      <td className="mono small col-num">{r.duration_ms}ms</td>
+                      <td className="mono small col-num">{fmtBytes(r.bytes_in)}</td>
+                      <td className="mono small col-num">{fmtBytes(r.bytes_out)}</td>
+                      <td data-status={r.status}><Badge kind={statusClass(r.status)}>{STATUS_LABELS[r.status]}</Badge></td>
                       <td className="mono small">{r.reason}</td>
                     </tr>
                   ))}
