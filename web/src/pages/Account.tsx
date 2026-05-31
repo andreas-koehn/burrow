@@ -29,7 +29,7 @@ function ActiveSessions() {
       {isLoading ? <p className="muted">Loading…</p> : (
         <div className="table-wrap">
           <table className="data" aria-label="Active sessions">
-            <thead><tr><th>Device</th><th>Created</th><th>Expires</th><th>IP</th><th className="col-actions"></th></tr></thead>
+            <thead><tr><th>Device</th><th>Created</th><th>Expires</th><th>IP</th><th className="col-actions">Actions</th></tr></thead>
             <tbody>
               {(data ?? []).map((s) => {
                 const ua = parseUserAgent(s.user_agent ?? "");
@@ -43,7 +43,7 @@ function ActiveSessions() {
                   <td className="col-created">{formatTimestamp(s.expires_at)}</td>
                   <td className="col-created">{s.ip}</td>
                   <td className="col-actions">
-                    {s.current ? <span className="muted">—</span> :
+                    {s.current ? <span className="muted">Current session</span> :
                       <Button variant="ghost" size="sm" onClick={() => revoke.mutate(s.id)}>Revoke</Button>}
                   </td>
                 </tr>

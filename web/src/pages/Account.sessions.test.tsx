@@ -15,6 +15,14 @@ describe("Account active sessions", () => {
     expect(within(table).getByText("198.51.100.4")).toBeInTheDocument();
   });
 
+  it("actions column has a header and current session shows label (D-16)", async () => {
+    renderApp(<Account />);
+    const table = await screen.findByRole("table", { name: /active sessions/i });
+    expect(within(table).getByRole("columnheader", { name: /actions/i })).toBeInTheDocument();
+    const currentRow = within(table).getByText(/this device/i).closest("tr")!;
+    expect(within(currentRow).getByText(/current session/i)).toBeInTheDocument();
+  });
+
   it("revokes a non-current session", async () => {
     renderApp(<Account />);
     const table = await screen.findByRole("table", { name: /active sessions/i });
