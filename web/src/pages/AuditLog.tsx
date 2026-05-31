@@ -128,7 +128,9 @@ export default function AuditLog() {
               </tr>
             </thead>
             <tbody>
-              {events.data.map((e) => <Row key={e.id} e={e} />)}
+              {events.data.length === 0
+                ? <tr><td colSpan={7} className="muted">No audit events yet.</td></tr>
+                : events.data.map((e) => <Row key={e.id} e={e} />)}
             </tbody>
           </table>
         </div>

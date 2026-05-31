@@ -116,6 +116,18 @@ describe("Audit log (§4.25)", () => {
     expect(screen.getByText("error").closest("span")).toHaveClass("badge", "status-suspended");
   });
 
+  it("renders a full-width empty-state row when there are no audit events (L-misc)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
+      if (String(url).includes("/audit/events")) {
+        return new Response(JSON.stringify([]), { status: 200 }) as Response;
+      }
+      return new Response("{}", { status: 200 }) as Response;
+    });
+    renderApp(<AuditLog />);
+    const cell = (await screen.findByText(/no audit events yet/i)).closest("td")!;
+    expect(cell.getAttribute("colspan")).toBe("7");
+  });
+
   it("renders formatted timestamps (not raw RFC3339) for audit rows (B5)", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       if (String(url).includes("/audit/events")) {

@@ -38,6 +38,15 @@ describe("Tokens", () => {
     expect(screen.getByRole("button", { name: /copy token/i })).toBeInTheDocument();
   });
 
+  it("renders a full-width empty-state row when there are no tokens (L-misc)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("[]", { status: 200 }) as any
+    );
+    setup();
+    const cell = (await screen.findByText(/no tokens yet/i)).closest("td")!;
+    expect(cell.getAttribute("colspan")).toBe("4");
+  });
+
   it("renders formatted timestamps (not raw RFC3339) for token rows", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify([

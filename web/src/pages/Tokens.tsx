@@ -54,7 +54,9 @@ export default function Tokens() {
             </tr>
           </thead>
           <tbody>
-            {(data ?? []).map((t) => (
+            {data && data.length === 0
+              ? <tr><td colSpan={4} className="muted">No tokens yet.</td></tr>
+              : (data ?? []).map((t) => (
               <tr key={t.id}>
                 <td className="col-name">{t.name}</td>
                 <td className="col-created">{formatTimestamp(t.created_at)}</td>
