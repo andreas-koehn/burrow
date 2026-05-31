@@ -26,7 +26,7 @@ async function login(page: Page) {
   await page.getByLabel("Email").fill(ADMIN_EMAIL);
   await page.getByLabel("Password").fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Tunnels" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
 }
 
 test("v0.3.0: Services page renders + nav + empty-state copy", async ({ page }) => {

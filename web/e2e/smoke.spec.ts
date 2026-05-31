@@ -19,10 +19,13 @@ test("smoke: full happy-path", async ({ page }) => {
   await page.getByLabel("Password").fill(E2E_INITIAL_PASSWORD);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
-  // ── 2. Tunnels dashboard ──────────────────────────────────────────────────
-  // After login the SPA routes to / which renders <Tunnels />.
+  // ── 2. Home dashboard ────────────────────────────────────────────────────
+  // After login the SPA routes to / which now renders <Home /> (Overview).
   await expect(page).toHaveURL(/\//);
-  // The Tunnels.tsx heading: <h1>Tunnels</h1>
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+
+  // Navigate to the Tunnels page explicitly to verify its empty-state.
+  await page.goto("/tunnels");
   await expect(page.getByRole("heading", { name: "Tunnels" })).toBeVisible();
   // Empty-state message (no burrow clients connected in CI)
   await expect(
@@ -106,7 +109,7 @@ test("smoke: full happy-path", async ({ page }) => {
   await page.getByLabel("Email").fill(E2E_EMAIL);
   await page.getByLabel("Password").fill(E2E_NEW_PASSWORD);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Tunnels" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
 
   // ── 7. Final logout ──────────────────────────────────────────────────────
   await page.getByRole("button", { name: "Log out" }).click();

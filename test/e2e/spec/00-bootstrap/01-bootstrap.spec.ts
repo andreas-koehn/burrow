@@ -6,6 +6,8 @@ import { TUNNEL_NAMES } from "../../fixtures/env";
 test("01-bootstrap: login + all 4 seeded tunnels visible + connected", async ({ page, context }) => {
   await loginAsAdmin(page);
 
+  // / now renders <Home /> (Overview); navigate explicitly to /tunnels.
+  await page.goto("/tunnels");
   await expect(page.getByRole("heading", { name: "Tunnels" })).toBeVisible();
 
   const table = page.locator('table[aria-label="Tunnels"]');
