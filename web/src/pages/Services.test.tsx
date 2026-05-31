@@ -58,6 +58,15 @@ describe("Services page", () => {
     expect(screen.getByText("burrow connect")).toBeInTheDocument();
   });
 
+  it("renders idle services as a status-idle badge, not bare muted text (D-12/L-15)", async () => {
+    mount();
+    const table = await screen.findByRole("table");
+    const gf = within(table).getByText("grafana").closest("tr")!;
+    const idle = within(gf).getByText("idle");
+    expect(idle).toHaveClass("badge", "status-idle");
+    expect(idle).not.toHaveClass("muted");
+  });
+
   it("shows an error notice with Retry on failure", async () => {
     server.use(
       http.get("/api/v1/services", () => HttpResponse.json({ error: "boom" }, { status: 500 })),

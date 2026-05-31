@@ -183,7 +183,7 @@ export default function Services() {
                   <td>
                     {s.connected
                       ? <Badge kind="status-connected">connected</Badge>
-                      : <span className="muted">idle</span>}
+                      : <Badge kind="status-idle">idle</Badge>}
                   </td>
                   <td className="col-actions">
                     <Button variant="secondary" size="sm" onClick={() => setConfigure(s)}>Configure</Button>
