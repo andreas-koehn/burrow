@@ -63,4 +63,11 @@ describe("Request inspector (§4.23)", () => {
       ).toBe(true);
     });
   });
+
+  it("inspector rows are reachable via table[aria-label=Requests] tbody tr.clickable (capture-harness guard)", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: /requests/i });
+    const clickable = within(table).getAllByRole("row").filter((r) => r.classList.contains("clickable"));
+    expect(clickable.length).toBeGreaterThan(0);
+  });
 });

@@ -278,13 +278,17 @@ function buildTargets(aiServiceId, aiEndpointId) {
       note: aiEndpointId ? null : "no AI endpoint found — captured list page (empty state)",
     },
     {
-      nn: "25", name: "inspector-row-expanded",
+      nn: "25", name: "inspector-detail-pane",
       url: insp ?? "/ai/endpoints",
       waitFor: insp ? 'h1:has-text("Inspector")' : 'h1:has-text("AI endpoints")',
       before: async (page) => {
         if (!insp) return;
-        // Click the first data row in the inspector table if any
-        const rows = page.locator('table[aria-label*="nspect"] tbody tr').filter({ hasNot: page.locator('[class*="skeleton"]') });
+        // Click the first data row to populate the right-side detail pane.
+        // The table aria-label is "Requests"; clickable data rows carry class "clickable".
+        // Note: when the live e2e lab has no captured inspector traffic the table
+        // is empty and this step captures the empty state — seeding live AI
+        // traffic is out of scope for this harness.
+        const rows = page.getByRole("table", { name: /requests/i }).locator("tbody tr.clickable").filter({ hasNot: page.locator('[class*="skeleton"]') });
         const count = await rows.count();
         if (count > 0) {
           await rows.first().click();
@@ -372,11 +376,13 @@ function buildTargets(aiServiceId, aiEndpointId) {
 
     // ── Modals ────────────────────────────────────────────────────────────────
     {
-      nn: "34", name: "modal-create-token",
+      nn: "34", name: "tokens-inline-create-form",
       url: "/tokens",
       waitFor: 'h1:has-text("Client tokens")',
       before: async (page) => {
-        // The tokens page has an inline form — fill name to enable Create button
+        // Token creation is an INLINE form on the tokens page (no modal).
+        // The reveal dialog after creation is captured by step #37.
+        // Fill the name input to show the enabled Create button state.
         const nameInput = page.locator("#token-name");
         if (await nameInput.count() > 0) {
           await nameInput.fill("screenshot-token");
@@ -452,13 +458,19 @@ function buildTargets(aiServiceId, aiEndpointId) {
       waitFor: insp ? 'h1:has-text("Inspector")' : 'h1:has-text("AI endpoints")',
       before: async (page) => {
         if (!insp) return;
-        // Select first row, then click Replay button
-        const rows = page.locator('table[aria-label*="nspect"] tbody tr').filter({ hasNot: page.locator('[class*="skeleton"]') });
+        // Select first row, then open the Replay dialog.
+        // The table aria-label is "Requests"; clickable data rows carry class "clickable".
+        // Note: when the live e2e lab has no captured inspector traffic the table
+        // is empty and this step captures the empty state — seeding live AI
+        // traffic is out of scope for this harness.
+        const rows = page.getByRole("table", { name: /requests/i }).locator("tbody tr.clickable").filter({ hasNot: page.locator('[class*="skeleton"]') });
         const count = await rows.count();
         if (count > 0) {
           await rows.first().click();
           await page.waitForTimeout(400);
-          const replayBtn = page.getByRole("button", { name: /replay/i });
+          // The accessible name is "Open replay dialog" (aria-label on the button);
+          // the visible text is "Replay".
+          const replayBtn = page.getByRole("button", { name: "Open replay dialog" });
           if (await replayBtn.count() > 0) {
             await replayBtn.first().click();
             await page.waitForSelector('[role="dialog"]', { timeout: 6_000 });
