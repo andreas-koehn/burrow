@@ -25,6 +25,19 @@ describe("Tokens", () => {
     expect(await screen.findByText("bur_SECRET123")).toBeInTheDocument();
   });
 
+  it("reveal dialog has a Copy button (L-5)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url: any, opts: any) => {
+      if (String(url).endsWith("/tokens") && opts?.method === "POST")
+        return new Response(JSON.stringify({ name: "laptop", token: "bur_COPY123" }), { status: 201 }) as any;
+      return new Response("[]", { status: 200 }) as any;
+    });
+    setup();
+    await userEvent.type(screen.getByLabelText(/token name/i), "laptop");
+    await userEvent.click(screen.getByRole("button", { name: /create/i }));
+    await screen.findByText("bur_COPY123");
+    expect(screen.getByRole("button", { name: /copy token/i })).toBeInTheDocument();
+  });
+
   it("renders formatted timestamps (not raw RFC3339) for token rows", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify([

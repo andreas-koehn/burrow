@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check } from "lucide-react";
+import { Check, Copy } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { formatTimestamp, formatRelativeTime } from "@/lib/format";
 import { Button, FormField, FormFieldGroup, Input, Dialog, PageHeader } from "@/components/ds";
@@ -99,6 +99,14 @@ export default function Tokens() {
           </div>
           <div className="key-row">
             <span className="v mono">{plaintext}</span>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="Copy token"
+              onClick={() => { if (plaintext) { void navigator.clipboard?.writeText(plaintext); toast.success("Copied."); } }}
+            >
+              <Copy size={13} />
+            </button>
           </div>
         </div>
       </Dialog>
