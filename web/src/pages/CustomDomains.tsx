@@ -22,7 +22,7 @@ const REJECTION_MESSAGES: Record<CustomDomainRejection["reason"], string> = {
 // idle (yellow-ish), cert_expired is suspended (red), active is connected
 // (green). Exhaustive switch — the `never` annotation guarantees TS will
 // complain if a new state is added to CustomDomainStatus without a badge.
-function statusBadgeKind(status: CustomDomain["status"]): string {
+export function statusBadgeKind(status: CustomDomain["status"]): string {
   switch (status) {
     case "active":        return "status-connected";
     case "pending":       return "status-idle";
@@ -36,7 +36,7 @@ function statusBadgeKind(status: CustomDomain["status"]): string {
 }
 
 // Human label for each status — keeps snake_case out of the UI.
-const STATUS_LABEL: Record<CustomDomain["status"], string> = {
+export const STATUS_LABEL: Record<CustomDomain["status"], string> = {
   active:        "Active",
   pending:       "Pending",
   cert_expiring: "Expiring",
@@ -140,6 +140,7 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
           Add domain
         </Button>
       </div>
+      <p className="help">Certificates here apply only to this service.</p>
 
       <div className="table-wrap">
         <table className="data" aria-label="Custom domains">

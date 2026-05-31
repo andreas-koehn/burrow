@@ -29,6 +29,7 @@ import ServiceDetail from "@/pages/ServiceDetail";
 import Retention from "@/pages/Retention";
 import DatabaseBackend from "@/pages/DatabaseBackend";
 import OpenApiViewer from "@/pages/OpenApiViewer";
+import CustomDomainsOverview from "@/pages/CustomDomainsOverview";
 
 export default function App() {
   return (
@@ -64,6 +65,7 @@ export default function App() {
         <Route path="/settings/database" element={<DatabaseBackend />} />
         {/* P1-14: in-app OpenAPI viewer, framed inside the dashboard chrome. */}
         <Route path="/openapi" element={<OpenApiViewer />} />
+        <Route path="/settings/custom-domains" element={<CustomDomainsOverview />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

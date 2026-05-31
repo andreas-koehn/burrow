@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Checkbox, Input, Select, FormField, FormFieldGroup, PageHeader } from "@/components/ds";
+import { Button, Checkbox, Input, Select, FormField, FormFieldGroup, PageHeader, InfoHint } from "@/components/ds";
 import type { SettingsMap } from "@/lib/contract";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
@@ -60,40 +60,12 @@ export default function Settings() {
     <div className="account-page">
       <PageHeader title="Settings" subtitle="Admin-only configuration for this Burrow relay." />
 
-      {/* ---- v0.5.0 nav cards ---- */}
-      <section className="account-section" aria-labelledby="sec-configuration">
-        <div className="section-head"><div className="left"><h2 id="sec-configuration">Configuration</h2></div></div>
-        <div className="settings-nav-grid">
-          <Link to="/settings/retention" className="settings-nav-card">
-            <div className="settings-nav-card-title">Retention &amp; compliance</div>
-            <div className="settings-nav-card-desc muted">Audit log, usage events, inspector ring buffer, and other retention knobs.</div>
-          </Link>
-          <Link to="/settings/database" className="settings-nav-card">
-            <div className="settings-nav-card-title">Database backend</div>
-            <div className="settings-nav-card-desc muted">Driver in use (SQLite default; Postgres alpha).</div>
-          </Link>
-          <Link to="/settings/backups" className="settings-nav-card">
-            <div className="settings-nav-card-title">Backup &amp; restore</div>
-            <div className="settings-nav-card-desc muted">Snapshots of the relay&apos;s SQLite database.</div>
-          </Link>
-          <Link to="/openapi" className="settings-nav-card">
-            <div className="settings-nav-card-title">OpenAPI viewer</div>
-            <div className="settings-nav-card-desc muted">Browse the JSON/HTTP API docs.</div>
-          </Link>
-          <Link to="/connection-logs" className="settings-nav-card">
-            <div className="settings-nav-card-title">Connection logs</div>
-            <div className="settings-nav-card-desc muted">Per-tunnel HTTP/TCP/control connection history.</div>
-          </Link>
-          <Link to="/services" className="settings-nav-card">
-            <div className="settings-nav-card-title">Custom domains</div>
-            <div className="settings-nav-card-desc muted">Per-service CNAME + cert pairs (managed per service).</div>
-          </Link>
-        </div>
-      </section>
+      {/* ---- General section: Privacy + Email/SMTP (above the nav cards) ---- */}
+      <section className="account-section" aria-labelledby="sec-general">
+        <div className="section-head"><div className="left"><h2 id="sec-general">General</h2></div></div>
 
-      {/* ---- v0.5.2 Privacy section (Q12 toggle for connection-log top-source-IPs) ---- */}
-      <section className="account-section" aria-labelledby="sec-privacy">
-        <div className="section-head"><div className="left"><h2 id="sec-privacy">Privacy</h2></div></div>
+        {/* ---- v0.5.2 Privacy section (Q12 toggle for connection-log top-source-IPs) ---- */}
+        <div className="section-head"><div className="left"><h3 id="sec-privacy">Privacy</h3></div></div>
         <div className="form-field">
           <label htmlFor="rollup-include-top-ips" className="checkbox-row">
             <Checkbox
@@ -108,10 +80,13 @@ export default function Settings() {
             service. Turn off for stricter privacy. Default-on.
           </p>
         </div>
-      </section>
 
-      <section className="account-section" aria-labelledby="sec-smtp">
-        <div className="section-head"><div className="left"><h2 id="sec-smtp">Email / SMTP</h2></div></div>
+        <div className="section-head">
+          <div className="left">
+            <h3 id="sec-smtp">Email / SMTP</h3>
+            <InfoHint label="Email / SMTP" content="SMTP enables password-reset and test emails." />
+          </div>
+        </div>
         {!configured && <p role="status" className="notice-inline">Email isn't set up — password resets and test emails are unavailable until you configure SMTP.</p>}
         <form className="pw-form" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
           <FormFieldGroup>
@@ -139,7 +114,7 @@ export default function Settings() {
           </div>
         </form>
 
-        <div className="section-head"><div className="left"><h2>Test connection</h2></div></div>
+        <div className="section-head"><div className="left"><h3>Test connection</h3></div></div>
         {!showTest ? (
           <Button variant="secondary" size="sm" onClick={() => setShowTest(true)}>Send test email</Button>
         ) : (
@@ -153,6 +128,37 @@ export default function Settings() {
           </div>
         )}
         {testError && <p role="alert" className="field-error">{testError}</p>}
+      </section>
+
+      {/* ---- v0.5.0 nav cards ---- */}
+      <section className="account-section" aria-labelledby="sec-configuration">
+        <div className="section-head"><div className="left"><h2 id="sec-configuration">Configuration</h2></div></div>
+        <div className="settings-nav-grid">
+          <Link to="/settings/retention" className="settings-nav-card">
+            <div className="settings-nav-card-title">Retention &amp; compliance</div>
+            <div className="settings-nav-card-desc muted">Audit log, usage events, inspector ring buffer, and other retention knobs.</div>
+          </Link>
+          <Link to="/settings/database" className="settings-nav-card">
+            <div className="settings-nav-card-title">Database backend</div>
+            <div className="settings-nav-card-desc muted">Driver in use (SQLite default; Postgres alpha).</div>
+          </Link>
+          <Link to="/settings/backups" className="settings-nav-card">
+            <div className="settings-nav-card-title">Backup &amp; restore</div>
+            <div className="settings-nav-card-desc muted">Snapshots of the relay&apos;s SQLite database.</div>
+          </Link>
+          <Link to="/openapi" className="settings-nav-card">
+            <div className="settings-nav-card-title">OpenAPI viewer</div>
+            <div className="settings-nav-card-desc muted">Browse the JSON/HTTP API docs.</div>
+          </Link>
+          <Link to="/connection-logs" className="settings-nav-card">
+            <div className="settings-nav-card-title">Connection logs</div>
+            <div className="settings-nav-card-desc muted">Per-tunnel HTTP/TCP/control connection history.</div>
+          </Link>
+          <Link to="/settings/custom-domains" className="settings-nav-card">
+            <div className="settings-nav-card-title">Custom domains (all services)</div>
+            <div className="settings-nav-card-desc muted">Read-only roll-up of every service&apos;s domains; open a service to edit.</div>
+          </Link>
+        </div>
       </section>
       <Toaster />
     </div>

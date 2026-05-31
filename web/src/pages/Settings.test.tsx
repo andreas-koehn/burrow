@@ -42,7 +42,8 @@ describe("Settings / nav cards", () => {
     expect(screen.getByText("Backup & restore")).toBeInTheDocument();
     expect(screen.getByText("OpenAPI viewer")).toBeInTheDocument();
     expect(screen.getByText("Connection logs")).toBeInTheDocument();
-    expect(screen.getByText("Custom domains")).toBeInTheDocument();
+    // P7B.3: card is now relabeled and relinked
+    expect(screen.getByText("Custom domains (all services)")).toBeInTheDocument();
     // OpenAPI viewer is now an internal NavLink (P1-14), no target=_blank.
     const openApiLink = screen.getByRole("link", { name: /openapi viewer/i });
     expect(openApiLink).not.toHaveAttribute("target");
@@ -52,6 +53,34 @@ describe("Settings / nav cards", () => {
   it("existing SMTP form is still rendered below the nav cards", async () => {
     renderApp(<Settings />);
     expect(await screen.findByLabelText(/SMTP server/i)).toBeInTheDocument();
+  });
+
+  // P7B.3: Custom domains card links to /settings/custom-domains (not /services)
+  it("Custom domains card links to /settings/custom-domains", async () => {
+    renderApp(<Settings />);
+    await screen.findByLabelText(/SMTP server/i);
+    const link = screen.getByRole("link", { name: /custom domains \(all services\)/i });
+    expect(link).toHaveAttribute("href", "/settings/custom-domains");
+  });
+});
+
+describe("Settings / P7B.4 — General panel above Configuration cards", () => {
+  it("General heading appears before Configuration heading in the DOM", async () => {
+    renderApp(<Settings />);
+    await screen.findByLabelText(/SMTP server/i);
+    const headings = screen.getAllByRole("heading");
+    const names = headings.map((h) => h.textContent ?? "");
+    const generalIdx = names.findIndex((n) => /general/i.test(n));
+    const configIdx = names.findIndex((n) => /configuration/i.test(n));
+    expect(generalIdx).toBeGreaterThanOrEqual(0);
+    expect(configIdx).toBeGreaterThanOrEqual(0);
+    expect(generalIdx).toBeLessThan(configIdx);
+  });
+
+  it("SMTP fields and Save button are still present after reorder", async () => {
+    renderApp(<Settings />);
+    expect(await screen.findByLabelText(/SMTP server/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /save settings/i })).toBeInTheDocument();
   });
 });
 
