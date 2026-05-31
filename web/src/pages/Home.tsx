@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { PageHeader, MetricStrip, MetricTile, ErrorNotice, Button, SkeletonRows } from "@/components/ds";
@@ -69,20 +70,27 @@ export default function Home() {
     })),
   });
 
-  // Flatten all domain results and find expiring ones
+  // Fix C: Date.now() is an impure call. Capture it once in a lazy-initialized
+  // state value so it is never called directly during the render pass.
+  // (The lazy initializer runs only once at mount, outside the render cycle.)
+  const [nowMs] = useState<number>(() => Date.now());
   const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-  const expiringDomains: { domain: CustomDomain; svcId: string }[] = [];
-  domainQueries.forEach((q, i) => {
-    const svcId = httpSvcs[i]!.id;
-    const domains = Array.isArray(q.data) ? q.data : [];
-    for (const d of domains) {
-      const isExpiring =
-        d.status === "cert_expiring" ||
-        d.status === "cert_expired" ||
-        (d.not_after && new Date(d.not_after).getTime() - Date.now() < THIRTY_DAYS_MS);
-      if (isExpiring) expiringDomains.push({ domain: d, svcId });
-    }
-  });
+  const expiringDomains = useMemo(() => {
+    const result: { domain: CustomDomain; svcId: string }[] = [];
+    domainQueries.forEach((q, i) => {
+      const svcId = httpSvcs[i]!.id;
+      const domains = Array.isArray(q.data) ? q.data : [];
+      for (const d of domains) {
+        const isExpiring =
+          d.status === "cert_expiring" ||
+          d.status === "cert_expired" ||
+          (d.not_after && new Date(d.not_after).getTime() - nowMs < THIRTY_DAYS_MS);
+        if (isExpiring) result.push({ domain: d, svcId });
+      }
+    });
+    return result;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [domainQueries, httpSvcs.length, nowMs]);
 
   // Alert conditions
   const smtpAlert = isAdmin && settings.data !== undefined && !settings.data["smtp.host"];
