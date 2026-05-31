@@ -83,7 +83,7 @@ describe("AI endpoints page (§4.19)", () => {
     );
     mount();
     await screen.findByText(/no ai endpoints yet/i);
-    const tokensTile = screen.getByText(/tokens in\/out/i).closest(".metric-tile")!;
+    const tokensTile = screen.getByText(/tokens in\/out/i).closest(".metric-tile") as HTMLElement;
     expect(within(tokensTile).getByText("—")).toBeInTheDocument();
   });
 
