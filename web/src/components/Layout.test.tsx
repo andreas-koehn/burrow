@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act, waitFor } from "@testing-library/react";
+import { render, screen, act, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "./theme-provider";
@@ -180,5 +180,76 @@ describe("Layout nav role-gating", () => {
     const sidebar = screen.getByRole("navigation", { name: "Main" });
     const navLinks = Array.from(sidebar.querySelectorAll("a"));
     expect(navLinks[0]).toBe(homeLink);
+  });
+});
+
+describe("Layout ⌘K command palette (P6A.3)", () => {
+  beforeEach(() => {
+    document.documentElement.classList.remove("dark");
+    localStorage.clear();
+    vi.mocked(window.matchMedia).mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+  });
+
+  it("Ctrl+K on window opens the command palette (role=dialog visible)", async () => {
+    renderLayout("admin");
+    // Wait for layout to settle
+    await screen.findByRole("link", { name: /^account$/i });
+    // Dialog should not be present yet
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // Fire Ctrl+K
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("the Search ⌘K affordance button is present in the sidebar", async () => {
+    renderLayout("admin");
+    await screen.findByRole("link", { name: /^account$/i });
+    expect(screen.getByRole("button", { name: /search/i })).toBeInTheDocument();
+  });
+
+  it("clicking the Search button opens the palette", async () => {
+    renderLayout("admin");
+    await screen.findByRole("link", { name: /^account$/i });
+    const searchBtn = screen.getByRole("button", { name: /search/i });
+    await act(async () => { searchBtn.click(); });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("palette opened as user excludes admin-only 'Users' destination", async () => {
+    renderLayout("user");
+    // Wait for auth to settle (Account link is role-neutral)
+    await screen.findByRole("link", { name: /^account$/i });
+    // Open palette via Ctrl+K
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    });
+    // Wait for dialog
+    await screen.findByRole("dialog");
+    // "Users" destination should not appear for non-admin
+    await waitFor(() => {
+      expect(screen.queryByRole("option", { name: /users/i })).not.toBeInTheDocument();
+    });
+  });
+
+  it("palette opened as admin includes admin-only 'Users' destination", async () => {
+    renderLayout("admin");
+    await screen.findByRole("link", { name: /^users$/i });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    });
+    await screen.findByRole("dialog");
+    // Option accessible name includes the group label "Access control" so match broadly.
+    expect(await screen.findByRole("option", { name: /users/i })).toBeInTheDocument();
   });
 });

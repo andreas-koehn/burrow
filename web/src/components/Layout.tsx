@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -10,6 +11,7 @@ import { Button, cx } from "@/components/ds";
 import { useTheme } from "@/components/theme-provider";
 import { useAuth } from "@/auth/useAuth";
 import type { Service } from "@/lib/contract";
+import { CommandPalette } from "@/components/CommandPalette";
 
 /* Brand mark — geometric tunnel-and-arrow glyph (currentColor, never Signal Teal). */
 function BurrowMark({ size = 20 }: { size?: number }) {
@@ -37,6 +39,7 @@ export function Layout() {
   const qc = useQueryClient();
   const { theme, toggleTheme } = useTheme();
   const { user } = useAuth();
+  const [paletteOpen, setPaletteOpen] = useState(false);
   async function logout() {
     try { await apiFetch("/auth/logout", { method: "POST" }); } catch { /* ignore */ }
     qc.clear();
@@ -61,6 +64,18 @@ export function Layout() {
     || servicesList.some((s) => s.type === "http" && s.connected);
   const navItem = ({ isActive }: { isActive: boolean }) => cx("nav-item", isActive && "is-active");
   const avatarInitial = (user?.email?.[0] ?? "U").toUpperCase();
+
+  // ⌘K / Ctrl+K global shortcut to open the command palette.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
   return (
     <div className="app-shell" style={{ display: "flex", minHeight: "100vh", position: "relative", background: "var(--background)", color: "var(--foreground)" }}>
       <a className="skip-link" href="#main">Skip to content</a>
@@ -71,6 +86,18 @@ export function Layout() {
         </div>
 
         <div className="sidebar-nav">
+          {/* ⌘K search affordance */}
+          <button
+            className="nav-item"
+            onClick={() => setPaletteOpen(true)}
+            aria-label="Search"
+            style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer" }}
+          >
+            <span className="nav-icon"><Search size={16} /></span>
+            <span className="nav-label">Search</span>
+            <span className="nav-count"><span className="kbd-token">⌘K</span></span>
+          </button>
+
           <NavLink to="/" end className={navItem}>
             <span className="nav-icon"><LayoutDashboard size={16} /></span>
             <span className="nav-label">Home</span>
@@ -200,6 +227,14 @@ export function Layout() {
       <main className="shell-main" id="main" tabIndex={-1}>
         <div className="shell-content"><Outlet /></div>
       </main>
+
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        isAdmin={isAdmin}
+        hasAiEndpoints={hasAiEndpoints}
+        firstHttpServiceId={firstHttpServiceId}
+      />
     </div>
   );
 }

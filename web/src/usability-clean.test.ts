@@ -45,7 +45,12 @@ describe("usability-clean — .home-explainer is token-based (Cl-1)", () => {
   });
 });
 it.todo("Cl-2: alerts strip uses .notice-inline tints, no new color literal (Phase 1)");
-it.todo("Cl-3: ⌘K palette reuses .dialog idiom, role=dialog present (Phase 6)");
+// Cl-3: verified via CommandPalette.test.tsx (RTL: getByRole('dialog') present when open=true).
+// The CSS contract checked here: CommandPalette is rendered inside DS Dialog, which always
+// emits class="dialog" with role="dialog". The .dialog class must exist in index.css.
+it("Cl-3: .dialog CSS class exists in index.css (CommandPalette uses DS Dialog = role=dialog)", () => {
+  expect(css).toMatch(/\.dialog\s*\{/);
+});
 
 describe("usability-clean — .cmd-block.wrap variant exists (P2.1)", () => {
   it(".cmd-block.wrap rule exists in index.css with pre-wrap and break-all", () => {
