@@ -1,9 +1,10 @@
 import { useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal, Sparkles } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, DropdownMenu, EmptyState, ErrorNotice, MetricStrip, MetricTile, PageHeader, SkeletonRows } from "@/components/ds";
+import { useAuth } from "@/auth/useAuth";
 import type { AiEndpoint, CostSummary } from "@/lib/contract";
 
 function fmtInt(n: number): string {
@@ -29,6 +30,8 @@ const STATUS_BADGE: Record<AiEndpoint["status"], string> = {
 export default function AiEndpoints() {
   const qc = useQueryClient();
   const nav = useNavigate();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const endpoints = useQuery({
     queryKey: ["ai", "endpoints"],
     queryFn: () => apiFetch<AiEndpoint[]>("/ai/endpoints"),
@@ -86,7 +89,15 @@ export default function AiEndpoints() {
       <PageHeader
         title="AI endpoints"
         subtitle="Services exposing an OpenAI-compatible API through this relay — with cache, cost, and traffic at a glance."
+        actions={isAdmin ? (
+          <Button variant="primary" size="sm" onClick={() => nav("/services?new=ai")}>
+            + Create AI service
+          </Button>
+        ) : undefined}
       />
+      <p className="muted small" style={{ marginBottom: "var(--space-3, 12px)" }}>
+        An AI endpoint is a <Link to="/services">Service</Link> with API-key access and an OpenAI-compatible upstream.
+      </p>
 
       <MetricStrip ariaLabel="AI endpoint metrics">
         <MetricTile label="Requests (24h)" value={fmtInt(totalRequests)} />
@@ -125,6 +136,11 @@ export default function AiEndpoints() {
         <EmptyState
           icon={<Sparkles size={18} />}
           title="No AI endpoints yet"
+          action={isAdmin ? (
+            <Button variant="primary" size="sm" onClick={() => nav("/services?new=ai")}>
+              + Create AI service
+            </Button>
+          ) : undefined}
         >
           Create a service with API-key access mode and OpenAI-compatible upstream.
         </EmptyState>

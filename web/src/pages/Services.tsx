@@ -1,10 +1,10 @@
-import { useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Badge, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows } from "@/components/ds";
+import { Button, Badge, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, Select, SkeletonRows } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import type { Service, AccessMode } from "@/lib/contract";
 import { AccessModePanel, type AccessModePanelHandle } from "@/components/AccessModePanel";
@@ -20,8 +20,16 @@ function copy(text: string) {
   void navigator.clipboard?.writeText(text);
 }
 
+const ACCESS_MODE_OPTIONS = [
+  { value: "open",         label: "Open" },
+  { value: "api_key",     label: "API key" },
+  { value: "burrow_login", label: "Burrow login" },
+];
+
 export default function Services() {
   const qc = useQueryClient();
+  const nav = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["services"],
     queryFn: () => apiFetch<Service[]>("/services"),
@@ -69,20 +77,53 @@ export default function Services() {
   const [newOpen, setNewOpen] = useState(false);
   const [nsServiceId, setNsServiceId] = useState("");
   const [nsTitle, setNsTitle] = useState("");
+  const [nsAccessMode, setNsAccessMode] = useState("open");
+  const [aiFlow, setAiFlow] = useState(false);
   const [nsErr, setNsErr] = useState<string | null>(null);
+
+  // P5.2 — ?new=ai or ?new=1 auto-opens the dialog pre-filled.
+  useEffect(() => {
+    const newParam = searchParams.get("new");
+    if (newParam === "ai") {
+      setNewOpen(true);
+      setNsAccessMode("api_key");
+      setAiFlow(true);
+      setSearchParams({}, { replace: true });
+    } else if (newParam === "1") {
+      setNewOpen(true);
+      setSearchParams({}, { replace: true });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function closeNew() {
+    setNewOpen(false);
+    setNsServiceId("");
+    setNsTitle("");
+    setNsAccessMode("open");
+    setAiFlow(false);
+    setNsErr(null);
+  }
+
   const createService = useMutation({
     mutationFn: () =>
-      apiFetch<Service>("/services", {
+      apiFetch<{ id: string; created_at: string }>("/services", {
         method: "POST",
-        body: JSON.stringify({ service_id: nsServiceId, title: nsTitle || undefined }),
+        body: JSON.stringify({
+          service_id: nsServiceId,
+          title: nsTitle || undefined,
+          access_mode: nsAccessMode,
+        }),
       }),
-    onSuccess: () => {
-      toast.success(`Service ${nsServiceId} created.`);
+    onSuccess: (resp) => {
       qc.invalidateQueries({ queryKey: ["services"] });
-      setNewOpen(false);
-      setNsServiceId("");
-      setNsTitle("");
-      setNsErr(null);
+      if (aiFlow && resp?.id) {
+        closeNew();
+        nav(`/services/${resp.id}#upstream-key`);
+      } else {
+        toast.success(`Service ${nsServiceId} created.`);
+        closeNew();
+      }
     },
     onError: (e: unknown) => {
       if (e instanceof ApiError && e.status === 403) {
@@ -230,15 +271,15 @@ export default function Services() {
         )}
       </Dialog>
 
-      {/* P2-1 — new-service dialog */}
+      {/* P2-1 / P5.1 — new-service dialog */}
       <Dialog
         open={newOpen}
-        onOpenChange={(o) => { setNewOpen(o); if (!o) setNsErr(null); }}
+        onOpenChange={(o) => { if (!o) closeNew(); }}
         title="Create service"
         description="Pre-provision a service so a connecting client adopts the same id."
         footer={
           <>
-            <Button variant="secondary" onClick={() => setNewOpen(false)}>Cancel</Button>
+            <Button variant="secondary" onClick={closeNew}>Cancel</Button>
             <Button
               variant="primary"
               disabled={!nsServiceId || createService.isPending}
@@ -255,6 +296,14 @@ export default function Services() {
           </FormField>
           <FormField label="Title" htmlFor="ns-title" w="md">
             <Input id="ns-title" placeholder="optional display name" value={nsTitle} onChange={(e) => setNsTitle(e.target.value)} />
+          </FormField>
+          <FormField label="Access mode" htmlFor="ns-access-mode" w="md">
+            <Select
+              id="ns-access-mode"
+              options={ACCESS_MODE_OPTIONS}
+              value={nsAccessMode}
+              onChange={setNsAccessMode}
+            />
           </FormField>
         </FormFieldGroup>
         {nsErr && <p role="alert" className="notice-inline error">{nsErr}</p>}

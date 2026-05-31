@@ -77,6 +77,39 @@ describe("AI endpoints page (§4.19)", () => {
     ).toBeInTheDocument();
   });
 
+  // P5.5 — admin empty-state CTA + concept explainer
+  it("P5.5: admin sees '+ Create AI service' button in empty state (does NOT change verbatim strings)", async () => {
+    // db.me is admin by default
+    db.services = db.services.filter((s) => s.access_mode !== "api_key");
+    mount();
+    // Verbatim strings still present
+    expect(await screen.findByRole("heading", { name: "No AI endpoints yet" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Create a service with API-key access mode and OpenAI-compatible upstream."),
+    ).toBeInTheDocument();
+    // Admin CTA present (two buttons: one in PageHeader actions, one in EmptyState)
+    const ctaBtns = screen.getAllByRole("button", { name: /\+ create ai service/i });
+    expect(ctaBtns.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("P5.5: concept explainer link to /services is always visible", async () => {
+    mount();
+    // The explainer "An AI endpoint is a Service with..." renders regardless of empty/non-empty
+    const link = await screen.findByRole("link", { name: /^service$/i });
+    expect(link).toHaveAttribute("href", "/services");
+  });
+
+  it("P5.5: featureAbsent branch has NO '+ Create AI service' button", async () => {
+    server.use(
+      http.get("/api/v1/ai/endpoints", () =>
+        HttpResponse.json({ error: "not found" }, { status: 404 }),
+      ),
+    );
+    mount();
+    await screen.findByRole("heading", { name: /ai gateway isn't available/i });
+    expect(screen.queryByRole("button", { name: /create ai service/i })).toBeNull();
+  });
+
   it("does not show cost-summary tokens when there are no AI endpoints (L-6)", async () => {
     server.use(
       http.get("/api/v1/ai/endpoints", () => HttpResponse.json([])),

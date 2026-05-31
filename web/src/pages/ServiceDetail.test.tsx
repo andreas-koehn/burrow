@@ -45,4 +45,32 @@ describe("ServiceDetail page", () => {
     const headerFormatInput = screen.getByLabelText(/header format/i);
     expect((headerFormatInput as HTMLInputElement).value).toBe("Bearer {key}");
   });
+
+  // P5.4 — #upstream-key hash deep-link opens Upstream-key tab directly
+  it("P5.4: #upstream-key hash makes Upstream-key tab active on load", async () => {
+    renderApp(
+      <Routes>
+        <Route path="/services/:id" element={<ServiceDetail />} />
+      </Routes>,
+      "/services/svc_ai001#upstream-key",
+    );
+    await screen.findByRole("heading", { name: /ollama/i });
+    // The Upstream key tab should be selected (aria-selected="true")
+    const upstreamTab = screen.getByRole("tab", { name: /upstream key/i });
+    expect(upstreamTab).toHaveAttribute("aria-selected", "true");
+    // And its panel content should be visible (binding fields rendered immediately)
+    const headerNameInput = await screen.findByLabelText(/header name/i);
+    expect(headerNameInput).toBeInTheDocument();
+  });
+
+  // P5.4 — explainer link to AI endpoints in the Upstream-key tab
+  it("P5.4: Upstream-key tab shows AI endpoints explainer link", async () => {
+    mount();
+    await screen.findByRole("heading", { name: /ollama/i });
+    const upstreamTab = screen.getByRole("tab", { name: /upstream key/i });
+    await userEvent.click(upstreamTab);
+    // Explainer text + link to /ai/endpoints
+    const link = await screen.findByRole("link", { name: /ai endpoints/i });
+    expect(link).toHaveAttribute("href", "/ai/endpoints");
+  });
 });

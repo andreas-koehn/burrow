@@ -141,4 +141,50 @@ describe("Services page", () => {
     const table = await screen.findByRole("table", { name: /services/i });
     expect(within(table).getByText("My AI Service")).toBeInTheDocument();
   });
+
+  // P5.1 — Access mode Select in the create dialog
+  it("P5.1: dialog has an Access mode combobox; selecting API key sends access_mode in POST body", async () => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(
+      http.post("/api/v1/services", async ({ request }) => {
+        captured = await request.json() as Record<string, unknown>;
+        return HttpResponse.json({ id: "svc-x", created_at: "2026-05-31T00:00:00Z" }, { status: 201 });
+      }),
+    );
+
+    mount();
+    await screen.findByRole("table", { name: /services/i });
+    await userEvent.click(screen.getByRole("button", { name: /\+ new service/i }));
+    await screen.findByRole("dialog");
+
+    // The Access mode combobox is present (Select renders a button with aria-haspopup="listbox")
+    const accessModeBtn = screen.getByRole("button", { name: /access mode/i });
+    expect(accessModeBtn).toBeInTheDocument();
+
+    // Open and select "API key"
+    await userEvent.click(accessModeBtn);
+    const apiKeyOption = await screen.findByRole("option", { name: /api key/i });
+    await userEvent.click(apiKeyOption);
+
+    // Fill required service ID
+    const idInput = screen.getByLabelText(/service id/i);
+    await userEvent.type(idInput, "new-ai-svc");
+
+    // Submit
+    await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
+
+    await waitFor(() => expect(captured).not.toBeNull());
+    expect(captured).toMatchObject({ access_mode: "api_key" });
+  });
+
+  // P5.2 — ?new=ai auto-opens the dialog pre-filled with API key access mode
+  it("P5.2: ?new=ai auto-opens dialog with Access mode pre-set to API key", async () => {
+    renderApp(<Services />, "/services?new=ai");
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /create service/i })).toBeInTheDocument();
+    // The Select trigger button should show "API key" as the selected value
+    const accessModeBtn = screen.getByRole("button", { name: /access mode/i });
+    expect(accessModeBtn.textContent).toMatch(/api key/i);
+  });
 });
