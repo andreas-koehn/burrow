@@ -28,15 +28,17 @@ test.describe("Home is default", () => {
     // In-1: root route shows the Home/Overview page
     await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
 
-    // Metric tiles — the Overview MetricStrip (aria-label="Overview") must exist
-    const strip = page.getByRole("region", { name: "Overview" });
+    // Metric tiles — the Overview MetricStrip renders role="list" with aria-label="Overview"
+    const strip = page.getByRole("list", { name: "Overview" });
     await expect(strip).toBeVisible();
 
-    // In-3: explainer section present
+    // In-3: explainer section present — use the bold terms inside the explainer
+    // to avoid strict-mode violations from sidebar nav items with the same words.
+    const explainer = page.locator("section.home-explainer");
     await expect(page.getByRole("heading", { name: "How Burrow works" })).toBeVisible();
-    await expect(page.getByText(/Client/)).toBeVisible();
-    await expect(page.getByText(/Service/)).toBeVisible();
-    await expect(page.getByText(/Tunnel/)).toBeVisible();
+    await expect(explainer.getByText("Client", { exact: true })).toBeVisible();
+    await expect(explainer.getByText("Services", { exact: true })).toBeVisible();
+    await expect(explainer.getByText("Tunnel", { exact: true })).toBeVisible();
 
     // Quick-action links in the page header
     await expect(page.getByRole("link", { name: /Connect a client/i })).toBeVisible();

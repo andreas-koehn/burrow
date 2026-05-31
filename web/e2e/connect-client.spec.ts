@@ -82,8 +82,8 @@ test("connect-client: HTTP mode omits --remote and adds --type http", async ({ p
   await page.goto("/clients/connect");
   await expect(page.getByRole("heading", { name: "Connect a client" })).toBeVisible();
 
-  // Switch protocol to HTTP
-  const protocolTrigger = page.getByText("TCP").locator("..");
+  // Switch protocol to HTTP — target the Select trigger by its id
+  const protocolTrigger = page.locator("#ob-protocol");
   await protocolTrigger.click();
   await page.getByRole("option", { name: "HTTP" }).click();
 

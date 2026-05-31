@@ -35,15 +35,15 @@ test("settings: Custom domains card links to /settings/custom-domains", async ({
   await expect(link).toBeVisible();
   await link.click();
   await expect(page).toHaveURL(/\/settings\/custom-domains/);
-  await expect(page.getByRole("heading", { name: /custom domains/i })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Custom domains (all services)" })).toBeVisible();
 });
 
 test("settings/custom-domains: service row links to /services/:id/domains", async ({ page }) => {
   await page.goto("/settings/custom-domains");
-  await expect(page.getByRole("heading", { name: /custom domains/i })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Custom domains (all services)" })).toBeVisible();
 
-  // Wait for the table to either show rows or the empty state.
-  const tableOrEmpty = page.locator("table.data, [class*='empty']");
+  // Wait for the table to either show rows or the empty state (EmptyState renders as .state-card).
+  const tableOrEmpty = page.locator("table.data, .state-card");
   await expect(tableOrEmpty.first()).toBeVisible({ timeout: 10_000 });
 
   // If there are service rows, click the first one and verify navigation.
@@ -59,7 +59,7 @@ test("settings/custom-domains: service row links to /services/:id/domains", asyn
 
 test("settings/custom-domains: InfoHint tooltip visible on hover", async ({ page }) => {
   await page.goto("/settings/custom-domains");
-  await expect(page.getByRole("heading", { name: /custom domains/i })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Custom domains (all services)" })).toBeVisible();
 
   const hint = page.getByRole("button", { name: /what is custom domains\?/i });
   await expect(hint).toBeVisible();
