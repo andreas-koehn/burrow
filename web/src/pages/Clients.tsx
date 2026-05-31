@@ -60,7 +60,7 @@ export default function Clients() {
                       signal. When the backend later exposes last_seen the
                       column can show relative time for disconnected clients. */}
                   <td><Badge kind="status-connected">connected</Badge></td>
-                  <td><Badge kind="" nodot>{c.service_count}</Badge></td>
+                  <td><Link to={`/clients/${c.session_id}`} aria-label={`View ${c.service_count} services for ${c.token_name}`}><Badge kind="" nodot>{c.service_count}</Badge></Link></td>
                   <td className="col-created">↓{formatBytes(c.total_bytes_in)} ↑{formatBytes(c.total_bytes_out)}</td>
                   <td className="col-actions"><Link to={`/clients/${c.session_id}`}><Button variant="secondary" size="sm">View</Button></Link></td>
                 </tr>

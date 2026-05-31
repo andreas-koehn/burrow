@@ -186,7 +186,7 @@ export default function Services() {
                   <td><Badge kind={`access-${s.access_mode}`} nodot>{ACCESS_LABEL[s.access_mode]}</Badge></td>
                   <td>
                     {s.connected
-                      ? <Badge kind="status-connected">connected</Badge>
+                      ? <Link to="/tunnels" aria-label={`View live tunnel for ${s.name}`}><Badge kind="status-connected">connected</Badge></Link>
                       : <Badge kind="status-idle">idle</Badge>}
                   </td>
                   <td className="col-actions">

@@ -94,6 +94,25 @@ describe("Services page", () => {
     expect(screen.queryByRole("alert", { name: /durable saved config/i })).toBeNull();
   });
 
+  it("connected service status badge links to /tunnels (P3B.2)", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: /services/i });
+    // "web" service is connected — its badge must be wrapped in a link to /tunnels
+    const web = within(table).getByText("web").closest("tr")!;
+    const connectedLink = within(web).getByRole("link", { name: /view live tunnel for web/i });
+    expect(connectedLink).toHaveAttribute("href", "/tunnels");
+  });
+
+  it("idle service status badge is NOT wrapped in a link to /tunnels (P3B.2)", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: /services/i });
+    // "grafana" service is idle — its status badge must NOT be a link to /tunnels
+    const gf = within(table).getByText("grafana").closest("tr")!;
+    expect(within(gf).queryByRole("link", { name: /view live tunnel for grafana/i })).toBeNull();
+    // The idle badge itself must still be present
+    expect(within(gf).getByText("idle")).toBeInTheDocument();
+  });
+
   it("creates a new service via the + New service dialog and shows a success toast", async () => {
     mount();
     // Wait for initial data to load (table must be present first)
