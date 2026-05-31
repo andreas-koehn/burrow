@@ -653,12 +653,12 @@ button.sort-header:focus-visible {
 
 /* dialog */
 .dialog-backdrop {
-  position: absolute; inset: 0;
-  background: oklch(0 0 0 / 0.35);
-  border-radius: inherit;
+  position: fixed; inset: 0;
+  background: oklch(0 0 0 / 0.5);
 }
 .dialog {
   position: relative;
+  z-index: 1;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);

@@ -20,6 +20,7 @@ beforeEach(() => {
       flex: 1 1 auto;
       min-height: 0;
     }
+    .dialog-backdrop { position: fixed; inset: 0; background: oklch(0 0 0 / 0.5); }
   `;
   document.head.appendChild(styleEl);
 });
@@ -51,5 +52,16 @@ describe("Dialog viewport overflow", () => {
     expect(body).not.toBeNull();
     const bodyCs = window.getComputedStyle(body);
     expect(bodyCs.overflowY).toBe("auto");
+  });
+});
+
+describe("Dialog backdrop scrim (D-1/L-14)", () => {
+  it("backdrop scrim is a fixed full-viewport layer (D-1/L-14)", () => {
+    const { container } = render(<Dialog open title="x" onOpenChange={() => {}} />);
+    const scrim = container.querySelector(".dialog-backdrop") as HTMLElement;
+    const cs = window.getComputedStyle(scrim);
+    expect(cs.position).toBe("fixed");
+    expect(cs.inset === "0px" || cs.top === "0px").toBe(true);
+    expect(cs.background).toContain("0.5");
   });
 });

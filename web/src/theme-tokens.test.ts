@@ -59,3 +59,12 @@ describe("design tokens — metric tile contrast (L-20)", () => {
     expect(sub).toContain("color-mix(in oklch, var(--muted-foreground)");
   });
 });
+
+describe("design tokens — dialog scrim (D-1/L-14)", () => {
+  it("backdrop is fixed + ~0.5 black, no border-radius:inherit", () => {
+    const rule = css.match(/\.dialog-backdrop\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toContain("position: fixed");
+    expect(rule).toContain("oklch(0 0 0 / 0.5)");
+    expect(rule).not.toContain("border-radius: inherit");
+  });
+});
