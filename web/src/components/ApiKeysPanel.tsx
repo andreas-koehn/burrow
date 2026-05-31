@@ -53,8 +53,7 @@ export function ApiKeysPanel({ serviceId }: { serviceId: string }) {
   return (
     <div className="api-keys-panel">
       <div className="panel-head">
-        <h3>API keys</h3>
-        <Button variant="primary" size="sm" onClick={() => setCreating(true)}>Create key</Button>
+        <Button variant="primary" size="sm" className="ml-auto" onClick={() => setCreating(true)}>Create key</Button>
       </div>
 
       <div className="table-wrap">

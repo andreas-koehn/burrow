@@ -54,6 +54,12 @@ describe("ApiKeysPanel", () => {
     await waitFor(() => expect(screen.queryByText(/^buk_mock_/)).toBeNull());
   });
 
+  it("does not render a redundant 'API keys' heading (the tab already names the panel) (L-19)", async () => {
+    renderApp(<ApiKeysPanel serviceId={SVC} />);
+    await screen.findByRole("table", { name: /api keys/i });
+    expect(screen.queryByRole("heading", { name: /^api keys$/i })).toBeNull();
+  });
+
   it("revokes a key after confirmation", async () => {
     renderApp(<ApiKeysPanel serviceId={SVC} />);
     const table = await screen.findByRole("table", { name: /api keys/i });
