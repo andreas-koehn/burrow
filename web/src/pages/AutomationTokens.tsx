@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy } from "lucide-react";
+import { Link } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
@@ -60,6 +61,8 @@ export default function AutomationTokens() {
         subtitle="Long-lived bearer tokens for CI / CLI / bots — scoped to your own permissions."
         actions={<Button variant="primary" size="sm" onClick={() => setAddOpen(true)}>Mint token</Button>}
       />
+
+      <p className="muted small">These authenticate machines and scripts — not tunneling agents. To connect a machine that runs burrow, use <Link className="link-inline" to="/tokens">Client tokens</Link>.</p>
 
       {!tokens.data ? (
         <SkeletonRows n={2} />

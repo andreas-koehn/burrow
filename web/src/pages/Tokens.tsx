@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy } from "lucide-react";
+import { Link } from "react-router-dom";
 import { apiFetch } from "@/lib/api";
 import { formatTimestamp, formatRelativeTime } from "@/lib/format";
 import { Button, FormField, FormFieldGroup, Input, Dialog, PageHeader } from "@/components/ds";
@@ -27,7 +28,11 @@ export default function Tokens() {
   });
   return (
     <div className="tokens-page">
-      <PageHeader title="Client tokens" />
+      <PageHeader
+        title="Client tokens"
+        subtitle="Tokens that let a machine running burrow connect to this relay. This list includes tokens minted here and via Connect a client."
+        actions={<Link to="/clients/connect"><Button variant="primary" size="sm">Connect a client</Button></Link>}
+      />
 
       <form
         className="tokens-form"
@@ -42,6 +47,8 @@ export default function Tokens() {
           <Button type="submit" variant="primary" disabled={!name || create.isPending}>Create</Button>
         </div>
       </form>
+
+      <p className="muted small">Need a token for CI, the CLI, or bots? <Link className="link-inline" to="/account/automation">Automation tokens</Link></p>
 
       <div className="table-wrap">
         <table className="data" aria-label="Tokens">

@@ -35,6 +35,20 @@ describe("Automation tokens", () => {
     expect(within(table).getByText(/bua_/)).toBeInTheDocument();
   });
 
+  // P4.3 — reciprocal hint
+  it("renders the 'not tunneling agents' hint text (P4.3)", () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }) as Response);
+    mount();
+    expect(screen.getByText(/not tunneling agents/i)).toBeInTheDocument();
+  });
+
+  it("renders Client tokens cross-link pointing to /tokens (P4.3)", () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }) as Response);
+    mount();
+    const link = screen.getByRole("link", { name: /client tokens/i });
+    expect(link).toHaveAttribute("href", "/tokens");
+  });
+
   it("Mint reveals the plaintext once with the verbatim save-now warning", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();

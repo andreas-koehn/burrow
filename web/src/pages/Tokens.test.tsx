@@ -1,12 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
+import { renderApp } from "@/mocks/test-utils";
 import Tokens from "./Tokens";
 
 function setup() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={qc}><Tokens /></QueryClientProvider>);
+  return renderApp(<Tokens />, "/tokens");
 }
 
 describe("Tokens", () => {
@@ -145,5 +144,27 @@ describe("Tokens", () => {
         expect.objectContaining({ method: "DELETE" }),
       );
     });
+  });
+
+  // P4.1 — subtitle and Connect-a-client action
+  it("renders the client-tokens subtitle explaining the token list (P4.1)", () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }) as any);
+    setup();
+    expect(screen.getByText(/this list includes tokens minted here and via connect a client/i)).toBeInTheDocument();
+  });
+
+  it("renders a Connect a client link pointing to /clients/connect (P4.1)", () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }) as any);
+    setup();
+    const link = screen.getByRole("link", { name: /connect a client/i });
+    expect(link).toHaveAttribute("href", "/clients/connect");
+  });
+
+  // P4.2 — automation cross-link hint
+  it("renders the Automation tokens cross-link hint (P4.2)", () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }) as any);
+    setup();
+    const link = screen.getByRole("link", { name: /automation tokens/i });
+    expect(link).toHaveAttribute("href", "/account/automation");
   });
 });

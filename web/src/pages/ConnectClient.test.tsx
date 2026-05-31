@@ -194,6 +194,14 @@ describe("P2.5 — Success-loop poller", () => {
   });
 });
 
+describe("P4.4 — Back-link to Tokens", () => {
+  it("renders a Tokens back-link pointing to /tokens", () => {
+    mount();
+    const link = screen.getByRole("link", { name: /^tokens$/i });
+    expect(link).toHaveAttribute("href", "/tokens");
+  });
+});
+
 describe("P2.6 — Inline explainers", () => {
   it("shows the 'machine running burrow connect' explainer", () => {
     mount();

@@ -112,6 +112,8 @@ export default function ConnectClient() {
         subtitle="Bring a machine online so it can expose a local service through this Burrow relay."
       />
 
+      <p className="muted small">Already connected clients? Manage their tokens in <Link className="link-inline" to="/tokens">Tokens</Link>.</p>
+
       {/* P2.6 — page-level explainer */}
       <p className="muted" style={{ marginBottom: "var(--space-4)" }}>
         A client is a machine running <code>burrow connect</code>. Name it, choose what it exposes,
