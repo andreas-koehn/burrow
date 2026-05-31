@@ -324,7 +324,7 @@ body {
   outline: none;
   transition: border-color var(--t-micro), background var(--t-micro);
 }
-.input::placeholder { color: color-mix(in oklch, var(--muted-foreground) 55%, transparent); }
+.input::placeholder { color: var(--muted-foreground); }
 .input:hover, .select-trigger:hover { border-color: var(--border-strong); }
 .input:focus, .select-trigger:focus,
 .input.is-focus, .select-trigger.is-focus {
