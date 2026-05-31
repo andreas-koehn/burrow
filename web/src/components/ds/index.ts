@@ -34,3 +34,5 @@ export { MetricStrip, MetricTile } from "./MetricStrip";
 export type { MetricStripProps, MetricTileProps } from "./MetricStrip";
 export { AccessModeCard } from "./AccessModeCard";
 export type { AccessModeCardProps } from "./AccessModeCard";
+export { InfoHint } from "./InfoHint";
+export type { InfoHintProps } from "./InfoHint";
