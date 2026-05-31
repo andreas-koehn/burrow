@@ -2040,6 +2040,10 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   margin-top: var(--space-md);
 }
 
+/* Retention number fields: keep entered values as normal text, neutralize the
+   native teal accent-color inherited from the Tailwind theme (L-misc). */
+.account-page .input.mono[type="number"] { accent-color: var(--muted-foreground); color: var(--foreground); }
+
 /* ──────────────────────────────────────────────────────────────
    Row alignment utilities — eliminate the repeated
    style={{ alignItems:"center" }} / style={{ alignItems:"flex-end" }}

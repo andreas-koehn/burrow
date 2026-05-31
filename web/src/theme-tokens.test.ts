@@ -75,3 +75,9 @@ describe("design tokens — form width (D-11/L-12)", () => {
     expect(rule).toContain("minmax(0, var(--input-w-lg))");
   });
 });
+
+describe("design tokens — retention number input accent (L-misc)", () => {
+  it("retention number inputs neutralize the native teal accent", () => {
+    expect(css).toMatch(/\.account-page \.input\.mono\[type="number"\][^{]*\{[^}]*accent-color/);
+  });
+});
