@@ -19,6 +19,12 @@ describe("ds primitives", () => {
     fireEvent.click(b);
     expect(fn).toHaveBeenCalled();
   });
+  it("disabled primary button keeps its btn-primary class and the disabled attribute", () => {
+    render(<Button variant="primary" disabled>Go</Button>);
+    const b = screen.getByRole("button", { name: "Go" });
+    expect(b).toBeDisabled();
+    expect(b.className).toContain("btn-primary");
+  });
   it("Switch toggles via keyboard/click and exposes role=switch", () => {
     const fn = vi.fn();
     render(<Switch checked={false} onChange={fn} aria-label="t" />);

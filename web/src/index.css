@@ -209,6 +209,17 @@ body {
 .btn[disabled], .btn[aria-disabled="true"] {
   opacity: 0.5; cursor: not-allowed;
 }
+/* Filled buttons: a 0.5-opacity teal fill reads as ambiguous (looks disabled
+   even when enabled, and disabled looks like a faint-but-clickable CTA). Give
+   the disabled FILLED state an explicit flat muted surface so disabled is
+   unmistakable and the enabled state stays full-strength teal. (D-2/L-1) */
+.btn-primary[disabled], .btn-primary[aria-disabled="true"],
+.btn-destructive-solid[disabled], .btn-destructive-solid[aria-disabled="true"] {
+  opacity: 1;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border-color: var(--border);
+}
 
 .btn-primary {
   background: var(--primary);

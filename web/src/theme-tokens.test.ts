@@ -31,3 +31,10 @@ describe("design tokens — border/input edges (D-4/L-2)", () => {
     expect(dark).toContain("--border-strong:        oklch(1 0 0 / 0.24);");
   });
 });
+
+describe("design tokens — disabled filled buttons (D-2/L-1)", () => {
+  it("filled primary/destructive-solid disabled state uses a flat muted surface, not faded teal", () => {
+    expect(css).toMatch(/\.btn-primary\[disabled\][^{]*\{[^}]*background:\s*var\(--muted\)/);
+    expect(css).toMatch(/\.btn-primary\[disabled\][^{]*\{[^}]*opacity:\s*1/);
+  });
+});
