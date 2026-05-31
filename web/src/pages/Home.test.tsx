@@ -1,11 +1,16 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { screen, within, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
+import { db, resetDb } from "@/mocks/db";
 import Home from "./Home";
 
 describe("Home (Overview)", () => {
+  afterEach(() => {
+    resetDb();
+  });
+
   it("renders the Overview heading", async () => {
     renderApp(<Home />);
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();
@@ -204,6 +209,74 @@ describe("Home (Overview)", () => {
       const link = screen.getByRole("link", { name: /review/i });
       expect(link).toBeInTheDocument();
       expect(link.getAttribute("href")).toMatch(/\/services\/svc_/);
+    });
+  });
+
+  // ---- Role degradation ----
+
+  describe("Role degradation (non-admin)", () => {
+    it("non-admin: Clients tile shows '—', explainer + quick actions still render", async () => {
+      // Set role to user — admin-only queries (clients, settings, budgets) must not
+      // fire. Because their `enabled: isAdmin` guard is false, React Query never
+      // issues those fetches, so no MSW handler is invoked for them.
+      db.me = { ...db.me, role: "user" };
+      renderApp(<Home />);
+
+      // Page heading always renders
+      await screen.findByRole("heading", { name: "Overview" });
+
+      // Wait for the strip to settle (services query resolves for non-admin too)
+      const strip = await screen.findByRole("list", { name: "Overview" });
+      await waitFor(() => {
+        const tiles = within(strip).getAllByRole("listitem");
+        // Clients tile (first) must show "—" for non-admin
+        const clientsTile = tiles[0];
+        expect(clientsTile!.querySelector(".value")?.textContent).toBe("—");
+      });
+
+      // Quick actions still visible
+      expect(screen.getByRole("link", { name: /connect a client/i })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /new service/i })).toBeInTheDocument();
+
+      // Explainer still visible
+      expect(screen.getByText(/how burrow works/i)).toBeInTheDocument();
+
+      // SMTP/budget alerts must NOT appear (admin-only queries didn't fire)
+      await waitFor(() => {
+        expect(screen.queryByText(/email isn't (set up|configured)/i)).toBeNull();
+        expect(screen.queryByText(/budget.*exceeded/i)).toBeNull();
+      });
+    });
+  });
+
+  // ---- Independent loading/error guards ----
+
+  describe("Hard-failure isolation", () => {
+    it("services 500: explainer + quick actions still render; page does not go blank", async () => {
+      server.use(
+        http.get("/api/v1/services", () =>
+          HttpResponse.json({ error: "boom" }, { status: 500 }),
+        ),
+      );
+      renderApp(<Home />);
+
+      // Heading must be visible
+      await screen.findByRole("heading", { name: "Overview" });
+
+      // Explainer must still render despite services failure
+      await waitFor(() => {
+        expect(screen.getByText(/how burrow works/i)).toBeInTheDocument();
+      });
+
+      // Quick actions must still render
+      expect(screen.getByRole("link", { name: /connect a client/i })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /new service/i })).toBeInTheDocument();
+
+      // Counts strip still renders once the error state settles (values default
+      // to 0 / "—" from null-safe access — not a crash, not a blank page)
+      await waitFor(() => {
+        expect(screen.getByRole("list", { name: "Overview" })).toBeInTheDocument();
+      });
     });
   });
 });

@@ -1,6 +1,6 @@
 import { useQuery, useQueries } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { PageHeader, MetricStrip, MetricTile, ErrorNotice, Button } from "@/components/ds";
+import { PageHeader, MetricStrip, MetricTile, ErrorNotice, Button, SkeletonRows } from "@/components/ds";
 import { useAuth } from "@/auth/useAuth";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
@@ -112,43 +112,55 @@ export default function Home() {
     </div>
   );
 
+  // Loading guards: each strip independently shows a skeleton while its data resolves.
+  const overviewLoading = services.isLoading || (isAdmin && clients.isLoading);
+  const trafficLoading = isAdmin && clients.isLoading;
+
   return (
     <div className="home-page">
       <PageHeader title="Overview" subtitle="Your relay at a glance." actions={quickActions} />
 
-      <MetricStrip ariaLabel="Overview">
-        <MetricTile
-          label="Clients"
-          value={isAdmin ? String(clients.data?.length ?? 0) : "—"}
-          sub={GLOSSARY.client.split(" that ")[0]}
-          tooltip="Machines running burrow connect."
-        />
-        <MetricTile
-          label="Services"
-          value={String(svc.length)}
-          sub={GLOSSARY.service.split("; it")[0]}
-        />
-        <MetricTile
-          label="Live tunnels"
-          value={String(liveTunnels)}
-          sub={GLOSSARY.tunnel.split(" — it")[0]}
-        />
-      </MetricStrip>
-
-      <MetricStrip ariaLabel="Last 24 hours">
-        <MetricTile
-          label="Traffic (24h)"
-          value={trafficValue}
-        />
-        {!costAbsent && (
+      {overviewLoading ? (
+        <SkeletonRows n={3} />
+      ) : (
+        <MetricStrip ariaLabel="Overview">
           <MetricTile
-            label="AI cost (24h)"
-            value={cost.data ? fmtUsd(cost.data.total_usd) : "—"}
-            sub={cost.data ? `${fmtInt(cost.data.tokens_in)} → ${fmtInt(cost.data.tokens_out)}` : undefined}
-            tooltip="Estimates from the bundled pricing table — operator-overridable."
+            label="Clients"
+            value={isAdmin ? String(clients.data?.length ?? 0) : "—"}
+            sub={GLOSSARY.client.split(" that ")[0]}
+            tooltip="Machines running burrow connect."
           />
-        )}
-      </MetricStrip>
+          <MetricTile
+            label="Services"
+            value={String(svc.length)}
+            sub={GLOSSARY.service.split("; it")[0]}
+          />
+          <MetricTile
+            label="Live tunnels"
+            value={String(liveTunnels)}
+            sub={GLOSSARY.tunnel.split(" — it")[0]}
+          />
+        </MetricStrip>
+      )}
+
+      {cost.isLoading ? (
+        <SkeletonRows n={2} />
+      ) : (
+        <MetricStrip ariaLabel="Last 24 hours">
+          <MetricTile
+            label="Traffic (24h)"
+            value={trafficLoading ? "…" : trafficValue}
+          />
+          {!costAbsent && (
+            <MetricTile
+              label="AI cost (24h)"
+              value={cost.data ? fmtUsd(cost.data.total_usd) : "—"}
+              sub={cost.data ? `${fmtInt(cost.data.tokens_in)} → ${fmtInt(cost.data.tokens_out)}` : undefined}
+              tooltip="Estimates from the bundled pricing table — operator-overridable."
+            />
+          )}
+        </MetricStrip>
+      )}
 
       {(smtpAlert || budgetAlert || certAlert) && (
         <div className="alerts-strip">
