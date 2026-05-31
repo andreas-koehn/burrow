@@ -1,6 +1,6 @@
 import { http, HttpResponse } from "msw";
 import { db, type MockDb, type CacheSettingsPayload } from "@/mocks/db";
-import type { AiEndpoint, CostSummary, ModelAliasV5, Provider, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings } from "@/lib/contract";
+import type { AccessMode, AiEndpoint, CostSummary, ModelAliasV5, Provider, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings } from "@/lib/contract";
 
 const VALID_PROVIDERS = new Set<string>(["ollama", "vllm", "openai-compat", "openai", "anthropic", "other"]);
 
@@ -249,6 +249,18 @@ export const handlers = [
       api_key_count: (db.serviceApiKeys[svc.id] ?? []).length,
       access_policy: db.serviceAccessPolicy[svc.id] ?? [],
     });
+  }),
+  http.post("/api/v1/services", async ({ request }) => {
+    const g = gate(request, { admin: true }); if (g) return g;
+    const b = await body<{ service_id?: string; title?: string; access_mode?: string }>(request);
+    const id = (b?.service_id ?? "").trim();
+    if (!/^[a-z0-9_-]{3,64}$/.test(id)) return err(400, "service_id must match ^[a-z0-9_-]{3,64}$");
+    const modeMap: Record<string, string> = { "": "open", public: "open", open: "open", api_key: "api_key", burrow_login: "burrow_login" };
+    const stored = modeMap[b?.access_mode ?? ""];
+    if (stored === undefined) return err(400, `unknown access mode "${b?.access_mode}"`);
+    if (db.services.some((s) => s.id === id)) return err(409, "service already exists");
+    db.services.push({ id, user_id: db.me.id, name: b?.title ?? "", type: "http", subdomain: "", hostname: "", access_mode: stored as AccessMode, api_key_header: "Authorization", connected: false, remote_port: 0, local_addr: "" });
+    return json({ id, created_at: new Date().toISOString() }, 201);
   }),
 
   // ---- v0.3.0 per-service API keys (spec Part C; services:configure) ----

@@ -79,4 +79,33 @@ describe("Services page", () => {
     await userEvent.click(retry);
     await waitFor(() => expect(screen.getByRole("table", { name: /services/i })).toBeInTheDocument());
   });
+
+  it("creates a new service via the + New service dialog and shows a success toast", async () => {
+    mount();
+    // Wait for initial data to load (table must be present first)
+    await screen.findByRole("table", { name: /services/i });
+
+    // Open the create dialog
+    await userEvent.click(screen.getByRole("button", { name: /\+ new service/i }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+
+    // Fill in the service ID and an optional title
+    const idInput = screen.getByLabelText(/service id/i);
+    await userEvent.type(idInput, "ai-svc");
+    const titleInput = screen.getByLabelText(/title/i);
+    await userEvent.type(titleInput, "My AI Service");
+
+    // Click Create
+    await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
+
+    // Success toast appears with the service_id
+    await screen.findByText("Service ai-svc created.");
+
+    // Dialog should be closed
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // The new service appears in the table on refetch (by its title/name)
+    const table = await screen.findByRole("table", { name: /services/i });
+    expect(within(table).getByText("My AI Service")).toBeInTheDocument();
+  });
 });
