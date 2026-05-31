@@ -38,9 +38,9 @@
   --destructive-foreground:oklch(0.985 0.004 200);
 
   /* structure */
-  --border:               oklch(0.900 0.008 72);
-  --border-strong:        oklch(0.830 0.010 72);
-  --input:                oklch(0.900 0.008 72);
+  --border:               oklch(0.865 0.010 72);
+  --border-strong:        oklch(0.800 0.012 72);
+  --input:                oklch(0.845 0.010 72);
   --hover:                oklch(0.965 0.004 75);
 
   --radius: 0.625rem;
@@ -75,9 +75,9 @@
   --destructive:          oklch(0.704 0.190 22);
   --destructive-foreground:oklch(0.205 0.012 65);
 
-  --border:               oklch(1 0 0 / 0.10);
-  --border-strong:        oklch(1 0 0 / 0.18);
-  --input:                oklch(1 0 0 / 0.10);
+  --border:               oklch(1 0 0 / 0.15);
+  --border-strong:        oklch(1 0 0 / 0.24);
+  --input:                oklch(1 0 0 / 0.18);
   --hover:                oklch(1 0 0 / 0.045);
 
   --shadow-overlay: 0 8px 28px -8px rgb(0 0 0 / 0.55);
