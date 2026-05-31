@@ -24,6 +24,9 @@ describe("Automation tokens", () => {
       expect(container.querySelector(".state-card")).not.toBeNull();
       expect(container.querySelector(".state-card .icon-bubble")).not.toBeNull();
     });
+    const card = container.querySelector(".state-card")!;
+    expect(card.textContent).not.toContain("Long-lived bearer tokens for CI / CLI / bots");
+    expect(card.textContent).toMatch(/mint a token/i);
   });
 
   it("renders a row per token with mono bua_ prefix", async () => {

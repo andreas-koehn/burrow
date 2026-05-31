@@ -65,7 +65,7 @@ export default function AutomationTokens() {
         <SkeletonRows n={2} />
       ) : tokens.data.length === 0 ? (
         <EmptyState title="No automation tokens yet">
-          Long-lived bearer tokens for CI / CLI / bots — scoped to your own permissions.
+          Mint a token to let CI jobs, the CLI, or bots authenticate on your behalf — without sharing your password.
         </EmptyState>
       ) : (
         <div className="table-wrap">
