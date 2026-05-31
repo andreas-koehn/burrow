@@ -43,9 +43,12 @@ function SpendTile({ w, summary }: { w: Window; summary: CostSummary | undefined
       value={summary ? fmtUsd(summary.total_usd) : "—"}
       sub={summary ? `${summary.tokens_in.toLocaleString()} → ${summary.tokens_out.toLocaleString()}` : "—"}
     >
-      <div
-        className={`pct-bar ${pctClass(summary?.pct_of_budget ?? null)}`}
-      />
+      <div className="pct-bar">
+        <span
+          className={`fill ${pctClass(summary?.pct_of_budget ?? null)}`}
+          style={{ width: `${Math.min(100, Math.max(0, (summary?.pct_of_budget ?? 0) * 100))}%` }}
+        />
+      </div>
     </MetricTile>
   );
 }
@@ -147,7 +150,7 @@ export default function CostBudgets() {
         </div>
         <div className="table-wrap">
           <table className="data" aria-label="Budgets">
-            <thead><tr><th>Scope</th><th>Subject</th><th>Daily $</th><th>On exceed</th><th>Spend</th></tr></thead>
+            <thead><tr><th>Scope</th><th>Subject</th><th className="col-num">Daily $</th><th>On exceed</th><th className="col-num">Spend</th></tr></thead>
             <tbody>
               {featureAbsent
                 ? <tr><td colSpan={5} className="muted">Budgets aren&apos;t available on this relay.</td></tr>
@@ -157,9 +160,9 @@ export default function CostBudgets() {
                       <tr key={b.id}>
                         <td>{b.scope}</td>
                         <td className="mono">{b.subject_id}</td>
-                        <td className="mono">{fmtUsd(b.daily_usd)}</td>
+                        <td className="mono col-num">{fmtUsd(b.daily_usd)}</td>
                         <td>{b.action_on_exceed}</td>
-                        <td className="mono">{fmtUsd(b.current_usd)}</td>
+                        <td className="mono col-num">{fmtUsd(b.current_usd)}</td>
                       </tr>
                     ))}
             </tbody>

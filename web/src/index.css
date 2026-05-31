@@ -1911,9 +1911,10 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   margin-top: var(--space-xs);
   overflow: hidden;
 }
-.pct-bar.ok     { background: color-mix(in oklch, var(--success, oklch(0.60 0.17 145)) 30%, var(--muted)); }
-.pct-bar.warn   { background: color-mix(in oklch, oklch(0.72 0.18 85) 50%, var(--muted)); }
-.pct-bar.danger { background: color-mix(in oklch, var(--destructive) 50%, var(--muted)); }
+.pct-bar .fill { height: 100%; border-radius: inherit; transition: width var(--t-enter); }
+.pct-bar .fill.ok     { background: color-mix(in oklch, var(--success, oklch(0.60 0.17 145)) 70%, var(--muted)); }
+.pct-bar .fill.warn   { background: color-mix(in oklch, oklch(0.72 0.18 85) 80%, var(--muted)); }
+.pct-bar .fill.danger { background: var(--destructive); }
 
 /* RequestInspector search row — replace inline style margin */
 .inspector-search {

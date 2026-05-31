@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
+import { server } from "@/mocks/server";
 import { renderApp } from "@/mocks/test-utils";
 import CostBudgets from "@/pages/CostBudgets";
 
@@ -61,5 +63,33 @@ describe("Cost & budgets (§4.24)", () => {
         ),
       ).toBe(true);
     });
+  });
+
+  it("renders a percentage-sized fill inside each meter, empty at $0 (D-5/L-7)", async () => {
+    // Override GET /cost/summary so pct_of_budget = 0 and total_usd = 0 for all windows
+    server.use(
+      http.get("/api/v1/cost/summary", ({ request }) => {
+        const url = new URL(request.url);
+        const w = url.searchParams.get("window") ?? "today";
+        return HttpResponse.json({
+          window: w,
+          total_usd: 0,
+          tokens_in: 0,
+          tokens_out: 0,
+          top_consumers: [],
+          pct_of_budget: 0,
+        });
+      }),
+    );
+    const { container } = renderApp(<CostBudgets />, "/cost");
+    // Wait for the MetricStrip "Spend by window" list to appear
+    await screen.findByRole("list", { name: /spend by window/i });
+    const bars = container.querySelectorAll(".pct-bar");
+    expect(bars.length).toBeGreaterThanOrEqual(4);
+    for (const bar of bars) {
+      const fill = bar.querySelector(".fill") as HTMLElement | null;
+      expect(fill).not.toBeNull();
+      expect(fill!.style.width).toBe("0%");
+    }
   });
 });
