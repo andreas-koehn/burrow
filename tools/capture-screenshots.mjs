@@ -472,16 +472,22 @@ function buildTargets(aiServiceId, aiEndpointId) {
       url: "/settings/backups",
       waitFor: 'h1:has-text("Backup")',
       before: async (page) => {
-        // Look for any "Restore" button in the backups list
+        // The Restore button only enables after a file is uploaded via the file
+        // input. In the e2e lab (no uploaded backup) it is always disabled.
+        // Attempt a force-click to open the confirm dialog; if the button is
+        // disabled/absent, skip gracefully and capture the empty state.
         const restoreBtn = page.getByRole("button", { name: /restore/i });
         const count = await restoreBtn.count();
         if (count > 0) {
-          await restoreBtn.first().click();
-          await page.waitForSelector('[role="dialog"]', { timeout: 6_000 });
-          await page.waitForTimeout(400);
-          // DO NOT confirm — we screenshot, then close
+          const disabled = await restoreBtn.first().getAttribute("disabled");
+          if (!disabled) {
+            await restoreBtn.first().click();
+            await page.waitForSelector('[role="dialog"]', { timeout: 6_000 });
+            await page.waitForTimeout(400);
+            // DO NOT confirm — screenshot open dialog, then it will be cleaned up
+          }
+          // If disabled (no file uploaded) just screenshot the empty state
         }
-        // If no backup rows yet, the empty state is captured instead
       },
     },
   ];
