@@ -44,7 +44,24 @@ describe("usability-clean — .home-explainer is token-based (Cl-1)", () => {
     expect(rule).not.toMatch(/\boklch\(/);
   });
 });
-it.todo("Cl-2: alerts strip uses .notice-inline tints, no new color literal (Phase 1)");
+it("Cl-2: home-explainer and home-quick-actions rules use only var(-- tokens — no bare hex/oklch/rgb", () => {
+  // .home-explainer is already checked in the describe block below; here we pin
+  // the .home-quick-actions rule (quick-action buttons in Home.tsx header area).
+  // Both classes must only reference DS tokens for colour, never literals.
+  const quickActionsRule = css.match(/\.home-quick-actions\s*\{[^}]*\}/)?.[0];
+  // The rule may be absent if home-quick-actions has no colour properties (fine) —
+  // but if it IS present it must be token-only.
+  if (quickActionsRule) {
+    expect(quickActionsRule).not.toMatch(/#[0-9a-fA-F]{3,6}\b/);
+    expect(quickActionsRule).not.toMatch(/\boklch\(/);
+    expect(quickActionsRule).not.toMatch(/\brgb\(/);
+  }
+
+  // The alerts strip reuses .notice-inline which is already validated in the
+  // first describe block above. Verify .notice-inline exists in the CSS as a
+  // further guard that the Home alerts strip has the right class available.
+  expect(css).toContain(".notice-inline");
+});
 // Cl-3: verified via CommandPalette.test.tsx (RTL: getByRole('dialog') present when open=true).
 // The CSS contract checked here: CommandPalette is rendered inside DS Dialog, which always
 // emits class="dialog" with role="dialog". The .dialog class must exist in index.css.

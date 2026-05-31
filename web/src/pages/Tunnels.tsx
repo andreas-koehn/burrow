@@ -101,6 +101,8 @@ export default function Tunnels() {
 
   useEffect(() => {
     // NOTE: EventSource requires same-origin (the Go server must serve this SPA).
+    // jsdom (used by vitest/RTL) does not implement EventSource; skip gracefully.
+    if (typeof EventSource === "undefined") return;
     const es = new EventSource("/api/v1/events");
     const onTunnels = () => qc.invalidateQueries({ queryKey: ["tunnels"] });
     es.addEventListener("tunnels", onTunnels);
@@ -163,6 +165,7 @@ export default function Tunnels() {
             </svg>
           </div>
           <p>No live tunnels. Run <code>burrow connect</code> with a token.</p>
+          <Link to="/clients/connect"><Button variant="primary" size="sm">Connect a client</Button></Link>
         </div>
       ) : (
         <div className="table-wrap">
