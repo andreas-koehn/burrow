@@ -31,12 +31,15 @@ Thumbs.db
 # Claude Code harness state (worktrees, local settings) - never commit
 .claude/
 
-# Internal project + AI-workflow docs - kept local, never published.
-# Listed file-by-pattern instead of as a bare `docs/` so the canonical
-# OpenAPI spec at docs/openapi.yaml can be force-included with a negation
-# below (git ignores file-level negations under a directory-excluded path).
-docs/*
-!docs/openapi.yaml
+# Internal project + AI-workflow docs (specs, plans, backlogs, reviews) -
+# kept local, never published. The published VitePress site lives in docs/
+# and IS tracked; the canonical OpenAPI spec stays at docs/openapi.yaml.
+dev/
+
+# VitePress build artifacts and local install (docs/ site is otherwise tracked).
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+docs/node_modules/
 design/
 
 # Playwright e2e outputs
