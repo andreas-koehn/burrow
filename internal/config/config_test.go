@@ -763,3 +763,52 @@ func TestConfigDatabaseURLEnvVar(t *testing.T) {
 		t.Fatal("experimental_postgres_backend must be true after BURROW_EXPERIMENTAL_POSTGRES_BACKEND=true")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// v0.6.0: ACME built-in Let's Encrypt config keys + validation
+// ---------------------------------------------------------------------------
+
+func TestLoadServer_ACMEEnablesAndValidates(t *testing.T) {
+	t.Setenv("BURROW_ACME_DOMAIN", "burrow.example.com")
+	t.Setenv("BURROW_ACME_EMAIL", "admin@example.com")
+	c, err := LoadServer(nil)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if c.ACMEDomain != "burrow.example.com" || c.ACMEEmail != "admin@example.com" {
+		t.Fatalf("acme fields not parsed: %+v", c)
+	}
+	if c.ACMECA == "" {
+		t.Fatalf("ACMECA should default to a non-empty CA directory")
+	}
+	if c.ACMEStorage == "" {
+		t.Fatalf("ACMEStorage should derive a default path")
+	}
+}
+
+func TestLoadServer_ACMEDomainRequiresEmail(t *testing.T) {
+	t.Setenv("BURROW_ACME_DOMAIN", "burrow.example.com")
+	if _, err := LoadServer(nil); err == nil {
+		t.Fatal("expected error when ACME_DOMAIN set without ACME_EMAIL")
+	}
+}
+
+func TestLoadServer_ACMEConflictsWithFileCerts(t *testing.T) {
+	t.Setenv("BURROW_ACME_DOMAIN", "burrow.example.com")
+	t.Setenv("BURROW_ACME_EMAIL", "admin@example.com")
+	t.Setenv("BURROW_TLS_CERT", "certs/x.pem")
+	t.Setenv("BURROW_TLS_KEY", "certs/x-key.pem")
+	if _, err := LoadServer(nil); err == nil {
+		t.Fatal("expected error when ACME and file certs are both configured")
+	}
+}
+
+func TestLoadServer_ACMEOffPreservesDefaults(t *testing.T) {
+	c, err := LoadServer(nil)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if c.ACMEDomain != "" {
+		t.Fatalf("ACME should be off by default, got %q", c.ACMEDomain)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -155,6 +156,13 @@ type ServerConfig struct {
 	// form reads a file CONTAINING the path, consistent with the generic
 	// _FILE pattern; however in the common case the env var IS the path).
 	CertValidationRootsFile string `koanf:"cert_validation_roots_file"`
+
+	// ACME (v0.6.0): built-in Let's Encrypt. Setting ACMEDomain enables ACME
+	// and is mutually exclusive with the *_TLS_CERT/KEY file-cert fields.
+	ACMEDomain  string `koanf:"acme_domain"`
+	ACMEEmail   string `koanf:"acme_email"`
+	ACMECA      string `koanf:"acme_ca"`
+	ACMEStorage string `koanf:"acme_storage"`
 }
 
 // ClientConfig configures burrow.
@@ -368,6 +376,10 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 		"login_rate_limit_per_ip": 0,
 		// cert_validation_roots_file: empty = use system root pool.
 		"cert_validation_roots_file": "",
+		// ACME: empty domain = disabled. CA defaults to Let's Encrypt production.
+		// acme_storage is derived after merge (like backup_dir) when left empty.
+		"acme_domain": "", "acme_email": "",
+		"acme_ca": "https://acme-v02.api.letsencrypt.org/directory", "acme_storage": "",
 	}, "."), nil)
 	_ = k.Load(burrowEnvProvider(), nil)
 	if err := applyFileSecrets(k); err != nil {
@@ -406,6 +418,19 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 	// must opt in explicitly).
 	if err := validateDatabaseConfig(&c); err != nil {
 		return nil, fmt.Errorf("invalid server config: %w", err)
+	}
+	// ACME validation (v0.6.0).
+	if c.ACMEDomain != "" {
+		if c.ACMEEmail == "" {
+			return nil, fmt.Errorf("invalid server config: acme_email is required when acme_domain is set")
+		}
+		if c.TLSCert != "" && c.TLSCert != "certs/dev-server.pem" ||
+			c.HTTPTLSCert != "" || c.HTTPProxyTLSCert != "" {
+			return nil, fmt.Errorf("invalid server config: acme_domain is mutually exclusive with *_tls_cert/key (ACME manages all certificates)")
+		}
+		if c.ACMEStorage == "" {
+			c.ACMEStorage = filepath.Join(filepath.Dir(c.DatabasePath), "acme")
+		}
 	}
 	return &c, nil
 }
