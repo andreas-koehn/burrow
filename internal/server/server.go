@@ -46,6 +46,13 @@ func (f AuthFunc) Authenticate(ctx context.Context, token string) (string, error
 	return f(ctx, token)
 }
 
+// noopAuth is the default TokenAuthenticator: it denies every connection.
+type noopAuth struct{}
+
+func (noopAuth) Authenticate(_ context.Context, _ string) (string, error) {
+	return "", fmt.Errorf("no authenticator configured")
+}
+
 // noopTunnelStore is the default TunnelStore: it persists nothing.
 type noopTunnelStore struct{}
 
@@ -126,6 +133,11 @@ type Options struct {
 	// When non-nil, handleConn emits a kind=control entry on yamux session
 	// close. Wired by Task 17 (cmd/server); nil means no logging.
 	ConnLog ControlSessionSink
+	// GetCertificate, when non-nil, supplies the control-channel certificate
+	// (e.g. from the ACME manager) instead of loading TLSCert/TLSKey files.
+	// Only GetCertificate is used (no TLS-ALPN NextProtos) since the control
+	// channel speaks yamux, not an ACME challenge protocol.
+	GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 }
 
 // Server is the burrowd relay control server.
@@ -144,7 +156,7 @@ type Server struct {
 // New validates options and loads the TLS keypair.
 func New(o Options) (*Server, error) {
 	if o.Auth == nil {
-		return nil, fmt.Errorf("server: Auth (TokenAuthenticator) is required")
+		o.Auth = noopAuth{}
 	}
 	if o.Tunnels == nil {
 		o.Tunnels = noopTunnelStore{}
@@ -164,13 +176,19 @@ func New(o Options) (*Server, error) {
 	if o.PortMax == 0 {
 		o.PortMax = 9100
 	}
-	cert, err := tls.LoadX509KeyPair(o.TLSCert, o.TLSKey)
-	if err != nil {
-		return nil, fmt.Errorf("load tls keypair: %w", err)
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if o.GetCertificate != nil {
+		tlsCfg.GetCertificate = o.GetCertificate
+	} else {
+		cert, err := tls.LoadX509KeyPair(o.TLSCert, o.TLSKey)
+		if err != nil {
+			return nil, fmt.Errorf("load tls keypair: %w", err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{cert}
 	}
 	s := &Server{
 		opts: o, log: o.Logger, reg: NewRegistry(),
-		tlsC: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
+		tlsC: tlsCfg,
 	}
 	s.ports = newPortAllocator(o.PortMin, o.PortMax)
 	return s, nil

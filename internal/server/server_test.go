@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -259,5 +260,31 @@ func TestRegisterPortInUseFails(t *testing.T) {
 	_ = proto.DecodePayload(env, &r2)
 	if r2.OK {
 		t.Fatal("second register on the same in-use port must fail")
+	}
+}
+
+func TestNewServer_UsesInjectedGetCertificate(t *testing.T) {
+	called := false
+	getCert := func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		called = true
+		return nil, nil
+	}
+	s, err := New(Options{
+		Listen:         "127.0.0.1:0",
+		GetCertificate: getCert,
+		Logger:         slog.Default(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if s.tlsC.GetCertificate == nil {
+		t.Fatal("expected tlsC.GetCertificate to be set from Options.GetCertificate")
+	}
+	_, _ = s.tlsC.GetCertificate(&tls.ClientHelloInfo{})
+	if !called {
+		t.Fatal("injected GetCertificate was not wired")
+	}
+	if len(s.tlsC.Certificates) != 0 {
+		t.Fatal("static Certificates must be empty when GetCertificate is injected")
 	}
 }
