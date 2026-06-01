@@ -1,7 +1,7 @@
 package api
 
 // contract_v3_test.go is the executable form of the v0.3.0 contract
-// (docs/superpowers/specs/2026-05-19-v0.3.0-api-contract.md, Parts C/D/E).
+// (dev/superpowers/specs/2026-05-19-v0.3.0-api-contract.md, Parts C/D/E).
 //
 // It asserts the *shape* (key set + value types) and the *known error bodies*
 // of every v0.3.0 endpoint. Per the spec's own rule ("if shipped code and the

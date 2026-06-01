@@ -40,7 +40,7 @@ test("27-failover: stop primary upstream, verify failover + audit", async ({ pag
     }),
   });
   if (cfgResp.status() !== 204) {
-    test.skip(true, "failover not implemented — see docs/BACKLOG_failover.md");
+    test.skip(true, "failover not implemented — see dev/BACKLOG_failover.md");
   }
 
   // 3. Stop mockoai and run test assertions — always restart in finally block.
@@ -51,7 +51,7 @@ test("27-failover: stop primary upstream, verify failover + audit", async ({ pag
       { stdio: "pipe", cwd: REPO_ROOT },
     );
     if (stopResult.status !== 0) {
-      test.skip(true, "failover not implemented — see docs/BACKLOG_failover.md");
+      test.skip(true, "failover not implemented — see dev/BACKLOG_failover.md");
     }
 
     // 4. Fire requests; expect either 200 (failover) or 5xx (no secondary configured).

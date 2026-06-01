@@ -114,7 +114,7 @@ import (
 // Retry seam in chain.go Step 9. None of these are present at tip
 // 7805962 so the test cannot meaningfully exercise failover today.
 func TestE2EFailover_OnConnectionError(t *testing.T) {
-	t.Skip("failover/circuit-breaker not implemented (route.Router runs with routeLookupNoop) — see docs/BACKLOG_failover.md")
+	t.Skip("failover/circuit-breaker not implemented (route.Router runs with routeLookupNoop) — see dev/BACKLOG_failover.md")
 }
 
 // TestE2EFailover_CircuitBreakerTrip — Task 7, sub-test 2.
@@ -134,7 +134,7 @@ func TestE2EFailover_OnConnectionError(t *testing.T) {
 // this e2e exercises the end-to-end signal flow that's not yet
 // connected.
 func TestE2EFailover_CircuitBreakerTrip(t *testing.T) {
-	t.Skip("failover/circuit-breaker not implemented (route.Router runs with routeLookupNoop) — see docs/BACKLOG_failover.md")
+	t.Skip("failover/circuit-breaker not implemented (route.Router runs with routeLookupNoop) — see dev/BACKLOG_failover.md")
 }
 
 // TestE2EFailover_IdempotencyKeyRule — Task 7, sub-test 3.
@@ -158,5 +158,5 @@ func TestE2EFailover_CircuitBreakerTrip(t *testing.T) {
 // Step 9 needs and that v04_wiring.go's noop Lookup makes impossible
 // today. See the package doc-comment for the full chain.
 func TestE2EFailover_IdempotencyKeyRule(t *testing.T) {
-	t.Skip("failover/circuit-breaker not implemented (route.Router runs with routeLookupNoop) — see docs/BACKLOG_failover.md")
+	t.Skip("failover/circuit-breaker not implemented (route.Router runs with routeLookupNoop) — see dev/BACKLOG_failover.md")
 }

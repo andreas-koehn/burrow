@@ -1,4 +1,4 @@
-// Typed mirror of docs/superpowers/specs/2026-05-19-v0.2.0-api-contract.md.
+// Typed mirror of dev/superpowers/specs/2026-05-19-v0.2.0-api-contract.md.
 // snake_case fields match the wire verbatim; do not rename.
 
 export type UserRole = "admin" | "user";
@@ -85,7 +85,7 @@ export interface NewToken {
 }
 
 // ---- v0.3.0: durable services + HTTP access config ----
-// Mirror of docs/superpowers/specs/2026-05-19-v0.3.0-api-contract.md Part C/D/E.
+// Mirror of dev/superpowers/specs/2026-05-19-v0.3.0-api-contract.md Part C/D/E.
 
 export interface Service {
   id: string;
@@ -124,7 +124,7 @@ export interface CreatedApiKey {
 }
 
 // ---- v0.4.0: AI gateway + company-scale dashboard ----
-// Mirror of docs/superpowers/specs/2026-05-19-v0.4.0-api-contract.md.
+// Mirror of dev/superpowers/specs/2026-05-19-v0.4.0-api-contract.md.
 
 // AI endpoint — read-only lens over Service rows where access_mode=api_key
 // (spec §4.19). Backend derives; UI never POSTs this shape.
@@ -424,7 +424,7 @@ export interface RedactionRule {
 
 // ---- v0.5.0: semantic cache, upstream credentials, multi-provider routing, ----
 // ---- custom domains, connection logs, retention, webhooks v5, database status ----
-// Mirror of docs/superpowers/specs/2026-05-20-v0.5.0-api-contract.md.
+// Mirror of dev/superpowers/specs/2026-05-20-v0.5.0-api-contract.md.
 
 export interface SemanticCacheSettings {
   enabled: boolean;

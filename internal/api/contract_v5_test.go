@@ -4,7 +4,7 @@ package api
 //
 // Like contract_v4_test.go, this file is the *executable form* of the
 // (reconciled) v0.5.0 spec — see
-// docs/superpowers/specs/2026-05-20-v0.5.0-api-contract.md and especially
+// dev/superpowers/specs/2026-05-20-v0.5.0-api-contract.md and especially
 // its "Reconciled (Integration Task 1, 2026-05-23)" section. It boots the
 // real /api/v1 router with an admin session + CSRF cookie and pins the
 // top-level JSON shape of every critical v0.5.0 endpoint family.
