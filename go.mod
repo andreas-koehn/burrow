@@ -3,6 +3,7 @@ module github.com/ankoehn/burrow
 go 1.25.0
 
 require (
+	github.com/caddyserver/certmagic v0.25.3
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/go-chi/httprate v0.15.0
 	github.com/go-playground/validator/v10 v10.22.1
@@ -12,6 +13,7 @@ require (
 	github.com/knadh/koanf/providers/confmap v0.1.0
 	github.com/knadh/koanf/providers/env v1.0.0
 	github.com/knadh/koanf/v2 v2.1.2
+	github.com/mholt/acmez/v3 v3.1.6
 	github.com/oschwald/maxminddb-golang v1.13.1
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/spf13/cobra v1.8.1
@@ -21,7 +23,6 @@ require (
 )
 
 require (
-	github.com/caddyserver/certmagic v0.25.3 // indirect
 	github.com/caddyserver/zerossl v0.1.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
@@ -37,7 +38,6 @@ require (
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/libdns/libdns v1.1.1 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/mholt/acmez/v3 v3.1.6 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
