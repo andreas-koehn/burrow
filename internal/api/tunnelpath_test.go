@@ -51,3 +51,18 @@ func TestTunnelPathHandler_RootPath(t *testing.T) {
 		t.Fatalf("path = %q, want /", gotPath)
 	}
 }
+
+func TestTunnelPathHandler_PreservesEncodedPath(t *testing.T) {
+	var gotEscaped string
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEscaped = r.URL.EscapedPath()
+	})
+	h := TunnelPathHandler(proxy, "burrow.example.com")
+	r := chi.NewRouter()
+	r.Handle("/t/{id}/*", h)
+	req := httptest.NewRequest("GET", "https://burrow.example.com/t/abc123/foo%2Fbar", nil)
+	r.ServeHTTP(httptest.NewRecorder(), req)
+	if gotEscaped != "/foo%2Fbar" {
+		t.Fatalf("escaped path = %q, want /foo%%2Fbar", gotEscaped)
+	}
+}

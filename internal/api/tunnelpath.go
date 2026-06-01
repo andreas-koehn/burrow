@@ -28,7 +28,18 @@ func TunnelPathHandler(proxy http.Handler, authDomain string) http.HandlerFunc {
 
 		r2 := r.Clone(r.Context())
 		r2.URL.Path = rest
-		r2.URL.RawPath = "" // let net/http re-derive from Path
+		// Preserve percent-encoding: if RawPath is set (path had encoded bytes
+		// like %2F), strip the prefix from it too; otherwise leave it empty so
+		// net/http re-derives the encoded form from Path.
+		if r.URL.RawPath != "" {
+			rawRest := strings.TrimPrefix(r.URL.RawPath, prefix)
+			if !strings.HasPrefix(rawRest, "/") {
+				rawRest = "/" + rawRest
+			}
+			r2.URL.RawPath = rawRest
+		} else {
+			r2.URL.RawPath = ""
+		}
 		r2.Host = id + "." + authDomain
 		r2.Header.Set("X-Burrow-Path-Prefix", prefix)
 
