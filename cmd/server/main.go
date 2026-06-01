@@ -22,12 +22,14 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/ankoehn/burrow/internal/acme"
 	"github.com/ankoehn/burrow/internal/api"
 	"github.com/ankoehn/burrow/internal/config"
 	"github.com/ankoehn/burrow/internal/connlog"
@@ -345,6 +347,34 @@ func main() {
 				return err
 			}
 			bus := events.NewBus()
+
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			// Built-in ACME (v0.6.0): when ACMEDomain is set, burrowd obtains
+			// auto-renewing Let's Encrypt certificates and uses them for every
+			// listener (dashboard, control channel, proxy ingress) plus a :80
+			// HTTP-01 + redirect listener. acme.New blocks until certs are ready
+			// (ManageSync) so listeners always start with a cert; an error here
+			// is fatal. Built before server.New so the control channel can adopt
+			// the ACME cert via Options.GetCertificate. When ACMEDomain == ""
+			// acmeMgr stays nil and all behavior below is byte-for-byte unchanged.
+			var acmeMgr *acme.Manager
+			if cfg.ACMEDomain != "" {
+				var aerr error
+				acmeMgr, aerr = acme.New(ctx, acme.Config{
+					Domains: splitAndTrim(cfg.ACMEDomain),
+					Email:   cfg.ACMEEmail,
+					CA:      cfg.ACMECA,
+					Storage: cfg.ACMEStorage,
+					Log:     log,
+				})
+				if aerr != nil {
+					log.Error("acme: fatal", "err", aerr)
+					return aerr
+				}
+			}
+
 			srv, err := server.New(server.Options{
 				Listen: cfg.Listen, TLSCert: cfg.TLSCert, TLSKey: cfg.TLSKey,
 				PublicBind: cfg.PublicBind, PortMin: cfg.PortMin, PortMax: cfg.PortMax,
@@ -352,12 +382,15 @@ func main() {
 				// v0.3.0: HTTP tunnel service identity + subdomain resolver.
 				Services:   serviceResolverAdapter{db: db.Wrap(database)},
 				AuthDomain: cfg.AuthDomain,
+				// v0.6.0: when ACME is enabled the control channel serves the
+				// ACME-managed certificate instead of TLSCert/TLSKey files.
+				// acmeGetCert returns nil when acmeMgr is nil, so the server
+				// falls back to file certs exactly as before (unchanged).
+				GetCertificate: acmeGetCert(acmeMgr),
 			})
 			if err != nil {
 				return err
 			}
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
 
 			// Start the session reaper: purges expired sessions once at startup
 			// and then every hour. Mirrors the byteTicker goroutine pattern in
@@ -379,11 +412,12 @@ func main() {
 			// httpsEnabled is true when both HTTP TLS cert+key are configured.
 			// effectiveSecureCookies forces Secure on cookies whenever TLS is
 			// active (a TLS-served cookie MUST be Secure); the operator-facing
-			// http_secure_cookies flag also covers proxy-terminated TLS.
+			// http_secure_cookies flag also covers proxy-terminated TLS. ACME
+			// always serves the dashboard over HTTPS, so cookies are Secure too.
 			httpsEnabled := cfg.HTTPTLSCert != "" && cfg.HTTPTLSKey != ""
-			effectiveSecureCookies := httpsEnabled || cfg.HTTPSecureCookies
+			effectiveSecureCookies := httpsEnabled || cfg.HTTPSecureCookies || acmeMgr != nil
 
-			if !httpsEnabled && !cfg.HTTPSecureCookies {
+			if acmeMgr == nil && !httpsEnabled && !cfg.HTTPSecureCookies {
 				log.Warn("dashboard/session cookie is transmitted in plaintext; " +
 					"set BURROW_HTTP_TLS_CERT/BURROW_HTTP_TLS_KEY for native HTTPS " +
 					"or terminate TLS at a proxy and set BURROW_HTTP_SECURE_COOKIES=true")
@@ -497,8 +531,18 @@ func main() {
 				}, "00:30")
 			}()
 
+			// Dashboard listen address. With ACME on, promote the stock
+			// default (:8080) to :443 so the HTTPS dashboard answers on the
+			// canonical port; an operator who pinned a custom http_listen keeps
+			// it. ACME off → httpListen == cfg.HTTPListen, unchanged.
+			httpListen := cfg.HTTPListen
+			if acmeMgr != nil && httpListen == ":8080" {
+				httpListen = ":443"
+				log.Info("acme: dashboard binding :443", "was", cfg.HTTPListen)
+			}
+
 			apiSrv := &http.Server{
-				Addr: cfg.HTTPListen,
+				Addr: httpListen,
 				Handler: api.NewRouter(api.Deps{
 					Users: st, Tunnels: tunnelListerAdapter{s: srv, access: st}, Events: bus,
 					Log: log, SecureCookies: effectiveSecureCookies, HTTPSEnabled: httpsEnabled,
@@ -577,7 +621,10 @@ func main() {
 				}),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
-			if httpsEnabled {
+			if acmeMgr != nil {
+				// ACME-managed TLS (GetCertificate + TLS-ALPN-01) for the dashboard.
+				apiSrv.TLSConfig = acmeMgr.TLSConfig()
+			} else if httpsEnabled {
 				apiSrv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 			}
 
@@ -586,7 +633,27 @@ func main() {
 			// Baseline: control listener (srv.Serve) + api server = 2.
 			// The proxy listener adds 1 when cfg.HTTPProxyListen is non-empty.
 			// The MCP listener (Task 25) adds 1 more when cfg.MCPListen is set.
+			// The ACME :80 challenge+redirect listener adds 1 when ACME is on.
 			senderCount := 2
+
+			// v0.6.0: when ACME is enabled, run a :80 listener that solves
+			// HTTP-01 challenges and redirects every other request to https://.
+			// Counted as one errc sender (incremented before errc is sized).
+			var challengeSrv *http.Server
+			if acmeMgr != nil {
+				senderCount++
+				redirect := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					u := *r.URL
+					u.Scheme = "https"
+					u.Host = r.Host
+					http.Redirect(w, r, u.String(), http.StatusMovedPermanently)
+				})
+				challengeSrv = &http.Server{
+					Addr:              ":80",
+					Handler:           acmeMgr.HTTPChallengeHandler(redirect),
+					ReadHeaderTimeout: 10 * time.Second,
+				}
+			}
 
 			// Build the optional HTTP reverse-proxy listener (v0.3.0).
 			// Started only when HTTPProxyListen is non-empty (default ":8443").
@@ -604,7 +671,9 @@ func main() {
 					ingressPort = port
 				}
 
-				proxyTLSEnabled := cfg.HTTPProxyTLSCert != "" && cfg.HTTPProxyTLSKey != ""
+				// Proxy ingress serves TLS when file certs are configured OR
+				// when ACME is enabled (ACME manages the ingress cert too).
+				proxyTLSEnabled := (cfg.HTTPProxyTLSCert != "" && cfg.HTTPProxyTLSKey != "") || acmeMgr != nil
 
 				accessChecker := proxy.NewAccessCheckerWithSessionsAndLogger(st, st, cfg.AuthDomain, log)
 				gate := proxy.NewGate(st, cfg.AuthDomain, effectiveSecureCookies, log)
@@ -664,8 +733,7 @@ func main() {
 				var proxyTLSCfg *tls.Config
 				if proxyTLSEnabled {
 					proxyTLSCfg = &tls.Config{
-						MinVersion:     tls.VersionTLS12,
-						GetCertificate: customdomain.CertCallback(v05.CustomDomainStore, nil),
+						MinVersion: tls.VersionTLS12,
 						// Request (but don't require) a client cert on every TLS
 						// connection. For mTLS services GetConfigForClient overrides
 						// this with RequireAndVerifyClientCert + per-service ClientCAs
@@ -676,6 +744,24 @@ func main() {
 						// header override). The application-layer checkMTLS performs the
 						// real cert-chain verification against the service's CA PEM.
 						ClientAuth: tls.RequestClientCert,
+					}
+					// customGet serves any custom-domain certificate uploaded by an
+					// operator. With ACME on, fall back to the ACME-managed cert for
+					// the configured domain(s) when no custom cert matches the SNI,
+					// and advertise the TLS-ALPN-01 protocol so ingress can also
+					// solve TLS-ALPN challenges. Without ACME, the proxy serves only
+					// custom-domain certs (file-cert mode), exactly as before.
+					customGet := customdomain.CertCallback(v05.CustomDomainStore, nil)
+					if acmeMgr != nil {
+						proxyTLSCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+							if c, err := customGet(hello); err == nil && c != nil {
+								return c, nil
+							}
+							return acmeMgr.GetCertificate(hello)
+						}
+						proxyTLSCfg.NextProtos = append(proxyTLSCfg.NextProtos, acme.ACMETLSProto)
+					} else {
+						proxyTLSCfg.GetCertificate = customGet
 					}
 					proxyOpts = append(proxyOpts, proxy.WithTLSBase(proxyTLSCfg))
 				}
@@ -716,14 +802,25 @@ func main() {
 			errc := make(chan error, senderCount)
 			go func() { errc <- srv.Serve(ctx) }()
 			go func() {
+				if acmeMgr != nil {
+					// Certs come from apiSrv.TLSConfig.GetCertificate (ACME),
+					// not from files — pass empty strings to ListenAndServeTLS.
+					log.Info("http api listening (ACME TLS)", "addr", httpListen)
+					if err := apiSrv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+						errc <- err
+						return
+					}
+					errc <- nil
+					return
+				}
 				if httpsEnabled {
-					log.Info("http api listening (TLS)", "addr", cfg.HTTPListen)
+					log.Info("http api listening (TLS)", "addr", httpListen)
 					if err := apiSrv.ListenAndServeTLS(cfg.HTTPTLSCert, cfg.HTTPTLSKey); err != nil && err != http.ErrServerClosed {
 						errc <- err
 						return
 					}
 				} else {
-					log.Info("http api listening", "addr", cfg.HTTPListen)
+					log.Info("http api listening", "addr", httpListen)
 					if err := apiSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 						errc <- err
 						return
@@ -731,9 +828,32 @@ func main() {
 				}
 				errc <- nil
 			}()
+			if challengeSrv != nil {
+				go func() {
+					log.Info("acme http-01 + redirect listening", "addr", ":80")
+					if err := challengeSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+						errc <- err
+						return
+					}
+					errc <- nil
+				}()
+			}
 			if proxySrv != nil {
+				// File-cert TLS branch governor (ACME handled separately below).
 				proxyTLSEnabled := cfg.HTTPProxyTLSCert != "" && cfg.HTTPProxyTLSKey != ""
 				go func() {
+					if acmeMgr != nil {
+						// Certs come from proxySrv.TLSConfig.GetCertificate (custom
+						// domains, falling back to the ACME-managed cert) — pass
+						// empty strings to ListenAndServeTLS.
+						log.Info("http proxy listening (ACME TLS)", "addr", cfg.HTTPProxyListen)
+						if err := proxySrv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+							errc <- err
+							return
+						}
+						errc <- nil
+						return
+					}
 					if proxyTLSEnabled {
 						log.Info("http proxy listening (TLS)", "addr", cfg.HTTPProxyListen)
 						if err := proxySrv.ListenAndServeTLS(cfg.HTTPProxyTLSCert, cfg.HTTPProxyTLSKey); err != nil && err != http.ErrServerClosed {
@@ -786,6 +906,8 @@ func main() {
 			// the control listener is still draining. The MCP listener uses
 			// the same in-process surfaces as the API, so it shuts first to
 			// drain any in-flight automation calls before the proxy quiesces.
+			// The ACME :80 challenge+redirect listener (nil unless ACME is on)
+			// is shut alongside the api tier it fronts.
 			shutCtx, cancel := context.WithTimeout(context.Background(), apiShutdownGrace)
 			defer cancel()
 			if mcpSrv != nil {
@@ -795,6 +917,9 @@ func main() {
 				_ = proxySrv.Shutdown(shutCtx)
 			}
 			_ = apiSrv.Shutdown(shutCtx)
+			if challengeSrv != nil {
+				_ = challengeSrv.Shutdown(shutCtx)
+			}
 			srv.Wait()
 			// One value already consumed iff the select took the errc branch;
 			// drain the remaining senders so no goroutine leaks.
@@ -924,4 +1049,27 @@ func (a proxyConnLogAdapter) Record(ctx context.Context, e proxy.ConnLogEntry) e
 		Status:          connlog.Status(e.Status),
 		Reason:          e.Reason,
 	})
+}
+
+// splitAndTrim splits a comma-separated string into a slice of trimmed,
+// non-empty values. Used to parse BURROW_ACME_DOMAIN ("a.example.com,
+// b.example.com") into the []string the ACME manager expects.
+func splitAndTrim(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if v := strings.TrimSpace(part); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// acmeGetCert returns the manager's GetCertificate callback, or nil when the
+// manager is nil (ACME disabled). A nil return lets server.Options /
+// tls.Config consumers fall back to their file-cert paths unchanged.
+func acmeGetCert(m *acme.Manager) func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	if m == nil {
+		return nil
+	}
+	return m.GetCertificate
 }
