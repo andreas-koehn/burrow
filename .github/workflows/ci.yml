@@ -104,6 +104,17 @@ jobs:
       - run: bash test/integration/smoke.sh
       - run: bash test/integration/smoke-full.sh
 
+  e2e-acme:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      # Tier-1 ACME gate: built-in CertMagic ACME issuance against Pebble (LE's
+      # test ACME server) + single-origin /t/{id} path routing over the issued
+      # cert. curl/openssl only, no browser. The script builds the relay from
+      # source (so it exercises this branch's ACME code), brings up the Pebble
+      # stack, asserts, and tears down (down -v) on success or failure.
+      - run: bash test/integration/acme.sh
+
   e2e-ui:
     runs-on: ubuntu-latest
     steps:

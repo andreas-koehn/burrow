@@ -1,6 +1,8 @@
 // test/harness/upstream/main.go
 // Tiny stdlib-only HTTP service used as the upstream behind a burrow tunnel
-// in the basic e2e Docker Compose harness. Two endpoints: /healthz and /echo.
+// in the basic e2e Docker Compose harness. Endpoints: /healthz, /echo, and
+// /redirect -> /redirected (exercises the proxy's prefix-aware Location
+// rewrite for single-origin /t/{id} path routing).
 // No external dependencies — keeps the test-infra footprint zero.
 package main
 
@@ -23,6 +25,18 @@ func handler() http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+	// /redirect issues a 302 to the path-absolute "/redirected". A reverse
+	// proxy that path-mounts this upstream under /t/<id> must rewrite a
+	// path-absolute Location to /t/<id>/redirected — this endpoint exists to
+	// prove that prefix-aware Location rewrite (see proxy.rewriteLocationPrefix,
+	// which only rewrites path-absolute, non-protocol-relative Locations).
+	mux.HandleFunc("/redirect", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/redirected", http.StatusFound)
+	})
+	mux.HandleFunc("/redirected", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"landed": "redirected"})
 	})
 	mux.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, maxEchoBody))

@@ -80,6 +80,35 @@ func TestEchoPOSTBody(t *testing.T) {
 	}
 }
 
+func TestRedirect(t *testing.T) {
+	rr := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/redirect", nil)
+	handler().ServeHTTP(rr, r)
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status: want 302, got %d", rr.Code)
+	}
+	// Location must be path-absolute so the proxy's prefix rewrite applies.
+	if loc := rr.Header().Get("Location"); loc != "/redirected" {
+		t.Fatalf("location: want /redirected, got %q", loc)
+	}
+}
+
+func TestRedirected(t *testing.T) {
+	rr := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/redirected", nil)
+	handler().ServeHTTP(rr, r)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: want 200, got %d", rr.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["landed"] != "redirected" {
+		t.Fatalf("body: want landed=redirected, got %+v", body)
+	}
+}
+
 func TestEchoBodyCap(t *testing.T) {
 	big := bytes.Repeat([]byte("a"), 70*1024) // 70 KiB > 64 KiB cap
 	rr := httptest.NewRecorder()

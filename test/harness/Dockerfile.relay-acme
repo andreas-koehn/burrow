@@ -1,0 +1,37 @@
+# test-only — never deploy this shape.
+# test/harness/Dockerfile.relay-acme
+#
+# burrowd built from THIS branch (so it includes the built-in ACME / CertMagic
+# code under test) configured to obtain certs from Pebble. Unlike
+# Dockerfile.relay it sets NO *_TLS_CERT/KEY env vars: built-in ACME is mutually
+# exclusive with file certs (see internal/config validation), so the file-cert
+# defaults from the full relay image would make LoadServer reject the config.
+# ACME manages every listener's certificate instead.
+FROM golang:1.26-alpine AS build
+ARG GO_BUILD_TAGS=integration,semantic_cache
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -tags=${GO_BUILD_TAGS} -trimpath -ldflags="-s -w" -o /out/burrowd ./cmd/server
+
+FROM alpine:3.20
+RUN apk add --no-cache curl bash ca-certificates openssl \
+    && adduser -D -u 65532 burrow \
+    && mkdir -p /data /run/burrow /certs \
+    && chown -R 65532:65532 /data /run/burrow /certs
+COPY --from=build /out/burrowd /usr/local/bin/burrowd
+COPY test/harness/entrypoints/relay-acme.sh /usr/local/bin/relay-acme.sh
+RUN chmod +x /usr/local/bin/relay-acme.sh
+USER 65532
+# Only non-cert config here. ACME-specific config (BURROW_ACME_*, SSL_CERT_FILE)
+# is injected by compose.acme.yml so this image stays a thin "burrowd + ACME
+# entrypoint" layer.
+ENV BURROW_DATABASE_PATH=/data/burrow.db \
+    BURROW_LOG_LEVEL=info \
+    BURROW_LOG_FORMAT=text
+# :80 HTTP-01 + redirect, :443 dashboard (ACME promotes :8080 default to :443),
+# :7000 control plane, :8443 proxy ingress, TCP tunnel range.
+EXPOSE 80 443 7000 8443 9000-9100
+WORKDIR /data
+ENTRYPOINT ["/usr/local/bin/relay-acme.sh"]

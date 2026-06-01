@@ -1,0 +1,162 @@
+# test-only — never deploy this shape.
+# test/harness/compose.acme.yml
+#
+# Proves burrowd's BUILT-IN ACME (CertMagic) + single-origin /t/{id} path
+# routing end-to-end against Pebble — Let's Encrypt's test ACME server — with
+# a mock DNS server (pebble-challtestsrv) standing in for public DNS.
+#
+# Topology (user-defined bridge 10.30.50.0/24, static IPs so the DNS shim is
+# deterministic):
+#
+#   pebble        10.30.50.2   ACME dir https://pebble:14000/dir, mgmt :15000
+#   challtestsrv  10.30.50.3   mock DNS :8053 (answers every A -> relay), REST :8055
+#   relay         10.30.50.10  burrowd built from THIS branch, ACME-managed certs
+#   upstream-http (dynamic)    burrow client exposing a tiny HTTP upstream as an
+#                              http tunnel -> gives us a /t/<id> to hit
+#
+# The curl+openssl assertions run via `docker exec` INTO the relay container
+# (it already has curl+openssl, sits on this network, and mounts Pebble's CA) —
+# see test/integration/acme.sh and the mounted test/harness/acme-assert.sh.
+#
+# How ACME trust is wired:
+#   - CertMagic (in burrowd) talks to pebble:14000 over HTTPS. Pebble serves a
+#     cert signed by its bundled minica. Go honours SSL_CERT_FILE, so the relay
+#     mounts test/harness/certs/pebble.minica.pem and sets
+#     SSL_CERT_FILE=/certs/pebble.minica.pem. Without this, issuance fails x509.
+#   - Pebble validates the challenge by resolving relay.test via its -dnsserver
+#     (challtestsrv, which answers with the relay's static IP), then reaching the
+#     relay on :80 (HTTP-01) / :443 (TLS-ALPN-01) — see the custom Pebble config.
+#
+# Run (from repo root):
+#   docker compose -f test/harness/compose.acme.yml up -d --build
+#   bash test/integration/acme.sh   # orchestrates up + assert + down -v
+#   docker compose -f test/harness/compose.acme.yml down -v
+
+name: burrow-e2e-acme
+
+services:
+  # ---- mock DNS: every A query resolves to the relay's static IP ----------
+  challtestsrv:
+    image: ghcr.io/letsencrypt/pebble-challtestsrv:latest
+    # -defaultIPv4 makes EVERY A lookup (incl. relay.test) resolve to the relay,
+    # which is all Pebble needs to reach the challenge. This is the canonical
+    # upstream pebble docker-compose pattern and is simpler/more deterministic
+    # than POSTing /add-a to the :8055 REST API per-run. -defaultIPv6 "" disables
+    # AAAA so Pebble doesn't try an unreachable v6 address first. (The :8055 REST
+    # API — /add-a, /set-default-ipv4 — is still available for ad-hoc tweaks.)
+    command: ["-defaultIPv6", "", "-defaultIPv4", "10.30.50.10"]
+    networks:
+      acme:
+        ipv4_address: 10.30.50.3
+
+  # ---- Pebble: the test ACME server --------------------------------------
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:latest
+    # Custom config (mounted below) overriding ONLY the challenge ports: Pebble
+    # defaults to httpPort 5002 / tlsPort 5001, but burrowd solves HTTP-01 on :80
+    # and TLS-ALPN-01 on :443, so we point Pebble's validation fetches at 80/443.
+    # The bundled server cert (test/certs/localhost/*) is left in place — it is
+    # signed by pebble.minica.pem, which the relay trusts via SSL_CERT_FILE.
+    # -dnsserver points challenge name resolution at the mock DNS; -strict keeps
+    # Pebble pedantic about ACME correctness.
+    command: ["-config", "/test/config/pebble-config.json", "-strict", "-dnsserver", "10.30.50.3:8053"]
+    volumes:
+      - ./pebble/pebble-config.json:/test/config/pebble-config.json:ro
+    environment:
+      # Fast, deterministic validation for CI: no random VA sleeps, never reject
+      # nonces, always reuse authorizations.
+      PEBBLE_VA_NOSLEEP: "1"
+      PEBBLE_WFE_NONCEREJECT: "0"
+      PEBBLE_AUTHZREUSE: "100"
+    depends_on: [challtestsrv]
+    networks:
+      acme:
+        ipv4_address: 10.30.50.2
+    # Pebble has no shell; probe the management interface from another container
+    # in the integration script rather than via a container healthcheck.
+
+  # ---- relay: burrowd from THIS branch, ACME-managed certs ----------------
+  relay:
+    build:
+      context: ../..
+      dockerfile: test/harness/Dockerfile.relay-acme
+    image: burrow-e2e-acme-relay:dev
+    environment:
+      BURROW_ADMIN_EMAIL: admin@e2e.local
+      BURROW_ADMIN_PASSWORD: e2e-pass
+      # --- built-in ACME against Pebble ---
+      BURROW_ACME_DOMAIN: relay.test
+      BURROW_ACME_EMAIL: e2e@test
+      BURROW_ACME_CA: https://pebble:14000/dir
+      BURROW_ACME_STORAGE: /data/acme
+      # CertMagic -> pebble:14000 over HTTPS trusts this CA (Pebble's minica).
+      SSL_CERT_FILE: /certs/pebble.minica.pem
+      # BURROW_AUTH_DOMAIN intentionally UNSET: with ACME on, burrowd falls back
+      # to the first ACME domain (relay.test) as the host-routing base, so the
+      # single-origin /t/{id} route registers against relay.test out of the box.
+    volumes:
+      - token-share:/run/burrow
+      - relay-data:/data
+      - ./certs/pebble.minica.pem:/certs/pebble.minica.pem:ro
+      # The in-container assertion script (run by test/integration/acme.sh via
+      # `docker exec`). Mounted rather than piped over exec stdin so it can never
+      # silently run empty (a non-interactive `docker exec` attaches no stdin).
+      - ./acme-assert.sh:/usr/local/bin/acme-assert.sh:ro
+    depends_on: [pebble]
+    # The relay must resolve relay.test (for its own HTTP-01 self-checks / general
+    # name resolution) and Pebble must reach the relay's :80. Static IP keeps the
+    # DNS shim deterministic.
+    networks:
+      acme:
+        ipv4_address: 10.30.50.10
+        aliases:
+          - relay.test
+    ports:
+      - "9000-9010:9000-9010"   # TCP tunnel range (parity with other relays)
+    healthcheck:
+      # Dashboard is HTTPS on :443 under ACME. CertMagic only serves a cert for
+      # the managed SNI (relay.test) — a plain https://127.0.0.1 handshake gets
+      # "no certificate available for 127.0.0.1" — so we --resolve relay.test to
+      # loopback to send the right SNI. -k skips chain validation (the chain is
+      # Pebble's test root); this only gates "is burrowd answering". The real
+      # TLS-chain proof is done by the tester against Pebble's /roots/0.
+      test: ["CMD-SHELL", "curl -fsS -k -o /dev/null --resolve relay.test:443:127.0.0.1 https://relay.test/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 5s
+
+  # ---- client: exposes a tiny HTTP upstream as an http tunnel -------------
+  upstream-http:
+    build:
+      context: ../..
+      dockerfile: test/harness/Dockerfile.client-http
+    image: burrow-e2e-acme-client:dev
+    depends_on:
+      relay:
+        condition: service_healthy
+    environment:
+      # Dial the relay by its ACME domain so the control-channel TLS SNI is
+      # 'relay.test' — CertMagic only serves a cert for the managed domain, so
+      # SNI 'relay' (the bare service name) would fail the handshake with
+      # "no certificate available for 'relay'". relay.test is a network alias
+      # for the relay container, so it resolves in-network. --insecure still
+      # skips client-side chain validation of Pebble's test cert.
+      BURROW_RELAY: relay.test:7000
+      BURROW_REMOTE_PORT: "9000"
+      BURROW_TUNNEL_NAME: acme-upstream
+      UPSTREAM_ADDR: 127.0.0.1:8081
+    volumes:
+      - token-share:/run/burrow:ro
+    networks: [acme]
+
+volumes:
+  token-share:
+  relay-data:
+
+networks:
+  acme:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.30.50.0/24

@@ -1,0 +1,31 @@
+# test-only — never deploy this shape.
+# test/harness/Dockerfile.client-http
+# Like Dockerfile.client but connects the upstream as an HTTP tunnel
+# (--type http) instead of TCP, so the relay exposes it for /t/{id} path
+# routing. Builds both `burrow` (client CLI) and the tiny `upstream` HTTP
+# service used as the tunnel target.
+FROM golang:1.26-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/burrow ./cmd/client \
+ && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/upstream ./test/harness/upstream
+
+FROM alpine:3.20 AS runtime
+RUN apk add --no-cache curl ca-certificates bash \
+    && addgroup -S burrow && adduser -S -G burrow -u 65532 burrow \
+    && mkdir -p /run/burrow \
+    && chown -R 65532:65532 /run/burrow
+COPY --from=builder /out/burrow    /usr/local/bin/burrow
+COPY --from=builder /out/upstream  /usr/local/bin/upstream
+COPY test/harness/entrypoints/client-http.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+USER 65532:65532
+# BURROW_RELAY uses relay.test (not bare 'relay') so the control-channel TLS
+# SNI matches the ACME-managed domain — compose.acme.yml documents why.
+ENV UPSTREAM_ADDR=127.0.0.1:8081 \
+    BURROW_RELAY=relay.test:7000 \
+    BURROW_REMOTE_PORT=9000 \
+    BURROW_TUNNEL_NAME=acme-upstream
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

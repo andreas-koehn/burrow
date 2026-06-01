@@ -76,6 +76,11 @@ tasks:
     cmds:
       - bash test/e2e/run.sh
 
+  e2e:acme:
+    desc: "Tier 1: built-in ACME (Pebble) + single-origin /t/{id} path routing curl gate (up/assert/down)"
+    cmds:
+      - bash test/integration/acme.sh
+
   e2e:user:
     desc: "Tier 3 helper: scripted user-acceptance walkthrough (mint -> connect -> ... -> restart)"
     cmds:
