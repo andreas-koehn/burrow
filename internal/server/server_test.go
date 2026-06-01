@@ -272,6 +272,7 @@ func TestNewServer_UsesInjectedGetCertificate(t *testing.T) {
 	s, err := New(Options{
 		Listen:         "127.0.0.1:0",
 		GetCertificate: getCert,
+		Auth:           fakeAuth{uid: "u1"},
 		Logger:         slog.Default(),
 	})
 	if err != nil {

@@ -46,13 +46,6 @@ func (f AuthFunc) Authenticate(ctx context.Context, token string) (string, error
 	return f(ctx, token)
 }
 
-// noopAuth is the default TokenAuthenticator: it denies every connection.
-type noopAuth struct{}
-
-func (noopAuth) Authenticate(_ context.Context, _ string) (string, error) {
-	return "", fmt.Errorf("no authenticator configured")
-}
-
 // noopTunnelStore is the default TunnelStore: it persists nothing.
 type noopTunnelStore struct{}
 
@@ -156,7 +149,7 @@ type Server struct {
 // New validates options and loads the TLS keypair.
 func New(o Options) (*Server, error) {
 	if o.Auth == nil {
-		o.Auth = noopAuth{}
+		return nil, fmt.Errorf("server: Auth (TokenAuthenticator) is required")
 	}
 	if o.Tunnels == nil {
 		o.Tunnels = noopTunnelStore{}
