@@ -265,6 +265,11 @@ type Deps struct {
 	// Empty means no auth domain is configured; burrow_login mode is rejected
 	// with 409 when this field is empty.
 	AuthDomain string
+	// TunnelProxy, when non-nil, is the host-routing proxy handler. The router
+	// mounts /t/{id} and /t/{id}/* on it (via TunnelPathHandler) for
+	// single-origin path routing. AuthDomain (above) is the base domain used
+	// to synthesize the upstream host "<id>.<AuthDomain>".
+	TunnelProxy http.Handler
 	// ControlListen is the relay's control-plane listen address — the value
 	// `burrow connect --server …` must point at. Surfaced by the
 	// /api/v1/clients/connect-info endpoint so the "Connect a client" wizard

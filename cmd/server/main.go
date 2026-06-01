@@ -541,6 +541,161 @@ func main() {
 				log.Info("acme: dashboard binding :443", "was", cfg.HTTPListen)
 			}
 
+			// Host-routing proxy handler (built unconditionally). It backs both:
+			//   1. the dedicated :8443 proxy listener (proxySrv, below), and
+			//   2. the single-origin /t/{id} path route mounted on the API/
+			//      dashboard router (api.Deps.TunnelProxy), so http tunnels are
+			//      reachable on the same :443 origin even when HTTPProxyListen is
+			//      empty (feat/builtin-acme B3).
+			// Construction is cheap and pure (no listener, no goroutine), so it
+			// is hoisted above api.NewRouter rather than guarded. The :8443
+			// listener block below reuses this handler — it does NOT build a
+			// second one. ingressPort is derived from cfg.HTTPProxyListen and may
+			// be "" when the proxy listener is disabled; WithIngressPort is then
+			// simply not appended (the proxy falls back to the request's own port
+			// for X-Forwarded-Port).
+			var ingressPort string
+			if cfg.HTTPProxyListen != "" {
+				if _, port, err := net.SplitHostPort(cfg.HTTPProxyListen); err == nil && port != "" {
+					ingressPort = port
+				}
+			}
+			// Proxy ingress serves TLS when file certs are configured OR when
+			// ACME is enabled (ACME manages the ingress cert too). Governs the
+			// WithTLSBase / proxySrv.TLSConfig wiring below.
+			proxyTLSEnabled := (cfg.HTTPProxyTLSCert != "" && cfg.HTTPProxyTLSKey != "") || acmeMgr != nil
+
+			// proxyAuthDomain is the single resolved base domain used for ALL
+			// host-routing surfaces — the proxy's subdomain matcher, the access
+			// checker, the gate, AND the /t/{id} path route (api.Deps.AuthDomain
+			// + TunnelPathHandler). It prefers the explicit BURROW_AUTH_DOMAIN;
+			// when that is empty but built-in ACME is on, it falls back to the
+			// first ACME-managed domain so single-origin path routing works out
+			// of the box on an ACME deployment without a separate auth_domain.
+			// In the common case (auth_domain set) this equals cfg.AuthDomain, so
+			// every consumer below is byte-for-byte unchanged. When it resolves
+			// to "" (no auth_domain, ACME off) the router does NOT register the
+			// /t/{id} routes (see api.NewRouter) — matching the prior behavior
+			// where subdomain routing is disabled.
+			//
+			// Keeping a single value here guarantees the path handler's
+			// synthesized host "<id>.<proxyAuthDomain>" always matches the
+			// suffix the proxy routes on — otherwise the route would register but
+			// 404 at the proxy.
+			proxyAuthDomain := cfg.AuthDomain
+			if proxyAuthDomain == "" && acmeMgr != nil {
+				if d := splitAndTrim(cfg.ACMEDomain); len(d) > 0 {
+					proxyAuthDomain = d[0]
+				}
+			}
+
+			accessChecker := proxy.NewAccessCheckerWithSessionsAndLogger(st, st, proxyAuthDomain, log)
+			gate := proxy.NewGate(st, proxyAuthDomain, effectiveSecureCookies, log)
+			// v0.5.0 F-13: wire the connection-log sink so the proxy
+			// records one connection_logs row per closed request. The
+			// adapter shim translates proxy.ConnLogEntry into the
+			// concrete connlog.Entry — kept here (not in internal/proxy)
+			// so the proxy package stays import-free of connlog.
+			//
+			// v0.5.1 P2.1 (Task 5): pass the store as the settings
+			// reader so SQLSink.Rollup honours the
+			// connection_logs.rollup_include_top_ips toggle. The
+			// settings reader is only consulted on the daily rollup
+			// compaction path, NOT the per-connection Record hot path.
+			connLogSink := connlog.NewSQLSink(db.Wrap(database), log).WithSettings(st)
+			// v0.5.0 F-14: wire the custom-domain routing hook. The proxy
+			// invokes this closure when the inbound Host header does NOT
+			// end with ".<authDomain>" (proxy.go:285 — the dead-code
+			// branch the hook activates). The closure adapts
+			// v05.CustomDomainStore.LookupBySNI (which returns a Cert with
+			// a ServiceID field) into the (serviceID, ok, err) shape the
+			// proxy expects. On a miss the proxy falls through to its
+			// existing notFound path; on a real DB / parse error it
+			// returns 502 (logged with host + err).
+			customDomainLookup := func(ctx context.Context, host string) (string, bool, error) {
+				if v05.CustomDomainStore == nil {
+					return "", false, nil
+				}
+				cert, ok, err := v05.CustomDomainStore.LookupBySNI(ctx, host)
+				if err != nil || !ok {
+					return "", ok, err
+				}
+				return cert.ServiceID, true, nil
+			}
+			proxyOpts := []proxy.Option{
+				proxy.WithGate(gate),
+				// v0.4.0 Task 25: wire the AI middleware chain into the
+				// proxy. The chain is pure pass-through when no
+				// service_ai_config row exists (IsAIPassThrough), which
+				// preserves the FlushInterval=-1 / SSE / WebSocket
+				// invariants byte-for-byte for v0.3.0 traffic.
+				proxy.WithAIChain(v04.AIChain),
+				proxy.WithConnLogSink(proxyConnLogAdapter{sink: connLogSink}),
+				proxy.WithCustomDomainLookup(customDomainLookup),
+				// Wire the audit logger so the proxy can emit
+				// audit.ActionAIUpstreamError rows on upstream failures
+				// for AI-gateway services (spec 27 / audit log contract).
+				proxy.WithAuditLogger(v04.AuditLogger),
+			}
+			if ingressPort != "" {
+				proxyOpts = append(proxyOpts, proxy.WithIngressPort(ingressPort))
+			}
+			// When TLS is enabled, build the base config first so it can be
+			// passed to the proxy via WithTLSBase. The proxy's
+			// GetConfigForClient hook uses the base config as a template when
+			// cloning per-vhost configs for mTLS services.
+			var proxyTLSCfg *tls.Config
+			if proxyTLSEnabled {
+				proxyTLSCfg = &tls.Config{
+					MinVersion: tls.VersionTLS12,
+					// Request (but don't require) a client cert on every TLS
+					// connection. For mTLS services GetConfigForClient overrides
+					// this with RequireAndVerifyClientCert + per-service ClientCAs
+					// when the SNI label matches a registered subdomain. Using
+					// RequestClientCert (no TLS-layer verification) allows a client
+					// to present a cert even when SNI doesn't resolve to the service
+					// subdomain (e.g. connecting via localhost:8443 with a Host
+					// header override). The application-layer checkMTLS performs the
+					// real cert-chain verification against the service's CA PEM.
+					ClientAuth: tls.RequestClientCert,
+				}
+				// customGet serves any custom-domain certificate uploaded by an
+				// operator. With ACME on, fall back to the ACME-managed cert for
+				// the configured domain(s) when no custom cert matches the SNI,
+				// and advertise the TLS-ALPN-01 protocol so ingress can also
+				// solve TLS-ALPN challenges. Without ACME, the proxy serves only
+				// custom-domain certs (file-cert mode), exactly as before.
+				customGet := customdomain.CertCallback(v05.CustomDomainStore, nil)
+				if acmeMgr != nil {
+					proxyTLSCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+						if c, err := customGet(hello); err == nil && c != nil {
+							return c, nil
+						}
+						return acmeMgr.GetCertificate(hello)
+					}
+					proxyTLSCfg.NextProtos = append(proxyTLSCfg.NextProtos, acme.ACMETLSProto)
+				} else {
+					proxyTLSCfg.GetCertificate = customGet
+				}
+				proxyOpts = append(proxyOpts, proxy.WithTLSBase(proxyTLSCfg))
+			}
+			proxyHandler := proxy.New(
+				proxyDialerAdapter{st: st, srv: srv},
+				accessChecker,
+				proxyAuthDomain,
+				log,
+				proxyOpts...,
+			)
+			if proxyTLSCfg != nil {
+				// Wire GetConfigForClient so mTLS services get a per-vhost
+				// TLS config with ClientCAs + RequireAndVerifyClientCert at
+				// TLS-handshake time. Non-mTLS vhosts continue to use the
+				// base config (no client cert required). Set here (after
+				// proxy.New) so both the :8443 listener and any future TLS
+				// consumer of proxyTLSCfg observe the hook.
+				proxyTLSCfg.GetConfigForClient = proxyHandler.GetConfigForClient
+			}
+
 			apiSrv := &http.Server{
 				Addr: httpListen,
 				Handler: api.NewRouter(api.Deps{
@@ -555,7 +710,19 @@ func main() {
 					// v0.3.0: service API + live tunnel lookup + auth domain.
 					Services:    st,
 					LiveTunnels: liveTunnelLookupAdapter{srv: srv},
-					AuthDomain:  cfg.AuthDomain,
+					// AuthDomain uses the same resolved value the proxy/access
+					// checker/gate route on (cfg.AuthDomain, or the first ACME
+					// domain when auth_domain is unset and ACME is on). In the
+					// common case this equals cfg.AuthDomain, so composeHostname
+					// and the burrow_login-409 check are unchanged.
+					AuthDomain: proxyAuthDomain,
+					// feat/builtin-acme B3: single-origin /t/{id} tunnel routing.
+					// proxyHandler is the hoisted host-routing proxy. The router
+					// mounts /t/{id} + /t/{id}/* on it via TunnelPathHandler only
+					// when AuthDomain (above) is non-empty; the synthesized host
+					// "<id>.<AuthDomain>" then matches the proxy's own routing
+					// suffix exactly. When AuthDomain is "" the routes are skipped.
+					TunnelProxy: proxyHandler,
 					// Control plane is on a different port from the API/dashboard
 					// (e.g. compose maps :7000 control, :8080 dashboard). Surface
 					// it via /clients/connect-info so the "Connect a client" wizard
@@ -657,132 +824,29 @@ func main() {
 
 			// Build the optional HTTP reverse-proxy listener (v0.3.0).
 			// Started only when HTTPProxyListen is non-empty (default ":8443").
-			// TLS is used iff both HTTPProxyTLSCert + HTTPProxyTLSKey are set;
-			// otherwise the listener runs plain HTTP (operator may terminate TLS
-			// upstream — e.g. nginx or a cloud load-balancer). A warning is
-			// logged in that case so it is never silently insecure.
+			// The host-routing proxyHandler (+ its TLS base config) is built
+			// ABOVE, before api.NewRouter, so it can ALSO back the single-origin
+			// /t/{id} route on the dashboard origin (feat/builtin-acme B3); this
+			// block only wraps that already-built handler in a dedicated listener.
+			// TLS is used iff both HTTPProxyTLSCert + HTTPProxyTLSKey are set (or
+			// ACME is on); otherwise the listener runs plain HTTP (operator may
+			// terminate TLS upstream — e.g. nginx or a cloud load-balancer). A
+			// warning is logged in that case so it is never silently insecure.
 			var proxySrv *http.Server
 			if cfg.HTTPProxyListen != "" {
 				senderCount++
-
-				// Extract the port label for X-Forwarded-Port (e.g. ":8443" → "8443").
-				var ingressPort string
-				if _, port, err := net.SplitHostPort(cfg.HTTPProxyListen); err == nil && port != "" {
-					ingressPort = port
-				}
-
-				// Proxy ingress serves TLS when file certs are configured OR
-				// when ACME is enabled (ACME manages the ingress cert too).
-				proxyTLSEnabled := (cfg.HTTPProxyTLSCert != "" && cfg.HTTPProxyTLSKey != "") || acmeMgr != nil
-
-				accessChecker := proxy.NewAccessCheckerWithSessionsAndLogger(st, st, cfg.AuthDomain, log)
-				gate := proxy.NewGate(st, cfg.AuthDomain, effectiveSecureCookies, log)
-				// v0.5.0 F-13: wire the connection-log sink so the proxy
-				// records one connection_logs row per closed request. The
-				// adapter shim translates proxy.ConnLogEntry into the
-				// concrete connlog.Entry — kept here (not in internal/proxy)
-				// so the proxy package stays import-free of connlog.
-				//
-				// v0.5.1 P2.1 (Task 5): pass the store as the settings
-				// reader so SQLSink.Rollup honours the
-				// connection_logs.rollup_include_top_ips toggle. The
-				// settings reader is only consulted on the daily rollup
-				// compaction path, NOT the per-connection Record hot path.
-				connLogSink := connlog.NewSQLSink(db.Wrap(database), log).WithSettings(st)
-				// v0.5.0 F-14: wire the custom-domain routing hook. The proxy
-				// invokes this closure when the inbound Host header does NOT
-				// end with ".<authDomain>" (proxy.go:285 — the dead-code
-				// branch the hook activates). The closure adapts
-				// v05.CustomDomainStore.LookupBySNI (which returns a Cert with
-				// a ServiceID field) into the (serviceID, ok, err) shape the
-				// proxy expects. On a miss the proxy falls through to its
-				// existing notFound path; on a real DB / parse error it
-				// returns 502 (logged with host + err).
-				customDomainLookup := func(ctx context.Context, host string) (string, bool, error) {
-					if v05.CustomDomainStore == nil {
-						return "", false, nil
-					}
-					cert, ok, err := v05.CustomDomainStore.LookupBySNI(ctx, host)
-					if err != nil || !ok {
-						return "", ok, err
-					}
-					return cert.ServiceID, true, nil
-				}
-				proxyOpts := []proxy.Option{
-					proxy.WithGate(gate),
-					// v0.4.0 Task 25: wire the AI middleware chain into the
-					// proxy. The chain is pure pass-through when no
-					// service_ai_config row exists (IsAIPassThrough), which
-					// preserves the FlushInterval=-1 / SSE / WebSocket
-					// invariants byte-for-byte for v0.3.0 traffic.
-					proxy.WithAIChain(v04.AIChain),
-					proxy.WithConnLogSink(proxyConnLogAdapter{sink: connLogSink}),
-					proxy.WithCustomDomainLookup(customDomainLookup),
-					// Wire the audit logger so the proxy can emit
-					// audit.ActionAIUpstreamError rows on upstream failures
-					// for AI-gateway services (spec 27 / audit log contract).
-					proxy.WithAuditLogger(v04.AuditLogger),
-				}
-				if ingressPort != "" {
-					proxyOpts = append(proxyOpts, proxy.WithIngressPort(ingressPort))
-				}
-				// When TLS is enabled, build the base config first so it can be
-				// passed to the proxy via WithTLSBase. The proxy's
-				// GetConfigForClient hook uses the base config as a template when
-				// cloning per-vhost configs for mTLS services.
-				var proxyTLSCfg *tls.Config
-				if proxyTLSEnabled {
-					proxyTLSCfg = &tls.Config{
-						MinVersion: tls.VersionTLS12,
-						// Request (but don't require) a client cert on every TLS
-						// connection. For mTLS services GetConfigForClient overrides
-						// this with RequireAndVerifyClientCert + per-service ClientCAs
-						// when the SNI label matches a registered subdomain. Using
-						// RequestClientCert (no TLS-layer verification) allows a client
-						// to present a cert even when SNI doesn't resolve to the service
-						// subdomain (e.g. connecting via localhost:8443 with a Host
-						// header override). The application-layer checkMTLS performs the
-						// real cert-chain verification against the service's CA PEM.
-						ClientAuth: tls.RequestClientCert,
-					}
-					// customGet serves any custom-domain certificate uploaded by an
-					// operator. With ACME on, fall back to the ACME-managed cert for
-					// the configured domain(s) when no custom cert matches the SNI,
-					// and advertise the TLS-ALPN-01 protocol so ingress can also
-					// solve TLS-ALPN challenges. Without ACME, the proxy serves only
-					// custom-domain certs (file-cert mode), exactly as before.
-					customGet := customdomain.CertCallback(v05.CustomDomainStore, nil)
-					if acmeMgr != nil {
-						proxyTLSCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-							if c, err := customGet(hello); err == nil && c != nil {
-								return c, nil
-							}
-							return acmeMgr.GetCertificate(hello)
-						}
-						proxyTLSCfg.NextProtos = append(proxyTLSCfg.NextProtos, acme.ACMETLSProto)
-					} else {
-						proxyTLSCfg.GetCertificate = customGet
-					}
-					proxyOpts = append(proxyOpts, proxy.WithTLSBase(proxyTLSCfg))
-				}
-				proxyHandler := proxy.New(
-					proxyDialerAdapter{st: st, srv: srv},
-					accessChecker,
-					cfg.AuthDomain,
-					log,
-					proxyOpts...,
-				)
 				proxySrv = &http.Server{
 					Addr:              cfg.HTTPProxyListen,
 					Handler:           proxyHandler,
 					ReadHeaderTimeout: 10 * time.Second,
 				}
-				if proxyTLSEnabled {
-					// Wire GetConfigForClient so mTLS services get a per-vhost
-					// TLS config with ClientCAs + RequireAndVerifyClientCert at
-					// TLS-handshake time. Non-mTLS vhosts continue to use the
-					// base config (no client cert required).
-					proxyTLSCfg.GetConfigForClient = proxyHandler.GetConfigForClient
+				if proxyTLSCfg != nil {
+					// proxyTLSCfg is non-nil exactly when proxyTLSEnabled (file
+					// certs configured OR ACME on). GetConfigForClient is already
+					// wired to proxyHandler in the hoisted construction above, so
+					// mTLS services still get a per-vhost TLS config with ClientCAs
+					// + RequireAndVerifyClientCert at TLS-handshake time; non-mTLS
+					// vhosts use the base config (no client cert required).
 					proxySrv.TLSConfig = proxyTLSCfg
 				}
 			}
