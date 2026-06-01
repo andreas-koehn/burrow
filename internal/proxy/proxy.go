@@ -621,6 +621,12 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 				RawQuery: pr.In.URL.RawQuery,
 			}
 			pr.Out.Host = upstreamHost
+
+			// Carry the path-routing prefix (set by the /t/{id} adapter) to
+			// ModifyResponse via the outbound request headers.
+			if pfx := pr.In.Header.Get("X-Burrow-Path-Prefix"); pfx != "" {
+				pr.Out.Header.Set("X-Burrow-Path-Prefix", pfx)
+			}
 		},
 
 		Transport: &http.Transport{
@@ -663,6 +669,15 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 			}
 			http.Error(w, "bad gateway", http.StatusBadGateway)
 		},
+
+		ModifyResponse: func(resp *http.Response) error {
+			if pfx := resp.Request.Header.Get("X-Burrow-Path-Prefix"); pfx != "" {
+				if loc := resp.Header.Get("Location"); loc != "" {
+					resp.Header.Set("Location", rewriteLocationPrefix(loc, pfx))
+				}
+			}
+			return nil
+		},
 	}
 
 	p.log.Debug("proxy request", "subdomain", label, "method", r.Method, "path", r.URL.Path)
@@ -693,6 +708,19 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 		// Emit audit row for AI-gateway upstream 5xx responses (non-chain path).
 		p.emitAIUpstreamErrorAudit(ctx, res.ServiceID, res.APIKeyHeader, upstreamHost, ww.statusCode)
 	}
+}
+
+// rewriteLocationPrefix prepends pathPrefix to a path-absolute Location value
+// so a redirect emitted by a path-routed upstream stays under /t/<id>.
+// Absolute and protocol-relative URLs are left unchanged (documented limit).
+func rewriteLocationPrefix(loc, pathPrefix string) string {
+	if loc == "" || pathPrefix == "" {
+		return loc
+	}
+	if strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") {
+		return pathPrefix + loc
+	}
+	return loc
 }
 
 // ipGeoDenied reports whether the resolved client IP is denied by the

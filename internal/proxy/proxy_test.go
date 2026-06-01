@@ -714,3 +714,18 @@ func TestProxyCustomDomainNotFound(t *testing.T) {
 		t.Errorf("want body 'tunnel not found', got %q", rec.Body.String())
 	}
 }
+
+func TestRewriteLocationHeader(t *testing.T) {
+	cases := []struct{ loc, prefix, want string }{
+		{"/login", "/t/abc", "/t/abc/login"},
+		{"/", "/t/abc", "/t/abc/"},
+		{"https://other.example/x", "/t/abc", "https://other.example/x"}, // absolute: untouched
+		{"//evil.example/x", "/t/abc", "//evil.example/x"},               // protocol-relative: untouched
+		{"", "/t/abc", ""},
+	}
+	for _, c := range cases {
+		if got := proxy.RewriteLocationPrefix(c.loc, c.prefix); got != c.want {
+			t.Errorf("rewriteLocationPrefix(%q,%q)=%q want %q", c.loc, c.prefix, got, c.want)
+		}
+	}
+}
