@@ -82,7 +82,10 @@ jobs:
 
       - uses: goreleaser/goreleaser-action@9ed2f89a662bf1735a48bc8557fd212fa902bebf  # v6.1.0
         with:
-          version: "~> v2"
+          # Pin the exact goreleaser version (NOT "~> v2"): v2.16.0 changed the
+          # valid --skip keys, which instant-fails the args below. 2.15.4 is the
+          # version this pipeline is verified against. Bump deliberately.
+          version: "2.15.4"
           # --snapshot   : no real git tag required; embeds a pseudo-version
           # --clean      : wipe dist/ before building
           # --skip=docker: skip dockers_v2 (no QEMU/buildx, no ghcr push)
