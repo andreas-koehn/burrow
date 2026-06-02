@@ -225,6 +225,8 @@ func withConnLogSink(sink proxy.ConnLogSink) bootE2EStackOption {
 // chain's vector-similarity tier exercises real Lookup/Promote against the
 // test DB. Default (no option) leaves Semantic=nil → tests that don't enable
 // cache.semantic in service_ai_config see the v0.4.0 chain behaviour intact.
+//
+//nolint:unused // only referenced from e2e_v050_semantic_test.go (//go:build semantic_cache); appears unused in the default build.
 func withSemanticCache(c semantic.Cache) bootE2EStackOption {
 	return func(cfg *bootE2ECfg) {
 		cfg.semCache = c
@@ -616,8 +618,6 @@ var _ = strings.Contains
 // tunnel, no proxy — only the API server's HTTP handler attached to a
 // random loopback listener.
 type securityStack struct {
-	ctx        context.Context
-	cancel     context.CancelFunc
 	db         *sql.DB
 	store      *store.Store
 	apiSrv     *http.Server

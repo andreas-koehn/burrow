@@ -242,16 +242,16 @@ func (s *apiBackupStack) do(t *testing.T, method, path string, body any) (int, [
 }
 
 // TestE2EBackup_RestoreRoundtrip is the Task 14 acceptance test. It covers:
-//   1. CLI backup: tar.gz contains manifest.json + db.sqlite with matching
-//      db_sha256.
-//   2. CLI restore into a fresh DB: schema + seeded admin survive, the
-//      first event after restore is audit.restore with payload.prior_last_hash
-//      equal to the pre-restore chain head (the chain is preserved, not
-//      truncated — Reconciled spec text).
-//   3. REST path against the live API: POST /backups -> 202, GET /backups
-//      lists it with a matching db_sha256, POST /backups/{id}/verify -> ok.
-//   4. Negative: `burrowd restore` against a DB whose .restore.lock exists
-//      exits 1 with the "another restore in progress" message.
+//  1. CLI backup: tar.gz contains manifest.json + db.sqlite with matching
+//     db_sha256.
+//  2. CLI restore into a fresh DB: schema + seeded admin survive, the
+//     first event after restore is audit.restore with payload.prior_last_hash
+//     equal to the pre-restore chain head (the chain is preserved, not
+//     truncated — Reconciled spec text).
+//  3. REST path against the live API: POST /backups -> 202, GET /backups
+//     lists it with a matching db_sha256, POST /backups/{id}/verify -> ok.
+//  4. Negative: `burrowd restore` against a DB whose .restore.lock exists
+//     exits 1 with the "another restore in progress" message.
 func TestE2EBackup_RestoreRoundtrip(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip e2e in -short")

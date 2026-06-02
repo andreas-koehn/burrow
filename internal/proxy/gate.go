@@ -174,6 +174,7 @@ func (g *Gate) handleGetLogin(w http.ResponseWriter, r *http.Request) {
 								return
 							}
 							// Role allowed → redirect back to service immediately.
+							//nolint:gosec // G710: nextURL is sanitizeNext()-validated to https + authDomain/sub-of-authDomain only; not attacker-controlled.
 							http.Redirect(w, r, nextURL, http.StatusFound)
 							return
 						}
@@ -181,6 +182,7 @@ func (g *Gate) handleGetLogin(w http.ResponseWriter, r *http.Request) {
 				}
 				// No service found or no label — redirect to next anyway (the service
 				// access check is best-effort; the proxy will re-evaluate).
+				//nolint:gosec // G710: nextURL is sanitizeNext()-validated to https + authDomain/sub-of-authDomain only; not attacker-controlled.
 				http.Redirect(w, r, nextURL, http.StatusFound)
 				return
 			}
@@ -256,6 +258,7 @@ func (g *Gate) handlePostLogin(w http.ResponseWriter, r *http.Request) {
 	g.log.Info("gate: login success", "email", email)
 	_ = g.st.DeleteSession // best-effort touch is not needed here
 
+	//nolint:gosec // G710: nextURL is sanitizeNext()-validated to https + authDomain/sub-of-authDomain only; not attacker-controlled.
 	http.Redirect(w, r, nextURL, http.StatusFound)
 }
 

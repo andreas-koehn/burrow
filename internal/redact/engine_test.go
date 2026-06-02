@@ -19,8 +19,8 @@ func TestBuiltInRules(t *testing.T) {
 	cases := []struct {
 		name   string
 		body   string
-		scope  string  // request_body | response_body
-		wantIn string  // when action=mask|hash: substring expected in rewritten body
+		scope  string // request_body | response_body
+		wantIn string // when action=mask|hash: substring expected in rewritten body
 		// for drop rules: drop != nil and out body unchanged but Apply returns
 		// dropped = &rule (verified separately).
 		expectDrop   bool
@@ -29,43 +29,43 @@ func TestBuiltInRules(t *testing.T) {
 		expectHashed bool   // hash-action assertion
 	}{
 		{
-			name: "email mask",
-			body: "contact me at alice@example.com today",
+			name:  "email mask",
+			body:  "contact me at alice@example.com today",
 			scope: "request_body", wantIn: "[redacted: email]", expectMasked: true,
 		},
 		{
-			name: "ipv4 mask",
-			body: "src=192.168.1.42 dst=10.0.0.1",
+			name:  "ipv4 mask",
+			body:  "src=192.168.1.42 dst=10.0.0.1",
 			scope: "request_body", wantIn: "[redacted: ipv4]", expectMasked: true,
 		},
 		{
-			name: "ipv6 mask",
-			body: "ip6=2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+			name:  "ipv6 mask",
+			body:  "ip6=2001:0db8:85a3:0000:0000:8a2e:0370:7334",
 			scope: "request_body", wantIn: "[redacted: ipv6]", expectMasked: true,
 		},
 		{
-			name: "aws_access_key drop",
-			body: "key=AKIAIOSFODNN7EXAMPLE rest",
+			name:  "aws_access_key drop",
+			body:  "key=AKIAIOSFODNN7EXAMPLE rest",
 			scope: "request_body", expectDrop: true, expectRule: "aws_access_key",
 		},
 		{
-			name: "credit_card_luhn mask (valid Luhn)",
-			body: "card 4111 1111 1111 1111 ok",
+			name:  "credit_card_luhn mask (valid Luhn)",
+			body:  "card 4111 1111 1111 1111 ok",
 			scope: "request_body", wantIn: "[redacted: credit_card_luhn]", expectMasked: true,
 		},
 		{
-			name: "ssn_us mask",
-			body: "ssn=123-45-6789 rest",
+			name:  "ssn_us mask",
+			body:  "ssn=123-45-6789 rest",
 			scope: "request_body", wantIn: "[redacted: ssn_us]", expectMasked: true,
 		},
 		{
-			name: "github_pat drop",
-			body: "pat=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA rest",
+			name:  "github_pat drop",
+			body:  "pat=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA rest",
 			scope: "request_body", expectDrop: true, expectRule: "github_pat",
 		},
 		{
-			name: "slack_token drop",
-			body: "tok=xoxb-1234567890-0987654321-abcdef rest",
+			name:  "slack_token drop",
+			body:  "tok=xoxb-1234567890-0987654321-abcdef rest",
 			scope: "request_body", expectDrop: true, expectRule: "slack_token",
 		},
 	}
@@ -136,7 +136,7 @@ func TestHashAction(t *testing.T) {
 		t.Fatalf("hash replacement should be 10 hex chars, got %q", parts[1])
 	}
 	for _, c := range parts[1] {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Fatalf("non-hex char in hash replacement: %q", parts[1])
 		}
 	}
@@ -239,9 +239,9 @@ func TestPresidioTimeoutShortCircuits(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error; got nil")
 	}
-	if !(errors.Is(err, context.DeadlineExceeded) ||
-		strings.Contains(err.Error(), "deadline exceeded") ||
-		strings.Contains(err.Error(), "context deadline")) {
+	if !errors.Is(err, context.DeadlineExceeded) &&
+		!strings.Contains(err.Error(), "deadline exceeded") &&
+		!strings.Contains(err.Error(), "context deadline") {
 		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
 	}
 	// Some scheduling slack; we just want to confirm we did NOT wait for the

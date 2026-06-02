@@ -293,10 +293,10 @@ func TestV040Contract_Webhooks_Shape(t *testing.T) {
 
 // TestV040Contract_BearerAuth_GetAutomationTokens proves the bearer-auth
 // surface is alive — spec Part M.1. The flow:
-//   1. Mint an automation token via the cookie path (POST).
-//   2. Re-issue GET /api/v1/automation/tokens with Authorization: Bearer
-//      bua_... and NO cookies / NO CSRF.
-//   3. Assert 200 with a JSON array body.
+//  1. Mint an automation token via the cookie path (POST).
+//  2. Re-issue GET /api/v1/automation/tokens with Authorization: Bearer
+//     bua_... and NO cookies / NO CSRF.
+//  3. Assert 200 with a JSON array body.
 //
 // This is the single bearer-auth assertion required by the Reconciled
 // spec — automation_test.go covers the rest of the bearer matrix.

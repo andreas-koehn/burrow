@@ -499,8 +499,8 @@ func TestPutCustomDomain_EmitsCertExpiringWebhook(t *testing.T) {
 // cert.expiring when the renewed cert has plenty of time left.
 func TestPutCustomDomain_NoWebhookWhenNotExpiring(t *testing.T) {
 	ca, caKey, pool, _ := genCA(t)
-	certPEM, keyPEM := genCert(t, ca, caKey, []string{"foo.example.com"}) // 24h expiry > 14d? no — 24h < 14d
 	// genCert gives NotAfter = now+24h which IS within 14 days. Use a cert valid for 30 days instead.
+	var certPEM, keyPEM string
 	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	tpl := &x509.Certificate{
 		SerialNumber: big.NewInt(88),

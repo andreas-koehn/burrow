@@ -67,8 +67,8 @@ type fakeGeoLookupSurface struct {
 	dbAge   int64
 }
 
-func (f fakeGeoLookupSurface) Enabled() bool      { return f.enabled }
-func (f fakeGeoLookupSurface) DBPath() string     { return f.dbPath }
+func (f fakeGeoLookupSurface) Enabled() bool       { return f.enabled }
+func (f fakeGeoLookupSurface) DBPath() string      { return f.dbPath }
 func (f fakeGeoLookupSurface) DBAgeSeconds() int64 { return f.dbAge }
 
 // makeIPGeoDeps wires a Deps tuned for the ip-geo handler suite.
@@ -264,8 +264,8 @@ func TestSetServiceAccessMode_MTLS_PassesCAPEM(t *testing.T) {
 	c := authedClient(t, srv)
 
 	body := map[string]string{
-		"access_mode":  "mtls",
-		"mtls_ca_pem":  "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n",
+		"access_mode": "mtls",
+		"mtls_ca_pem": "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n",
 	}
 	r := c.put(t, "/api/v1/services/svc-1/access-mode", body)
 	if r.StatusCode != http.StatusNoContent {

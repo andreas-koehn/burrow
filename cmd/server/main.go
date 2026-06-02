@@ -704,7 +704,7 @@ func main() {
 					SPA: spaHandler, TrustedProxies: cfg.TrustedProxies,
 					// Wire env override: 0 means use the api.LoginRateLimitPerIP constant.
 					LoginRateLimitPerIPOverride: cfg.LoginRateLimitPerIP,
-					Roles: st, Sessions: st, Settings: st,
+					Roles:                       st, Sessions: st, Settings: st,
 					Clients: clientsAdapter{srv: srv, st: st}, AccessModes: st,
 					DB: database,
 					// v0.3.0: service API + live tunnel lookup + auth domain.
@@ -776,15 +776,15 @@ func main() {
 					// no-op) and semanticEngineAdapter under -tags=semantic_cache (sums
 					// per-service Stats() across all registered services, implements
 					// ClearAll by iterating ListAllServices).
-					SemanticEngine:     newSemanticEngine(v05.SemanticCache, db.Wrap(database)),
-					ServiceAIConfigs:   db.Wrap(database),
-					CredentialVault:    v05.CredVault,
-					CredentialDB:       db.Wrap(database),
-					CredentialServices: db.Wrap(database),
-					CustomDomains:      db.Wrap(database),
-					CustomDomainCache:  v05.CustomDomainStore,
+					SemanticEngine:      newSemanticEngine(v05.SemanticCache, db.Wrap(database)),
+					ServiceAIConfigs:    db.Wrap(database),
+					CredentialVault:     v05.CredVault,
+					CredentialDB:        db.Wrap(database),
+					CredentialServices:  db.Wrap(database),
+					CustomDomains:       db.Wrap(database),
+					CustomDomainCache:   v05.CustomDomainStore,
 					CertValidationRoots: certValidationRoots,
-					ConnLogDB:          v05.ConnLogDB,
+					ConnLogDB:           v05.ConnLogDB,
 				}),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
@@ -813,6 +813,10 @@ func main() {
 					u := *r.URL
 					u.Scheme = "https"
 					u.Host = r.Host
+					// G710: standard HTTP->HTTPS upgrade. The target is the same
+					// host + path the client already requested (just scheme=https);
+					// it cannot point at an attacker-chosen external origin.
+					//nolint:gosec // G710: same-host scheme upgrade, not attacker-controlled.
 					http.Redirect(w, r, u.String(), http.StatusMovedPermanently)
 				})
 				challengeSrv = &http.Server{

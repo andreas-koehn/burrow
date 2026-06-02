@@ -239,16 +239,15 @@ func TestE2EAuditChain_FullMutationSequence(t *testing.T) {
 	}
 
 	type step struct {
-		name        string
-		do          func(t *testing.T) (subjectID, subjectLabel string)
-		wantAction  string
-		wantSubject func(subjectID, subjectLabel string, ev db.AuditEvent) error
+		name       string
+		do         func(t *testing.T) (subjectID, subjectLabel string)
+		wantAction string
 	}
 
 	var (
-		newUserID    string
-		newTokenID   string
-		newAPIKeyID  string
+		newUserID   string
+		newTokenID  string
+		newAPIKeyID string
 	)
 
 	steps := []step{
@@ -261,7 +260,9 @@ func TestE2EAuditChain_FullMutationSequence(t *testing.T) {
 				if code != http.StatusCreated {
 					t.Fatalf("POST /users: code=%d body=%s", code, string(body))
 				}
-				var out struct{ ID string `json:"id"` }
+				var out struct {
+					ID string `json:"id"`
+				}
 				if err := json.Unmarshal(body, &out); err != nil {
 					t.Fatalf("decode user: %v", err)
 				}

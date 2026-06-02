@@ -33,7 +33,6 @@ func (f *fakeInspectorOwner) GetServiceOwner(_ context.Context, id string) (stri
 type stubReplayer struct {
 	mu        sync.Mutex
 	gotReqs   []*http.Request
-	mode      string // "compare" toggles the responseBody so the diff is meaningful
 	respBody  []byte // override response body for the synthesized new Entry
 	respCT    string // content-type for the new Entry's RespHeaders
 	respCache string
@@ -103,7 +102,7 @@ func TestInspectorListReturnsDescendingTSAndFilters(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0).UTC()
 	for i, st := range []int{200, 500, 200} {
 		ring.Capture(inspector.Entry{
-			ID:       fmt.Sprintf("ins_%d", i),
+			ID:        fmt.Sprintf("ins_%d", i),
 			ServiceID: "svc1",
 			TS:        base.Add(time.Duration(i) * time.Second),
 			Method:    "POST",
@@ -297,12 +296,12 @@ func TestInspectorReplayCompareReturnsUnifiedDiffForText(t *testing.T) {
 	mgr := inspector.NewManager()
 	ring := mgr.GetOrCreate("svc1", 10)
 	ring.Capture(inspector.Entry{
-		ID:         "ins_orig",
-		ServiceID:  "svc1",
-		TS:         time.Now().UTC(),
-		Method:     "GET",
-		Path:       "/v1/foo",
-		Status:     200,
+		ID:          "ins_orig",
+		ServiceID:   "svc1",
+		TS:          time.Now().UTC(),
+		Method:      "GET",
+		Path:        "/v1/foo",
+		Status:      200,
 		RespHeaders: map[string]string{"Content-Type": "application/json"},
 		RespBody:    []byte("{\n  \"hello\": \"world\"\n}\n"),
 	})

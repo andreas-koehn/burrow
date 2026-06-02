@@ -547,11 +547,12 @@ func TestHTTPProxyTLSCertKeyFile(t *testing.T) {
 // has the documented default when no env / overrides are set.
 //
 // Defaults (Task 24):
-//   MCPListen        ""     (MCP listener disabled)
-//   GeoDBPath        ""     (NoopGeoLookup)
-//   PricingPath      ""     (embedded pricing.yaml)
-//   BackupDir        "./burrow.db.backups"  (derived from default DatabasePath)
-//   BurrowMCPToken   ""     (empty; falls back to automation_tokens lookup)
+//
+//	MCPListen        ""     (MCP listener disabled)
+//	GeoDBPath        ""     (NoopGeoLookup)
+//	PricingPath      ""     (embedded pricing.yaml)
+//	BackupDir        "./burrow.db.backups"  (derived from default DatabasePath)
+//	BurrowMCPToken   ""     (empty; falls back to automation_tokens lookup)
 func TestV04DefaultsAllNewFields(t *testing.T) {
 	c, err := LoadServer(nil)
 	if err != nil {
@@ -719,9 +720,9 @@ func TestExperimentalPostgresDefaultFalse(t *testing.T) {
 // database_path and database_url returns a fatal error.
 func TestConfigRejectsBothDatabasePathAndURL(t *testing.T) {
 	_, err := LoadServer(map[string]any{
-		"database_path":                   "/x/burrow.db",
-		"database_url":                    "postgres://user:pass@host/db",
-		"experimental.postgres_backend":   true,
+		"database_path":                 "/x/burrow.db",
+		"database_url":                  "postgres://user:pass@host/db",
+		"experimental.postgres_backend": true,
 	})
 	if err == nil {
 		t.Fatal("expected error when both database_path and database_url are set, got nil")

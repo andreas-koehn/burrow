@@ -83,7 +83,6 @@ func writeTraversalArchive(t *testing.T, path string) {
 	}
 }
 
-
 // makeBackup is a test helper that drives runBackup on a freshly migrated
 // DB and returns the resulting archive path.
 func makeBackup(t *testing.T, dir, name string) string {

@@ -6,11 +6,11 @@ import "time"
 //
 // The closed enum:
 //   - pending       — reserved for future ACME / auto-renew flows (rows created
-//                     without a cert). Never returned by ComputeStatus.
+//     without a cert). Never returned by ComputeStatus.
 //   - active        — cert is valid and more than ExpiryWarnWindow away from
-//                     not_after.
+//     not_after.
 //   - cert_expiring — cert is still valid but within ExpiryWarnWindow of
-//                     not_after.
+//     not_after.
 //   - cert_expired  — cert's not_after <= now.
 //
 // The enum is enforced application-side on SQLite via ComputeStatus and on

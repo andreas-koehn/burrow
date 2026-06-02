@@ -200,16 +200,6 @@ var closedSet = []metricDef{
 		labels: nil},
 }
 
-// closedSetIndex maps metric name → its definition, populated at package
-// init. It is read-only after init (no goroutine ever mutates closedSet).
-var closedSetIndex = func() map[string]metricDef {
-	m := make(map[string]metricDef, len(closedSet))
-	for _, d := range closedSet {
-		m[d.name] = d
-	}
-	return m
-}()
-
 // histogramSeries holds the bucket-aggregated state for one labeled series of
 // a histogram metric. Each bucket is cumulative — bucket i is "observations
 // with value ≤ defaultBuckets[i]". sumBits is the float64 sum, stored as its

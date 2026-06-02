@@ -328,12 +328,6 @@ func TestLiveTunnelLookupAdapter_ByTunnelID(t *testing.T) {
 		ServiceID: "svc-2",
 		IsHTTP:    true,
 	}
-	// Populate UserID via the session snapshot by wrapping fakeHTTPTunnelLister
-	// with a sessionSnapshotter that contains the owning session.
-	type httpTunnelListerWithSessions interface {
-		HTTPTunnels() []*server.Tunnel
-		SnapshotSessions() []server.SessionSnapshot
-	}
 	lister := &fakeHTTPTunnelLister{tunnels: []*server.Tunnel{tn}}
 
 	a := liveTunnelLookupAdapter{srv: lister}
@@ -362,22 +356,6 @@ func TestLiveTunnelLookupAdapter_ByTunnelID_WithUserID(t *testing.T) {
 		ServiceID: "svc-3",
 		IsHTTP:    true,
 	}
-	// Use a fake that returns both the tunnel and a session snapshot.
-	type fullFake struct {
-		fakeHTTPTunnelLister
-	}
-	ff := &struct {
-		tunnels  []*server.Tunnel
-		sessions []server.SessionSnapshot
-	}{
-		tunnels: []*server.Tunnel{tn},
-		sessions: []server.SessionSnapshot{{
-			UserID:  "user-abc",
-			Tunnels: []server.TunnelView{{ID: "tn-z"}},
-		}},
-	}
-	_ = ff // suppress unused var — tested via the concrete adapter below
-
 	// Create the adapter with the fakeHTTPTunnelLister that returns sessions.
 	fakeLister := &fakeHTTPTunnelListerWithSessions{
 		tunnels:  []*server.Tunnel{tn},

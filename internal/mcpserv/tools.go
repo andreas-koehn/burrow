@@ -257,7 +257,7 @@ func buildTools(s ToolStore) map[string]Tool {
 				ID: det.ID, UserID: det.UserID, Name: det.Name,
 				Type: det.Type, Subdomain: det.Subdomain,
 				AccessMode: det.AccessMode, APIKeyHeader: det.APIKeyHeader,
-				CreatedAt: det.CreatedAt,
+				CreatedAt:   det.CreatedAt,
 				APIKeyCount: det.APIKeyCount, AccessPolicy: policy,
 			})
 		},

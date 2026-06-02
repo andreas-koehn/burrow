@@ -135,7 +135,7 @@ func TestAIChain_PassThroughWhenNoServiceConfig(t *testing.T) {
 
 // TestBuildMCPServer_BuiltWhenMCPListenSet asserts the optional :7800 MCP
 // listener is constructed exactly when cfg.MCPListen is non-empty —
-// matching Task 25 Step 1's "fourth http.Server when MCPListen != ''"
+// matching Task 25 Step 1's "fourth http.Server when MCPListen != ”"
 // invariant.
 func TestBuildMCPServer_BuiltWhenMCPListenSet(t *testing.T) {
 	st, wrapped := freshTestStack(t)

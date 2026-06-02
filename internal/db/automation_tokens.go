@@ -158,4 +158,3 @@ func scanAutomationTokens(rows *sql.Rows) ([]AutomationToken, error) {
 	}
 	return out, nil
 }
-

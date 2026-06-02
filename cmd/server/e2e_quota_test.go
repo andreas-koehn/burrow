@@ -85,16 +85,6 @@ func seedRateLimit(t *testing.T, s *e2eStack, rl db.RateLimit) {
 	}
 }
 
-// quotaSkipMsg is emitted when bootE2EStack's Chain has no RateLimit
-// middleware wired (quota.Engine not injected), so rate-limit rows seeded
-// in DB are not consulted at all. Chain.ServeHTTP now calls RateLimit
-// before the IsAIPassThrough guard (bypass bug fixed), but the enforcer
-// must still be injected at startup for the enforcement to be active.
-const quotaSkipMsg = "quota.Engine not wired into bootE2EStack Chain.RateLimit: " +
-	"rate-limit rows are present in DB but the chain's RateLimit field is nil so " +
-	"enforcement is skipped. Wire quota.Engine.Charge into the e2e stack's Chain " +
-	"to activate enforcement and remove this skip."
-
 // TestE2EQuota_RateLimit429 — Task 6, single-bucket rpm denial.
 func TestE2EQuota_RateLimit429(t *testing.T) {
 	if testing.Short() {
@@ -390,17 +380,4 @@ func TestE2EQuota_DayQuota(t *testing.T) {
 	if got.Error == "" {
 		t.Errorf("429 body.error is empty (body=%q)", body)
 	}
-}
-
-// statusesString is a tiny [int]->"a,b,c" helper kept inline to avoid
-// pulling fmt for one-liner debug strings.
-func statusesString(s []int) string {
-	out := make([]byte, 0, 4*len(s))
-	for i, v := range s {
-		if i > 0 {
-			out = append(out, ',')
-		}
-		out = append(out, []byte(itoa(v))...)
-	}
-	return string(out)
 }

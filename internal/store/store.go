@@ -475,7 +475,9 @@ var ErrRoleBuiltin = errors.New("store: role is built-in")
 type ErrUnknownPermission struct{ Key string }
 
 // Error implements error.
-func (e ErrUnknownPermission) Error() string { return "store: unknown permission " + strconv.Quote(e.Key) }
+func (e ErrUnknownPermission) Error() string {
+	return "store: unknown permission " + strconv.Quote(e.Key)
+}
 
 // ErrRoleExists is returned by CreateRole on a duplicate name.
 var ErrRoleExists = errors.New("store: role already exists")
@@ -617,8 +619,8 @@ func (s *Store) DeleteRole(ctx context.Context, name string) (affectedUserIDs []
 	s.emitAudit(ctx, audit.ActionRoleDelete, func(e *audit.Event) {
 		e.SubjectLabel = name
 		e.Payload = audit.MustJSON(map[string]any{
-			"fallback":        fallback,
-			"affected_users":  len(affected),
+			"fallback":       fallback,
+			"affected_users": len(affected),
 		})
 	})
 	if err := s.refreshRolesCache(ctx); err != nil {

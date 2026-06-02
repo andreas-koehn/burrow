@@ -192,13 +192,13 @@ type RateLimit struct {
 
 // Budget is a row of the budgets table.
 type Budget struct {
-	ID              string
-	Scope           string // api_key|service|user|global
-	SubjectID       string
-	DailyUSD        float64
-	ActionOnExceed  string // alert_webhook|throttle_zero|disable_key
-	AlertWebhookID  *string
-	CreatedAt       time.Time
+	ID             string
+	Scope          string // api_key|service|user|global
+	SubjectID      string
+	DailyUSD       float64
+	ActionOnExceed string // alert_webhook|throttle_zero|disable_key
+	AlertWebhookID *string
+	CreatedAt      time.Time
 }
 
 // ServiceIPGeo is a row of the service_ip_geo table.

@@ -416,9 +416,9 @@ type chunkDeltaDelta struct {
 // chunkFinishChoice / chunkFinishDelta — final finish_reason frame (empty
 // delta object plus finish_reason).
 type chunkFinishChoice struct {
-	Index        int               `json:"index"`
-	Delta        chunkFinishDelta  `json:"delta"`
-	FinishReason string            `json:"finish_reason"`
+	Index        int              `json:"index"`
+	Delta        chunkFinishDelta `json:"delta"`
+	FinishReason string           `json:"finish_reason"`
 }
 type chunkFinishDelta struct{}
 

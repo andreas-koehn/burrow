@@ -25,11 +25,10 @@ func (f *fakeLimitStore) ListRateLimits(_ context.Context) ([]db.RateLimit, erro
 
 // fakeDailyUsage is the test double for DailyUsageStore.
 type fakeDailyUsage struct {
-	bytesByKey  map[string]int64 // api_key_id → daily byte-estimate
-	bytesBySvc  map[string]int64 // service_id → daily byte-estimate
-	countByKey  map[string]int64
-	countBySvc  map[string]int64
-	wantContext bool
+	bytesByKey map[string]int64 // api_key_id → daily byte-estimate
+	bytesBySvc map[string]int64 // service_id → daily byte-estimate
+	countByKey map[string]int64
+	countBySvc map[string]int64
 }
 
 func (f *fakeDailyUsage) SumDailyUsageEventsByAPIKey(_ context.Context, k string) (int64, error) {

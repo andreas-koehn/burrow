@@ -607,4 +607,3 @@ func namesOf(td []ToolDescriptor) []string {
 	}
 	return out
 }
-

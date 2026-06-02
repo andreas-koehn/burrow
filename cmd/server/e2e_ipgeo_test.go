@@ -195,13 +195,13 @@ func (l *ipGeoListener) visitorClient(t *testing.T, hostname string) *http.Clien
 // enforcement and the geo-OFF behaviour of the global /geo/status surface.
 //
 // Steps mirror the v0.4.0 integration plan, Task 9:
-//   1. Seed service_ip_geo with allow_cidrs=["203.0.113.0/24"] (TEST-NET-3).
-//   2. POST with X-Forwarded-For=203.0.113.7 (allowed) → 200.
-//   3. POST with X-Forwarded-For=198.51.100.4 (TEST-NET-2, not in the
-//      allowlist) → 403 {"error":"forbidden","reason":"ip_geo"}.
-//   4. Add allow_countries=["DE"] while geo is not loaded; GET
-//      /api/v1/geo/status returns {enabled:false}, and CIDR allow-only
-//      enforcement continues to apply (the country list is a no-op).
+//  1. Seed service_ip_geo with allow_cidrs=["203.0.113.0/24"] (TEST-NET-3).
+//  2. POST with X-Forwarded-For=203.0.113.7 (allowed) → 200.
+//  3. POST with X-Forwarded-For=198.51.100.4 (TEST-NET-2, not in the
+//     allowlist) → 403 {"error":"forbidden","reason":"ip_geo"}.
+//  4. Add allow_countries=["DE"] while geo is not loaded; GET
+//     /api/v1/geo/status returns {enabled:false}, and CIDR allow-only
+//     enforcement continues to apply (the country list is a no-op).
 func TestE2EIPGeo_CIDRAllowBlock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip e2e in -short")

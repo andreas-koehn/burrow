@@ -638,7 +638,7 @@ func (s *SQLSink) upsertTopIPs(ctx context.Context, dayStr, serviceID, kind stri
 	if err != nil {
 		return fmt.Errorf("top_ips begin tx: %w", err)
 	}
-	defer tx.Rollback() // no-op after Commit
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM connection_log_rollup_top_ips
 		  WHERE day = ? AND service_id = ? AND kind = ?`,

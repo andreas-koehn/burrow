@@ -17,9 +17,9 @@ import (
 
 // fakeBearerStore is an in-memory BearerStore for middleware tests.
 type fakeBearerStore struct {
-	mu       sync.Mutex
-	byHash   map[string]AutomationTokenInfo
-	touched  []string
+	mu        sync.Mutex
+	byHash    map[string]AutomationTokenInfo
+	touched   []string
 	lookupErr error
 }
 

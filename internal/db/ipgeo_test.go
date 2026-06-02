@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 )
 
@@ -183,9 +182,8 @@ func TestIPGeoDecodeMalformedJSON(t *testing.T) {
 		t.Errorf("ok input: %v", err)
 	}
 	out = nil
+	// Just ensure the error surfaces; the wording belongs to encoding/json.
 	if err := decodeJSONArray("not json", &out); err == nil {
 		t.Errorf("want error on garbage, got nil")
-	} else if !strings.Contains(err.Error(), "invalid") {
-		// Just ensure the error surfaces; the wording belongs to encoding/json.
 	}
 }

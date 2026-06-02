@@ -71,7 +71,7 @@ type redactionRulesResp struct {
 // PerService is always a non-nil slice (possibly empty); the wire JSON
 // renders as [] rather than null for UI ergonomics.
 type redactionSettingsResp struct {
-	Global     redactionGlobalJSON          `json:"global"`
+	Global     redactionGlobalJSON           `json:"global"`
 	PerService []redactionPerServiceSettings `json:"per_service"`
 }
 

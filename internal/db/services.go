@@ -69,7 +69,7 @@ func (x *DB) CreateService(ctx context.Context, s Service) error {
 // selectServiceRow is the shared SELECT column list for service rows.
 // mtls_ca_pem (migration 0009) is included so the proxy layer can populate
 // proxy.Resolved.MTLSCAPEM without a second round-trip; non-mtls services
-// store it as NULL, which COALESCE rewrites to ''.
+// store it as NULL, which COALESCE rewrites to ”.
 const selectServiceCols = `id, user_id, name, type, COALESCE(subdomain,''), access_mode, api_key_header, created_at, COALESCE(mtls_ca_pem,'')`
 
 // GetOrCreateService returns the service row for (userID, name), creating it

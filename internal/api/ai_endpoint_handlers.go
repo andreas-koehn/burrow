@@ -44,22 +44,22 @@ type aiEndpointResp struct {
 // endpoint.  Mirrors the TypeScript EndpointMetrics interface in
 // AiEndpointDetail.tsx.
 type endpointMetricsResp struct {
-	Requests24h      int       `json:"requests_24h"`
-	TokensIn24h      int       `json:"tokens_in_24h"`
-	TokensOut24h     int       `json:"tokens_out_24h"`
-	CostUSD24h       float64   `json:"cost_usd_24h"`
-	CacheHitRatio24h float64   `json:"cache_hit_ratio_24h"`
-	RequestsPerMinute []int    `json:"requests_per_minute"`
+	Requests24h       int     `json:"requests_24h"`
+	TokensIn24h       int     `json:"tokens_in_24h"`
+	TokensOut24h      int     `json:"tokens_out_24h"`
+	CostUSD24h        float64 `json:"cost_usd_24h"`
+	CacheHitRatio24h  float64 `json:"cache_hit_ratio_24h"`
+	RequestsPerMinute []int   `json:"requests_per_minute"`
 }
 
 // providerToBackendType converts a model-alias provider string to the
 // backend_type enum the UI expects.
 //
-//   "openai"       → "openai-compat"
-//   "openai-compat"→ "openai-compat"
-//   "ollama"       → "ollama"
-//   "vllm"         → "vllm"
-//   anything else  → "other"
+//	"openai"       → "openai-compat"
+//	"openai-compat"→ "openai-compat"
+//	"ollama"       → "ollama"
+//	"vllm"         → "vllm"
+//	anything else  → "other"
 func providerToBackendType(provider string) string {
 	switch provider {
 	case "openai", "openai-compat":
@@ -224,9 +224,7 @@ func (d Deps) GetAIEndpointMetrics(w http.ResponseWriter, r *http.Request) {
 			if agg.Requests > 0 {
 				resp.CacheHitRatio24h = float64(agg.CacheHits) / float64(agg.Requests)
 			}
-			for i, v := range agg.PerMinute {
-				rpm[i] = v
-			}
+			copy(rpm, agg.PerMinute[:])
 			// Cost from per-kind token subtotals via the pricing table.
 			if d.CostEngine != nil {
 				var usd float64

@@ -141,17 +141,17 @@ func TestE2EFailover_CircuitBreakerTrip(t *testing.T) {
 //
 // Intent: two scenarios that pin spec Part C.2's idempotency rule.
 //
-//   1. POST with `Idempotency-Key: abc` whose primary returns 500
-//      BEFORE streaming any byte → retry to secondary IS allowed,
-//      visitor sees secondary's 200 body.
+//  1. POST with `Idempotency-Key: abc` whose primary returns 500
+//     BEFORE streaming any byte → retry to secondary IS allowed,
+//     visitor sees secondary's 200 body.
 //
-//   2. POST WITHOUT `Idempotency-Key` whose primary streams 2 bytes
-//      back then aborts with a network error → retry MUST NOT happen
-//      (the visitor has already received bytes from the primary and
-//      a fresh POST to the secondary would silently duplicate any
-//      side effect). The visitor receives the partial bytes and a
-//      trailer / final-status indicator that records the upstream
-//      failure.
+//  2. POST WITHOUT `Idempotency-Key` whose primary streams 2 bytes
+//     back then aborts with a network error → retry MUST NOT happen
+//     (the visitor has already received bytes from the primary and
+//     a fresh POST to the secondary would silently duplicate any
+//     side effect). The visitor receives the partial bytes and a
+//     trailer / final-status indicator that records the upstream
+//     failure.
 //
 // SKIPPED — wiring deferred. The byte-streamed-yet flag and the
 // idempotency-key check both live in the Retry seam that chain.go

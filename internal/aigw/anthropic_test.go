@@ -42,10 +42,10 @@ func compactJSON(t *testing.T, raw []byte) []byte {
 // TestAnthropicRewriteRequest — table-driven over the 5 fixtures.
 func TestAnthropicRewriteRequest(t *testing.T) {
 	cases := []struct {
-		name       string
-		fixture    string
-		wantLossy  bool
-		wantDrops  []string // dropped field names, in observed order
+		name      string
+		fixture   string
+		wantLossy bool
+		wantDrops []string // dropped field names, in observed order
 	}{
 		{"plain_user", "req_plain_user", false, nil},
 		{"with_system", "req_with_system", true, []string{"top_k"}},

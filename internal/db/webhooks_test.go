@@ -33,7 +33,7 @@ func TestWebhooksCRUD(t *testing.T) {
 	w2 := Webhook{
 		ID: "wh2", Name: "audit", URL: "https://example.com/audit",
 		SecretHash: "cafebabe", Events: `["audit.exported"]`,
-		Paused:     true,
+		Paused: true,
 	}
 	if err := x.CreateWebhook(ctx, w2); err != nil {
 		t.Fatalf("create wh2: %v", err)

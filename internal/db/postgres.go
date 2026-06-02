@@ -199,7 +199,7 @@ var (
 // rewriteQuestionMarks scans query and replaces every "?" that occurs OUTSIDE
 // any of the following regions with $1, $2, … in left-to-right order:
 //
-//   - single-quoted string literals '…' (with '' as the embedded quote escape;
+//   - single-quoted string literals '…' (with ” as the embedded quote escape;
 //     backslash escapes are NOT recognised — Postgres standard_conforming_strings
 //     is on by default, so backslash is literal)
 //   - double-quoted identifiers "…" (with "" as the embedded quote escape)

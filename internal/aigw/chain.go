@@ -409,10 +409,10 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// before the IsAIPassThrough guard so quota covers all proxied traffic.)
 	// ---------------------------------------------------------------
 	var (
-		redactedBody []byte = body
-		redactHits   []redact.RuleHit
-		redactDrop   *redact.Rule
+		redactHits []redact.RuleHit
+		redactDrop *redact.Rule
 	)
+	redactedBody := body
 	if cfg.Redaction != nil && cfg.Redaction.Enabled && c.Redact != nil && len(body) > 0 {
 		var err error
 		redactedBody, redactDrop, redactHits, err = c.Redact.Apply(body, redact.ScopeRequestBody)
@@ -878,23 +878,6 @@ func DetectKind(r *http.Request, body []byte) Kind {
 	}
 
 	return KindUnknown
-}
-
-// readBody fully drains r.Body and replaces it with a fresh ReadCloser so
-// downstream handlers see the same bytes. Returns the empty slice when the
-// body is missing.
-//
-// Deprecated: callers in the chain must use readBodyLimited so a hostile
-// client cannot OOM the process. Kept for any out-of-chain caller; new
-// code should not use this.
-func readBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil {
-		return nil, nil
-	}
-	b, err := io.ReadAll(r.Body)
-	_ = r.Body.Close()
-	r.Body = io.NopCloser(bytes.NewReader(b))
-	return b, err
 }
 
 // readBodyLimited drains r.Body up to limit bytes. If the body is larger

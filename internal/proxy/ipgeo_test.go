@@ -24,8 +24,8 @@ func (f fakeGeo) Country(ip net.IP) (string, error) {
 	}
 	return f.m[ip.String()], nil
 }
-func (f fakeGeo) Enabled() bool      { return f.enabled }
-func (f fakeGeo) DBPath() string     { return "/dev/null" }
+func (f fakeGeo) Enabled() bool       { return f.enabled }
+func (f fakeGeo) DBPath() string      { return "/dev/null" }
 func (f fakeGeo) DBAgeSeconds() int64 { return 0 }
 
 // --------------------------------------------------------------------------

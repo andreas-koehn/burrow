@@ -29,12 +29,11 @@ func TestE2EHTTPTunnel_RoundTrip(t *testing.T) {
 
 	// Upstream captures the headers it saw so we can assert XFP/XFF.
 	type capture struct {
-		path  string
-		xfp   string
-		xfh   string
-		xff   string
-		host  string
-		hello string
+		path string
+		xfp  string
+		xfh  string
+		xff  string
+		host string
 	}
 	var (
 		mu   sync.Mutex

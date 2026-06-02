@@ -19,12 +19,14 @@ import (
 // (mounted under `burrowd audit`).
 //
 // Usage:
-//   burrowd audit verify [--db <path>] [--from <id>] [--to <id>]
+//
+//	burrowd audit verify [--db <path>] [--from <id>] [--to <id>]
 //
 // Exit codes:
-//   0 — chain valid; stdout: "Chain valid from <first_id> to <last_id>."
-//   1 — chain mismatch; stderr: "Chain mismatch at <mismatched_id>."
-//   1 — any other error (failed to open DB, missing signing key, etc.)
+//
+//	0 — chain valid; stdout: "Chain valid from <first_id> to <last_id>."
+//	1 — chain mismatch; stderr: "Chain mismatch at <mismatched_id>."
+//	1 — any other error (failed to open DB, missing signing key, etc.)
 //
 // Output goes to the io.Writer attached to the cobra command (stdout +
 // stderr) so tests can inspect both streams.

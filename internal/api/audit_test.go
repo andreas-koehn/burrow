@@ -84,7 +84,7 @@ func TestAuditEventsAdminReadsList(t *testing.T) {
 		t.Fatalf("want 3 rows, got %d", len(out))
 	}
 	// id DESC: out[0].id > out[1].id > out[2].id
-	if !(out[0].ID > out[1].ID && out[1].ID > out[2].ID) {
+	if out[0].ID <= out[1].ID || out[1].ID <= out[2].ID {
 		t.Fatalf("ids not DESC: %s %s %s", out[0].ID, out[1].ID, out[2].ID)
 	}
 }
@@ -137,7 +137,7 @@ func TestAuditEventsCursorBeforeID(t *testing.T) {
 		t.Fatalf("want 2 older rows, got %d", len(page))
 	}
 	for _, e := range page {
-		if !(e.ID < out[0].ID) {
+		if e.ID >= out[0].ID {
 			t.Fatalf("row %s not older than cursor %s", e.ID, out[0].ID)
 		}
 	}

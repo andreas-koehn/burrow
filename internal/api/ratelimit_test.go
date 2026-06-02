@@ -29,9 +29,8 @@ func TestLoginRateLimitPerIP(t *testing.T) {
 	})
 	defer ts.Close()
 
-	body := strings.NewReader(`{"email":"a@x","password":"bad"}`)
-
 	// First perIP requests must reach the handler (expect 401 invalid-creds).
+	var body *strings.Reader
 	for i := 0; i < perIP; i++ {
 		body = strings.NewReader(`{"email":"a@x","password":"bad"}`)
 		resp, err := http.Post(ts.URL+"/api/v1/auth/login", "application/json", body)
@@ -242,7 +241,6 @@ func (f *fakeQuotaEngine) Limits() []quota.Limit {
 }
 
 func (f *fakeQuotaEngine) DropBucket(_, _, _, _ string) {}
-
 
 // TestRateLimitHandler_GetEmpty — empty store returns a non-null JSON
 // empty array.

@@ -677,4 +677,3 @@ var (
 	_ CostEngine  = (*cost.Engine)(nil)
 	_ BudgetStore = (*db.DB)(nil)
 )
-

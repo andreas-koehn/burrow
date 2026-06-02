@@ -41,7 +41,7 @@ func (a loggerChainAdapter) Verify(ctx context.Context, fromID, toID string) (bo
 func (a loggerChainAdapter) ExportNDJSON(ctx context.Context, w io.Writer, q audit.ExportQuery) error {
 	return a.l.ExportNDJSON(ctx, w, q)
 }
-func (a loggerChainAdapter) PublicKey() []byte    { return []byte(a.l.PublicKey()) }
+func (a loggerChainAdapter) PublicKey() []byte      { return []byte(a.l.PublicKey()) }
 func (a loggerChainAdapter) FingerprintHex() string { return a.l.FingerprintHex() }
 
 // NewAuditChainAdapter returns an AuditChain backed by the given Logger.

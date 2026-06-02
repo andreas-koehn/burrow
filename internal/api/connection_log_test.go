@@ -480,7 +480,7 @@ func (f *countingConnLogStore) ListConnectionLogRollupTopIPsBatch(_ context.Cont
 	f.batchCalls++
 	out := make(map[connlog.TopIPsGroup][]connlog.TopIP, len(groups))
 	for _, g := range groups {
-		if rows, ok := f.fakeConnLogStore.topIPs[g.Day+"|"+g.ServiceID+"|"+g.Kind]; ok {
+		if rows, ok := f.topIPs[g.Day+"|"+g.ServiceID+"|"+g.Kind]; ok {
 			out[g] = rows
 		}
 	}

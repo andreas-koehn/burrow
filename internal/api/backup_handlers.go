@@ -129,8 +129,8 @@ type restoreStartResp struct {
 // restoreStatusResp is the wire shape of GET /api/v1/backups/restores/{id}.
 type restoreStatusResp struct {
 	ID        string    `json:"id"`
-	Status    string    `json:"status"`           // "running" | "done" | "failed"
-	Error     string    `json:"error,omitempty"`  // populated when status == "failed"
+	Status    string    `json:"status"`          // "running" | "done" | "failed"
+	Error     string    `json:"error,omitempty"` // populated when status == "failed"
 	StartedAt time.Time `json:"started_at"`
 	EndedAt   time.Time `json:"ended_at,omitempty"`
 }

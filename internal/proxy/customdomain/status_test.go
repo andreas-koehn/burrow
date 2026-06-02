@@ -11,9 +11,9 @@ func TestComputeStatus(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 
 	cases := []struct {
-		name    string
-		delta   time.Duration
-		want    string
+		name  string
+		delta time.Duration
+		want  string
 	}{
 		{"60d remaining -> active", 60 * 24 * time.Hour, StatusActive},
 		{"14d edge -> cert_expiring", 14 * 24 * time.Hour, StatusCertExpiring},

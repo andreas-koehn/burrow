@@ -159,4 +159,3 @@ func TestGeoMMDBLookup_OpenGeoDBFactory(t *testing.T) {
 		t.Error("GeoBuildTagEnabled() = false in -tags geo build; want true")
 	}
 }
-

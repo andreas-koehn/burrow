@@ -44,7 +44,7 @@ type QuotaEngine interface {
 // the spec Part D.2 Limit struct exactly so the JSON contract is stable.
 type rateLimitResp struct {
 	ID        string `json:"id"`
-	Scope     string `json:"scope"`     // api_key|role|service|global
+	Scope     string `json:"scope"` // api_key|role|service|global
 	Subject   string `json:"subject"`
 	Dimension string `json:"dimension"` // rpm|bpm
 	Limit     int    `json:"limit"`
@@ -407,17 +407,18 @@ func (d Deps) GetRateLimitUsage(w http.ResponseWriter, r *http.Request) {
 	rows := d.RateLimits.UsageFor(r.Context(), who)
 	out := usageResp{Limits: make([]usageRow, 0, len(rows))}
 	for _, u := range rows {
-		// u embeds quota.Limit (which has its own Limit int field); use the
-		// explicit qualifier to disambiguate the field selector.
+		// u embeds quota.Limit; the inner Limit int field collides with the
+		// embedded type name, so it alone needs the explicit u.Limit.Limit
+		// qualifier. The other fields are promoted and accessed directly.
 		out.Limits = append(out.Limits, usageRow{
 			rateLimitResp: rateLimitResp{
-				ID:        u.Limit.ID,
-				Scope:     u.Limit.Scope,
-				Subject:   u.Limit.Subject,
-				Dimension: u.Limit.Dimension,
+				ID:        u.ID,
+				Scope:     u.Scope,
+				Subject:   u.Subject,
+				Dimension: u.Dimension,
 				Limit:     u.Limit.Limit,
-				Burst:     u.Limit.Burst,
-				Window:    u.Limit.Window,
+				Burst:     u.Burst,
+				Window:    u.Window,
 			},
 			Used:         u.Used,
 			ResetSeconds: u.ResetSeconds,

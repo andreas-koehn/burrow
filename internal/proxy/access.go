@@ -64,8 +64,8 @@ type SessionValidator interface {
 // propagates hdr headers and writes the status code; no proxy.go change is
 // required for redirect support.
 type accessChecker struct {
-	v          APIKeyValidator
-	sv         SessionValidator // optional; when non-nil, burrow_login passes
+	v  APIKeyValidator
+	sv SessionValidator // optional; when non-nil, burrow_login passes
 	// through visitors with a valid session cookie + allowed role (the
 	// proxy-side validation the spec calls for; without this, the
 	// gate→service→gate loop makes burrow_login non-functional).
@@ -207,7 +207,7 @@ func (ac *accessChecker) checkAPIKey(ctx context.Context, res *Resolved, r *http
 	}
 
 	raw := r.Header.Get(headerName)
-	presented := raw
+	var presented string
 	if headerName == "Authorization" {
 		presented = parseBearer(raw)
 	} else {

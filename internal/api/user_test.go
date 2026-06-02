@@ -22,8 +22,7 @@ type userMgmtStore struct {
 	listUsersResult []db.User
 	listUsersErr    error
 	// create user control
-	createUserResult db.User
-	createUserErr    error
+	createUserErr error
 	// delete user control
 	deleteUserErr error
 	// role for GetUserByID (controls RequireAdmin)

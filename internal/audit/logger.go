@@ -351,8 +351,9 @@ func (l *Logger) ExportNDJSON(ctx context.Context, w io.Writer, q ExportQuery) e
 		if err != nil {
 			return fmt.Errorf("audit: marshal export line: %w", err)
 		}
-		bw.Write(b)
-		bw.WriteByte('\n')
+		// Errors on the buffered writer surface at bw.Flush() below.
+		_, _ = bw.Write(b)
+		_ = bw.WriteByte('\n')
 		return nil
 	}
 	if err := l.d.IterAuditEventsAsc(ctx, q.FromID, q.ToID, visit); err != nil {

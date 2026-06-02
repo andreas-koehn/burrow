@@ -19,11 +19,11 @@ import (
 // skipped AND any pre-existing aux rows are scrubbed. Default-true policy:
 // the row need not be seeded.
 var allowedSettingKeys = map[string]bool{
-	"smtp.host":     true,
-	"smtp.port":     true,
-	"smtp.username": true,
-	"smtp.from":     true,
-	"smtp.tls":      true,
+	"smtp.host":                              true,
+	"smtp.port":                              true,
+	"smtp.username":                          true,
+	"smtp.from":                              true,
+	"smtp.tls":                               true,
 	"connection_logs.rollup_include_top_ips": true,
 }
 

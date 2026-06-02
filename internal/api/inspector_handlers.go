@@ -61,30 +61,30 @@ type InspectorReplayer interface {
 // rendered as UTF-8 strings when valid, else base64. The encoding field
 // signals which is in use so clients render the response correctly.
 type inspectorEntryJSON struct {
-	ID            string                  `json:"id"`
-	ServiceID     string                  `json:"service_id"`
-	APIKeyID      string                  `json:"api_key_id,omitempty"`
-	TS            time.Time               `json:"ts"`
-	Method        string                  `json:"method"`
-	Path          string                  `json:"path"`
-	Status        int                     `json:"status"`
-	DurationMs    int64                   `json:"duration_ms"`
-	BytesIn       int64                   `json:"bytes_in"`
-	BytesOut      int64                   `json:"bytes_out"`
-	ReqHeaders    map[string]string       `json:"req_headers,omitempty"`
-	ReqBody       string                  `json:"req_body,omitempty"`
-	ReqBodyEnc    string                  `json:"req_body_encoding,omitempty"`  // "utf8" | "base64"
-	RespHeaders   map[string]string       `json:"resp_headers,omitempty"`
-	RespBody      string                  `json:"resp_body,omitempty"`
-	RespBodyEnc   string                  `json:"resp_body_encoding,omitempty"` // "utf8" | "base64"
-	Truncated     bool                    `json:"truncated,omitempty"`
-	BytesOmitted  int64                   `json:"bytes_omitted,omitempty"`
-	Cache         string                  `json:"cache,omitempty"`
-	Redactions    []inspector.RedactionHit `json:"redactions,omitempty"`
-	TraceID       string                  `json:"trace_id,omitempty"`
-	RemoteIP      string                  `json:"remote_ip,omitempty"`
-	MCP           *inspector.MCPInfo      `json:"mcp,omitempty"`
-	AdapterLossy  bool                    `json:"adapter_lossy,omitempty"`
+	ID           string                   `json:"id"`
+	ServiceID    string                   `json:"service_id"`
+	APIKeyID     string                   `json:"api_key_id,omitempty"`
+	TS           time.Time                `json:"ts"`
+	Method       string                   `json:"method"`
+	Path         string                   `json:"path"`
+	Status       int                      `json:"status"`
+	DurationMs   int64                    `json:"duration_ms"`
+	BytesIn      int64                    `json:"bytes_in"`
+	BytesOut     int64                    `json:"bytes_out"`
+	ReqHeaders   map[string]string        `json:"req_headers,omitempty"`
+	ReqBody      string                   `json:"req_body,omitempty"`
+	ReqBodyEnc   string                   `json:"req_body_encoding,omitempty"` // "utf8" | "base64"
+	RespHeaders  map[string]string        `json:"resp_headers,omitempty"`
+	RespBody     string                   `json:"resp_body,omitempty"`
+	RespBodyEnc  string                   `json:"resp_body_encoding,omitempty"` // "utf8" | "base64"
+	Truncated    bool                     `json:"truncated,omitempty"`
+	BytesOmitted int64                    `json:"bytes_omitted,omitempty"`
+	Cache        string                   `json:"cache,omitempty"`
+	Redactions   []inspector.RedactionHit `json:"redactions,omitempty"`
+	TraceID      string                   `json:"trace_id,omitempty"`
+	RemoteIP     string                   `json:"remote_ip,omitempty"`
+	MCP          *inspector.MCPInfo       `json:"mcp,omitempty"`
+	AdapterLossy bool                     `json:"adapter_lossy,omitempty"`
 }
 
 // inspectorEntryToJSON converts a captured Entry to the wire shape. Bodies
