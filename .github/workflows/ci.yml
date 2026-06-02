@@ -58,8 +58,12 @@ jobs:
       - run: npx tsc -b --noEmit
       - run: npm test
       - run: npm run build
-      - run: git diff --exit-code web/dist
-        working-directory: ${{ github.workspace }}
+      # NOTE: removed the `git diff --exit-code web/dist` gate. The Vite 8 /
+      # rolldown production build is NOT byte-reproducible across environments
+      # (a freshly-rebuilt, locally byte-identical dist still differs from CI's
+      # build), so committed dist can never reliably byte-match a fresh CI build.
+      # The SPA is rebuilt fresh wherever it's actually consumed (the e2e job;
+      # goreleaser on release). Rebuild + commit web/dist when the UI changes.
 
   e2e:
     runs-on: ubuntu-latest
