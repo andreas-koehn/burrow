@@ -52,10 +52,10 @@ test("v0.5.0: connection logs page renders and rollups toggle works", async ({ p
   await expect(page.getByRole("heading", { name: "Connection logs" })).toBeVisible();
 
   // In default (non-rollup) mode, the table or empty state is shown.
-  // Empty state: "No connection logs yet."
-  // Table mode: aria-label="Connection logs"
+  // Empty state: the EmptyState card renders <h4>No connection logs yet</h4>.
+  // Table mode: aria-label="Connection logs".
   const tableOrEmpty = page.locator(
-    '[aria-label="Connection logs"], p.muted:has-text("No connection logs yet")',
+    '[aria-label="Connection logs"], h4:has-text("No connection logs yet")',
   );
   await expect(tableOrEmpty.first()).toBeVisible();
 
@@ -66,29 +66,24 @@ test("v0.5.0: connection logs page renders and rollups toggle works", async ({ p
   await expect(rollupsCheckbox).toBeChecked();
 
   // After enabling rollups either the "Day" column header appears or the
-  // empty-state message appears (no rollup data in fresh CI fixture)
+  // rollups empty-state card (<h4>No rollups yet</h4>) shows (no rollup data in
+  // the fresh CI fixture).
   const dayColOrEmpty = page.locator(
-    'th:has-text("Day"), p.muted:has-text("No connection logs yet")',
+    'th:has-text("Day"), h4:has-text("No rollups yet")',
   );
   await expect(dayColOrEmpty.first()).toBeVisible();
 });
 
 // ── 4. OpenAPI viewer: no external CDN requests ───────────────────────────────
-test("v0.5.0: OpenAPI viewer loads with zero external-CDN requests", async ({ page, context }) => {
-  // Navigate to a page that renders the full Layout with the sidebar nav.
-  await page.goto("/settings");
-  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+test("v0.5.0: OpenAPI viewer loads with zero external-CDN requests", async ({ page }) => {
+  // The OpenAPI viewer is now an in-app page (P1-14): the Settings
+  // "OpenAPI viewer" nav card is a same-tab <Link to="/openapi"> (no
+  // target="_blank"), and /openapi frames /api/v1/openapi/viewer/ in an
+  // <iframe>. So we navigate in-app and inspect the iframe — no new tab opens.
 
-  // The nav link opens /api/v1/openapi/viewer in a new tab (target="_blank").
-  // We listen for the new page before clicking.
-  const [viewerPage] = await Promise.all([
-    context.waitForEvent("page"),
-    page.getByRole("link", { name: "OpenAPI", exact: true }).click(),
-  ]);
-
-  // Collect all network requests made by the viewer page.
+  // Collect every external request made on this page (incl. iframe subresources).
   const externalRequests: string[] = [];
-  viewerPage.on("request", (req) => {
+  page.on("request", (req) => {
     const url = req.url();
     // Allow same-origin requests: localhost or 127.0.0.1 on any port, and data: URIs.
     if (
@@ -101,16 +96,27 @@ test("v0.5.0: OpenAPI viewer loads with zero external-CDN requests", async ({ pa
     externalRequests.push(url);
   });
 
-  // Wait for the page to finish loading — the spec fetch fires on load.
-  await viewerPage.waitForLoadState("networkidle");
+  // Navigate to a page that renders the full Layout with the sidebar nav.
+  await page.goto("/settings");
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
 
-  // Assert no external CDN requests were fired.
+  // The Settings "OpenAPI viewer" card links in-app to /openapi (same tab).
+  // The card's accessible name is its full text ("OpenAPI viewer" + the
+  // description line), so match by substring rather than exact.
+  await page.getByRole("link", { name: /OpenAPI viewer/ }).click();
+  await expect(page).toHaveURL(/\/openapi$/);
+  await expect(page.getByRole("heading", { name: "OpenAPI", exact: true })).toBeVisible();
+
+  // The viewer is served inside an <iframe src="/api/v1/openapi/viewer/">.
+  // Its bundled HTML contains the #route-list element (no external CDN deps).
+  const viewer = page.frameLocator('iframe[title="OpenAPI viewer"]');
+  await expect(viewer.locator("#route-list")).toBeVisible({ timeout: 15_000 });
+
+  // Let any iframe subresources (viewer.css / viewer.js / spec fetch) settle.
+  await page.waitForLoadState("networkidle");
+
+  // Assert no external CDN requests were fired by the page or its iframe.
   expect(externalRequests, `External requests found: ${externalRequests.join(", ")}`).toHaveLength(0);
-
-  // The viewer serves valid HTML: the route-list element should exist.
-  await expect(viewerPage.locator("#route-list")).toBeVisible({ timeout: 15_000 });
-
-  await viewerPage.close();
 });
 
 // ── 5. Semantic cache tab is live (not disabled placeholder) ──────────────────

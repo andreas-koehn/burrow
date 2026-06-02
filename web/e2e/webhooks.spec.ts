@@ -18,7 +18,7 @@ test.use({ storageState: "playwright-auth.json" });
 test("v0.4.0: webhooks page mounts + rejects non-https URL client-side", async ({ page }) => {
   await page.goto("/webhooks");
   await expect(page).toHaveURL(/\/webhooks$/);
-  await expect(page.getByRole("heading", { name: "Webhooks" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Webhooks", exact: true })).toBeVisible();
 
   // Open the add dialog.
   await page.getByRole("button", { name: "Add webhook" }).click();

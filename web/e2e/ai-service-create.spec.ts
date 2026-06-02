@@ -20,6 +20,10 @@ import { test, expect } from "@playwright/test";
 
 test.use({ storageState: "playwright-auth.json" });
 
+// Per-test sequence suffix: guarantees unique service ids across tests in the
+// shared embedded-burrowd session even if two POSTs land in the same millisecond.
+let svcSeq = 0;
+
 test("P5: ?new=ai auto-opens Services dialog pre-filled with API-key access mode", async ({ page }) => {
   await page.goto("/services?new=ai");
 
@@ -38,7 +42,7 @@ test("P5: ?new=ai auto-opens Services dialog pre-filled with API-key access mode
 
 test("P5: create AI service via dialog routes to upstream-key tab", async ({ page }) => {
   // Pre-create step: ensure a unique service id.
-  const uniqueId = `svc-e2e-ai-${Date.now()}`;
+  const uniqueId = `svc-e2e-ai-${Date.now()}-${++svcSeq}`;
 
   const cookies = await page.context().cookies();
   const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
@@ -49,8 +53,13 @@ test("P5: create AI service via dialog routes to upstream-key tab", async ({ pag
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
 
-  // Fill in a unique service ID
+  // Fill in a unique service ID and a matching Title. The Title maps to the
+  // services.name column, which carries a UNIQUE(user_id, name) constraint;
+  // the real binary exposes no DELETE /services route, so leaving the name
+  // blank would collide with any other blank-named service this suite creates
+  // (POST → 409). A unique title keeps each created service independent.
   await dialog.getByLabel(/service id/i).fill(uniqueId);
+  await dialog.getByLabel(/^title$/i).fill(uniqueId);
 
   // The Access mode should already be set to API key (auto-filled by ?new=ai)
   const accessModeBtn = dialog.getByRole("button", { name: /access mode/i });
@@ -70,8 +79,9 @@ test("P5: create AI service via dialog routes to upstream-key tab", async ({ pag
   await expect(upstreamTab).toBeVisible();
   await expect(upstreamTab).toHaveAttribute("aria-selected", "true");
 
-  // Clean up: the created service — best-effort, not critical
-  void page.request.delete(`/api/v1/services/${uniqueId}`, { headers }).catch(() => {});
+  // Clean up: the created service. Await it so the deletion completes before the
+  // next test runs in the shared session (fire-and-forget leaked state → flakiness).
+  await page.request.delete(`/api/v1/services/${uniqueId}`, { headers }).catch(() => {});
 });
 
 test("P5: ServiceDetail #upstream-key hash makes Upstream-key tab active", async ({ page }) => {
@@ -80,10 +90,14 @@ test("P5: ServiceDetail #upstream-key hash makes Upstream-key tab active", async
   const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 
-  const svcId = `svc-e2e-hash-${Date.now()}`;
+  const svcId = `svc-e2e-hash-${Date.now()}-${++svcSeq}`;
+  // A unique `title` (→ services.name) is required: the name column has a
+  // UNIQUE(user_id, name) constraint and the real binary has no
+  // DELETE /services route, so a blank name would collide (409) with any other
+  // blank-named service created elsewhere in this shared session.
   const created = await page.request.post("/api/v1/services", {
     headers,
-    data: { service_id: svcId, access_mode: "api_key" },
+    data: { service_id: svcId, title: svcId, access_mode: "api_key" },
   });
   expect([201, 409]).toContain(created.status());
 

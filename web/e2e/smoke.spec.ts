@@ -58,8 +58,12 @@ test("smoke: full happy-path", async ({ page }) => {
   // Token name cell appears in the table (exact match to avoid the Revoke cell)
   await expect(page.getByRole("cell", { name: "e2e-smoke", exact: true })).toBeVisible();
 
-  // Revoke — aria-label set by Tokens.tsx: `Revoke token ${t.name}`
+  // Revoke — the per-row button (aria-label `Revoke token ${t.name}`) now opens
+  // a confirmation dialog ("Revoke token?") with a confirming "Revoke" button.
   await page.getByRole("button", { name: "Revoke token e2e-smoke" }).click();
+  const revokeDialog = page.getByRole("dialog", { name: "Revoke token?" });
+  await expect(revokeDialog).toBeVisible();
+  await revokeDialog.getByRole("button", { name: "Revoke", exact: true }).click();
 
   // Row disappears after revocation
   await expect(page.getByRole("cell", { name: "e2e-smoke", exact: true })).not.toBeVisible();

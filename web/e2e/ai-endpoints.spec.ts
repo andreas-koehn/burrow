@@ -8,11 +8,12 @@ import { test, expect } from "@playwright/test";
 // sidebar (previously the test had to navigate by URL because no live client
 // existed in the e2e fixture).
 //
-// The backend route `/api/v1/ai/endpoints` itself is still not wired by the
-// relay binary (it exists in the MSW contract mock used by Vitest). The real
-// server returns 404, so the page mounts in its error state — that's still
-// the deterministic surface this test asserts: heading, metric tile labels,
-// the "Retry" button.
+// The backend route `/api/v1/ai/endpoints` is now wired by the stock relay
+// binary and returns 200. Pre-provisioning an api_key http service (below)
+// surfaces it as an AI endpoint, so the page mounts successfully and renders
+// the "AI endpoints" data table (NOT an error and NOT the empty state). This
+// test asserts that real surface: heading, subtitle, the metric-tile labels,
+// and the populated endpoints table containing the pre-provisioned service.
 
 // Use the globalSetup-cached admin session (see web/e2e/global-setup.ts).
 test.use({ storageState: "playwright-auth.json" });
@@ -45,11 +46,15 @@ test("v0.4.0: AI endpoints page mounts with heading + metric strip", async ({ pa
   await expect(strip.getByText("Cost estimate (24h)", { exact: true })).toBeVisible();
   await expect(strip.getByText("Cache hit ratio (24h)", { exact: true })).toBeVisible();
 
-  // /ai/endpoints isn't wired in the real binary → page surfaces error state.
+  // /ai/endpoints is wired in the real binary; the pre-provisioned api_key
+  // service surfaces as an AI endpoint, so the page mounts cleanly and renders
+  // the "AI endpoints" data table (no error banner). The created service is a
+  // row in that table.
+  const endpointsTable = page.getByRole("table", { name: "AI endpoints" });
+  await expect(endpointsTable).toBeVisible();
   await expect(
-    page.getByText("Couldn't load AI endpoints", { exact: false }),
+    endpointsTable.getByText("Playwright AI gateway", { exact: false }),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
 });
 
 test("v0.4.0: AI endpoints depends on /cost/summary contract", async ({ page }) => {
