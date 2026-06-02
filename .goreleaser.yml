@@ -182,3 +182,14 @@ changelog:
       - '^chore:'
       - '^test:'
       - '^docs:'
+
+# snapshot: controls the pseudo-version embedded in --snapshot builds only.
+# This block has NO effect on real tagged releases.
+# A STABLE version string (no commit) keeps the rolling "develop" pre-release
+# asset filenames constant, so each develop push overwrites them instead of
+# accumulating stale per-commit binaries. The actual commit is still embedded
+# in each binary via the version.Commit ldflag (goreleaser injects .Commit
+# independently of this template).
+# Archive name example: burrowd_linux_amd64_0.0.0-develop.tar.gz
+snapshot:
+  version_template: "0.0.0-develop"
