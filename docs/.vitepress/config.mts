@@ -8,9 +8,14 @@ export default defineConfig({
   base: '/', // custom domain (docs.burrow.com); use '/burrow/' if served from a project page
   cleanUrls: true,
   lastUpdated: true,
+  markdown: {
+    // `env` is not a built-in Shiki grammar; alias it to `properties` so
+    // KEY=value blocks highlight cleanly instead of falling back to plain text.
+    languageAlias: { env: 'properties' },
+  },
   themeConfig: {
     nav: [
-      { text: 'Guide', link: '/guide/quickstart' },
+      { text: 'Guide', link: '/guide/introduction' },
       { text: 'Reference', link: '/reference/cli' },
     ],
     sidebar: {
@@ -18,9 +23,15 @@ export default defineConfig({
         {
           text: 'Guide',
           items: [
+            { text: 'Introduction', link: '/guide/introduction' },
             { text: 'Quickstart', link: '/guide/quickstart' },
-            { text: 'Installation', link: '/guide/installation' },
+            { text: 'Deploy on a server', link: '/guide/deploy' },
+            { text: 'Connect a client', link: '/guide/connect-client' },
+            { text: 'Expose services', link: '/guide/expose-services' },
+            { text: 'Access control & security', link: '/guide/access-control' },
             { text: 'Configuration', link: '/guide/configuration' },
+            { text: 'Operations', link: '/guide/operations' },
+            { text: 'Troubleshooting', link: '/guide/troubleshooting' },
           ],
         },
       ],
