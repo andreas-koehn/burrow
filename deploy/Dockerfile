@@ -39,5 +39,8 @@ COPY --from=build /out/burrow  /usr/local/bin/burrow
 
 EXPOSE 80 443 7000
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["/usr/local/bin/burrowd", "healthcheck"]
+
 ENTRYPOINT ["/usr/local/bin/burrowd"]
 CMD ["serve"]

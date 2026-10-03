@@ -1069,6 +1069,7 @@ func main() {
 	// for serve), without needing a running burrowd.
 	root.AddCommand(newBackupCmd())
 	root.AddCommand(newRestoreCmd())
+	root.AddCommand(newHealthcheckCmd())
 
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
