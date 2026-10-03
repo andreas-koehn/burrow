@@ -43,7 +43,7 @@ jobs:
           file: deploy/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/ankoehn/burrow:develop
+          tags: ghcr.io/${{ github.repository_owner }}/burrow:develop
           # provenance=false keeps a flat, single-list manifest (no attestation
           # index wrapper) so the tag is directly pullable on older clients.
           provenance: false
