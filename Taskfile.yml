@@ -71,6 +71,11 @@ tasks:
     cmds:
       - bash test/integration/smoke-full.sh
 
+  integration:ollama:
+    desc: "Tier 1: production image + real Ollama upstream behind an API key (up/assert/down)"
+    cmds:
+      - bash test/integration/ollama.sh
+
   e2e:run:
     desc: "Tier 2: bring up full stack + run the Playwright UI suite (up/test/down)"
     cmds:
