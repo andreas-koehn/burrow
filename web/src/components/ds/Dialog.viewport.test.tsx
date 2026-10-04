@@ -125,4 +125,48 @@ describe("Dialog size, close button, focus (F2/U2)", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(opener).toHaveFocus());
   });
+
+  it("returns focus to the opener even when a child autofocuses on mount", async () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>Open</button>
+          <Dialog open={open} title="t" onOpenChange={setOpen}><input autoFocus aria-label="Query" /></Dialog>
+        </>
+      );
+    }
+    render(<Harness />);
+    const opener = screen.getByRole("button", { name: "Open" });
+    opener.focus();
+    fireEvent.click(opener);
+    // autoFocus is applied at commit, before any effect of the dialog runs.
+    expect(screen.getByLabelText("Query")).toHaveFocus();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(opener).toHaveFocus();
+  });
+
+  it("skips a disconnected opener without throwing", async () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          {!open && <button onClick={() => setOpen(true)}>Open</button>}
+          <button>Other</button>
+          <Dialog open={open} title="t" onOpenChange={setOpen}><input aria-label="Name" /></Dialog>
+        </>
+      );
+    }
+    render(<Harness />);
+    const opener = screen.getByRole("button", { name: "Open" });
+    opener.focus();
+    fireEvent.click(opener);
+    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveFocus());
+    expect(opener.isConnected).toBe(false);
+    const focusSpy = vi.spyOn(opener, "focus");
+    expect(() => fireEvent.keyDown(document, { key: "Escape" })).not.toThrow();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(focusSpy).not.toHaveBeenCalled();
+  });
 });

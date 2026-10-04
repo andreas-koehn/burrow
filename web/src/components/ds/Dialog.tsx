@@ -32,10 +32,16 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
   // and steal focus back from whatever the user is typing into.
   const onOpenChangeRef = useRef(onOpenChange);
   onOpenChangeRef.current = onOpenChange;
+  // Remember what opened the dialog so focus can go back there on close.
+  // Captured during the render that opens it: a child with autoFocus takes
+  // focus at commit, before any effect here runs, so an effect would record
+  // the dialog's own field as the opener. undefined = not captured yet.
+  const openerRef = useRef<Element | null | undefined>(undefined);
+  if (!open) openerRef.current = undefined;
+  else if (openerRef.current === undefined) openerRef.current = document.activeElement;
   useEffect(() => {
     if (!open) return;
-    // Remember what opened the dialog so focus can go back there on close.
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const opener = openerRef.current;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onOpenChangeRef.current?.(false);
     };
@@ -56,7 +62,9 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
     return () => {
       document.removeEventListener("keydown", onKey);
       clearTimeout(t);
-      if (opener && opener.isConnected) opener.focus();
+      // Skip <body> (nothing was focused) and openers that unmounted while
+      // the dialog was open, e.g. a dropdown item.
+      if (opener instanceof HTMLElement && opener !== document.body && opener.isConnected) opener.focus();
     };
   }, [open]);
 
