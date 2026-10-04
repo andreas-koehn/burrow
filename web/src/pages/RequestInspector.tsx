@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import {
-  Badge, Button, Dialog, Input, PageHeader, Select, SkeletonRows, Tabs,
+  Badge, Button, Dialog, ErrorNotice, Input, PageHeader, Select, SkeletonRows, Tabs,
 } from "@/components/ds";
 import type { InspectorEntry, Service, ServiceAIConfig } from "@/lib/contract";
 import { withAIConfigDefaults } from "@/lib/aiConfig";
@@ -73,7 +73,7 @@ export default function RequestInspector() {
         id="inspector-service"
         options={httpServices.map((s) => ({ value: s.id, label: s.name }))}
         value={serviceId}
-        onChange={(id) => { setSelected(null); nav(`/inspector/${id}`); }}
+        onChange={(id) => { setSelected(null); setQuery(""); nav(`/inspector/${id}`); }}
       />
     </div>
   ) : undefined;
@@ -125,6 +125,19 @@ export default function RequestInspector() {
         <p className="muted">
           Request inspector is off for this service — enable in Access settings.
         </p>
+      </div>
+    );
+  }
+
+  // Unknown service id or a failed list: an error, not an endless skeleton.
+  if (list.isError) {
+    return (
+      <div className="inspector-page">
+        <PageHeader title="Request inspector" actions={servicePicker} />
+        <ErrorNotice action={<Link to="/inspector">Back to request inspector</Link>}>
+          Couldn't load requests:{" "}
+          {list.error instanceof ApiError ? list.error.message : "Unknown error"}
+        </ErrorNotice>
       </div>
     );
   }

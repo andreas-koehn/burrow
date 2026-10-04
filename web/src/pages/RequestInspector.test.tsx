@@ -99,4 +99,27 @@ describe("Request inspector (§4.23)", () => {
     await screen.findByText("Tail and replay traffic on ollama.");
     expect(document.getElementById("inspector-service")).toBeNull();
   });
+
+  it("shows the API error with a way back for an unknown service, not an endless skeleton", async () => {
+    mount("/inspector/no-such-service");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn't load requests: service not found");
+    expect(within(alert).getByRole("link", { name: /request inspector/i })).toHaveAttribute("href", "/inspector");
+    expect(screen.queryByRole("table", { name: /requests/i })).not.toBeInTheDocument();
+  });
+
+  it("clears the search filter when switching service (F7)", async () => {
+    db.services.push({ ...db.services.find((s) => s.id === "svc_ai001")!, id: "svc_other", name: "other" });
+    db.inspectorEntries.svc_other = db.inspectorEntries.svc_ai001!;
+    mount();
+    const search = await screen.findByRole("searchbox", { name: /search requests/i });
+    await userEvent.type(search, "zzz-no-match");
+    expect(await screen.findByText("No requests yet.")).toBeInTheDocument();
+    await userEvent.click(document.getElementById("inspector-service")!);
+    await userEvent.click(await screen.findByRole("option", { name: "other" }));
+    await waitFor(() => {
+      expect(screen.getByRole("searchbox", { name: /search requests/i })).toHaveValue("");
+    });
+    expect(screen.queryByText("No requests yet.")).not.toBeInTheDocument();
+  });
 });

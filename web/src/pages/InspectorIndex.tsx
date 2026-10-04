@@ -1,7 +1,7 @@
 import { Link, Navigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { apiFetch } from "@/lib/api";
-import { Button, EmptyState, PageHeader, SkeletonRows } from "@/components/ds";
+import { apiFetch, ApiError } from "@/lib/api";
+import { Button, EmptyState, ErrorNotice, PageHeader, SkeletonRows } from "@/components/ds";
 import type { Service } from "@/lib/contract";
 
 // Stable entry point for the request inspector: picks the first http service
@@ -18,6 +18,25 @@ export default function InspectorIndex() {
       <div className="inspector-page">
         <PageHeader title="Request inspector" />
         <SkeletonRows n={4} />
+      </div>
+    );
+  }
+
+  // A failed list is not "no services": say so and offer a retry.
+  if (services.isError) {
+    return (
+      <div className="inspector-page">
+        <PageHeader title="Request inspector" />
+        <ErrorNotice
+          action={
+            <Button variant="secondary" size="sm" onClick={() => void services.refetch()}>
+              Retry
+            </Button>
+          }
+        >
+          Couldn't load services:{" "}
+          {services.error instanceof ApiError ? services.error.message : "Unknown error"}
+        </ErrorNotice>
       </div>
     );
   }

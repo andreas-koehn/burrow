@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { Routes, Route } from "react-router-dom";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import InspectorIndex from "@/pages/InspectorIndex";
@@ -33,5 +34,33 @@ describe("InspectorIndex (F7)", () => {
     mount();
     expect(await screen.findByText("No HTTP services to inspect")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Connect a client" })).toHaveAttribute("href", "/clients/connect");
+  });
+
+  it("shows an error with a retry, not the empty state, when the service list fails", async () => {
+    let calls = 0;
+    server.use(http.get("/api/v1/services", () => {
+      calls += 1;
+      return HttpResponse.json({ error: "boom" }, { status: 500 });
+    }));
+    mount();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn't load services");
+    expect(screen.queryByText("No HTTP services to inspect")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Connect a client" })).not.toBeInTheDocument();
+    const before = calls;
+    await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(calls).toBeGreaterThan(before));
+  });
+
+  it("shows a skeleton while the service list is loading", async () => {
+    server.use(http.get("/api/v1/services", async () => {
+      await delay(150);
+      return HttpResponse.json([]);
+    }));
+    const { container } = mount();
+    expect(container.querySelector(".skel")).not.toBeNull();
+    expect(screen.queryByText("No HTTP services to inspect")).not.toBeInTheDocument();
+    expect(await screen.findByText("No HTTP services to inspect")).toBeInTheDocument();
+    expect(container.querySelector(".skel")).toBeNull();
   });
 });
