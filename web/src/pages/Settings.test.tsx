@@ -89,8 +89,9 @@ describe("Settings / SMTP form width (D-11/L-12)", () => {
     renderApp(<Settings />);
     await screen.findByLabelText(/SMTP server/i);
     const fields = [...document.querySelectorAll(".pw-form .form-field")];
-    const widths = fields.map(f => [...f.classList].find(c => c.startsWith("w-")));
-    const nonPort = widths.filter(w => w !== "w-sm");
+    const widths = fields.map(f => [...f.classList].find(c => c.startsWith("field-w-")));
+    const nonPort = widths.filter(w => w !== "field-w-sm");
+    expect(nonPort[0]).toBeDefined();
     expect(new Set(nonPort).size).toBe(1);
   });
 });

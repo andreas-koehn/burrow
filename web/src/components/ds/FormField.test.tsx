@@ -48,6 +48,11 @@ describe("FormField", () => {
     const md = c2.querySelector(".form-field")!;
     expect(md.classList.contains("field-w-md")).toBe(true);
 
+    const { container: c4 } = render(
+      <FormField label="D" htmlFor="d" w="lg"><Input id="d" /></FormField>,
+    );
+    expect(c4.querySelector(".form-field")!.classList.contains("field-w-lg")).toBe(true);
+
     const { container: c3 } = render(
       <FormField label="C" htmlFor="c"><Input id="c" /></FormField>,
     );
