@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -105,5 +106,23 @@ func TestRouter_GatePostNotBlockedByCSRF(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/__burrow/login", strings.NewReader("email=a&password=b")))
 	if rec.Code != http.StatusFound {
 		t.Fatalf("status = %d, want 302 from the gate", rec.Code)
+	}
+}
+
+// The adapter marks the request context; the proxy trusts only that mark, not
+// the X-Burrow-Path-Prefix header a client could send itself.
+func TestServicePathHandler_MarksContextWithPrefix(t *testing.T) {
+	var gotPrefix string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPrefix = proxy.PathPrefix(r.Context())
+	})
+	h := ServicePathHandler(next, "burrow.example.com")
+	r := chi.NewRouter()
+	r.Handle("/svc/{slug}/*", h)
+	req := httptest.NewRequest("GET", "https://burrow.example.com/svc/abc123/foo", nil)
+	req.Header.Set("X-Burrow-Path-Prefix", "/svc/evil")
+	r.ServeHTTP(httptest.NewRecorder(), req)
+	if gotPrefix != "/svc/abc123" {
+		t.Fatalf("context prefix = %q, want /svc/abc123", gotPrefix)
 	}
 }

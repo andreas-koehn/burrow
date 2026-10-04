@@ -439,6 +439,7 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			stripBurrowCookies(pr.Out)
+			pr.Out.Header.Del("X-Burrow-Path-Prefix")
 			pr.Out.Header.Del("X-Forwarded-Port")
 			pr.Out.Header.Set("X-Forwarded-For", resolvedClientIP)
 			pr.Out.Header.Set("X-Forwarded-Proto", "https")
@@ -613,7 +614,8 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 			pr.Out.Header.Set("X-Forwarded-Proto", "https")
 			// Path-routed requests reach here with a synthetic Host; the
 			// visitor only ever saw the auth domain.
-			if pr.In.Header.Get("X-Burrow-Path-Prefix") != "" {
+			pfx := PathPrefix(pr.In.Context())
+			if pfx != "" {
 				pr.Out.Header.Set("X-Forwarded-Host", authDomain)
 			} else {
 				pr.Out.Header.Set("X-Forwarded-Host", label+"."+authDomain)
@@ -631,9 +633,11 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 			}
 			pr.Out.Host = upstreamHost
 
-			// Carry the path-routing prefix (set by the /svc/{slug} adapter) to
-			// ModifyResponse via the outbound request headers.
-			if pfx := pr.In.Header.Get("X-Burrow-Path-Prefix"); pfx != "" {
+			// Tell the upstream the path-routing prefix. It comes from the
+			// request context (set by the /svc/{slug} adapter); a value the
+			// client sent in the header is never forwarded.
+			pr.Out.Header.Del("X-Burrow-Path-Prefix")
+			if pfx != "" {
 				pr.Out.Header.Set("X-Burrow-Path-Prefix", pfx)
 			}
 		},
@@ -680,7 +684,7 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 		},
 
 		ModifyResponse: func(resp *http.Response) error {
-			if pfx := resp.Request.Header.Get("X-Burrow-Path-Prefix"); pfx != "" {
+			if pfx := PathPrefix(resp.Request.Context()); pfx != "" {
 				if loc := resp.Header.Get("Location"); loc != "" {
 					resp.Header.Set("Location", rewriteLocationPrefix(loc, pfx))
 				}
@@ -1055,16 +1059,53 @@ func (c *countingConn) Write(p []byte) (int, error) {
 var burrowCookies = map[string]bool{"burrow_session": true, "burrow_csrf": true}
 
 // stripBurrowCookies removes the dashboard's cookies from an outbound request
-// and leaves every other cookie untouched.
+// and leaves every other cookie untouched. It filters the raw header text
+// instead of parsing it: the upstream's cookies must arrive byte for byte,
+// including values Go's cookie parser would reject or re-quote.
 func stripBurrowCookies(out *http.Request) {
-	cookies := out.Cookies()
-	if len(cookies) == 0 {
+	lines := out.Header.Values("Cookie")
+	if len(lines) == 0 {
 		return
 	}
-	out.Header.Del("Cookie")
-	for _, c := range cookies {
-		if !burrowCookies[c.Name] {
-			out.AddCookie(c)
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		pairs := strings.Split(line, ";")
+		rest := pairs[:0]
+		for _, pair := range pairs {
+			name, _, _ := strings.Cut(pair, "=")
+			if !burrowCookies[strings.TrimSpace(name)] {
+				rest = append(rest, pair)
+			}
+		}
+		if len(rest) == len(pairs) {
+			kept = append(kept, line)
+			continue
+		}
+		if line = strings.TrimSpace(strings.Join(rest, ";")); line != "" {
+			kept = append(kept, line)
 		}
 	}
+	if len(kept) == 0 {
+		out.Header.Del("Cookie")
+		return
+	}
+	out.Header["Cookie"] = kept
+}
+
+// pathPrefixKey is the context key under which the /svc/{slug} adapter records
+// the public path prefix of a path-routed request.
+type pathPrefixKey struct{}
+
+// WithPathPrefix marks a request as path-routed under prefix ("/svc/<slug>").
+// Only the /svc/{slug} adapter calls it; a request header cannot, so clients
+// of the host-routed listener are unable to claim a prefix.
+func WithPathPrefix(ctx context.Context, prefix string) context.Context {
+	return context.WithValue(ctx, pathPrefixKey{}, prefix)
+}
+
+// PathPrefix returns the prefix recorded by WithPathPrefix, or "" for a
+// host-routed request.
+func PathPrefix(ctx context.Context) string {
+	pfx, _ := ctx.Value(pathPrefixKey{}).(string)
+	return pfx
 }

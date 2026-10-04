@@ -50,6 +50,8 @@ package proxy
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"log/slog"
 	"net"
 	"net/http"
@@ -65,6 +67,7 @@ import (
 
 const (
 	gateSessionCookieName = "burrow_session"
+	gateCSRFCookieName    = "burrow_csrf"
 	gateSessionMaxAge     = 7 * 24 * time.Hour
 	// loginRateLimitPerIP mirrors the value from internal/api's LoginRateLimitPerIP
 	// constant. The gate gets its own independent limiter instance (not shared
@@ -256,6 +259,15 @@ func (g *Gate) handlePostLogin(w http.ResponseWriter, r *http.Request) {
 	// service share the auth domain's origin, so no Domain attribute is
 	// needed. The same MaxAge/flags as the dashboard cookie apply.
 	g.setSessionCookie(w, sid)
+	// On this origin the session cookie is also the dashboard session, and
+	// the dashboard API rejects every mutation without the double-submit CSRF
+	// cookie. Issue it exactly as the dashboard login does. A failure here
+	// only costs dashboard mutations, so the service login still succeeds.
+	if token, err := newCSRFToken(); err != nil {
+		g.log.Error("gate: csrf token error", "err", err)
+	} else {
+		g.setCSRFCookie(w, token)
+	}
 
 	g.log.Info("gate: login success", "email", email)
 	_ = g.st.DeleteSession // best-effort touch is not needed here
@@ -264,12 +276,17 @@ func (g *Gate) handlePostLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, nextURL, http.StatusFound)
 }
 
-// handlePostLogout clears the session cookie and deletes the session from the store.
+// handlePostLogout deletes the session from the store and clears the session
+// and CSRF cookies. Both happen only when the request carried the session
+// cookie: the endpoint has no CSRF token, and SameSite=Lax withholds the
+// cookie from a cross-site form POST, so such a request must not be able to
+// sign the visitor out of the dashboard.
 func (g *Gate) handlePostLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(gateSessionCookieName); err == nil && c.Value != "" {
 		_ = g.st.DeleteSession(r.Context(), c.Value)
+		g.clearSessionCookie(w)
+		g.clearCSRFCookie(w)
 	}
-	g.clearSessionCookie(w)
 	http.Redirect(w, r, "https://"+g.authDomain+"/__burrow/login", http.StatusFound)
 }
 
@@ -301,6 +318,44 @@ func (g *Gate) clearSessionCookie(w http.ResponseWriter) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   g.secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+// newCSRFToken returns a 32-byte random token as 64 hex chars. It mirrors
+// generateCSRFToken in internal/api/cookies.go, which this package cannot
+// import (internal/api imports internal/proxy).
+func newCSRFToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// setCSRFCookie sets the dashboard's double-submit CSRF cookie with the same
+// attributes as internal/api/cookies.go: readable by JavaScript, host-only.
+func (g *Gate) setCSRFCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     gateCSRFCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: false, // JS-readable: required for the double-submit pattern
+		Secure:   g.secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(gateSessionMaxAge.Seconds()),
+	})
+}
+
+// clearCSRFCookie expires the burrow_csrf cookie.
+func (g *Gate) clearCSRFCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     gateCSRFCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: false,
 		Secure:   g.secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
@@ -353,8 +408,10 @@ func (g *Gate) renderAccessDenied(w http.ResponseWriter, r *http.Request, user d
 // sanitizeNext validates the `next` parameter. Accepts a URL iff:
 //   - it is parseable,
 //   - scheme == "https",
-//   - host == authDomain,
-//   - the path lies under /svc/<slug> (dot segments resolved first),
+//   - host == authDomain exactly (no port, no other case, no trailing dot),
+//   - the path is already in its canonical form (no dot segments, doubled
+//     slashes, backslashes or percent-encoded separators) and lies under
+//     /svc/<slug>, so the slug the gate checks is the one the browser lands on,
 //   - no userinfo (user:password@ is stripped out)
 //
 // Any other value (off-domain, a subdomain of authDomain, http://, another
@@ -369,11 +426,17 @@ func (g *Gate) sanitizeNext(raw string) string {
 	if err != nil || u.Scheme != "https" {
 		return fallback
 	}
-	if u.Hostname() != g.authDomain { // Hostname strips the port
+	if u.Host != g.authDomain {
+		return fallback
+	}
+	// RawPath is set only when the path carries an encoding that differs from
+	// the canonical one (%2F, %2e, ...). Browsers treat a backslash as a slash.
+	if u.RawPath != "" || strings.Contains(u.Path, `\`) {
 		return fallback
 	}
 	// "/svc" and "/svc/" clean to "/svc" and are rejected with the rest.
-	if !strings.HasPrefix(path.Clean(u.Path), "/svc/") {
+	clean := path.Clean(u.Path)
+	if clean != strings.TrimSuffix(u.Path, "/") || !strings.HasPrefix(clean, "/svc/") {
 		return fallback
 	}
 	// Strip userinfo for safety.

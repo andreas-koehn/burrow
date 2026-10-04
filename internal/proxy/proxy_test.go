@@ -731,7 +731,7 @@ func TestRewriteLocationHeader(t *testing.T) {
 }
 
 // TestProxyForwardedHostOnPathRoute verifies that a path-routed request
-// (X-Burrow-Path-Prefix set by the /svc/{slug} adapter) reports the public
+// (marked by the /svc/{slug} adapter via WithPathPrefix) reports the public
 // auth domain upstream in X-Forwarded-Host, not the internal routing label.
 func TestProxyForwardedHostOnPathRoute(t *testing.T) {
 	var gotXFH string
@@ -744,12 +744,14 @@ func TestProxyForwardedHostOnPathRoute(t *testing.T) {
 
 	p := proxy.New(d, openChecker{}, authDomain, testLog(), proxy.WithIngressPort("443"))
 
-	ts := httptest.NewServer(p)
+	// Stand in for the /svc/{slug} adapter, which marks the request context.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.ServeHTTP(w, r.WithContext(proxy.WithPathPrefix(r.Context(), "/svc/hdr")))
+	}))
 	defer ts.Close()
 
 	req, _ := http.NewRequest("GET", ts.URL+"/", nil)
 	req.Host = "hdr." + authDomain
-	req.Header.Set("X-Burrow-Path-Prefix", "/svc/hdr")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -820,5 +822,118 @@ func TestProxyStripsBurrowCookies_OnlyBurrowCookies(t *testing.T) {
 	}
 	if _, ok := gotHeader["Cookie"]; ok {
 		t.Fatalf("upstream got a Cookie header: %q", gotHeader["Cookie"])
+	}
+}
+
+// Cookies of the tunnelled app must reach the upstream byte for byte, even
+// when Go's cookie parser would reject or rewrite them.
+func TestProxyStripsBurrowCookies_LeavesAppCookiesVerbatim(t *testing.T) {
+	var gotCookie string
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCookie = r.Header.Get("Cookie")
+		w.WriteHeader(http.StatusOK)
+	})
+	d := newFakeDialer(upstream)
+	d.register("ck3", &proxy.Resolved{ServiceID: "svc-ck3", AccessMode: "open", LocalHost: "127.0.0.1:3000"})
+
+	p := proxy.New(d, openChecker{}, authDomain, testLog())
+	ts := httptest.NewServer(p)
+	defer ts.Close()
+
+	for _, tc := range []struct{ in, want string }{
+		{`burrow_session=s; prefs={"a":1}; flag; burrow_csrf=t; a=b c`, `prefs={"a":1}; flag; a=b c`},
+		{`prefs={"a":1}; flag; a=b c`, `prefs={"a":1}; flag; a=b c`},
+		{`flag;burrow_csrf=t;x=1`, `flag;x=1`},
+		{`burrow_sessionx=keep; burrow_session=s`, `burrow_sessionx=keep`},
+	} {
+		req, _ := http.NewRequest("GET", ts.URL+"/", nil)
+		req.Host = "ck3." + authDomain
+		req.Header.Set("Cookie", tc.in)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		resp.Body.Close()
+		if gotCookie != tc.want {
+			t.Errorf("Cookie %q: upstream got %q, want %q", tc.in, gotCookie, tc.want)
+		}
+	}
+}
+
+// A client of the host-routed listener can send X-Burrow-Path-Prefix itself.
+// It must not be treated as a path-routed request, and the header must not
+// travel upstream.
+func TestProxyIgnoresSpoofedPathPrefixHeader(t *testing.T) {
+	var gotXFH, gotPrefix string
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotXFH = r.Header.Get("X-Forwarded-Host")
+		gotPrefix = r.Header.Get("X-Burrow-Path-Prefix")
+		w.Header().Set("Location", "/login")
+		w.WriteHeader(http.StatusFound)
+	})
+	d := newFakeDialer(upstream)
+	d.register("spoof", &proxy.Resolved{ServiceID: "svc-spoof", AccessMode: "open", LocalHost: "127.0.0.1:3000"})
+
+	p := proxy.New(d, openChecker{}, authDomain, testLog())
+	ts := httptest.NewServer(p)
+	defer ts.Close()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/", nil)
+	req.Host = "spoof." + authDomain
+	req.Header.Set("X-Burrow-Path-Prefix", "/svc/evil")
+
+	hc := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if want := "spoof." + authDomain; gotXFH != want {
+		t.Errorf("X-Forwarded-Host = %q, want %q", gotXFH, want)
+	}
+	if got := resp.Header.Get("Location"); got != "/login" {
+		t.Errorf("Location = %q, want it untouched (/login)", got)
+	}
+	if gotPrefix != "" {
+		t.Errorf("upstream received the spoofed X-Burrow-Path-Prefix %q", gotPrefix)
+	}
+}
+
+// On a real path-routed request the Location header is rewritten under the
+// prefix and the upstream is told the prefix.
+func TestProxyPathRoute_RewritesLocationAndSendsPrefix(t *testing.T) {
+	var gotPrefix string
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPrefix = r.Header.Get("X-Burrow-Path-Prefix")
+		w.Header().Set("Location", "/login")
+		w.WriteHeader(http.StatusFound)
+	})
+	d := newFakeDialer(upstream)
+	d.register("real", &proxy.Resolved{ServiceID: "svc-real", AccessMode: "open", LocalHost: "127.0.0.1:3000"})
+
+	p := proxy.New(d, openChecker{}, authDomain, testLog())
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.ServeHTTP(w, r.WithContext(proxy.WithPathPrefix(r.Context(), "/svc/real")))
+	}))
+	defer ts.Close()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/", nil)
+	req.Host = "real." + authDomain
+	// A client-supplied value must lose against the adapter's.
+	req.Header.Set("X-Burrow-Path-Prefix", "/svc/evil")
+
+	hc := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Location"); got != "/svc/real/login" {
+		t.Errorf("Location = %q, want /svc/real/login", got)
+	}
+	if gotPrefix != "/svc/real" {
+		t.Errorf("upstream X-Burrow-Path-Prefix = %q, want /svc/real", gotPrefix)
 	}
 }

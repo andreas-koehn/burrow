@@ -287,7 +287,7 @@ func TestAccessChecker_BurrowLogin_PathRouted_NextStaysOnOrigin(t *testing.T) {
 	res := &proxy.Resolved{ServiceID: "svc6", AccessMode: "burrow_login"}
 	req := httptest.NewRequest("GET", "http://grafana."+testAuthDomain+"/d/abc?q=1", nil)
 	req.Host = "grafana." + testAuthDomain
-	req.Header.Set("X-Burrow-Path-Prefix", "/svc/grafana")
+	req = req.WithContext(proxy.WithPathPrefix(req.Context(), "/svc/grafana"))
 
 	_, status, _, hdr := ac.Allow(context.Background(), res, req)
 	if status != http.StatusFound {
@@ -312,7 +312,7 @@ func TestAccessChecker_BurrowLogin_PathRouted_PrefixNotDoubled(t *testing.T) {
 	req.URL.Path = "/d/a/b"
 	req.URL.RawPath = "/d/a%2Fb"
 	req.Host = "grafana." + testAuthDomain
-	req.Header.Set("X-Burrow-Path-Prefix", "/svc/grafana")
+	req = req.WithContext(proxy.WithPathPrefix(req.Context(), "/svc/grafana"))
 
 	_, _, _, hdr := ac.Allow(context.Background(), res, req)
 	u, err := url.Parse(hdr.Get("Location"))
@@ -320,6 +320,27 @@ func TestAccessChecker_BurrowLogin_PathRouted_PrefixNotDoubled(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "https://" + testAuthDomain + "/svc/grafana/d/a%2Fb?q=1"
+	if got := u.Query().Get("next"); got != want {
+		t.Fatalf("next = %q, want %q", got, want)
+	}
+}
+
+// A client of the host-routed listener can send X-Burrow-Path-Prefix itself.
+// Only the /svc/{slug} adapter may mark a request as path-routed, so the
+// header must not change the next URL.
+func TestAccessChecker_BurrowLogin_SpoofedPrefixHeaderIgnored(t *testing.T) {
+	ac := newChecker(&fakeValidator{goodKey: testGoodKey})
+	res := &proxy.Resolved{ServiceID: "svc6", AccessMode: "burrow_login"}
+	req := httptest.NewRequest("GET", "/d/abc?q=1", nil)
+	req.Host = "grafana." + testAuthDomain
+	req.Header.Set("X-Burrow-Path-Prefix", "/svc/evil")
+
+	_, _, _, hdr := ac.Allow(context.Background(), res, req)
+	u, err := url.Parse(hdr.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://grafana." + testAuthDomain + "/d/abc?q=1"
 	if got := u.Query().Get("next"); got != want {
 		t.Fatalf("next = %q, want %q", got, want)
 	}

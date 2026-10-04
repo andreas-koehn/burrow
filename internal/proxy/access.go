@@ -281,7 +281,7 @@ func (ac *accessChecker) checkBurrowLogin(ctx context.Context, res *Resolved, r 
 	// actually used so the gate sends them back to the same origin. r.URL has
 	// the /svc/<slug> prefix already stripped, r.RequestURI does not.
 	originalURL := "https://" + r.Host + r.RequestURI
-	if pfx := r.Header.Get("X-Burrow-Path-Prefix"); pfx != "" {
+	if pfx := PathPrefix(r.Context()); pfx != "" {
 		originalURL = "https://" + ac.authDomain + pfx + r.URL.RequestURI()
 	}
 	gateURL := "https://" + ac.authDomain + "/__burrow/login?next=" + url.QueryEscape(originalURL)

@@ -576,19 +576,28 @@ func TestGateGetLogin_PathNext_WrongRole_AccessDenied(t *testing.T) {
 }
 
 func TestGateNext_RejectsOpenRedirects(t *testing.T) {
-	h := newTestGate(newFakeGateStore())
+	fallback := "https://" + gateAuthDomain + "/"
 	for _, next := range []string{
 		"https://evil.example/svc/x/",
 		"http://" + gateAuthDomain + "/svc/x/",
 		"//evil.example/svc/x/",
 		"https://" + gateAuthDomain + ".evil.example/",
+		"https://" + gateAuthDomain + ".evil.example/svc/x/",
+		"https://" + gateAuthDomain + "@evil.example/svc/x/",
+		"https://" + gateAuthDomain + `\@evil.example/svc/x/`,
 		"javascript:alert(1)",
 	} {
-		req := httptest.NewRequest("GET", "https://"+gateAuthDomain+"/__burrow/login?next="+url.QueryEscape(next), nil)
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		if strings.Contains(rec.Body.String(), "evil.example") || strings.Contains(rec.Body.String(), "javascript:") {
-			t.Errorf("next=%q leaked into the login form", next)
+		_, gate := newTestGateWithUser("user", "active")
+		rec := postLoginForm(gate, map[string]string{
+			"email":    "alice@example.com",
+			"password": "correct-password",
+			"next":     next,
+		})
+		if rec.Code != http.StatusFound {
+			t.Fatalf("next=%q: want 302, got %d", next, rec.Code)
+		}
+		if got := rec.Header().Get("Location"); got != fallback {
+			t.Errorf("next=%q: Location = %q, want %q", next, got, fallback)
 		}
 	}
 }
@@ -607,6 +616,20 @@ func TestGateNext_AcceptsOnlySvcPathsOnAuthDomain(t *testing.T) {
 		{"https://" + gateAuthDomain + "/svc/", fallback},
 		{"https://" + gateAuthDomain + "/svc/../api/v1/users", fallback},
 		{"https://" + gateAuthDomain + "/svcx/grafana/", fallback},
+		{"https://" + gateAuthDomain + "/svc/grafana", "https://" + gateAuthDomain + "/svc/grafana"},
+		{"https://" + gateAuthDomain + ":8443/svc/grafana/", fallback},
+		{"https://" + strings.ToUpper(gateAuthDomain) + "/svc/grafana/", fallback},
+		{"https://" + gateAuthDomain + "./svc/grafana/", fallback},
+		{"https://" + gateAuthDomain + "/svc/grafana/../other/", fallback},
+		{"https://" + gateAuthDomain + "//svc/grafana/", fallback},
+		{"https://" + gateAuthDomain + "/a/../svc/grafana", fallback},
+		{"https://" + gateAuthDomain + "/svc/./grafana", fallback},
+		{"https://" + gateAuthDomain + "/svc%2Fgrafana/", fallback},
+		{"https://" + gateAuthDomain + "/svc/grafana/%2e%2e/other/", fallback},
+		{"https://" + gateAuthDomain + "/svc/grafana/%2E%2E/other/", fallback},
+		{"https://" + gateAuthDomain + `/svc/grafana/\..\other/`, fallback},
+		{"https://" + gateAuthDomain + "/svc/grafana/%5C..%5Cother/", fallback},
+		{"https://" + gateAuthDomain + "/svc/grafana//", fallback},
 		{"https://user:pw@" + gateAuthDomain + "/svc/grafana/", "https://" + gateAuthDomain + "/svc/grafana/"},
 	} {
 		_, gate := newTestGateWithUser("user", "active")
@@ -648,6 +671,73 @@ func TestGatePostLogin_CookieIsHostOnly(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("want burrow_session cookie, got none")
+	}
+}
+
+// The gate's session cookie is the dashboard session on this origin, so the
+// gate also issues the double-submit CSRF cookie the dashboard API requires.
+func TestGatePostLogin_SetsCSRFCookie(t *testing.T) {
+	_, gate := newTestGateWithUser("user", "active")
+	rec := postLoginForm(gate, map[string]string{
+		"email":    "alice@example.com",
+		"password": "correct-password",
+		"next":     "https://" + gateAuthDomain + "/svc/grafana/",
+	})
+	var csrf *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "burrow_csrf" {
+			csrf = c
+		}
+	}
+	if csrf == nil {
+		t.Fatal("want burrow_csrf cookie, got none")
+	}
+	if len(csrf.Value) != 64 {
+		t.Errorf("burrow_csrf value length = %d, want 64 hex chars", len(csrf.Value))
+	}
+	if csrf.HttpOnly {
+		t.Error("burrow_csrf must be readable by JavaScript")
+	}
+	if csrf.Domain != "" || csrf.Path != "/" || csrf.SameSite != http.SameSiteLaxMode {
+		t.Errorf("burrow_csrf attributes: Domain=%q Path=%q SameSite=%v", csrf.Domain, csrf.Path, csrf.SameSite)
+	}
+}
+
+// A logout request that carries no session cookie (a cross-site form POST:
+// SameSite=Lax withholds the cookie) must not clear anything.
+func TestGatePostLogout_WithoutCookie_ClearsNothing(t *testing.T) {
+	_, gate := newTestGateWithUser("user", "active")
+	req := httptest.NewRequest("POST", "/__burrow/logout", nil)
+	req.RemoteAddr = "1.2.3.4:5678"
+	rec := httptest.NewRecorder()
+	gate.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("want 302, got %d", rec.Code)
+	}
+	if got := rec.Result().Cookies(); len(got) != 0 {
+		t.Errorf("logout without a session cookie set cookies: %v", got)
+	}
+}
+
+// A real logout clears the CSRF cookie along with the session cookie.
+func TestGatePostLogout_ClearsCSRFCookie(t *testing.T) {
+	st, gate := newTestGateWithUser("user", "active")
+	st.sessionMap["sess-abc"] = "user-1"
+	req := httptest.NewRequest("POST", "/__burrow/logout", nil)
+	req.RemoteAddr = "1.2.3.4:5678"
+	req.AddCookie(&http.Cookie{Name: "burrow_session", Value: "sess-abc"})
+	rec := httptest.NewRecorder()
+	gate.ServeHTTP(rec, req)
+
+	cleared := false
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "burrow_csrf" && c.MaxAge == -1 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Error("logout did not clear burrow_csrf")
 	}
 }
 

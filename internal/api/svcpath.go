@@ -5,16 +5,18 @@ import (
 	"strings"
 
 	"github.com/ankoehn/burrow/internal/auth"
+	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/go-chi/chi/v5"
 )
 
 // ServicePathHandler adapts a /svc/{slug}/* request into a host-based request
 // the host-routing proxy handler understands: it rewrites Host to
 // "<slug>.<authDomain>", strips the "/svc/<slug>" prefix from the path, and
-// sets X-Burrow-Path-Prefix so the proxy can rewrite Location headers and
-// report the public host upstream. Access control, connection logging,
+// records the prefix in the request context (proxy.WithPathPrefix) so the
+// proxy can rewrite Location headers and report the public host upstream. The
+// proxy trusts only that context value, never a client-sent header. Access control, connection logging,
 // streaming, and stream dialing all come from the delegated proxy handler.
-func ServicePathHandler(proxy http.Handler, authDomain string) http.HandlerFunc {
+func ServicePathHandler(next http.Handler, authDomain string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slug := chi.URLParam(r, "slug")
 		if !auth.ValidSlug(slug) {
@@ -27,7 +29,7 @@ func ServicePathHandler(proxy http.Handler, authDomain string) http.HandlerFunc 
 			rest = "/" + rest
 		}
 
-		r2 := r.Clone(r.Context())
+		r2 := r.Clone(proxy.WithPathPrefix(r.Context(), prefix))
 		r2.URL.Path = rest
 		// Preserve percent-encoding: if RawPath is set (path had encoded bytes
 		// like %2F), strip the prefix from it too; otherwise leave it empty so
@@ -44,6 +46,6 @@ func ServicePathHandler(proxy http.Handler, authDomain string) http.HandlerFunc 
 		r2.Host = slug + "." + authDomain
 		r2.Header.Set("X-Burrow-Path-Prefix", prefix)
 
-		proxy.ServeHTTP(w, r2)
+		next.ServeHTTP(w, r2)
 	}
 }
