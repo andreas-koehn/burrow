@@ -197,7 +197,13 @@ export default function CostBudgets() {
             <Select id="budget-scope" value={scope} onChange={(v) => { setScope(v as Budget["scope"]); setSubjectId(""); }} options={SCOPE_OPTIONS} />
           </FormField>
           {scope === "service" ? (
-            <FormField label="Subject" htmlFor="budget-subject" w="md" help="The service this budget applies to.">
+            <FormField
+              label="Subject"
+              htmlFor="budget-subject"
+              w="md"
+              help={services.isLoading ? "Loading services…" : "The service this budget applies to."}
+              error={services.isError && !services.data ? "Couldn't load services." : undefined}
+            >
               <Select id="budget-subject" value={subjectId} onChange={setSubjectId} options={serviceOptions} placeholder="Select a service…" />
             </FormField>
           ) : scope !== "global" ? (

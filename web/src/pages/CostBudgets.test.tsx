@@ -110,33 +110,78 @@ describe("Cost & budgets (§4.24)", () => {
     await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
     const dialog = await screen.findByRole("dialog", { name: "New budget" });
 
-    // The DS Select trigger is a <button> tied to its <label> by id only;
-    // Testing Library resolves neither getByLabelText nor a role name for
-    // it, so reach it by the id the label points at.
-    const trigger = (id: string) => {
-      const el = dialog.querySelector<HTMLButtonElement>(`button#${id}`);
-      if (!el) throw new Error(`no select trigger #${id}`);
-      expect(dialog.querySelector(`label[for="${id}"]`)).not.toBeNull();
-      return el;
-    };
     // A subject typed for one scope must not survive a scope switch.
     await userEvent.type(within(dialog).getByLabelText("Subject"), "ak_stale");
 
-    await userEvent.click(trigger("budget-scope"));
+    await userEvent.click(within(dialog).getByLabelText("Scope"));
     await userEvent.click(await screen.findByRole("option", { name: "Service" }));
-    await userEvent.click(trigger("budget-subject"));
+    await userEvent.click(within(dialog).getByLabelText("Subject"));
     expect(await screen.findByRole("option", { name: "alpha" })).toBeInTheDocument();
     // Close the list by toggling the trigger: Escape would also close the dialog.
-    await userEvent.click(trigger("budget-subject"));
+    await userEvent.click(within(dialog).getByLabelText("Subject"));
     expect(screen.queryByRole("option", { name: "alpha" })).toBeNull();
 
-    await userEvent.click(trigger("budget-scope"));
+    await userEvent.click(within(dialog).getByLabelText("Scope"));
     await userEvent.click(await screen.findByRole("option", { name: "User" }));
     expect(within(dialog).getByLabelText("Subject")).toHaveValue("");
 
-    await userEvent.click(trigger("budget-scope"));
+    await userEvent.click(within(dialog).getByLabelText("Scope"));
     await userEvent.click(await screen.findByRole("option", { name: "Global" }));
+    expect(within(dialog).queryByLabelText("Subject")).toBeNull();
     expect(within(dialog).queryByText("Subject")).toBeNull();
-    expect(dialog.querySelector("#budget-subject")).toBeNull();
+  });
+
+  // Records every POST /budgets body so the tests can assert what was sent.
+  function captureBudgetPosts() {
+    const bodies: Record<string, unknown>[] = [];
+    server.use(http.post("/api/v1/budgets", async ({ request }) => {
+      const b = (await request.json()) as Record<string, unknown>;
+      bodies.push(b);
+      return HttpResponse.json({ id: "bdg_test", current_usd: 0, exceeded: false, alert_webhook_id: null, ...b }, { status: 201 });
+    }));
+    return bodies;
+  }
+
+  it("posts the picked service id as subject_id for the Service scope (U4)", async () => {
+    server.use(http.get("/api/v1/services", () => HttpResponse.json([
+      { id: "svc-a", name: "alpha", type: "http", access_mode: "api_key", connected: true },
+    ])));
+    const bodies = captureBudgetPosts();
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
+    const dialog = await screen.findByRole("dialog", { name: "New budget" });
+    await userEvent.click(within(dialog).getByLabelText("Scope"));
+    await userEvent.click(await screen.findByRole("option", { name: "Service" }));
+    await userEvent.click(within(dialog).getByLabelText("Subject"));
+    await userEvent.click(await screen.findByRole("option", { name: "alpha" }));
+    await userEvent.type(within(dialog).getByLabelText("Daily USD"), "5");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({ scope: "service", subject_id: "svc-a", daily_usd: 5 });
+  });
+
+  it("posts an empty subject_id for the Global scope even after a subject was typed (U4)", async () => {
+    const bodies = captureBudgetPosts();
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
+    const dialog = await screen.findByRole("dialog", { name: "New budget" });
+    await userEvent.type(within(dialog).getByLabelText("Subject"), "ak_stale");
+    await userEvent.click(within(dialog).getByLabelText("Scope"));
+    await userEvent.click(await screen.findByRole("option", { name: "Global" }));
+    await userEvent.type(within(dialog).getByLabelText("Daily USD"), "5");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({ scope: "global", subject_id: "", daily_usd: 5 });
+  });
+
+  it("says so when the service list cannot be loaded instead of showing an empty picker (U4)", async () => {
+    server.use(http.get("/api/v1/services", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
+    const dialog = await screen.findByRole("dialog", { name: "New budget" });
+    await userEvent.click(within(dialog).getByLabelText("Scope"));
+    await userEvent.click(await screen.findByRole("option", { name: "Service" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Couldn't load services.");
+    expect(within(dialog).queryByText("The service this budget applies to.")).toBeNull();
   });
 });

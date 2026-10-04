@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MtlsPanel } from "@/components/MtlsPanel";
+import { Dialog } from "@/components/ds";
 
 describe("MtlsPanel", () => {
   it("renders a mono textarea for the CA PEM", () => {
@@ -47,5 +48,28 @@ describe("MtlsPanel upload affordance (L9)", () => {
     await waitFor(() => {
       expect(onChange).toHaveBeenCalledWith(expect.stringContaining("BEGIN CERTIFICATE"));
     });
+  });
+
+  it("does not take the dialog's initial focus or a tab stop; the textarea does", async () => {
+    render(
+      <Dialog open title="Access">
+        <MtlsPanel value="" onChange={() => {}} />
+      </Dialog>,
+    );
+    const textarea = screen.getByLabelText(/ca pem/i);
+    await waitFor(() => expect(textarea).toHaveFocus());
+    expect(screen.getByLabelText("Upload CA bundle")).toHaveAttribute("tabindex", "-1");
+    // The visible button is the keyboard path to the picker.
+    const button = screen.getByRole("button", { name: "Upload file…" });
+    expect(button).not.toHaveAttribute("tabindex", "-1");
+    await userEvent.tab({ shift: true });
+    expect(button).toHaveFocus();
+  });
+
+  it("opens the file picker from the visible button", async () => {
+    render(<MtlsPanel value="" onChange={() => {}} />);
+    const click = vi.spyOn(screen.getByLabelText("Upload CA bundle") as HTMLInputElement, "click");
+    await userEvent.click(screen.getByRole("button", { name: "Upload file…" }));
+    expect(click).toHaveBeenCalledTimes(1);
   });
 });

@@ -52,15 +52,6 @@ export function MtlsPanel({ value, onChange }: MtlsPanelProps) {
             Upload file…
           </Button>
         </div>
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".pem,.crt,.cer,application/x-pem-file,application/x-x509-ca-cert"
-          aria-label="Upload CA bundle"
-          onChange={(e) => { void onFile(e); }}
-          className="visually-hidden"
-          tabIndex={-1}
-        />
         <textarea
           id={id}
           className="input mono"
@@ -69,6 +60,17 @@ export function MtlsPanel({ value, onChange }: MtlsPanelProps) {
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder="-----BEGIN CERTIFICATE-----&#10;…&#10;-----END CERTIFICATE-----"
+        />
+        {/* Kept after the textarea: Dialog focuses the first field in its body,
+            and this one is invisible. The button above is its keyboard path. */}
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".pem,.crt,.cer,application/x-pem-file,application/x-x509-ca-cert"
+          aria-label="Upload CA bundle"
+          onChange={(e) => { void onFile(e); }}
+          className="visually-hidden"
+          tabIndex={-1}
         />
         <p className="help">
           Paste a PEM-encoded CA bundle, or upload a <code>.pem</code> /
