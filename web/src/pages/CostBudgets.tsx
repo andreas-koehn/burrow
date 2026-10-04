@@ -4,7 +4,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Dialog, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, PageHeader, Select, SkeletonRows, TableEmptyRow } from "@/components/ds";
-import type { Budget, CostSummary } from "@/lib/contract";
+import type { Budget, CostSummary, Service } from "@/lib/contract";
 
 type Window = CostSummary["window"];
 
@@ -41,7 +41,7 @@ function SpendTile({ w, summary }: { w: Window; summary: CostSummary | undefined
     <MetricTile
       label={WINDOW_LABEL[w]}
       value={summary ? fmtUsd(summary.total_usd) : "—"}
-      sub={summary ? `${summary.tokens_in.toLocaleString()} → ${summary.tokens_out.toLocaleString()}` : "—"}
+      sub={summary ? `${summary.tokens_in.toLocaleString()} tokens in · ${summary.tokens_out.toLocaleString()} out` : "—"}
     >
       <div className="pct-bar">
         <span
@@ -80,6 +80,15 @@ export default function CostBudgets() {
   const [dailyUsd, setDailyUsd] = useState("");
   const [action, setAction] = useState<Budget["action_on_exceed"]>("alert_webhook");
   const [err, setErr] = useState<string | null>(null);
+
+  const services = useQuery({
+    queryKey: ["services"],
+    queryFn: () => apiFetch<Service[]>("/services"),
+    retry: false,
+    enabled: addOpen,
+  });
+  const serviceOptions = (Array.isArray(services.data) ? services.data : [])
+    .map((s) => ({ value: s.id, label: s.name }));
 
   const create = useMutation({
     mutationFn: () =>
@@ -185,11 +194,22 @@ export default function CostBudgets() {
       >
         <FormFieldGroup>
           <FormField label="Scope" htmlFor="budget-scope" w="md">
-            <Select id="budget-scope" value={scope} onChange={(v) => setScope(v as Budget["scope"])} options={SCOPE_OPTIONS} />
+            <Select id="budget-scope" value={scope} onChange={(v) => { setScope(v as Budget["scope"]); setSubjectId(""); }} options={SCOPE_OPTIONS} />
           </FormField>
-          <FormField label="Subject" htmlFor="budget-subject" w="md">
-            <Input id="budget-subject" className="mono" value={subjectId} onChange={(e) => setSubjectId(e.target.value)} />
-          </FormField>
+          {scope === "service" ? (
+            <FormField label="Subject" htmlFor="budget-subject" w="md" help="The service this budget applies to.">
+              <Select id="budget-subject" value={subjectId} onChange={setSubjectId} options={serviceOptions} placeholder="Select a service…" />
+            </FormField>
+          ) : scope !== "global" ? (
+            <FormField
+              label="Subject"
+              htmlFor="budget-subject"
+              w="md"
+              help={scope === "api_key" ? "ID of the API key." : "ID of the user."}
+            >
+              <Input id="budget-subject" className="mono" value={subjectId} onChange={(e) => setSubjectId(e.target.value)} />
+            </FormField>
+          ) : null}
           <FormField label="Daily USD" htmlFor="budget-daily" w="sm">
             <Input id="budget-daily" type="number" className="mono" value={dailyUsd} onChange={(e) => setDailyUsd(e.target.value)} />
           </FormField>

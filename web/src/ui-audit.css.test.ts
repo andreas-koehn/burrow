@@ -102,3 +102,20 @@ describe("T14 — table empty row wraps and ignores row hover", () => {
     expect(css).toMatch(/table\.data tbody tr:hover td\.table-empty\s*\{[^}]*background:\s*transparent/);
   });
 });
+
+describe("T15 — controls", () => {
+  it("inputs and default buttons share one height", () => {
+    expect(css).toMatch(/\.input, \.select-trigger\s*\{[^}]*height:\s*32px/);
+    expect(css).toMatch(/\.btn\s*\{[^}]*height:\s*32px/);
+  });
+  it("textareas are not forced to single-line height", () => {
+    expect(css).toMatch(/textarea\.input\s*\{[^}]*height:\s*auto/);
+  });
+  it("small controls get a larger hit area", () => {
+    expect(css).toMatch(/\.switch::before\s*\{[^}]*inset:\s*-7px/);
+    expect(css).toMatch(/button\.sort-header\s*\{[^}]*min-height:\s*28px/);
+  });
+  it("restores list numbers in the Home explainer", () => {
+    expect(css).toMatch(/\.home-explainer ol\s*\{[^}]*list-style:\s*decimal/);
+  });
+});

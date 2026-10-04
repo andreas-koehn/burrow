@@ -1,4 +1,4 @@
-import { useId, useState, type ChangeEvent } from "react";
+import { useId, useRef, useState, type ChangeEvent } from "react";
 import { Button } from "@/components/ds";
 
 function toHex(buf: ArrayBuffer): string {
@@ -14,6 +14,7 @@ export interface MtlsPanelProps {
 
 export function MtlsPanel({ value, onChange }: MtlsPanelProps) {
   const id = useId();
+  const fileRef = useRef<HTMLInputElement>(null);
   const [fingerprint, setFingerprint] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -45,13 +46,20 @@ export function MtlsPanel({ value, onChange }: MtlsPanelProps) {
   return (
     <div className="mtls-panel">
       <div className="field">
-        <label htmlFor={id}>CA PEM</label>
+        <div className="row row-center gap-2" style={{ justifyContent: "space-between" }}>
+          <label htmlFor={id}>CA PEM</label>
+          <Button variant="secondary" size="sm" onClick={() => fileRef.current?.click()}>
+            Upload file…
+          </Button>
+        </div>
         <input
+          ref={fileRef}
           type="file"
           accept=".pem,.crt,.cer,application/x-pem-file,application/x-x509-ca-cert"
           aria-label="Upload CA bundle"
           onChange={(e) => { void onFile(e); }}
-          className="small"
+          className="visually-hidden"
+          tabIndex={-1}
         />
         <textarea
           id={id}
@@ -62,7 +70,7 @@ export function MtlsPanel({ value, onChange }: MtlsPanelProps) {
           onChange={(e) => onChange(e.target.value)}
           placeholder="-----BEGIN CERTIFICATE-----&#10;…&#10;-----END CERTIFICATE-----"
         />
-        <p className="muted small">
+        <p className="help">
           Paste a PEM-encoded CA bundle, or upload a <code>.pem</code> /
           {" "}<code>.crt</code> file.
         </p>

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { server } from "@/mocks/server";
@@ -91,5 +91,52 @@ describe("Cost & budgets (§4.24)", () => {
       expect(fill).not.toBeNull();
       expect(fill!.style.width).toBe("0%");
     }
+  });
+
+  it("labels the token counts on the spend tiles (L6)", async () => {
+    mount();
+    const strip = await screen.findByRole("list", { name: /spend by window/i });
+    await waitFor(() => {
+      expect(strip.textContent).toMatch(/tokens in · .* out/);
+    });
+    expect(strip.textContent).not.toContain("→");
+  });
+
+  it("offers a service picker for the Service scope and hides Subject for Global (U4)", async () => {
+    server.use(http.get("/api/v1/services", () => HttpResponse.json([
+      { id: "svc-a", name: "alpha", type: "http", access_mode: "api_key", connected: true },
+    ])));
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
+    const dialog = await screen.findByRole("dialog", { name: "New budget" });
+
+    // The DS Select trigger is a <button> tied to its <label> by id only;
+    // Testing Library resolves neither getByLabelText nor a role name for
+    // it, so reach it by the id the label points at.
+    const trigger = (id: string) => {
+      const el = dialog.querySelector<HTMLButtonElement>(`button#${id}`);
+      if (!el) throw new Error(`no select trigger #${id}`);
+      expect(dialog.querySelector(`label[for="${id}"]`)).not.toBeNull();
+      return el;
+    };
+    // A subject typed for one scope must not survive a scope switch.
+    await userEvent.type(within(dialog).getByLabelText("Subject"), "ak_stale");
+
+    await userEvent.click(trigger("budget-scope"));
+    await userEvent.click(await screen.findByRole("option", { name: "Service" }));
+    await userEvent.click(trigger("budget-subject"));
+    expect(await screen.findByRole("option", { name: "alpha" })).toBeInTheDocument();
+    // Close the list by toggling the trigger: Escape would also close the dialog.
+    await userEvent.click(trigger("budget-subject"));
+    expect(screen.queryByRole("option", { name: "alpha" })).toBeNull();
+
+    await userEvent.click(trigger("budget-scope"));
+    await userEvent.click(await screen.findByRole("option", { name: "User" }));
+    expect(within(dialog).getByLabelText("Subject")).toHaveValue("");
+
+    await userEvent.click(trigger("budget-scope"));
+    await userEvent.click(await screen.findByRole("option", { name: "Global" }));
+    expect(within(dialog).queryByText("Subject")).toBeNull();
+    expect(dialog.querySelector("#budget-subject")).toBeNull();
   });
 });

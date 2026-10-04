@@ -136,18 +136,20 @@ export default function Home() {
           <MetricTile
             label="Clients"
             value={isAdmin ? String(clients.data?.length ?? 0) : "—"}
-            sub={GLOSSARY.client.split(" that ")[0]}
-            tooltip="Machines running burrow connect."
+            sub="machines connected"
+            tooltip={GLOSSARY.client.replace(/`/g, "")}
           />
           <MetricTile
             label="Services"
             value={String(svc.length)}
-            sub={GLOSSARY.service.split("; it")[0]}
+            sub="saved configurations"
+            tooltip={GLOSSARY.service}
           />
           <MetricTile
             label="Live tunnels"
             value={String(liveTunnels)}
-            sub={GLOSSARY.tunnel.split(" — it")[0]}
+            sub="forwarding right now"
+            tooltip={GLOSSARY.tunnel}
           />
         </MetricStrip>
       )}
@@ -159,12 +161,13 @@ export default function Home() {
           <MetricTile
             label="Traffic (24h)"
             value={trafficLoading ? "…" : trafficValue}
+            sub="in / out"
           />
           {!costAbsent && (
             <MetricTile
               label="AI cost (24h)"
               value={cost.data ? fmtUsd(cost.data.total_usd) : "—"}
-              sub={cost.data ? `${fmtInt(cost.data.tokens_in)} → ${fmtInt(cost.data.tokens_out)}` : undefined}
+              sub={cost.data ? `${fmtInt(cost.data.tokens_in)} tokens in · ${fmtInt(cost.data.tokens_out)} out` : undefined}
               tooltip="Estimates from the bundled pricing table — operator-overridable."
             />
           )}

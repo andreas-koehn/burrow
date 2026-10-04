@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
 import AuditLog from "@/pages/AuditLog";
@@ -160,5 +160,55 @@ describe("Audit log (§4.25)", () => {
       expect(screen.queryByText(/2026-05-25T07:42:51\.83442115Z/)).toBeNull();
       expect(screen.getByText(/25 May 2026/)).toBeInTheDocument();
     });
+  });
+
+  function mockEvents(payload: Record<string, unknown>) {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
+      if (String(url).includes("/audit/events")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: "1",
+              ts: "2026-05-25T07:42:51Z",
+              actor_id: "u1",
+              actor_email: "alice@example.com",
+              action: "session.create",
+              subject_id: "s1",
+              subject_label: "session",
+              result: "ok",
+              source_ip: "127.0.0.1",
+              user_agent: "",
+              request_id: "req1",
+              payload,
+              prev_hash: "",
+              hash: "h1",
+            },
+          ]),
+          { status: 200 },
+        ) as Response;
+      }
+      return new Response("{}", { status: 200 }) as Response;
+    });
+  }
+
+  it("says so when an entry has no payload instead of printing {} (U6)", async () => {
+    mockEvents({});
+    mount();
+    const table = await screen.findByRole("table", { name: /audit events/i });
+    await userEvent.click(within(table).getByText("session.create"));
+    expect(await screen.findByText("No additional details.")).toBeInTheDocument();
+    expect(screen.queryByText("{}")).toBeNull();
+    expect(table.querySelector("pre")).toBeNull();
+  });
+
+  it("still prints a non-empty payload as JSON (U6)", async () => {
+    mockEvents({ reason: "login" });
+    mount();
+    const table = await screen.findByRole("table", { name: /audit events/i });
+    await userEvent.click(within(table).getByText("session.create"));
+    await waitFor(() => {
+      expect(table.querySelector("pre")?.textContent).toContain('"reason": "login"');
+    });
+    expect(screen.queryByText("No additional details.")).toBeNull();
   });
 });

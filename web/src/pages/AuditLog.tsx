@@ -32,7 +32,9 @@ function Row({ e }: { e: AuditEvent }) {
       {open && (
         <tr>
           <td colSpan={7} className="audit-detail">
-            <pre className="mono small">{JSON.stringify(e.payload, null, 2)}</pre>
+            {e.payload && Object.keys(e.payload).length > 0
+              ? <pre className="mono small">{JSON.stringify(e.payload, null, 2)}</pre>
+              : <p className="muted small">No additional details.</p>}
             <p className="muted mono small">
               prev_hash: {e.prev_hash} · hash: {e.hash}
             </p>

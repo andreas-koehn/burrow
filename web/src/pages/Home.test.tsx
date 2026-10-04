@@ -16,7 +16,7 @@ describe("Home (Overview)", () => {
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();
   });
 
-  it("renders a 'Last 24 hours' strip with AI-cost tile showing $1.23 and 12,000 → 8,000", async () => {
+  it("renders a 'Last 24 hours' strip with AI-cost tile showing $1.23 and labelled token counts", async () => {
     renderApp(<Home />);
     const strip = await screen.findByRole("list", { name: "Last 24 hours" });
     const { getAllByRole } = within(strip);
@@ -26,7 +26,7 @@ describe("Home (Overview)", () => {
       const costTile = tiles.find((t) => t.querySelector(".label")?.textContent === "AI cost (24h)");
       expect(costTile).toBeTruthy();
       expect(costTile!.querySelector(".value")?.textContent).toBe("$1.23");
-      expect(costTile!.querySelector(".sub")?.textContent).toBe("12,000 → 8,000");
+      expect(costTile!.querySelector(".sub")?.textContent).toBe("12,000 tokens in · 8,000 out");
     });
   });
 
@@ -60,6 +60,28 @@ describe("Home (Overview)", () => {
       // Live tunnels tile — 3 services have connected=true
       expect(tiles[2].querySelector(".value")?.textContent).toBe("3");
     });
+  });
+
+  it("stat tiles show short context, not glossary sentences or backticks (L6)", async () => {
+    renderApp(<Home />);
+    const strip = await screen.findByRole("list", { name: "Overview" });
+    expect(strip.textContent).not.toContain("`");
+    expect(within(strip).getByText("machines connected")).toBeInTheDocument();
+    expect(within(strip).getByText("saved configurations")).toBeInTheDocument();
+    expect(within(strip).getByText("forwarding right now")).toBeInTheDocument();
+    for (const tile of within(strip).getAllByRole("listitem")) {
+      expect(tile.getAttribute("title")).toBeTruthy();
+      expect(tile.getAttribute("title")).not.toContain("`");
+    }
+  });
+
+  it("labels the token counts on the AI cost tile (L6)", async () => {
+    renderApp(<Home />);
+    const strip = await screen.findByRole("list", { name: "Last 24 hours" });
+    await waitFor(() => {
+      expect(strip.textContent).toMatch(/tokens in · .* out/);
+    });
+    expect(within(strip).getByText("in / out")).toBeInTheDocument();
   });
 
   // ---- Alerts strip ----

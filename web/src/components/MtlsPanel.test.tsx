@@ -29,3 +29,23 @@ describe("MtlsPanel", () => {
     expect(await screen.findByText(/deadbeef/)).toBeInTheDocument();
   });
 });
+
+describe("MtlsPanel upload affordance (L9)", () => {
+  it("offers a DS button instead of a bare file input", () => {
+    render(<MtlsPanel value="" onChange={() => {}} />);
+    expect(screen.getByRole("button", { name: "Upload file…" })).toBeInTheDocument();
+    const input = screen.getByLabelText("Upload CA bundle");
+    expect(input).toHaveAttribute("type", "file");
+    expect(input.className).toContain("visually-hidden");
+  });
+
+  it("loads the picked file into the textarea value", async () => {
+    const onChange = vi.fn();
+    render(<MtlsPanel value="" onChange={onChange} />);
+    const file = new File(["-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----"], "ca.pem", { type: "application/x-pem-file" });
+    await userEvent.upload(screen.getByLabelText("Upload CA bundle"), file);
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledWith(expect.stringContaining("BEGIN CERTIFICATE"));
+    });
+  });
+});
