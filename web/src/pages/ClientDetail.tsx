@@ -13,6 +13,8 @@ const ACCESS_LABEL: Record<AccessMode, string> = {
   mtls: "mTLS",
 };
 
+const BACK = { to: "/clients", label: "Clients" } as const;
+
 export default function ClientDetail() {
   const { id = "" } = useParams();
   const { data, isLoading, error } = useQuery({
@@ -24,7 +26,7 @@ export default function ClientDetail() {
   if (error) {
     return (
       <div className="users-page">
-        <PageHeader title="Client" />
+        <PageHeader back={BACK} title="Client" />
         <div className="notice-block error">
           <div className="icon-bubble"><AlertTriangle size={18} /></div>
           <p role="alert">{error instanceof ApiError ? error.message : "client not found"}</p>
@@ -37,6 +39,7 @@ export default function ClientDetail() {
   return (
     <div className="users-page">
       <PageHeader
+        back={BACK}
         title={data.token_name}
         subtitle={<span className="mono">{data.session_id} · {data.os}/{data.arch} · burrow {data.client_version}</span>}
       />

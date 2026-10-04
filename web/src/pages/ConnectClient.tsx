@@ -51,6 +51,8 @@ function buildCmd(opts: {
   return parts.join(" ");
 }
 
+const BACK = { to: "/clients", label: "Clients" } as const;
+
 export default function ConnectClient() {
   const [name, setName] = useState("");
   const [reveal, setReveal] = useState(false);
@@ -147,6 +149,7 @@ export default function ConnectClient() {
   return (
     <div className="account-page">
       <PageHeader
+        back={BACK}
         title="Connect a client"
         subtitle="Bring a machine online so it can expose a local service through this Burrow relay."
       />
@@ -305,7 +308,6 @@ export default function ConnectClient() {
                     <Badge kind="status-connected">connected</Badge>
                     <span>✓ <strong>{name}</strong> connected</span>
                     <Link to={`/clients/${matched.session_id}`}>View client</Link>
-                    <Link to="/clients">Back to Clients</Link>
                   </span>
                 ) : (
                   <span className="muted">Waiting for <strong>{name}</strong> to connect…</span>

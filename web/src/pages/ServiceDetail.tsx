@@ -16,6 +16,8 @@ const ACCESS_LABEL: Record<AccessMode, string> = {
   mtls: "mTLS",
 };
 
+const BACK = { to: "/services", label: "Services" } as const;
+
 export default function ServiceDetail() {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
@@ -36,7 +38,7 @@ export default function ServiceDetail() {
   if (isLoading) {
     return (
       <div className="service-detail-page">
-        <PageHeader title="Service" />
+        <PageHeader back={BACK} title="Service" />
         <SkeletonRows n={4} />
       </div>
     );
@@ -45,7 +47,7 @@ export default function ServiceDetail() {
   if (error || !svc) {
     return (
       <div className="service-detail-page">
-        <PageHeader title="Service" />
+        <PageHeader back={BACK} title="Service" />
         <ErrorNotice
           action={
             <button type="button" onClick={() => void refetch()}>
@@ -61,7 +63,7 @@ export default function ServiceDetail() {
 
   return (
     <div className="service-detail-page">
-      <PageHeader title={`Service · ${svc.name}`} />
+      <PageHeader back={BACK} title={`Service · ${svc.name}`} />
 
       {/* Meta strip */}
       <div className="meta-strip">

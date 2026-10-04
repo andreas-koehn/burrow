@@ -56,6 +56,8 @@ function statusClass(status: ConnectionLogStatus): string {
   }
 }
 
+const BACK = { to: "/settings", label: "Settings" } as const;
+
 export default function ConnectionLogs() {
   const [kindFilter, setKindFilter] = useState<ConnectionLogKind | "">("");
   const [serviceFilter, setServiceFilter] = useState("");
@@ -150,6 +152,7 @@ export default function ConnectionLogs() {
   return (
     <div className="connection-logs-page">
       <PageHeader
+        back={BACK}
         title="Connection logs"
         actions={<Button variant="secondary" size="sm" onClick={handleExport}>Export</Button>}
       />

@@ -14,6 +14,8 @@ interface DomainRow {
   domain: CustomDomain;
 }
 
+const BACK = { to: "/settings", label: "Settings" } as const;
+
 export default function CustomDomainsOverview() {
   const { data: services } = useQuery({
     queryKey: ["services"],
@@ -43,6 +45,7 @@ export default function CustomDomainsOverview() {
     <div className="account-page">
       <div className="page-header-row">
         <PageHeader
+          back={BACK}
           title="Custom domains (all services)"
           subtitle="Read-only roll-up — open a service to add or remove."
         />

@@ -16,6 +16,8 @@ function truncate(s: string, n = 12): string {
   return s.length <= n ? s : `${s.slice(0, n)}…`;
 }
 
+const BACK = { to: "/settings", label: "Settings" } as const;
+
 export default function BackupRestore() {
   const qc = useQueryClient();
   const backups = useQuery({
@@ -69,6 +71,7 @@ export default function BackupRestore() {
   return (
     <div className="backup-page">
       <PageHeader
+        back={BACK}
         title="Backup & restore"
         subtitle={<>Backups include the database, the relay&apos;s TLS cert state, and config — but<strong> not</strong> ephemeral session/audit-chain pointers reset on restore.</>}
         actions={<Button variant="primary" size="sm" disabled={create.isPending} onClick={() => create.mutate()}>{create.isPending ? "Creating…" : "Create backup"}</Button>}

@@ -119,3 +119,10 @@ describe("T15 — controls", () => {
     expect(css).toMatch(/\.home-explainer ol\s*\{[^}]*list-style:\s*decimal/);
   });
 });
+
+describe("T16 — back links", () => {
+  it("styles the page back link inside the page header", () => {
+    expect(css).toMatch(/\.page-header \.page-back\s*\{[^}]*display:\s*inline-flex/);
+    expect(css).toMatch(/\.page-header \.page-back:focus-visible\s*\{[^}]*outline:/);
+  });
+});

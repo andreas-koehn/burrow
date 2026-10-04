@@ -3,6 +3,8 @@ import { apiFetch } from "@/lib/api";
 import { PageHeader } from "@/components/ds";
 import type { DatabaseStatus } from "@/lib/contract";
 
+const BACK = { to: "/settings", label: "Settings" } as const;
+
 export default function DatabaseBackend() {
   const { data } = useQuery({
     queryKey: ["database"],
@@ -14,7 +16,7 @@ export default function DatabaseBackend() {
 
   return (
     <div className="account-page">
-      <PageHeader title="Database backend" subtitle="The storage engine Burrow is currently using." />
+      <PageHeader back={BACK} title="Database backend" subtitle="The storage engine Burrow is currently using." />
 
       <section className="account-section">
         {status && (

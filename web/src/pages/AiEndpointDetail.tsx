@@ -79,6 +79,8 @@ interface AliasFormState {
 }
 
 
+const BACK = { to: "/ai/endpoints", label: "AI endpoints" } as const;
+
 export default function AiEndpointDetail() {
   const { id = "" } = useParams<{ id: string }>();
   const nav = useNavigate();
@@ -233,13 +235,9 @@ export default function AiEndpointDetail() {
     return (
       <div className="ai-endpoint-detail-page">
         <PageHeader
+          back={BACK}
           title="AI endpoint"
           subtitle="Per-endpoint metering, cache, redaction, and inspector."
-          actions={
-            <Button variant="ghost" size="sm" onClick={() => nav("/ai/endpoints")}>
-              ← Back to endpoints
-            </Button>
-          }
         />
         <ErrorNotice
           action={
@@ -257,7 +255,7 @@ export default function AiEndpointDetail() {
   if (!draft || !metrics.data || !svc.data) {
     return (
       <div className="ai-endpoint-detail-page">
-        <PageHeader title="AI endpoint" subtitle="Per-endpoint metering, cache, redaction, and inspector." />
+        <PageHeader back={BACK} title="AI endpoint" subtitle="Per-endpoint metering, cache, redaction, and inspector." />
         <SkeletonRows n={6} />
       </div>
     );
@@ -301,6 +299,7 @@ export default function AiEndpointDetail() {
   return (
     <div className="ai-endpoint-detail-page">
       <PageHeader
+        back={BACK}
         title={`AI endpoint · ${svc.data.name}`}
         subtitle="Routing, traffic, and recent traffic for this gateway endpoint."
         actions={

@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import { PageHeader } from "./PageHeader";
 
 describe("PageHeader", () => {
@@ -23,5 +24,21 @@ describe("PageHeader", () => {
     const actions = container.querySelector(".page-header > .actions");
     expect(actions).not.toBeNull();
     expect(actions?.querySelector("button")?.textContent).toBe("New webhook");
+  });
+
+  it("renders a back link above the title when `back` is given (U1)", () => {
+    render(
+      <MemoryRouter>
+        <PageHeader title="Retention" back={{ to: "/settings", label: "Settings" }} />
+      </MemoryRouter>,
+    );
+    const link = screen.getByRole("link", { name: "Back to Settings" });
+    expect(link).toHaveAttribute("href", "/settings");
+    expect(link.className).toContain("page-back");
+  });
+
+  it("renders no back link by default", () => {
+    render(<MemoryRouter><PageHeader title="Home" /></MemoryRouter>);
+    expect(screen.queryByRole("link")).toBeNull();
   });
 });

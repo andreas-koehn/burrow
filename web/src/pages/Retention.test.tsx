@@ -89,3 +89,10 @@ describe("Retention & compliance", () => {
     expect(screen.queryAllByRole("alert")).toHaveLength(1);
   });
 });
+
+describe("Retention back link", () => {
+  it("links back to Settings (U1)", async () => {
+    renderApp(<Retention />);
+    expect(await screen.findByRole("link", { name: "Back to Settings" })).toHaveAttribute("href", "/settings");
+  });
+});
