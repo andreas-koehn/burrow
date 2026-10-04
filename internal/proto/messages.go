@@ -61,7 +61,8 @@ type TunnelRegisterResponse struct {
 	OK         bool   `json:"ok"`
 	TunnelID   string `json:"tunnel_id,omitempty"`
 	RemotePort int    `json:"remote_port,omitempty"` // resolved port; 0 for http tunnels
-	Hostname   string `json:"hostname,omitempty"`    // e.g. "k7p2qx.tunnels.example.com" (http only)
+	URL        string `json:"url,omitempty"`         // e.g. "https://burrow.example.com/svc/k7p2qx/" (http only)
+	Hostname   string `json:"hostname,omitempty"`    // no longer set by the server; kept so older peers still decode
 	Error      string `json:"error,omitempty"`
 }
 

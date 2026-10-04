@@ -92,12 +92,12 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 					s.log.Warn("persist tunnel failed", "tunnel_id", tn.ID, "err", err)
 				}
 				s.opts.Events.PublishTunnelsChanged(cs.UserID)
-				var hostname string
+				var tunnelURL string
 				if s.opts.AuthDomain != "" {
-					hostname = subdomain + "." + s.opts.AuthDomain
+					tunnelURL = "https://" + s.opts.AuthDomain + "/svc/" + subdomain + "/"
 				}
-				s.log.Info("http tunnel registered", "tunnel_id", tn.ID, "subdomain", subdomain, "session_id", cs.SessionID)
-				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: true, TunnelID: tn.ID, RemotePort: 0, Hostname: hostname})
+				s.log.Info("http tunnel registered", "tunnel_id", tn.ID, "slug", subdomain, "url", tunnelURL, "session_id", cs.SessionID)
+				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: true, TunnelID: tn.ID, RemotePort: 0, URL: tunnelURL})
 			case "", "tcp":
 				port, perr := s.ports.Allocate(tr.RemotePort)
 				if perr != nil {

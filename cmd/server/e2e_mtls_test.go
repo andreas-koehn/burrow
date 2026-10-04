@@ -402,7 +402,9 @@ func startAPIForMTLSTest(t *testing.T, s *e2eStack) (*httptest.Server, *mtlsAPIC
 		Users:      s.store,
 		Services:   s.store,
 		AuthDomain: e2eAuthDomain,
-		Log:        s.log,
+		// This suite runs the host-routed ingress, so mTLS is on offer.
+		HostRouting: true,
+		Log:         s.log,
 	}
 	apiSrv := httptest.NewServer(api.NewRouter(deps))
 

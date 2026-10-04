@@ -68,8 +68,10 @@ type ServerConfig struct {
 	// from/tls) live in the settings table instead. Empty = SMTP unconfigured.
 	// Env: BURROW_SMTP_PASSWORD (also _FILE variant).
 	SMTPPassword string `koanf:"smtp_password"`
-	// HTTPProxyListen is the TCP address the HTTP reverse-proxy listener binds
-	// to. Defaults to ":8443". An empty string disables the proxy listener.
+	// HTTPProxyListen is the TCP address of the host-routed ingress
+	// (<slug>.<auth_domain>). Empty (the default) leaves it off: services are
+	// reached by path at https://<auth_domain>/svc/<slug>/. Setting it needs
+	// wildcard DNS and a wildcard certificate.
 	// Env: BURROW_HTTP_PROXY_LISTEN.
 	HTTPProxyListen string `koanf:"http_proxy_listen"`
 	// HTTPProxyTLSCert and HTTPProxyTLSKey are the TLS certificate and key files
@@ -359,10 +361,11 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 		"database_path": "./burrow.db", "http_listen": ":8080", "http_secure_cookies": false,
 		// trusted_proxies defaults to empty: no forwarded headers trusted.
 		"trusted_proxies": []string{},
-		// http_proxy_listen defaults to :8443; empty string disables the listener.
+		// http_proxy_listen defaults to empty: the host-routed ingress is off
+		// and services are reached by path at https://<auth_domain>/svc/<slug>/.
 		// http_proxy_tls_cert/key default to empty (no TLS; operator terminates upstream).
 		// auth_domain defaults to empty (no subdomain-routing configured).
-		"http_proxy_listen": ":8443", "http_proxy_tls_cert": "", "http_proxy_tls_key": "", "auth_domain": "",
+		"http_proxy_listen": "", "http_proxy_tls_cert": "", "http_proxy_tls_key": "", "auth_domain": "",
 		// v0.4.0 (Task 24) defaults. The empty-string defaults disable the
 		// associated feature (MCP listener, geo lookup, pricing override).
 		// BackupDir defaults to empty here and is derived after unmarshalling —

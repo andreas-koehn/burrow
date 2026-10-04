@@ -387,14 +387,15 @@ func TestServerConfigSMTPPassword(t *testing.T) {
 // Task 11: proxy listener, proxy TLS pair, auth domain
 // ---------------------------------------------------------------------------
 
-// TestHTTPProxyListenDefault asserts that the default http_proxy_listen is ":8443".
+// TestHTTPProxyListenDefault asserts that the default http_proxy_listen is
+// empty: the host-routed ingress is opt-in.
 func TestHTTPProxyListenDefault(t *testing.T) {
 	c, err := LoadServer(nil)
 	if err != nil {
 		t.Fatalf("LoadServer: %v", err)
 	}
-	if c.HTTPProxyListen != ":8443" {
-		t.Fatalf("default http_proxy_listen = %q, want :8443", c.HTTPProxyListen)
+	if c.HTTPProxyListen != "" {
+		t.Fatalf("HTTPProxyListen default = %q, want empty (host routing is opt-in)", c.HTTPProxyListen)
 	}
 }
 

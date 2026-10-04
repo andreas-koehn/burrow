@@ -768,6 +768,8 @@ func main() {
 					// common case this equals cfg.AuthDomain, so composeHostname
 					// and the burrow_login-409 check are unchanged.
 					AuthDomain: proxyAuthDomain,
+					// mTLS is only offered while the host-routed ingress runs.
+					HostRouting: cfg.HTTPProxyListen != "",
 					// feat/builtin-acme B3: single-origin /svc/{slug} tunnel routing.
 					// proxyHandler is the hoisted host-routing proxy. The router
 					// mounts /svc/{slug} + /svc/{slug}/* on it via ServicePathHandler only
@@ -882,7 +884,7 @@ func main() {
 			}
 
 			// Build the optional HTTP reverse-proxy listener (v0.3.0).
-			// Started only when HTTPProxyListen is non-empty (default ":8443").
+			// Started only when HTTPProxyListen is non-empty (off by default).
 			// The host-routing proxyHandler (+ its TLS base config) is built
 			// ABOVE, before api.NewRouter, so it can ALSO back the single-origin
 			// /svc/{slug} route on the dashboard origin (feat/builtin-acme B3); this

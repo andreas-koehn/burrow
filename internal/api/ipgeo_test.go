@@ -255,9 +255,10 @@ func TestIPGeo_Status_DefaultBuild(t *testing.T) {
 func TestSetServiceAccessMode_MTLS_PassesCAPEM(t *testing.T) {
 	ss := &fakeServiceStore{}
 	d := Deps{
-		Users:    &fakeUserStore{role: "user"},
-		Services: ss,
-		Log:      discardLog(),
+		Users:       &fakeUserStore{role: "user"},
+		Services:    ss,
+		HostRouting: true,
+		Log:         discardLog(),
 	}
 	srv := httptest.NewServer(NewRouter(d))
 	defer srv.Close()
@@ -284,9 +285,10 @@ func TestSetServiceAccessMode_MTLS_PassesCAPEM(t *testing.T) {
 func TestSetServiceAccessMode_MTLS_MissingCAReturns400(t *testing.T) {
 	ss := &fakeServiceStore{setModeErr: store.ErrMTLSCARequired}
 	d := Deps{
-		Users:    &fakeUserStore{role: "user"},
-		Services: ss,
-		Log:      discardLog(),
+		Users:       &fakeUserStore{role: "user"},
+		Services:    ss,
+		HostRouting: true,
+		Log:         discardLog(),
 	}
 	srv := httptest.NewServer(NewRouter(d))
 	defer srv.Close()
@@ -304,9 +306,10 @@ func TestSetServiceAccessMode_MTLS_MissingCAReturns400(t *testing.T) {
 func TestSetServiceAccessMode_MTLS_InvalidCAPEM(t *testing.T) {
 	ss := &fakeServiceStore{setModeErr: store.ErrInvalidMTLSCAPEM}
 	d := Deps{
-		Users:    &fakeUserStore{role: "user"},
-		Services: ss,
-		Log:      discardLog(),
+		Users:       &fakeUserStore{role: "user"},
+		Services:    ss,
+		HostRouting: true,
+		Log:         discardLog(),
 	}
 	srv := httptest.NewServer(NewRouter(d))
 	defer srv.Close()

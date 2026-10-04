@@ -417,6 +417,75 @@ func TestSetServiceAccessMode_BurrowLogin_WithAuthDomain_204(t *testing.T) {
 	}
 }
 
+func TestSetAccessMode_MTLSRefusedWithoutHostRouting(t *testing.T) {
+	ss := &fakeServiceStore{}
+	d := newServiceDeps(ss, fakeLiveTunnels{}, "example.com")
+	d.HostRouting = false
+	srv, c := newServiceServer(t, d)
+	defer srv.Close()
+
+	r := c.put(t, "/api/v1/services/s1/access-mode", map[string]string{
+		"access_mode": "mtls",
+		"mtls_ca_pem": "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n",
+	})
+	body := readBody(t, r)
+	if r.StatusCode != http.StatusConflict {
+		t.Fatalf("want 409, got %d body=%s", r.StatusCode, body)
+	}
+	var obj map[string]string
+	if err := json.Unmarshal([]byte(body), &obj); err != nil {
+		t.Fatalf("body not JSON: %q", body)
+	}
+	if obj["error"] != "mTLS needs host routing, which is disabled on this relay" {
+		t.Errorf("error = %q", obj["error"])
+	}
+	// Confirm store was NOT called.
+	if ss.lastMode != "" {
+		t.Errorf("store should not have been called, lastMode=%q", ss.lastMode)
+	}
+}
+
+func TestSetAccessMode_MTLSAllowedWithHostRouting(t *testing.T) {
+	ss := &fakeServiceStore{}
+	d := newServiceDeps(ss, fakeLiveTunnels{}, "example.com")
+	d.HostRouting = true
+	srv, c := newServiceServer(t, d)
+	defer srv.Close()
+
+	r := c.put(t, "/api/v1/services/s1/access-mode", map[string]string{
+		"access_mode": "mtls",
+		"mtls_ca_pem": "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n",
+	})
+	r.Body.Close()
+	if r.StatusCode != http.StatusNoContent {
+		t.Fatalf("want 204, got %d", r.StatusCode)
+	}
+	if ss.lastMode != "mtls" || len(ss.lastCAPEM) == 0 {
+		t.Errorf("store not called with mtls + CA: mode=%q ca=%d bytes", ss.lastMode, len(ss.lastCAPEM))
+	}
+}
+
+// TestSetAccessMode_Legacy_MTLSRefusedWithoutHostRouting covers the same guard
+// on the back-compat PUT /tunnels/{id}/access-mode route.
+func TestSetAccessMode_Legacy_MTLSRefusedWithoutHostRouting(t *testing.T) {
+	ss := &fakeServiceStore{}
+	lt := fakeLiveTunnels{
+		tunnelID:  "tn-live",
+		tunnelLoc: TunnelLocator{ServiceID: "svc-abc", UserID: "u-self"},
+	}
+	srv, c := newServiceServer(t, newServiceDeps(ss, lt, "example.com"))
+	defer srv.Close()
+
+	r := c.put(t, "/api/v1/tunnels/tn-live/access-mode", map[string]string{"access_mode": "mtls"})
+	body := readBody(t, r)
+	if r.StatusCode != http.StatusConflict {
+		t.Fatalf("want 409, got %d body=%s", r.StatusCode, body)
+	}
+	if ss.lastMode != "" {
+		t.Errorf("store should not have been called, lastMode=%q", ss.lastMode)
+	}
+}
+
 func TestSetServiceAccessMode_InvalidMode_400(t *testing.T) {
 	ss := &fakeServiceStore{setModeErr: store.ErrInvalidAccessMode}
 	srv, c := newServiceServer(t, newServiceDeps(ss, fakeLiveTunnels{}, ""))

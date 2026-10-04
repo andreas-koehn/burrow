@@ -150,7 +150,16 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		if env.Type != proto.MsgTunnelRegisterResp || proto.DecodePayload(env, &rr) != nil || !rr.OK {
 			return fmt.Errorf("register failed: %s", rr.Error)
 		}
-		c.log.Info("tunnel registered", "tunnel_id", rr.TunnelID, "remote_port", rr.RemotePort)
+		if tn.Type == "http" {
+			// Older relays report only the hostname; keep printing that.
+			tunnelURL := rr.URL
+			if tunnelURL == "" {
+				tunnelURL = rr.Hostname
+			}
+			c.log.Info("tunnel registered", "name", tn.Name, "tunnel_id", rr.TunnelID, "url", tunnelURL)
+		} else {
+			c.log.Info("tunnel registered", "tunnel_id", rr.TunnelID, "remote_port", rr.RemotePort)
+		}
 		c.mu.Lock()
 		c.tunnelLocal[rr.TunnelID] = tn.LocalAddr
 		c.lastRemotePort = rr.RemotePort

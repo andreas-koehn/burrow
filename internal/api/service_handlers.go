@@ -229,6 +229,10 @@ func (d Deps) SetServiceAccessMode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "burrow_login requires a configured auth_domain")
 		return
 	}
+	if in.AccessMode == "mtls" && !d.HostRouting {
+		writeErr(w, http.StatusConflict, "mTLS needs host routing, which is disabled on this relay")
+		return
+	}
 	// api_key_header is only honored for api_key mode (spec Part C). When set,
 	// validate against RFC 7230 token rules so we never persist an
 	// uninterpretable header name (e.g. "Authorization: Bearer" with a colon).

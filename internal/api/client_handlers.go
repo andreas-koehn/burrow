@@ -104,6 +104,10 @@ func (d Deps) SetAccessMode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "access_mode is required")
 		return
 	}
+	if in.AccessMode == "mtls" && !d.HostRouting {
+		writeErr(w, http.StatusConflict, "mTLS needs host routing, which is disabled on this relay")
+		return
+	}
 
 	// v0.3 delegation path: resolve tunnelID → serviceID via live registry.
 	if d.LiveTunnels != nil {

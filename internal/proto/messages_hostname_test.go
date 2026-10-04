@@ -41,3 +41,18 @@ func TestAuthRequestHostnameReserved(t *testing.T) {
 		t.Fatalf("hostname not decoded: %+v", got)
 	}
 }
+
+func TestTunnelRegisterResponse_URLRoundTrip(t *testing.T) {
+	in := TunnelRegisterResponse{OK: true, TunnelID: "t1", URL: "https://burrow.example.com/svc/p7baeh/"}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"url":"https://burrow.example.com/svc/p7baeh/"`) || strings.Contains(string(b), "hostname") {
+		t.Fatalf("wire form = %s", b)
+	}
+	var out TunnelRegisterResponse
+	if err := json.Unmarshal(b, &out); err != nil || out.URL != in.URL {
+		t.Fatalf("round trip: %v %+v", err, out)
+	}
+}

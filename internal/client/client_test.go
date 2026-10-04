@@ -1,15 +1,18 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -348,6 +351,120 @@ func TestBackoffNotResetOnRegistrationFailure(t *testing.T) {
 		t.Fatal("client marked registered despite registration failure")
 	}
 	<-serverDone
+}
+
+// syncBuffer is a goroutine-safe log sink (the client logs from more than one
+// goroutine once a session is up).
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// registerHTTPAgainstFake runs one connectOnce against a fake relay that
+// accepts auth and answers the http tunnel registration with resp, then
+// returns everything the client logged.
+func registerHTTPAgainstFake(t *testing.T, resp proto.TunnelRegisterResponse) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := devcert.Generate(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	cert, err := tls.LoadX509KeyPair(
+		filepath.Join(dir, "dev-server.pem"),
+		filepath.Join(dir, "dev-server-key.pem"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		conn, e := ln.Accept()
+		if e != nil {
+			return
+		}
+		defer conn.Close()
+		var env proto.Envelope
+		if e := proto.ReadFrame(conn, &env); e != nil {
+			return
+		}
+		if e := proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{OK: true, SessionID: "test-sess"}); e != nil {
+			return
+		}
+		ysess, e := yamux.Server(conn, yamux.DefaultConfig())
+		if e != nil {
+			return
+		}
+		defer ysess.Close()
+		stream, e := ysess.Accept()
+		if e != nil {
+			return
+		}
+		defer stream.Close()
+		if e := proto.ReadFrame(stream, &env); e != nil {
+			return
+		}
+		// Reply, then hang up: the client logs the registration before it
+		// notices the closed session.
+		_ = proto.WriteMessage(stream, proto.MsgTunnelRegisterResp, resp)
+	}()
+
+	caPEM, _ := os.ReadFile(filepath.Join(dir, "dev-ca.pem"))
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(caPEM)
+
+	out := &syncBuffer{}
+	c := New(Options{
+		Server: ln.Addr().String(), Token: "secret", RootCAs: pool, ServerName: "localhost",
+		Tunnels: []TunnelSpec{{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000"}},
+		Logger:  slog.New(slog.NewTextHandler(out, nil)),
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = c.connectOnce(ctx)
+	<-serverDone
+	return out.String()
+}
+
+// TestClientLogsHTTPTunnelURL asserts the client prints the path URL the relay
+// reported for an http tunnel.
+func TestClientLogsHTTPTunnelURL(t *testing.T) {
+	out := registerHTTPAgainstFake(t, proto.TunnelRegisterResponse{
+		OK: true, TunnelID: "t1", URL: "https://burrow.example.com/svc/p7baeh/",
+	})
+	if !strings.Contains(out, "tunnel registered") || !strings.Contains(out, "name=web") ||
+		!strings.Contains(out, "url=https://burrow.example.com/svc/p7baeh/") {
+		t.Fatalf("log output missing the tunnel URL: %s", out)
+	}
+}
+
+// TestClientLogsHTTPTunnelHostnameFallback asserts a new client still reports
+// where the tunnel lives when an older relay only sends Hostname.
+func TestClientLogsHTTPTunnelHostnameFallback(t *testing.T) {
+	out := registerHTTPAgainstFake(t, proto.TunnelRegisterResponse{
+		OK: true, TunnelID: "t1", Hostname: "k7p2qx.tunnels.example.com",
+	})
+	if !strings.Contains(out, "url=k7p2qx.tunnels.example.com") {
+		t.Fatalf("log output missing the hostname fallback: %s", out)
+	}
 }
 
 func itoa(i int) string { return strconv.Itoa(i) }

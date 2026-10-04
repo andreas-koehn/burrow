@@ -269,6 +269,10 @@ type Deps struct {
 	// Empty means no auth domain is configured; burrow_login mode is rejected
 	// with 409 when this field is empty.
 	AuthDomain string
+	// HostRouting reports whether the host-routed ingress is enabled. mTLS
+	// access mode needs it (a client certificate is checked during the TLS
+	// handshake of a dedicated host).
+	HostRouting bool
 	// TunnelProxy, when non-nil, is the host-routing proxy handler. The router
 	// mounts /t/{id} and /t/{id}/* on it (via TunnelPathHandler) for
 	// single-origin path routing. AuthDomain (above) is the base domain used

@@ -497,6 +497,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The mode is not available on this relay or for this service (mTLS needs host routing). }
 
   # ────────────────────────────────────────────────────────────────────────
   # Services
@@ -600,6 +601,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The mode is not available on this relay or for this service (mTLS needs host routing). }
 
   /api/v1/services/{serviceID}/slug:
     put:

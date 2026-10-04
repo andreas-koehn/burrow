@@ -197,18 +197,18 @@ func doRegister(t *testing.T, cli net.Conn, msg proto.TunnelRegister) proto.Tunn
 // ---- HTTP tunnel tests ----
 
 // TestRegisterHTTPTunnelAssignsSubdomainNoPort verifies that an http-type
-// registration gets a subdomain, no TCP port, and a routable Hostname.
+// registration gets a slug, no TCP port, and the path URL of the service.
 func TestRegisterHTTPTunnelAssignsSubdomainNoPort(t *testing.T) {
 	_, _, _, cli := newTestServerWithHTTP(t, fakeResolver{sub: "k7p2qx", id: "svc1"}, "tunnels.example.com")
 	resp := doRegister(t, cli, proto.TunnelRegister{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000"})
 	if !resp.OK || resp.RemotePort != 0 {
 		t.Fatalf("http tunnel must not get a port: %+v", resp)
 	}
-	if resp.Hostname == "" || !strings.HasPrefix(resp.Hostname, "k7p2qx.") {
-		t.Fatalf("missing/incorrect hostname: %+v", resp)
+	if resp.URL != "https://tunnels.example.com/svc/k7p2qx/" {
+		t.Fatalf("want url https://tunnels.example.com/svc/k7p2qx/, got %q", resp.URL)
 	}
-	if resp.Hostname != "k7p2qx.tunnels.example.com" {
-		t.Fatalf("want hostname k7p2qx.tunnels.example.com, got %q", resp.Hostname)
+	if resp.Hostname != "" {
+		t.Fatalf("Hostname must no longer be set, got %q", resp.Hostname)
 	}
 	if resp.TunnelID == "" {
 		t.Fatalf("TunnelID must be set: %+v", resp)
@@ -260,15 +260,15 @@ func TestRegisterUnknownTypeFails(t *testing.T) {
 }
 
 // TestRegisterHTTPTunnelNoAuthDomain verifies that when AuthDomain is empty
-// Hostname is "" but registration still succeeds (degraded mode).
+// URL is "" but registration still succeeds (degraded mode).
 func TestRegisterHTTPTunnelNoAuthDomain(t *testing.T) {
 	_, _, _, cli := newTestServerWithHTTP(t, fakeResolver{sub: "k7p2qx", id: "svc1"}, "")
 	resp := doRegister(t, cli, proto.TunnelRegister{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000"})
 	if !resp.OK {
 		t.Fatalf("expected OK=true even with empty AuthDomain: %+v", resp)
 	}
-	if resp.Hostname != "" {
-		t.Fatalf("expected empty Hostname when AuthDomain==\"\", got %q", resp.Hostname)
+	if resp.URL != "" || resp.Hostname != "" {
+		t.Fatalf("expected empty URL and Hostname when AuthDomain==\"\", got %q / %q", resp.URL, resp.Hostname)
 	}
 	if resp.TunnelID == "" {
 		t.Fatalf("TunnelID must be set: %+v", resp)
