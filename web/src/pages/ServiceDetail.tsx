@@ -89,6 +89,7 @@ export default function ServiceDetail() {
                 serviceName={svc.name}
                 mode={svc.access_mode}
                 clientId={`svc:${svc.id}`}
+                hideApiKeys
               />
             ),
           },

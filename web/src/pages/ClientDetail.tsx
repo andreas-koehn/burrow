@@ -1,11 +1,17 @@
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { Badge, PageHeader, SkeletonRows } from "@/components/ds";
-import type { ClientDetail as ClientDetailT } from "@/lib/contract";
-import { AccessModePanel } from "@/components/AccessModePanel";
+import type { AccessMode, ClientDetail as ClientDetailT } from "@/lib/contract";
+
+const ACCESS_LABEL: Record<AccessMode, string> = {
+  open: "Open",
+  api_key: "API key",
+  burrow_login: "Burrow login",
+  mtls: "mTLS",
+};
 
 export default function ClientDetail() {
   const { id = "" } = useParams();
@@ -49,7 +55,14 @@ export default function ClientDetail() {
                   </td>
                   <td className="col-created mono">{s.local_addr}</td>
                   <td className="col-created">↓{formatBytes(s.total_bytes_in)} ↑{formatBytes(s.total_bytes_out)}</td>
-                  <td><AccessModePanel serviceId={s.id} serviceName={s.name} mode={s.access_mode} clientId={data.session_id} /></td>
+                  <td>
+                    <span className="row row-center gap-2">
+                      <Badge kind={`access-${s.access_mode}`} nodot>{ACCESS_LABEL[s.access_mode]}</Badge>
+                      {s.service_id && (
+                        <Link className="link-inline" to={`/services/${s.service_id}`}>Configure</Link>
+                      )}
+                    </span>
+                  </td>
                 </tr>
               ))}
               {data.services.length === 0 && (

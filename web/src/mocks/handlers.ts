@@ -213,7 +213,13 @@ export const handlers = [
     const g = gate(request, { admin: true }); if (g) return g;
     const c = db.clients.find((x) => x.session_id === params.id);
     if (!c) return err(404, "client not found");
-    return json(c);
+    // http services carry the id of their durable service row (matched by
+    // name, as the server does); tcp tunnels have none.
+    const services = c.services.map((s) => {
+      const svc = s.type === "http" ? db.services.find((x) => x.name === s.name && x.type === "http") : undefined;
+      return svc ? { ...s, service_id: svc.id } : s;
+    });
+    return json({ ...c, services });
   }),
 
   // ---- per-service access mode ----

@@ -56,6 +56,8 @@ export interface ServiceView {
   remote_port: number;
   local_addr: string;
   access_mode: AccessMode;
+  /** Durable service id for http services; absent for tcp. Routable at /services/:id. */
+  service_id?: string;
   bytes_in: number;
   bytes_out: number;
   total_bytes_in: number;

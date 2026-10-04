@@ -23,7 +23,7 @@ const META: Record<AccessMode, { title: string; help: string }> = {
 // AccessModePanelHandle is the imperative handle exposed via panelRef so the
 // surrounding Dialog footer (Tunnels / Services Configure flows) can drive
 // Save without re-implementing the mutation. Pages that embed the panel
-// inline (ClientDetail) ignore this — the inline Save button stays visible
+// inline (ServiceDetail) ignore this — the inline Save button stays visible
 // when no panelRef is supplied (P1-7).
 export interface AccessModePanelHandle {
   save: () => void;
@@ -39,9 +39,12 @@ export interface AccessModePanelProps {
   // "Save changes" button is hidden — the dialog footer is expected to
   // trigger save.
   panelRef?: Ref<AccessModePanelHandle>;
+  // Hosts that already show API keys elsewhere (service detail has an
+  // "API keys" tab) pass this so the list is not rendered twice.
+  hideApiKeys?: boolean;
 }
 
-export function AccessModePanel({ serviceId, serviceName, mode, clientId, panelRef }: AccessModePanelProps) {
+export function AccessModePanel({ serviceId, serviceName, mode, clientId, panelRef, hideApiKeys }: AccessModePanelProps) {
   const qc = useQueryClient();
   const [selected, setSelected] = useState<AccessMode>(mode);
   // RFC 7230 header-name tokens disallow colon + whitespace; the prior
@@ -125,7 +128,7 @@ export function AccessModePanel({ serviceId, serviceName, mode, clientId, panelR
                 onChange={(e) => setApiKeyHeader(e.target.value)}
               />
             </FormField>
-            <ApiKeysPanel serviceId={serviceId} />
+            {!hideApiKeys && <ApiKeysPanel serviceId={serviceId} />}
           </div>
         )}
 
@@ -147,8 +150,8 @@ export function AccessModePanel({ serviceId, serviceName, mode, clientId, panelR
 
         {/* P1-7: hide the inline button when the panel is hosted inside a
             Dialog. The dialog footer carries Cancel + Save changes instead.
-            Pages that embed the panel inline (ClientDetail, ServiceDetail
-            access tab) still rely on the inline button. */}
+            The ServiceDetail access tab embeds the panel inline and
+            still relies on the inline button. */}
         {!panelRef && (
           <div className="panel-actions">
             <Button variant="primary" size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
