@@ -31,6 +31,8 @@ type ServiceStore interface {
 	// supplied. Returns db.ErrDuplicateService on UNIQUE-constraint violations
 	// (mapped to HTTP 409). *db.DB satisfies this directly via CreateService.
 	CreateService(ctx context.Context, s db.Service) error
+	SetServiceSlug(ctx context.Context, callerID, callerRole, serviceID, slug string) (old string, err error)
+	SuggestSlug(ctx context.Context) (string, error)
 }
 
 // LiveTunnelSnapshot is the live/runtime subset of a tunnel that the API
@@ -185,12 +187,10 @@ type TunnelView struct {
 	// the tunnel.id for http tunnels yields 404 because per-session tunnel
 	// UUIDs differ from the persisted service UUID.
 	ServiceID string `json:"service_id,omitempty"`
-	// Hostname is the routable FQDN for http tunnels (subdomain.AuthDomain).
-	// Omitted for tcp tunnels and for http tunnels when the relay was
-	// started without an AuthDomain. The Tunnels page renders it with a
-	// copy affordance so users can paste a working endpoint immediately
-	// (P0-5 / P1-6).
-	Hostname string `json:"hostname,omitempty"`
+	// URL is the public address of an http tunnel
+	// (https://<auth_domain>/svc/<slug>/). Omitted for tcp tunnels and when
+	// the relay has no auth domain.
+	URL string `json:"url,omitempty"`
 	// AccessMode is the per-service access mode currently in effect
 	// ("open"/"api_key"/"burrow_login"/"mtls"). Omitted for tcp tunnels and
 	// when no durable services row is wired. The Tunnels page falls back to

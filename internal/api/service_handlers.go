@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
@@ -21,8 +22,8 @@ type serviceResp struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	Type         string `json:"type"`
-	Subdomain    string `json:"subdomain"`
-	Hostname     string `json:"hostname"`
+	Slug         string `json:"slug"`
+	URL          string `json:"url"`
 	AccessMode   string `json:"access_mode"`
 	APIKeyHeader string `json:"api_key_header"`
 	Connected    bool   `json:"connected"`
@@ -57,13 +58,13 @@ type accessPolicyResp struct {
 	Roles []string `json:"roles"`
 }
 
-// composeHostname returns "<subdomain>.<authDomain>" when both are non-empty,
-// and "" otherwise (degraded / tcp service / auth_domain not configured).
-func composeHostname(subdomain, authDomain string) string {
-	if subdomain == "" || authDomain == "" {
+// composeServiceURL returns "https://<authDomain>/svc/<slug>/" when both parts
+// are set, and "" otherwise (tcp service, no slug yet, or no auth domain).
+func composeServiceURL(slug, authDomain string) string {
+	if slug == "" || authDomain == "" {
 		return ""
 	}
-	return subdomain + "." + authDomain
+	return "https://" + authDomain + "/svc/" + slug + "/"
 }
 
 // composeLive queries the LiveTunnelLookup for live state and returns the
@@ -109,6 +110,12 @@ func mapServiceErr(w http.ResponseWriter, err error, notFoundMsg string) bool {
 	case errors.Is(err, store.ErrInvalidMTLSCAPEM):
 		writeErr(w, http.StatusBadRequest, "invalid CA PEM")
 		return true
+	case errors.Is(err, store.ErrInvalidSlug):
+		writeErr(w, http.StatusBadRequest, auth.SlugRule)
+		return true
+	case errors.Is(err, store.ErrSlugTaken):
+		writeErr(w, http.StatusConflict, "slug already in use")
+		return true
 	case errors.Is(err, store.ErrNameRequired):
 		writeErr(w, http.StatusBadRequest, "name is required")
 		return true
@@ -139,8 +146,8 @@ func (d Deps) ListServices(w http.ResponseWriter, r *http.Request) {
 			ID:           sv.ID,
 			Name:         sv.Name,
 			Type:         sv.Type,
-			Subdomain:    sv.Subdomain,
-			Hostname:     composeHostname(sv.Subdomain, d.AuthDomain),
+			Slug:         sv.Subdomain,
+			URL:          composeServiceURL(sv.Subdomain, d.AuthDomain),
 			AccessMode:   sv.AccessMode,
 			APIKeyHeader: sv.APIKeyHeader,
 			Connected:    snap.Connected,
@@ -177,8 +184,8 @@ func (d Deps) GetService(w http.ResponseWriter, r *http.Request) {
 			ID:           det.ID,
 			Name:         det.Name,
 			Type:         det.Type,
-			Subdomain:    det.Subdomain,
-			Hostname:     composeHostname(det.Subdomain, d.AuthDomain),
+			Slug:         det.Subdomain,
+			URL:          composeServiceURL(det.Subdomain, d.AuthDomain),
 			AccessMode:   det.AccessMode,
 			APIKeyHeader: det.APIKeyHeader,
 			Connected:    snap.Connected,
@@ -363,14 +370,13 @@ type setAccessPolicyReq struct {
 
 // postServiceReq is the wire shape of POST /api/v1/services. service_id is
 // REQUIRED and validated against serviceIDRe; title and access_mode are
-// optional (access_mode defaults to "public"). Hostnames are NOT part of this
-// shape — public hostnames are composed from subdomain+AuthDomain at read
-// time, and custom hostnames are managed post-creation via
-// PUT /api/v1/services/{serviceID}/custom-domains (table: service_custom_domains).
+// optional (access_mode defaults to "public"). slug is optional too: when
+// omitted, one is generated the first time the client connects.
 type postServiceReq struct {
 	ServiceID  string `json:"service_id"`
 	Title      string `json:"title,omitempty"`
 	AccessMode string `json:"access_mode,omitempty"`
+	Slug       string `json:"slug,omitempty"`
 }
 
 // serviceIDRe is the validation regex for the pre-provisioning service_id.
@@ -399,14 +405,14 @@ var postServiceAccessModes = map[string]string{
 // service row (v0.5.2 P3.6 / Task 9). Permission: admin (gated by
 // RequireAdmin in router.go; the handler does no second check).
 //
-// Body: { service_id (req), title?, access_mode? }.
+// Body: { service_id (req), title?, access_mode?, slug? }.
 //   - service_id matches ^[a-z0-9_-]{3,64}$.
 //   - title is stored on the services.name column (max 120 chars).
 //   - access_mode defaults to "public" (mapped to the stored enum value "open").
-//   - hostnames are not part of this shape — see postServiceReq doc.
+//   - slug matches auth.ValidSlug; omitted means generated at first connect.
 //
 // On UNIQUE violation returns 409. On success returns 201 with
-// { id, created_at }. The audit event is `service.create` with payload
+// { id, slug, created_at }. The audit event is `service.create` with payload
 // `{by_admin: true}` so downstream consumers can distinguish admin
 // pre-provisioning from the implicit client-side GetOrCreateService path.
 func (d Deps) PostService(w http.ResponseWriter, r *http.Request) {
@@ -446,6 +452,10 @@ func (d Deps) PostService(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "title must be at most 120 chars")
 		return
 	}
+	if in.Slug != "" && !auth.ValidSlug(in.Slug) {
+		writeErr(w, http.StatusBadRequest, auth.SlugRule)
+		return
+	}
 
 	// Store availability check.
 	if d.Services == nil {
@@ -461,15 +471,15 @@ func (d Deps) PostService(w http.ResponseWriter, r *http.Request) {
 		ID:           in.ServiceID,
 		UserID:       userID(r.Context()),
 		Name:         in.Title,
-		Type:         "http", // pre-provisioned rows are http by default; tcp services are bound by the client at connect time
-		Subdomain:    "",     // empty until the client connects; public hostname is composed at read time, custom hostnames live in service_custom_domains
+		Type:         "http",  // pre-provisioned rows are http by default; tcp services are bound by the client at connect time
+		Subdomain:    in.Slug, // empty means generated when the client first connects
 		AccessMode:   storedMode,
 		APIKeyHeader: "Authorization",
 		CreatedAt:    now,
 	}
 	if err := d.Services.CreateService(r.Context(), row); err != nil {
 		if errors.Is(err, db.ErrDuplicateService) {
-			writeErr(w, http.StatusConflict, "service already exists")
+			writeErr(w, http.StatusConflict, "service id or slug already in use")
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "internal error")
@@ -496,6 +506,7 @@ func (d Deps) PostService(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":         row.ID,
+		"slug":       in.Slug,
 		"created_at": now.Format(time.RFC3339),
 	})
 }
@@ -560,4 +571,57 @@ func isValidHTTPHeaderName(s string) bool {
 		}
 	}
 	return true
+}
+
+type setSlugReq struct {
+	Slug string `json:"slug"`
+}
+
+// PutServiceSlug handles PUT /api/v1/services/{serviceID}/slug. The old URL
+// stops working immediately; there is no redirect.
+func (d Deps) PutServiceSlug(w http.ResponseWriter, r *http.Request) {
+	serviceID := chi.URLParam(r, "serviceID")
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	var in setSlugReq
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	role, err := d.callerRole(r)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	old, err := d.Services.SetServiceSlug(r.Context(), userID(r.Context()), role, serviceID, in.Slug)
+	if err != nil {
+		if !mapServiceErr(w, err, "service not found") {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	if d.AuditAppender != nil && old != in.Slug {
+		lc := audit.LogContextFrom(r.Context())
+		_ = d.AuditAppender.Append(r.Context(), audit.Event{
+			ActorID: lc.ActorID, ActorEmail: lc.ActorEmail,
+			Action:    audit.ActionServiceSlugChange,
+			SubjectID: serviceID,
+			Result:    "ok",
+			SourceIP:  lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
+			Payload: audit.MustJSON(map[string]any{"old": old, "new": in.Slug}),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"slug": in.Slug,
+		"url":  composeServiceURL(in.Slug, d.AuthDomain),
+	})
+}
+
+// GetSlugSuggestion handles GET /api/v1/services/slug-suggestion.
+func (d Deps) GetSlugSuggestion(w http.ResponseWriter, r *http.Request) {
+	slug, err := d.Services.SuggestSlug(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"slug": slug})
 }

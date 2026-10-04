@@ -343,14 +343,14 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 	if callEnv.Error != nil {
 		t.Fatalf("tools/call services.list err=%+v", callEnv.Error)
 	}
-	// services.list returns []svcOut (id, user_id, name, type, subdomain,
+	// services.list returns []svcOut (id, user_id, name, type, slug,
 	// access_mode, api_key_header, created_at). The closed-set wire shape.
 	var svcOut []struct {
 		ID         string `json:"id"`
 		UserID     string `json:"user_id"`
 		Name       string `json:"name"`
 		Type       string `json:"type"`
-		Subdomain  string `json:"subdomain"`
+		Subdomain  string `json:"slug"`
 		AccessMode string `json:"access_mode"`
 	}
 	if err := json.Unmarshal(callEnv.Result, &svcOut); err != nil {
@@ -369,7 +369,7 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 				t.Errorf("services.list svc.user_id=%q want %q", sv.UserID, stack.userID)
 			}
 			if sv.Subdomain != stack.subdomain {
-				t.Errorf("services.list svc.subdomain=%q want %q", sv.Subdomain, stack.subdomain)
+				t.Errorf("services.list svc.slug=%q want %q", sv.Subdomain, stack.subdomain)
 			}
 		}
 	}

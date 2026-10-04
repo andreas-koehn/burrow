@@ -93,10 +93,15 @@ type userTunnelLister interface {
 //
 // services, when set, overrides that with the durable services row — the
 // mode users actually configure — so Tunnels and Services never disagree.
+//
+// slugs + authDomain compose the public URL of http tunnels from the durable
+// service row, so a slug change shows up without a client reconnect.
 type tunnelListerAdapter struct {
-	s        userTunnelLister
-	access   tunnelGetter      // optional; nil in unit tests
-	services serviceModeGetter // optional; nil in unit tests
+	s          userTunnelLister
+	access     tunnelGetter      // optional; nil in unit tests
+	services   serviceModeGetter // optional; nil in unit tests
+	slugs      serviceGetter     // optional; nil in unit tests
+	authDomain string
 }
 
 func (a tunnelListerAdapter) ListUserTunnels(userID string) []api.TunnelView {
@@ -113,11 +118,31 @@ func (a tunnelListerAdapter) ListUserTunnels(userID string) []api.TunnelView {
 			ID: t.ID, Name: t.Name, Type: t.Type, RemotePort: t.RemotePort,
 			LocalAddr: t.LocalAddr, BytesIn: t.BytesIn, BytesOut: t.BytesOut, Connected: t.Connected,
 			ServiceID:  t.ServiceID,
-			Hostname:   t.Hostname,
+			URL:        a.tunnelURL(t.ServiceID),
 			AccessMode: mode,
 		})
 	}
 	return out
+}
+
+// tunnelURL returns "https://<authDomain>/svc/<slug>/" for the durable service
+// behind a tunnel, or "" when there is no auth domain, no service row or no
+// slug (tcp tunnels have none).
+func (a tunnelListerAdapter) tunnelURL(serviceID string) string {
+	if a.slugs == nil || a.authDomain == "" || serviceID == "" {
+		return ""
+	}
+	svc, err := a.slugs.ServiceByID(context.Background(), serviceID)
+	if err != nil || svc.Subdomain == "" {
+		return ""
+	}
+	return "https://" + a.authDomain + "/svc/" + svc.Subdomain + "/"
+}
+
+// serviceGetter loads the durable service row for a service id.
+// *store.Store satisfies it; nil in unit tests that don't exercise it.
+type serviceGetter interface {
+	ServiceByID(ctx context.Context, id string) (db.Service, error)
 }
 
 // sessionSnapshotter is the read-only slice of *server.Server the clients
@@ -726,7 +751,7 @@ func main() {
 			apiSrv := &http.Server{
 				Addr: httpListen,
 				Handler: api.NewRouter(api.Deps{
-					Users: st, Tunnels: tunnelListerAdapter{s: srv, access: st, services: st}, Events: bus,
+					Users: st, Tunnels: tunnelListerAdapter{s: srv, access: st, services: st, slugs: st, authDomain: proxyAuthDomain}, Events: bus,
 					Log: log, SecureCookies: effectiveSecureCookies, HTTPSEnabled: httpsEnabled,
 					SPA: spaHandler, TrustedProxies: cfg.TrustedProxies,
 					// Wire env override: 0 means use the api.LoginRateLimitPerIP constant.

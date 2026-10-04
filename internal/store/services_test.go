@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/db"
 )
 
@@ -490,5 +491,59 @@ func TestValidateAPIKeyWrongService(t *testing.T) {
 	ok, err := st.ValidateAPIKey(ctx, svcB.ID, pt)
 	if err != nil || ok {
 		t.Fatalf("key for svcA must not validate against svcB: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestSetServiceSlug(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, s, "owner@x", "user")
+	svcID := mustGetOrCreateService(t, s, owner.ID, "web", "http").ID
+
+	old, err := s.SetServiceSlug(ctx, owner.ID, "user", svcID, "my-app")
+	if err != nil {
+		t.Fatalf("SetServiceSlug: %v", err)
+	}
+	if old != "" {
+		t.Fatalf("old slug = %q, want empty", old)
+	}
+	got, err := s.ServiceForSubdomain(ctx, "my-app")
+	if err != nil || got.ID != svcID {
+		t.Fatalf("lookup by new slug: %v %+v", err, got)
+	}
+	if old, err = s.SetServiceSlug(ctx, owner.ID, "user", svcID, "my-app2"); err != nil || old != "my-app" {
+		t.Fatalf("second change: old=%q err=%v, want old=my-app", old, err)
+	}
+
+	if _, err := s.SetServiceSlug(ctx, owner.ID, "user", svcID, "Bad_Slug"); !errors.Is(err, ErrInvalidSlug) {
+		t.Fatalf("invalid slug err = %v, want ErrInvalidSlug", err)
+	}
+	if _, err := s.SetServiceSlug(ctx, "someone-else", "user", svcID, "other"); err == nil {
+		t.Fatal("a non-owner, non-admin caller changed the slug")
+	}
+}
+
+func TestSetServiceSlug_Taken(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, s, "owner@x", "user")
+	a := mustGetOrCreateService(t, s, owner.ID, "web", "http").ID
+	b := mustGetOrCreateService(t, s, owner.ID, "api", "http").ID
+	if _, err := s.SetServiceSlug(ctx, owner.ID, "user", a, "shared"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetServiceSlug(ctx, owner.ID, "user", b, "shared"); !errors.Is(err, ErrSlugTaken) {
+		t.Fatalf("err = %v, want ErrSlugTaken", err)
+	}
+}
+
+func TestSuggestSlug_IsValidAndFree(t *testing.T) {
+	s := newStore(t)
+	slug, err := s.SuggestSlug(context.Background())
+	if err != nil || !auth.ValidSlug(slug) {
+		t.Fatalf("SuggestSlug = %q, %v", slug, err)
+	}
+	if _, err := s.ServiceForSubdomain(context.Background(), slug); !errors.Is(err, db.ErrNotFound) {
+		t.Fatalf("suggested slug is already in use: %v", err)
 	}
 }

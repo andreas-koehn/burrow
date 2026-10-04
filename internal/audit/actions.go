@@ -32,6 +32,7 @@ const (
 	ActionServiceCreate             = "service.create"
 	ActionServiceDelete             = "service.delete"
 	ActionServiceAccessModeUpdate   = "service.access_mode.update"
+	ActionServiceSlugChange         = "service.slug_changed"
 	ActionServiceAccessPolicyUpdate = "service.access_policy.update"
 	ActionServiceAPIKeyCreate       = "service.api_key.create"
 	ActionServiceAPIKeyRevoke       = "service.api_key.revoke"
@@ -119,7 +120,7 @@ var AllActions = []string{
 	ActionTokenMint, ActionTokenRevoke,
 	ActionSessionCreate, ActionSessionDelete, ActionSessionRevokeOthers,
 	ActionServiceCreate, ActionServiceDelete,
-	ActionServiceAccessModeUpdate, ActionServiceAccessPolicyUpdate,
+	ActionServiceAccessModeUpdate, ActionServiceSlugChange, ActionServiceAccessPolicyUpdate,
 	ActionServiceAPIKeyCreate, ActionServiceAPIKeyRevoke,
 	ActionServiceAIConfigUpdate,
 	ActionCacheClear, ActionCacheSettingsUpdate,

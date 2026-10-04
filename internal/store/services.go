@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,6 +30,13 @@ import (
 	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
+)
+
+var (
+	// ErrInvalidSlug is returned when a slug does not match auth.ValidSlug.
+	ErrInvalidSlug = errors.New("store: invalid slug")
+	// ErrSlugTaken is returned when another service already uses the slug.
+	ErrSlugTaken = errors.New("store: slug already in use")
 )
 
 // ServiceView is the durable-fields representation of a service returned by
@@ -189,6 +197,51 @@ func (s *Store) SetServiceAccessMode(ctx context.Context, callerID, callerRole, 
 		})
 	}
 	return nil
+}
+
+// SetServiceSlug changes the URL segment of an http service. Same permission
+// rule as SetServiceAccessMode (owner or a role that may configure any
+// service). Returns the previous slug so the caller can audit the change.
+func (s *Store) SetServiceSlug(ctx context.Context, callerID, callerRole, serviceID, slug string) (string, error) {
+	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
+	if err != nil {
+		return "", err
+	}
+	if svc.Type != "http" {
+		return "", ErrServiceNotHTTP
+	}
+	if !auth.ValidSlug(slug) {
+		return "", ErrInvalidSlug
+	}
+	if svc.Subdomain == slug {
+		return slug, nil
+	}
+	if err := s.q.SetServiceSubdomain(ctx, serviceID, slug); err != nil {
+		// isUniqueViolation matches SQLite; Postgres reports
+		// "violates unique constraint".
+		if isUniqueViolation(err) || containsStr(err.Error(), "unique constraint") {
+			return "", ErrSlugTaken
+		}
+		return "", err
+	}
+	return svc.Subdomain, nil
+}
+
+// SuggestSlug returns a generated slug that no service uses right now. The
+// result is a suggestion only: uniqueness is enforced when it is saved.
+func (s *Store) SuggestSlug(ctx context.Context) (string, error) {
+	for i := 0; i < 8; i++ {
+		slug, err := auth.GenerateSlug()
+		if err != nil {
+			return "", err
+		}
+		if _, err := s.q.GetServiceBySubdomain(ctx, slug); errors.Is(err, db.ErrNotFound) {
+			return slug, nil
+		} else if err != nil {
+			return "", err
+		}
+	}
+	return "", errors.New("store: no free slug after 8 attempts")
 }
 
 // validateCAPEM reports whether pem contains at least one parseable

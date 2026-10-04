@@ -54,7 +54,11 @@ func TestTunnelListerAdapterMapsAllFields(t *testing.T) {
 	}
 	f := &fakeUserTunnelLister{views: []server.TunnelView{src}}
 
-	out := tunnelListerAdapter{s: f}.ListUserTunnels("u1")
+	out := tunnelListerAdapter{
+		s:          f,
+		slugs:      fakeServiceGetter{svcs: map[string]db.Service{"svc-99": {ID: "svc-99", Subdomain: "newslug"}}},
+		authDomain: "tunnels.example.com",
+	}.ListUserTunnels("u1")
 
 	if f.gotUser != "u1" {
 		t.Fatalf("adapter passed wrong userID to lister: %q", f.gotUser)
@@ -90,11 +94,48 @@ func TestTunnelListerAdapterMapsAllFields(t *testing.T) {
 	if got.ServiceID != src.ServiceID {
 		t.Errorf("ServiceID: got %q want %q", got.ServiceID, src.ServiceID)
 	}
-	if got.Hostname != src.Hostname {
-		t.Errorf("Hostname: got %q want %q", got.Hostname, src.Hostname)
+	// The URL comes from the durable service row, not the live tunnel's
+	// hostname, so a changed slug is reported at once.
+	if want := "https://tunnels.example.com/svc/newslug/"; got.URL != want {
+		t.Errorf("URL: got %q want %q", got.URL, want)
 	}
 	if got.AccessMode != src.AccessMode {
 		t.Errorf("AccessMode: got %q want %q", got.AccessMode, src.AccessMode)
+	}
+}
+
+type fakeServiceGetter struct {
+	svcs map[string]db.Service
+}
+
+func (f fakeServiceGetter) ServiceByID(_ context.Context, id string) (db.Service, error) {
+	svc, ok := f.svcs[id]
+	if !ok {
+		return db.Service{}, db.ErrNotFound
+	}
+	return svc, nil
+}
+
+// The URL is empty without an auth domain, without a service row and for a
+// service that has no slug.
+func TestTunnelListerAdapterURLEmpty(t *testing.T) {
+	f := &fakeUserTunnelLister{views: []server.TunnelView{
+		{ID: "tn-1", Type: "http", ServiceID: "svc-1"},
+		{ID: "tn-2", Type: "http", ServiceID: "svc-missing"},
+		{ID: "tn-3", Type: "tcp", ServiceID: "svc-tcp"},
+	}}
+	slugs := fakeServiceGetter{svcs: map[string]db.Service{
+		"svc-1":   {ID: "svc-1", Subdomain: "abc123"},
+		"svc-tcp": {ID: "svc-tcp"},
+	}}
+	for _, v := range (tunnelListerAdapter{s: f, slugs: slugs}).ListUserTunnels("u1") {
+		if v.URL != "" {
+			t.Errorf("no auth domain: tunnel %s URL = %q, want empty", v.ID, v.URL)
+		}
+	}
+	got := tunnelListerAdapter{s: f, slugs: slugs, authDomain: "example.com"}.ListUserTunnels("u1")
+	if got[0].URL != "https://example.com/svc/abc123/" || got[1].URL != "" || got[2].URL != "" {
+		t.Errorf("URLs = %q, %q, %q", got[0].URL, got[1].URL, got[2].URL)
 	}
 }
 

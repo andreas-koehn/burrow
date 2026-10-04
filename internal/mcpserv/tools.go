@@ -197,7 +197,7 @@ func buildTools(s ToolStore) map[string]Tool {
 				UserID       string    `json:"user_id"`
 				Name         string    `json:"name"`
 				Type         string    `json:"type"`
-				Subdomain    string    `json:"subdomain"`
+				Subdomain    string    `json:"slug"`
 				AccessMode   string    `json:"access_mode"`
 				APIKeyHeader string    `json:"api_key_header"`
 				CreatedAt    time.Time `json:"created_at"`
@@ -246,7 +246,7 @@ func buildTools(s ToolStore) map[string]Tool {
 				UserID       string    `json:"user_id"`
 				Name         string    `json:"name"`
 				Type         string    `json:"type"`
-				Subdomain    string    `json:"subdomain"`
+				Subdomain    string    `json:"slug"`
 				AccessMode   string    `json:"access_mode"`
 				APIKeyHeader string    `json:"api_key_header"`
 				CreatedAt    time.Time `json:"created_at"`

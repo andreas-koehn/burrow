@@ -437,6 +437,14 @@ func (*fullDepsStub) CreateService(context.Context, db.Service) error {
 	stubPanic("CreateService")
 	return nil
 }
+func (*fullDepsStub) SetServiceSlug(context.Context, string, string, string, string) (string, error) {
+	stubPanic("SetServiceSlug")
+	return "", nil
+}
+func (*fullDepsStub) SuggestSlug(context.Context) (string, error) {
+	stubPanic("SuggestSlug")
+	return "", nil
+}
 
 // LiveTunnelLookup.
 func (*fullDepsStub) LookupByServiceID(string) (LiveTunnelSnapshot, bool) {

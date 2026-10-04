@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -54,6 +55,13 @@ type fakeServiceStore struct {
 	createSvcErr error
 	createdSvcs  []db.Service
 
+	// SetServiceSlug / SuggestSlug
+	setSlugOld  string
+	setSlugErr  error
+	lastSlug    string
+	suggestSlug string
+	suggestErr  error
+
 	// last args captured for inspection
 	lastMode   string
 	lastHeader string
@@ -88,6 +96,14 @@ func (f *fakeServiceStore) GetAccessPolicy(_ context.Context, _, _, _ string) ([
 func (f *fakeServiceStore) SetAccessPolicy(_ context.Context, _, _, _ string, roles []string) error {
 	f.lastRoles = roles
 	return f.setPolicyErr
+}
+
+func (f *fakeServiceStore) SetServiceSlug(_ context.Context, _, _, _, slug string) (string, error) {
+	f.lastSlug = slug
+	return f.setSlugOld, f.setSlugErr
+}
+func (f *fakeServiceStore) SuggestSlug(_ context.Context) (string, error) {
+	return f.suggestSlug, f.suggestErr
 }
 
 // CreateService is the v0.5.2 admin pre-provisioning surface (P3.6).
@@ -204,8 +220,8 @@ func TestListServices_WithItems(t *testing.T) {
 	if svc.ID != "s1" {
 		t.Errorf("id: got %q want s1", svc.ID)
 	}
-	if svc.Hostname != "k7p2qx.tunnels.example.com" {
-		t.Errorf("hostname: got %q want k7p2qx.tunnels.example.com", svc.Hostname)
+	if svc.URL != "https://tunnels.example.com/svc/k7p2qx/" {
+		t.Errorf("url: got %q want https://tunnels.example.com/svc/k7p2qx/", svc.URL)
 	}
 	if !svc.Connected {
 		t.Error("want connected=true")
@@ -215,7 +231,7 @@ func TestListServices_WithItems(t *testing.T) {
 	}
 }
 
-func TestListServices_NoAuthDomain_HostnameEmpty(t *testing.T) {
+func TestListServices_NoAuthDomain_URLEmpty(t *testing.T) {
 	ss := &fakeServiceStore{
 		listSvcs: []store.ServiceView{
 			{ID: "s1", Name: "web", Type: "http", Subdomain: "abc"},
@@ -231,8 +247,8 @@ func TestListServices_NoAuthDomain_HostnameEmpty(t *testing.T) {
 	var out []serviceResp
 	json.NewDecoder(r.Body).Decode(&out)
 	r.Body.Close()
-	if len(out) != 1 || out[0].Hostname != "" {
-		t.Fatalf("want hostname empty when no auth_domain, got %q", out[0].Hostname)
+	if len(out) != 1 || out[0].URL != "" {
+		t.Fatalf("want url empty when no auth_domain, got %q", out[0].URL)
 	}
 }
 
@@ -299,8 +315,8 @@ func TestGetService_Found(t *testing.T) {
 	if len(out.AccessPolicy) != 1 || out.AccessPolicy[0] != "user" {
 		t.Errorf("access_policy: %v", out.AccessPolicy)
 	}
-	if out.Hostname != "abc.example.com" {
-		t.Errorf("hostname: %q", out.Hostname)
+	if out.URL != "https://example.com/svc/abc/" {
+		t.Errorf("url: %q", out.URL)
 	}
 	if !out.Connected {
 		t.Error("want connected=true")
@@ -1216,3 +1232,140 @@ var errFake = &fakeError{}
 type fakeError struct{}
 
 func (f *fakeError) Error() string { return "fake error" }
+
+// ---------------------------------------------------------------------------
+// Slug + URL (path routing)
+// ---------------------------------------------------------------------------
+
+func TestListServices_SlugAndURL(t *testing.T) {
+	ss := &fakeServiceStore{
+		listSvcs: []store.ServiceView{
+			{ID: "s1", Name: "web", Type: "http", Subdomain: "p7baeh", AccessMode: "open"},
+		},
+	}
+	srv, c := newServiceServer(t, newServiceDeps(ss, fakeLiveTunnels{}, "burrow.example.com"))
+	defer srv.Close()
+
+	r := c.get(t, "/api/v1/services")
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", r.StatusCode, readBody(t, r))
+	}
+	var out []map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	r.Body.Close()
+	if len(out) != 1 {
+		t.Fatalf("want 1 service, got %d", len(out))
+	}
+	got := out[0]
+	if got["slug"] != "p7baeh" || got["url"] != "https://burrow.example.com/svc/p7baeh/" {
+		t.Fatalf("got slug=%v url=%v", got["slug"], got["url"])
+	}
+	if _, ok := got["hostname"]; ok {
+		t.Fatal("hostname must not be in the response")
+	}
+	if _, ok := got["subdomain"]; ok {
+		t.Fatal("subdomain must not be in the response")
+	}
+}
+
+func TestPutServiceSlug(t *testing.T) {
+	ss := &fakeServiceStore{setSlugOld: "p7baeh"}
+	srv, c := newServiceServer(t, newServiceDeps(ss, fakeLiveTunnels{}, "burrow.example.com"))
+	defer srv.Close()
+
+	r := c.put(t, "/api/v1/services/s1/slug", map[string]string{"slug": "my-app"})
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", r.StatusCode, readBody(t, r))
+	}
+	var ok map[string]string
+	if err := json.NewDecoder(r.Body).Decode(&ok); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	r.Body.Close()
+	if ok["slug"] != "my-app" || ok["url"] != "https://burrow.example.com/svc/my-app/" {
+		t.Fatalf("body = %v", ok)
+	}
+	if ss.lastSlug != "my-app" {
+		t.Fatalf("store got slug %q", ss.lastSlug)
+	}
+
+	ss.setSlugErr = store.ErrInvalidSlug
+	r = c.put(t, "/api/v1/services/s1/slug", map[string]string{"slug": "Bad_Slug"})
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid slug: want 400, got %d", r.StatusCode)
+	}
+	var bad map[string]string
+	json.NewDecoder(r.Body).Decode(&bad)
+	r.Body.Close()
+	if bad["error"] != auth.SlugRule {
+		t.Fatalf("error text = %q, want auth.SlugRule", bad["error"])
+	}
+
+	ss.setSlugErr = store.ErrSlugTaken
+	r = c.put(t, "/api/v1/services/s1/slug", map[string]string{"slug": "taken"})
+	r.Body.Close()
+	if r.StatusCode != http.StatusConflict {
+		t.Fatalf("taken slug: want 409, got %d", r.StatusCode)
+	}
+
+	ss.setSlugErr = db.ErrNotFound
+	r = c.put(t, "/api/v1/services/nope/slug", map[string]string{"slug": "my-app"})
+	r.Body.Close()
+	if r.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown service: want 404, got %d", r.StatusCode)
+	}
+}
+
+func TestGetSlugSuggestion(t *testing.T) {
+	ss := &fakeServiceStore{suggestSlug: "k7p2qx"}
+	srv, c := newServiceServer(t, newServiceDeps(ss, fakeLiveTunnels{}, "burrow.example.com"))
+	defer srv.Close()
+
+	r := c.get(t, "/api/v1/services/slug-suggestion")
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", r.StatusCode, readBody(t, r))
+	}
+	var out map[string]string
+	json.NewDecoder(r.Body).Decode(&out)
+	r.Body.Close()
+	if out["slug"] != "k7p2qx" {
+		t.Fatalf("slug = %q, want k7p2qx", out["slug"])
+	}
+}
+
+func TestPostService_Slug(t *testing.T) {
+	ss := &fakeServiceStore{}
+	srv, c := newServiceServer(t, newServiceDeps(ss, fakeLiveTunnels{}, ""))
+	defer srv.Close()
+
+	r := c.post(t, "/api/v1/services", map[string]any{"service_id": "web-prod", "slug": "web"})
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("status %d body=%s; want 201", r.StatusCode, readBody(t, r))
+	}
+	var created map[string]any
+	json.NewDecoder(r.Body).Decode(&created)
+	r.Body.Close()
+	if created["slug"] != "web" {
+		t.Fatalf("201 body slug = %v, want web", created["slug"])
+	}
+	if len(ss.createdSvcs) != 1 || ss.createdSvcs[0].Subdomain != "web" {
+		t.Fatalf("stored row: %#v", ss.createdSvcs)
+	}
+
+	r = c.post(t, "/api/v1/services", map[string]any{"service_id": "web-bad", "slug": "Bad"})
+	r.Body.Close()
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad slug: want 400, got %d", r.StatusCode)
+	}
+
+	r = c.post(t, "/api/v1/services", map[string]any{"service_id": "web-noslug"})
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("no slug: want 201, got %d", r.StatusCode)
+	}
+	if len(ss.createdSvcs) != 2 || ss.createdSvcs[1].Subdomain != "" {
+		t.Fatalf("stored rows: %#v", ss.createdSvcs)
+	}
+}

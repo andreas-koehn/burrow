@@ -167,6 +167,12 @@ components:
         id: { type: string }
         name: { type: string }
         type: { type: string, enum: [http, tcp] }
+        slug:
+          type: string
+          description: URL segment of an http service; empty for tcp or until one is assigned.
+        url:
+          type: string
+          description: Public address, `https://<auth_domain>/svc/<slug>/`; empty without a slug or auth domain.
         access_mode: { type: string }
         remote_port: { type: integer }
         local_addr: { type: string }
@@ -182,6 +188,9 @@ components:
         bytes_in: { type: integer, format: int64 }
         bytes_out: { type: integer, format: int64 }
         connected: { type: boolean }
+        url:
+          type: string
+          description: Public address of an http tunnel, `https://<auth_domain>/svc/<slug>/`; omitted for tcp.
     Session:
       type: object
       properties:
@@ -526,6 +535,10 @@ paths:
                 service_id:  { type: string, pattern: '^[a-z0-9_-]{3,64}$' }
                 title:       { type: string, maxLength: 120 }
                 access_mode: { type: string, enum: [public, open, api_key, burrow_login] }
+                slug:
+                  type: string
+                  pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$'
+                  description: Optional. Generated when the client first connects if omitted.
       responses:
         '201':
           description: Service row created.
@@ -535,11 +548,28 @@ paths:
                 type: object
                 properties:
                   id:         { type: string }
+                  slug:       { type: string }
                   created_at: { type: string, format: date-time }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { description: service_id already exists. }
+        '409': { description: service_id or slug already in use. }
+
+  /api/v1/services/slug-suggestion:
+    get:
+      tags: [services]
+      summary: Suggest a slug no service uses
+      description: A suggestion only; uniqueness is enforced when the slug is saved.
+      responses:
+        '200':
+          description: A free slug.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  slug: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/services/{serviceID}:
     get:
@@ -570,6 +600,36 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/services/{serviceID}/slug:
+    put:
+      tags: [services]
+      summary: Change the service's slug
+      description: The old URL stops working immediately; there is no redirect.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slug]
+              properties:
+                slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$' }
+      responses:
+        '200':
+          description: Slug changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  slug: { type: string }
+                  url:  { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Slug already in use. }
 
   /api/v1/services/{serviceID}/api-keys:
     get:
