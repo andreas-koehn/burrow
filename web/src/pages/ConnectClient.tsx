@@ -147,7 +147,7 @@ export default function ConnectClient() {
   const connected = !!matched;
 
   return (
-    <div className="account-page">
+    <div className="account-page page-narrow">
       <PageHeader
         back={BACK}
         title="Connect a client"

@@ -1137,6 +1137,18 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
   flex: 1;
 }
 
+/* Form-only pages (fields capped at --input-w-*, short cards, definition
+   lists) would sit left-aligned in the 1440px column with most of it empty.
+   This modifier goes on the page wrapper — the element that also holds the
+   PageHeader, so title and content share a left edge — and gives the page a
+   narrower column centred in .shell-content. Below the cap the wrapper fills
+   the column as before. Pages with tables, tile grids or split views do not
+   take it. */
+.page-narrow {
+  max-width: var(--page-w-narrow);
+  margin-inline: auto;
+}
+
 .skip-link {
   position: absolute;
   left: 12px;
@@ -1656,6 +1668,7 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   --input-w-sm:   200px;
   --input-w-md:   360px;
   --input-w-lg:   560px;
+  --page-w-narrow: 880px;
 }
 
 /* MetricStrip — responsive grid of stat tiles. Referenced from

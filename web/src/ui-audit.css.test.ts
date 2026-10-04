@@ -184,3 +184,40 @@ describe("access-mode detail — field width and keys panel gap", () => {
     expect(css).not.toMatch(/\.mode-detail\s*\{[^}]*gap:/);
   });
 });
+
+describe("narrow page column — form-only pages", () => {
+  const page = (name: string) => readFileSync(resolve(__dirname, "pages", `${name}.tsx`), "utf8");
+  // className of every element that directly wraps a <PageHeader> in a page.
+  const wrappers = (name: string) =>
+    [...page(name).matchAll(/<div className="([^"]*)">\s*(?:<div className="page-header-row">\s*)?<PageHeader\b/g)].map((m) => m[1]);
+
+  it("defines the cap as a token next to the input widths", () => {
+    expect(css).toMatch(/--input-w-lg:\s*560px;\s*--page-w-narrow:\s*880px;/);
+  });
+  it("caps and centres the page wrapper with one modifier", () => {
+    const rules = css.match(/\.page-narrow\s*\{[^}]*\}/g) ?? [];
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toMatch(/max-width:\s*var\(--page-w-narrow\)/);
+    expect(rules[0]).toMatch(/margin-inline:\s*auto/);
+    // The cap sits on the page wrapper, so the header shares the column; the
+    // shell column itself keeps its own cap.
+    expect(css).toMatch(/\.shell-content\s*\{[^}]*max-width:\s*1440px/);
+    expect(css).not.toMatch(/\.page-narrow\s+\.page-header/);
+  });
+  it("is narrower than the shell column and wider than the widest field", () => {
+    const px = (name: string) => Number(css.match(new RegExp(`${name}:\\s*(\\d+)px`))?.[1]);
+    expect(px("--page-w-narrow")).toBeGreaterThan(px("--input-w-lg"));
+    expect(px("--page-w-narrow")).toBeLessThan(1440);
+  });
+  it.each(["Settings", "Retention", "DatabaseBackend", "ConnectClient"])("%s is a narrow page", (name) => {
+    const w = wrappers(name);
+    expect(w.length).toBeGreaterThan(0);
+    for (const c of w) expect(c.split(" ")).toContain("page-narrow");
+  });
+  it.each(["Services", "Users", "Account", "BackupRestore", "CustomDomainsOverview", "ServiceDetail", "Home"])(
+    "%s keeps the full column (it shows a table, tiles or tabs)",
+    (name) => {
+      expect(page(name)).not.toContain("page-narrow");
+    },
+  );
+});

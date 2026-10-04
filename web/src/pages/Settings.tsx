@@ -58,7 +58,7 @@ export default function Settings() {
   });
 
   return (
-    <div className="account-page">
+    <div className="account-page page-narrow">
       <PageHeader title="Settings" subtitle="Admin-only configuration for this Burrow relay." />
 
       {/* ---- General section: Privacy + Email/SMTP (above the nav cards) ---- */}

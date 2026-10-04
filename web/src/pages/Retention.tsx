@@ -91,7 +91,7 @@ export default function Retention() {
   });
 
   return (
-    <div className="account-page">
+    <div className="account-page page-narrow">
       <PageHeader
         back={BACK}
         title="Retention & compliance"

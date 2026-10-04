@@ -15,7 +15,7 @@ export default function DatabaseBackend() {
   const status = data;
 
   return (
-    <div className="account-page">
+    <div className="account-page page-narrow">
       <PageHeader back={BACK} title="Database backend" subtitle="The storage engine Burrow is currently using." />
 
       <section className="account-section">
