@@ -36,6 +36,17 @@ describe("Users list", () => {
   });
 });
 
+describe("Users — delete self (U5)", () => {
+  it("explains why you cannot delete your own account", async () => {
+    renderApp(<Users />);
+    await screen.findByText("bob@acme.io");
+    const you = screen.getByLabelText("this is you").closest("tr")!;
+    const own = within(you).getByRole("button", { name: /^delete user /i });
+    expect(own).toBeDisabled();
+    expect(own).toHaveAttribute("title", "You can't delete your own account.");
+  });
+});
+
 describe("Users — SMTP informational notice (P6B.1)", () => {
   it("shows SMTP notice when settings has no smtp.host (default empty settings)", async () => {
     // Default db.settings = {} so smtp.host is absent
@@ -74,7 +85,7 @@ describe("CreateUserDialog — no-email clarifier (P6B.3)", () => {
   it("dialog description says Burrow does not email an invitation", async () => {
     renderApp(<Users />);
     await screen.findByText("bob@acme.io");
-    await userEvent.click(screen.getByRole("button", { name: /create user/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^new user$/i }));
     expect(await screen.findByText(/does not email an invitation/i)).toBeInTheDocument();
   });
 });

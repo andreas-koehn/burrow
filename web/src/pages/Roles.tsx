@@ -23,7 +23,7 @@ function RoleDetailDialog({ name, onClose }: { name: string | null; onClose: () 
       footer={<Button variant="primary" onClick={onClose}>Close</Button>}
     >
       <div>
-        <p className="muted" role="note">Permissions are fixed for built-in roles. Editable custom roles are planned.</p>
+        <p className="muted" role="note">Permissions are fixed for built-in roles. Create a custom role to choose your own set.</p>
         <ul aria-label="Permissions" className="perm-list">
           {(data?.permissions ?? []).map((p) => (
             <li key={p}><code className="perm-key">{p}</code></li>

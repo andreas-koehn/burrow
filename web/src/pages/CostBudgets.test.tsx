@@ -29,10 +29,10 @@ describe("Cost & budgets (§4.24)", () => {
     expect(spendTiles.length).toBeGreaterThanOrEqual(4);
   });
 
-  it("Add budget validates daily_usd > 0 and posts /budgets", async () => {
+  it("New budget validates daily_usd > 0 and posts /budgets", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();
-    await userEvent.click(await screen.findByRole("button", { name: /add budget/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /new budget/i }));
     const daily = await screen.findByLabelText(/daily usd/i);
     await userEvent.clear(daily);
     await userEvent.type(daily, "0");

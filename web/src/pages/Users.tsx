@@ -75,7 +75,7 @@ export default function Users() {
       <PageHeader
         title="Users"
         subtitle="People who can sign in to this Burrow relay."
-        actions={<Button variant="primary" size="sm" onClick={() => setCreating(true)}>Create user</Button>}
+        actions={<Button variant="primary" size="sm" onClick={() => setCreating(true)}>New user</Button>}
       />
 
       {smtpUnconfigured && (
@@ -126,7 +126,8 @@ export default function Users() {
                   <td className="col-actions">
                     <Button variant="secondary" size="sm" onClick={() => setEditing(u)}>Edit</Button>{" "}
                     <Button
-                      variant="secondary" size="sm"
+                      variant="destructive" size="sm"
+                      title={u.id === me?.id ? "You can't delete your own account." : undefined}
                       aria-label={`Delete user ${u.email}`}
                       disabled={u.id === me?.id}
                       onClick={() => setConfirmTarget(u)}
@@ -158,7 +159,7 @@ export default function Users() {
         description={confirmTarget ? `${confirmTarget.email} will lose access immediately. This cannot be undone.` : ""}
         footer={
           <>
-            <Button variant="ghost" onClick={() => setConfirmTarget(null)}>Cancel</Button>
+            <Button variant="secondary" onClick={() => setConfirmTarget(null)}>Cancel</Button>
             <Button variant="destructive-solid" onClick={() => { if (confirmTarget) deleteUser.mutate(confirmTarget.id); setConfirmTarget(null); }}>Delete user</Button>
           </>
         }

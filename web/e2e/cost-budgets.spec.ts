@@ -20,9 +20,9 @@ test("v0.4.0: cost page renders zeroed tiles + add-budget flow lists the row", a
   // At least one "$0.00" appears on a fresh DB.
   await expect(strip.getByText("$0.00").first()).toBeVisible();
 
-  // Add budget dialog.
-  await page.getByRole("button", { name: "Add budget" }).click();
-  const dlg = page.getByRole("dialog", { name: "Add budget" });
+  // New budget dialog.
+  await page.getByRole("button", { name: "New budget" }).click();
+  const dlg = page.getByRole("dialog", { name: "New budget" });
   await expect(dlg).toBeVisible();
   const subject = `ak_e2e_${Date.now()}`;
   await dlg.getByLabel("Subject").fill(subject);

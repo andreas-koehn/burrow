@@ -21,8 +21,8 @@ test("v0.4.0: webhooks page mounts + rejects non-https URL client-side", async (
   await expect(page.getByRole("heading", { name: "Webhooks", exact: true })).toBeVisible();
 
   // Open the add dialog.
-  await page.getByRole("button", { name: "Add webhook" }).click();
-  const dlg = page.getByRole("dialog", { name: "Add webhook" });
+  await page.getByRole("button", { name: "New webhook" }).click();
+  const dlg = page.getByRole("dialog", { name: "New webhook" });
   await expect(dlg).toBeVisible();
   await dlg.getByLabel("Name").fill("e2e-bad");
   await dlg.getByLabel("URL").fill("http://example.com/hook");

@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal, Sparkles } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
+import { statusLabel } from "@/lib/status";
 import { Badge, Button, DropdownMenu, EmptyState, ErrorNotice, MetricStrip, MetricTile, PageHeader, SkeletonRows } from "@/components/ds";
 import { useAuth } from "@/auth/useAuth";
 import type { AiEndpoint, CostSummary } from "@/lib/contract";
@@ -91,7 +92,7 @@ export default function AiEndpoints() {
         subtitle="Services exposing an OpenAI-compatible API through this relay — with cache, cost, and traffic at a glance."
         actions={isAdmin ? (
           <Button variant="primary" size="sm" onClick={() => nav("/services?new=ai")}>
-            + Create AI service
+            New AI service
           </Button>
         ) : undefined}
       />
@@ -138,7 +139,7 @@ export default function AiEndpoints() {
           title="No AI endpoints yet"
           action={isAdmin ? (
             <Button variant="primary" size="sm" onClick={() => nav("/services?new=ai")}>
-              + Create AI service
+              New AI service
             </Button>
           ) : undefined}
         >
@@ -186,7 +187,7 @@ export default function AiEndpoints() {
                   </td>
                   <td className="mono">{fmtInt(e.latency_p95_ms)} ms</td>
                   <td>
-                    <Badge kind={STATUS_BADGE[e.status]}>{e.status}</Badge>
+                    <Badge kind={STATUS_BADGE[e.status]}>{statusLabel(e.status)}</Badge>
                   </td>
                   <td className="col-actions">
                     <DropdownMenu

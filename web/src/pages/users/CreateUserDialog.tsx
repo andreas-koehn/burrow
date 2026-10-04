@@ -28,11 +28,11 @@ export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: ()
     <Dialog
       open={open}
       onOpenChange={(o) => { if (!o) { reset(); onClose(); } }}
-      title="Create user"
+      title="New user"
       description="They'll be able to sign in to this relay. They sign in with the password you set here — Burrow does not email an invitation."
       footer={
         <>
-          <Button variant="ghost" onClick={() => { reset(); onClose(); }}>Cancel</Button>
+          <Button variant="secondary" onClick={() => { reset(); onClose(); }}>Cancel</Button>
           <Button variant="primary" disabled={create.isPending} onClick={() => { setFormError(""); create.mutate(); }}>
             {create.isPending ? "Creating…" : "Create user"}
           </Button>

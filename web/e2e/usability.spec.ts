@@ -116,7 +116,7 @@ test.describe("Command palette", () => {
 // 4. Cross-feature wiring
 // ---------------------------------------------------------------------------
 test.describe("Cross-feature wiring", () => {
-  test("AI endpoints empty state: '+ Create AI service' button opens dialog prefilled with API-key", async ({ page }) => {
+  test("AI endpoints empty state: 'New AI service' button opens dialog prefilled with API-key", async ({ page }) => {
     // Navigate directly to /services?new=ai because the real /ai/endpoints
     // returns 404 on stock builds (feature-gated) — the AiEndpoints page
     // shows featureAbsent in that case and the CTA is not rendered.

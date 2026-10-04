@@ -34,9 +34,9 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   await expect(adminRow).toHaveCount(1);
 
   // ── Users: create (POST /users → 201) ─────────────────────────────────────
-  await page.getByRole("button", { name: "Create user" }).click();
+  await page.getByRole("button", { name: "New user", exact: true }).click();
   const createDlg = page.getByRole("dialog");
-  await expect(createDlg.getByRole("heading", { name: "Create user" })).toBeVisible();
+  await expect(createDlg.getByRole("heading", { name: "New user" })).toBeVisible();
   await createDlg.getByLabel("Email").fill(NEW_USER_EMAIL);
   await createDlg.getByLabel("Password").fill(NEW_USER_PASSWORD);
   await createDlg.getByRole("button", { name: "Create user", exact: true }).click();

@@ -38,7 +38,7 @@ export function EditUserDialog({ user, selfId, onClose }: { user: UserAdmin | nu
       description={user?.email}
       footer={
         <>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
           <Button variant="primary" disabled={save.isPending} onClick={() => save.mutate()}>Save changes</Button>
         </>
       }

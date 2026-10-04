@@ -200,6 +200,7 @@ describe("Connection logs page (§v0.5.0 Part E)", () => {
       const badges = document.querySelectorAll("td[data-status='closed_clean'] span.badge");
       expect(badges.length).toBeGreaterThan(0);
       expect(badges[0]).toHaveClass("status-connected");
+      expect(badges[0].textContent).toBe("closed clean");
     });
 
     // Also verify a rejected row maps to status-suspended.

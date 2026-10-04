@@ -2,6 +2,7 @@ import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch, downloadFile } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
+import { statusLabel } from "@/lib/status";
 import { Button, Badge, EmptyState, PageHeader, SkeletonRows } from "@/components/ds";
 import type { ConnectionLog, ConnectionLogRollup, ConnectionLogKind, ConnectionLogStatus, Service } from "@/lib/contract";
 
@@ -330,7 +331,7 @@ export default function ConnectionLogs() {
                       <td className="mono small col-num">{r.duration_ms}ms</td>
                       <td className="mono small col-num">{fmtBytes(r.bytes_in)}</td>
                       <td className="mono small col-num">{fmtBytes(r.bytes_out)}</td>
-                      <td data-status={r.status}><Badge kind={statusClass(r.status)}>{STATUS_LABELS[r.status]}</Badge></td>
+                      <td data-status={r.status}><Badge kind={statusClass(r.status)}>{statusLabel(STATUS_LABELS[r.status])}</Badge></td>
                       <td className="mono small">{r.reason}</td>
                     </tr>
                   ))}

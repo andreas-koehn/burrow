@@ -31,10 +31,10 @@ describe("Webhooks (§4.26)", () => {
     expect(within(table).getByRole("button", { name: /copy webhook url/i })).toBeInTheDocument();
   });
 
-  it("Add webhook rejects non-HTTPS URLs and reveals the signing secret on success", async () => {
+  it("New webhook rejects non-HTTPS URLs and reveals the signing secret on success", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();
-    await userEvent.click(await screen.findByRole("button", { name: /add webhook/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /new webhook/i }));
     const name = await screen.findByLabelText(/^name$/i);
     const url = screen.getByLabelText(/^url$/i);
     await userEvent.type(name, "ops");
@@ -59,10 +59,10 @@ describe("Webhooks (§4.26)", () => {
 
   it("Add Dialog events picker includes the v0.5.0 events", async () => {
     mount();
-    await userEvent.click(await screen.findByRole("button", { name: /add webhook/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /new webhook/i }));
 
     // Wait for dialog to appear — identify by the dialog heading specifically
-    await screen.findByRole("heading", { name: /add webhook/i });
+    await screen.findByRole("heading", { name: /new webhook/i });
 
     // All 6 v0.5.0 event checkboxes should be present (as text labels)
     const v5Events = [
@@ -85,7 +85,7 @@ describe("Webhooks (§4.26)", () => {
   // so Playwright (and the table-aware assertions in the page) can locate
   // the table even on a fresh stack. The C3 EmptyState card is intentionally
   // gone — we keep the in-table row that calls out "No webhooks yet" and
-  // rely on the page-head Add webhook CTA (P2-4 dedup).
+  // rely on the page-head New webhook CTA (P2-4 dedup).
   it("renders an in-table empty row when there are no webhooks (P0-10)", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       const u = String(url);

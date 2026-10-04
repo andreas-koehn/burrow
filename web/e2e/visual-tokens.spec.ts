@@ -29,7 +29,7 @@ test.describe("Visual color-token verification (D-1/D-2)", () => {
     ).toBeVisible();
 
     // Open the Create-service dialog — the real trigger in Services.tsx.
-    await page.getByRole("button", { name: "+ New service" }).click();
+    await page.getByRole("button", { name: "New service", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await expect(
@@ -71,7 +71,7 @@ test.describe("Visual color-token verification (D-1/D-2)", () => {
     ).toBeVisible();
 
     // Open the Create-service dialog.
-    await page.getByRole("button", { name: "+ New service" }).click();
+    await page.getByRole("button", { name: "New service", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
 

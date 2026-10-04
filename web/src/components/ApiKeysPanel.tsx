@@ -76,7 +76,7 @@ export function ApiKeysPanel({ serviceId }: { serviceId: string }) {
                 </td>
                 <td className="col-actions">
                   <Button
-                    variant="secondary"
+                    variant="destructive"
                     size="sm"
                     aria-label={`Revoke key ${k.name}`}
                     onClick={() => setRevokeTarget(k)}

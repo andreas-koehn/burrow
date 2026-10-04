@@ -207,7 +207,7 @@ export default function Webhooks() {
       <PageHeader
         title="Webhooks"
         subtitle={<>Burrow signs every webhook with an HMAC-SHA256 signature in the{" "}<code className="mono">Burrow-Signature</code> header. Verify on receipt.{" "}<a href="/docs/webhooks" className="link-inline">Docs</a></>}
-        actions={<Button variant="primary" size="sm" onClick={() => setAddOpen(true)}>Add webhook</Button>}
+        actions={<Button variant="primary" size="sm" onClick={() => setAddOpen(true)}>New webhook</Button>}
       />
 
       {/* P0-10: render the Webhooks table unconditionally; the empty state
@@ -304,12 +304,12 @@ export default function Webhooks() {
         </div>
       </section>
 
-      {/* Add webhook dialog */}
+      {/* New webhook dialog */}
       <Dialog
         open={addOpen}
         onOpenChange={(o) => { setAddOpen(o); if (!o) setErr(null); }}
         size="md"
-        title="Add webhook"
+        title="New webhook"
         footer={
           <>
             <Button variant="secondary" onClick={() => setAddOpen(false)}>Cancel</Button>

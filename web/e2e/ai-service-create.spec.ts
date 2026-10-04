@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 // Phase 5: AI gateway actionable — guided create-service flow.
 //
-// Flow: /ai/endpoints → click "+ Create AI service" → Services page dialog
+// Flow: /ai/endpoints → click "New AI service" → Services page dialog
 // opens with Access mode pre-set to "API key" → fill service_id → Create
 // → server returns {id, created_at} → navigate to /services/<id>#upstream-key
 // → Upstream-key tab is active.
@@ -10,7 +10,7 @@ import { test, expect } from "@playwright/test";
 // This spec runs against the REAL built burrowd (no MSW). The POST /services
 // route is wired in the real binary (v0.5.2). The /ai/endpoints route returns
 // a non-200 in the stock binary (feature-gated), so the page renders in its
-// feature-absent or error state — the "+ Create AI service" button is on the
+// feature-absent or error state — the "New AI service" button is on the
 // PageHeader (visible in both states for admin, except featureAbsent).
 //
 // Because the real /ai/endpoints returns 404 (featureAbsent branch), the

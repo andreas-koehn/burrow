@@ -59,7 +59,7 @@ export default function AutomationTokens() {
       <PageHeader
         title="Automation tokens"
         subtitle="Long-lived bearer tokens for CI / CLI / bots — scoped to your own permissions."
-        actions={<Button variant="primary" size="sm" onClick={() => setAddOpen(true)}>Mint token</Button>}
+        actions={<Button variant="primary" size="sm" onClick={() => setAddOpen(true)}>New token</Button>}
       />
 
       <p className="muted small">These authenticate machines and scripts — not tunneling agents. To connect a machine that runs burrow, use <Link className="link-inline" to="/tokens">Client tokens</Link>.</p>
@@ -98,7 +98,7 @@ export default function AutomationTokens() {
       <Dialog
         open={addOpen}
         onOpenChange={setAddOpen}
-        title="Mint automation token"
+        title="New automation token"
         footer={
           <>
             <Button variant="secondary" onClick={() => setAddOpen(false)}>Cancel</Button>

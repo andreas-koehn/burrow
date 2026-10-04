@@ -125,14 +125,14 @@ describe("CLEAR — information architecture & labelling", () => {
     expect(note.textContent).toContain("Tunnels");
   });
 
-  it("Clr-4: AI-endpoints empty state renders a '+ Create AI service' CTA button (admin)", async () => {
+  it("Clr-4: AI-endpoints empty state renders a 'New AI service' CTA button (admin)", async () => {
     // Override /ai/endpoints to return empty list (no api_key services)
     server.use(
       http.get("/api/v1/ai/endpoints", () => HttpResponse.json([])),
     );
     renderApp(<AiEndpoints />, "/ai/endpoints");
     // Both PageHeader and EmptyState render the button for admin; at least one must exist.
-    const btns = await screen.findAllByRole("button", { name: "+ Create AI service" });
+    const btns = await screen.findAllByRole("button", { name: "New AI service" });
     expect(btns.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -186,23 +186,23 @@ describe("EASY — onboarding & discoverability", () => {
       expect((link as HTMLAnchorElement).href).toContain("/clients/connect");
     });
 
-    it("Services empty state has a '+ New service' button in the page header", async () => {
+    it("Services empty state has a 'New service' button in the page header", async () => {
       server.use(
         http.get("/api/v1/services", () => HttpResponse.json([])),
       );
       renderApp(<Services />, "/services");
-      // PageHeader actions always renders the "+ New service" button
-      const btn = await screen.findByRole("button", { name: /\+ New service/i });
+      // PageHeader actions always renders the "New service" button
+      const btn = await screen.findByRole("button", { name: /^New service$/i });
       expect(btn).toBeDefined();
     });
 
-    it("AI Endpoints empty state (admin) has a '+ Create AI service' button", async () => {
+    it("AI Endpoints empty state (admin) has a 'New AI service' button", async () => {
       server.use(
         http.get("/api/v1/ai/endpoints", () => HttpResponse.json([])),
       );
       renderApp(<AiEndpoints />, "/ai/endpoints");
       // Both PageHeader and EmptyState render the button for admin; assert at least one.
-      const btns = await screen.findAllByRole("button", { name: /\+ Create AI service/i });
+      const btns = await screen.findAllByRole("button", { name: /^New AI service$/i });
       expect(btns.length).toBeGreaterThanOrEqual(1);
     });
 

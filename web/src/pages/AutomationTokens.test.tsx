@@ -49,10 +49,10 @@ describe("Automation tokens", () => {
     expect(link).toHaveAttribute("href", "/tokens");
   });
 
-  it("Mint reveals the plaintext once with the verbatim save-now warning", async () => {
+  it("Creating a token reveals the plaintext once with the verbatim save-now warning", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();
-    await userEvent.click(await screen.findByRole("button", { name: /mint token/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /new token/i }));
     const dlg = await screen.findByRole("dialog");
     await userEvent.type(within(dlg).getByLabelText(/^name$/i), "ci-bot");
     await userEvent.click(within(dlg).getByRole("button", { name: /^create$/i }));

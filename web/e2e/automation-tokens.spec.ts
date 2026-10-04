@@ -11,8 +11,8 @@ test("v0.4.0: automation tokens — mint reveals plaintext once + lists with pre
 
   // The list may already contain rows from other test runs against the
   // reused server; just assert the page mounted and we can mint a new one.
-  await page.getByRole("button", { name: "Mint token" }).click();
-  const dlg = page.getByRole("dialog", { name: "Mint automation token" });
+  await page.getByRole("button", { name: "New token" }).click();
+  const dlg = page.getByRole("dialog", { name: "New automation token" });
   await expect(dlg).toBeVisible();
   const name = `e2e-ci-${Date.now()}`;
   await dlg.getByLabel("Name").fill(name);

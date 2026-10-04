@@ -18,10 +18,10 @@ describe("PageHeader", () => {
 
   it("renders actions in a right-aligned slot", () => {
     const { container } = render(
-      <PageHeader title="Webhooks" actions={<button>Add webhook</button>} />,
+      <PageHeader title="Webhooks" actions={<button>New webhook</button>} />,
     );
     const actions = container.querySelector(".page-header > .actions");
     expect(actions).not.toBeNull();
-    expect(actions?.querySelector("button")?.textContent).toBe("Add webhook");
+    expect(actions?.querySelector("button")?.textContent).toBe("New webhook");
   });
 });

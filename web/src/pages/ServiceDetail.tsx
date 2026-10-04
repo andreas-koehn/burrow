@@ -73,7 +73,7 @@ export default function ServiceDetail() {
         </Badge>
         {svc.connected
           ? <Badge kind="status-connected">connected</Badge>
-          : <span className="muted">idle</span>}
+          : <Badge kind="status-idle">idle</Badge>}
       </div>
 
       <Tabs

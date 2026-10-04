@@ -51,7 +51,7 @@ describe("AI endpoints page (§4.19)", () => {
     expect(within(ollama).getByText("1,024")).toBeInTheDocument(); // requests_24h
     expect(within(ollama).getByText("200")).toBeInTheDocument(); // cache_hits_24h
     expect(within(ollama).getByText("1,200 ms")).toBeInTheDocument(); // latency_p95_ms
-    expect(within(ollama).getByText(/connected/i)).toBeInTheDocument();
+    expect(within(ollama).getByText("connected", { selector: "span.badge" })).toBeInTheDocument();
   });
 
   it("⋯ menu offers Inspect / Keys / Access settings / Cost", async () => {
@@ -78,7 +78,7 @@ describe("AI endpoints page (§4.19)", () => {
   });
 
   // P5.5 — admin empty-state CTA + concept explainer
-  it("P5.5: admin sees '+ Create AI service' button in empty state (does NOT change verbatim strings)", async () => {
+  it("P5.5: admin sees 'New AI service' button in empty state (does NOT change verbatim strings)", async () => {
     // db.me is admin by default
     db.services = db.services.filter((s) => s.access_mode !== "api_key");
     mount();
@@ -88,7 +88,7 @@ describe("AI endpoints page (§4.19)", () => {
       screen.getByText("Create a service with API-key access mode and OpenAI-compatible upstream."),
     ).toBeInTheDocument();
     // Admin CTA present (two buttons: one in PageHeader actions, one in EmptyState)
-    const ctaBtns = screen.getAllByRole("button", { name: /\+ create ai service/i });
+    const ctaBtns = screen.getAllByRole("button", { name: /^new ai service$/i });
     expect(ctaBtns.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -99,7 +99,7 @@ describe("AI endpoints page (§4.19)", () => {
     expect(link).toHaveAttribute("href", "/services");
   });
 
-  it("P5.5: featureAbsent branch has NO '+ Create AI service' button", async () => {
+  it("P5.5: featureAbsent branch has NO 'New AI service' button", async () => {
     server.use(
       http.get("/api/v1/ai/endpoints", () =>
         HttpResponse.json({ error: "not found" }, { status: 404 }),
@@ -107,7 +107,7 @@ describe("AI endpoints page (§4.19)", () => {
     );
     mount();
     await screen.findByRole("heading", { name: /ai gateway isn't available/i });
-    expect(screen.queryByRole("button", { name: /create ai service/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /new ai service/i })).toBeNull();
   });
 
   it("does not show cost-summary tokens when there are no AI endpoints (L-6)", async () => {

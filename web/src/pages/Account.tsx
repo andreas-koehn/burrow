@@ -44,7 +44,7 @@ function ActiveSessions() {
                   <td className="col-created">{s.ip}</td>
                   <td className="col-actions">
                     {s.current ? <span className="muted">Current session</span> :
-                      <Button variant="ghost" size="sm" onClick={() => revoke.mutate(s.id)}>Revoke</Button>}
+                      <Button variant="destructive" size="sm" onClick={() => revoke.mutate(s.id)}>Revoke</Button>}
                   </td>
                 </tr>
               );

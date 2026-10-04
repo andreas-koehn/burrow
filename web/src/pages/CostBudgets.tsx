@@ -69,7 +69,7 @@ export default function CostBudgets() {
     retry: false,
   });
   // P1-10 — feature gating: if /budgets 404s, the AI gateway isn't on this
-  // relay. Disable "Add budget" + tooltip, keep the spend tiles since
+  // relay. Disable "New budget" + tooltip, keep the spend tiles since
   // /cost/summary may still respond (operators sometimes ship cost without
   // budgets).
   const featureAbsent = budgets.error instanceof ApiError && budgets.error.status === 404;
@@ -145,7 +145,7 @@ export default function CostBudgets() {
             title={featureAbsent ? "Budget creation requires the AI gateway." : undefined}
             onClick={() => { setAddOpen(true); setErr(null); }}
           >
-            Add budget
+            New budget
           </Button>
         </div>
         <div className="table-wrap">
@@ -173,7 +173,7 @@ export default function CostBudgets() {
       <Dialog
         open={addOpen}
         onOpenChange={(o) => { setAddOpen(o); if (!o) setErr(null); }}
-        title="Add budget"
+        title="New budget"
         footer={
           <>
             <Button variant="secondary" onClick={() => setAddOpen(false)}>Cancel</Button>

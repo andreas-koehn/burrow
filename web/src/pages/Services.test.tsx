@@ -113,13 +113,13 @@ describe("Services page", () => {
     expect(within(gf).getByText("idle")).toBeInTheDocument();
   });
 
-  it("creates a new service via the + New service dialog and shows a success toast", async () => {
+  it("creates a new service via the New service dialog and shows a success toast", async () => {
     mount();
     // Wait for initial data to load (table must be present first)
     await screen.findByRole("table", { name: /services/i });
 
     // Open the create dialog
-    await userEvent.click(screen.getByRole("button", { name: /\+ new service/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^new service$/i }));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
 
     // Fill in the service ID and an optional title
@@ -154,7 +154,7 @@ describe("Services page", () => {
 
     mount();
     await screen.findByRole("table", { name: /services/i });
-    await userEvent.click(screen.getByRole("button", { name: /\+ new service/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^new service$/i }));
     await screen.findByRole("dialog");
 
     // The Access mode combobox is present (Select renders a button with aria-haspopup="listbox")

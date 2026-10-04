@@ -31,6 +31,12 @@ describe("Account active sessions", () => {
     await waitFor(() => expect(screen.queryByText("198.51.100.4")).not.toBeInTheDocument());
   });
 
+  it("session Revoke uses the destructive button style (C2)", async () => {
+    renderApp(<Account />);
+    const revoke = (await screen.findAllByRole("button", { name: "Revoke" }))[0];
+    expect(revoke.className).toContain("btn-destructive");
+  });
+
   it("signs out everywhere", async () => {
     renderApp(<Account />);
     await screen.findByRole("table", { name: /active sessions/i });
