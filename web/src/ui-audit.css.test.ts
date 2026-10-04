@@ -60,8 +60,11 @@ describe("T10 — type hierarchy and rhythm", () => {
     expect(css).toMatch(/\.card-title\s*\{[^}]*margin:\s*0 0 var\(--space-md\)/);
   });
   it("adjacency margins do not double the gap of flex/grid parents", () => {
-    expect(css).toMatch(/\.stack-md > \.field,\s*\.stack-md > \.row,\s*\.form-grid > \.field\s*\{[^}]*margin-top:\s*0/);
-    expect(css).toMatch(/:where\(:not\(\.form-grid, \.stack-md\)\) > \.notice-inline \+ \*\s*\{/);
+    const reset = ".stack-md > .field,\n.stack-md > .row,\n.form-grid > .field,\n.pw-form > .field,\n.users-form > .field { margin-top: 0; }";
+    expect(css).toContain(reset);
+    // equal specificity: the reset only wins by coming after the adjacency rule
+    expect(css.indexOf(reset)).toBeGreaterThan(css.indexOf(".field + .row"));
+    expect(css).toContain(":where(:not(.form-grid, .stack-md, .form-field-group, .pw-form, .users-form)) > .notice-inline + * {");
     expect(css).toMatch(/\.section-head \.left\s*\{[^}]*gap:\s*0 var\(--space-sm\)/);
   });
 });

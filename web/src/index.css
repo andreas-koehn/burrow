@@ -1388,7 +1388,7 @@ button.sort-header:focus-visible {
 .card-title { margin: 0 0 var(--space-md); font-size: 15px; font-weight: 600; }
 /* Any notice followed by content, and any helper line followed by a table or
    empty state, keeps a gap — these were flush before. */
-:where(:not(.form-grid, .stack-md)) > .notice-inline + * { margin-top: var(--space-md); }
+:where(:not(.form-grid, .stack-md, .form-field-group, .pw-form, .users-form)) > .notice-inline + * { margin-top: var(--space-md); }
 p.muted + .table-wrap,
 p.muted + .state-card,
 p.small + .table-wrap,
@@ -1399,7 +1399,9 @@ p.small + .state-card { margin-top: var(--space-md); }
 /* Gap containers already space their children; do not double it. */
 .stack-md > .field,
 .stack-md > .row,
-.form-grid > .field { margin-top: 0; }
+.form-grid > .field,
+.pw-form > .field,
+.users-form > .field { margin-top: 0; }
 .perm-group { margin-top: var(--space-lg); }
 .perm-group h4 { margin: 0 0 var(--space-sm); font-size: 13px; font-weight: 600; }
 .perm-row {
