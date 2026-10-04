@@ -3,7 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { apiFetch, downloadFile, ApiError } from "@/lib/api";
-import { Badge, Button, Input, PageHeader, SkeletonRows } from "@/components/ds";
+import { Badge, Button, Input, PageHeader, SkeletonRows, TableEmptyRow } from "@/components/ds";
 import type { AuditEvent } from "@/lib/contract";
 import { formatTimestampWithTooltip } from "@/lib/format";
 
@@ -131,7 +131,7 @@ export default function AuditLog() {
             </thead>
             <tbody>
               {events.data.length === 0
-                ? <tr><td colSpan={7} className="muted">No audit events yet.</td></tr>
+                ? <TableEmptyRow colSpan={7} title="No audit events yet." />
                 : events.data.map((e) => <Row key={e.id} e={e} />)}
             </tbody>
           </table>

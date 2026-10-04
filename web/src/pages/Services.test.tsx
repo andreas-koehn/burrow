@@ -177,8 +177,8 @@ describe("Services page", () => {
     expect(captured).toMatchObject({ access_mode: "api_key" });
   });
 
-  // P5.2 — ?new=ai auto-opens the dialog pre-filled with API key access mode
-  it("P5.2: ?new=ai auto-opens dialog with Access mode pre-set to API key", async () => {
+  // P5.2 — ?new=ai auto-opens the dialog; access mode is fixed to API key, no picker
+  it("P5.2: ?new=ai auto-opens the New AI service dialog without an access-mode picker", async () => {
     renderApp(<Services />, "/services?new=ai");
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toBeInTheDocument();

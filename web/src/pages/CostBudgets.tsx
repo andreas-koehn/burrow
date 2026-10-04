@@ -186,7 +186,7 @@ export default function CostBudgets() {
         footer={
           <>
             <Button variant="secondary" onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button variant="primary" disabled={create.isPending} onClick={submit}>
+            <Button variant="primary" disabled={create.isPending || (scope !== "global" && !subjectId.trim())} onClick={submit}>
               Create
             </Button>
           </>

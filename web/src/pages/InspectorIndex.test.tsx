@@ -12,6 +12,7 @@ function mount() {
     <Routes>
       <Route path="/inspector" element={<InspectorIndex />} />
       <Route path="/inspector/:serviceId" element={<p>inspector for service</p>} />
+      <Route path="/clients/connect" element={<p>connect a client page</p>} />
     </Routes>,
     "/inspector",
   );
@@ -33,7 +34,10 @@ describe("InspectorIndex (F7)", () => {
     ])));
     mount();
     expect(await screen.findByText("No HTTP services to inspect")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Connect a client" })).toHaveAttribute("href", "/clients/connect");
+    // A plain button, not a button nested in a link.
+    expect(screen.queryByRole("link", { name: "Connect a client" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Connect a client" }));
+    expect(await screen.findByText("connect a client page")).toBeInTheDocument();
   });
 
   it("shows an error, not the empty state, when the service list fails; Retry recovers", async () => {
@@ -49,7 +53,7 @@ describe("InspectorIndex (F7)", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Couldn't load services");
     expect(screen.queryByText("No HTTP services to inspect")).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Connect a client" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect a client" })).not.toBeInTheDocument();
     await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("inspector for service")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();

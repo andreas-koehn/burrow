@@ -8,7 +8,7 @@ import Settings from "@/pages/Settings";
 describe("Settings / SMTP", () => {
   it("shows the unconfigured notice initially (P6B.2 — corrected copy)", async () => {
     renderApp(<Settings />);
-    expect(await screen.findByText(/Email isn't set up\. Invites and password resets are unavailable until SMTP is configured\./)).toBeInTheDocument();
+    expect(await screen.findByText(/Email isn't set up\. Password resets and test emails are unavailable until SMTP is configured\./)).toBeInTheDocument();
     expect(screen.queryByText(/invites are disabled/i)).not.toBeInTheDocument();
   });
 

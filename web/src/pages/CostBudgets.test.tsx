@@ -33,6 +33,7 @@ describe("Cost & budgets (§4.24)", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();
     await userEvent.click(await screen.findByRole("button", { name: /new budget/i }));
+    await userEvent.type(await screen.findByLabelText("Subject"), "ak_1");
     const daily = await screen.findByLabelText(/daily usd/i);
     await userEvent.clear(daily);
     await userEvent.type(daily, "0");
@@ -49,6 +50,26 @@ describe("Cost & budgets (§4.24)", () => {
         ),
       ).toBe(true);
     });
+  });
+
+  it("keeps Create disabled until a non-global scope has a subject", async () => {
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
+    const dialog = await screen.findByRole("dialog", { name: "New budget" });
+    const create = within(dialog).getByRole("button", { name: "Create" });
+    await userEvent.type(within(dialog).getByLabelText(/daily usd/i), "25");
+    expect(create).toBeDisabled();
+    await userEvent.type(within(dialog).getByLabelText("Subject"), "   ");
+    expect(create).toBeDisabled();
+    await userEvent.type(within(dialog).getByLabelText("Subject"), "ak_1");
+    expect(create).toBeEnabled();
+    // Global has no subject, so nothing is missing.
+    await userEvent.click(within(dialog).getByLabelText("Scope"));
+    await userEvent.click(await screen.findByRole("option", { name: "Global" }));
+    expect(create).toBeEnabled();
+    await userEvent.click(within(dialog).getByLabelText("Scope"));
+    await userEvent.click(await screen.findByRole("option", { name: "User" }));
+    expect(create).toBeDisabled();
   });
 
   it("Export cost report triggers GET /cost/export?format=ndjson", async () => {

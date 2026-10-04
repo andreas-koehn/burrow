@@ -50,8 +50,8 @@ describe("INTUITIVE — navigation & mental-model alignment", () => {
 
   it("In-4: Clients page — services-count badge links to the client detail view", async () => {
     renderApp(<Clients />, "/clients");
-    // db seeds one client: session_id = "sess_4f7a9c0b2e81", service_count = 1
-    // The aria-label is "View 1 services for office-box-1"
+    // db seeds one client: session_id = "sess_4f7a9c0b2e81", service_count = 2
+    // The aria-label is "View 2 services for office-box-1"
     const link = await screen.findByRole("link", { name: /View.*services for office-box-1/i });
     expect((link as HTMLAnchorElement).href).toContain("/clients/sess_4f7a9c0b2e81");
   });

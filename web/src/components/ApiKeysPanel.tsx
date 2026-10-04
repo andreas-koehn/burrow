@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
-import { Button, Input, Dialog } from "@/components/ds";
+import { Button, Input, Dialog, TableEmptyRow } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { useAuth } from "@/auth/useAuth";
@@ -53,7 +53,7 @@ export function ApiKeysPanel({ serviceId }: { serviceId: string }) {
   return (
     <div className="api-keys-panel">
       <div className="panel-head">
-        <Button variant="primary" size="sm" className="ml-auto" onClick={() => setCreating(true)}>Create key</Button>
+        <Button variant="primary" size="sm" className="ml-auto" onClick={() => setCreating(true)}>New key</Button>
       </div>
 
       <div className="table-wrap">
@@ -86,9 +86,7 @@ export function ApiKeysPanel({ serviceId }: { serviceId: string }) {
                 </td>
               </tr>
             ))}
-            {(data ?? []).length === 0 && (
-              <tr><td colSpan={4} className="muted">No keys yet.</td></tr>
-            )}
+            {data && data.length === 0 && <TableEmptyRow colSpan={4} title="No keys yet." />}
           </tbody>
         </table>
       </div>

@@ -65,7 +65,7 @@ export default function ClientDetail() {
                     <span className="row row-center gap-2">
                       <Badge kind={`access-${mode}`} nodot>{ACCESS_LABEL[mode]}</Badge>
                       {s.service_id && (
-                        <Link className="link-inline" to={`/services/${s.service_id}`}>Configure</Link>
+                        <Link className="link-inline" to={`/services/${s.service_id}`} aria-label={`Configure access for ${s.name}`}>Configure</Link>
                       )}
                     </span>
                   </td>

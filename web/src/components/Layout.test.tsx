@@ -77,12 +77,6 @@ describe("Layout theme toggle", () => {
     expect(screen.getByRole("button", { name: "Switch to dark theme" })).toBeInTheDocument();
   });
 
-  it("Log out button is still present alongside toggle", () => {
-    renderLayout();
-    expect(screen.getByRole("button", { name: /log out/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /switch to/i })).toBeInTheDocument();
-  });
-
   it("renders Log out as an icon button in the footer row (L2)", async () => {
     renderLayout("user");
     const logout = await screen.findByRole("button", { name: "Log out" });

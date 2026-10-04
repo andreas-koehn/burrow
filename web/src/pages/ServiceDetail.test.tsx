@@ -91,8 +91,8 @@ describe("ServiceDetail page", () => {
     // svc_ai001 is in api_key mode, the mode that used to embed the key list.
     await screen.findByRole("radiogroup", { name: "Access mode" });
     expect(screen.getByLabelText("API key header")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /create key/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New key" })).toBeNull();
     await userEvent.click(screen.getByRole("tab", { name: "API keys" }));
-    expect(await screen.findByRole("button", { name: /create key/i })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "New key" })).toBeInTheDocument();
   });
 });

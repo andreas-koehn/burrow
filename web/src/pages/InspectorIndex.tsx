@@ -1,4 +1,4 @@
-import { Link, Navigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, EmptyState, ErrorNotice, PageHeader, SkeletonRows } from "@/components/ds";
@@ -7,6 +7,7 @@ import type { Service } from "@/lib/contract";
 // Stable entry point for the request inspector: picks the first http service
 // so the sidebar link does not have to embed a service id.
 export default function InspectorIndex() {
+  const nav = useNavigate();
   const services = useQuery({
     queryKey: ["services"],
     queryFn: () => apiFetch<Service[]>("/services"),
@@ -49,7 +50,7 @@ export default function InspectorIndex() {
       <PageHeader title="Request inspector" subtitle="Tail and replay traffic on an HTTP service." />
       <EmptyState
         title="No HTTP services to inspect"
-        action={<Link to="/clients/connect"><Button variant="primary" size="sm">Connect a client</Button></Link>}
+        action={<Button variant="primary" size="sm" onClick={() => nav("/clients/connect")}>Connect a client</Button>}
       >
         Connect a client with an HTTP service to see its requests here.
       </EmptyState>

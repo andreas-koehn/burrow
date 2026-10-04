@@ -93,7 +93,7 @@ describe("Home (Overview)", () => {
       await screen.findByRole("heading", { name: "Overview" });
       await waitFor(() => {
         expect(
-          screen.getByText(/Email isn't set up\. Invites and password resets are unavailable until SMTP is configured\./),
+          screen.getByText(/Email isn't set up\. Password resets and test emails are unavailable until SMTP is configured\./),
         ).toBeInTheDocument();
       });
       // The alert must contain a link to /settings

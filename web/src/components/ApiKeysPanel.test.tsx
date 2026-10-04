@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { delay, http, HttpResponse } from "msw";
+import { server } from "@/mocks/server";
 import { renderApp } from "@/mocks/test-utils";
 import { db } from "@/mocks/db";
 import { ApiKeysPanel } from "@/components/ApiKeysPanel";
@@ -39,7 +41,7 @@ describe("ApiKeysPanel", () => {
   it("creates a key and reveals the plaintext exactly once", async () => {
     renderApp(<ApiKeysPanel serviceId={SVC} />);
     await screen.findByRole("table", { name: /api keys/i });
-    await userEvent.click(screen.getByRole("button", { name: /create key/i }));
+    await userEvent.click(screen.getByRole("button", { name: "New key" }));
     await userEvent.type(screen.getByLabelText(/key name/i), "deploy");
     await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
 
@@ -58,6 +60,19 @@ describe("ApiKeysPanel", () => {
     renderApp(<ApiKeysPanel serviceId={SVC} />);
     await screen.findByRole("table", { name: /api keys/i });
     expect(screen.queryByRole("heading", { name: /^api keys$/i })).toBeNull();
+  });
+
+  it("shows a centred empty row when the service has no keys, not while loading (C6)", async () => {
+    server.use(http.get("/api/v1/services/:id/api-keys", async () => {
+      await delay(100);
+      return HttpResponse.json([]);
+    }));
+    renderApp(<ApiKeysPanel serviceId={SVC} />);
+    await screen.findByRole("table", { name: /api keys/i });
+    expect(screen.queryByText("No keys yet.")).toBeNull();
+    const cell = (await screen.findByText("No keys yet.")).closest("td")!;
+    expect(cell).toHaveClass("table-empty");
+    expect(cell.getAttribute("colspan")).toBe("4");
   });
 
   it("revokes a key after confirmation", async () => {

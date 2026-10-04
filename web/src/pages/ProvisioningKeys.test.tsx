@@ -15,11 +15,11 @@ describe("Provisioning keys (§4.28)", () => {
     expect(screen.getByRole("table", { name: /pending approvals/i })).toBeInTheDocument();
   });
 
-  it("Mint provisioning key reveals the plaintext once with the install snippet", async () => {
+  it("New provisioning key reveals the plaintext once with the install snippet", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();
-    await userEvent.click(await screen.findByRole("button", { name: /mint provisioning key/i }));
-    const dlg = await screen.findByRole("dialog");
+    await userEvent.click(await screen.findByRole("button", { name: "New provisioning key" }));
+    const dlg = await screen.findByRole("dialog", { name: "New provisioning key" });
     await userEvent.type(within(dlg).getByLabelText(/^name$/i), "fleet-key");
     await userEvent.click(within(dlg).getByRole("button", { name: /^create$/i }));
     await waitFor(() => {

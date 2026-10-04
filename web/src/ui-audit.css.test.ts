@@ -126,3 +126,27 @@ describe("T16 — back links", () => {
     expect(css).toMatch(/\.page-header \.page-back:focus-visible\s*\{[^}]*outline:/);
   });
 });
+
+describe("final review — page header actions and dialog field widths", () => {
+  it("resets the page-scoped .actions margin inside the page header", () => {
+    const scoped = css.indexOf(".inspector-page     .actions {");
+    const reset = css.search(/\.page-header \.actions\s*\{\s*margin-top:\s*0;?\s*\}/);
+    expect(scoped).toBeGreaterThan(-1);
+    // Equal specificity: the reset only wins if it comes later in the file.
+    expect(reset).toBeGreaterThan(scoped);
+    // The account/tokens/automation block sets the same margin further down.
+    expect(reset).toBeGreaterThan(css.indexOf(".automation-page .actions {"));
+  });
+  it("lets md and lg fields fill the dialog body, after the capped rules", () => {
+    const rule = css.match(
+      /\.dialog-body \.form-field\.field-w-md\s+\.input,\s*\.dialog-body \.form-field\.field-w-md\s+\.select-trigger,\s*\.dialog-body \.form-field\.field-w-lg\s+\.input,\s*\.dialog-body \.form-field\.field-w-lg\s+\.select-trigger\s*\{\s*max-width:\s*none;?\s*\}/,
+    );
+    expect(rule).not.toBeNull();
+    const capped = css.search(/\n\.form-field\.field-w-lg\s+\.select-trigger\s*\{\s*max-width:\s*var\(--input-w-lg\)/);
+    expect(capped).toBeGreaterThan(-1);
+    expect(rule!.index!).toBeGreaterThan(capped);
+  });
+  it("keeps sm fields narrow inside dialogs", () => {
+    expect(css).not.toMatch(/\.dialog-body \.form-field\.field-w-sm/);
+  });
+});

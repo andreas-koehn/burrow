@@ -103,8 +103,6 @@ describe("Webhooks (§4.26)", () => {
       expect(within(table).getByText(/No webhooks yet/i)).toBeInTheDocument();
     });
     expect(within(table).getByText(/Burrow can POST to a URL when audit events/)).toBeInTheDocument();
-    await waitFor(() => {
-    });
   });
 
   it("shows an empty-state row in Recent deliveries when there are none (D-7/L-9)", async () => {

@@ -23,9 +23,9 @@ describe("AccessModePanel (v0.3.0)", () => {
     const header = screen.getByLabelText(/api key header/i);
     expect(header).toHaveValue("Authorization");
     expect(header.className).toContain("mono");
-    // ApiKeysPanel is mounted — the Create key button is its identifying control.
+    // ApiKeysPanel is mounted — the New key button is its identifying control.
     expect(
-      await screen.findByRole("button", { name: /create key/i }),
+      await screen.findByRole("button", { name: "New key" }),
     ).toBeInTheDocument();
   });
 
@@ -34,7 +34,7 @@ describe("AccessModePanel (v0.3.0)", () => {
   it("hides the services:configure permission hint for admin users (P1-5)", async () => {
     renderApp(<AccessModePanel serviceId="svc_web01" serviceName="web" mode="open" />);
     await userEvent.click(screen.getByRole("radio", { name: /api key/i }));
-    await screen.findByRole("button", { name: /create key/i });
+    await screen.findByRole("button", { name: "New key" });
     expect(
       screen.queryByText("Managing keys needs the services:configure permission."),
     ).toBeNull();

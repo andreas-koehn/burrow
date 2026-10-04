@@ -20,6 +20,12 @@ const FIELD_SELECTOR =
   'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled])';
 const FOOTER_SELECTOR = ".dialog-footer button:not([disabled])";
 
+// The last opener a closing dialog handed focus back to. A dialog opened from
+// inside another dialog (create, then reveal the secret) records a button of
+// the first dialog as its opener; that button is gone when the second dialog
+// closes, so focus falls back to where the first dialog returned it.
+let lastRestoredOpener: HTMLElement | null = null;
+
 export function Dialog({ open, onOpenChange, title, description, children, footer, size = "sm" }: DialogProps) {
   const ref = useRef<HTMLDivElement>(null);
   // Unique per-instance id so nested dialogs don't share aria-labelledby —
@@ -63,8 +69,14 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
       document.removeEventListener("keydown", onKey);
       clearTimeout(t);
       // Skip <body> (nothing was focused) and openers that unmounted while
-      // the dialog was open, e.g. a dropdown item.
-      if (opener instanceof HTMLElement && opener !== document.body && opener.isConnected) opener.focus();
+      // the dialog was open, e.g. a dropdown item or the previous dialog's
+      // submit button; fall back to the last opener that got focus back.
+      if (opener instanceof HTMLElement && opener !== document.body && opener.isConnected) {
+        opener.focus();
+        lastRestoredOpener = opener;
+      } else if (lastRestoredOpener?.isConnected) {
+        lastRestoredOpener.focus();
+      }
     };
   }, [open]);
 

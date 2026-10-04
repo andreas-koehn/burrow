@@ -84,7 +84,7 @@ export default function ProvisioningKeys() {
       <PageHeader
         title="Provisioning keys"
         subtitle="Mint long-lived keys that newly-launched clients use to enrol with this relay."
-        actions={<Button variant="primary" size="sm" onClick={() => setAddOpen(true)}>Mint provisioning key</Button>}
+        actions={<Button variant="primary" size="sm" onClick={() => setAddOpen(true)}>New provisioning key</Button>}
       />
 
       <section className="card">
@@ -163,7 +163,7 @@ export default function ProvisioningKeys() {
       <Dialog
         open={addOpen}
         onOpenChange={setAddOpen}
-        title="Mint provisioning key"
+        title="New provisioning key"
         footer={
           <>
             <Button variant="secondary" onClick={() => setAddOpen(false)}>Cancel</Button>

@@ -5,7 +5,7 @@ import { MoreHorizontal } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Dialog, DropdownMenu, ErrorNotice, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, PageHeader, Select, SkeletonRows, Switch } from "@/components/ds";
+import { Button, Dialog, DropdownMenu, ErrorNotice, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, PageHeader, Select, SkeletonRows, Switch, TableEmptyRow } from "@/components/ds";
 import type {
   AiEndpoint, ModelAliasV5, Provider, Service, ServiceAIConfig,
 } from "@/lib/contract";
@@ -466,11 +466,7 @@ export default function AiEndpointDetail() {
                 </tr>
               ))}
               {(routing.backends ?? []).length === 0 && (
-                <tr>
-                  <td colSpan={5} className="muted empty-cell">
-                    No backends configured. Add an alias to get started.
-                  </td>
-                </tr>
+                <TableEmptyRow colSpan={5} title="No backends configured.">Add an alias to get started.</TableEmptyRow>
               )}
             </tbody>
           </table>

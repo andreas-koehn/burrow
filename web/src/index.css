@@ -1766,6 +1766,12 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
 .form-field.field-w-lg   .select-trigger { max-width: var(--input-w-lg); }
 .form-field.field-w-full .input,
 .form-field.field-w-full .select-trigger { max-width: none; }
+/* Inside a dialog, md and lg fields fill the body so the left and right
+   padding match; sm fields (numbers, short codes) stay narrow. */
+.dialog-body .form-field.field-w-md .input,
+.dialog-body .form-field.field-w-md .select-trigger,
+.dialog-body .form-field.field-w-lg .input,
+.dialog-body .form-field.field-w-lg .select-trigger { max-width: none; }
 
 .form-field-group {
   display: flex;
@@ -2179,6 +2185,11 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   gap: var(--space-sm);
   margin-top: var(--space-md);
 }
+
+/* The page-scoped .actions rules above tie with .page-header .actions on
+   specificity and come later, so their margin-top pushed the header controls
+   below the title. Must stay after both blocks. */
+.page-header .actions { margin-top: 0; }
 
 /* Retention number fields: keep entered values as normal text, neutralize the
    native teal accent-color inherited from the Tailwind theme (L-misc). */

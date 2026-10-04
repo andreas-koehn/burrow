@@ -186,7 +186,7 @@ test("v0.5.0: upstream key tab shows env-only disclosure text", async ({ page })
   ).toBeVisible();
 });
 
-// ── 7. Custom domains tab shows Add domain form ───────────────────────────────
+// ── 7. Custom domains tab shows New domain form ───────────────────────────────
 //
 // v0.5.2 P3.6: previously early-returned when no live service existed; now
 // pre-provisions one via the admin POST /api/v1/services so the assertion
@@ -219,12 +219,12 @@ test("v0.5.0: custom domains tab opens add-domain dialog", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /Service/ })).toBeVisible();
 
   // The Custom domains tab should be active (initialTab="domains" when path ends in /domains)
-  // The panel contains the "Custom domains" h3 and "Add domain" button.
+  // The panel contains the "Custom domains" h3 and "New domain" button.
   await expect(page.getByRole("heading", { name: "Custom domains" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Add domain" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New domain", exact: true })).toBeVisible();
 
-  // Open the Add domain dialog
-  await page.getByRole("button", { name: "Add domain" }).click();
+  // Open the add-domain dialog
+  await page.getByRole("button", { name: "New domain", exact: true }).click();
 
   // Dialog title
   await expect(page.getByRole("dialog", { name: "Add custom domain" })).toBeVisible();

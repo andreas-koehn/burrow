@@ -67,10 +67,10 @@ describe("CustomDomainsPanel", () => {
     }
   });
 
-  it("Add domain dialog opens", async () => {
+  it("New domain opens the add dialog", async () => {
     mount();
     await screen.findByText("foo.example.com");
-    const addBtn = screen.getByRole("button", { name: /add domain/i });
+    const addBtn = screen.getByRole("button", { name: "New domain" });
     await userEvent.click(addBtn);
     // Dialog title should appear
     const dialog = await screen.findByRole("dialog");
@@ -82,7 +82,7 @@ describe("CustomDomainsPanel", () => {
     await screen.findByText("foo.example.com");
 
     // Open add dialog
-    await userEvent.click(screen.getByRole("button", { name: /add domain/i }));
+    await userEvent.click(screen.getByRole("button", { name: "New domain" }));
     const dialog = await screen.findByRole("dialog");
 
     // Fill hostname
@@ -111,7 +111,7 @@ describe("CustomDomainsPanel", () => {
     mount();
     await screen.findByText("foo.example.com");
 
-    await userEvent.click(screen.getByRole("button", { name: /add domain/i }));
+    await userEvent.click(screen.getByRole("button", { name: "New domain" }));
     const dialog = await screen.findByRole("dialog");
 
     const hostnameInput = within(dialog).getByLabelText(/hostname/i);

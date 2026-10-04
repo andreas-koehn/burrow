@@ -138,6 +138,15 @@ describe("AI endpoint detail (§4.20)", () => {
     expect(within(table).getByRole("columnheader", { name: /priority/i })).toBeInTheDocument();
   });
 
+  it("shows a centred empty row when no backend is configured (C6)", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: /backends/i });
+    const cell = within(table).getByText("No backends configured.").closest("td")!;
+    expect(cell).toHaveClass("table-empty");
+    expect(cell.getAttribute("colspan")).toBe("5");
+    expect(within(cell).getByText("Add an alias to get started.")).toBeInTheDocument();
+  });
+
   it("Priority input is editable and PUT /models/aliases/:alias fires on blur", async () => {
     // Seed a backend row so the Backends table has a row to interact with.
     const origBackends = db.aiConfigs["svc_ai001"]!.routing.backends;

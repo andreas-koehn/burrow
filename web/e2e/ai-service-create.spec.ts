@@ -2,9 +2,9 @@ import { test, expect } from "@playwright/test";
 
 // Phase 5: AI gateway actionable — guided create-service flow.
 //
-// Flow: /ai/endpoints → click "New AI service" → Services page dialog
-// opens with Access mode pre-set to "API key" → fill service_id → Create
-// → server returns {id, created_at} → navigate to /services/<id>#upstream-key
+// Flow: /ai/endpoints → click "New AI service" → Services page "New AI
+// service" dialog opens (access mode fixed to API key, no picker) → fill
+// service_id → "Create and continue" → server returns {id, created_at} → navigate to /services/<id>#upstream-key
 // → Upstream-key tab is active.
 //
 // This spec runs against the REAL built burrowd (no MSW). The POST /services
@@ -24,7 +24,7 @@ test.use({ storageState: "playwright-auth.json" });
 // shared embedded-burrowd session even if two POSTs land in the same millisecond.
 let svcSeq = 0;
 
-test("P5: ?new=ai auto-opens Services dialog pre-filled with API-key access mode", async ({ page }) => {
+test("P5: ?new=ai auto-opens the New AI service dialog without an access-mode picker", async ({ page }) => {
   await page.goto("/services?new=ai");
 
   // The create dialog should auto-open

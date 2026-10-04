@@ -147,6 +147,44 @@ describe("Dialog size, close button, focus (F2/U2)", () => {
     expect(opener).toHaveFocus();
   });
 
+  it("returns focus to the page opener when a chained dialog closes", async () => {
+    // Create-then-reveal: A's submit button closes A and opens B, then
+    // unmounts with A, so B's own opener is gone by the time B closes.
+    function Harness() {
+      const [a, setA] = useState(false);
+      const [b, setB] = useState(false);
+      return (
+        <>
+          <button onClick={() => setA(true)}>New key</button>
+          <Dialog
+            open={a}
+            title="Create"
+            onOpenChange={setA}
+            footer={<button onClick={() => { setA(false); setB(true); }}>Create</button>}
+          >
+            <p>Name it</p>
+          </Dialog>
+          <Dialog open={b} title="Reveal" onOpenChange={setB} footer={<button onClick={() => setB(false)}>Done</button>}>
+            <p>secret</p>
+          </Dialog>
+        </>
+      );
+    }
+    render(<Harness />);
+    const opener = screen.getByRole("button", { name: "New key" });
+    opener.focus();
+    fireEvent.click(opener);
+    const create = screen.getByRole("button", { name: "Create" });
+    await waitFor(() => expect(create).toHaveFocus());
+    fireEvent.click(create);
+    const done = screen.getByRole("button", { name: "Done" });
+    await waitFor(() => expect(done).toHaveFocus());
+    expect(create.isConnected).toBe(false);
+    fireEvent.click(done);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(opener).toHaveFocus();
+  });
+
   it("skips a disconnected opener without throwing", async () => {
     function Harness() {
       const [open, setOpen] = useState(false);

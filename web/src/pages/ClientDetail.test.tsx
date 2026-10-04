@@ -37,7 +37,9 @@ describe("Client detail", () => {
     expect(within(table).getByText("Open")).toBeInTheDocument();
     // The mock handler resolves service_id for the http service only (tcp has
     // no durable row), so exactly one link.
-    expect(within(table).getByRole("link", { name: /configure/i }))
+    const link = within(table).getByRole("link", { name: "Configure access for ollama" });
+    expect(link).toHaveTextContent("Configure");
+    expect(link)
       .toHaveAttribute("href", "/services/svc_ai001");
   });
 
@@ -67,5 +69,6 @@ describe("Client detail", () => {
     const badge = within(table).getByText("Open");
     expect(badge).toHaveClass("access-open");
     expect(within(table).queryByRole("link", { name: /configure/i })).toBeNull();
+    expect(within(table).queryByText("Configure")).toBeNull();
   });
 });

@@ -137,7 +137,7 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
       <div className="panel-head">
         <h3>Custom domains</h3>
         <Button variant="primary" size="sm" onClick={openAdd}>
-          Add domain
+          New domain
         </Button>
       </div>
       <p className="help">Certificates here apply only to this service.</p>

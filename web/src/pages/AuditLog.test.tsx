@@ -126,6 +126,7 @@ describe("Audit log (§4.25)", () => {
     renderApp(<AuditLog />);
     const cell = (await screen.findByText(/no audit events yet/i)).closest("td")!;
     expect(cell.getAttribute("colspan")).toBe("7");
+    expect(cell).toHaveClass("table-empty");
   });
 
   it("renders formatted timestamps (not raw RFC3339) for audit rows (B5)", async () => {
