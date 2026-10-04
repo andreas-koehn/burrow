@@ -73,6 +73,15 @@ describe("T11 — shell", () => {
   it("content area may grow to 1440px", () => {
     expect(css).toMatch(/\.shell-content\s*\{[^}]*max-width:\s*1440px/);
   });
+  it("centres the capped content column in the main area", () => {
+    const rule = css.match(/\.shell-content\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toMatch(/margin-inline:\s*auto/);
+    // No later margin / margin-left / margin-right in the same rule may undo
+    // the centring (the old rule left-anchored with margin: 0 + margin-right).
+    expect(rule).not.toMatch(/margin(-left|-right)?:\s*0\b/);
+    expect(rule).not.toMatch(/margin-(left|right):/);
+    expect(rule).toMatch(/box-sizing:\s*border-box/);
+  });
   it("sidebar nav uses a thin scrollbar", () => {
     expect(css).toMatch(/\.sidebar-nav\s*\{[^}]*scrollbar-width:\s*thin/);
   });

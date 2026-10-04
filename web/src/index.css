@@ -1128,11 +1128,11 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
   padding: 32px 32px 32px;
   max-width: 1440px;
   width: 100%;
-  /* Left-anchor under the fixed sidebar rather than centering in the remaining
-     space — centering left a large empty band between the sidebar and the
-     content on wide viewports (most noticeable on form pages like Settings). */
-  margin: 0;
-  margin-right: auto;
+  /* Centre the capped column in the main area so the gutters left and right
+     of it stay equal on viewports wider than the cap; below the cap the
+     column fills the main area and only the padding shows. */
+  margin-block: 0;
+  margin-inline: auto;
   box-sizing: border-box;
   flex: 1;
 }
