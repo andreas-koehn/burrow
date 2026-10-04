@@ -6,7 +6,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import {
-  Button, Dialog, FormField, Input, PageHeader, Select, SkeletonRows, Switch,
+  Button, Dialog, FormField, Input, PageHeader, Select, SkeletonRows, Switch, TableEmptyRow,
 } from "@/components/ds";
 import { RedactionRuleDialog } from "@/components/RedactionRuleDialog";
 import type {
@@ -60,7 +60,7 @@ function RulesTable({ name, rules, onDelete }: { name: string; rules: RedactionR
         </thead>
         <tbody>
           {rules.length === 0
-            ? <tr><td colSpan={cols} className="muted">No rules yet.</td></tr>
+            ? <TableEmptyRow colSpan={cols} title="No rules yet." />
             : rules.map((r) => (
                 <tr key={r.id}>
                   <td>{r.name}</td>

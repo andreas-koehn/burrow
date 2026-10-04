@@ -617,6 +617,23 @@ button.sort-header:focus-visible {
   border-radius: 2px;
 }
 
+table.data td.table-empty {
+  padding: var(--space-xl) var(--space-lg);
+  text-align: center;
+}
+.table-empty-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.table-empty-hint {
+  display: block;
+  margin-top: var(--space-xs);
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+
 /* ──────────────────────────────────────────────────────────────
    Overlays: dialog, menu, popover (single soft shadow allowed)
    ────────────────────────────────────────────────────────────── */

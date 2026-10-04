@@ -85,3 +85,11 @@ describe("T12 — notice colours do not drift in hue", () => {
     expect(block.match(/color-mix\(in oklab/g)?.length ?? 0).toBeGreaterThanOrEqual(6);
   });
 });
+
+describe("T14 — table empty state", () => {
+  it("centres the empty cell and styles title and hint with tokens", () => {
+    expect(css).toMatch(/table\.data td\.table-empty\s*\{[^}]*text-align:\s*center/);
+    expect(css).toMatch(/\.table-empty-title\s*\{[^}]*var\(--foreground\)/);
+    expect(css).toMatch(/\.table-empty-hint\s*\{[^}]*var\(--muted-foreground\)/);
+  });
+});

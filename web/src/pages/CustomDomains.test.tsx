@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
+import { server } from "@/mocks/server";
 import { renderApp } from "@/mocks/test-utils";
 import { resetDb, db } from "@/mocks/db";
 import { Route, Routes } from "react-router-dom";
@@ -156,5 +158,22 @@ describe("CustomDomainsPanel", () => {
     await waitFor(() => {
       expect(screen.queryByText("foo.example.com")).toBeNull();
     });
+  });
+});
+
+describe("CustomDomainsPanel empty state", () => {
+  it("shows the empty row only after a successful empty load, never while loading", async () => {
+    db.customDomains = [];
+    mount();
+    expect(screen.queryByText("No custom domains yet.")).toBeNull();
+    expect(await screen.findByText("No custom domains yet.")).toBeInTheDocument();
+    expect(screen.getByText(/Add a domain to serve this service/)).toBeInTheDocument();
+  });
+
+  it("shows an error notice, not the empty row, when the request fails with no data", async () => {
+    server.use(http.get("/api/v1/services/:id/domains", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    mount();
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.queryByText("No custom domains yet.")).toBeNull();
   });
 });

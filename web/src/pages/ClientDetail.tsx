@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
-import { Badge, PageHeader, SkeletonRows } from "@/components/ds";
+import { Badge, PageHeader, SkeletonRows, TableEmptyRow } from "@/components/ds";
 import type { AccessMode, ClientDetail as ClientDetailT } from "@/lib/contract";
 
 const ACCESS_LABEL: Record<AccessMode, string> = {
@@ -70,7 +70,7 @@ export default function ClientDetail() {
                 );
               })}
               {data.services.length === 0 && (
-                <tr><td colSpan={6} className="muted">Connected, but not serving any service yet.</td></tr>
+                <TableEmptyRow colSpan={6} title="Connected, but not serving any service yet." />
               )}
             </tbody>
           </table>

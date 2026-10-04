@@ -36,3 +36,5 @@ export { AccessModeCard } from "./AccessModeCard";
 export type { AccessModeCardProps } from "./AccessModeCard";
 export { InfoHint } from "./InfoHint";
 export type { InfoHintProps } from "./InfoHint";
+export { TableEmptyRow } from "./TableEmptyRow";
+export type { TableEmptyRowProps } from "./TableEmptyRow";

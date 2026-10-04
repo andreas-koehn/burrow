@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
-import { Badge, Button, ErrorNotice, FormFieldGroup, Input, Dialog } from "@/components/ds";
+import { Badge, Button, ErrorNotice, FormFieldGroup, Input, Dialog, TableEmptyRow } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { CertPemEditor } from "@/components/CertPemEditor";
@@ -54,7 +54,7 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
   const qc = useQueryClient();
   const domainsKey = ["service", serviceId, "domains"] as const;
 
-  const { data } = useQuery({
+  const { data, isError } = useQuery({
     queryKey: domainsKey,
     queryFn: () => apiFetch<CustomDomain[]>(`/services/${serviceId}/domains`),
     staleTime: 30_000,
@@ -176,10 +176,13 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
                 </td>
               </tr>
             ))}
-            {domains.length === 0 && (
-              <tr>
-                <td colSpan={5} className="muted">No custom domains yet.</td>
-              </tr>
+            {isError && !data && (
+              <tr><td colSpan={5}><ErrorNotice>Could not load custom domains.</ErrorNotice></td></tr>
+            )}
+            {data && data.length === 0 && (
+              <TableEmptyRow colSpan={5} title="No custom domains yet.">
+                Add a domain to serve this service on your own hostname.
+              </TableEmptyRow>
             )}
           </tbody>
         </table>

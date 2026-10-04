@@ -4,7 +4,7 @@ import { Copy } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Badge, Button, Checkbox, Dialog, DropdownMenu, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows } from "@/components/ds";
+import { Badge, Button, Checkbox, Dialog, DropdownMenu, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows, TableEmptyRow } from "@/components/ds";
 import { WebhookTemplateEditor } from "@/components/WebhookTemplateEditor";
 import type { WebhookTemplateEditorValue } from "@/components/WebhookTemplateEditor";
 import type { CreatedWebhook, Webhook, WebhookDelivery } from "@/lib/contract";
@@ -224,12 +224,9 @@ export default function Webhooks() {
             {!list.data ? (
               <tr><td colSpan={5}><SkeletonRows n={3} /></td></tr>
             ) : list.data.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="muted">
-                  No webhooks yet. Burrow can POST to a URL when audit events,
-                  AI requests, or other signals fire.
-                </td>
-              </tr>
+              <TableEmptyRow colSpan={5} title="No webhooks yet.">
+                Burrow can POST to a URL when audit events, AI requests, or other signals fire.
+              </TableEmptyRow>
             ) : (
               list.data.map((w) => {
                 const s = statusOf(w);
@@ -284,11 +281,9 @@ export default function Webhooks() {
               {!deliveries.data ? (
                 <tr><td colSpan={4}><SkeletonRows n={3} /></td></tr>
               ) : deliveries.data.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="muted">
-                    No deliveries yet. Burrow records each webhook POST and its response here.
-                  </td>
-                </tr>
+                <TableEmptyRow colSpan={4} title="No deliveries yet.">
+                  Burrow records each webhook POST and its response here.
+                </TableEmptyRow>
               ) : (
                 deliveries.data.map((d) => (
                   <tr key={d.id}>

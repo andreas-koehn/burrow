@@ -4,7 +4,7 @@ import { Check, Copy } from "lucide-react";
 import { Link } from "react-router-dom";
 import { apiFetch } from "@/lib/api";
 import { formatTimestamp, formatRelativeTime } from "@/lib/format";
-import { Button, FormField, FormFieldGroup, Input, Dialog, PageHeader } from "@/components/ds";
+import { Button, FormField, FormFieldGroup, Input, Dialog, PageHeader, TableEmptyRow } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 
@@ -62,7 +62,7 @@ export default function Tokens() {
           </thead>
           <tbody>
             {data && data.length === 0
-              ? <tr><td colSpan={4} className="muted">No tokens yet.</td></tr>
+              ? <TableEmptyRow colSpan={4} title="No tokens yet.">Create one above, or use Connect a client.</TableEmptyRow>
               : (data ?? []).map((t) => (
               <tr key={t.id}>
                 <td className="col-name">{t.name}</td>

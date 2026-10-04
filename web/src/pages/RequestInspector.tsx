@@ -5,7 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import {
-  Badge, Button, Dialog, ErrorNotice, Input, PageHeader, Select, SkeletonRows, Tabs,
+  Badge, Button, Dialog, ErrorNotice, Input, PageHeader, Select, SkeletonRows, Tabs, TableEmptyRow,
 } from "@/components/ds";
 import type { InspectorEntry, Service, ServiceAIConfig } from "@/lib/contract";
 import { withAIConfigDefaults } from "@/lib/aiConfig";
@@ -192,7 +192,7 @@ export default function RequestInspector() {
             </thead>
             <tbody>
               {rows.length === 0
-                ? <tr><td colSpan={5} className="muted">No requests yet.</td></tr>
+                ? <TableEmptyRow colSpan={5} title="No requests yet.">Requests appear here as soon as traffic reaches this service.</TableEmptyRow>
                 : rows.map((r) => (
                     <tr
                       key={r.id}

@@ -8,6 +8,7 @@ import {
   ErrorNotice,
   SkeletonRows,
   NotAuthorized,
+  TableEmptyRow,
 } from "./index";
 
 describe("ds primitives", () => {
@@ -84,6 +85,18 @@ describe("ds primitives", () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(focusedDuringSelect).toBe(trigger);
     expect(document.activeElement).toBe(trigger);
+  });
+  it("TableEmptyRow spans the table and shows title + hint", () => {
+    render(
+      <table><tbody>
+        <TableEmptyRow colSpan={4} title="No tokens yet.">Create one to connect a client.</TableEmptyRow>
+      </tbody></table>,
+    );
+    const cell = screen.getByRole("cell");
+    expect(cell).toHaveAttribute("colspan", "4");
+    expect(cell.className).toContain("table-empty");
+    expect(screen.getByText("No tokens yet.")).toBeInTheDocument();
+    expect(screen.getByText("Create one to connect a client.")).toBeInTheDocument();
   });
 });
 

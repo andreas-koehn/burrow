@@ -3,7 +3,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Dialog, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, PageHeader, Select, SkeletonRows } from "@/components/ds";
+import { Button, Dialog, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, PageHeader, Select, SkeletonRows, TableEmptyRow } from "@/components/ds";
 import type { Budget, CostSummary } from "@/lib/contract";
 
 type Window = CostSummary["window"];
@@ -153,9 +153,9 @@ export default function CostBudgets() {
             <thead><tr><th>Scope</th><th>Subject</th><th className="col-num">Daily $</th><th>On exceed</th><th className="col-num">Spend</th></tr></thead>
             <tbody>
               {featureAbsent
-                ? <tr><td colSpan={5} className="muted">Budgets aren&apos;t available on this relay.</td></tr>
+                ? <TableEmptyRow colSpan={5} title="Budgets aren't available on this relay." />
                 : (budgets.data ?? []).length === 0
-                  ? <tr><td colSpan={5} className="muted">No budgets yet.</td></tr>
+                  ? <TableEmptyRow colSpan={5} title="No budgets yet.">Add a budget to cap daily spend per key, service or user.</TableEmptyRow>
                   : (budgets.data ?? []).map((b) => (
                       <tr key={b.id}>
                         <td>{b.scope}</td>
