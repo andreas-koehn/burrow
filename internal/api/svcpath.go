@@ -4,23 +4,24 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/go-chi/chi/v5"
 )
 
-// TunnelPathHandler adapts a /t/{id}/* request into a host-based request the
-// existing host-routing proxy handler understands: it rewrites Host to
-// "<id>.<authDomain>", strips the "/t/<id>" prefix from the path, and sets
-// X-Burrow-Path-Prefix so the proxy can rewrite Location headers. Access
-// control, connection logging, streaming, and stream dialing all come from the
-// delegated proxy handler.
-func TunnelPathHandler(proxy http.Handler, authDomain string) http.HandlerFunc {
+// ServicePathHandler adapts a /svc/{slug}/* request into a host-based request
+// the host-routing proxy handler understands: it rewrites Host to
+// "<slug>.<authDomain>", strips the "/svc/<slug>" prefix from the path, and
+// sets X-Burrow-Path-Prefix so the proxy can rewrite Location headers and
+// report the public host upstream. Access control, connection logging,
+// streaming, and stream dialing all come from the delegated proxy handler.
+func ServicePathHandler(proxy http.Handler, authDomain string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := chi.URLParam(r, "id")
-		if id == "" {
+		slug := chi.URLParam(r, "slug")
+		if !auth.ValidSlug(slug) {
 			http.NotFound(w, r)
 			return
 		}
-		prefix := "/t/" + id
+		prefix := "/svc/" + slug
 		rest := strings.TrimPrefix(r.URL.Path, prefix)
 		if !strings.HasPrefix(rest, "/") {
 			rest = "/" + rest
@@ -40,7 +41,7 @@ func TunnelPathHandler(proxy http.Handler, authDomain string) http.HandlerFunc {
 		} else {
 			r2.URL.RawPath = ""
 		}
-		r2.Host = id + "." + authDomain
+		r2.Host = slug + "." + authDomain
 		r2.Header.Set("X-Burrow-Path-Prefix", prefix)
 
 		proxy.ServeHTTP(w, r2)

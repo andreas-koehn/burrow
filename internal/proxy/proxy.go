@@ -608,7 +608,13 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 			// Set Burrow's authoritative forwarding values.
 			pr.Out.Header.Set("X-Forwarded-For", resolvedClientIP)
 			pr.Out.Header.Set("X-Forwarded-Proto", "https")
-			pr.Out.Header.Set("X-Forwarded-Host", label+"."+authDomain)
+			// Path-routed requests reach here with a synthetic Host; the
+			// visitor only ever saw the auth domain.
+			if pr.In.Header.Get("X-Burrow-Path-Prefix") != "" {
+				pr.Out.Header.Set("X-Forwarded-Host", authDomain)
+			} else {
+				pr.Out.Header.Set("X-Forwarded-Host", label+"."+authDomain)
+			}
 			if ingressPort != "" {
 				pr.Out.Header.Set("X-Forwarded-Port", ingressPort)
 			}
@@ -622,7 +628,7 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 			}
 			pr.Out.Host = upstreamHost
 
-			// Carry the path-routing prefix (set by the /t/{id} adapter) to
+			// Carry the path-routing prefix (set by the /svc/{slug} adapter) to
 			// ModifyResponse via the outbound request headers.
 			if pfx := pr.In.Header.Get("X-Burrow-Path-Prefix"); pfx != "" {
 				pr.Out.Header.Set("X-Burrow-Path-Prefix", pfx)
@@ -711,7 +717,7 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 }
 
 // rewriteLocationPrefix prepends pathPrefix to a path-absolute Location value
-// so a redirect emitted by a path-routed upstream stays under /t/<id>.
+// so a redirect emitted by a path-routed upstream stays under /svc/<slug>.
 // Absolute and protocol-relative URLs are left unchanged (documented limit).
 func rewriteLocationPrefix(loc, pathPrefix string) string {
 	if loc == "" || pathPrefix == "" {

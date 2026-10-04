@@ -729,3 +729,35 @@ func TestRewriteLocationHeader(t *testing.T) {
 		}
 	}
 }
+
+// TestProxyForwardedHostOnPathRoute verifies that a path-routed request
+// (X-Burrow-Path-Prefix set by the /svc/{slug} adapter) reports the public
+// auth domain upstream in X-Forwarded-Host, not the internal routing label.
+func TestProxyForwardedHostOnPathRoute(t *testing.T) {
+	var gotXFH string
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotXFH = r.Header.Get("X-Forwarded-Host")
+		w.WriteHeader(http.StatusOK)
+	})
+	d := newFakeDialer(upstream)
+	d.register("hdr", &proxy.Resolved{ServiceID: "svc2", AccessMode: "open", LocalHost: "127.0.0.1:3000"})
+
+	p := proxy.New(d, openChecker{}, authDomain, testLog(), proxy.WithIngressPort("443"))
+
+	ts := httptest.NewServer(p)
+	defer ts.Close()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/", nil)
+	req.Host = "hdr." + authDomain
+	req.Header.Set("X-Burrow-Path-Prefix", "/svc/hdr")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if gotXFH != authDomain {
+		t.Errorf("X-Forwarded-Host on a path-routed request: want %q, got %q", authDomain, gotXFH)
+	}
+}

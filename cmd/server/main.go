@@ -570,7 +570,7 @@ func main() {
 
 			// Host-routing proxy handler (built unconditionally). It backs both:
 			//   1. the dedicated :8443 proxy listener (proxySrv, below), and
-			//   2. the single-origin /t/{id} path route mounted on the API/
+			//   2. the single-origin /svc/{slug} path route mounted on the API/
 			//      dashboard router (api.Deps.TunnelProxy), so http tunnels are
 			//      reachable on the same :443 origin even when HTTPProxyListen is
 			//      empty (feat/builtin-acme B3).
@@ -594,15 +594,15 @@ func main() {
 
 			// proxyAuthDomain is the single resolved base domain used for ALL
 			// host-routing surfaces — the proxy's subdomain matcher, the access
-			// checker, the gate, AND the /t/{id} path route (api.Deps.AuthDomain
-			// + TunnelPathHandler). It prefers the explicit BURROW_AUTH_DOMAIN;
+			// checker, the gate, AND the /svc/{slug} path route (api.Deps.AuthDomain
+			// + ServicePathHandler). It prefers the explicit BURROW_AUTH_DOMAIN;
 			// when that is empty but built-in ACME is on, it falls back to the
 			// first ACME-managed domain so single-origin path routing works out
 			// of the box on an ACME deployment without a separate auth_domain.
 			// In the common case (auth_domain set) this equals cfg.AuthDomain, so
 			// every consumer below is byte-for-byte unchanged. When it resolves
 			// to "" (no auth_domain, ACME off) the router does NOT register the
-			// /t/{id} routes (see api.NewRouter) — matching the prior behavior
+			// /svc/{slug} routes (see api.NewRouter) — matching the prior behavior
 			// where subdomain routing is disabled.
 			//
 			// Keeping a single value here guarantees the path handler's
@@ -743,9 +743,9 @@ func main() {
 					// common case this equals cfg.AuthDomain, so composeHostname
 					// and the burrow_login-409 check are unchanged.
 					AuthDomain: proxyAuthDomain,
-					// feat/builtin-acme B3: single-origin /t/{id} tunnel routing.
+					// feat/builtin-acme B3: single-origin /svc/{slug} tunnel routing.
 					// proxyHandler is the hoisted host-routing proxy. The router
-					// mounts /t/{id} + /t/{id}/* on it via TunnelPathHandler only
+					// mounts /svc/{slug} + /svc/{slug}/* on it via ServicePathHandler only
 					// when AuthDomain (above) is non-empty; the synthesized host
 					// "<id>.<AuthDomain>" then matches the proxy's own routing
 					// suffix exactly. When AuthDomain is "" the routes are skipped.
@@ -857,7 +857,7 @@ func main() {
 			// Started only when HTTPProxyListen is non-empty (default ":8443").
 			// The host-routing proxyHandler (+ its TLS base config) is built
 			// ABOVE, before api.NewRouter, so it can ALSO back the single-origin
-			// /t/{id} route on the dashboard origin (feat/builtin-acme B3); this
+			// /svc/{slug} route on the dashboard origin (feat/builtin-acme B3); this
 			// block only wraps that already-built handler in a dedicated listener.
 			// TLS is used iff both HTTPProxyTLSCert + HTTPProxyTLSKey are set (or
 			// ACME is on); otherwise the listener runs plain HTTP (operator may

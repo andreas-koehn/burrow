@@ -405,16 +405,16 @@ func NewRouter(d Deps) http.Handler {
 	})
 
 	// Single-origin HTTP tunnel path routing (feat/builtin-acme B3): mount
-	// /t/{id} and /t/{id}/* on the host-routing proxy handler so http tunnels
-	// are reachable at https://<domain>/t/<id>/... on the same :443 origin,
+	// /svc/{slug} and /svc/{slug}/* on the host-routing proxy handler so http
+	// tunnels are reachable at https://<domain>/svc/<slug>/... on the same :443 origin,
 	// even when the dedicated :8443 proxy listener is disabled. Registered
 	// BEFORE the SPA catch-all so these routes take precedence. When either
 	// TunnelProxy or AuthDomain is unset the routes are simply not registered
 	// (behavior is unchanged from before this feature).
 	if d.TunnelProxy != nil && d.AuthDomain != "" {
-		th := TunnelPathHandler(d.TunnelProxy, d.AuthDomain)
-		r.Handle("/t/{id}", th)
-		r.Handle("/t/{id}/*", th)
+		sh := ServicePathHandler(d.TunnelProxy, d.AuthDomain)
+		r.Handle("/svc/{slug}", sh)
+		r.Handle("/svc/{slug}/*", sh)
 	}
 
 	if d.SPA != nil {
