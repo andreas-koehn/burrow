@@ -42,7 +42,7 @@ describe("Users — SMTP informational notice (P6B.1)", () => {
     renderApp(<Users />);
     // Wait for users to load so settings query has had time to resolve
     await screen.findByText("bob@acme.io");
-    expect(await screen.findByText(/email isn't configured/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Email isn't set up\. Invites and password resets are unavailable until SMTP is configured\./)).toBeInTheDocument();
     const link = screen.getByRole("link", { name: /set up email/i });
     expect(link).toBeInTheDocument();
     expect(link.getAttribute("href")).toBe("/settings");
@@ -58,7 +58,7 @@ describe("Users — SMTP informational notice (P6B.1)", () => {
     await screen.findByText("bob@acme.io");
     // Give the settings query time to resolve
     await waitFor(() => {
-      expect(screen.queryByText(/email isn't configured/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/email isn't set up/i)).not.toBeInTheDocument();
     });
   });
 

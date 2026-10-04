@@ -42,9 +42,9 @@ describe("design tokens — disabled filled buttons (D-2/L-1)", () => {
 describe("design tokens — notice banner tints (L-4)", () => {
   it("base notice has a faint destructive tint and warn/error/ok have explicit fills", () => {
     const base = css.match(/\.notice-inline\s*\{[^}]*\}/)?.[0] ?? "";
-    expect(base).toContain("color-mix(in oklch, var(--destructive)");
+    expect(base).toContain("color-mix(in oklab, var(--destructive)");
     expect(base).not.toMatch(/background:\s*var\(--card\)\s*;/);
-    expect(css).toMatch(/\.notice-inline\.warn\s*\{[^}]*color-mix\(in oklch, var\(--warning\)/);
+    expect(css).toMatch(/\.notice-inline\.warn\s*\{[^}]*color-mix\(in oklab, var\(--warning\)/);
     expect(css).toMatch(/\.notice-inline\.error\s*\{/);
     expect(css).toMatch(/\.notice-inline\.ok\s*\{/);
   });

@@ -71,7 +71,7 @@ describe("Home (Overview)", () => {
       await screen.findByRole("heading", { name: "Overview" });
       await waitFor(() => {
         expect(
-          screen.getByText(/email isn't (set up|configured)/i),
+          screen.getByText(/Email isn't set up\. Invites and password resets are unavailable until SMTP is configured\./),
         ).toBeInTheDocument();
       });
       // The alert must contain a link to /settings
@@ -89,7 +89,7 @@ describe("Home (Overview)", () => {
       renderApp(<Home />);
       await screen.findByRole("heading", { name: "Overview" });
       await waitFor(() => {
-        expect(screen.queryByText(/email isn't (set up|configured)/i)).toBeNull();
+        expect(screen.queryByText(/email isn't set up/i)).toBeNull();
       });
     });
   });
@@ -243,7 +243,7 @@ describe("Home (Overview)", () => {
 
       // SMTP/budget alerts must NOT appear (admin-only queries didn't fire)
       await waitFor(() => {
-        expect(screen.queryByText(/email isn't (set up|configured)/i)).toBeNull();
+        expect(screen.queryByText(/email isn't set up/i)).toBeNull();
         expect(screen.queryByText(/budget.*exceeded/i)).toBeNull();
       });
     });

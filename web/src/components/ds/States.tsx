@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Inbox, AlertTriangle, ShieldAlert } from "lucide-react";
+import { Inbox, AlertTriangle, ShieldAlert, Info, CircleCheck } from "lucide-react";
 import { cx } from "./cx";
 
 /* ── EmptyState ──────────────────────────────────────────────────
@@ -37,6 +37,13 @@ export interface ErrorNoticeProps {
   className?: string;
 }
 
+const NOTICE_ICON = {
+  error: AlertTriangle,
+  warn: AlertTriangle,
+  info: Info,
+  success: CircleCheck,
+} as const;
+
 export function ErrorNotice({
   children,
   title,
@@ -46,13 +53,15 @@ export function ErrorNotice({
   role = "alert",
   className,
 }: ErrorNoticeProps) {
+  const Icon = NOTICE_ICON[variant];
   return (
     <div
       className={cx("notice-inline", variant !== "error" && variant, className)}
       role={role}
+      data-variant={variant}
     >
       <span className="icon">
-        <AlertTriangle size={14} />
+        <Icon size={14} />
       </span>
       <div className="body">
         {title && <strong>{title} </strong>}

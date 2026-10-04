@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { clientNameError } from "@/lib/clientName";
 import { shellQuote } from "@/lib/shell";
-import { Button, FormField, FormFieldGroup, Input, Select, Badge, PageHeader } from "@/components/ds";
+import { Button, FormField, FormFieldGroup, Input, Select, Badge, PageHeader, ErrorNotice } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { useAuth } from "@/auth/useAuth";
 import type { NewToken, ClientView } from "@/lib/contract";
@@ -248,7 +248,9 @@ export default function ConnectClient() {
         <>
           <section className="account-section" aria-labelledby="ob-2">
             <div className="section-head"><div className="left"><h2 id="ob-2" ref={credsRef} tabIndex={-1}>3. Credentials</h2></div></div>
-            <p role="status" className="notice-inline">Store this token now. Burrow doesn't keep a copy you can retrieve later — if you lose it, mint a new one for this client.</p>
+            <ErrorNotice variant="warn" role="status">
+              Store this token now. Burrow doesn't keep a copy you can retrieve later — if you lose it, mint a new one for this client.
+            </ErrorNotice>
             <div className="stack-md">
               <div className="field">
                 <label>Server endpoint</label>

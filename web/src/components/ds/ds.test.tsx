@@ -96,6 +96,17 @@ describe("ds states", () => {
     expect(screen.getByText("No live tunnels")).toBeTruthy();
     expect(screen.getByText("Run burrow connect.")).toBeTruthy();
   });
+  it("ErrorNotice exposes its variant and uses a non-warning icon for info/success", () => {
+    const { container, rerender } = render(<ErrorNotice variant="info">hello</ErrorNotice>);
+    const root = container.querySelector(".notice-inline")!;
+    expect(root.getAttribute("data-variant")).toBe("info");
+    expect(root.querySelector("svg.lucide-info")).not.toBeNull();
+    rerender(<ErrorNotice variant="success">ok</ErrorNotice>);
+    expect(container.querySelector("svg.lucide-circle-check")).not.toBeNull();
+    rerender(<ErrorNotice variant="warn">careful</ErrorNotice>);
+    expect(container.querySelector("svg.lucide-triangle-alert")).not.toBeNull();
+  });
+
   it("ErrorNotice renders .notice-inline with role=alert by default", () => {
     const { container } = render(<ErrorNotice>Couldn't load.</ErrorNotice>);
     expect(container.querySelector(".notice-inline")).toBeTruthy();

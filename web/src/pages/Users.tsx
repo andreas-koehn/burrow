@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ShieldAlert } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
+import { EMAIL_NOT_CONFIGURED } from "@/lib/copy";
 import { formatTimestamp } from "@/lib/format";
 import { useAuth } from "@/auth/useAuth";
 import { Button, EmptyState, ErrorNotice, Input, Select, Badge, Dialog, PageHeader, SkeletonRows } from "@/components/ds";
@@ -79,7 +80,7 @@ export default function Users() {
 
       {smtpUnconfigured && (
         <ErrorNotice variant="warn" role="status" action={<Link to="/settings">Set up email →</Link>}>
-          Email isn't configured. New users won't be emailed — give them the password you set. Configure SMTP for password-reset and test emails.
+          {EMAIL_NOT_CONFIGURED}
         </ErrorNotice>
       )}
 

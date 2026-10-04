@@ -77,3 +77,11 @@ describe("T11 — shell", () => {
     expect(css).toMatch(/\.sidebar-nav\s*\{[^}]*scrollbar-width:\s*thin/);
   });
 });
+
+describe("T12 — notice colours do not drift in hue", () => {
+  it("mixes notice backgrounds in oklab, not oklch", () => {
+    const block = css.slice(css.indexOf(".notice-inline {"), css.indexOf(".notice-inline .icon"));
+    expect(block).not.toContain("color-mix(in oklch");
+    expect(block.match(/color-mix\(in oklab/g)?.length ?? 0).toBeGreaterThanOrEqual(6);
+  });
+});

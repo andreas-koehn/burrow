@@ -5,6 +5,7 @@ import { PageHeader, MetricStrip, MetricTile, ErrorNotice, Button, SkeletonRows 
 import { useAuth } from "@/auth/useAuth";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
+import { EMAIL_NOT_CONFIGURED } from "@/lib/copy";
 import { GLOSSARY } from "@/lib/glossary";
 import type { ClientView, CostSummary, Service, Budget, CustomDomain } from "@/lib/contract";
 
@@ -178,7 +179,7 @@ export default function Home() {
               role="status"
               action={<Link to="/settings">Set up email →</Link>}
             >
-              Email isn't set up — user invites/password resets are unavailable.
+              {EMAIL_NOT_CONFIGURED}
             </ErrorNotice>
           )}
           {budgetAlert && (

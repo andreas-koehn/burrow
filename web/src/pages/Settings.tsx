@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Checkbox, Input, Select, FormField, FormFieldGroup, PageHeader, InfoHint } from "@/components/ds";
+import { Button, Checkbox, Input, Select, FormField, FormFieldGroup, PageHeader, InfoHint, ErrorNotice } from "@/components/ds";
+import { EMAIL_NOT_CONFIGURED } from "@/lib/copy";
 import type { SettingsMap } from "@/lib/contract";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
@@ -87,7 +88,7 @@ export default function Settings() {
             <InfoHint label="Email / SMTP" content="SMTP enables password-reset and test emails." />
           </div>
         </div>
-        {!configured && <p role="status" className="notice-inline">Email isn't set up — password resets and test emails are unavailable until you configure SMTP.</p>}
+        {!configured && <ErrorNotice variant="warn" role="status">{EMAIL_NOT_CONFIGURED}</ErrorNotice>}
         <form className="pw-form" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
           <FormFieldGroup>
             <FormField label="SMTP server" htmlFor="smtp-host" w="full">
