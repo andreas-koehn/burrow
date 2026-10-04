@@ -63,8 +63,8 @@ test.describe("Onboarding success loop", () => {
     await page.getByLabel("Client name").fill(clientName);
     await page.getByRole("button", { name: /generate token/i }).click();
 
-    // "Install & run" section appears after token is minted
-    await expect(page.getByRole("heading", { name: /install.*run/i })).toBeVisible();
+    // "Run on the client" section appears after token is minted
+    await expect(page.getByRole("heading", { name: /run on the client/i })).toBeVisible();
 
     // Command shows the real relay endpoint (not a hardcoded placeholder)
     const cmdBlock = page.locator("pre.cmd-block code");

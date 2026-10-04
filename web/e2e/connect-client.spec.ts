@@ -38,8 +38,8 @@ test("connect-client: fill fields, mint, check command and waiting indicator", a
   await page.getByLabel("Client name").fill(clientName);
   await page.getByRole("button", { name: /generate token/i }).click();
 
-  // Wait for the "Install & run" heading to appear
-  await expect(page.getByRole("heading", { name: /install.*run/i })).toBeVisible();
+  // Wait for the "Run on the client" heading to appear
+  await expect(page.getByRole("heading", { name: /run on the client/i })).toBeVisible();
 
   // ── 5. Assert command shows the real relay endpoint ───────────────────────
   // The /clients/connect-info endpoint returns the server's actual listen addr.
@@ -95,7 +95,7 @@ test("connect-client: HTTP mode omits --remote and adds --type http", async ({ p
   await page.getByLabel("Client name").fill(clientName);
   await page.getByRole("button", { name: /generate token/i }).click();
 
-  await expect(page.getByRole("heading", { name: /install.*run/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /run on the client/i })).toBeVisible();
 
   const cmdText = (await page.locator("pre.cmd-block code").textContent()) ?? "";
   expect(cmdText).toContain("--type http");

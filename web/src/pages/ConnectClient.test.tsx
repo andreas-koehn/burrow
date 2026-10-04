@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Routes, Route } from "react-router-dom";
@@ -28,10 +28,10 @@ function adminGate(req: Request) {
   return null;
 }
 
-// Wait until the Install & Run section is visible (command shown), then return the pre code element.
-// We detect this by waiting for the "Install & run" heading.
+// Wait until the "Run on the client" section is visible (command shown), then return the pre code element.
+// We detect this by waiting for its heading.
 async function waitForCommandSection(): Promise<Element> {
-  await screen.findByRole("heading", { name: /install.*run/i });
+  await screen.findByRole("heading", { name: /run on the client/i });
   const pre = document.querySelector("pre.cmd-block code");
   if (!pre) throw new Error("pre.cmd-block code not found");
   return pre;
@@ -150,7 +150,7 @@ describe("P2.5 — Success-loop poller", () => {
     await userEvent.type(screen.getByLabelText(/client name/i), "edge-99");
     await userEvent.click(screen.getByRole("button", { name: /generate token/i }));
     await waitForCommandSection();
-    // The success-loop status div is the one inside the Install & Run section.
+    // The success-loop status div is the one inside the "Run on the client" section.
     // The page may have multiple role=status elements (notice-inline + our div).
     // Query by text content of the waiting state.
     const waitingText = await screen.findByText(/waiting for/i);
@@ -197,7 +197,7 @@ describe("P2.5 — Success-loop poller", () => {
 describe("P4.4 — Back-link to Tokens", () => {
   it("renders a Tokens back-link pointing to /tokens", () => {
     mount();
-    const link = screen.getByRole("link", { name: /^tokens$/i });
+    const link = screen.getByRole("link", { name: /^manage tokens$/i });
     expect(link).toHaveAttribute("href", "/tokens");
   });
 });
@@ -214,5 +214,59 @@ describe("P2.6 — Inline explainers", () => {
     await userEvent.click(screen.getByRole("button", { name: /generate token/i }));
     await waitForCommandSection();
     expect(screen.getByText(/reachable address/i)).toBeInTheDocument();
+  });
+});
+
+describe("Connect a client — validation and flow (F5/F6)", () => {
+  it("rejects an invalid name and does not mint a token", async () => {
+    let minted = 0;
+    server.use(http.post("/api/v1/tokens", () => { minted++; return HttpResponse.json({ name: "x", token: "bur_x" }, { status: 201 }); }));
+    mount();
+    await userEvent.type(screen.getByLabelText(/client name/i), "UI Audit Test!");
+    await userEvent.click(screen.getByRole("button", { name: /generate token/i }));
+    expect(await screen.findByText("Use lowercase letters, digits and hyphens only.")).toBeInTheDocument();
+    expect(minted).toBe(0);
+    expect(screen.queryByRole("heading", { name: /credentials/i })).toBeNull();
+  });
+
+  it("locks the name and replaces Generate with 'Connect another client' after minting", async () => {
+    mount();
+    await userEvent.type(screen.getByLabelText(/client name/i), "edge-01");
+    await userEvent.click(screen.getByRole("button", { name: /generate token/i }));
+    await waitForCommandSection();
+    expect(screen.getByLabelText(/client name/i)).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /generate token/i })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /connect another client/i }));
+    expect(screen.getByLabelText(/client name/i)).not.toBeDisabled();
+    expect(screen.getByLabelText(/client name/i)).toHaveValue("");
+    expect(screen.queryByRole("heading", { name: /credentials/i })).toBeNull();
+  });
+
+  it("moves focus to the credentials heading and scrolls it into view", async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    mount();
+    await userEvent.type(screen.getByLabelText(/client name/i), "edge-01");
+    await userEvent.click(screen.getByRole("button", { name: /generate token/i }));
+    const heading = await screen.findByRole("heading", { name: /credentials/i });
+    expect(heading).toHaveFocus();
+    expect(scrollIntoView).toHaveBeenCalled();
+  });
+
+  it("shows 'What to expose' before 'Name this client'", () => {
+    mount();
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    expect(headings.indexOf("1. What to expose")).toBeLessThan(headings.indexOf("2. Name this client"));
+  });
+
+  it("shell-quotes a local address that needs it", async () => {
+    mount();
+    const local = screen.getByLabelText(/local address/i);
+    await userEvent.clear(local);
+    await userEvent.type(local, "my host:3000");
+    await userEvent.type(screen.getByLabelText(/client name/i), "edge-01");
+    await userEvent.click(screen.getByRole("button", { name: /generate token/i }));
+    const cmd = await waitForCommandSection();
+    expect(cmd.textContent).toContain("--local 'my host:3000'");
   });
 });

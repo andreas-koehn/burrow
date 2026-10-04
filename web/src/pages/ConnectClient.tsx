@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Copy } from "lucide-react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
+import { clientNameError } from "@/lib/clientName";
+import { shellQuote } from "@/lib/shell";
 import { Button, FormField, FormFieldGroup, Input, Select, Badge, PageHeader } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { useAuth } from "@/auth/useAuth";
@@ -35,17 +37,17 @@ function buildCmd(opts: {
   const { endpoint, token, local, remote, protocol, name } = opts;
   const parts = [
     "burrow connect",
-    `--server ${endpoint}`,
+    `--server ${shellQuote(endpoint)}`,
     `--token ${token}`,
-    `--local ${local}`,
+    `--local ${shellQuote(local)}`,
   ];
   if (protocol === "tcp" && remote.trim() !== "") {
-    parts.push(`--remote ${remote.trim()}`);
+    parts.push(`--remote ${shellQuote(remote.trim())}`);
   }
   if (protocol === "http") {
     parts.push("--type http");
   }
-  parts.push(`--name ${name}`);
+  parts.push(`--name ${shellQuote(name)}`);
   return parts.join(" ");
 }
 
@@ -57,6 +59,8 @@ export default function ConnectClient() {
   const [local, setLocal] = useState("127.0.0.1:3000");
   const [remote, setRemote] = useState("");
   const [protocol, setProtocol] = useState("tcp");
+  const [nameError, setNameError] = useState<string | null>(null);
+  const credsRef = useRef<HTMLHeadingElement>(null);
 
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -77,6 +81,29 @@ export default function ConnectClient() {
   });
 
   const tok = mint.data;
+
+  // Bring the result into view: it renders below the form and was easy to miss.
+  useEffect(() => {
+    if (!tok) return;
+    credsRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    credsRef.current?.focus();
+  }, [tok]);
+
+  function generate() {
+    const problem = clientNameError(name);
+    setNameError(problem);
+    if (problem) return;
+    setError("");
+    mint.mutate();
+  }
+
+  function startOver() {
+    mint.reset();
+    setName("");
+    setReveal(false);
+    setNameError(null);
+    setError("");
+  }
 
   // P2.3 — command built from real fields; masked vs unmasked
   const maskedToken = tok ? "bur_••••••••" : "";
@@ -112,48 +139,15 @@ export default function ConnectClient() {
         subtitle="Bring a machine online so it can expose a local service through this Burrow relay."
       />
 
-      <p className="muted small">Already connected clients? Manage their tokens in <Link className="link-inline" to="/tokens">Tokens</Link>.</p>
-
-      {/* P2.6 — page-level explainer */}
-      <p className="muted" style={{ marginBottom: "var(--space-4)" }}>
-        A client is a machine running <code>burrow connect</code>. Name it, choose what it exposes,
-        then run the command on that machine.
+      <p className="muted page-intro">
+        A client is a machine running <code>burrow connect</code>. Choose what it exposes, name it,
+        then run the command on that machine. Already connected?{" "}
+        <Link className="link-inline" to="/tokens">Manage tokens</Link>.
       </p>
-
-      <section className="account-section" aria-labelledby="ob-1">
-        <div className="section-head"><div className="left"><h2 id="ob-1">Name this client</h2></div></div>
-        <FormFieldGroup>
-          <FormField
-            label="Client name"
-            htmlFor="ob-name"
-            w="md"
-            help="Lowercase letters, digits, and hyphens. Once issued, the name lives with the token."
-          >
-            <Input
-              id="ob-name"
-              aria-label="Client name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. office-box-1"
-            />
-          </FormField>
-        </FormFieldGroup>
-        <div className="actions">
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={!name || mint.isPending}
-            onClick={() => { setError(""); mint.mutate(); }}
-          >
-            {mint.isPending ? "Generating…" : "Generate token"}
-          </Button>
-        </div>
-        {error && <p role="alert" className="field-error">{error}</p>}
-      </section>
 
       {/* P2.2 — What to expose section */}
       <section className="account-section" aria-labelledby="ob-expose">
-        <div className="section-head"><div className="left"><h2 id="ob-expose">What to expose</h2></div></div>
+        <div className="section-head"><div className="left"><h2 id="ob-expose">1. What to expose</h2></div></div>
         <FormFieldGroup>
           <FormField
             label="Local address"
@@ -204,42 +198,77 @@ export default function ConnectClient() {
         </FormFieldGroup>
       </section>
 
+      <section className="account-section" aria-labelledby="ob-1">
+        <div className="section-head"><div className="left"><h2 id="ob-1">2. Name this client</h2></div></div>
+        <FormFieldGroup>
+          <FormField
+            label="Client name"
+            htmlFor="ob-name"
+            w="md"
+            help="Lowercase letters, digits, and hyphens. Once issued, the name lives with the token."
+            error={nameError ?? undefined}
+          >
+            <Input
+              id="ob-name"
+              aria-label="Client name"
+              aria-invalid={nameError ? true : undefined}
+              value={name}
+              disabled={!!tok}
+              onChange={(e) => { setName(e.target.value); if (nameError) setNameError(null); }}
+              placeholder="e.g. office-box-1"
+            />
+          </FormField>
+        </FormFieldGroup>
+        <div className="actions">
+          {tok ? (
+            <Button variant="secondary" size="sm" onClick={startOver}>Connect another client</Button>
+          ) : (
+            <Button variant="primary" size="sm" disabled={!name || mint.isPending} onClick={generate}>
+              {mint.isPending ? "Generating…" : "Generate token"}
+            </Button>
+          )}
+        </div>
+        {error && <p role="alert" className="field-error">{error}</p>}
+      </section>
+
       {tok && (
         <>
           <section className="account-section" aria-labelledby="ob-2">
-            <div className="section-head"><div className="left"><h2 id="ob-2">Credentials</h2></div></div>
+            <div className="section-head"><div className="left"><h2 id="ob-2" ref={credsRef} tabIndex={-1}>3. Credentials</h2></div></div>
             <p role="status" className="notice-inline">Store this token now. Burrow doesn't keep a copy you can retrieve later — if you lose it, mint a new one for this client.</p>
-            <div className="field">
-              <label>Server endpoint</label>
-              {/* P2.6 — inline endpoint explainer */}
-              <span className="row row-center gap-2">
-                <code className="mono">{endpoint}</code>
-                <span className="muted" style={{ fontSize: "0.8em" }}>
-                  This is the relay's reachable address — a client on another machine must be able to reach it.
+            <div className="stack-md">
+              <div className="field">
+                <label>Server endpoint</label>
+                {/* P2.6 — inline endpoint explainer */}
+                <span className="row row-center gap-2">
+                  <code className="mono">{endpoint}</code>
+                  <span className="muted" style={{ fontSize: "0.8em" }}>
+                    This is the relay's reachable address — a client on another machine must be able to reach it.
+                  </span>
                 </span>
-              </span>
-            </div>
-            <div className="field">
-              <label>Client token</label>
-              <span className="row row-center gap-2">
-                <code className="mono">{reveal ? tok.token : "bur_••••••••"}</code>
-                <Button variant="ghost" size="sm" aria-label={reveal ? "Hide token" : "Reveal token"} onClick={() => setReveal((r) => !r)}>
-                  {reveal ? "Hide" : "Reveal"}
-                </Button>
-                <button
-                  type="button"
-                  className="icon-btn"
-                  aria-label="Copy client token"
-                  onClick={() => copy(tok.token)}
-                >
-                  <Copy size={13} />
-                </button>
-              </span>
+              </div>
+              <div className="field">
+                <label>Client token</label>
+                <span className="row row-center gap-2">
+                  <code className="mono">{reveal ? tok.token : "bur_••••••••"}</code>
+                  <Button variant="ghost" size="sm" aria-label={reveal ? "Hide token" : "Reveal token"} onClick={() => setReveal((r) => !r)}>
+                    {reveal ? "Hide" : "Reveal"}
+                  </Button>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label="Copy client token"
+                    onClick={() => copy(tok.token)}
+                  >
+                    <Copy size={13} />
+                  </button>
+                </span>
+              </div>
             </div>
           </section>
 
           <section className="account-section" aria-labelledby="ob-3">
-            <div className="section-head"><div className="left"><h2 id="ob-3">Install &amp; run</h2></div></div>
+            <div className="section-head"><div className="left"><h2 id="ob-3">4. Run on the client</h2></div></div>
             {/* P2.4 — wrapped command + copy */}
             <div className="row gap-2">
               <pre className="cmd-block wrap flex-1"><code>{cmd}</code></pre>
