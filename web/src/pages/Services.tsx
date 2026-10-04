@@ -53,7 +53,7 @@ export default function Services() {
     const list = data ?? [];
     const f = q
       ? list.filter((s) =>
-          `${s.name} ${s.type} ${s.slug ?? ""}`.toLowerCase().includes(q.toLowerCase()))
+          `${s.name} ${s.type} ${s.slug ?? ""} ${s.url ?? ""}`.toLowerCase().includes(q.toLowerCase()))
       : list;
     const sgn = sortDir === "asc" ? 1 : -1;
     return [...f].sort((a, b) => {

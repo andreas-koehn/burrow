@@ -87,7 +87,7 @@ const SAMPLE_FIELDS: Record<string, Record<string, unknown>> = {
   },
   "cert.expiring": {
     service_id: "svc_web01",
-    hostname: "k7p2qx.tunnels.example.com",
+    hostname: "tunnels.example.com",
     not_after: "2026-06-01T00:00:00Z",
     days_remaining: 9,
   },

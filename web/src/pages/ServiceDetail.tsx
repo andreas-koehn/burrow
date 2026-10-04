@@ -8,7 +8,6 @@ import { EditSlugDialog } from "@/components/EditSlugDialog";
 import { AccessModePanel } from "@/components/AccessModePanel";
 import { ApiKeysPanel } from "@/components/ApiKeysPanel";
 import { UpstreamCredentialsPanel } from "@/pages/UpstreamCredentials";
-import { CustomDomainsPanel } from "@/pages/CustomDomains";
 import type { ServiceDetail as ServiceDetailType, AccessMode } from "@/lib/contract";
 
 const ACCESS_LABEL: Record<AccessMode, string> = {
@@ -25,9 +24,7 @@ export default function ServiceDetail() {
   const location = useLocation();
   const initialTab = location.hash === "#upstream-key"
     ? "upstream-key"
-    : location.pathname.endsWith("/domains")
-      ? "domains"
-      : "access";
+    : "access";
   const [tab, setTab] = useState(initialTab);
   const [editSlug, setEditSlug] = useState(false);
 
@@ -82,6 +79,13 @@ export default function ServiceDetail() {
           : <Badge kind="status-idle">idle</Badge>}
       </div>
 
+      {svc.type === "http" && (
+        <p className="muted small">
+          Reached at the URL above, on the same origin as this dashboard. Only expose apps you trust:
+          a page served here can act as the signed-in dashboard user.
+        </p>
+      )}
+
       <Tabs
         value={tab}
         onChange={setTab}
@@ -119,11 +123,6 @@ export default function ServiceDetail() {
                 />
               </>
             ),
-          },
-          {
-            value: "domains",
-            label: "Custom domains",
-            content: <CustomDomainsPanel serviceId={svc.id} />,
           },
         ]}
       />

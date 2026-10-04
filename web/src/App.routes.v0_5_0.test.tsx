@@ -20,9 +20,18 @@ describe("v0.5.0 routes", () => {
     ["/connection-logs",            /^Connection logs$/i],
     ["/settings/retention",         /^Retention & compliance$/i],
     ["/settings/database",          /^Database backend$/i],
-    ["/services/svc_ai001/domains", /^Custom domains$/i],
   ])("%s resolves to its page heading", async (path, heading) => {
     renderAt(path);
     expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
+  });
+
+  it("redirects the retired custom-domain routes", async () => {
+    renderAt("/settings/custom-domains");
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+  });
+
+  it("redirects a service's domains route to the service", async () => {
+    renderAt("/services/svc_web01/domains");
+    expect(await screen.findByRole("tab", { name: "Access" })).toBeInTheDocument();
   });
 });

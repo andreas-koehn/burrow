@@ -52,7 +52,7 @@ describe("ServiceDetail page", () => {
     expect(heading.textContent).toMatch(/ollama/i);
   });
 
-  it("shows four tabs: Access, API keys, Upstream key, Custom domains", async () => {
+  it("shows three tabs: Access, API keys, Upstream key", async () => {
     mount();
     await screen.findByRole("heading", { name: /ollama/i });
     const tablist = screen.getByRole("tablist");
@@ -61,7 +61,6 @@ describe("ServiceDetail page", () => {
     expect(labels).toContain("Access");
     expect(labels).toContain("API keys");
     expect(labels).toContain("Upstream key");
-    expect(labels).toContain("Custom domains");
   });
 
   it("Upstream key tab renders the binding fields when a binding exists", async () => {
@@ -137,5 +136,16 @@ describe("ServiceDetail page", () => {
     await userEvent.type(slug, "ai4m2q"); // slug of svc_ai001 in the fixtures
     await userEvent.click(within(dialog).getByRole("button", { name: "Change URL" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("slug already in use");
+  });
+
+  it("has no custom-domains tab", async () => {
+    mountAt("/services/svc_web01");
+    await screen.findByRole("tab", { name: "Access" });
+    expect(screen.queryByRole("tab", { name: /custom domains/i })).toBeNull();
+  });
+
+  it("warns that path-routed apps share the dashboard origin", async () => {
+    mountAt("/services/svc_web01");
+    expect(await screen.findByText(/can act as the signed-in dashboard user/)).toBeInTheDocument();
   });
 });

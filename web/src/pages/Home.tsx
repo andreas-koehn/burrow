@@ -217,15 +217,14 @@ export default function Home() {
           <li>
             Each Client exposes one or more local ports through durable{" "}
             <strong>Services</strong>. A Service is the saved configuration
-            (access mode + hostname) that persists even when no client is connected.
+            (access mode + URL) that persists even when no client is connected.
           </li>
           <li>
             A live connection to a Service is a <strong>Tunnel</strong>. Tunnels exist
             only while the client is connected and actively forwarding traffic.
           </li>
           <li>
-            Add an access mode (API key, mTLS) or point a Service at an
-            OpenAI-compatible upstream to unlock the AI gateway.
+            Add an access mode (API key, Burrow login) to control who reaches a service.
           </li>
         </ol>
       </section>

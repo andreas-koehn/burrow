@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import { RequireAuth } from "@/auth/RequireAuth";
 import { Layout } from "@/components/Layout";
 import Login from "@/pages/Login";
@@ -30,7 +30,12 @@ import ServiceDetail from "@/pages/ServiceDetail";
 import Retention from "@/pages/Retention";
 import DatabaseBackend from "@/pages/DatabaseBackend";
 import OpenApiViewer from "@/pages/OpenApiViewer";
-import CustomDomainsOverview from "@/pages/CustomDomainsOverview";
+
+// Custom domains need host routing, which is off; old links land on the service.
+function ServiceDomainsRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={`/services/${id}`} replace />;
+}
 
 export default function App() {
   return (
@@ -62,12 +67,12 @@ export default function App() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/connection-logs" element={<ConnectionLogs />} />
         <Route path="/services/:id" element={<ServiceDetail />} />
-        <Route path="/services/:id/domains" element={<ServiceDetail />} />
+        <Route path="/services/:id/domains" element={<ServiceDomainsRedirect />} />
         <Route path="/settings/retention" element={<Retention />} />
         <Route path="/settings/database" element={<DatabaseBackend />} />
         {/* P1-14: in-app OpenAPI viewer, framed inside the dashboard chrome. */}
         <Route path="/openapi" element={<OpenApiViewer />} />
-        <Route path="/settings/custom-domains" element={<CustomDomainsOverview />} />
+        <Route path="/settings/custom-domains" element={<Navigate to="/settings" replace />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

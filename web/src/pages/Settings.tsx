@@ -155,10 +155,6 @@ export default function Settings() {
             <div className="settings-nav-card-title">Connection logs</div>
             <div className="settings-nav-card-desc muted">Per-tunnel HTTP/TCP/control connection history.</div>
           </Link>
-          <Link to="/settings/custom-domains" className="settings-nav-card">
-            <div className="settings-nav-card-title">Custom domains (all services)</div>
-            <div className="settings-nav-card-desc muted">Read-only roll-up of every service&apos;s domains; open a service to edit.</div>
-          </Link>
         </div>
       </section>
       <Toaster />

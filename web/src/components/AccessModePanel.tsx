@@ -1,11 +1,10 @@
 import { useEffect, useImperativeHandle, useState, type Ref } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
-import { AccessModeCard, Button, FormField, FormFieldGroup, Input } from "@/components/ds";
-import { ACCESS_MODES, type AccessMode } from "@/lib/contract";
+import { AccessModeCard, Button, ErrorNotice, FormField, FormFieldGroup, Input } from "@/components/ds";
+import { type AccessMode } from "@/lib/contract";
 import { ApiKeysPanel } from "@/components/ApiKeysPanel";
 import { AccessPolicyEditor } from "@/components/AccessPolicyEditor";
-import { MtlsPanel } from "@/components/MtlsPanel";
 import { IPGeoPanel } from "@/components/IPGeoPanel";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
@@ -13,6 +12,8 @@ import { toast } from "sonner";
 // User-facing mode explainers. P1-3: dropped the "v0.2.0" leak — the help
 // text no longer references internal version numbers. Visitors are described
 // in terms of what Burrow does to their requests, not the codebase history.
+const SELECTABLE = ["open", "api_key", "burrow_login"] as const;
+
 const META: Record<AccessMode, { title: string; help: string }> = {
   open: { title: "Open — raw passthrough", help: "Burrow adds no auth — visitor traffic flows straight through. The safe default for TCP tunnels." },
   api_key: { title: "API key — header check", help: "Burrow verifies an API key header before proxying." },
@@ -46,19 +47,17 @@ export interface AccessModePanelProps {
 
 export function AccessModePanel({ serviceId, serviceName, mode, clientId, panelRef, hideApiKeys }: AccessModePanelProps) {
   const qc = useQueryClient();
-  const [selected, setSelected] = useState<AccessMode>(mode);
+  const [selected, setSelected] = useState<AccessMode>(mode === "mtls" ? "open" : mode);
   // RFC 7230 header-name tokens disallow colon + whitespace; the prior
   // default "Authorization: Bearer" persisted as an uninterpretable header
   // and the backend (api/service_handlers.go: isValidHTTPHeaderName) now
   // rejects it with 400. "Authorization" is the proxy's safe default; it
   // also strips a "Bearer " prefix for that header only.
   const [apiKeyHeader, setApiKeyHeader] = useState("Authorization");
-  const [caPem, setCaPem] = useState("");
   const [err, setErr] = useState<string | null>(null);
 
   function buildBody(): Record<string, unknown> {
     if (selected === "api_key") return { access_mode: selected, api_key_header: apiKeyHeader };
-    if (selected === "mtls") return { access_mode: selected, mtls_ca_pem: caPem };
     return { access_mode: selected };
   }
 
@@ -103,8 +102,13 @@ export function AccessModePanel({ serviceId, serviceName, mode, clientId, panelR
   return (
     <div className="access-panel">
       <FormFieldGroup>
+        {mode === "mtls" && (
+          <ErrorNotice variant="info" role="note">
+            This service is set to mTLS, which is inactive while services are reached by path. Choose another mode.
+          </ErrorNotice>
+        )}
         <div role="radiogroup" aria-label="Access mode" className="mode-list">
-          {ACCESS_MODES.map((m) => {
+          {SELECTABLE.map((m) => {
             const meta = META[m];
             return (
               <AccessModeCard
@@ -135,12 +139,6 @@ export function AccessModePanel({ serviceId, serviceName, mode, clientId, panelR
         {selected === "burrow_login" && (
           <div className="mode-detail">
             <AccessPolicyEditor serviceId={serviceId} />
-          </div>
-        )}
-
-        {selected === "mtls" && (
-          <div className="mode-detail">
-            <MtlsPanel value={caPem} onChange={setCaPem} />
           </div>
         )}
 

@@ -19,7 +19,6 @@ import Tokens from "@/pages/Tokens";
 import AutomationTokens from "@/pages/AutomationTokens";
 import Tunnels from "@/pages/Tunnels";
 import Users from "@/pages/Users";
-import Settings from "@/pages/Settings";
 
 // ---------------------------------------------------------------------------
 // INTUITIVE — navigation & mental-model alignment
@@ -136,12 +135,6 @@ describe("CLEAR — information architecture & labelling", () => {
     expect(btns.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("Clr-6: Settings page shows a 'Custom domains (all services)' link to /settings/custom-domains", async () => {
-    renderApp(<Settings />, "/settings");
-    // settings-nav-card link in the Configuration section
-    const link = await screen.findByRole("link", { name: /Custom domains \(all services\)/i });
-    expect((link as HTMLAnchorElement).href).toContain("/settings/custom-domains");
-  });
 });
 
 // ---------------------------------------------------------------------------
