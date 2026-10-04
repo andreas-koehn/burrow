@@ -10,6 +10,16 @@ function mount() {
 }
 
 describe("Connection logs page (§v0.5.0 Part E)", () => {
+  it("renders an unknown status without crashing the page", async () => {
+    db.connectionLogs[0] = { ...db.connectionLogs[0], status: "half_open" as never };
+    mount();
+    const table = await screen.findByRole("table", { name: /connection logs/i });
+    await waitFor(() => {
+      const badge = table.querySelector("td[data-status='half_open'] span.badge");
+      expect(badge?.textContent).toBe("half open");
+    });
+  });
+
   afterEach(() => {
     resetDb();
   });

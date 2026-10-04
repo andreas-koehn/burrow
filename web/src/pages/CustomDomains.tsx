@@ -166,7 +166,7 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
                 <td className="mono small">{truncateFp(d.cert_sha256)}</td>
                 <td className="col-actions">
                   <Button
-                    variant="secondary"
+                    variant="destructive"
                     size="sm"
                     aria-label={`Delete domain ${d.hostname}`}
                     onClick={() => setDeleteTarget(d)}

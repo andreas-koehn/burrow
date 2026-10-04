@@ -113,7 +113,7 @@ export default function ProvisioningKeys() {
                     <td className="mono small">{k.created_at}</td>
                     <td className="mono small">{k.last_used ?? "—"}</td>
                     <td className="col-actions">
-                      <Button variant="ghost" size="sm" onClick={() => remove.mutate(k.id)}>Revoke</Button>
+                      <Button variant="destructive" size="sm" onClick={() => remove.mutate(k.id)}>Revoke</Button>
                     </td>
                   </tr>
                 ))}

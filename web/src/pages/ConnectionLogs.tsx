@@ -47,12 +47,6 @@ const KIND_LABELS: Record<ConnectionLogKind, string> = {
 };
 
 // Status badge kind mapping — maps onto the existing status-* CSS variants.
-const STATUS_LABELS: Record<ConnectionLogStatus, string> = {
-  closed_clean: "closed_clean",
-  closed_idle: "closed_idle",
-  closed_error: "closed_error",
-  rejected: "rejected",
-};
 function statusClass(status: ConnectionLogStatus): string {
   switch (status) {
     case "closed_clean": return "status-connected";
@@ -331,7 +325,7 @@ export default function ConnectionLogs() {
                       <td className="mono small col-num">{r.duration_ms}ms</td>
                       <td className="mono small col-num">{fmtBytes(r.bytes_in)}</td>
                       <td className="mono small col-num">{fmtBytes(r.bytes_out)}</td>
-                      <td data-status={r.status}><Badge kind={statusClass(r.status)}>{statusLabel(STATUS_LABELS[r.status])}</Badge></td>
+                      <td data-status={r.status}><Badge kind={statusClass(r.status)}>{statusLabel(r.status)}</Badge></td>
                       <td className="mono small">{r.reason}</td>
                     </tr>
                   ))}

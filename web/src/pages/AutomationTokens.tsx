@@ -86,7 +86,7 @@ export default function AutomationTokens() {
                   <td className="mono small">{t.expires_at ?? "never"}</td>
                   <td className="mono small">{t.last_used ?? "—"}</td>
                   <td className="col-actions">
-                    <Button variant="ghost" size="sm" onClick={() => revoke.mutate(t.id)}>Revoke</Button>
+                    <Button variant="destructive" size="sm" onClick={() => revoke.mutate(t.id)}>Revoke</Button>
                   </td>
                 </tr>
               ))}

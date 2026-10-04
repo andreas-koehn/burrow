@@ -57,7 +57,7 @@ describe("Webhooks (§4.26)", () => {
     ).toBeInTheDocument();
   });
 
-  it("Add Dialog events picker includes the v0.5.0 events", async () => {
+  it("New webhook dialog events picker includes the v0.5.0 events", async () => {
     mount();
     await userEvent.click(await screen.findByRole("button", { name: /new webhook/i }));
 

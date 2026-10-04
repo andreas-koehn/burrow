@@ -15,6 +15,18 @@ function mount() {
 }
 
 describe("ServiceDetail page", () => {
+  it("renders an idle service as a status-idle badge (C4)", async () => {
+    renderApp(
+      <Routes>
+        <Route path="/services/:id" element={<ServiceDetail />} />
+      </Routes>,
+      "/services/svc_graf01",
+    );
+    const idle = await screen.findByText("idle");
+    expect(idle).toHaveClass("badge", "status-idle");
+    expect(idle).not.toHaveClass("muted");
+  });
+
   it("renders service name in the heading", async () => {
     mount();
     const heading = await screen.findByRole("heading", { name: /ollama/i });

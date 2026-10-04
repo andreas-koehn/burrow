@@ -9,7 +9,10 @@ describe("statusLabel", () => {
     ["closed_clean", "closed clean"],
     ["idle", "idle"],
     ["", ""],
+    ["Some_New_State", "some new state"],
+    [undefined, ""],
+    [null, ""],
   ])("%j → %j", (raw, want) => {
-    expect(statusLabel(raw)).toBe(want);
+    expect(statusLabel(raw as string)).toBe(want);
   });
 });
