@@ -163,10 +163,12 @@ export default function AiEndpoints() {
               {list.map((e) => (
                 <tr key={e.service_id}>
                   <td className="col-name">
-                    <div>{e.name}</div>
-                    <div className="mono muted small">
-                      {`${e.model_alias} → ${e.concrete_model}`}
-                    </div>
+                    <div><Link to={`/ai/endpoints/${e.service_id}`}>{e.name}</Link></div>
+                    {(e.model_alias || e.concrete_model) && (
+                      <div className="mono muted small">
+                        {`${e.model_alias} → ${e.concrete_model}`}
+                      </div>
+                    )}
                   </td>
                   <td>
                     <Badge kind={`backend-${e.backend_type}`} nodot>
@@ -202,7 +204,6 @@ export default function AiEndpoints() {
                         { label: "Keys", onSelect: () => nav(`/services?focus=${e.service_id}&panel=api-keys`) },
                         { label: "Access settings", onSelect: () => nav(`/services?focus=${e.service_id}`) },
                         { label: "Cost", onSelect: () => nav(`/cost`) },
-                        { label: "Disable", danger: true, onSelect: () => { /* wired by detail page */ } },
                       ]}
                     />
                   </td>

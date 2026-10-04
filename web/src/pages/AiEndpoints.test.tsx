@@ -40,7 +40,7 @@ describe("AI endpoints page (§4.19)", () => {
     expect(alias.className).toContain("mono");
     const ollama = alias.closest("tr")!;
     // Name cell value.
-    expect(within(ollama).getByText("ollama", { selector: "td.col-name > div" }))
+    expect(within(ollama).getByText("ollama", { selector: "td.col-name a" }))
       .toBeInTheDocument();
     // Backend type badge.
     expect(within(ollama).getByText("ollama", { selector: "span.badge" }))
@@ -54,7 +54,7 @@ describe("AI endpoints page (§4.19)", () => {
     expect(within(ollama).getByText(/connected/i)).toBeInTheDocument();
   });
 
-  it("⋯ menu offers Inspect / Keys / Access settings / Cost / Disable", async () => {
+  it("⋯ menu offers Inspect / Keys / Access settings / Cost", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /ai endpoints/i });
     const alias = within(table).getByText("fast → llama3.1:8b");
@@ -63,7 +63,7 @@ describe("AI endpoints page (§4.19)", () => {
     await userEvent.click(more);
     const menu = await screen.findByRole("menu");
     const labels = within(menu).getAllByRole("menuitem").map((n) => n.textContent);
-    expect(labels).toEqual(["Inspect", "Keys", "Access settings", "Cost", "Disable"]);
+    expect(labels).toEqual(["Inspect", "Keys", "Access settings", "Cost"]);
   });
 
   it("renders the verbatim empty state when there are no AI endpoints", async () => {
@@ -134,5 +134,20 @@ describe("AI endpoints page (§4.19)", () => {
     await waitFor(() =>
       expect(screen.getByRole("table", { name: /ai endpoints/i })).toBeInTheDocument(),
     );
+  });
+
+  it("links each endpoint name to its detail page (U7)", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: /ai endpoints/i });
+    const link = within(table).getByRole("link", { name: "ollama" });
+    expect(link).toHaveAttribute("href", expect.stringMatching(/^\/ai\/endpoints\/.+/));
+  });
+
+  it("has no dead 'Disable' item in the row menu (U7)", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: /ai endpoints/i });
+    await userEvent.click(within(table).getAllByRole("button", { name: /more actions for/i })[0]);
+    expect(screen.getByRole("menuitem", { name: "Inspect" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Disable" })).toBeNull();
   });
 });

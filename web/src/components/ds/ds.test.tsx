@@ -38,6 +38,53 @@ describe("ds primitives", () => {
     fireEvent.click(screen.getByText("Del"));
     expect(fn).toHaveBeenCalled();
   });
+  it("DropdownMenu renders its menu outside clipping ancestors (portal on body)", () => {
+    const { container } = render(
+      <div style={{ overflow: "hidden" }}>
+        <DropdownMenu trigger={<button>⋯</button>} items={[{ label: "Inspect" }]} />
+      </div>,
+    );
+    fireEvent.click(screen.getByText("⋯"));
+    const menu = screen.getByRole("menu");
+    expect(container.contains(menu)).toBe(false);
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu.style.position).toBe("fixed");
+  });
+  it("DropdownMenu closes on outside mousedown but not on mousedown inside the menu", () => {
+    render(<DropdownMenu trigger={<button>⋯</button>} items={[{ label: "Inspect" }]} />);
+    fireEvent.click(screen.getByText("⋯"));
+    fireEvent.mouseDown(screen.getByRole("menu"));
+    expect(screen.queryByRole("menu")).not.toBeNull();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+  // A Dialog opened from a menu item captures document.activeElement while it
+  // opens, so the trigger must already hold focus when onSelect runs.
+  it("DropdownMenu returns focus to its trigger before a clicked item's onSelect runs", () => {
+    let focusedDuringSelect: Element | null = null;
+    const onSelect = vi.fn(() => { focusedDuringSelect = document.activeElement; });
+    render(<DropdownMenu trigger={<button>⋯</button>} items={[{ label: "Edit", onSelect }]} />);
+    const trigger = screen.getByText("⋯");
+    fireEvent.click(trigger);
+    expect(document.activeElement).not.toBe(trigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(focusedDuringSelect).toBe(trigger);
+    expect(document.activeElement).toBe(trigger);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+  it("DropdownMenu returns focus to its trigger when an item is selected with Enter", () => {
+    let focusedDuringSelect: Element | null = null;
+    const onSelect = vi.fn(() => { focusedDuringSelect = document.activeElement; });
+    render(<DropdownMenu trigger={<button>⋯</button>} items={[{ label: "Edit", onSelect }]} />);
+    const trigger = screen.getByText("⋯");
+    fireEvent.click(trigger);
+    expect(document.activeElement).not.toBe(trigger);
+    fireEvent.keyDown(document, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(focusedDuringSelect).toBe(trigger);
+    expect(document.activeElement).toBe(trigger);
+  });
 });
 
 describe("ds states", () => {

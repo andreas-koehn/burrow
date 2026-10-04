@@ -1,6 +1,8 @@
-import { useState, useEffect, useRef, cloneElement } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, cloneElement } from "react";
+import { createPortal } from "react-dom";
 import type { ReactElement, ReactNode, MouseEvent } from "react";
 import { cx } from "./cx";
+import { placeMenu } from "./placeMenu";
 
 export interface DropdownItem {
   label?: string;
@@ -22,11 +24,49 @@ export function DropdownMenu({ trigger, items, align = "right" }: DropdownMenuPr
   const [focusIdx, setFocusIdx] = useState(0);
   const wrapRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  // The menu is portalled to <body> and positioned in viewport coordinates so
+  // an ancestor with overflow (e.g. .table-wrap) can never clip it.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const t = triggerRef.current?.getBoundingClientRect();
+      const m = menuRef.current;
+      if (!t || !m) return;
+      setPos(placeMenu(
+        t,
+        { width: m.offsetWidth, height: m.offsetHeight },
+        { width: window.innerWidth, height: window.innerHeight },
+        align,
+      ));
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+      // Next open starts hidden until it has been measured again.
+      setPos(null);
+    };
+  }, [open, align]);
+
+  // Focus goes back to the trigger before onSelect runs: a Dialog opened by
+  // the item records document.activeElement and returns focus there on close.
+  const select = (it: DropdownItem | undefined) => {
+    triggerRef.current?.focus();
+    it?.onSelect?.();
+    setOpen(false);
+  };
 
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: globalThis.MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (wrapRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -43,8 +83,7 @@ export function DropdownMenu({ trigger, items, align = "right" }: DropdownMenuPr
       }
       if (e.key === "Enter") {
         e.preventDefault();
-        items[focusIdx]?.onSelect?.();
-        setOpen(false);
+        select(items[focusIdx]);
       }
     };
     document.addEventListener("mousedown", onDoc);
@@ -69,16 +108,18 @@ export function DropdownMenu({ trigger, items, align = "right" }: DropdownMenuPr
   return (
     <div ref={wrapRef} style={{ position: "relative", display: "inline-block" }}>
       {cloneElement(trigger, injected)}
-      {open && (
+      {open && createPortal(
         <div
+          ref={menuRef}
           className="menu menu-enter"
           role="menu"
           style={{
-            position: "absolute",
-            top: "100%",
-            [align === "right" ? "right" : "left"]: 0,
-            marginTop: 4,
-            zIndex: 20,
+            position: "fixed",
+            top: pos?.top ?? 0,
+            left: pos?.left ?? 0,
+            visibility: pos ? "visible" : "hidden",
+            // Above dialogs (z-index 30) so menus inside dialogs still work.
+            zIndex: 40,
           }}
         >
           {items.map((it, i) =>
@@ -90,10 +131,7 @@ export function DropdownMenu({ trigger, items, align = "right" }: DropdownMenuPr
                 role="menuitem"
                 className={cx("menu-item", it.danger && "danger", focusIdx === i && "is-focus")}
                 onMouseEnter={() => setFocusIdx(i)}
-                onClick={() => {
-                  it.onSelect?.();
-                  setOpen(false);
-                }}
+                onClick={() => select(it)}
               >
                 {it.icon && (
                   <span style={{ color: it.danger ? "inherit" : "var(--muted-foreground)" }}>
@@ -105,7 +143,8 @@ export function DropdownMenu({ trigger, items, align = "right" }: DropdownMenuPr
               </div>
             ),
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
