@@ -68,3 +68,12 @@ describe("T10 — type hierarchy and rhythm", () => {
     expect(css).toMatch(/\.section-head \.left\s*\{[^}]*gap:\s*0 var\(--space-sm\)/);
   });
 });
+
+describe("T11 — shell", () => {
+  it("content area may grow to 1440px", () => {
+    expect(css).toMatch(/\.shell-content\s*\{[^}]*max-width:\s*1440px/);
+  });
+  it("sidebar nav uses a thin scrollbar", () => {
+    expect(css).toMatch(/\.sidebar-nav\s*\{[^}]*scrollbar-width:\s*thin/);
+  });
+});

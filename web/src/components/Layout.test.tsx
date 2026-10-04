@@ -83,6 +83,17 @@ describe("Layout theme toggle", () => {
     expect(screen.getByRole("button", { name: /switch to/i })).toBeInTheDocument();
   });
 
+  it("renders Log out as an icon button in the footer row (L2)", async () => {
+    renderLayout("user");
+    const logout = await screen.findByRole("button", { name: "Log out" });
+    expect(logout.className).toContain("icon-btn");
+    expect(logout.closest(".sidebar-footer")).not.toBeNull();
+    // Same row as the theme toggle, not a row of its own.
+    expect(logout.parentElement).toBe(
+      screen.getByRole("button", { name: /switch to/i }).parentElement,
+    );
+  });
+
   it("theme toggle exposes a title matching aria-label for hover-tooltip parity (D1)", () => {
     renderLayout("user");
     const btn = screen.getByRole("button", { name: /switch to dark theme/i });
@@ -212,10 +223,17 @@ describe("Layout ⌘K command palette (P6A.3)", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
-  it("the Search ⌘K affordance button is present in the sidebar", async () => {
+  it("the Search shortcut affordance button is present in the sidebar", async () => {
     renderLayout("admin");
     await screen.findByRole("link", { name: /^account$/i });
     expect(screen.getByRole("button", { name: /search/i })).toBeInTheDocument();
+  });
+
+  it("shows a platform-appropriate search shortcut (U3)", async () => {
+    renderLayout("user");
+    const search = await screen.findByRole("button", { name: "Search" });
+    // jsdom reports an empty platform → non-Apple label.
+    expect(search).toHaveTextContent("Ctrl K");
   });
 
   it("clicking the Search button opens the palette", async () => {

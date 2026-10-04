@@ -898,10 +898,12 @@ button.sort-header:focus-visible {
   padding: 8px 0;
   overflow-y: auto;
   min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
 .nav-group { margin-bottom: 4px; }
-.nav-group + .nav-group { margin-top: 14px; }
+.nav-group + .nav-group { margin-top: 10px; }
 
 .nav-group-title {
   font-family: var(--font-mono);
@@ -917,7 +919,7 @@ button.sort-header:focus-visible {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 16px 7px 18px;
+  padding: 6px 16px 6px 18px;
   color: var(--muted-foreground);
   font-size: 13px;
   font-weight: 400;
@@ -1067,7 +1069,7 @@ button.sort-header:focus-visible {
 }
 .shell-content {
   padding: 32px 32px 32px;
-  max-width: 1200px;
+  max-width: 1440px;
   width: 100%;
   /* Left-anchor under the fixed sidebar rather than centering in the remaining
      space — centering left a large empty band between the sidebar and the

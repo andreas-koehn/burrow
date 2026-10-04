@@ -7,7 +7,8 @@ import {
   Webhook as WebhookIcon, Bot, LayoutDashboard,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import { Button, cx } from "@/components/ds";
+import { cx } from "@/components/ds";
+import { shortcutLabel } from "@/lib/platform";
 import { useTheme } from "@/components/theme-provider";
 import { useAuth } from "@/auth/useAuth";
 import type { Service } from "@/lib/contract";
@@ -97,7 +98,7 @@ export function Layout() {
           >
             <span className="nav-icon"><Search size={16} /></span>
             <span className="nav-label">Search</span>
-            <span className="nav-count"><span className="kbd-token">⌘K</span></span>
+            <span className="nav-count"><span className="kbd-token">{shortcutLabel("K")}</span></span>
           </button>
 
           <NavLink to="/" end className={navItem}>
@@ -207,7 +208,7 @@ export function Layout() {
             <div className="user-chip">
               <span className="avatar">{avatarInitial}</span>
               <span className="user-meta">
-                {user?.email && <span className="user-email">{user.email}</span>}
+                {user?.email && <span className="user-email" title={user.email}>{user.email}</span>}
                 {user?.role && <span className="user-role">{user.role.toUpperCase()}</span>}
               </span>
             </div>
@@ -219,10 +220,16 @@ export function Layout() {
             >
               {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
             </button>
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={logout}
+              aria-label="Log out"
+              title="Log out"
+            >
+              <LogOut size={15} />
+            </button>
           </div>
-          <Button variant="secondary" size="sm" icon={<LogOut size={14} />} onClick={logout}>
-            Log out
-          </Button>
         </div>
       </nav>
 
