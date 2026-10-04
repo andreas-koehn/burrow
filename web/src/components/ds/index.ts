@@ -14,7 +14,7 @@ export type { CheckboxProps } from "./Checkbox";
 export { DropdownMenu } from "./DropdownMenu";
 export type { DropdownMenuProps, DropdownItem } from "./DropdownMenu";
 export { Dialog } from "./Dialog";
-export type { DialogProps } from "./Dialog";
+export type { DialogProps, DialogSize } from "./Dialog";
 export { Tabs } from "./Tabs";
 export type { TabItem, TabsProps } from "./Tabs";
 export { EmptyState, ErrorNotice, SkeletonRows, NotAuthorized } from "./States";

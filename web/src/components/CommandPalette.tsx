@@ -136,9 +136,9 @@ export function CommandPalette({
   );
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} title="Jump to…">
+    <Dialog open={open} onOpenChange={onOpenChange} size="md" title="Jump to…">
       <div
-        style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 400 }}
+        style={{ display: "flex", flexDirection: "column", gap: 8 }}
         onKeyDown={handleKeyDown}
       >
         <Input

@@ -121,6 +121,7 @@ export function CustomRoleEditor({ open, roleName, onClose }: CustomRoleEditorPr
       <Dialog
         open={open}
         onOpenChange={(o) => { if (!o) onClose(); }}
+        size="md"
         title={isNew ? "New role" : `Edit role · ${roleName ?? ""}`}
         footer={
           <>

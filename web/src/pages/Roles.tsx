@@ -17,6 +17,7 @@ function RoleDetailDialog({ name, onClose }: { name: string | null; onClose: () 
     <Dialog
       open={name !== null}
       onOpenChange={(o) => { if (!o) onClose(); }}
+      size="md"
       title={name ?? ""}
       description="Read-only — built-in role."
       footer={<Button variant="primary" onClick={onClose}>Close</Button>}

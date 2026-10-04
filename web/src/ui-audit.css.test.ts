@@ -18,3 +18,16 @@ describe("T01 — FormField width classes do not collide with Tailwind utilities
     expect(css).not.toMatch(/\.form-field\.w-(sm|md|lg|full)\b/);
   });
 });
+
+describe("T02 — dialog sizing and overflow", () => {
+  it("defines three dialog widths", () => {
+    expect(css).toMatch(/\.dialog\.size-sm\s*\{[^}]*420px/);
+    expect(css).toMatch(/\.dialog\.size-md\s*\{[^}]*560px/);
+    expect(css).toMatch(/\.dialog\.size-lg\s*\{[^}]*720px/);
+  });
+  it("dialog body never scrolls sideways and wraps long strings", () => {
+    const rule = css.match(/\.dialog-body\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toContain("overflow-x: hidden");
+    expect(rule).toContain("overflow-wrap: anywhere");
+  });
+});

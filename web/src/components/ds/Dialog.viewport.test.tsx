@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { render } from "@testing-library/react";
+import { useState } from "react";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { Dialog } from "./Dialog";
 
 // jsdom does not load CSS files — inject the dialog rules so getComputedStyle
@@ -63,5 +64,65 @@ describe("Dialog backdrop scrim (D-1/L-14)", () => {
     expect(cs.position).toBe("fixed");
     expect(cs.inset === "0px" || cs.top === "0px").toBe(true);
     expect(cs.background).toContain("0.5");
+  });
+});
+
+describe("Dialog size, close button, focus (F2/U2)", () => {
+  it("defaults to size-sm and applies size-md / size-lg", () => {
+    const { getByRole, rerender } = render(<Dialog open title="t" onOpenChange={() => {}} />);
+    expect(getByRole("dialog").className).toContain("size-sm");
+    rerender(<Dialog open title="t" size="md" onOpenChange={() => {}} />);
+    expect(getByRole("dialog").className).toContain("size-md");
+    rerender(<Dialog open title="t" size="lg" onOpenChange={() => {}} />);
+    expect(getByRole("dialog").className).toContain("size-lg");
+  });
+
+  it("renders a close button that requests close", () => {
+    const onOpenChange = vi.fn();
+    render(<Dialog open title="t" onOpenChange={onOpenChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("omits the close button when the dialog cannot be dismissed", () => {
+    render(<Dialog open title="t" />);
+    expect(screen.queryByRole("button", { name: "Close dialog" })).toBeNull();
+  });
+
+  it("puts initial focus on the first body field, not the close button", async () => {
+    render(
+      <Dialog open title="t" onOpenChange={() => {}} footer={<button>Save</button>}>
+        <input aria-label="Name" />
+      </Dialog>,
+    );
+    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveFocus());
+  });
+
+  it("falls back to the first footer button when the body has no field", async () => {
+    render(
+      <Dialog open title="t" onOpenChange={() => {}} footer={<><button>Cancel</button><button>Delete</button></>}>
+        <p>Sure?</p>
+      </Dialog>,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus());
+  });
+
+  it("returns focus to the opener when it closes", async () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>Open</button>
+          <Dialog open={open} title="t" onOpenChange={setOpen}><input aria-label="Name" /></Dialog>
+        </>
+      );
+    }
+    render(<Harness />);
+    const opener = screen.getByRole("button", { name: "Open" });
+    opener.focus();
+    fireEvent.click(opener);
+    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveFocus());
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(opener).toHaveFocus());
   });
 });

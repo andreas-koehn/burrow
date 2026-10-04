@@ -296,6 +296,7 @@ export default function Tunnels() {
       <Dialog
         open={configure !== null}
         onOpenChange={(o) => { if (!o) setConfigure(null); }}
+        size="lg"
         title={configure ? `Access · ${configure.name || configure.id}` : ""}
         description="Choose how Burrow gates requests before proxying to this service."
         footer={

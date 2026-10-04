@@ -244,6 +244,7 @@ export default function Services() {
       <Dialog
         open={configure !== null}
         onOpenChange={(o) => { if (!o) setConfigure(null); }}
+        size="lg"
         title={configure ? `Access · ${configure.name}` : ""}
         description={configure?.type === "tcp"
           ? "Raw TCP service — only Open passthrough applies."

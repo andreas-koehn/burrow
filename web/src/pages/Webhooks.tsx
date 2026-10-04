@@ -308,6 +308,7 @@ export default function Webhooks() {
       <Dialog
         open={addOpen}
         onOpenChange={(o) => { setAddOpen(o); if (!o) setErr(null); }}
+        size="md"
         title="Add webhook"
         footer={
           <>
@@ -335,6 +336,7 @@ export default function Webhooks() {
       <Dialog
         open={editWebhook !== null}
         onOpenChange={(o) => { if (!o) { setEditWebhook(null); setEditErr(null); } }}
+        size="md"
         title={`Edit webhook: ${editWebhook?.name ?? ""}`}
         footer={
           <>

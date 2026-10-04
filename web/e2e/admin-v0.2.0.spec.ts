@@ -79,7 +79,7 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   const roleDlg = page.getByRole("dialog");
   // Permissions come from internal/authz (admin → full set incl users:manage).
   await expect(roleDlg.getByText("users:manage", { exact: true })).toBeVisible();
-  await roleDlg.getByRole("button", { name: "Close" }).click();
+  await roleDlg.getByRole("button", { name: "Close", exact: true }).click();
 
   // ── Settings: GET then PUT round-trip (whitelisted keys persist) ──────────
   await page.getByRole("link", { name: "Settings" }).click();
