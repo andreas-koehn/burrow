@@ -36,6 +36,9 @@ const CHAIN_SCOPE = '[data-dialog-root], [role="listbox"], [role="menu"]';
 
 function forgetChainOpener(e?: Event) {
   if (e && e.target instanceof Element && e.target.closest(CHAIN_SCOPE)) return;
+  // A backdrop mousedown moves focus to the dialog's nearest focusable
+  // ancestor (the shell's <main tabIndex={-1}>); that is still the chain.
+  if (e?.type === "focusin" && e.target instanceof Element && e.target.querySelector("[data-dialog-root]")) return;
   chainOpener = null;
   for (const type of CHAIN_EVENTS) document.removeEventListener(type, forgetChainOpener, true);
 }

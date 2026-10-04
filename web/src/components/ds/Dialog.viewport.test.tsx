@@ -337,6 +337,31 @@ describe("Dialog size, close button, focus (F2/U2)", () => {
     expect(opener).toHaveFocus();
   });
 
+  // A real browser moves focus to the nearest focusable ancestor on a backdrop
+  // mousedown: the shell's <main tabIndex={-1}>, which wraps the open dialog.
+  it("async chain: a backdrop press that focuses the dialog's focusable ancestor keeps the chain", async () => {
+    const host = document.createElement("main");
+    host.tabIndex = -1;
+    document.body.appendChild(host);
+    const view = render(<AsyncChain />, { container: host });
+    const opener = screen.getByRole("button", { name: "New key" });
+    opener.focus();
+    press(opener);
+    const create = screen.getByRole("button", { name: "Create" });
+    await waitFor(() => expect(create).toHaveFocus());
+    press(create);
+    const done = await screen.findByRole("button", { name: "Done" });
+    await waitFor(() => expect(done).toHaveFocus());
+    const backdrop = view.container.querySelector(".dialog-backdrop")!;
+    fireEvent.pointerDown(backdrop);
+    host.focus();
+    fireEvent.click(backdrop);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(opener).toHaveFocus();
+    view.unmount();
+    host.remove();
+  });
+
   it("async chain: a portalled list used inside the reveal dialog does not break the chain", async () => {
     const { opener, done } = await openReveal();
     fireEvent.pointerDown(screen.getByRole("option", { name: "Portalled" }));
