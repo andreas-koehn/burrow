@@ -79,7 +79,7 @@ export default function ServiceDetail() {
           : <Badge kind="status-idle">idle</Badge>}
       </div>
 
-      {svc.type === "http" && (
+      {svc.type === "http" && (svc.slug || svc.url) && (
         <p className="muted small">
           Reached at the URL above, on the same origin as this dashboard. Only expose apps you trust:
           a page served here can act as the signed-in dashboard user.

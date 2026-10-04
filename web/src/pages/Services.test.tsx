@@ -45,6 +45,17 @@ describe("Services page", () => {
     expect(within(table).getAllByRole("row")).toHaveLength(2); // header + grafana
   });
 
+  it("filters by the URL's domain or /svc/ path", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: "Services" });
+    const box = screen.getByRole("searchbox", { name: "Filter services" });
+    await userEvent.type(box, "tunnels.example.com/svc/gf7x");
+    expect(within(table).getAllByRole("row")).toHaveLength(2); // header + grafana
+    await userEvent.clear(box);
+    await userEvent.type(box, "/svc/");
+    expect(within(table).getAllByRole("row")).toHaveLength(4); // header + 3 http rows
+  });
+
   it("renders a row per service with name, type, URL, access badge", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /services/i });

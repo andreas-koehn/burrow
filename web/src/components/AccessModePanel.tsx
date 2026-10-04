@@ -9,11 +9,11 @@ import { IPGeoPanel } from "@/components/IPGeoPanel";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 
+const SELECTABLE = ["open", "api_key", "burrow_login"] as const;
+
 // User-facing mode explainers. P1-3: dropped the "v0.2.0" leak — the help
 // text no longer references internal version numbers. Visitors are described
 // in terms of what Burrow does to their requests, not the codebase history.
-const SELECTABLE = ["open", "api_key", "burrow_login"] as const;
-
 const META: Record<AccessMode, { title: string; help: string }> = {
   open: { title: "Open — raw passthrough", help: "Burrow adds no auth — visitor traffic flows straight through. The safe default for TCP tunnels." },
   api_key: { title: "API key — header check", help: "Burrow verifies an API key header before proxying." },
@@ -47,7 +47,7 @@ export interface AccessModePanelProps {
 
 export function AccessModePanel({ serviceId, serviceName, mode, clientId, panelRef, hideApiKeys }: AccessModePanelProps) {
   const qc = useQueryClient();
-  const [selected, setSelected] = useState<AccessMode>(mode === "mtls" ? "open" : mode);
+  const [selected, setSelected] = useState<AccessMode | null>(mode === "mtls" ? null : mode);
   // RFC 7230 header-name tokens disallow colon + whitespace; the prior
   // default "Authorization: Bearer" persisted as an uninterpretable header
   // and the backend (api/service_handlers.go: isValidHTTPHeaderName) now
@@ -91,8 +91,8 @@ export function AccessModePanel({ serviceId, serviceName, mode, clientId, panelR
   // changes so the footer button's disabled state stays in sync (P1-7).
   useImperativeHandle(
     panelRef,
-    () => ({ save: () => save.mutate(), isSaving: save.isPending }),
-    [save],
+    () => ({ save: () => { if (selected) save.mutate(); }, isSaving: save.isPending }),
+    [save, selected],
   );
 
   // Re-publish on save state transitions so the dialog footer can read the
@@ -152,7 +152,7 @@ export function AccessModePanel({ serviceId, serviceName, mode, clientId, panelR
             still relies on the inline button. */}
         {!panelRef && (
           <div className="panel-actions">
-            <Button variant="primary" size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
+            <Button variant="primary" size="sm" disabled={save.isPending || !selected} onClick={() => save.mutate()}>
               {save.isPending ? "Saving…" : "Save changes"}
             </Button>
           </div>

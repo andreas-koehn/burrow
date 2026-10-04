@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
@@ -99,5 +99,26 @@ describe("AccessModePanel (v0.3.0)", () => {
     expect(screen.getByRole("note")).toHaveTextContent(
       "This service is set to mTLS, which is inactive while services are reached by path. Choose another mode.",
     );
+  });
+
+  it("preselects nothing and disables Save for a service in mtls mode", () => {
+    renderApp(<AccessModePanel serviceId="svc_web01" serviceName="web" mode="mtls" />);
+    for (const r of screen.getAllByRole("radio")) expect(r).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("button", { name: /save changes/i })).toBeDisabled();
+  });
+
+  it("choosing a mode on an mtls service enables Save and sends that mode", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    renderApp(<AccessModePanel serviceId="svc_web01" serviceName="web" mode="mtls" />);
+    await userEvent.click(screen.getByRole("radio", { name: /open/i }));
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => {
+      const put = fetchSpy.mock.calls.find(([url, init]) =>
+        String(url).endsWith("/api/v1/services/svc_web01/access-mode")
+        && (init as RequestInit | undefined)?.method === "PUT",
+      );
+      expect(put).toBeTruthy();
+      expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ access_mode: "open" });
+    });
   });
 });
