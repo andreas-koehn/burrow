@@ -1376,7 +1376,7 @@ button.sort-header:focus-visible {
   font-weight: 600;
 }
 /* A heading row may carry an inline hint (InfoHint) next to the title. */
-.section-head .left { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
+.section-head .left { display: flex; align-items: center; gap: 0 var(--space-sm); flex-wrap: wrap; }
 .section-head .left p { flex-basis: 100%; }
 /* Sub-section inside a section: separated from whatever precedes it. */
 .section-head.sub { margin-top: var(--space-xl); margin-bottom: var(--space-sm); }
@@ -1388,7 +1388,7 @@ button.sort-header:focus-visible {
 .card-title { margin: 0 0 var(--space-md); font-size: 15px; font-weight: 600; }
 /* Any notice followed by content, and any helper line followed by a table or
    empty state, keeps a gap — these were flush before. */
-.notice-inline + * { margin-top: var(--space-md); }
+:where(:not(.form-grid, .stack-md)) > .notice-inline + * { margin-top: var(--space-md); }
 p.muted + .table-wrap,
 p.muted + .state-card,
 p.small + .table-wrap,
@@ -1396,6 +1396,10 @@ p.small + .state-card { margin-top: var(--space-md); }
 /* Legacy .field stacks (dialogs that predate FormFieldGroup) */
 .field + .field,
 .field + .row { margin-top: var(--space-md); }
+/* Gap containers already space their children; do not double it. */
+.stack-md > .field,
+.stack-md > .row,
+.form-grid > .field { margin-top: 0; }
 .perm-group { margin-top: var(--space-lg); }
 .perm-group h4 { margin: 0 0 var(--space-sm); font-size: 13px; font-weight: 600; }
 .perm-row {

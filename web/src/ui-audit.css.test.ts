@@ -59,4 +59,9 @@ describe("T10 — type hierarchy and rhythm", () => {
     expect(css).toMatch(/\.section-head\.sub\s*\{[^}]*margin-top:\s*var\(--space-xl\)/);
     expect(css).toMatch(/\.card-title\s*\{[^}]*margin:\s*0 0 var\(--space-md\)/);
   });
+  it("adjacency margins do not double the gap of flex/grid parents", () => {
+    expect(css).toMatch(/\.stack-md > \.field,\s*\.stack-md > \.row,\s*\.form-grid > \.field\s*\{[^}]*margin-top:\s*0/);
+    expect(css).toMatch(/:where\(:not\(\.form-grid, \.stack-md\)\) > \.notice-inline \+ \*\s*\{/);
+    expect(css).toMatch(/\.section-head \.left\s*\{[^}]*gap:\s*0 var\(--space-sm\)/);
+  });
 });
