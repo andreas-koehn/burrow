@@ -1772,6 +1772,14 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
 .dialog-body .form-field.field-w-md .select-trigger,
 .dialog-body .form-field.field-w-lg .input,
 .dialog-body .form-field.field-w-lg .select-trigger { max-width: none; }
+/* Access-mode detail fields line up with the mode cards above them
+   (capped at --input-w-lg) instead of filling the dialog. */
+.dialog-body .mode-detail .form-field.field-w-md .input,
+.dialog-body .mode-detail .form-field.field-w-md .select-trigger,
+.dialog-body .mode-detail .form-field.field-w-lg .input,
+.dialog-body .mode-detail .form-field.field-w-lg .select-trigger { max-width: var(--input-w-lg); }
+/* The keys panel ("New key") was flush against the header field above it. */
+.mode-detail > .form-field + .api-keys-panel { margin-top: var(--space-md); }
 
 .form-field-group {
   display: flex;

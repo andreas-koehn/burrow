@@ -185,6 +185,101 @@ describe("Dialog size, close button, focus (F2/U2)", () => {
     expect(opener).toHaveFocus();
   });
 
+  it("does not jump to an earlier opener once the user has interacted with the page", async () => {
+    // Dialog A hands focus back to "New service". Later an unrelated dialog
+    // whose own opener is gone closes: focus must not jump to that button.
+    function Harness() {
+      const [a, setA] = useState(false);
+      const [b, setB] = useState(false);
+      return (
+        <>
+          <button onClick={() => setA(true)}>New service</button>
+          <p>page text</p>
+          {!b && <button onClick={() => setB(true)}>Delete row</button>}
+          <Dialog open={a} title="Create" onOpenChange={setA} footer={<button onClick={() => setA(false)}>Cancel</button>}>
+            <p>Name it</p>
+          </Dialog>
+          <Dialog open={b} title="Confirm" onOpenChange={setB} footer={<button onClick={() => setB(false)}>Done</button>}>
+            <p>Sure?</p>
+          </Dialog>
+        </>
+      );
+    }
+    render(<Harness />);
+    const first = screen.getByRole("button", { name: "New service" });
+    first.focus();
+    fireEvent.click(first);
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    await waitFor(() => expect(cancel).toHaveFocus());
+    fireEvent.click(cancel);
+    await waitFor(() => expect(first).toHaveFocus());
+
+    fireEvent.pointerDown(screen.getByText("page text"));
+    const rowButton = screen.getByRole("button", { name: "Delete row" });
+    rowButton.focus();
+    fireEvent.click(rowButton);
+    const done = screen.getByRole("button", { name: "Done" });
+    await waitFor(() => expect(done).toHaveFocus());
+    expect(rowButton.isConnected).toBe(false);
+    const focusSpy = vi.spyOn(first, "focus");
+    fireEvent.click(done);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(focusSpy).not.toHaveBeenCalled();
+    expect(first).not.toHaveFocus();
+  });
+
+  it("uses the chained fallback once and without scrolling", async () => {
+    function Harness() {
+      const [a, setA] = useState(false);
+      const [b, setB] = useState(false);
+      const [c, setC] = useState(false);
+      return (
+        <>
+          <button onClick={() => setA(true)}>New key</button>
+          <Dialog
+            open={a}
+            title="Create"
+            onOpenChange={setA}
+            footer={<button onClick={() => { setA(false); setB(true); }}>Create</button>}
+          >
+            <p>Name it</p>
+          </Dialog>
+          <Dialog
+            open={b}
+            title="Reveal"
+            onOpenChange={setB}
+            footer={<button onClick={() => { setB(false); setC(true); }}>Done</button>}
+          >
+            <p>secret</p>
+          </Dialog>
+          <Dialog open={c} title="Third" onOpenChange={setC} footer={<button onClick={() => setC(false)}>Finish</button>}>
+            <p>more</p>
+          </Dialog>
+        </>
+      );
+    }
+    render(<Harness />);
+    const opener = screen.getByRole("button", { name: "New key" });
+    opener.focus();
+    fireEvent.click(opener);
+    const create = screen.getByRole("button", { name: "Create" });
+    await waitFor(() => expect(create).toHaveFocus());
+    fireEvent.click(create);
+    const done = screen.getByRole("button", { name: "Done" });
+    await waitFor(() => expect(done).toHaveFocus());
+    const focusSpy = vi.spyOn(opener, "focus");
+    fireEvent.click(done);
+    // Closing the chained dialog falls back to the page button, once.
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+    expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
+    const finish = screen.getByRole("button", { name: "Finish" });
+    await waitFor(() => expect(finish).toHaveFocus());
+    fireEvent.click(finish);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // The fallback was consumed by the second dialog.
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("skips a disconnected opener without throwing", async () => {
     function Harness() {
       const [open, setOpen] = useState(false);

@@ -20,11 +20,27 @@ const FIELD_SELECTOR =
   'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled])';
 const FOOTER_SELECTOR = ".dialog-footer button:not([disabled])";
 
-// The last opener a closing dialog handed focus back to. A dialog opened from
+// The opener a closing dialog just handed focus back to. A dialog opened from
 // inside another dialog (create, then reveal the secret) records a button of
 // the first dialog as its opener; that button is gone when the second dialog
 // closes, so focus falls back to where the first dialog returned it.
-let lastRestoredOpener: HTMLElement | null = null;
+// Only valid within that chain: the next interaction outside a dialog forgets
+// it, so an unrelated dialog never jumps to a stale button and no detached
+// node stays referenced.
+let chainOpener: HTMLElement | null = null;
+const CHAIN_EVENTS = ["pointerdown", "keydown", "focusin"] as const;
+
+function forgetChainOpener(e?: Event) {
+  if (e && e.target instanceof Element && e.target.closest('[role="dialog"]')) return;
+  chainOpener = null;
+  for (const type of CHAIN_EVENTS) document.removeEventListener(type, forgetChainOpener, true);
+}
+
+// Call after focusing el, so its own focusin does not forget it right away.
+function rememberChainOpener(el: HTMLElement) {
+  chainOpener = el;
+  for (const type of CHAIN_EVENTS) document.addEventListener(type, forgetChainOpener, true);
+}
 
 export function Dialog({ open, onOpenChange, title, description, children, footer, size = "sm" }: DialogProps) {
   const ref = useRef<HTMLDivElement>(null);
@@ -70,12 +86,14 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
       clearTimeout(t);
       // Skip <body> (nothing was focused) and openers that unmounted while
       // the dialog was open, e.g. a dropdown item or the previous dialog's
-      // submit button; fall back to the last opener that got focus back.
+      // submit button; fall back to the opener the previous dialog of the chain returned to.
       if (opener instanceof HTMLElement && opener !== document.body && opener.isConnected) {
         opener.focus();
-        lastRestoredOpener = opener;
-      } else if (lastRestoredOpener?.isConnected) {
-        lastRestoredOpener.focus();
+        rememberChainOpener(opener);
+      } else {
+        const fallback = chainOpener;
+        forgetChainOpener();
+        if (fallback?.isConnected) fallback.focus({ preventScroll: true });
       }
     };
   }, [open]);

@@ -1,7 +1,10 @@
+import { useState } from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import {
   Button,
+  Dialog,
+  Select,
   Switch,
   DropdownMenu,
   EmptyState,
@@ -10,6 +13,21 @@ import {
   NotAuthorized,
   TableEmptyRow,
 } from "./index";
+
+const SCOPES = [
+  { value: "a", label: "Alpha" },
+  { value: "b", label: "Beta" },
+];
+
+function DialogWithSelect({ onOpenChange }: { onOpenChange: (open: boolean) => void }) {
+  const [value, setValue] = useState("a");
+  return (
+    <Dialog open title="New rule" onOpenChange={onOpenChange}>
+      <label htmlFor="scope">Scope</label>
+      <Select id="scope" options={SCOPES} value={value} onChange={setValue} />
+    </Dialog>
+  );
+}
 
 describe("ds primitives", () => {
   it("Button renders variant class and fires onClick", () => {
@@ -85,6 +103,74 @@ describe("ds primitives", () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(focusedDuringSelect).toBe(trigger);
     expect(document.activeElement).toBe(trigger);
+  });
+  it("Select renders its list outside clipping ancestors (portal on body)", () => {
+    const { container } = render(
+      <div style={{ overflow: "hidden" }}>
+        <label htmlFor="scope">Scope</label>
+        <Select id="scope" options={SCOPES} value="a" />
+      </div>,
+    );
+    const trigger = screen.getByLabelText("Scope");
+    expect(trigger).toHaveAttribute("aria-haspopup", "listbox");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    const list = screen.getByRole("listbox");
+    expect(container.contains(list)).toBe(false);
+    expect(list.parentElement).toBe(document.body);
+    expect(list.style.position).toBe("fixed");
+    // Above dialogs (z-index 30), like the DropdownMenu menu.
+    expect(Number(list.style.zIndex)).toBeGreaterThan(30);
+    expect(screen.getByRole("option", { name: "Alpha" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("option", { name: "Beta" })).toHaveAttribute("aria-selected", "false");
+  });
+  it("Select selects an option on click and closes", () => {
+    const fn = vi.fn();
+    render(<Select options={SCOPES} value="a" onChange={fn} />);
+    fireEvent.click(screen.getByRole("button"));
+    const option = screen.getByRole("option", { name: "Beta" });
+    fireEvent.mouseDown(option);
+    fireEvent.click(option);
+    expect(fn).toHaveBeenCalledWith("b");
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+  it("Select closes on outside mousedown but not on mousedown inside the list", () => {
+    render(<Select options={SCOPES} value="a" />);
+    fireEvent.click(screen.getByRole("button"));
+    fireEvent.mouseDown(screen.getByRole("listbox"));
+    expect(screen.queryByRole("listbox")).not.toBeNull();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+  it("Select inside a Dialog: an option click selects without closing the dialog", () => {
+    const onOpenChange = vi.fn();
+    render(<DialogWithSelect onOpenChange={onOpenChange} />);
+    const trigger = screen.getByLabelText("Scope");
+    fireEvent.click(trigger);
+    const option = screen.getByRole("option", { name: "Beta" });
+    expect(screen.getByRole("dialog").contains(option)).toBe(false);
+    fireEvent.mouseDown(option);
+    fireEvent.click(option);
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(trigger).toHaveTextContent("Beta");
+  });
+  it("Select inside a Dialog: Escape closes only the list and keeps focus on the trigger", () => {
+    const onOpenChange = vi.fn();
+    render(<DialogWithSelect onOpenChange={onOpenChange} />);
+    const trigger = screen.getByLabelText("Scope");
+    trigger.focus();
+    fireEvent.click(trigger);
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    // With the list closed, Escape reaches the dialog again.
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
   it("TableEmptyRow spans the table and shows title + hint", () => {
     render(

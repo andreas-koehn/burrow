@@ -150,3 +150,20 @@ describe("final review — page header actions and dialog field widths", () => {
     expect(css).not.toMatch(/\.dialog-body \.form-field\.field-w-sm/);
   });
 });
+
+describe("access-mode detail — field width and keys panel gap", () => {
+  it("caps detail fields at the card width, out-specifying the dialog fill rule", () => {
+    const rule = css.match(
+      /\.dialog-body \.mode-detail \.form-field\.field-w-md \.input,\s*\.dialog-body \.mode-detail \.form-field\.field-w-md \.select-trigger,\s*\.dialog-body \.mode-detail \.form-field\.field-w-lg \.input,\s*\.dialog-body \.mode-detail \.form-field\.field-w-lg \.select-trigger\s*\{\s*max-width:\s*var\(--input-w-lg\);?\s*\}/,
+    );
+    expect(rule).not.toBeNull();
+    // The cards the fields line up with carry the same cap.
+    expect(css).toMatch(/\.access-mode-card\s*\{[^}]*max-width:\s*var\(--input-w-lg\)/);
+  });
+  it("separates the keys panel from the field above it", () => {
+    expect(css).toMatch(/\.mode-detail > \.form-field \+ \.api-keys-panel\s*\{\s*margin-top:\s*var\(--space-md\);?\s*\}/);
+  });
+  it("does not turn the detail area into a gap container the margin would stack on", () => {
+    expect(css).not.toMatch(/\.mode-detail\s*\{[^}]*gap:/);
+  });
+});
