@@ -214,7 +214,7 @@ export default function Webhooks() {
           becomes an in-table row so Playwright + the page-head CTA agree on
           the same affordance (P2-4 dedup). */}
       <section className="card">
-        <h2>Configured webhooks</h2>
+        <h2 className="card-title">Configured webhooks</h2>
       <div className="table-wrap">
         <table className="data" aria-label="Webhooks">
           <thead>
@@ -274,7 +274,7 @@ export default function Webhooks() {
       </section>
 
       <section className="card">
-        <h2>Recent deliveries</h2>
+        <h2 className="card-title">Recent deliveries</h2>
         <div className="table-wrap">
           <table className="data" aria-label="Webhook deliveries">
             <thead>

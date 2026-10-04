@@ -1360,7 +1360,7 @@ button.sort-header:focus-visible {
 }
 .section-head .left h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.005em;
 }
@@ -1369,6 +1369,41 @@ button.sort-header:focus-visible {
   font-size: 12.5px;
   color: var(--muted-foreground);
   max-width: 540px;
+}
+.section-head .left h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+/* A heading row may carry an inline hint (InfoHint) next to the title. */
+.section-head .left { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
+.section-head .left p { flex-basis: 100%; }
+/* Sub-section inside a section: separated from whatever precedes it. */
+.section-head.sub { margin-top: var(--space-xl); margin-bottom: var(--space-sm); }
+.section-head.sub:first-child { margin-top: 0; }
+
+/* Shared vertical rhythm helpers */
+.stack-md { display: flex; flex-direction: column; gap: var(--space-md); }
+.page-intro { margin: 0 0 var(--space-lg); max-width: 72ch; }
+.card-title { margin: 0 0 var(--space-md); font-size: 15px; font-weight: 600; }
+/* Any notice followed by content, and any helper line followed by a table or
+   empty state, keeps a gap — these were flush before. */
+.notice-inline + * { margin-top: var(--space-md); }
+p.muted + .table-wrap,
+p.muted + .state-card,
+p.small + .table-wrap,
+p.small + .state-card { margin-top: var(--space-md); }
+/* Legacy .field stacks (dialogs that predate FormFieldGroup) */
+.field + .field,
+.field + .row { margin-top: var(--space-md); }
+.perm-group { margin-top: var(--space-lg); }
+.perm-group h4 { margin: 0 0 var(--space-sm); font-size: 13px; font-weight: 600; }
+.perm-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 14rem) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) 0;
 }
 
 .profile-card {
@@ -1609,7 +1644,13 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   margin-block-end: var(--space-lg);
 }
 .page-header .left { flex: 1; min-width: 0; }
-.page-header .left h1 { margin: 0; }
+.page-header .left h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+}
 .page-header .left p {
   color: var(--muted-foreground);
   margin: var(--space-xs) 0 0;

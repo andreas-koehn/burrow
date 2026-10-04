@@ -46,3 +46,17 @@ describe("T09 — long redaction patterns wrap inside the rules table", () => {
     expect(rule).toContain("overflow-wrap: anywhere");
   });
 });
+
+describe("T10 — type hierarchy and rhythm", () => {
+  it("page title is larger than section headings", () => {
+    expect(css).toMatch(/\.page-header \.left h1\s*\{[^}]*font-size:\s*20px/);
+    expect(css).toMatch(/\.section-head \.left h2\s*\{[^}]*font-size:\s*15px/);
+    expect(css).toMatch(/\.section-head \.left h3\s*\{[^}]*font-size:\s*13px/);
+  });
+  it("defines the shared rhythm helpers", () => {
+    expect(css).toMatch(/\.stack-md\s*\{[^}]*gap:\s*var\(--space-md\)/);
+    expect(css).toMatch(/\.page-intro\s*\{/);
+    expect(css).toMatch(/\.section-head\.sub\s*\{[^}]*margin-top:\s*var\(--space-xl\)/);
+    expect(css).toMatch(/\.card-title\s*\{[^}]*margin:\s*0 0 var\(--space-md\)/);
+  });
+});

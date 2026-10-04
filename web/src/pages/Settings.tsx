@@ -65,7 +65,7 @@ export default function Settings() {
         <div className="section-head"><div className="left"><h2 id="sec-general">General</h2></div></div>
 
         {/* ---- v0.5.2 Privacy section (Q12 toggle for connection-log top-source-IPs) ---- */}
-        <div className="section-head"><div className="left"><h3 id="sec-privacy">Privacy</h3></div></div>
+        <div className="section-head sub"><div className="left"><h3 id="sec-privacy">Privacy</h3></div></div>
         <div className="form-field">
           <label htmlFor="rollup-include-top-ips" className="checkbox-row">
             <Checkbox
@@ -81,7 +81,7 @@ export default function Settings() {
           </p>
         </div>
 
-        <div className="section-head">
+        <div className="section-head sub">
           <div className="left">
             <h3 id="sec-smtp">Email / SMTP</h3>
             <InfoHint label="Email / SMTP" content="SMTP enables password-reset and test emails." />
@@ -114,7 +114,7 @@ export default function Settings() {
           </div>
         </form>
 
-        <div className="section-head"><div className="left"><h3>Test connection</h3></div></div>
+        <div className="section-head sub"><div className="left"><h3>Test connection</h3></div></div>
         {!showTest ? (
           <Button variant="secondary" size="sm" onClick={() => setShowTest(true)}>Send test email</Button>
         ) : (

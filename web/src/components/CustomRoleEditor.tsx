@@ -142,7 +142,7 @@ export function CustomRoleEditor({ open, roleName, onClose }: CustomRoleEditorPr
           onChange={setTab}
           tabs={[
             { value: "general", label: "General", content: (
-              <div>
+              <div className="stack-md">
                 <div className="field">
                   <label htmlFor="role-name">Name</label>
                   <Input id="role-name" value={name} onChange={(e) => setName(e.target.value)} disabled={!isNew} />
@@ -171,7 +171,7 @@ export function CustomRoleEditor({ open, roleName, onClose }: CustomRoleEditorPr
                   <div key={group} className="perm-group">
                     <h4>{group}</h4>
                     {items.map((p) => (
-                      <div key={p.key} className="row row-center gap-2">
+                      <div key={p.key} className="perm-row">
                         <Switch
                           aria-label={p.key}
                           checked={granted.has(p.key)}

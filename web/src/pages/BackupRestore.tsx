@@ -75,7 +75,7 @@ export default function BackupRestore() {
       />
 
       <section className="card">
-        <h2>Backup history</h2>
+        <h2 className="card-title">Backup history</h2>
         {!backups.data ? (
           <SkeletonRows n={2} />
         ) : backups.data.length === 0 ? (
@@ -118,7 +118,7 @@ export default function BackupRestore() {
       </section>
 
       <section className="card">
-        <h2>Restore from backup</h2>
+        <h2 className="card-title">Restore from backup</h2>
         <p className="muted">Upload a previously-downloaded backup archive to replace the current Burrow state.</p>
         <div className="row row-center gap-2">
           <input
