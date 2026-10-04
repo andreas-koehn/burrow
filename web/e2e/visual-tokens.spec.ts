@@ -33,7 +33,7 @@ test.describe("Visual color-token verification (D-1/D-2)", () => {
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await expect(
-      dialog.getByRole("heading", { name: "Create service" }),
+      dialog.getByRole("heading", { name: "New service" }),
     ).toBeVisible();
 
     // The backdrop sits at class="dialog-backdrop" directly in the fixed

@@ -30,11 +30,10 @@ test("P5: ?new=ai auto-opens Services dialog pre-filled with API-key access mode
   // The create dialog should auto-open
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("heading", { name: /create service/i })).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "New AI service" })).toBeVisible();
 
-  // The Access mode Select trigger should show "API key"
-  const accessModeBtn = dialog.getByRole("button", { name: /access mode/i });
-  await expect(accessModeBtn).toContainText(/api key/i);
+  // Access mode is fixed to API key for AI services: no picker is offered
+  await expect(dialog.getByRole("button", { name: /access mode/i })).toHaveCount(0);
 
   // URL param is cleared (dialog is open but the ?new=ai is gone)
   await expect(page).not.toHaveURL(/new=ai/);
@@ -61,12 +60,8 @@ test("P5: create AI service via dialog routes to upstream-key tab", async ({ pag
   await dialog.getByLabel(/service id/i).fill(uniqueId);
   await dialog.getByLabel(/^title$/i).fill(uniqueId);
 
-  // The Access mode should already be set to API key (auto-filled by ?new=ai)
-  const accessModeBtn = dialog.getByRole("button", { name: /access mode/i });
-  await expect(accessModeBtn).toContainText(/api key/i);
-
-  // Click Create — POST /services with {service_id, access_mode:"api_key"}
-  await dialog.getByRole("button", { name: /^create$/i }).click();
+  // Click Create and continue — POST /services with {service_id, access_mode:"api_key"}
+  await dialog.getByRole("button", { name: "Create and continue" }).click();
 
   // After success the dialog closes and we navigate to /services/<id>#upstream-key
   await expect(dialog).not.toBeVisible({ timeout: 10_000 });

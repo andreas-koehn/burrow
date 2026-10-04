@@ -182,9 +182,40 @@ describe("Services page", () => {
     renderApp(<Services />, "/services?new=ai");
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /create service/i })).toBeInTheDocument();
-    // The Select trigger button should show "API key" as the selected value
-    const accessModeBtn = screen.getByRole("button", { name: /access mode/i });
-    expect(accessModeBtn.textContent).toMatch(/api key/i);
+    expect(screen.getByRole("heading", { name: /new ai service/i })).toBeInTheDocument();
+    // Access mode is fixed to API key for AI services: no picker is offered.
+    expect(screen.queryByRole("button", { name: /access mode/i })).toBeNull();
+  });
+
+  it("P5.2: ?new=ai still POSTs access_mode api_key", async () => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(
+      http.post("/api/v1/services", async ({ request }) => {
+        captured = await request.json() as Record<string, unknown>;
+        return HttpResponse.json({ id: "svc-ai", created_at: "2026-05-31T00:00:00Z" }, { status: 201 });
+      }),
+    );
+    renderApp(<Services />, "/services?new=ai");
+    const dialog = await screen.findByRole("dialog", { name: "New AI service" });
+    await userEvent.type(within(dialog).getByLabelText(/service id/i), "ai-svc-2");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create and continue" }));
+    await waitFor(() => expect(captured).not.toBeNull());
+    expect(captured).toMatchObject({ access_mode: "api_key" });
+  });
+
+  it("explains the AI flow when opened via ?new=ai (F8)", async () => {
+    renderApp(<Services />, "/services?new=ai");
+    const dialog = await screen.findByRole("dialog", { name: "New AI service" });
+    expect(within(dialog).getByText(/next you'll bind an upstream key/i)).toBeInTheDocument();
+    // Access mode is fixed for AI services, so the picker is not offered.
+    expect(within(dialog).queryByLabelText("Access mode")).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Create and continue" })).toBeInTheDocument();
+  });
+
+  it("keeps the generic dialog for the normal flow", async () => {
+    renderApp(<Services />, "/services?new=1");
+    const dialog = await screen.findByRole("dialog", { name: "New service" });
+    expect(within(dialog).getByLabelText("Access mode")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Create" })).toBeInTheDocument();
   });
 });

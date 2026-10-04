@@ -276,8 +276,10 @@ export default function Services() {
       <Dialog
         open={newOpen}
         onOpenChange={(o) => { if (!o) closeNew(); }}
-        title="Create service"
-        description="Pre-provision a service so a connecting client adopts the same id."
+        title={aiFlow ? "New AI service" : "New service"}
+        description={aiFlow
+          ? "Creates a service with API-key access. Next you'll bind an upstream key so it appears under AI endpoints."
+          : "Pre-provision a service so a connecting client adopts the same id."}
         footer={
           <>
             <Button variant="secondary" onClick={closeNew}>Cancel</Button>
@@ -286,7 +288,7 @@ export default function Services() {
               disabled={!nsServiceId || createService.isPending}
               onClick={() => createService.mutate()}
             >
-              {createService.isPending ? "Creating…" : "Create"}
+              {createService.isPending ? "Creating…" : aiFlow ? "Create and continue" : "Create"}
             </Button>
           </>
         }
@@ -298,14 +300,16 @@ export default function Services() {
           <FormField label="Title" htmlFor="ns-title" w="md">
             <Input id="ns-title" placeholder="optional display name" value={nsTitle} onChange={(e) => setNsTitle(e.target.value)} />
           </FormField>
-          <FormField label="Access mode" htmlFor="ns-access-mode" w="md">
-            <Select
-              id="ns-access-mode"
-              options={ACCESS_MODE_OPTIONS}
-              value={nsAccessMode}
-              onChange={setNsAccessMode}
-            />
-          </FormField>
+          {!aiFlow && (
+            <FormField label="Access mode" htmlFor="ns-access-mode" w="md">
+              <Select
+                id="ns-access-mode"
+                options={ACCESS_MODE_OPTIONS}
+                value={nsAccessMode}
+                onChange={setNsAccessMode}
+              />
+            </FormField>
+          )}
         </FormFieldGroup>
         {nsErr && <p role="alert" className="notice-inline error">{nsErr}</p>}
       </Dialog>
