@@ -570,6 +570,8 @@ table.data tbody td {
   vertical-align: middle;
   white-space: nowrap;
 }
+/* Opt-out of the nowrap above for free-text cells (e.g. regex patterns). */
+table.data tbody td.cell-wrap { white-space: normal; overflow-wrap: anywhere; }
 table.data tbody tr:last-child td { border-bottom: none; }
 table.data tbody tr:hover td { background: var(--hover); }
 table.data tbody tr.is-hover td { background: var(--hover); }

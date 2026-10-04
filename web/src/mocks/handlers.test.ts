@@ -92,3 +92,34 @@ describe("MSW handlers (contract fidelity)", () => {
     expect(await r.json()).toEqual({ error: "unauthorized" });
   });
 });
+
+describe("MSW redaction rule handlers mirror the API's errors", () => {
+  beforeEach(() => { resetDb(); document.cookie = `burrow_csrf=${CSRF}; path=/`; });
+  const post = (b: object) =>
+    fetch("/api/v1/redaction/rules", { ...authed("POST"), body: JSON.stringify(b) });
+
+  it("POST rejects a missing or unknown action / scope with 400", async () => {
+    for (const [b, msg] of [
+      [{ name: "n", pattern: "a", scope: "both" }, "invalid action"],
+      [{ name: "n", pattern: "a", action: "nope", scope: "both" }, "invalid action"],
+      [{ name: "n", pattern: "a", action: "mask" }, "invalid scope"],
+      [{ name: "n", pattern: "a", action: "mask", scope: "nope" }, "invalid scope"],
+    ] as const) {
+      const r = await post(b);
+      expect(r.status).toBe(400);
+      expect(await r.json()).toEqual({ error: msg });
+    }
+  });
+
+  it("DELETE is 404 for an unknown id, 409 for a built-in, 204 for a custom rule", async () => {
+    const unknown = await fetch("/api/v1/redaction/rules/nope", authed("DELETE"));
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toEqual({ error: "rule not found" });
+    const builtIn = await fetch("/api/v1/redaction/rules/email", authed("DELETE"));
+    expect(builtIn.status).toBe(409);
+    expect(await builtIn.json()).toEqual({ error: "built-in rules cannot be deleted" });
+    const created = await (await post({ name: "n", pattern: "a", action: "mask", scope: "both" })).json();
+    const ok = await fetch(`/api/v1/redaction/rules/${created.id}`, authed("DELETE"));
+    expect(ok.status).toBe(204);
+  });
+});

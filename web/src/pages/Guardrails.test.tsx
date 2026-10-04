@@ -1,9 +1,10 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
+import { db } from "@/mocks/db";
 import Guardrails from "@/pages/Guardrails";
 
 function mount() {
@@ -61,6 +62,10 @@ describe("Guardrails page (§4.22)", () => {
 });
 
 describe("Guardrails custom rules (F9)", () => {
+  // fetch spies are shared across tests unless restored; the cancel case
+  // counts DELETE calls and must not see an earlier test's request.
+  afterEach(() => { vi.restoreAllMocks(); });
+
   async function openRegex() {
     mount();
     await userEvent.click(await screen.findByRole("button", { name: /regex redaction/i }));
@@ -90,18 +95,70 @@ describe("Guardrails custom rules (F9)", () => {
     expect(screen.getByRole("dialog", { name: "New redaction rule" })).toBeInTheDocument();
   });
 
-  it("deletes a custom rule after confirmation", async () => {
-    server.use(http.get("/api/v1/redaction/rules", () => HttpResponse.json({
-      built_in: [],
-      custom: [{ id: "r1", name: "internal-id", pattern: "ID-\\d+", action: "mask", scope: "both" }],
-    })));
-    let deleted = "";
-    server.use(http.delete("/api/v1/redaction/rules/:id", ({ params }) => { deleted = String(params.id); return new HttpResponse(null, { status: 204 }); }));
+  const SEEDED = { id: "r1", name: "internal-id", pattern: "ID-\\d+", action: "mask", scope: "both" } as const;
+  const deleteCalls = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.filter(([url, init]) =>
+      String(url).includes("/api/v1/redaction/rules/")
+      && (init as RequestInit | undefined)?.method === "DELETE");
+
+  it("deletes a custom rule after confirmation: dialog closes and the row is removed", async () => {
+    db.redactionRules.custom.push({ ...SEEDED });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
     await openRegex();
     await userEvent.click(await screen.findByRole("button", { name: "Delete rule internal-id" }));
     const confirm = await screen.findByRole("dialog", { name: "Delete rule?" });
     await userEvent.click(within(confirm).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(deleted).toBe("r1"));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Delete rule?" })).toBeNull());
+    const table = screen.getByRole("table", { name: "Custom rules" });
+    await waitFor(() => expect(within(table).queryByText("internal-id")).toBeNull());
+    expect(within(table).getByText("No rules yet.")).toBeInTheDocument();
+    expect(deleteCalls(fetchSpy)).toHaveLength(1);
+    expect(String(deleteCalls(fetchSpy)[0][0])).toMatch(/\/redaction\/rules\/r1$/);
+  });
+
+  it("cancelling the delete confirmation sends no request and keeps the row", async () => {
+    db.redactionRules.custom.push({ ...SEEDED });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await openRegex();
+    await userEvent.click(await screen.findByRole("button", { name: "Delete rule internal-id" }));
+    const confirm = await screen.findByRole("dialog", { name: "Delete rule?" });
+    await userEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Delete rule?" })).toBeNull());
+    expect(within(screen.getByRole("table", { name: "Custom rules" })).getByText("internal-id")).toBeInTheDocument();
+    expect(deleteCalls(fetchSpy)).toHaveLength(0);
+  });
+
+  it("Enter in a text field submits the new-rule form", async () => {
+    await openRegex();
+    await userEvent.click(screen.getByRole("button", { name: "New rule" }));
+    const dialog = await screen.findByRole("dialog", { name: "New redaction rule" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "by-enter");
+    await userEvent.type(within(dialog).getByLabelText("Pattern"), "abc{Enter}");
+    const table = await screen.findByRole("table", { name: "Custom rules" });
+    expect(await within(table).findByText("by-enter")).toBeInTheDocument();
+  });
+
+  it("cannot be dismissed while the create request is pending", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    server.use(http.post("/api/v1/redaction/rules", async () => {
+      await held;
+      return HttpResponse.json({ error: "invalid regex" }, { status: 400 });
+    }));
+    await openRegex();
+    await userEvent.click(screen.getByRole("button", { name: "New rule" }));
+    const dialog = await screen.findByRole("dialog", { name: "New redaction rule" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "slow");
+    await userEvent.type(within(dialog).getByLabelText("Pattern"), "abc");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    expect(await within(dialog).findByRole("button", { name: "Creating…" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByRole("dialog", { name: "New redaction rule" })).toBeInTheDocument();
+    release();
+    // The late error lands in the same, still-filled form.
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("invalid regex");
+    expect(within(dialog).getByLabelText("Name")).toHaveValue("slow");
   });
 
   it("offers no delete button on built-in rules", async () => {

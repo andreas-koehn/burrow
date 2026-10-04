@@ -64,7 +64,7 @@ function RulesTable({ name, rules, onDelete }: { name: string; rules: RedactionR
             : rules.map((r) => (
                 <tr key={r.id}>
                   <td>{r.name}</td>
-                  <td className="mono small">{r.pattern}</td>
+                  <td className="mono small cell-wrap">{r.pattern}</td>
                   <td>{r.action}</td>
                   <td>{r.scope}</td>
                   {onDelete && (

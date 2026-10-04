@@ -38,3 +38,11 @@ describe("T09 — Guardrails custom-rules heading row", () => {
     expect(css).toMatch(/\.accordion-body \.subsection-head h3\s*\{[^}]*margin: 0/);
   });
 });
+
+describe("T09 — long redaction patterns wrap inside the rules table", () => {
+  it("overrides the table's nowrap for the pattern cell", () => {
+    const rule = css.match(/table\.data tbody td\.cell-wrap\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toContain("white-space: normal");
+    expect(rule).toContain("overflow-wrap: anywhere");
+  });
+});

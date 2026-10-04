@@ -537,17 +537,22 @@ export const handlers = [
     if (!b?.name?.trim()) return err(400, "name is required");
     if (!b.pattern) return err(400, "pattern is required");
     try { new RegExp(b.pattern); } catch { return err(400, "invalid regex"); }
+    if (!b.action || !["mask", "drop", "hash"].includes(b.action)) return err(400, "invalid action");
+    if (!b.scope || !["request_body", "response_body", "both"].includes(b.scope)) return err(400, "invalid scope");
     const rule: RedactionRule = {
       id: crypto.randomUUID(), name: b.name.trim(), pattern: b.pattern,
-      action: b.action ?? "mask", scope: b.scope ?? "both",
+      action: b.action, scope: b.scope,
     };
     db.redactionRules.custom.push(rule);
     return json(rule, 201);
   }),
   http.delete("/api/v1/redaction/rules/:id", ({ request, params }) => {
     const g = gate(request, { admin: true }); if (g) return g;
+    if (db.redactionRules.built_in.some((r) => r.id === params.id))
+      return err(409, "built-in rules cannot be deleted");
     const i = db.redactionRules.custom.findIndex((r) => r.id === params.id);
-    if (i >= 0) db.redactionRules.custom.splice(i, 1);
+    if (i < 0) return err(404, "rule not found");
+    db.redactionRules.custom.splice(i, 1);
     return noContent();
   }),
   http.get("/api/v1/redaction/settings", ({ request }) =>
