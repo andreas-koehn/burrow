@@ -1630,14 +1630,14 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   font-size: 12px;
   color: var(--destructive);
 }
-.form-field.w-sm   .input,
-.form-field.w-sm   .select-trigger { max-width: var(--input-w-sm); }
-.form-field.w-md   .input,
-.form-field.w-md   .select-trigger { max-width: var(--input-w-md); }
-.form-field.w-lg   .input,
-.form-field.w-lg   .select-trigger { max-width: var(--input-w-lg); }
-.form-field.w-full .input,
-.form-field.w-full .select-trigger { max-width: none; }
+.form-field.field-w-sm   .input,
+.form-field.field-w-sm   .select-trigger { max-width: var(--input-w-sm); }
+.form-field.field-w-md   .input,
+.form-field.field-w-md   .select-trigger { max-width: var(--input-w-md); }
+.form-field.field-w-lg   .input,
+.form-field.field-w-lg   .select-trigger { max-width: var(--input-w-lg); }
+.form-field.field-w-full .input,
+.form-field.field-w-full .select-trigger { max-width: none; }
 
 .form-field-group {
   display: flex;

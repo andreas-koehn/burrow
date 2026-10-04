@@ -35,14 +35,28 @@ describe("FormField", () => {
     expect(err?.getAttribute("role")).toBe("alert");
   });
 
-  it("applies the w-sm / w-md / w-lg / w-full width class", () => {
+  it("applies a field-w-* width class and never a bare Tailwind w-* utility", () => {
     const { container: c1 } = render(
       <FormField label="A" htmlFor="a" w="sm"><Input id="a" /></FormField>,
     );
-    expect(c1.querySelector(".form-field")?.className).toContain("w-sm");
+    const sm = c1.querySelector(".form-field")!;
+    expect(sm.classList.contains("field-w-sm")).toBe(true);
+
     const { container: c2 } = render(
-      <FormField label="B" htmlFor="b" w="lg"><Input id="b" /></FormField>,
+      <FormField label="B" htmlFor="b" w="md"><Input id="b" /></FormField>,
     );
-    expect(c2.querySelector(".form-field")?.className).toContain("w-lg");
+    const md = c2.querySelector(".form-field")!;
+    expect(md.classList.contains("field-w-md")).toBe(true);
+
+    const { container: c3 } = render(
+      <FormField label="C" htmlFor="c"><Input id="c" /></FormField>,
+    );
+    expect(c3.querySelector(".form-field")!.classList.contains("field-w-full")).toBe(true);
+
+    for (const el of [sm, md]) {
+      for (const cls of Array.from(el.classList)) {
+        expect(cls).not.toMatch(/^w-(sm|md|lg|full)$/);
+      }
+    }
   });
 });

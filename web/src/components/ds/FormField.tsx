@@ -22,7 +22,9 @@ export function FormField({
   children,
   className,
 }: FormFieldProps) {
-  const widthClass = `w-${w}`;
+  // Prefixed so it can never collide with a Tailwind width utility
+  // (`.w-md` is `width: 28rem` in Tailwind v4 and blew fields out of dialogs).
+  const widthClass = `field-w-${w}`;
   return (
     <div className={cx("form-field", widthClass, className)}>
       <label htmlFor={htmlFor}>{label}</label>
