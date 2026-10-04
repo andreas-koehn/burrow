@@ -125,3 +125,47 @@ func TestTunnelListerAdapterEnrichesAccessModeFromStore(t *testing.T) {
 		t.Fatalf("expected adapter to enrich AccessMode=api_key; got %+v", got)
 	}
 }
+
+type fakeServiceModeGetter struct {
+	modes map[string]string
+}
+
+func (f fakeServiceModeGetter) ServiceAccessMode(_ context.Context, serviceID string) (string, error) {
+	m, ok := f.modes[serviceID]
+	if !ok {
+		return "", db.ErrNotFound
+	}
+	return m, nil
+}
+
+// The durable services row is the source of truth: it must win over both the
+// live registry value and the legacy tunnels row.
+func TestTunnelListerAdapterPrefersDurableServiceMode(t *testing.T) {
+	src := server.TunnelView{
+		ID: "tn-9", Name: "ollama", Type: "http", Connected: true,
+		ServiceID: "svc-ollama", AccessMode: "open",
+	}
+	f := &fakeUserTunnelLister{views: []server.TunnelView{src}}
+	got := tunnelListerAdapter{
+		s:        f,
+		access:   fakeAccessModeGetter{mode: "open"},
+		services: fakeServiceModeGetter{modes: map[string]string{"svc-ollama": "api_key"}},
+	}.ListUserTunnels("u1")
+	if len(got) != 1 || got[0].AccessMode != "api_key" {
+		t.Fatalf("want durable mode api_key, got %+v", got)
+	}
+}
+
+// No durable row (tcp tunnel, or lookup error): keep the previous fallback.
+func TestTunnelListerAdapterFallsBackWithoutServiceRow(t *testing.T) {
+	src := server.TunnelView{ID: "tn-3", Name: "ai", Type: "http", Connected: true, ServiceID: "svc-missing"}
+	f := &fakeUserTunnelLister{views: []server.TunnelView{src}}
+	got := tunnelListerAdapter{
+		s:        f,
+		access:   fakeAccessModeGetter{mode: "burrow_login"},
+		services: fakeServiceModeGetter{modes: map[string]string{}},
+	}.ListUserTunnels("u1")
+	if len(got) != 1 || got[0].AccessMode != "burrow_login" {
+		t.Fatalf("want legacy fallback burrow_login, got %+v", got)
+	}
+}

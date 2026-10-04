@@ -135,9 +135,13 @@ type ClientView struct {
 // ClientServiceView is one service (tunnel) under a client: live + persisted
 // byte counters and the per-service access mode.
 type ClientServiceView struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Type          string `json:"type"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+	// ServiceID is the durable-service id for http services (omitted for tcp).
+	// The dashboard links to /services/{service_id} with it — the per-session
+	// tunnel ID in "id" is not routable there.
+	ServiceID     string `json:"service_id,omitempty"`
 	RemotePort    int    `json:"remote_port"`
 	LocalAddr     string `json:"local_addr"`
 	AccessMode    string `json:"access_mode"`

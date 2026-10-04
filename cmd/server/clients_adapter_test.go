@@ -75,3 +75,32 @@ func TestClientsAdapter(t *testing.T) {
 		t.Fatal("GetClient(nope) must be !ok")
 	}
 }
+
+func TestClientsAdapterUsesDurableServiceMode(t *testing.T) {
+	snap := fakeSnapshotter{sessions: []server.SessionSnapshot{{
+		SessionID: "c1", UserID: "u1", Token: "laptop",
+		Tunnels: []server.TunnelView{
+			{ID: "tn1", Name: "ollama", Type: "http", ServiceID: "svc-ollama", Connected: true},
+			{ID: "tn2", Name: "ssh", Type: "tcp", RemotePort: 9001, Connected: true},
+		},
+	}}}
+	tg := fakeTunnelGetter{rows: map[string]db.Tunnel{
+		"tn1": {ID: "tn1", AccessMode: "open"},
+		"tn2": {ID: "tn2", AccessMode: "open"},
+	}}
+	a := clientsAdapter{
+		srv:      snap,
+		st:       tg,
+		services: fakeServiceModeGetter{modes: map[string]string{"svc-ollama": "api_key"}},
+	}
+	cd, ok := a.GetClient("c1")
+	if !ok || len(cd.Services) != 2 {
+		t.Fatalf("detail: ok=%v services=%d", ok, len(cd.Services))
+	}
+	if cd.Services[0].AccessMode != "api_key" || cd.Services[0].ServiceID != "svc-ollama" {
+		t.Fatalf("http service: want api_key/svc-ollama, got %+v", cd.Services[0])
+	}
+	if cd.Services[1].AccessMode != "open" || cd.Services[1].ServiceID != "" {
+		t.Fatalf("tcp service: want open/empty service id, got %+v", cd.Services[1])
+	}
+}

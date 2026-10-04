@@ -400,3 +400,14 @@ func serviceToView(s db.Service) ServiceView {
 func (s *Store) CreateService(ctx context.Context, svc db.Service) error {
 	return s.q.CreateService(ctx, svc)
 }
+
+// ServiceAccessMode returns the durable access mode of a service. It is the
+// source of truth the dashboard's Tunnels and Client views must show; the
+// per-session tunnels row only carries the legacy v0.2 value.
+func (s *Store) ServiceAccessMode(ctx context.Context, serviceID string) (string, error) {
+	svc, err := s.q.GetServiceByID(ctx, serviceID)
+	if err != nil {
+		return "", err
+	}
+	return svc.AccessMode, nil
+}

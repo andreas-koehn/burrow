@@ -90,9 +90,13 @@ type userTunnelLister interface {
 // persisted tunnel row (best-effort: a missing row leaves the field empty,
 // so the dashboard falls back to its "Open" default — never blocks the
 // hot read path on a store error).
+//
+// services, when set, overrides that with the durable services row — the
+// mode users actually configure — so Tunnels and Services never disagree.
 type tunnelListerAdapter struct {
-	s      userTunnelLister
-	access tunnelGetter // optional; nil in unit tests
+	s        userTunnelLister
+	access   tunnelGetter      // optional; nil in unit tests
+	services serviceModeGetter // optional; nil in unit tests
 }
 
 func (a tunnelListerAdapter) ListUserTunnels(userID string) []api.TunnelView {
@@ -104,6 +108,7 @@ func (a tunnelListerAdapter) ListUserTunnels(userID string) []api.TunnelView {
 				mode = row.AccessMode
 			}
 		}
+		mode = durableMode(a.services, t.ServiceID, mode)
 		out = append(out, api.TunnelView{
 			ID: t.ID, Name: t.Name, Type: t.Type, RemotePort: t.RemotePort,
 			LocalAddr: t.LocalAddr, BytesIn: t.BytesIn, BytesOut: t.BytesOut, Connected: t.Connected,
@@ -127,14 +132,34 @@ type tunnelGetter interface {
 	GetTunnel(ctx context.Context, id string) (db.Tunnel, error)
 }
 
+// serviceModeGetter resolves the durable access mode for a service id.
+// *store.Store satisfies it; nil in unit tests that don't exercise it.
+type serviceModeGetter interface {
+	ServiceAccessMode(ctx context.Context, serviceID string) (string, error)
+}
+
+// durableMode returns the service's durable access mode, or fallback when the
+// tunnel has no durable service or the lookup fails (best-effort: the read
+// path never fails because of it).
+func durableMode(g serviceModeGetter, serviceID, fallback string) string {
+	if g == nil || serviceID == "" {
+		return fallback
+	}
+	if m, err := g.ServiceAccessMode(context.Background(), serviceID); err == nil && m != "" {
+		return m
+	}
+	return fallback
+}
+
 // clientsAdapter exposes live sessions + persisted per-service totals to the
 // HTTP API (keeps internal/api decoupled from internal/server and internal/db).
 type clientsAdapter struct {
-	srv sessionSnapshotter
-	st  tunnelGetter
+	srv      sessionSnapshotter
+	st       tunnelGetter
+	services serviceModeGetter // optional; nil in unit tests
 }
 
-func (a clientsAdapter) services(ss server.SessionSnapshot) ([]api.ClientServiceView, int64, int64) {
+func (a clientsAdapter) serviceViews(ss server.SessionSnapshot) ([]api.ClientServiceView, int64, int64) {
 	var svcs []api.ClientServiceView
 	var aggIn, aggOut int64
 	for _, tn := range ss.Tunnels {
@@ -143,10 +168,12 @@ func (a clientsAdapter) services(ss server.SessionSnapshot) ([]api.ClientService
 		if row, err := a.st.GetTunnel(context.Background(), tn.ID); err == nil {
 			totIn, totOut, mode = row.TotalBytesIn, row.TotalBytesOut, row.AccessMode
 		}
+		mode = durableMode(a.services, tn.ServiceID, mode)
 		aggIn += totIn
 		aggOut += totOut
 		svcs = append(svcs, api.ClientServiceView{
 			ID: tn.ID, Name: tn.Name, Type: tn.Type, RemotePort: tn.RemotePort,
+			ServiceID: tn.ServiceID,
 			LocalAddr: tn.LocalAddr, AccessMode: mode,
 			BytesIn: tn.BytesIn, BytesOut: tn.BytesOut,
 			TotalBytesIn: totIn, TotalBytesOut: totOut,
@@ -167,7 +194,7 @@ func (a clientsAdapter) toView(ss server.SessionSnapshot, aggIn, aggOut int64, n
 func (a clientsAdapter) ListClients() []api.ClientView {
 	var out []api.ClientView
 	for _, ss := range a.srv.SnapshotSessions() {
-		_, in, outB := a.services(ss)
+		_, in, outB := a.serviceViews(ss)
 		out = append(out, a.toView(ss, in, outB, len(ss.Tunnels)))
 	}
 	return out
@@ -178,7 +205,7 @@ func (a clientsAdapter) GetClient(sessionID string) (api.ClientDetail, bool) {
 		if ss.SessionID != sessionID {
 			continue
 		}
-		svcs, in, outB := a.services(ss)
+		svcs, in, outB := a.serviceViews(ss)
 		return api.ClientDetail{
 			ClientView: a.toView(ss, in, outB, len(ss.Tunnels)),
 			Services:   svcs,
@@ -699,13 +726,13 @@ func main() {
 			apiSrv := &http.Server{
 				Addr: httpListen,
 				Handler: api.NewRouter(api.Deps{
-					Users: st, Tunnels: tunnelListerAdapter{s: srv, access: st}, Events: bus,
+					Users: st, Tunnels: tunnelListerAdapter{s: srv, access: st, services: st}, Events: bus,
 					Log: log, SecureCookies: effectiveSecureCookies, HTTPSEnabled: httpsEnabled,
 					SPA: spaHandler, TrustedProxies: cfg.TrustedProxies,
 					// Wire env override: 0 means use the api.LoginRateLimitPerIP constant.
 					LoginRateLimitPerIPOverride: cfg.LoginRateLimitPerIP,
 					Roles:                       st, Sessions: st, Settings: st,
-					Clients: clientsAdapter{srv: srv, st: st}, AccessModes: st,
+					Clients: clientsAdapter{srv: srv, st: st, services: st}, AccessModes: st,
 					DB: database,
 					// v0.3.0: service API + live tunnel lookup + auth domain.
 					Services:    st,

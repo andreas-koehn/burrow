@@ -119,6 +119,13 @@ func TestSetServiceAccessModeNotFound(t *testing.T) {
 	}
 }
 
+func TestServiceAccessModeNotFound(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.ServiceAccessMode(context.Background(), "does-not-exist"); err == nil {
+		t.Fatal("want an error for an unknown service id")
+	}
+}
+
 // TestSetServiceAccessModeHeaderDefault verifies that an empty header defaults
 // to "Authorization" for api_key mode.
 func TestSetServiceAccessModeHeaderDefault(t *testing.T) {
