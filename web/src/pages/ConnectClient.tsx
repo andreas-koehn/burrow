@@ -61,6 +61,8 @@ export default function ConnectClient() {
   const [protocol, setProtocol] = useState("tcp");
   const [nameError, setNameError] = useState<string | null>(null);
   const credsRef = useRef<HTMLHeadingElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const restartedRef = useRef(false);
 
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -86,7 +88,16 @@ export default function ConnectClient() {
   useEffect(() => {
     if (!tok) return;
     credsRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
-    credsRef.current?.focus();
+    // preventScroll: a plain focus() jumps instantly and cancels the smooth scroll.
+    credsRef.current?.focus({ preventScroll: true });
+  }, [tok]);
+
+  // Starting over unmounts the focused button; hand focus to the name field
+  // once it is enabled again (it is still disabled during the click).
+  useEffect(() => {
+    if (tok || !restartedRef.current) return;
+    restartedRef.current = false;
+    nameRef.current?.focus();
   }, [tok]);
 
   function generate() {
@@ -98,6 +109,7 @@ export default function ConnectClient() {
   }
 
   function startOver() {
+    restartedRef.current = true;
     mint.reset();
     setName("");
     setReveal(false);
@@ -210,6 +222,7 @@ export default function ConnectClient() {
           >
             <Input
               id="ob-name"
+              ref={nameRef}
               aria-label="Client name"
               aria-invalid={nameError ? true : undefined}
               value={name}
@@ -223,7 +236,7 @@ export default function ConnectClient() {
           {tok ? (
             <Button variant="secondary" size="sm" onClick={startOver}>Connect another client</Button>
           ) : (
-            <Button variant="primary" size="sm" disabled={!name || mint.isPending} onClick={generate}>
+            <Button variant="primary" size="sm" disabled={mint.isPending} onClick={generate}>
               {mint.isPending ? "Generating…" : "Generate token"}
             </Button>
           )}

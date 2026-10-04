@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Routes, Route } from "react-router-dom";
@@ -194,8 +194,8 @@ describe("P2.5 — Success-loop poller", () => {
   });
 });
 
-describe("P4.4 — Back-link to Tokens", () => {
-  it("renders a Tokens back-link pointing to /tokens", () => {
+describe("P4.4 — Manage tokens link", () => {
+  it("renders a 'Manage tokens' link pointing to /tokens", () => {
     mount();
     const link = screen.getByRole("link", { name: /^manage tokens$/i });
     expect(link).toHaveAttribute("href", "/tokens");
@@ -218,6 +218,13 @@ describe("P2.6 — Inline explainers", () => {
 });
 
 describe("Connect a client — validation and flow (F5/F6)", () => {
+  // jsdom has no scrollIntoView; one test installs a mock, so put the original back.
+  const originalScrollIntoView = Element.prototype.scrollIntoView;
+  afterEach(() => {
+    Element.prototype.scrollIntoView = originalScrollIntoView;
+    vi.restoreAllMocks();
+  });
+
   it("rejects an invalid name and does not mint a token", async () => {
     let minted = 0;
     server.use(http.post("/api/v1/tokens", () => { minted++; return HttpResponse.json({ name: "x", token: "bur_x" }, { status: 201 }); }));
@@ -239,18 +246,36 @@ describe("Connect a client — validation and flow (F5/F6)", () => {
     await userEvent.click(screen.getByRole("button", { name: /connect another client/i }));
     expect(screen.getByLabelText(/client name/i)).not.toBeDisabled();
     expect(screen.getByLabelText(/client name/i)).toHaveValue("");
+    expect(screen.getByLabelText(/client name/i)).toHaveFocus();
+    expect(screen.queryByRole("heading", { name: /credentials/i })).toBeNull();
+  });
+
+  it.each([
+    ["an empty name", "", "Enter a name."],
+    ["a whitespace-only name", "   ", "Use lowercase letters, digits and hyphens only."],
+  ])("surfaces the validation message for %s and does not mint", async (_label, value, msg) => {
+    let minted = 0;
+    server.use(http.post("/api/v1/tokens", () => { minted++; return HttpResponse.json({ name: "x", token: "bur_x" }, { status: 201 }); }));
+    mount();
+    if (value) await userEvent.type(screen.getByLabelText(/client name/i), value);
+    await userEvent.click(screen.getByRole("button", { name: /generate token/i }));
+    expect(await screen.findByText(msg)).toBeInTheDocument();
+    expect(minted).toBe(0);
     expect(screen.queryByRole("heading", { name: /credentials/i })).toBeNull();
   });
 
   it("moves focus to the credentials heading and scrolls it into view", async () => {
     const scrollIntoView = vi.fn();
     Element.prototype.scrollIntoView = scrollIntoView;
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
     mount();
     await userEvent.type(screen.getByLabelText(/client name/i), "edge-01");
     await userEvent.click(screen.getByRole("button", { name: /generate token/i }));
     const heading = await screen.findByRole("heading", { name: /credentials/i });
     expect(heading).toHaveFocus();
     expect(scrollIntoView).toHaveBeenCalled();
+    // focus() must not cancel the smooth scroll that precedes it.
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
   });
 
   it("shows 'What to expose' before 'Name this client'", () => {
