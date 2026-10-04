@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { createPortal } from "react-dom";
 import { Dialog } from "./Dialog";
 
 // jsdom does not load CSS files — inject the dialog rules so getComputedStyle
@@ -278,6 +279,70 @@ describe("Dialog size, close button, focus (F2/U2)", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     // The fallback was consumed by the second dialog.
     expect(focusSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // Real order of create-then-reveal: pointerdown + click on Create, the
+  // request resolves later, then A closes and B opens; B is closed by a
+  // pointerdown + click on its footer button, its backdrop, or an option of
+  // a portalled list interacted with in between.
+  function AsyncChain() {
+    const [a, setA] = useState(false);
+    const [b, setB] = useState(false);
+    const create = () => {
+      void Promise.resolve().then(() => { setA(false); setB(true); });
+    };
+    return (
+      <>
+        <button onClick={() => setA(true)}>New key</button>
+        <Dialog open={a} title="Create" onOpenChange={setA} footer={<button onClick={create}>Create</button>}>
+          <p>Name it</p>
+        </Dialog>
+        <Dialog open={b} title="Reveal" onOpenChange={setB} footer={<button onClick={() => setB(false)}>Done</button>}>
+          <p>secret</p>
+        </Dialog>
+        {b && createPortal(<div role="listbox"><div role="option" aria-selected="false">Portalled</div></div>, document.body)}
+      </>
+    );
+  }
+  const press = (el: Element) => {
+    fireEvent.pointerDown(el);
+    fireEvent.mouseDown(el);
+    fireEvent.click(el);
+  };
+  async function openReveal() {
+    const view = render(<AsyncChain />);
+    const opener = screen.getByRole("button", { name: "New key" });
+    opener.focus();
+    press(opener);
+    const create = screen.getByRole("button", { name: "Create" });
+    await waitFor(() => expect(create).toHaveFocus());
+    press(create);
+    const done = await screen.findByRole("button", { name: "Done" });
+    await waitFor(() => expect(done).toHaveFocus());
+    expect(create.isConnected).toBe(false);
+    return { opener, done, container: view.container };
+  }
+
+  it("async chain: closing the reveal dialog via its footer button returns focus to the page button", async () => {
+    const { opener, done } = await openReveal();
+    press(done);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(opener).toHaveFocus();
+  });
+
+  it("async chain: closing the reveal dialog via the backdrop returns focus to the page button", async () => {
+    const { opener, container } = await openReveal();
+    press(container.querySelector(".dialog-backdrop")!);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(opener).toHaveFocus();
+  });
+
+  it("async chain: a portalled list used inside the reveal dialog does not break the chain", async () => {
+    const { opener, done } = await openReveal();
+    fireEvent.pointerDown(screen.getByRole("option", { name: "Portalled" }));
+    press(done);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(opener).toHaveFocus();
   });
 
   it("skips a disconnected opener without throwing", async () => {

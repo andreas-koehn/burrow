@@ -24,14 +24,18 @@ const FOOTER_SELECTOR = ".dialog-footer button:not([disabled])";
 // inside another dialog (create, then reveal the secret) records a button of
 // the first dialog as its opener; that button is gone when the second dialog
 // closes, so focus falls back to where the first dialog returned it.
-// Only valid within that chain: the next interaction outside a dialog forgets
+// Only valid within that chain: the next interaction outside a dialog (see CHAIN_SCOPE) forgets
 // it, so an unrelated dialog never jumps to a stale button and no detached
 // node stays referenced.
 let chainOpener: HTMLElement | null = null;
 const CHAIN_EVENTS = ["pointerdown", "keydown", "focusin"] as const;
+// Still "inside" the chain: the dialog wrapper (the backdrop is a sibling of
+// [role="dialog"], so the wrapper is what counts) and the lists and menus a
+// dialog's controls portal to <body>.
+const CHAIN_SCOPE = '[data-dialog-root], [role="listbox"], [role="menu"]';
 
 function forgetChainOpener(e?: Event) {
-  if (e && e.target instanceof Element && e.target.closest('[role="dialog"]')) return;
+  if (e && e.target instanceof Element && e.target.closest(CHAIN_SCOPE)) return;
   chainOpener = null;
   for (const type of CHAIN_EVENTS) document.removeEventListener(type, forgetChainOpener, true);
 }
@@ -101,6 +105,7 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
   if (!open) return null;
   return (
     <div
+      data-dialog-root=""
       style={{
         position: "fixed",
         inset: 0,

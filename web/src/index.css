@@ -679,6 +679,13 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
   box-shadow: var(--shadow-overlay);
   font-size: 13px;
 }
+/* Select list: as wide as its trigger (min-width is set inline from the
+   trigger), not the 200px menu minimum; long lists scroll inside the viewport. */
+.menu.select-list {
+  min-width: 0;
+  max-height: min(320px, calc(100vh - 16px));
+  overflow-y: auto;
+}
 .menu-item {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 8px;

@@ -97,8 +97,11 @@ export function Select({ options, value, onChange, placeholder = "Select…", id
       {open && createPortal(
         <div
           ref={listRef}
-          className="menu menu-enter"
+          className="menu menu-enter select-list"
           role="listbox"
+          // The list is not a DOM descendant of the trigger's container:
+          // keep the browser from moving focus to <body> on mousedown.
+          onMouseDown={(e) => e.preventDefault()}
           style={{
             position: "fixed",
             top: pos?.top ?? 0,
@@ -116,6 +119,7 @@ export function Select({ options, value, onChange, placeholder = "Select…", id
               aria-selected={o.value === value}
               className="menu-item"
               onClick={() => {
+                triggerRef.current?.focus();
                 onChange?.(o.value);
                 setOpen(false);
               }}

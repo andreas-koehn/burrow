@@ -135,6 +135,20 @@ describe("ds primitives", () => {
     expect(fn).toHaveBeenCalledWith("b");
     expect(screen.queryByRole("listbox")).toBeNull();
   });
+  // The list lives on <body>: without this, focus would drop to <body> and
+  // the next Tab would leave the dialog the Select sits in.
+  it("Select keeps focus on its trigger when an option is chosen", () => {
+    render(<Select options={SCOPES} value="a" />);
+    const trigger = screen.getByRole("button");
+    fireEvent.click(trigger);
+    const list = screen.getByRole("listbox");
+    expect(list.className).toContain("select-list");
+    const option = screen.getByRole("option", { name: "Beta" });
+    // mousedown is cancelled so the browser never moves focus off the trigger.
+    expect(fireEvent.mouseDown(option)).toBe(false);
+    fireEvent.click(option);
+    expect(trigger).toHaveFocus();
+  });
   it("Select closes on outside mousedown but not on mousedown inside the list", () => {
     render(<Select options={SCOPES} value="a" />);
     fireEvent.click(screen.getByRole("button"));

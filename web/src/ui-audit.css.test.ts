@@ -163,6 +163,14 @@ describe("access-mode detail — field width and keys panel gap", () => {
   it("separates the keys panel from the field above it", () => {
     expect(css).toMatch(/\.mode-detail > \.form-field \+ \.api-keys-panel\s*\{\s*margin-top:\s*var\(--space-md\);?\s*\}/);
   });
+  it("lets the Select list follow its trigger width and scroll inside the viewport", () => {
+    const rule = css.match(/\.menu\.select-list\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toMatch(/min-width:\s*0/);
+    expect(rule).toMatch(/max-height:\s*min\(320px, calc\(100vh - 16px\)\)/);
+    expect(rule).toMatch(/overflow-y:\s*auto/);
+    // Equal specificity is not enough: it must out-specify .menu's 200px.
+    expect(css).toMatch(/\.menu\s*\{[^}]*min-width:\s*200px/);
+  });
   it("does not turn the detail area into a gap container the margin would stack on", () => {
     expect(css).not.toMatch(/\.mode-detail\s*\{[^}]*gap:/);
   });
