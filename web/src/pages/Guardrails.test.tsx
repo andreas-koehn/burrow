@@ -138,11 +138,18 @@ describe("Guardrails custom rules (F9)", () => {
     expect(await within(table).findByText("by-enter")).toBeInTheDocument();
   });
 
-  it("cannot be dismissed while the create request is pending", async () => {
+  // A stalled POST must not trap the user: every exit closes the dialog and
+  // the late result is dropped instead of landing in a reopened form.
+  it.each([
+    ["Cancel", "Cancel"],
+    ["the header X", "Close dialog"],
+  ])("closes via %s while the create is pending and drops the late result", async (_label, button) => {
     let release!: () => void;
     const held = new Promise<void>((r) => { release = r; });
+    let answered = false;
     server.use(http.post("/api/v1/redaction/rules", async () => {
       await held;
+      answered = true;
       return HttpResponse.json({ error: "invalid regex" }, { status: 400 });
     }));
     await openRegex();
@@ -152,13 +159,33 @@ describe("Guardrails custom rules (F9)", () => {
     await userEvent.type(within(dialog).getByLabelText("Pattern"), "abc");
     await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
     expect(await within(dialog).findByRole("button", { name: "Creating…" })).toBeDisabled();
-    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
-    await userEvent.keyboard("{Escape}");
-    expect(screen.getByRole("dialog", { name: "New redaction rule" })).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: button }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New redaction rule" })).toBeNull());
+
+    await userEvent.click(screen.getByRole("button", { name: "New rule" }));
+    const reopened = await screen.findByRole("dialog", { name: "New redaction rule" });
+    expect(within(reopened).getByLabelText("Name")).toHaveValue("");
+    expect(within(reopened).getByLabelText("Pattern")).toHaveValue("");
     release();
-    // The late error lands in the same, still-filled form.
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent("invalid regex");
-    expect(within(dialog).getByLabelText("Name")).toHaveValue("slow");
+    await waitFor(() => expect(answered).toBe(true));
+    // Give the rejected request time to reach (and be ignored by) the dialog.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(within(reopened).queryByRole("alert")).toBeNull();
+    expect(within(reopened).getByLabelText("Name")).toHaveValue("");
+    expect(within(reopened).getByRole("button", { name: "Create" })).toBeInTheDocument();
+  });
+
+  it("names the rule in the success toast from the server response", async () => {
+    server.use(http.post("/api/v1/redaction/rules", () => HttpResponse.json(
+      { id: "r9", name: "server-name", pattern: "abc", action: "mask", scope: "both" }, { status: 201 },
+    )));
+    await openRegex();
+    await userEvent.click(screen.getByRole("button", { name: "New rule" }));
+    const dialog = await screen.findByRole("dialog", { name: "New redaction rule" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "typed-name");
+    await userEvent.type(within(dialog).getByLabelText("Pattern"), "abc");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    expect(await screen.findByText("Rule server-name added.")).toBeInTheDocument();
   });
 
   it("offers no delete button on built-in rules", async () => {

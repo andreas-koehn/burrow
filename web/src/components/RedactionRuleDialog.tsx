@@ -29,35 +29,35 @@ export function RedactionRuleDialog({ open, onClose }: RedactionRuleDialogProps)
   const [scope, setScope] = useState<RedactionRule["scope"]>("both");
   const [err, setErr] = useState<string | null>(null);
 
-  // A pending POST keeps the dialog open (Cancel, Esc and backdrop are
-  // ignored) so its late result cannot land in a reset or reopened form.
-  function finish() {
-    setName(""); setPattern(""); setAction("mask"); setScope("both"); setErr(null);
-    onClose();
-  }
-  function close() {
-    if (!create.isPending) finish();
-  }
-
   const create = useMutation({
     mutationFn: () =>
       apiFetch<RedactionRule>("/redaction/rules", {
         method: "POST",
         body: JSON.stringify({ name, pattern, action, scope }),
       }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["redaction", "rules"] });
-      toast.success(`Rule ${name.trim()} added.`);
-      finish();
-    },
-    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : "Couldn't add the rule."),
+    // The list refreshes even when the dialog was closed mid-request.
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["redaction", "rules"] }); },
   });
+
+  // Closing is always allowed. reset() detaches a pending POST, so the
+  // per-call callbacks in submit() never fire into a closed or reopened form.
+  function close() {
+    create.reset();
+    setName(""); setPattern(""); setAction("mask"); setScope("both"); setErr(null);
+    onClose();
+  }
 
   const canSubmit = !!name.trim() && !!pattern && !create.isPending;
   function submit() {
     if (!canSubmit) return;
     setErr(null);
-    create.mutate();
+    create.mutate(undefined, {
+      onSuccess: (rule) => {
+        toast.success(`Rule ${rule.name} added.`);
+        close();
+      },
+      onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : "Couldn't add the rule."),
+    });
   }
 
   return (
@@ -68,7 +68,7 @@ export function RedactionRuleDialog({ open, onClose }: RedactionRuleDialogProps)
       description="Matches are redacted before the body leaves or enters this relay."
       footer={
         <>
-          <Button variant="secondary" disabled={create.isPending} onClick={close}>Cancel</Button>
+          <Button variant="secondary" onClick={close}>Cancel</Button>
           <Button
             variant="primary"
             disabled={!canSubmit}
