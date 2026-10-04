@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Copy } from "lucide-react";
+import { ArrowDown, ArrowUp } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Badge, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, Select, SkeletonRows } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import type { Service, AccessMode } from "@/lib/contract";
+import { ServiceUrl } from "@/components/ServiceUrl";
 import { AccessModePanel, type AccessModePanelHandle } from "@/components/AccessModePanel";
 
 const ACCESS_LABEL: Record<AccessMode, string> = {
@@ -15,10 +16,6 @@ const ACCESS_LABEL: Record<AccessMode, string> = {
   burrow_login: "Burrow login",
   mtls: "mTLS",
 };
-
-function copy(text: string) {
-  void navigator.clipboard?.writeText(text);
-}
 
 const ACCESS_MODE_OPTIONS = [
   { value: "open",         label: "Open" },
@@ -55,7 +52,7 @@ export default function Services() {
     const list = data ?? [];
     const f = q
       ? list.filter((s) =>
-          `${s.name} ${s.type} ${s.hostname ?? ""}`.toLowerCase().includes(q.toLowerCase()))
+          `${s.name} ${s.type} ${s.slug ?? ""}`.toLowerCase().includes(q.toLowerCase()))
       : list;
     const sgn = sortDir === "asc" ? 1 : -1;
     return [...f].sort((a, b) => {
@@ -168,7 +165,7 @@ export default function Services() {
             <Input
               type="search"
               aria-label="Filter services"
-              placeholder="filter by name, type, hostname…"
+              placeholder="filter by name, type, URL…"
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
@@ -189,7 +186,7 @@ export default function Services() {
                       Type {sortIcon("type")}
                     </button>
                   </th>
-                  <th>Hostname</th>
+                  <th>URL</th>
                   <th>Access</th>
                   <th>
                     <button type="button" className="sort-header" onClick={() => toggleSort("status")}
@@ -208,21 +205,7 @@ export default function Services() {
                   </td>
                   <td><Badge kind={`type-${s.type}`} nodot>{s.type}</Badge></td>
                   <td>
-                    {s.type === "http" && s.hostname ? (
-                      <span className="row row-center gap-2">
-                        <span className="mono">{s.hostname}</span>
-                        <button
-                          type="button"
-                          className="icon-btn"
-                          aria-label={`Copy hostname ${s.hostname}`}
-                          onClick={() => copy(s.hostname)}
-                        >
-                          <Copy size={13} />
-                        </button>
-                      </span>
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
+                    {s.type === "http" ? <ServiceUrl slug={s.slug} url={s.url} /> : <span className="muted">—</span>}
                   </td>
                   <td><Badge kind={`access-${s.access_mode}`} nodot>{ACCESS_LABEL[s.access_mode]}</Badge></td>
                   <td>

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
@@ -17,15 +17,43 @@ describe("Services page", () => {
     expect(container.querySelector(".skel")).toBeTruthy();
   });
 
-  it("renders a row per service with name, type, hostname, access badge", async () => {
+  it("shows each http service's path and copies the full URL", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    mount();
+    const table = await screen.findByRole("table", { name: "Services" });
+    expect(within(table).getByRole("columnheader", { name: "URL" })).toBeInTheDocument();
+    expect(within(table).queryByRole("columnheader", { name: "Hostname" })).toBeNull();
+    expect(within(table).getByText("/svc/k7p2qx/")).toBeInTheDocument();
+    await userEvent.click(
+      within(table).getByRole("button", { name: "Copy URL https://tunnels.example.com/svc/k7p2qx/" }),
+    );
+    expect(writeText).toHaveBeenCalledWith("https://tunnels.example.com/svc/k7p2qx/");
+  });
+
+  it("never renders a subdomain-style host", async () => {
+    mount();
+    await screen.findByRole("table", { name: "Services" });
+    expect(document.body.textContent).not.toMatch(/k7p2qx\.tunnels\.example\.com/);
+  });
+
+  it("filters by slug", async () => {
+    mount();
+    await screen.findByRole("table", { name: "Services" });
+    await userEvent.type(screen.getByRole("searchbox", { name: "Filter services" }), "gf7x1p");
+    const table = screen.getByRole("table", { name: "Services" });
+    expect(within(table).getAllByRole("row")).toHaveLength(2); // header + grafana
+  });
+
+  it("renders a row per service with name, type, URL, access badge", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /services/i });
     const web = within(table).getByText("web").closest("tr")!;
     expect(within(web).getByText("http")).toBeInTheDocument();
     // http row: hostname shown mono with an aria-labelled copy button
-    expect(within(web).getByText("k7p2qx.tunnels.example.com")).toBeInTheDocument();
+    expect(within(web).getByText("/svc/k7p2qx/")).toBeInTheDocument();
     expect(
-      within(web).getByRole("button", { name: /copy hostname k7p2qx\.tunnels\.example\.com/i }),
+      within(web).getByRole("button", { name: /copy url https:\/\/tunnels\.example\.com\/svc\/k7p2qx\//i }),
     ).toBeInTheDocument();
     expect(within(web).getByText("Open")).toBeInTheDocument();
 
@@ -38,7 +66,7 @@ describe("Services page", () => {
     // tcp row: no hostname, em-dash, no copy button
     const pg = within(table).getByText("postgres").closest("tr")!;
     expect(within(pg).getByText("tcp")).toBeInTheDocument();
-    expect(within(pg).queryByRole("button", { name: /copy hostname/i })).toBeNull();
+    expect(within(pg).queryByRole("button", { name: /copy url/i })).toBeNull();
   });
 
   it("Configure opens the AccessModePanel for that service", async () => {

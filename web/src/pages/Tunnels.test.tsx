@@ -83,18 +83,20 @@ describe("Tunnels", () => {
     });
   });
 
-  it("http rows show the hostname (mono, copy) + Access badge + Configure; tcp rows do not", async () => {
+  it("http rows show the URL path (mono, copy) + Access badge + Configure; tcp rows do not", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify([
-        { id: "th1", name: "web", type: "http", remote_port: 0, local_addr: "127.0.0.1:3000", hostname: "k7p2qx.tunnels.example.com", access_mode: "open", bytes_in: 11, bytes_out: 22, connected: true },
-        { id: "th2", name: "ai", type: "http", remote_port: 0, local_addr: "127.0.0.1:11434", hostname: "ai4m2q.tunnels.example.com", access_mode: "api_key", bytes_in: 0, bytes_out: 0, connected: true },
+        { id: "th1", name: "web", type: "http", remote_port: 0, local_addr: "127.0.0.1:3000", url: "https://tunnels.example.com/svc/k7p2qx/", access_mode: "open", bytes_in: 11, bytes_out: 22, connected: true },
+        { id: "th2", name: "ai", type: "http", remote_port: 0, local_addr: "127.0.0.1:11434", url: "https://tunnels.example.com/svc/ai4m2q/", access_mode: "api_key", bytes_in: 0, bytes_out: 0, connected: true },
         { id: "tt1", name: "pg", type: "tcp", remote_port: 9000, local_addr: "127.0.0.1:5432", bytes_in: 0, bytes_out: 0, connected: true },
       ]), { status: 200 }) as any
     );
     setup();
     const webRow = (await screen.findByText("web")).closest("tr")!;
-    expect(within(webRow).getByText("k7p2qx.tunnels.example.com")).toBeInTheDocument();
-    expect(within(webRow).getByRole("button", { name: /copy hostname k7p2qx\.tunnels\.example\.com/i })).toBeInTheDocument();
+    expect(within(webRow).getByText("/svc/k7p2qx/")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "URL" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Hostname" })).toBeNull();
+    expect(within(webRow).getByRole("button", { name: /copy url https:\/\/tunnels\.example\.com\/svc\/k7p2qx\//i })).toBeInTheDocument();
     expect(within(webRow).getByText("Open")).toBeInTheDocument();
 
     const aiRow = screen.getByText("ai").closest("tr")!;
@@ -103,7 +105,7 @@ describe("Tunnels", () => {
     const pgRow = screen.getByText("pg").closest("tr")!;
     expect(within(pgRow).getByText(":9000")).toBeInTheDocument();
     expect(within(pgRow).getByText("Open")).toBeInTheDocument();
-    expect(within(pgRow).queryByRole("button", { name: /copy hostname/i })).toBeNull();
+    expect(within(pgRow).queryByRole("button", { name: /copy url/i })).toBeNull();
     expect(within(pgRow).queryByRole("button", { name: /configure/i })).toBeNull();
 
     // Configure on an http row opens the AccessModePanel.
@@ -117,7 +119,7 @@ describe("Tunnels", () => {
       if (u.includes("/tunnels")) {
         return new Response(JSON.stringify([
           { id: "t1", name: "ai", type: "http", remote_port: 0, local_addr: "mockoai:8081",
-            bytes_in: 0, bytes_out: 0, connected: true, hostname: "abc.test.local" },
+            bytes_in: 0, bytes_out: 0, connected: true, url: "https://test.local/svc/abc/" },
           { id: "t2", name: "echo", type: "tcp", remote_port: 9002, local_addr: "127.0.0.1:8082",
             bytes_in: 0, bytes_out: 0, connected: true },
         ]), { status: 200 }) as Response;
@@ -127,7 +129,7 @@ describe("Tunnels", () => {
     setup();
     await waitFor(() => {
       expect(screen.queryByText(":0")).toBeNull();
-      expect(screen.getByText("abc.test.local")).toBeInTheDocument();
+      expect(screen.getByText("/svc/abc/")).toBeInTheDocument();
       expect(screen.getByText(":9002")).toBeInTheDocument();
     });
   });
@@ -189,7 +191,7 @@ describe("Tunnels", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify([
         { id: "th1", name: "web", type: "http", remote_port: 0, local_addr: "127.0.0.1:3000",
-          hostname: "k7p2qx.tunnels.example.com", access_mode: "open",
+          url: "https://tunnels.example.com/svc/k7p2qx/", access_mode: "open",
           bytes_in: 0, bytes_out: 0, connected: true, service_id: "svc_web01" },
       ]), { status: 200 }) as any
     );

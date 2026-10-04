@@ -93,8 +93,8 @@ export interface Service {
   id: string;
   name: string;
   type: "tcp" | "http";
-  subdomain: string;
-  hostname: string;
+  slug: string;
+  url: string;
   access_mode: AccessMode;
   api_key_header: string;
   connected: boolean;

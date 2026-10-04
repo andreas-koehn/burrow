@@ -3,6 +3,7 @@ import { Link, useParams, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, ErrorNotice, PageHeader, SkeletonRows, Tabs } from "@/components/ds";
+import { ServiceUrl } from "@/components/ServiceUrl";
 import { AccessModePanel } from "@/components/AccessModePanel";
 import { ApiKeysPanel } from "@/components/ApiKeysPanel";
 import { UpstreamCredentialsPanel } from "@/pages/UpstreamCredentials";
@@ -67,9 +68,7 @@ export default function ServiceDetail() {
 
       {/* Meta strip */}
       <div className="meta-strip">
-        {svc.hostname && (
-          <span className="mono small">{svc.hostname}</span>
-        )}
+        {svc.type === "http" && <ServiceUrl slug={svc.slug} url={svc.url} />}
         <Badge kind={`access-${svc.access_mode}`} nodot>
           {ACCESS_LABEL[svc.access_mode]}
         </Badge>

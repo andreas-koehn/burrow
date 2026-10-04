@@ -16,7 +16,7 @@ interface Tunnel {
   id: string; name: string; type: string; remote_port: number;
   local_addr: string; bytes_in: number; bytes_out: number; connected: boolean;
   // v0.3.0 additive: present for http tunnels only.
-  hostname?: string; access_mode?: AccessMode;
+  url?: string; access_mode?: AccessMode;
   // service_id is the durable-service id (http tunnels only). Required for
   // per-service routes (/services/{id}/access-mode, /api-keys); using the
   // per-session tunnel.id 404s.
@@ -79,7 +79,7 @@ export default function Tunnels() {
     const list = data ?? [];
     const filtered = q
       ? list.filter((t) =>
-          `${t.name} ${t.type} ${t.local_addr} ${t.hostname ?? ""}`
+          `${t.name} ${t.type} ${t.local_addr} ${t.url ?? ""}`
             .toLowerCase()
             .includes(q.toLowerCase()))
       : list;
@@ -194,7 +194,7 @@ export default function Tunnels() {
                 </th>
                 <th>Remote</th>
                 <th>Local</th>
-                <th>Hostname</th>
+                <th>URL</th>
                 <th>Access</th>
                 <th>Traffic</th>
                 <th>
@@ -248,14 +248,14 @@ export default function Tunnels() {
                   </td>
                   <td className="col-local">{t.local_addr}</td>
                   <td>
-                    {t.type === "http" && t.hostname ? (
+                    {t.type === "http" && t.url ? (
                       <span className="row row-center gap-2">
-                        <span className="mono">{t.hostname}</span>
+                        <span className="mono" title={t.url}>{new URL(t.url).pathname}</span>
                         <button
                           type="button"
                           className="icon-btn"
-                          aria-label={`Copy hostname ${t.hostname}`}
-                          onClick={() => void navigator.clipboard?.writeText(t.hostname!)}
+                          aria-label={`Copy URL ${t.url}`}
+                          onClick={() => void navigator.clipboard?.writeText(t.url!)}
                         >
                           <Copy size={13} />
                         </button>

@@ -265,7 +265,7 @@ export const handlers = [
     const stored = modeMap[b?.access_mode ?? ""];
     if (stored === undefined) return err(400, `unknown access mode "${b?.access_mode}"`);
     if (db.services.some((s) => s.id === id)) return err(409, "service already exists");
-    db.services.push({ id, user_id: db.me.id, name: b?.title ?? "", type: "http", subdomain: "", hostname: "", access_mode: stored as AccessMode, api_key_header: "Authorization", connected: false, remote_port: 0, local_addr: "" });
+    db.services.push({ id, user_id: db.me.id, name: b?.title ?? "", type: "http", slug: "", url: "", access_mode: stored as AccessMode, api_key_header: "Authorization", connected: false, remote_port: 0, local_addr: "" });
     return json({ id, created_at: new Date().toISOString() }, 201);
   }),
 

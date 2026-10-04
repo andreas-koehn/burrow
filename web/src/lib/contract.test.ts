@@ -41,8 +41,8 @@ describe("contract", () => {
 
   it("Service shape matches v0.3.0 contract Part E", () => {
     const s: Service = {
-      id: "s1", name: "web", type: "http", subdomain: "k7p2qx",
-      hostname: "k7p2qx.tunnels.example.com", access_mode: "open",
+      id: "s1", name: "web", type: "http", slug: "k7p2qx",
+      url: "https://tunnels.example.com/svc/k7p2qx/", access_mode: "open",
       api_key_header: "Authorization", connected: true,
       remote_port: 0, local_addr: "127.0.0.1:3000",
     };

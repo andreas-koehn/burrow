@@ -127,10 +127,10 @@ function seed(): MockDb {
       { id: "tok_1", name: "office-box-1", last_used: "2026-05-18T09:00:00Z", created_at: "2026-05-01T08:00:00Z" },
     ],
     services: [
-      { id: "svc_web01", user_id: meId, name: "web", type: "http", subdomain: "k7p2qx", hostname: "k7p2qx.tunnels.example.com", access_mode: "open", api_key_header: "Authorization", connected: true, remote_port: 0, local_addr: "127.0.0.1:3000" },
-      { id: "svc_ai001", user_id: meId, name: "ollama", type: "http", subdomain: "ai4m2q", hostname: "ai4m2q.tunnels.example.com", access_mode: "api_key", api_key_header: "Authorization", connected: true, remote_port: 0, local_addr: "127.0.0.1:11434" },
-      { id: "svc_graf01", user_id: meId, name: "grafana", type: "http", subdomain: "gf7x1p", hostname: "gf7x1p.tunnels.example.com", access_mode: "burrow_login", api_key_header: "Authorization", connected: false, remote_port: 0, local_addr: "127.0.0.1:3001" },
-      { id: "svc_pg001", user_id: meId, name: "postgres", type: "tcp", subdomain: "", hostname: "", access_mode: "open", api_key_header: "Authorization", connected: true, remote_port: 9000, local_addr: "127.0.0.1:5432" },
+      { id: "svc_web01", user_id: meId, name: "web", type: "http", slug: "k7p2qx", url: "https://tunnels.example.com/svc/k7p2qx/", access_mode: "open", api_key_header: "Authorization", connected: true, remote_port: 0, local_addr: "127.0.0.1:3000" },
+      { id: "svc_ai001", user_id: meId, name: "ollama", type: "http", slug: "ai4m2q", url: "https://tunnels.example.com/svc/ai4m2q/", access_mode: "api_key", api_key_header: "Authorization", connected: true, remote_port: 0, local_addr: "127.0.0.1:11434" },
+      { id: "svc_graf01", user_id: meId, name: "grafana", type: "http", slug: "gf7x1p", url: "https://tunnels.example.com/svc/gf7x1p/", access_mode: "burrow_login", api_key_header: "Authorization", connected: false, remote_port: 0, local_addr: "127.0.0.1:3001" },
+      { id: "svc_pg001", user_id: meId, name: "postgres", type: "tcp", slug: "", url: "", access_mode: "open", api_key_header: "Authorization", connected: true, remote_port: 9000, local_addr: "127.0.0.1:5432" },
     ],
     serviceApiKeys: {
       svc_ai001: [
