@@ -99,10 +99,11 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   await expect(page.getByText("No clients connected", { exact: false })).toBeVisible();
 
   // ── Access-mode endpoint contract ─────────────────────────────────────────
-  // The AccessModePanel UI renders only inside ClientDetail for a *live*
-  // client's service; a pure web e2e has no connected burrow data-plane, so
-  // the panel itself is covered by AccessModePanel.test.tsx (unit). Here we
-  // assert the exact request the panel issues — PUT
+  // The AccessModePanel UI renders in the ServiceDetail access tab and the
+  // Tunnels/Services Configure dialogs; a pure web e2e has no connected
+  // burrow data-plane, so the panel itself is covered by
+  // AccessModePanel.test.tsx (unit). Here we assert the exact request the
+  // panel issues — PUT
   // /api/v1/tunnels/{id}/access-mode with the double-submit X-CSRF-Token —
   // reaches the real handler and honours the contract: 404 {"error":"tunnel
   // not found"} for an unknown/unowned id, and 403 {"error":"csrf token

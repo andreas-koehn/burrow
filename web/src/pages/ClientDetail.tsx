@@ -46,7 +46,10 @@ export default function ClientDetail() {
           <table className="data" aria-label="Services">
             <thead><tr><th>Name</th><th>Type</th><th>Remote</th><th>Local</th><th>Traffic</th><th>Access</th></tr></thead>
             <tbody>
-              {data.services.map((s) => (
+              {data.services.map((s) => {
+                // Tunnels without a stored mode are raw passthrough, same as Tunnels.tsx.
+                const mode: AccessMode = ACCESS_LABEL[s.access_mode] ? s.access_mode : "open";
+                return (
                 <tr key={s.id}>
                   <td>{s.name}</td>
                   <td><Badge kind={`type-${s.type}`} nodot>{s.type}</Badge></td>
@@ -57,14 +60,15 @@ export default function ClientDetail() {
                   <td className="col-created">↓{formatBytes(s.total_bytes_in)} ↑{formatBytes(s.total_bytes_out)}</td>
                   <td>
                     <span className="row row-center gap-2">
-                      <Badge kind={`access-${s.access_mode}`} nodot>{ACCESS_LABEL[s.access_mode]}</Badge>
+                      <Badge kind={`access-${mode}`} nodot>{ACCESS_LABEL[mode]}</Badge>
                       {s.service_id && (
                         <Link className="link-inline" to={`/services/${s.service_id}`}>Configure</Link>
                       )}
                     </span>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {data.services.length === 0 && (
                 <tr><td colSpan={6} className="muted">Connected, but not serving any service yet.</td></tr>
               )}

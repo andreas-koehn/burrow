@@ -115,9 +115,11 @@ function seed(): MockDb {
       {
         session_id: "sess_4f7a9c0b2e81", user_id: meId, token_name: "office-box-1",
         remote_addr: "203.0.113.7:51234", os: "linux", arch: "amd64", client_version: "0.2.0",
-        service_count: 1, total_bytes_in: 10240, total_bytes_out: 4096,
+        service_count: 2, total_bytes_in: 10240, total_bytes_out: 4096,
         services: [
           { id: "tnl_web01", name: "web-staging", type: "tcp", remote_port: 9000, local_addr: "127.0.0.1:3000", access_mode: "open", bytes_in: 2048, bytes_out: 1024, total_bytes_in: 10240, total_bytes_out: 4096 },
+          // Same name as the durable http service svc_ai001, so GET /clients/:id links the two.
+          { id: "tnl_ai001", name: "ollama", type: "http", remote_port: 0, local_addr: "127.0.0.1:11434", access_mode: "api_key", bytes_in: 0, bytes_out: 0, total_bytes_in: 0, total_bytes_out: 0 },
         ],
       },
     ],
