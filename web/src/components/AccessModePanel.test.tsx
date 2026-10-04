@@ -1,9 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { createRef } from "react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
 import { db } from "@/mocks/db";
-import { AccessModePanel } from "@/components/AccessModePanel";
+import { AccessModePanel, type AccessModePanelHandle } from "@/components/AccessModePanel";
 
 describe("AccessModePanel (v0.3.0)", () => {
   it("drops the v0.2.0 disabled gating — every mode is selectable", async () => {
@@ -120,5 +121,16 @@ describe("AccessModePanel (v0.3.0)", () => {
       expect(put).toBeTruthy();
       expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ access_mode: "open" });
     });
+  });
+
+  it("save through panelRef with nothing chosen sends no request and shows an alert", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const ref = createRef<AccessModePanelHandle>();
+    renderApp(<AccessModePanel serviceId="svc_web01" serviceName="web" mode="mtls" panelRef={ref} />);
+    const before = fetchSpy.mock.calls.length;
+    act(() => ref.current!.save());
+    expect(await screen.findByRole("alert")).toHaveTextContent("Choose an access mode.");
+    const puts = fetchSpy.mock.calls.slice(before).filter(([, init]) => (init as RequestInit | undefined)?.method === "PUT");
+    expect(puts).toHaveLength(0);
   });
 });

@@ -11,7 +11,7 @@ test.use({ storageState: AUTH_STORAGE_PATH });
 
 test("10-ai-gateway-basic: chat-completions SSE works via Burrow → mockoai", async ({ page, request }) => {
   // Reset the ai service to Open mode so this spec doesn't depend on prior
-  // test state (specs 06-09 leave it in burrow_login / mtls).
+  // test state (specs 06-08 leave it in burrow_login).
   const list = await request.get("/api/v1/services");
   const services = (await list.json()) as { id: string; name: string }[];
   const ai = services.find((s) => s.name === "ai");

@@ -130,12 +130,12 @@ Each cell cites the concrete artifact that covers the feature, or `—` for a ga
 | Access: open | `internal/proxy/access_test.go`, `internal/proxy/gate_test.go` | `smoke-full.sh` (open AI tunnel) | `access-modes/06-access-mode-open.spec.ts` | RUNBOOK §6a |
 | Access: api_key | `internal/proxy/gate_test.go`, `internal/api/automation_test.go` | `smoke-user.sh` step 5 (access-gate-api-key) | `access-modes/07-access-mode-api-key.spec.ts` | RUNBOOK §6b |
 | Access: burrow_login | `internal/auth/auth_test.go`, `internal/api/auth_test.go` | — | `access-modes/08-access-mode-burrow-login.spec.ts` | RUNBOOK §6c |
-| Access: mTLS | `internal/proxy/mtls_test.go`, `cmd/server/e2e_mtls_test.go` | — | `access-modes/09-access-mode-mtls.spec.ts`, `access-modes/23-mtls-cert-flow.spec.ts` | RUNBOOK §6d |
+| Access: mTLS | `internal/proxy/mtls_test.go`, `cmd/server/e2e_mtls_test.go` | — | — | RUNBOOK §6d |
 | AI gateway basic | `internal/aigw/anthropic_test.go`, `cmd/server/e2e_openai_test.go` | `smoke-full.sh` (`/v1/chat/completions` SSE) | `ai-gateway/10-ai-gateway-basic.spec.ts` | RUNBOOK §7 |
 | AI semantic cache | `internal/cache/semantic/semantic_test.go`, `internal/cache/exact/cache_test.go`, `internal/api/cache_test.go` | — | `ai-gateway/11-ai-gateway-semantic-cache.spec.ts` | RUNBOOK §8a |
 | AI metering / cost | `internal/aimeter/meter_test.go`, `internal/cost/engine_test.go`, `internal/api/cost_test.go` | — | `ai-gateway/12-ai-gateway-metering-cost.spec.ts` | RUNBOOK §7 |
 | MCP | `internal/mcpserv/server_test.go`, `internal/api/mcp_test.go` | — | `ai-gateway/26-mcp.spec.ts` | — |
-| Custom domains | `internal/proxy/customdomain/customdomain_test.go`, `internal/proxy/customdomain/status_test.go` | — | `domains/13-custom-domains.spec.ts`, `domains/31-custom-domains-active.spec.ts` | RUNBOOK §9 |
+| Custom domains | `internal/proxy/customdomain/customdomain_test.go`, `internal/proxy/customdomain/status_test.go` | — | `domains/13-custom-domains.spec.ts` | RUNBOOK §9 |
 | Connection logs | `internal/connlog/sink_test.go` | — | `observability/14-connection-logs.spec.ts` | RUNBOOK §10 |
 | Audit chain | `internal/audit/logger_test.go`, `internal/db/audit_test.go`, `internal/api/audit_test.go` | `smoke-user.sh` (audit step) | `observability/15-audit-chain.spec.ts` | RUNBOOK §11 |
 | Inspector | `internal/inspector/ring_test.go`, `internal/api/inspector_test.go` | — | `observability/24-inspector.spec.ts` | — |
