@@ -245,6 +245,9 @@ export const handlers = [
       : db.services.filter((s) => s.user_id === db.me.id);
     return json(rows.map(({ user_id: _u, ...s }) => s));
   }),
+  // Registered before /services/:id so the literal segment wins.
+  http.get("/api/v1/services/slug-suggestion", ({ request }) =>
+    gate(request) ?? json({ slug: "q4m7kx" })),
   http.get("/api/v1/services/:id", ({ request, params }) => {
     const g = gate(request); if (g) return g;
     const svc = db.services.find((s) => s.id === params.id);
@@ -258,14 +261,15 @@ export const handlers = [
   }),
   http.post("/api/v1/services", async ({ request }) => {
     const g = gate(request, { admin: true }); if (g) return g;
-    const b = await body<{ service_id?: string; title?: string; access_mode?: string }>(request);
+    const b = await body<{ service_id?: string; title?: string; access_mode?: string; slug?: string }>(request);
     const id = (b?.service_id ?? "").trim();
     if (!/^[a-z0-9_-]{3,64}$/.test(id)) return err(400, "service_id must match ^[a-z0-9_-]{3,64}$");
     const modeMap: Record<string, string> = { "": "open", public: "open", open: "open", api_key: "api_key", burrow_login: "burrow_login" };
     const stored = modeMap[b?.access_mode ?? ""];
     if (stored === undefined) return err(400, `unknown access mode "${b?.access_mode}"`);
     if (db.services.some((s) => s.id === id)) return err(409, "service already exists");
-    db.services.push({ id, user_id: db.me.id, name: b?.title ?? "", type: "http", slug: "", url: "", access_mode: stored as AccessMode, api_key_header: "Authorization", connected: false, remote_port: 0, local_addr: "" });
+    const slug = b?.slug ?? "";
+    db.services.push({ id, user_id: db.me.id, name: b?.title ?? "", type: "http", slug, url: slug ? `https://tunnels.example.com/svc/${slug}/` : "", access_mode: stored as AccessMode, api_key_header: "Authorization", connected: false, remote_port: 0, local_addr: "" });
     return json({ id, created_at: new Date().toISOString() }, 201);
   }),
 
@@ -315,6 +319,23 @@ export const handlers = [
     svc.access_mode = b.access_mode as typeof svc.access_mode;
     if (b.access_mode === "api_key" && b.api_key_header) svc.api_key_header = b.api_key_header;
     return noContent();
+  }),
+
+  // ---- per-service slug (the /svc/<slug>/ path segment; services:configure) ----
+  http.put("/api/v1/services/:id/slug", async ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = db.services.find((s) => s.id === params.id);
+    if (!svc) return err(404, "service not found");
+    if (!canConfigure(svc)) return err(403, "forbidden");
+    if (svc.type === "tcp") return err(409, "slug requires an http service");
+    const b = await body<{ slug?: string }>(request);
+    const slug = b?.slug ?? "";
+    if (!/^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/.test(slug))
+      return err(400, "slug must be 3-40 characters: lowercase letters, digits and hyphens, not starting or ending with a hyphen");
+    if (db.services.some((s) => s.slug === slug && s.id !== svc.id)) return err(409, "slug already in use");
+    svc.slug = slug;
+    svc.url = `https://tunnels.example.com/svc/${slug}/`;
+    return json({ slug, url: svc.url });
   }),
 
   // ---- v0.3.0 per-service access policy (spec Part D; services:configure) ----

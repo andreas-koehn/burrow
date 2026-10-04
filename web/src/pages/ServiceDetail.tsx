@@ -2,8 +2,9 @@ import { useState } from "react";
 import { Link, useParams, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Badge, ErrorNotice, PageHeader, SkeletonRows, Tabs } from "@/components/ds";
+import { Badge, Button, ErrorNotice, PageHeader, SkeletonRows, Tabs } from "@/components/ds";
 import { ServiceUrl } from "@/components/ServiceUrl";
+import { EditSlugDialog } from "@/components/EditSlugDialog";
 import { AccessModePanel } from "@/components/AccessModePanel";
 import { ApiKeysPanel } from "@/components/ApiKeysPanel";
 import { UpstreamCredentialsPanel } from "@/pages/UpstreamCredentials";
@@ -28,6 +29,7 @@ export default function ServiceDetail() {
       ? "domains"
       : "access";
   const [tab, setTab] = useState(initialTab);
+  const [editSlug, setEditSlug] = useState(false);
 
   const { data: svc, isLoading, error, refetch } = useQuery({
     queryKey: ["service", id],
@@ -69,6 +71,9 @@ export default function ServiceDetail() {
       {/* Meta strip */}
       <div className="meta-strip">
         {svc.type === "http" && (svc.slug || svc.url) && <ServiceUrl slug={svc.slug} url={svc.url} />}
+        {svc.type === "http" && (
+          <Button variant="secondary" size="sm" onClick={() => setEditSlug(true)}>Edit URL</Button>
+        )}
         <Badge kind={`access-${svc.access_mode}`} nodot>
           {ACCESS_LABEL[svc.access_mode]}
         </Badge>
@@ -122,6 +127,7 @@ export default function ServiceDetail() {
           },
         ]}
       />
+      <EditSlugDialog service={svc} open={editSlug} onOpenChange={setEditSlug} />
     </div>
   );
 }

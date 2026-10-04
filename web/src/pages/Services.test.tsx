@@ -246,4 +246,31 @@ describe("Services page", () => {
     expect(within(dialog).getByLabelText("Access mode")).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Create" })).toBeInTheDocument();
   });
+
+  it("prefills the suggested slug in the new-service dialog and sends the edited one", async () => {
+    let posted: Record<string, unknown> | null = null;
+    server.use(http.post("/api/v1/services", async ({ request }) => {
+      posted = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ id: "web-prod", created_at: "2026-10-04T00:00:00Z" }, { status: 201 });
+    }));
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New service" }));
+    const slug = await screen.findByLabelText("URL slug");
+    await waitFor(() => expect(slug).toHaveValue("q4m7kx"));
+    await userEvent.type(screen.getByLabelText("Service ID"), "web-prod");
+    await userEvent.clear(slug);
+    await userEvent.type(slug, "web");
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(posted).toMatchObject({ service_id: "web-prod", slug: "web" }));
+  });
+
+  it("blocks Create while the slug is invalid", async () => {
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New service" }));
+    await userEvent.type(screen.getByLabelText("Service ID"), "web-prod");
+    const slug = await screen.findByLabelText("URL slug");
+    await userEvent.clear(slug);
+    await userEvent.type(slug, "-bad");
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+  });
 });

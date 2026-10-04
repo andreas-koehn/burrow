@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
 import { Route, Routes } from "react-router-dom";
@@ -11,6 +11,15 @@ function mount() {
       <Route path="/services/:id" element={<ServiceDetail />} />
     </Routes>,
     "/services/svc_ai001",
+  );
+}
+
+function mountAt(path: string) {
+  return renderApp(
+    <Routes>
+      <Route path="/services/:id" element={<ServiceDetail />} />
+    </Routes>,
+    path,
   );
 }
 
@@ -104,5 +113,29 @@ describe("ServiceDetail page", () => {
     expect(screen.queryByRole("button", { name: "New key" })).toBeNull();
     await userEvent.click(screen.getByRole("tab", { name: "API keys" }));
     expect(await screen.findByRole("button", { name: "New key" })).toBeInTheDocument();
+  });
+
+  it("changes the slug and shows the new URL", async () => {
+    mountAt("/services/svc_web01");
+    await userEvent.click(await screen.findByRole("button", { name: "Edit URL" }));
+    const dialog = await screen.findByRole("dialog", { name: /change url/i });
+    expect(within(dialog).getByText(/old URL stops working immediately/i)).toBeInTheDocument();
+    const slug = within(dialog).getByLabelText("URL slug");
+    await userEvent.clear(slug);
+    await userEvent.type(slug, "web");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Change URL" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await screen.findByText("/svc/web/")).toBeInTheDocument();
+  });
+
+  it("keeps the dialog open and shows the server error when the slug is taken", async () => {
+    mountAt("/services/svc_web01");
+    await userEvent.click(await screen.findByRole("button", { name: "Edit URL" }));
+    const dialog = await screen.findByRole("dialog", { name: /change url/i });
+    const slug = within(dialog).getByLabelText("URL slug");
+    await userEvent.clear(slug);
+    await userEvent.type(slug, "ai4m2q"); // slug of svc_ai001 in the fixtures
+    await userEvent.click(within(dialog).getByRole("button", { name: "Change URL" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("slug already in use");
   });
 });

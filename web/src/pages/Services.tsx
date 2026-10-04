@@ -8,6 +8,7 @@ import { Button, Badge, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGro
 import { Toaster } from "@/components/ui/sonner";
 import type { Service, AccessMode } from "@/lib/contract";
 import { ServiceUrl } from "@/components/ServiceUrl";
+import { SlugField, slugError } from "@/components/SlugField";
 import { AccessModePanel, type AccessModePanelHandle } from "@/components/AccessModePanel";
 
 const ACCESS_LABEL: Record<AccessMode, string> = {
@@ -74,6 +75,7 @@ export default function Services() {
   const [newOpen, setNewOpen] = useState(false);
   const [nsServiceId, setNsServiceId] = useState("");
   const [nsTitle, setNsTitle] = useState("");
+  const [nsSlug, setNsSlug] = useState("");
   const [nsAccessMode, setNsAccessMode] = useState("open");
   const [aiFlow, setAiFlow] = useState(false);
   const [nsErr, setNsErr] = useState<string | null>(null);
@@ -93,10 +95,25 @@ export default function Services() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Burrow suggests a slug each time the dialog opens; the operator may replace it.
+  const suggestion = useQuery({
+    queryKey: ["slug-suggestion"],
+    queryFn: () => apiFetch<{ slug: string }>("/services/slug-suggestion"),
+    enabled: newOpen,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
+  useEffect(() => {
+    if (newOpen && suggestion.data && nsSlug === "") setNsSlug(suggestion.data.slug);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newOpen, suggestion.data]);
+
   function closeNew() {
     setNewOpen(false);
     setNsServiceId("");
     setNsTitle("");
+    setNsSlug("");
     setNsAccessMode("open");
     setAiFlow(false);
     setNsErr(null);
@@ -109,6 +126,7 @@ export default function Services() {
         body: JSON.stringify({
           service_id: nsServiceId,
           title: nsTitle || undefined,
+          slug: nsSlug || undefined,
           access_mode: nsAccessMode,
         }),
       }),
@@ -268,7 +286,7 @@ export default function Services() {
             <Button variant="secondary" onClick={closeNew}>Cancel</Button>
             <Button
               variant="primary"
-              disabled={!nsServiceId || createService.isPending}
+              disabled={!nsServiceId || slugError(nsSlug) !== null || createService.isPending}
               onClick={() => createService.mutate()}
             >
               {createService.isPending ? "Creating…" : aiFlow ? "Create and continue" : "Create"}
@@ -283,6 +301,7 @@ export default function Services() {
           <FormField label="Title" htmlFor="ns-title" w="md">
             <Input id="ns-title" placeholder="optional display name" value={nsTitle} onChange={(e) => setNsTitle(e.target.value)} />
           </FormField>
+          <SlugField id="ns-slug" value={nsSlug} onChange={setNsSlug} />
           {!aiFlow && (
             <FormField label="Access mode" htmlFor="ns-access-mode" w="md">
               <Select
@@ -294,6 +313,7 @@ export default function Services() {
             </FormField>
           )}
         </FormFieldGroup>
+        <p className="muted small">Apps that load assets from absolute paths (/assets/…) need base-path support to work under a /svc/ URL.</p>
         {nsErr && <p role="alert" className="notice-inline error">{nsErr}</p>}
       </Dialog>
       <Toaster />
