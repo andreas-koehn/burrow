@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
+import { server } from "@/mocks/server";
 import Guardrails from "@/pages/Guardrails";
 
 function mount() {
@@ -55,5 +57,58 @@ describe("Guardrails page (§4.22)", () => {
         ),
       ).toBe(true);
     });
+  });
+});
+
+describe("Guardrails custom rules (F9)", () => {
+  async function openRegex() {
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: /regex redaction/i }));
+  }
+
+  it("adds a custom rule", async () => {
+    await openRegex();
+    await userEvent.click(screen.getByRole("button", { name: "New rule" }));
+    const dialog = await screen.findByRole("dialog", { name: "New redaction rule" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "internal-id");
+    await userEvent.type(within(dialog).getByLabelText("Pattern"), "ID-\\d{{6}");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    const table = await screen.findByRole("table", { name: "Custom rules" });
+    expect(await within(table).findByText("internal-id")).toBeInTheDocument();
+    expect(within(table).getByText("ID-\\d{6}")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New redaction rule" })).toBeNull());
+  });
+
+  it("shows the server's validation message for an invalid regex", async () => {
+    await openRegex();
+    await userEvent.click(screen.getByRole("button", { name: "New rule" }));
+    const dialog = await screen.findByRole("dialog", { name: "New redaction rule" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "bad");
+    await userEvent.type(within(dialog).getByLabelText("Pattern"), "([[");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("invalid regex");
+    expect(screen.getByRole("dialog", { name: "New redaction rule" })).toBeInTheDocument();
+  });
+
+  it("deletes a custom rule after confirmation", async () => {
+    server.use(http.get("/api/v1/redaction/rules", () => HttpResponse.json({
+      built_in: [],
+      custom: [{ id: "r1", name: "internal-id", pattern: "ID-\\d+", action: "mask", scope: "both" }],
+    })));
+    let deleted = "";
+    server.use(http.delete("/api/v1/redaction/rules/:id", ({ params }) => { deleted = String(params.id); return new HttpResponse(null, { status: 204 }); }));
+    await openRegex();
+    await userEvent.click(await screen.findByRole("button", { name: "Delete rule internal-id" }));
+    const confirm = await screen.findByRole("dialog", { name: "Delete rule?" });
+    await userEvent.click(within(confirm).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(deleted).toBe("r1"));
+  });
+
+  it("offers no delete button on built-in rules", async () => {
+    await openRegex();
+    const builtIn = await screen.findByRole("table", { name: "Built-in rules" });
+    // Non-vacuous: the table really holds the seeded built-in rows.
+    expect(within(builtIn).getByText("Email address")).toBeInTheDocument();
+    expect(within(builtIn).queryByRole("button", { name: /delete rule/i })).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 import { http, HttpResponse } from "msw";
 import { db, type MockDb, type CacheSettingsPayload } from "@/mocks/db";
-import type { AccessMode, AiEndpoint, CostSummary, ModelAliasV5, Provider, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings } from "@/lib/contract";
+import type { AccessMode, AiEndpoint, CostSummary, ModelAliasV5, Provider, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
 
 const VALID_PROVIDERS = new Set<string>(["ollama", "vllm", "openai-compat", "openai", "anthropic", "other"]);
 
@@ -531,6 +531,25 @@ export const handlers = [
   // ---- v0.4.0 guardrails & redaction (spec §4.22) ----
   http.get("/api/v1/redaction/rules", ({ request }) =>
     gate(request, { admin: true }) ?? json(db.redactionRules)),
+  http.post("/api/v1/redaction/rules", async ({ request }) => {
+    const g = gate(request, { admin: true }); if (g) return g;
+    const b = await body<{ name?: string; pattern?: string; action?: RedactionRule["action"]; scope?: RedactionRule["scope"] }>(request);
+    if (!b?.name?.trim()) return err(400, "name is required");
+    if (!b.pattern) return err(400, "pattern is required");
+    try { new RegExp(b.pattern); } catch { return err(400, "invalid regex"); }
+    const rule: RedactionRule = {
+      id: crypto.randomUUID(), name: b.name.trim(), pattern: b.pattern,
+      action: b.action ?? "mask", scope: b.scope ?? "both",
+    };
+    db.redactionRules.custom.push(rule);
+    return json(rule, 201);
+  }),
+  http.delete("/api/v1/redaction/rules/:id", ({ request, params }) => {
+    const g = gate(request, { admin: true }); if (g) return g;
+    const i = db.redactionRules.custom.findIndex((r) => r.id === params.id);
+    if (i >= 0) db.redactionRules.custom.splice(i, 1);
+    return noContent();
+  }),
   http.get("/api/v1/redaction/settings", ({ request }) =>
     gate(request, { admin: true }) ?? json(db.redactionSettings)),
   http.put("/api/v1/redaction/settings", async ({ request }) => {

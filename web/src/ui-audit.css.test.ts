@@ -31,3 +31,10 @@ describe("T02 — dialog sizing and overflow", () => {
     expect(rule).toContain("overflow-wrap: anywhere");
   });
 });
+
+describe("T09 — Guardrails custom-rules heading row", () => {
+  it("spreads the heading and its action and drops the h3's own margin", () => {
+    expect(css).toMatch(/\.accordion-body \.subsection-head\s*\{[^}]*justify-content: space-between/);
+    expect(css).toMatch(/\.accordion-body \.subsection-head h3\s*\{[^}]*margin: 0/);
+  });
+});

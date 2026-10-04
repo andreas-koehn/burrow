@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import {
-  Button, FormField, Input, PageHeader, Select, SkeletonRows, Switch,
+  Button, Dialog, FormField, Input, PageHeader, Select, SkeletonRows, Switch,
 } from "@/components/ds";
+import { RedactionRuleDialog } from "@/components/RedactionRuleDialog";
 import type {
   GuardrailPattern, GuardrailSettings, GuardrailSettingsResponse,
   RedactionRule, RedactionSettings,
@@ -46,20 +47,33 @@ function Accordion({ id, title, subtitle, children, defaultOpen = false }: {
   );
 }
 
-function RulesTable({ name, rules }: { name: string; rules: RedactionRule[] }) {
+function RulesTable({ name, rules, onDelete }: { name: string; rules: RedactionRule[]; onDelete?: (r: RedactionRule) => void }) {
+  const cols = onDelete ? 5 : 4;
   return (
     <div className="table-wrap">
       <table className="data" aria-label={name}>
-        <thead><tr><th>Name</th><th>Pattern</th><th>Action</th><th>Scope</th></tr></thead>
+        <thead>
+          <tr>
+            <th>Name</th><th>Pattern</th><th>Action</th><th>Scope</th>
+            {onDelete && <th className="col-actions"></th>}
+          </tr>
+        </thead>
         <tbody>
           {rules.length === 0
-            ? <tr><td colSpan={4} className="muted">No rules yet.</td></tr>
+            ? <tr><td colSpan={cols} className="muted">No rules yet.</td></tr>
             : rules.map((r) => (
                 <tr key={r.id}>
                   <td>{r.name}</td>
                   <td className="mono small">{r.pattern}</td>
                   <td>{r.action}</td>
                   <td>{r.scope}</td>
+                  {onDelete && (
+                    <td className="col-actions">
+                      <button type="button" className="icon-btn" aria-label={`Delete rule ${r.name}`} onClick={() => onDelete(r)}>
+                        <Trash2 size={13} />
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
         </tbody>
@@ -162,6 +176,16 @@ export default function Guardrails() {
     onError: (e: unknown) =>
       toast.error(e instanceof ApiError ? e.message : "Couldn't reach Presidio."),
   });
+  const [ruleOpen, setRuleOpen] = useState(false);
+  const [deleteRule, setDeleteRule] = useState<RedactionRule | null>(null);
+  const removeRule = useMutation({
+    mutationFn: (id: string) => apiFetch<void>(`/redaction/rules/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      toast.success("Rule deleted.");
+      qc.invalidateQueries({ queryKey: ["redaction", "rules"] });
+    },
+    onError: (e: unknown) => toast.error(e instanceof ApiError ? e.message : "Couldn't delete the rule."),
+  });
 
   if (!redactDraft || !guardDraft || !rules.data) {
     return (
@@ -199,8 +223,11 @@ export default function Guardrails() {
         </div>
         <h3>Built-in rules</h3>
         <RulesTable name="Built-in rules" rules={rules.data.built_in} />
-        <h3>Custom rules</h3>
-        <RulesTable name="Custom rules" rules={rules.data.custom} />
+        <div className="row row-center gap-2 subsection-head">
+          <h3>Custom rules</h3>
+          <Button variant="secondary" size="sm" onClick={() => setRuleOpen(true)}>New rule</Button>
+        </div>
+        <RulesTable name="Custom rules" rules={rules.data.custom} onDelete={setDeleteRule} />
         <div className="actions">
           <Button variant="primary" size="sm" disabled={saveRedact.isPending} onClick={() => saveRedact.mutate(redactDraft)}>
             {saveRedact.isPending ? "Saving…" : "Save regex settings"}
@@ -261,6 +288,27 @@ export default function Guardrails() {
           </Button>
         </div>
       </Accordion>
+
+      <RedactionRuleDialog open={ruleOpen} onClose={() => setRuleOpen(false)} />
+      <Dialog
+        open={deleteRule !== null}
+        onOpenChange={(o) => { if (!o) setDeleteRule(null); }}
+        title="Delete rule?"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDeleteRule(null)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={removeRule.isPending}
+              onClick={() => { if (deleteRule) removeRule.mutate(deleteRule.id); setDeleteRule(null); }}
+            >
+              Delete
+            </Button>
+          </>
+        }
+      >
+        <p>Delete <code className="mono">{deleteRule?.name}</code>? Matching content will no longer be redacted.</p>
+      </Dialog>
 
       <Toaster />
     </div>

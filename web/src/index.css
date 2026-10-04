@@ -1904,6 +1904,11 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
 .accordion-body h3:first-child {
   margin-top: var(--space-sm);
 }
+.accordion-body .subsection-head {
+  justify-content: space-between;
+  margin: var(--space-lg) 0 var(--space-sm);
+}
+.accordion-body .subsection-head h3 { margin: 0; }
 /* Guardrails field inside accordion body (presidio URL) */
 .accordion-body .field {
   max-width: var(--input-w-md);
