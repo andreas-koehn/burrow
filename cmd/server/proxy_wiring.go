@@ -46,7 +46,7 @@ type serviceDB interface {
 }
 
 // serviceResolverAdapter adapts the db layer to server.ServiceResolver.
-// It owns the collision-retry logic: GenerateSubdomain is called up to N
+// It owns the collision-retry logic: GenerateSlug is called up to N
 // times, retrying whenever SetServiceSubdomain returns a UNIQUE error.
 type serviceResolverAdapter struct {
 	db serviceDB
@@ -69,7 +69,7 @@ func (a serviceResolverAdapter) Resolve(ctx context.Context, userID, name, typ s
 		return svc.ID, svc.Subdomain, nil
 	}
 	for i := 0; i < subdomainRetries; i++ {
-		sub, err := auth.GenerateSubdomain()
+		sub, err := auth.GenerateSlug()
 		if err != nil {
 			return "", "", fmt.Errorf("resolve service: generate subdomain: %w", err)
 		}

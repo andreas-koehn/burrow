@@ -434,21 +434,21 @@ func TestStoreSatisfiesAPIServiceStore(t *testing.T) {
 	var _ api.ServiceStore = st
 }
 
-// TestAuthGenerateSubdomain verifies properties of auth.GenerateSubdomain
+// TestAuthGenerateSlug verifies properties of auth.GenerateSlug
 // as a cross-check that our adapter alphabet check is correct.
-func TestAuthGenerateSubdomain(t *testing.T) {
+func TestAuthGenerateSlug(t *testing.T) {
 	const safeAlphabet = "abcdefghijkmnpqrstuvwxyz23456789"
 	for i := 0; i < 50; i++ {
-		s, err := auth.GenerateSubdomain()
+		s, err := auth.GenerateSlug()
 		if err != nil {
-			t.Fatalf("GenerateSubdomain: %v", err)
+			t.Fatalf("GenerateSlug: %v", err)
 		}
 		if len(s) != 6 {
-			t.Errorf("GenerateSubdomain: length %d want 6 (got %q)", len(s), s)
+			t.Errorf("GenerateSlug: length %d want 6 (got %q)", len(s), s)
 		}
 		for _, c := range s {
 			if !strings.ContainsRune(safeAlphabet, c) {
-				t.Errorf("GenerateSubdomain: char %q outside safe alphabet in %q", c, s)
+				t.Errorf("GenerateSlug: char %q outside safe alphabet in %q", c, s)
 			}
 		}
 	}
