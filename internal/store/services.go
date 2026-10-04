@@ -353,6 +353,12 @@ func (s *Store) ServiceForSubdomain(ctx context.Context, sub string) (db.Service
 	return s.q.GetServiceBySubdomain(ctx, sub)
 }
 
+// ServiceByID returns the service row for id. Hot-path helper used by the
+// proxy router; it has NO permission gate. Propagates db.ErrNotFound.
+func (s *Store) ServiceByID(ctx context.Context, id string) (db.Service, error) {
+	return s.q.GetServiceByID(ctx, id)
+}
+
 // GetServiceIPGeo returns the ip-geo policy config for the given service.
 // This is a hot-path helper used by the proxy router; it has NO permission gate.
 // Returns a zero-value config (Enabled=false, empty slices) when no row exists.

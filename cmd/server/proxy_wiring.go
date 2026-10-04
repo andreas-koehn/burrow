@@ -100,6 +100,7 @@ func isUNIQUESubdomainError(err error) bool {
 // the store layer. *store.Store satisfies it implicitly.
 type subdomainStore interface {
 	ServiceForSubdomain(ctx context.Context, sub string) (db.Service, error)
+	ServiceByID(ctx context.Context, id string) (db.Service, error)
 	GetServiceIPGeo(ctx context.Context, serviceID string) (db.ServiceIPGeoConfig, error)
 }
 
@@ -107,7 +108,6 @@ type subdomainStore interface {
 // *server.Server. Defined as an interface so the adapter can be tested with
 // a fake, and to avoid a direct import cycle.
 type tunnelStreamOpener interface {
-	LookupHTTPTunnel(sub string) (*server.Tunnel, bool)
 	LookupHTTPTunnelByServiceID(serviceID string) (*server.Tunnel, bool)
 	OpenTunnelStream(ctx context.Context, tn *server.Tunnel) (net.Conn, error)
 	// LookupSessionByTunnelID resolves UserID + ClientSessionID from the
@@ -138,7 +138,10 @@ func (a proxyDialerAdapter) lookupSessionFields(tunnelID string) (userID, sessio
 // Lookup implements proxy.StreamDialer.Lookup.
 // Returns proxy.ErrNotFound when:
 //   - the service row does not exist (subdomain not registered), or
-//   - no live HTTP tunnel is connected for that subdomain.
+//   - no live HTTP tunnel is connected for that service.
+//
+// The live tunnel is found by service id, never by the slug it registered
+// with, so a slug rename applies without a client reconnect.
 func (a proxyDialerAdapter) Lookup(ctx context.Context, sub string) (*proxy.Resolved, error) {
 	svc, err := a.st.ServiceForSubdomain(ctx, sub)
 	if err != nil {
@@ -147,7 +150,7 @@ func (a proxyDialerAdapter) Lookup(ctx context.Context, sub string) (*proxy.Reso
 		}
 		return nil, fmt.Errorf("proxy lookup: service for subdomain: %w", err)
 	}
-	tn, ok := a.srv.LookupHTTPTunnel(sub)
+	tn, ok := a.srv.LookupHTTPTunnelByServiceID(svc.ID)
 	if !ok {
 		// Service exists but no live tunnel — treat as not found for the proxy
 		// (the client may have disconnected after registering the subdomain).
@@ -180,19 +183,18 @@ func (a proxyDialerAdapter) Lookup(ctx context.Context, sub string) (*proxy.Reso
 }
 
 // DialTunnelStream implements proxy.StreamDialer.DialTunnelStream.
-// Looks up the live tunnel by subdomain and opens a yamux stream using
-// server.Server.OpenTunnelStream (the same pairing primitive that bridgeVisitor
-// uses for TCP tunnels). Returns proxy.ErrNotFound if the tunnel is gone.
+// Resolves the slug to its service row, then dials the live tunnel by service
+// id (the registry's slug may be stale after a rename). Returns
+// proxy.ErrNotFound if the service or the tunnel is gone.
 func (a proxyDialerAdapter) DialTunnelStream(ctx context.Context, sub string) (net.Conn, error) {
-	tn, ok := a.srv.LookupHTTPTunnel(sub)
-	if !ok {
-		return nil, proxy.ErrNotFound
-	}
-	conn, err := a.srv.OpenTunnelStream(ctx, tn)
+	svc, err := a.st.ServiceForSubdomain(ctx, sub)
 	if err != nil {
-		return nil, fmt.Errorf("proxy dial stream: %w", err)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, proxy.ErrNotFound
+		}
+		return nil, fmt.Errorf("proxy dial stream: service for slug: %w", err)
 	}
-	return conn, nil
+	return a.DialTunnelStreamByServiceID(ctx, svc.ID)
 }
 
 // LookupByServiceID implements proxy.StreamDialer.LookupByServiceID.
@@ -205,12 +207,12 @@ func (a proxyDialerAdapter) LookupByServiceID(ctx context.Context, serviceID str
 	}
 	// We need the service row for access mode / api-key header. Use a fresh DB
 	// lookup by service ID (tolerate a miss — the tunnel may be gone).
-	svc, err := a.st.ServiceForSubdomain(ctx, tn.Subdomain)
+	svc, err := a.st.ServiceByID(ctx, serviceID)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			return nil, proxy.ErrNotFound
 		}
-		return nil, fmt.Errorf("proxy lookup by service id: service for subdomain: %w", err)
+		return nil, fmt.Errorf("proxy lookup by service id: service by id: %w", err)
 	}
 	userID, sessionID := a.lookupSessionFields(tn.ID)
 	ipgeo, err := a.st.GetServiceIPGeo(ctx, svc.ID)

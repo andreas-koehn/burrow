@@ -173,8 +173,26 @@ type fakeStoreSubdomain struct {
 	err error
 }
 
+// ServiceForSubdomain returns svc for its current slug only. A fake whose svc
+// carries no slug answers for any slug (the older tests rely on that).
 func (f *fakeStoreSubdomain) ServiceForSubdomain(_ context.Context, sub string) (db.Service, error) {
-	return f.svc, f.err
+	if f.err != nil {
+		return db.Service{}, f.err
+	}
+	if f.svc.Subdomain != "" && f.svc.Subdomain != sub {
+		return db.Service{}, db.ErrNotFound
+	}
+	return f.svc, nil
+}
+
+func (f *fakeStoreSubdomain) ServiceByID(_ context.Context, id string) (db.Service, error) {
+	if f.err != nil {
+		return db.Service{}, f.err
+	}
+	if f.svc.ID != id {
+		return db.Service{}, db.ErrNotFound
+	}
+	return f.svc, nil
 }
 
 func (f *fakeStoreSubdomain) GetServiceIPGeo(_ context.Context, _ string) (db.ServiceIPGeoConfig, error) {
@@ -193,11 +211,21 @@ type fakeHTTPTunnelLookup struct {
 	ok bool
 }
 
-func (f *fakeHTTPTunnelLookup) LookupHTTPTunnel(_ string) (*server.Tunnel, bool) {
+// LookupHTTPTunnel matches on the slug the tunnel registered with, when the
+// fake tunnel carries one.
+func (f *fakeHTTPTunnelLookup) LookupHTTPTunnel(sub string) (*server.Tunnel, bool) {
+	if f.tn != nil && f.tn.Subdomain != "" && f.tn.Subdomain != sub {
+		return nil, false
+	}
 	return f.tn, f.ok
 }
 
-func (f *fakeHTTPTunnelLookup) LookupHTTPTunnelByServiceID(_ string) (*server.Tunnel, bool) {
+// LookupHTTPTunnelByServiceID matches on the tunnel's service id, when the
+// fake tunnel carries one.
+func (f *fakeHTTPTunnelLookup) LookupHTTPTunnelByServiceID(serviceID string) (*server.Tunnel, bool) {
+	if f.tn != nil && f.tn.ServiceID != "" && f.tn.ServiceID != serviceID {
+		return nil, false
+	}
 	return f.tn, f.ok
 }
 
@@ -248,6 +276,27 @@ func TestProxyDialerAdapter_Lookup_Found(t *testing.T) {
 	}
 	if res.LocalHost != "127.0.0.1:3000" {
 		t.Errorf("LocalHost: got %q want 127.0.0.1:3000", res.LocalHost)
+	}
+}
+
+// A slug rename changes the services row only. The live tunnel still carries
+// the slug it registered with; routing must not depend on it.
+func TestProxyDialerAdapter_Lookup_AfterSlugRename(t *testing.T) {
+	svc := db.Service{ID: "svc1", Name: "web", Type: "http", Subdomain: "newslug", AccessMode: "open"}
+	tn := &server.Tunnel{ID: "t1", IsHTTP: true, Subdomain: "oldslug", ServiceID: "svc1", LocalAddr: "127.0.0.1:3000"}
+	a := proxyDialerAdapter{
+		st:  &fakeStoreSubdomain{svc: svc},
+		srv: &fakeHTTPTunnelLookup{tn: tn, ok: true},
+	}
+	res, err := a.Lookup(context.Background(), "newslug")
+	if err != nil {
+		t.Fatalf("Lookup(newslug): %v", err)
+	}
+	if res.ServiceID != "svc1" || res.TunnelID != "t1" {
+		t.Fatalf("got %+v", res)
+	}
+	if _, err := a.Lookup(context.Background(), "oldslug"); !errors.Is(err, proxy.ErrNotFound) {
+		t.Fatalf("Lookup(oldslug) err = %v, want ErrNotFound", err)
 	}
 }
 

@@ -637,10 +637,10 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 
 		Transport: &http.Transport{
 			// DialContext ignores the addr argument: we always connect to the
-			// tunnel stream for this label. The Transport calls this for each
+			// tunnel stream of the resolved service. The Transport calls this for each
 			// new connection (i.e. each proxied request, since we do not pool).
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				conn, err := p.dialer.DialTunnelStream(ctx, label)
+				conn, err := p.dialer.DialTunnelStreamByServiceID(ctx, res.ServiceID)
 				if err != nil {
 					return nil, err
 				}
