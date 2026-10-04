@@ -620,7 +620,9 @@ button.sort-header:focus-visible {
 table.data td.table-empty {
   padding: var(--space-xl) var(--space-lg);
   text-align: center;
+  white-space: normal;
 }
+table.data tbody tr:hover td.table-empty { background: transparent; }
 .table-empty-title {
   display: block;
   font-size: 13px;

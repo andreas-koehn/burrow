@@ -93,3 +93,12 @@ describe("T14 — table empty state", () => {
     expect(css).toMatch(/\.table-empty-hint\s*\{[^}]*var\(--muted-foreground\)/);
   });
 });
+
+describe("T14 — table empty row wraps and ignores row hover", () => {
+  it("lets the empty cell wrap", () => {
+    expect(css).toMatch(/table\.data td\.table-empty\s*\{[^}]*white-space:\s*normal/);
+  });
+  it("does not paint the hover background on the empty row", () => {
+    expect(css).toMatch(/table\.data tbody tr:hover td\.table-empty\s*\{[^}]*background:\s*transparent/);
+  });
+});

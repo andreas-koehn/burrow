@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
-import { Badge, Button, ErrorNotice, FormFieldGroup, Input, Dialog, TableEmptyRow } from "@/components/ds";
+import { Badge, Button, ErrorNotice, FormFieldGroup, Input, Dialog, SkeletonRows, TableEmptyRow } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { CertPemEditor } from "@/components/CertPemEditor";
@@ -176,6 +176,9 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
                 </td>
               </tr>
             ))}
+            {!data && !isError && (
+              <tr><td colSpan={5}><SkeletonRows n={3} /></td></tr>
+            )}
             {isError && !data && (
               <tr><td colSpan={5}><ErrorNotice>Could not load custom domains.</ErrorNotice></td></tr>
             )}

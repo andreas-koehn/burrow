@@ -192,7 +192,9 @@ export default function RequestInspector() {
             </thead>
             <tbody>
               {rows.length === 0
-                ? <TableEmptyRow colSpan={5} title="No requests yet.">Requests appear here as soon as traffic reaches this service.</TableEmptyRow>
+                ? (list.data.length === 0
+                  ? <TableEmptyRow colSpan={5} title="No requests yet.">Requests appear here as soon as traffic reaches this service.</TableEmptyRow>
+                  : <TableEmptyRow colSpan={5} title="No requests match your search." />)
                 : rows.map((r) => (
                     <tr
                       key={r.id}

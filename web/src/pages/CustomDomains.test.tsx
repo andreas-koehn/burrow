@@ -166,6 +166,7 @@ describe("CustomDomainsPanel empty state", () => {
     db.customDomains = [];
     mount();
     expect(screen.queryByText("No custom domains yet.")).toBeNull();
+    expect(screen.getByRole("table", { name: "Custom domains" }).querySelector(".skel")).not.toBeNull();
     expect(await screen.findByText("No custom domains yet.")).toBeInTheDocument();
     expect(screen.getByText(/Add a domain to serve this service/)).toBeInTheDocument();
   });

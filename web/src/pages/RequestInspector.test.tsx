@@ -114,13 +114,16 @@ describe("Request inspector (§4.23)", () => {
     mount();
     const search = await screen.findByRole("searchbox", { name: /search requests/i });
     await userEvent.type(search, "zzz-no-match");
-    expect(await screen.findByText("No requests yet.")).toBeInTheDocument();
+    expect(await screen.findByText("No requests match your search.")).toBeInTheDocument();
+    expect(screen.queryByText("No requests yet.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Requests appear here as soon as traffic/)).not.toBeInTheDocument();
     await userEvent.click(document.getElementById("inspector-service")!);
     await userEvent.click(await screen.findByRole("option", { name: "other" }));
     await waitFor(() => {
       expect(screen.getByRole("searchbox", { name: /search requests/i })).toHaveValue("");
     });
     expect(screen.queryByText("No requests yet.")).not.toBeInTheDocument();
+    expect(screen.queryByText("No requests match your search.")).not.toBeInTheDocument();
   });
 
   it("keeps the loaded list when a background refetch fails", async () => {
