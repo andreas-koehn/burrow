@@ -22,8 +22,8 @@ describe("AI endpoint detail (§4.20)", () => {
     mount();
     // Model alias resolved to upstream.
     expect(await screen.findByText("fast → llama3.1:8b")).toBeInTheDocument();
-    // Public base URL (subdomain + /v1).
-    expect(screen.getByText("https://ai4m2q.tunnels.example.com/v1")).toBeInTheDocument();
+    // Public base URL (service URL + v1).
+    expect(screen.getByText("https://tunnels.example.com/svc/ai4m2q/v1")).toBeInTheDocument();
     // Client link uses session_id.
     const clientLink = screen.getByRole("link", { name: /sess_4f7a9c0b2e81/i });
     expect(clientLink).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");

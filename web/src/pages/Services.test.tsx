@@ -50,7 +50,7 @@ describe("Services page", () => {
     const table = await screen.findByRole("table", { name: /services/i });
     const web = within(table).getByText("web").closest("tr")!;
     expect(within(web).getByText("http")).toBeInTheDocument();
-    // http row: hostname shown mono with an aria-labelled copy button
+    // http row: URL path shown mono with an aria-labelled copy button
     expect(within(web).getByText("/svc/k7p2qx/")).toBeInTheDocument();
     expect(
       within(web).getByRole("button", { name: /copy url https:\/\/tunnels\.example\.com\/svc\/k7p2qx\//i }),
@@ -63,7 +63,7 @@ describe("Services page", () => {
     const gf = within(table).getByText("grafana").closest("tr")!;
     expect(within(gf).getByText("Burrow login")).toBeInTheDocument();
 
-    // tcp row: no hostname, em-dash, no copy button
+    // tcp row: no URL, em-dash, no copy button
     const pg = within(table).getByText("postgres").closest("tr")!;
     expect(within(pg).getByText("tcp")).toBeInTheDocument();
     expect(within(pg).queryByRole("button", { name: /copy url/i })).toBeNull();

@@ -91,12 +91,16 @@ describe("Tunnels", () => {
         { id: "tt1", name: "pg", type: "tcp", remote_port: 9000, local_addr: "127.0.0.1:5432", bytes_in: 0, bytes_out: 0, connected: true },
       ]), { status: 200 }) as any
     );
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     setup();
     const webRow = (await screen.findByText("web")).closest("tr")!;
     expect(within(webRow).getByText("/svc/k7p2qx/")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "URL" })).toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: "Hostname" })).toBeNull();
     expect(within(webRow).getByRole("button", { name: /copy url https:\/\/tunnels\.example\.com\/svc\/k7p2qx\//i })).toBeInTheDocument();
+    await userEvent.click(within(webRow).getByRole("button", { name: "Copy URL https://tunnels.example.com/svc/k7p2qx/" }));
+    expect(writeText).toHaveBeenCalledWith("https://tunnels.example.com/svc/k7p2qx/");
     expect(within(webRow).getByText("Open")).toBeInTheDocument();
 
     const aiRow = screen.getByText("ai").closest("tr")!;

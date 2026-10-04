@@ -27,6 +27,16 @@ describe("ServiceDetail page", () => {
     expect(idle).not.toHaveClass("muted");
   });
 
+  it("shows the path URL in the meta strip with a copy button, no subdomain host", async () => {
+    mount();
+    await screen.findByRole("heading", { name: /ollama/i });
+    expect(screen.getByText("/svc/ai4m2q/")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Copy URL https://tunnels.example.com/svc/ai4m2q/" }),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/ai4m2q\.tunnels\.example\.com/);
+  });
+
   it("renders service name in the heading", async () => {
     mount();
     const heading = await screen.findByRole("heading", { name: /ollama/i });

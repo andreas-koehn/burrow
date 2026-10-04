@@ -70,7 +70,7 @@ describe("INTUITIVE — navigation & mental-model alignment", () => {
             bytes_in: 0,
             bytes_out: 0,
             connected: true,
-            hostname: "k7p2qx.tunnels.example.com",
+            url: "https://tunnels.example.com/svc/k7p2qx/",
             access_mode: "open",
             service_id: "svc_web01",
           },

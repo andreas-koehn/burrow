@@ -1,3 +1,4 @@
+import { urlPath } from "@/lib/serviceUrl";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -250,7 +251,7 @@ export default function Tunnels() {
                   <td>
                     {t.type === "http" && t.url ? (
                       <span className="row row-center gap-2">
-                        <span className="mono" title={t.url}>{new URL(t.url).pathname}</span>
+                        <span className="mono" title={t.url}>{urlPath(t.url)}</span>
                         <button
                           type="button"
                           className="icon-btn"

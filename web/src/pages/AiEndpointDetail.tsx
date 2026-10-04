@@ -226,7 +226,7 @@ export default function AiEndpointDetail() {
   const baseUrl = useMemo(() => {
     if (!svc.data) return null;
     return svc.data.type === "http" && svc.data.url
-      ? `${svc.data.url.replace(/\/?$/, "/")}v1`
+      ? `${svc.data.url}v1`
       : null;
   }, [svc.data]);
 

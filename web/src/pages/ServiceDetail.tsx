@@ -68,7 +68,7 @@ export default function ServiceDetail() {
 
       {/* Meta strip */}
       <div className="meta-strip">
-        {svc.type === "http" && <ServiceUrl slug={svc.slug} url={svc.url} />}
+        {svc.type === "http" && (svc.slug || svc.url) && <ServiceUrl slug={svc.slug} url={svc.url} />}
         <Badge kind={`access-${svc.access_mode}`} nodot>
           {ACCESS_LABEL[svc.access_mode]}
         </Badge>
