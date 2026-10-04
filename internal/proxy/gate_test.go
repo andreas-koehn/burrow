@@ -617,6 +617,13 @@ func TestGateNext_AcceptsOnlySvcPathsOnAuthDomain(t *testing.T) {
 		{"https://" + gateAuthDomain + "/svc/../api/v1/users", fallback},
 		{"https://" + gateAuthDomain + "/svcx/grafana/", fallback},
 		{"https://" + gateAuthDomain + "/svc/grafana", "https://" + gateAuthDomain + "/svc/grafana"},
+		{"https://" + gateAuthDomain + "/svc/grafana/a(b)", "https://" + gateAuthDomain + "/svc/grafana/a(b)"},
+		{"https://" + gateAuthDomain + "/svc/grafana/a%20b", "https://" + gateAuthDomain + "/svc/grafana/a%20b"},
+		{"https://" + gateAuthDomain + "/svc/grafana/a[1]!*'?q=(x)", "https://" + gateAuthDomain + "/svc/grafana/a[1]!*'?q=(x)"},
+		{"https://" + gateAuthDomain + "/svc/grafana/caf\u00e9", "https://" + gateAuthDomain + "/svc/grafana/caf%C3%A9"},
+		{"https://" + gateAuthDomain + "/svc/grafana/a%2Fb", fallback},
+		{"https://" + gateAuthDomain + "/svc/grafana/a%2fb", fallback},
+		{"https://" + gateAuthDomain + "/svc/grafana/%5c..%5cother/", fallback},
 		{"https://" + gateAuthDomain + ":8443/svc/grafana/", fallback},
 		{"https://" + strings.ToUpper(gateAuthDomain) + "/svc/grafana/", fallback},
 		{"https://" + gateAuthDomain + "./svc/grafana/", fallback},
@@ -698,6 +705,29 @@ func TestGatePostLogin_SetsCSRFCookie(t *testing.T) {
 	if csrf.HttpOnly {
 		t.Error("burrow_csrf must be readable by JavaScript")
 	}
+	if csrf.MaxAge != 7*24*3600 {
+		t.Errorf("burrow_csrf MaxAge = %d, want %d", csrf.MaxAge, 7*24*3600)
+	}
+	if csrf.Secure {
+		t.Error("burrow_csrf Secure = true on a gate built with secure=false")
+	}
+
+	// A gate built with secure=true marks the cookie Secure.
+	st := newFakeGateStore()
+	st.user = db.User{ID: "user-1", Email: "alice@example.com", Role: "user", Status: "active"}
+	secureRec := postLoginForm(proxy.NewGate(st, gateAuthDomain, true, testLog()), map[string]string{
+		"email":    "alice@example.com",
+		"password": "correct-password",
+	})
+	secure := false
+	for _, c := range secureRec.Result().Cookies() {
+		if c.Name == "burrow_csrf" {
+			secure = c.Secure
+		}
+	}
+	if !secure {
+		t.Error("burrow_csrf Secure = false on a gate built with secure=true")
+	}
 	if csrf.Domain != "" || csrf.Path != "/" || csrf.SameSite != http.SameSiteLaxMode {
 		t.Errorf("burrow_csrf attributes: Domain=%q Path=%q SameSite=%v", csrf.Domain, csrf.Path, csrf.SameSite)
 	}
@@ -750,4 +780,37 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// The next URL the access checker emits for a path-routed request must come
+// back out of the gate unchanged, or the visitor lands on the dashboard root
+// after signing in.
+func TestGateNext_RoundTripsAccessCheckerRedirect(t *testing.T) {
+	ac := proxy.NewAccessChecker(&fakeValidator{goodKey: testGoodKey}, gateAuthDomain)
+	res := &proxy.Resolved{ServiceID: "svc6", AccessMode: "burrow_login"}
+	for _, rest := range []string{"/d/abc?q=1&r=a%20b", "/a(b)", "/a(b)/c[1]?x=(y)", "/a%20b", "/"} {
+		req := httptest.NewRequest("GET", rest, nil)
+		req.Host = "grafana." + gateAuthDomain
+		req = req.WithContext(proxy.WithPathPrefix(req.Context(), "/svc/grafana"))
+
+		_, _, _, hdr := ac.Allow(context.Background(), res, req)
+		loc, err := url.Parse(hdr.Get("Location"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		next := loc.Query().Get("next")
+		if want := "https://" + gateAuthDomain + "/svc/grafana" + rest; next != want {
+			t.Fatalf("%s: checker next = %q, want %q", rest, next, want)
+		}
+
+		_, gate := newTestGateWithUser("user", "active")
+		rec := postLoginForm(gate, map[string]string{
+			"email":    "alice@example.com",
+			"password": "correct-password",
+			"next":     next,
+		})
+		if got := rec.Header().Get("Location"); got != next {
+			t.Errorf("%s: gate Location = %q, want %q", rest, got, next)
+		}
+	}
 }

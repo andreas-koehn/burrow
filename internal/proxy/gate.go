@@ -410,7 +410,8 @@ func (g *Gate) renderAccessDenied(w http.ResponseWriter, r *http.Request, user d
 //   - scheme == "https",
 //   - host == authDomain exactly (no port, no other case, no trailing dot),
 //   - the path is already in its canonical form (no dot segments, doubled
-//     slashes, backslashes or percent-encoded separators) and lies under
+//     slashes, backslashes, or percent-encoded slashes, dots or backslashes)
+//     and lies under
 //     /svc/<slug>, so the slug the gate checks is the one the browser lands on,
 //   - no userinfo (user:password@ is stripped out)
 //
@@ -429,10 +430,14 @@ func (g *Gate) sanitizeNext(raw string) string {
 	if u.Host != g.authDomain {
 		return fallback
 	}
-	// RawPath is set only when the path carries an encoding that differs from
-	// the canonical one (%2F, %2e, ...). Browsers treat a backslash as a slash.
-	if u.RawPath != "" || strings.Contains(u.Path, `\`) {
-		return fallback
+	// An encoded slash, dot or backslash would hide a separator or dot segment
+	// from the path.Clean check below, and browsers treat a backslash as a
+	// slash. Every other escape (%20, ...) and literal ( ) ! * ' [ ] is fine.
+	escaped := strings.ToLower(u.EscapedPath())
+	for _, bad := range []string{"%2f", "%2e", "%5c", `\`} {
+		if strings.Contains(escaped, bad) {
+			return fallback
+		}
 	}
 	// "/svc" and "/svc/" clean to "/svc" and are rejected with the rest.
 	clean := path.Clean(u.Path)

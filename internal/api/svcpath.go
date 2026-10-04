@@ -14,8 +14,9 @@ import (
 // "<slug>.<authDomain>", strips the "/svc/<slug>" prefix from the path, and
 // records the prefix in the request context (proxy.WithPathPrefix) so the
 // proxy can rewrite Location headers and report the public host upstream. The
-// proxy trusts only that context value, never a client-sent header. Access control, connection logging,
-// streaming, and stream dialing all come from the delegated proxy handler.
+// proxy trusts only that context value, never a client-sent header. Access
+// control, connection logging, streaming, and stream dialing all come from
+// the delegated proxy handler.
 func ServicePathHandler(next http.Handler, authDomain string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slug := chi.URLParam(r, "slug")
@@ -44,7 +45,6 @@ func ServicePathHandler(next http.Handler, authDomain string) http.HandlerFunc {
 			r2.URL.RawPath = ""
 		}
 		r2.Host = slug + "." + authDomain
-		r2.Header.Set("X-Burrow-Path-Prefix", prefix)
 
 		next.ServeHTTP(w, r2)
 	}

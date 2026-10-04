@@ -12,13 +12,13 @@ import (
 
 func TestServicePathHandler_RewritesHostAndStripsPrefix(t *testing.T) {
 	var gotHost, gotPath, gotPrefix string
-	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHost = r.Host
 		gotPath = r.URL.Path
-		gotPrefix = r.Header.Get("X-Burrow-Path-Prefix")
+		gotPrefix = proxy.PathPrefix(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
-	h := ServicePathHandler(proxy, "burrow.example.com")
+	h := ServicePathHandler(next, "burrow.example.com")
 
 	r := chi.NewRouter()
 	r.Handle("/svc/{slug}/*", h)
@@ -124,5 +124,21 @@ func TestServicePathHandler_MarksContextWithPrefix(t *testing.T) {
 	r.ServeHTTP(httptest.NewRecorder(), req)
 	if gotPrefix != "/svc/abc123" {
 		t.Fatalf("context prefix = %q, want /svc/abc123", gotPrefix)
+	}
+}
+
+// The adapter no longer writes X-Burrow-Path-Prefix itself: the proxy sets it
+// from the context, so whatever the client sent is passed on untouched here.
+func TestServicePathHandler_DoesNotWritePrefixHeader(t *testing.T) {
+	var gotHeader []string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Values("X-Burrow-Path-Prefix")
+	})
+	h := ServicePathHandler(next, "burrow.example.com")
+	r := chi.NewRouter()
+	r.Handle("/svc/{slug}/*", h)
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "https://burrow.example.com/svc/abc123/foo", nil))
+	if len(gotHeader) != 0 {
+		t.Fatalf("adapter wrote X-Burrow-Path-Prefix %q", gotHeader)
 	}
 }
