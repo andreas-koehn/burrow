@@ -46,10 +46,9 @@ describe("destinationsFor — admin with AI and http service", () => {
     });
   }
 
-  it("Request inspector path is templated with firstHttpServiceId", () => {
+  it("Request inspector points at the stable /inspector entry route", () => {
     const inspector = result.find((d) => d.label === "Request inspector");
-    expect(inspector).toBeDefined();
-    expect(inspector?.path).toBe("/inspector/x");
+    expect(inspector?.path).toBe("/inspector");
   });
 });
 
@@ -98,9 +97,8 @@ describe("destinationsFor — non-admin with AI and http service", () => {
   const ctx = { isAdmin: false, hasAiEndpoints: true, firstHttpServiceId: "svc-42" };
   const result = destinationsFor(ctx);
 
-  it("Request inspector path uses the provided firstHttpServiceId", () => {
+  it("Request inspector points at the stable /inspector entry route", () => {
     const inspector = result.find((d) => d.label === "Request inspector");
-    expect(inspector).toBeDefined();
-    expect(inspector?.path).toBe("/inspector/svc-42");
+    expect(inspector?.path).toBe("/inspector");
   });
 });

@@ -5,9 +5,9 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import {
-  Badge, Button, Dialog, Input, PageHeader, SkeletonRows, Tabs,
+  Badge, Button, Dialog, Input, PageHeader, Select, SkeletonRows, Tabs,
 } from "@/components/ds";
-import type { InspectorEntry, ServiceAIConfig } from "@/lib/contract";
+import type { InspectorEntry, Service, ServiceAIConfig } from "@/lib/contract";
 import { withAIConfigDefaults } from "@/lib/aiConfig";
 
 function RedactedHeaders({ headers }: { headers: Record<string, string> }) {
@@ -60,6 +60,24 @@ export default function RequestInspector() {
     retry: false,
     enabled: Boolean(serviceId && selected),
   });
+  const services = useQuery({
+    queryKey: ["services"],
+    queryFn: () => apiFetch<Service[]>("/services"),
+    retry: false,
+  });
+  const httpServices = (Array.isArray(services.data) ? services.data : []).filter((s) => s.type === "http");
+  const servicePicker = httpServices.length > 1 ? (
+    <div className="row row-center gap-2">
+      <label htmlFor="inspector-service" className="muted small">Service</label>
+      <Select
+        id="inspector-service"
+        options={httpServices.map((s) => ({ value: s.id, label: s.name }))}
+        value={serviceId}
+        onChange={(id) => { setSelected(null); nav(`/inspector/${id}`); }}
+      />
+    </div>
+  ) : undefined;
+  const currentName = httpServices.find((s) => s.id === serviceId)?.name;
 
   useEffect(() => {
     if (typeof EventSource === "undefined") return;
@@ -103,9 +121,9 @@ export default function RequestInspector() {
   if (cfg.data && !cfg.data.inspector.enabled) {
     return (
       <div className="inspector-page">
-        <PageHeader title="Request inspector" />
+        <PageHeader title="Request inspector" actions={servicePicker} />
         <p className="muted">
-          Request inspector is off for this tunnel — enable in Access settings.
+          Request inspector is off for this service — enable in Access settings.
         </p>
       </div>
     );
@@ -114,7 +132,7 @@ export default function RequestInspector() {
   if (!list.data) {
     return (
       <div className="inspector-page">
-        <PageHeader title="Request inspector" />
+        <PageHeader title="Request inspector" actions={servicePicker} />
         <SkeletonRows n={6} />
       </div>
     );
@@ -128,7 +146,8 @@ export default function RequestInspector() {
     <div className="inspector-page">
       <PageHeader
         title="Request inspector"
-        subtitle="Tail and replay traffic on this AI endpoint."
+        subtitle={currentName ? `Tail and replay traffic on ${currentName}.` : "Tail and replay traffic on this service."}
+        actions={servicePicker}
       />
 
       <div className="inspector-search">

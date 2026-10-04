@@ -18,6 +18,7 @@ import AiEndpointDetail from "@/pages/AiEndpointDetail";
 import PromptCache from "@/pages/PromptCache";
 import Guardrails from "@/pages/Guardrails";
 import RequestInspector from "@/pages/RequestInspector";
+import InspectorIndex from "@/pages/InspectorIndex";
 import CostBudgets from "@/pages/CostBudgets";
 import AuditLog from "@/pages/AuditLog";
 import Webhooks from "@/pages/Webhooks";
@@ -43,6 +44,7 @@ export default function App() {
         <Route path="/ai/endpoints/:id" element={<AiEndpointDetail />} />
         <Route path="/cache" element={<PromptCache />} />
         <Route path="/guardrails" element={<Guardrails />} />
+        <Route path="/inspector" element={<InspectorIndex />} />
         <Route path="/inspector/:serviceId/:requestId?" element={<RequestInspector />} />
         <Route path="/cost" element={<CostBudgets />} />
         <Route path="/audit" element={<AuditLog />} />

@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from "vitest";
 import { screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
+import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
+import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
 import RequestInspector from "@/pages/RequestInspector";
 
@@ -40,7 +42,7 @@ describe("Request inspector (§4.23)", () => {
     mount();
     expect(
       await screen.findByText(
-        "Request inspector is off for this tunnel — enable in Access settings.",
+        "Request inspector is off for this service — enable in Access settings.",
       ),
     ).toBeInTheDocument();
   });
@@ -69,5 +71,32 @@ describe("Request inspector (§4.23)", () => {
     const table = await screen.findByRole("table", { name: /requests/i });
     const clickable = within(table).getAllByRole("row").filter((r) => r.classList.contains("clickable"));
     expect(clickable.length).toBeGreaterThan(0);
+  });
+
+  it("lets the user switch to another http service (F7)", async () => {
+    server.use(http.get("/api/v1/services", () => HttpResponse.json([
+      { id: "svc-a", name: "alpha", type: "http", access_mode: "api_key", connected: true },
+      { id: "svc-b", name: "beta", type: "http", access_mode: "api_key", connected: false },
+    ])));
+    mount();
+    const picker = await screen.findByRole("button", { name: /service/i });
+    expect(picker).toHaveAttribute("id", "inspector-service");
+    await userEvent.click(picker);
+    await userEvent.click(await screen.findByRole("option", { name: "beta" }));
+    // Picking a service navigates to its inspector: the trigger now shows it.
+    await waitFor(() => {
+      expect(document.getElementById("inspector-service")).toHaveTextContent("beta");
+    });
+  });
+
+  it("shows no service picker when there is only one http service (F7)", async () => {
+    server.use(http.get("/api/v1/services", () => HttpResponse.json([
+      { id: "svc_ai001", name: "ollama", type: "http", access_mode: "api_key", connected: true },
+      { id: "tcp-1", name: "ssh", type: "tcp", access_mode: "open", connected: true },
+    ])));
+    mount();
+    // The subtitle names the service only once /services has resolved.
+    await screen.findByText("Tail and replay traffic on ollama.");
+    expect(document.getElementById("inspector-service")).toBeNull();
   });
 });

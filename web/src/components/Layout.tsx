@@ -145,7 +145,7 @@ export function Layout() {
                 <span className="nav-label">Guardrails</span>
               </NavLink>
               {firstHttpServiceId && (
-                <NavLink to={`/inspector/${firstHttpServiceId}`} className={navItem}>
+                <NavLink to="/inspector" className={navItem}>
                   <span className="nav-icon"><Search size={16} /></span>
                   <span className="nav-label">Request inspector</span>
                 </NavLink>

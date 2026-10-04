@@ -57,10 +57,5 @@ export function destinationsFor(ctx: {
   return DESTINATIONS
     .filter((d) => !d.adminOnly || ctx.isAdmin)
     .filter((d) => !d.needsAiGroup || ctx.hasAiEndpoints)
-    .filter((d) => !d.needsHttpService || !!ctx.firstHttpServiceId)
-    .map((d) =>
-      d.path === "/inspector" && ctx.firstHttpServiceId
-        ? { ...d, path: `/inspector/${ctx.firstHttpServiceId}` }
-        : d,
-    );
+    .filter((d) => !d.needsHttpService || !!ctx.firstHttpServiceId);
 }
