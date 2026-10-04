@@ -49,7 +49,7 @@ test("v0.5.0: database backend page shows sqlite driver", async ({ page }) => {
 // ── 3. Connection logs page renders + Rollups toggle ──────────────────────────
 test("v0.5.0: connection logs page renders and rollups toggle works", async ({ page }) => {
   await page.goto("/connection-logs");
-  await expect(page.getByRole("heading", { name: "Connection logs" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Connection logs", exact: true })).toBeVisible();
 
   // In default (non-rollup) mode, the table or empty state is shown.
   // Empty state: the EmptyState card renders <h4>No connection logs yet</h4>.
