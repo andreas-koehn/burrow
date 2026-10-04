@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Routes, Route } from "react-router-dom";
 import { delay, http, HttpResponse } from "msw";
@@ -36,20 +36,23 @@ describe("InspectorIndex (F7)", () => {
     expect(screen.getByRole("link", { name: "Connect a client" })).toHaveAttribute("href", "/clients/connect");
   });
 
-  it("shows an error with a retry, not the empty state, when the service list fails", async () => {
+  it("shows an error, not the empty state, when the service list fails; Retry recovers", async () => {
     let calls = 0;
     server.use(http.get("/api/v1/services", () => {
       calls += 1;
-      return HttpResponse.json({ error: "boom" }, { status: 500 });
+      if (calls === 1) return HttpResponse.json({ error: "boom" }, { status: 500 });
+      return HttpResponse.json([
+        { id: "http-1", name: "ollama", type: "http", access_mode: "api_key", connected: true },
+      ]);
     }));
     mount();
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Couldn't load services");
     expect(screen.queryByText("No HTTP services to inspect")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Connect a client" })).not.toBeInTheDocument();
-    const before = calls;
     await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(calls).toBeGreaterThan(before));
+    expect(await screen.findByText("inspector for service")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("shows a skeleton while the service list is loading", async () => {

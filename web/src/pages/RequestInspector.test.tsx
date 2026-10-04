@@ -122,4 +122,38 @@ describe("Request inspector (§4.23)", () => {
     });
     expect(screen.queryByText("No requests yet.")).not.toBeInTheDocument();
   });
+
+  it("keeps the loaded list when a background refetch fails", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: /requests/i });
+    const rows = await within(table).findAllByRole("row");
+    await userEvent.click(rows[1]!);
+    // From here on the list endpoint fails; a replay invalidates and refetches it.
+    let failed = 0;
+    server.use(http.get("/api/v1/services/:id/inspector/requests", () => {
+      failed += 1;
+      return HttpResponse.json({ error: "boom" }, { status: 500 });
+    }));
+    await userEvent.click(await screen.findByRole("button", { name: /open replay dialog/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^replay$/i }));
+    await waitFor(() => expect(failed).toBeGreaterThan(0));
+    // Let the failed refetch settle into the query state before asserting.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByRole("table", { name: /requests/i })).toBeInTheDocument();
+    expect(screen.queryByText(/couldn't load requests/i)).not.toBeInTheDocument();
+  });
+
+  it("the unknown-service error offers a Retry that refetches the list", async () => {
+    let calls = 0;
+    server.use(http.get("/api/v1/services/:id/inspector/requests", () => {
+      calls += 1;
+      if (calls === 1) return HttpResponse.json({ error: "boom" }, { status: 500 });
+      return HttpResponse.json([]);
+    }));
+    mount();
+    const alert = await screen.findByRole("alert");
+    await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("table", { name: /requests/i })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
 });

@@ -23,7 +23,7 @@ export default function InspectorIndex() {
   }
 
   // A failed list is not "no services": say so and offer a retry.
-  if (services.isError) {
+  if (services.isError && !services.data) {
     return (
       <div className="inspector-page">
         <PageHeader title="Request inspector" />

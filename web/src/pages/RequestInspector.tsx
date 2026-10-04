@@ -129,12 +129,22 @@ export default function RequestInspector() {
     );
   }
 
-  // Unknown service id or a failed list: an error, not an endless skeleton.
-  if (list.isError) {
+  // Unknown service id or a failed first load: an error, not an endless
+  // skeleton. A failed background refetch keeps the list already on screen.
+  if (list.isError && !list.data) {
     return (
       <div className="inspector-page">
         <PageHeader title="Request inspector" actions={servicePicker} />
-        <ErrorNotice action={<Link to="/inspector">Back to request inspector</Link>}>
+        <ErrorNotice
+          action={
+            <>
+              <Button variant="secondary" size="sm" onClick={() => void list.refetch()}>
+                Retry
+              </Button>
+              <Link to="/inspector">Back to request inspector</Link>
+            </>
+          }
+        >
           Couldn't load requests:{" "}
           {list.error instanceof ApiError ? list.error.message : "Unknown error"}
         </ErrorNotice>
