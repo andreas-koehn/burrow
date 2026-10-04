@@ -9,8 +9,10 @@
 //	https://<authDomain>/__burrow/login?next=<url-encoded-original-url>
 //
 // The Gate renders a Burrow-account login form, authenticates the submission
-// using the same argon2 + session primitives as the dashboard API, sets an
-// auth-domain-scoped session cookie, and 302s back to the service.
+// using the same argon2 + session primitives as the dashboard API, sets a
+// host-only session cookie on the auth domain, and 302s back to the service.
+// Services are served under /svc/<slug>/ on that same origin, so the cookie
+// reaches every one of them without a Domain attribute.
 //
 // # Security decisions
 //
@@ -52,6 +54,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -106,7 +109,7 @@ type Gate struct {
 //
 //   - st:         GateStore providing auth + session primitives.
 //   - authDomain: the Burrow auth domain (e.g. "tunnels.example.com"). Used for
-//     cookie Domain scoping and next-URL validation.
+//     next-URL validation and the gate's own redirects.
 //   - secure:     when true, cookies carry Secure=true (matches dashboard flag).
 //   - log:        structured logger; must not be nil.
 func NewGate(st GateStore, authDomain string, secure bool, log *slog.Logger) http.Handler {
@@ -161,8 +164,8 @@ func (g *Gate) handleGetLogin(w http.ResponseWriter, r *http.Request) {
 			// Valid session — look up the user and check role against target service.
 			user, err := g.st.GetUserByID(r.Context(), uid)
 			if err == nil && user.Status != "suspended" {
-				// Derive service from the next URL subdomain.
-				label := subdomainLabel(nextURL, g.authDomain)
+				// Derive service from the /svc/<slug>/ path of the next URL.
+				label := slugFromNext(nextURL)
 				if label != "" {
 					svc, err := g.st.ServiceForSubdomain(r.Context(), label)
 					if err == nil {
@@ -174,7 +177,7 @@ func (g *Gate) handleGetLogin(w http.ResponseWriter, r *http.Request) {
 								return
 							}
 							// Role allowed → redirect back to service immediately.
-							//nolint:gosec // G710: nextURL is sanitizeNext()-validated to https + authDomain/sub-of-authDomain only; not attacker-controlled.
+							//nolint:gosec // G710: nextURL is sanitizeNext()-validated to https + authDomain + /svc/ path only; not attacker-controlled.
 							http.Redirect(w, r, nextURL, http.StatusFound)
 							return
 						}
@@ -182,7 +185,7 @@ func (g *Gate) handleGetLogin(w http.ResponseWriter, r *http.Request) {
 				}
 				// No service found or no label — redirect to next anyway (the service
 				// access check is best-effort; the proxy will re-evaluate).
-				//nolint:gosec // G710: nextURL is sanitizeNext()-validated to https + authDomain/sub-of-authDomain only; not attacker-controlled.
+				//nolint:gosec // G710: nextURL is sanitizeNext()-validated to https + authDomain + /svc/ path only; not attacker-controlled.
 				http.Redirect(w, r, nextURL, http.StatusFound)
 				return
 			}
@@ -190,7 +193,7 @@ func (g *Gate) handleGetLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// No valid session (or suspended) → show login form.
-	label := subdomainLabel(nextURL, g.authDomain)
+	label := slugFromNext(nextURL)
 	g.renderLogin(w, nextURL, label, "")
 }
 
@@ -207,7 +210,7 @@ func (g *Gate) handlePostLogin(w http.ResponseWriter, r *http.Request) {
 	nextRaw := r.FormValue("next")
 	nextURL := g.sanitizeNext(nextRaw)
 
-	label := subdomainLabel(nextURL, g.authDomain)
+	label := slugFromNext(nextURL)
 
 	// Verify credentials.
 	ok, err := g.st.VerifyUserPassword(r.Context(), email, password)
@@ -249,16 +252,15 @@ func (g *Gate) handlePostLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set the auth-domain-scoped session cookie. Domain=authDomain means
-	// the cookie is sent to all subdomains of authDomain — this is the key
-	// difference from the dashboard cookie (which has no Domain set, making
-	// it host-only). The same MaxAge/flags as the dashboard cookie apply.
+	// Set the host-only session cookie. The gate and every path-routed
+	// service share the auth domain's origin, so no Domain attribute is
+	// needed. The same MaxAge/flags as the dashboard cookie apply.
 	g.setSessionCookie(w, sid)
 
 	g.log.Info("gate: login success", "email", email)
 	_ = g.st.DeleteSession // best-effort touch is not needed here
 
-	//nolint:gosec // G710: nextURL is sanitizeNext()-validated to https + authDomain/sub-of-authDomain only; not attacker-controlled.
+	//nolint:gosec // G710: nextURL is sanitizeNext()-validated to https + authDomain + /svc/ path only; not attacker-controlled.
 	http.Redirect(w, r, nextURL, http.StatusFound)
 }
 
@@ -272,18 +274,18 @@ func (g *Gate) handlePostLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
-// Cookie helpers (domain-scoped variants of internal/api/cookies.go)
+// Cookie helpers (mirror internal/api/cookies.go)
 // ---------------------------------------------------------------------------
 
-// setSessionCookie sets the burrow_session cookie scoped to authDomain so it is
-// shared across all subdomains (SSO). The dashboard cookie (internal/api/cookies.go)
-// uses no Domain (host-only); we add Domain here for gate-specific SSO scoping.
-// All other flags (HttpOnly, SameSite=Lax, Secure, MaxAge) mirror the dashboard.
+// setSessionCookie sets the burrow_session cookie. It is host-only (no Domain)
+// because the gate and every path-routed service share the auth domain's
+// origin; it replaces the dashboard cookie of the same name instead of
+// shadowing it. All flags (HttpOnly, SameSite=Lax, Secure, MaxAge) mirror the
+// dashboard cookie (internal/api/cookies.go).
 func (g *Gate) setSessionCookie(w http.ResponseWriter, id string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     gateSessionCookieName,
 		Value:    id,
-		Domain:   g.authDomain,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   g.secure,
@@ -292,12 +294,11 @@ func (g *Gate) setSessionCookie(w http.ResponseWriter, id string) {
 	})
 }
 
-// clearSessionCookie expires the burrow_session cookie on the auth domain.
+// clearSessionCookie expires the host-only burrow_session cookie.
 func (g *Gate) clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     gateSessionCookieName,
 		Value:    "",
-		Domain:   g.authDomain,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   g.secure,
@@ -352,10 +353,12 @@ func (g *Gate) renderAccessDenied(w http.ResponseWriter, r *http.Request, user d
 // sanitizeNext validates the `next` parameter. Accepts a URL iff:
 //   - it is parseable,
 //   - scheme == "https",
-//   - host == authDomain OR host ends with "."+authDomain.
+//   - host == authDomain,
+//   - the path lies under /svc/<slug> (dot segments resolved first),
 //   - no userinfo (user:password@ is stripped out)
 //
-// Any other value (off-domain, http://, unparseable) returns the safe default:
+// Any other value (off-domain, a subdomain of authDomain, http://, another
+// path on the auth domain, unparseable) returns the safe default:
 // "https://<authDomain>/".
 func (g *Gate) sanitizeNext(raw string) string {
 	fallback := "https://" + g.authDomain + "/"
@@ -366,8 +369,11 @@ func (g *Gate) sanitizeNext(raw string) string {
 	if err != nil || u.Scheme != "https" {
 		return fallback
 	}
-	host := u.Hostname() // strips port
-	if host != g.authDomain && !strings.HasSuffix(host, "."+g.authDomain) {
+	if u.Hostname() != g.authDomain { // Hostname strips the port
+		return fallback
+	}
+	// "/svc" and "/svc/" clean to "/svc" and are rejected with the rest.
+	if !strings.HasPrefix(path.Clean(u.Path), "/svc/") {
 		return fallback
 	}
 	// Strip userinfo for safety.
@@ -375,23 +381,17 @@ func (g *Gate) sanitizeNext(raw string) string {
 	return u.String()
 }
 
-// subdomainLabel extracts the first DNS label from a URL's host if the host is
-// a direct subdomain of authDomain (e.g. "app.tunnels.example.com" → "app").
-// Returns "" if the URL is unparseable, is the auth domain itself, or the label
-// contains a dot (multi-level subdomain).
-func subdomainLabel(rawURL, authDomain string) string {
+// slugFromNext extracts the service slug from a validated next URL: the
+// <slug> segment of its /svc/<slug>/ path. Returns "" for the fallback URL.
+func slugFromNext(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return ""
 	}
-	host := u.Hostname()
-	suffix := "." + authDomain
-	if !strings.HasSuffix(host, suffix) {
+	rest, ok := strings.CutPrefix(u.Path, "/svc/")
+	if !ok {
 		return ""
 	}
-	label := strings.TrimSuffix(host, suffix)
-	if label == "" || strings.Contains(label, ".") {
-		return ""
-	}
-	return label
+	slug, _, _ := strings.Cut(rest, "/")
+	return slug
 }

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -83,5 +84,26 @@ func TestServicePathHandler_RejectsInvalidSlug(t *testing.T) {
 	}
 	if called {
 		t.Fatal("proxy was called for an invalid slug")
+	}
+}
+
+func TestRouter_MountsGate(t *testing.T) {
+	hit := false
+	gate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true })
+	h := NewRouter(Deps{Gate: gate, Log: discardLog()})
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/__burrow/login", nil))
+	if !hit {
+		t.Fatal("/__burrow/login did not reach the gate")
+	}
+}
+
+func TestRouter_GatePostNotBlockedByCSRF(t *testing.T) {
+	status := 0
+	gate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { status = http.StatusFound; w.WriteHeader(status) })
+	h := NewRouter(Deps{Gate: gate, Log: discardLog()})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/__burrow/login", strings.NewReader("email=a&password=b")))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 from the gate", rec.Code)
 	}
 }

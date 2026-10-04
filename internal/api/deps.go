@@ -274,6 +274,9 @@ type Deps struct {
 	// single-origin path routing. AuthDomain (above) is the base domain used
 	// to synthesize the upstream host "<id>.<AuthDomain>".
 	TunnelProxy http.Handler
+	// Gate, when non-nil, serves /__burrow/* (the burrow_login form) on this
+	// origin. Path-routed services redirect visitors here.
+	Gate http.Handler
 	// ControlListen is the relay's control-plane listen address — the value
 	// `burrow connect --server …` must point at. Surfaced by the
 	// /api/v1/clients/connect-info endpoint so the "Connect a client" wizard

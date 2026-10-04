@@ -761,3 +761,64 @@ func TestProxyForwardedHostOnPathRoute(t *testing.T) {
 		t.Errorf("X-Forwarded-Host on a path-routed request: want %q, got %q", authDomain, gotXFH)
 	}
 }
+
+// Tunnelled apps share the dashboard's origin, so the browser attaches the
+// dashboard session to every /svc/ request. It must never reach the upstream.
+func TestProxyStripsBurrowCookies(t *testing.T) {
+	var gotCookie string
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCookie = r.Header.Get("Cookie")
+		w.WriteHeader(http.StatusOK)
+	})
+	d := newFakeDialer(upstream)
+	d.register("ck", &proxy.Resolved{ServiceID: "svc-ck", AccessMode: "open", LocalHost: "127.0.0.1:3000"})
+
+	p := proxy.New(d, openChecker{}, authDomain, testLog())
+	ts := httptest.NewServer(p)
+	defer ts.Close()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/", nil)
+	req.Host = "ck." + authDomain
+	req.Header.Set("Cookie", "burrow_session=secret; app=1; burrow_csrf=tok; theme=dark")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if gotCookie != "app=1; theme=dark" {
+		t.Fatalf("upstream Cookie = %q, want %q", gotCookie, "app=1; theme=dark")
+	}
+}
+
+func TestProxyStripsBurrowCookies_OnlyBurrowCookies(t *testing.T) {
+	var gotHeader http.Header
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	})
+	d := newFakeDialer(upstream)
+	d.register("ck2", &proxy.Resolved{ServiceID: "svc-ck2", AccessMode: "open", LocalHost: "127.0.0.1:3000"})
+
+	p := proxy.New(d, openChecker{}, authDomain, testLog())
+	ts := httptest.NewServer(p)
+	defer ts.Close()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/", nil)
+	req.Host = "ck2." + authDomain
+	req.Header.Set("Cookie", "burrow_session=secret")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if gotHeader == nil {
+		t.Fatal("upstream was not reached")
+	}
+	if _, ok := gotHeader["Cookie"]; ok {
+		t.Fatalf("upstream got a Cookie header: %q", gotHeader["Cookie"])
+	}
+}

@@ -775,6 +775,9 @@ func main() {
 					// "<id>.<AuthDomain>" then matches the proxy's own routing
 					// suffix exactly. When AuthDomain is "" the routes are skipped.
 					TunnelProxy: proxyHandler,
+					// The burrow_login gate, served at /__burrow/* on this origin so
+					// path-routed services can redirect visitors to it.
+					Gate: gate,
 					// Control plane is on a different port from the API/dashboard
 					// (e.g. compose maps :7000 control, :8080 dashboard). Surface
 					// it via /clients/connect-info so the "Connect a client" wizard

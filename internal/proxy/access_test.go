@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -276,5 +277,50 @@ func TestProxyBurrowLoginRedirect(t *testing.T) {
 	}
 	if !strings.Contains(loc, "app."+domain) {
 		t.Errorf("Location %q should contain original host", loc)
+	}
+}
+
+// A path-routed request arrives with a synthetic Host. The gate redirect must
+// send the visitor back to the public path URL, never to the internal label.
+func TestAccessChecker_BurrowLogin_PathRouted_NextStaysOnOrigin(t *testing.T) {
+	ac := newChecker(&fakeValidator{goodKey: testGoodKey})
+	res := &proxy.Resolved{ServiceID: "svc6", AccessMode: "burrow_login"}
+	req := httptest.NewRequest("GET", "http://grafana."+testAuthDomain+"/d/abc?q=1", nil)
+	req.Host = "grafana." + testAuthDomain
+	req.Header.Set("X-Burrow-Path-Prefix", "/svc/grafana")
+
+	_, status, _, hdr := ac.Allow(context.Background(), res, req)
+	if status != http.StatusFound {
+		t.Fatalf("status = %d, want 302", status)
+	}
+	u, err := url.Parse(hdr.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://" + testAuthDomain + "/svc/grafana/d/abc?q=1"
+	if got := u.Query().Get("next"); got != want {
+		t.Fatalf("next = %q, want %q", got, want)
+	}
+}
+
+// The /svc/{slug} adapter strips the prefix from URL.Path but leaves
+// RequestURI as the visitor sent it. The prefix must appear exactly once.
+func TestAccessChecker_BurrowLogin_PathRouted_PrefixNotDoubled(t *testing.T) {
+	ac := newChecker(&fakeValidator{goodKey: testGoodKey})
+	res := &proxy.Resolved{ServiceID: "svc6", AccessMode: "burrow_login"}
+	req := httptest.NewRequest("GET", "https://"+testAuthDomain+"/svc/grafana/d/a%2Fb?q=1", nil)
+	req.URL.Path = "/d/a/b"
+	req.URL.RawPath = "/d/a%2Fb"
+	req.Host = "grafana." + testAuthDomain
+	req.Header.Set("X-Burrow-Path-Prefix", "/svc/grafana")
+
+	_, _, _, hdr := ac.Allow(context.Background(), res, req)
+	u, err := url.Parse(hdr.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://" + testAuthDomain + "/svc/grafana/d/a%2Fb?q=1"
+	if got := u.Query().Get("next"); got != want {
+		t.Fatalf("next = %q, want %q", got, want)
 	}
 }

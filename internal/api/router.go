@@ -406,6 +406,13 @@ func NewRouter(d Deps) http.Handler {
 		})
 	})
 
+	// The burrow_login gate. Path-routed services redirect visitors to
+	// /__burrow/login on this origin; it sits outside /api/v1, so the CSRF
+	// middleware does not apply to its form POST.
+	if d.Gate != nil {
+		r.Handle("/__burrow/*", d.Gate)
+	}
+
 	// Single-origin HTTP tunnel path routing (feat/builtin-acme B3): mount
 	// /svc/{slug} and /svc/{slug}/* on the host-routing proxy handler so http
 	// tunnels are reachable at https://<domain>/svc/<slug>/... on the same :443 origin,

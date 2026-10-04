@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -141,7 +142,15 @@ func TestE2EAccessModes_BurrowLogin_FullFlow(t *testing.T) {
 	}
 	s := bootE2EStack(t)
 
+	// The upstream records the cookies it is sent: the dashboard's own cookies
+	// must never reach it.
+	var upstreamCookies atomic.Value // []string
 	s.setUpstreamHandler(func(w http.ResponseWriter, r *http.Request) {
+		var names []string
+		for _, ck := range r.Cookies() {
+			names = append(names, ck.Name)
+		}
+		upstreamCookies.Store(names)
 		_, _ = io.WriteString(w, "secret-app")
 	})
 
@@ -153,9 +162,10 @@ func TestE2EAccessModes_BurrowLogin_FullFlow(t *testing.T) {
 		context.Background(), s.userID, "admin", s.serviceID, []string{"admin"}),
 		"SetAccessPolicy(admin)")
 
-	// Step 1 — unauthenticated visit → 302 to /__burrow/login?next=...
-	hc := s.visitorClient(t)
-	svcURL := "https://" + s.hostWithPort() + "/protected"
+	// Step 1 — unauthenticated visit to the path URL → 302 to
+	// /__burrow/login?next=... on the same origin.
+	hc := s.pathClient(t)
+	svcURL := s.pathURL("/protected")
 
 	r1, err := hc.Get(svcURL)
 	must(t, err, "GET (unauth)")
@@ -176,8 +186,7 @@ func TestE2EAccessModes_BurrowLogin_FullFlow(t *testing.T) {
 	}
 
 	// Step 2 — GET the gate; verify 200 HTML + "Sign in to continue".
-	gateURL := "https://" + e2eAuthDomain + ":" + s.proxyPort + "/__burrow/login?next=" + url.QueryEscape(svcURL)
-	r2, err := hc.Get(gateURL)
+	r2, err := hc.Get(loc1.String())
 	must(t, err, "GET gate")
 	body2 := readAllString(t, r2)
 	if r2.StatusCode != http.StatusOK {
@@ -190,20 +199,23 @@ func TestE2EAccessModes_BurrowLogin_FullFlow(t *testing.T) {
 		t.Errorf("gate body missing service label %q, got: %s", s.subdomain, body2)
 	}
 
-	// Step 3 — POST credentials → 302 back to next + sets Domain=test.local cookie.
+	// Step 3 — POST credentials → 302 back to next + sets a host-only cookie.
 	form := url.Values{
 		"email":    {e2eAdminEmail},
 		"password": {e2eAdminPassword},
 		"next":     {svcURL},
 	}
-	postURL := "https://" + e2eAuthDomain + ":" + s.proxyPort + "/__burrow/login"
+	postURL := "https://" + e2eAuthDomain + "/__burrow/login"
 	r3, err := hc.PostForm(postURL, form)
 	must(t, err, "POST gate")
 	_ = readAllString(t, r3)
 	if r3.StatusCode != http.StatusFound {
 		t.Fatalf("POST gate: want 302, got %d", r3.StatusCode)
 	}
-	// Verify cookie is Domain-scoped to test.local.
+	if got := r3.Header.Get("Location"); got != svcURL {
+		t.Errorf("POST gate Location: want %q, got %q", svcURL, got)
+	}
+	// Verify the cookie is host-only (no Domain attribute).
 	var sso *http.Cookie
 	for _, ck := range r3.Cookies() {
 		if ck.Name == "burrow_session" {
@@ -214,9 +226,15 @@ func TestE2EAccessModes_BurrowLogin_FullFlow(t *testing.T) {
 	if sso == nil {
 		t.Fatal("POST gate: missing burrow_session cookie")
 	}
-	if sso.Domain != e2eAuthDomain {
-		t.Errorf("cookie Domain: want %s, got %q", e2eAuthDomain, sso.Domain)
+	if sso.Domain != "" {
+		t.Errorf("cookie Domain: want none (host-only), got %q", sso.Domain)
 	}
+	// A dashboard CSRF cookie rides along on the shared origin as well.
+	mainURL, _ := url.Parse("https://" + e2eAuthDomain + "/")
+	hc.Jar.SetCookies(mainURL, []*http.Cookie{
+		{Name: "burrow_csrf", Value: "tok", Path: "/", Secure: true},
+		{Name: "app", Value: "1", Path: "/", Secure: true},
+	})
 
 	// Step 4 — re-visit the service with the cookie → 200 proxied.
 	r4, err := hc.Get(svcURL)
@@ -227,6 +245,11 @@ func TestE2EAccessModes_BurrowLogin_FullFlow(t *testing.T) {
 	}
 	if body4 != "secret-app" {
 		t.Errorf("authed body: want secret-app, got %q", body4)
+	}
+	// The upstream sees its own cookie but neither of the dashboard's.
+	got, _ := upstreamCookies.Load().([]string)
+	if len(got) != 1 || got[0] != "app" {
+		t.Errorf("upstream cookies: want [app], got %v", got)
 	}
 
 	// Step 5 — restrict policy to {"user"} only; admin (us) is now denied.
@@ -259,7 +282,7 @@ func TestE2EAccessModes_BurrowLogin_FullFlow(t *testing.T) {
 	}
 
 	// Step 6 — global logout: POST /__burrow/logout → 302 to login + clears cookie.
-	logoutURL := "https://" + e2eAuthDomain + ":" + s.proxyPort + "/__burrow/logout"
+	logoutURL := "https://" + e2eAuthDomain + "/__burrow/logout"
 	r7, err := hc.PostForm(logoutURL, nil)
 	must(t, err, "POST logout")
 	_ = readAllString(t, r7)

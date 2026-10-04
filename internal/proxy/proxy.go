@@ -438,6 +438,7 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 	rp := &httputil.ReverseProxy{
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
+			stripBurrowCookies(pr.Out)
 			pr.Out.Header.Del("X-Forwarded-Port")
 			pr.Out.Header.Set("X-Forwarded-For", resolvedClientIP)
 			pr.Out.Header.Set("X-Forwarded-Proto", "https")
@@ -598,6 +599,8 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 		FlushInterval: -1,
 
 		Rewrite: func(pr *httputil.ProxyRequest) {
+			stripBurrowCookies(pr.Out)
+
 			// Stdlib has stripped Forwarded, X-Forwarded-For, X-Forwarded-Host,
 			// and X-Forwarded-Proto from pr.Out before this function is called.
 			// X-Forwarded-Port is NOT auto-stripped by stdlib, so we delete it
@@ -1045,4 +1048,23 @@ func (c *countingConn) Write(p []byte) (int, error) {
 		*c.n += int64(n)
 	}
 	return n, err
+}
+
+// burrowCookies are the dashboard's own cookies. Path-routed services share
+// the dashboard's origin, so browsers attach these to every request.
+var burrowCookies = map[string]bool{"burrow_session": true, "burrow_csrf": true}
+
+// stripBurrowCookies removes the dashboard's cookies from an outbound request
+// and leaves every other cookie untouched.
+func stripBurrowCookies(out *http.Request) {
+	cookies := out.Cookies()
+	if len(cookies) == 0 {
+		return
+	}
+	out.Header.Del("Cookie")
+	for _, c := range cookies {
+		if !burrowCookies[c.Name] {
+			out.AddCookie(c)
+		}
+	}
 }

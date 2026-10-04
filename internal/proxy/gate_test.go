@@ -166,13 +166,13 @@ func TestGateGetLogin_ServiceLabel_FromNext(t *testing.T) {
 	st.serviceMap["app"] = db.Service{ID: "svc1", Name: "My App", Subdomain: "app"}
 	gate := newTestGate(st)
 
-	nextURL := "https://app." + gateAuthDomain + "/dashboard"
+	nextURL := "https://" + gateAuthDomain + "/svc/app/dashboard"
 	req := httptest.NewRequest("GET", "/__burrow/login?next="+url.QueryEscape(nextURL), nil)
 	rec := httptest.NewRecorder()
 	gate.ServeHTTP(rec, req)
 
 	body := rec.Body.String()
-	// The first label of the next host should appear as service label
+	// The slug in the next path should appear as service label
 	if !strings.Contains(body, "app") {
 		t.Errorf("body missing service label 'app': %q", body[:min(300, len(body))])
 	}
@@ -242,7 +242,9 @@ func TestGateGetLogin_NextSameAuthDomain_Accepted(t *testing.T) {
 	}
 }
 
-func TestGateGetLogin_NextSubdomain_Accepted(t *testing.T) {
+// A subdomain of the auth domain is not a valid next: services live under
+// /svc/<slug>/ on the auth domain itself.
+func TestGateGetLogin_NextSubdomain_Dropped(t *testing.T) {
 	_, gate := newTestGateWithUser("user", "active")
 
 	next := "https://app." + gateAuthDomain + "/path"
@@ -253,6 +255,9 @@ func TestGateGetLogin_NextSubdomain_Accepted(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
+	if strings.Contains(rec.Body.String(), "app."+gateAuthDomain) {
+		t.Errorf("body should not carry a subdomain next URL")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -262,7 +267,7 @@ func TestGateGetLogin_NextSubdomain_Accepted(t *testing.T) {
 func TestGatePostLogin_ValidCreds_SetsSessionCookie(t *testing.T) {
 	st, gate := newTestGateWithUser("user", "active")
 	_ = st
-	next := "https://app." + gateAuthDomain + "/after-login"
+	next := "https://" + gateAuthDomain + "/svc/app/after-login"
 
 	rec := postLoginForm(gate, map[string]string{
 		"email":    "alice@example.com",
@@ -293,9 +298,9 @@ func TestGatePostLogin_ValidCreds_SetsSessionCookie(t *testing.T) {
 	if sessionCookie.Value == "" {
 		t.Error("burrow_session cookie value is empty")
 	}
-	// Cookie MUST have Domain = authDomain (shared SSO cookie)
-	if sessionCookie.Domain != gateAuthDomain {
-		t.Errorf("burrow_session cookie Domain: want %q, got %q", gateAuthDomain, sessionCookie.Domain)
+	// Cookie MUST be host-only (the gate shares the dashboard's origin)
+	if sessionCookie.Domain != "" {
+		t.Errorf("burrow_session cookie Domain: want %q, got %q", "", sessionCookie.Domain)
 	}
 	if !sessionCookie.HttpOnly {
 		t.Error("burrow_session cookie must be HttpOnly")
@@ -418,7 +423,7 @@ func TestGateGetLogin_AuthenticatedWrongRole_AccessDenied(t *testing.T) {
 
 	gate := newTestGate(st)
 
-	next := "https://secure." + gateAuthDomain + "/page"
+	next := "https://" + gateAuthDomain + "/svc/secure/page"
 	req := httptest.NewRequest("GET", "/__burrow/login?next="+url.QueryEscape(next), nil)
 	// Attach session cookie
 	req.AddCookie(&http.Cookie{Name: "burrow_session", Value: sessionID})
@@ -458,7 +463,7 @@ func TestGateGetLogin_AuthenticatedAllowedRole_RedirectsToNext(t *testing.T) {
 
 	gate := newTestGate(st)
 
-	next := "https://allowed." + gateAuthDomain + "/home"
+	next := "https://" + gateAuthDomain + "/svc/allowed/home"
 	req := httptest.NewRequest("GET", "/__burrow/login?next="+url.QueryEscape(next), nil)
 	req.AddCookie(&http.Cookie{Name: "burrow_session", Value: sessionID})
 	rec := httptest.NewRecorder()
@@ -515,6 +520,134 @@ func TestGatePostLogout_ClearsCookieAndRedirects(t *testing.T) {
 	}
 	if clearedCookie.MaxAge != -1 {
 		t.Errorf("clearing cookie: want MaxAge=-1, got %d", clearedCookie.MaxAge)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: path-routed next URLs (/svc/<slug>/ on the auth domain)
+// ---------------------------------------------------------------------------
+
+// The login form names the service taken from the /svc/<slug>/ path of next.
+func TestGateGetLogin_ServiceLabel_FromPathNext(t *testing.T) {
+	st := newFakeGateStore()
+	st.user = db.User{ID: "u1", Email: "a@example.com", Role: "user", Status: "active"}
+	st.serviceMap["grafana"] = db.Service{ID: "svc1", Name: "My App", Subdomain: "grafana"}
+	gate := newTestGate(st)
+
+	nextURL := "https://" + gateAuthDomain + "/svc/grafana/d/abc"
+	req := httptest.NewRequest("GET", "/__burrow/login?next="+url.QueryEscape(nextURL), nil)
+	rec := httptest.NewRecorder()
+	gate.ServeHTTP(rec, req)
+
+	// The next URL itself is echoed into a hidden field, so look for the label
+	// outside of it.
+	body := strings.ReplaceAll(rec.Body.String(), nextURL, "")
+	if !strings.Contains(body, "grafana") {
+		t.Errorf("body missing service label 'grafana': %q", body[:min(300, len(body))])
+	}
+}
+
+// A logged-in user whose role is not in the policy sees access-denied for a
+// path next, exactly as for a subdomain next.
+func TestGateGetLogin_PathNext_WrongRole_AccessDenied(t *testing.T) {
+	st := newFakeGateStore()
+	st.user = db.User{
+		ID:     "user-2",
+		Email:  "bob@example.com",
+		Role:   "user",
+		Status: "active",
+	}
+	st.serviceMap["grafana"] = db.Service{ID: "svc-secure", Name: "SecureApp", Subdomain: "grafana"}
+	st.policyMap["svc-secure"] = []string{"admin"}
+	sessionID := "sess-user-2"
+	st.sessionMap[sessionID] = "user-2"
+
+	gate := newTestGate(st)
+
+	next := "https://" + gateAuthDomain + "/svc/grafana/"
+	req := httptest.NewRequest("GET", "/__burrow/login?next="+url.QueryEscape(next), nil)
+	req.AddCookie(&http.Cookie{Name: "burrow_session", Value: sessionID})
+	rec := httptest.NewRecorder()
+	gate.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("want 403 access-denied, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGateNext_RejectsOpenRedirects(t *testing.T) {
+	h := newTestGate(newFakeGateStore())
+	for _, next := range []string{
+		"https://evil.example/svc/x/",
+		"http://" + gateAuthDomain + "/svc/x/",
+		"//evil.example/svc/x/",
+		"https://" + gateAuthDomain + ".evil.example/",
+		"javascript:alert(1)",
+	} {
+		req := httptest.NewRequest("GET", "https://"+gateAuthDomain+"/__burrow/login?next="+url.QueryEscape(next), nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if strings.Contains(rec.Body.String(), "evil.example") || strings.Contains(rec.Body.String(), "javascript:") {
+			t.Errorf("next=%q leaked into the login form", next)
+		}
+	}
+}
+
+// Only https://<authDomain>/svc/... is a valid next. Subdomains of the auth
+// domain and other paths on it fall back to the dashboard root.
+func TestGateNext_AcceptsOnlySvcPathsOnAuthDomain(t *testing.T) {
+	fallback := "https://" + gateAuthDomain + "/"
+	for _, tc := range []struct{ next, want string }{
+		{"https://" + gateAuthDomain + "/svc/grafana/d/abc?q=1", "https://" + gateAuthDomain + "/svc/grafana/d/abc?q=1"},
+		{"https://app." + gateAuthDomain + "/svc/grafana/", fallback},
+		{"https://app." + gateAuthDomain + "/page", fallback},
+		{"https://" + gateAuthDomain + "/settings", fallback},
+		{"https://" + gateAuthDomain + "/api/v1/users", fallback},
+		{"https://" + gateAuthDomain + "/svc", fallback},
+		{"https://" + gateAuthDomain + "/svc/", fallback},
+		{"https://" + gateAuthDomain + "/svc/../api/v1/users", fallback},
+		{"https://" + gateAuthDomain + "/svcx/grafana/", fallback},
+		{"https://user:pw@" + gateAuthDomain + "/svc/grafana/", "https://" + gateAuthDomain + "/svc/grafana/"},
+	} {
+		_, gate := newTestGateWithUser("user", "active")
+		rec := postLoginForm(gate, map[string]string{
+			"email":    "alice@example.com",
+			"password": "correct-password",
+			"next":     tc.next,
+		})
+		if rec.Code != http.StatusFound {
+			t.Fatalf("next=%q: want 302, got %d", tc.next, rec.Code)
+		}
+		if got := rec.Header().Get("Location"); got != tc.want {
+			t.Errorf("next=%q: Location = %q, want %q", tc.next, got, tc.want)
+		}
+	}
+}
+
+// The gate lives on the dashboard's own host, so its cookie is host-only and
+// replaces the dashboard cookie of the same name instead of shadowing it.
+func TestGatePostLogin_CookieIsHostOnly(t *testing.T) {
+	_, gate := newTestGateWithUser("user", "active")
+	rec := postLoginForm(gate, map[string]string{
+		"email":    "alice@example.com",
+		"password": "correct-password",
+		"next":     "https://" + gateAuthDomain + "/svc/grafana/",
+	})
+	if rec.Code != http.StatusFound {
+		t.Fatalf("want 302, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var found bool
+	for _, c := range rec.Result().Cookies() {
+		if c.Name != "burrow_session" {
+			continue
+		}
+		found = true
+		if c.Domain != "" {
+			t.Errorf("burrow_session cookie Domain = %q, want host-only", c.Domain)
+		}
+	}
+	if !found {
+		t.Fatal("want burrow_session cookie, got none")
 	}
 }
 

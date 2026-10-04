@@ -81,6 +81,12 @@ type e2eStack struct {
 	proxyAddr string
 	proxyPort string
 
+	// mainSrv is the dashboard origin (https://test.local): the API router
+	// with the /svc/{slug} path route and the gate. mainAddr is its loopback
+	// "host:port".
+	mainSrv  *http.Server
+	mainAddr string
+
 	// upstream is the local-side test HTTP server the client tunnel forwards to.
 	upstream     *http.Server
 	upstreamLn   net.Listener
@@ -122,11 +128,29 @@ func (s *e2eStack) setUpstreamHandler(h func(http.ResponseWriter, *http.Request)
 // Each call returns an independent client (cookie jar is fresh).
 func (s *e2eStack) visitorClient(t *testing.T) *http.Client {
 	t.Helper()
+	return s.clientDialing(t, s.proxyAddr)
+}
+
+// pathURL returns the public path URL of the stack's service for the given
+// rest (which starts with "/"): "https://test.local/svc/<slug><rest>".
+func (s *e2eStack) pathURL(rest string) string {
+	return "https://" + e2eAuthDomain + "/svc/" + s.subdomain + rest
+}
+
+// pathClient is visitorClient for the dashboard origin: it always dials the
+// main listener, so https://test.local/... URLs need neither DNS nor a port.
+func (s *e2eStack) pathClient(t *testing.T) *http.Client {
+	t.Helper()
+	return s.clientDialing(t, s.mainAddr)
+}
+
+// clientDialing builds the client behind visitorClient and pathClient.
+func (s *e2eStack) clientDialing(t *testing.T, dialAddr string) *http.Client {
+	t.Helper()
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dialAddr := s.proxyAddr // closed over
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
@@ -484,6 +508,32 @@ func bootE2EStack(t *testing.T, opts ...bootE2EStackOption) *e2eStack {
 	}
 	go func() { _ = s.proxySrv.Serve(proxyLn) }()
 
+	// 6b. Dashboard origin: the API router serving /svc/{slug} through the
+	// same proxy handler and /__burrow/* through the same gate — mirroring
+	// cmd/server/main.go. The wildcard cert also covers the bare auth domain.
+	mainCert, err := tls.LoadX509KeyPair(proxyCertPath, proxyKeyPath)
+	if err != nil {
+		t.Fatalf("load main cert: %v", err)
+	}
+	mainLn, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{mainCert},
+	})
+	if err != nil {
+		t.Fatalf("main listen: %v", err)
+	}
+	s.mainAddr = mainLn.Addr().String()
+	s.mainSrv = &http.Server{
+		Handler: api.NewRouter(api.Deps{
+			Log:         s.log,
+			AuthDomain:  e2eAuthDomain,
+			TunnelProxy: handler,
+			Gate:        gate,
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = s.mainSrv.Serve(mainLn) }()
+
 	// 7. Real client with one http tunnel.
 	c := client.New(client.Options{
 		Server:     srv.Addr(),
@@ -526,6 +576,9 @@ func (s *e2eStack) shutdown() {
 	}
 	if s.proxySrv != nil {
 		_ = s.proxySrv.Shutdown(context.Background())
+	}
+	if s.mainSrv != nil {
+		_ = s.mainSrv.Shutdown(context.Background())
 	}
 	if s.upstream != nil {
 		_ = s.upstream.Shutdown(context.Background())
