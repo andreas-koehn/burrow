@@ -173,13 +173,12 @@ type fakeStoreSubdomain struct {
 	err error
 }
 
-// ServiceForSubdomain returns svc for its current slug only. A fake whose svc
-// carries no slug answers for any slug (the older tests rely on that).
+// ServiceForSubdomain returns svc for its current slug only.
 func (f *fakeStoreSubdomain) ServiceForSubdomain(_ context.Context, sub string) (db.Service, error) {
 	if f.err != nil {
 		return db.Service{}, f.err
 	}
-	if f.svc.Subdomain != "" && f.svc.Subdomain != sub {
+	if f.svc.Subdomain != sub {
 		return db.Service{}, db.ErrNotFound
 	}
 	return f.svc, nil
@@ -207,31 +206,26 @@ func (f *fakeStoreSubdomain) GetServiceIPGeo(_ context.Context, _ string) (db.Se
 // httpTunnelLookup is the narrow interface test double for
 // proxyDialerAdapter.Lookup (the server side).
 type fakeHTTPTunnelLookup struct {
-	tn *server.Tunnel
-	ok bool
+	tn   *server.Tunnel
+	ok   bool
+	conn net.Conn // returned by OpenTunnelStream when set
 }
 
-// LookupHTTPTunnel matches on the slug the tunnel registered with, when the
-// fake tunnel carries one.
-func (f *fakeHTTPTunnelLookup) LookupHTTPTunnel(sub string) (*server.Tunnel, bool) {
-	if f.tn != nil && f.tn.Subdomain != "" && f.tn.Subdomain != sub {
-		return nil, false
-	}
-	return f.tn, f.ok
-}
-
-// LookupHTTPTunnelByServiceID matches on the tunnel's service id, when the
-// fake tunnel carries one.
+// LookupHTTPTunnelByServiceID matches strictly on the tunnel's service id,
+// like the real registry lookup.
 func (f *fakeHTTPTunnelLookup) LookupHTTPTunnelByServiceID(serviceID string) (*server.Tunnel, bool) {
-	if f.tn != nil && f.tn.ServiceID != "" && f.tn.ServiceID != serviceID {
+	if !f.ok || f.tn == nil || f.tn.ServiceID != serviceID {
 		return nil, false
 	}
-	return f.tn, f.ok
+	return f.tn, true
 }
 
 func (f *fakeHTTPTunnelLookup) OpenTunnelStream(_ context.Context, _ *server.Tunnel) (net.Conn, error) {
-	// Not used in Lookup tests; DialTunnelStream is tested separately.
-	return nil, errors.New("not implemented in fake")
+	if f.conn == nil {
+		// Lookup tests never open a stream.
+		return nil, errors.New("not implemented in fake")
+	}
+	return f.conn, nil
 }
 
 func (f *fakeHTTPTunnelLookup) SnapshotSessions() []server.SessionSnapshot {
@@ -251,10 +245,11 @@ func (f *fakeHTTPTunnelLookup) LookupSessionByTunnelID(_ string) (sessionID, use
 func TestProxyDialerAdapter_Lookup_Found(t *testing.T) {
 	svc := db.Service{
 		ID:           "svc-1",
+		Subdomain:    "abc123",
 		AccessMode:   "api_key",
 		APIKeyHeader: "X-Api-Key",
 	}
-	tn := &server.Tunnel{LocalAddr: "127.0.0.1:3000"}
+	tn := &server.Tunnel{ServiceID: "svc-1", LocalAddr: "127.0.0.1:3000"}
 
 	a := proxyDialerAdapter{
 		st:  &fakeStoreSubdomain{svc: svc},
@@ -317,12 +312,85 @@ func TestProxyDialerAdapter_Lookup_ServiceMissing(t *testing.T) {
 // ErrNotFound when the service row exists but the live tunnel is gone.
 func TestProxyDialerAdapter_Lookup_TunnelGone(t *testing.T) {
 	a := proxyDialerAdapter{
-		st:  &fakeStoreSubdomain{svc: db.Service{ID: "svc-1"}},
+		st:  &fakeStoreSubdomain{svc: db.Service{ID: "svc-1", Subdomain: "abc123"}},
 		srv: &fakeHTTPTunnelLookup{tn: nil, ok: false},
 	}
 	_, err := a.Lookup(context.Background(), "abc123")
 	if !errors.Is(err, proxy.ErrNotFound) {
 		t.Errorf("expected proxy.ErrNotFound when tunnel gone, got %v", err)
+	}
+}
+
+// renamedSlugAdapter returns an adapter whose service was renamed to "newslug"
+// while its live tunnel still carries the slug it registered with ("oldslug").
+func renamedSlugAdapter(conn net.Conn) proxyDialerAdapter {
+	svc := db.Service{ID: "svc1", Name: "web", Type: "http", Subdomain: "newslug", AccessMode: "open"}
+	tn := &server.Tunnel{ID: "t1", IsHTTP: true, Subdomain: "oldslug", ServiceID: "svc1", LocalAddr: "127.0.0.1:3000"}
+	return proxyDialerAdapter{
+		st:  &fakeStoreSubdomain{svc: svc},
+		srv: &fakeHTTPTunnelLookup{tn: tn, ok: true, conn: conn},
+	}
+}
+
+// TestProxyDialerAdapter_DialTunnelStream_AfterSlugRename checks that the dial
+// goes slug → service row → live tunnel by service id: the current slug dials,
+// the slug the tunnel registered with does not.
+func TestProxyDialerAdapter_DialTunnelStream_AfterSlugRename(t *testing.T) {
+	want, peer := net.Pipe()
+	defer want.Close()
+	defer peer.Close()
+	a := renamedSlugAdapter(want)
+
+	got, err := a.DialTunnelStream(context.Background(), "newslug")
+	if err != nil {
+		t.Fatalf("DialTunnelStream(newslug): %v", err)
+	}
+	if got != want {
+		t.Fatalf("DialTunnelStream(newslug) returned a different conn")
+	}
+	if _, err := a.DialTunnelStream(context.Background(), "oldslug"); !errors.Is(err, proxy.ErrNotFound) {
+		t.Fatalf("DialTunnelStream(oldslug) err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestProxyDialerAdapter_DialTunnelStream_TunnelGone checks that a known slug
+// without a live tunnel maps to ErrNotFound.
+func TestProxyDialerAdapter_DialTunnelStream_TunnelGone(t *testing.T) {
+	a := proxyDialerAdapter{
+		st:  &fakeStoreSubdomain{svc: db.Service{ID: "svc1", Subdomain: "newslug"}},
+		srv: &fakeHTTPTunnelLookup{},
+	}
+	if _, err := a.DialTunnelStream(context.Background(), "newslug"); !errors.Is(err, proxy.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestProxyDialerAdapter_LookupByServiceID_StaleTunnelSlug checks that the
+// service row is read by id, not through the slug the live tunnel carries.
+func TestProxyDialerAdapter_LookupByServiceID_StaleTunnelSlug(t *testing.T) {
+	a := renamedSlugAdapter(nil)
+
+	res, err := a.LookupByServiceID(context.Background(), "svc1")
+	if err != nil {
+		t.Fatalf("LookupByServiceID(svc1): %v", err)
+	}
+	if res.ServiceID != "svc1" || res.TunnelID != "t1" || res.AccessMode != "open" || res.LocalHost != "127.0.0.1:3000" {
+		t.Fatalf("got %+v", res)
+	}
+	if _, err := a.LookupByServiceID(context.Background(), "other"); !errors.Is(err, proxy.ErrNotFound) {
+		t.Fatalf("LookupByServiceID(other) err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestProxyDialerAdapter_LookupByServiceID_ServiceMissing checks that a live
+// tunnel whose service row is gone maps to ErrNotFound.
+func TestProxyDialerAdapter_LookupByServiceID_ServiceMissing(t *testing.T) {
+	a := proxyDialerAdapter{
+		st:  &fakeStoreSubdomain{err: db.ErrNotFound},
+		srv: &fakeHTTPTunnelLookup{tn: &server.Tunnel{ID: "t1", ServiceID: "svc1", Subdomain: "oldslug"}, ok: true},
+	}
+	if _, err := a.LookupByServiceID(context.Background(), "svc1"); !errors.Is(err, proxy.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
 
