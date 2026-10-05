@@ -61,9 +61,12 @@ export default function ServiceDetail() {
     );
   }
 
+  // A pre-provisioned service has no name until a title is set or a client connects.
+  const label = svc.name || svc.id;
+
   return (
     <div className="service-detail-page">
-      <PageHeader back={BACK} title={`Service · ${svc.name}`} />
+      <PageHeader back={BACK} title={`Service · ${label}`} />
 
       {/* Meta strip */}
       <div className="meta-strip">
@@ -96,7 +99,7 @@ export default function ServiceDetail() {
             content: (
               <AccessModePanel
                 serviceId={svc.id}
-                serviceName={svc.name}
+                serviceName={label}
                 mode={svc.access_mode}
                 clientId={`svc:${svc.id}`}
                 hideApiKeys
@@ -126,7 +129,7 @@ export default function ServiceDetail() {
           },
         ]}
       />
-      <EditSlugDialog service={svc} open={editSlug} onOpenChange={setEditSlug} />
+      <EditSlugDialog service={{ id: svc.id, name: label, slug: svc.slug }} open={editSlug} onOpenChange={setEditSlug} />
     </div>
   );
 }

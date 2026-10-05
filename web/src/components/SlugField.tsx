@@ -37,6 +37,9 @@ export function SlugField({ id, value, onChange, error }: SlugFieldProps) {
         mono
         value={value}
         invalid={!!message}
+        autoComplete="off"
+        autoCapitalize="none"
+        spellCheck={false}
         aria-describedby={message ? errId : preview ? previewId : undefined}
         onChange={(e) => onChange(e.target.value.toLowerCase())}
       />

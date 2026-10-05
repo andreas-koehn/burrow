@@ -43,6 +43,8 @@ after logging in to `https://burrow.insingo.com`.
 
 ### `mtls`
 
+Requires the opt-in host-routed ingress; not available with path URLs.
+
 Mutual TLS. The relay demands a client certificate signed by a CA you upload.
 The TLS handshake itself rejects any connection without a valid cert — the
 access check is defense-in-depth.
@@ -54,8 +56,8 @@ cryptographic identity rather than shared secrets.
 mTLS requires the opt-in host-routed ingress (`BURROW_HTTP_PROXY_LISTEN`) and is
 not available with path URLs. The `https://burrow.insingo.com/svc/<slug>/`
 endpoint shares the dashboard TLS connection and **cannot** carry a per-service
-client certificate. The dashboard no longer offers mTLS; a service still in
-`mtls` mode must be moved to another mode by hand.
+client certificate. The dashboard has no mTLS controls: set the mode through
+the REST API. Without the host-routed ingress the API refuses `mtls`.
 :::
 
 ---

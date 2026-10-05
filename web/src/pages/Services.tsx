@@ -219,7 +219,7 @@ export default function Services() {
                 {filtered.map((s) => (
                 <tr key={s.id}>
                   <td className="col-name link-row">
-                    <Link to={`/services/${s.id}`}>{s.name}</Link>
+                    <Link to={`/services/${s.id}`}>{s.name || s.id}</Link>
                   </td>
                   <td><Badge kind={`type-${s.type}`} nodot>{s.type}</Badge></td>
                   <td>
@@ -228,7 +228,7 @@ export default function Services() {
                   <td><Badge kind={`access-${s.access_mode}`} nodot>{ACCESS_LABEL[s.access_mode]}</Badge></td>
                   <td>
                     {s.connected
-                      ? <Link to="/tunnels" aria-label={`View live tunnel for ${s.name}`}><Badge kind="status-connected">connected</Badge></Link>
+                      ? <Link to="/tunnels" aria-label={`View live tunnel for ${s.name || s.id}`}><Badge kind="status-connected">connected</Badge></Link>
                       : <Badge kind="status-idle">idle</Badge>}
                   </td>
                   <td className="col-actions">
@@ -246,7 +246,7 @@ export default function Services() {
         open={configure !== null}
         onOpenChange={(o) => { if (!o) setConfigure(null); }}
         size="lg"
-        title={configure ? `Access · ${configure.name}` : ""}
+        title={configure ? `Access · ${configure.name || configure.id}` : ""}
         description={configure?.type === "tcp"
           ? "Raw TCP service — only Open passthrough applies."
           : "Choose how Burrow gates requests before proxying to this service."}
@@ -265,7 +265,7 @@ export default function Services() {
         {configure && (
           <AccessModePanel
             serviceId={configure.id}
-            serviceName={configure.name}
+            serviceName={configure.name || configure.id}
             mode={configure.access_mode}
             clientId={`svc:${configure.id}`}
             panelRef={panelRef}

@@ -5,6 +5,9 @@ import { Button, Dialog, ErrorNotice } from "@/components/ds";
 import { SlugField, slugError } from "@/components/SlugField";
 import type { Service } from "@/lib/contract";
 
+// The one 409 that is about the slug; the other (tcp service) is not.
+const SLUG_TAKEN = "slug already in use";
+
 export interface EditSlugDialogProps {
   service: Pick<Service, "id" | "name" | "slug">;
   open: boolean;
@@ -14,10 +17,13 @@ export interface EditSlugDialogProps {
 export function EditSlugDialog({ service, open, onOpenChange }: EditSlugDialogProps) {
   const qc = useQueryClient();
   const [slug, setSlug] = useState(service.slug);
-  const [serverErr, setServerErr] = useState<string | null>(null);
+  // slugErr belongs to the slug itself (invalid, taken) and shows on the field;
+  // formErr is everything else (permission, wrong service type, network).
+  const [slugErr, setSlugErr] = useState<string | null>(null);
+  const [formErr, setFormErr] = useState<string | null>(null);
 
   useEffect(() => {
-    if (open) { setSlug(service.slug); setServerErr(null); }
+    if (open) { setSlug(service.slug); setSlugErr(null); setFormErr(null); }
   }, [open, service.slug]);
 
   const save = useMutation({
@@ -26,14 +32,21 @@ export function EditSlugDialog({ service, open, onOpenChange }: EditSlugDialogPr
         method: "PUT",
         body: JSON.stringify({ slug }),
       }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["services"] });
-      qc.invalidateQueries({ queryKey: ["service", service.id] });
-      qc.invalidateQueries({ queryKey: ["tunnels"] });
+    // Wait for the refetches so the page behind the dialog never shows the old URL.
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["services"] }),
+        qc.invalidateQueries({ queryKey: ["service", service.id] }),
+        qc.invalidateQueries({ queryKey: ["tunnels"] }),
+      ]);
       onOpenChange(false);
     },
-    onError: (e: unknown) =>
-      setServerErr(e instanceof ApiError ? e.message : "Couldn't change the URL."),
+    onError: (e: unknown) => {
+      if (!(e instanceof ApiError)) setFormErr("Couldn't change the URL.");
+      else if (e.status === 400 || (e.status === 409 && e.message === SLUG_TAKEN)) setSlugErr(e.message);
+      else if (e.status === 403) setFormErr("You don't have permission to change this service's URL.");
+      else setFormErr(e.message);
+    },
   });
 
   const unchanged = slug === service.slug;
@@ -62,9 +75,10 @@ export function EditSlugDialog({ service, open, onOpenChange }: EditSlugDialogPr
       <SlugField
         id="edit-slug"
         value={slug}
-        onChange={(v) => { setSlug(v); setServerErr(null); }}
-        error={serverErr}
+        onChange={(v) => { setSlug(v); setSlugErr(null); setFormErr(null); }}
+        error={slugErr}
       />
+      {formErr && <ErrorNotice>{formErr}</ErrorNotice>}
     </Dialog>
   );
 }

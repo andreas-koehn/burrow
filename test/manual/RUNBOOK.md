@@ -12,7 +12,7 @@ Plan 3's Playwright suite codifies each section as an automated spec.
 
 - **Browser:** any Chromium-based (Chrome, Edge, Brave). Firefox/Safari out of scope.
 - **Admin dashboard:** `http://localhost:8080/`.
-- **HTTPS proxy / visitor-facing surfaces:** `https://<subdomain>.test.local:8443/` (host-routed via the wildcard cert mounted into the relay container; HTTP tunnels get a random subdomain at registration time — read it from `docker logs burrow-e2e-full-relay-1 | grep "http tunnel registered"`).
+- **Visitor-facing surfaces:** `http://localhost:8080/svc/<slug>/` (path URL on the dashboard origin) and, because this harness turns on the opt-in host-routed ingress, `https://<slug>.test.local:8443/` (wildcard cert mounted into the relay container). HTTP services get a random slug at registration time — read it from `docker logs burrow-e2e-full-relay-1 | grep "http tunnel registered"`).
 - **TCP tunnels:** `http://localhost:<port>/...` where `<port>` is the `--remote` value (9002 for tcp-echo, 9003/9004 for multi-svc-a/b).
 - **Login:** `admin@e2e.local` / `e2e-pass` (seeded by `relay-full.sh`).
 - **Reset between sections:** `curl -X POST http://localhost:8080/api/v1/internal/test-reset` (build-tagged endpoint from Plan 1 T18). Truncates audit, tokens, sessions, services + per-service rows, webhooks, connection-logs, rate limits, budgets, etc. — preserves seeded admin + schema migrations. ⚠ After /test-reset, cached tokens on `/run/burrow/token-{ai,tcp,multi}` become invalid until the relay re-mints them; the cleanest follow-up is `docker compose restart` to re-seed.
@@ -24,11 +24,11 @@ Bring up the stack and verify the proven smoke shape before starting:
 ```bash
 docker compose -f test/harness/compose.full.yml up -d --wait
 
-# Discover the AI tunnel's auto-assigned subdomain (changes per boot):
+# Discover the AI service's slug:
 AI=$(docker logs burrow-e2e-full-relay-1 2>&1 \
   | grep "http tunnel registered" | tail -1 \
-  | grep -oE 'subdomain=[a-z0-9]+' | cut -d= -f2)
-echo "AI subdomain: $AI"
+  | grep -oE 'slug=[a-z0-9-]+' | cut -d= -f2)
+echo "AI slug: $AI"
 
 # Proven 6-surface smoke (must all pass before starting):
 curl -fsS http://localhost:8080/healthz                       # [1/6] dashboard
@@ -61,10 +61,10 @@ Optional — trust the test CA at the OS level to eliminate browser warnings:
 3. [Services (burrow.yaml multi-service)](#3-services)
 4. [Tokens (UI mint + use)](#4-tokens)
 5. [Users + Roles (CRUD)](#5-users--roles)
-6. [Access modes (open, api_key, burrow_login, mTLS)](#6-access-modes)
+6. [Access modes (open, api_key, burrow_login; mTLS via API)](#6-access-modes)
 7. [AI Gateway basic (chat-completions, metering, rate limit, cost)](#7-ai-gateway-basic)
 8. [AI Gateway depth (semantic cache, guardrail, redaction)](#8-ai-gateway-depth)
-9. [Custom domains (per-service CNAME + cert pair)](#9-custom-domains)
+9. [Custom domains (removed from the dashboard)](#9-custom-domains)
 10. [Connection logs (drive TCP traffic → entry + NDJSON export)](#10-connection-logs)
 11. [Audit + Webhooks + OpenAPI viewer + Retention](#11-audit--webhooks--openapi--retention)
 12. [Postgres swap (compose.postgres.yml profile)](#12-postgres-swap)
@@ -109,7 +109,7 @@ After all 13 sections pass, append:
 
 ### Steps
 1. Navigate `/tunnels`. Confirm 4 rows:
-   - `ai` (http; random subdomain, e.g. `qgnh4v.test.local` — no fixed port)
+   - `ai` (http; random slug, e.g. `/svc/qgnh4v/` — no fixed port)
    - `tcp-echo` (tcp; remote :9002)
    - `svc-a` (tcp; remote :9003)
    - `svc-b` (tcp; remote :9004)
@@ -118,7 +118,7 @@ After all 13 sections pass, append:
 4. Drive traffic from a shell:
    ```bash
    for i in 1 2 3 4 5; do curl -fsS http://localhost:9002/healthz; done
-   AI=$(docker logs burrow-e2e-full-relay-1 | grep "http tunnel registered" | tail -1 | grep -oE 'subdomain=[a-z0-9]+' | cut -d= -f2)
+   AI=$(docker logs burrow-e2e-full-relay-1 | grep "http tunnel registered" | tail -1 | grep -oE 'slug=[a-z0-9-]+' | cut -d= -f2)
    curl --ssl-no-revoke -k --resolve "$AI.test.local:8443:127.0.0.1" \
         -fsS -X POST -H "content-type: application/json" \
         -d '{"model":"x","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
@@ -133,7 +133,7 @@ After all 13 sections pass, append:
 
 ### Gotchas ⚠
 - If `connected` badge doesn't appear, check `docker compose logs client-ai|client-tcp|client-multi` — the client may be in backoff retry loop (typically after a /test-reset wiped tokens).
-- HTTP tunnels (`ai`) do NOT have a fixed `--remote` port — they're host-routed on :8443. The "Remote" column may render `—` or the assigned subdomain.
+- HTTP tunnels (`ai`) do NOT have a fixed `--remote` port — they are reached at `/svc/<slug>/` (and host-routed on :8443 in this harness). The "Remote" column renders `—`; the "URL" column shows the path.
 
 ### Findings
 - [ ]
@@ -229,12 +229,12 @@ After all 13 sections pass, append:
 
 ## 6. Access modes
 
-**Goal:** All 4 access modes (open, api_key, burrow_login, mTLS) work end-to-end against the HTTP tunnel from `client-ai` (configured on the `ai` service).
+**Goal:** The 3 dashboard access modes (open, api_key, burrow_login) and API-only mTLS work end-to-end against the HTTP tunnel from `client-ai` (configured on the `ai` service).
 
-Discover the AI tunnel's subdomain first (same as pre-flight):
+Discover the AI service's slug first (same as pre-flight):
 ```bash
-AI=$(docker logs burrow-e2e-full-relay-1 | grep "http tunnel registered" | tail -1 | grep -oE 'subdomain=[a-z0-9]+' | cut -d= -f2)
-echo "AI subdomain: $AI"
+AI=$(docker logs burrow-e2e-full-relay-1 | grep "http tunnel registered" | tail -1 | grep -oE 'slug=[a-z0-9-]+' | cut -d= -f2)
+echo "AI slug: $AI"
 ```
 
 ### 6a. Open
@@ -261,13 +261,14 @@ echo "AI subdomain: $AI"
 
 ### 6c. Burrow login (SSO)
 1. Access tab → mode "Burrow login" → save. Requires `BURROW_AUTH_DOMAIN` configured (relay container ships with `test.local`; check `docker exec burrow-e2e-full-relay-1 printenv BURROW_AUTH_DOMAIN`).
-2. From browser (incognito) — needs `127.0.0.1 <subdomain>.test.local` in your hosts file: open `https://<subdomain>.test.local:8443/` → expect redirect to the auth surface.
-3. Sign in with admin creds → redirect back → page loads.
+2. From browser (incognito): open `http://localhost:8080/svc/<slug>/` → expect the login gate on the same origin.
+3. Sign in with admin creds → you land on `/svc/<slug>/` and the page loads.
 4. Findings ✅
 
-### 6d. mTLS (v0.4 surface)
-1. Access tab → mode "mTLS" → upload trust anchor PEM → save. ⚠ Burrow does NOT sign client certs; you supply both the trust anchor (CA cert) AND mint/issue client certs separately.
-2. To test, generate a client cert against the same test CA:
+### 6d. mTLS (REST API only, host-routed ingress)
+The dashboard has no mTLS controls. The mode is set through the REST API and only works on the opt-in host-routed ingress (`BURROW_HTTP_PROXY_LISTEN`, `:8443` in this harness); without that ingress the API refuses `mtls`.
+1. Access tab of the `ai` service: only "Open", "API key" and "Burrow login" are offered.
+2. Generate a client cert against the test CA:
    ```bash
    cd test/harness/certs
    MSYS_NO_PATHCONV=1 openssl req -new -newkey rsa:2048 -nodes \
@@ -276,22 +277,37 @@ echo "AI subdomain: $AI"
    MSYS_NO_PATHCONV=1 openssl x509 -req -in client.csr -days 365 \
      -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt
    rm client.csr ca.srl
+   cd -
    ```
-3. From shell:
+3. Set the mode with the CA as trust anchor (Burrow does NOT sign client certs):
+   ```bash
+   JAR=$(mktemp)
+   curl -s -o /dev/null -c "$JAR" -X POST http://localhost:8080/api/v1/auth/login \
+        -H 'Content-Type: application/json' -d '{"email":"admin@e2e.local","password":"e2e-pass"}'
+   CSRF=$(grep burrow_csrf "$JAR" | awk '{print $NF}')
+   SVC=$(curl -s -b "$JAR" http://localhost:8080/api/v1/services \
+     | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).find(x=>x.name==="ai").id))')
+   node -e 'console.log(JSON.stringify({access_mode:"mtls",mtls_ca_pem:require("fs").readFileSync("test/harness/certs/ca.crt","utf8")}))' \
+     | curl -s -o /dev/null -w '%{http_code}\n' -b "$JAR" -H "X-CSRF-Token: $CSRF" \
+        -H 'Content-Type: application/json' -X PUT -d @- \
+        "http://localhost:8080/api/v1/services/$SVC/access-mode"
+   ```
+   → 204.
+4. With the client cert, over the host-routed ingress:
    ```bash
    curl --ssl-no-revoke -k --resolve "$AI.test.local:8443:127.0.0.1" \
         -fsS https://$AI.test.local:8443/healthz \
-        --cert certs/client.crt --key certs/client.key
+        --cert test/harness/certs/client.crt --key test/harness/certs/client.key
    ```
    → 200.
-4. Without `--cert/--key`: → 401.
-5. Cleanup: `git status` the new `client.{crt,key}` and remove them — they should NOT be committed.
-6. Findings ✅ / ❌ (skip if mTLS UI not shipped yet — file follow-up).
+5. Without `--cert/--key`: → 401.
+6. Reload the `ai` service page: the Access tab shows the note that the service is set to mTLS and preselects no mode. Choose "Open" and save to leave the mode.
+7. Cleanup: `git status` the new `client.{crt,key}` and remove them — they should NOT be committed.
+8. Findings ✅ / ❌
 
 ### Gotchas ⚠
 - TCP tunnels reject all access modes except "Open" (409 Conflict in UI). Verify by attempting to set api_key on `tcp-echo`.
 - `burrow_login` without `BURROW_AUTH_DOMAIN` configured → 409 from the API.
-- Browser-driven 6c flow requires hosts-file entries (admin on Windows). Use `curl --resolve` for terminal-only testing.
 
 ### Findings
 - [ ]
@@ -318,9 +334,9 @@ echo "AI subdomain: $AI"
      Semantic tab must not blank out)
    - `/cost`, `/guardrails`, and `/inspector/<ai-service-id>` each render
 4. `/tokens` → mint `ai-key-1` → copy.
-5. Discover AI subdomain:
+5. Discover the AI slug:
    ```bash
-   AI=$(docker logs burrow-e2e-full-relay-1 | grep "http tunnel registered" | tail -1 | grep -oE 'subdomain=[a-z0-9]+' | cut -d= -f2)
+   AI=$(docker logs burrow-e2e-full-relay-1 | grep "http tunnel registered" | tail -1 | grep -oE 'slug=[a-z0-9-]+' | cut -d= -f2)
    ```
 6. From shell, hit chat-completions:
    ```bash
@@ -407,31 +423,19 @@ echo "AI subdomain: $AI"
 
 ---
 
-## 9. Custom domains (v0.5 surface)
+## 9. Custom domains (removed from the dashboard)
 
-**Goal:** Per-service operator-supplied cert pair lets a custom hostname route to a tunnel.
+**Goal:** The dashboard offers no custom-domain UI. Custom domains need the opt-in host-routed ingress and are managed through the REST API only (`/api/v1/services/{serviceID}/domains`, see `docs/openapi.yaml`).
 
 ### Steps
-1. `/services` → `ai` → "Custom domains" tab → "Add domain".
-2. Domain: `api.test.local`; upload cert pair: `test/harness/certs/wildcard.test.local.crt` + `wildcard.test.local.key` (covers `*.test.local`).
-3. Save → row appears with status `active` (or `pending` initially, transitioning to `active` after the daily status tick).
-4. From shell:
-   ```bash
-   curl --ssl-no-revoke -k --resolve "api.test.local:8443:127.0.0.1" \
-        -fsS https://api.test.local:8443/healthz
-   ```
-   → 200 (proxied to the `ai` service's mockoai upstream).
-5. Cleanup: delete the custom domain entry.
+1. `/services` → `ai`: the tabs are "Access", "API keys" and "Upstream key". There is no "Custom domains" tab.
+2. Open `/services/<id>/domains` directly → lands on the service page.
+3. Open `/settings/custom-domains` directly → lands on Settings.
+4. The sidebar and the Settings tabs have no "Custom domains" entry.
 
 ### Expected ✅
-- Domain saves with active status.
-- HTTPS request to the custom hostname routes to the configured service.
-- Status column reflects the state machine: `pending` → `active` (transitions captured via the daily tick + webhook in v0.5.2 Task 10).
-
-### Gotchas ⚠
-- The wildcard test cert's SAN includes `*.test.local` and `test.local` — `api.test.local` matches. If you upload a cert for an unrelated CN (e.g., `example.com`), the proxy WILL still serve it for the configured custom domain, but `curl --resolve` won't help against a real DNS resolver.
-- ACME auto-issuance is NOT in v0.5 (deferred to v0.3.1 backlog). Operator-supplied cert pair only.
-- Status transitions (`active`/`expiring`/`expired`/`pending`) are driven by a daily background tick (v0.5.2 Task 10). To observe `expiring`, you'd need a cert with `notAfter` within ~30 days; the test wildcard cert is 10-year so it stays `active`.
+- No "Custom domains" tab, nav entry or settings page.
+- Both old links redirect instead of showing an empty or broken page.
 
 ### Findings
 - [ ]
@@ -571,7 +575,7 @@ echo "AI subdomain: $AI"
 6. Drive traffic to confirm:
    ```bash
    curl -fsS http://localhost:9002/healthz
-   AI=$(docker logs burrow-e2e-full-relay-1 | grep "http tunnel registered" | tail -1 | grep -oE 'subdomain=[a-z0-9]+' | cut -d= -f2)
+   AI=$(docker logs burrow-e2e-full-relay-1 | grep "http tunnel registered" | tail -1 | grep -oE 'slug=[a-z0-9-]+' | cut -d= -f2)
    curl --ssl-no-revoke -k --resolve "$AI.test.local:8443:127.0.0.1" \
         -fsS https://$AI.test.local:8443/healthz
    ```
@@ -584,7 +588,7 @@ echo "AI subdomain: $AI"
 ### Gotchas ⚠
 - Client backoff is configurable; first reconnect attempt is usually within 1-2s. Subsequent retries exponentially.
 - Don't `docker restart` on a single container — use `docker compose restart relay` so the network alias persists.
-- The HTTP tunnel's subdomain MAY change after restart if the relay's in-memory registry was wiped (subdomain is stored per-session). Re-discover via `docker logs ... | grep "http tunnel registered" | tail -1`.
+- The slug is stored with the service and survives a restart. If the service was removed (e.g. by /test-reset), re-discover it via `docker logs ... | grep "http tunnel registered" | tail -1`.
 
 ### Findings
 - [ ]

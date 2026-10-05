@@ -17,6 +17,19 @@ describe("Services page", () => {
     expect(container.querySelector(".skel")).toBeTruthy();
   });
 
+  it("links a service without a title by its id", async () => {
+    const svc = db.services.find((s) => s.id === "svc_graf01")!;
+    const name = svc.name;
+    svc.name = "";
+    try {
+      mount();
+      const table = await screen.findByRole("table", { name: "Services" });
+      expect(within(table).getByRole("link", { name: "svc_graf01" })).toHaveAttribute("href", "/services/svc_graf01");
+    } finally {
+      svc.name = name;
+    }
+  });
+
   it("shows each http service's path and copies the full URL", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });

@@ -30,7 +30,7 @@ export const COMPOSE_POSTGRES_OVERRIDE = "test/harness/compose.postgres.yml";
 
 export const RESET_URL = `${DASHBOARD_URL}/api/v1/internal/test-reset`;
 
-// Discovers the AI tunnel's auto-assigned subdomain by querying the services API.
+// Discovers the AI service's slug by querying the services API.
 // Uses the session cookie from playwright-auth.json for authentication.
 // HTTP tunnels register a random subdomain at session start. Cached after first
 // call — call resetAiSubdomainCache() when the tunnel is known to have re-registered
@@ -61,12 +61,12 @@ export function aiSubdomain(): string {
       if (result.status === 0 && result.stdout) {
         const services = JSON.parse(result.stdout) as {
           name: string;
-          subdomain: string;
+          slug: string;
           connected: boolean;
         }[];
-        const ai = services.find((s) => s.name === "ai" && s.connected && s.subdomain);
+        const ai = services.find((s) => s.name === "ai" && s.connected && s.slug);
         if (ai) {
-          _aiSubdomain = ai.subdomain;
+          _aiSubdomain = ai.slug;
           return _aiSubdomain;
         }
       }
@@ -86,7 +86,7 @@ export function aiSubdomain(): string {
   const combined = (logs.stdout ?? "") + (logs.stderr ?? "");
   const lines = combined.split("\n").filter((l) => l.includes("http tunnel registered"));
   const out = lines[lines.length - 1] ?? "";
-  const m = out.match(/subdomain=([a-z0-9]+)/);
+  const m = out.match(/slug=([a-z0-9-]+)/);
   if (!m) throw new Error(`aiSubdomain: relay log has no "http tunnel registered" line yet`);
   _aiSubdomain = m[1];
   return _aiSubdomain;

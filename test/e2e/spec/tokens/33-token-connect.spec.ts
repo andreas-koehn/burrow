@@ -70,18 +70,18 @@ test("33-token-connect: UI-minted token connects a real client + traffic flows",
 
     // 3. Poll the API until the ephemeral tunnel registers connected; capture its subdomain.
     // The relay assigns a random subdomain when the http-type client connects.
-    // /api/v1/services returns {name, subdomain, connected, ...} per tunnel/service.
+    // /api/v1/services returns {name, slug, connected, ...} per tunnel/service.
     let subdomain = "";
     for (let i = 0; i < 30; i++) {
       const r = await request.get("/api/v1/services", { headers: adminHeaders() });
       const svcs = (await r.json()) as {
         name: string;
-        subdomain: string;
+        slug: string;
         connected: boolean;
       }[];
-      const mine = svcs.find((s) => s.name === TUNNEL_NAME && s.connected && s.subdomain);
+      const mine = svcs.find((s) => s.name === TUNNEL_NAME && s.connected && s.slug);
       if (mine) {
-        subdomain = mine.subdomain;
+        subdomain = mine.slug;
         break;
       }
       await new Promise((res) => setTimeout(res, 1000));

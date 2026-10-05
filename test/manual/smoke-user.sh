@@ -203,10 +203,10 @@ json_field() {
   grep -o "\"${1}\":\"[^\"]*\"" | head -1 | cut -d'"' -f4 || true
 }
 
-# json_services_subdomain <name> [require_connected] — read services JSON from stdin,
-# find service by name, print subdomain (empty if not found / not connected).
+# json_services_slug <name> [require_connected] — read services JSON from stdin,
+# find service by name, print its slug (empty if not found / not connected).
 # Uses node (reliably in PATH on this host; the e2e stack depends on it too).
-json_services_subdomain() {
+json_services_slug() {
   local svcname="$1"
   local require_connected="${2:-1}"
   node -e "
@@ -215,8 +215,8 @@ process.stdin.on('data',c=>d.push(c));
 process.stdin.on('end',()=>{
   try {
     const a=JSON.parse(d.join(''));
-    const s=a.find(x=>x.name==='${svcname}'${require_connected:+&&x.connected&&x.subdomain});
-    console.log(s&&s.subdomain?s.subdomain:'');
+    const s=a.find(x=>x.name==='${svcname}'${require_connected:+&&x.connected&&x.slug});
+    console.log(s&&s.slug?s.slug:'');
   } catch(e){ console.log(''); }
 });
 " 2>/dev/null || true
@@ -255,7 +255,7 @@ find_ai_service() {
   local svcs
   svcs=$(api_get /api/v1/services)
   AI_ID=$(echo "$svcs" | json_services_id "ai")
-  AI_SUB=$(echo "$svcs" | json_services_subdomain "ai" 1)
+  AI_SUB=$(echo "$svcs" | json_services_slug "ai" 1)
 }
 
 # poll_service_connected <name> <timeout_secs> — prints subdomain when found, else ""
@@ -264,7 +264,7 @@ poll_service_connected() {
   local timeout="$2"
   local found=""
   for attempt in $(seq 1 "$timeout"); do
-    found=$(api_get /api/v1/services | json_services_subdomain "$svcname" 1)
+    found=$(api_get /api/v1/services | json_services_slug "$svcname" 1)
     if [ -n "$found" ]; then
       echo "$found"
       return 0

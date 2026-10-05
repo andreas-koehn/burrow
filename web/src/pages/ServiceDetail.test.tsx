@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
 import { Route, Routes } from "react-router-dom";
 import ServiceDetail from "@/pages/ServiceDetail";
+import { db } from "@/mocks/db";
 
 function mount() {
   return renderApp(
@@ -112,6 +113,20 @@ describe("ServiceDetail page", () => {
     expect(screen.queryByRole("button", { name: "New key" })).toBeNull();
     await userEvent.click(screen.getByRole("tab", { name: "API keys" }));
     expect(await screen.findByRole("button", { name: "New key" })).toBeInTheDocument();
+  });
+
+  it("titles a service without a name by its id", async () => {
+    const svc = db.services.find((s) => s.id === "svc_graf01")!;
+    const name = svc.name;
+    svc.name = "";
+    try {
+      mountAt("/services/svc_graf01");
+      expect(await screen.findByRole("heading", { name: "Service · svc_graf01" })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Edit URL" }));
+      expect(screen.getByRole("dialog", { name: "Change URL · svc_graf01" })).toBeInTheDocument();
+    } finally {
+      svc.name = name;
+    }
   });
 
   it("changes the slug and shows the new URL", async () => {

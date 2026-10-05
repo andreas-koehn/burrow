@@ -1967,6 +1967,12 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
 }
 
 /* 4. AiEndpointDetail meta-strip (resolved alias + base URL row) */
+/* A service URL next to its copy button: in a narrow container the path wraps
+   and the button keeps its size, so it is never pushed out of view. Table
+   cells stay on one line (td is nowrap) and scroll with the table. */
+.service-url { min-width: 0; max-width: 100%; }
+.service-url-path { min-width: 0; overflow-wrap: anywhere; }
+.service-url .icon-btn { flex-shrink: 0; }
 .meta-strip {
   display: flex;
   flex-wrap: wrap;

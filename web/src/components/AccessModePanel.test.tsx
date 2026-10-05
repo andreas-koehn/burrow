@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { createRef } from "react";
 import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -7,6 +7,18 @@ import { db } from "@/mocks/db";
 import { AccessModePanel, type AccessModePanelHandle } from "@/components/AccessModePanel";
 
 describe("AccessModePanel (v0.3.0)", () => {
+  // Each test spies on fetch afresh; without the restore the spy of an earlier
+  // test keeps its calls and a later assertion passes on a stale request.
+  afterEach(() => vi.restoreAllMocks());
+
+  function putBodies(spy: { mock: { calls: unknown[][] } }) {
+    return spy.mock.calls
+      .filter(([url, init]) =>
+        String(url).endsWith("/api/v1/services/svc_web01/access-mode")
+        && (init as RequestInit | undefined)?.method === "PUT")
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+  }
+
   it("drops the v0.2.0 disabled gating — every mode is selectable", async () => {
     renderApp(<AccessModePanel serviceId="svc_web01" serviceName="web" mode="open" />);
     expect(screen.queryByText(/needs http tunnels/i)).toBeNull();
@@ -142,14 +154,6 @@ describe("AccessModePanel (v0.3.0)", () => {
     await userEvent.click(screen.getByRole("radio", { name: /open/i }));
     expect(screen.queryByRole("alert")).toBeNull();
   });
-
-  function putBodies(spy: { mock: { calls: unknown[][] } }) {
-    return spy.mock.calls
-      .filter(([url, init]) =>
-        String(url).endsWith("/api/v1/services/svc_web01/access-mode")
-        && (init as RequestInit | undefined)?.method === "PUT")
-      .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
-  }
 
   it("save through panelRef sends the current mode", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
