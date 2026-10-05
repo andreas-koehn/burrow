@@ -50,12 +50,13 @@ type AccessChecker interface {
 type AIChain interface {
 	// Dispatch runs the chain for one request. serviceID is the resolved
 	// service identity; localHost / apiKeyHeader come from the Resolved
-	// metadata. proxyHandler is the v0.3.0 ReverseProxy handler the chain
+	// metadata. apiKeyID is the matched service API key ("" outside api_key
+	// mode). proxyHandler is the v0.3.0 ReverseProxy handler the chain
 	// delegates to on a cache MISS / no short-circuit. The chain MUST
 	// either short-circuit (writing status + body to w) OR forward via
 	// proxyHandler — never both.
 	Dispatch(w http.ResponseWriter, r *http.Request,
-		serviceID, localHost, apiKeyHeader string,
+		serviceID, localHost, apiKeyHeader, apiKeyID string,
 		proxyHandler http.Handler)
 }
 
@@ -490,7 +491,7 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 	p.log.Debug("proxy custom domain request", "host", host, "service_id", serviceID, "method", r.Method, "path", r.URL.Path)
 
 	if p.aiChain != nil {
-		p.aiChain.Dispatch(w, r, res.ServiceID, res.LocalHost, res.APIKeyHeader, rp)
+		p.aiChain.Dispatch(w, r, res.ServiceID, res.LocalHost, res.APIKeyHeader, res.APIKeyID, rp)
 		// Post-dispatch 5xx promotion: if the upstream responded with ≥500 and
 		// the ErrorHandler was NOT called, promote closed_clean → closed_error.
 		// closed_error and closed_idle are never downgraded (precedence rule).
@@ -702,7 +703,7 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 	// v0.3.0.
 	if p.aiChain != nil {
 		p.aiChain.Dispatch(w, r,
-			res.ServiceID, res.LocalHost, res.APIKeyHeader, rp)
+			res.ServiceID, res.LocalHost, res.APIKeyHeader, res.APIKeyID, rp)
 		// Post-dispatch 5xx promotion: if the upstream responded with ≥500 and
 		// the ErrorHandler was NOT called, promote closed_clean → closed_error.
 		// closed_error and closed_idle are never downgraded (precedence rule).

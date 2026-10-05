@@ -13,17 +13,21 @@ import (
 )
 
 // fakeValidator is a minimal APIKeyValidator for unit tests.
-// goodKey is the key that returns (true, nil); everything else is (false, nil).
+// goodKey is the key that returns ("key-1", true, nil); everything else is
+// ("", false, nil).
 type fakeValidator struct {
 	goodKey  string
-	failWith error // if non-nil, every call returns (false, failWith)
+	failWith error // if non-nil, every call returns ("", false, failWith)
 }
 
-func (f *fakeValidator) ValidateAPIKey(_ context.Context, _, presented string) (bool, error) {
+func (f *fakeValidator) ValidateAPIKey(_ context.Context, _, presented string) (string, bool, error) {
 	if f.failWith != nil {
-		return false, f.failWith
+		return "", false, f.failWith
 	}
-	return presented == f.goodKey, nil
+	if presented == f.goodKey {
+		return "key-1", true, nil
+	}
+	return "", false, nil
 }
 
 const testAuthDomain = "auth.example.com"
@@ -70,6 +74,20 @@ func TestAccessChecker_APIKey_Missing(t *testing.T) {
 	}
 	if hdr.Get("Content-Type") != "application/json" {
 		t.Errorf("want Content-Type: application/json, got %q", hdr.Get("Content-Type"))
+	}
+}
+
+func TestAccessChecker_APIKey_RecordsMatchedKeyID(t *testing.T) {
+	ac := newChecker(&fakeValidator{goodKey: testGoodKey})
+	res := &proxy.Resolved{ServiceID: "svc1", AccessMode: "api_key"}
+	req := httptest.NewRequest("GET", "http://svc1."+testAuthDomain+"/", nil)
+	req.Header.Set("Authorization", "Bearer "+testGoodKey)
+	ok, _, _, _ := ac.Allow(context.Background(), res, req)
+	if !ok {
+		t.Fatal("want allowed")
+	}
+	if res.APIKeyID != "key-1" {
+		t.Fatalf("Resolved.APIKeyID = %q, want key-1", res.APIKeyID)
 	}
 }
 

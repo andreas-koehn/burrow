@@ -38,7 +38,7 @@ const (
 // API keys. *store.Store satisfies it implicitly (same method signature).
 // Tests use a local fake instead of pulling in the full store.
 type APIKeyValidator interface {
-	ValidateAPIKey(ctx context.Context, serviceID, presented string) (bool, error)
+	ValidateAPIKey(ctx context.Context, serviceID, presented string) (keyID string, ok bool, err error)
 }
 
 // SessionValidator is the narrow interface the accessChecker uses to validate
@@ -221,7 +221,7 @@ func (ac *accessChecker) checkAPIKey(ctx context.Context, res *Resolved, r *http
 		return false, http.StatusUnauthorized, `{"error":"missing api key"}`, h
 	}
 
-	valid, err := ac.v.ValidateAPIKey(ctx, res.ServiceID, presented)
+	keyID, valid, err := ac.v.ValidateAPIKey(ctx, res.ServiceID, presented)
 	if err != nil {
 		// Log at warn; do NOT expose internal error details to the visitor.
 		ac.log.Warn("api key validation error", "service_id", res.ServiceID, "err", err)
@@ -234,6 +234,7 @@ func (ac *accessChecker) checkAPIKey(ctx context.Context, res *Resolved, r *http
 		h.Set("Content-Type", "application/json")
 		return false, http.StatusUnauthorized, `{"error":"invalid api key"}`, h
 	}
+	res.APIKeyID = keyID
 	return true, 0, "", nil
 }
 

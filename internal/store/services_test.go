@@ -203,21 +203,24 @@ func TestCreateAPIKey(t *testing.T) {
 	}
 
 	// Validate the returned plaintext works.
-	ok, err := st.ValidateAPIKey(ctx, svc.ID, plaintext)
+	keyID, ok, err := st.ValidateAPIKey(ctx, svc.ID, plaintext)
 	if err != nil {
 		t.Fatalf("ValidateAPIKey: %v", err)
 	}
 	if !ok {
 		t.Fatal("ValidateAPIKey: freshly created key must validate")
 	}
+	if keyID != id {
+		t.Fatalf("ValidateAPIKey: key id = %q, want %q", keyID, id)
+	}
 
 	// Wrong key must not validate.
-	ok, err = st.ValidateAPIKey(ctx, svc.ID, "buk_bogus")
+	keyID, ok, err = st.ValidateAPIKey(ctx, svc.ID, "buk_bogus")
 	if err != nil {
 		t.Fatalf("ValidateAPIKey bogus: %v", err)
 	}
-	if ok {
-		t.Fatal("ValidateAPIKey: bogus key must not validate")
+	if ok || keyID != "" {
+		t.Fatalf("ValidateAPIKey: bogus key must not validate (ok=%v id=%q)", ok, keyID)
 	}
 }
 
@@ -488,9 +491,9 @@ func TestValidateAPIKeyWrongService(t *testing.T) {
 		t.Fatalf("CreateAPIKey: %v", err)
 	}
 
-	ok, err := st.ValidateAPIKey(ctx, svcB.ID, pt)
-	if err != nil || ok {
-		t.Fatalf("key for svcA must not validate against svcB: ok=%v err=%v", ok, err)
+	keyID, ok, err := st.ValidateAPIKey(ctx, svcB.ID, pt)
+	if err != nil || ok || keyID != "" {
+		t.Fatalf("key for svcA must not validate against svcB: id=%q ok=%v err=%v", keyID, ok, err)
 	}
 }
 

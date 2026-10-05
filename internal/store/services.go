@@ -377,26 +377,26 @@ func (s *Store) SetAccessPolicy(ctx context.Context, callerID, callerRole, servi
 	return nil
 }
 
-// ValidateAPIKey checks whether the presented plaintext API key is valid for
-// the given service. This is a hot-path helper used by the proxy middleware;
-// it has NO permission gate (the caller has already proven service identity via
-// subdomain/routing).
+// ValidateAPIKey checks the presented plaintext key against the service's keys
+// and returns the matched key's id. ok is false (with a nil error) when no key
+// matches. This is a hot-path helper used by the proxy middleware; it has NO
+// permission gate (the caller has already proven service identity via
+// routing).
 //
-// On a hit: best-effort touch last_used (touch error ignored); returns (true, nil).
-// On miss (db.ErrNotFound): returns (false, nil).
-// On other errors: propagates.
-func (s *Store) ValidateAPIKey(ctx context.Context, serviceID, presented string) (bool, error) {
+// On a hit: best-effort touch last_used (touch error ignored).
+// On other errors than db.ErrNotFound: propagates.
+func (s *Store) ValidateAPIKey(ctx context.Context, serviceID, presented string) (string, bool, error) {
 	hash := auth.HashToken(presented)
 	key, err := s.q.GetServiceAPIKeyByHash(ctx, serviceID, hash)
 	if err != nil {
 		if err == db.ErrNotFound {
-			return false, nil
+			return "", false, nil
 		}
-		return false, err
+		return "", false, err
 	}
 	// Best-effort: update last_used without failing validation on error.
 	_ = s.q.TouchServiceAPIKey(ctx, key.ID)
-	return true, nil
+	return key.ID, true, nil
 }
 
 // ServiceForSubdomain returns the service registered for the given subdomain.

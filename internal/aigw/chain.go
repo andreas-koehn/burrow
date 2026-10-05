@@ -251,18 +251,9 @@ func (c *Chain) ServeHTTP(w http.ResponseWriter, r *http.Request, svc Service, p
 	// service_ai_config row still have quota enforced. The duplicate block
 	// inside run() has been removed.
 	// ---------------------------------------------------------------
-	if c.RateLimit != nil {
-		r = r.WithContext(quota.WithSubjects(r.Context(), quota.Subjects{
-			ServiceID: svc.ID,
-			APIKeyID:  svc.APIKeyID,
-		}))
-		passed := false
-		c.RateLimit(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-			passed = true
-		})).ServeHTTP(w, r)
-		if !passed {
-			return
-		}
+	r, ok := c.allow(w, r, svc)
+	if !ok {
+		return
 	}
 
 	if IsAIPassThrough(svc.AIConfig) {
@@ -270,6 +261,23 @@ func (c *Chain) ServeHTTP(w http.ResponseWriter, r *http.Request, svc Service, p
 		return
 	}
 	c.run(w, r, svc, proxyHandler, false)
+}
+
+// allow runs the rate limiter for one request. It returns the request with
+// the quota subjects attached, and false when the limiter already answered.
+func (c *Chain) allow(w http.ResponseWriter, r *http.Request, svc Service) (*http.Request, bool) {
+	if c.RateLimit == nil {
+		return r, true
+	}
+	r = r.WithContext(quota.WithSubjects(r.Context(), quota.Subjects{
+		ServiceID: svc.ID,
+		APIKeyID:  svc.APIKeyID,
+	}))
+	passed := false
+	c.RateLimit(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		passed = true
+	})).ServeHTTP(w, r)
+	return r, passed
 }
 
 // Dispatch is the entry point the proxy calls (satisfies the
@@ -280,13 +288,36 @@ func (c *Chain) ServeHTTP(w http.ResponseWriter, r *http.Request, svc Service, p
 // The proxy passes primitive arguments — keeping internal/aigw entirely
 // out of internal/proxy's imports, and vice versa.
 func (c *Chain) Dispatch(w http.ResponseWriter, r *http.Request,
-	serviceID, localHost, apiKeyHeader string,
+	serviceID, localHost, apiKeyHeader, apiKeyID string,
 	proxyHandler http.Handler,
 ) {
+	c.ServeHTTP(w, r, c.resolve(r, serviceID, localHost, apiKeyHeader, apiKeyID), proxyHandler)
+}
+
+// DispatchMetered is Dispatch for callers that must account for every
+// request (the /ai/ gateway): it runs the chain, and so records usage, even
+// when the service has no AI features configured.
+func (c *Chain) DispatchMetered(w http.ResponseWriter, r *http.Request,
+	serviceID, localHost, apiKeyHeader, apiKeyID string,
+	proxyHandler http.Handler,
+) {
+	svc := c.resolve(r, serviceID, localHost, apiKeyHeader, apiKeyID)
+	r, ok := c.allow(w, r, svc)
+	if !ok {
+		return
+	}
+	c.run(w, r, svc, proxyHandler, false)
+}
+
+// resolve builds the Service for one request: the caller's identity fields
+// plus the AI config from Loader (zero config when none exists or the load
+// fails).
+func (c *Chain) resolve(r *http.Request, serviceID, localHost, apiKeyHeader, apiKeyID string) Service {
 	svc := Service{
 		ID:           serviceID,
 		LocalHost:    localHost,
 		APIKeyHeader: apiKeyHeader,
+		APIKeyID:     apiKeyID,
 	}
 	if c.Loader != nil {
 		loaded, ok, err := c.Loader.LoadAIConfig(r.Context(), serviceID)
@@ -306,9 +337,11 @@ func (c *Chain) Dispatch(w http.ResponseWriter, r *http.Request,
 				loaded.APIKeyHeader = apiKeyHeader
 			}
 			svc = loaded
+			// The loader never knows which key authorised the request.
+			svc.APIKeyID = apiKeyID
 		}
 	}
-	c.ServeHTTP(w, r, svc, proxyHandler)
+	return svc
 }
 
 // Replay re-fires r through the entire chain and returns the resulting
@@ -688,7 +721,9 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 					CreatedAt:  time.Now().UTC(),
 					TTLSeconds: cfg.Cache.TTLSeconds,
 				}
-				storeErr := c.Cache.Store(r.Context(), key, entry)
+				storeCtx, cancelStore := detached(r.Context())
+				storeErr := c.Cache.Store(storeCtx, key, entry)
+				cancelStore()
 				if storeErr != nil {
 					c.Log.Warn("aigw: cache store failed",
 						slog.String("service_id", svc.ID),
@@ -725,6 +760,16 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		isStreamedResponse(wrapped.Header()), false,
 		wrapped.statusCode,
 	)
+}
+
+// postResponseTimeout bounds bookkeeping that runs after the response has
+// been sent (usage row, cache entry). It runs on a context detached from the
+// request, because a client that hangs up right after the last byte cancels
+// the request context before these writes start.
+const postResponseTimeout = 5 * time.Second
+
+func detached(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), postResponseTimeout)
 }
 
 // captureEntry records one inspector entry IF the per-service inspector
@@ -793,6 +838,8 @@ func (c *Chain) recordMeter(ctx context.Context, svc Service, kind Kind,
 	if c.Meter == nil {
 		return
 	}
+	ctx, cancel := detached(ctx)
+	defer cancel()
 	_ = c.Meter.Record(ctx, aimeter.Sample{
 		ServiceID:      svc.ID,
 		APIKeyID:       svc.APIKeyID,

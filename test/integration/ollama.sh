@@ -168,21 +168,21 @@ OK=""; for _ in $(seq 1 60); do [ "$(px -o /dev/null -w '%{http_code}' -H "$AUTH
 check "relay restart: client reconnects, same slug, key still valid" "$OK" "yes"
 login
 
-# --- known defects (XFAIL) ---------------------------------------------------
-# 1. Usage rows are written with the request context, which is already
-#    cancelled once a non-streaming client has its response and hangs up.
+# Usage rows must survive a non-streaming client that hangs up as soon as it
+# has its response (the request context is cancelled by then).
 BEFORE=$(metric requests_24h)
 for i in 1 2 3; do px -o /dev/null -H "$AUTH" -H 'Content-Type: application/json' -d "$(chat "meter $i $RANDOM")" "$PX/v1/chat/completions"; done
 sleep 1
-xcheck "metering: 3 non-streamed requests are all recorded" "$(( $(metric requests_24h) - BEFORE ))" "3"
+check "metering: 3 non-streamed requests are all recorded" "$(( $(metric requests_24h) - BEFORE ))" "3"
 
-# 2. The matched API key id never reaches the AI chain, so api_key-scoped
-#    limits (and per-key cost attribution) never apply.
+# The matched API key id reaches the AI chain, so api_key-scoped limits (and
+# per-key cost attribution) apply.
 RL=$(amut POST /api/v1/rate-limits "{\"scope\":\"api_key\",\"subject\":\"$KEY_ID\",\"dimension\":\"rpm\",\"limit\":2,\"burst\":2,\"window\":\"minute\"}" | jq -r .id)
 CODES=""; for i in 1 2 3 4; do CODES="$CODES$(px -o /dev/null -w '%{http_code}' -H "$AUTH" -H 'Content-Type: application/json' -d "$(chat "rl-key $i $RANDOM")" "$PX/v1/chat/completions") "; done
-xcheck "rate limit (api_key scope) is enforced" "$(echo "$CODES" | grep -c 429 || true)" "1"
+check "rate limit (api_key scope) is enforced" "$(echo "$CODES" | grep -c 429 || true)" "1"
 acode DELETE "/api/v1/rate-limits/$RL" >/dev/null
 
+# --- known defects (XFAIL) ---------------------------------------------------
 # 3. Model aliases are stored and listed but not applied on the data plane.
 amut POST /api/v1/models/aliases "{\"alias\":\"gpt-4o-mini\",\"concrete_model\":\"$MODEL\",\"service_id\":\"$SID\",\"provider\":\"ollama\",\"priority\":0}" >/dev/null
 xcheck "model alias gpt-4o-mini is rewritten to $MODEL" \

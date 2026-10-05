@@ -60,6 +60,9 @@ type Resolved struct {
 	TunnelID        string
 	UserID          string
 	ClientSessionID string
+	// APIKeyID is the id of the service API key that authorised this request.
+	// Set by the access checker in api_key mode; "" otherwise.
+	APIKeyID string
 	// IP/geo allow/block policy (string CIDRs + ISO country codes). Empty =
 	// no restriction. Compiled per-request by the proxy (Task C2) via
 	// proxy.CompileIPGeoPolicy.

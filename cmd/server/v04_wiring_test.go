@@ -117,7 +117,7 @@ func TestAIChain_PassThroughWhenNoServiceConfig(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
 	stack.AIChain.Dispatch(rr, req,
-		"svc-nonexistent", "127.0.0.1:3000", "Authorization",
+		"svc-nonexistent", "127.0.0.1:3000", "Authorization", "",
 		downstream,
 	)
 

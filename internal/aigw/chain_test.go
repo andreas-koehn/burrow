@@ -135,7 +135,7 @@ func runChainOverServer(t *testing.T, chain *aigw.Chain, upstream http.Handler) 
 	t.Cleanup(upstreamSrv.Close)
 	rp := reverseProxyTo(t, upstreamSrv.URL)
 	visitor := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		chain.Dispatch(w, r, "svc-test", "", "Authorization", rp)
+		chain.Dispatch(w, r, "svc-test", "", "Authorization", "", rp)
 	})
 	srv := httptest.NewServer(visitor)
 	t.Cleanup(srv.Close)
@@ -984,5 +984,75 @@ func TestChainOnMissHookNotWired(t *testing.T) {
 		if p.serviceID != svcID {
 			t.Errorf("Promote[%d]: serviceID = %q; want %q", i, p.serviceID, svcID)
 		}
+	}
+}
+
+// ctxSink records the last sample and the state of the context it was
+// written on.
+type ctxSink struct {
+	got    bool
+	ctxErr error
+	sample aimeter.Sample
+}
+
+func (s *ctxSink) Record(ctx context.Context, sm aimeter.Sample) error {
+	s.got, s.ctxErr, s.sample = true, ctx.Err(), sm
+	return nil
+}
+
+// One-shot clients (curl) close the connection as soon as the body ends, which
+// cancels the request context before the chain records usage.
+func TestChain_UsageWriteSurvivesClientHangup(t *testing.T) {
+	sink := &ctxSink{}
+	c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`)).WithContext(ctx)
+	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		cancel()
+	})
+	svc := aigw.Service{ID: "svc1", AIConfig: aigw.ServiceAIConfig{Anthropic: &aigw.AnthropicConfig{}}}
+	c.ServeHTTP(httptest.NewRecorder(), req, svc, up)
+	if !sink.got {
+		t.Fatal("no usage sample recorded")
+	}
+	if sink.ctxErr != nil {
+		t.Fatalf("usage write ran on a dead context: %v", sink.ctxErr)
+	}
+}
+
+func TestChain_Dispatch_PassesAPIKeyID(t *testing.T) {
+	sink := &ctxSink{}
+	c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, nil)
+	c.Loader = staticLoader{ok: true, svc: aigw.Service{ID: "svc1", AIConfig: aigw.ServiceAIConfig{Anthropic: &aigw.AnthropicConfig{}}}}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	c.Dispatch(httptest.NewRecorder(), req, "svc1", "127.0.0.1:11434", "Authorization", "key-1", up)
+	if sink.sample.APIKeyID != "key-1" {
+		t.Fatalf("usage sample APIKeyID = %q, want key-1", sink.sample.APIKeyID)
+	}
+}
+
+// A service without AI config is pure pass-through for Dispatch (no usage
+// row). DispatchMetered must record usage anyway.
+func TestChain_DispatchMetered_RecordsUsageWithoutAIConfig(t *testing.T) {
+	sink := &ctxSink{}
+	c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, nil)
+	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
+	})
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+	c.DispatchMetered(httptest.NewRecorder(), req, "svc1", "host", "Authorization", "key-1", up)
+	if !sink.got || sink.sample.TokensIn != 10 || sink.sample.TokensOut != 5 || sink.sample.APIKeyID != "key-1" {
+		t.Fatalf("sample = %+v got=%v", sink.sample, sink.got)
+	}
+
+	// Dispatch keeps its pass-through behaviour for the same service.
+	sink2 := &ctxSink{}
+	c2 := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink2, nil)
+	c2.Dispatch(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`)), "svc1", "host", "Authorization", "key-1", up)
+	if sink2.got {
+		t.Fatal("Dispatch must stay pass-through for a service without AI config")
 	}
 }
