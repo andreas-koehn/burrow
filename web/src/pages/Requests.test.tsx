@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useLocation } from "react-router-dom";
@@ -32,7 +32,14 @@ const table = () => screen.findByRole("table", { name: "Requests" });
 const bodyRows = (t: HTMLElement) => Array.from(t.querySelectorAll<HTMLElement>("tbody tr"));
 
 describe("Requests page", () => {
-  afterEach(() => resetDb());
+  afterEach(() => {
+    resetDb();
+    vi.restoreAllMocks();
+  });
+
+  /** The query strings of the list requests sent so far. */
+  const listCalls = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.map(([url]) => String(url)).filter((u) => u.includes("/inspector/requests?")).map((u) => new URL(u, "http://x").searchParams);
 
   it("renders the heading 'Requests'", async () => {
     mount();
@@ -43,9 +50,19 @@ describe("Requests page", () => {
     capture("svc_web01", [1, 2]);
     mount();
     const t = await table();
-    // Provider, model, tokens and cost are not part of a captured request yet.
+    // Model, tokens and cost are not part of a captured request yet.
     expect(within(t).getAllByRole("columnheader").map((h) => h.textContent))
-      .toEqual(["Time", "Method", "Path", "Status", "Cache", "Guardrail"]);
+      .toEqual(["Time", "Provider", "Method", "Path", "Status", "Cache", "Guardrail"]);
+  });
+
+  it("names the provider the service belongs to, and '—' for a service without one", async () => {
+    capture("svc_web01", [1]);
+    capture("svc_ai001", [1]);
+    db.aiProviders[0] = { ...db.aiProviders[0]!, name: "Local Ollama" };
+    mount("/gateway/requests?service=svc_ai001");
+    await waitFor(async () => expect(bodyRows(await table())[0]!.querySelectorAll("td")[1]).toHaveTextContent("Local Ollama"));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Service" }), "svc_web01");
+    await waitFor(async () => expect(bodyRows(await table())[0]!.querySelectorAll("td")[1]).toHaveTextContent(/^—$/));
   });
 
   it("starts on the first http service", async () => {
@@ -93,22 +110,28 @@ describe("Requests page", () => {
     expect(row.getByText("3 redacted")).toBeInTheDocument();
   });
 
-  it("the time range narrows the list and is kept in the URL", async () => {
+  it("the time range is sent to the relay as since and kept in the URL", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
     capture("svc_web01", [5, 30, 600]);
     mount();
     expect(bodyRows(await table())).toHaveLength(3);
     await userEvent.click(screen.getByRole("radio", { name: "15 min" }));
-    expect(bodyRows(await table())).toHaveLength(1);
+    await waitFor(async () => expect(bodyRows(await table())).toHaveLength(1));
     expect(screen.getByTestId("path")).toHaveTextContent("/gateway/requests?range=15m");
+    const age = Date.now() - Date.parse(listCalls(spy).at(-1)!.get("since")!);
+    expect(age).toBeGreaterThan(14 * 60_000);
+    expect(age).toBeLessThan(16 * 60_000);
   });
 
-  it("the Filter box searches path, method and body", async () => {
+  it("the Filter box is sent to the relay as q", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
     capture("svc_web01", [1, 2]);
     db.inspectorEntries.svc_web01![1] = { ...db.inspectorEntries.svc_web01![1]!, path: "/v1/embeddings" };
     mount();
     await table();
     await userEvent.type(screen.getByRole("searchbox", { name: "Filter" }), "embed");
     await waitFor(async () => expect(bodyRows(await table())).toHaveLength(1));
+    expect(listCalls(spy).at(-1)!.get("q")).toBe("embed");
     expect(screen.getByTestId("path")).toHaveTextContent("/gateway/requests?q=embed");
     await userEvent.type(screen.getByRole("searchbox", { name: "Filter" }), "zzz");
     expect(await screen.findByText("No requests match your filter")).toBeInTheDocument();
@@ -122,26 +145,69 @@ describe("Requests page", () => {
     expect(bodyRows(await table())).toHaveLength(1);
   });
 
-  it("a service without any captured request says how the list fills", async () => {
-    mount();
-    expect(await screen.findByText("No requests yet")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Show the last 7 days" })).toBeNull();
+  it("requests older than 7 days stay reachable: Show all asks without since", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    capture("svc_web01", [30 * 24 * 60]);
+    mount("/gateway/requests?range=7d");
+    expect(await screen.findByText("No requests in this period")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Show all" }));
+    expect(bodyRows(await table())).toHaveLength(1);
+    expect(screen.getByRole("radio", { name: "All" })).toBeChecked();
+    expect(listCalls(spy).at(-1)!.has("since")).toBe(false);
   });
 
-  it("says when capturing is switched off for the service", async () => {
+  it("a service without any captured request says how the list fills", async () => {
+    mount("/gateway/requests?range=all");
+    expect(await screen.findByText("No requests yet")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Show/ })).toBeNull();
+  });
+
+  it("says so when the relay returned a full page: only the newest 100 are shown", async () => {
+    capture("svc_web01", Array.from({ length: 100 }, (_, i) => i + 1));
+    capture("svc_ai001", [1, 2]);
+    mount();
+    expect(bodyRows(await table())).toHaveLength(100);
+    expect(screen.getByText(/Showing the newest 100 requests that match/)).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Service" }), "svc_ai001");
+    await waitFor(async () => expect(bodyRows(await table())).toHaveLength(2));
+    expect(screen.queryByText(/Showing the newest 100 requests that match/)).toBeNull();
+  });
+
+  it("says when capturing is switched off for the service and where to turn it on", async () => {
     db.aiConfigs.svc_web01 = { inspector: { enabled: false, max_requests: 100 } } as never;
     mount();
-    expect(await screen.findByText("Request capture is off for web")).toBeInTheDocument();
-    expect(screen.getByText("Requests to this service are not being recorded.")).toBeInTheDocument();
+    expect(await screen.findByText("Request inspector is off for web")).toBeInTheDocument();
+    expect(screen.getByText(/enable in Access settings/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open the service" })).toHaveAttribute("href", "/services/svc_web01");
   });
 
-  it("with no provider at all: 'No providers yet' and a link to add one", async () => {
+  it("with no provider and nothing to inspect: 'No providers yet' and a link to add one", async () => {
     db.services = db.services.filter((s) => s.type !== "http");
+    db.aiProviders = [];
     mount();
     expect(await screen.findByText("No providers yet")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Add a provider" })).toHaveAttribute("href", "/gateway/providers");
     // The page itself stays: heading and all.
     expect(screen.getByRole("heading", { name: /^requests$/i, level: 1 })).toBeInTheDocument();
+  });
+
+  it("providers exist but no HTTP service: says so and offers to connect a client", async () => {
+    server.use(http.get("/api/v1/services", () => HttpResponse.json(db.services.filter((s) => s.type !== "http"))));
+    mount();
+    expect(await screen.findByText("No HTTP services to inspect")).toBeInTheDocument();
+    expect(screen.queryByText("No providers yet")).toBeNull();
+    // A plain button, not a button nested in a link.
+    expect(screen.queryByRole("link", { name: "Connect a client" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Connect a client" }));
+    expect(screen.getByTestId("path")).toHaveTextContent("/clients/connect");
+  });
+
+  it("HTTP services without any provider keep their requests: the list shows, not 'No providers yet'", async () => {
+    db.aiProviders = [];
+    capture("svc_web01", [1]);
+    mount();
+    expect(bodyRows(await table())).toHaveLength(1);
+    expect(screen.queryByText("No providers yet")).toBeNull();
   });
 
   it("shows an error, not the empty state, when the service list fails; Retry recovers", async () => {
@@ -174,8 +240,8 @@ describe("Requests page", () => {
     }));
     const { container } = mount();
     expect(container.querySelector(".skel")).not.toBeNull();
-    expect(screen.queryByText("No providers yet")).not.toBeInTheDocument();
-    expect(await screen.findByText("No providers yet")).toBeInTheDocument();
+    expect(screen.queryByText("No HTTP services to inspect")).not.toBeInTheDocument();
+    expect(await screen.findByText("No HTTP services to inspect")).toBeInTheDocument();
     expect(container.querySelector(".skel")).toBeNull();
   });
 });

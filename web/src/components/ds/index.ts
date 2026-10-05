@@ -38,3 +38,5 @@ export { InfoHint } from "./InfoHint";
 export type { InfoHintProps } from "./InfoHint";
 export { TableEmptyRow } from "./TableEmptyRow";
 export type { TableEmptyRowProps } from "./TableEmptyRow";
+export { Segmented } from "./Segmented";
+export type { SegmentedProps, SegmentedOption } from "./Segmented";

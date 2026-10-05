@@ -50,13 +50,13 @@ export function ProviderConnect({ baseUrl, exampleModel }: ProviderConnectProps)
         </button>
       </div>
       <div className="row gap-2">
-        <pre className="cmd-block wrap flex-1"><code>{curl}</code></pre>
+        <pre className="cmd-block wrap fill-rest"><code>{curl}</code></pre>
         <button type="button" className="icon-btn" aria-label="Copy curl example" onClick={() => copy(curl)}>
           <Copy size={13} aria-hidden="true" />
         </button>
       </div>
       <div className="row gap-2">
-        <pre className="cmd-block wrap flex-1"><code>{env}</code></pre>
+        <pre className="cmd-block wrap fill-rest"><code>{env}</code></pre>
         <button type="button" className="icon-btn" aria-label="Copy environment variables" onClick={() => copy(env)}>
           <Copy size={13} aria-hidden="true" />
         </button>

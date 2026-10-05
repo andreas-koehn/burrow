@@ -70,11 +70,34 @@ describe("Traffic page", () => {
     expect(screen.getByTestId("path")).toHaveTextContent("/traffic?range=7d");
   });
 
-  it("does not offer a longer period when 7 days are already shown", async () => {
-    db.connectionLogs = [];
+  it("after 7 days the empty state offers everything; All sends no bounds and shows the oldest log", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    // Retention can be years: a connection from last year is still there.
+    db.connectionLogs = [{ ...db.connectionLogs[0]!, started_at: new Date(Date.now() - 400 * 86_400_000).toISOString() }];
     mount("/traffic?range=7d");
     expect(await screen.findByText("No traffic in this period")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Show the last 7 days" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Show all" }));
+    expect(bodyRows(await table())).toHaveLength(1);
+    expect(screen.getByRole("radio", { name: "All" })).toBeChecked();
+    expect(screen.getByTestId("path")).toHaveTextContent("/traffic?range=all");
+    const last = fetchSpy.mock.calls.map(([url]) => String(url)).filter((u) => u.includes("/api/v1/connection-logs?")).at(-1)!;
+    expect(last).not.toContain("since=");
+    expect(last).not.toContain("until=");
+  });
+
+  it("with All chosen an empty list offers no longer period, and Export has no bounds either", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    db.connectionLogs = [];
+    mount("/traffic?range=all");
+    expect(await screen.findByText("No traffic yet")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Show/ })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /^export$/i }));
+    await waitFor(() => {
+      const exp = fetchSpy.mock.calls.map(([url]) => String(url)).find((u) => u.includes("/connection-logs/export"));
+      expect(exp).toBeDefined();
+      expect(exp).not.toContain("since=");
+    });
   });
 
   it("the time range is sent to the API and kept in the URL", async () => {
@@ -181,7 +204,7 @@ describe("Traffic page", () => {
     db.connectionLogs = [{ ...db.connectionLogs[0]!, status: "rejected", reason: "ip not allowed" }];
     mount();
     const t = await table();
-    await userEvent.click(bodyRows(t)[0]!);
+    await userEvent.click(within(bodyRows(t)[0]!).getByRole("button", { name: "Show details" }));
     const panel = screen.getByRole("region", { name: "Traffic details" });
     expect(panel).toHaveTextContent("ip not allowed");
     expect(panel).toHaveTextContent("burrow-client/0.5.0");

@@ -1502,7 +1502,7 @@ a.user-chip:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
-/* Two or three exclusive choices in a toolbar (role="radiogroup"). */
+/* A few exclusive choices in a toolbar (ds/Segmented, role="radiogroup"). */
 .segmented {
   display: inline-flex;
   flex: none;
@@ -2573,8 +2573,8 @@ tr.clickable { cursor: pointer; }
 /* Resizable textarea — replaces inline style={{ resize: "vertical", height: "auto" }} */
 .resizable { resize: vertical; height: auto; }
 
-/* Flex-grow utility */
-.flex-1 { flex: 1; }
+/* Takes the space its flex row has left */
+.fill-rest { flex: 1; }
 
 /* Text alignment */
 .text-center { text-align: center; }

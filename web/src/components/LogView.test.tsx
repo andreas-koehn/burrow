@@ -79,7 +79,7 @@ describe("LogView", () => {
   it("offers the time range as a radiogroup and reports the choice", async () => {
     const { props } = mount();
     const group = screen.getByRole("radiogroup", { name: "Time range" });
-    expect(within(group).getAllByRole("radio").map((r) => r.textContent)).toEqual(["15 min", "1 hour", "24 hours", "7 days"]);
+    expect(within(group).getAllByRole("radio").map((r) => r.textContent)).toEqual(["15 min", "1 hour", "24 hours", "7 days", "All"]);
     expect(within(group).getByRole("radio", { name: "24 hours" })).toBeChecked();
     await userEvent.click(within(group).getByRole("radio", { name: "7 days" }));
     expect(props.onRangeChange).toHaveBeenCalledWith("7d");
@@ -92,6 +92,8 @@ describe("LogView", () => {
     expect(props.onRangeChange).toHaveBeenLastCalledWith("1h");
     await userEvent.keyboard("{ArrowRight}");
     expect(props.onRangeChange).toHaveBeenLastCalledWith("7d");
+    await userEvent.click(screen.getByRole("radio", { name: "All" }));
+    expect(props.onRangeChange).toHaveBeenLastCalledWith("all");
   });
 
   it("has a search input labelled Filter that reports what is typed", async () => {
@@ -105,41 +107,77 @@ describe("LogView", () => {
     expect(screen.getByRole("button", { name: "Pick a service" })).toBeInTheDocument();
   });
 
-  it("opens a row's detail on click; Escape closes it and returns the focus to the row", async () => {
-    mount({ detail: (r) => <p>detail of {r.name}</p> });
-    expect(screen.queryByText(/detail of/)).toBeNull();
-    const row = screen.getByRole("row", { name: /beta/ });
-    await userEvent.click(row);
+  const withDetail = { detail: (r: Row) => <p>detail of {r.name}</p> };
+  const toggleOf = (name: RegExp) => within(screen.getByRole("row", { name })).getByRole("button", { name: "Show details" });
+
+  it("a row with detail has a button that says whether the detail is open and what it controls", async () => {
+    mount(withDetail);
+    const button = toggleOf(/beta/);
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(button);
+    expect(button).toHaveAttribute("aria-expanded", "true");
     const panel = screen.getByRole("region", { name: "Things details" });
+    expect(button).toHaveAttribute("aria-controls", panel.id);
     expect(panel).toHaveTextContent("detail of beta");
     expect(panel).toHaveFocus();
-    expect(row).toHaveAttribute("aria-selected", "true");
-    await userEvent.keyboard("{Escape}");
-    expect(screen.queryByText(/detail of/)).toBeNull();
-    expect(row).toHaveFocus();
+    expect(toggleOf(/alpha/)).toHaveAttribute("aria-expanded", "false");
+    // A plain table has no selectable rows; the row is neither a tab stop nor "selected".
+    const row = screen.getByRole("row", { name: /beta/ });
+    expect(row).not.toHaveAttribute("aria-selected");
+    expect(row).not.toHaveAttribute("tabindex");
   });
 
-  it.each([["Enter", "{Enter}"], ["Space", " "]])("opens the focused row's detail with %s", async (_name, key) => {
-    mount({ detail: (r) => <p>detail of {r.name}</p> });
-    const row = screen.getByRole("row", { name: /alpha/ });
-    row.focus();
+  it("Escape closes the detail and returns the focus to the row's button", async () => {
+    mount(withDetail);
+    await userEvent.click(toggleOf(/beta/));
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByText(/detail of/)).toBeNull();
+    expect(toggleOf(/beta/)).toHaveFocus();
+    expect(toggleOf(/beta/)).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it.each([["Enter", "{Enter}"], ["Space", " "]])("opens and closes the detail from the keyboard with %s", async (_name, key) => {
+    mount(withDetail);
+    toggleOf(/alpha/).focus();
     await userEvent.keyboard(key);
     expect(screen.getByText("detail of alpha")).toBeInTheDocument();
-    await userEvent.keyboard("{Escape}");
-    expect(row).toHaveFocus();
+    toggleOf(/alpha/).focus();
+    await userEvent.keyboard(key);
+    expect(screen.queryByText(/detail of/)).toBeNull();
+  });
+
+  it("a click anywhere on the row toggles its detail", async () => {
+    mount(withDetail);
+    const cell = screen.getByRole("cell", { name: "20" });
+    await userEvent.click(cell);
+    expect(screen.getByText("detail of beta")).toBeInTheDocument();
+    await userEvent.click(cell);
+    expect(screen.queryByText(/detail of/)).toBeNull();
   });
 
   it("closes the detail with its Close button", async () => {
-    mount({ detail: (r) => <p>detail of {r.name}</p> });
-    const row = screen.getByRole("row", { name: /alpha/ });
-    await userEvent.click(row);
+    mount(withDetail);
+    await userEvent.click(toggleOf(/alpha/));
     await userEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByText(/detail of/)).toBeNull();
-    expect(row).toHaveFocus();
+    expect(toggleOf(/alpha/)).toHaveFocus();
   });
 
-  it("rows are not focusable when there is no detail", () => {
+  it("when the open row leaves the list the panel goes, the focus stays in the view and the row does not reopen", async () => {
+    const { props, rerender } = mount(withDetail);
+    await userEvent.click(toggleOf(/beta/));
+    expect(screen.getByRole("region", { name: "Things details" })).toHaveFocus();
+    rerender(<LogView {...props} rows={[ROWS[0]]} />);
+    expect(screen.queryByText(/detail of/)).toBeNull();
+    expect(screen.getByRole("group", { name: "Things log" })).toHaveFocus();
+    rerender(<LogView {...props} rows={ROWS} />);
+    expect(screen.queryByText(/detail of/)).toBeNull();
+    expect(toggleOf(/beta/)).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("rows have no detail button when there is no detail", () => {
     mount();
+    expect(screen.queryByRole("button", { name: "Show details" })).toBeNull();
     expect(screen.getByRole("row", { name: /alpha/ })).not.toHaveAttribute("tabindex");
   });
 

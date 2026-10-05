@@ -5,7 +5,7 @@ import { ArrowDown, ArrowUp, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/auth/useAuth";
-import { Button, Badge, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, Select, SkeletonRows } from "@/components/ds";
+import { Button, Badge, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, Segmented, Select, SkeletonRows } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { formatBytes } from "@/lib/format";
 import type { Service, AccessMode, ClientDetail, ClientView } from "@/lib/contract";
@@ -51,36 +51,7 @@ interface Row {
 const SHOW = [{ value: "all", label: "All" }, { value: "live", label: "Live" }] as const;
 
 function ShowFilter({ live, onChange }: { live: boolean; onChange: (live: boolean) => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const current = live ? "live" : "all";
-  return (
-    <div
-      ref={ref}
-      role="radiogroup"
-      aria-label="Show"
-      className="segmented"
-      onKeyDown={(e) => {
-        if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
-        e.preventDefault();
-        // Two options: any arrow key selects the other one and takes the focus along.
-        onChange(!live);
-        ref.current?.querySelector<HTMLElement>('[aria-checked="false"]')?.focus();
-      }}
-    >
-      {SHOW.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          role="radio"
-          aria-checked={o.value === current}
-          tabIndex={o.value === current ? 0 : -1}
-          onClick={() => onChange(o.value === "live")}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
+  return <Segmented aria-label="Show" options={SHOW} value={live ? "live" : "all"} onChange={(v) => onChange(v === "live")} />;
 }
 
 export default function Services() {

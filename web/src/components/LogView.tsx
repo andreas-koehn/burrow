@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import type { KeyboardEvent, ReactNode } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { ChevronRight } from "lucide-react";
 import { ApiError } from "@/lib/api";
-import { Button, ErrorNotice, Input, SkeletonRows } from "@/components/ds";
+import { Button, ErrorNotice, Input, Segmented, SkeletonRows } from "@/components/ds";
 import { TIME_RANGES, type TimeRange } from "@/lib/time-range";
 
 export type { TimeRange } from "@/lib/time-range";
@@ -37,36 +38,6 @@ export interface LogViewProps<Row> {
   onLoadMore?: () => void;
 }
 
-function RangeControl({ range, onChange }: { range: TimeRange; onChange: (r: TimeRange) => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  function onKeyDown(e: KeyboardEvent) {
-    const step = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : 0;
-    if (step === 0) return;
-    e.preventDefault();
-    const at = TIME_RANGES.findIndex((r) => r.value === range);
-    const next = (at + step + TIME_RANGES.length) % TIME_RANGES.length;
-    onChange(TIME_RANGES[next].value);
-    // The selected option is the only tab stop, so the focus goes along with the choice.
-    ref.current?.querySelectorAll<HTMLElement>('[role="radio"]')[next]?.focus();
-  }
-  return (
-    <div ref={ref} role="radiogroup" aria-label="Time range" className="segmented" onKeyDown={onKeyDown}>
-      {TIME_RANGES.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          role="radio"
-          aria-checked={o.value === range}
-          tabIndex={o.value === range ? 0 : -1}
-          onClick={() => onChange(o.value)}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 /**
  * One log table for every scope: a filter bar (time range, search, the page's own
  * controls), then loading, error, empty or the rows, with an optional detail panel
@@ -77,9 +48,14 @@ export function LogView<Row>({
   range, onRangeChange, search, onSearchChange, filters, empty, detail, hasMore, onLoadMore,
 }: LogViewProps<Row>) {
   const [openKey, setOpenKey] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const tableRef = useRef<HTMLTableElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const panelId = useId();
   const open = detail && openKey !== null ? rows?.find((r) => rowKey(r) === openKey) : undefined;
+  // The open row left the list (a filter changed, a refresh dropped it): forget it,
+  // so it does not spring open again when it comes back.
+  if (openKey !== null && !open) setOpenKey(null);
 
   // The panel follows the table in the page; taking the focus there spares a keyboard
   // user the remaining rows and lets a screen reader announce what opened.
@@ -87,12 +63,24 @@ export function LogView<Row>({
     if (openKey !== null) panelRef.current?.focus();
   }, [openKey]);
 
+  // A panel that went away while it held the focus leaves the focus on <body>; keep it in the view.
+  const hadPanel = useRef(false);
+  useEffect(() => {
+    if (hadPanel.current && !open && document.activeElement === document.body) rootRef.current?.focus();
+    hadPanel.current = Boolean(open);
+  }, [open]);
+
+  const toggleOf = (key: string) =>
+    [...(tableRef.current?.querySelectorAll<HTMLElement>("tbody tr") ?? [])]
+      .find((tr) => tr.dataset.rowKey === key)
+      ?.querySelector<HTMLElement>("button[aria-expanded]");
+
   function close() {
     const key = openKey;
     setOpenKey(null);
-    const row = [...(tableRef.current?.querySelectorAll<HTMLElement>("tbody tr") ?? [])].find((tr) => tr.dataset.rowKey === key);
-    row?.focus();
+    if (key !== null) toggleOf(key)?.focus();
   }
+  const toggle = (key: string) => { if (openKey === key) close(); else setOpenKey(key); };
 
   let body: ReactNode;
   if (isLoading) {
@@ -120,24 +108,37 @@ export function LogView<Row>({
           <tbody>
             {rows.map((r) => {
               const key = rowKey(r);
-              const cells = columns.map((c) => <td key={c.id} className={c.numeric ? "col-num" : undefined}>{c.cell(r)}</td>);
-              if (!detail) return <tr key={key}>{cells}</tr>;
+              if (!detail) {
+                return <tr key={key}>{columns.map((c) => <td key={c.id} className={c.numeric ? "col-num" : undefined}>{c.cell(r)}</td>)}</tr>;
+              }
+              const isOpen = openKey === key;
               return (
                 <tr
                   key={key}
                   data-row-key={key}
                   className="clickable"
-                  tabIndex={0}
-                  aria-selected={openKey === key}
-                  onClick={() => setOpenKey(key)}
-                  onKeyDown={(e) => {
-                    // Keys pressed on a control inside the row belong to that control.
-                    if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
-                    e.preventDefault();
-                    setOpenKey(key);
-                  }}
+                  // A convenience for the pointer; the button in the first cell is the control.
+                  onClick={(e) => { if (!(e.target as HTMLElement).closest("a, button, input, select")) toggle(key); }}
                 >
-                  {cells}
+                  {columns.map((c, i) => (
+                    <td key={c.id} className={c.numeric ? "col-num" : undefined}>
+                      {i === 0 ? (
+                        <span className="row row-center gap-2">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            iconOnly
+                            icon={<ChevronRight size={14} aria-hidden="true" />}
+                            aria-label="Show details"
+                            aria-expanded={isOpen}
+                            aria-controls={isOpen ? panelId : undefined}
+                            onClick={() => toggle(key)}
+                          />
+                          {c.cell(r)}
+                        </span>
+                      ) : c.cell(r)}
+                    </td>
+                  ))}
                 </tr>
               );
             })}
@@ -151,7 +152,7 @@ export function LogView<Row>({
         <div className={open ? "inspector-grid" : undefined}>
           {table}
           {open && (
-            <div className="detail-pane" role="region" aria-label={`${label} details`} tabIndex={-1} ref={panelRef}>
+            <div className="detail-pane" id={panelId} role="region" aria-label={`${label} details`} tabIndex={-1} ref={panelRef}>
               <div className="detail-toolbar">
                 <Button variant="secondary" size="sm" onClick={close}>Close</Button>
               </div>
@@ -169,15 +170,22 @@ export function LogView<Row>({
   }
 
   return (
-    // Escape closes the detail from wherever the focus is: the row or the panel.
-    <div className="log-view" onKeyDown={(e) => { if (e.key === "Escape" && open) { e.stopPropagation(); close(); } }}>
+    // Escape closes the detail from wherever the focus is: the row's button or the panel.
+    <div
+      className="log-view"
+      role="group"
+      aria-label={`${label} log`}
+      tabIndex={-1}
+      ref={rootRef}
+      onKeyDown={(e) => { if (e.key === "Escape" && open) { e.stopPropagation(); close(); } }}
+    >
       <div className="filter-row">
-        <RangeControl range={range} onChange={onRangeChange} />
+        <Segmented aria-label="Time range" options={TIME_RANGES} value={range} onChange={onRangeChange} />
         <Input
           type="search"
           aria-label="Filter"
           placeholder="Filter"
-          className="flex-1"
+          className="fill-rest"
           value={search}
           onChange={(e) => onSearchChange(e.target.value)}
         />

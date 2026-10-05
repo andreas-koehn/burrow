@@ -200,7 +200,6 @@ describe("App routes", () => {
     expect(nav.getByRole("link", { name: "Requests" })).toHaveAttribute("href", "/gateway/requests");
   });
 
-
   it("/provisioning is unreachable (backend pending)", async () => {
     renderAt("/provisioning");
     await waitFor(() => {

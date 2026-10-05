@@ -4,7 +4,7 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { apiFetch, downloadFile } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
 import { statusLabel } from "@/lib/status";
-import { parseTimeRange, timeRangeMs, type TimeRange } from "@/lib/time-range";
+import { parseTimeRange, timeRangeMs, widerRange, type TimeRange } from "@/lib/time-range";
 import { Button, Badge, EmptyState, PageHeader } from "@/components/ds";
 import { LogView, type LogColumn } from "@/components/LogView";
 import type { ConnectionLog, ConnectionLogRollup, ConnectionLogKind, ConnectionLogStatus, Service } from "@/lib/contract";
@@ -41,6 +41,22 @@ function statusClass(status: ConnectionLogStatus): string {
     case "closed_error": return "status-suspended";
     case "rejected":     return "status-suspended";
   }
+}
+
+/** The filters every connection-log endpoint understands; the window ends at the time of the call. */
+function logParams(f: { kind: string; service: string; range: TimeRange; q: string }): URLSearchParams {
+  const now = Date.now();
+  const p = new URLSearchParams();
+  if (f.kind) p.set("kind", f.kind);
+  if (f.service) p.set("service_id", f.service);
+  // "All" sends no bounds, so the list and the export reach as far back as retention keeps logs.
+  const ms = timeRangeMs(f.range);
+  if (ms !== null) {
+    p.set("since", new Date(now - ms).toISOString());
+    p.set("until", new Date(now).toISOString());
+  }
+  if (f.q) p.set("q", f.q);
+  return p;
 }
 
 function LogDetail({ row, service }: { row: ConnectionLog; service: string }) {
@@ -86,17 +102,8 @@ export default function Traffic() {
   }
   const setRange = (r: TimeRange) => setParam("range", r === "24h" ? "" : r);
 
-  // The filters every connection-log endpoint understands; the window ends now.
-  function filterParams(withSearch: boolean) {
-    const now = Date.now();
-    const p = new URLSearchParams();
-    if (kindFilter) p.set("kind", kindFilter);
-    if (serviceFilter) p.set("service_id", serviceFilter);
-    p.set("since", new Date(now - timeRangeMs(range)).toISOString());
-    p.set("until", new Date(now).toISOString());
-    if (withSearch && searchQ) p.set("q", searchQ);
-    return p;
-  }
+  const filterParams = (withSearch: boolean) =>
+    logParams({ kind: kindFilter, service: serviceFilter, range, q: withSearch ? searchQ : "" });
 
   // Logs, a page at a time; the cursor is the id of the last row shown.
   const logsQuery = useInfiniteQuery({
@@ -142,11 +149,9 @@ export default function Traffic() {
 
   const logs = useMemo(() => logsQuery.data?.pages.flat(), [logsQuery.data]);
   // The rollups endpoint has no text search, so the Filter box narrows what it returned.
-  const rollupRows = useMemo(() => {
-    const q = searchQ.toLowerCase();
-    return rollupsQuery.data?.filter((r) =>
-      `${r.day} ${r.kind} ${KIND_LABELS[r.kind] ?? ""} ${r.service_id} ${serviceName.get(r.service_id) ?? ""}`.toLowerCase().includes(q));
-  }, [rollupsQuery.data, searchQ, serviceName]);
+  const needle = searchQ.toLowerCase();
+  const rollupRows = rollupsQuery.data?.filter((r) =>
+    `${r.day} ${r.kind} ${KIND_LABELS[r.kind] ?? ""} ${r.service_id} ${serviceName.get(r.service_id) ?? ""}`.toLowerCase().includes(needle));
 
   const logColumns: LogColumn<ConnectionLog>[] = [
     { id: "time", header: "Time", cell: (r) => <span className="mono small" title={r.started_at}>{formatTimestamp(r.started_at)}</span> },
@@ -222,11 +227,13 @@ export default function Traffic() {
     </>
   );
 
+  const wider = widerRange(range);
+  const what = rollups ? "rollups" : "traffic";
   const empty = (
     <EmptyState
-      title={rollups ? "No rollups in this period" : "No traffic in this period"}
-      action={range !== "7d"
-        ? <Button variant="primary" size="sm" onClick={() => setRange("7d")}>Show the last 7 days</Button>
+      title={wider ? `No ${what} in this period` : `No ${what} yet`}
+      action={wider
+        ? <Button variant="primary" size="sm" onClick={() => setRange(wider.value)}>{wider.label}</Button>
         : undefined}
     >
       Connections are recorded on session close.

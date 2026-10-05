@@ -289,7 +289,7 @@ export default function ConnectClient() {
             <div className="section-head"><div className="left"><h2 id="ob-3">4. Run on the client</h2></div></div>
             {/* P2.4 — wrapped command + copy */}
             <div className="row gap-2">
-              <pre className="cmd-block wrap flex-1"><code>{cmd}</code></pre>
+              <pre className="cmd-block wrap fill-rest"><code>{cmd}</code></pre>
               <button
                 type="button"
                 className="icon-btn"

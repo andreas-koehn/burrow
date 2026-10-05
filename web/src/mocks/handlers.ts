@@ -773,8 +773,12 @@ export const handlers = [
     if (!svc) return err(404, "service not found");
     const url = new URL(request.url);
     const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit")) || 100));
+    // Mirrors the relay: since (RFC3339) and q (substring) narrow before the limit applies.
+    const since = url.searchParams.get("since") ?? "";
+    const q = (url.searchParams.get("q") ?? "").toLowerCase();
     const rows = (db.inspectorEntries[svc.id] ?? [])
-      .slice()
+      .filter((r) => !since || r.ts >= since)
+      .filter((r) => !q || `${r.path} ${r.method} ${r.req_body}`.toLowerCase().includes(q))
       .sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))
       .slice(0, limit);
     return json(rows);
