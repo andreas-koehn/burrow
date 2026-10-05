@@ -10,10 +10,14 @@ package api
 // always 0: usage_events has no latency column.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +58,27 @@ type aiProviderResp struct {
 	CredentialPresent bool   `json:"credential_present"`
 	Billing           string `json:"billing"`
 	ModelCount        int    `json:"model_count"`
+
+	// How the relay presents the credential upstream, for callers who may
+	// change it (admins): PUT …/upstream keeps what a body leaves out, and
+	// these fields show what that is. auth_format holds the literal {key}
+	// placeholder, never the credential. Left out for other callers and for
+	// tunnel providers.
+	AuthHeader   string            `json:"auth_header,omitempty"`
+	AuthFormat   string            `json:"auth_format,omitempty"`
+	ExtraHeaders map[string]string `json:"extra_headers,omitzero"`
+}
+
+// upstreamAuthView fills the fields of v that only a caller who may configure
+// the provider is shown.
+func upstreamAuthView(v *aiProviderResp, p db.AIProvider) {
+	if p.Kind != "direct" {
+		return
+	}
+	v.AuthHeader, v.AuthFormat, v.ExtraHeaders = p.AuthHeader, p.AuthFormat, p.ExtraHeaders
+	if v.ExtraHeaders == nil {
+		v.ExtraHeaders = map[string]string{}
+	}
 }
 
 // credentialPresent reports whether the vault holds a non-empty value for
@@ -208,7 +233,7 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 
 		alias := aliasForService[p.ServiceID]
 
-		out = append(out, aiProviderResp{
+		v := aiProviderResp{
 			Slug:            p.Slug,
 			Name:            p.Name,
 			Kind:            p.Kind,
@@ -230,7 +255,12 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 			CredentialPresent: present,
 			Billing:           p.Billing,
 			ModelCount:        d.modelCount(r.Context(), p.Slug),
-		})
+		}
+		// The upstream routes are admin only.
+		if role == "admin" {
+			upstreamAuthView(&v, p)
+		}
+		out = append(out, v)
 	}
 	return out, nil
 }
@@ -267,6 +297,8 @@ func (d Deps) writeProviderView(w http.ResponseWriter, r *http.Request, status i
 			BackendType: providerToBackendType(""), Status: "Offline",
 			UpstreamBaseURL: p.BaseURL, CredentialSlot: p.CredentialSlot, Billing: p.Billing,
 		}
+		// Only the admin-only write handlers answer through here.
+		upstreamAuthView(&v, p)
 	}
 	writeJSON(w, status, v)
 }
@@ -388,6 +420,35 @@ func (u upstreamReq) input() store.DirectProviderInput {
 		APIFormat: u.APIFormat, BaseURL: u.BaseURL, CredentialSlot: u.CredentialSlot,
 		AuthHeader: u.AuthHeader, AuthFormat: u.AuthFormat, ExtraHeaders: u.ExtraHeaders, Billing: u.Billing,
 	}
+}
+
+// plainFieldRe is what a JSON field name must look like to be repeated in an
+// error message.
+var plainFieldRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+
+// decodeUpstreamJSON decodes a body that carries upstream settings into v and
+// refuses a field v does not have, writing the 400 itself. A key pasted into
+// "api_key" or "credential" would otherwise be dropped without a word and
+// the provider saved without it. The message names the field; the field's
+// value is never repeated, logged or audited.
+func decodeUpstreamJSON(w http.ResponseWriter, body io.Reader, v any) bool {
+	dec := json.NewDecoder(body)
+	dec.DisallowUnknownFields()
+	err := dec.Decode(v)
+	if err == nil {
+		return true
+	}
+	const hint = "; the credential is set on the relay, credential_slot names its slot"
+	if quoted, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
+		if name, uerr := strconv.Unquote(quoted); uerr == nil && plainFieldRe.MatchString(name) {
+			writeErr(w, http.StatusBadRequest, "unknown field "+strconv.Quote(name)+hint)
+		} else {
+			writeErr(w, http.StatusBadRequest, "unknown field in the request body"+hint)
+		}
+		return false
+	}
+	writeErr(w, http.StatusBadRequest, "invalid JSON body")
+	return false
 }
 
 // postProviderReq is the body of POST /api/v1/ai/providers. service_id is
@@ -523,9 +584,19 @@ func upstreamAudit(p db.AIProvider) map[string]any {
 // derived from the name.
 func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
-	var in postProviderReq
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	var in postProviderReq
+	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	// A direct provider's body is read again, strictly, before anything is
+	// done with it.
+	if in.Kind == "direct" && !decodeUpstreamJSON(w, bytes.NewReader(raw), &postProviderReq{}) {
 		return
 	}
 	name, ok := validProviderName(w, in.Name)
@@ -667,8 +738,7 @@ func (d Deps) providerForWrite(w http.ResponseWriter, r *http.Request) (db.AIPro
 func (d Deps) PutAIProviderUpstream(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	var in upstreamReq
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeUpstreamJSON(w, r.Body, &in) {
 		return
 	}
 	old, ok := d.providerForWrite(w, r)
@@ -730,8 +800,11 @@ func (d Deps) GetAIProviderModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// modelSyncTimeout bounds one model sync, whatever the fetcher does.
-var modelSyncTimeout = 45 * time.Second
+// modelSyncTimeout bounds one model sync, whatever the fetcher does. It is
+// below the router's 30 s request timeout and the fetcher's own 30 s cap, so
+// that this deadline is the one that fires and the admin gets the 502 with
+// its message.
+var modelSyncTimeout = 25 * time.Second
 
 // modelSyncs holds the slugs with a sync in flight: one outbound call per
 // provider at a time.

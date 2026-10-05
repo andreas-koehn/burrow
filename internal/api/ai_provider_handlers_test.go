@@ -873,14 +873,16 @@ func (f *directFixture) serve(t *testing.T) *authClient {
 	return c
 }
 
-// noSecrets fails when the upstream credential or a header value shows up in
-// body, in an audit payload or in the log.
+// noSecrets fails when the upstream credential shows up in body, in an audit
+// payload or in the log, or a header value in an audit payload or in the log.
+// (An admin's provider view carries the extra headers; see
+// TestProviderView_UpstreamFieldsForAdminsOnly.)
 func (f *directFixture) noSecrets(t *testing.T, body string) {
 	t.Helper()
+	if strings.Contains(body, upstreamSecret) {
+		t.Errorf("response leaks %q: %s", upstreamSecret, body)
+	}
 	for _, secret := range []string{upstreamSecret, "header-value-do-not-leak"} {
-		if strings.Contains(body, secret) {
-			t.Errorf("response leaks %q: %s", secret, body)
-		}
 		for _, ev := range f.aud.events {
 			if strings.Contains(string(ev.Payload), secret) || strings.Contains(ev.SubjectLabel, secret) {
 				t.Errorf("audit event %s leaks %q: %s", ev.Action, secret, ev.Payload)
@@ -953,9 +955,11 @@ func TestPostDirectProvider(t *testing.T) {
 		c := f.serve(t)
 		in := map[string]any{"name": "z.ai", "slug": "zai", "kind": "direct", "base_url": "https://api.z.ai/v4", "credential_slot": "OPENROUTER",
 			"credential": upstreamSecret, "api_key": upstreamSecret}
-		body := wantStatus(t, c.post(t, "/api/v1/ai/providers", in), http.StatusCreated)
-		if got := fmt.Sprintf("%+v", f.ps.lastDirect); strings.Contains(got, upstreamSecret) {
-			t.Errorf("the store was handed a credential value: %s", got)
+		// Refused, so that the admin learns the key went nowhere (see
+		// TestDirectProvider_UnknownFieldRefused); it is not stored or echoed.
+		body := wantStatus(t, c.post(t, "/api/v1/ai/providers", in), http.StatusBadRequest)
+		if got := fmt.Sprintf("%+v", f.ps.lastDirect); strings.Contains(got, upstreamSecret) || f.ps.writes != 0 {
+			t.Errorf("the store was called (%d writes) or handed a credential value: %s", f.ps.writes, got)
 		}
 		f.noSecrets(t, body)
 	})
@@ -1132,7 +1136,7 @@ func TestDirectProviderResponses_CarryNoCredential(t *testing.T) {
 	// The raw JSON has no field that could hold the value.
 	var raw map[string]any
 	_ = json.Unmarshal([]byte(wantStatus(t, c.get(t, "/api/v1/ai/providers/openrouter"), http.StatusOK)), &raw)
-	for _, k := range []string{"credential", "api_key", "auth_format", "extra_headers", "key"} {
+	for _, k := range []string{"credential", "api_key", "key"} {
 		if _, ok := raw[k]; ok {
 			t.Errorf("response has field %q", k)
 		}
@@ -1412,5 +1416,117 @@ func TestAIProviderAuditActionsRegistered(t *testing.T) {
 		if !slices.Contains(audit.AllActions, a) {
 			t.Errorf("audit action %q is not registered", a)
 		}
+	}
+}
+
+// PUT …/upstream keeps the fields a body leaves out, so a caller who may
+// configure the provider is shown what it keeps: the header name, the format
+// with its {key} placeholder and the extra headers. Other callers are not.
+func TestProviderView_UpstreamFieldsForAdminsOnly(t *testing.T) {
+	f := newDirectFixture()
+	c := f.serve(t)
+	for _, path := range []string{"/api/v1/ai/providers/openrouter", "/api/v1/ai/providers"} {
+		body := wantStatus(t, c.get(t, path), http.StatusOK)
+		for _, want := range []string{`"auth_header":"Authorization"`, `"auth_format":"Bearer {key}"`, `"extra_headers":{"X-Title":"header-value-do-not-leak"}`} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s: admin view lacks %s: %s", path, want, body)
+			}
+		}
+		if strings.Contains(body, upstreamSecret) {
+			t.Errorf("%s leaks the credential: %s", path, body)
+		}
+	}
+	// The write answers with the same view.
+	body := wantStatus(t, c.put(t, "/api/v1/ai/providers/openrouter/upstream", map[string]any{"billing": "flat"}), http.StatusOK)
+	if p := decodeProvider(t, body); p.AuthHeader != "Authorization" || p.AuthFormat != "Bearer {key}" || p.ExtraHeaders["X-Title"] == "" {
+		t.Errorf("view after PUT: %s", body)
+	}
+	// A direct provider without extra headers says so; a tunnel provider has
+	// no such fields.
+	f.ps.rows[len(f.ps.rows)-1].ExtraHeaders = nil
+	if body := wantStatus(t, c.get(t, "/api/v1/ai/providers/openrouter"), http.StatusOK); !strings.Contains(body, `"extra_headers":{}`) {
+		t.Errorf("no extra headers: %s", body)
+	}
+	var raw map[string]any
+	_ = json.Unmarshal([]byte(wantStatus(t, c.get(t, "/api/v1/ai/providers/ollama"), http.StatusOK)), &raw)
+	for _, k := range []string{"auth_header", "auth_format", "extra_headers"} {
+		if _, ok := raw[k]; ok {
+			t.Errorf("tunnel provider has field %q", k)
+		}
+	}
+
+	// A caller who can see the provider but not configure it.
+	f = newDirectFixture()
+	f.d.Users = &fakeUserStore{role: "user"}
+	c = f.serve(t)
+	for _, path := range []string{"/api/v1/ai/providers/openrouter", "/api/v1/ai/providers"} {
+		body := wantStatus(t, c.get(t, path), http.StatusOK)
+		for _, k := range []string{"auth_header", "auth_format", "extra_headers", "header-value-do-not-leak"} {
+			if strings.Contains(body, k) {
+				t.Errorf("%s: non-admin view contains %q: %s", path, k, body)
+			}
+		}
+	}
+}
+
+// A key sent by mistake in a field the API does not have is refused with the
+// field's name. Its value is in no response, audit event or log line, and
+// nothing is stored.
+func TestDirectProvider_UnknownFieldRefused(t *testing.T) {
+	const stray = "sk-or-stray-key-do-not-echo"
+	cases := map[string]func(c *authClient) *http.Response{
+		"create api_key": func(c *authClient) *http.Response {
+			return c.post(t, "/api/v1/ai/providers", map[string]any{
+				"name": "z.ai", "slug": "zai", "kind": "direct", "base_url": "https://api.z.ai/v4", "credential_slot": "OPENROUTER", "api_key": stray})
+		},
+		"create credential": func(c *authClient) *http.Response {
+			return c.post(t, "/api/v1/ai/providers", map[string]any{
+				"name": "z.ai", "slug": "zai", "kind": "direct", "base_url": "https://api.z.ai/v4", "credential_slot": "OPENROUTER", "credential": stray})
+		},
+		"upstream api_key": func(c *authClient) *http.Response {
+			return c.put(t, "/api/v1/ai/providers/openrouter/upstream", map[string]any{"billing": "flat", "api_key": stray})
+		},
+		"upstream credential": func(c *authClient) *http.Response {
+			return c.put(t, "/api/v1/ai/providers/openrouter/upstream", map[string]any{"credential": map[string]string{"value": stray}})
+		},
+	}
+	for name, call := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newDirectFixture()
+			c := f.serve(t)
+			body := wantStatus(t, call(c), http.StatusBadRequest)
+			field := strings.Fields(name)[1]
+			if !strings.Contains(body, "unknown field") || !strings.Contains(body, field) {
+				t.Errorf("body does not name the field %q: %s", field, body)
+			}
+			if strings.Contains(body, stray) || strings.Contains(f.logs.String(), stray) {
+				t.Errorf("the value was echoed: body %s log %s", body, f.logs.String())
+			}
+			if len(f.aud.events) != 0 || f.ps.writes != 0 {
+				t.Errorf("audit events %+v, store writes %d, want none", f.aud.events, f.ps.writes)
+			}
+		})
+	}
+
+	// A field name that is not a plain identifier is not repeated either.
+	f := newDirectFixture()
+	c := f.serve(t)
+	body := wantStatus(t, c.put(t, "/api/v1/ai/providers/openrouter/upstream", map[string]any{"Bearer " + stray: "x"}), http.StatusBadRequest)
+	if !strings.Contains(body, "unknown field") || strings.Contains(body, stray) {
+		t.Errorf("body = %s", body)
+	}
+	// A tunnel provider is created as before.
+	ss, ps := oneProviderFixture()
+	ps.rows = nil
+	srv, tc := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+	defer srv.Close()
+	wantStatus(t, tc.post(t, "/api/v1/ai/providers", map[string]any{"name": "Ollama", "slug": "ollama", "service_id": "svc1"}), http.StatusCreated)
+}
+
+// The sync's own deadline has to be the first one to fire: the router gives
+// a request 30 s and FetchModels stops at 30 s.
+func TestModelSyncTimeout_BelowRequestTimeout(t *testing.T) {
+	if modelSyncTimeout >= 30*time.Second || modelSyncTimeout <= 0 {
+		t.Fatalf("modelSyncTimeout = %v, want below the 30 s request timeout", modelSyncTimeout)
 	}
 }

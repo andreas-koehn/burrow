@@ -3,6 +3,7 @@ package aimeter_test
 import (
 	"bytes"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -207,5 +208,92 @@ func TestOpenAIStreamWithoutUsage_BytesFallback(t *testing.T) {
 	}
 	if got.In != 0 {
 		t.Fatalf("fallback In: got %d want 0", got.In)
+	}
+}
+
+func TestParseOpenAICost(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		usd  float64
+		ok   bool
+	}{
+		{"openrouter body", `{"id":"x","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.00042}}`, 0.00042, true},
+		{"zero cost is a reported cost", `{"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":0}}`, 0, true},
+		{"at the bound", `{"usage":{"cost":10000}}`, 10000, true},
+		{"no cost field", `{"usage":{"prompt_tokens":10,"completion_tokens":5}}`, 0, false},
+		{"null cost", `{"usage":{"cost":null}}`, 0, false},
+		{"no usage", `{"id":"x"}`, 0, false},
+		{"negative", `{"usage":{"cost":-1}}`, 0, false},
+		{"negative zero", `{"usage":{"cost":-0.0}}`, 0, true},
+		{"absurd", `{"usage":{"cost":1e12}}`, 0, false},
+		{"overflows float64", `{"usage":{"cost":1e999}}`, 0, false},
+		{"NaN literal", `{"usage":{"cost":NaN}}`, 0, false},
+		{"string", `{"usage":{"cost":"0.1"}}`, 0, false},
+		{"object", `{"usage":{"cost":{"usd":1}}}`, 0, false},
+		{"bool", `{"usage":{"cost":true}}`, 0, false},
+		{"usage is not an object", `{"usage":"x"}`, 0, false},
+		{"not json", `nope`, 0, false},
+	}
+	for _, c := range cases {
+		usd, ok := aimeter.ParseOpenAICost([]byte(c.body))
+		if ok != c.ok || usd != c.usd || math.Signbit(usd) {
+			t.Errorf("%s: got (%v, %v), want (%v, %v)", c.name, usd, ok, c.usd, c.ok)
+		}
+	}
+}
+
+func TestStream_CostFromFinalSSEChunk(t *testing.T) {
+	var sink bytes.Buffer
+	s := aimeter.WrapResponse(&sink, aimeter.KindOpenAI)
+	const first = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"
+	const usage = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5,\"cost\":0.0015}}\n\n"
+	const done = "data: [DONE]\n\n"
+	_, _ = s.Write([]byte(first))
+	if _, ok := s.Cost(); ok {
+		t.Fatal("cost reported before any usage chunk")
+	}
+	_, _ = s.Write([]byte(usage))
+	_, _ = s.Write([]byte(done))
+	_ = s.Close()
+	usd, ok := s.Cost()
+	if !ok || usd != 0.0015 {
+		t.Fatalf("Cost() = (%v, %v), want (0.0015, true)", usd, ok)
+	}
+	if tok := s.Tokens(); tok.In != 3 || tok.Out != 2 {
+		t.Fatalf("tokens = %+v", tok)
+	}
+	// Reading the cost never changes what the client receives.
+	if sink.String() != first+usage+done {
+		t.Fatalf("forwarded bytes changed: %q", sink.String())
+	}
+}
+
+func TestStream_NoCostWithoutUsageCost(t *testing.T) {
+	s := aimeter.WrapResponse(io.Discard, aimeter.KindOpenAI)
+	_, _ = s.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n"))
+	_ = s.Close()
+	if _, ok := s.Cost(); ok {
+		t.Fatal("cost reported although the upstream sent none")
+	}
+}
+
+// A cost the relay cannot trust must not cost the token counts of the same
+// chunk: the price table then applies to them.
+func TestStream_InvalidCostKeepsTokens(t *testing.T) {
+	for _, cost := range []string{`"0.1"`, `-3`, `1e12`, `1e999`, `{}`, `null`} {
+		s := aimeter.WrapResponse(io.Discard, aimeter.KindOpenAI)
+		_, _ = s.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5,\"cost\":" + cost + "}}\n\n"))
+		_ = s.Close()
+		if usd, ok := s.Cost(); ok {
+			t.Errorf("cost %s: accepted as %v", cost, usd)
+		}
+		if tok := s.Tokens(); tok.In != 3 || tok.Out != 2 {
+			t.Errorf("cost %s: tokens = %+v, want 3/2", cost, tok)
+		}
+		body := []byte(`{"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"cost":` + cost + `}}`)
+		if tok := aimeter.ParseOpenAIBody(body); tok.In != 3 || tok.Out != 2 {
+			t.Errorf("cost %s: body tokens = %+v, want 3/2", cost, tok)
+		}
 	}
 }

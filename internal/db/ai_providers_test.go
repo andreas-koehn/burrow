@@ -268,3 +268,85 @@ func TestGetOrCreateService_NeverReturnsDirectRow(t *testing.T) {
 		t.Fatalf("other user: %v %+v", err, s)
 	}
 }
+
+// A rename of a direct provider renames its backing service with it, so the
+// old name is free again for the same owner. A tunnel provider's service is a
+// user's own service and keeps its name.
+func TestUpdateAIProvider_RenamesDirectBackingService(t *testing.T) {
+	x, svcID := newDBWithService(t)
+	ctx := context.Background()
+	svc, _ := directFixture(t, x)
+	if err := x.UpdateAIProvider(ctx, "openrouter", "router2", "Router Two"); err != nil {
+		t.Fatal(err)
+	}
+	if backing, _ := x.GetServiceByID(ctx, svc.ID); backing.Name != "Router Two" || backing.Type != "direct" {
+		t.Fatalf("backing service = %+v, want name Router Two", backing)
+	}
+
+	before, _ := x.GetServiceByID(ctx, svcID)
+	if err := x.CreateAIProvider(ctx, AIProvider{Slug: "local", Name: "Local", Kind: "tunnel", ServiceID: svcID, APIFormat: "openai"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.UpdateAIProvider(ctx, "local", "local2", "Renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := x.GetServiceByID(ctx, svcID); after.Name != before.Name {
+		t.Fatalf("tunnel service renamed: %q -> %q", before.Name, after.Name)
+	}
+
+	// A name the owner already uses is refused and nothing changes.
+	if err := x.UpdateAIProvider(ctx, "router2", "router3", before.Name); !errors.Is(err, ErrDuplicateProvider) {
+		t.Fatalf("name clash err = %v, want ErrDuplicateProvider", err)
+	}
+	if p, err := x.GetAIProvider(ctx, "router2"); err != nil || p.Name != "Router Two" {
+		t.Fatalf("refused rename left a trace: %v %+v", err, p)
+	}
+}
+
+// Two admins saving at the same time: the second write is applied to what
+// the first one stored, not to the copy it read before.
+func TestModifyAIProviderUpstream_NoLostUpdate(t *testing.T) {
+	x, _ := newDBWithService(t)
+	ctx := context.Background()
+	directFixture(t, x)
+
+	calls := 0
+	err := x.ModifyAIProviderUpstream(ctx, "openrouter", func(p AIProvider) (AIProvider, error) {
+		calls++
+		if calls == 1 {
+			// The other admin gets in between this read and this write.
+			other := p
+			other.Billing, other.ExtraHeaders = "flat", map[string]string{"X-Title": "Burrow"}
+			if err := x.UpdateAIProviderUpstream(ctx, other); err != nil {
+				t.Fatal(err)
+			}
+		}
+		p.BaseURL = "https://openrouter.ai/api/v2"
+		return p, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("modify ran %d times, want 2 (once more on the fresh row)", calls)
+	}
+	p, _ := x.GetAIProvider(ctx, "openrouter")
+	if p.BaseURL != "https://openrouter.ai/api/v2" || p.Billing != "flat" || p.ExtraHeaders["X-Title"] != "Burrow" {
+		t.Fatalf("an update was lost: %+v", p)
+	}
+
+	// modify's error stops the update; an unknown slug is ErrNotFound.
+	boom := errors.New("refused")
+	if err := x.ModifyAIProviderUpstream(ctx, "openrouter", func(p AIProvider) (AIProvider, error) {
+		p.BaseURL = "https://evil.example/v1"
+		return p, boom
+	}); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want modify's error", err)
+	}
+	if p, _ := x.GetAIProvider(ctx, "openrouter"); p.BaseURL != "https://openrouter.ai/api/v2" {
+		t.Fatalf("a refused update was stored: %+v", p)
+	}
+	if err := x.ModifyAIProviderUpstream(ctx, "gone", func(p AIProvider) (AIProvider, error) { return p, nil }); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown slug err = %v", err)
+	}
+}

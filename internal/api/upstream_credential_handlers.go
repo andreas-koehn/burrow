@@ -116,7 +116,19 @@ func (d Deps) ensureCredentialAccess(w http.ResponseWriter, r *http.Request, ser
 		writeErr(w, http.StatusForbidden, "forbidden")
 		return false
 	}
+	// A direct provider's credential is its own slot (PUT
+	// /ai/providers/{slug}/upstream), not a binding on the backing row.
+	if svc.Type == "direct" {
+		writeDirectServiceErr(w)
+		return false
+	}
 	return true
+}
+
+// writeDirectServiceErr answers a service route that does not apply to the
+// backing row of a direct AI provider (store.ErrDirectService).
+func writeDirectServiceErr(w http.ResponseWriter) {
+	writeErr(w, http.StatusConflict, "this service backs a direct AI provider; this setting does not apply to it")
 }
 
 // --- Wire shapes ------------------------------------------------------------

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/google/uuid"
+
 	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/db"
@@ -153,7 +155,8 @@ func (s *Store) CreateTunnelProvider(ctx context.Context, slug, name, serviceID 
 }
 
 // UpdateProvider changes a provider's slug and display name. The old base URL
-// stops working at once.
+// stops working at once. The backing service of a direct provider is renamed
+// with it.
 func (s *Store) UpdateProvider(ctx context.Context, slug, newSlug, name string) (db.AIProvider, error) {
 	if !ValidProviderSlug(newSlug) {
 		return db.AIProvider{}, ErrInvalidProviderSlug
@@ -293,7 +296,8 @@ func normalizeDirect(in DirectProviderInput) (DirectProviderInput, error) {
 }
 
 // CreateDirectProvider adds a provider the relay calls itself, together with
-// its backing service row "prov-<slug>" owned by ownerID. Callers gate on
+// its backing service row owned by ownerID. The row's id is generated like
+// any other service's, so it survives a change of slug. Callers gate on
 // admin; the store validates the data and does no network calls.
 func (s *Store) CreateDirectProvider(ctx context.Context, ownerID string, in DirectProviderInput) (db.AIProvider, error) {
 	if !ValidProviderSlug(in.Slug) {
@@ -310,7 +314,7 @@ func (s *Store) CreateDirectProvider(ctx context.Context, ownerID string, in Dir
 	if err != nil {
 		return db.AIProvider{}, err
 	}
-	svc := db.Service{ID: "prov-" + in.Slug, UserID: ownerID, Name: in.Name, Type: "direct", AccessMode: "api_key", APIKeyHeader: "Authorization"}
+	svc := db.Service{ID: uuid.NewString(), UserID: ownerID, Name: in.Name, Type: "direct", AccessMode: "api_key", APIKeyHeader: "Authorization"}
 	p := db.AIProvider{
 		Slug: in.Slug, Name: in.Name, Kind: "direct", ServiceID: svc.ID, APIFormat: in.APIFormat,
 		BaseURL: in.BaseURL, CredentialSlot: in.CredentialSlot, AuthHeader: in.AuthHeader, AuthFormat: in.AuthFormat,
@@ -331,36 +335,39 @@ func (s *Store) CreateDirectProvider(ctx context.Context, ownerID string, in Dir
 // headers and an empty map removes them. Slug and Name of in are ignored.
 // The /ai/ data plane reads the row per request, so the change applies at once.
 func (s *Store) UpdateProviderUpstream(ctx context.Context, slug string, in DirectProviderInput) (db.AIProvider, error) {
-	p, err := s.providerOrNotFound(ctx, slug)
-	if err != nil {
-		return db.AIProvider{}, err
-	}
-	if p.Kind != "direct" {
-		return db.AIProvider{}, invalidConfig("only direct providers have upstream settings")
-	}
-	keep := func(v *string, stored string) {
-		if *v == "" {
-			*v = stored
+	// The merge with the stored values runs inside the database's
+	// read-and-write step, so a concurrent update of other fields is kept.
+	err := s.q.ModifyAIProviderUpstream(ctx, slug, func(p db.AIProvider) (db.AIProvider, error) {
+		if p.Kind != "direct" {
+			return p, invalidConfig("only direct providers have upstream settings")
 		}
-	}
-	keep(&in.BaseURL, p.BaseURL)
-	keep(&in.CredentialSlot, p.CredentialSlot)
-	keep(&in.AuthHeader, p.AuthHeader)
-	keep(&in.AuthFormat, p.AuthFormat)
-	keep(&in.Billing, p.Billing)
-	keep(&in.APIFormat, p.APIFormat)
-	if in.ExtraHeaders == nil {
-		in.ExtraHeaders = p.ExtraHeaders
-	}
-	in, err = normalizeDirect(in)
-	if err != nil {
-		return db.AIProvider{}, err
-	}
-	p.BaseURL, p.CredentialSlot, p.AuthHeader, p.AuthFormat = in.BaseURL, in.CredentialSlot, in.AuthHeader, in.AuthFormat
-	p.Billing, p.APIFormat, p.ExtraHeaders = in.Billing, in.APIFormat, in.ExtraHeaders
-	if err := s.q.UpdateAIProviderUpstream(ctx, p); errors.Is(err, db.ErrNotFound) {
+		in := in
+		keep := func(v *string, stored string) {
+			if *v == "" {
+				*v = stored
+			}
+		}
+		keep(&in.BaseURL, p.BaseURL)
+		keep(&in.CredentialSlot, p.CredentialSlot)
+		keep(&in.AuthHeader, p.AuthHeader)
+		keep(&in.AuthFormat, p.AuthFormat)
+		keep(&in.Billing, p.Billing)
+		keep(&in.APIFormat, p.APIFormat)
+		if in.ExtraHeaders == nil {
+			in.ExtraHeaders = p.ExtraHeaders
+		}
+		in, err := normalizeDirect(in)
+		if err != nil {
+			return p, err
+		}
+		p.BaseURL, p.CredentialSlot, p.AuthHeader, p.AuthFormat = in.BaseURL, in.CredentialSlot, in.AuthHeader, in.AuthFormat
+		p.Billing, p.APIFormat, p.ExtraHeaders = in.Billing, in.APIFormat, in.ExtraHeaders
+		return p, nil
+	})
+	if errors.Is(err, db.ErrNotFound) {
 		return db.AIProvider{}, ErrProviderNotFound
-	} else if err != nil {
+	}
+	if err != nil {
 		return db.AIProvider{}, err
 	}
 	return s.q.GetAIProvider(ctx, slug)

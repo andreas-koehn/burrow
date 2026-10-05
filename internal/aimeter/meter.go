@@ -78,6 +78,9 @@ type Sample struct {
 	Streamed                   bool
 	CacheHit                   bool
 	UpstreamStatus             int
+	// CostUSD is the cost the upstream reported for this request. nil means
+	// it reported none and the price table applies.
+	CostUSD *float64
 }
 
 // Accumulator is the read-side of a Stream: it exposes the running token
@@ -106,6 +109,8 @@ type Stream struct {
 	bytesOut int64 // bytes successfully forwarded to w
 	tokens   Tokens
 	gotUsage bool
+	costUSD  float64 // what the upstream says it charged; valid when hasCost
+	hasCost  bool
 }
 
 // parser is the per-kind line-buffered SSE parser. It receives raw bytes
@@ -207,6 +212,18 @@ func (s *Stream) recordTokens(in, out, total int) {
 		s.tokens.Total = in + out
 	}
 	s.gotUsage = true
+}
+
+// recordCost is called by parsers when the upstream reports what it charged.
+// Like the token counters it is written from the copy loop only.
+func (s *Stream) recordCost(usd float64) {
+	s.costUSD, s.hasCost = usd, true
+}
+
+// Cost returns the cost the upstream reported for this response, if any. A
+// stream that was cut off before its usage chunk reports none.
+func (s *Stream) Cost() (float64, bool) {
+	return s.costUSD, s.hasCost
 }
 
 // flush calls http.Flusher.Flush if the writer implements it. Safe to call

@@ -186,6 +186,12 @@ func (e *Engine) UsdFor(model string, tokensIn, tokensOut int) float64 {
 		float64(tokensOut)*entry.OutputPerMillion/1_000_000
 }
 
+// rowUSD prices one usage row: what upstreams reported, plus the price table
+// for the tokens no upstream put a price on.
+func (e *Engine) rowUSD(r db.UsageRow) float64 {
+	return r.ReportedUSD + e.UsdFor(r.Kind, int(r.PricedTokensIn), int(r.PricedTokensOut))
+}
+
 // CheckBudgets aggregates today's spend for every budget that matches the
 // given Subjects and, when a budget is now exceeded but was not on the
 // previous call (the exceed transition), triggers its configured action
@@ -327,7 +333,7 @@ func (e *Engine) currentUsdForBudget(ctx context.Context, b db.Budget, subj Subj
 		}
 		var total float64
 		for _, r := range rows {
-			total += e.UsdFor(r.Kind, int(r.TokensIn), int(r.TokensOut))
+			total += e.rowUSD(r)
 		}
 		return total, nil
 	}
@@ -358,7 +364,7 @@ func (e *Engine) usdForApiKey(ctx context.Context, apiKeyID string) (float64, er
 		if r.APIKeyID != apiKeyID {
 			continue
 		}
-		total += e.UsdFor(r.Kind, int(r.TokensIn), int(r.TokensOut))
+		total += e.rowUSD(r)
 	}
 	return total, nil
 }
@@ -381,7 +387,7 @@ func (e *Engine) usdForService(ctx context.Context, serviceID string) (float64, 
 		if r.ServiceID != serviceID {
 			continue
 		}
-		total += e.UsdFor(r.Kind, int(r.TokensIn), int(r.TokensOut))
+		total += e.rowUSD(r)
 	}
 	return total, nil
 }
@@ -519,7 +525,7 @@ func (e *Engine) Summary(ctx context.Context, window string) (Summary, error) {
 		}
 		c.TokensIn += r.TokensIn
 		c.TokensOut += r.TokensOut
-		usd := e.UsdFor(r.Kind, int(r.TokensIn), int(r.TokensOut))
+		usd := e.rowUSD(r)
 		c.USD += usd
 		out.TotalUSD += usd
 		out.TokensIn += r.TokensIn

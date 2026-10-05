@@ -2,6 +2,7 @@ package aimeter
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"time"
 
@@ -68,15 +69,25 @@ func (s *SQLSink) Record(ctx context.Context, sm Sample) error {
 		CacheHit:       sm.CacheHit,
 		UpstreamStatus: sm.UpstreamStatus,
 	}
+	// The parsers only hand over a validated cost; checking again here keeps
+	// NaN, an infinity, a negative or an absurd amount out of the table and
+	// out of the budget check whoever built the Sample. Such a row is stored
+	// without a cost, so the price table applies to it.
+	var cost sql.NullFloat64
+	if sm.CostUSD != nil && saneCost(*sm.CostUSD) {
+		v := *sm.CostUSD
+		row.CostUSD = &v
+		cost = sql.NullFloat64{Float64: v, Valid: true}
+	}
 	_, err := s.DB.DB().ExecContext(ctx, `
 		INSERT INTO usage_events
 		  (id, service_id, api_key_id, ts, kind,
 		   tokens_in, tokens_out, bytes_in, bytes_out,
-		   streamed, cache_hit, upstream_status)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   streamed, cache_hit, upstream_status, cost_usd)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		row.ID, row.ServiceID, row.APIKeyID, row.Ts, row.Kind,
 		row.TokensIn, row.TokensOut, row.BytesIn, row.BytesOut,
-		boolToInt(row.Streamed), boolToInt(row.CacheHit), row.UpstreamStatus,
+		boolToInt(row.Streamed), boolToInt(row.CacheHit), row.UpstreamStatus, cost,
 	)
 	if err != nil {
 		log.Warn("aimeter: usage_events insert failed",

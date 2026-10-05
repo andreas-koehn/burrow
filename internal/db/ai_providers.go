@@ -16,20 +16,26 @@ var ErrDuplicateProvider = errors.New("db: provider slug or service already in u
 const aiProviderCols = `slug, name, kind, service_id, api_format, base_url, credential_slot, auth_header, auth_format, extra_headers, billing, created_at`
 
 func scanAIProvider(row interface{ Scan(...any) error }) (AIProvider, error) {
+	p, _, err := scanAIProviderRaw(row)
+	return p, err
+}
+
+// scanAIProviderRaw also returns extra_headers as stored.
+func scanAIProviderRaw(row interface{ Scan(...any) error }) (AIProvider, string, error) {
 	var p AIProvider
 	var headers string
 	err := row.Scan(&p.Slug, &p.Name, &p.Kind, &p.ServiceID, &p.APIFormat, &p.BaseURL, &p.CredentialSlot,
 		&p.AuthHeader, &p.AuthFormat, &headers, &p.Billing, &p.CreatedAt)
 	if err != nil {
-		return p, err
+		return p, headers, err
 	}
 	p.ExtraHeaders = map[string]string{}
 	if headers != "" {
 		if err := json.Unmarshal([]byte(headers), &p.ExtraHeaders); err != nil {
-			return p, fmt.Errorf("ai provider %s: extra_headers: %w", p.Slug, err)
+			return p, headers, fmt.Errorf("ai provider %s: extra_headers: %w", p.Slug, err)
 		}
 	}
-	return p, nil
+	return p, headers, nil
 }
 
 // execer is satisfied by *sql.DB and *sql.Tx.
@@ -130,6 +136,55 @@ func (x *DB) UpdateAIProviderUpstream(ctx context.Context, p AIProvider) error {
 	return notFoundIfNoRows(res, "update ai provider upstream")
 }
 
+// modifyUpstreamAttempts bounds how often ModifyAIProviderUpstream starts
+// over because another writer changed the row in between.
+const modifyUpstreamAttempts = 5
+
+// ModifyAIProviderUpstream reads the provider, hands it to modify and stores
+// the upstream settings of the result, as one step: the UPDATE only applies
+// while the row still holds the settings that were read, and modify runs
+// again on the fresh row when another writer got in between. So two
+// concurrent updates cannot lose one another's fields. modify's error stops
+// the update and is returned as is. ErrNotFound when no provider has the slug.
+func (x *DB) ModifyAIProviderUpstream(ctx context.Context, slug string, modify func(AIProvider) (AIProvider, error)) error {
+	for i := 0; i < modifyUpstreamAttempts; i++ {
+		old, oldHeaders, err := scanAIProviderRaw(x.sqlDB.QueryRowContext(ctx,
+			`SELECT `+aiProviderCols+` FROM ai_providers WHERE slug=?`, slug))
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("modify ai provider upstream: %w", err)
+		}
+		p, err := modify(old)
+		if err != nil {
+			return err
+		}
+		headers, err := json.Marshal(nonNilHeaders(p.ExtraHeaders))
+		if err != nil {
+			return fmt.Errorf("modify ai provider upstream: extra_headers: %w", err)
+		}
+		res, err := x.sqlDB.ExecContext(ctx,
+			`UPDATE ai_providers SET base_url=?, credential_slot=?, auth_header=?, auth_format=?, extra_headers=?, billing=?, api_format=?
+			  WHERE slug=? AND base_url=? AND credential_slot=? AND auth_header=? AND auth_format=? AND extra_headers=? AND billing=? AND api_format=?`,
+			p.BaseURL, p.CredentialSlot, orDefault(p.AuthHeader, "Authorization"), orDefault(p.AuthFormat, "Bearer {key}"),
+			string(headers), orDefault(p.Billing, "metered"), p.APIFormat,
+			slug, old.BaseURL, old.CredentialSlot, old.AuthHeader, old.AuthFormat, oldHeaders, old.Billing, old.APIFormat)
+		if err != nil {
+			return fmt.Errorf("modify ai provider upstream: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("modify ai provider upstream rows affected: %w", err)
+		}
+		if n > 0 {
+			return nil
+		}
+		// The row changed or is gone; the next read tells which.
+	}
+	return fmt.Errorf("modify ai provider upstream %s: the row kept changing", slug)
+}
+
 // DeleteAIProviderAndBacking deletes the provider and, for kind "direct", its
 // backing service, in one transaction.
 func (x *DB) DeleteAIProviderAndBacking(ctx context.Context, slug string) error {
@@ -219,15 +274,35 @@ func (x *DB) ListAIProviders(ctx context.Context) ([]AIProvider, error) {
 
 // UpdateAIProvider renames a provider and/or changes its display name.
 func (x *DB) UpdateAIProvider(ctx context.Context, slug, newSlug, name string) error {
-	res, err := x.sqlDB.ExecContext(ctx,
-		`UPDATE ai_providers SET slug=?, name=? WHERE slug=?`, newSlug, name, slug)
+	tx, err := x.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
+		return fmt.Errorf("begin update provider tx: %w", err)
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE ai_providers SET slug=?, name=? WHERE slug=?`, newSlug, name, slug)
+	if err == nil {
+		if err = notFoundIfNoRows(res, "update ai provider"); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		// The backing row of a direct provider exists only for the provider
+		// and carries its name; left behind, the old name would stay taken
+		// for the owner. A tunnel provider's service keeps its own name.
+		_, err = tx.ExecContext(ctx,
+			`UPDATE services SET name=? WHERE type='direct' AND id=(SELECT service_id FROM ai_providers WHERE slug=?)`,
+			name, newSlug)
+	}
+	if err != nil {
+		_ = tx.Rollback()
 		if isDuplicateServiceErr(err) {
 			return ErrDuplicateProvider
 		}
 		return fmt.Errorf("update ai provider: %w", err)
 	}
-	return notFoundIfNoRows(res, "update ai provider")
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit update provider tx: %w", err)
+	}
+	return nil
 }
 
 // DeleteAIProvider removes a provider row. The backing service is untouched.

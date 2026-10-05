@@ -225,3 +225,45 @@ func TestSumDailyTokensQueries(t *testing.T) {
 		t.Errorf("empty api_key → in=%d out=%d, want 0/0", in, out)
 	}
 }
+
+// TestListUsageForWindow_ReportedCost: a row with a reported cost adds to
+// ReportedUSD and its tokens are not priced again; a row without one is left
+// to the price table. A reported cost of 0 is a reported cost.
+func TestListUsageForWindow_ReportedCost(t *testing.T) {
+	x := testDB(t)
+	ctx := context.Background()
+	mustUser(t, x, "u1")
+	svc := seedSvc(t, x, "u1", "svc-reported")
+
+	now := time.Now().UTC()
+	quarter, zero := 0.25, 0.0
+	events := []UsageEvent{
+		{ID: "r-1", TokensIn: 100, TokensOut: 50, CostUSD: &quarter},
+		{ID: "r-2", TokensIn: 10, TokensOut: 5},
+		{ID: "r-3", TokensIn: 7, TokensOut: 3, CostUSD: &zero},
+	}
+	for _, ue := range events {
+		if _, err := x.sqlDB.ExecContext(ctx,
+			`INSERT INTO usage_events(id, service_id, api_key_id, ts, kind, tokens_in, tokens_out, cost_usd)
+			 VALUES(?,?,?,?,?,?,?,?)`,
+			ue.ID, svc, "k1", now, "openai", ue.TokensIn, ue.TokensOut, ue.CostUSD); err != nil {
+			t.Fatalf("insert %s: %v", ue.ID, err)
+		}
+	}
+
+	got, err := x.ListUsageForWindow(ctx, "today")
+	if err != nil {
+		t.Fatalf("list usage today: %v", err)
+	}
+	var sum UsageRow
+	for _, r := range got {
+		sum.ReportedUSD += r.ReportedUSD
+		sum.PricedTokensIn += r.PricedTokensIn
+		sum.PricedTokensOut += r.PricedTokensOut
+		sum.TokensIn += r.TokensIn
+		sum.TokensOut += r.TokensOut
+	}
+	if sum.ReportedUSD != 0.25 || sum.PricedTokensIn != 10 || sum.PricedTokensOut != 5 || sum.TokensIn != 117 || sum.TokensOut != 58 {
+		t.Fatalf("sum = %+v, want reported 0.25, priced 10/5, tokens 117/58", sum)
+	}
+}

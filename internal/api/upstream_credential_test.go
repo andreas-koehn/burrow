@@ -71,13 +71,14 @@ func (s *stubAuditAppender) Append(_ context.Context, e audit.Event) error {
 type stubSvcLookup struct {
 	ownerID string
 	missing bool
+	svcType string // "" = an ordinary service
 }
 
 func (s *stubSvcLookup) GetServiceByID(_ context.Context, _ string) (db.Service, error) {
 	if s.missing {
 		return db.Service{}, db.ErrNotFound
 	}
-	return db.Service{ID: "svc1", UserID: s.ownerID}, nil
+	return db.Service{ID: "svc1", UserID: s.ownerID, Type: s.svcType}, nil
 }
 
 // --- Helpers ----------------------------------------------------------------
@@ -466,4 +467,37 @@ func TestDeleteServiceCred_SlotNotInAuditPayload_ValueAbsent(t *testing.T) {
 // "fake-key-for-<SLOT>", so any leak of that value will be caught.
 func containsCredValue(s string) bool {
 	return strings.Contains(s, "fake-key")
+}
+
+// The backing row of a direct AI provider has no upstream credential binding
+// and no custom domains: the provider has its own credential slot and is
+// reached under /ai/ only.
+func TestServiceRoutes_RefuseDirectBackingRow(t *testing.T) {
+	credStore := &stubCredStore{present: false}
+	d := newCredDeps(&stubCredVault{slots: []string{"OPENAI"}}, credStore)
+	lookup := &stubSvcLookup{ownerID: "u-self", svcType: "direct"}
+	d.CredentialServices, d.IPGeoServices = lookup, lookup
+	domains := newStubDomainStore()
+	d.CustomDomains = domains
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	for name, resp := range map[string]*http.Response{
+		"get credential":    c.get(t, "/api/v1/services/svc1/upstream-credential"),
+		"put credential":    c.put(t, "/api/v1/services/svc1/upstream-credential", map[string]string{"slot": "OPENAI"}),
+		"delete credential": c.delete(t, "/api/v1/services/svc1/upstream-credential"),
+		"list domains":      c.get(t, "/api/v1/services/svc1/domains"),
+		"post domain":       c.post(t, "/api/v1/services/svc1/domains", map[string]string{"hostname": "x.example.com"}),
+		"get domain":        c.get(t, "/api/v1/services/svc1/domains/d1"),
+		"put domain":        c.put(t, "/api/v1/services/svc1/domains/d1", map[string]string{"cert_pem": "x", "key_pem": "y"}),
+		"delete domain":     c.delete(t, "/api/v1/services/svc1/domains/d1"),
+	} {
+		if body := wantStatus(t, resp, http.StatusConflict); !strings.Contains(body, "direct AI provider") {
+			t.Errorf("%s: body = %s", name, body)
+		}
+	}
+	if credStore.lastPut.Slot != "" || credStore.lastDel != "" {
+		t.Errorf("the direct row's binding was touched: put %+v del %q", credStore.lastPut, credStore.lastDel)
+	}
 }

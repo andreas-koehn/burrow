@@ -357,6 +357,32 @@ func TestCostHandler_GetExport_NDJSON(t *testing.T) {
 	}
 }
 
+// The export's usd is the dashboard's: what the upstream reported plus the
+// price table for the tokens it put no price on.
+func TestCostHandler_GetExport_NDJSONUsesReportedCost(t *testing.T) {
+	st := newFakeBudgetStore()
+	st.usage = []db.UsageRow{
+		{ServiceID: "svcA", APIKeyID: "kA", Kind: "k",
+			TokensIn: 3_000_000, TokensOut: 0, ReportedUSD: 0.25, PricedTokensIn: 1_000_000},
+	}
+	d := Deps{
+		Log:     discardLog(),
+		Users:   &fakeUserStore{role: "admin"},
+		Budgets: st,
+		CostEngine: &fakeCostEngine{pricing: cost.Pricing{Entries: map[string]cost.Entry{
+			"k": {InputPerMillion: 1, OutputPerMillion: 2},
+		}}},
+	}
+	srv := newTestServer(d)
+	defer srv.Close()
+	c := authedClient(t, srv)
+	r := c.get(t, "/api/v1/cost/export?format=ndjson&window=today")
+	body := readBody(t, r)
+	if r.StatusCode != http.StatusOK || !strings.Contains(body, `"usd":1.25`) || !strings.Contains(body, `"tokens_in":3000000`) {
+		t.Fatalf("status=%d body=%s, want usd 1.25 over all 3000000 tokens", r.StatusCode, body)
+	}
+}
+
 func TestCostHandler_GetExport_CSV(t *testing.T) {
 	st := newFakeBudgetStore()
 	st.usage = []db.UsageRow{

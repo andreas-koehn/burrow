@@ -1185,3 +1185,99 @@ func TestChain_UpstreamPanicIsPassedOn(t *testing.T) {
 		t.Fatalf("panic = %v, want the upstream's own value", got)
 	}
 }
+
+func TestChain_RecordsReportedCost(t *testing.T) {
+	cases := map[string]struct {
+		contentType, body string
+		want              *float64
+	}{
+		"json body":      {"application/json", `{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.00042}}`, ptr(0.00042)},
+		"sse stream":     {"text/event-stream", "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5,\"cost\":0.0015}}\n\ndata: [DONE]\n\n", ptr(0.0015)},
+		"zero cost":      {"application/json", `{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0}}`, ptr(0)},
+		"no cost":        {"application/json", `{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`, nil},
+		"negative cost":  {"application/json", `{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":-5}}`, nil},
+		"absurd cost":    {"text/event-stream", "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5,\"cost\":1e300}}\n\n", nil},
+		"cost as string": {"application/json", `{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":"0.1"}}`, nil},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			sink := &ctxSink{}
+			ch := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, nil)
+			up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", c.contentType)
+				_, _ = w.Write([]byte(c.body))
+			})
+			req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+			rec := httptest.NewRecorder()
+			ch.ServeHTTP(rec, req, aigw.Service{ID: "s", AIConfig: aigw.ServiceAIConfig{Anthropic: &aigw.AnthropicConfig{}}}, up)
+			got := sink.sample.CostUSD
+			switch {
+			case c.want == nil && got != nil:
+				t.Fatalf("CostUSD = %v, want nil", *got)
+			case c.want != nil && (got == nil || *got != *c.want):
+				t.Fatalf("CostUSD = %v, want %v", got, *c.want)
+			}
+			// The tokens are recorded whatever the cost field holds.
+			if sink.sample.TokensIn == 0 || sink.sample.TokensOut == 0 {
+				t.Fatalf("tokens lost: %+v", sink.sample)
+			}
+			// Reading the cost never changes the response.
+			if rec.Body.String() != c.body {
+				t.Fatalf("body changed: %q", rec.Body.String())
+			}
+		})
+	}
+}
+
+func ptr(f float64) *float64 { return &f }
+
+// A stream cut off before its final usage chunk carries no cost: the row is
+// recorded without one, so the price table applies to the tokens seen.
+func TestChain_AbortedStreamHasNoReportedCost(t *testing.T) {
+	sink := newMemSink()
+	c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, testLog())
+	svc := aigw.Service{ID: "svc1", APIKeyID: "key-1", AIConfig: aigw.ServiceAIConfig{Anthropic: &aigw.AnthropicConfig{}}}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true}`))
+	const sent = "data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"cost\":0.0"
+	if got := serveRecovering(c, httptest.NewRecorder(), req, svc, abortingUpstream("text/event-stream", 0, sent)); got != http.ErrAbortHandler {
+		t.Fatalf("panic = %v", got)
+	}
+	samples := sink.all()
+	if len(samples) != 1 {
+		t.Fatalf("usage samples = %d, want 1", len(samples))
+	}
+	if samples[0].CostUSD != nil {
+		t.Fatalf("CostUSD = %v from a truncated chunk, want nil", *samples[0].CostUSD)
+	}
+}
+
+// A cached answer cost nothing upstream: it is recorded with an explicit
+// zero, not left to the price table.
+func TestChain_CacheHitRecordsZeroCost(t *testing.T) {
+	sink := newMemSink()
+	c := aigw.NewChain(freshCache(t), nil, nil, nil, nil, nil, nil, sink, testLog())
+	svc := aigw.Service{ID: "svc-cache", AIConfig: aigw.ServiceAIConfig{
+		Cache: &exact.Settings{Enabled: true, AppliesPer: "global", TTLSeconds: 300, MaxEntries: 100, MaxPerEntryKB: 64},
+	}}
+	const body = `{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"cost":0.5}}`
+	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		_, _ = w.Write([]byte(body))
+	})
+	for i := 0; i < 2; i++ {
+		r := httptest.NewRequest("POST", "https://abc.example.com/v1/chat/completions", strings.NewReader(`{"model":"gpt-4","prompt":"hi"}`))
+		r.Header.Set("Content-Type", "application/json")
+		c.ServeHTTP(httptest.NewRecorder(), r, svc, up)
+	}
+	samples := sink.all()
+	if len(samples) != 2 || !samples[1].CacheHit {
+		t.Fatalf("samples = %+v", samples)
+	}
+	if samples[0].CostUSD == nil || *samples[0].CostUSD != 0.5 {
+		t.Fatalf("miss CostUSD = %v, want 0.5", samples[0].CostUSD)
+	}
+	if samples[1].CostUSD == nil || *samples[1].CostUSD != 0 {
+		t.Fatalf("hit CostUSD = %v, want an explicit 0", samples[1].CostUSD)
+	}
+}

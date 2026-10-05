@@ -101,6 +101,9 @@ type UsageEvent struct {
 	Streamed       bool
 	CacheHit       bool
 	UpstreamStatus int
+	// CostUSD is the cost the upstream reported for the request; nil (NULL)
+	// when it reported none and the price table applies.
+	CostUSD *float64
 }
 
 // CacheEntry is a row of the cache_entries table (AI response cache).

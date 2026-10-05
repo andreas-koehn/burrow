@@ -122,8 +122,10 @@ components:
           type: string
           description: >
             The backing service. For a direct provider this is its own row
-            "prov-<slug>" of type "direct"; it holds the provider's API keys
-            and AI configuration and is not listed by GET /api/v1/services.
+            of type "direct", named like the provider; it holds the
+            provider's API keys and AI configuration and is not listed by
+            GET /api/v1/services. Its upstream-credential and domains routes
+            answer 409, like its slug and access-mode routes.
         base_url:
           type: string
           description: >
@@ -143,6 +145,27 @@ components:
         credential_present:
           type: boolean
           description: Whether the vault slot holds a value.
+        auth_header:
+          type: string
+          description: >
+            Direct providers, admin callers only. The request header that
+            carries the credential upstream. Left out for other callers and
+            for tunnel providers.
+          example: Authorization
+        auth_format:
+          type: string
+          description: >
+            Direct providers, admin callers only. The header value with the
+            literal placeholder {key} where the relay puts the credential;
+            the credential itself is never part of it.
+          example: 'Bearer {key}'
+        extra_headers:
+          type: object
+          additionalProperties: { type: string }
+          description: >
+            Direct providers, admin callers only. Static headers the relay
+            adds to every upstream request, as set by an admin; {} when
+            there are none.
         billing: { type: string, enum: [metered, flat] }
         model_count:
           type: integer
@@ -2533,10 +2556,12 @@ paths:
         Kind "tunnel" registers an existing http service in API-key mode as
         a provider (service_id is required). Kind "direct" adds a provider
         the relay calls itself (base_url and credential_slot are required);
-        its backing service "prov-<slug>" is created with it and owned by
-        the caller. The provider is then served at
+        its backing service is created with it and owned by the caller.
+        The provider is then served at
         https://<auth_domain>/ai/<provider>/v1. When slug is empty it is
-        derived from name.
+        derived from name. For kind "direct" a field this body does not
+        have (for example api_key) is refused with 400 naming the field:
+        the credential is set on the relay, not through this API.
       requestBody:
         required: true
         content:
@@ -2670,6 +2695,10 @@ paths:
         A field that is left out keeps its stored value, so the credential
         slot stays unless the body names another one. extra_headers {}
         removes all extra headers. The change applies to the next request.
+        The response shows the stored auth_header, auth_format and
+        extra_headers. Concurrent updates of different fields are both
+        kept. A field this body does not have (for example api_key) is
+        refused with 400 naming the field.
       requestBody:
         required: true
         content:

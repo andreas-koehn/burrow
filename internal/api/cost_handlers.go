@@ -275,7 +275,7 @@ func (d Deps) GetCostExport(w http.ResponseWriter, r *http.Request) {
 				"tokens_out": r.TokensOut,
 				"bytes_in":   r.BytesIn,
 				"bytes_out":  r.BytesOut,
-				"usd":        priceFor(r.Kind, r.TokensIn, r.TokensOut),
+				"usd":        r.ReportedUSD + priceFor(r.Kind, r.PricedTokensIn, r.PricedTokensOut),
 			})
 		}
 	case "csv":

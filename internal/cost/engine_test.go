@@ -110,6 +110,13 @@ func (f *fakeUsageReader) ListUsageForWindow(_ context.Context, _ string) ([]db.
 	defer f.mu.Unlock()
 	out := make([]db.UsageRow, len(f.rows))
 	copy(out, f.rows)
+	// Like the real query: a row without a reported cost has all its tokens
+	// priced from the table.
+	for i := range out {
+		if r := &out[i]; r.ReportedUSD == 0 && r.PricedTokensIn == 0 && r.PricedTokensOut == 0 {
+			r.PricedTokensIn, r.PricedTokensOut = r.TokensIn, r.TokensOut
+		}
+	}
 	return out, nil
 }
 
@@ -399,5 +406,61 @@ func TestSummary_BasicAggregation(t *testing.T) {
 	}
 	if len(s.TopConsumers) != 2 {
 		t.Fatalf("top_consumers len = %d, want 2", len(s.TopConsumers))
+	}
+}
+
+// reportedPricing prices kind "openai" at 1 USD per 1M input tokens and
+// 2 USD per 1M output tokens.
+func reportedPricing() cost.Pricing {
+	return cost.Pricing{Version: "test", Entries: map[string]cost.Entry{
+		"openai": {InputPerMillion: 1, OutputPerMillion: 2},
+	}}
+}
+
+func TestSummary_UsesReportedCostAndPricesTheRest(t *testing.T) {
+	usage := &fakeUsageReader{rows: []db.UsageRow{
+		{ServiceID: "svc-A", APIKeyID: "kA", Kind: "openai", TokensIn: 1_000_100, TokensOut: 500_050,
+			ReportedUSD: 0.25, PricedTokensIn: 1_000_000, PricedTokensOut: 500_000},
+	}}
+	e := cost.NewWithDeps(reportedPricing(), nil, usage, nil, nil, nil, nil, nil)
+	s, err := e.Summary(context.Background(), "today")
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if math.Abs(s.TotalUSD-2.25) > 1e-9 {
+		t.Errorf("total_usd = %v, want 2.25", s.TotalUSD)
+	}
+	if s.TokensIn != 1_000_100 || s.TokensOut != 500_050 {
+		t.Errorf("tokens = (%d, %d), want all tokens (1000100, 500050)", s.TokensIn, s.TokensOut)
+	}
+	if len(s.TopConsumers) != 1 || math.Abs(s.TopConsumers[0].USD-2.25) > 1e-9 {
+		t.Errorf("top_consumers = %+v", s.TopConsumers)
+	}
+}
+
+// A kind without a price entry used to count as 0 USD; the reported cost
+// makes it count, for every budget scope.
+func TestCurrentUsdFor_CountsReportedCost(t *testing.T) {
+	usage := &fakeUsageReader{rows: []db.UsageRow{
+		{ServiceID: "svc-A", APIKeyID: "kA", Kind: "unknown", TokensIn: 10, TokensOut: 10, ReportedUSD: 1.5},
+		{ServiceID: "svc-B", APIKeyID: "kB", Kind: "openai", TokensIn: 2_000_000, TokensOut: 0,
+			ReportedUSD: 0.5, PricedTokensIn: 1_000_000},
+	}}
+	e := cost.NewWithDeps(reportedPricing(), nil, usage, fakeDailyReader{}, nil, nil, nil, nil)
+	for _, c := range []struct {
+		b    db.Budget
+		want float64
+	}{
+		{db.Budget{Scope: "api_key", SubjectID: "kA"}, 1.5},
+		{db.Budget{Scope: "service", SubjectID: "svc-B"}, 1.5},
+		{db.Budget{Scope: "global"}, 3.0},
+	} {
+		got, err := e.CurrentUsdFor(context.Background(), c.b)
+		if err != nil {
+			t.Fatalf("%s: %v", c.b.Scope, err)
+		}
+		if math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("%s: current = %v, want %v", c.b.Scope, got, c.want)
+		}
 	}
 }

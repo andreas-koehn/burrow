@@ -384,6 +384,11 @@ func (d Deps) ensureCustomDomainAccess(w http.ResponseWriter, r *http.Request, s
 		writeErr(w, http.StatusForbidden, "forbidden")
 		return "", false
 	}
+	// A direct provider has no tunnel a custom domain could lead to.
+	if svc.Type == "direct" {
+		writeDirectServiceErr(w)
+		return "", false
+	}
 	return svc.UserID, true
 }
 

@@ -3,6 +3,7 @@ package aimeter
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 )
 
 // openAIParser handles OpenAI-shaped SSE streams. Each frame is a single
@@ -97,12 +98,65 @@ func (p *openAIParser) inspect(line []byte) {
 		return
 	}
 	p.s.recordTokens(env.Usage.PromptTokens, env.Usage.CompletionTokens, env.Usage.TotalTokens)
+	if usd, ok := reportedCost(env.Usage.Cost); ok {
+		p.s.recordCost(usd)
+	}
 }
 
 type openAIUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// Cost is the amount the upstream charged for this request, in USD.
+	// OpenRouter sets it; most upstreams do not. Kept raw so that a value of
+	// the wrong type does not make the token counts fail to decode;
+	// reportedCost validates it.
+	Cost json.RawMessage `json:"cost"`
+}
+
+// maxReportedCostUSD rejects figures that can only be a bug or an attack on
+// the accounting (a single request never costs this much).
+const maxReportedCostUSD = 10_000
+
+// reportedCost validates an upstream-reported cost. The field is untrusted
+// input: anything but a JSON number in [0, maxReportedCostUSD] is treated as
+// "no cost reported", and the price table applies.
+func reportedCost(raw json.RawMessage) (float64, bool) {
+	// A JSON number starts with a digit or a minus sign. This also turns away
+	// null, which Unmarshal would accept and leave at zero.
+	if len(raw) == 0 || (raw[0] != '-' && (raw[0] < '0' || raw[0] > '9')) {
+		return 0, false
+	}
+	var v float64
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return 0, false
+	}
+	if !saneCost(v) {
+		return 0, false
+	}
+	if v == 0 {
+		return 0, true // not -0
+	}
+	return v, true
+}
+
+// saneCost reports whether usd can be the cost of one request.
+func saneCost(usd float64) bool {
+	return !math.IsNaN(usd) && !math.IsInf(usd, 0) && usd >= 0 && usd <= maxReportedCostUSD
+}
+
+// ParseOpenAICost returns the cost a non-streamed OpenAI-style response
+// reports in usage.cost, if any.
+func ParseOpenAICost(body []byte) (float64, bool) {
+	var env struct {
+		Usage *struct {
+			Cost json.RawMessage `json:"cost"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(body, &env) != nil || env.Usage == nil {
+		return 0, false
+	}
+	return reportedCost(env.Usage.Cost)
 }
 
 // ParseOpenAIBody parses a fully-buffered non-streaming OpenAI chat

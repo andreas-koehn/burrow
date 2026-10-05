@@ -2,7 +2,10 @@ package aimeter_test
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"io"
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -198,5 +201,56 @@ func TestSQLSinkRecord_NilSafeguards(t *testing.T) {
 	s = &aimeter.SQLSink{DB: nil}
 	if err := s.Record(ctx, aimeter.Sample{}); err != nil {
 		t.Fatalf("nil DB Record: %v", err)
+	}
+}
+
+// A reported cost is stored as it came; a sample without one leaves the
+// column NULL so the price table applies to its tokens.
+func TestSQLSinkRecord_CostUSD(t *testing.T) {
+	ctx := context.Background()
+	x := testDB(t)
+	serviceID := seedService(t, x)
+	sink := aimeter.NewSQLSink(x)
+
+	reported, zero := 0.00042, 0.0
+	for key, cost := range map[string]*float64{"k-reported": &reported, "k-zero": &zero, "k-none": nil} {
+		if err := sink.Record(ctx, aimeter.Sample{ServiceID: serviceID, APIKeyID: key, Kind: aimeter.KindOpenAI, TokensIn: 1, TokensOut: 1, CostUSD: cost}); err != nil {
+			t.Fatalf("Record %s: %v", key, err)
+		}
+		var got sql.NullFloat64
+		if err := x.DB().QueryRowContext(ctx, `SELECT cost_usd FROM usage_events WHERE api_key_id=?`, key).Scan(&got); err != nil {
+			t.Fatalf("read back %s: %v", key, err)
+		}
+		switch {
+		case cost == nil && got.Valid:
+			t.Errorf("%s: cost_usd = %v, want NULL", key, got.Float64)
+		case cost != nil && (!got.Valid || got.Float64 != *cost):
+			t.Errorf("%s: cost_usd = %+v, want %v", key, got, *cost)
+		}
+	}
+}
+
+// The sink is the last stop before the database: a cost that is not a sane
+// amount is dropped there even if a caller handed it over, and the row is
+// still written.
+func TestSQLSinkRecord_DropsInsaneCost(t *testing.T) {
+	ctx := context.Background()
+	x := testDB(t)
+	serviceID := seedService(t, x)
+	sink := aimeter.NewSQLSink(x)
+	for i, bad := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), -0.01, 1e9} {
+		bad := bad
+		key := fmt.Sprintf("k-%d", i)
+		if err := sink.Record(ctx, aimeter.Sample{ServiceID: serviceID, APIKeyID: key, Kind: aimeter.KindOpenAI, TokensIn: 3, TokensOut: 2, CostUSD: &bad}); err != nil {
+			t.Fatalf("Record %v: %v", bad, err)
+		}
+		var got sql.NullFloat64
+		var in int64
+		if err := x.DB().QueryRowContext(ctx, `SELECT cost_usd, tokens_in FROM usage_events WHERE api_key_id=?`, key).Scan(&got, &in); err != nil {
+			t.Fatalf("row for cost %v missing: %v", bad, err)
+		}
+		if got.Valid || in != 3 {
+			t.Errorf("cost %v: stored %+v with tokens_in=%d, want NULL and 3", bad, got, in)
+		}
 	}
 }

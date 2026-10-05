@@ -543,7 +543,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				cacheHdr.Set(k, v)
 			}
 			c.captureEntry(svc, r, body, redactedBody, redactHits, kind, entry.Status, entry.Body, cacheHdr, 0, false, cacheStatus, fromReplay)
-			c.recordMeter(r.Context(), svc, kind, 0, 0, int64(len(redactedBody)), int64(len(entry.Body)), false, true, entry.Status)
+			c.recordMeter(r.Context(), svc, kind, 0, 0, int64(len(redactedBody)), int64(len(entry.Body)), false, true, entry.Status, cachedCost())
 			return
 		}
 		cacheStatus = "MISS"
@@ -597,7 +597,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 					cacheHdr.Set(k, v)
 				}
 				c.captureEntry(svc, r, body, redactedBody, redactHits, kind, status, exactEntry.Body, cacheHdr, 0, false, "similar", fromReplay)
-				c.recordMeter(r.Context(), svc, kind, 0, 0, int64(len(redactedBody)), int64(len(exactEntry.Body)), false, true, status)
+				c.recordMeter(r.Context(), svc, kind, 0, 0, int64(len(redactedBody)), int64(len(exactEntry.Body)), false, true, status, cachedCost())
 				return
 			}
 		}
@@ -707,6 +707,21 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		}
 	}
 
+	// Cost the upstream itself reports (OpenRouter). Streamed responses carry
+	// it in the final usage chunk; plain JSON responses in the body. It is
+	// read from the bytes already copied to the client, never from a second
+	// pass that could hold the response back. A response that reports none,
+	// or was cut off before the chunk that does, leaves this nil and the
+	// price table applies.
+	var reportedUSD *float64
+	if usd, ok := stream.Cost(); ok {
+		reportedUSD = &usd
+	} else if kind == KindOpenAI && !isStreamedResponse(wrapped.Header()) && !capw.truncated() {
+		if usd, ok := aimeter.ParseOpenAICost(capw.bytes()); ok {
+			reportedUSD = &usd
+		}
+	}
+
 	// Should we cache the response? Only when:
 	//  - cache feature is enabled for this service
 	//  - upstream returned 2xx
@@ -776,7 +791,16 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		int64(len(redactedBody)), bytesOut,
 		isStreamedResponse(wrapped.Header()), false,
 		wrapped.statusCode,
+		reportedUSD,
 	)
+}
+
+// cachedCost is the cost of an answer served from the cache: nothing was
+// spent upstream, so the row says zero instead of leaving it to the price
+// table.
+func cachedCost() *float64 {
+	zero := 0.0
+	return &zero
 }
 
 // serveUpstream calls the upstream handler and reports a panic instead of
@@ -865,9 +889,10 @@ func (c *Chain) captureEntry(svc Service, r *http.Request,
 }
 
 // recordMeter writes one usage_events row when a Meter sink is configured.
-// Non-blocking: any error is logged + swallowed by the SQLSink.
+// Non-blocking: any error is logged + swallowed by the SQLSink. costUSD is
+// what the upstream reported for the request, nil when it reported nothing.
 func (c *Chain) recordMeter(ctx context.Context, svc Service, kind Kind,
-	tokensIn, tokensOut int, bytesIn, bytesOut int64, streamed, cacheHit bool, status int) {
+	tokensIn, tokensOut int, bytesIn, bytesOut int64, streamed, cacheHit bool, status int, costUSD *float64) {
 	if c.Meter == nil {
 		return
 	}
@@ -885,6 +910,7 @@ func (c *Chain) recordMeter(ctx context.Context, svc Service, kind Kind,
 		Streamed:       streamed,
 		CacheHit:       cacheHit,
 		UpstreamStatus: status,
+		CostUSD:        costUSD,
 	})
 }
 

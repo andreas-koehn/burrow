@@ -210,7 +210,7 @@ func TestCreateDirectProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Kind != "direct" || p.ServiceID != "prov-openrouter" || p.APIFormat != "openai" || p.Billing != "metered" ||
+	if p.Kind != "direct" || p.ServiceID == "" || p.APIFormat != "openai" || p.Billing != "metered" ||
 		p.AuthHeader != "Authorization" || p.AuthFormat != "Bearer {key}" {
 		t.Fatalf("defaults: %+v", p)
 	}
@@ -290,10 +290,10 @@ func TestCreateDirectProvider(t *testing.T) {
 	if err := s.DeleteProvider(ctx, "openrouter"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ServiceByID(ctx, "prov-openrouter"); !errors.Is(err, db.ErrNotFound) {
+	if _, err := s.ServiceByID(ctx, p.ServiceID); !errors.Is(err, db.ErrNotFound) {
 		t.Errorf("backing service survived: %v", err)
 	}
-	if keys, _ := s.q.ListServiceAPIKeys(ctx, "prov-openrouter"); len(keys) != 0 {
+	if keys, _ := s.q.ListServiceAPIKeys(ctx, p.ServiceID); len(keys) != 0 {
 		t.Errorf("api keys survived: %+v", keys)
 	}
 	if models, _ := s.q.ListAIProviderModels(ctx, "openrouter"); len(models) != 0 {
@@ -479,5 +479,39 @@ func TestDirectBackingService_Guards(t *testing.T) {
 	}
 	if err := s.DeleteAPIKey(ctx, ownerID, "admin", p.ServiceID, id); err != nil {
 		t.Fatalf("delete key: %v", err)
+	}
+}
+
+// After a rename the old slug and the old name are free again: the backing
+// service follows the provider's name and its id does not come from the slug.
+func TestRenameDirectProvider_FreesSlugAndName(t *testing.T) {
+	s := newStore(t)
+	ownerID := mustCreateUser(t, s, "admin@x", "admin").ID
+	ctx := context.Background()
+	in := DirectProviderInput{Slug: "openrouter", Name: "OpenRouter", BaseURL: "https://openrouter.ai/api/v1", CredentialSlot: "OPENROUTER"}
+
+	first, err := s.CreateDirectProvider(ctx, ownerID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(first.ServiceID, "openrouter") {
+		t.Fatalf("service id %q is derived from the slug", first.ServiceID)
+	}
+	renamed, err := s.UpdateProvider(ctx, "openrouter", "router2", "Router Two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.ServiceID != first.ServiceID {
+		t.Fatalf("rename changed the backing service: %q -> %q", first.ServiceID, renamed.ServiceID)
+	}
+	if svc, err := s.ServiceByID(ctx, first.ServiceID); err != nil || svc.Name != "Router Two" {
+		t.Fatalf("backing service = %+v (%v), want name Router Two", svc, err)
+	}
+	second, err := s.CreateDirectProvider(ctx, ownerID, in)
+	if err != nil {
+		t.Fatalf("old slug and name are still taken: %v", err)
+	}
+	if second.ServiceID == first.ServiceID {
+		t.Fatal("both providers share a backing service")
 	}
 }

@@ -164,15 +164,21 @@ func UsageWindowBoundary(window string) string {
 
 // UsageRow is one row of the cost-engine aggregation query: model + observed
 // token totals + observed byte totals + per-(service, api_key) labels. The
-// engine multiplies tokens_in/out by pricing entries to compute USD.
+// engine adds what upstreams reported (ReportedUSD) to the price-table cost
+// of the tokens no upstream put a price on (PricedTokensIn/Out).
 type UsageRow struct {
 	ServiceID string
 	APIKeyID  string
 	Kind      string
-	TokensIn  int64
-	TokensOut int64
+	TokensIn  int64 // all rows
+	TokensOut int64 // all rows
 	BytesIn   int64
 	BytesOut  int64
+	// ReportedUSD is the sum of cost_usd over the rows that carry one.
+	ReportedUSD float64
+	// PricedTokensIn/Out are the tokens of the rows without a reported cost.
+	PricedTokensIn  int64
+	PricedTokensOut int64
 }
 
 // ListUsageForWindow returns one UsageRow per (service_id, api_key_id, kind)
@@ -187,7 +193,10 @@ func (x *DB) ListUsageForWindow(ctx context.Context, window string) ([]UsageRow,
 		       COALESCE(SUM(tokens_in), 0)  AS tokens_in,
 		       COALESCE(SUM(tokens_out), 0) AS tokens_out,
 		       COALESCE(SUM(bytes_in), 0)   AS bytes_in,
-		       COALESCE(SUM(bytes_out), 0)  AS bytes_out
+		       COALESCE(SUM(bytes_out), 0)  AS bytes_out,
+		       COALESCE(SUM(cost_usd), 0)   AS reported_usd,
+		       COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_in  ELSE 0 END), 0) AS priced_tokens_in,
+		       COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_out ELSE 0 END), 0) AS priced_tokens_out
 		  FROM usage_events
 		 WHERE ts >= %s
 		 GROUP BY service_id, api_key_id, kind`, UsageWindowBoundary(window))
@@ -200,7 +209,8 @@ func (x *DB) ListUsageForWindow(ctx context.Context, window string) ([]UsageRow,
 	for rows.Next() {
 		var u UsageRow
 		if err := rows.Scan(&u.ServiceID, &u.APIKeyID, &u.Kind,
-			&u.TokensIn, &u.TokensOut, &u.BytesIn, &u.BytesOut); err != nil {
+			&u.TokensIn, &u.TokensOut, &u.BytesIn, &u.BytesOut,
+			&u.ReportedUSD, &u.PricedTokensIn, &u.PricedTokensOut); err != nil {
 			return nil, fmt.Errorf("scan usage row: %w", err)
 		}
 		out = append(out, u)
