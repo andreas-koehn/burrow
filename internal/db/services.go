@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -72,10 +73,18 @@ func (x *DB) CreateService(ctx context.Context, s Service) error {
 // store it as NULL, which COALESCE rewrites to ”.
 const selectServiceCols = `id, user_id, name, type, COALESCE(subdomain,''), access_mode, api_key_header, created_at, COALESCE(mtls_ca_pem,'')`
 
+// ErrServiceNameReserved is returned by GetOrCreateService when the name
+// belongs to the backing row of a direct AI provider.
+var ErrServiceNameReserved = errors.New("db: service name is used by a direct AI provider")
+
 // GetOrCreateService returns the service row for (userID, name), creating it
 // with the given type and default access_mode/api_key_header if it does not
 // exist. The operation is idempotent (INSERT ... ON CONFLICT DO NOTHING then
 // SELECT), safe for concurrent callers.
+//
+// A row of type "direct" backs an AI provider and is never handed out: a
+// tunnel registering under that name would otherwise bind to the provider's
+// keys and policy. Such a call fails with ErrServiceNameReserved.
 func (x *DB) GetOrCreateService(ctx context.Context, userID, name, typ string) (Service, error) {
 	id := uuid.NewString()
 	_, err := x.sqlDB.ExecContext(ctx,
@@ -97,6 +106,9 @@ func (x *DB) GetOrCreateService(ctx context.Context, userID, name, typ string) (
 	}
 	if err != nil {
 		return Service{}, fmt.Errorf("get or create service select: %w", err)
+	}
+	if s.Type == "direct" {
+		return Service{}, ErrServiceNameReserved
 	}
 	return s, nil
 }

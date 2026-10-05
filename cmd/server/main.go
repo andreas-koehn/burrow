@@ -761,6 +761,8 @@ func main() {
 				Log:        log,
 				// Direct providers: the upstream credential comes from the
 				// env vault, the policy from the backing service's rows.
+				// GET /v1/models answers from the stored catalog when it has entries.
+				Models:        st,
 				Direct:        aigateway.DirectUpstreams(v05.CredVault, aiUpstreamTransport),
 				ServicePolicy: directServicePolicy(st),
 			}
@@ -791,6 +793,19 @@ func main() {
 					// v0.3.0: service API + live tunnel lookup + auth domain.
 					Services:    st,
 					AIProviders: st,
+					// Direct providers: the save-time host check follows the
+					// same switch as the dial guard, and the model sync leaves
+					// through the guarded transport.
+					AllowPrivateUpstreams: cfg.AIAllowPrivateUpstreams,
+					HostCheck: func(ctx context.Context, host string) error {
+						return aiprovider.CheckHostPublic(ctx, net.DefaultResolver, host)
+					},
+					FetchProviderModels: func(ctx context.Context, p db.AIProvider) ([]aiprovider.Model, error) {
+						return aiprovider.FetchModels(ctx, aiprovider.Config{
+							Slug: p.Slug, BaseURL: p.BaseURL, CredentialSlot: p.CredentialSlot,
+							AuthHeader: p.AuthHeader, AuthFormat: p.AuthFormat, ExtraHeaders: p.ExtraHeaders,
+						}, v05.CredVault, aiUpstreamTransport)
+					},
 					LiveTunnels: liveTunnelLookupAdapter{srv: srv},
 					// AuthDomain uses the same resolved value the proxy/access
 					// checker/gate route on (cfg.AuthDomain, or the first ACME

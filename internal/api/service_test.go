@@ -1438,3 +1438,45 @@ func TestPostService_Slug(t *testing.T) {
 		t.Fatalf("stored rows: %#v", ss.createdSvcs)
 	}
 }
+
+// The backing row of a direct AI provider is not listed as a service.
+func TestListServices_HidesDirectBackingRows(t *testing.T) {
+	ss := &fakeServiceStore{
+		listSvcs: []store.ServiceView{
+			{ID: "prov-openrouter", Name: "OpenRouter", Type: "direct", AccessMode: "api_key"},
+			{ID: "s1", Name: "web", Type: "http", Subdomain: "k7p2qx", AccessMode: "open"},
+			{ID: "prov-zai", Name: "z.ai", Type: "direct", AccessMode: "api_key"},
+		},
+	}
+	srv, c := newServiceServer(t, newServiceDeps(ss, fakeLiveTunnels{}, "tunnels.example.com"))
+	defer srv.Close()
+
+	body := wantStatus(t, c.get(t, "/api/v1/services"), http.StatusOK)
+	var out []serviceResp
+	if err := json.Unmarshal([]byte(body), &out); err != nil || len(out) != 1 || out[0].ID != "s1" {
+		t.Fatalf("services = %s (%v), want only s1", body, err)
+	}
+
+	// Only direct rows: an empty array, not null.
+	ss.listSvcs = ss.listSvcs[:1]
+	if body := wantStatus(t, c.get(t, "/api/v1/services"), http.StatusOK); strings.TrimSpace(body) != "[]" {
+		t.Fatalf("services = %s, want []", body)
+	}
+}
+
+// Slug and access mode of a direct provider's backing row cannot be changed
+// through the service endpoints.
+func TestServiceEndpoints_RefuseDirectBackingRow(t *testing.T) {
+	ss := &fakeServiceStore{setModeErr: store.ErrDirectService, setSlugErr: store.ErrDirectService}
+	srv, c := newServiceServer(t, newServiceDeps(ss, fakeLiveTunnels{}, "tunnels.example.com"))
+	defer srv.Close()
+
+	for _, resp := range []*http.Response{
+		c.put(t, "/api/v1/services/prov-openrouter/access-mode", map[string]string{"access_mode": "open"}),
+		c.put(t, "/api/v1/services/prov-openrouter/slug", map[string]string{"slug": "my-slug"}),
+	} {
+		if body := wantStatus(t, resp, http.StatusConflict); !strings.Contains(body, "direct AI provider") {
+			t.Errorf("body = %s", body)
+		}
+	}
+}

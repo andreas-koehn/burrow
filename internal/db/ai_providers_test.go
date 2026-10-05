@@ -145,3 +145,126 @@ func TestTunnelProvider_ReadsDefaults(t *testing.T) {
 		t.Fatalf("defaults: %+v", got)
 	}
 }
+
+func directFixture(t *testing.T, x *DB) (Service, AIProvider) {
+	t.Helper()
+	svc := Service{ID: "prov-openrouter", UserID: "u1", Name: "OpenRouter", Type: "direct", AccessMode: "api_key"}
+	p := AIProvider{
+		Slug: "openrouter", Name: "OpenRouter", Kind: "direct", ServiceID: svc.ID, APIFormat: "openai",
+		BaseURL: "https://openrouter.ai/api/v1", CredentialSlot: "OPENROUTER",
+	}
+	if err := x.CreateDirectAIProvider(context.Background(), svc, p); err != nil {
+		t.Fatal(err)
+	}
+	return svc, p
+}
+
+// The function owns the row types: a caller cannot make a "direct" provider
+// out of an http service row or a tunnel provider row.
+func TestCreateDirectAIProvider_ForcesDirect(t *testing.T) {
+	x, _ := newDBWithService(t)
+	ctx := context.Background()
+	svc := Service{ID: "prov-zai", UserID: "u1", Name: "z.ai", Type: "http", AccessMode: "api_key"}
+	p := AIProvider{Slug: "zai", Name: "z.ai", Kind: "tunnel", ServiceID: svc.ID, APIFormat: "openai", BaseURL: "https://api.z.ai/v1", CredentialSlot: "ZAI"}
+	if err := x.CreateDirectAIProvider(ctx, svc, p); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := x.GetAIProvider(ctx, "zai")
+	backing, _ := x.GetServiceByID(ctx, "prov-zai")
+	if got.Kind != "direct" || backing.Type != "direct" {
+		t.Fatalf("kind %q type %q, want direct/direct", got.Kind, backing.Type)
+	}
+}
+
+func TestUpdateAIProviderUpstream(t *testing.T) {
+	x, _ := newDBWithService(t)
+	ctx := context.Background()
+	_, p := directFixture(t, x)
+
+	p.BaseURL, p.CredentialSlot, p.Billing, p.APIFormat = "https://api.z.ai/v4", "ZAI", "flat", "anthropic"
+	p.AuthHeader, p.AuthFormat = "X-Api-Key", "{key}"
+	p.ExtraHeaders = map[string]string{"X-Title": "Burrow"}
+	if err := x.UpdateAIProviderUpstream(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	got, err := x.GetAIProvider(ctx, "openrouter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BaseURL != "https://api.z.ai/v4" || got.CredentialSlot != "ZAI" || got.Billing != "flat" || got.APIFormat != "anthropic" ||
+		got.AuthHeader != "X-Api-Key" || got.AuthFormat != "{key}" || got.ExtraHeaders["X-Title"] != "Burrow" ||
+		got.Kind != "direct" || got.Name != "OpenRouter" {
+		t.Fatalf("after update: %+v", got)
+	}
+
+	p.Slug = "gone"
+	if err := x.UpdateAIProviderUpstream(ctx, p); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown slug err = %v, want ErrNotFound", err)
+	}
+}
+
+// A provider of kind "direct" whose service is not of type "direct" (a row
+// written by hand): the provider goes, the foreign service stays.
+func TestDeleteAIProviderAndBacking_DirectOnForeignService(t *testing.T) {
+	x, svcID := newDBWithService(t)
+	ctx := context.Background()
+	if err := x.CreateAIProvider(ctx, AIProvider{Slug: "odd", Name: "Odd", Kind: "direct", ServiceID: svcID, APIFormat: "openai"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.DeleteAIProviderAndBacking(ctx, "odd"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := x.GetAIProvider(ctx, "odd"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("provider survived the delete: %v", err)
+	}
+	if _, err := x.GetServiceByID(ctx, svcID); err != nil {
+		t.Fatalf("a service that is not of type direct must be kept: %v", err)
+	}
+}
+
+// Deleting a direct provider takes its backing service's API keys along.
+func TestDeleteAIProviderAndBacking_RemovesKeysAndModels(t *testing.T) {
+	x, _ := newDBWithService(t)
+	ctx := context.Background()
+	svc, _ := directFixture(t, x)
+	if err := x.CreateServiceAPIKey(ctx, ServiceAPIKey{ID: "k1", ServiceID: svc.ID, Name: "ci", KeyHash: "h1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.UpsertAIProviderModel(ctx, AIProviderModel{ProviderSlug: "openrouter", ModelID: "glm-5.1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.DeleteAIProviderAndBacking(ctx, "openrouter"); err != nil {
+		t.Fatal(err)
+	}
+	if keys, _ := x.ListServiceAPIKeys(ctx, svc.ID); len(keys) != 0 {
+		t.Fatalf("api keys survived: %+v", keys)
+	}
+	if models, _ := x.ListAIProviderModels(ctx, "openrouter"); len(models) != 0 {
+		t.Fatalf("models survived: %+v", models)
+	}
+}
+
+// A tunnel client registering under the name of a direct provider's backing
+// row must not be handed that row.
+func TestGetOrCreateService_NeverReturnsDirectRow(t *testing.T) {
+	x, _ := newDBWithService(t)
+	ctx := context.Background()
+	directFixture(t, x) // backing row: user u1, name "OpenRouter"
+
+	got, err := x.GetOrCreateService(ctx, "u1", "OpenRouter", "http")
+	if !errors.Is(err, ErrServiceNameReserved) {
+		t.Fatalf("err = %v (service %+v), want ErrServiceNameReserved", err, got)
+	}
+	if got.ID != "" {
+		t.Fatalf("the direct row leaked to the caller: %+v", got)
+	}
+	backing, _ := x.GetServiceByID(ctx, "prov-openrouter")
+	if backing.Type != "direct" || backing.Subdomain != "" {
+		t.Fatalf("backing row changed: %+v", backing)
+	}
+	// Another user may use the name; it is unique per user only.
+	mustUser(t, x, "u2")
+	if s, err := x.GetOrCreateService(ctx, "u2", "OpenRouter", "http"); err != nil || s.Type != "http" {
+		t.Fatalf("other user: %v %+v", err, s)
+	}
+}

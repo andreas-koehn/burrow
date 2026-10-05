@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	stdlog "log"
 	"log/slog"
@@ -1191,5 +1192,131 @@ func TestServe_UpstreamAbortMidStreamAbortsTheClient(t *testing.T) {
 				t.Fatalf("usage row = %+v", sm)
 			}
 		})
+	}
+}
+
+type fakeModels map[string][]db.AIProviderModel
+
+func (f fakeModels) ListProviderModels(_ context.Context, slug string) ([]db.AIProviderModel, error) {
+	return f[slug], nil
+}
+
+func TestServe_ModelsFromCatalog(t *testing.T) {
+	upstreamHit := false
+	chain := &spyChain{}
+	g := newGateway(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { upstreamHit = true }), chain)
+	g.Models = fakeModels{"ollama": {{ProviderSlug: "ollama", ModelID: "mistral"}, {ProviderSlug: "ollama", ModelID: "qwen2.5:0.5b"}}}
+
+	want := `{"object":"list","data":[{"id":"mistral","object":"model","owned_by":"ollama"},{"id":"qwen2.5:0.5b","object":"model","owned_by":"ollama"}]}`
+	for _, path := range []string{"/v1/models", "/v1/models/"} {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Authorization", "Bearer sk-good")
+		rec := httptest.NewRecorder()
+		g.Serve(rec, req, "ollama")
+		if rec.Code != 200 || upstreamHit {
+			t.Fatalf("%s: status %d upstreamHit=%v", path, rec.Code, upstreamHit)
+		}
+		if strings.TrimSpace(rec.Body.String()) != want {
+			t.Fatalf("%s: body = %s", path, rec.Body.String())
+		}
+		if rec.Header().Get("Content-Type") != "application/json" || rec.Header().Get("Burrow-Provider") != "ollama" {
+			t.Fatalf("%s: headers = %v", path, rec.Header())
+		}
+	}
+	// A model listing is not usage.
+	if chain.serviceID != "" {
+		t.Fatal("the catalog answer went through the AI chain")
+	}
+
+	// Still behind the key check.
+	rec := httptest.NewRecorder()
+	g.Serve(rec, httptest.NewRequest("GET", "/v1/models", nil), "ollama")
+	if rec.Code != 401 || strings.Contains(rec.Body.String(), "mistral") {
+		t.Fatalf("unauthenticated models: status %d body %s", rec.Code, rec.Body.String())
+	}
+
+	// Only the listing itself: one model, or a POST, goes to the upstream.
+	for _, c := range [][2]string{{"GET", "/v1/models/mistral"}, {"POST", "/v1/models"}} {
+		upstreamHit = false
+		req := httptest.NewRequest(c[0], c[1], nil)
+		req.Header.Set("Authorization", "Bearer sk-good")
+		g.Serve(httptest.NewRecorder(), req, "ollama")
+		if !upstreamHit {
+			t.Fatalf("%s %s was answered from the catalog", c[0], c[1])
+		}
+	}
+}
+
+// Model ids are data: markup in one is escaped, never interpreted.
+func TestServe_ModelsFromCatalog_EscapesIDs(t *testing.T) {
+	g := newGateway(http.NotFoundHandler(), nil)
+	g.Models = fakeModels{"ollama": {{ProviderSlug: "ollama", ModelID: `<script>alert("x")</script>`}}}
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer sk-good")
+	rec := httptest.NewRecorder()
+	g.Serve(rec, req, "ollama")
+	var body struct {
+		Data []struct{ ID string } `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Data) != 1 || body.Data[0].ID != `<script>alert("x")</script>` {
+		t.Fatalf("round trip: %v %s", err, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "<script>") {
+		t.Fatalf("markup is not escaped: %s", rec.Body.String())
+	}
+}
+
+type errModels struct{}
+
+func (errModels) ListProviderModels(context.Context, string) ([]db.AIProviderModel, error) {
+	return nil, errors.New("db down")
+}
+
+func TestServe_ModelsForwardedWhenCatalogEmpty(t *testing.T) {
+	for name, models := range map[string]ModelLister{"empty": fakeModels{}, "unreadable": errModels{}, "not wired": nil} {
+		upstreamHit := false
+		g := newGateway(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { upstreamHit = true; w.WriteHeader(200) }), nil)
+		g.Models = models
+		req := httptest.NewRequest("GET", "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer sk-good")
+		g.Serve(httptest.NewRecorder(), req, "ollama")
+		if !upstreamHit {
+			t.Fatalf("%s: an empty catalog must fall through to the upstream", name)
+		}
+	}
+}
+
+// A direct provider's catalog is served without building the upstream, so
+// without reading the credential.
+func TestServe_Direct_ModelsFromCatalog(t *testing.T) {
+	built := false
+	g := directGateway(t, func(db.AIProvider) (http.Handler, error) { built = true; return http.NotFoundHandler(), nil }, nil)
+	g.Models = fakeModels{"openrouter": {{ProviderSlug: "openrouter", ModelID: "google/gemini-x"}}}
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer sk-good")
+	rec := httptest.NewRecorder()
+	g.Serve(rec, req, "openrouter")
+	if rec.Code != 200 || built || !strings.Contains(rec.Body.String(), `"id":"google/gemini-x"`) {
+		t.Fatalf("status %d built=%v body %s", rec.Code, built, rec.Body.String())
+	}
+}
+
+// A direct provider whose backing service is missing or not of type "direct"
+// is a broken configuration, not a server fault.
+func TestServe_Direct_BackingServiceNotDirect(t *testing.T) {
+	built := false
+	g := directGateway(t, func(db.AIProvider) (http.Handler, error) { built = true; return http.NotFoundHandler(), nil }, nil)
+	g.ServicePolicy = func(context.Context, string) (*proxy.Resolved, error) {
+		return nil, fmt.Errorf("direct service policy: %w", proxy.ErrNotFound)
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer sk-good")
+	rec := httptest.NewRecorder()
+	g.Serve(rec, req, "openrouter")
+	if rec.Code != 503 || errCode(t, rec) != "provider_misconfigured" {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if built || g.Keys.(*fakeKeys).calls.Load() != 0 {
+		t.Fatalf("a refused request got as far as the key check or the upstream (built=%v)", built)
 	}
 }

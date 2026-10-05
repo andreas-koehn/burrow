@@ -78,8 +78,10 @@ func (x *DB) CreateAIProvider(ctx context.Context, p AIProvider) error {
 }
 
 // CreateDirectAIProvider inserts the backing service row (type "direct") and
-// the provider in one transaction.
+// the provider in one transaction. The service's type, the provider's kind
+// and the link between the two are set here, whatever the caller passed.
 func (x *DB) CreateDirectAIProvider(ctx context.Context, svc Service, p AIProvider) error {
+	svc.Type, p.Kind, p.ServiceID = "direct", "direct", svc.ID
 	if svc.CreatedAt.IsZero() {
 		svc.CreatedAt = time.Now().UTC()
 	}
@@ -145,15 +147,25 @@ func (x *DB) DeleteAIProviderAndBacking(ctx context.Context, slug string) error 
 		_ = tx.Rollback()
 		return fmt.Errorf("delete ai provider: %w", err)
 	}
+	deleted := int64(0)
 	if kind == "direct" {
 		// The provider row goes with the service by cascade.
-		_, err = tx.ExecContext(ctx, `DELETE FROM services WHERE id=? AND type='direct'`, serviceID)
-	} else {
-		_, err = tx.ExecContext(ctx, `DELETE FROM ai_providers WHERE slug=?`, slug)
+		res, err := tx.ExecContext(ctx, `DELETE FROM services WHERE id=? AND type='direct'`, serviceID)
+		if err == nil {
+			deleted, err = res.RowsAffected()
+		}
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("delete ai provider: backing service: %w", err)
+		}
 	}
-	if err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("delete ai provider: %w", err)
+	if deleted == 0 {
+		// A tunnel provider, or a direct one whose service is not a backing
+		// row: that service is someone's tunnel and stays.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM ai_providers WHERE slug=?`, slug); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("delete ai provider: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete provider tx: %w", err)

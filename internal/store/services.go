@@ -37,6 +37,9 @@ var (
 	ErrInvalidSlug = errors.New("store: invalid slug")
 	// ErrSlugTaken is returned when another service already uses the slug.
 	ErrSlugTaken = errors.New("store: slug already in use")
+	// ErrDirectService is returned when a setting that only makes sense for a
+	// tunnelled service is changed on the backing row of a direct AI provider.
+	ErrDirectService = errors.New("store: service backs a direct AI provider")
 )
 
 // ServiceView is the durable-fields representation of a service returned by
@@ -157,6 +160,11 @@ func (s *Store) SetServiceAccessMode(ctx context.Context, callerID, callerRole, 
 	if err != nil {
 		return err
 	}
+	// A direct provider's backing row stays in api_key mode: /ai/ refuses
+	// any other mode, and there is no tunnel the other modes could protect.
+	if svc.Type == "direct" {
+		return ErrDirectService
+	}
 	switch mode {
 	case "open", "api_key", "burrow_login", "mtls":
 	default:
@@ -206,6 +214,9 @@ func (s *Store) SetServiceSlug(ctx context.Context, callerID, callerRole, servic
 	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
 	if err != nil {
 		return "", err
+	}
+	if svc.Type == "direct" {
+		return "", ErrDirectService
 	}
 	if svc.Type != "http" {
 		return "", ErrServiceNotHTTP

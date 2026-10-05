@@ -116,14 +116,37 @@ components:
       properties:
         slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$' }
         name: { type: string }
-        kind: { type: string, enum: [tunnel] }
-        api_format: { type: string, enum: [openai] }
-        service_id: { type: string }
+        kind: { type: string, enum: [tunnel, direct] }
+        api_format: { type: string, enum: [openai, anthropic] }
+        service_id:
+          type: string
+          description: >
+            The backing service. For a direct provider this is its own row
+            "prov-<slug>" of type "direct"; it holds the provider's API keys
+            and AI configuration and is not listed by GET /api/v1/services.
         base_url:
           type: string
           description: >
             https://<auth_domain>/ai/<provider>/v1, or "" when the relay has
             no auth domain.
+        upstream_base_url:
+          type: string
+          description: Direct providers only. Where the relay sends requests; "" for a tunnel provider.
+          example: https://openrouter.ai/api/v1
+        credential_slot:
+          type: string
+          description: >
+            Direct providers only. Name of the vault slot that holds the
+            upstream credential. The credential itself is configured on the
+            relay and is never accepted or returned by this API.
+          example: OPENROUTER
+        credential_present:
+          type: boolean
+          description: Whether the vault slot holds a value.
+        billing: { type: string, enum: [metered, flat] }
+        model_count:
+          type: integer
+          description: Number of entries in the provider's stored model list.
         model_alias: { type: string }
         concrete_model: { type: string }
         backend_type: { type: string, enum: [ollama, vllm, openai-compat, other] }
@@ -131,8 +154,65 @@ components:
         requests_24h: { type: integer }
         cache_hits_24h: { type: integer }
         latency_p95_ms: { type: integer }
-        status: { type: string, enum: [Connected, Degraded, Offline] }
+        status:
+          type: string
+          enum: [Connected, Degraded, Offline]
+          description: >
+            Tunnel provider: whether its client is connected. Direct provider:
+            Connected when the credential slot is set, Offline otherwise.
         client_session_id: { type: string }
+    AIProviderUpstream:
+      type: object
+      description: >
+        Upstream settings of a direct provider. There is no field for the
+        credential: credential_slot names a vault slot whose value is
+        configured on the relay.
+      properties:
+        api_format: { type: string, enum: [openai, anthropic], default: openai }
+        base_url:
+          type: string
+          maxLength: 2048
+          description: >
+            https URL of the upstream API, without credentials, query or
+            fragment. Unless the relay allows private upstreams, a host that
+            is or resolves to a private, loopback or link-local address is
+            refused.
+          example: https://openrouter.ai/api/v1
+        credential_slot:
+          type: string
+          pattern: '^[A-Z0-9_]{1,32}$'
+          example: OPENROUTER
+        auth_header:
+          type: string
+          default: Authorization
+          description: Header that carries the credential. An RFC 7230 token; not a hop-by-hop or forwarding header.
+        auth_format:
+          type: string
+          maxLength: 128
+          default: 'Bearer {key}'
+          description: Value of the auth header. Must contain "{key}" exactly once; no control characters.
+        extra_headers:
+          type: object
+          maxProperties: 16
+          additionalProperties: { type: string, maxLength: 512 }
+          description: >
+            Static headers sent with every upstream request; at most 16 and
+            4096 bytes in total. Names are RFC 7230 tokens, values carry no
+            control characters. Refused names: Host, Content-Length,
+            Transfer-Encoding, Connection, Keep-Alive, TE, Trailer, Upgrade,
+            Proxy-*, Authorization, X-Api-Key, Cookie, Forwarded,
+            X-Forwarded-* and the auth header itself. Values are not returned
+            by any endpoint.
+          example: { X-Title: Burrow }
+        billing: { type: string, enum: [metered, flat], default: metered }
+    AIProviderModel:
+      type: object
+      description: One entry of a provider's stored model list.
+      properties:
+        id: { type: string, maxLength: 200, example: google/gemini-x }
+        display_name: { type: string, maxLength: 200 }
+        context_length: { type: integer, format: int64, minimum: 0 }
+        synced_at: { type: string, format: date-time }
     EndpointMetrics:
       type: object
       description: >
@@ -517,6 +597,11 @@ paths:
     get:
       tags: [services]
       summary: List services visible to the caller
+      description: |
+        The backing rows of direct AI providers (type "direct") are not
+        listed; they are managed under /api/v1/ai/providers. Their API keys
+        and AI configuration are reachable through the service endpoints by
+        id, while a change of slug or access mode answers 409.
       responses:
         '200':
           description: List of services.
@@ -2445,24 +2530,41 @@ paths:
       tags: [models]
       summary: Create a provider (admin)
       description: |
-        Registers an existing http service in API-key mode as a provider.
-        The provider is then served at https://<auth_domain>/ai/<provider>/v1.
-        When slug is empty it is derived from name.
+        Kind "tunnel" registers an existing http service in API-key mode as
+        a provider (service_id is required). Kind "direct" adds a provider
+        the relay calls itself (base_url and credential_slot are required);
+        its backing service "prov-<slug>" is created with it and owned by
+        the caller. The provider is then served at
+        https://<auth_domain>/ai/<provider>/v1. When slug is empty it is
+        derived from name.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [name, service_id]
-              properties:
-                slug:
-                  type: string
-                  pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$'
-                  description: Optional. "v1" is reserved.
-                name: { type: string, minLength: 1, maxLength: 120 }
-                kind: { type: string, enum: [tunnel], default: tunnel }
-                service_id: { type: string }
+              allOf:
+                - type: object
+                  required: [name]
+                  properties:
+                    slug:
+                      type: string
+                      pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$'
+                      description: Optional. "v1" is reserved.
+                    name: { type: string, minLength: 1, maxLength: 120 }
+                    kind: { type: string, enum: [tunnel, direct], default: tunnel }
+                    service_id: { type: string, description: Kind "tunnel" only. }
+                - $ref: '#/components/schemas/AIProviderUpstream'
+            examples:
+              tunnel:
+                value: { name: Ollama, kind: tunnel, service_id: 0b1f6c0e-4f0a-4a55-9b53-0d0c8f5a2a11 }
+              direct:
+                value:
+                  name: OpenRouter
+                  slug: openrouter
+                  kind: direct
+                  base_url: https://openrouter.ai/api/v1
+                  credential_slot: OPENROUTER
+                  extra_headers: { X-Title: Burrow }
       responses:
         '201':
           description: Provider created.
@@ -2475,8 +2577,8 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409':
           description: >
-            The slug is taken, the service already backs a provider, or the
-            service is not an http service in API-key mode.
+            The slug or the name is taken, the service already backs a
+            provider, or the service is not an http service in API-key mode.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2544,13 +2646,171 @@ paths:
       tags: [models]
       summary: Delete a provider (admin)
       description: |
-        Removes the provider; its base URL stops working immediately. The
-        backing service, its API keys and its tunnel are kept.
+        Removes the provider; its base URL stops working immediately. For a
+        tunnel provider the backing service, its API keys and its tunnel are
+        kept. For a direct provider the backing service is removed with it,
+        and with that its API keys, AI configuration and model list; the
+        vault slot is configured on the relay and is not touched.
       responses:
         '204': { description: Provider deleted. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/ai/providers/{slug}/upstream:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+    put:
+      tags: [models]
+      summary: Change a direct provider's upstream settings (admin)
+      description: |
+        A field that is left out keeps its stored value, so the credential
+        slot stays unless the body names another one. extra_headers {}
+        removes all extra headers. The change applies to the next request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AIProviderUpstream'
+            example: { base_url: 'https://openrouter.ai/api/v1', billing: flat }
+      responses:
+        '200':
+          description: Provider updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIProvider'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The provider is a tunnel provider; it has no upstream settings.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/ai/providers/{slug}/models:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [models]
+      summary: List a provider's stored models
+      description: |
+        The list GET /ai/<provider>/v1/models answers from. Returns 404 when
+        no provider has that slug or its backing service is not visible to
+        the caller.
+      security:
+        - CookieAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Models ordered by id.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AIProviderModel'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [models]
+      summary: Add one model id by hand (admin)
+      description: Works for either kind of provider. Adding an id that is already listed changes nothing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: No control characters, no surrounding space.
+            example: { id: glm-5.1 }
+      responses:
+        '204': { description: Model added. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [models]
+      summary: Remove one model id (admin)
+      parameters:
+        - name: id
+          in: query
+          required: true
+          description: The model id. A query parameter because model ids contain "/".
+          schema: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        '204': { description: Model removed. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/ai/providers/{slug}/models/sync:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [models]
+      summary: Read the model list from a direct provider's upstream (admin)
+      description: |
+        Calls GET <upstream_base_url>/models with the provider's credential
+        and replaces the stored list with the answer. The call is bounded in
+        time and size, follows no redirect and is subject to the same
+        address guard as every upstream request. Of the upstream's answer
+        only ids, names and context lengths are kept (at most 5000 models;
+        malformed entries are skipped); nothing else of it is returned. One
+        sync per provider runs at a time.
+      responses:
+        '200':
+          description: The stored list was replaced.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count]
+                properties:
+                  count: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            The provider is a tunnel provider, its credential slot is not
+            set, or a sync is already running.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: >
+            The upstream did not answer with a model list. The message names
+            the cause in general terms (for example the status code), never
+            the upstream's own answer.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: Model sync is not available on this relay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/ai/providers/{slug}/metrics:
     get:

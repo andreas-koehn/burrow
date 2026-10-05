@@ -1,7 +1,7 @@
 package api
 
 // ai_provider_handlers.go — /ai/providers: list, read, metrics, create,
-// update, delete.
+// update, delete, upstream settings and the model catalog.
 //
 // A provider is a row of the ai_providers table: a slug under which a model
 // backend is served at https://<auth_domain>/ai/<slug>/v1.  The read handlers
@@ -10,13 +10,17 @@ package api
 // always 0: usage_events has no latency column.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/db"
@@ -41,6 +45,34 @@ type aiProviderResp struct {
 	LatencyP95ms    int    `json:"latency_p95_ms"`
 	Status          string `json:"status"`
 	ClientSessionID string `json:"client_session_id"`
+
+	// Direct providers. The credential itself is never part of a response:
+	// credential_slot is the name of a vault slot and credential_present
+	// tells whether that slot holds a value.
+	UpstreamBaseURL   string `json:"upstream_base_url"`
+	CredentialSlot    string `json:"credential_slot"`
+	CredentialPresent bool   `json:"credential_present"`
+	Billing           string `json:"billing"`
+	ModelCount        int    `json:"model_count"`
+}
+
+// credentialPresent reports whether the vault holds a non-empty value for
+// slot. The value is looked at only to tell "set" from "empty".
+func (d Deps) credentialPresent(slot string) bool {
+	if d.CredentialVault == nil || slot == "" {
+		return false
+	}
+	v, ok := d.CredentialVault.Get(slot)
+	return ok && v != ""
+}
+
+// modelCount is the size of the provider's stored model list; 0 on error.
+func (d Deps) modelCount(ctx context.Context, slug string) int {
+	models, err := d.AIProviders.ListProviderModels(ctx, slug)
+	if err != nil {
+		return 0
+	}
+	return len(models)
 }
 
 // endpointMetricsResp is the JSON wire shape for the per-provider metrics
@@ -162,8 +194,15 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 		// (returns zero-value snapshot).  client_session_id stays empty:
 		// LiveTunnelSnapshot has no SessionID field today and the dashboard
 		// handles "" gracefully.
+		// A direct provider has no tunnel: it is usable when its credential
+		// slot is set.
 		status := "Offline"
-		if d.composeLive(p.ServiceID).Connected {
+		present := false
+		if p.Kind == "direct" {
+			if present = d.credentialPresent(p.CredentialSlot); present {
+				status = "Connected"
+			}
+		} else if d.composeLive(p.ServiceID).Connected {
 			status = "Connected"
 		}
 
@@ -185,6 +224,12 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 			LatencyP95ms:    0, // usage_events has no latency column — not derivable
 			Status:          status,
 			ClientSessionID: "",
+
+			UpstreamBaseURL:   p.BaseURL,
+			CredentialSlot:    p.CredentialSlot,
+			CredentialPresent: present,
+			Billing:           p.Billing,
+			ModelCount:        d.modelCount(r.Context(), p.Slug),
 		})
 	}
 	return out, nil
@@ -220,6 +265,7 @@ func (d Deps) writeProviderView(w http.ResponseWriter, r *http.Request, status i
 			Slug: p.Slug, Name: p.Name, Kind: p.Kind, APIFormat: p.APIFormat, ServiceID: p.ServiceID,
 			BaseURL:     composeProviderURL(p.Slug, d.AuthDomain),
 			BackendType: providerToBackendType(""), Status: "Offline",
+			UpstreamBaseURL: p.BaseURL, CredentialSlot: p.CredentialSlot, Billing: p.Billing,
 		}
 	}
 	writeJSON(w, status, v)
@@ -324,12 +370,34 @@ func (d Deps) warn(msg string, args ...any) {
 	}
 }
 
-// postProviderReq is the body of POST /api/v1/ai/providers.
+// upstreamReq carries the upstream settings of a direct provider. There is
+// no field for the credential: credential_slot names a vault slot, and the
+// value of that slot is configured on the relay, not through the API.
+type upstreamReq struct {
+	APIFormat      string            `json:"api_format"`
+	BaseURL        string            `json:"base_url"`
+	CredentialSlot string            `json:"credential_slot"`
+	AuthHeader     string            `json:"auth_header"`
+	AuthFormat     string            `json:"auth_format"`
+	ExtraHeaders   map[string]string `json:"extra_headers"`
+	Billing        string            `json:"billing"`
+}
+
+func (u upstreamReq) input() store.DirectProviderInput {
+	return store.DirectProviderInput{
+		APIFormat: u.APIFormat, BaseURL: u.BaseURL, CredentialSlot: u.CredentialSlot,
+		AuthHeader: u.AuthHeader, AuthFormat: u.AuthFormat, ExtraHeaders: u.ExtraHeaders, Billing: u.Billing,
+	}
+}
+
+// postProviderReq is the body of POST /api/v1/ai/providers. service_id is
+// for kind "tunnel", the upstream settings for kind "direct".
 type postProviderReq struct {
 	Slug      string `json:"slug"`
 	Name      string `json:"name"`
 	Kind      string `json:"kind"`
 	ServiceID string `json:"service_id"`
+	upstreamReq
 }
 
 // putProviderReq is the body of PUT /api/v1/ai/providers/{slug}.
@@ -353,6 +421,9 @@ func mapProviderErr(w http.ResponseWriter, err error) bool {
 		writeErr(w, http.StatusConflict, "provider slug or service already in use")
 	case errors.Is(err, store.ErrProviderService):
 		writeErr(w, http.StatusConflict, "a tunnel provider needs an http service in API-key mode")
+	case errors.Is(err, store.ErrInvalidProviderConfig):
+		// The reason names the field; it never repeats a header value or the URL.
+		writeErr(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), store.ErrInvalidProviderConfig.Error()+": "))
 	default:
 		return false
 	}
@@ -389,8 +460,66 @@ func (d Deps) auditProvider(r *http.Request, action string, p db.AIProvider, pay
 	})
 }
 
-// PostAIProvider handles POST /api/v1/ai/providers (admin only).  It registers
-// an existing http service in API-key mode as a provider.  An empty slug is
+// upstreamHostCheckTimeout bounds the DNS lookup done when a direct provider
+// is saved. A variable so tests can shorten it.
+var upstreamHostCheckTimeout = 5 * time.Second
+
+const (
+	msgBaseURLInvalid = "base URL must be an https URL without credentials, query or fragment"
+	msgBaseURLPrivate = "base URL resolves to a private or loopback address"
+	msgBaseURLNoDNS   = "base URL host could not be resolved"
+)
+
+// upstreamHostAllowed vets the host of a direct provider's base URL when the
+// provider is saved, and writes the 400 itself. It gives the admin an early,
+// readable answer; the dial guard of the upstream transport is what enforces
+// the rule on every connection. With private upstreams allowed the check is
+// skipped, like the guard.
+func (d Deps) upstreamHostAllowed(w http.ResponseWriter, r *http.Request, baseURL string) bool {
+	if d.AllowPrivateUpstreams || d.HostCheck == nil {
+		return true
+	}
+	u, err := aiprovider.ValidateBaseURL(baseURL)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, msgBaseURLInvalid)
+		return false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), upstreamHostCheckTimeout)
+	defer cancel()
+	// The check runs in its own goroutine so that a resolver that ignores
+	// the deadline cannot hold the request.
+	done := make(chan error, 1)
+	go func() { done <- d.HostCheck(ctx, u.Hostname()) }()
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		err = ctx.Err()
+	}
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, aiprovider.ErrBlockedAddress):
+		writeErr(w, http.StatusBadRequest, msgBaseURLPrivate)
+	default:
+		writeErr(w, http.StatusBadRequest, msgBaseURLNoDNS)
+	}
+	return false
+}
+
+// upstreamAudit is the audit payload of a direct provider's settings: names
+// only, never a header value.
+func upstreamAudit(p db.AIProvider) map[string]any {
+	return map[string]any{
+		"kind":            p.Kind,
+		"base_url":        p.BaseURL,
+		"credential_slot": p.CredentialSlot,
+		"billing":         p.Billing,
+	}
+}
+
+// PostAIProvider handles POST /api/v1/ai/providers (admin only).  Kind
+// "tunnel" registers an existing http service in API-key mode as a provider;
+// kind "direct" adds a provider the relay calls itself.  An empty slug is
 // derived from the name.
 func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
@@ -406,8 +535,8 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 	if in.Kind == "" {
 		in.Kind = "tunnel"
 	}
-	if in.Kind != "tunnel" {
-		writeErr(w, http.StatusBadRequest, "kind must be 'tunnel'")
+	if in.Kind != "tunnel" && in.Kind != "direct" {
+		writeErr(w, http.StatusBadRequest, "kind must be 'tunnel' or 'direct'")
 		return
 	}
 	slug := in.Slug
@@ -418,6 +547,11 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 	// slug out of every store implementation.
 	if !store.ValidProviderSlug(slug) {
 		writeErr(w, http.StatusBadRequest, providerSlugRule)
+		return
+	}
+
+	if in.Kind == "direct" {
+		d.postDirectProvider(w, r, slug, name, in.upstreamReq)
 		return
 	}
 
@@ -433,6 +567,25 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 		"kind":       p.Kind,
 		"service_id": p.ServiceID,
 	})
+	d.writeProviderView(w, r, http.StatusCreated, p)
+}
+
+// postDirectProvider is the kind "direct" branch of PostAIProvider. The
+// backing service is owned by the admin who creates the provider.
+func (d Deps) postDirectProvider(w http.ResponseWriter, r *http.Request, slug, name string, up upstreamReq) {
+	if !d.upstreamHostAllowed(w, r, up.BaseURL) {
+		return
+	}
+	in := up.input()
+	in.Slug, in.Name = slug, name
+	p, err := d.AIProviders.CreateDirectProvider(r.Context(), userID(r.Context()), in)
+	if err != nil {
+		if !mapProviderErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	d.auditProvider(r, audit.ActionAIProviderCreate, p, upstreamAudit(p))
 	d.writeProviderView(w, r, http.StatusCreated, p)
 }
 
@@ -472,15 +625,226 @@ func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteAIProvider handles DELETE /api/v1/ai/providers/{slug} (admin only).
-// The backing service is kept.
+// A tunnel provider's service is kept.  A direct provider's backing service
+// is removed with it, and with that its API keys and model list; the vault
+// slot is configured on the relay and is not touched.
 func (d Deps) DeleteAIProvider(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
+	p, ok := d.providerForWrite(w, r)
+	if !ok {
+		return
+	}
 	if err := d.AIProviders.DeleteProvider(r.Context(), slug); err != nil {
 		if !mapProviderErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
 		}
 		return
 	}
-	d.auditProvider(r, audit.ActionAIProviderDelete, db.AIProvider{Slug: slug}, map[string]any{})
+	d.auditProvider(r, audit.ActionAIProviderDelete, p, map[string]any{"kind": p.Kind})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// providerForWrite loads the provider named in the path for an admin-only
+// handler and writes the 404 / 500 itself.
+func (d Deps) providerForWrite(w http.ResponseWriter, r *http.Request) (db.AIProvider, bool) {
+	p, err := d.AIProviders.ProviderBySlug(r.Context(), chi.URLParam(r, "slug"))
+	if errors.Is(err, db.ErrNotFound) || errors.Is(err, store.ErrProviderNotFound) {
+		writeErr(w, http.StatusNotFound, "provider not found")
+		return db.AIProvider{}, false
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return db.AIProvider{}, false
+	}
+	return p, true
+}
+
+// PutAIProviderUpstream handles PUT /api/v1/ai/providers/{slug}/upstream
+// (admin only).  It changes the upstream settings of a direct provider; a
+// field that is left out keeps its stored value, so the credential slot stays
+// unless the body names another one.  extra_headers {} removes all headers.
+// The change applies to the next request.
+func (d Deps) PutAIProviderUpstream(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	var in upstreamReq
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	old, ok := d.providerForWrite(w, r)
+	if !ok {
+		return
+	}
+	if old.Kind != "direct" {
+		writeErr(w, http.StatusConflict, "only direct providers have upstream settings")
+		return
+	}
+	if in.BaseURL != "" && !d.upstreamHostAllowed(w, r, in.BaseURL) {
+		return
+	}
+	p, err := d.AIProviders.UpdateProviderUpstream(r.Context(), old.Slug, in.input())
+	if err != nil {
+		if !mapProviderErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	payload := upstreamAudit(p)
+	payload["upstream"] = true
+	d.auditProvider(r, audit.ActionAIProviderUpdate, p, payload)
+	d.writeProviderView(w, r, http.StatusOK, p)
+}
+
+// aiProviderModelResp is one entry of a provider's model list.
+type aiProviderModelResp struct {
+	ID            string    `json:"id"`
+	DisplayName   string    `json:"display_name"`
+	ContextLength int64     `json:"context_length"`
+	SyncedAt      time.Time `json:"synced_at"`
+}
+
+// GetAIProviderModels handles GET /api/v1/ai/providers/{slug}/models.  A
+// provider the caller may not see answers 404, like one that does not exist.
+func (d Deps) GetAIProviderModels(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	_, ok, err := d.providerView(r, slug)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !ok {
+		writeErr(w, http.StatusNotFound, "provider not found")
+		return
+	}
+	models, err := d.AIProviders.ListProviderModels(r.Context(), slug)
+	if err != nil {
+		if !mapProviderErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	out := make([]aiProviderModelResp, len(models))
+	for i, m := range models {
+		out[i] = aiProviderModelResp{ID: m.ModelID, DisplayName: m.DisplayName, ContextLength: m.ContextLength, SyncedAt: m.SyncedAt}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// modelSyncTimeout bounds one model sync, whatever the fetcher does.
+var modelSyncTimeout = 45 * time.Second
+
+// modelSyncs holds the slugs with a sync in flight: one outbound call per
+// provider at a time.
+var modelSyncs sync.Map
+
+// PostAIProviderModelsSync handles POST /api/v1/ai/providers/{slug}/models/sync
+// (admin only).  It reads the model list from a direct provider's upstream
+// and replaces the stored list with it.  The call leaves the relay through
+// the guarded upstream transport; nothing the upstream sent is returned
+// except the number of models.
+func (d Deps) PostAIProviderModelsSync(w http.ResponseWriter, r *http.Request) {
+	p, ok := d.providerForWrite(w, r)
+	if !ok {
+		return
+	}
+	if p.Kind != "direct" {
+		writeErr(w, http.StatusConflict, "sync is available for direct providers")
+		return
+	}
+	if d.FetchProviderModels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "model sync is not available on this relay")
+		return
+	}
+	if _, running := modelSyncs.LoadOrStore(p.Slug, struct{}{}); running {
+		writeErr(w, http.StatusConflict, "a sync for this provider is already running")
+		return
+	}
+	defer modelSyncs.Delete(p.Slug)
+
+	ctx, cancel := context.WithTimeout(r.Context(), modelSyncTimeout)
+	defer cancel()
+	fetched, err := d.FetchProviderModels(ctx, p)
+	if errors.Is(err, aiprovider.ErrNotConfigured) {
+		writeErr(w, http.StatusConflict, "the credential slot "+p.CredentialSlot+" is not set")
+		return
+	}
+	if err != nil {
+		// FetchModels words its errors for an admin: no transport error, no
+		// upstream body, no credential.
+		d.warn("ai provider model sync failed", "provider", p.Slug, "err", err)
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	models := make([]db.AIProviderModel, len(fetched))
+	for i, m := range fetched {
+		models[i] = db.AIProviderModel{ProviderSlug: p.Slug, ModelID: m.ID, DisplayName: m.DisplayName, ContextLength: m.ContextLength}
+	}
+	if err := d.AIProviders.ReplaceProviderModels(r.Context(), p.Slug, models); err != nil {
+		switch {
+		case errors.Is(err, store.ErrInvalidProviderConfig):
+			writeErr(w, http.StatusBadGateway, "the provider's model list was refused")
+		case !mapProviderErr(w, err):
+			writeErr(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	d.auditProvider(r, audit.ActionAIProviderModelsSync, p, map[string]any{"count": len(models)})
+	writeJSON(w, http.StatusOK, map[string]int{"count": len(models)})
+}
+
+// msgModelID is the 400 message for a model id that cannot be stored.
+const msgModelID = "id must be 1-200 characters without control characters"
+
+// PostAIProviderModel handles POST /api/v1/ai/providers/{slug}/models (admin
+// only): adds one model id by hand, for either kind of provider.
+func (d Deps) PostAIProviderModel(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	var in struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if !aiprovider.ValidModelID(in.ID) {
+		writeErr(w, http.StatusBadRequest, msgModelID)
+		return
+	}
+	p, ok := d.providerForWrite(w, r)
+	if !ok {
+		return
+	}
+	if err := d.AIProviders.AddProviderModel(r.Context(), p.Slug, in.ID); err != nil {
+		if !mapProviderErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	d.auditProvider(r, audit.ActionAIProviderModelAdd, p, map[string]any{"model_id": in.ID})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DeleteAIProviderModel handles DELETE /api/v1/ai/providers/{slug}/models?id=…
+// (admin only).  The id is a query parameter because model ids contain "/".
+func (d Deps) DeleteAIProviderModel(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if !aiprovider.ValidModelID(id) {
+		writeErr(w, http.StatusBadRequest, msgModelID)
+		return
+	}
+	p, ok := d.providerForWrite(w, r)
+	if !ok {
+		return
+	}
+	if err := d.AIProviders.RemoveProviderModel(r.Context(), p.Slug, id); err != nil {
+		switch {
+		case errors.Is(err, store.ErrProviderNotFound):
+			writeErr(w, http.StatusNotFound, "model not found")
+		case !mapProviderErr(w, err):
+			writeErr(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	d.auditProvider(r, audit.ActionAIProviderModelRemove, p, map[string]any{"model_id": id})
 	w.WriteHeader(http.StatusNoContent)
 }

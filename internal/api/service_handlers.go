@@ -113,6 +113,9 @@ func mapServiceErr(w http.ResponseWriter, err error, notFoundMsg string) bool {
 	case errors.Is(err, store.ErrInvalidSlug):
 		writeErr(w, http.StatusBadRequest, auth.SlugRule)
 		return true
+	case errors.Is(err, store.ErrDirectService):
+		writeErr(w, http.StatusConflict, "this service backs a direct AI provider; its slug and access mode cannot be changed")
+		return true
 	case errors.Is(err, store.ErrSlugTaken):
 		writeErr(w, http.StatusConflict, "slug already in use")
 		return true
@@ -139,10 +142,15 @@ func (d Deps) ListServices(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	out := make([]serviceResp, len(svcs))
-	for i, sv := range svcs {
+	out := make([]serviceResp, 0, len(svcs))
+	for _, sv := range svcs {
+		// The backing row of a direct AI provider is not a service anyone
+		// tunnels; it is managed under AI providers.
+		if sv.Type == "direct" {
+			continue
+		}
 		snap := d.composeLive(sv.ID)
-		out[i] = serviceResp{
+		out = append(out, serviceResp{
 			ID:           sv.ID,
 			Name:         sv.Name,
 			Type:         sv.Type,
@@ -153,7 +161,7 @@ func (d Deps) ListServices(w http.ResponseWriter, r *http.Request) {
 			Connected:    snap.Connected,
 			RemotePort:   snap.RemotePort,
 			LocalAddr:    snap.LocalAddr,
-		}
+		})
 	}
 	writeJSON(w, http.StatusOK, out)
 }

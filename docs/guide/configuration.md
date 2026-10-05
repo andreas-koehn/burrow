@@ -229,7 +229,7 @@ via environment:
 | `BURROW_MCP_TOKEN` | `""` | Bearer token for the MCP endpoint. Also accepts `BURROW_MCP_TOKEN_FILE`. |
 | `BURROW_GEO_DB_PATH` | `""` | Path to a MaxMind GeoLite2 `.mmdb` file. Required for the `geo` access mode (needs `-tags=geo` build). |
 | `BURROW_PRICING_PATH` | `""` | Path to a YAML file that overrides the embedded AI gateway pricing table. |
-| `BURROW_AI_ALLOW_PRIVATE_UPSTREAMS` | `false` | Lets direct AI providers use a base URL that resolves to a private, loopback or link-local address (a self-hosted model server on the LAN). Off = the relay refuses to connect to such addresses. Accepted values: `true`, `TRUE`, `1`, `false`, `FALSE`, `0`; empty means `false`. Any other value, such as `yes`, is an error and the server does not start. |
+| `BURROW_AI_ALLOW_PRIVATE_UPSTREAMS` | `false` | Lets direct AI providers use a base URL that resolves to a private, loopback or link-local address (a self-hosted model server on the LAN). Off = the relay refuses to connect to such addresses. Accepted values are Go boolean literals: `1`, `t`, `T`, `TRUE`, `true`, `True` to allow, `0`, `f`, `F`, `FALSE`, `false`, `False` to refuse; empty means `false`. Any other value, such as `yes` or `on`, is an error and the server does not start. |
 
 ---
 

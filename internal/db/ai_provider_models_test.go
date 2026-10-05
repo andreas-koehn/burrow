@@ -53,6 +53,16 @@ func TestAIProviderModels(t *testing.T) {
 	if err := x.DeleteAIProviderModel(ctx, "local", "mistral"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second delete err = %v", err)
 	}
+	// Deleting the provider removes its catalog.
+	if err := x.UpsertAIProviderModel(ctx, AIProviderModel{ProviderSlug: "local", ModelID: "mistral"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.DeleteAIProvider(ctx, "local"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := x.ListAIProviderModels(ctx, "local"); len(got) != 0 {
+		t.Fatalf("models survived their provider: %+v", got)
+	}
 	if got, _ := x.ListAIProviderModels(ctx, "nope"); got == nil || len(got) != 0 {
 		t.Fatalf("unknown provider list = %#v, want empty non-nil", got)
 	}

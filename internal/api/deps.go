@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/ankoehn/burrow/internal/aigateway"
+	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -235,6 +236,12 @@ type AIProviderStore interface {
 	CreateTunnelProvider(ctx context.Context, slug, name, serviceID string) (db.AIProvider, error)
 	UpdateProvider(ctx context.Context, slug, newSlug, name string) (db.AIProvider, error)
 	DeleteProvider(ctx context.Context, slug string) error
+	CreateDirectProvider(ctx context.Context, ownerID string, in store.DirectProviderInput) (db.AIProvider, error)
+	UpdateProviderUpstream(ctx context.Context, slug string, in store.DirectProviderInput) (db.AIProvider, error)
+	ListProviderModels(ctx context.Context, slug string) ([]db.AIProviderModel, error)
+	ReplaceProviderModels(ctx context.Context, slug string, models []db.AIProviderModel) error
+	AddProviderModel(ctx context.Context, slug, modelID string) error
+	RemoveProviderModel(ctx context.Context, slug, modelID string) error
 }
 
 type Deps struct {
@@ -274,6 +281,16 @@ type Deps struct {
 	Services ServiceStore
 	// AIProviders is the providers table behind /ai/providers.
 	AIProviders AIProviderStore
+	// HostCheck vets a direct provider's host when it is saved. nil skips
+	// the check. The provider API finds out which credential slots are set
+	// from CredentialVault; it never returns a slot's value.
+	HostCheck func(ctx context.Context, host string) error
+	// AllowPrivateUpstreams mirrors cfg.AIAllowPrivateUpstreams: when set,
+	// HostCheck is not consulted.
+	AllowPrivateUpstreams bool
+	// FetchProviderModels reads a direct provider's model list from its
+	// upstream, through the guarded upstream transport. nil = no model sync.
+	FetchProviderModels func(ctx context.Context, p db.AIProvider) ([]aiprovider.Model, error)
 	// LiveTunnels allows the service handlers to compose live/runtime fields
 	// (connected, local_addr) into service responses. May be nil before
 	// Task 12 wires the concrete server.Server implementation.

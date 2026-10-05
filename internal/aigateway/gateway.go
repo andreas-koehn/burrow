@@ -2,6 +2,7 @@ package aigateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -40,6 +41,11 @@ type Chain interface {
 	DispatchMetered(w http.ResponseWriter, r *http.Request, serviceID, localHost, apiKeyHeader, apiKeyID string, upstream http.Handler)
 }
 
+// ModelLister reads a provider's stored model list.
+type ModelLister interface {
+	ListProviderModels(ctx context.Context, slug string) ([]db.AIProviderModel, error)
+}
+
 // Gateway serves requests under /ai/<provider>/.
 type Gateway struct {
 	Providers  ProviderStore
@@ -50,6 +56,7 @@ type Gateway struct {
 	IPGeoDeny  func(res *proxy.Resolved, r *http.Request) bool // nil = no policy check
 	PublicHost string                                          // auth domain, for X-Forwarded-Host
 	Log        *slog.Logger
+	Models     ModelLister // nil = /v1/models is always forwarded
 
 	// Direct builds the upstream handler for a provider the relay calls
 	// itself. nil = direct providers are not available on this relay.
@@ -86,6 +93,9 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 
 	keyID, ok := g.authenticate(w, r, p)
 	if !ok {
+		return
+	}
+	if g.serveModels(w, r, p) {
 		return
 	}
 	if p.Kind == "direct" {
@@ -147,6 +157,40 @@ func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, p db.AIPr
 		return "", false
 	}
 	return keyID, true
+}
+
+// serveModels answers GET /v1/models from the stored catalog. It reports
+// false when the request is something else or the catalog is empty, in which
+// case the request is forwarded like any other. Ids are stored data; the
+// encoder escapes them.
+func (g *Gateway) serveModels(w http.ResponseWriter, r *http.Request, p db.AIProvider) bool {
+	if g.Models == nil || r.Method != http.MethodGet || strings.TrimRight(r.URL.Path, "/") != "/v1/models" {
+		return false
+	}
+	models, err := g.Models.ListProviderModels(r.Context(), p.Slug)
+	if err != nil {
+		g.Log.Warn("aigateway: model catalog not read, forwarding", "provider", p.Slug, "err", err)
+		return false
+	}
+	if len(models) == 0 {
+		return false
+	}
+	type item struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		OwnedBy string `json:"owned_by"`
+	}
+	out := struct {
+		Object string `json:"object"`
+		Data   []item `json:"data"`
+	}{Object: "list", Data: make([]item, len(models))}
+	for i, m := range models {
+		out.Data[i] = item{ID: m.ModelID, Object: "model", OwnedBy: p.Slug}
+	}
+	w.Header().Set("Burrow-Provider", p.Slug)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+	return true
 }
 
 // presentedKey reads the caller's key from "Authorization: Bearer …" (OpenAI
@@ -252,6 +296,12 @@ func (g *Gateway) directAllowed(w http.ResponseWriter, r *http.Request, p db.AIP
 		return false
 	}
 	res, err := g.ServicePolicy(r.Context(), p.ServiceID)
+	if errors.Is(err, proxy.ErrNotFound) {
+		// The backing service is gone or is not this provider's own row.
+		g.Log.Error("aigateway: direct provider has no backing service of type direct", "provider", p.Slug, "service_id", p.ServiceID)
+		WriteError(w, http.StatusServiceUnavailable, "provider_misconfigured", "this provider's configuration is invalid")
+		return false
+	}
 	if err != nil || res == nil {
 		g.Log.Error("aigateway: service policy lookup failed", "provider", p.Slug, "err", err)
 		WriteError(w, http.StatusInternalServerError, "internal_error", "internal error")
