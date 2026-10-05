@@ -127,6 +127,13 @@ describe("LogView", () => {
     expect(row).not.toHaveAttribute("tabindex");
   });
 
+  it("names each row's button after the row when the page says how", () => {
+    mount({ ...withDetail, rowLabel: (r) => r.name });
+    expect(screen.getByRole("button", { name: "Show details for alpha" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show details for beta" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show details" })).toBeNull();
+  });
+
   it("Escape closes the detail and returns the focus to the row's button", async () => {
     mount(withDetail);
     await userEvent.click(toggleOf(/beta/));

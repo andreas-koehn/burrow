@@ -9,6 +9,7 @@ import {
 } from "@/components/ds";
 import type { InspectorEntry, Service, ServiceAIConfig } from "@/lib/contract";
 import { withAIConfigDefaults } from "@/lib/aiConfig";
+import { InspectorOffHint } from "@/components/InspectorOffHint";
 
 function RedactedHeaders({ headers }: { headers: Record<string, string> }) {
   const entries = Object.entries(headers);
@@ -122,9 +123,8 @@ export default function RequestInspector() {
     return (
       <div className="inspector-page">
         <PageHeader title="Request inspector" actions={servicePicker} />
-        <p className="muted">
-          Request inspector is off for this service — enable in Access settings.
-        </p>
+        <p className="muted">Request inspector is off for this service.</p>
+        <p className="muted small"><InspectorOffHint serviceId={serviceId} /></p>
       </div>
     );
   }

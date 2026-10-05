@@ -177,8 +177,13 @@ describe("Requests page", () => {
     db.aiConfigs.svc_web01 = { inspector: { enabled: false, max_requests: 100 } } as never;
     mount();
     expect(await screen.findByText("Request inspector is off for web")).toBeInTheDocument();
-    expect(screen.getByText(/enable in Access settings/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open the service" })).toHaveAttribute("href", "/services/svc_web01");
+    // Nothing in the dashboard switches it; the hint names the API call instead of a page.
+    const hint = screen.getByText(/The dashboard has no switch for this yet/);
+    expect(hint).toHaveTextContent("inspector.enabled");
+    expect(hint).toHaveTextContent("PUT /api/v1/services/svc_web01/ai-config");
+    expect(screen.queryByText(/Access settings/)).toBeNull();
+    expect(screen.queryByRole("link", { name: "Open the service" })).toBeNull();
+    expect(document.querySelector("a[href^='/services/']")).toBeNull();
   });
 
   it("with no provider and nothing to inspect: 'No providers yet' and a link to add one", async () => {
@@ -200,6 +205,74 @@ describe("Requests page", () => {
     expect(screen.queryByRole("link", { name: "Connect a client" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Connect a client" }));
     expect(screen.getByTestId("path")).toHaveTextContent("/clients/connect");
+  });
+
+  it("a provider list that cannot be read is not 'no providers'", async () => {
+    server.use(
+      http.get("/api/v1/services", () => HttpResponse.json(db.services.filter((s) => s.type !== "http"))),
+      http.get("/api/v1/ai/providers", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })),
+    );
+    mount();
+    expect(await screen.findByText("No HTTP services to inspect")).toBeInTheDocument();
+    expect(screen.queryByText("No providers yet")).toBeNull();
+  });
+
+  it("typing quickly sends one request, with the final q", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    capture("svc_web01", [1, 2]);
+    db.inspectorEntries.svc_web01![1] = { ...db.inspectorEntries.svc_web01![1]!, path: "/v1/embeddings" };
+    mount();
+    await table();
+    const before = listCalls(spy).length;
+    await userEvent.type(screen.getByRole("searchbox", { name: "Filter" }), "embed");
+    // The box and the URL follow every key; the relay is asked once typing pauses.
+    expect(screen.getByRole("searchbox", { name: "Filter" })).toHaveValue("embed");
+    expect(screen.getByTestId("path")).toHaveTextContent("/gateway/requests?q=embed");
+    await waitFor(async () => expect(bodyRows(await table())).toHaveLength(1));
+    const sent = listCalls(spy).slice(before).map((p) => p.get("q"));
+    expect(sent).toEqual(["embed"]);
+  });
+
+  it("keeps the rows on screen while a changed filter loads", async () => {
+    capture("svc_web01", [5, 30]);
+    mount();
+    expect(bodyRows(await table())).toHaveLength(2);
+    let release = () => {};
+    const held = new Promise<void>((r) => { release = r; });
+    server.use(http.get("/api/v1/services/:id/inspector/requests", async () => {
+      await held;
+      return HttpResponse.json([db.inspectorEntries.svc_web01![0]]);
+    }));
+    await userEvent.click(screen.getByRole("radio", { name: "15 min" }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(document.querySelector(".skel")).toBeNull();
+    expect(bodyRows(screen.getByRole("table", { name: "Requests" }))).toHaveLength(2);
+    release();
+    await waitFor(() => expect(bodyRows(screen.getByRole("table", { name: "Requests" }))).toHaveLength(1));
+  });
+
+  it("another service starts clean: its rows never show under the wrong name", async () => {
+    capture("svc_web01", [1, 2]);
+    capture("svc_ai001", [1]);
+    mount();
+    expect(bodyRows(await table())).toHaveLength(2);
+    let release = () => {};
+    const held = new Promise<void>((r) => { release = r; });
+    server.use(http.get("/api/v1/services/:id/inspector/requests", async () => {
+      await held;
+      return HttpResponse.json(db.inspectorEntries.svc_ai001);
+    }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Service" }), "svc_ai001");
+    await waitFor(() => expect(screen.queryByRole("table", { name: "Requests" })).toBeNull());
+    release();
+    expect(bodyRows(await table())).toHaveLength(1);
+  });
+
+  it("rows have no detail button: a row opens the inspector", async () => {
+    capture("svc_web01", [1]);
+    mount();
+    await table();
+    expect(screen.queryByRole("button", { name: /Show details/ })).toBeNull();
   });
 
   it("HTTP services without any provider keep their requests: the list shows, not 'No providers yet'", async () => {

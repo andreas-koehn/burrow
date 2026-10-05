@@ -52,7 +52,7 @@ test("48-inspector-deep-dive: detail tabs + replay/compare controls render witho
 
   try {
     // Turn inspector capture ON so the page does not short-circuit to the
-    // "Request inspector is off for this tunnel" message (RequestInspector.tsx
+    // "Request inspector is off for this service." message (RequestInspector.tsx
     // line 98). The PUT tolerates a partial body (only validates cache.semantic
     // if present).
     const enableRes = await request.put(`/api/v1/services/${id}/ai-config`, {

@@ -204,7 +204,9 @@ describe("Traffic page", () => {
     db.connectionLogs = [{ ...db.connectionLogs[0]!, status: "rejected", reason: "ip not allowed" }];
     mount();
     const t = await table();
-    await userEvent.click(within(bodyRows(t)[0]!).getByRole("button", { name: "Show details" }));
+    // The button is named after its row: when and which service.
+    const toggle = within(bodyRows(t)[0]!).getByRole("button", { name: /^Show details for .+, web$/ });
+    await userEvent.click(toggle);
     const panel = screen.getByRole("region", { name: "Traffic details" });
     expect(panel).toHaveTextContent("ip not allowed");
     expect(panel).toHaveTextContent("burrow-client/0.5.0");
@@ -226,6 +228,23 @@ describe("Traffic page", () => {
     expect(screen.queryByText("No traffic in this period")).toBeNull();
     await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
     expect(bodyRows(await table())).toHaveLength(1);
+  });
+
+  it("keeps the rows on screen while a changed filter loads", async () => {
+    mount();
+    const before = bodyRows(await table()).length;
+    let release = () => {};
+    const held = new Promise<void>((r) => { release = r; });
+    server.use(http.get("/api/v1/connection-logs", async () => {
+      await held;
+      return HttpResponse.json([db.connectionLogs[0]]);
+    }));
+    await userEvent.click(screen.getByRole("radio", { name: "1 hour" }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(document.querySelector(".skel")).toBeNull();
+    expect(bodyRows(screen.getByRole("table", { name: "Traffic" }))).toHaveLength(before);
+    release();
+    await waitFor(() => expect(bodyRows(screen.getByRole("table", { name: "Traffic" }))).toHaveLength(1));
   });
 
   it("Load more appends the next page and goes away on the last one", async () => {

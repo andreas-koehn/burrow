@@ -118,6 +118,8 @@ export default function Traffic() {
     getNextPageParam: (last) => (last.length < PAGE_SIZE ? undefined : last.at(-1)?.id),
     enabled: !rollups,
     retry: false,
+    // A changed filter keeps the rows on screen until the new ones arrive.
+    placeholderData: (prev) => prev,
   });
 
   const rollupsQuery = useQuery({
@@ -276,6 +278,7 @@ export default function Traffic() {
           isLoading={logsQuery.isLoading}
           error={logsQuery.error}
           onRetry={() => void logsQuery.refetch()}
+          rowLabel={(r) => `${formatTimestamp(r.started_at)}, ${serviceName.get(r.service_id) ?? r.service_id}`}
           detail={(r) => <LogDetail row={r} service={serviceName.get(r.service_id) ?? r.service_id} />}
           hasMore={logsQuery.hasNextPage}
           onLoadMore={() => void logsQuery.fetchNextPage()}

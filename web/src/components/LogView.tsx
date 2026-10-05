@@ -34,6 +34,8 @@ export interface LogViewProps<Row> {
   empty: ReactNode;
   /** Row detail, shown in a panel beside the table. */
   detail?: (row: Row) => ReactNode;
+  /** What tells a row from its neighbours, for the name of its detail button ("Show details for …"). */
+  rowLabel?: (row: Row) => string;
   hasMore?: boolean;
   onLoadMore?: () => void;
 }
@@ -45,7 +47,7 @@ export interface LogViewProps<Row> {
  */
 export function LogView<Row>({
   label, rows, rowKey, columns, isLoading, error, onRetry,
-  range, onRangeChange, search, onSearchChange, filters, empty, detail, hasMore, onLoadMore,
+  range, onRangeChange, search, onSearchChange, filters, empty, detail, rowLabel, hasMore, onLoadMore,
 }: LogViewProps<Row>) {
   const [openKey, setOpenKey] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -129,7 +131,7 @@ export function LogView<Row>({
                             size="sm"
                             iconOnly
                             icon={<ChevronRight size={14} aria-hidden="true" />}
-                            aria-label="Show details"
+                            aria-label={rowLabel ? `Show details for ${rowLabel(r)}` : "Show details"}
                             aria-expanded={isOpen}
                             aria-controls={isOpen ? panelId : undefined}
                             onClick={() => toggle(key)}

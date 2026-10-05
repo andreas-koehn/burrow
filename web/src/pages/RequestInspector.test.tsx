@@ -37,14 +37,14 @@ describe("Request inspector (§4.23)", () => {
     expect(within(headersTable).getByText(/\[redacted\]/)).toBeInTheDocument();
   });
 
-  it("shows the off-message verbatim when inspector.enabled is false", async () => {
+  it("says the inspector is off and how to turn it on when inspector.enabled is false", async () => {
     db.aiConfigs.svc_ai001.inspector.enabled = false;
     mount();
-    expect(
-      await screen.findByText(
-        "Request inspector is off for this service — enable in Access settings.",
-      ),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Request inspector is off for this service.")).toBeInTheDocument();
+    const hint = screen.getByText(/The dashboard has no switch for this yet/);
+    expect(hint).toHaveTextContent("inspector.enabled");
+    expect(hint).toHaveTextContent("PUT /api/v1/services/svc_ai001/ai-config");
+    expect(screen.queryByText(/Access settings/)).toBeNull();
   });
 
   it("Replay POSTs /services/:id/inspector/requests/:rid/replay", async () => {

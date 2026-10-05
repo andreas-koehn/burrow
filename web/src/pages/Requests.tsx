@@ -5,6 +5,8 @@ import { apiFetch } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
 import { parseTimeRange, timeRangeMs, widerRange, type TimeRange } from "@/lib/time-range";
 import { withAIConfigDefaults } from "@/lib/aiConfig";
+import { useDebounced } from "@/lib/use-debounced";
+import { InspectorOffHint } from "@/components/InspectorOffHint";
 import { Badge, Button, EmptyState, PageHeader, SkeletonRows } from "@/components/ds";
 import { LogView, type LogColumn } from "@/components/LogView";
 import type { AiProvider, InspectorEntry, Service, ServiceAIConfig } from "@/lib/contract";
@@ -32,6 +34,8 @@ export default function Requests() {
   const [params, setParams] = useSearchParams();
   const range = parseTimeRange(params.get("range"));
   const search = params.get("q") ?? "";
+  // The box and the URL follow every key; the relay is asked once typing pauses.
+  const query = useDebounced(search, 250);
 
   function setParam(name: string, value: string) {
     setParams((prev) => {
@@ -76,10 +80,13 @@ export default function Requests() {
   });
   // Under the inspector's own key, so everything that refreshes ["inspector", id] refreshes this too.
   const list = useQuery({
-    queryKey: ["inspector", serviceId, "list", range, search],
-    queryFn: () => apiFetch<InspectorEntry[]>(listPath(serviceId, range, search)),
+    queryKey: ["inspector", serviceId, "list", range, query],
+    queryFn: () => apiFetch<InspectorEntry[]>(listPath(serviceId, range, query)),
     retry: false,
     enabled: Boolean(serviceId),
+    // A changed period or filter keeps the rows on screen until the new ones arrive;
+    // another service starts clean, so its rows never show under the wrong name.
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === serviceId ? prev : undefined),
   });
 
   // New requests arrive over the event stream; the list follows them.
@@ -146,14 +153,11 @@ export default function Requests() {
   let empty;
   if (cfg.data && !cfg.data.inspector.enabled) {
     empty = (
-      <EmptyState
-        title={`Request inspector is off for ${serviceName}`}
-        action={<Link className="btn btn-secondary btn-sm" to={`/services/${encodeURIComponent(serviceId)}`}>Open the service</Link>}
-      >
-        Request inspector is off for this service — enable in Access settings.
+      <EmptyState title={`Request inspector is off for ${serviceName}`}>
+        <InspectorOffHint serviceId={serviceId} />
       </EmptyState>
     );
-  } else if (search) {
+  } else if (query) {
     empty = <EmptyState title="No requests match your filter" />;
   } else if (wider) {
     empty = (
