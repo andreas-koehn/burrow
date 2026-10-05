@@ -258,6 +258,7 @@ func newRoot(d deps) *cobra.Command {
 		newUpCmd(d),
 		newStatusCmd(d),
 		newDoctorCmd(d),
+		newUpdateCmd(d),
 		newConnectCmd(),
 		&cobra.Command{
 			Use:   "version",
@@ -271,5 +272,6 @@ func newRoot(d deps) *cobra.Command {
 }
 
 func main() {
+	removeReplacedAtStart(runtime.GOOS)
 	os.Exit(report(os.Stderr, newRoot(defaultDeps()).Execute()))
 }
