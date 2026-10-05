@@ -30,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ankoehn/burrow/internal/acme"
+	"github.com/ankoehn/burrow/internal/aigateway"
 	"github.com/ankoehn/burrow/internal/api"
 	"github.com/ankoehn/burrow/internal/config"
 	"github.com/ankoehn/burrow/internal/connlog"
@@ -744,6 +745,19 @@ func main() {
 				log,
 				proxyOpts...,
 			)
+			// The /ai/ data plane shares the proxy's dialer, AI chain and
+			// IP/geo policy. A nil chain must stay a nil interface.
+			aiGateway := &aigateway.Gateway{
+				Providers:  st,
+				Keys:       st,
+				Tunnels:    proxyDialerAdapter{st: st, srv: srv},
+				IPGeoDeny:  proxyHandler.IPGeoDenied,
+				PublicHost: proxyAuthDomain,
+				Log:        log,
+			}
+			if v04.AIChain != nil {
+				aiGateway.Chain = v04.AIChain
+			}
 			if proxyTLSCfg != nil {
 				// Wire GetConfigForClient so mTLS services get a per-vhost
 				// TLS config with ClientCAs + RequireAndVerifyClientCert at
@@ -783,6 +797,7 @@ func main() {
 					// "<id>.<AuthDomain>" then matches the proxy's own routing
 					// suffix exactly. When AuthDomain is "" the routes are skipped.
 					TunnelProxy: proxyHandler,
+					AIGateway:   aiGateway,
 					// The burrow_login gate, served at /__burrow/* on this origin so
 					// path-routed services can redirect visitors to it.
 					Gate: gate,

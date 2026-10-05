@@ -754,6 +754,15 @@ func (p *Proxy) ipGeoDenied(res *Resolved, clientIP string) (bool, string) {
 	return !allowed, reason
 }
 
+// IPGeoDenied reports whether the service's IP/geo policy denies this
+// request. It lets other entry points (the /ai/ gateway) enforce the same
+// policy as path- and host-routed traffic.
+func (p *Proxy) IPGeoDenied(res *Resolved, r *http.Request) bool {
+	ip := clientip.Resolve(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Real-IP"), p.trustedProxies)
+	denied, _ := p.ipGeoDenied(res, ip)
+	return denied
+}
+
 // emitAIUpstreamErrorAudit writes an audit.ActionAIUpstreamError row when
 // all of the following hold:
 //   - p.auditLogger is non-nil (wired in production via WithAuditLogger),

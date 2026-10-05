@@ -294,3 +294,20 @@ func TestIPGeo_NoopGeoLookup(t *testing.T) {
 		t.Errorf("noop metadata not zero")
 	}
 }
+
+// The exported check resolves the client IP itself and applies the service's
+// policy, so the /ai/ gateway enforces what path- and host-routed traffic does.
+func TestProxy_IPGeoDenied(t *testing.T) {
+	p := proxy.New(deadDialer{}, openChecker{}, authDomain, testLog())
+	res := &proxy.Resolved{IPBlockCIDRs: []string{"203.0.113.0/24"}}
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req.RemoteAddr = "203.0.113.9:1234"
+	if !p.IPGeoDenied(res, req) {
+		t.Fatal("blocked address was not denied")
+	}
+	req.RemoteAddr = "198.51.100.9:1234"
+	if p.IPGeoDenied(res, req) {
+		t.Fatal("address outside the block list was denied")
+	}
+}

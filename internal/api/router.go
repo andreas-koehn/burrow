@@ -413,6 +413,14 @@ func NewRouter(d Deps) http.Handler {
 		r.Handle("/__burrow/*", d.Gate)
 	}
 
+	// AI data plane. Registered before the SPA catch-all. The dashboard's own
+	// AI pages live under /gateway/, so /ai/ is free for it.
+	if d.AIGateway != nil {
+		ah := AIPathHandler(d.AIGateway)
+		r.Handle("/ai/{provider}", ah)
+		r.Handle("/ai/{provider}/*", ah)
+	}
+
 	// Single-origin HTTP tunnel path routing (feat/builtin-acme B3): mount
 	// /svc/{slug} and /svc/{slug}/* on the host-routing proxy handler so http
 	// tunnels are reachable at https://<domain>/svc/<slug>/... on the same :443 origin,

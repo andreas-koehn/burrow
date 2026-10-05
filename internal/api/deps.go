@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/ankoehn/burrow/internal/aigateway"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -278,6 +279,8 @@ type Deps struct {
 	// single-origin path routing. AuthDomain (above) is the base domain used
 	// to synthesize the upstream host "<slug>.<AuthDomain>".
 	TunnelProxy http.Handler
+	// AIGateway, when non-nil, serves the /ai/{provider}/… data plane.
+	AIGateway *aigateway.Gateway
 	// Gate, when non-nil, serves /__burrow/* (the burrow_login form) on this
 	// origin. Path-routed services redirect visitors here.
 	Gate http.Handler
