@@ -47,6 +47,10 @@ type deps struct {
 	// viewTerminal reports whether stdout is a terminal that can show the
 	// status view.
 	viewTerminal func() bool
+	// discover asks the relay at its dashboard address (https://host[:port])
+	// where its control endpoint is and which version it runs, with the TLS
+	// settings of g. It sends no token.
+	discover func(ctx context.Context, relay string, g globalFlags) (client.Discovery, error)
 }
 
 func defaultDeps() deps {
@@ -61,6 +65,7 @@ func defaultDeps() deps {
 		isTerminal:     func() bool { return term.IsTerminal(int(os.Stdin.Fd())) },
 		readSecret:     readSecretFromTerminal,
 		viewTerminal:   func() bool { return stdoutShowsView() },
+		discover:       discoverRelay,
 	}
 }
 

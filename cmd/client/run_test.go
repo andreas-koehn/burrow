@@ -5,12 +5,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ankoehn/burrow/internal/client"
+	"github.com/ankoehn/burrow/internal/version"
 )
 
 // testToken stands in for a client token. Tests check that it never shows up
@@ -43,6 +46,13 @@ type harness struct {
 	cfgPath     string // where the user config lives when --config is not given
 	runs        []runCall
 	runErr      error
+	// discover answers a discovery request; nil stands for a relay of this
+	// client's version whose control endpoint is <relay host>:7000.
+	discover func(relay string, g globalFlags) (client.Discovery, error)
+	// realDiscover sends discovery through the real code, to a test server.
+	realDiscover bool
+	discovered   []string // the relay addresses discovery was asked at
+	onSecret     func()   // called when the hidden token prompt opens
 }
 
 func newHarness(t *testing.T) *harness {
@@ -77,8 +87,25 @@ func (h *harness) deps() deps {
 		},
 		isTerminal:   func() bool { return h.terminal },
 		viewTerminal: func() bool { return h.viewTerm },
+		discover: func(ctx context.Context, relay string, g globalFlags) (client.Discovery, error) {
+			h.discovered = append(h.discovered, relay)
+			switch {
+			case h.realDiscover:
+				return discoverRelay(ctx, relay, g)
+			case h.discover != nil:
+				return h.discover(relay, g)
+			}
+			u, err := url.Parse(relay)
+			if err != nil {
+				return client.Discovery{}, err
+			}
+			return client.Discovery{Control: net.JoinHostPort(u.Hostname(), defaultControlPort), Version: version.Version, ProtocolVersion: 1}, nil
+		},
 		readSecret: func() (string, error) {
 			h.secretCalls++
+			if h.onSecret != nil {
+				h.onSecret()
+			}
 			if h.typed != "" {
 				// the real reader, on input that stays open like a terminal
 				return readHiddenLine(keys(h.t, h.typed))

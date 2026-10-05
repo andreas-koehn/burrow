@@ -132,6 +132,11 @@ func NewRouter(d Deps) http.Handler {
 
 		r.With(loginPerIP, loginGlobal).Post("/auth/login", d.Login)
 
+		// Client discovery: public, like login, because a client asks before
+		// it has a token. Rate-limited per source IP. It answers with the
+		// public control endpoint and versions only (see ClientDiscovery).
+		r.With(d.discoveryRateLimiter()).Get("/client/discovery", d.GetClientDiscovery)
+
 		// JSON routes: session-protected + CSRF-protected + JSONHandlerTimeout.
 		// RequireCSRF is placed after RequireSession so unauthenticated requests
 		// get 401 before CSRF validation runs. Safe methods (GET/HEAD/OPTIONS)

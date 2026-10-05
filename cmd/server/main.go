@@ -829,6 +829,8 @@ func main() {
 					// it via /clients/connect-info so the "Connect a client" wizard
 					// prints a working `burrow connect --server …` command. (P1-2)
 					ControlListen: cfg.Listen,
+					// Reported by the public /client/discovery endpoint.
+					MinClientVersion: cfg.MinClientVersion,
 					// v0.4.0 Task 20: backup / restore wiring.
 					BackupDir:      backupDir,
 					BackupRunner:   backupRunnerAdapter{cfg: cfg},

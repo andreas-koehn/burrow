@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -67,18 +66,15 @@ type doctorDeps struct {
 	authOpts client.Options
 	now      func() time.Time
 	// services finds the burrow.yaml `up` would use: its path, its services
-	// and whether there is one.
-	services      func() (path string, tunnels []client.TunnelSpec, found bool)
+	// and whether there is one. err says the file is there and cannot be read
+	// as a burrow.yaml; its text is not printed.
+	services func() (path string, tunnels []client.TunnelSpec, found bool, err error)
+	// report, when set, is given each result as soon as its check ends.
+	report        func(checkResult)
 	probe         func(ctx context.Context, addr string) bool
 	clientVersion string
 	timeout       time.Duration // one network check
 	total         time.Duration // the whole run
-}
-
-type discovery struct {
-	Control          string `json:"control"`
-	Version          string `json:"version"`
-	MinClientVersion string `json:"min_client_version"`
 }
 
 type doctorRun struct {
@@ -91,7 +87,7 @@ type doctorRun struct {
 	signedIn   bool
 	resolved   bool
 	reachable  bool
-	disc       *discovery
+	disc       *client.Discovery
 	discDate   time.Time
 	relayVer   string
 	authedHere bool
@@ -121,7 +117,11 @@ func runDoctor(parent context.Context, d doctorDeps) []checkResult {
 }
 
 func (r *doctorRun) add(name, status, detail, fix string, code int) {
-	r.out = append(r.out, checkResult{name: name, status: status, detail: r.clean(detail), fix: r.clean(fix), code: code})
+	res := checkResult{name: name, status: status, detail: r.clean(detail), fix: r.clean(fix), code: code}
+	r.out = append(r.out, res)
+	if r.d.report != nil {
+		r.d.report(res)
+	}
 }
 
 func (r *doctorRun) skip(name, why string) { r.add(name, "skip", why, "", 0) }
@@ -173,7 +173,12 @@ func (r *doctorRun) checkConfig() {
 	creds, err := r.d.resolve()
 	if err != nil {
 		var mm *client.RelayMismatchError
+		var tf *tokenFileError
 		switch {
+		case errors.As(err, &tf):
+			// Not the stored sign-in: the variable names a file that is not there
+			// or not readable. The path is the user's own; the error text is not printed.
+			r.add(checkConfig, "fail", "the file that BURROW_TOKEN_FILE names cannot be read", "check the path in BURROW_TOKEN_FILE, or unset the variable", 0)
 		case errors.As(err, &mm):
 			login := "<relay>"
 			if h, _, e := net.SplitHostPort(mm.Control); e == nil && h != "" {
@@ -249,8 +254,12 @@ func certProblem(err error) (string, bool) {
 	switch {
 	case errors.As(err, &ua):
 		issuer := "an unknown issuer"
-		if ua.Cert != nil && ua.Cert.Issuer.CommonName != "" {
-			issuer = ua.Cert.Issuer.CommonName
+		if ua.Cert != nil {
+			if cn := ua.Cert.Issuer.CommonName; cn != "" {
+				issuer = cn
+			} else if dn := ua.Cert.Issuer.String(); dn != "" {
+				issuer = dn // an issuer without a common name, by its full name
+			}
 		}
 		return "the certificate is not trusted (issued by " + issuer + ")", true
 	case errors.As(err, &he):
@@ -274,53 +283,51 @@ func (r *doctorRun) checkDiscovery() {
 	}
 	base := strings.TrimRight(strings.TrimSpace(r.creds.Relay), "/")
 	if base == "" {
-		base = "https://" + r.host()
+		// No relay address is known: the control host is asked. An IPv6
+		// address needs its brackets in a URL.
+		h := r.host()
+		if strings.Contains(h, ":") {
+			h = "[" + h + "]"
+		}
+		base = "https://" + h
 	}
 	if u, err := url.Parse(base); err != nil || u.Scheme != "https" || u.Host == "" {
 		r.add(name, "fail", "the relay address is not an https address", "burrow login <relay>", 0)
 		return
 	}
-	u := base + "/api/v1/client/discovery"
 	r.netCheck(name, func(ctx context.Context) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-		if err != nil {
-			r.add(name, "fail", "the relay address is not usable", "burrow login <relay>", 0)
-			return
-		}
-		resp, err := r.d.http.Do(req)
-		if err != nil {
+		disc, err := client.Discover(ctx, r.d.http, base)
+		r.discDate = disc.Date
+		var se *client.DiscoveryStatusError
+		switch {
+		case err == nil:
+			r.disc = &disc
+			if !client.SameEndpoint(disc.Control, r.creds.Control) {
+				r.add(name, "warn", "the relay names the control endpoint "+disc.Control+"; this machine uses "+r.creds.Control,
+					"If the relay moved its control endpoint, sign in again: burrow login <relay>", 0)
+				return
+			}
+			detail := base + " answers with a valid certificate"
+			if r.d.authOpts.Insecure {
+				detail = base + " answers; its certificate was not checked (--insecure)"
+			}
+			r.add(name, "pass", detail, "", 0)
+		case errors.Is(err, client.ErrNoDiscovery):
+			r.add(name, "warn", "this relay is older and has no discovery; using "+r.creds.Control, "", 0)
+		case errors.Is(err, client.ErrNotARelay):
+			r.add(name, "warn", "the answer of "+base+" is not a discovery document", "", 0)
+		case errors.As(err, &se):
+			r.add(name, "fail", base+" answered discovery with status "+strconv.Itoa(se.Status), "Check the relay address", exitUnreachable)
+		default:
 			if msg, ok := certProblem(err); ok {
 				r.failNet(name, err, msg, fixCacert, exitUnreachable)
 				return
-			}
-			var ue *url.Error
-			if errors.As(err, &ue) {
-				err = ue.Err
 			}
 			detail := "cannot reach " + base + ": " + err.Error()
 			if ctx.Err() != nil {
 				detail = "no answer from " + base + " within " + r.d.timeout.String()
 			}
 			r.failNet(name, err, detail, "Check the relay address and your network connection", exitUnreachable)
-			return
-		}
-		defer resp.Body.Close()
-		if t, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
-			r.discDate = t
-		}
-		switch {
-		case resp.StatusCode == http.StatusNotFound:
-			r.add(name, "warn", "this relay is older and has no discovery; using "+r.creds.Control, "", 0)
-		case resp.StatusCode != http.StatusOK:
-			r.add(name, "fail", base+" answered discovery with status "+strconv.Itoa(resp.StatusCode), "Check the relay address", exitUnreachable)
-		default:
-			var disc discovery
-			if json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&disc) != nil {
-				r.add(name, "warn", "the answer of "+base+" is not a discovery document", "", 0)
-				return
-			}
-			r.disc = &disc
-			r.add(name, "pass", base+" answers with a valid certificate", "", 0)
 		}
 	})
 }
@@ -498,9 +505,15 @@ func (r *doctorRun) checkClock() {
 }
 
 func (r *doctorRun) checkLocal() {
-	path, tunnels, found := r.d.services()
+	path, tunnels, found, err := r.d.services()
 	if !found {
 		r.skip(checkLocal, "no burrow.yaml found")
+		return
+	}
+	if err != nil {
+		// The parser's message can quote the file; it is not shown.
+		r.add(checkLocal, "warn", path+" cannot be read as a burrow.yaml; its services were not checked",
+			"Fix the file: `burrow up` reports the line", 0)
 		return
 	}
 	if len(tunnels) == 0 {
@@ -559,9 +572,26 @@ func printDoctor(w io.Writer, rs []checkResult, colour bool) {
 	}
 }
 
+// doctorExit is how a run ends: nil when nothing failed and every check had
+// its turn, otherwise an error with the exit code. A run cut short by Ctrl-C
+// did not find the machine in order, so it does not end with 0.
+func doctorExit(rs []checkResult, interrupted bool) error {
+	if code := exitCodeOf(rs); code != 0 {
+		return &exitError{code: code, msg: "burrow doctor found problems; the lines marked FAIL say how to fix them."}
+	}
+	if interrupted {
+		return &exitError{code: exitGeneral, msg: "Interrupted: not every check ran."}
+	}
+	return nil
+}
+
 // newDoctorDeps wires the checks to the network.
-func newDoctorDeps(cmd *cobra.Command, d deps, g globalFlags, userPath string) (doctorDeps, error) {
+func newDoctorDeps(d deps, g globalFlags, userPath string) (doctorDeps, error) {
 	pool, err := loadRootCAs(g.cacert)
+	if err != nil {
+		return doctorDeps{}, err
+	}
+	hc, err := relayHTTPClient(g)
 	if err != nil {
 		return doctorDeps{}, err
 	}
@@ -570,20 +600,20 @@ func newDoctorDeps(cmd *cobra.Command, d deps, g globalFlags, userPath string) (
 	}
 	var fc *client.FileConfig
 	var svcPath string
+	var svcErr error
 	if p, err := findServiceFile(d, ""); err == nil {
 		svcPath = p
 		if f, err := client.LoadFileConfig(p); err == nil {
 			fc = &f
+		} else {
+			svcErr = err
 		}
 	}
-	tr := &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: tlsCfg(""), TLSHandshakeTimeout: doctorCheckTimeout}
 	return doctorDeps{
 		resolve:    func() (client.Credentials, error) { return resolveCredentials(d, userPath, fc) },
 		configPath: userPath,
 		lookup:     net.DefaultResolver.LookupHost,
-		http: &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		}},
+		http:       hc, // client.Discover follows no redirect, whatever the client
 		dialTCP: func(ctx context.Context, addr string) (net.Conn, error) {
 			var nd net.Dialer
 			return nd.DialContext(ctx, "tcp", addr)
@@ -594,14 +624,14 @@ func newDoctorDeps(cmd *cobra.Command, d deps, g globalFlags, userPath string) (
 		checkAuth: client.CheckAuth,
 		authOpts:  client.Options{Insecure: g.insecure, RootCAs: pool, ServerName: g.serverName},
 		now:       time.Now,
-		services: func() (string, []client.TunnelSpec, bool) {
+		services: func() (string, []client.TunnelSpec, bool, error) {
 			if svcPath == "" {
-				return "", nil, false
+				return "", nil, false, nil
 			}
 			if fc == nil {
-				return svcPath, nil, true
+				return svcPath, nil, true, svcErr
 			}
-			return svcPath, fc.Tunnels, true
+			return svcPath, fc.Tunnels, true, nil
 		},
 		probe: func(ctx context.Context, addr string) bool {
 			var nd net.Dialer
@@ -637,10 +667,15 @@ func newDoctorCmd(d deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			dd, err := newDoctorDeps(cmd, d, g, userPath)
+			dd, err := newDoctorDeps(d, g, userPath)
 			if err != nil {
 				return err
 			}
+			// Each line appears when its check ends: a run that hangs on one
+			// check, or is cut short, has shown the ones before it.
+			out := cmd.OutOrStdout()
+			colour := d.viewTerminal != nil && d.viewTerminal() && d.getenv("NO_COLOR") == ""
+			dd.report = func(c checkResult) { printDoctor(out, []checkResult{c}, colour) }
 			ctx := cmd.Context()
 			if ctx == nil {
 				ctx = context.Background()
@@ -648,12 +683,7 @@ func newDoctorCmd(d deps) *cobra.Command {
 			ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			rs := runDoctor(ctx, dd)
-			colour := d.viewTerminal != nil && d.viewTerminal() && d.getenv("NO_COLOR") == ""
-			printDoctor(cmd.OutOrStdout(), rs, colour)
-			if code := exitCodeOf(rs); code != 0 {
-				return &exitError{code: code, msg: "burrow doctor found problems; the lines marked FAIL say how to fix them."}
-			}
-			return nil
+			return doctorExit(rs, ctx.Err() != nil)
 		},
 	}
 }

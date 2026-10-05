@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -16,6 +17,10 @@ import (
 )
 
 var validate = validator.New()
+
+// minClientVersionRE is the form of min_client_version: MAJOR.MINOR.PATCH with
+// an optional leading v, which is what the client compares.
+var minClientVersionRE = regexp.MustCompile(`^v?\d{1,9}\.\d{1,9}\.\d{1,9}$`)
 
 // TunnelSpec is one tunnel the client asks the server to register.
 type TunnelSpec struct {
@@ -152,6 +157,13 @@ type ServerConfig struct {
 	// trigger rate-limit responses with fewer attempts.
 	// Env: BURROW_LOGIN_RATE_LIMIT_PER_IP.
 	LoginRateLimitPerIP int `koanf:"login_rate_limit_per_ip"`
+
+	// MinClientVersion is the oldest client version this relay accepts, in the
+	// form 0.6.0 or v0.6.0. The relay reports it at
+	// GET /api/v1/client/discovery; a client older than it stops with
+	// "This relay needs burrow <min> or newer". Empty (the default) means no
+	// minimum. Env: BURROW_MIN_CLIENT_VERSION.
+	MinClientVersion string `koanf:"min_client_version"`
 
 	// CertValidationRootsFile, when non-empty, is the path to a PEM file
 	// containing one or more CA certificates to use as the trust roots when
@@ -383,6 +395,8 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 		"database_url": "", "experimental_postgres_backend": false,
 		// login_rate_limit_per_ip: 0 means use api.LoginRateLimitPerIP constant.
 		"login_rate_limit_per_ip": 0,
+		// min_client_version: empty = clients of any version are accepted.
+		"min_client_version": "",
 		// cert_validation_roots_file: empty = use system root pool.
 		"cert_validation_roots_file": "",
 		// ACME: empty domain = disabled. CA defaults to Let's Encrypt production.
@@ -420,6 +434,12 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 	deriveV04Fields(&c)
 	if err := validateV04Fields(&c); err != nil {
 		return nil, fmt.Errorf("invalid server config: %w", err)
+	}
+	// A minimum that clients cannot compare with would be ignored by them
+	// without a word, so it is refused here.
+	c.MinClientVersion = strings.TrimSpace(c.MinClientVersion)
+	if c.MinClientVersion != "" && !minClientVersionRE.MatchString(c.MinClientVersion) {
+		return nil, fmt.Errorf("invalid server config: min_client_version %q must look like 0.6.0 or v0.6.0", c.MinClientVersion)
 	}
 	// v0.5.0 (Task 15): validate Postgres backend config. Both database_path
 	// and database_url being non-empty is ambiguous and therefore fatal.

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -25,16 +27,40 @@ func tokenLabel(name, token string) string {
 	return "set"
 }
 
+// statusDiscoveryTimeout is how long `status` waits for the relay's version.
+var statusDiscoveryTimeout = 3 * time.Second
+
+// relayVersion asks the relay at its dashboard address which version it runs.
+// Any failure gives "unknown": status reports the sign-in, not the network.
+func relayVersion(ctx context.Context, d deps, relay string, g globalFlags) string {
+	if d.discover == nil {
+		return "unknown"
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, statusDiscoveryTimeout)
+	defer cancel()
+	disc, err := d.discover(ctx, relay, g)
+	if err != nil || disc.Version == "" {
+		return "unknown"
+	}
+	return disc.Version
+}
+
 // newStatusCmd builds `burrow status`.
 func newStatusCmd(d deps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show what this machine is signed in to",
 		Long: "Show what this machine is signed in to, without connecting.\n\n" +
+			"The relay is asked for its version at its web address; the token is not sent.\n" +
+			"When the relay does not answer, the version is shown as unknown.\n\n" +
 			"Exit code 0 when signed in, 3 when not.",
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if _, _, err := logFormatFlag(cmd); err != nil {
+			g, err := readGlobals(cmd, d)
+			if err != nil {
 				return err
 			}
 			userPath, err := userConfigFile(cmd, d)
@@ -48,6 +74,8 @@ func newStatusCmd(d deps) *cobra.Command {
 			relay := strings.TrimSpace(creds.Relay)
 			if relay == "" {
 				relay = "not known"
+			} else {
+				relay += " (version " + relayVersion(cmd.Context(), d, relay, g) + ")"
 			}
 			out := cmd.OutOrStdout()
 			// Named fields only: the credentials are never printed as a whole.

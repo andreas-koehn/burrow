@@ -2106,6 +2106,52 @@ paths:
                   server: { type: string, example: "relay.example.com:7000" }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /api/v1/client/discovery:
+    get:
+      tags: [clients]
+      summary: Tell a client where the control endpoint is and which version the relay runs
+      description: >
+        Public (no authentication): `burrow login <relay>` asks here before it
+        has a token. `control` is the value `/clients/connect-info` returns;
+        the control endpoint is a public port, not a secret. The response
+        holds these four fields and nothing else. Rate-limited per source IP
+        (60 requests per minute). Not cacheable.
+      security: []
+      responses:
+        '200':
+          description: Discovery document.
+          headers:
+            Cache-Control:
+              schema: { type: string, example: no-store }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [control, version, min_client_version, protocol_version]
+                properties:
+                  control:
+                    type: string
+                    description: host:port of the control endpoint.
+                    example: "burrow.example.com:7000"
+                  version:
+                    type: string
+                    description: The relay's version.
+                    example: "0.6.0"
+                  min_client_version:
+                    type: string
+                    description: Oldest client version the relay accepts; empty when there is no minimum.
+                    example: "0.6.0"
+                  protocol_version:
+                    type: integer
+                    description: Version of the control protocol the relay speaks.
+                    example: 1
+        '429':
+          description: Rate-limited (per source IP).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   # ────────────────────────────────────────────────────────────────────────
   # Geo
   # ────────────────────────────────────────────────────────────────────────

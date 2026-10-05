@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -46,7 +47,7 @@ func goodDeps(t *testing.T) doctorDeps {
 			return client.AuthResult{OK: true}, nil
 		},
 		now:           func() time.Time { return epoch },
-		services:      func() (string, []client.TunnelSpec, bool) { return "", nil, false },
+		services:      func() (string, []client.TunnelSpec, bool, error) { return "", nil, false, nil },
 		probe:         func(context.Context, string) bool { return true },
 		clientVersion: "v1.2.0",
 		timeout:       time.Second,
@@ -340,8 +341,8 @@ func TestDoctor_Clock(t *testing.T) {
 
 func TestDoctor_LocalTargets(t *testing.T) {
 	d := goodDeps(t)
-	d.services = func() (string, []client.TunnelSpec, bool) {
-		return "burrow.yaml", []client.TunnelSpec{{Name: "a", LocalAddr: "127.0.0.1:3000"}, {Name: "b", LocalAddr: "127.0.0.1:3001"}}, true
+	d.services = func() (string, []client.TunnelSpec, bool, error) {
+		return "burrow.yaml", []client.TunnelSpec{{Name: "a", LocalAddr: "127.0.0.1:3000"}, {Name: "b", LocalAddr: "127.0.0.1:3001"}}, true, nil
 	}
 	d.probe = func(_ context.Context, addr string) bool { return addr == "127.0.0.1:3000" }
 	rs := runDoctor(context.Background(), d)
@@ -370,8 +371,8 @@ func TestDoctor_HangingNetworkFinishesInTime(t *testing.T) {
 		block(ctx)
 		return client.AuthResult{}, ctx.Err()
 	}
-	d.services = func() (string, []client.TunnelSpec, bool) {
-		return "burrow.yaml", []client.TunnelSpec{{Name: "a", LocalAddr: "127.0.0.1:3000"}}, true
+	d.services = func() (string, []client.TunnelSpec, bool, error) {
+		return "burrow.yaml", []client.TunnelSpec{{Name: "a", LocalAddr: "127.0.0.1:3000"}}, true, nil
 	}
 	d.probe = func(ctx context.Context, _ string) bool { block(ctx); return false }
 	d.timeout, d.total = 100*time.Millisecond, 300*time.Millisecond
@@ -475,4 +476,265 @@ func TestDoctorCommand(t *testing.T) {
 	if code := h.exec("doctor", "extra"); code != exitUsage {
 		t.Fatalf("exit %d", code)
 	}
+}
+
+// netForbidden makes every network seam of the checks fail the test.
+func netForbidden(t *testing.T, d *doctorDeps) {
+	t.Helper()
+	d.lookup = func(context.Context, string) ([]string, error) {
+		t.Error("lookup was called")
+		return nil, errors.New("forbidden")
+	}
+	d.http = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Error("an HTTP request was sent")
+		return nil, errors.New("forbidden")
+	})}
+	d.dialTCP = func(context.Context, string) (net.Conn, error) {
+		t.Error("the control endpoint was dialled")
+		return nil, errors.New("forbidden")
+	}
+	d.checkAuth = func(context.Context, client.Options) (client.AuthResult, error) {
+		t.Error("the token was sent")
+		return client.AuthResult{}, errors.New("forbidden")
+	}
+}
+
+// Ruling 3 through the real wiring: a stored sign-in for relay A and
+// BURROW_SERVER naming relay B is "not signed in" to B, and nothing is sent
+// anywhere.
+func TestDoctor_StoredSignInAndAnotherServer(t *testing.T) {
+	h := newHarness(t)
+	h.signIn() // burrow.example.com:7000
+	h.env["BURROW_SERVER"] = "127.0.0.1:1"
+	dd, err := newDoctorDeps(h.deps(), globalFlags{}, h.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	netForbidden(t, &dd)
+	rs := runDoctor(context.Background(), dd)
+	if code := exitCodeOf(rs); code != exitNotSignedIn {
+		t.Fatalf("exit %d, want %d", code, exitNotSignedIn)
+	}
+	if r := find(t, rs, checkConfig); r.status != "fail" || !strings.Contains(r.detail, "not signed in to 127.0.0.1:1") {
+		t.Fatalf("%+v", r)
+	}
+	for _, r := range rs {
+		if strings.Contains(r.detail+r.fix, testToken) {
+			t.Fatal("the token was printed")
+		}
+	}
+}
+
+func TestDoctor_UnreadableTokenFile(t *testing.T) {
+	h := newHarness(t)
+	h.signIn()
+	h.env["BURROW_TOKEN_FILE"] = filepath.Join(t.TempDir(), "missing-token")
+	dd, err := newDoctorDeps(h.deps(), globalFlags{}, h.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	netForbidden(t, &dd)
+	r := find(t, runDoctor(context.Background(), dd), checkConfig)
+	if r.status != "fail" || !strings.Contains(r.detail, "BURROW_TOKEN_FILE") || !strings.Contains(r.fix, "BURROW_TOKEN_FILE") {
+		t.Fatalf("%+v", r)
+	}
+	if strings.Contains(r.detail+r.fix, "stored sign-in") || strings.Contains(r.fix, h.cfgPath) {
+		t.Fatalf("the user config is blamed: %+v", r)
+	}
+}
+
+// Check 3 goes through client.Discover: its path, its User-Agent, no token.
+func TestDoctor_DiscoveryRequest(t *testing.T) {
+	d := goodDeps(t)
+	var got *http.Request
+	d.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		got = r
+		return discoveryResponse(200, `{"control":"relay.example.com:7000","version":"v1.2.0","min_client_version":"","protocol_version":1}`, epoch), nil
+	})}
+	if r := find(t, runDoctor(context.Background(), d), checkDiscovery); r.status != "pass" {
+		t.Fatalf("%+v", r)
+	}
+	if got == nil || got.URL.String() != "https://relay.example.com"+client.DiscoveryPath || !strings.HasPrefix(got.Header.Get("User-Agent"), "burrow/") {
+		t.Fatalf("request %+v", got)
+	}
+	if got.Header.Get("Authorization") != "" || strings.Contains(got.URL.String(), fakeSecret) {
+		t.Fatal("discovery carried the token")
+	}
+}
+
+func TestDoctor_DiscoveryAnswers(t *testing.T) {
+	cases := []struct {
+		name, body string
+		code       int
+		status, in string
+	}{
+		{"html", "<!doctype html><html></html>", 200, "warn", "not a discovery document"},
+		{"control is not host:port", `{"control":"https://evil.example.com","version":"v1.2.0"}`, 200, "warn", "not a discovery document"},
+		{"redirect", "", 302, "fail", "status 302"},
+		{"server error", "", 502, "fail", "status 502"},
+		{"another control endpoint", `{"control":"other.example.com:7000","version":"v1.2.0"}`, 200, "warn", "other.example.com:7000"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := goodDeps(t)
+			d.http = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				resp := discoveryResponse(tc.code, tc.body, epoch)
+				resp.Header.Set("Location", "https://elsewhere.example.com/")
+				return resp, nil
+			})}
+			r := find(t, runDoctor(context.Background(), d), checkDiscovery)
+			if r.status != tc.status || !strings.Contains(r.detail, tc.in) {
+				t.Fatalf("%+v", r)
+			}
+			if tc.name == "another control endpoint" && !strings.Contains(r.detail, "relay.example.com:7000") {
+				t.Fatalf("the endpoint in use is not named: %+v", r)
+			}
+			if strings.Contains(r.detail, "evil.example.com") {
+				t.Fatalf("an answer that is not trusted is repeated: %+v", r)
+			}
+		})
+	}
+}
+
+// Without a relay address the control host is asked; an IPv6 one keeps its
+// brackets.
+func TestDoctor_DiscoveryIPv6Host(t *testing.T) {
+	d := goodDeps(t)
+	d.resolve = func() (client.Credentials, error) {
+		return client.Credentials{Control: "[::1]:7000", Token: fakeSecret, Source: client.SourceEnvironment}, nil
+	}
+	var host string
+	d.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		host = r.URL.Host
+		return discoveryResponse(200, `{"control":"[::1]:7000","version":"v1.2.0"}`, epoch), nil
+	})}
+	r := find(t, runDoctor(context.Background(), d), checkDiscovery)
+	if host != "[::1]" || r.status != "pass" || !strings.Contains(r.detail, "https://[::1]") {
+		t.Fatalf("asked host %q: %+v", host, r)
+	}
+}
+
+// With --insecure nothing was verified, and the line does not say otherwise.
+func TestDoctor_InsecureDoesNotClaimAValidCertificate(t *testing.T) {
+	d := goodDeps(t)
+	if r := find(t, runDoctor(context.Background(), d), checkDiscovery); !strings.Contains(r.detail, "valid certificate") {
+		t.Fatalf("%+v", r)
+	}
+	d.authOpts.Insecure = true
+	r := find(t, runDoctor(context.Background(), d), checkDiscovery)
+	if r.status != "pass" || strings.Contains(r.detail, "valid certificate") || !strings.Contains(r.detail, "--insecure") {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// A burrow.yaml that cannot be parsed is said to be unreadable, not empty,
+// and nothing of its content is shown.
+func TestDoctor_BrokenServiceFile(t *testing.T) {
+	d := goodDeps(t)
+	d.services = func() (string, []client.TunnelSpec, bool, error) {
+		return "burrow.yaml", nil, true, errors.New("yaml: line 2: " + fakeSecret)
+	}
+	r := find(t, runDoctor(context.Background(), d), checkLocal)
+	if r.status != "warn" || !strings.Contains(r.detail, "burrow.yaml cannot be read") || strings.Contains(r.detail+r.fix, "SECRET") {
+		t.Fatalf("%+v", r)
+	}
+
+	// Through the real wiring, with a file next to the user config.
+	h := newHarness(t)
+	h.signIn()
+	h.env["BURROW_SERVER"] = "127.0.0.1:1" // not signed in there: no network check runs
+	yml := filepath.Join(filepath.Dir(h.cfgPath), "burrow.yaml")
+	writeAt(t, yml, "services:\n  - name: [unclosed\n    token: "+fakeSecret+"\n")
+	dd, err := newDoctorDeps(h.deps(), globalFlags{}, h.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	netForbidden(t, &dd)
+	var sb strings.Builder
+	printDoctor(&sb, runDoctor(context.Background(), dd), false)
+	out := sb.String()
+	if !strings.Contains(out, "warn  "+checkLocal+"  "+yml+" cannot be read") {
+		t.Fatalf("output:\n%s", out)
+	}
+	if strings.Contains(out, "no services") || strings.Contains(out, "SECRET") || strings.Contains(out, "unclosed") {
+		t.Fatalf("output:\n%s", out)
+	}
+}
+
+// Each line is handed over when its check ends, not when all have.
+func TestDoctor_ReportsEachCheckAsItFinishes(t *testing.T) {
+	d := goodDeps(t)
+	var mu sync.Mutex
+	var seen []string
+	d.report = func(r checkResult) {
+		mu.Lock()
+		seen = append(seen, r.name+":"+r.status)
+		mu.Unlock()
+	}
+	names := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), seen...)
+	}
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	d.lookup = func(ctx context.Context, _ string) ([]string, error) {
+		close(entered)
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return []string{"192.0.2.1"}, nil
+	}
+	d.total, d.timeout = time.Minute, time.Minute
+	done := make(chan []checkResult, 1)
+	go func() { done <- runDoctor(context.Background(), d) }()
+	<-entered
+	if got := names(); len(got) != 1 || got[0] != checkConfig+":pass" {
+		t.Fatalf("while the second check runs, reported: %v", got)
+	}
+	close(release)
+	rs := <-done
+	got := names()
+	if len(got) != len(rs) {
+		t.Fatalf("%d lines reported for %d results", len(got), len(rs))
+	}
+	for i, r := range rs {
+		if got[i] != r.name+":"+r.status {
+			t.Fatalf("line %d is %q, result is %s:%s", i, got[i], r.name, r.status)
+		}
+	}
+}
+
+func TestDoctor_ExitWhenInterrupted(t *testing.T) {
+	ok := []checkResult{{name: "a", status: "pass"}, {name: "b", status: "skip", detail: "interrupted"}}
+	if err := doctorExit(ok, false); err != nil {
+		t.Fatalf("not interrupted: %v", err)
+	}
+	if code := exitCode(doctorExit(ok, true)); code != exitGeneral {
+		t.Fatalf("interrupted: exit %d, want %d", code, exitGeneral)
+	}
+	// A failure keeps its own code.
+	failed := append(ok, checkResult{name: "c", status: "fail", code: exitTokenRejected})
+	if code := exitCode(doctorExit(failed, true)); code != exitTokenRejected {
+		t.Fatalf("exit %d", code)
+	}
+
+	// The command: a run cut short does not end with 0, and what ran is printed.
+	h := newHarness(t)
+	h.signIn()
+	h.answers(client.Discovery{}, errors.New("unused"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	root := newRoot(h.deps())
+	root.SetArgs([]string{"doctor"})
+	code := report(&h.stderr, root.ExecuteContext(ctx))
+	if code != exitGeneral || !strings.Contains(h.stderr.String(), "nterrupted") {
+		t.Fatalf("exit %d, stderr %q", code, h.stderr.String())
+	}
+	out := h.stdout.String()
+	if !strings.Contains(out, "ok    "+checkConfig) || !strings.Contains(out, "skip  "+checkResolve+"  interrupted") {
+		t.Fatalf("stdout:\n%s", out)
+	}
+	h.noToken()
 }

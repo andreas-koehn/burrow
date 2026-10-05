@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -84,6 +86,43 @@ func loadRootCAs(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
+// relayHTTPClient is the HTTP client for a relay's dashboard address. It
+// honours --cacert, --server-name and --insecure like the control connection.
+func relayHTTPClient(g globalFlags) (*http.Client, error) {
+	pool, err := loadRootCAs(g.cacert)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: g.insecure, //nolint:gosec // dev-only opt-in
+			RootCAs:            pool,
+			ServerName:         g.serverName,
+			MinVersion:         tls.VersionTLS12,
+		},
+		TLSHandshakeTimeout: client.DiscoveryTimeout,
+		// One request per command: nothing is kept open behind it.
+		DisableKeepAlives: true,
+	}}, nil
+}
+
+// discoverRelay asks the relay for its discovery document. It is deps.discover
+// outside tests.
+func discoverRelay(ctx context.Context, relay string, g globalFlags) (client.Discovery, error) {
+	hc, err := relayHTTPClient(g)
+	if err != nil {
+		return client.Discovery{}, err
+	}
+	return client.Discover(ctx, hc, relay)
+}
+
+// tokenFileError says that the file BURROW_TOKEN_FILE names cannot be read.
+type tokenFileError struct{ err error }
+
+func (e *tokenFileError) Error() string { return "BURROW_TOKEN_FILE: " + e.err.Error() }
+func (e *tokenFileError) Unwrap() error { return e.err }
+
 // logFormatFlag returns the value of --log when it was given.
 func logFormatFlag(cmd *cobra.Command) (format string, given bool, err error) {
 	f := cmd.Flags().Lookup("log")
@@ -145,7 +184,7 @@ func resolveCredentials(d deps, userPath string, file *client.FileConfig) (clien
 	if p := d.getenv("BURROW_TOKEN_FILE"); p != "" {
 		b, err := os.ReadFile(p)
 		if err != nil {
-			return client.Credentials{}, fmt.Errorf("BURROW_TOKEN_FILE: %w", err)
+			return client.Credentials{}, &tokenFileError{err: err}
 		}
 		s.EnvToken = string(b)
 	}

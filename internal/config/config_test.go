@@ -857,3 +857,31 @@ func TestLoadServer_ACMEOffPreservesDefaults(t *testing.T) {
 		t.Fatalf("ACME should be off by default, got %q", c.ACMEDomain)
 	}
 }
+
+// TestMinClientVersion: empty by default, set from BURROW_MIN_CLIENT_VERSION,
+// and refused at start when it is not a version a client can compare with.
+func TestMinClientVersion(t *testing.T) {
+	c, err := LoadServer(nil)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if c.MinClientVersion != "" {
+		t.Fatalf("min_client_version default = %q, want empty", c.MinClientVersion)
+	}
+	for _, v := range []string{"0.6.0", "v0.6.0", " 1.10.2 "} {
+		t.Setenv("BURROW_MIN_CLIENT_VERSION", v)
+		c, err := LoadServer(nil)
+		if err != nil {
+			t.Fatalf("%q: %v", v, err)
+		}
+		if want := strings.TrimSpace(v); c.MinClientVersion != want {
+			t.Fatalf("min_client_version = %q, want %q", c.MinClientVersion, want)
+		}
+	}
+	for _, v := range []string{"0.6", "latest", "v1.2.3-rc1", "1.2.3.4", "1..3"} {
+		t.Setenv("BURROW_MIN_CLIENT_VERSION", v)
+		if _, err := LoadServer(nil); err == nil || !strings.Contains(err.Error(), "min_client_version") {
+			t.Fatalf("%q: err = %v, want one naming min_client_version", v, err)
+		}
+	}
+}

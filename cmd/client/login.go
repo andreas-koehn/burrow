@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ankoehn/burrow/internal/client"
+	"github.com/ankoehn/burrow/internal/version"
 )
 
 // defaultControlPort is where the relay's control endpoint listens unless
@@ -129,6 +131,76 @@ func cleanToken(token, relayArg string) (string, error) {
 	return token, nil
 }
 
+// discoverControl asks the relay for its discovery document and returns the
+// control endpoint to store: the one given with --control, else the one the
+// relay names, else fallback (<relay host>:7000) for a relay without
+// discovery. Notes for the user go to errOut, one line each.
+//
+// It fails, with nothing stored, when this client is older than the relay
+// accepts (exit 6) and when the relay cannot be asked: not reachable, a
+// certificate that is not trusted, an answer that is an error or a redirect
+// (exit 5).
+func discoverControl(ctx context.Context, d deps, g globalFlags, errOut io.Writer, relay, fallback string, controlGiven bool) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	disc, err := d.discover(ctx, relay, g)
+	if g.insecure {
+		fmt.Fprintln(errOut, "Warning: --insecure is set: the relay's certificate was not checked.")
+	}
+	var se *client.DiscoveryStatusError
+	switch {
+	case err == nil:
+		me := version.Version
+		if c, ok := compareVersions(me, disc.MinClientVersion); ok && c < 0 {
+			return "", &exitError{code: exitClientTooOld, msg: fmt.Sprintf(msgClientTooOld, disc.MinClientVersion)}
+		}
+		if c, ok := compareVersions(me, disc.Version); ok && c < 0 {
+			fmt.Fprintf(errOut, "The relay runs %s; this client is %s. Run: burrow update\n", disc.Version, me)
+		} else if ok && c > 0 {
+			fmt.Fprintf(errOut, "The relay runs %s; this client is %s, which is newer.\n", disc.Version, me)
+		}
+		if controlGiven {
+			return fallback, nil
+		}
+		// The token will go to the control endpoint. When the relay names one
+		// on another host than its own, that is said, not just done.
+		if !client.SameHost(disc.Control, relay) {
+			fmt.Fprintf(errOut, "Note: this relay's control endpoint is on another host: %s. The token will be sent there, not to %s.\n",
+				disc.Control, strings.TrimPrefix(relay, "https://"))
+		}
+		return disc.Control, nil
+	case errors.Is(err, client.ErrNoDiscovery):
+		if !controlGiven {
+			fmt.Fprintf(errOut, "This relay is older and does not say where its control endpoint is; using %s. Pass --control if it is elsewhere.\n", fallback)
+		}
+		return fallback, nil
+	case errors.Is(err, client.ErrNotARelay):
+		if !controlGiven {
+			fmt.Fprintf(errOut, "%s did not answer like a current Burrow relay; using %s. Check the address, or pass --control if the control endpoint is elsewhere.\n", relay, fallback)
+		}
+		return fallback, nil
+	case ctx.Err() != nil && errors.Is(err, context.Canceled):
+		return "", err
+	case errors.As(err, &se):
+		msg := fmt.Sprintf("Cannot use %s: %s.", relay, se.Error())
+		if se.RedirectHost != "" {
+			msg += "\nIf that is the relay, run: burrow login " + se.RedirectHost
+		} else {
+			msg += "\nCheck the relay address."
+		}
+		return "", &exitError{code: exitUnreachable, msg: msg}
+	}
+	if problem, ok := certProblem(err); ok {
+		return "", &exitError{code: exitUnreachable, msg: "Cannot trust " + relay + ": " + problem + ".\n" + fixCacert}
+	}
+	reason := err.Error()
+	if errors.Is(err, context.DeadlineExceeded) {
+		reason = "no answer within " + client.DiscoveryTimeout.String()
+	}
+	return "", &exitError{code: exitUnreachable, msg: "Cannot reach " + relay + ": " + reason + ".\nCheck the address and your network connection."}
+}
+
 // newLoginCmd builds `burrow login <relay>`. In this version it stores a token
 // created in the dashboard; signing in through the browser follows.
 func newLoginCmd(d deps) *cobra.Command {
@@ -137,6 +209,7 @@ func newLoginCmd(d deps) *cobra.Command {
 		Short: "Sign this machine in, once",
 		Long: "Sign this machine in, once.\n\n" +
 			"<relay> is the dashboard address: burrow.example.com or a full https:// URL.\n" +
+			"The relay is asked there where its control endpoint is; the token is not sent.\n" +
 			"A token created in the dashboard (Clients, tab Tokens) is stored with `--token -`:\n" +
 			"burrow asks for it, or reads it from standard input, which keeps it out of the\n" +
 			"shell history and the process list.",
@@ -148,7 +221,8 @@ func newLoginCmd(d deps) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			flags := cmd.Flags()
-			if _, _, err := logFormatFlag(cmd); err != nil {
+			g, err := readGlobals(cmd, d)
+			if err != nil {
 				return err
 			}
 			relay, host, err := normalizeRelay(args[0])
@@ -157,7 +231,8 @@ func newLoginCmd(d deps) *cobra.Command {
 			}
 
 			control := net.JoinHostPort(host, defaultControlPort)
-			if flags.Changed("control") {
+			controlGiven := flags.Changed("control")
+			if controlGiven {
 				control, _ = flags.GetString("control")
 				control = strings.TrimSpace(control)
 				h, p, e := net.SplitHostPort(control)
@@ -193,6 +268,12 @@ func newLoginCmd(d deps) *cobra.Command {
 				return err
 			}
 			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
+
+			// The relay says where its control endpoint is, before anything is
+			// asked or stored. What it says is shown before the token is read.
+			if control, err = discoverControl(cmd.Context(), d, g, errOut, relay, control, controlGiven); err != nil {
+				return err
+			}
 			terminal := d.isTerminal()
 			force, _ := flags.GetBool("force")
 			// A stored file that cannot be read or holds no token is not a
@@ -255,7 +336,7 @@ func newLoginCmd(d deps) *cobra.Command {
 	f := cmd.Flags()
 	f.String("token", "", "store a token created in the dashboard; give - and paste the token when asked, so that it stays out of the shell history")
 	f.String("name", "", "name to remember the token by (default: this machine's hostname)")
-	f.String("control", "", "control endpoint host:port (default: <relay host>:7000)")
+	f.String("control", "", "control endpoint host:port (default: the one the relay names, else <relay host>:7000)")
 	f.Bool("force", false, "replace a stored sign-in without asking")
 	return cmd
 }

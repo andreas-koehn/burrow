@@ -320,6 +320,12 @@ type Deps struct {
 	// dashboard host:port is also the control endpoint (P1-2). Falls back to
 	// the request Host header when empty.
 	ControlListen string
+	// MinClientVersion is the oldest client version this relay accepts, as the
+	// public discovery endpoint reports it. Empty means no minimum.
+	MinClientVersion string
+	// DiscoveryRateLimitPerIPOverride overrides DiscoveryRateLimitPerIP for
+	// tests; zero uses the const.
+	DiscoveryRateLimitPerIPOverride int
 
 	// v0.4.0 surfaces — additive; nil-safe handlers degrade gracefully.
 	// CacheEngine is the exact-match prompt cache (clear/stats surface for
