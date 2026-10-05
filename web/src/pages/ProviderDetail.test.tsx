@@ -620,6 +620,73 @@ describe("Provider detail", () => {
       expect(await within(dialog).findByRole("alert")).toHaveTextContent(/changed by someone else.*try again/);
     });
 
+    it("Edit upstream: a refusal that may pass on a second try does not block Save", async () => {
+      let calls = 0;
+      server.use(http.put("/api/v1/ai/providers/openrouter/upstream", () => {
+        calls++;
+        return HttpResponse.json({ error: "base URL host could not be resolved" }, { status: 400 });
+      }));
+      mountDirect();
+      const { dialog } = await openEdit();
+      const url = within(dialog).getByLabelText("Base URL");
+      await userEvent.type(url, "x");
+      const save = within(dialog).getByRole("button", { name: "Save" });
+      await userEvent.click(save);
+      await waitFor(() => expect(url).toHaveAccessibleDescription("base URL host could not be resolved"));
+      // Nothing was edited, yet the same request can be sent again.
+      expect(save).toBeEnabled();
+      await userEvent.click(save);
+      await waitFor(() => expect(calls).toBe(2));
+    });
+
+    it("Edit upstream: editing any field clears what the server said about another", async () => {
+      server.use(http.put("/api/v1/ai/providers/openrouter/upstream", () =>
+        HttpResponse.json({ error: 'extra header "X-Title" is not allowed' }, { status: 400 })));
+      mountDirect("openrouter", { extra_headers: { "X-Title": "Burrow" } });
+      const { dialog } = await openEdit();
+      const authHeader = within(dialog).getByLabelText("Auth header");
+      await userEvent.clear(authHeader);
+      await userEvent.type(authHeader, "X-Title");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      const extra = within(dialog).getByLabelText("Extra headers");
+      await waitFor(() => expect(extra).toHaveAttribute("aria-invalid", "true"));
+      expect(extra).toHaveAccessibleDescription(/extra header "X-Title" is not allowed/);
+      // The cause was the auth header: changing it back clears the verdict on the untouched field.
+      await userEvent.clear(authHeader);
+      await userEvent.type(authHeader, "Authorization");
+      expect(extra).not.toHaveAttribute("aria-invalid");
+      await userEvent.type(authHeader, "2");
+      expect(within(dialog).getByRole("button", { name: "Save" })).toBeEnabled();
+    });
+
+    it("Routing tab: the alias dialog presumes no local backend and the backing service is not shown by id", async () => {
+      const p = addDirectProvider("openrouter", { name: "OpenRouter", credential_slot: "OPENROUTER" });
+      db.aiConfigs[p.service_id] = {
+        ...db.aiConfigs["svc_ai001"]!,
+        routing: { ...db.aiConfigs["svc_ai001"]!.routing, backends: [{ service_id: p.service_id, weight: 1, concrete_model: "acme/large-1" }] },
+      };
+      mountAt("/gateway/providers/openrouter");
+      await openTab("Routing");
+      const table = await screen.findByRole("table", { name: /backends/i });
+      expect(within(table).getByText("This provider")).toBeInTheDocument();
+      expect(within(table).queryByText("prov-openrouter")).toBeNull();
+      await userEvent.click(screen.getByRole("button", { name: /add alias/i }));
+      const dialog = await screen.findByRole("dialog", { name: "Add alias" });
+      // Nothing is preselected, and the service is this provider, by name.
+      expect(within(dialog).getByLabelText("Provider")).toHaveTextContent("Select a backend type…");
+      expect(within(dialog).getByLabelText("Provider")).not.toHaveTextContent("Ollama");
+      expect(within(dialog).getByLabelText("Service")).toHaveTextContent("OpenRouter");
+      await userEvent.type(within(dialog).getByLabelText(/^alias$/i), "smart");
+      await userEvent.type(within(dialog).getByLabelText(/concrete model/i), "acme/large-1");
+      expect(within(dialog).getByRole("button", { name: /create alias/i })).toBeDisabled();
+      await userEvent.click(within(dialog).getByLabelText("Provider"));
+      await userEvent.click(await screen.findByRole("option", { name: "OpenAI-compat" }));
+      await userEvent.click(within(dialog).getByRole("button", { name: /create alias/i }));
+      await waitFor(() => expect(db.modelAliases.at(-1)).toMatchObject({
+        alias: "smart", service_id: "prov-openrouter", provider: "openai-compat",
+      }));
+    });
+
     it("delete says that the API keys and the model list go with it", async () => {
       mountDirect();
       await screen.findByRole("heading", { name: /connect a client/i });
@@ -633,5 +700,25 @@ describe("Provider detail", () => {
       expect(await screen.findByText("PROVIDERS_PAGE")).toBeInTheDocument();
       expect(db.services.some((s) => s.id === "prov-openrouter")).toBe(false);
     });
+  });
+
+  it("mounts exactly one toaster, whichever tab is open", async () => {
+    mount();
+    await screen.findByRole("heading", { name: /connect a client/i });
+    const toasters = () => document.querySelectorAll("[data-sonner-toaster], section[aria-label^='Notifications']");
+    const sections = () => document.querySelectorAll("section[aria-label^='Notifications']").length;
+    expect(sections()).toBe(1);
+    await openTab("API keys");
+    await screen.findByRole("table", { name: "API keys" });
+    expect(sections()).toBe(1);
+    await openTab("Routing");
+    expect(sections()).toBe(1);
+    expect(toasters().length).toBeGreaterThan(0);
+  });
+
+  it("describes the whole page in its subtitle", async () => {
+    mount();
+    await screen.findByRole("heading", { name: /connect a client/i });
+    expect(screen.getByText("Connection details, traffic, API keys, models and routing for this provider.")).toBeInTheDocument();
   });
 });

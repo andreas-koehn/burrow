@@ -115,4 +115,42 @@ describe("Provider models panel", () => {
     await userEvent.type(screen.getByLabelText("Filter models"), "nothing-like-this");
     expect(screen.getByText("No model matches the filter.")).toBeInTheDocument();
   });
+
+  it("reports a sync that is already running and an upstream that did not answer", async () => {
+    renderPanel({ slug: "openrouter", kind: "direct", isAdmin: true });
+    server.use(http.post("/api/v1/ai/providers/openrouter/models/sync", () =>
+      HttpResponse.json({ error: "a sync for this provider is already running" }, { status: 409 })));
+    await userEvent.click(await screen.findByRole("button", { name: "Sync models" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("a sync for this provider is already running");
+    expect(screen.queryByRole("status")).toBeNull();
+    server.use(http.post("/api/v1/ai/providers/openrouter/models/sync", () =>
+      HttpResponse.json({ error: "the provider answered 401 to the model list request" }, { status: 502 })));
+    await userEvent.click(screen.getByRole("button", { name: "Sync models" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("the provider answered 401 to the model list request"));
+    // A later success replaces the error.
+    server.resetHandlers();
+    await userEvent.click(screen.getByRole("button", { name: "Sync models" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("2 models synced");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("disables every remove button while one removal runs, so no click is dropped silently", async () => {
+    addDirectProvider("openrouter", { credential_slot: "OPENROUTER" });
+    seedModels("openrouter", 3);
+    let deletes = 0;
+    server.use(http.delete("/api/v1/ai/providers/openrouter/models", async () => {
+      deletes++;
+      await delay(80);
+      db.aiProviderModels["openrouter"]!.shift();
+      return new HttpResponse(null, { status: 204 });
+    }));
+    renderPanel({ slug: "openrouter", kind: "direct", isAdmin: true });
+    await userEvent.click(await screen.findByRole("button", { name: "Remove vendor/model-0000" }));
+    const other = screen.getByRole("button", { name: "Remove vendor/model-0001" });
+    await waitFor(() => expect(other).toBeDisabled());
+    await userEvent.click(other);
+    await waitFor(() => expect(screen.queryByText("vendor/model-0000")).toBeNull());
+    expect(deletes).toBe(1);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Remove vendor/model-0001" })).toBeEnabled());
+  });
 });

@@ -84,7 +84,8 @@ export function ProviderModelsPanel({ slug, kind, isAdmin }: ProviderModelsPanel
     onSuccess: async () => {
       await refresh();
       // The row and its button are gone; keep the focus in the panel.
-      if (!document.activeElement || document.activeElement === document.body) rootRef.current?.focus();
+      const at = document.activeElement;
+      if (!at || at === document.body || (at instanceof HTMLButtonElement && at.disabled)) rootRef.current?.focus();
     },
     onError: (e: unknown, modelId) => setActionErr(`Couldn't remove ${modelId}: ${reason(e, "the request failed")}`),
   });
@@ -197,7 +198,9 @@ export function ProviderModelsPanel({ slug, kind, isAdmin }: ProviderModelsPanel
                           type="button"
                           className="icon-btn"
                           aria-label={`Remove ${m.id}`}
-                          onClick={() => { if (!remove.isPending) remove.mutate(m.id); }}
+                          // One removal at a time; the others wait, visibly.
+                          disabled={remove.isPending}
+                          onClick={() => remove.mutate(m.id)}
                         >
                           <Trash2 size={14} aria-hidden="true" />
                         </button>

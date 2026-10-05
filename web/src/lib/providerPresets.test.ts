@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PROVIDER_PRESETS, envVarForSlot } from "./providerPresets";
+import { PROVIDER_PRESETS, credentialSlotError, envVarForSlot } from "./providerPresets";
 
 describe("provider presets", () => {
   it("ships the three known providers and a blank custom entry", () => {
@@ -27,4 +27,21 @@ describe("provider presets", () => {
     const keys = new Set(PROVIDER_PRESETS.flatMap((p) => Object.keys(p)));
     expect([...keys].sort()).toEqual(["baseUrl", "billing", "credentialSlot", "id", "label", "name", "note", "slug"]);
   });
+  it("accepts a slot name the relay accepts and rejects the rest", () => {
+    expect(credentialSlotError("")).toBeNull(); // nothing typed yet
+    expect(credentialSlotError("OPENROUTER")).toBeNull();
+    expect(credentialSlotError("TEAM_A_2")).toBeNull();
+    expect(credentialSlotError("open-router")).toMatch(/A–Z, 0–9 and underscore/);
+    expect(credentialSlotError("A".repeat(33))).toMatch(/1–32 characters/);
+  });
+  it("rejects a slot ending in _FILE: the relay reads that variable as a file path for another slot", () => {
+    expect(credentialSlotError("FOO_FILE")).toMatch(/cannot end in _FILE/);
+    expect(credentialSlotError("FOO_FILE")).toContain("BURROW_UPSTREAM_KEY_FOO_FILE");
+    expect(credentialSlotError("_FILE")).toMatch(/cannot end in _FILE/);
+    expect(credentialSlotError("FILE")).toBeNull();
+    expect(credentialSlotError("FILE_A")).toBeNull();
+  });
+  for (const p of PROVIDER_PRESETS.filter((p) => p.credentialSlot)) {
+    it(`preset ${p.id} names a valid slot`, () => expect(credentialSlotError(p.credentialSlot)).toBeNull());
+  }
 });

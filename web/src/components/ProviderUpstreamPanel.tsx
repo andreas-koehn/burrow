@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Checkbox, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
-import { CREDENTIAL_SLOT_HINT, CREDENTIAL_SLOT_RE, envVarForSlot } from "@/lib/providerPresets";
+import { credentialSlotError, envVarForSlot } from "@/lib/providerPresets";
 import type { AiProvider, AiProviderUpstreamInput } from "@/lib/contract";
 
 const BILLING_LABEL: Record<AiProvider["billing"], string> = { metered: "Metered", flat: "Flat rate" };
@@ -95,8 +95,9 @@ export function ProviderUpstreamPanel({ provider, isAdmin }: ProviderUpstreamPan
         <p className="muted small">The credential itself is set on the relay and is never shown here.</p>
       ) : (
         <ErrorNotice variant="warn" role="note">
-          No credential found in slot {slot}. Set <code>{envVarForSlot(slot)}</code> in the relay's
-          environment and restart it. Until then this provider answers 503.
+          Slot {slot} is not set on the relay, or is set to an empty value. Set{" "}
+          <code>{envVarForSlot(slot)}</code> to a non-empty value in the relay's environment and restart it.
+          Until then this provider answers 503.
         </ErrorNotice>
       )}
       {isAdmin && <EditUpstreamDialog provider={provider} open={editOpen} onOpenChange={setEditOpen} />}
@@ -136,7 +137,10 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
   // keeps them, text replaces all of them, and removing them is its own choice.
   const [extraText, setExtraText] = useState("");
   const [clearExtra, setClearExtra] = useState(false);
-  // Errors the server reported about one field; formErr is everything else.
+  // What the server said about one field of the last attempt; formErr is
+  // everything else. Shown until the next edit of any field (one setting can
+  // be refused because of another) and never a reason to disable Save: a
+  // refusal such as a failed DNS lookup may pass on a second try.
   const [fieldErr, setFieldErr] = useState<Partial<Record<Field, string>>>({});
   const [formErr, setFormErr] = useState<string | null>(null);
 
@@ -148,12 +152,14 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
   });
 
   const parsedExtra = clearExtra ? {} : extraText.trim() === "" ? undefined : parseExtraHeaders(extraText);
-  const errors: Partial<Record<Field, string>> = {
-    ...(slot !== "" && !CREDENTIAL_SLOT_RE.test(slot) ? { slot: CREDENTIAL_SLOT_HINT } : {}),
+  const slotMessage = credentialSlotError(slot);
+  // Only these block Save.
+  const invalid: Partial<Record<Field, string>> = {
+    ...(slotMessage ? { slot: slotMessage } : {}),
     ...(authFormat.split("{key}").length !== 2 ? { authFormat: "Must contain {key} exactly once." } : {}),
     ...(parsedExtra === null ? { extra: EXTRA_FORMAT } : {}),
-    ...fieldErr,
   };
+  const errors: Partial<Record<Field, string>> = { ...fieldErr, ...invalid };
 
   // Only what changed is sent: a field that is left out keeps its stored value.
   const body: AiProviderUpstreamInput = {
@@ -190,18 +196,14 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
     },
   });
 
-  function edited(field: Field) {
+  function edited() {
     setFormErr(null);
-    setFieldErr((prev) => {
-      if (!(field in prev)) return prev;
-      const { [field]: _gone, ...others } = prev;
-      return others;
-    });
+    setFieldErr({});
   }
 
   const slotMissing = slot !== "" && !errors.slot && slots.data !== undefined && !slots.data.slots.includes(slot);
   const blocked = unchanged || baseUrl.trim() === "" || slot === "" || authHeader.trim() === ""
-    || Object.keys(errors).length > 0 || save.isPending;
+    || Object.keys(invalid).length > 0 || save.isPending;
   const extraHelp = names.length > 0
     ? `Set now: ${names.join(", ")}. Their values are never shown. Leave this empty to keep them; anything entered here replaces all of them. ${EXTRA_FORMAT}`
     : `None set. ${EXTRA_FORMAT} Values are never shown again after saving.`;
@@ -239,7 +241,7 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
             autoCapitalize="none"
             spellCheck={false}
             aria-describedby={errors.url ? "eu-base-url-err" : undefined}
-            onChange={(e) => { setBaseUrl(e.target.value); edited("url"); }}
+            onChange={(e) => { setBaseUrl(e.target.value); edited(); }}
           />
         </FormField>
         <FormField
@@ -247,7 +249,7 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
           htmlFor="eu-slot"
           w="md"
           error={err("slot", "eu-slot")}
-          help={<span id="eu-slot-help">The name of the slot, not the key. The key is set on the relay.</span>}
+          help={<span id="eu-slot-help">The name of the slot, not the key. The key is set on the relay and must be set to a non-empty value.</span>}
         >
           <Input
             id="eu-slot"
@@ -260,14 +262,14 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
             autoCapitalize="characters"
             spellCheck={false}
             aria-describedby={errors.slot ? "eu-slot-err" : "eu-slot-help"}
-            onChange={(e) => { setSlot(e.target.value.toUpperCase()); edited("slot"); }}
+            onChange={(e) => { setSlot(e.target.value.toUpperCase()); edited(); }}
           />
         </FormField>
         <FormField label="Billing" htmlFor="eu-billing" w="md">
           <Select
             id="eu-billing"
             value={billing}
-            onChange={(v) => { setBilling(v as AiProvider["billing"]); setFormErr(null); }}
+            onChange={(v) => { setBilling(v as AiProvider["billing"]); edited(); }}
             options={BILLING_OPTIONS}
           />
         </FormField>
@@ -282,7 +284,7 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
             autoComplete="off"
             spellCheck={false}
             aria-describedby={errors.authHeader ? "eu-auth-header-err" : undefined}
-            onChange={(e) => { setAuthHeader(e.target.value); edited("authHeader"); }}
+            onChange={(e) => { setAuthHeader(e.target.value); edited(); }}
           />
         </FormField>
         <FormField
@@ -302,7 +304,7 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
             autoComplete="off"
             spellCheck={false}
             aria-describedby={errors.authFormat ? "eu-auth-format-err" : "eu-auth-format-help"}
-            onChange={(e) => { setAuthFormat(e.target.value); edited("authFormat"); }}
+            onChange={(e) => { setAuthFormat(e.target.value); edited(); }}
           />
         </FormField>
         <FormField
@@ -322,20 +324,20 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
             aria-invalid={errors.extra ? true : undefined}
             aria-describedby={errors.extra ? "eu-extra-err" : "eu-extra-help"}
             placeholder="X-Title: Burrow"
-            onChange={(e) => { setExtraText(e.target.value); edited("extra"); }}
+            onChange={(e) => { setExtraText(e.target.value); edited(); }}
           />
         </FormField>
         {names.length > 0 && (
           <div className="row row-center gap-2">
-            <Checkbox id="eu-extra-clear" checked={clearExtra} onChange={(v) => { setClearExtra(v); edited("extra"); }} />
+            <Checkbox id="eu-extra-clear" checked={clearExtra} onChange={(v) => { setClearExtra(v); edited(); }} />
             <label htmlFor="eu-extra-clear">Remove all extra headers</label>
           </div>
         )}
       </FormFieldGroup>
       {slotMissing && (
         <ErrorNotice variant="info" role="note">
-          No credential found in slot {slot}. Set <code>{envVarForSlot(slot)}</code> in the relay's
-          environment and restart it. The provider answers 503 until the key is set.
+          Slot {slot} is not set on the relay. Set <code>{envVarForSlot(slot)}</code> to a non-empty value in
+          the relay's environment and restart it. The provider answers 503 until the key is set.
         </ErrorNotice>
       )}
       {formErr && <ErrorNotice>{formErr}</ErrorNotice>}

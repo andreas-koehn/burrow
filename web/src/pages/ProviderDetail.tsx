@@ -81,13 +81,14 @@ interface AliasFormState {
   alias: string;
   concrete_model: string;
   service_id: string;
-  provider: Provider;
+  /** "" until chosen: a direct provider has no local backend to presume. */
+  provider: Provider | "";
   priority: number;
 }
 
 
 const BACK = { to: "/gateway/providers", label: "Providers" } as const;
-const SUBTITLE = "Routing, traffic, and recent traffic for this provider.";
+const SUBTITLE = "Connection details, traffic, API keys, models and routing for this provider.";
 // Tab values double as URL fragments, e.g. /gateway/providers/<slug>#api-keys.
 const TAB_VALUES = ["connect", "api-keys", "models", "routing", "upstream"];
 
@@ -229,7 +230,7 @@ export default function ProviderDetail() {
       toast.success("Alias created.");
       qc.invalidateQueries({ queryKey: ["models", "aliases"] });
       setAliasDialogOpen(false);
-      setAliasForm({ alias: "", concrete_model: "", service_id: id, provider: "ollama", priority: 100 });
+      setAliasForm({ alias: "", concrete_model: "", service_id: id, provider: direct ? "" : "ollama", priority: 100 });
     },
     onError: (e: unknown) => {
       toast.error(e instanceof ApiError ? e.message : "Couldn't create alias.");
@@ -467,7 +468,7 @@ export default function ProviderDetail() {
           {
             value: "api-keys",
             label: "API keys",
-            content: <ApiKeysPanel serviceId={id} />,
+            content: <ApiKeysPanel serviceId={id} ownToaster={false} />,
           },
           {
             value: "models",
@@ -539,7 +540,7 @@ export default function ProviderDetail() {
                     variant="primary"
                     size="sm"
                     onClick={() => {
-                      setAliasForm({ alias: "", concrete_model: "", service_id: id, provider: "ollama", priority: 100 });
+                      setAliasForm({ alias: "", concrete_model: "", service_id: id, provider: direct ? "" : "ollama", priority: 100 });
                       setAliasDialogOpen(true);
                     }}
                   >
@@ -560,7 +561,10 @@ export default function ProviderDetail() {
                     <tbody>
                       {(routing.backends ?? []).map((b) => (
                         <tr key={b.service_id}>
-                          <td className="mono">{b.service_id}</td>
+                          {/* A direct provider's backing service is not a service anyone manages: no id. */}
+                          {direct && b.service_id === id
+                            ? <td>This provider</td>
+                            : <td className="mono">{b.service_id}</td>}
                           <td className="mono">{b.concrete_model}</td>
                           <td className="mono">{b.weight}</td>
                           <td>
@@ -625,7 +629,7 @@ export default function ProviderDetail() {
             <Button
               variant="primary"
               size="sm"
-              disabled={createAlias.isPending}
+              disabled={createAlias.isPending || aliasForm.provider === ""}
               onClick={() => createAlias.mutate(aliasForm)}
             >
               {createAlias.isPending ? "Creating…" : "Create alias"}
@@ -664,6 +668,7 @@ export default function ProviderDetail() {
               value={aliasForm.provider}
               onChange={(v) => setAliasForm((f) => ({ ...f, provider: v as Provider }))}
               options={PROVIDER_OPTIONS}
+              placeholder="Select a backend type…"
             />
           </FormField>
           <FormField label="Priority" htmlFor="alias-field-priority" w="sm">
@@ -719,8 +724,8 @@ export default function ProviderDetail() {
         />
       )}
 
-      {/* The API keys panel mounts its own toaster; two would show every toast twice. */}
-      {tab !== "api-keys" && <Toaster />}
+      {/* The one toaster of the page; the API keys panel is told not to mount its own. */}
+      <Toaster />
     </div>
   );
 }

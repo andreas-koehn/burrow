@@ -22,3 +22,10 @@ Object.defineProperty(window, "matchMedia", {
     dispatchEvent: vi.fn(),
   })),
 });
+
+// jsdom does not implement pointer capture; sonner calls it when a toast (or a
+// button inside one) is pressed.
+for (const name of ["setPointerCapture", "releasePointerCapture"] as const) {
+  if (!Element.prototype[name]) Element.prototype[name] = () => {};
+}
+if (!Element.prototype.hasPointerCapture) Element.prototype.hasPointerCapture = () => false;

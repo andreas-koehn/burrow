@@ -31,9 +31,20 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
 ];
 
-/** Same rule as the relay's vault slots. */
-export const CREDENTIAL_SLOT_RE = /^[A-Z0-9_]{1,32}$/;
-export const CREDENTIAL_SLOT_HINT = "1–32 characters: A–Z, 0–9 and underscore.";
+// Same rule as the relay's vault slots.
+const CREDENTIAL_SLOT_RE = /^[A-Z0-9_]{1,32}$/;
+
+/** Local validation message for a credential slot name, or null when it is fine or empty. */
+export function credentialSlotError(slot: string): string | null {
+  if (slot === "") return null;
+  if (!CREDENTIAL_SLOT_RE.test(slot)) return "1–32 characters: A–Z, 0–9 and underscore.";
+  // BURROW_UPSTREAM_KEY_FOO_FILE is the path of a file holding slot FOO's
+  // key, so a slot named FOO_FILE could never be told apart from it.
+  if (slot.endsWith("_FILE")) {
+    return `A slot name cannot end in _FILE: the relay reads ${envVarForSlot(slot)} as the path of a key file for slot ${slot.slice(0, -5) || "…"}.`;
+  }
+  return null;
+}
 
 /** Environment variable the relay reads a credential slot from. */
 export function envVarForSlot(slot: string): string {

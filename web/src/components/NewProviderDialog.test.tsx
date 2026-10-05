@@ -47,6 +47,8 @@ describe("New provider dialog", () => {
     expect(screen.getByLabelText("Credential slot")).toHaveValue("OPENROUTER");
     expect(screen.getByText("Cost is taken from what OpenRouter reports per request.")).toBeInTheDocument();
     expect(screen.queryByText(/BURROW_UPSTREAM_KEY_OPENROUTER/)).toBeNull(); // slot exists → no warning
+    // A slot that exists can still be empty; the field says what counts.
+    expect(screen.getByLabelText("Credential slot")).toHaveAccessibleDescription(/must be set to a non-empty value/);
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(posted).toMatchObject({
       kind: "direct", slug: "openrouter", name: "OpenRouter",
@@ -79,6 +81,9 @@ describe("New provider dialog", () => {
     const note = await screen.findByRole("note");
     expect(note).toHaveTextContent("BURROW_UPSTREAM_KEY_ZAI");
     expect(note).toHaveTextContent(/restart/i);
+    // Same condition as the "not configured" badge later: set and non-empty.
+    expect(note).toHaveTextContent("Slot ZAI is not set on the relay.");
+    expect(note).toHaveTextContent(/to a non-empty value/);
     expect(screen.getByRole("button", { name: "Create" })).toBeEnabled();
   });
 
@@ -148,5 +153,18 @@ describe("New provider dialog", () => {
     await userEvent.click(screen.getByRole("radio", { name: /a service behind a burrow client/i }));
     expect(await screen.findByText(/no eligible service/i)).toBeInTheDocument();
     expect(screen.queryByLabelText("Base URL")).toBeNull();
+  });
+
+  it("rejects a credential slot that ends in _FILE", async () => {
+    renderDialog();
+    await hosted();
+    await choosePreset("OpenRouter");
+    const slot = screen.getByLabelText("Credential slot");
+    await userEvent.clear(slot);
+    await userEvent.type(slot, "foo_file");
+    expect(slot).toHaveAttribute("aria-invalid", "true");
+    expect(slot).toHaveAccessibleDescription(/cannot end in _FILE/);
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+    expect(screen.queryByRole("note")).toBeNull();
   });
 });

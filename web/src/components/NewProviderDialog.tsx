@@ -5,7 +5,7 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
 import { SlugField } from "@/components/SlugField";
 import { providerSlugError } from "@/lib/providerSlug";
-import { CREDENTIAL_SLOT_HINT, CREDENTIAL_SLOT_RE, PROVIDER_PRESETS, envVarForSlot } from "@/lib/providerPresets";
+import { PROVIDER_PRESETS, credentialSlotError, envVarForSlot } from "@/lib/providerPresets";
 import { providerBaseUrl } from "@/lib/serviceUrl";
 import type { AiProvider, Service } from "@/lib/contract";
 
@@ -123,7 +123,9 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
   });
 
   const slugMessage = slugErr ?? providerSlugError(slug);
-  const slotMessage = slotErr ?? (slot !== "" && !CREDENTIAL_SLOT_RE.test(slot) ? CREDENTIAL_SLOT_HINT : null);
+  const slotMessage = slotErr ?? credentialSlotError(slot);
+  // The list names every slot that is set, also one set to an empty value, so
+  // a listed slot is no proof of a usable key; an unlisted one is proof of none.
   const slotMissing = direct && slot !== "" && slotMessage === null
     && slots.data !== undefined && !slots.data.slots.includes(slot);
   const filled = direct
@@ -225,7 +227,7 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
               htmlFor="np-slot"
               w="md"
               error={slotMessage ? <span id="np-slot-err">{slotMessage}</span> : undefined}
-              help={<span id="np-slot-help">The name of the slot, not the key. The key is set on the relay.</span>}
+              help={<span id="np-slot-help">The name of the slot, not the key. The key is set on the relay and must be set to a non-empty value.</span>}
             >
               <Input
                 id="np-slot"
@@ -266,8 +268,9 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
       <p className="muted small">Leave the slug empty to derive it from the name.</p>
       {slotMissing && (
         <ErrorNotice variant="info" role="note">
-          No credential found in slot {slot}. Set <code>{envVarForSlot(slot)}</code> in the relay's
-          environment and restart it. You can create the provider now; it answers 503 until the key is set.
+          Slot {slot} is not set on the relay. Set <code>{envVarForSlot(slot)}</code> to a non-empty value in
+          the relay's environment and restart it. You can create the provider now; it answers 503 until the
+          key is set.
         </ErrorNotice>
       )}
       {direct ? null : loadFailed ? (

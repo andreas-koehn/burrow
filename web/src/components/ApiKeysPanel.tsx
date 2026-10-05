@@ -9,7 +9,13 @@ import { toast } from "sonner";
 import { useAuth } from "@/auth/useAuth";
 import type { ServiceApiKey, CreatedApiKey } from "@/lib/contract";
 
-export function ApiKeysPanel({ serviceId }: { serviceId: string }) {
+export interface ApiKeysPanelProps {
+  serviceId: string;
+  /** False when the page around the panel already mounts a toaster. */
+  ownToaster?: boolean;
+}
+
+export function ApiKeysPanel({ serviceId, ownToaster = true }: ApiKeysPanelProps) {
   const { user } = useAuth();
   const qc = useQueryClient();
   const keysKey = ["service-api-keys", serviceId];
@@ -177,7 +183,7 @@ export function ApiKeysPanel({ serviceId }: { serviceId: string }) {
         <p className="muted">Clients using this key will start receiving 401 responses.</p>
       </Dialog>
 
-      <Toaster />
+      {ownToaster && <Toaster />}
     </div>
   );
 }
