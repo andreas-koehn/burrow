@@ -85,7 +85,7 @@ After all 13 sections pass, append:
 ### Steps
 1. Open `http://localhost:8080/` → expect redirect to `/login`.
 2. Sign in: `admin@e2e.local` / `e2e-pass`.
-3. Land on `/tunnels`. Sidebar shows: Tunnels, Services, Tokens, Clients, Users, Roles, AI endpoints, Cache, Guardrails, Cost, Audit log, Webhooks, Settings.
+3. Land on `/tunnels`. Sidebar shows: Tunnels, Services, Tokens, Clients, Users, Roles, Providers, Cache, Guardrails, Cost, Audit log, Webhooks, Settings.
 4. Click avatar → Account → Change password → new password `e2e-pass-2` → save → toast "Password updated".
 5. Sign out → sign in with new password → success.
 6. Reset for subsequent sections: `curl -X POST http://localhost:8080/api/v1/internal/test-reset` (password reverts to seeded). ⚠ After reset, `docker compose restart` is the cleanest way to also re-seed the on-disk token files so tunnels reconnect cleanly.
@@ -319,17 +319,20 @@ The dashboard has no mTLS controls. The mode is set through the REST API and onl
 **Goal:** v0.4 AI gateway middleware chain works end-to-end via mockoai.
 
 ### Steps
-1. **Turn the `ai` service into an AI endpoint.** An AI endpoint is simply an HTTP
-   service in **api_key** access mode — there is NO separate "Register endpoint"
-   button. Go to `/services` → `ai` → **Configure** → select **API key** →
-   **Save changes**.
-2. `/ai/endpoints` → the `ai` row now appears with status **Connected**.
-   (Services left in *open* mode are intentionally NOT listed here — that empty
-   list is expected until at least one service is in api_key mode.)
+1. **Register the `ai` service as a provider.** A provider is backed by an HTTP
+   service in **api_key** access mode. Go to `/services` → `ai` → **Configure** →
+   select **API key** → **Save changes**. Switching the mode does not create the
+   provider: go to `/gateway/providers` → **New provider** → name `ai`, slug
+   `ai-mock`, service `ai` → **Create**.
+2. `/gateway/providers` → the `ai` row now appears with its base URL path
+   `/ai/ai-mock/v1` and status **Connected**. (A service is not listed here
+   until an admin has registered it — an empty list with "No providers yet"
+   is expected before step 1.)
 3. **Link check — every AI-gateway page must render (no blank page / error).**
    Click each AI-gateway nav link and confirm content renders:
-   - `/ai/endpoints` (list) → click `ai` → `/ai/endpoints/<id>` (detail page:
-     **Routing**, **Backends**, **Recent requests** sections all render)
+   - `/gateway/providers` (list) → click `ai` → `/gateway/providers/ai-mock`
+     (detail page: **Connect a client**, **Routing**, **Backends**, **Recent
+     requests** sections all render)
    - `/cache` → both the **Exact match** AND **Semantic** tabs render (the
      Semantic tab must not blank out)
    - `/cost`, `/guardrails`, and `/inspector/<ai-service-id>` each render
@@ -347,7 +350,7 @@ The dashboard has no mTLS controls. The mode is set through the REST API and onl
         -d '{"model":"mock","stream":true,"messages":[{"role":"user","content":"hi"}]}'
    ```
 7. Expect SSE stream with `data: {...}` chunks + `[DONE]` (5 chunks total: 4 content + 1 DONE).
-8. `/ai/endpoints` → click `ai` → endpoint detail page renders. ⚠ The Requests /
+8. `/gateway/providers` → click `ai` → provider detail page renders. ⚠ The Requests /
    Tokens / Cost / Cache-hit tiles currently read **0** — see Gotchas (server-side
    usage aggregation is not wired yet). That is expected, not a failure.
 9. Repeat the curl 20 times rapidly → trigger rate limit → expect 429 on later calls.
@@ -363,11 +366,11 @@ The dashboard has no mTLS controls. The mode is set through the REST API and onl
   connection-log entries, not the metric tiles.
 
 ### Gotchas ⚠
-- **Per-endpoint metering is not aggregated yet.** `GET /ai/endpoints` and
-  `GET /ai/endpoints/{id}/metrics` (internal/api/ai_endpoint_handlers.go) return
+- **Per-provider metering is not aggregated yet.** `GET /api/v1/ai/providers` and
+  `GET /api/v1/ai/providers/{slug}/metrics` (internal/api/ai_provider_handlers.go) return
   hard-zeroed requests/tokens/cost/cache values — a documented TODO pending
   `usage_events` aggregation on the proxy hot-path. So the metric tiles on
-  `/ai/endpoints`, the endpoint detail page, and the `$` figures on `/cost` will
+  `/gateway/providers`, the provider detail page, and the `$` figures on `/cost` will
   read 0 even after real traffic. Don't flag this as a regression; verify
   proxying via the SSE stream + `ratelimit.enforced` audit row instead.
 - mockoai's `/v1/chat/completions` doesn't honor the bearer token (it accepts every request). The bearer is checked by Burrow's proxy access-mode gate BEFORE the request reaches mockoai. So 401 without bearer means Burrow's gate fired; 200 with bearer means Burrow accepted + proxied.

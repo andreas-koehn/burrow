@@ -23,7 +23,7 @@ export interface ServiceRow extends Service {
   user_id: string;
 }
 
-// Per-service AI-endpoint metadata seeded for the v0.4.0 /ai/endpoints lens.
+// Per-service metadata the /ai/providers handlers join onto a provider row.
 // Backend derives these from runtime metrics; the mock seeds plausible values.
 export interface AiMetaRow {
   backend_type: "ollama" | "vllm" | "openai-compat" | "other";
@@ -32,6 +32,15 @@ export interface AiMetaRow {
   latency_p95_ms: number;
   status: "Connected" | "Degraded" | "Offline";
   client_session_id: string;
+}
+
+// Identity part of a provider, as stored in the providers table.
+export interface AiProviderRow {
+  slug: string;
+  name: string;
+  kind: "tunnel" | "direct";
+  api_format: "openai" | "anthropic";
+  service_id: string;
 }
 
 export interface MockDb {
@@ -50,6 +59,7 @@ export interface MockDb {
   serviceApiKeys: Record<string, ServiceApiKey[]>;
   serviceAccessPolicy: Record<string, string[]>;
   aiMeta: Record<string, AiMetaRow>;
+  aiProviders: AiProviderRow[];
   modelAliases: ModelAliasV5[];
   costSummary: Record<"today" | "week" | "month" | "year", CostSummary>;
   aiConfigs: Record<string, ServiceAIConfig>;
@@ -151,6 +161,9 @@ function seed(): MockDb {
         client_session_id: "sess_4f7a9c0b2e81",
       },
     },
+    aiProviders: [
+      { slug: "ollama", name: "ollama", kind: "tunnel", api_format: "openai", service_id: "svc_ai001" },
+    ],
     modelAliases: [
       { alias: "fast", concrete_model: "llama3.1:8b", service_id: "svc_ai001", provider: "ollama", priority: 100, created_at: "2026-05-19T00:00:00Z" },
     ],
@@ -325,7 +338,7 @@ function defaultAiConfig(): ServiceAIConfig {
 }
 
 // Twelve inspector entries — enough to test the "10 newest" Recent Requests
-// table on the AI endpoint detail page.
+// table on the provider detail page.
 function seedInspector(serviceId: string): InspectorEntry[] {
   const out: InspectorEntry[] = [];
   for (let i = 0; i < 12; i++) {

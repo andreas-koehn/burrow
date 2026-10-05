@@ -63,7 +63,7 @@ export function Layout() {
   const isAdmin = user?.role === "admin";
   const servicesList = Array.isArray(services.data) ? services.data : [];
   const firstHttpServiceId = servicesList.find((s) => s.type === "http")?.id;
-  const hasAiEndpoints = isAdmin
+  const hasAiGateway = isAdmin
     || servicesList.some((s) => s.type === "http" && s.connected);
   const navItem = ({ isActive }: { isActive: boolean }) => cx("nav-item", isActive && "is-active");
   const avatarInitial = (user?.email?.[0] ?? "U").toUpperCase();
@@ -126,12 +126,12 @@ export function Layout() {
             </NavLink>
           </div>
 
-          {hasAiEndpoints && (
+          {hasAiGateway && (
             <div className="nav-group">
               <div className="nav-group-title">AI GATEWAY</div>
-              <NavLink to="/ai/endpoints" className={navItem}>
+              <NavLink to="/gateway/providers" className={navItem}>
                 <span className="nav-icon"><Sparkles size={16} /></span>
-                <span className="nav-label">AI endpoints</span>
+                <span className="nav-label">Providers</span>
               </NavLink>
               <NavLink to="/cost" className={navItem}>
                 <span className="nav-icon"><DollarSign size={16} /></span>
@@ -242,7 +242,7 @@ export function Layout() {
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
         isAdmin={isAdmin}
-        hasAiEndpoints={hasAiEndpoints}
+        hasAiGateway={hasAiGateway}
         firstHttpServiceId={firstHttpServiceId}
       />
     </div>

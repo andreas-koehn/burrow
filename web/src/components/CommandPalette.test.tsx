@@ -17,7 +17,7 @@ function SpyHeading() {
 interface RenderOptions {
   open?: boolean;
   isAdmin?: boolean;
-  hasAiEndpoints?: boolean;
+  hasAiGateway?: boolean;
   firstHttpServiceId?: string;
   onOpenChange?: (open: boolean) => void;
 }
@@ -25,7 +25,7 @@ interface RenderOptions {
 function renderPalette({
   open = true,
   isAdmin = true,
-  hasAiEndpoints = true,
+  hasAiGateway = true,
   firstHttpServiceId = "svc_web01",
   onOpenChange = vi.fn(),
 }: RenderOptions = {}) {
@@ -45,7 +45,7 @@ function renderPalette({
                     open={open}
                     onOpenChange={onOpenChange}
                     isAdmin={isAdmin}
-                    hasAiEndpoints={hasAiEndpoints}
+                    hasAiGateway={hasAiGateway}
                     firstHttpServiceId={firstHttpServiceId}
                   />
                 </>

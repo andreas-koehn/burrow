@@ -6,7 +6,7 @@ import { test, expect } from "@playwright/test";
 //   1. "Home is default"          — In-1, In-3, metric tiles, quick-action links
 //   2. "Onboarding success loop"  — Ea-1 (connect-client form, command, Waiting indicator)
 //   3. "Command palette"          — In-6, Ea-2 (Ctrl+K opens, type, Enter navigates)
-//   4. "Cross-feature wiring"     — Clr-4 (AI endpoints empty→dialog prefilled)
+//   4. "Cross-feature wiring"     — Clr-4 (Providers → "New AI service" dialog prefilled)
 //                                  Ea-4 (Users SMTP notice → /settings link)
 //
 // This spec runs against the REAL built burrowd (no MSW mocks).
@@ -116,12 +116,10 @@ test.describe("Command palette", () => {
 // 4. Cross-feature wiring
 // ---------------------------------------------------------------------------
 test.describe("Cross-feature wiring", () => {
-  test("AI endpoints empty state: 'New AI service' button opens dialog prefilled with API-key", async ({ page }) => {
-    // Navigate directly to /services?new=ai because the real /ai/endpoints
-    // returns 404 on stock builds (feature-gated) — the AiEndpoints page
-    // shows featureAbsent in that case and the CTA is not rendered.
-    // The button on /ai/endpoints is tested via RTL (Clr-4) against MSW.
-    // Here we verify the guided create flow works end-to-end.
+  test("Providers page: 'New AI service' button opens dialog prefilled with API-key", async ({ page }) => {
+    // Navigate directly to /services?new=ai, where the button on
+    // /gateway/providers leads; the button itself is tested via RTL (Clr-4)
+    // against MSW. Here we verify the guided create flow works end-to-end.
     await page.goto("/services?new=ai");
 
     const dialog = page.getByRole("dialog");

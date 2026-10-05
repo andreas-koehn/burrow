@@ -10,7 +10,7 @@ export interface CommandPaletteProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   isAdmin: boolean;
-  hasAiEndpoints: boolean;
+  hasAiGateway: boolean;
   firstHttpServiceId?: string;
 }
 
@@ -30,7 +30,7 @@ export function CommandPalette({
   open,
   onOpenChange,
   isAdmin,
-  hasAiEndpoints,
+  hasAiGateway,
   firstHttpServiceId,
 }: CommandPaletteProps) {
   const navigate = useNavigate();
@@ -60,7 +60,7 @@ export function CommandPalette({
   // Wrapped in useMemo so the array reference is stable and doesn't cause
   // the useCallback below to re-create on every render.
   const allItems = useMemo<PaletteItem[]>(() => {
-    const destinations = destinationsFor({ isAdmin, hasAiEndpoints, firstHttpServiceId });
+    const destinations = destinationsFor({ isAdmin, hasAiGateway, firstHttpServiceId });
 
     // Filter destinations by query.
     const filteredDestinations = destinations.filter(
@@ -107,7 +107,7 @@ export function CommandPalette({
       })),
       ...entityItems,
     ];
-  }, [q, servicesQuery.data, clientsQuery.data, isAdmin, hasAiEndpoints, firstHttpServiceId]);
+  }, [q, servicesQuery.data, clientsQuery.data, isAdmin, hasAiGateway, firstHttpServiceId]);
 
   const activate = useCallback(
     (path: string) => {

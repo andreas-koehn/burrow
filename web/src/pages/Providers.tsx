@@ -1,12 +1,14 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Sparkles } from "lucide-react";
+import { Copy, MoreHorizontal, Sparkles } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { statusLabel } from "@/lib/status";
 import { Badge, Button, DropdownMenu, EmptyState, ErrorNotice, MetricStrip, MetricTile, PageHeader, SkeletonRows } from "@/components/ds";
 import { useAuth } from "@/auth/useAuth";
-import type { AiEndpoint, CostSummary } from "@/lib/contract";
+import { NewProviderDialog } from "@/components/NewProviderDialog";
+import { providerBaseUrl } from "@/lib/serviceUrl";
+import type { AiProvider, CostSummary } from "@/lib/contract";
 
 function fmtInt(n: number): string {
   return n.toLocaleString("en-US");
@@ -22,20 +24,21 @@ function hitRatio(hits: number, requests: number): string {
 }
 
 
-const STATUS_BADGE: Record<AiEndpoint["status"], string> = {
+const STATUS_BADGE: Record<AiProvider["status"], string> = {
   Connected: "status-connected",
   Degraded: "status-degraded",
   Offline: "status-offline",
 };
 
-export default function AiEndpoints() {
+export default function Providers() {
   const qc = useQueryClient();
   const nav = useNavigate();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const [newOpen, setNewOpen] = useState(false);
   const endpoints = useQuery({
-    queryKey: ["ai", "endpoints"],
-    queryFn: () => apiFetch<AiEndpoint[]>("/ai/endpoints"),
+    queryKey: ["ai", "providers"],
+    queryFn: () => apiFetch<AiProvider[]>("/ai/providers"),
     retry: false,
   });
   const summary = useQuery({
@@ -49,7 +52,7 @@ export default function AiEndpoints() {
   useEffect(() => {
     if (typeof EventSource === "undefined") return;
     const es = new EventSource("/api/v1/events");
-    const onTick = () => qc.invalidateQueries({ queryKey: ["ai", "endpoints"] });
+    const onTick = () => qc.invalidateQueries({ queryKey: ["ai", "providers"] });
     es.addEventListener("tunnels", onTick);
     return () => {
       es.removeEventListener("tunnels", onTick);
@@ -74,7 +77,7 @@ export default function AiEndpoints() {
   if (featureAbsent) {
     return (
       <div className="ai-endpoints-page">
-        <PageHeader title="AI endpoints" />
+        <PageHeader title="Providers" />
         <EmptyState
           icon={<Sparkles size={18} />}
           title="AI gateway isn't available on this relay"
@@ -88,19 +91,24 @@ export default function AiEndpoints() {
   return (
     <div className="ai-endpoints-page">
       <PageHeader
-        title="AI endpoints"
-        subtitle="Services exposing an OpenAI-compatible API through this relay — with cache, cost, and traffic at a glance."
+        title="Providers"
+        subtitle="Model backends served through this relay, each under its own base URL — with cache, cost, and traffic at a glance."
         actions={isAdmin ? (
-          <Button variant="primary" size="sm" onClick={() => nav("/services?new=ai")}>
-            New AI service
-          </Button>
+          <>
+            <Button variant="secondary" size="sm" onClick={() => nav("/services?new=ai")}>
+              New AI service
+            </Button>
+            <Button variant="primary" size="sm" onClick={() => setNewOpen(true)}>
+              New provider
+            </Button>
+          </>
         ) : undefined}
       />
       <p className="muted small" style={{ marginBottom: "var(--space-3, 12px)" }}>
-        An AI endpoint is a <Link to="/services">Service</Link> with API-key access and an OpenAI-compatible upstream.
+        A provider serves a <Link to="/services">Service</Link> with API-key access and an OpenAI-compatible upstream.
       </p>
 
-      <MetricStrip ariaLabel="AI endpoint metrics">
+      <MetricStrip ariaLabel="Provider metrics">
         <MetricTile label="Requests (24h)" value={fmtInt(totalRequests)} />
         <MetricTile
           label="Tokens in/out (24h)"
@@ -126,7 +134,7 @@ export default function AiEndpoints() {
             </Button>
           }
         >
-          Couldn't load AI endpoints:{" "}
+          Couldn't load providers:{" "}
           {endpoints.error instanceof ApiError ? endpoints.error.message : "Unknown error"}
         </ErrorNotice>
       ) : endpoints.isLoading ? (
@@ -136,21 +144,24 @@ export default function AiEndpoints() {
       ) : list.length === 0 ? (
         <EmptyState
           icon={<Sparkles size={18} />}
-          title="No AI endpoints yet"
+          title="No providers yet"
           action={isAdmin ? (
-            <Button variant="primary" size="sm" onClick={() => nav("/services?new=ai")}>
-              New AI service
+            <Button variant="primary" size="sm" onClick={() => setNewOpen(true)}>
+              New provider
             </Button>
           ) : undefined}
         >
-          Create a service with API-key access mode and OpenAI-compatible upstream.
+          {isAdmin
+            ? "Add one from a service in API-key mode."
+            : "An administrator can add one from a service in API-key mode."}
         </EmptyState>
       ) : (
         <div className="table-wrap">
-          <table className="data" aria-label="AI endpoints">
+          <table className="data" aria-label="Providers">
             <thead>
               <tr>
                 <th>Name</th>
+                <th>Base URL</th>
                 <th>Backend</th>
                 <th>Keys</th>
                 <th>Requests (24h)</th>
@@ -161,15 +172,30 @@ export default function AiEndpoints() {
               </tr>
             </thead>
             <tbody>
-              {list.map((e) => (
-                <tr key={e.service_id}>
+              {list.map((e) => {
+                const baseUrl = providerBaseUrl(e.slug, e.base_url);
+                return (
+                <tr key={e.slug}>
                   <td className="col-name">
-                    <div><Link to={`/ai/endpoints/${e.service_id}`}>{e.name}</Link></div>
+                    <div><Link to={`/gateway/providers/${e.slug}`}>{e.name}</Link></div>
                     {(e.model_alias || e.concrete_model) && (
                       <div className="mono muted small">
                         {`${e.model_alias} → ${e.concrete_model}`}
                       </div>
                     )}
+                  </td>
+                  <td>
+                    <span className="row row-center gap-2 service-url">
+                      <span className="mono service-url-path" title={baseUrl}>{`/ai/${e.slug}/v1`}</span>
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label={`Copy base URL ${baseUrl}`}
+                        onClick={() => void navigator.clipboard?.writeText(baseUrl)}
+                      >
+                        <Copy size={13} />
+                      </button>
+                    </span>
                   </td>
                   <td>
                     <Badge kind={`backend-${e.backend_type}`} nodot>
@@ -201,7 +227,7 @@ export default function AiEndpoints() {
                         </button>
                       }
                       items={[
-                        { label: "Inspect", onSelect: () => nav(`/ai/endpoints/${e.service_id}`) },
+                        { label: "Inspect", onSelect: () => nav(`/gateway/providers/${e.slug}`) },
                         { label: "Keys", onSelect: () => nav(`/services?focus=${e.service_id}&panel=api-keys`) },
                         { label: "Access settings", onSelect: () => nav(`/services?focus=${e.service_id}`) },
                         { label: "Cost", onSelect: () => nav(`/cost`) },
@@ -209,11 +235,13 @@ export default function AiEndpoints() {
                     />
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
+      {isAdmin && <NewProviderDialog open={newOpen} onOpenChange={setNewOpen} />}
     </div>
   );
 }

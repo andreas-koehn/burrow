@@ -1672,7 +1672,7 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
 }
 
 /* MetricStrip — responsive grid of stat tiles. Referenced from
-   CostBudgets / AiEndpoints / AiEndpointDetail since v0.4 but the
+   CostBudgets / Providers / ProviderDetail since v0.4 but the
    class rule was never authored, so tiles fell back to block layout
    (vertical stack). minmax(180px, 1fr) wraps gracefully below ~750px. */
 .metric-strip {
@@ -1903,7 +1903,7 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
 
 /* ──────────────────────────────────────────────────────────────
    AI Gateway page layout primitives
-   Shared by AiEndpoints, AiEndpointDetail, CostBudgets,
+   Shared by Providers, ProviderDetail, CostBudgets,
    PromptCache, Guardrails, RequestInspector.
 
    Root causes fixed here:
@@ -1916,7 +1916,7 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
    3. .page-section + .page-section — automatic vertical rhythm
       between top-level sections (replaces ad-hoc margin-top: 16px
       on individual .card elements).
-   4. .meta-strip / .sparkline-wrap — AiEndpointDetail layout
+   4. .meta-strip / .sparkline-wrap — ProviderDetail layout
       helpers that were used in JSX but had no CSS.
    5. .stat-row / .semantic-stats — PromptCache SemanticStatsPanel
       rows had no layout rule.
@@ -1966,13 +1966,25 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   margin-top: var(--space-xl);
 }
 
-/* 4. AiEndpointDetail meta-strip (resolved alias + base URL row) */
+/* 4. ProviderDetail meta-strip (resolved alias + base URL row) */
 /* A service URL next to its copy button: in a narrow container the path wraps
    and the button keeps its size, so it is never pushed out of view. Table
    cells stay on one line (td is nowrap) and scroll with the table. */
 .service-url { min-width: 0; max-width: 100%; }
 .service-url-path { min-width: 0; overflow-wrap: anywhere; }
 .service-url .icon-btn { flex-shrink: 0; }
+/* ProviderConnect: base URL row and the copyable examples, evenly spaced. */
+.provider-connect > * + * { margin-top: var(--space-md); }
+.provider-connect .icon-btn { flex-shrink: 0; }
+.provider-connect .cmd-block { min-width: 0; }
+/* The provider pages carry two or three header controls; on a narrow screen
+   they drop under the title instead of squeezing it. */
+@media (max-width: 560px) {
+  .ai-endpoints-page > .page-header,
+  .ai-endpoint-detail-page > .page-header { flex-wrap: wrap; }
+  .ai-endpoints-page > .page-header .actions,
+  .ai-endpoint-detail-page > .page-header .actions { flex-wrap: wrap; flex-shrink: 1; }
+}
 .meta-strip {
   display: flex;
   flex-wrap: wrap;
@@ -1985,7 +1997,7 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   margin-bottom: var(--space-md);
 }
 
-/* 4b. AiEndpointDetail sparkline container */
+/* 4b. ProviderDetail sparkline container */
 .sparkline-wrap {
   margin: var(--space-md) 0;
   color: var(--primary);
@@ -2253,7 +2265,7 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
    Panel sub-header — replaces hand-rolled
    <div className="row" style={{justifyContent:"space-between",
    alignItems:"center"}}> inside ApiKeysPanel, CustomDomainsPanel,
-   AiEndpointDetail etc. (R2-F09, R2-F29).
+   ProviderDetail etc. (R2-F09, R2-F29).
    Uses .section-head naming consistent with Account page pattern.
    ────────────────────────────────────────────────────────────── */
 .panel-head {

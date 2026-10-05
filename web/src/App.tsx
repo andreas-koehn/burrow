@@ -13,8 +13,8 @@ import Settings from "@/pages/Settings";
 import Clients from "@/pages/Clients";
 import ClientDetail from "@/pages/ClientDetail";
 import ConnectClient from "@/pages/ConnectClient";
-import AiEndpoints from "@/pages/AiEndpoints";
-import AiEndpointDetail from "@/pages/AiEndpointDetail";
+import Providers from "@/pages/Providers";
+import ProviderDetail from "@/pages/ProviderDetail";
 import PromptCache from "@/pages/PromptCache";
 import Guardrails from "@/pages/Guardrails";
 import RequestInspector from "@/pages/RequestInspector";
@@ -45,8 +45,9 @@ export default function App() {
         <Route path="/" element={<Home />} />
         <Route path="/tunnels" element={<Tunnels />} />
         <Route path="/services" element={<Services />} />
-        <Route path="/ai/endpoints" element={<AiEndpoints />} />
-        <Route path="/ai/endpoints/:id" element={<AiEndpointDetail />} />
+        {/* /ai/ is the gateway's data plane and never reaches the SPA; its pages live under /gateway/. */}
+        <Route path="/gateway/providers" element={<Providers />} />
+        <Route path="/gateway/providers/:slug" element={<ProviderDetail />} />
         <Route path="/cache" element={<PromptCache />} />
         <Route path="/guardrails" element={<Guardrails />} />
         <Route path="/inspector" element={<InspectorIndex />} />

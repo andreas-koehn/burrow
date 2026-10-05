@@ -7,6 +7,10 @@ interface Service {
   id: string;
   name: string;
 }
+interface AiProvider {
+  slug: string;
+  service_id: string;
+}
 interface ModelAlias {
   alias: string;
   concrete_model: string;
@@ -16,14 +20,12 @@ interface ModelAlias {
 test.use({ storageState: AUTH_STORAGE_PATH });
 
 // Model-alias CRUD. The intended surface is the "Add alias" dialog on
-// /ai/endpoints/{id} (web/src/pages/AiEndpointDetail.tsx). That page is
-// currently broken for every service: it issues GET /services/{id}/ai-config,
-// but the backend only registers a PUT route (internal/api/router.go), so the
-// GET 405s and the page short-circuits to "Couldn't load endpoint: Method Not
-// Allowed" — the alias dialog never renders (see follow-up task).
+// /gateway/providers/{slug} (web/src/pages/ProviderDetail.tsx). That page
+// exists only for a service that backs a provider, and it short-circuits to
+// "Couldn't load provider: …" when one of its requests fails.
 //
-// This spec drives the real page first. If the alias dialog is reachable (i.e.
-// the GET /ai-config route has since been added) it exercises create through
+// This spec drives the real page first when the seeded "ai" service backs a
+// provider and the alias dialog is reachable: it then exercises create through
 // the UI. Otherwise it falls back to exercising alias create + delete through
 // the model-alias API (POST + DELETE /models/aliases) so the feature is still
 // genuinely covered end-to-end rather than skipped. Either way create is
@@ -41,14 +43,21 @@ test("37-ai-aliases: create and delete a model alias (UI dialog when reachable, 
   let createdViaUI = false;
 
   try {
-    await page.goto(`/ai/endpoints/${id}`);
+    // The provider of the "ai" service, if it backs one in this run.
+    const provRes = await request.get("/api/v1/ai/providers");
+    const slug = provRes.ok()
+      ? ((await provRes.json()) as AiProvider[]).find((p) => p.service_id === id)?.slug
+      : undefined;
 
     const addAlias = page.getByRole("button", { name: /add alias/i });
-    const loadError = page.getByText(/Couldn't load endpoint/i);
-    // Race: either the page renders (Add alias button) or it errors.
-    await expect(addAlias.or(loadError).first()).toBeVisible({ timeout: 10_000 });
+    if (slug) {
+      await page.goto(`/gateway/providers/${slug}`);
+      const loadError = page.getByText(/Couldn't load provider/i);
+      // Race: either the page renders (Add alias button) or it errors.
+      await expect(addAlias.or(loadError).first()).toBeVisible({ timeout: 10_000 });
+    }
 
-    if (await addAlias.isVisible().catch(() => false)) {
+    if (slug && (await addAlias.isVisible().catch(() => false))) {
       // ── UI path: drive the Add alias dialog. ──
       await addAlias.click();
       const dialog = page.getByRole("dialog", { name: "Add alias" });
@@ -63,7 +72,7 @@ test("37-ai-aliases: create and delete a model alias (UI dialog when reachable, 
       await expect(page.getByText("Alias created.")).toBeVisible({ timeout: 5_000 });
       createdViaUI = true;
     } else {
-      // ── API fallback: the detail page is broken (GET /ai-config 405s).
+      // ── API fallback: no provider page for this service in this run.
       // Exercise alias CREATE through the model-alias API. ──
       const created = await request.post("/api/v1/models/aliases", {
         headers: adminHeaders(),

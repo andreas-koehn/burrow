@@ -128,11 +128,17 @@ export interface CreatedApiKey {
 // ---- v0.4.0: AI gateway + company-scale dashboard ----
 // Mirror of dev/superpowers/specs/2026-05-19-v0.4.0-api-contract.md.
 
-// AI endpoint — read-only lens over Service rows where access_mode=api_key
-// (spec §4.19). Backend derives; UI never POSTs this shape.
-export interface AiEndpoint {
-  service_id: string;
+// AI provider — a slug under which a model backend is served at base_url.
+// Identity fields come from the providers table; the rest is read live from
+// the backing service.
+export interface AiProvider {
+  slug: string;
   name: string;
+  kind: "tunnel" | "direct";
+  api_format: "openai" | "anthropic";
+  service_id: string;
+  /** https://<auth_domain>/ai/<provider>/v1, or "" when the relay has no auth domain. */
+  base_url: string;
   model_alias: string;
   concrete_model: string;
   backend_type: "ollama" | "vllm" | "openai-compat" | "other";

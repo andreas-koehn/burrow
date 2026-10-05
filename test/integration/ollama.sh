@@ -74,7 +74,7 @@ acode() { curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -H "X-CSRF-Token: $CS
 # px <curl args...> — host-routed request to the tunnel ingress
 px()    { curl -s -H "Host: $SUB.$DOMAIN" "$@"; }
 chat()  { printf '{"model":"%s","temperature":0,"max_tokens":%s,"messages":[{"role":"user","content":"%s"}]}' "${3:-$MODEL}" "${2:-8}" "$1"; }
-metric() { aget "/api/v1/ai/endpoints/$SID/metrics" | jq -r ".$1"; }
+metric() { aget "/api/v1/ai/providers/$PROV/metrics" | jq -r ".$1"; }
 
 login
 TOKEN=$(amut POST /api/v1/tokens '{"name":"ollama-host"}' | jq -r .token)
@@ -98,6 +98,9 @@ check "open: path route /svc/<slug>/v1/models" "$(curl -s -o /dev/null -w '%{htt
 
 # --- access: api_key ---------------------------------------------------------
 check "set access mode api_key" "$(acode PUT "/api/v1/services/$SID/access-mode" '{"access_mode":"api_key"}')" "204"
+# A provider is not created when a service is switched to api_key later.
+PROV=$(amut POST /api/v1/ai/providers "{\"slug\":\"ollama\",\"name\":\"ollama\",\"kind\":\"tunnel\",\"service_id\":\"$SID\"}" | jq -r .slug)
+check "register provider" "$PROV" "ollama"
 KEY=$(amut POST "/api/v1/services/$SID/api-keys" '{"name":"openai-sdk"}' | jq -r .key)
 KEY_ID=$(aget "/api/v1/services/$SID/api-keys" | jq -r '.[0].id')
 AUTH="Authorization: Bearer $KEY"
@@ -184,13 +187,10 @@ acode DELETE "/api/v1/rate-limits/$RL" >/dev/null
 
 # --- model aliases -----------------------------------------------------------
 # An alias of the provider's service is rewritten on /ai/<provider>/. The
-# provider slug is the service name ("ollama"), lower-cased.
-# Keep this check below the "docker restart" in the resilience section: the
-# "ollama" provider row exists only because that restart re-runs the
-# start-time backfill while the service is in api_key mode.
+# provider is the one registered in the api_key section above.
 amut POST /api/v1/models/aliases "{\"alias\":\"gpt-4o-mini\",\"concrete_model\":\"$MODEL\",\"service_id\":\"$SID\",\"provider\":\"ollama\",\"priority\":0}" >/dev/null
 check "model alias gpt-4o-mini is rewritten to $MODEL" \
-  "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" -H 'Content-Type: application/json' -d "$(chat "alias $RANDOM" 4 gpt-4o-mini)" "$B/ai/ollama/v1/chat/completions")" "200"
+  "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" -H 'Content-Type: application/json' -d "$(chat "alias $RANDOM" 4 gpt-4o-mini)" "$B/ai/$PROV/v1/chat/completions")" "200"
 
 # --- known defects (XFAIL) ---------------------------------------------------
 # 4. An automation token's declared permission set is not enforced on

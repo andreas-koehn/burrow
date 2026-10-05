@@ -2,21 +2,14 @@ import { test, expect } from "@playwright/test";
 
 // Phase 5: AI gateway actionable — guided create-service flow.
 //
-// Flow: /ai/endpoints → click "New AI service" → Services page "New AI
+// Flow: /gateway/providers → click "New AI service" → Services page "New AI
 // service" dialog opens (access mode fixed to API key, no picker) → fill
-// service_id → "Create and continue" → server returns {id, created_at} → navigate to /services/<id>#upstream-key
-// → Upstream-key tab is active.
+// service_id → "Create and continue" → the service is created and registered
+// as a provider → navigate to /gateway/providers/<slug>.
 //
-// This spec runs against the REAL built burrowd (no MSW). The POST /services
-// route is wired in the real binary (v0.5.2). The /ai/endpoints route returns
-// a non-200 in the stock binary (feature-gated), so the page renders in its
-// feature-absent or error state — the "New AI service" button is on the
-// PageHeader (visible in both states for admin, except featureAbsent).
-//
-// Because the real /ai/endpoints returns 404 (featureAbsent branch), the
-// empty-state CTA is NOT rendered; the PageHeader CTA is rendered only in the
-// non-featureAbsent path. Therefore this spec navigates directly to
-// /services?new=ai to exercise the auto-open flow independently.
+// This spec runs against the REAL built burrowd (no MSW). It navigates
+// directly to /services?new=ai to exercise the auto-open flow on its own; the
+// "New AI service" button on the Providers page is covered by RTL.
 
 test.use({ storageState: "playwright-auth.json" });
 
@@ -39,7 +32,7 @@ test("P5: ?new=ai auto-opens the New AI service dialog without an access-mode pi
   await expect(page).not.toHaveURL(/new=ai/);
 });
 
-test("P5: create AI service via dialog routes to upstream-key tab", async ({ page }) => {
+test("P5: create AI service via dialog registers a provider and opens its page", async ({ page }) => {
   // Pre-create step: ensure a unique service id.
   const uniqueId = `svc-e2e-ai-${Date.now()}-${++svcSeq}`;
 
@@ -63,19 +56,17 @@ test("P5: create AI service via dialog routes to upstream-key tab", async ({ pag
   // Click Create and continue — POST /services with {service_id, access_mode:"api_key"}
   await dialog.getByRole("button", { name: "Create and continue" }).click();
 
-  // After success the dialog closes and we navigate to /services/<id>#upstream-key
+  // After success the dialog closes and we land on the new provider's page.
+  // The server derives the provider slug from the title.
   await expect(dialog).not.toBeVisible({ timeout: 10_000 });
+  await expect(page).toHaveURL(/\/gateway\/providers\/[a-z0-9-]+$/, { timeout: 10_000 });
+  await expect(page.getByRole("heading", { name: `Provider · ${uniqueId}`, level: 1 })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("heading", { name: "Connect a client" })).toBeVisible();
 
-  // URL should be /services/<id> (with or without the hash in the URL bar)
-  await expect(page).toHaveURL(new RegExp(`/services/${uniqueId}`), { timeout: 10_000 });
-
-  // The Upstream-key tab should be active
-  const upstreamTab = page.getByRole("tab", { name: /upstream key/i });
-  await expect(upstreamTab).toBeVisible();
-  await expect(upstreamTab).toHaveAttribute("aria-selected", "true");
-
-  // Clean up: the created service. Await it so the deletion completes before the
-  // next test runs in the shared session (fire-and-forget leaked state → flakiness).
+  // Clean up: the provider, then the service. Await both so the deletions
+  // complete before the next test runs in the shared session.
+  const slug = new URL(page.url()).pathname.split("/").pop();
+  await page.request.delete(`/api/v1/ai/providers/${slug}`, { headers }).catch(() => {});
   await page.request.delete(`/api/v1/services/${uniqueId}`, { headers }).catch(() => {});
 });
 

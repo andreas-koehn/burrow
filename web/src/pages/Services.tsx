@@ -130,11 +130,23 @@ export default function Services() {
           access_mode: nsAccessMode,
         }),
       }),
-    onSuccess: (resp) => {
+    onSuccess: async (resp) => {
       qc.invalidateQueries({ queryKey: ["services"] });
       if (aiFlow && resp?.id) {
-        closeNew();
-        nav(`/services/${resp.id}#upstream-key`);
+        // The service only becomes reachable under /ai/ once it has a provider.
+        try {
+          const p = await apiFetch<{ slug: string }>("/ai/providers", {
+            method: "POST",
+            body: JSON.stringify({ name: nsTitle || nsServiceId, kind: "tunnel", service_id: resp.id }),
+          });
+          qc.invalidateQueries({ queryKey: ["ai", "providers"] });
+          closeNew();
+          nav(`/gateway/providers/${p.slug}`);
+        } catch {
+          // The service exists; the provider can still be added from Providers.
+          closeNew();
+          nav(`/services/${resp.id}`);
+        }
       } else {
         toast.success(`Service ${nsServiceId} created.`);
         closeNew();
@@ -279,7 +291,7 @@ export default function Services() {
         onOpenChange={(o) => { if (!o) closeNew(); }}
         title={aiFlow ? "New AI service" : "New service"}
         description={aiFlow
-          ? "Creates a service with API-key access. Next you'll bind an upstream key so it appears under AI endpoints."
+          ? "Creates a service with API-key access and registers it as a model provider."
           : "Pre-provision a service so a connecting client adopts the same id."}
         footer={
           <>

@@ -17,16 +17,19 @@ export interface SlugFieldProps {
   onChange: (value: string) => void;
   /** Error reported by the server (e.g. "slug already in use"). */
   error?: string | null;
+  label?: string;
+  /** URL the slug results in, shown under a valid value. */
+  preview?: (slug: string) => string;
 }
 
-export function SlugField({ id, value, onChange, error }: SlugFieldProps) {
+export function SlugField({ id, value, onChange, error, label = "URL slug", preview: previewOf = serviceUrl }: SlugFieldProps) {
   const message = error ?? slugError(value);
   const errId = `${id}-err`;
   const previewId = `${id}-preview`;
-  const preview = value && !message ? serviceUrl(value) : "";
+  const preview = value && !message ? previewOf(value) : "";
   return (
     <FormField
-      label="URL slug"
+      label={label}
       htmlFor={id}
       w="md"
       error={message ? <span id={errId}>{message}</span> : undefined}

@@ -5,7 +5,12 @@ import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
+import { Route, Routes, useLocation } from "react-router-dom";
 import Services from "@/pages/Services";
+
+function PathProbe() {
+  return <div data-testid="path">{useLocation().pathname}</div>;
+}
 
 function mount() {
   return renderApp(<Services />, "/services");
@@ -258,10 +263,45 @@ describe("Services page", () => {
   it("explains the AI flow when opened via ?new=ai (F8)", async () => {
     renderApp(<Services />, "/services?new=ai");
     const dialog = await screen.findByRole("dialog", { name: "New AI service" });
-    expect(within(dialog).getByText(/next you'll bind an upstream key/i)).toBeInTheDocument();
+    expect(within(dialog).getByText("Creates a service with API-key access and registers it as a model provider.")).toBeInTheDocument();
     // Access mode is fixed for AI services, so the picker is not offered.
     expect(within(dialog).queryByLabelText("Access mode")).toBeNull();
     expect(within(dialog).getByRole("button", { name: "Create and continue" })).toBeInTheDocument();
+  });
+
+  it("?new=ai registers the new service as a provider and opens its page", async () => {
+    renderApp(
+      <Routes>
+        <Route path="/services" element={<Services />} />
+        <Route path="/gateway/providers/:slug" element={<PathProbe />} />
+        <Route path="/services/:id" element={<PathProbe />} />
+      </Routes>,
+      "/services?new=ai",
+    );
+    const dialog = await screen.findByRole("dialog", { name: "New AI service" });
+    await userEvent.type(within(dialog).getByLabelText(/service id/i), "local-llm");
+    await userEvent.type(within(dialog).getByLabelText("Title"), "Local LLM");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create and continue" }));
+    // The mock derives the slug from the name, as the server does.
+    expect(await screen.findByTestId("path")).toHaveTextContent(/^\/gateway\/providers\/local-llm$/);
+    expect(db.aiProviders.at(-1)).toMatchObject({ slug: "local-llm", name: "Local LLM", service_id: "local-llm" });
+  });
+
+  it("?new=ai falls back to the service page when the provider cannot be created", async () => {
+    server.use(http.post("/api/v1/ai/providers", () =>
+      HttpResponse.json({ error: "provider slug or service already in use" }, { status: 409 })));
+    renderApp(
+      <Routes>
+        <Route path="/services" element={<Services />} />
+        <Route path="/gateway/providers/:slug" element={<PathProbe />} />
+        <Route path="/services/:id" element={<PathProbe />} />
+      </Routes>,
+      "/services?new=ai",
+    );
+    const dialog = await screen.findByRole("dialog", { name: "New AI service" });
+    await userEvent.type(within(dialog).getByLabelText(/service id/i), "local-llm");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create and continue" }));
+    expect(await screen.findByTestId("path")).toHaveTextContent(/^\/services\/local-llm$/);
   });
 
   it("keeps the generic dialog for the normal flow", async () => {

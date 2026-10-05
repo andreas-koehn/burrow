@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal } from "lucide-react";
@@ -6,8 +6,12 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Dialog, DropdownMenu, ErrorNotice, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, PageHeader, Select, SkeletonRows, Switch, TableEmptyRow } from "@/components/ds";
+import { ProviderConnect } from "@/components/ProviderConnect";
+import { RenameProviderDialog } from "@/components/RenameProviderDialog";
+import { useAuth } from "@/auth/useAuth";
+import { providerBaseUrl } from "@/lib/serviceUrl";
 import type {
-  AiEndpoint, ModelAliasV5, Provider, Service, ServiceAIConfig,
+  AiProvider, ModelAliasV5, Provider, Service, ServiceAIConfig,
 } from "@/lib/contract";
 import { withAIConfigDefaults } from "@/lib/aiConfig";
 
@@ -79,13 +83,26 @@ interface AliasFormState {
 }
 
 
-const BACK = { to: "/ai/endpoints", label: "AI endpoints" } as const;
+const BACK = { to: "/gateway/providers", label: "Providers" } as const;
+const SUBTITLE = "Routing, traffic, and recent traffic for this provider.";
 
-export default function AiEndpointDetail() {
-  const { id = "" } = useParams<{ id: string }>();
+export default function ProviderDetail() {
+  const { slug = "" } = useParams<{ slug: string }>();
   const nav = useNavigate();
   const qc = useQueryClient();
   const headingId = useId();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const [renameOpen, setRenameOpen] = useState(false);
+
+  const provider = useQuery({
+    queryKey: ["ai", "provider", slug],
+    queryFn: () => apiFetch<AiProvider>(`/ai/providers/${slug}`),
+    retry: false,
+    enabled: Boolean(slug),
+  });
+  // Everything below is per service; the provider names the service.
+  const id = provider.data?.service_id ?? "";
 
   const svc = useQuery({
     queryKey: ["service", id],
@@ -105,15 +122,10 @@ export default function AiEndpointDetail() {
     enabled: Boolean(id),
   });
   const metrics = useQuery({
-    queryKey: ["service", id, "metrics"],
-    queryFn: () => apiFetch<EndpointMetrics>(`/ai/endpoints/${id}/metrics`),
+    queryKey: ["ai", "provider", slug, "metrics"],
+    queryFn: () => apiFetch<EndpointMetrics>(`/ai/providers/${slug}/metrics`),
     retry: false,
-    enabled: Boolean(id),
-  });
-  const endpoints = useQuery({
-    queryKey: ["ai", "endpoints"],
-    queryFn: () => apiFetch<AiEndpoint[]>("/ai/endpoints"),
-    retry: false,
+    enabled: Boolean(slug),
   });
   const aliases = useQuery({
     queryKey: ["models", "aliases"],
@@ -174,12 +186,13 @@ export default function AiEndpointDetail() {
   const disable = useMutation({
     mutationFn: () => apiFetch<void>(`/services/${id}`, { method: "DELETE" }),
     onSuccess: () => {
-      toast.success("Endpoint disabled.");
+      toast.success("Provider disabled.");
       qc.invalidateQueries({ queryKey: ["services"] });
-      nav("/ai/endpoints");
+      qc.invalidateQueries({ queryKey: ["ai", "providers"] });
+      nav("/gateway/providers");
     },
     onError: (e: unknown) =>
-      toast.error(e instanceof ApiError ? e.message : "Couldn't disable endpoint."),
+      toast.error(e instanceof ApiError ? e.message : "Couldn't disable provider."),
   });
 
   const createAlias = useMutation({
@@ -214,7 +227,7 @@ export default function AiEndpointDetail() {
     },
   });
 
-  const aiRow = (endpoints.data ?? []).find((e) => e.service_id === id);
+  const aiRow = provider.data;
   const alias = (aliases.data ?? []).find((a) => a.service_id === id);
   const resolvedAlias =
     alias && draft?.routing.model_alias
@@ -223,39 +236,32 @@ export default function AiEndpointDetail() {
         ? `${aiRow.model_alias} → ${aiRow.concrete_model}`
         : null;
 
-  const baseUrl = useMemo(() => {
-    if (!svc.data) return null;
-    return svc.data.type === "http" && svc.data.url
-      ? `${svc.data.url}v1`
-      : null;
-  }, [svc.data]);
-
-  if (svc.error || cfg.error || metrics.error) {
-    const e = svc.error ?? cfg.error ?? metrics.error;
+  if (provider.error || svc.error || cfg.error || metrics.error) {
+    const e = provider.error ?? svc.error ?? cfg.error ?? metrics.error;
     return (
       <div className="ai-endpoint-detail-page">
         <PageHeader
           back={BACK}
-          title="AI endpoint"
-          subtitle="Per-endpoint metering, cache, redaction, and inspector."
+          title="Provider"
+          subtitle={SUBTITLE}
         />
         <ErrorNotice
           action={
-            <Button variant="secondary" size="sm" onClick={() => { void svc.refetch(); void cfg.refetch(); void metrics.refetch(); }}>
+            <Button variant="secondary" size="sm" onClick={() => { void provider.refetch(); void svc.refetch(); void cfg.refetch(); void metrics.refetch(); }}>
               Retry
             </Button>
           }
         >
-          Couldn't load endpoint: {e instanceof ApiError ? e.message : "Unknown error"}
+          Couldn't load provider: {e instanceof ApiError ? e.message : "Unknown error"}
         </ErrorNotice>
       </div>
     );
   }
 
-  if (!draft || !metrics.data || !svc.data) {
+  if (!draft || !metrics.data || !svc.data || !provider.data) {
     return (
       <div className="ai-endpoint-detail-page">
-        <PageHeader back={BACK} title="AI endpoint" subtitle="Per-endpoint metering, cache, redaction, and inspector." />
+        <PageHeader back={BACK} title="Provider" subtitle={SUBTITLE} />
         <SkeletonRows n={6} />
       </div>
     );
@@ -300,14 +306,19 @@ export default function AiEndpointDetail() {
     <div className="ai-endpoint-detail-page">
       <PageHeader
         back={BACK}
-        title={`AI endpoint · ${svc.data.name}`}
-        subtitle="Routing, traffic, and recent traffic for this gateway endpoint."
+        title={`Provider · ${provider.data.name}`}
+        subtitle={SUBTITLE}
         actions={
-          <div className="row gap-2">
+          <>
+            {isAdmin && (
+              <Button variant="secondary" size="sm" onClick={() => setRenameOpen(true)}>
+                Rename
+              </Button>
+            )}
             <label className="row row-center gap-2">
-              <span>Pause endpoint</span>
+              <span>Pause provider</span>
               <Switch
-                aria-label="Pause endpoint"
+                aria-label="Pause provider"
                 checked={routing.paused}
                 onChange={togglePause}
               />
@@ -325,13 +336,17 @@ export default function AiEndpointDetail() {
                 { label: "Export logs (NDJSON)", onSelect: () => { void apiFetch(`/services/${id}/inspector/export?format=ndjson`); } },
               ]}
             />
-          </div>
+          </>
         }
+      />
+
+      <ProviderConnect
+        baseUrl={providerBaseUrl(provider.data.slug, provider.data.base_url)}
+        exampleModel={provider.data.concrete_model || undefined}
       />
 
       <div className="meta-strip">
         {resolvedAlias && <span className="mono">{resolvedAlias}</span>}
-        {baseUrl && <span className="mono">{baseUrl}</span>}
         {aiRow?.client_session_id && (
           <Link to={`/clients/${aiRow.client_session_id}`} className="mono">
             {aiRow.client_session_id}
@@ -342,7 +357,7 @@ export default function AiEndpointDetail() {
         </span>
       </div>
 
-      <MetricStrip ariaLabel="Endpoint metrics">
+      <MetricStrip ariaLabel="Provider metrics">
         <MetricTile label="Requests (24h)" value={fmtInt(metrics.data.requests_24h)} />
         <MetricTile label="Tokens (24h)" value={`${fmtInt(metrics.data.tokens_in_24h)} → ${fmtInt(metrics.data.tokens_out_24h)}`} />
         <MetricTile label="Cost (24h)" value={`$${metrics.data.cost_usd_24h.toFixed(2)}`} />
@@ -515,7 +530,7 @@ export default function AiEndpointDetail() {
         open={aliasDialogOpen}
         onOpenChange={setAliasDialogOpen}
         title="Add alias"
-        description="Create a new model alias binding for this endpoint."
+        description="Create a new model alias binding for this provider."
         footer={
           <>
             <Button variant="secondary" size="sm" onClick={() => setAliasDialogOpen(false)}>
@@ -577,6 +592,21 @@ export default function AiEndpointDetail() {
           </FormField>
         </FormFieldGroup>
       </Dialog>
+
+      {isAdmin && (
+        <RenameProviderDialog
+          provider={provider.data}
+          open={renameOpen}
+          onOpenChange={setRenameOpen}
+          onRenamed={(next) => {
+            if (next.slug === slug) return;
+            // Same backing service, so the numbers carry over: no skeleton, and
+            // the Rename button keeps the focus the dialog handed back.
+            qc.setQueryData(["ai", "provider", next.slug, "metrics"], metrics.data);
+            nav(`/gateway/providers/${next.slug}`, { replace: true });
+          }}
+        />
+      )}
 
       <Toaster />
     </div>

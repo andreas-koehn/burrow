@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { serviceUrl, servicePath, urlPath } from "./serviceUrl";
+import { providerBaseUrl, serviceUrl, servicePath, urlPath } from "./serviceUrl";
 
 describe("serviceUrl", () => {
   it("prefers the URL reported by the API", () => {
@@ -15,6 +15,10 @@ describe("serviceUrl", () => {
   });
   it("servicePath is the path part", () => {
     expect(servicePath("my-app")).toBe("/svc/my-app/");
+  });
+  it("providerBaseUrl prefers the API value and falls back to the origin", () => {
+    expect(providerBaseUrl("ollama", "https://b.example.com/ai/ollama/v1")).toBe("https://b.example.com/ai/ollama/v1");
+    expect(providerBaseUrl("ollama", "")).toBe(`${window.location.origin}/ai/ollama/v1`);
   });
   it("urlPath extracts the pathname and tolerates malformed input", () => {
     expect(urlPath("https://burrow.example.com/svc/x/")).toBe("/svc/x/");

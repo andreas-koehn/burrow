@@ -35,7 +35,7 @@ export const DESTINATIONS: Destination[] = [
   { path: "/tunnels", label: "Tunnels", group: "Tunneling", icon: Waypoints },
   { path: "/services", label: "Services", group: "Tunneling", icon: Globe },
   { path: "/tokens", label: "Tokens", group: "Tunneling", icon: KeyRound },
-  { path: "/ai/endpoints", label: "AI endpoints", group: "AI Gateway", icon: Sparkles, needsAiGroup: true },
+  { path: "/gateway/providers", label: "Providers", group: "AI Gateway", icon: Sparkles, needsAiGroup: true },
   { path: "/cost", label: "Cost & budgets", group: "AI Gateway", icon: DollarSign, needsAiGroup: true },
   { path: "/cache", label: "Prompt cache", group: "AI Gateway", icon: Database, needsAiGroup: true },
   { path: "/guardrails", label: "Guardrails", group: "AI Gateway", icon: ShieldAlert, needsAiGroup: true },
@@ -51,11 +51,11 @@ export const DESTINATIONS: Destination[] = [
 
 export function destinationsFor(ctx: {
   isAdmin: boolean;
-  hasAiEndpoints: boolean;
+  hasAiGateway: boolean;
   firstHttpServiceId?: string;
 }): Destination[] {
   return DESTINATIONS
     .filter((d) => !d.adminOnly || ctx.isAdmin)
-    .filter((d) => !d.needsAiGroup || ctx.hasAiEndpoints)
+    .filter((d) => !d.needsAiGroup || ctx.hasAiGateway)
     .filter((d) => !d.needsHttpService || !!ctx.firstHttpServiceId);
 }

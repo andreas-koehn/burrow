@@ -16,7 +16,7 @@ describe("DESTINATIONS", () => {
 });
 
 describe("destinationsFor — admin with AI and http service", () => {
-  const ctx = { isAdmin: true, hasAiEndpoints: true, firstHttpServiceId: "x" };
+  const ctx = { isAdmin: true, hasAiGateway: true, firstHttpServiceId: "x" };
   const result = destinationsFor(ctx);
   const labels = result.map((d) => d.label);
 
@@ -26,7 +26,7 @@ describe("destinationsFor — admin with AI and http service", () => {
     "Tunnels",
     "Services",
     "Tokens",
-    "AI endpoints",
+    "Providers",
     "Cost & budgets",
     "Prompt cache",
     "Guardrails",
@@ -53,7 +53,7 @@ describe("destinationsFor — admin with AI and http service", () => {
 });
 
 describe("destinationsFor — non-admin, no AI, no http service", () => {
-  const ctx = { isAdmin: false, hasAiEndpoints: false };
+  const ctx = { isAdmin: false, hasAiGateway: false };
   const result = destinationsFor(ctx);
   const labels = result.map((d) => d.label);
 
@@ -65,7 +65,7 @@ describe("destinationsFor — non-admin, no AI, no http service", () => {
   }
 
   const excludedAiLabels = [
-    "AI endpoints",
+    "Providers",
     "Cost & budgets",
     "Prompt cache",
     "Guardrails",
@@ -79,7 +79,7 @@ describe("destinationsFor — non-admin, no AI, no http service", () => {
 });
 
 describe("destinationsFor — non-admin with AI but no http service", () => {
-  const ctx = { isAdmin: false, hasAiEndpoints: true, firstHttpServiceId: undefined };
+  const ctx = { isAdmin: false, hasAiGateway: true, firstHttpServiceId: undefined };
   const result = destinationsFor(ctx);
   const labels = result.map((d) => d.label);
 
@@ -88,13 +88,13 @@ describe("destinationsFor — non-admin with AI but no http service", () => {
   });
 
   it("includes other AI group items", () => {
-    expect(labels).toContain("AI endpoints");
+    expect(labels).toContain("Providers");
     expect(labels).toContain("Guardrails");
   });
 });
 
 describe("destinationsFor — non-admin with AI and http service", () => {
-  const ctx = { isAdmin: false, hasAiEndpoints: true, firstHttpServiceId: "svc-42" };
+  const ctx = { isAdmin: false, hasAiGateway: true, firstHttpServiceId: "svc-42" };
   const result = destinationsFor(ctx);
 
   it("Request inspector points at the stable /inspector entry route", () => {

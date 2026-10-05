@@ -14,6 +14,13 @@ export function serviceUrl(slug: string, apiUrl?: string): string {
   return `${origin}${servicePath(slug)}`;
 }
 
+/** Base URL an OpenAI-compatible client is configured with for a provider. */
+export function providerBaseUrl(slug: string, apiUrl?: string): string {
+  if (apiUrl) return apiUrl;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  return `${origin}/ai/${slug}/v1`;
+}
+
 /** Path of a full URL; the raw string when it does not parse as an absolute URL. */
 export function urlPath(url: string): string {
   try {

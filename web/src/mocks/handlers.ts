@@ -1,6 +1,6 @@
 import { http, HttpResponse } from "msw";
-import { db, type MockDb, type CacheSettingsPayload } from "@/mocks/db";
-import type { AccessMode, AiEndpoint, CostSummary, ModelAliasV5, Provider, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
+import { db, type MockDb, type CacheSettingsPayload, type AiProviderRow } from "@/mocks/db";
+import type { AccessMode, AiProvider, CostSummary, ModelAliasV5, Provider, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
 
 const VALID_PROVIDERS = new Set<string>(["ollama", "vllm", "openai-compat", "openai", "anthropic", "other"]);
 
@@ -44,6 +44,35 @@ async function body<T>(req: Request): Promise<T | null> {
     if (!t) return null;
     return JSON.parse(t) as T;
   } catch { return null; }
+}
+
+const PROVIDER_SLUG_RE = /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/;
+const PROVIDER_SLUG_RULE =
+  'slug must be 3-40 characters: lowercase letters, digits and hyphens; "v1" is reserved';
+const providerSlugOk = (slug: string) => PROVIDER_SLUG_RE.test(slug) && slug !== "v1";
+
+// A provider is visible when its backing service is (same rule as GET /services).
+function providerVisible(p: AiProviderRow): boolean {
+  const svc = db.services.find((s) => s.id === p.service_id);
+  return !!svc && (db.me.role === "admin" || svc.user_id === db.me.id);
+}
+
+function providerView(p: AiProviderRow): AiProvider {
+  const meta = db.aiMeta[p.service_id];
+  const alias = db.modelAliases.find((a) => a.service_id === p.service_id);
+  return {
+    ...p,
+    base_url: `https://tunnels.example.com/ai/${p.slug}/v1`,
+    model_alias: alias?.alias ?? "",
+    concrete_model: alias?.concrete_model ?? "",
+    backend_type: meta?.backend_type ?? "other",
+    api_key_count: (db.serviceApiKeys[p.service_id] ?? []).length,
+    requests_24h: meta?.requests_24h ?? 0,
+    cache_hits_24h: meta?.cache_hits_24h ?? 0,
+    latency_p95_ms: meta?.latency_p95_ms ?? 0,
+    status: meta?.status ?? "Offline",
+    client_session_id: meta?.client_session_id ?? "",
+  };
 }
 
 export const handlers = [
@@ -376,34 +405,82 @@ export const handlers = [
   // ---- tunnels (reference) ----
   http.get("/api/v1/tunnels", ({ request }) => gate(request) ?? json([])),
 
-  // ---- v0.4.0 AI endpoints lens (spec §4.19) ----
-  // Derived view over db.services where access_mode=api_key. Backend owns the
-  // real metrics; the mock joins seeded aiMeta + modelAliases + serviceApiKeys.
-  http.get("/api/v1/ai/endpoints", ({ request }) => {
+  // ---- AI providers ----
+  // Identity comes from db.aiProviders; the mock joins seeded aiMeta +
+  // modelAliases + serviceApiKeys of the backing service.
+  http.get("/api/v1/ai/providers", ({ request }) => {
     const g = gate(request); if (g) return g;
-    const rows = db.me.role === "admin"
-      ? db.services
-      : db.services.filter((s) => s.user_id === db.me.id);
-    const endpoints: AiEndpoint[] = rows
-      .filter((s) => s.access_mode === "api_key")
-      .map((s) => {
-        const meta = db.aiMeta[s.id];
-        const alias = db.modelAliases.find((a) => a.service_id === s.id);
-        return {
-          service_id: s.id,
-          name: s.name,
-          model_alias: alias?.alias ?? "",
-          concrete_model: alias?.concrete_model ?? "",
-          backend_type: meta?.backend_type ?? "other",
-          api_key_count: (db.serviceApiKeys[s.id] ?? []).length,
-          requests_24h: meta?.requests_24h ?? 0,
-          cache_hits_24h: meta?.cache_hits_24h ?? 0,
-          latency_p95_ms: meta?.latency_p95_ms ?? 0,
-          status: meta?.status ?? "Offline",
-          client_session_id: meta?.client_session_id ?? "",
-        };
-      });
-    return json(endpoints);
+    return json(db.aiProviders.filter(providerVisible).map(providerView));
+  }),
+  http.post("/api/v1/ai/providers", async ({ request }) => {
+    const g = gate(request, { admin: true }); if (g) return g;
+    const b = await body<{ slug?: string; name?: string; kind?: string; service_id?: string }>(request);
+    const name = (b?.name ?? "").trim();
+    if (!name) return err(400, "name is required");
+    const slug = b?.slug || name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!providerSlugOk(slug)) return err(400, PROVIDER_SLUG_RULE);
+    const svc = db.services.find((s) => s.id === b?.service_id);
+    if (!svc) return err(404, "provider not found");
+    if (svc.type !== "http" || svc.access_mode !== "api_key") {
+      return err(409, "a tunnel provider needs an http service in API-key mode");
+    }
+    if (db.aiProviders.some((p) => p.slug === slug || p.service_id === svc.id)) {
+      return err(409, "provider slug or service already in use");
+    }
+    const row: AiProviderRow = { slug, name, kind: "tunnel", api_format: "openai", service_id: svc.id };
+    db.aiProviders.push(row);
+    return json(providerView(row), 201);
+  }),
+  // Registered before /ai/providers/:slug so the longer path wins.
+  http.get("/api/v1/ai/providers/:slug/metrics", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const p = db.aiProviders.find((x) => x.slug === params.slug);
+    if (!p || !providerVisible(p)) return err(404, "provider not found");
+    const meta = db.aiMeta[p.service_id];
+    const requests = meta?.requests_24h ?? 0;
+    const summary = db.costSummary.today;
+    // Deterministic sinusoidal sparkline — enough to render a stable curve.
+    const rpm: number[] = [];
+    for (let i = 0; i < 60; i++) {
+      rpm.push(Math.round(20 + 15 * Math.sin(i / 4)));
+    }
+    return json({
+      requests_24h: requests,
+      tokens_in_24h: summary.tokens_in,
+      tokens_out_24h: summary.tokens_out,
+      cost_usd_24h: summary.total_usd,
+      cache_hit_ratio_24h: requests > 0 ? (meta?.cache_hits_24h ?? 0) / requests : 0,
+      requests_per_minute: rpm,
+    });
+  }),
+  http.get("/api/v1/ai/providers/:slug", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const p = db.aiProviders.find((x) => x.slug === params.slug);
+    if (!p || !providerVisible(p)) return err(404, "provider not found");
+    return json(providerView(p));
+  }),
+  http.put("/api/v1/ai/providers/:slug", async ({ request, params }) => {
+    const g = gate(request, { admin: true }); if (g) return g;
+    const p = db.aiProviders.find((x) => x.slug === params.slug);
+    if (!p) return err(404, "provider not found");
+    const b = await body<{ slug?: string; name?: string }>(request);
+    const name = (b?.name ?? "").trim();
+    if (!name) return err(400, "name is required");
+    const slug = b?.slug ?? "";
+    if (!providerSlugOk(slug)) return err(400, PROVIDER_SLUG_RULE);
+    if (db.aiProviders.some((x) => x !== p && x.slug === slug)) {
+      return err(409, "provider slug or service already in use");
+    }
+    p.slug = slug;
+    p.name = name;
+    return json(providerView(p));
+  }),
+  http.delete("/api/v1/ai/providers/:slug", ({ request, params }) => {
+    const g = gate(request, { admin: true }); if (g) return g;
+    const i = db.aiProviders.findIndex((x) => x.slug === params.slug);
+    if (i < 0) return err(404, "provider not found");
+    db.aiProviders.splice(i, 1);
+    return noContent();
   }),
 
   // ---- v0.4.0 cost summary (spec Part F) ----
@@ -413,27 +490,6 @@ export const handlers = [
     const w = (url.searchParams.get("window") ?? "today") as CostSummary["window"];
     const summary = db.costSummary[w] ?? db.costSummary.today;
     return json(summary);
-  }),
-
-  // ---- v0.4.0 per-endpoint metrics (spec §4.20) ----
-  http.get("/api/v1/ai/endpoints/:service_id/metrics", ({ request, params }) => {
-    const g = gate(request); if (g) return g;
-    const meta = db.aiMeta[String(params.service_id)];
-    if (!meta) return err(404, "service not found");
-    const summary = db.costSummary.today;
-    // Deterministic sinusoidal sparkline — enough to render a stable curve.
-    const rpm: number[] = [];
-    for (let i = 0; i < 60; i++) {
-      rpm.push(Math.round(20 + 15 * Math.sin(i / 4)));
-    }
-    return json({
-      requests_24h: meta.requests_24h,
-      tokens_in_24h: summary.tokens_in,
-      tokens_out_24h: summary.tokens_out,
-      cost_usd_24h: summary.total_usd,
-      cache_hit_ratio_24h: meta.requests_24h > 0 ? meta.cache_hits_24h / meta.requests_24h : 0,
-      requests_per_minute: rpm,
-    });
   }),
 
   // ---- v0.4.0 service AI config (spec Part B.7) ----

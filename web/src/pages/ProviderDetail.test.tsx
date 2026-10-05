@@ -2,28 +2,115 @@ import { describe, it, expect, vi } from "vitest";
 import { screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
-import { Route, Routes } from "react-router-dom";
-import AiEndpointDetail from "@/pages/AiEndpointDetail";
+import { Route, Routes, useLocation } from "react-router-dom";
+import ProviderDetail from "@/pages/ProviderDetail";
 import { db } from "@/mocks/db";
 
-function mount() {
+function PathProbe() {
+  return <div data-testid="path">{useLocation().pathname}</div>;
+}
+
+function mountAt(route: string) {
   return renderApp(
-    <Routes>
-      <Route path="/ai/endpoints/:id" element={<AiEndpointDetail />} />
-      <Route path="/clients/:id" element={<div>CLIENT_PAGE</div>} />
-      <Route path="/inspector/:serviceId/:requestId?" element={<div>INSPECTOR_PAGE</div>} />
-    </Routes>,
-    "/ai/endpoints/svc_ai001",
+    <>
+      <Routes>
+        <Route path="/gateway/providers" element={<div>PROVIDERS_PAGE</div>} />
+        <Route path="/gateway/providers/:slug" element={<ProviderDetail />} />
+        <Route path="/clients/:id" element={<div>CLIENT_PAGE</div>} />
+        <Route path="/inspector/:serviceId/:requestId?" element={<div>INSPECTOR_PAGE</div>} />
+      </Routes>
+      <PathProbe />
+    </>,
+    route,
   );
 }
 
-describe("AI endpoint detail (§4.20)", () => {
-  it("renders the meta strip with alias, base URL, client link, and last-seen", async () => {
+function mount() {
+  return mountAt("/gateway/providers/ollama");
+}
+
+describe("Provider detail", () => {
+  it("shows how to connect a client", async () => {
+    mountAt("/gateway/providers/ollama");
+    expect(await screen.findByRole("heading", { name: /connect a client/i })).toBeInTheDocument();
+    expect(screen.getByText("https://tunnels.example.com/ai/ollama/v1")).toBeInTheDocument();
+    // The example uses a model this provider serves.
+    expect(screen.getByText(/"model": "llama3.1:8b"/)).toBeInTheDocument();
+  });
+
+  it("names the page after the provider and links back to the list", async () => {
+    mount();
+    expect(await screen.findByRole("heading", { name: "Provider · ollama" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /providers/i })).toHaveAttribute("href", "/gateway/providers");
+  });
+
+  it("says so when the provider does not exist", async () => {
+    mountAt("/gateway/providers/nope");
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load provider: provider not found/i);
+  });
+
+  it("lets an admin rename the provider and follows the new slug", async () => {
+    mount();
+    const opener = await screen.findByRole("button", { name: "Rename" });
+    await userEvent.click(opener);
+    const dialog = await screen.findByRole("dialog", { name: "Rename provider · ollama" });
+    expect(within(dialog).getByRole("note")).toHaveTextContent("The old base URL stops working immediately.");
+    const name = within(dialog).getByLabelText("Name");
+    await waitFor(() => expect(name).toHaveFocus());
+    expect(name).toHaveValue("ollama");
+    const slug = within(dialog).getByLabelText("Provider slug");
+    expect(slug).toHaveValue("ollama");
+    // Nothing changed yet.
+    expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+    await userEvent.clear(name);
+    await userEvent.type(name, "Local models");
+    await userEvent.clear(slug);
+    await userEvent.type(slug, "local");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent(/^\/gateway\/providers\/local$/));
+    expect(await screen.findByRole("heading", { name: "Provider · Local models" })).toBeInTheDocument();
+    expect(screen.getByText("https://tunnels.example.com/ai/local/v1")).toBeInTheDocument();
+    expect(db.aiProviders[0]).toMatchObject({ slug: "local", name: "Local models" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("rename: a taken slug is reported on the slug field", async () => {
+    db.services.push({ ...db.services.find((x) => x.id === "svc_ai001")!, id: "svc_ai002", name: "vllm", slug: "vl9k2p" });
+    db.aiProviders.push({ slug: "vllm", name: "vllm", kind: "tunnel", api_format: "openai", service_id: "svc_ai002" });
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "Rename" }));
+    const dialog = await screen.findByRole("dialog", { name: /rename provider/i });
+    const slug = within(dialog).getByLabelText("Provider slug");
+    await userEvent.clear(slug);
+    await userEvent.type(slug, "vllm");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(slug).toHaveAccessibleDescription("provider slug or service already in use"));
+    expect(slug).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByTestId("path")).toHaveTextContent(/^\/gateway\/providers\/ollama$/);
+  });
+
+  it("rename: the reserved slug v1 is rejected before sending", async () => {
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "Rename" }));
+    const dialog = await screen.findByRole("dialog", { name: /rename provider/i });
+    const slug = within(dialog).getByLabelText("Provider slug");
+    await userEvent.clear(slug);
+    await userEvent.type(slug, "v1");
+    expect(slug).toHaveAccessibleDescription('"v1" is reserved.');
+    expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("hides Rename from non-admins", async () => {
+    db.me = { ...db.me, role: "user" };
+    mount();
+    await screen.findByRole("heading", { name: /connect a client/i });
+    expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+  });
+
+  it("renders the meta strip with alias, client link, and last-seen", async () => {
     mount();
     // Model alias resolved to upstream.
     expect(await screen.findByText("fast → llama3.1:8b")).toBeInTheDocument();
-    // Public base URL (service URL + v1).
-    expect(screen.getByText("https://tunnels.example.com/svc/ai4m2q/v1")).toBeInTheDocument();
     // Client link uses session_id.
     const clientLink = screen.getByRole("link", { name: /sess_4f7a9c0b2e81/i });
     expect(clientLink).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
@@ -34,7 +121,7 @@ describe("AI endpoint detail (§4.20)", () => {
     const spark = await screen.findByLabelText("requests per minute, last 24h");
     expect(spark.tagName.toLowerCase()).toBe("svg");
     expect(spark.getAttribute("viewBox")).toBe("0 0 240 60");
-    const strip = screen.getByRole("list", { name: "Endpoint metrics" });
+    const strip = screen.getByRole("list", { name: "Provider metrics" });
     const tiles = within(strip).getAllByRole("listitem");
     expect(tiles.length).toBeGreaterThanOrEqual(4);
   });
@@ -70,7 +157,7 @@ describe("AI endpoint detail (§4.20)", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();
     await screen.findByLabelText("requests per minute, last 24h");
-    const pause = screen.getByRole("switch", { name: /pause endpoint/i });
+    const pause = screen.getByRole("switch", { name: /pause provider/i });
     await userEvent.click(pause);
     await waitFor(() => {
       const putCalls = fetchSpy.mock.calls.filter(([url, init]) =>

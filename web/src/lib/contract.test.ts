@@ -3,7 +3,7 @@ import type {
   UserAdmin, UsersPage, RoleSummary, RoleDetail, Session,
   ClientView, ClientDetail, ServiceView, SettingsMap, AccessMode,
   Service, ServiceDetail, ServiceApiKey, AccessPolicy, CreatedApiKey,
-  AiEndpoint, ServiceAIConfig, UsageEvent, RateLimit, Budget, PricingTable,
+  AiProvider, ServiceAIConfig, UsageEvent, RateLimit, Budget, PricingTable,
   PricingEntry, InspectorEntry, AuditEvent, AuditFingerprint, Webhook,
   CreatedWebhook, WebhookDelivery, AutomationToken, CreatedAutomationToken,
   ModelAlias, BackupRow, MtlsConfig, IpGeoConfig,
@@ -55,8 +55,9 @@ describe("contract", () => {
   });
 
   it("v0.4.0 shapes match contract Parts B–M", () => {
-    const ai: AiEndpoint = {
-      service_id: "svc_web01", name: "web", model_alias: "fast",
+    const ai: AiProvider = {
+      slug: "web", name: "web", kind: "tunnel", api_format: "openai",
+      service_id: "svc_web01", base_url: "https://b.example.com/ai/web/v1", model_alias: "fast",
       concrete_model: "llama3.1:8b", backend_type: "ollama",
       api_key_count: 2, requests_24h: 1024, cache_hits_24h: 200,
       latency_p95_ms: 1200, status: "Connected", client_session_id: "sess_abc",

@@ -14,7 +14,7 @@ import { renderApp } from "@/mocks/test-utils";
 import App from "@/App";
 import Clients from "@/pages/Clients";
 import Services from "@/pages/Services";
-import AiEndpoints from "@/pages/AiEndpoints";
+import Providers from "@/pages/Providers";
 import Tokens from "@/pages/Tokens";
 import AutomationTokens from "@/pages/AutomationTokens";
 import Tunnels from "@/pages/Tunnels";
@@ -124,13 +124,13 @@ describe("CLEAR — information architecture & labelling", () => {
     expect(note.textContent).toContain("Tunnels");
   });
 
-  it("Clr-4: AI-endpoints empty state renders a 'New AI service' CTA button (admin)", async () => {
-    // Override /ai/endpoints to return empty list (no api_key services)
+  it("Clr-4: Providers page with no providers renders a 'New AI service' CTA button (admin)", async () => {
+    // Override /ai/providers to return an empty list
     server.use(
-      http.get("/api/v1/ai/endpoints", () => HttpResponse.json([])),
+      http.get("/api/v1/ai/providers", () => HttpResponse.json([])),
     );
-    renderApp(<AiEndpoints />, "/ai/endpoints");
-    // Both PageHeader and EmptyState render the button for admin; at least one must exist.
+    renderApp(<Providers />, "/gateway/providers");
+    // The PageHeader renders the button for admin.
     const btns = await screen.findAllByRole("button", { name: "New AI service" });
     expect(btns.length).toBeGreaterThanOrEqual(1);
   });
@@ -189,12 +189,12 @@ describe("EASY — onboarding & discoverability", () => {
       expect(btn).toBeDefined();
     });
 
-    it("AI Endpoints empty state (admin) has a 'New AI service' button", async () => {
+    it("Providers page with no providers (admin) has a 'New AI service' button", async () => {
       server.use(
-        http.get("/api/v1/ai/endpoints", () => HttpResponse.json([])),
+        http.get("/api/v1/ai/providers", () => HttpResponse.json([])),
       );
-      renderApp(<AiEndpoints />, "/ai/endpoints");
-      // Both PageHeader and EmptyState render the button for admin; assert at least one.
+      renderApp(<Providers />, "/gateway/providers");
+      // The PageHeader renders the button for admin.
       const btns = await screen.findAllByRole("button", { name: /^New AI service$/i });
       expect(btns.length).toBeGreaterThanOrEqual(1);
     });

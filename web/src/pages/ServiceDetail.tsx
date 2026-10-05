@@ -117,8 +117,8 @@ export default function ServiceDetail() {
             content: (
               <>
                 <p className="muted small" style={{ marginBottom: "var(--space-3, 12px)" }}>
-                  This makes the service an AI endpoint — see it under{" "}
-                  <Link to="/ai/endpoints">AI endpoints</Link>.
+                  This service can be used as a model provider — see it under{" "}
+                  <Link to="/gateway/providers">Providers</Link>.
                 </p>
                 <UpstreamCredentialsPanel
                   serviceId={svc.id}
