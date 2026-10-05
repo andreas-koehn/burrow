@@ -623,6 +623,16 @@ func TestDirectServicePolicy(t *testing.T) {
 	if _, err := directServicePolicy(st)(context.Background(), "gone"); !errors.Is(err, proxy.ErrNotFound) {
 		t.Fatalf("missing service err = %v", err)
 	}
+	// A provider row pointing at a service of another type must not borrow
+	// that service's keys and policy.
+	for _, typ := range []string{"http", "tcp", ""} {
+		other := st
+		other.svc.Type = typ
+		if _, err := directServicePolicy(other)(context.Background(), "prov-openrouter"); !errors.Is(err, proxy.ErrNotFound) {
+			t.Fatalf("service of type %q: err = %v, want proxy.ErrNotFound", typ, err)
+		}
+	}
+
 	st.ipgeoErr = errors.New("db down")
 	if _, err := directServicePolicy(st)(context.Background(), "prov-openrouter"); err == nil {
 		t.Fatal("a failed policy read must not look like an empty policy")

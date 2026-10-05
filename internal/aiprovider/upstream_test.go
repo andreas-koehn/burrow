@@ -680,16 +680,29 @@ func TestUpstream_StripsSetCookie(t *testing.T) {
 	h := newPair(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Add("Set-Cookie", "burrow_session=evil; Path=/")
 		w.Header().Add("Set-Cookie", "burrow_csrf=evil; Path=/")
+		w.Header().Set("Set-Cookie2", "burrow_session=evil; Version=1")
 		w.Header().Set("X-Request-Id", "up-1")
 		w.Header().Set("Retry-After", "7")
 		w.WriteHeader(429)
 	}, Config{Slug: "p", CredentialSlot: "S"}, mapVault{"S": "k"})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
-	if rec.Code != 429 || len(rec.Header().Values("Set-Cookie")) != 0 {
-		t.Fatalf("status %d Set-Cookie %v", rec.Code, rec.Header().Values("Set-Cookie"))
+	if rec.Code != 429 || len(rec.Header().Values("Set-Cookie")) != 0 || len(rec.Header().Values("Set-Cookie2")) != 0 {
+		t.Fatalf("status %d headers %v", rec.Code, rec.Header())
 	}
 	if rec.Header().Get("X-Request-Id") != "up-1" || rec.Header().Get("Retry-After") != "7" {
 		t.Fatalf("other headers were touched: %v", rec.Header())
+	}
+}
+
+func TestDropSetCookie(t *testing.T) {
+	h := http.Header{}
+	h.Add("Set-Cookie", "a=1")
+	h.Add("Set-Cookie", "b=2")
+	h.Set("Set-Cookie2", "c=3")
+	h.Set("Content-Type", "application/json")
+	DropSetCookie(h)
+	if len(h) != 1 || h.Get("Content-Type") != "application/json" {
+		t.Fatalf("headers = %v", h)
 	}
 }

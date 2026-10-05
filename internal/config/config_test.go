@@ -125,6 +125,31 @@ func TestServerAIAllowPrivateUpstreamsDefaultAndOverride(t *testing.T) {
 	}
 }
 
+// The guard must not be switched off, or silently left on, by a value the
+// operator mistyped: anything that is not a boolean stops the server.
+func TestServerAIAllowPrivateUpstreamsValues(t *testing.T) {
+	for value, want := range map[string]bool{"1": true, "TRUE": true, "true": true, "": false, "0": false, "false": false} {
+		t.Run("value="+value, func(t *testing.T) {
+			t.Setenv("BURROW_AI_ALLOW_PRIVATE_UPSTREAMS", value)
+			c, err := LoadServer(nil)
+			if err != nil {
+				t.Fatalf("LoadServer: %v", err)
+			}
+			if c.AIAllowPrivateUpstreams != want {
+				t.Fatalf("ai_allow_private_upstreams = %v, want %v", c.AIAllowPrivateUpstreams, want)
+			}
+		})
+	}
+	for _, value := range []string{"yes", "on", "2", "enabled"} {
+		t.Run("invalid="+value, func(t *testing.T) {
+			t.Setenv("BURROW_AI_ALLOW_PRIVATE_UPSTREAMS", value)
+			if c, err := LoadServer(nil); err == nil {
+				t.Fatalf("LoadServer accepted %q (parsed as %v)", value, c.AIAllowPrivateUpstreams)
+			}
+		})
+	}
+}
+
 // TestTrustedProxiesDefaultEmpty asserts that the default TrustedProxies is an
 // empty slice (safe: no forwarded headers trusted).
 func TestTrustedProxiesDefaultEmpty(t *testing.T) {

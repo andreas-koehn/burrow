@@ -673,7 +673,14 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		statusCode:     0,
 	}
 
-	proxyHandler.ServeHTTP(wrapped, r)
+	// Under a real http.Server a ReverseProxy panics http.ErrAbortHandler
+	// when the client hangs up mid-response. The tokens were spent all the
+	// same, so the bookkeeping below still runs; the panic is then raised
+	// again, unchanged, so the server aborts the connection as before.
+	aborted, abort := serveUpstream(proxyHandler, wrapped, r)
+	if aborted {
+		defer panic(abort)
+	}
 	_ = stream.Close()
 
 	// Read counters before recording the meter row.
@@ -709,7 +716,8 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	//  - capture buffer did NOT hit its cap (otherwise the cached body
 	//    would be truncated and a later HIT would serve an incomplete
 	//    body with the original Content-Length → silent corruption)
-	if cfg.Cache != nil && cfg.Cache.Enabled && c.Cache != nil && !bypass &&
+	//  - the response was not cut off (an aborted response is a fragment)
+	if !aborted && cfg.Cache != nil && cfg.Cache.Enabled && c.Cache != nil && !bypass &&
 		wrapped.statusCode >= 200 && wrapped.statusCode < 300 &&
 		!isStreamedResponse(wrapped.Header()) &&
 		wrapped.Header().Get("Content-Length") != "" {
@@ -756,11 +764,12 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	}
 
 	// Inspector capture: only when this service has the feature enabled.
+	// An aborted response is captured too, with the bytes that were sent.
 	c.captureEntry(svc, r, body, redactedBody, redactHits, kind,
 		wrapped.statusCode, capw.bytes(), wrapped.Header(), bytesIn, isStreamedResponse(wrapped.Header()), cacheStatus, fromReplay)
 
-	// Meter the request — always, even on non-2xx, so quota usage reflects
-	// reality. cache_hit is false on this MISS path; cacheStatus tells the
+	// Meter the request — always, even on non-2xx or after an abort, so
+	// quota usage reflects reality. cache_hit is false on this MISS path; cacheStatus tells the
 	// inspector "MISS" while still recording the bytes/tokens.
 	c.recordMeter(r.Context(), svc, kind,
 		tokens.In, tokens.Out,
@@ -768,6 +777,22 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		isStreamedResponse(wrapped.Header()), false,
 		wrapped.statusCode,
 	)
+}
+
+// serveUpstream calls the upstream handler and reports a panic instead of
+// letting it unwind, so the caller can finish its bookkeeping first.
+func serveUpstream(h http.Handler, w http.ResponseWriter, r *http.Request) (panicked bool, value any) {
+	// A handler may legally call panic(nil) on older Go versions; the flag,
+	// not the value, says whether it returned.
+	panicked = true
+	defer func() {
+		if panicked {
+			value = recover()
+		}
+	}()
+	h.ServeHTTP(w, r)
+	panicked = false
+	return false, nil
 }
 
 // postResponseTimeout bounds bookkeeping that runs after the response has

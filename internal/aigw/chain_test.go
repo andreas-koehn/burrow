@@ -1056,3 +1056,132 @@ func TestChain_DispatchMetered_RecordsUsageWithoutAIConfig(t *testing.T) {
 		t.Fatal("Dispatch must stay pass-through for a service without AI config")
 	}
 }
+
+// abortingUpstream answers like a ReverseProxy whose copy to the client
+// failed under a real http.Server: it panics http.ErrAbortHandler after the
+// bytes it managed to send.
+func abortingUpstream(contentType string, declaredLen int, sent string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		if declaredLen > 0 {
+			w.Header().Set("Content-Length", fmt.Sprint(declaredLen))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sent))
+		panic(http.ErrAbortHandler)
+	})
+}
+
+// serveRecovering runs the chain and returns what it panicked with.
+func serveRecovering(c *aigw.Chain, w http.ResponseWriter, r *http.Request, svc aigw.Service, up http.Handler) (panicked any) {
+	defer func() { panicked = recover() }()
+	c.ServeHTTP(w, r, svc, up)
+	return nil
+}
+
+// A stream the client abandoned still costs tokens: the usage row is written
+// with the key id and the counts seen so far, the request is visible in the
+// inspector, and the abort still reaches the server.
+func TestChain_AbortedStreamStillRecordsUsage(t *testing.T) {
+	sink := newMemSink()
+	mgr := inspector.NewManager()
+	c := aigw.NewChain(nil, nil, nil, nil, nil, mgr, nil, sink, testLog())
+	svc := aigw.Service{ID: "svc1", APIKeyID: "key-1", AIConfig: aigw.ServiceAIConfig{
+		Inspector: &aigw.InspectorConfig{Enabled: true, MaxRequests: 4},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the client is gone
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true}`)).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	const sent = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hel"
+
+	got := serveRecovering(c, rec, req, svc, abortingUpstream("text/event-stream", 0, sent))
+	if got != http.ErrAbortHandler {
+		t.Fatalf("panic = %v, want http.ErrAbortHandler passed on unchanged", got)
+	}
+	if rec.Body.String() != sent {
+		t.Fatalf("something was appended to the aborted stream: %q", rec.Body.String())
+	}
+	samples := sink.all()
+	if len(samples) != 1 {
+		t.Fatalf("usage samples = %d, want exactly 1", len(samples))
+	}
+	sm := samples[0]
+	if sm.APIKeyID != "key-1" || sm.ServiceID != "svc1" || sm.TokensIn != 7 || sm.TokensOut != 3 || !sm.Streamed || sm.BytesOut != int64(len(sent)) {
+		t.Fatalf("sample = %+v", sm)
+	}
+	if entries := mgr.GetOrCreate("svc1", 4).List(inspector.ListQuery{}); len(entries) != 1 || entries[0].APIKeyID != "key-1" {
+		t.Fatalf("inspector entries = %+v", entries)
+	}
+}
+
+// The usage write of an aborted request runs on a live context.
+func TestChain_AbortedStreamUsageWriteIsDetached(t *testing.T) {
+	sink := &ctxSink{}
+	c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, testLog())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`)).WithContext(ctx)
+	svc := aigw.Service{ID: "svc1", APIKeyID: "key-1", AIConfig: aigw.ServiceAIConfig{Anthropic: &aigw.AnthropicConfig{}}}
+	if got := serveRecovering(c, httptest.NewRecorder(), req, svc, abortingUpstream("text/event-stream", 0, "data: x\n\n")); got != http.ErrAbortHandler {
+		t.Fatalf("panic = %v", got)
+	}
+	if !sink.got || sink.ctxErr != nil || sink.sample.APIKeyID != "key-1" {
+		t.Fatalf("got=%v ctxErr=%v sample=%+v", sink.got, sink.ctxErr, sink.sample)
+	}
+}
+
+// A response cut off half way is metered but never stored: the next caller
+// must not be served the fragment from the exact cache.
+func TestChain_AbortedResponseIsNotCached(t *testing.T) {
+	sink := newMemSink()
+	c := aigw.NewChain(freshCache(t), nil, nil, nil, nil, nil, nil, sink, testLog())
+	svc := aigw.Service{ID: "svc-cache", APIKeyID: "key-1", AIConfig: aigw.ServiceAIConfig{
+		Cache: &exact.Settings{Enabled: true, AppliesPer: "global", TTLSeconds: 300, MaxEntries: 100, MaxPerEntryKB: 64},
+	}}
+	mkReq := func() *http.Request {
+		r := httptest.NewRequest("POST", "https://abc.example.com/v1/chat/completions", strings.NewReader(`{"model":"gpt-4","prompt":"hi"}`))
+		r.Header.Set("Content-Type", "application/json")
+		return r
+	}
+	const full = `{"choices":[{"message":{"content":"hello"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+
+	rec := httptest.NewRecorder()
+	if got := serveRecovering(c, rec, mkReq(), svc, abortingUpstream("application/json", len(full), full[:20])); got != http.ErrAbortHandler {
+		t.Fatalf("panic = %v", got)
+	}
+	if len(sink.all()) != 1 || sink.all()[0].APIKeyID != "key-1" {
+		t.Fatalf("samples after the aborted request = %+v", sink.all())
+	}
+
+	hits := 0
+	healthy := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprint(len(full)))
+		_, _ = w.Write([]byte(full))
+	})
+	rec = httptest.NewRecorder()
+	c.ServeHTTP(rec, mkReq(), svc, healthy)
+	if hits != 1 || rec.Body.String() != full || rec.Header().Get("Burrow-Cache") == "HIT" {
+		t.Fatalf("the fragment was served from the cache: hits=%d cache=%q body=%q", hits, rec.Header().Get("Burrow-Cache"), rec.Body.String())
+	}
+	// The complete answer is cached as before.
+	rec = httptest.NewRecorder()
+	c.ServeHTTP(rec, mkReq(), svc, healthy)
+	if hits != 1 || rec.Body.String() != full {
+		t.Fatalf("a complete response was not cached: hits=%d body=%q", hits, rec.Body.String())
+	}
+}
+
+// A panic that is not an abort is passed on unchanged as well.
+func TestChain_UpstreamPanicIsPassedOn(t *testing.T) {
+	sink := newMemSink()
+	c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, testLog())
+	svc := aigw.Service{ID: "svc1", AIConfig: aigw.ServiceAIConfig{Anthropic: &aigw.AnthropicConfig{}}}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+	got := serveRecovering(c, httptest.NewRecorder(), req, svc, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }))
+	if got != "boom" {
+		t.Fatalf("panic = %v, want the upstream's own value", got)
+	}
+}

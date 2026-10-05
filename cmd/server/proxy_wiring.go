@@ -253,6 +253,11 @@ func directServicePolicy(st subdomainStore) func(ctx context.Context, serviceID 
 			}
 			return nil, fmt.Errorf("direct service policy: service by id: %w", err)
 		}
+		// Only a direct provider's own backing row: a provider pointing at
+		// any other service must not inherit that service's keys and policy.
+		if svc.Type != "direct" {
+			return nil, proxy.ErrNotFound
+		}
 		ipgeo, err := st.GetServiceIPGeo(ctx, svc.ID)
 		if err != nil {
 			return nil, fmt.Errorf("direct service policy: ip-geo config: %w", err)

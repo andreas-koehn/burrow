@@ -206,7 +206,10 @@ func (g *Gateway) tunnelUpstream(w http.ResponseWriter, r *http.Request, p db.AI
 			pr.Out.URL = &url.URL{Scheme: "http", Host: host, Path: pr.In.URL.Path, RawPath: pr.In.URL.RawPath, RawQuery: pr.In.URL.RawQuery}
 			pr.Out.Host = host
 		},
-		ModifyResponse: stripSetCookie,
+		ModifyResponse: func(resp *http.Response) error {
+			aiprovider.DropSetCookie(resp.Header)
+			return nil
+		},
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return g.Tunnels.DialTunnelStreamByServiceID(ctx, serviceID)
@@ -239,14 +242,6 @@ func (g *Gateway) policyAllows(w http.ResponseWriter, r *http.Request, p db.AIPr
 		return false
 	}
 	return true
-}
-
-// stripSetCookie drops cookies an upstream tries to set: /ai/ is served on
-// the dashboard's origin, where a cookie named like the session or CSRF
-// cookie would replace the dashboard's own.
-func stripSetCookie(resp *http.Response) error {
-	resp.Header.Del("Set-Cookie")
-	return nil
 }
 
 // directAllowed is the policy step for a direct provider. It reads the

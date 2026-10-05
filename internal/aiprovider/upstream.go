@@ -124,6 +124,14 @@ func isNil(v any) bool {
 	return false
 }
 
+// DropSetCookie removes the cookies an upstream tries to set. Everything
+// under /ai/ is answered on the dashboard's origin, where a cookie named like
+// the session or CSRF cookie would replace the dashboard's own.
+func DropSetCookie(h http.Header) {
+	h.Del("Set-Cookie")
+	h.Del("Set-Cookie2")
+}
+
 // stripped are inbound headers that never leave the relay; Rewrite has
 // already removed Forwarded and X-Forwarded-For/-Host/-Proto.
 var stripped = []string{"Authorization", "X-Api-Key", "Cookie", "X-Forwarded-Port", "X-Real-Ip", "X-Burrow-Path-Prefix"}
@@ -201,9 +209,7 @@ func NewUpstream(cfg Config, v Vault, rt http.RoundTripper, writeErr ErrorWriter
 			case resp.StatusCode >= 300 && resp.StatusCode < 400 && resp.StatusCode != http.StatusNotModified:
 				return &errUpstreamRejected{http.StatusBadGateway, "upstream_redirect", "the provider answered with a redirect"}
 			}
-			// The relay answers on the dashboard's origin: an upstream must
-			// not be able to set a cookie there.
-			resp.Header.Del("Set-Cookie")
+			DropSetCookie(resp.Header)
 			return nil
 		},
 		// The client gets one neutral error whatever the cause; the cause goes

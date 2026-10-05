@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	stdlog "log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ankoehn/burrow/internal/aigw"
+	"github.com/ankoehn/burrow/internal/aimeter"
 	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/guardrails"
@@ -772,6 +774,7 @@ func TestServe_StripsSetCookie_Tunnel(t *testing.T) {
 	g := newGateway(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Add("Set-Cookie", "burrow_session=evil; Path=/")
 		w.Header().Add("Set-Cookie", "burrow_csrf=evil; Path=/")
+		w.Header().Set("Set-Cookie2", "burrow_session=evil; Version=1")
 		w.Header().Set("X-Request-Id", "up-1")
 		w.WriteHeader(200)
 	}), &spyChain{})
@@ -779,7 +782,7 @@ func TestServe_StripsSetCookie_Tunnel(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer sk-good")
 	rec := httptest.NewRecorder()
 	g.Serve(rec, req, "ollama")
-	if rec.Code != 200 || len(rec.Header().Values("Set-Cookie")) != 0 || rec.Header().Get("X-Request-Id") != "up-1" {
+	if rec.Code != 200 || len(rec.Header().Values("Set-Cookie")) != 0 || len(rec.Header().Values("Set-Cookie2")) != 0 || rec.Header().Get("X-Request-Id") != "up-1" {
 		t.Fatalf("status %d headers %v", rec.Code, rec.Header())
 	}
 }
@@ -792,6 +795,7 @@ func TestServe_StripsSetCookie_Direct(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Add("Set-Cookie", "burrow_session=evil; Path=/")
 		w.Header().Add("Set-Cookie", "burrow_csrf=evil; Path=/")
+		w.Header().Set("Set-Cookie2", "burrow_session=evil; Version=1")
 		w.Header().Set("X-Request-Id", "up-1")
 		w.WriteHeader(200)
 	}))
@@ -804,7 +808,7 @@ func TestServe_StripsSetCookie_Direct(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer sk-good")
 	rec := httptest.NewRecorder()
 	g.Serve(rec, req, "openrouter")
-	if rec.Code != 200 || len(rec.Header().Values("Set-Cookie")) != 0 || rec.Header().Get("X-Request-Id") != "up-1" {
+	if rec.Code != 200 || len(rec.Header().Values("Set-Cookie")) != 0 || len(rec.Header().Values("Set-Cookie2")) != 0 || rec.Header().Get("X-Request-Id") != "up-1" {
 		t.Fatalf("status %d headers %v", rec.Code, rec.Header())
 	}
 }
@@ -953,5 +957,239 @@ func TestServe_Direct_StreamsThroughChain(t *testing.T) {
 	rest, _ := io.ReadAll(br)
 	if !strings.Contains(string(rest), "[DONE]") {
 		t.Fatalf("rest = %q", rest)
+	}
+}
+
+// A provider row of a kind this relay does not know is refused before
+// anything else is consulted.
+func TestServe_UnknownKindTouchesNothing(t *testing.T) {
+	g := newGateway(http.NotFoundHandler(), &spyChain{})
+	g.Providers = fakeProviders{"odd": {Slug: "odd", Kind: "other", ServiceID: "svc1"}}
+	g.Tunnels = noTunnels{t}
+	g.Direct = func(db.AIProvider) (http.Handler, error) {
+		t.Error("the direct factory was called")
+		return http.NotFoundHandler(), nil
+	}
+	g.ServicePolicy = func(context.Context, string) (*proxy.Resolved, error) {
+		t.Error("the service policy was read")
+		return nil, errors.New("unused")
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer sk-good")
+	rec := httptest.NewRecorder()
+	g.Serve(rec, req, "odd")
+	if rec.Code != 503 || errCode(t, rec) != "provider_unavailable" {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if n := g.Keys.(*fakeKeys).calls.Load(); n != 0 {
+		t.Fatalf("the key store was asked %d times", n)
+	}
+	if g.Chain.(*spyChain).serviceID != "" {
+		t.Fatal("the chain ran")
+	}
+}
+
+// usageSink collects usage samples written from server goroutines.
+type usageSink struct {
+	mu      sync.Mutex
+	samples []aimeter.Sample
+	wrote   chan struct{}
+}
+
+func newUsageSink() *usageSink { return &usageSink{wrote: make(chan struct{}, 16)} }
+
+func (s *usageSink) Record(ctx context.Context, sm aimeter.Sample) error {
+	if err := ctx.Err(); err != nil {
+		return err // a write on a dead context would not reach the database
+	}
+	s.mu.Lock()
+	s.samples = append(s.samples, sm)
+	s.mu.Unlock()
+	s.wrote <- struct{}{}
+	return nil
+}
+
+// one waits for the first sample and reports all samples seen shortly after.
+func (s *usageSink) one(t *testing.T) aimeter.Sample {
+	t.Helper()
+	select {
+	case <-s.wrote:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no usage row was written")
+	}
+	time.Sleep(100 * time.Millisecond) // a second row would be a double count
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.samples) != 1 {
+		t.Fatalf("usage rows = %d, want exactly 1: %+v", len(s.samples), s.samples)
+	}
+	return s.samples[0]
+}
+
+const usageChunk = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\n"
+
+// endlessStream sends a first chunk carrying usage and then keeps talking
+// until its caller is gone.
+func endlessStream(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	_, _ = w.Write([]byte(usageChunk))
+	rc := http.NewResponseController(w)
+	_ = rc.Flush()
+	stop := time.After(10 * time.Second)
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-stop:
+			return
+		case <-time.After(5 * time.Millisecond):
+		}
+		if _, err := w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n")); err != nil {
+			return
+		}
+		_ = rc.Flush()
+	}
+}
+
+// completeAnswer is a whole non-streamed response.
+func completeAnswer(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`))
+}
+
+// hangupGateways builds, for one upstream handler, a gateway per provider
+// kind, each behind a real http.Server and the real AI chain: the direct one
+// through the production factory and guarded transport, the tunnelled one
+// through a real connection.
+func hangupGateways(t *testing.T, upstream http.HandlerFunc) map[string]func() (url string, sink *usageSink) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	front := func(g *Gateway, slug string) string {
+		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { g.Serve(w, r, slug) }))
+		srv.Config.ErrorLog = stdlog.New(io.Discard, "", 0)
+		srv.Start()
+		t.Cleanup(srv.Close)
+		return srv.URL
+	}
+	return map[string]func() (string, *usageSink){
+		"direct": func() (string, *usageSink) {
+			up := httptest.NewTLSServer(upstream)
+			t.Cleanup(up.Close)
+			// The production transport; the upstream is on loopback, which
+			// only the allow-private option lets it reach.
+			tr := aiprovider.NewTransport(true)
+			tr.TLSClientConfig = up.Client().Transport.(*http.Transport).TLSClientConfig
+			t.Cleanup(tr.CloseIdleConnections)
+			sink := newUsageSink()
+			g := directGateway(t, DirectUpstreams(vaultMap{"OPENROUTER": "sk-or"}, tr), aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, log))
+			g.Providers.(fakeProviders)["openrouter"] = db.AIProvider{
+				Slug: "openrouter", Kind: "direct", ServiceID: "prov-openrouter", BaseURL: up.URL + "/api/v1", CredentialSlot: "OPENROUTER",
+			}
+			return front(g, "openrouter"), sink
+		},
+		"tunnel": func() (string, *usageSink) {
+			up := httptest.NewServer(upstream)
+			t.Cleanup(up.Close)
+			sink := newUsageSink()
+			g := newGateway(nil, aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, log))
+			g.Tunnels = streamTunnels{
+				res:  &proxy.Resolved{ServiceID: "svc1", AccessMode: "api_key", LocalHost: "127.0.0.1:11434"},
+				addr: up.Listener.Addr().String(),
+			}
+			return front(g, "ollama"), sink
+		},
+	}
+}
+
+// Review Focus 5: a client that hangs up in the middle of a stream has still
+// spent tokens. Exactly one usage row is written, with the key id and the
+// counts seen before the hangup.
+func TestServe_ClientHangupMidStreamStillWritesUsage(t *testing.T) {
+	for kind, build := range hangupGateways(t, endlessStream) {
+		t.Run(kind, func(t *testing.T) {
+			url, sink := build()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			req, _ := http.NewRequestWithContext(ctx, "POST", url+"/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true}`))
+			req.Header.Set("Authorization", "Bearer sk-good")
+			client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			br := bufio.NewReader(resp.Body)
+			if line, err := br.ReadString('\n'); err != nil || !strings.Contains(line, "prompt_tokens") {
+				t.Fatalf("first chunk = %q err %v", line, err)
+			}
+			cancel() // hang up
+			_ = resp.Body.Close()
+
+			sm := sink.one(t)
+			if sm.APIKeyID != "key-1" || sm.TokensIn != 7 || sm.TokensOut != 3 || !sm.Streamed || sm.BytesOut == 0 {
+				t.Fatalf("usage row = %+v", sm)
+			}
+		})
+	}
+}
+
+// A one-shot client closes the connection right after the last byte.
+func TestServe_ClientHangupAfterLastByteStillWritesUsage(t *testing.T) {
+	for kind, build := range hangupGateways(t, completeAnswer) {
+		t.Run(kind, func(t *testing.T) {
+			url, sink := build()
+			req, _ := http.NewRequest("POST", url+"/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+			req.Header.Set("Authorization", "Bearer sk-good")
+			tr := &http.Transport{DisableKeepAlives: true}
+			resp, err := (&http.Client{Transport: tr}).Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			tr.CloseIdleConnections()
+			if resp.StatusCode != 200 || !strings.Contains(string(body), "prompt_tokens") {
+				t.Fatalf("status %d body %s", resp.StatusCode, body)
+			}
+
+			sm := sink.one(t)
+			if sm.APIKeyID != "key-1" || sm.TokensIn != 7 || sm.TokensOut != 3 {
+				t.Fatalf("usage row = %+v", sm)
+			}
+		})
+	}
+}
+
+// When the upstream breaks off mid-stream the caller's connection is aborted:
+// the stream ends without a terminator and without any JSON appended to it.
+func TestServe_UpstreamAbortMidStreamAbortsTheClient(t *testing.T) {
+	broken := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(usageChunk))
+		_ = http.NewResponseController(w).Flush()
+		panic(http.ErrAbortHandler)
+	}
+	for kind, build := range hangupGateways(t, broken) {
+		if kind != "direct" {
+			continue // the tunnel fake dials plain HTTP; the same code path is covered by the direct case
+		}
+		t.Run(kind, func(t *testing.T) {
+			url, sink := build()
+			req, _ := http.NewRequest("POST", url+"/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true}`))
+			req.Header.Set("Authorization", "Bearer sk-good")
+			resp, err := (&http.Client{Transport: &http.Transport{DisableKeepAlives: true}}).Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr == nil {
+				t.Fatalf("the stream ended cleanly, want an aborted connection; body %q", body)
+			}
+			if string(body) != usageChunk && string(body) != "" {
+				t.Fatalf("something was appended to the aborted stream: %q", body)
+			}
+			if sm := sink.one(t); sm.APIKeyID != "key-1" {
+				t.Fatalf("usage row = %+v", sm)
+			}
+		})
 	}
 }
