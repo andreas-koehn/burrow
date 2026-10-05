@@ -1,8 +1,9 @@
 // test-only — never deploy this shape.
 //
-// Covers the /connection-logs filter controls and the Export action that the
-// feature suite did not yet exercise. See web/src/pages/ConnectionLogs.tsx:
-//   - Kind / Service / Date-range filters are native <select> (aria-label=…).
+// Covers the Traffic page's (/traffic, was /connection-logs) filter controls and
+// the Export action. See web/src/pages/Traffic.tsx:
+//   - Protocol / Service filters are native <select> (aria-label=…); the time
+//     range is a radiogroup.
 //   - Rollups is a native checkbox (aria-label="Rollups").
 //   - Export is a header button that issues GET /connection-logs/export
 //     ?format=ndjson via fetch (apiFetch) — it does NOT trigger a browser
@@ -14,24 +15,24 @@ import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
 test.use({ storageState: AUTH_STORAGE_PATH });
 
 // The page renders either a logs table, a rollups table (both
-// aria-label="Connection logs"), or an EmptyState — depending on seeded data.
+// aria-label="Traffic"), or an EmptyState — depending on seeded data.
 // "renders without error" == one of those is visible and no error banner shows.
 async function assertViewSettled(page: import("@playwright/test").Page) {
-  const table = page.locator('table[aria-label="Connection logs"]');
-  const empty = page.getByText(/No connection logs yet|No rollups yet/);
+  const table = page.locator('table[aria-label="Traffic"]');
+  const empty = page.getByText(/No traffic in this period|No rollups in this period/);
   await expect.poll(
     async () => (await table.count()) > 0 || (await empty.count()) > 0,
     { timeout: 10_000, message: "neither logs table nor empty-state rendered" },
   ).toBe(true);
   // A thrown render error would surface React's fallback / a missing heading.
-  // exact:true — the EmptyState renders an <h4>"No connection logs yet"</h4>
-  // that substring-matches a loose "Connection logs".
-  await expect(page.getByRole("heading", { name: "Connection logs", exact: true })).toBeVisible();
+  // exact:true — the EmptyState renders an <h4>"No traffic in this period"</h4>
+  // that substring-matches a loose "Traffic".
+  await expect(page.getByRole("heading", { name: "Traffic", exact: true })).toBeVisible();
 }
 
 test("47-connection-logs-filter-export: rollups toggle + kind filter render; Export hits the API", async ({ page }) => {
-  await page.goto("/connection-logs");
-  await expect(page.getByRole("heading", { name: "Connection logs", exact: true })).toBeVisible();
+  await page.goto("/traffic");
+  await expect(page.getByRole("heading", { name: "Traffic", exact: true })).toBeVisible();
   await assertViewSettled(page);
 
   // --- ROLLUPS TOGGLE ------------------------------------------------------
@@ -45,13 +46,13 @@ test("47-connection-logs-filter-export: rollups toggle + kind filter render; Exp
   await expect(rollups).not.toBeChecked();
   await assertViewSettled(page);
 
-  // --- KIND FILTER ---------------------------------------------------------
-  // Native <select> aria-label="Kind". Pick "TCP proxy" and assert the view
+  // --- PROTOCOL FILTER -----------------------------------------------------
+  // Native <select> aria-label="Protocol". Pick "TCP proxy" and assert the view
   // re-settles without error (don't over-assert rows — seeded data varies).
-  await page.getByLabel("Kind").selectOption("tcp_proxy");
+  await page.getByLabel("Protocol", { exact: true }).selectOption("tcp_proxy");
   await assertViewSettled(page);
   // Reset to All.
-  await page.getByLabel("Kind").selectOption("");
+  await page.getByLabel("Protocol", { exact: true }).selectOption("");
   await assertViewSettled(page);
 
   // --- EXPORT --------------------------------------------------------------

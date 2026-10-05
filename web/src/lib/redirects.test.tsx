@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom";
 import { RedirectTo } from "./redirects";
-import { OLD_ROUTES, NOT_YET_MOVED } from "./moved-routes";
+import { OLD_ROUTES } from "./moved-routes";
 
 function Landing() {
   const { pathname, search, hash } = useLocation();
@@ -45,6 +45,8 @@ describe("RedirectTo", () => {
     ["/tunnels?live=0", "/services?live=1"],
     ["/tokens", "/clients?tab=tokens"],
     ["/tokens?q=ci#list", "/clients?tab=tokens&q=ci#list"],
+    ["/connection-logs", "/traffic"],
+    ["/connection-logs?service=svc1&q=a#row", "/traffic?service=svc1&q=a#row"],
   ])("%s lands on %s", (from, to) => {
     expect(landingFor(from)).toBe(to);
   });
@@ -65,14 +67,5 @@ describe("route tables", () => {
       expect(targets.has(r.from)).toBe(false);
       expect(r.to).not.toMatch(/^\/(ai|svc|openai|anthropic|api|__burrow)(\/|$)/);
     }
-  });
-
-  it("a page that has not moved yet is reached from its future path, query and hash intact", () => {
-    expect(landingFor("/traffic?q=a#row", NOT_YET_MOVED)).toBe("/connection-logs?q=a#row");
-  });
-
-  it("the two tables never chain into a loop", () => {
-    const old = new Set(OLD_ROUTES.map((r) => r.from));
-    for (const r of NOT_YET_MOVED) expect(old.has(r.to)).toBe(false);
   });
 });

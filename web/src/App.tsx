@@ -20,21 +20,21 @@ import ProviderDetail from "@/pages/ProviderDetail";
 import PromptCache from "@/pages/PromptCache";
 import Guardrails from "@/pages/Guardrails";
 import RequestInspector from "@/pages/RequestInspector";
-import InspectorIndex from "@/pages/InspectorIndex";
+import Requests from "@/pages/Requests";
+import Traffic from "@/pages/Traffic";
 import CostBudgets from "@/pages/CostBudgets";
 import AuditLog from "@/pages/AuditLog";
 import Webhooks from "@/pages/Webhooks";
 
 import AutomationTokens from "@/pages/AutomationTokens";
 import BackupRestore from "@/pages/BackupRestore";
-import ConnectionLogs from "@/pages/ConnectionLogs";
 import ServiceDetail from "@/pages/ServiceDetail";
 import Retention from "@/pages/Retention";
 import DatabaseBackend from "@/pages/DatabaseBackend";
 import OpenApiViewer from "@/pages/OpenApiViewer";
 import GatewayOverview from "@/pages/GatewayOverview";
 import { RedirectTo } from "@/lib/redirects";
-import { NOT_YET_MOVED, OLD_ROUTES } from "@/lib/moved-routes";
+import { OLD_ROUTES } from "@/lib/moved-routes";
 
 // Custom domains need host routing, which is off; old links land on the service.
 function ServiceDomainsRedirect() {
@@ -63,13 +63,13 @@ export default function App() {
         <Route path="/gateway/providers/:slug" element={<ProviderDetail />} />
         <Route path="/gateway/cache" element={<PromptCache />} />
         <Route path="/gateway/guardrails" element={<Guardrails />} />
-        <Route path="/gateway/requests" element={<InspectorIndex />} />
+        <Route path="/gateway/requests" element={<Requests />} />
         <Route path="/gateway/requests/:serviceId/:requestId?" element={<RequestInspector />} />
         <Route path="/gateway/cost" element={<CostBudgets />} />
         <Route path="/clients" element={<Clients />} />
         <Route path="/clients/connect" element={<ConnectClient />} />
         <Route path="/clients/:id" element={<ClientDetail />} />
-        <Route path="/connection-logs" element={<ConnectionLogs />} />
+        <Route path="/traffic" element={<Traffic />} />
         <Route path="/services/:id" element={<ServiceDetail />} />
         <Route path="/services/:id/domains" element={<ServiceDomainsRedirect />} />
         {/* Settings. The admin-only pages are the entries marked adminOnly in lib/navigation.ts. */}
@@ -90,8 +90,6 @@ export default function App() {
         <Route path="/settings/automation" element={<AutomationTokens />} />
         {/* Old bookmarks: every moved path lands on its new home, params, query and hash intact. */}
         {OLD_ROUTES.map((r) => <Route key={r.from} path={r.from} element={<RedirectTo to={r.to} />} />)}
-        {/* Temporary (W05): navigation entries whose page still lives at its old address. */}
-        {NOT_YET_MOVED.map((r) => <Route key={r.from} path={r.from} element={<RedirectTo to={r.to} />} />)}
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

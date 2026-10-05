@@ -2468,7 +2468,7 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
 }
 
 /* ──────────────────────────────────────────────────────────────
-   Filter row — ConnectionLogs filter toolbar (R2-F05).
+   Filter row — the LogView filter bar (R2-F05).
    ────────────────────────────────────────────────────────────── */
 .filter-row {
   display: flex;

@@ -66,7 +66,11 @@ export default function ServiceDetail() {
 
   return (
     <div className="service-detail-page">
-      <PageHeader back={BACK} title={`Service · ${label}`} />
+      <PageHeader
+        back={BACK}
+        title={`Service · ${label}`}
+        actions={<Link className="btn btn-secondary btn-sm" to={`/traffic?service=${encodeURIComponent(svc.id)}`}>View traffic</Link>}
+      />
 
       {/* Meta strip */}
       <div className="meta-strip">

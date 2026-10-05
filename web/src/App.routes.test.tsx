@@ -120,10 +120,16 @@ describe("App routes", () => {
     },
   );
 
-  it("/gateway/requests picks the first http service", async () => {
-    renderAt("/gateway/requests");
-    expect(await screen.findByRole("heading", { name: /^Request inspector$/i })).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByTestId("path").textContent).toMatch(/^\/gateway\/requests\/[^/]+$/));
+  // The two scopes of the log view: Traffic in Services, Requests in the AI Gateway.
+  it.each([
+    ["/traffic",          /^Traffic$/,  "Services",   "Traffic"],
+    ["/gateway/requests", /^Requests$/, "AI Gateway", "Requests"],
+  ])("%s renders its log view and stays put", async (path, heading, workspace, entry) => {
+    renderAt(path);
+    expect(await screen.findByRole("heading", { name: heading, level: 1 })).toBeInTheDocument();
+    expect(screen.getByTestId("path")).toHaveTextContent(path);
+    const nav = within(await screen.findByRole("navigation", { name: workspace }));
+    expect(nav.getByRole("link", { name: entry })).toHaveAttribute("aria-current", "page");
   });
 
   // Old bookmarks: every moved path lands on its new page, params, query and hash intact.
@@ -144,7 +150,10 @@ describe("App routes", () => {
     "/settings/custom-domains": { url: "/settings/custom-domains", lands: "/settings/general", heading: /^General$/, current: "General" },
     "/cache": { url: "/cache", lands: "/gateway/cache", heading: /^Prompt cache$/i },
     "/guardrails": { url: "/guardrails#custom", lands: "/gateway/guardrails#custom", heading: /^Guardrails & redaction$/i },
-    "/inspector": { url: "/inspector", lands: "/gateway/requests/", heading: /^Request inspector$/i },
+    "/inspector": { url: "/inspector", lands: "/gateway/requests", heading: /^Requests$/ },
+    "/connection-logs": {
+      url: "/connection-logs?service=svc_web01#row", lands: "/traffic?service=svc_web01#row", heading: /^Traffic$/, services: /^Traffic$/,
+    },
     "/inspector/:serviceId/:requestId?": {
       url: "/inspector/svc_ai001/req9?tab=diff#body", lands: "/gateway/requests/svc_ai001/req9?tab=diff#body", heading: /^Request inspector$/i,
     },
@@ -157,10 +166,7 @@ describe("App routes", () => {
     const c = visit[from];
     renderAt(c.url);
     expect(await screen.findByRole("heading", { name: c.heading, level: 1 })).toBeInTheDocument();
-    // "/inspector" goes on to the first http service, so only its prefix is fixed.
-    const path = screen.getByTestId("path").textContent ?? "";
-    if (c.lands.endsWith("/")) expect(path.startsWith(c.lands)).toBe(true);
-    else expect(path).toBe(c.lands);
+    expect(screen.getByTestId("path")).toHaveTextContent(c.lands);
     // The sidebar shows the workspace the page now belongs to.
     const nav = within(await screen.findByRole("navigation", { name: c.services ? "Services" : c.current ? "Settings" : "AI Gateway" }));
     const current = c.services ?? c.current;
@@ -194,14 +200,6 @@ describe("App routes", () => {
     expect(nav.getByRole("link", { name: "Requests" })).toHaveAttribute("href", "/gateway/requests");
   });
 
-  // Until W05 moves the page, the navigation entry leads to the page's current address.
-  it.each([
-    ["/traffic",             "/connection-logs",    /^Connection logs$/i],
-  ])("%s leads to the page that has not moved yet (%s)", async (from, lands, heading) => {
-    renderAt(from);
-    expect(await screen.findByRole("heading", { name: heading, level: 1 })).toBeInTheDocument();
-    expect(screen.getByTestId("path")).toHaveTextContent(lands);
-  });
 
   it("/provisioning is unreachable (backend pending)", async () => {
     renderAt("/provisioning");

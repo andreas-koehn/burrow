@@ -47,6 +47,11 @@ describe("ServiceDetail page", () => {
     expect(document.body.textContent).not.toMatch(/ai4m2q\.tunnels\.example\.com/);
   });
 
+  it("links to the traffic of this service", async () => {
+    mount();
+    expect(await screen.findByRole("link", { name: "View traffic" })).toHaveAttribute("href", "/traffic?service=svc_ai001");
+  });
+
   it("renders service name in the heading", async () => {
     mount();
     const heading = await screen.findByRole("heading", { name: /ollama/i });

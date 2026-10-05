@@ -21,7 +21,7 @@ function renderAt(route: string) {
 
 describe("v0.5.0 routes", () => {
   it.each([
-    ["/connection-logs",            /^Connection logs$/i],
+    ["/traffic",                    /^Traffic$/i],
     ["/settings/retention",         /^Retention & compliance$/i],
     ["/settings/database",          /^Database backend$/i],
   ])("%s resolves to its page heading", async (path, heading) => {

@@ -46,16 +46,16 @@ test("v0.5.0: database backend page shows sqlite driver", async ({ page }) => {
   await expect(page.locator("code.mono").filter({ hasText: "sqlite" })).toBeVisible();
 });
 
-// ── 3. Connection logs page renders + Rollups toggle ──────────────────────────
-test("v0.5.0: connection logs page renders and rollups toggle works", async ({ page }) => {
-  await page.goto("/connection-logs");
-  await expect(page.getByRole("heading", { name: "Connection logs", exact: true })).toBeVisible();
+// ── 3. Traffic page (was Connection logs) renders + Rollups toggle ──────────────────────────
+test("v0.5.0: traffic page renders and rollups toggle works", async ({ page }) => {
+  await page.goto("/traffic");
+  await expect(page.getByRole("heading", { name: "Traffic", exact: true })).toBeVisible();
 
   // In default (non-rollup) mode, the table or empty state is shown.
-  // Empty state: the EmptyState card renders <h4>No connection logs yet</h4>.
-  // Table mode: aria-label="Connection logs".
+  // Empty state: the EmptyState card renders <h4>No traffic in this period</h4>.
+  // Table mode: aria-label="Traffic".
   const tableOrEmpty = page.locator(
-    '[aria-label="Connection logs"], h4:has-text("No connection logs yet")',
+    'table[aria-label="Traffic"], h4:has-text("No traffic in this period")',
   );
   await expect(tableOrEmpty.first()).toBeVisible();
 
@@ -66,10 +66,10 @@ test("v0.5.0: connection logs page renders and rollups toggle works", async ({ p
   await expect(rollupsCheckbox).toBeChecked();
 
   // After enabling rollups either the "Day" column header appears or the
-  // rollups empty-state card (<h4>No rollups yet</h4>) shows (no rollup data in
-  // the fresh CI fixture).
+  // rollups empty-state card (<h4>No rollups in this period</h4>) shows (no rollup
+  // data in the fresh CI fixture).
   const dayColOrEmpty = page.locator(
-    'th:has-text("Day"), h4:has-text("No rollups yet")',
+    'th:has-text("Day"), h4:has-text("No rollups in this period")',
   );
   await expect(dayColOrEmpty.first()).toBeVisible();
 });

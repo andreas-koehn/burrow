@@ -18,17 +18,8 @@ export const OLD_ROUTES: { from: string; to: string }[] = [
   // Tunnels are the Live filter of Services; client tokens are a tab of Clients.
   { from: "/tunnels", to: "/services?live=1" },
   { from: "/tokens", to: "/clients?tab=tokens" },
+  // Connection logs are the Traffic view of the Services workspace.
+  { from: "/connection-logs", to: "/traffic" },
   // Custom domains need host routing, which is off; its retired settings page lands on General.
   { from: "/settings/custom-domains", to: "/settings/general" },
-];
-
-/**
- * Temporary, and the other way round: paths the navigation already names whose
- * pages still live at their old address. Rendered as routes in App.tsx so that
- * no sidebar, footer or palette entry leads nowhere. W05 removes `/traffic`
- * (and adds the reverse row to OLD_ROUTES). The reachability test in
- * navigation.test.ts pins this list against its own PENDING array.
- */
-export const NOT_YET_MOVED: { from: string; to: string }[] = [
-  { from: "/traffic", to: "/connection-logs" },
 ];
