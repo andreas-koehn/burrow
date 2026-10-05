@@ -20,7 +20,12 @@ func (e *TargetError) Error() string {
 // A bare port means 127.0.0.1.
 func ParseTarget(s string) (string, error) {
 	in := strings.TrimSpace(s)
-	bad := func(reason string) (string, error) { return "", &TargetError{Input: s, Reason: reason} }
+	// shown holds the input as echoed in errors: a typed password is never repeated.
+	shown := s
+	if u, err := url.Parse(in); err == nil && u.User != nil {
+		shown = u.Redacted()
+	}
+	bad := func(reason string) (string, error) { return "", &TargetError{Input: shown, Reason: reason} }
 
 	if strings.Contains(in, "://") {
 		u, err := url.Parse(in)
@@ -41,28 +46,41 @@ func ParseTarget(s string) (string, error) {
 		if port == "" {
 			port = "80"
 		}
-		return joinTarget(s, host, port)
+		return joinTarget(shown, host, port)
 	}
 	if !strings.Contains(in, ":") {
 		// a bare port
-		return joinTarget(s, "127.0.0.1", in)
+		return joinTarget(shown, "127.0.0.1", in)
 	}
 	host, port, err := net.SplitHostPort(in)
 	if err != nil {
 		return bad("it needs the form host:port with a numeric port")
 	}
-	return joinTarget(s, host, port)
+	return joinTarget(shown, host, port)
 }
 
 func joinTarget(input, host, port string) (string, error) {
 	n, err := strconv.Atoi(port)
-	if err != nil || n < 1 || n > 65535 {
+	if err != nil || !plainDigits(port) || n < 1 || n > 65535 {
 		return "", &TargetError{Input: input, Reason: "the port must be a number between 1 and 65535"}
 	}
-	if host == "" || strings.ContainsAny(host, " \t/") {
+	if host == "" || strings.ContainsAny(host, "/") || strings.IndexFunc(host, func(r rune) bool { return r <= ' ' || r == 0x7f }) >= 0 {
 		return "", &TargetError{Input: input, Reason: "the host is missing or not valid"}
 	}
 	return net.JoinHostPort(host, strconv.Itoa(n)), nil
+}
+
+// plainDigits reports whether s is ASCII digits only, without a leading zero.
+func plainDigits(s string) bool {
+	if s == "" || s[0] == '0' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // DefaultName is the service name used when the user gives none. It depends
@@ -82,14 +100,22 @@ func DefaultName(hostname, localAddr string) string {
 		}
 	}
 	host = strings.Trim(b.String(), "-")
-	if len(host) > 40 {
-		host = strings.TrimRight(host[:40], "-")
+	_, port, err := net.SplitHostPort(localAddr)
+	if err != nil || port == "" {
+		port = ""
+	}
+	// The whole name stays within 40 characters so it is a valid slug.
+	limit := 40
+	if port != "" {
+		limit = 40 - 1 - len(port)
+	}
+	if len(host) > limit {
+		host = strings.TrimRight(host[:limit], "-")
 	}
 	if host == "" {
 		host = "burrow"
 	}
-	_, port, err := net.SplitHostPort(localAddr)
-	if err != nil || port == "" {
+	if port == "" {
 		return host
 	}
 	return host + "-" + port

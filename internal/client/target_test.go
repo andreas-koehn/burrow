@@ -2,6 +2,7 @@ package client
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -20,6 +21,7 @@ func TestParseTarget(t *testing.T) {
 		"http://localhost":         "localhost:80",
 		"1":                        "127.0.0.1:1",
 		"65535":                    "127.0.0.1:65535",
+		"http://[::1]:3000":        "[::1]:3000",
 	}
 	for in, want := range ok {
 		got, err := ParseTarget(in)
@@ -45,6 +47,17 @@ func TestParseTarget(t *testing.T) {
 		"ftp://localhost:21":         "http",
 		"localhost:3000:1":           "port",
 		"local host:3000":            "host",
+		"+3000":                      "port",
+		"03000":                      "port",
+		"localhost:+80":              "port",
+		"a\nb:80":                    "host",
+		"a\x7fb:80":                  "host",
+		"http://localhost:0":         "port",
+		"http://localhost:65536":     "port",
+	}
+	_, err := ParseTarget("http://user:pw@localhost:1")
+	if err == nil || strings.Contains(err.Error(), "pw") {
+		t.Errorf("credentials error must not echo the password: %v", err)
 	}
 	for in, word := range bad {
 		_, err := ParseTarget(in)
@@ -70,12 +83,19 @@ func TestDefaultName(t *testing.T) {
 		{"my_box", "127.0.0.1:1", "my-box-1"},                         // characters outside a-z0-9- become "-"
 		{"", "127.0.0.1:3000", "burrow-3000"},                         // no hostname available
 		{"---", "127.0.0.1:3000", "burrow-3000"},
-		{strings.Repeat("a", 80), "127.0.0.1:3000", strings.Repeat("a", 40) + "-3000"}, // host part capped at 40
+		{strings.Repeat("a", 80), "127.0.0.1:3000", strings.Repeat("a", 35) + "-3000"}, // whole name capped at 40
 		{"host", "garbage", "host"},                                                    // no port to append
 	}
 	for _, c := range cases {
 		if got := DefaultName(c.host, c.addr); got != c.want {
 			t.Errorf("DefaultName(%q, %q) = %q, want %q", c.host, c.addr, got, c.want)
+		}
+	}
+	// The result always satisfies the slug rule, even for a long host and a 5-digit port.
+	slug := regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$`)
+	for _, h := range []string{strings.Repeat("a", 80), strings.Repeat("ab-", 30), "x"} {
+		if got := DefaultName(h, "127.0.0.1:65535"); !slug.MatchString(got) {
+			t.Errorf("DefaultName(%q) = %q does not satisfy the slug rule", h, got)
 		}
 	}
 	// Stable: the same inputs always give the same name.
