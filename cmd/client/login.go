@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -61,18 +62,27 @@ func normalizeRelay(in string) (relay, host string, err error) {
 	return "https://" + strings.ToLower(u.Host), host, nil
 }
 
-// readLine reads one line and reports whether more input follows it.
-func readLine(r *bufio.Reader) (line string, more bool) {
-	line, _ = r.ReadString('\n')
-	_, err := r.Peek(1)
-	return strings.TrimSpace(line), err == nil
+// msgPasteToken is how a token gets in without passing the shell history or
+// the process list. It takes the relay as typed after `burrow login`.
+const msgPasteToken = "run: burrow login %s --token -\nthen paste the token and press Enter."
+
+// readLine reads one line. end reports that the input ended without one; more
+// that further input follows the line.
+func readLine(r *bufio.Reader) (line string, end, more bool) {
+	line, err := r.ReadString('\n')
+	line = strings.TrimSpace(line)
+	if err != nil {
+		return line, line == "", false
+	}
+	_, err = r.Peek(1)
+	return line, false, err == nil
 }
 
 // cleanToken checks a token as typed or read. The token is never repeated.
 func cleanToken(token string) (string, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return "", usageErrorf("The token is empty. Create one in the dashboard (Clients, tab Tokens) and pass it with --token.")
+		return "", usageErrorf("The token is empty. Create one in the dashboard (Clients, tab Tokens), "+msgPasteToken, "<relay>")
 	}
 	if strings.IndexFunc(token, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
 		return "", usageErrorf("The token must be a single word on one line.")
@@ -88,8 +98,9 @@ func newLoginCmd(d deps) *cobra.Command {
 		Short: "Sign this machine in, once",
 		Long: "Sign this machine in, once.\n\n" +
 			"<relay> is the dashboard address: burrow.example.com or a full https:// URL.\n" +
-			"--token stores a token created in the dashboard (Clients, tab Tokens);\n" +
-			"`--token -` reads it from standard input, which keeps it out of the shell history.",
+			"A token created in the dashboard (Clients, tab Tokens) is stored with `--token -`:\n" +
+			"burrow asks for it, or reads it from standard input, which keeps it out of the\n" +
+			"shell history and the process list.",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
 				return usageWithLine(cmd, "%s needs the relay address, for example: burrow login burrow.example.com", cmd.CommandPath())
@@ -132,28 +143,19 @@ func newLoginCmd(d deps) *cobra.Command {
 
 			if !flags.Changed("token") {
 				return usageErrorf("Browser sign-in arrives with a newer version of burrow.\n"+
-					"Create a token in the dashboard (Clients, tab Tokens) and run: burrow login %s --token <token>",
+					"Create a token in the dashboard (Clients, tab Tokens), "+msgPasteToken,
 					strings.TrimPrefix(relay, "https://"))
 			}
-			in := bufio.NewReader(d.stdin)
 			token, _ := flags.GetString("token")
 			fromStdin := strings.TrimSpace(token) == "-"
-			if fromStdin {
-				line, more := readLine(in)
-				if more {
-					return usageErrorf("The token must be a single word on one line.")
-				}
-				token = line
-			}
-			if token, err = cleanToken(token); err != nil {
-				return err
-			}
 
 			path, err := userConfigFile(cmd, d)
 			if err != nil {
 				return err
 			}
 			out := cmd.OutOrStdout()
+			in := bufio.NewReader(d.stdin)
+			terminal := d.isTerminal()
 			force, _ := flags.GetBool("force")
 			// A stored file that cannot be read or holds no token is not a
 			// sign-in: it is replaced without a question.
@@ -162,16 +164,42 @@ func newLoginCmd(d deps) *cobra.Command {
 				if where == "" {
 					where = strings.TrimSpace(cur.Control)
 				}
-				if fromStdin || !d.isTerminal() {
-					return usageErrorf("This machine is already signed in to %s. Pass --force to replace the stored sign-in.", where)
+				needForce := usageErrorf("This machine is already signed in to %s. Pass --force to replace the stored sign-in.", where)
+				if !terminal {
+					return needForce
 				}
 				fmt.Fprintf(out, "This machine is already signed in to %s. Replace the stored sign-in? [y/N] ", where)
-				answer, _ := readLine(in)
+				answer, end, _ := readLine(in)
 				fmt.Fprintln(out)
+				if end {
+					// Nobody is there to answer, as with input from /dev/null.
+					return needForce
+				}
 				if a := strings.ToLower(answer); a != "y" && a != "yes" {
 					fmt.Fprintln(out, "Kept the stored sign-in.")
 					return nil
 				}
+			}
+
+			switch {
+			case fromStdin && terminal:
+				// Asked on stderr and read without echo: the token is on no screen.
+				errOut := cmd.ErrOrStderr()
+				fmt.Fprint(errOut, "Token (input is hidden): ")
+				token, err = d.readSecret()
+				fmt.Fprintln(errOut)
+				if err != nil {
+					return errors.New("could not read the token from the terminal")
+				}
+			case fromStdin:
+				line, _, more := readLine(in)
+				if more {
+					return usageErrorf("The token must be a single word on one line.")
+				}
+				token = line
+			}
+			if token, err = cleanToken(token); err != nil {
+				return err
 			}
 
 			// The config is built field by field and handed to the one function
@@ -184,7 +212,7 @@ func newLoginCmd(d deps) *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.String("token", "", "store this token instead of signing in through the browser; - reads it from standard input")
+	f.String("token", "", "store a token created in the dashboard; give - and paste the token when asked, so that it stays out of the shell history")
 	f.String("name", "", "name to remember the token by (default: this machine's hostname)")
 	f.String("control", "", "control endpoint host:port (default: <relay host>:7000)")
 	f.Bool("force", false, "replace a stored sign-in without asking")

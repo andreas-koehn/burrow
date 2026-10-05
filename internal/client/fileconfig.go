@@ -32,10 +32,18 @@ type rawService struct {
 	RemotePort int    `yaml:"remote"`
 }
 
-// LoadFileConfig reads and validates a burrow.yaml file at path.
-// It returns a FileConfig with Tunnels populated, and Server and Token when the
-// file has them.
-func LoadFileConfig(path string) (FileConfig, error) {
+// LoadFileConfig reads and validates a burrow.yaml file at path for
+// `burrow up`. It returns a FileConfig with Tunnels populated, and Server and
+// Token when the file has them: both are optional, a blank value counts as
+// absent, and what is absent comes from the sign-in.
+func LoadFileConfig(path string) (FileConfig, error) { return loadFileConfig(path, false) }
+
+// LoadCompleteFileConfig is the loader of `burrow connect --config`. server and
+// one of token / token_file are required, and every check, message and value is
+// the one that command has always had.
+func LoadCompleteFileConfig(path string) (FileConfig, error) { return loadFileConfig(path, true) }
+
+func loadFileConfig(path string, complete bool) (FileConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return FileConfig{}, fmt.Errorf("loadfileconfig: read %s: %w", path, err)
@@ -46,12 +54,19 @@ func LoadFileConfig(path string) (FileConfig, error) {
 		return FileConfig{}, fmt.Errorf("loadfileconfig: parse %s: %w", path, err)
 	}
 
-	// server and token are optional: what is absent comes from the sign-in.
-	// A blank value counts as absent.
-	server := strings.TrimSpace(raw.Server)
-	token := strings.TrimSpace(raw.Token)
-
-	// At most one of token / token_file.
+	server, token := raw.Server, raw.Token
+	if complete {
+		// Validate server non-empty.
+		if server == "" {
+			return FileConfig{}, fmt.Errorf("loadfileconfig: server is required")
+		}
+		// Validate exactly one of token / token_file.
+		if token == "" && raw.TokenFile == "" {
+			return FileConfig{}, fmt.Errorf("loadfileconfig: exactly one of token or token_file is required")
+		}
+	} else {
+		server, token = strings.TrimSpace(server), strings.TrimSpace(token)
+	}
 	if token != "" && raw.TokenFile != "" {
 		return FileConfig{}, fmt.Errorf("loadfileconfig: only one of token or token_file may be set")
 	}
@@ -62,7 +77,12 @@ func LoadFileConfig(path string) (FileConfig, error) {
 		if err != nil {
 			return FileConfig{}, fmt.Errorf("loadfileconfig: token_file %q: %w", raw.TokenFile, err)
 		}
-		token = strings.TrimSpace(string(b))
+		if complete {
+			// Trim trailing newlines (same convention as internal/config applyFileSecrets).
+			token = strings.TrimRight(string(b), "\r\n")
+		} else {
+			token = strings.TrimSpace(string(b))
+		}
 	}
 
 	// Validate at least one service.

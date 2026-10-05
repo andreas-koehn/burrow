@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/ankoehn/burrow/internal/client"
@@ -119,5 +120,32 @@ func TestVersionCommand(t *testing.T) {
 	h := newHarness(t)
 	if code := h.exec("version"); code != 0 || h.stdout.String() != versionLine()+"\n" {
 		t.Fatalf("exit %d, stdout %q", code, h.stdout.String())
+	}
+}
+
+func TestRoot_UnknownCommandSuggests(t *testing.T) {
+	for typed, want := range map[string]string{"statsu": "status", "logn": "login", "conect": "connect"} {
+		h := newHarness(t)
+		code := h.exec(typed)
+		s := h.stderr.String()
+		if code != 2 || !strings.Contains(s, `unknown command "`+typed+`" for "burrow"`) || !strings.Contains(s, "Did you mean this?") || !strings.Contains(s, "\t"+want+"\n") {
+			t.Fatalf("%s: exit %d, stderr %q", typed, code, s)
+		}
+	}
+	h := newHarness(t)
+	if code := h.exec("zzzzzz"); code != 2 || strings.Contains(h.stderr.String(), "Did you mean") {
+		t.Fatalf("exit %d, stderr %q", code, h.stderr.String())
+	}
+}
+
+func TestReport_StoredTokenForAnotherRelay(t *testing.T) {
+	user := client.UserConfig{Relay: "https://burrow.example.com", Control: "burrow.example.com:7000", Token: testToken}
+	_, err := client.Resolve(client.Sources{EnvServer: "other.example.com:7001", User: &user})
+	var b bytes.Buffer
+	code := report(&b, fmt.Errorf("resolve: %w", err))
+	want := "Not signed in to other.example.com:7001. The stored sign-in is for https://burrow.example.com.\n" +
+		"Run: burrow login other.example.com --control other.example.com:7001\n"
+	if code != 3 || b.String() != want {
+		t.Fatalf("report = %d %q, want 3 %q", code, b.String(), want)
 	}
 }

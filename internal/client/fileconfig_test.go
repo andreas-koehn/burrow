@@ -264,3 +264,38 @@ func TestLoadFileConfig_TCPRemotePort(t *testing.T) {
 		t.Fatalf("expected RemotePort=9100, got %d", c.Tunnels[0].RemotePort)
 	}
 }
+
+// LoadCompleteFileConfig is the loader of `burrow connect --config`: server and
+// token are required, with the messages and the order of checks they always had.
+func TestLoadCompleteFileConfig(t *testing.T) {
+	dir := t.TempDir()
+	tok := filepath.Join(dir, "tok")
+	os.WriteFile(tok, []byte("bur_abc \r\n"), 0o600)
+	svc := "services:\n  - { name: app, local: 127.0.0.1:3000 }\n"
+	bad := []struct{ name, content, want string }{
+		{"no server", "token: mytoken\n" + svc, "loadfileconfig: server is required"},
+		{"no token", "server: relay.example.com:7000\n" + svc, "loadfileconfig: exactly one of token or token_file is required"},
+		{"neither, and no services", "{}\n", "loadfileconfig: server is required"},
+		{"no server, both tokens", "token: a\ntoken_file: " + tok + "\n" + svc, "loadfileconfig: server is required"},
+		{"both tokens", "server: relay.example.com:7000\ntoken: a\ntoken_file: " + tok + "\n" + svc, "loadfileconfig: only one of token or token_file may be set"},
+		{"no services", "server: relay.example.com:7000\ntoken: a\n", "loadfileconfig: at least one service is required"},
+	}
+	for _, tc := range bad {
+		yml := filepath.Join(dir, "burrow.yaml")
+		os.WriteFile(yml, []byte(tc.content), 0o600)
+		if _, err := LoadCompleteFileConfig(yml); err == nil || err.Error() != tc.want {
+			t.Fatalf("%s: err = %v, want %q", tc.name, err, tc.want)
+		}
+	}
+
+	yml := filepath.Join(dir, "burrow.yaml")
+	os.WriteFile(yml, []byte("server: relay.example.com:7000\ntoken_file: "+tok+"\n"+svc), 0o600)
+	c, err := LoadCompleteFileConfig(yml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only the line end is cut from a token file, as before.
+	if c.Server != "relay.example.com:7000" || c.Token != "bur_abc " || len(c.Tunnels) != 1 {
+		t.Fatalf("server %q, tunnels %d, token as before: %v", c.Server, len(c.Tunnels), c.Token == "bur_abc ")
+	}
+}

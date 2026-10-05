@@ -174,11 +174,72 @@ func TestLogin_WithoutTokenPointsAtTheTokenPath(t *testing.T) {
 	if code != 2 || h.hasConfig() {
 		t.Fatalf("exit %d, config written: %v", code, h.hasConfig())
 	}
-	for _, w := range []string{"Browser sign-in", "newer version", "burrow login burrow.example.com --token"} {
+	for _, w := range []string{"Browser sign-in", "newer version", "burrow login burrow.example.com --token -", "paste the token", "press Enter"} {
 		if !strings.Contains(h.stderr.String(), w) {
 			t.Fatalf("stderr %q does not contain %q", h.stderr.String(), w)
 		}
 	}
+	// A token on the command line ends up in the shell history and the process list.
+	if strings.Contains(h.stderr.String(), "--token <") {
+		t.Fatalf("the message suggests a token on the command line: %q", h.stderr.String())
+	}
+}
+
+func TestLogin_MessagesAndHelpSteerToStdin(t *testing.T) {
+	h := newHarness(t)
+	if code := h.exec("login", "burrow.example.com", "--token", ""); code != 2 {
+		t.Fatalf("exit %d", code)
+	}
+	if s := h.stderr.String(); strings.Contains(s, "--token <") || !strings.Contains(s, "--token -") || !strings.Contains(s, "paste the token") {
+		t.Fatalf("stderr = %q", s)
+	}
+	if code := h.exec("login", "--help"); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if s := h.stdout.String(); strings.Contains(s, "--token <") || !strings.Contains(s, "--token -") || !strings.Contains(s, "shell history") {
+		t.Fatalf("help = %q", s)
+	}
+}
+
+// On a terminal `--token -` asks for the token on stderr and reads it without echo.
+func TestLoginToken_PromptOnATerminal(t *testing.T) {
+	h := newHarness(t)
+	h.terminal, h.secret = true, " "+testToken+"\n"
+	h.stdin = "this line must not be read as the token\n"
+	if code := h.exec("login", "burrow.example.com", "--token", "-"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	if h.secretCalls != 1 || h.stored(h.cfgPath).Token != testToken {
+		t.Fatalf("hidden prompt used %d times; token stored from it: %v", h.secretCalls, h.stored(h.cfgPath).Token == testToken)
+	}
+	if !strings.Contains(h.stderr.String(), "Token") || strings.Contains(h.stdout.String(), "Token:") {
+		t.Fatalf("the prompt belongs on stderr: stderr %q stdout %q", h.stderr.String(), h.stdout.String())
+	}
+	h.noToken()
+
+	t.Run("nothing typed", func(t *testing.T) {
+		h := newHarness(t)
+		h.terminal, h.secret = true, ""
+		if code := h.exec("login", "burrow.example.com", "--token", "-"); code != 2 || h.hasConfig() {
+			t.Fatalf("exit %d", code)
+		}
+	})
+	t.Run("not a terminal reads the line and shows no prompt", func(t *testing.T) {
+		h := newHarness(t)
+		h.stdin = testToken + "\n"
+		if code := h.exec("login", "burrow.example.com", "--token", "-"); code != 0 || h.secretCalls != 0 || h.stderr.Len() != 0 {
+			t.Fatalf("exit %d, prompt calls %d, stderr %q", code, h.secretCalls, h.stderr.String())
+		}
+	})
+	t.Run("already signed in: asked first, then the hidden prompt", func(t *testing.T) {
+		h := newHarness(t)
+		h.signIn()
+		h.terminal, h.stdin, h.secret = true, "y\n", "bur_new_token_9876543210"
+		if code := h.exec("login", "other.example.com", "--token", "-"); code != 0 || h.stored(h.cfgPath).Token != "bur_new_token_9876543210" {
+			t.Fatalf("exit %d: %s", code, h.stderr.String())
+		}
+		h.noToken("bur_new_token_9876543210")
+	})
 }
 
 func TestLogin_AlreadySignedIn(t *testing.T) {
@@ -186,7 +247,7 @@ func TestLogin_AlreadySignedIn(t *testing.T) {
 	args := []string{"login", "other.example.com", "--token", newToken}
 
 	t.Run("answer n keeps the sign-in", func(t *testing.T) {
-		for _, answer := range []string{"n\n", "\n", "", "nope\n"} {
+		for _, answer := range []string{"n\n", "\n", "nope\n"} {
 			h := newHarness(t)
 			before := h.signIn()
 			h.terminal, h.stdin = true, answer
@@ -229,6 +290,20 @@ func TestLogin_AlreadySignedIn(t *testing.T) {
 			t.Fatalf("a question was asked: %q", h.stdout.String())
 		}
 	})
+	// A "terminal" that gives no answer at all, like /dev/null, cannot be asked.
+	t.Run("end of input instead of an answer needs --force", func(t *testing.T) {
+		h := newHarness(t)
+		before := h.signIn()
+		h.terminal, h.stdin = true, ""
+		code := h.exec(args...)
+		if code != 2 || !strings.Contains(h.stderr.String(), "--force") || h.stored(h.cfgPath) != before {
+			t.Fatalf("exit %d, stderr %q", code, h.stderr.String())
+		}
+		if strings.Contains(h.stdout.String(), "Kept") {
+			t.Fatalf("stdout = %q", h.stdout.String())
+		}
+		h.noToken(newToken)
+	})
 	t.Run("not a terminal needs --force", func(t *testing.T) {
 		h := newHarness(t)
 		before := h.signIn()
@@ -241,7 +316,7 @@ func TestLogin_AlreadySignedIn(t *testing.T) {
 	t.Run("a token from stdin needs --force", func(t *testing.T) {
 		h := newHarness(t)
 		before := h.signIn()
-		h.terminal, h.stdin = true, newToken+"\n" // stdin holds the token, so nobody can be asked
+		h.stdin = newToken + "\n" // stdin holds the token, so nobody can be asked
 		code := h.exec("login", "other.example.com", "--token", "-")
 		if code != 2 || !strings.Contains(h.stderr.String(), "--force") || h.stored(h.cfgPath) != before {
 			t.Fatalf("exit %d, stderr %q", code, h.stderr.String())

@@ -26,17 +26,19 @@ type runCall struct {
 // harness runs the root command in-process without touching the environment,
 // the real user config or the network.
 type harness struct {
-	t        *testing.T
-	stdout   bytes.Buffer
-	stderr   bytes.Buffer
-	stdin    string
-	env      map[string]string
-	hostname string
-	hostErr  error
-	terminal bool
-	cfgPath  string // where the user config lives when --config is not given
-	runs     []runCall
-	runErr   error
+	t           *testing.T
+	stdout      bytes.Buffer
+	stderr      bytes.Buffer
+	stdin       string
+	env         map[string]string
+	hostname    string
+	hostErr     error
+	terminal    bool
+	secret      string // what a person types at the hidden token prompt
+	secretCalls int
+	cfgPath     string // where the user config lives when --config is not given
+	runs        []runCall
+	runErr      error
 }
 
 func newHarness(t *testing.T) *harness {
@@ -66,6 +68,10 @@ func (h *harness) deps() deps {
 			return h.runErr
 		},
 		isTerminal: func() bool { return h.terminal },
+		readSecret: func() (string, error) {
+			h.secretCalls++
+			return h.secret, nil
+		},
 	}
 }
 

@@ -136,15 +136,38 @@ func TestUp_FileWithServerAndTokenUsesItsOwn(t *testing.T) {
 	}
 }
 
-func TestUp_FileWithOnlyAServerTakesTheStoredToken(t *testing.T) {
+func TestUp_FileWithOnlyAServer(t *testing.T) {
+	// the relay of the sign-in: the stored token is used
 	h := newHarness(t)
 	h.signIn()
-	yml := writeFile(t, "burrow.yaml", "server: relay.example.com:7000\n"+servicesOnly)
+	yml := writeFile(t, "burrow.yaml", "server: burrow.example.com:7000\n"+servicesOnly)
 	if code := h.exec("up", "--file", yml); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}
-	if c := h.oneRun().creds; c.Control != "relay.example.com:7000" || c.Token != testToken || c.Source != client.SourceFile {
+	if c := h.oneRun().creds; c.Control != "burrow.example.com:7000" || c.Token != testToken || c.Source != client.SourceFile {
 		t.Fatalf("credentials: control %q source %q", c.Control, c.Source)
+	}
+
+	// another relay: the stored token is not sent there
+	h = newHarness(t)
+	h.signIn()
+	yml = writeFile(t, "burrow.yaml", "server: relay.example.com:7000\n"+servicesOnly)
+	code := h.exec("up", "--file", yml)
+	if code != 3 || len(h.runs) != 0 || !strings.Contains(h.stderr.String(), "Not signed in to relay.example.com:7000") {
+		t.Fatalf("exit %d, runs %d, stderr %q", code, len(h.runs), h.stderr.String())
+	}
+	h.noToken()
+}
+
+func TestUp_HelpNamesTheEnvironment(t *testing.T) {
+	h := newHarness(t)
+	if code := h.exec("up", "--help"); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	for _, w := range []string{"BURROW_SERVER", "BURROW_TOKEN", "connect --config"} {
+		if !strings.Contains(h.stdout.String(), w) {
+			t.Fatalf("help does not mention %q:\n%s", w, h.stdout.String())
+		}
 	}
 }
 

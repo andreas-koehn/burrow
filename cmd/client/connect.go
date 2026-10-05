@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -27,16 +28,14 @@ func buildTunnelSpec(name string, remotePort int, localAddr string, typ string) 
 var singleFlagNames = []string{"server", "token", "local", "remote", "name", "type"}
 
 // newConnectCmd constructs the "connect" sub-command.
-func newConnectCmd() *cobra.Command { return newConnectCmdWith(defaultDeps()) }
-
-// newConnectCmdWith is newConnectCmd with replaceable surroundings.
 //
 // The command is the explicit form that existed before `http`, `tcp` and `up`
 // and behaves as it always has: its own --config is the path to burrow.yaml
-// (it hides the root's --config), --insecure, --cacert and --server-name are
-// its own flags, and its errors, flag errors included, end in "error: …" and
-// exit code 1.
-func newConnectCmdWith(d deps) *cobra.Command {
+// (it hides the root's --config) and that file must name server and token,
+// neither the environment nor a stored sign-in fills them in; --insecure,
+// --cacert and --server-name are its own flags; and every one of its errors,
+// flag errors included, ends in "error: …" and exit code 1.
+func newConnectCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "connect",
 		Short: "Connect to a Burrow server and register a tunnel",
@@ -44,7 +43,7 @@ func newConnectCmdWith(d deps) *cobra.Command {
 			cfgPath, _ := cmd.Flags().GetString("config")
 			logFormat, logGiven, err := logFormatFlag(cmd)
 			if err != nil {
-				return err
+				return errors.New(err.Error()) // a plain error, like every other of this command
 			}
 
 			if cfgPath != "" {
@@ -55,7 +54,7 @@ func newConnectCmdWith(d deps) *cobra.Command {
 					}
 				}
 
-				fc, err := client.LoadFileConfig(cfgPath)
+				fc, err := client.LoadCompleteFileConfig(cfgPath)
 				if err != nil {
 					return err
 				}
@@ -68,18 +67,7 @@ func newConnectCmdWith(d deps) *cobra.Command {
 					g.logFormat = logFormat
 				}
 
-				// A file with server and token uses exactly those, as before.
 				creds := client.Credentials{Control: fc.Server, Token: fc.Token, Source: client.SourceFile}
-				if fc.Server == "" || fc.Token == "" {
-					// What the file leaves out comes from the sign-in, as for `burrow up`.
-					userPath, err := d.userConfigPath("")
-					if err != nil {
-						return err
-					}
-					if creds, err = resolveCredentials(d, userPath, &fc); err != nil {
-						return err
-					}
-				}
 				return runClient(cmd.Context(), creds, fc.Tunnels, g)
 			}
 

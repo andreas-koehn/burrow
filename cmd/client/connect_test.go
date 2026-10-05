@@ -470,21 +470,42 @@ func TestConnect_ThroughRoot_ErrorsAsBefore(t *testing.T) {
 	}
 }
 
-// New with this version: a burrow.yaml without server and token takes them
-// from the sign-in, for `connect --config` as for `up`.
-func TestConnect_ConfigFileWithoutCredentialsUsesTheSignIn(t *testing.T) {
+// `connect --config` needs server and token in the file, as it always has:
+// neither the environment nor a stored sign-in fills them in.
+func TestConnect_ConfigFile_IncompleteFailsAsBefore(t *testing.T) {
+	svc := "services:\n  - { name: app, local: 127.0.0.1:3000 }\n"
+	cases := []struct{ name, content, want string }{
+		{"no server", "token: filetok\n" + svc, "loadfileconfig: server is required"},
+		{"no token", "server: relay.example.com:7000\n" + svc, "loadfileconfig: exactly one of token or token_file is required"},
+		{"neither", svc, "loadfileconfig: server is required"},
+		{"no server and no services", "token: filetok\n", "loadfileconfig: server is required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.signIn()
+			h.env["BURROW_SERVER"], h.env["BURROW_TOKEN"] = "env.example.com:7000", "envtok"
+			t.Setenv("BURROW_SERVER", "env.example.com:7000")
+			t.Setenv("BURROW_TOKEN", "envtok")
+			s := captureStart(t)
+			yml := writeFile(t, "burrow.yaml", tc.content)
+			if code := h.exec("connect", "--config", yml); code != 1 || h.stderr.String() != "error: "+tc.want+"\n" || s.calls != 0 {
+				t.Fatalf("exit %d, stderr %q, calls %d", code, h.stderr.String(), s.calls)
+			}
+			if err := runConnect(t, "--config", yml); err == nil || err.Error() != tc.want {
+				t.Fatalf("standalone: error = %v", err)
+			}
+		})
+	}
+}
+
+// Every error of connect has the prefix and exit code 1, a bad --log included.
+func TestConnect_ThroughRoot_BadLogFlag(t *testing.T) {
 	h := newHarness(t)
 	s := captureStart(t)
-	yml := writeFile(t, "burrow.yaml", servicesOnly)
-	if code := h.exec("connect", "--config", yml); code != 3 || s.calls != 0 {
-		t.Fatalf("not signed in: exit %d, calls %d", code, s.calls)
-	}
-	h.signIn()
-	if code := h.exec("connect", "--config", yml); code != 0 {
-		t.Fatalf("exit %d: %s", code, h.stderr.String())
-	}
-	if o := s.opts; o.Server != "burrow.example.com:7000" || o.Token != testToken || len(o.Tunnels) != 2 {
-		t.Fatalf("server %q, stored token used: %v, tunnels %d", o.Server, o.Token == testToken, len(o.Tunnels))
+	code := h.exec("connect", "--server", "h:7000", "--token", "t", "--log", "xml")
+	if code != 1 || h.stderr.String() != "error: --log must be text or json\n" || s.calls != 0 {
+		t.Fatalf("exit %d, stderr %q", code, h.stderr.String())
 	}
 }
 

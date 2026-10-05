@@ -98,9 +98,12 @@ func report(w io.Writer, err error) int {
 	}
 	var ee *exitError
 	var te *client.TargetError
+	var me *client.RelayMismatchError
 	switch {
 	case errors.As(err, &ee):
 		fmt.Fprintln(w, ee.msg)
+	case errors.As(err, &me): // not signed in to this relay: it has its own two lines
+		fmt.Fprintln(w, me.Error())
 	case errors.Is(err, client.ErrNotSignedIn):
 		fmt.Fprintln(w, msgNotSignedIn)
 	case errors.As(err, &te):

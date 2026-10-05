@@ -1,9 +1,12 @@
 package client
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"strconv"
 	"strings"
 )
 
@@ -84,6 +87,11 @@ var ErrNotSignedIn = errors.New("Not signed in. Run: burrow login <your relay ad
 //
 // Values are trimmed, and one that is blank counts as not set.
 //
+// A token from the user config is used only with the user config's own control
+// endpoint, or with a control endpoint from another source that is the same
+// one; otherwise the result is a *RelayMismatchError. A token given explicitly
+// may go with any control endpoint.
+//
 // Source names the highest-precedence place that contributed a value.
 // TokenName is set only when the token itself came from the user config, and
 // Relay only when the control endpoint did: the stored name and dashboard URL
@@ -103,6 +111,14 @@ func Resolve(s Sources) (Credentials, error) {
 		return Credentials{}, ErrNotSignedIn
 	}
 
+	// The stored token belongs to the relay it was stored with. A server named
+	// some other way gets it only when it is that same control endpoint.
+	if names[ti] == SourceUserConfig && names[ci] != SourceUserConfig && !sameEndpoint(controls[ci], controls[3]) {
+		return Credentials{}, &RelayMismatchError{
+			Control: controls[ci], StoredControl: controls[3], StoredRelay: trim(s.User.Relay),
+		}
+	}
+
 	c := Credentials{Control: controls[ci], Token: tokens[ti], Source: names[min(ci, ti)]}
 	if names[ci] == SourceUserConfig {
 		c.Relay = s.User.Relay
@@ -111,6 +127,53 @@ func Resolve(s Sources) (Credentials, error) {
 		c.TokenName = s.User.TokenName
 	}
 	return c, nil
+}
+
+// RelayMismatchError says that the only token at hand is the stored one and
+// that it was stored for another relay than the one asked for. The token is
+// not sent there. It is a kind of ErrNotSignedIn; its message names the relay
+// and the command that signs in to it, and never the token.
+type RelayMismatchError struct {
+	Control       string // the control endpoint asked for
+	StoredControl string // the control endpoint of the stored sign-in, "" when it has none
+	StoredRelay   string // the dashboard URL of the stored sign-in, "" when it has none
+}
+
+func (e *RelayMismatchError) Error() string {
+	stored := "The stored sign-in names no relay."
+	if at := cmp.Or(e.StoredRelay, e.StoredControl); at != "" {
+		stored = "The stored sign-in is for " + at + "."
+	}
+	login := "<its address>"
+	if host, port, err := net.SplitHostPort(e.Control); err == nil && host != "" {
+		login = host
+		if strings.Contains(host, ":") {
+			login = "[" + host + "]"
+		}
+		if port != "7000" {
+			login += " --control " + e.Control
+		}
+	}
+	return "Not signed in to " + e.Control + ". " + stored + "\nRun: burrow login " + login
+}
+
+// Is makes the error count as ErrNotSignedIn.
+func (e *RelayMismatchError) Is(target error) bool { return target == ErrNotSignedIn }
+
+// sameEndpoint reports whether two host:port values name the same control
+// endpoint: the host without regard to case or a trailing dot, the same port.
+func sameEndpoint(a, b string) bool {
+	norm := func(s string) string {
+		host, port, err := net.SplitHostPort(s)
+		if err != nil {
+			return strings.ToLower(s)
+		}
+		if n, err := strconv.Atoi(port); err == nil {
+			port = strconv.Itoa(n)
+		}
+		return net.JoinHostPort(strings.TrimSuffix(strings.ToLower(host), "."), port)
+	}
+	return a != "" && b != "" && norm(a) == norm(b)
 }
 
 // firstSet returns the index of the first non-empty value, or -1.

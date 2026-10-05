@@ -11,8 +11,10 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/ankoehn/burrow/internal/client"
 	"github.com/ankoehn/burrow/internal/version"
@@ -36,6 +38,8 @@ type deps struct {
 	run func(ctx context.Context, creds client.Credentials, tunnels []client.TunnelSpec, g globalFlags) error
 	// isTerminal reports whether stdin is a terminal a person can answer on.
 	isTerminal func() bool
+	// readSecret reads one line from the terminal without showing it.
+	readSecret func() (string, error)
 }
 
 func defaultDeps() deps {
@@ -47,9 +51,10 @@ func defaultDeps() deps {
 		userConfigPath: client.UserConfigPath,
 		getenv:         os.Getenv,
 		run:            runClient,
-		isTerminal: func() bool {
-			fi, err := os.Stdin.Stat()
-			return err == nil && fi.Mode()&os.ModeCharDevice != 0
+		isTerminal:     func() bool { return term.IsTerminal(int(os.Stdin.Fd())) },
+		readSecret: func() (string, error) {
+			b, err := term.ReadPassword(int(os.Stdin.Fd()))
+			return string(b), err
 		},
 	}
 }
@@ -62,11 +67,21 @@ func newRoot(d deps) *cobra.Command {
 		Version:       versionLine(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// SuggestionsFor does not apply cobra's default distance by itself.
+		SuggestionsMinimumDistance: 2,
 		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return usageErrorf("unknown command %q for %q\nRun '%s --help' for the commands.", args[0], cmd.CommandPath(), cmd.CommandPath())
+			if len(args) == 0 {
+				return nil
 			}
-			return nil
+			// cobra's own wording, suggestions included, as a usage error.
+			msg := fmt.Sprintf("unknown command %q for %q", args[0], cmd.CommandPath())
+			if s := cmd.SuggestionsFor(args[0]); len(s) > 0 {
+				msg += "\n\nDid you mean this?\n"
+				for _, name := range s {
+					msg += "\t" + name + "\n"
+				}
+			}
+			return usageErrorf("%s\nRun '%s --help' for usage.", strings.TrimRight(msg, "\n")+"\n", cmd.CommandPath())
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
@@ -89,7 +104,7 @@ func newRoot(d deps) *cobra.Command {
 		newExposeCmd(d, "tcp"),
 		newUpCmd(d),
 		newStatusCmd(d),
-		newConnectCmdWith(d),
+		newConnectCmd(),
 		&cobra.Command{
 			Use:   "version",
 			Short: "Print version information",

@@ -50,7 +50,9 @@ func newUpCmd(d deps) *cobra.Command {
 		Long: "Run every service in burrow.yaml.\n\n" +
 			"The file is looked for in this order: --file <path>, ./burrow.yaml, burrow.yaml in the\n" +
 			"user config directory. `server` and `token` in the file are optional; what is absent\n" +
-			"comes from the sign-in (burrow login).",
+			"comes from the sign-in (burrow login).\n\n" +
+			"BURROW_SERVER and BURROW_TOKEN, when set, come before the values in the file; this differs\n" +
+			"from `burrow connect --config`, which uses the file alone.",
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			given, _ := cmd.Flags().GetString("file")

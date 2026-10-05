@@ -23,9 +23,10 @@ func TestResolve_Precedence(t *testing.T) {
 			Credentials{Control: "e.example:7000", Token: "bur_env", Source: "environment"}},
 		{"flags override everything", Sources{FlagServer: "x.example:7000", FlagToken: "bur_flag", EnvServer: "e:7000", EnvToken: "bur_env", User: user},
 			Credentials{Control: "x.example:7000", Token: "bur_flag", Source: "flags"}},
-		// The two values are resolved independently: a flag for the server with the stored token is a normal case.
-		{"flag server, stored token", Sources{FlagServer: "x.example:7000", User: user},
-			Credentials{Control: "x.example:7000", Token: "bur_user", TokenName: "laptop", Relay: "", Source: "flags"}},
+		// The two values are resolved independently, but the stored token goes
+		// only to the control endpoint it was stored with.
+		{"flag server that is the stored one, stored token", Sources{FlagServer: "R.Example.:7000", User: user},
+			Credentials{Control: "R.Example.:7000", Token: "bur_user", TokenName: "laptop", Relay: "", Source: "flags"}},
 		{"env token, stored server", Sources{EnvToken: "bur_env", User: user},
 			Credentials{Control: "r.example:7000", Token: "bur_env", Relay: "https://r.example", Source: "environment"}},
 		{"file token, stored server", Sources{FileToken: "bur_file", User: user},
@@ -162,5 +163,58 @@ func TestResolve_TrimsValues(t *testing.T) {
 	}
 	if c.Control != "e.example:7000" || c.Token != "bur_env" {
 		t.Fatalf("control %q, token trimmed: %v", c.Control, c.Token == "bur_env")
+	}
+}
+
+// A stored token is never sent to a server other than the one it was stored with.
+func TestResolve_StoredTokenForAnotherRelay(t *testing.T) {
+	user := sampleUserConfig() // burrow.example.com:7000
+	cases := []struct {
+		name    string
+		s       Sources
+		control string
+		run     string
+	}{
+		{"flag server", Sources{FlagServer: "other.example.com:7000", User: &user}, "other.example.com:7000", "burrow login other.example.com"},
+		{"env server", Sources{EnvServer: "other.example.com:7000", User: &user}, "other.example.com:7000", "burrow login other.example.com"},
+		{"file server", Sources{FileServer: "other.example.com:7000", User: &user}, "other.example.com:7000", "burrow login other.example.com"},
+		{"same host, other port", Sources{EnvServer: "burrow.example.com:7001", User: &user}, "burrow.example.com:7001",
+			"burrow login burrow.example.com --control burrow.example.com:7001"},
+		{"server that is not host:port", Sources{EnvServer: "burrow.example.com", User: &user}, "burrow.example.com", "burrow login <its address>"},
+		{"stored token without a stored server", Sources{EnvServer: "other.example.com:7000", User: &UserConfig{Token: testToken}},
+			"other.example.com:7000", "burrow login other.example.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Resolve(tc.s)
+			var me *RelayMismatchError
+			if !errors.As(err, &me) || !errors.Is(err, ErrNotSignedIn) {
+				t.Fatalf("err = %v, want a *RelayMismatchError that is ErrNotSignedIn", err)
+			}
+			if got != (Credentials{}) {
+				t.Fatal("want empty credentials next to the error")
+			}
+			if me.Control != tc.control {
+				t.Fatalf("Control = %q, want %q", me.Control, tc.control)
+			}
+			msg := err.Error()
+			if strings.Contains(msg, testToken) {
+				t.Fatal("the message contains the token")
+			}
+			if !strings.Contains(msg, "Not signed in to "+tc.control) || !strings.HasSuffix(msg, "Run: "+tc.run) {
+				t.Fatalf("message = %q", msg)
+			}
+		})
+	}
+
+	// An explicit token may go to any server, and the stored server may take any token.
+	for name, s := range map[string]Sources{
+		"env token, flag server":    {FlagServer: "other.example.com:7000", EnvToken: "bur_env", User: &user},
+		"file token, env server":    {EnvServer: "other.example.com:7000", FileToken: "bur_file", User: &user},
+		"flag token, stored server": {FlagToken: "bur_flag", User: &user},
+	} {
+		if _, err := Resolve(s); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
 	}
 }

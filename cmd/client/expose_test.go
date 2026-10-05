@@ -179,16 +179,44 @@ func TestExpose_Environment(t *testing.T) {
 	}
 }
 
-func TestExpose_EnvironmentWinsOverTheStoredSignIn(t *testing.T) {
+// The stored token belongs to the relay it was issued by. A server from the
+// environment may be the same control endpoint written differently; any other
+// server does not get the stored token.
+func TestExpose_StoredTokenGoesOnlyToItsOwnRelay(t *testing.T) {
+	for _, same := range []string{"burrow.example.com:7000", "Burrow.Example.COM:7000", "burrow.example.com.:7000"} {
+		h := newHarness(t)
+		h.signIn()
+		h.env["BURROW_SERVER"] = same
+		if code := h.exec("tcp", "5432"); code != 0 {
+			t.Fatalf("%s: exit %d: %s", same, code, h.stderr.String())
+		}
+		if c := h.oneRun().creds; c.Token != testToken || c.TokenName != "kohns-laptop" || c.Source != client.SourceEnvironment {
+			t.Fatalf("%s: source %q name %q", same, c.Source, c.TokenName)
+		}
+	}
+	for _, other := range []string{"env.example.com:7000", "burrow.example.com:7001"} {
+		for _, cmd := range [][]string{{"http", "3000"}, {"tcp", "5432"}, {"status"}} {
+			h := newHarness(t)
+			h.signIn()
+			h.env["BURROW_SERVER"] = other
+			code := h.exec(cmd...)
+			if code != 3 || len(h.runs) != 0 || h.stdout.Len() != 0 {
+				t.Fatalf("%s %v: exit %d, runs %d, stdout %q", other, cmd, code, len(h.runs), h.stdout.String())
+			}
+			for _, w := range []string{"Not signed in to " + other, "https://burrow.example.com", "burrow login "} {
+				if !strings.Contains(h.stderr.String(), w) {
+					t.Fatalf("%s %v: stderr %q does not contain %q", other, cmd, h.stderr.String(), w)
+				}
+			}
+			h.noToken()
+		}
+	}
+	// A token given explicitly goes wherever the server says.
 	h := newHarness(t)
 	h.signIn()
-	h.env["BURROW_SERVER"] = "env.example.com:7000"
-	if code := h.exec("tcp", "5432"); code != 0 {
+	h.env["BURROW_SERVER"], h.env["BURROW_TOKEN"] = "env.example.com:7000", "bur_explicit_token_0001"
+	if code := h.exec("http", "3000"); code != 0 || h.oneRun().creds.Token != "bur_explicit_token_0001" {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
-	}
-	c := h.oneRun().creds
-	if c.Control != "env.example.com:7000" || c.Token != testToken || c.Source != client.SourceEnvironment || c.TokenName != "kohns-laptop" {
-		t.Fatalf("credentials: control %q source %q name %q", c.Control, c.Source, c.TokenName)
 	}
 }
 
