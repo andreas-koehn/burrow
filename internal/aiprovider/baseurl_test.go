@@ -21,6 +21,10 @@ func TestValidateBaseURL(t *testing.T) {
 		"https://", "https://user:pw@example.com/v1", "https://example.com/v1?x=1",
 		"https://example.com/v1#frag", "https://exa mple.com", "//example.com/v1",
 		"https://user@example.com/v1", "https://example.com/v1?", "HTTP://example.com/v1",
+		"https://example.com/a/../b", "https://example.com/v1/.", "https://example.com/%2e%2e/b",
+		"https://example.com/v1 ", " https://example.com/v1", "https://example.com/v1\t", "https://example.com/v1%20x",
+		"https://example.com:0/v1", "https://example.com:99999/v1", "https://example.com:/v1",
+		"https://example.com/v1#",
 	}
 	for _, s := range good {
 		if _, err := ValidateBaseURL(s); err != nil {
@@ -64,6 +68,7 @@ func TestPublicIP(t *testing.T) {
 		"::ffff:127.0.0.1", "::ffff:10.0.0.1", "::ffff:172.16.0.1", "::ffff:192.168.0.1",
 		"::ffff:169.254.169.254", "::ffff:100.64.0.1", "::ffff:0.0.0.0", "::ffff:224.0.0.1",
 		"64:ff9b::7f00:1", "64:ff9b:1::a00:1", "2002:7f00:1::1", "2001:0:7f00:1::1",
+		"::7f00:1", "::a00:1", "::ffff:0:7f00:1", "::ffff:0:a00:1", "fec0::1", "feff::1",
 	}
 	for _, s := range public {
 		if !PublicIP(net.ParseIP(s)) {

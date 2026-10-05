@@ -2,12 +2,15 @@ package aiprovider
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"reflect"
 	"strings"
 )
 
@@ -81,20 +84,44 @@ func validHeaderValue(s string) bool {
 	return true
 }
 
-// hasDotSegment reports whether path contains a "." or ".." segment.
-func hasDotSegment(path string) bool {
-	for seg := range strings.SplitSeq(path, "/") {
-		if seg == "." || seg == ".." {
-			return true
-		}
+// failureReason names the cause of a transport error for the operator's log.
+// The error itself is not logged: it can quote the upstream URL.
+func failureReason(err error) string {
+	var (
+		ne      net.Error
+		op      *net.OpError
+		certErr *tls.CertificateVerificationError
+		recErr  tls.RecordHeaderError
+		alert   tls.AlertError
+	)
+	switch {
+	case errors.Is(err, ErrBlockedAddress):
+		return "address_blocked"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &ne) && ne.Timeout():
+		return "timeout"
+	case errors.As(err, &certErr), errors.As(err, &recErr), errors.As(err, &alert):
+		return "tls"
+	case errors.As(err, &op) && op.Op == "dial":
+		return "dial"
+	case errors.As(err, new(*net.DNSError)):
+		return "dns"
 	}
-	return false
+	return "other"
 }
 
-// isTimeout reports whether a transport error is a deadline running out.
-func isTimeout(err error) bool {
-	var ne net.Error
-	return errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout())
+// isNil reports whether an interface holds nothing or a nil pointer.
+func isNil(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Func, reflect.Interface:
+		return rv.IsNil()
+	}
+	return false
 }
 
 // stripped are inbound headers that never leave the relay; Rewrite has
@@ -105,6 +132,14 @@ var stripped = []string{"Authorization", "X-Api-Key", "Cookie", "X-Forwarded-Por
 // upstream with the upstream's credential. The inbound request's own
 // credentials and forwarding headers never leave the relay.
 func NewUpstream(cfg Config, v Vault, rt http.RoundTripper, writeErr ErrorWriter) (http.Handler, error) {
+	// A nil transport would make ReverseProxy fall back to
+	// http.DefaultTransport: no address guard, environment proxies honoured.
+	if isNil(rt) {
+		return nil, fmt.Errorf("aiprovider: %s: transport is missing", cfg.Slug)
+	}
+	if writeErr == nil || isNil(v) {
+		return nil, fmt.Errorf("aiprovider: %s: error writer or vault is missing", cfg.Slug)
+	}
 	base, err := ValidateBaseURL(cfg.BaseURL)
 	if err != nil {
 		return nil, err
@@ -168,20 +203,18 @@ func NewUpstream(cfg Config, v Vault, rt http.RoundTripper, writeErr ErrorWriter
 			}
 			return nil
 		},
-		// The transport's error can quote the upstream URL and is not passed
-		// on or logged; the client gets a fixed message per cause.
+		// The client gets one neutral error whatever the cause; the cause goes
+		// to the log, as a reason only, because the transport's error can
+		// quote the upstream URL.
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			var rej *errUpstreamRejected
-			switch {
-			case errors.As(err, &rej):
+			if errors.As(err, &rej) {
+				slog.Warn("ai upstream response replaced", "provider", cfg.Slug, "reason", rej.code)
 				writeErr(w, rej.status, rej.code, rej.message)
-			case errors.Is(err, ErrBlockedAddress):
-				writeErr(w, http.StatusBadGateway, "upstream_address_blocked", "the provider's address is not public")
-			case isTimeout(err):
-				writeErr(w, http.StatusGatewayTimeout, "upstream_timeout", "the provider did not answer in time")
-			default:
-				writeErr(w, http.StatusBadGateway, "upstream_unavailable", "the provider did not answer")
+				return
 			}
+			slog.Warn("ai upstream request failed", "provider", cfg.Slug, "reason", failureReason(err))
+			writeErr(w, http.StatusBadGateway, "upstream_unavailable", "the provider did not answer")
 		},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

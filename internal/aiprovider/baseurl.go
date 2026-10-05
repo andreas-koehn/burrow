@@ -9,7 +9,9 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
+	"unicode"
 )
 
 var (
@@ -20,9 +22,15 @@ var (
 )
 
 // ValidateBaseURL accepts "https://host[:port][/path]" without credentials,
-// query or fragment. Its errors never repeat the input, which may carry a
-// password or a key.
+// query, fragment, whitespace or dot segments. Its errors never repeat the
+// input, which may carry a password or a key.
 func ValidateBaseURL(raw string) (*url.URL, error) {
+	if strings.ContainsFunc(raw, unicode.IsSpace) {
+		return nil, fmt.Errorf("%w: must not contain whitespace", ErrInvalidBaseURL)
+	}
+	if strings.Contains(raw, "#") {
+		return nil, fmt.Errorf("%w: must not contain a query or fragment", ErrInvalidBaseURL)
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		// url.Parse quotes the whole input in its error.
@@ -37,17 +45,44 @@ func ValidateBaseURL(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("%w: must not contain credentials", ErrInvalidBaseURL)
 	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
 		return nil, fmt.Errorf("%w: must not contain a query or fragment", ErrInvalidBaseURL)
+	case strings.ContainsFunc(u.Path, unicode.IsSpace): // percent-encoded
+		return nil, fmt.Errorf("%w: must not contain whitespace", ErrInvalidBaseURL)
+	case hasDotSegment(u.Path):
+		return nil, fmt.Errorf("%w: path must not contain . or .. segments", ErrInvalidBaseURL)
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return nil, fmt.Errorf("%w: port is missing", ErrInvalidBaseURL)
+	}
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+			return nil, fmt.Errorf("%w: port is out of range", ErrInvalidBaseURL)
+		}
 	}
 	return u, nil
 }
 
+// hasDotSegment reports whether path contains a "." or ".." segment.
+func hasDotSegment(path string) bool {
+	for seg := range strings.SplitSeq(path, "/") {
+		if seg == "." || seg == ".." {
+			return true
+		}
+	}
+	return false
+}
+
 // nonPublic lists ranges that netip.Addr's own predicates do not cover.
 var nonPublic = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),      // "this network"
-	netip.MustParsePrefix("100.64.0.0/10"),  // carrier-grade NAT
-	netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments
-	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking
-	netip.MustParsePrefix("240.0.0.0/4"),    // reserved, includes broadcast
+	netip.MustParsePrefix("0.0.0.0/8"),       // "this network"
+	netip.MustParsePrefix("100.64.0.0/10"),   // carrier-grade NAT
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking
+	netip.MustParsePrefix("240.0.0.0/4"),     // reserved, includes broadcast
+	netip.MustParsePrefix("::/96"),           // IPv4-compatible: embeds an IPv4 address
+	netip.MustParsePrefix("::ffff:0:0:0/96"), // IPv4-translated: embeds an IPv4 address
+	netip.MustParsePrefix("fec0::/10"),       // site-local (deprecated)
+	// An IPv6-only relay behind DNS64 reaches IPv4 upstreams through this
+	// range and needs BURROW_AI_ALLOW_PRIVATE_UPSTREAMS.
 	netip.MustParsePrefix("64:ff9b::/96"),   // NAT64: embeds an IPv4 address
 	netip.MustParsePrefix("64:ff9b:1::/48"), // local-use NAT64
 	netip.MustParsePrefix("2001::/32"),      // Teredo: embeds an IPv4 address

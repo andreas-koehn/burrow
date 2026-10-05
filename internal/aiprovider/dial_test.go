@@ -45,6 +45,9 @@ func TestNewTransport_HasTimeoutsAndNoProxyFromEnv(t *testing.T) {
 	if tr.Proxy != nil {
 		t.Fatal("an environment proxy would bypass the dial guard")
 	}
+	if tr.MaxIdleConns != 100 {
+		t.Fatalf("MaxIdleConns = %d, want 100", tr.MaxIdleConns)
+	}
 }
 
 // listenLoopback returns a loopback listener and a counter of accepted
@@ -155,10 +158,11 @@ func TestGuardedDial_ControlRunsForEveryAddress(t *testing.T) {
 	g := &guardedDialer{
 		resolver:     fakeResolver{"multi.example": {"10.0.0.1", "192.168.0.1", "127.0.0.1"}},
 		allowPrivate: true, // skips the check before dialling, leaving only the hook
-		dialer: &net.Dialer{Timeout: 2 * time.Second, Control: func(network, address string, c syscall.RawConn) error {
+		timeout:      2 * time.Second,
+		dial: (&net.Dialer{Control: func(network, address string, c syscall.RawConn) error {
 			seen = append(seen, address)
 			return inner(network, address, c)
-		}},
+		}}).DialContext,
 	}
 	conn, err := g.DialContext(context.Background(), "tcp", net.JoinHostPort("multi.example", port))
 	if err == nil {
@@ -184,4 +188,66 @@ func TestGuardedDial_AllowPrivateReachesLoopback(t *testing.T) {
 		t.Fatalf("allowPrivate dial: %v", err)
 	}
 	_ = conn.Close()
+}
+
+// A blackholed first address must not hold a new connection for a full dial
+// timeout: the answers share one deadline and each gets a fair part of it.
+func TestGuardedDial_BlackholedAddressDoesNotStallTheRest(t *testing.T) {
+	var tried []string
+	g := &guardedDialer{
+		resolver: fakeResolver{"multi.example": {"93.184.216.34", "93.184.216.35"}},
+		timeout:  400 * time.Millisecond,
+		dial: func(ctx context.Context, _, address string) (net.Conn, error) {
+			tried = append(tried, address)
+			if len(tried) == 1 {
+				<-ctx.Done() // never answers
+				return nil, ctx.Err()
+			}
+			c, peer := net.Pipe()
+			_ = peer.Close()
+			return c, nil
+		},
+	}
+	start := time.Now()
+	conn, err := g.DialContext(context.Background(), "tcp", "multi.example:443")
+	if err != nil {
+		t.Fatalf("dial: %v (tried %v)", err, tried)
+	}
+	_ = conn.Close()
+	if len(tried) != 2 || tried[1] != "93.184.216.35:443" {
+		t.Fatalf("tried %v", tried)
+	}
+	// The first of two answers gets half the budget, not all of it.
+	if d := time.Since(start); d < 150*time.Millisecond || d > 350*time.Millisecond {
+		t.Fatalf("second address reached after %v, want about 200ms", d)
+	}
+}
+
+// With every answer blackholed the dial ends at the overall deadline, not at
+// one dial timeout per address.
+func TestGuardedDial_OverallDeadlineBoundsAllAttempts(t *testing.T) {
+	attempts := 0
+	g := &guardedDialer{
+		resolver: fakeResolver{"multi.example": {"93.184.216.34", "93.184.216.35", "93.184.216.36", "93.184.216.37"}},
+		timeout:  300 * time.Millisecond,
+		dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			attempts++
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	start := time.Now()
+	_, err := g.DialContext(context.Background(), "tcp", "multi.example:443")
+	if err == nil {
+		t.Fatal("dial succeeded")
+	}
+	if d := time.Since(start); d > 600*time.Millisecond {
+		t.Fatalf("dial took %v, want about 300ms", d)
+	}
+	if attempts != 4 {
+		t.Fatalf("attempts = %d, want every address tried", attempts)
+	}
+	if tr := newTransport(false, fakeResolver{}); tr.DialContext == nil {
+		t.Fatal("no dialer")
+	}
 }

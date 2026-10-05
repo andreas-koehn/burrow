@@ -29,11 +29,15 @@ func dialControl(allowPrivate bool) func(network, address string, _ syscall.RawC
 	}
 }
 
+// dialTimeout bounds resolving and connecting, over all addresses of a name.
+const dialTimeout = 15 * time.Second
+
 // guardedDialer resolves the host itself and connects to IP literals only, so
 // the address the control hook vets is the address the socket connects to.
 type guardedDialer struct {
 	resolver     Resolver
-	dialer       *net.Dialer
+	dial         func(ctx context.Context, network, address string) (net.Conn, error)
+	timeout      time.Duration
 	allowPrivate bool
 }
 
@@ -44,8 +48,10 @@ func (g *guardedDialer) DialContext(ctx context.Context, network, address string
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrBlockedAddress, address)
 	}
+	ctx, cancel := context.WithTimeout(ctx, g.timeout)
+	defer cancel()
 	if net.ParseIP(host) != nil {
-		return g.dialer.DialContext(ctx, network, address)
+		return g.dial(ctx, network, address)
 	}
 	addrs, err := g.resolver.LookupIPAddr(ctx, host)
 	if err != nil {
@@ -61,20 +67,34 @@ func (g *guardedDialer) DialContext(ctx context.Context, network, address string
 			}
 		}
 	}
+	// The answers are tried in order and share the one deadline: each attempt
+	// may use an equal part of what is left, so an address that never answers
+	// costs a fraction of the budget instead of a full dial timeout.
+	deadline, _ := ctx.Deadline()
 	var firstErr error
-	for _, a := range addrs {
-		conn, err := g.dialer.DialContext(ctx, network, net.JoinHostPort(a.String(), port))
+	for i, a := range addrs {
+		left := time.Until(deadline)
+		if left <= 0 || ctx.Err() != nil {
+			break
+		}
+		conn, err := g.dialOne(ctx, left/time.Duration(len(addrs)-i), network, net.JoinHostPort(a.String(), port))
 		if err == nil {
 			return conn, nil
 		}
 		if firstErr == nil {
 			firstErr = err
 		}
-		if ctx.Err() != nil {
-			break
-		}
+	}
+	if firstErr == nil {
+		firstErr = context.DeadlineExceeded
 	}
 	return nil, firstErr
+}
+
+func (g *guardedDialer) dialOne(ctx context.Context, share time.Duration, network, address string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, share)
+	defer cancel()
+	return g.dial(ctx, network, address)
 }
 
 // NewTransport returns the transport shared by all direct providers.
@@ -88,7 +108,8 @@ func newTransport(allowPrivate bool, r Resolver) *http.Transport {
 	g := &guardedDialer{
 		resolver:     r,
 		allowPrivate: allowPrivate,
-		dialer:       &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second, Control: dialControl(allowPrivate)},
+		timeout:      dialTimeout,
+		dial:         (&net.Dialer{KeepAlive: 30 * time.Second, Control: dialControl(allowPrivate)}).DialContext,
 	}
 	return &http.Transport{
 		// No proxy: an environment HTTP proxy would make the guard vet the
@@ -99,6 +120,7 @@ func newTransport(allowPrivate bool, r Resolver) *http.Transport {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 120 * time.Second, // slow first token on large models
 		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   16,
 	}
 }

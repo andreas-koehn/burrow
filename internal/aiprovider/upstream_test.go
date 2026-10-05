@@ -7,11 +7,13 @@ import (
 	"errors"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -247,6 +249,41 @@ func TestUpstream_RedirectIsNotFollowed(t *testing.T) {
 	}
 }
 
+// captureLog collects what the package logs for the rest of the test.
+func captureLog(t *testing.T) *syncBuffer {
+	t.Helper()
+	buf := new(syncBuffer)
+	prevLog, prevSlog := log.Writer(), slog.Default()
+	log.SetOutput(buf)
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	t.Cleanup(func() { log.SetOutput(prevLog); slog.SetDefault(prevSlog) })
+	return buf
+}
+
+// syncBuffer is a buffer the test servers' own goroutines may log into.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (b *syncBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf.Reset()
+}
+
 type failingRT struct{}
 
 func (failingRT) RoundTrip(*http.Request) (*http.Response, error) {
@@ -277,12 +314,8 @@ func (leakyRT) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func TestUpstream_TransportFailureLeaksNothing(t *testing.T) {
-	var logged bytes.Buffer
-	prev := log.Writer()
-	log.SetOutput(&logged)
-	t.Cleanup(func() { log.SetOutput(prev) })
-
-	h, err := NewUpstream(Config{Slug: "p", BaseURL: "https://up.example/v1", CredentialSlot: "S"}, mapVault{"S": "sk-secret-credential"}, leakyRT{}, testWriteErr)
+	logged := captureLog(t)
+	h, err := NewUpstream(Config{Slug: "leaky-provider", BaseURL: "https://up.example/v1", CredentialSlot: "S"}, mapVault{"S": "sk-secret-credential"}, leakyRT{}, testWriteErr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,8 +324,12 @@ func TestUpstream_TransportFailureLeaksNothing(t *testing.T) {
 	if rec.Code != 502 {
 		t.Fatalf("status %d", rec.Code)
 	}
+	// The operator still gets a line saying which provider failed.
+	if !strings.Contains(logged.String(), "provider=leaky-provider") || !strings.Contains(logged.String(), "reason=") {
+		t.Errorf("log line = %q", logged.String())
+	}
 	for _, out := range []string{rec.Body.String(), logged.String()} {
-		for _, secret := range []string{"sk-secret-credential", "q-secret", "up.example"} {
+		for _, secret := range []string{"sk-secret-credential", "q-secret", "up.example", "/v1/models"} {
 			if strings.Contains(out, secret) {
 				t.Errorf("%q leaked into %q", secret, out)
 			}
@@ -306,6 +343,21 @@ func TestNewUpstream_ConfigErrors(t *testing.T) {
 	}
 	if _, err := NewUpstream(Config{BaseURL: "https://u:pw@x/v1", CredentialSlot: "S"}, mapVault{"S": "k"}, failingRT{}, testWriteErr); !errors.Is(err, ErrInvalidBaseURL) {
 		t.Errorf("userinfo base err = %v", err)
+	}
+	// Without a transport ReverseProxy would use http.DefaultTransport: no
+	// address guard, environment proxies honoured.
+	if _, err := NewUpstream(Config{BaseURL: "https://x/v1", CredentialSlot: "S"}, mapVault{"S": "k"}, nil, testWriteErr); err == nil {
+		t.Error("nil transport accepted")
+	}
+	var nilTransport *http.Transport
+	if _, err := NewUpstream(Config{BaseURL: "https://x/v1", CredentialSlot: "S"}, mapVault{"S": "k"}, nilTransport, testWriteErr); err == nil {
+		t.Error("typed nil transport accepted")
+	}
+	if _, err := NewUpstream(Config{BaseURL: "https://x/v1", CredentialSlot: "S"}, mapVault{"S": "k"}, failingRT{}, nil); err == nil {
+		t.Error("nil error writer accepted")
+	}
+	if _, err := NewUpstream(Config{BaseURL: "https://x/v1", CredentialSlot: "S"}, nil, failingRT{}, testWriteErr); err == nil {
+		t.Error("nil vault accepted")
 	}
 	if _, err := NewUpstream(Config{BaseURL: "https://x/v1", CredentialSlot: "MISSING"}, mapVault{}, failingRT{}, testWriteErr); !errors.Is(err, ErrNotConfigured) {
 		t.Errorf("missing slot err = %v", err)
@@ -372,20 +424,28 @@ func realPair(t *testing.T, upstream http.HandlerFunc, allowPrivate bool, tune f
 // Review Focus 4, end to end: the provider's name resolves to loopback at
 // request time; the request is refused before it leaves the relay.
 func TestUpstream_GuardRefusesPrivateUpstreamAtConnect(t *testing.T) {
+	logged := captureLog(t)
 	hits := 0
 	up := func(http.ResponseWriter, *http.Request) { hits++ }
 	rec := httptest.NewRecorder()
 	realPair(t, up, false, nil).ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
-	if rec.Code != 502 || !strings.Contains(rec.Body.String(), "upstream_address_blocked") {
+	// The client sees the one neutral error; only the log names the cause.
+	if rec.Code != 502 || !strings.Contains(rec.Body.String(), "upstream_unavailable") {
 		t.Fatalf("%d %s", rec.Code, rec.Body.String())
 	}
 	if hits != 0 {
 		t.Fatal("request reached the loopback upstream")
 	}
-	for _, s := range []string{"127.0.0.1", "sk-secret-credential", "example.com"} {
+	for _, s := range []string{"127.0.0.1", "sk-secret-credential", "example.com", "public", "blocked"} {
 		if strings.Contains(rec.Body.String(), s) {
 			t.Errorf("%q leaked: %s", s, rec.Body.String())
 		}
+	}
+	if !strings.Contains(logged.String(), "reason=address_blocked") || !strings.Contains(logged.String(), "provider=p") {
+		t.Errorf("log line = %q", logged.String())
+	}
+	if strings.Contains(logged.String(), "sk-secret-credential") || strings.Contains(logged.String(), "/api/v1") {
+		t.Errorf("log leaked: %q", logged.String())
 	}
 
 	// The explicit switch, and only that, opens private upstreams.
@@ -403,13 +463,19 @@ func TestUpstream_TransportFailures(t *testing.T) {
 		case <-time.After(3 * time.Second):
 		}
 	}
-	// No response headers within the transport's bound → 504.
+	logged := captureLog(t)
+	const neutral = "the provider did not answer"
+	// No response headers within the transport's bound.
 	rec := httptest.NewRecorder()
 	realPair(t, slow, true, func(tr *http.Transport) { tr.ResponseHeaderTimeout = 50 * time.Millisecond }).
 		ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
-	if rec.Code != 504 || !strings.Contains(rec.Body.String(), "upstream_timeout") {
+	if rec.Code != 502 || !strings.Contains(rec.Body.String(), "upstream_unavailable") || !strings.Contains(rec.Body.String(), neutral) {
 		t.Errorf("header timeout → %d %s", rec.Code, rec.Body.String())
 	}
+	if !strings.Contains(logged.String(), "reason=timeout") {
+		t.Errorf("timeout log = %q", logged.String())
+	}
+	logged.Reset()
 
 	// Certificate not trusted → 502.
 	rec = httptest.NewRecorder()
@@ -421,6 +487,10 @@ func TestUpstream_TransportFailures(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "certificate") || strings.Contains(rec.Body.String(), "sk-secret-credential") {
 		t.Errorf("TLS failure detail leaked: %s", rec.Body.String())
 	}
+	if !strings.Contains(logged.String(), "reason=tls") {
+		t.Errorf("tls log = %q", logged.String())
+	}
+	logged.Reset()
 
 	// Nothing listening → 502.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -438,6 +508,9 @@ func TestUpstream_TransportFailures(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
 	if rec.Code != 502 || !strings.Contains(rec.Body.String(), "upstream_unavailable") {
 		t.Errorf("dial refused → %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(logged.String(), "reason=dial") || strings.Contains(logged.String(), "sk-secret-credential") {
+		t.Errorf("dial log = %q", logged.String())
 	}
 }
 
