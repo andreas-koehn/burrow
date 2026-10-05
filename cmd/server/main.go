@@ -398,6 +398,12 @@ func main() {
 			if err := st.SeedAdmin(context.Background(), cfg.AdminEmail, cfg.AdminPassword); err != nil {
 				return err
 			}
+			if n, err := st.BackfillAIProviders(context.Background()); err != nil {
+				log.Warn("ai providers backfill failed", "err", err)
+			} else if n > 0 {
+				log.Info("ai providers created for existing api_key services", "count", n)
+			}
+
 			bus := events.NewBus()
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

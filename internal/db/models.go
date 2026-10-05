@@ -178,6 +178,17 @@ type ModelAlias struct {
 	Priority      int    // v0.5.0: routing priority (lower = higher priority)
 }
 
+// AIProvider is a row of the ai_providers table: a named upstream speaking an
+// LLM API, backed by a service.
+type AIProvider struct {
+	Slug      string
+	Name      string
+	Kind      string // "tunnel" (Phase 1) or "direct" (Phase 2)
+	ServiceID string
+	APIFormat string // "openai" or "anthropic"
+	CreatedAt time.Time
+}
+
 // RateLimit is a row of the rate_limits table.
 type RateLimit struct {
 	ID        string
