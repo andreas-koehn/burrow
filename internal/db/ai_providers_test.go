@@ -75,3 +75,73 @@ func TestAIProviders_DeletedWithService(t *testing.T) {
 		t.Fatalf("provider survived its service: %v", err)
 	}
 }
+
+func TestDirectAIProvider_CreateReadDelete(t *testing.T) {
+	x, _ := newDBWithService(t)
+	ctx := context.Background()
+	svc := Service{ID: "prov-openrouter", UserID: "u1", Name: "OpenRouter", Type: "direct", AccessMode: "api_key"}
+	p := AIProvider{
+		Slug: "openrouter", Name: "OpenRouter", Kind: "direct", ServiceID: svc.ID, APIFormat: "openai",
+		BaseURL: "https://openrouter.ai/api/v1", CredentialSlot: "OPENROUTER",
+		AuthHeader: "Authorization", AuthFormat: "Bearer {key}",
+		ExtraHeaders: map[string]string{"X-Title": "Burrow"}, Billing: "metered",
+	}
+	if err := x.CreateDirectAIProvider(ctx, svc, p); err != nil {
+		t.Fatal(err)
+	}
+	got, err := x.GetAIProvider(ctx, "openrouter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BaseURL != p.BaseURL || got.CredentialSlot != "OPENROUTER" || got.Billing != "metered" ||
+		got.ExtraHeaders["X-Title"] != "Burrow" || got.AuthFormat != "Bearer {key}" {
+		t.Fatalf("round trip: %+v", got)
+	}
+	backing, err := x.GetServiceByID(ctx, "prov-openrouter")
+	if err != nil || backing.Type != "direct" || backing.AccessMode != "api_key" {
+		t.Fatalf("backing service: %v %+v", err, backing)
+	}
+
+	// A failed provider insert must not leave the backing service behind.
+	svc2 := Service{ID: "prov-dup", UserID: svc.UserID, Name: "Dup", Type: "direct", AccessMode: "api_key"}
+	dup := p
+	dup.ServiceID = svc2.ID // same slug as p
+	if err := x.CreateDirectAIProvider(ctx, svc2, dup); !errors.Is(err, ErrDuplicateProvider) {
+		t.Fatalf("duplicate err = %v", err)
+	}
+	if _, err := x.GetServiceByID(ctx, "prov-dup"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("orphan backing service left behind: %v", err)
+	}
+
+	if err := x.DeleteAIProviderAndBacking(ctx, "openrouter"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := x.GetServiceByID(ctx, "prov-openrouter"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("backing service survived: %v", err)
+	}
+}
+
+func TestDeleteAIProviderAndBacking_KeepsTunnelService(t *testing.T) {
+	x, svcID := newDBWithService(t)
+	ctx := context.Background()
+	_ = x.CreateAIProvider(ctx, AIProvider{Slug: "ollama", Name: "Ollama", Kind: "tunnel", ServiceID: svcID, APIFormat: "openai"})
+	if err := x.DeleteAIProviderAndBacking(ctx, "ollama"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := x.GetServiceByID(ctx, svcID); err != nil {
+		t.Fatalf("a tunnel provider's service must be kept: %v", err)
+	}
+	if err := x.DeleteAIProviderAndBacking(ctx, "ollama"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second delete err = %v", err)
+	}
+}
+
+func TestTunnelProvider_ReadsDefaults(t *testing.T) {
+	x, svcID := newDBWithService(t)
+	ctx := context.Background()
+	_ = x.CreateAIProvider(ctx, AIProvider{Slug: "ollama", Name: "Ollama", Kind: "tunnel", ServiceID: svcID, APIFormat: "openai"})
+	got, _ := x.GetAIProvider(ctx, "ollama")
+	if got.ExtraHeaders == nil || len(got.ExtraHeaders) != 0 || got.Billing != "metered" || got.AuthHeader != "Authorization" {
+		t.Fatalf("defaults: %+v", got)
+	}
+}

@@ -186,7 +186,23 @@ type AIProvider struct {
 	Kind      string // "tunnel" (Phase 1) or "direct" (Phase 2)
 	ServiceID string
 	APIFormat string // "openai" or "anthropic"
-	CreatedAt time.Time
+
+	BaseURL        string            // direct only, e.g. "https://openrouter.ai/api/v1"
+	CredentialSlot string            // direct only, vault slot name (never the secret)
+	AuthHeader     string            // default "Authorization"
+	AuthFormat     string            // default "Bearer {key}"
+	ExtraHeaders   map[string]string // static headers sent upstream; never nil after a read
+	Billing        string            // "metered" or "flat"
+	CreatedAt      time.Time
+}
+
+// AIProviderModel is a row of the ai_provider_models catalog.
+type AIProviderModel struct {
+	ProviderSlug  string
+	ModelID       string
+	DisplayName   string
+	ContextLength int64
+	SyncedAt      time.Time
 }
 
 // RateLimit is a row of the rate_limits table.

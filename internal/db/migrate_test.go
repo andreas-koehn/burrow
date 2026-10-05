@@ -235,12 +235,12 @@ func TestMigrateDriverFilter(t *testing.T) {
 		}
 	}
 
-	// Expect exactly 19 SQLite files and 19 Postgres files.
-	if len(sqliteFiles) != 19 {
-		t.Errorf("want 19 sqlite migration files, got %d: %v", len(sqliteFiles), sqliteFiles)
+	// Expect exactly 20 SQLite files and 20 Postgres files.
+	if len(sqliteFiles) != 20 {
+		t.Errorf("want 20 sqlite migration files, got %d: %v", len(sqliteFiles), sqliteFiles)
 	}
-	if len(postgresFiles) != 19 {
-		t.Errorf("want 19 postgres migration files, got %d: %v", len(postgresFiles), postgresFiles)
+	if len(postgresFiles) != 20 {
+		t.Errorf("want 20 postgres migration files, got %d: %v", len(postgresFiles), postgresFiles)
 	}
 
 	// Each SQLite file must have a matching postgres twin.
@@ -289,7 +289,7 @@ func TestMigrationParitySQLiteAndPostgres(t *testing.T) {
 		"users", "sessions", "client_tokens", "tunnels",
 		"roles", "settings", "services",
 		"audit_events", "webhooks", "automation_tokens",
-		"ai_providers",
+		"ai_providers", "ai_provider_models",
 	}
 	for _, tbl := range coreTables {
 		var name string
