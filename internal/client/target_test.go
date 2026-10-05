@@ -47,6 +47,11 @@ func TestParseTarget(t *testing.T) {
 		"ftp://localhost:21":         "http",
 		"localhost:3000:1":           "port",
 		"local host:3000":            "host",
+		"pw@localhost:3000":          "credentials",
+		"user:pw@localhost:3000":     "credentials",
+		"a\u00a0b:80":                "host",
+		"a b:80":                     "host",
+		"-h:80":                      "host",
 		"+3000":                      "port",
 		"03000":                      "port",
 		"localhost:+80":              "port",
@@ -55,9 +60,22 @@ func TestParseTarget(t *testing.T) {
 		"http://localhost:0":         "port",
 		"http://localhost:65536":     "port",
 	}
-	_, err := ParseTarget("http://user:pw@localhost:1")
-	if err == nil || strings.Contains(err.Error(), "pw") {
-		t.Errorf("credentials error must not echo the password: %v", err)
+	for _, in := range []string{
+		"user:s3cretpw@localhost:1", "user:s3cretpw@localhost", "http://user:s3cretpw@localhost:abc",
+		"http://user:s3cr etpw@localhost:1", "http://user:s3cretpw@local host:1", "http://user:s3cretpw@[::1",
+		"http://user:s3cretpw@localhost:1", "https://user:s3cretpw@localhost:1", "http://user:s3cr@etpw@localhost:1",
+		"http://user:s3cr:etpw@localhost:1", "user:s3cr@etpw@localhost:3000", "user:s3cr:etpw@localhost:3000",
+	} {
+		_, err := ParseTarget(in)
+		if err == nil {
+			t.Errorf("ParseTarget(%q) accepted credentials", in)
+			continue
+		}
+		for _, leak := range []string{"s3cretpw", "etpw", "s3cr"} {
+			if strings.Contains(err.Error(), leak) {
+				t.Errorf("ParseTarget(%q) echoes the password (%q): %v", in, leak, err)
+			}
+		}
 	}
 	for in, word := range bad {
 		_, err := ParseTarget(in)
@@ -98,8 +116,40 @@ func TestDefaultName(t *testing.T) {
 			t.Errorf("DefaultName(%q) = %q does not satisfy the slug rule", h, got)
 		}
 	}
+	// Odd ports: a non-numeric or over-long port counts as no port.
+	for _, c := range []struct{ host, addr, want string }{
+		{"x", "h:HTTP", "burrow"},
+		{"host", "h:HTTP", "host"},
+		{"host", "h:" + strings.Repeat("9", 50), "host"},
+		{"a", "garbage", "burrow"},
+		{"ab", "garbage", "burrow"},
+		{strings.Repeat("a", 33) + "-bcdef", "127.0.0.1:65535", strings.Repeat("a", 33) + "-65535"},
+	} {
+		got := DefaultName(c.host, c.addr)
+		if got != c.want || !slug.MatchString(got) {
+			t.Errorf("DefaultName(%q, %q) = %q, want %q", c.host, c.addr, got, c.want)
+		}
+	}
 	// Stable: the same inputs always give the same name.
 	if DefaultName("h", "127.0.0.1:3000") != DefaultName("h", "127.0.0.1:3000") {
 		t.Fatal("DefaultName is not deterministic")
+	}
+}
+
+func TestDefaultNameAlwaysValidSlug(t *testing.T) {
+	slug := regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$`)
+	hosts := []string{"", "x", "AB", "HOST", "---", "...", "!!!", "héllo-wörld", "日本語", strings.Repeat("a", 200),
+		"host.", "host-", "-host", "a.b.c.d", "my host", strings.Repeat("a-", 40), "UPPER.Example.COM", "1", "a_b"}
+	addrs := []string{"", "127.0.0.1:3000", "localhost:1", "[::1]:65535", "garbage", "h:", "h:HTTP", "h:" + strings.Repeat("9", 60), ":80", "h:0080", "h:-1"}
+	for _, h := range hosts {
+		for _, a := range addrs {
+			got := DefaultName(h, a)
+			if !slug.MatchString(got) {
+				t.Errorf("DefaultName(%q, %q) = %q is not a valid slug", h, a, got)
+			}
+			if again := DefaultName(h, a); again != got {
+				t.Errorf("DefaultName(%q, %q) not stable: %q vs %q", h, a, got, again)
+			}
+		}
 	}
 }

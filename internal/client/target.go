@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // TargetError explains why a target was not accepted. Its message is shown to
@@ -20,12 +21,18 @@ func (e *TargetError) Error() string {
 // A bare port means 127.0.0.1.
 func ParseTarget(s string) (string, error) {
 	in := strings.TrimSpace(s)
-	// shown holds the input as echoed in errors: a typed password is never repeated.
-	shown := s
-	if u, err := url.Parse(in); err == nil && u.User != nil {
-		shown = u.Redacted()
-	}
+	// shown is the input as echoed in errors: a typed password is never repeated.
+	shown := redactCredentials(s)
 	bad := func(reason string) (string, error) { return "", &TargetError{Input: shown, Reason: reason} }
+	const credReason = "an address must not contain credentials"
+
+	rest := in
+	if i := strings.Index(rest, "://"); i >= 0 {
+		rest = rest[i+3:]
+	}
+	if strings.Contains(authorityOf(rest), "@") {
+		return bad(credReason)
+	}
 
 	if strings.Contains(in, "://") {
 		u, err := url.Parse(in)
@@ -38,7 +45,7 @@ func ParseTarget(s string) (string, error) {
 		case u.Scheme != "http":
 			return bad("only http:// addresses are understood")
 		case u.User != nil:
-			return bad("an address must not contain credentials")
+			return bad(credReason)
 		case (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "":
 			return bad("an address must not contain a path; the whole service is exposed")
 		}
@@ -64,10 +71,38 @@ func joinTarget(input, host, port string) (string, error) {
 	if err != nil || !plainDigits(port) || n < 1 || n > 65535 {
 		return "", &TargetError{Input: input, Reason: "the port must be a number between 1 and 65535"}
 	}
-	if host == "" || strings.ContainsAny(host, "/") || strings.IndexFunc(host, func(r rune) bool { return r <= ' ' || r == 0x7f }) >= 0 {
+	if host == "" || host[0] == '-' || strings.ContainsAny(host, "/@") ||
+		strings.IndexFunc(host, func(r rune) bool { return r <= ' ' || r == 0x7f || unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
 		return "", &TargetError{Input: input, Reason: "the host is missing or not valid"}
 	}
 	return net.JoinHostPort(host, strconv.Itoa(n)), nil
+}
+
+// authorityOf returns the part of s up to the first "/", "?" or "#".
+func authorityOf(s string) string {
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// redactCredentials replaces a password in user:password@host with "xxxxx"
+// by text, so it also works on input that does not parse.
+func redactCredentials(s string) string {
+	prefix, rest := "", s
+	if i := strings.Index(rest, "://"); i >= 0 {
+		prefix, rest = rest[:i+3], rest[i+3:]
+	}
+	auth := authorityOf(rest)
+	at := strings.LastIndex(auth, "@")
+	if at < 0 {
+		return s
+	}
+	colon := strings.Index(auth, ":")
+	if colon < 0 || colon > at {
+		return s
+	}
+	return prefix + auth[:colon+1] + "xxxxx" + rest[at:]
 }
 
 // plainDigits reports whether s is ASCII digits only, without a leading zero.
@@ -101,7 +136,7 @@ func DefaultName(hostname, localAddr string) string {
 	}
 	host = strings.Trim(b.String(), "-")
 	_, port, err := net.SplitHostPort(localAddr)
-	if err != nil || port == "" {
+	if err != nil || !plainDigits(port) || len(port) > 5 {
 		port = ""
 	}
 	// The whole name stays within 40 characters so it is a valid slug.
@@ -115,8 +150,12 @@ func DefaultName(hostname, localAddr string) string {
 	if host == "" {
 		host = "burrow"
 	}
-	if port == "" {
-		return host
+	name := host
+	if port != "" {
+		name = host + "-" + port
 	}
-	return host + "-" + port
+	if len(name) < 3 {
+		return "burrow"
+	}
+	return name
 }
