@@ -163,42 +163,62 @@ func TestLogin_ControlOnAnotherHost(t *testing.T) {
 	}
 }
 
+// A relay from before discovery answers 404: the default control port is used.
 func TestLogin_RelayWithoutDiscovery(t *testing.T) {
-	for name, derr := range map[string]error{
-		"404":                    client.ErrNoDiscovery,
-		"not a discovery answer": client.ErrNotARelay,
-	} {
-		t.Run(name, func(t *testing.T) {
-			h := newHarness(t)
-			h.answers(client.Discovery{}, derr)
-			if code := h.exec("login", "burrow.example.com", "--token", testToken); code != 0 {
-				t.Fatalf("exit %d: %s", code, h.stderr.String())
-			}
-			if got := h.stored(h.cfgPath).Control; got != "burrow.example.com:7000" {
-				t.Fatalf("stored control %q", got)
-			}
-			errOut := h.stderr.String()
-			if strings.Count(errOut, "\n") != 1 || !strings.Contains(errOut, "using burrow.example.com:7000") || !strings.Contains(errOut, "--control") {
-				t.Fatalf("want one line saying what is used, got %q", errOut)
-			}
-			// And the client then connects on the default control port.
-			if code := h.exec("http", "3000"); code != 0 {
-				t.Fatalf("http: exit %d: %s", code, h.stderr.String())
-			}
-			if c := h.oneRun().creds.Control; c != "burrow.example.com:7000" {
-				t.Fatalf("connected to %q", c)
-			}
-		})
+	h := newHarness(t)
+	h.answers(client.Discovery{}, client.ErrNoDiscovery)
+	if code := h.exec("login", "burrow.example.com", "--token", testToken); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	if got := h.stored(h.cfgPath).Control; got != "burrow.example.com:7000" {
+		t.Fatalf("stored control %q", got)
+	}
+	errOut := h.stderr.String()
+	if strings.Count(errOut, "\n") != 1 || !strings.Contains(errOut, "using burrow.example.com:7000") || !strings.Contains(errOut, "--control") {
+		t.Fatalf("want one line saying what is used, got %q", errOut)
+	}
+	// And the client then connects on the default control port.
+	if code := h.exec("http", "3000"); code != 0 {
+		t.Fatalf("http: exit %d: %s", code, h.stderr.String())
+	}
+	if c := h.oneRun().creds.Control; c != "burrow.example.com:7000" {
+		t.Fatalf("connected to %q", c)
 	}
 }
 
+// Some web page at the address (a mistyped host, a proxy's page) is not a
+// relay: nothing is guessed and nothing is stored.
+func TestLogin_NotARelay(t *testing.T) {
+	h := newHarness(t)
+	h.terminal, h.secret = true, testToken
+	h.answers(client.Discovery{}, client.ErrNotARelay)
+	code := h.exec("login", "burrow.example.com", "--token", "-")
+	errOut := h.stderr.String()
+	if code != exitUnreachable || !strings.Contains(errOut, "does not look like a Burrow relay") || !strings.Contains(errOut, "--control <host:port>") {
+		t.Fatalf("exit %d, stderr %q", code, errOut)
+	}
+	if h.hasConfig() || h.secretCalls != 0 || strings.Contains(h.stdout.String(), "Signed in") {
+		t.Fatalf("stored %v, token asked %d times, stdout %q", h.hasConfig(), h.secretCalls, h.stdout.String())
+	}
+}
+
+// --control says where to connect, so the web address is asked only for the
+// versions. When it gives no usable answer the sign-in is stored all the same,
+// with one line saying that nothing was checked.
 func TestLogin_ControlFlagOverridesDiscovery(t *testing.T) {
 	for name, tc := range map[string]struct {
-		d   client.Discovery
-		err error
+		d    client.Discovery
+		err  error
+		warn string // "" = nothing on stderr
 	}{
-		"over a discovered endpoint": {client.Discovery{Control: "burrow.example.com:7443", Version: version.Version}, nil},
-		"over the fallback":          {client.Discovery{}, client.ErrNoDiscovery},
+		"over a discovered endpoint": {client.Discovery{Control: "burrow.example.com:7443", Version: version.Version}, nil, ""},
+		"over the fallback":          {client.Discovery{}, client.ErrNoDiscovery, ""},
+		"unreachable":                {client.Discovery{}, &net.OpError{Op: "dial", Err: errors.New("connection refused")}, "connection refused"},
+		"no answer in time":          {client.Discovery{}, context.DeadlineExceeded, "no answer"},
+		"403":                        {client.Discovery{}, &client.DiscoveryStatusError{Status: 403}, "status 403"},
+		"502":                        {client.Discovery{}, &client.DiscoveryStatusError{Status: 502}, "status 502"},
+		"302 from a proxy":           {client.Discovery{}, &client.DiscoveryStatusError{Status: 302, RedirectHost: "sso.example.com"}, "redirect to sso.example.com"},
+		"not a discovery answer":     {client.Discovery{}, client.ErrNotARelay, "does not look like a Burrow relay"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
@@ -206,14 +226,116 @@ func TestLogin_ControlFlagOverridesDiscovery(t *testing.T) {
 			if code := h.exec("login", "burrow.example.com", "--token", testToken, "--control", "ctl.example.com:7001"); code != 0 {
 				t.Fatalf("exit %d: %s", code, h.stderr.String())
 			}
-			if got := h.stored(h.cfgPath).Control; got != "ctl.example.com:7001" {
-				t.Fatalf("stored control %q", got)
+			if got := h.stored(h.cfgPath); got.Control != "ctl.example.com:7001" || got.Token != testToken {
+				t.Fatalf("stored control %q", got.Control)
 			}
-			if h.stderr.Len() != 0 {
-				t.Fatalf("stderr = %q", h.stderr.String())
+			errOut := h.stderr.String()
+			if tc.warn == "" {
+				if errOut != "" {
+					t.Fatalf("stderr = %q", errOut)
+				}
+				return
 			}
+			if strings.Count(errOut, "\n") != 1 || !strings.HasPrefix(errOut, "Warning: ") || !strings.Contains(errOut, tc.warn) ||
+				!strings.Contains(errOut, "ctl.example.com:7001") {
+				t.Fatalf("want one warning line with %q, got %q", tc.warn, errOut)
+			}
+			h.noToken()
 		})
 	}
+}
+
+// With --control too, a relay that did answer is believed about the minimum
+// client version.
+func TestLogin_ControlFlagKeepsTheMinimumVersion(t *testing.T) {
+	asVersion(t, "v0.5.9")
+	h := newHarness(t)
+	h.answers(client.Discovery{Control: "burrow.example.com:7000", Version: "v0.6.2", MinClientVersion: "0.6.0"}, nil)
+	code := h.exec("login", "burrow.example.com", "--token", testToken, "--control", "ctl.example.com:7001")
+	if code != exitClientTooOld || h.hasConfig() {
+		t.Fatalf("exit %d, stored %v: %s", code, h.hasConfig(), h.stderr.String())
+	}
+}
+
+// Ctrl-C while the relay is asked: a plain line, nothing stored.
+func TestLogin_InterruptedDuringDiscovery(t *testing.T) {
+	for _, extra := range [][]string{nil, {"--control", "ctl.example.com:7001"}} {
+		h := newHarness(t)
+		h.answers(client.Discovery{}, context.Canceled)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		root := newRoot(h.deps())
+		root.SetArgs(append([]string{"login", "burrow.example.com", "--token", testToken}, extra...))
+		code := report(&h.stderr, root.ExecuteContext(ctx))
+		if code != exitGeneral || h.stderr.String() != "Interrupted. Nothing was stored.\n" {
+			t.Fatalf("%v: exit %d, stderr %q", extra, code, h.stderr.String())
+		}
+		if h.hasConfig() {
+			t.Fatal("a sign-in was stored")
+		}
+	}
+}
+
+// --insecure is pointed out when a certificate went unchecked, which needs an
+// answer; not when no connection was made.
+func TestLogin_InsecureWarningNeedsAnAnswer(t *testing.T) {
+	h := newHarness(t)
+	h.answers(client.Discovery{}, &net.OpError{Op: "dial", Err: errors.New("connection refused")})
+	if code := h.exec("login", "burrow.example.com", "--token", testToken, "--insecure"); code != exitUnreachable {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	if strings.Contains(h.stderr.String(), "not checked") {
+		t.Fatalf("stderr = %q", h.stderr.String())
+	}
+	for _, derr := range []error{nil, client.ErrNoDiscovery, &client.DiscoveryStatusError{Status: 502}} {
+		h := newHarness(t)
+		if derr != nil {
+			h.answers(client.Discovery{}, derr)
+		}
+		h.exec("login", "burrow.example.com", "--token", testToken, "--insecure")
+		if !strings.Contains(h.stderr.String(), "certificate was not checked") {
+			t.Fatalf("%v: stderr = %q", derr, h.stderr.String())
+		}
+	}
+}
+
+// noteBeforeRead is a stdin that stays open like a pipe someone still writes
+// to. On the first read it records what stderr held: that is what the user saw
+// before any byte of the token was taken.
+type noteBeforeRead struct {
+	r      io.Reader
+	stderr func() string
+	once   sync.Once
+	seen   string
+}
+
+func (n *noteBeforeRead) Read(p []byte) (int, error) {
+	n.once.Do(func() { n.seen = n.stderr() })
+	return n.r.Read(p)
+}
+
+// The piped path of the note about a control endpoint on another host.
+func TestLogin_ControlOnAnotherHost_Piped(t *testing.T) {
+	h := newHarness(t)
+	h.answers(client.Discovery{Control: "ctl.example.net:7000", Version: version.Version}, nil)
+	pr, pw := io.Pipe()
+	in := &noteBeforeRead{r: pr, stderr: func() string { return h.stderr.String() }}
+	h.stdinR = in
+	// The writer waits for the command to read, as a pipe's writer does.
+	go func() {
+		_, _ = io.WriteString(pw, testToken+"\n")
+		_ = pw.Close()
+	}()
+	if code := h.execWithin("login", "burrow.example.com", "--token", "-"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	if !strings.Contains(in.seen, "another host") || !strings.Contains(in.seen, "ctl.example.net:7000") {
+		t.Fatalf("stderr before the first read of the token: %q", in.seen)
+	}
+	if got := h.stored(h.cfgPath); got.Control != "ctl.example.net:7000" || got.Token != testToken {
+		t.Fatalf("stored control %q", got.Control)
+	}
+	h.noToken()
 }
 
 func TestLogin_VersionNotes(t *testing.T) {
@@ -302,6 +424,14 @@ func TestLogin_Certificate(t *testing.T) {
 		}
 		h.noToken()
 	})
+	t.Run("not trusted, with --control", func(t *testing.T) {
+		h := newHarness(t)
+		h.realDiscover = true
+		code := h.exec("login", relay.URL, "--token", testToken, "--control", "127.0.0.1:7001")
+		if code != exitUnreachable || !strings.Contains(h.stderr.String(), "--cacert") || h.hasConfig() {
+			t.Fatalf("exit %d, stored %v, stderr %q", code, h.hasConfig(), h.stderr.String())
+		}
+	})
 	t.Run("--cacert", func(t *testing.T) {
 		h := newHarness(t)
 		h.realDiscover = true
@@ -339,42 +469,98 @@ func TestLogin_Certificate(t *testing.T) {
 	}
 }
 
-// A new client against a relay from before discovery: its API answers 404, or
-// a catch-all in front of it answers every path with the dashboard's HTML.
+// A new client against a relay from before discovery, whose API answers 404:
+// the sign-in is stored for the default control port and the client connects
+// there.
 func TestLogin_OlderRelay(t *testing.T) {
-	handlers := map[string]http.HandlerFunc{
-		"404 from the API": func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = io.WriteString(w, `{"error":"not found"}`)
-		},
-		"html from a catch-all": func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = io.WriteString(w, "<!doctype html><html><head><title>Burrow</title></head><body><div id=\"root\"></div></body></html>")
-		},
+	relay := newRelayServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":"not found"}`)
+	})
+	want := net.JoinHostPort(relay.host(t), "7000")
+	h := newHarness(t)
+	h.realDiscover = true
+	if code := h.exec("login", relay.URL, "--token", testToken, "--cacert", relay.caFile(t)); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}
-	for name, handler := range handlers {
+	if got := h.stored(h.cfgPath).Control; got != want {
+		t.Fatalf("stored control %q, want %q", got, want)
+	}
+	if !strings.Contains(h.stderr.String(), "using "+want) {
+		t.Fatalf("stderr = %q", h.stderr.String())
+	}
+	if code := h.exec("http", "3000"); code != 0 {
+		t.Fatalf("http: exit %d: %s", code, h.stderr.String())
+	}
+	if c := h.oneRun().creds; c.Control != want || c.Token != testToken {
+		t.Fatalf("connected to %q", c.Control)
+	}
+}
+
+// A catch-all that answers every path with a page (an SPA in front of an
+// older relay, or another site altogether) is not taken for a relay. With
+// --control the user has said where to connect, and that is stored.
+func TestLogin_CatchAllPage(t *testing.T) {
+	relay := newRelayServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "<!doctype html><html><head><title>Burrow</title></head><body><div id=\"root\"></div></body></html>")
+	})
+	ca := relay.caFile(t)
+	h := newHarness(t)
+	h.realDiscover = true
+	code := h.exec("login", relay.URL, "--token", testToken, "--cacert", ca)
+	if code != exitUnreachable || h.hasConfig() || !strings.Contains(h.stderr.String(), "does not look like a Burrow relay") ||
+		!strings.Contains(h.stderr.String(), "--control") {
+		t.Fatalf("exit %d, stored %v, stderr %q", code, h.hasConfig(), h.stderr.String())
+	}
+	control := net.JoinHostPort(relay.host(t), "7000")
+	if code := h.exec("login", relay.URL, "--token", testToken, "--cacert", ca, "--control", control); code != 0 {
+		t.Fatalf("with --control: exit %d: %s", code, h.stderr.String())
+	}
+	if got := h.stored(h.cfgPath).Control; got != control || !strings.HasPrefix(h.stderr.String(), "Warning: ") {
+		t.Fatalf("stored control %q, stderr %q", got, h.stderr.String())
+	}
+	if code := h.exec("http", "3000"); code != 0 {
+		t.Fatalf("http: exit %d: %s", code, h.stderr.String())
+	}
+	if c := h.oneRun().creds; c.Control != control {
+		t.Fatalf("connected to %q", c.Control)
+	}
+}
+
+// An SSO proxy in front of the dashboard answers with a redirect; a closed
+// port answers nothing. With --control the sign-in is stored, and the redirect
+// is still not followed.
+func TestLogin_ControlFlagWhenTheWebAddressIsNoHelp(t *testing.T) {
+	other := newRelayServer(t, discoveryHandler(`{"control":"evil.example.com:7000","version":"0.6.0","min_client_version":"","protocol_version":1}`))
+	proxy := newRelayServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/login", http.StatusFound)
+	})
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := "https://" + l.Addr().String()
+	l.Close()
+	for name, addr := range map[string]string{"302": proxy.URL, "closed port": closed} {
 		t.Run(name, func(t *testing.T) {
-			relay := newRelayServer(t, handler)
-			want := net.JoinHostPort(relay.host(t), "7000")
 			h := newHarness(t)
 			h.realDiscover = true
-			if code := h.exec("login", relay.URL, "--token", testToken, "--cacert", relay.caFile(t)); code != 0 {
+			if code := h.exec("login", addr, "--token", testToken, "--insecure", "--control", "127.0.0.1:7001"); code != 0 {
 				t.Fatalf("exit %d: %s", code, h.stderr.String())
 			}
-			if got := h.stored(h.cfgPath).Control; got != want {
-				t.Fatalf("stored control %q, want %q", got, want)
+			if got := h.stored(h.cfgPath); got.Control != "127.0.0.1:7001" || got.Relay != addr {
+				t.Fatalf("stored control %q, relay %q", got.Control, got.Relay)
 			}
-			if !strings.Contains(h.stderr.String(), "using "+want) {
+			if !strings.Contains(h.stderr.String(), "Warning: ") {
 				t.Fatalf("stderr = %q", h.stderr.String())
 			}
-			if code := h.exec("http", "3000"); code != 0 {
-				t.Fatalf("http: exit %d: %s", code, h.stderr.String())
-			}
-			if c := h.oneRun().creds; c.Control != want || c.Token != testToken {
-				t.Fatalf("connected to %q", c.Control)
-			}
+			h.noToken()
 		})
+	}
+	if n := len(other.requests()); n != 0 {
+		t.Fatalf("the redirect target was asked %d times", n)
 	}
 }
 

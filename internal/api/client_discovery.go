@@ -32,8 +32,10 @@ type ClientDiscovery struct {
 // request: Deps.ControlListen when it names a host, otherwise the host the
 // request was sent to with the control port.
 //
-// An empty ControlListen (legacy boot, tests) gives the request's Host as it
-// is. A port alone (":7000") and a bind-all address ("0.0.0.0:7000",
+// An empty ControlListen gives the request's Host as it is. That branch is
+// for tests that build Deps without it: the relay's configuration always has
+// a listen address (`listen` is required and defaults to ":7000"), and
+// cmd/server passes it on. A port alone (":7000") and a bind-all address ("0.0.0.0:7000",
 // "[::]:7000") take the host from the request: a bind address is not where a
 // client connects.
 func (d Deps) controlEndpoint(r *http.Request) string {

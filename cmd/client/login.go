@@ -133,22 +133,43 @@ func cleanToken(token, relayArg string) (string, error) {
 
 // discoverControl asks the relay for its discovery document and returns the
 // control endpoint to store: the one given with --control, else the one the
-// relay names, else fallback (<relay host>:7000) for a relay without
-// discovery. Notes for the user go to errOut, one line each.
+// relay names, else fallback (<relay host>:7000) for a relay that answers 404
+// because it is older than discovery. Notes for the user go to errOut, one
+// line each.
 //
-// It fails, with nothing stored, when this client is older than the relay
-// accepts (exit 6) and when the relay cannot be asked: not reachable, a
-// certificate that is not trusted, an answer that is an error or a redirect
-// (exit 5).
+// Without --control the relay's answer is needed: when it cannot be asked (not
+// reachable, an error status, a redirect) or what answers is not a relay, it
+// fails with exit 5 and nothing is stored. With --control the user has said
+// where to connect, so those are one warning line and fallback (the --control
+// value) is returned.
+//
+// Two things fail either way: a certificate that is not trusted (exit 5), and
+// a relay that did answer and needs a newer client (exit 6).
 func discoverControl(ctx context.Context, d deps, g globalFlags, errOut io.Writer, relay, fallback string, controlGiven bool) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	disc, err := d.discover(ctx, relay, g)
-	if g.insecure {
-		fmt.Fprintln(errOut, "Warning: --insecure is set: the relay's certificate was not checked.")
+	if ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return "", &exitError{code: exitGeneral, msg: "Interrupted. Nothing was stored."}
 	}
 	var se *client.DiscoveryStatusError
+	// Only an answer went through a handshake, and only then was a
+	// certificate left unchecked.
+	answered := err == nil || errors.Is(err, client.ErrNoDiscovery) || errors.Is(err, client.ErrNotARelay) || errors.As(err, &se)
+	if g.insecure && answered {
+		fmt.Fprintln(errOut, "Warning: --insecure is set: the relay's certificate was not checked.")
+	}
+	// unasked ends a failed discovery: with --control it is a warning, without
+	// it an error with the two lines given.
+	unasked := func(what, hint string) (string, error) {
+		if controlGiven {
+			fmt.Fprintf(errOut, "Warning: %s; storing the sign-in for --control %s without checking the relay's versions.\n", what, fallback)
+			return fallback, nil
+		}
+		return "", &exitError{code: exitUnreachable, msg: what + ".\n" + hint}
+	}
+	const orControl = "If the control endpoint is known, pass --control <host:port> to sign in without asking the relay's web address."
 	switch {
 	case err == nil:
 		me := version.Version
@@ -176,21 +197,17 @@ func discoverControl(ctx context.Context, d deps, g globalFlags, errOut io.Write
 		}
 		return fallback, nil
 	case errors.Is(err, client.ErrNotARelay):
-		if !controlGiven {
-			fmt.Fprintf(errOut, "%s did not answer like a current Burrow relay; using %s. Check the address, or pass --control if the control endpoint is elsewhere.\n", relay, fallback)
-		}
-		return fallback, nil
-	case ctx.Err() != nil && errors.Is(err, context.Canceled):
-		return "", err
+		// Some web page answered. No control endpoint is guessed from that.
+		return unasked(relay+" does not look like a Burrow relay",
+			"Check the address. If it is right and the control endpoint is known, --control <host:port> overrides this.")
 	case errors.As(err, &se):
-		msg := fmt.Sprintf("Cannot use %s: %s.", relay, se.Error())
+		hint := "Check the relay address. " + orControl
 		if se.RedirectHost != "" {
-			msg += "\nIf that is the relay, run: burrow login " + se.RedirectHost
-		} else {
-			msg += "\nCheck the relay address."
+			hint = "If that is the relay, run: burrow login " + se.RedirectHost + "\n" + orControl
 		}
-		return "", &exitError{code: exitUnreachable, msg: msg}
+		return unasked(relay+" cannot be asked: "+se.Error(), hint)
 	}
+	// A certificate that is not trusted is not a relay to be skipped past.
 	if problem, ok := certProblem(err); ok {
 		return "", &exitError{code: exitUnreachable, msg: "Cannot trust " + relay + ": " + problem + ".\n" + fixCacert}
 	}
@@ -198,7 +215,7 @@ func discoverControl(ctx context.Context, d deps, g globalFlags, errOut io.Write
 	if errors.Is(err, context.DeadlineExceeded) {
 		reason = "no answer within " + client.DiscoveryTimeout.String()
 	}
-	return "", &exitError{code: exitUnreachable, msg: "Cannot reach " + relay + ": " + reason + ".\nCheck the address and your network connection."}
+	return unasked("Cannot reach "+relay+": "+reason, "Check the address and your network connection. "+orControl)
 }
 
 // newLoginCmd builds `burrow login <relay>`. In this version it stores a token
