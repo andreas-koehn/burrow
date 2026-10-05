@@ -45,15 +45,19 @@ func TestLoadFileConfig_DefaultTypeTCP(t *testing.T) {
 	}
 }
 
-func TestLoadFileConfig_EmptyServerError(t *testing.T) {
+// server and token are optional: without them `burrow up` uses the sign-in.
+func TestLoadFileConfig_ServerOptional(t *testing.T) {
 	dir := t.TempDir()
 	yml := filepath.Join(dir, "burrow.yaml")
 	os.WriteFile(yml, []byte("token: mytoken\n"+
 		"services:\n"+
 		"  - { name: app, local: 127.0.0.1:3000 }\n"), 0o600)
-	_, err := LoadFileConfig(yml)
-	if err == nil || !strings.Contains(err.Error(), "server") {
-		t.Fatalf("expected server error, got %v", err)
+	c, err := LoadFileConfig(yml)
+	if err != nil {
+		t.Fatalf("a file without server must load: %v", err)
+	}
+	if c.Server != "" || c.Token != "mytoken" || len(c.Tunnels) != 1 {
+		t.Fatalf("server %q, tunnels %d", c.Server, len(c.Tunnels))
 	}
 }
 
@@ -73,15 +77,54 @@ func TestLoadFileConfig_BothTokensError(t *testing.T) {
 	}
 }
 
-func TestLoadFileConfig_NoTokenError(t *testing.T) {
+func TestLoadFileConfig_TokenOptional(t *testing.T) {
 	dir := t.TempDir()
 	yml := filepath.Join(dir, "burrow.yaml")
 	os.WriteFile(yml, []byte("server: relay.example.com:7000\n"+
 		"services:\n"+
 		"  - { name: app, local: 127.0.0.1:3000 }\n"), 0o600)
-	_, err := LoadFileConfig(yml)
-	if err == nil || !strings.Contains(err.Error(), "token") {
-		t.Fatalf("expected token error, got %v", err)
+	c, err := LoadFileConfig(yml)
+	if err != nil {
+		t.Fatalf("a file without token must load: %v", err)
+	}
+	if c.Server != "relay.example.com:7000" || c.Token != "" {
+		t.Fatalf("server %q, token empty: %v", c.Server, c.Token == "")
+	}
+}
+
+func TestLoadFileConfig_ServicesOnly(t *testing.T) {
+	dir := t.TempDir()
+	yml := filepath.Join(dir, "burrow.yaml")
+	os.WriteFile(yml, []byte("services:\n"+
+		"  - { name: app, local: 127.0.0.1:3000 }\n"+
+		"  - { name: web, local: 127.0.0.1:8080, type: http }\n"), 0o600)
+	c, err := LoadFileConfig(yml)
+	if err != nil {
+		t.Fatalf("a file with services only must load: %v", err)
+	}
+	if c.Server != "" || c.Token != "" || len(c.Tunnels) != 2 || c.Tunnels[0].Type != "tcp" || c.Tunnels[1].Type != "http" {
+		t.Fatalf("server %q, tunnels %+v", c.Server, c.Tunnels)
+	}
+}
+
+// Blank values count as absent, so a sign-in can fill them.
+func TestLoadFileConfig_BlankServerAndTokenAreAbsent(t *testing.T) {
+	dir := t.TempDir()
+	tok := filepath.Join(dir, "tok")
+	os.WriteFile(tok, []byte("  \n"), 0o600)
+	for name, head := range map[string]string{
+		"blank values":     "server: \"  \"\ntoken: \" \"\n",
+		"blank token file": "server: \"\"\ntoken_file: " + tok + "\n",
+	} {
+		yml := filepath.Join(dir, "burrow.yaml")
+		os.WriteFile(yml, []byte(head+"services:\n  - { name: app, local: 127.0.0.1:3000 }\n"), 0o600)
+		c, err := LoadFileConfig(yml)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if c.Server != "" || c.Token != "" {
+			t.Fatalf("%s: server %q, token empty: %v", name, c.Server, c.Token == "")
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // The places a value can come from, as Credentials.Source names them.
@@ -19,7 +20,7 @@ const (
 // Like UserConfig, it never prints its token.
 type Credentials struct {
 	Control   string `json:"control"` // host:port of the control endpoint
-	Token     string `json:"-"`
+	Token     string `json:"-" yaml:"-"`
 	TokenName string `json:"token_name"` // "" when the token did not come from the user config
 	Relay     string `json:"relay"`      // dashboard URL, "" when unknown
 	Source    string `json:"source"`     // "flags" | "environment" | "burrow.yaml" | "user config", for doctor and status
@@ -48,12 +49,12 @@ func (c Credentials) LogValue() slog.Value {
 // Sources are the places a control endpoint and a token can come from, highest precedence first.
 type Sources struct {
 	FlagServer string      `json:"flag_server"`
-	FlagToken  string      `json:"-"`
+	FlagToken  string      `json:"-" yaml:"-"`
 	EnvServer  string      `json:"env_server"`  // BURROW_SERVER
-	EnvToken   string      `json:"-"`           // BURROW_TOKEN (BURROW_TOKEN_FILE already resolved by the caller)
+	EnvToken   string      `json:"-" yaml:"-"`  // BURROW_TOKEN (BURROW_TOKEN_FILE already resolved by the caller)
 	FileServer string      `json:"file_server"` // burrow.yaml, for `up` only
-	FileToken  string      `json:"-"`
-	User       *UserConfig `json:"user,omitempty"`
+	FileToken  string      `json:"-" yaml:"-"`
+	User       *UserConfig `json:"user,omitempty" yaml:"-"` // its token is written as YAML, so it stays out as a whole
 }
 
 // String renders the sources without any token.
@@ -81,6 +82,8 @@ var ErrNotSignedIn = errors.New("Not signed in. Run: burrow login <your relay ad
 // first source that has it: flags, then the environment, then burrow.yaml, then
 // the user config. It returns ErrNotSignedIn when either is missing.
 //
+// Values are trimmed, and one that is blank counts as not set.
+//
 // Source names the highest-precedence place that contributed a value.
 // TokenName is set only when the token itself came from the user config, and
 // Relay only when the control endpoint did: the stored name and dashboard URL
@@ -90,9 +93,10 @@ func Resolve(s Sources) (Credentials, error) {
 	if s.User != nil {
 		userControl, userToken = s.User.Control, s.User.Token
 	}
+	trim := strings.TrimSpace
 	names := [...]string{SourceFlags, SourceEnvironment, SourceFile, SourceUserConfig}
-	controls := [...]string{s.FlagServer, s.EnvServer, s.FileServer, userControl}
-	tokens := [...]string{s.FlagToken, s.EnvToken, s.FileToken, userToken}
+	controls := [...]string{trim(s.FlagServer), trim(s.EnvServer), trim(s.FileServer), trim(userControl)}
+	tokens := [...]string{trim(s.FlagToken), trim(s.EnvToken), trim(s.FileToken), trim(userToken)}
 
 	ci, ti := firstSet(controls[:]), firstSet(tokens[:])
 	if ci < 0 || ti < 0 {

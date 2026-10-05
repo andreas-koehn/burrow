@@ -1,24 +1,20 @@
 // Command burrow is the Burrow local client CLI.
 //
-// `connect` runs the Phase 2 control client (TLS auth, tunnel registration,
-// heartbeat, auto-reconnect); the TCP data plane arrives in MVP Phase 3.
+// `login` stores a sign-in once; `http`, `tcp` and `up` then expose local
+// services with one command each. `connect` is the explicit form with every
+// value on the command line.
 package main
 
 import (
 	"context"
-	"crypto/x509"
 	"fmt"
-	"net"
+	"io"
 	"os"
-	"os/signal"
 	"runtime"
-	"syscall"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ankoehn/burrow/internal/client"
-	"github.com/ankoehn/burrow/internal/config"
-	"github.com/ankoehn/burrow/internal/logging"
 	"github.com/ankoehn/burrow/internal/version"
 )
 
@@ -27,163 +23,84 @@ func versionLine() string {
 		version.Version, version.Commit, version.Date, runtime.GOOS, runtime.GOARCH)
 }
 
-// buildTunnelSpec constructs a client.TunnelSpec from the provided flags values,
-// validating that typ is one of "tcp" or "http".
-func buildTunnelSpec(name string, remotePort int, localAddr string, typ string) (client.TunnelSpec, error) {
-	if typ != "tcp" && typ != "http" {
-		return client.TunnelSpec{}, fmt.Errorf("unknown tunnel type %q: must be tcp or http", typ)
-	}
-	return client.TunnelSpec{
-		Name:       name,
-		Type:       typ,
-		RemotePort: remotePort,
-		LocalAddr:  localAddr,
-	}, nil
+// deps is what the commands take from their surroundings. Tests replace it so
+// that no command reads the real environment, the real user config or a
+// terminal, or opens a connection.
+type deps struct {
+	stdout, stderr io.Writer
+	stdin          io.Reader
+	hostname       func() (string, error)
+	userConfigPath func(override string) (string, error)
+	getenv         func(string) string
+	// run connects and blocks until the client stops.
+	run func(ctx context.Context, creds client.Credentials, tunnels []client.TunnelSpec, g globalFlags) error
+	// isTerminal reports whether stdin is a terminal a person can answer on.
+	isTerminal func() bool
 }
 
-// singleFlagNames lists the per-tunnel flags that conflict with --config.
-var singleFlagNames = []string{"server", "token", "local", "remote", "name", "type"}
-
-// newConnectCmd constructs the "connect" sub-command.
-func newConnectCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "connect",
-		Short: "Connect to a Burrow server and register a tunnel",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfgPath, _ := cmd.Flags().GetString("config")
-
-			if cfgPath != "" {
-				// --config mode: reject any combination with single-tunnel flags.
-				for _, flag := range singleFlagNames {
-					if cmd.Flags().Changed(flag) {
-						return fmt.Errorf("--config cannot be combined with --%s", flag)
-					}
-				}
-
-				fc, err := client.LoadFileConfig(cfgPath)
-				if err != nil {
-					return err
-				}
-
-				insecure, _ := cmd.Flags().GetBool("insecure")
-				caPath, _ := cmd.Flags().GetString("cacert")
-				serverName, _ := cmd.Flags().GetString("server-name")
-
-				var pool *x509.CertPool
-				if caPath != "" {
-					pem, err := os.ReadFile(caPath)
-					if err != nil {
-						return err
-					}
-					pool = x509.NewCertPool()
-					if !pool.AppendCertsFromPEM(pem) {
-						return fmt.Errorf("cacert %s: no certificates", caPath)
-					}
-				}
-				sn := serverName
-				if sn == "" {
-					if h, _, e := net.SplitHostPort(fc.Server); e == nil {
-						sn = h
-					}
-				}
-				log := logging.New("info", "text")
-				cl := client.New(client.Options{
-					Server: fc.Server, Token: fc.Token, Insecure: insecure,
-					RootCAs: pool, ServerName: sn, Logger: log,
-					Tunnels: fc.Tunnels,
-				})
-				ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-				defer stop()
-				return cl.Run(ctx)
-			}
-
-			// Single-tunnel mode (original path).
-			server, _ := cmd.Flags().GetString("server")
-			token, _ := cmd.Flags().GetString("token")
-			local, _ := cmd.Flags().GetString("local")
-			remote, _ := cmd.Flags().GetInt("remote")
-			name, _ := cmd.Flags().GetString("name")
-			insecure, _ := cmd.Flags().GetBool("insecure")
-			caPath, _ := cmd.Flags().GetString("cacert")
-			serverName, _ := cmd.Flags().GetString("server-name")
-			typ, _ := cmd.Flags().GetString("type")
-
-			spec, err := buildTunnelSpec(name, remote, local, typ)
-			if err != nil {
-				return err
-			}
-
-			cfg, err := config.LoadClient(map[string]any{
-				"server": server, "token": token, "insecure": insecure,
-				"cacert": caPath, "server_name": serverName,
-			})
-			if err != nil {
-				return err
-			}
-			log := logging.New(cfg.LogLevel, cfg.LogFormat)
-			var pool *x509.CertPool
-			if cfg.CACert != "" {
-				pem, err := os.ReadFile(cfg.CACert)
-				if err != nil {
-					return err
-				}
-				pool = x509.NewCertPool()
-				if !pool.AppendCertsFromPEM(pem) {
-					return fmt.Errorf("cacert %s: no certificates", cfg.CACert)
-				}
-			}
-			sn := cfg.ServerName
-			if sn == "" {
-				if h, _, e := net.SplitHostPort(cfg.Server); e == nil {
-					sn = h
-				}
-			}
-			cl := client.New(client.Options{
-				Server: cfg.Server, Token: cfg.Token, Insecure: cfg.Insecure,
-				RootCAs: pool, ServerName: sn, Logger: log,
-				Tunnels: []client.TunnelSpec{spec},
-			})
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
-			return cl.Run(ctx)
+func defaultDeps() deps {
+	return deps{
+		stdout:         os.Stdout,
+		stderr:         os.Stderr,
+		stdin:          os.Stdin,
+		hostname:       os.Hostname,
+		userConfigPath: client.UserConfigPath,
+		getenv:         os.Getenv,
+		run:            runClient,
+		isTerminal: func() bool {
+			fi, err := os.Stdin.Stat()
+			return err == nil && fi.Mode()&os.ModeCharDevice != 0
 		},
 	}
-	cmd.Flags().String("config", "", "path to burrow.yaml (multi-service)")
-	cmd.Flags().String("server", "", "server host:port (required without --config)")
-	cmd.Flags().String("token", "", "auth token (required without --config)")
-	cmd.Flags().String("local", "127.0.0.1:3000", "local address to expose")
-	cmd.Flags().Int("remote", 0, "requested remote port (0 = auto)")
-	cmd.Flags().String("name", "", "tunnel name")
-	cmd.Flags().Bool("insecure", false, "skip TLS verification (DEV ONLY)")
-	cmd.Flags().String("cacert", "", "PEM CA to trust (e.g. certs/dev-ca.pem)")
-	cmd.Flags().String("server-name", "", "TLS SNI/verify name (default: host of --server)")
-	cmd.Flags().String("type", "tcp", "tunnel type: tcp|http (--remote is ignored for http)")
-	// --server and --token are required only in single-tunnel mode; cobra's MarkFlagRequired
-	// applies to every invocation, so we enforce the requirement manually inside RunE instead.
-	return cmd
 }
 
-func main() {
+// newRoot builds the command tree.
+func newRoot(d deps) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "burrow",
 		Short:         "Burrow local client",
 		Version:       versionLine(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
-	}
-
-	root.AddCommand(newConnectCmd())
-
-	root.AddCommand(&cobra.Command{
-		Use:   "version",
-		Short: "Print version information",
-		Run: func(_ *cobra.Command, _ []string) {
-			fmt.Println(versionLine())
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return usageErrorf("unknown command %q for %q\nRun '%s --help' for the commands.", args[0], cmd.CommandPath(), cmd.CommandPath())
+			}
+			return nil
 		},
-	})
-
-	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
+	root.SetOut(d.stdout)
+	root.SetErr(d.stderr)
+	root.SetIn(d.stdin)
+	root.SetFlagErrorFunc(flagUsageError)
+
+	pf := root.PersistentFlags()
+	pf.String("log", "", "print log lines in this format: text|json")
+	pf.String("config", "", "user config file (default: config.yaml in the burrow directory of the user config directory)")
+	pf.String("cacert", "", "PEM CA to trust (e.g. certs/dev-ca.pem)")
+	pf.String("server-name", "", "TLS SNI/verify name (default: host of the control endpoint)")
+	pf.Bool("insecure", false, "skip TLS verification (DEV ONLY)")
+
+	root.AddCommand(
+		newLoginCmd(d),
+		newLogoutCmd(d),
+		newExposeCmd(d, "http"),
+		newExposeCmd(d, "tcp"),
+		newUpCmd(d),
+		newStatusCmd(d),
+		newConnectCmdWith(d),
+		&cobra.Command{
+			Use:   "version",
+			Short: "Print version information",
+			Run: func(cmd *cobra.Command, _ []string) {
+				fmt.Fprintln(cmd.OutOrStdout(), versionLine())
+			},
+		},
+	)
+	return root
+}
+
+func main() {
+	os.Exit(report(os.Stderr, newRoot(defaultDeps()).Execute()))
 }

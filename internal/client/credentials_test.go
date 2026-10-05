@@ -2,7 +2,10 @@ package client
 
 import (
 	"errors"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestResolve_Precedence(t *testing.T) {
@@ -107,4 +110,57 @@ func TestCredentialsAndSources_NeverPrintTheToken(t *testing.T) {
 	}
 	assertNoToken(t, "Credentials", c)
 	assertNoToken(t, "*Credentials", &c)
+}
+
+// Only UserConfig is ever written as YAML; the other types leave every token out.
+func TestCredentialsAndSources_YAMLHasNoToken(t *testing.T) {
+	user := sampleUserConfig()
+	for name, v := range map[string]any{
+		"Credentials": Credentials{Control: "c.example:7000", Token: testToken, TokenName: "laptop", Source: SourceUserConfig},
+		"Sources":     Sources{FlagToken: testToken, EnvToken: testToken, FileToken: testToken, User: &user},
+	} {
+		out, err := yaml.Marshal(v)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if strings.Contains(string(out), testToken) {
+			t.Fatalf("%s: the YAML encoding contains the token", name)
+		}
+	}
+	out, err := yaml.Marshal(Credentials{Control: "c.example:7000", Token: testToken})
+	if err != nil || !strings.Contains(string(out), "c.example:7000") {
+		t.Fatalf("the other fields are still encoded: %q, %v", out, err)
+	}
+}
+
+// A value of spaces only is not a value: the next source is asked.
+func TestResolve_BlankValuesCountAsNotSet(t *testing.T) {
+	user := &UserConfig{Relay: "https://r.example", Control: "r.example:7000", Token: "bur_user", TokenName: "laptop"}
+	c, err := Resolve(Sources{FlagServer: " ", FlagToken: "\t", EnvServer: "  ", EnvToken: " \n", FileServer: " ", FileToken: " ", User: user})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if c.Control != "r.example:7000" || c.Token != "bur_user" || c.Source != SourceUserConfig || c.TokenName != "laptop" {
+		t.Fatalf("control %q source %q name %q", c.Control, c.Source, c.TokenName)
+	}
+
+	for name, s := range map[string]Sources{
+		"blank user token":   {User: &UserConfig{Control: "r.example:7000", Token: "  "}},
+		"blank user control": {User: &UserConfig{Control: " ", Token: "bur_user"}},
+		"blank env":          {EnvServer: " ", EnvToken: " "},
+	} {
+		if _, err := Resolve(s); !errors.Is(err, ErrNotSignedIn) {
+			t.Fatalf("%s: err = %v, want ErrNotSignedIn", name, err)
+		}
+	}
+}
+
+func TestResolve_TrimsValues(t *testing.T) {
+	c, err := Resolve(Sources{EnvServer: " e.example:7000\n", EnvToken: "  bur_env\r\n"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if c.Control != "e.example:7000" || c.Token != "bur_env" {
+		t.Fatalf("control %q, token trimmed: %v", c.Control, c.Token == "bur_env")
+	}
 }

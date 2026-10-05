@@ -369,3 +369,42 @@ func TestUserConfig_NeverPrintsTheToken(t *testing.T) {
 		t.Errorf("String() of an empty config = %q, want it to say there is no token", s)
 	}
 }
+
+// A symlink at the config path is replaced by the new file. Writing through it
+// would put the token wherever the link points.
+func TestSaveUserConfig_ReplacesASymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks needs a privilege on Windows")
+	}
+	dir := t.TempDir()
+	elsewhere := filepath.Join(t.TempDir(), "elsewhere.txt")
+	if err := os.WriteFile(elsewhere, []byte("untouched\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.Symlink(elsewhere, path); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SaveUserConfig(path, sampleUserConfig()); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("the config path is %v, want a regular 0600 file", fi.Mode())
+	}
+	target, err := os.ReadFile(elsewhere)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(target) != "untouched\n" {
+		t.Fatal("the file the link pointed at was written to")
+	}
+	if got, err := LoadUserConfig(path); err != nil || got != sampleUserConfig() {
+		t.Fatalf("the saved config does not read back: %v", err)
+	}
+}

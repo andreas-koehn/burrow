@@ -8,7 +8,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// FileConfig is the parsed result of a burrow.yaml file.
+// FileConfig is the parsed result of a burrow.yaml file. Server and Token are
+// "" when the file does not set them.
 type FileConfig struct {
 	Server  string
 	Token   string
@@ -32,7 +33,8 @@ type rawService struct {
 }
 
 // LoadFileConfig reads and validates a burrow.yaml file at path.
-// It returns a FileConfig with Server, Token, and Tunnels populated.
+// It returns a FileConfig with Tunnels populated, and Server and Token when the
+// file has them.
 func LoadFileConfig(path string) (FileConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -44,28 +46,23 @@ func LoadFileConfig(path string) (FileConfig, error) {
 		return FileConfig{}, fmt.Errorf("loadfileconfig: parse %s: %w", path, err)
 	}
 
-	// Validate server non-empty.
-	if raw.Server == "" {
-		return FileConfig{}, fmt.Errorf("loadfileconfig: server is required")
-	}
+	// server and token are optional: what is absent comes from the sign-in.
+	// A blank value counts as absent.
+	server := strings.TrimSpace(raw.Server)
+	token := strings.TrimSpace(raw.Token)
 
-	// Validate exactly one of token / token_file.
-	if raw.Token == "" && raw.TokenFile == "" {
-		return FileConfig{}, fmt.Errorf("loadfileconfig: exactly one of token or token_file is required")
-	}
-	if raw.Token != "" && raw.TokenFile != "" {
+	// At most one of token / token_file.
+	if token != "" && raw.TokenFile != "" {
 		return FileConfig{}, fmt.Errorf("loadfileconfig: only one of token or token_file may be set")
 	}
 
 	// Resolve token_file.
-	token := raw.Token
 	if raw.TokenFile != "" {
 		b, err := os.ReadFile(raw.TokenFile)
 		if err != nil {
 			return FileConfig{}, fmt.Errorf("loadfileconfig: token_file %q: %w", raw.TokenFile, err)
 		}
-		// Trim trailing newlines (same convention as internal/config applyFileSecrets).
-		token = strings.TrimRight(string(b), "\r\n")
+		token = strings.TrimSpace(string(b))
 	}
 
 	// Validate at least one service.
@@ -104,7 +101,7 @@ func LoadFileConfig(path string) (FileConfig, error) {
 	}
 
 	return FileConfig{
-		Server:  raw.Server,
+		Server:  server,
 		Token:   token,
 		Tunnels: tunnels,
 	}, nil
