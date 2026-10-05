@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { ArrowLeft, LogOut, Moon, Search, Sun } from "lucide-react";
 import { cx } from "@/components/ds";
 import { shortcutLabel } from "@/lib/platform";
-import { NAVIGATIONS, activeEntry, attentionTarget, type NavEntry, type Navigation } from "@/lib/navigation";
+import { NAVIGATIONS, PROFILE_ENTRY, activeEntry, attentionTarget, type NavEntry, type Navigation } from "@/lib/navigation";
 import { lastWorkspace } from "@/lib/workspace";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
@@ -24,8 +24,6 @@ export interface SidebarProps {
   onToggleTheme(): void;
   onLogout(): void;
 }
-
-const PROFILE = NAVIGATIONS.settings.groups.flatMap((g) => g.entries).find((e) => e.id === "profile")!;
 
 /** Read out with an entry that carries the dot; the dot alone is only colour. */
 const ATTENTION = "needs attention";
@@ -113,7 +111,7 @@ export function Sidebar({
       <div className="sidebar-footer">
         {footer.length > 0 && <div className="sidebar-footer-nav">{footer.map((e) => link(e, false))}</div>}
         <div className="sidebar-footer-row row row-center gap-2">
-          <Link className="user-chip" to={PROFILE.to} aria-label={profileLabel} title={collapsed ? profileLabel : undefined}>
+          <Link className="user-chip" to={PROFILE_ENTRY.to} aria-label={profileLabel} title={collapsed ? profileLabel : undefined}>
             <span className="avatar">{(user.email[0] ?? "U").toUpperCase()}</span>
             {!collapsed && (
               <span className="user-meta">

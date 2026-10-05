@@ -178,6 +178,17 @@ describe("Sidebar", () => {
     expect(nav.getByRole("link", { name: "General" })).toHaveAttribute("aria-current", "page");
   });
 
+  it("inside Settings, collapsed, the Email entry keeps the mark in its name and tooltip", () => {
+    mount("/settings/general", admin, { attention: ["/settings/email"], footer: [], collapsed: true });
+    const nav = within(screen.getByRole("navigation", { name: "Settings" }));
+    const email = nav.getByRole("link", { name: "Email, needs attention" });
+    expect(email).toHaveAttribute("title", "Email, needs attention");
+    expect(email.querySelector(".nav-attention")).not.toBeNull();
+    expect(email.querySelector(".nav-label")).toBeNull();
+    expect(document.querySelectorAll(".nav-attention")).toHaveLength(1);
+    expect(nav.getByRole("link", { name: "General" })).toHaveAttribute("title", "General");
+  });
+
   it("has no mark without an open relay notice", () => {
     mount("/");
     expect(within(footerZone()).getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings/general");

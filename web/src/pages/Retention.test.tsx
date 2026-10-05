@@ -91,8 +91,11 @@ describe("Retention & compliance", () => {
 });
 
 describe("Retention back link", () => {
-  it("links back to Settings (U1)", async () => {
+  // The Settings sidebar is the way around; a link to the sibling page General was not a way back.
+  it("has none: the page sits in the Settings navigation", async () => {
     renderApp(<Retention />);
-    expect(await screen.findByRole("link", { name: "Back to Settings" })).toHaveAttribute("href", "/settings/general");
+    expect(await screen.findByRole("heading", { level: 1 })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /back to/i })).toBeNull();
+    expect(document.querySelector(".page-back")).toBeNull();
   });
 });

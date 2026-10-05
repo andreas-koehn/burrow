@@ -68,7 +68,6 @@ export default function EmailSettings() {
             <Button type="submit" variant="primary" disabled={save.isPending}>Save settings</Button>
           </div>
         </form>
-
       </section>
 
       <section className="account-section" aria-labelledby="sec-smtp-test">

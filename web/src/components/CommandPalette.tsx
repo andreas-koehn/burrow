@@ -60,13 +60,15 @@ export function CommandPalette({
   const allItems = useMemo<PaletteItem[]>(() => {
     const destinations = destinationsFor({ isAdmin, hasAiGateway });
 
-    // Filter destinations by query.
-    const filteredDestinations = destinations.filter(
-      (d) =>
-        q === "" ||
-        d.label.toLowerCase().includes(q) ||
-        d.group.toLowerCase().includes(q),
-    );
+    // Filter destinations by query. A page whose own name matches comes before the
+    // pages that only sit in a workspace of that name ("Services" is both).
+    const byLabel = (d: { label: string }) => d.label.toLowerCase().includes(q);
+    const filteredDestinations = q === ""
+      ? destinations
+      : [
+          ...destinations.filter(byLabel),
+          ...destinations.filter((d) => !byLabel(d) && d.group.toLowerCase().includes(q)),
+        ];
 
     const entityItems: PaletteItem[] = [];
     if (q !== "") {

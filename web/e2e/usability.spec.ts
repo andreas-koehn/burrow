@@ -106,9 +106,9 @@ test.describe("Command palette", () => {
     // Press Enter → URL changes
     const beforeURL = page.url();
     await page.keyboard.press("Enter");
-    // After navigation the URL should differ from the home page
+    // "Services" names a page and a workspace: Enter opens the page, not the Overview we are on.
     await page.waitForURL((url) => url.toString() !== beforeURL, { timeout: 10_000 });
-    expect(page.url()).not.toBe(beforeURL);
+    expect(new URL(page.url()).pathname).toBe("/services");
   });
 });
 

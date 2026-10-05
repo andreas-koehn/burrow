@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useMemo } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useDebounced } from "@/lib/use-debounced";
+import { useUrlParams } from "@/lib/use-url-params";
 import { apiFetch, downloadFile } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
 import { statusLabel } from "@/lib/status";
@@ -32,6 +33,7 @@ const KIND_LABELS: Record<ConnectionLogKind, string> = {
   tcp_proxy: "TCP proxy",
   control: "Control",
 };
+const KINDS = Object.keys(KIND_LABELS) as ConnectionLogKind[];
 
 // Status badge kind mapping — maps onto the existing status-* CSS variants.
 function statusClass(status: ConnectionLogStatus): string {
@@ -85,31 +87,27 @@ function LogDetail({ row, service }: { row: ConnectionLog; service: string }) {
 }
 
 export default function Traffic() {
-  // Range, search and service live in the URL, so a link reproduces the view.
-  const [params, setParams] = useSearchParams();
+  // Every filter lives in the URL, so a link reproduces the view.
+  const [params, setParam] = useUrlParams();
   const range = parseTimeRange(params.get("range"));
   const searchQ = params.get("q") ?? "";
+  // The box and the URL follow every key; the relay is asked once typing pauses.
+  const query = useDebounced(searchQ, 250);
   const serviceFilter = params.get("service") ?? "";
-  const [kindFilter, setKindFilter] = useState<ConnectionLogKind | "">("");
-  const [rollups, setRollups] = useState(false);
+  const kindParam = params.get("kind");
+  const kindFilter: ConnectionLogKind | "" = KINDS.includes(kindParam as ConnectionLogKind) ? (kindParam as ConnectionLogKind) : "";
+  const rollups = params.get("rollups") === "1";
 
-  function setParam(name: string, value: string) {
-    setParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (value) next.set(name, value); else next.delete(name);
-      return next;
-    }, { replace: true });
-  }
   const setRange = (r: TimeRange) => setParam("range", r === "24h" ? "" : r);
 
-  const filterParams = (withSearch: boolean) =>
-    logParams({ kind: kindFilter, service: serviceFilter, range, q: withSearch ? searchQ : "" });
+  const filterParams = (q: string) =>
+    logParams({ kind: kindFilter, service: serviceFilter, range, q });
 
   // Logs, a page at a time; the cursor is the id of the last row shown.
   const logsQuery = useInfiniteQuery({
-    queryKey: ["connection-logs", kindFilter, serviceFilter, range, searchQ],
+    queryKey: ["connection-logs", kindFilter, serviceFilter, range, query],
     queryFn: ({ pageParam }) => {
-      const p = filterParams(true);
+      const p = filterParams(query);
       p.set("limit", String(PAGE_SIZE));
       if (pageParam) p.set("before_id", pageParam);
       return apiFetch<ConnectionLog[]>(`/connection-logs?${p.toString()}`);
@@ -124,7 +122,7 @@ export default function Traffic() {
 
   const rollupsQuery = useQuery({
     queryKey: ["connection-logs-rollups", serviceFilter, kindFilter, range],
-    queryFn: () => apiFetch<ConnectionLogRollup[]>(`/connection-logs/rollups?${filterParams(false).toString()}`),
+    queryFn: () => apiFetch<ConnectionLogRollup[]>(`/connection-logs/rollups?${filterParams("").toString()}`),
     enabled: rollups,
     retry: false,
   });
@@ -144,7 +142,8 @@ export default function Traffic() {
   const serviceCell = (id: string) => serviceName.get(id) ?? <span className="mono">{id}</span>;
 
   function handleExport() {
-    const p = filterParams(true);
+    // What the box says now, not what was last asked for.
+    const p = filterParams(searchQ);
     p.set("format", "ndjson");
     void downloadFile(`/connection-logs/export?${p.toString()}`, "connection-logs.ndjson");
   }
@@ -199,7 +198,7 @@ export default function Traffic() {
         <select
           aria-label="Protocol"
           value={kindFilter}
-          onChange={(e) => setKindFilter(e.target.value as ConnectionLogKind | "")}
+          onChange={(e) => setParam("kind", e.target.value)}
           className="input"
         >
           <option value="">All</option>
@@ -223,7 +222,7 @@ export default function Traffic() {
         </select>
       </label>
       <label className="checkbox-row small">
-        <input type="checkbox" aria-label="Rollups" checked={rollups} onChange={(e) => setRollups(e.target.checked)} />
+        <input type="checkbox" aria-label="Rollups" checked={rollups} onChange={(e) => setParam("rollups", e.target.checked ? "1" : "")} />
         <span>Rollups</span>
       </label>
     </>
@@ -275,7 +274,9 @@ export default function Traffic() {
           rows={logs}
           rowKey={(r) => r.id}
           columns={logColumns}
-          isLoading={logsQuery.isLoading}
+          // Rows of the previous filter stay while the new ones load; an empty list does
+          // not, because its text would speak for a filter the relay has not answered yet.
+          isLoading={logsQuery.isLoading || (logsQuery.isPlaceholderData && logs?.length === 0)}
           error={logsQuery.error}
           onRetry={() => void logsQuery.refetch()}
           rowLabel={(r) => `${formatTimestamp(r.started_at)}, ${serviceName.get(r.service_id) ?? r.service_id}`}

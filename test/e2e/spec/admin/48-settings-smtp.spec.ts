@@ -74,6 +74,9 @@ test("48-settings-smtp: SMTP save + test-email flow + privacy toggle", async ({ 
     }).toPass({ timeout: 15_000 });
 
     // ---- PRIVACY TOGGLE ----
+    // It lives on General since the settings were split; the Settings sidebar leads there.
+    await page.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "General" }).click();
+    await expect(page.getByRole("heading", { name: "General", level: 1 })).toBeVisible();
     const toggle = page.locator("#rollup-include-top-ips");
     await expect(toggle).toBeVisible();
     const startState = await toggle.getAttribute("aria-checked");

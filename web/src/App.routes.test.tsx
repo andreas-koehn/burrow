@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -24,6 +24,9 @@ function renderAt(route: string) {
 }
 
 describe("App routes", () => {
+  // Email is set up, so no entry carries the attention mark ("Email, needs attention")
+  // and the exact names below do not depend on when the settings arrive.
+  beforeEach(() => { db.settings["smtp.host"] = "smtp.example.com"; });
   afterEach(() => resetDb());
 
   it("renders Clients at /clients", async () => {

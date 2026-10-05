@@ -2,8 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { ChevronsUpDown } from "lucide-react";
-import { cx } from "@/components/ds";
+import { Check, ChevronsUpDown } from "lucide-react";
 import { placeMenu } from "@/components/ds/placeMenu";
 import type { Navigation } from "@/lib/navigation";
 import { BurrowMark } from "./BurrowMark";
@@ -114,7 +113,9 @@ export function WorkspaceSwitcher({ current, workspaces, collapsed = false }: Wo
         if (at >= 0) choose(workspaces[at]);
         break;
       case "Escape": e.preventDefault(); close(); break;
-      case "Tab": setOpen(false); break;
+      // Not prevented: the menu is portalled to the end of <body>, so the focus goes back
+      // to the button first and the browser's own Tab carries on from there.
+      case "Tab": close(); break;
     }
   };
 
@@ -159,12 +160,16 @@ export function WorkspaceSwitcher({ current, workspaces, collapsed = false }: Wo
                 role="menuitemradio"
                 aria-checked={ws.workspace === current.workspace}
                 tabIndex={-1}
-                className={cx("menu-item", ws.workspace === current.workspace && "is-focus")}
+                className="menu-item"
                 onClick={() => choose(ws)}
               >
                 <span style={{ color: "var(--muted-foreground)" }}><Icon size={15} aria-hidden="true" /></span>
                 <span>{ws.label}</span>
                 {ws.namespace && <span className="shortcut">{ws.namespace}</span>}
+                {/* A slot of fixed width on every item, so the namespaces line up. */}
+                <span className="menu-check">
+                  {ws.workspace === current.workspace && <Check size={14} aria-hidden="true" />}
+                </span>
               </div>
             );
           })}

@@ -166,6 +166,29 @@ describe("Traffic page", () => {
     });
   });
 
+  it("the Protocol filter and the Rollups switch are kept in the URL too", async () => {
+    mount();
+    await table();
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Protocol" }), "control");
+    expect(screen.getByTestId("path")).toHaveTextContent("/traffic?kind=control");
+    await userEvent.click(screen.getByRole("checkbox", { name: /rollups/i }));
+    expect(screen.getByTestId("path")).toHaveTextContent("/traffic?kind=control&rollups=1");
+    await userEvent.click(screen.getByRole("checkbox", { name: /rollups/i }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Protocol" }), "");
+    expect(screen.getByTestId("path")).toHaveTextContent(/^\/traffic$/);
+  });
+
+  it("opening /traffic?kind=tcp_proxy&rollups=1 starts on that view; an unknown kind is ignored", async () => {
+    const first = mount("/traffic?kind=tcp_proxy&rollups=1");
+    expect(await screen.findByRole("columnheader", { name: "Day" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Protocol" })).toHaveValue("tcp_proxy");
+    expect(screen.getByRole("checkbox", { name: /rollups/i })).toBeChecked();
+    first.unmount();
+    mount("/traffic?kind=nope");
+    await table();
+    expect(screen.getByRole("combobox", { name: "Protocol" })).toHaveValue("");
+  });
+
   it("renders service name (not UUID) when a service is known (B4)", async () => {
     mount();
     await table();
@@ -245,6 +268,43 @@ describe("Traffic page", () => {
     expect(bodyRows(screen.getByRole("table", { name: "Traffic" }))).toHaveLength(before);
     release();
     await waitFor(() => expect(bodyRows(screen.getByRole("table", { name: "Traffic" }))).toHaveLength(1));
+  });
+
+  it("typing quickly sends one request, with the final q", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    const listCalls = () => spy.mock.calls.map(([url]) => String(url))
+      .filter((u) => u.includes("/connection-logs?")).map((u) => new URL(u, "http://x").searchParams);
+    mount();
+    await table();
+    const before = listCalls().length;
+    await userEvent.type(screen.getByRole("searchbox", { name: "Filter" }), "rejected");
+    // The box and the URL follow every key; the relay is asked once typing pauses.
+    expect(screen.getByRole("searchbox", { name: "Filter" })).toHaveValue("rejected");
+    expect(screen.getByTestId("path")).toHaveTextContent("/traffic?q=rejected");
+    await waitFor(() => expect(listCalls().slice(before).map((p) => p.get("q"))).toEqual(["rejected"]));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(listCalls().slice(before).map((p) => p.get("q"))).toEqual(["rejected"]);
+  });
+
+  it("an empty list does not speak for the new period before its answer is in", async () => {
+    // One connection three days ago: nothing in 24 hours, one row in 7 days.
+    db.connectionLogs = [{ ...db.connectionLogs[0]!, started_at: new Date(Date.now() - 3 * 86_400_000).toISOString() }];
+    mount();
+    expect(await screen.findByRole("button", { name: "Show the last 7 days" })).toBeInTheDocument();
+    let release = () => {};
+    const held = new Promise<void>((r) => { release = r; });
+    server.use(http.get("/api/v1/connection-logs", async () => {
+      await held;
+      return HttpResponse.json(db.connectionLogs);
+    }));
+    await userEvent.click(screen.getByRole("radio", { name: "7 days" }));
+    await new Promise((r) => setTimeout(r, 50));
+    // Not "No traffic in this period · Show all": that would be a claim about 7 days.
+    expect(screen.queryByText("No traffic in this period")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show all" })).toBeNull();
+    expect(document.querySelector(".skel")).not.toBeNull();
+    release();
+    expect(bodyRows(await table())).toHaveLength(1);
   });
 
   it("Load more appends the next page and goes away on the last one", async () => {

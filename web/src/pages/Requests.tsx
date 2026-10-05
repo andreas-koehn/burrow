@@ -1,11 +1,12 @@
 import { useEffect, useMemo } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
 import { parseTimeRange, timeRangeMs, widerRange, type TimeRange } from "@/lib/time-range";
 import { withAIConfigDefaults } from "@/lib/aiConfig";
 import { useDebounced } from "@/lib/use-debounced";
+import { useUrlParams } from "@/lib/use-url-params";
 import { InspectorOffHint } from "@/components/InspectorOffHint";
 import { Badge, Button, EmptyState, PageHeader, SkeletonRows } from "@/components/ds";
 import { LogView, type LogColumn } from "@/components/LogView";
@@ -31,19 +32,12 @@ export default function Requests() {
   const nav = useNavigate();
   const qc = useQueryClient();
   // Range, search and service live in the URL, so a link reproduces the view.
-  const [params, setParams] = useSearchParams();
+  const [params, setParam] = useUrlParams();
   const range = parseTimeRange(params.get("range"));
   const search = params.get("q") ?? "";
   // The box and the URL follow every key; the relay is asked once typing pauses.
   const query = useDebounced(search, 250);
 
-  function setParam(name: string, value: string) {
-    setParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (value) next.set(name, value); else next.delete(name);
-      return next;
-    }, { replace: true });
-  }
   const setRange = (r: TimeRange) => setParam("range", r === "24h" ? "" : r);
 
   const services = useQuery({
@@ -184,7 +178,9 @@ export default function Requests() {
         rows={services.data ? list.data : undefined}
         rowKey={(r) => r.id}
         columns={columns}
-        isLoading={services.isLoading || list.isLoading}
+        // Rows of the previous filter stay while the new ones load; an empty list does
+        // not, because its text would speak for a filter the relay has not answered yet.
+        isLoading={services.isLoading || list.isLoading || (list.isPlaceholderData && list.data?.length === 0)}
         error={failed.error}
         onRetry={() => void failed.refetch()}
         range={range}

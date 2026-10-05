@@ -251,6 +251,25 @@ describe("Requests page", () => {
     await waitFor(() => expect(bodyRows(screen.getByRole("table", { name: "Requests" }))).toHaveLength(1));
   });
 
+  it("an empty list does not speak for the new filter before its answer is in", async () => {
+    capture("svc_web01", [3 * 24 * 60]);
+    mount();
+    expect(await screen.findByText("No requests in this period")).toBeInTheDocument();
+    let release = () => {};
+    const held = new Promise<void>((r) => { release = r; });
+    server.use(http.get("/api/v1/services/:id/inspector/requests", async () => {
+      await held;
+      return HttpResponse.json([]);
+    }));
+    await userEvent.type(screen.getByRole("searchbox", { name: "Filter" }), "zzz");
+    await new Promise((r) => setTimeout(r, 400));
+    // The relay has not answered for "zzz" yet.
+    expect(screen.queryByText("No requests match your filter")).toBeNull();
+    expect(document.querySelector(".skel")).not.toBeNull();
+    release();
+    expect(await screen.findByText("No requests match your filter")).toBeInTheDocument();
+  });
+
   it("another service starts clean: its rows never show under the wrong name", async () => {
     capture("svc_web01", [1, 2]);
     capture("svc_ai001", [1]);

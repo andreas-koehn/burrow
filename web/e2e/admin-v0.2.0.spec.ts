@@ -73,7 +73,8 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   await expect(page.locator("tbody tr").filter({ hasText: NEW_USER_EMAIL })).toHaveCount(0);
 
   // ── Roles: list + detail w/ code-defined permissions ──────────────────────
-  await sidebar.getByRole("link", { name: /^Settings(,|$)/ }).click();
+  // Users is a Settings page: the sidebar already shows the Settings navigation
+  // (and no footer shortcut), so Roles is one click away.
   await sidebar.getByRole("link", { name: "Roles", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Roles" })).toBeVisible();
   const adminRoleRow = page.locator("tbody tr").filter({ hasText: "admin" });

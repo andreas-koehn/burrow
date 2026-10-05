@@ -27,7 +27,6 @@ function isOutOfRange(value: number, min: number, max: number): boolean {
   return isNaN(value) || value < min || value > max;
 }
 
-const BACK = { to: "/settings/general", label: "Settings" } as const;
 
 export default function Retention() {
   const qc = useQueryClient();
@@ -93,7 +92,6 @@ export default function Retention() {
   return (
     <div className="account-page page-narrow">
       <PageHeader
-        back={BACK}
         title="Retention & compliance"
         subtitle="Configure how long Burrow retains logs and ring-buffer entries."
       />

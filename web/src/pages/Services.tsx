@@ -113,7 +113,6 @@ export default function Services() {
       queryKey: ["client", c.session_id],
       queryFn: () => apiFetch<ClientDetail>(`/clients/${c.session_id}`),
       retry: false,
-      staleTime: 30000,
       refetchInterval: 30000,
       enabled: live && isAdmin,
     })),
@@ -129,8 +128,8 @@ export default function Services() {
     const es = new EventSource("/api/v1/events");
     const onTunnels = () => {
       qc.invalidateQueries({ queryKey: ["tunnels"] });
-      // Exact: the per-client details are left to their own interval (see above).
-      qc.invalidateQueries({ queryKey: ["clients"], exact: true });
+      // The list only: the per-client details live under ["client", id] and keep their own interval (see above).
+      qc.invalidateQueries({ queryKey: ["clients"] });
     };
     es.addEventListener("tunnels", onTunnels);
     es.onerror = () => {
@@ -162,6 +161,7 @@ export default function Services() {
     if (sortKey === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else { setSortKey(k); setSortDir("asc"); }
   }
+  const ariaSort = (k: SortKey) => sortKey === k ? (sortDir === "asc" ? "ascending" : "descending") : undefined;
   const sortIcon = (k: SortKey) => sortKey === k
     ? sortDir === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} />
     : null;
@@ -324,14 +324,14 @@ export default function Services() {
         >
           Couldn't load services: {failure instanceof ApiError ? failure.message : "Unknown error"}
         </ErrorNotice>
-      ) : isLoading || (live && tunnels.isLoading) ? (
+      ) : (live ? tunnels.isLoading : isLoading) ? (
         <div className="table-wrap skel-pad">
           <SkeletonRows n={4} />
         </div>
       ) : live && (tunnelList ?? []).length === 0 ? (
         <EmptyState
           title="Nothing is live right now"
-          action={<Link to="/clients/connect"><Button variant="primary" size="sm">Connect a client</Button></Link>}
+          action={<Link className="btn btn-primary btn-sm" to="/clients/connect">Connect a client</Link>}
         >
           A service goes live when a client runs <code>burrow connect</code> for it.
         </EmptyState>
@@ -344,13 +344,13 @@ export default function Services() {
           <table className="data" aria-label="Services">
             <thead>
               <tr>
-                <th>
+                <th aria-sort={ariaSort("name")}>
                   <button type="button" className="sort-header" onClick={() => toggleSort("name")}
                     aria-label={`Sort by name (${sortKey === "name" ? sortDir : "asc"})`}>
                     Name {sortIcon("name")}
                   </button>
                 </th>
-                <th>
+                <th aria-sort={ariaSort("type")}>
                   <button type="button" className="sort-header" onClick={() => toggleSort("type")}
                     aria-label={`Sort by type (${sortKey === "type" ? sortDir : "asc"})`}>
                     Type {sortIcon("type")}
@@ -362,7 +362,7 @@ export default function Services() {
                 {live && <th>Local</th>}
                 {live && <th>Remote</th>}
                 {live && <th>Traffic</th>}
-                <th>
+                <th aria-sort={ariaSort("status")}>
                   <button type="button" className="sort-header" onClick={() => toggleSort("status")}
                     aria-label={`Sort by status (${sortKey === "status" ? sortDir : "asc"})`}>
                     Status {sortIcon("status")}
@@ -376,9 +376,9 @@ export default function Services() {
                 const serviceId = s?.id ?? t?.service_id;
                 const access = s?.access_mode ?? t?.access_mode ?? "open";
                 const holder = t ? holders.get(t.id) : undefined;
-              const target = s ?? (t && type === "http" && t.service_id
-                ? { id: t.service_id, name, type, access_mode: access }
-                : undefined);
+                const target = s ?? (t && type === "http" && t.service_id
+                  ? { id: t.service_id, name, type, access_mode: access }
+                  : undefined);
                 return (
               <tr key={key}>
                 <td className="col-name link-row">

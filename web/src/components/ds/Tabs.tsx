@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useId, useRef } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 
 export interface TabItem {
@@ -15,6 +15,7 @@ export interface TabsProps {
 
 export function Tabs({ tabs, value, onChange }: TabsProps) {
   const listRef = useRef<HTMLDivElement>(null);
+  const uid = useId();
   // Selection follows focus: the arrow keys select the neighbouring tab and
   // move the focus to it, so the next arrow key starts from there.
   const go = (i: number) => {
@@ -31,15 +32,27 @@ export function Tabs({ tabs, value, onChange }: TabsProps) {
       e.preventDefault();
       go((i - 1 + tabs.length) % tabs.length);
     }
+    if (e.key === "Home") {
+      e.preventDefault();
+      go(0);
+    }
+    if (e.key === "End") {
+      e.preventDefault();
+      go(tabs.length - 1);
+    }
   };
-  const active = tabs.find((t) => t.value === value);
+  const at = tabs.findIndex((t) => t.value === value);
+  const active = tabs[at];
   return (
     <div className="tabs">
       <div role="tablist" className="tabs-list" ref={listRef} onKeyDown={onKey}>
-        {tabs.map((t) => (
+        {tabs.map((t, i) => (
           <button
             key={t.value}
+            type="button"
             role="tab"
+            id={`${uid}-tab-${i}`}
+            aria-controls={`${uid}-panel`}
             aria-selected={t.value === value}
             tabIndex={t.value === value ? 0 : -1}
             className="tab"
@@ -49,7 +62,8 @@ export function Tabs({ tabs, value, onChange }: TabsProps) {
           </button>
         ))}
       </div>
-      <div role="tabpanel" className="tab-panel">
+      {/* One panel, named by whichever tab is selected. */}
+      <div role="tabpanel" className="tab-panel" id={`${uid}-panel`} aria-labelledby={active ? `${uid}-tab-${at}` : undefined}>
         {active?.content}
       </div>
     </div>

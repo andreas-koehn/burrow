@@ -239,4 +239,20 @@ describe("GatewayOverview", () => {
     const list = await checklist();
     expect(stepStates(list).map((s) => s[1])).toEqual(["done", "done", "to do"]);
   });
+
+  it("holds the checklist back while the cost answer is still out, then shows it", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    server.use(http.get("/api/v1/cost/summary", async () => {
+      await held;
+      return HttpResponse.json({ window: "today", total_usd: 0, tokens_in: 0, tokens_out: 0, top_consumers: [], pct_of_budget: null });
+    }));
+    withProviders([provider({ api_key_count: 1, requests_24h: 0 })]);
+    renderApp(<GatewayOverview />);
+    // Everything else is there; only the list that depends on the cost is not.
+    await screen.findByRole("table", { name: "Providers" });
+    expect(screen.queryByRole("list", { name: "Set up the AI Gateway" })).toBeNull();
+    release();
+    expect(stepStates(await checklist()).map((s) => s[1])).toEqual(["done", "done", "to do"]);
+  });
 });

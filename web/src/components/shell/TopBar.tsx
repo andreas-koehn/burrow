@@ -12,7 +12,7 @@ export function TopBar({ crumbs, collapsed, onToggle }: TopBarProps) {
   const label = collapsed ? "Expand sidebar" : "Collapse sidebar";
   return (
     <div className="topbar">
-      <button type="button" className="icon-btn" aria-pressed={collapsed} aria-label={label} title={label} onClick={onToggle}>
+      <button type="button" className="icon-btn" aria-expanded={!collapsed} aria-label={label} title={label} onClick={onToggle}>
         {collapsed ? <PanelLeftOpen size={15} aria-hidden="true" /> : <PanelLeftClose size={15} aria-hidden="true" />}
       </button>
       <nav aria-label="Breadcrumb">

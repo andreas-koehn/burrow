@@ -2,6 +2,8 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
+import { http, HttpResponse } from "msw";
+import { server } from "@/mocks/server";
 import { db, resetDb } from "@/mocks/db";
 import GeneralSettings from "@/pages/settings/GeneralSettings";
 
@@ -70,5 +72,18 @@ describe("Settings / General / Privacy — connection_logs.rollup_include_top_ip
     await waitFor(() => {
       expect(db.settings["connection_logs.rollup_include_top_ips"]).toBe("false");
     });
+  });
+
+  // Other pages read the same ["settings"] cache (the Email form, the overview's notice):
+  // a one-key map there would look like a relay with nothing configured.
+  it("does not seed the shared settings cache when the settings could not be read", async () => {
+    server.use(http.get("/api/v1/settings", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    const { qc } = renderApp(<GeneralSettings />);
+    const toggle = await screen.findByRole("checkbox", { name: /include top source ips/i });
+    await waitFor(() => expect(qc.getQueryState(["settings"])?.status).toBe("error"));
+    await userEvent.click(toggle);
+    await waitFor(() => expect(db.settings["connection_logs.rollup_include_top_ips"]).toBe("false"));
+    await waitFor(() => expect(qc.isMutating()).toBe(0));
+    expect(qc.getQueryData(["settings"])).toBeUndefined();
   });
 });

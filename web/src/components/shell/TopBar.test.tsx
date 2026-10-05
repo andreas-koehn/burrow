@@ -52,16 +52,21 @@ describe("TopBar", () => {
     expect(screen.getByRole("link", { name: "Services" })).not.toHaveAttribute("aria-current");
   });
 
-  it("has a collapse toggle that reports its state", async () => {
+  // The name says what the button does next. It is not a pressed/unpressed toggle on top
+  // of that: "Expand sidebar, pressed" would say the state twice, and backwards.
+  it("has a collapse toggle whose name is its state", async () => {
     const onToggle = mount("/services");
     const button = screen.getByRole("button", { name: "Collapse sidebar" });
-    expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(button).not.toHaveAttribute("aria-pressed");
+    expect(button).toHaveAttribute("aria-expanded", "true");
     await userEvent.click(button);
     expect(onToggle).toHaveBeenCalledTimes(1);
   });
 
   it("offers to expand when collapsed", () => {
     mount("/services", { collapsed: true });
-    expect(screen.getByRole("button", { name: "Expand sidebar" })).toHaveAttribute("aria-pressed", "true");
+    const button = screen.getByRole("button", { name: "Expand sidebar" });
+    expect(button).not.toHaveAttribute("aria-pressed");
+    expect(button).toHaveAttribute("aria-expanded", "false");
   });
 });

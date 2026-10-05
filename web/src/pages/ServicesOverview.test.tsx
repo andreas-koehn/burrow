@@ -142,7 +142,9 @@ describe("ServicesOverview", () => {
     await screen.findByRole("heading", { name: "Overview" });
     const header = document.querySelector(".page-header") as HTMLElement;
     expect(within(header).getByRole("link", { name: /connect a client/i })).toHaveAttribute("href", "/clients/connect");
-    expect(within(header).getByRole("link", { name: /new service/i })).toHaveAttribute("href", "/services");
+    // It opens the dialog its label promises, and neither link wraps a second control.
+    expect(within(header).getByRole("link", { name: /new service/i })).toHaveAttribute("href", "/services?new=1");
+    expect(header.querySelector("a button")).toBeNull();
   });
 
   it("non-admin: no admin-only request, dashes for what they cannot see, no error notice", async () => {

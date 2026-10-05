@@ -98,12 +98,9 @@ export default function ServicesOverview() {
 
   const quickActions = (
     <div className="home-quick-actions">
-      <Link to="/clients/connect">
-        <Button variant="primary" size="sm">Connect a client</Button>
-      </Link>
-      <Link to="/services">
-        <Button variant="secondary" size="sm">New service</Button>
-      </Link>
+      <Link className="btn btn-primary btn-sm" to="/clients/connect">Connect a client</Link>
+      {/* ?new=1 opens the dialog the label promises. */}
+      <Link className="btn btn-secondary btn-sm" to="/services?new=1">New service</Link>
     </div>
   );
 

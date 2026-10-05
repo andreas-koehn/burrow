@@ -1,9 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { server } from "@/mocks/server";
 import { renderApp } from "@/mocks/test-utils";
+import { db } from "@/mocks/db";
 import { Routes, Route, useLocation } from "react-router-dom";
 import Clients from "@/pages/Clients";
 
@@ -96,5 +97,59 @@ describe("Clients — Clients | Tokens tabs", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Tokens" }));
     expect(await screen.findByRole("table", { name: "Tokens" })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("ties each panel to its tab, and Home/End reach the first and last tab", async () => {
+    mount();
+    const clients = await screen.findByRole("tab", { name: "Clients" });
+    expect(screen.getByRole("tabpanel", { name: "Clients" })).toHaveAttribute("id", clients.getAttribute("aria-controls")!);
+    clients.focus();
+    await userEvent.keyboard("{End}");
+    const tokens = screen.getByRole("tab", { name: "Tokens" });
+    expect(tokens).toHaveFocus();
+    expect(tokens).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: "Tokens" })).toBeInTheDocument();
+    await userEvent.keyboard("{Home}");
+    expect(screen.getByRole("tab", { name: "Clients" })).toHaveFocus();
+    expect(screen.getByRole("tab", { name: "Clients" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("its links that look like buttons are links only: one tab stop each", async () => {
+    mount();
+    const row = (await screen.findByText("office-box-1")).closest("tr")!;
+    for (const link of [screen.getByRole("link", { name: "Connect a client" }), within(row).getByRole("link", { name: "View" })]) {
+      expect(link.querySelector("button")).toBeNull();
+      expect(link).toHaveClass("btn");
+    }
+  });
+
+  // The clients list is admin only: anyone else starts on their own tokens.
+  describe("for a non-admin", () => {
+    afterEach(() => server.events.removeAllListeners());
+
+    it("opens on the Tokens tab without asking for the clients list", async () => {
+      db.me.role = "user";
+      const asked: string[] = [];
+      server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
+      server.use(http.get("/api/v1/clients", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
+      mount();
+      expect(await screen.findByRole("tab", { name: "Tokens" })).toHaveAttribute("aria-selected", "true");
+      expect(await screen.findByRole("table", { name: "Tokens" })).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(asked).not.toContain("/api/v1/clients");
+      expect(currentLocation()).toBe("/clients");
+    });
+
+    it("can still open the Clients tab, which the URL then names", async () => {
+      db.me.role = "user";
+      server.use(http.get("/api/v1/clients", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
+      mount();
+      await userEvent.click(await screen.findByRole("tab", { name: "Clients" }));
+      expect(currentLocation()).toBe("/clients?tab=clients");
+      expect(screen.getByRole("tab", { name: "Clients" })).toHaveAttribute("aria-selected", "true");
+      expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load clients/i);
+      await userEvent.click(screen.getByRole("tab", { name: "Tokens" }));
+      expect(currentLocation()).toBe("/clients");
+    });
   });
 });

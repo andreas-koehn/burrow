@@ -132,6 +132,9 @@ describe("T15 — controls", () => {
 
 describe("T16 — back links", () => {
   it("styles the page back link inside the page header", () => {
+    // At 390 px two header actions used to overlap the title; they wrap below it now.
+    expect(css).toMatch(/\.page-header\s*\{[^}]*flex-wrap:\s*wrap/);
+    expect(css).toMatch(/\.page-header \.left\s*\{[^}]*flex:\s*1 1 200px/);
     expect(css).toMatch(/\.page-header \.page-back\s*\{[^}]*display:\s*inline-flex/);
     expect(css).toMatch(/\.page-header \.page-back:focus-visible\s*\{[^}]*outline:/);
   });

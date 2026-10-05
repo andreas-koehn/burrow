@@ -95,6 +95,18 @@ describe("CommandPalette — P6A.1: destinations", () => {
     expect(screen.getByTestId("spy-location")).toHaveTextContent("/gateway/cost");
   });
 
+  // "Services" is a page and a workspace: the page of that name comes before the
+  // pages that only sit in the workspace, so Enter opens it and not the Overview.
+  it("typing 'services' puts the Services page first and Enter opens it", async () => {
+    renderPalette();
+    await userEvent.type(screen.getByRole("searchbox"), "services");
+    const options = screen.getAllByRole("option").map((o) => o.textContent);
+    expect(options[0]).toBe("ServicesServices");
+    expect(options).toContain("OverviewServices");
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByTestId("spy-location")).toHaveTextContent(/^\/services$/);
+  });
+
   it("typing 'sett' lists the Settings pages (admin) and nothing from another workspace", async () => {
     renderPalette({ isAdmin: true });
     const input = screen.getByRole("searchbox");

@@ -25,10 +25,12 @@ export default function GeneralSettings() {
     onSuccess: (_data, next) => {
       // Update the cached settings so the toggle reflects the new value
       // without waiting for the GET refetch round-trip.
-      qc.setQueryData<SettingsMap>(["settings"], (f) => ({
+      // Nothing cached (the GET failed): leave it so, rather than a map of this one
+      // key that other readers of ["settings"] would take for the relay's settings.
+      qc.setQueryData<SettingsMap>(["settings"], (f) => f && {
         ...f,
         "connection_logs.rollup_include_top_ips": next ? "true" : "false",
-      }));
+      });
       void qc.invalidateQueries({ queryKey: ["settings"] });
     },
     onError: (e: unknown) =>

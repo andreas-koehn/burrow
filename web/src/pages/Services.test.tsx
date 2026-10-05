@@ -386,6 +386,20 @@ describe("Services page — All | Live", () => {
 
   const rowCount = () => within(screen.getByRole("table", { name: "Services" })).getAllByRole("row").length;
 
+  it("says which column the table is sorted by, and in which direction", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: "Services" });
+    const header = (name: string) => within(table).getByRole("button", { name: new RegExp(`^Sort by ${name}`) }).closest("th")!;
+    // Default: by type, ascending.
+    expect(header("type")).toHaveAttribute("aria-sort", "ascending");
+    expect(header("name")).not.toHaveAttribute("aria-sort");
+    await userEvent.click(within(table).getByRole("button", { name: /^Sort by name/ }));
+    expect(header("name")).toHaveAttribute("aria-sort", "ascending");
+    expect(header("type")).not.toHaveAttribute("aria-sort");
+    await userEvent.click(within(table).getByRole("button", { name: /^Sort by name/ }));
+    expect(header("name")).toHaveAttribute("aria-sort", "descending");
+  });
+
   it("has an All | Live filter that follows the URL", async () => {
     mount();
     const filter = await screen.findByRole("radiogroup", { name: "Show" });
@@ -572,15 +586,34 @@ describe("Services page — All | Live", () => {
     }
   });
 
-  it("polls the clients and their details like the tunnels, for when there is no event stream", async () => {
-    const { qc } = mountAt("/services?live=1");
+  it("polls the tunnels, the clients and their details every 30 s, for when there is no event stream", async () => {
+    // Time moves on by itself too, so the first load and findBy keep working.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const asked: string[] = [];
+    server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
+    try {
+      mountAt("/services?live=1");
+      const table = await screen.findByRole("table", { name: "Services" });
+      await within(table).findAllByRole("link", { name: /office-box-1/ });
+      const paths = ["/api/v1/tunnels", "/api/v1/clients", "/api/v1/clients/sess_4f7a9c0b2e81"];
+      const counts = () => paths.map((p) => asked.filter((a) => a === p).length);
+      const before = counts();
+      await act(() => vi.advanceTimersByTimeAsync(25_000));
+      expect(counts()).toEqual(before);
+      await act(() => vi.advanceTimersByTimeAsync(6_000));
+      await waitFor(() => expect(counts()).toEqual(before.map((n) => n + 1)));
+    } finally {
+      vi.useRealTimers();
+      server.events.removeAllListeners();
+    }
+  });
+
+  it("Live does not wait for the saved services: the tunnel rows show while that request is open", async () => {
+    server.use(http.get("/api/v1/services", () => new Promise<never>(() => {})));
+    mountAt("/services?live=1");
     const table = await screen.findByRole("table", { name: "Services" });
-    await within(table).findAllByRole("link", { name: /office-box-1/ });
-    const interval = (key: unknown[]) =>
-      (qc.getQueryCache().find({ queryKey: key })!.observers[0].options as { refetchInterval?: unknown }).refetchInterval;
-    expect(interval(["tunnels"])).toBe(30000);
-    expect(interval(["clients"])).toBe(30000);
-    expect(interval(["client", "sess_4f7a9c0b2e81"])).toBe(30000);
+    expect(within(table).getAllByRole("row")).toHaveLength(3); // header + the two live tunnels
+    expect(within(table).getByText("ollama")).toBeInTheDocument();
   });
 
   it("Live still shows the tunnel rows when the saved services cannot be loaded", async () => {

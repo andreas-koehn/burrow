@@ -43,6 +43,11 @@ export interface NavContext {
   hasAiGateway: boolean;
 }
 
+/** Where the user chip leads. Named, so the sidebar cannot lose it to a renamed id. */
+export const PROFILE_ENTRY: NavEntry = {
+  id: "profile", label: "Profile & password", to: "/settings/profile", icon: UserCircle,
+};
+
 /**
  * The one description of what is where. Sidebar, breadcrumb, command palette and the
  * orphan-page test all read it; new pages go here, never into the sidebar component.
@@ -94,7 +99,7 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
         { id: "api", label: "API reference", to: "/settings/api", icon: BookOpen, adminOnly: true },
       ] },
       { title: "Personal", entries: [
-        { id: "profile", label: "Profile & password", to: "/settings/profile", icon: UserCircle },
+        PROFILE_ENTRY,
         { id: "sessions", label: "Sessions", to: "/settings/sessions", icon: MonitorSmartphone },
         { id: "automation", label: "Automation tokens", to: "/settings/automation", icon: Bot },
       ] },

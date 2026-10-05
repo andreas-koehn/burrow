@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { navigationFor, workspacesFor } from "@/lib/navigation";
@@ -92,6 +92,31 @@ describe("WorkspaceSwitcher", () => {
     expect(screen.queryByRole("menu")).toBeNull();
     expect(button).toHaveFocus();
     expect(screen.getByTestId("path")).toHaveTextContent(/^\/services$/);
+  });
+
+  // jsdom has no sequential focus navigation of its own, so this pins the two halves the
+  // browser needs: focus is back on the button, and Tab keeps its default action.
+  // web/e2e/workspaces.spec.ts checks in Chrome that the focus then lands on the next control.
+  it("Tab closes the menu, puts focus back on the button and is not swallowed", async () => {
+    mount("/services");
+    const button = screen.getByRole("button", { name: "Workspace: Services" });
+    await userEvent.click(button);
+    const item = screen.getAllByRole("menuitemradio")[0];
+    expect(item).toHaveFocus();
+    const notPrevented = fireEvent.keyDown(item, { key: "Tab" });
+    expect(notPrevented).toBe(true);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(button).toHaveFocus();
+  });
+
+  it("marks the current workspace with a check, not with the hover background", async () => {
+    mount("/gateway");
+    await userEvent.click(screen.getByRole("button", { name: "Workspace: AI Gateway" }));
+    const [services, gateway] = screen.getAllByRole("menuitemradio");
+    expect(gateway.querySelector(".menu-check svg")).not.toBeNull();
+    expect(services.querySelector(".menu-check svg")).toBeNull();
+    expect(gateway).not.toHaveClass("is-focus");
+    expect(gateway).toHaveTextContent(/^AI Gateway\/ai\/…$/);
   });
 
   it("a click outside closes the menu", async () => {

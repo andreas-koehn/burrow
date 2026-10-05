@@ -701,6 +701,12 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
   font-size: 11px;
   color: var(--muted-foreground);
 }
+.menu-item .menu-check {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 14px;
+  color: var(--foreground);
+}
 .menu-item:hover, .menu-item.is-focus { background: var(--hover); }
 .menu-item:focus-visible { outline: 2px solid var(--ring); outline-offset: -1px; }
 .menu-item.danger { color: var(--destructive); }
@@ -1907,8 +1913,10 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   justify-content: space-between;
   gap: var(--space-lg);
   margin-block-end: var(--space-lg);
+  /* On a narrow screen the actions go below the title instead of squeezing it. */
+  flex-wrap: wrap;
 }
-.page-header .left { flex: 1; min-width: 0; }
+.page-header .left { flex: 1 1 200px; min-width: 0; }
 .page-header .left h1 {
   margin: 0;
   font-size: 20px;
