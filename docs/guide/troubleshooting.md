@@ -193,13 +193,13 @@ or
 The **default** header is `Authorization` with a `Bearer ` prefix:
 
 ```sh
-curl -H "Authorization: Bearer buk_YOUR_API_KEY" https://burrow.insingo.com/svc/abc123/
+curl -H "Authorization: Bearer buk_YOUR_API_KEY" https://burrow.insingo.com/svc/k7p2qx/
 ```
 
 If a **custom header** is configured (e.g. `X-Api-Key`), send the raw key value — no `Bearer ` prefix:
 
 ```sh
-curl -H "X-Api-Key: bur_YOUR_TOKEN_HERE" https://burrow.insingo.com/svc/abc123/
+curl -H "X-Api-Key: bur_YOUR_TOKEN_HERE" https://burrow.insingo.com/svc/k7p2qx/
 ```
 
 ::: tip
@@ -266,13 +266,13 @@ dashboard TLS connection and cannot perform a per-service handshake.
 wildcard DNS and a wildcard certificate. Otherwise move the service to another
 access mode.
 
-See [Access control & security](/guide/access-control) for the full mTLS setup guide.
+See [Access control & security](/guide/access-control) for the mTLS constraints.
 
 ---
 
 ## Old `/svc/` URL returns 404 after a slug change
 
-**Symptom:** A service worked at `https://burrow.insingo.com/svc/abc123/` and now
+**Symptom:** A service worked at `https://burrow.insingo.com/svc/k7p2qx/` and now
 returns `404`.
 
 **Cause:** The slug was changed ("Edit URL" on the service's page). The old URL

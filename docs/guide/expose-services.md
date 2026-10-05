@@ -190,7 +190,7 @@ curl -X POST https://burrow.insingo.com/api/v1/services/<id>/api-keys \
 **Default header — `Authorization: Bearer <key>`**
 
 ```sh
-curl https://burrow.insingo.com/svc/abc123/health \
+curl https://burrow.insingo.com/svc/k7p2qx/health \
   -H "Authorization: Bearer buk_YOUR_API_KEY"
 ```
 
@@ -200,7 +200,7 @@ If the dashboard access-policy is configured with a custom header name (e.g.
 `X-Api-Key`), callers send the key value directly:
 
 ```sh
-curl https://burrow.insingo.com/svc/abc123/health \
+curl https://burrow.insingo.com/svc/k7p2qx/health \
   -H "X-Api-Key: buk_YOUR_API_KEY"
 ```
 

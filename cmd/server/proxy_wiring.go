@@ -71,7 +71,7 @@ func (a serviceResolverAdapter) Resolve(ctx context.Context, userID, name, typ s
 	for i := 0; i < subdomainRetries; i++ {
 		sub, err := auth.GenerateSlug()
 		if err != nil {
-			return "", "", fmt.Errorf("resolve service: generate subdomain: %w", err)
+			return "", "", fmt.Errorf("resolve service: generate slug: %w", err)
 		}
 		serr := a.db.SetServiceSubdomain(ctx, svc.ID, sub)
 		if serr == nil {

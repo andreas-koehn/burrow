@@ -40,7 +40,7 @@ One container. One domain. Automatic HTTPS.
 ```
 
 ::: info Path URLs and mTLS
-The only feature not available on `/svc/<slug>/` URLs is mTLS. Mutual TLS
+The only features not available on `/svc/<slug>/` URLs are mTLS and custom domains. Mutual TLS
 requires a dedicated TLS handshake on the opt-in host-routed ingress
 (`BURROW_HTTP_PROXY_LISTEN`).
 :::

@@ -20,7 +20,7 @@ features:
   - title: Automatic HTTPS — built-in Let's Encrypt
     details: Set BURROW_ACME_DOMAIN and BURROW_ACME_EMAIL. burrowd obtains and renews certificates via ACME before the first listener starts. One container, ports 80 and 443, done.
   - title: HTTP tunnels and TCP tunnels with access control
-    details: HTTP services are served at a path on your relay's domain (https://burrow.insingo.com/svc/slug/), so one A record and one certificate are enough. TCP ports are forwarded directly. Access modes — open, api_key, burrow_login, or mTLS — are set per service.
+    details: HTTP services are served at a path on your relay's domain (https://burrow.insingo.com/svc/<slug>/), so one A record and one certificate are enough. TCP ports are forwarded directly. Access modes — open, api_key, burrow_login, or mTLS — are set per service.
   - title: Apache-2.0 — no open core
     details: Every feature is in the repository. Nothing is held back for a paid tier. Build from source or pull the pre-built image.
 ---

@@ -66,7 +66,7 @@ exercised. Switch back to the production CA (the default) when going live.
 `BURROW_HTTP_PROXY_LISTEN` is empty by default. Set it (for example to `:8443`)
 to start the opt-in host-routed ingress, which serves services at
 `https://<slug>.<domain>/` and needs wildcard DNS and a wildcard certificate.
-mTLS access mode and custom domains only work with this ingress.
+mTLS access mode and custom domains only work with this ingress. With `burrow_login`, sign-in returns to the service only on `/svc/<slug>/`; over this ingress the visitor lands on the dashboard root.
 
 ::: tip Stable TCP ports
 Set `remote: 9001` (or any value in the `PORT_MIN`–`PORT_MAX` range) in

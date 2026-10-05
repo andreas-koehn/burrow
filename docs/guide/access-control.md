@@ -33,8 +33,10 @@ client that can send a custom header.
 ### `burrow_login`
 
 The relay checks that the caller has an active Burrow session cookie. Requests
-without a valid session get a `401`. This is session-based authentication
-against the same user directory that drives the dashboard.
+without a valid session are redirected to the `/__burrow/login` gate. This is
+session-based authentication against the same user directory that drives the
+dashboard. After sign-in the visitor returns to the service on `/svc/<slug>/`
+only; over the host-routed ingress the visitor lands on the dashboard root.
 
 **When to use:** internal tools that your team members access via a browser
 after logging in to `https://burrow.insingo.com`.
@@ -63,8 +65,7 @@ client certificate. The dashboard no longer offers mTLS; a service still in
 ### Dashboard
 
 Open the service detail page, click **Configure**, and select the mode from the
-**Access** dropdown. For `mtls`, you will also be prompted to paste or upload
-the PEM-encoded CA that signed your client certificates.
+**Access** dropdown.
 
 ### REST API
 
@@ -113,7 +114,7 @@ The response body includes the raw key value. Copy it — it is shown only once.
 By default, callers send the key in the standard `Authorization` header:
 
 ```sh
-curl https://abc123.burrow.insingo.com/api/data \
+curl https://burrow.insingo.com/svc/k7p2qx/api/data \
   -H "Authorization: Bearer buk_YOUR_API_KEY"
 ```
 
@@ -126,7 +127,7 @@ settings. When a custom header is set, callers send the **raw key value** with
 no prefix:
 
 ```sh
-curl https://abc123.burrow.insingo.com/api/data \
+curl https://burrow.insingo.com/svc/k7p2qx/api/data \
   -H "X-Api-Key: buk_YOUR_API_KEY"
 ```
 

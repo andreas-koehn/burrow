@@ -140,7 +140,7 @@ self-signed certificates instead.
                                      └──────────────────────────────┘
                                               ▲          ▲
                                      browser / curl   SSH client
-                                     GET /svc/abc123/ :9001
+                                     GET /svc/k7p2qx/ :9001
 ```
 
 Inbound traffic from the internet arrives at the relay. For HTTP tunnels the
@@ -158,7 +158,7 @@ splices the raw connection.
 
 - Create and manage services (tunnels)
 - Mint and revoke client tokens and API keys
-- Configure access policies and mTLS certificates
+- Configure access policies
 - Manage users and roles
 - View connection logs, audit logs, and AI gateway usage
 - Configure SMTP, retention, and other server settings

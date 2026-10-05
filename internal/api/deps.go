@@ -274,9 +274,9 @@ type Deps struct {
 	// handshake of a dedicated host).
 	HostRouting bool
 	// TunnelProxy, when non-nil, is the host-routing proxy handler. The router
-	// mounts /t/{id} and /t/{id}/* on it (via TunnelPathHandler) for
+	// mounts /svc/{slug} and /svc/{slug}/* on it (via ServicePathHandler) for
 	// single-origin path routing. AuthDomain (above) is the base domain used
-	// to synthesize the upstream host "<id>.<AuthDomain>".
+	// to synthesize the upstream host "<slug>.<AuthDomain>".
 	TunnelProxy http.Handler
 	// Gate, when non-nil, serves /__burrow/* (the burrow_login form) on this
 	// origin. Path-routed services redirect visitors here.
