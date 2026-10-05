@@ -533,8 +533,15 @@ export const handlers = [
   http.get("/api/v1/events", ({ request }) =>
     gate(request) ?? new HttpResponse("retry: 10000\n\n", { status: 200, headers: { "Content-Type": "text/event-stream" } })),
 
-  // ---- tunnels (reference) ----
-  http.get("/api/v1/tunnels", ({ request }) => gate(request) ?? json([])),
+  // ---- tunnels: every service a connected client holds, as GET /clients/:id lists them ----
+  http.get("/api/v1/tunnels", ({ request }) => gate(request) ?? json(db.clients.flatMap((c) => c.services.map((s) => {
+    const svc = s.type === "http" ? db.services.find((x) => x.name === s.name && x.type === "http") : undefined;
+    return {
+      id: s.id, name: s.name, type: s.type, remote_port: s.remote_port, local_addr: s.local_addr,
+      bytes_in: s.bytes_in, bytes_out: s.bytes_out, connected: true, access_mode: s.access_mode,
+      ...(svc ? { service_id: svc.id, url: svc.url } : {}),
+    };
+  })))),
 
   // ---- AI providers ----
   // Identity comes from db.aiProviders; the mock joins seeded aiMeta +

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { destinationsFor, TEMPORARY_ENTRIES } from "./destinations";
+import { destinationsFor } from "./destinations";
 import { allEntries } from "./navigation";
 
 const admin = { isAdmin: true, hasAiGateway: true };
@@ -8,7 +8,7 @@ const byGroup = (ctx: typeof admin, group: string) => destinationsFor(ctx).filte
 
 describe("destinationsFor — the navigation description, flattened", () => {
   it("lists every entry of the three navigations under its workspace label", () => {
-    expect(byGroup(admin, "Services")).toEqual(["Overview", "Services", "Clients", "Traffic", "Tunnels", "Tokens"]);
+    expect(byGroup(admin, "Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
     expect(byGroup(admin, "AI Gateway")).toEqual(["Overview", "Providers", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
     expect(byGroup(admin, "Settings")).toEqual([
       "General", "Email", "Retention", "Database", "Backups", "Users", "Roles", "Audit log",
@@ -17,11 +17,8 @@ describe("destinationsFor — the navigation description, flattened", () => {
     expect(new Set(destinationsFor(admin).map((d) => d.group))).toEqual(new Set(["Services", "AI Gateway", "Settings"]));
   });
 
-  it("adds nothing but the temporary entries to the navigation description", () => {
-    const fromNav = allEntries(admin).map((x) => x.entry.to);
-    const extra = destinationsFor(admin).map((d) => d.path).filter((p) => !fromNav.includes(p));
-    expect(extra).toEqual(TEMPORARY_ENTRIES.map((e) => e.to));
-    expect(extra).toEqual(["/tunnels", "/tokens"]);
+  it("adds nothing to the navigation description", () => {
+    expect(destinationsFor(admin).map((d) => d.path)).toEqual(allEntries(admin).map((x) => x.entry.to));
   });
 
   it("all paths are unique (the palette keys its rows by path)", () => {
@@ -42,7 +39,7 @@ describe("destinationsFor — the navigation description, flattened", () => {
   });
 
   it("a non-admin without AI access sees Services and the Personal settings only", () => {
-    expect(byGroup(plain, "Services")).toEqual(["Overview", "Services", "Clients", "Traffic", "Tunnels", "Tokens"]);
+    expect(byGroup(plain, "Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
     expect(byGroup(plain, "AI Gateway")).toEqual([]);
     expect(byGroup(plain, "Settings")).toEqual(["Profile & password", "Sessions", "Automation tokens"]);
   });

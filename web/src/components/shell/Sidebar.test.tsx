@@ -4,7 +4,6 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { FOOTER_ENTRIES, navigationFor, workspacesFor } from "@/lib/navigation";
 import { workspaceFor } from "@/lib/workspace";
-import { TEMPORARY_ENTRIES } from "@/lib/destinations";
 import { Sidebar, type SidebarProps } from "./Sidebar";
 
 const admin = { isAdmin: true, hasAiGateway: true };
@@ -24,7 +23,6 @@ function mount(path: string, ctx = admin, over: Partial<SidebarProps> = {}) {
     onSearch: vi.fn(),
     onToggleTheme: vi.fn(),
     onLogout: vi.fn(),
-    extra: workspace === "services" ? TEMPORARY_ENTRIES : undefined,
     ...over,
   };
   const view = render(<MemoryRouter initialEntries={[path]}><Sidebar {...props} /></MemoryRouter>);
@@ -43,8 +41,7 @@ describe("Sidebar", () => {
 
   it("Services workspace: its entries, with the parent current on a detail page", () => {
     mount("/services/abc");
-    // Tunnels and Tokens are temporary until W04.
-    expect(entries("Services")).toEqual(["Overview", "Services", "Clients", "Tunnels", "Tokens", "Traffic"]);
+    expect(entries("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
     const nav = screen.getByRole("navigation", { name: "Services" });
     const services = within(nav).getByRole("link", { name: "Services" });
     expect(services).toHaveAttribute("aria-current", "page");
@@ -53,12 +50,6 @@ describe("Sidebar", () => {
     expect(overview).not.toHaveAttribute("aria-current");
     expect(overview).not.toHaveClass("is-active");
     expect(within(nav).getByText("Connect")).toHaveClass("nav-group-title");
-  });
-
-  it("a temporary entry is current on its own page", () => {
-    mount("/tunnels");
-    expect(screen.getByRole("link", { name: "Tunnels" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("link", { name: "Tunnels" })).toHaveAttribute("href", "/tunnels");
   });
 
   it("AI Gateway workspace: its entries, Providers current on a provider page", () => {
@@ -132,7 +123,7 @@ describe("Sidebar", () => {
   it("collapsed: icons only, every control keeps its name", () => {
     mount("/services", admin, { collapsed: true, counts: { services: 2 } });
     expect(document.querySelector(".sidebar")).toHaveClass("is-collapsed");
-    expect(entries("Services")).toEqual(["Overview", "Services, 2", "Clients", "Tunnels", "Tokens", "Traffic"]);
+    expect(entries("Services")).toEqual(["Overview", "Services, 2", "Clients", "Traffic"]);
     expect(document.querySelector(".nav-label")).toBeNull();
     expect(document.querySelector(".nav-group-title")).toBeNull();
     expect(document.querySelector(".nav-count")).toBeNull();

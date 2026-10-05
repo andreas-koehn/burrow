@@ -50,7 +50,7 @@ export default function ClientDetail() {
             <thead><tr><th>Name</th><th>Type</th><th>Remote</th><th>Local</th><th>Traffic</th><th>Access</th></tr></thead>
             <tbody>
               {data.services.map((s) => {
-                // Tunnels without a stored mode are raw passthrough, same as Tunnels.tsx.
+                // Tunnels without a stored mode are raw passthrough, same as the Services list.
                 const mode: AccessMode = ACCESS_LABEL[s.access_mode] ? s.access_mode : "open";
                 return (
                 <tr key={s.id}>

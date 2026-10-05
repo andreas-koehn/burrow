@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { screen, within, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { act, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
@@ -12,8 +12,17 @@ function PathProbe() {
   return <div data-testid="path">{useLocation().pathname}</div>;
 }
 
+function LocationProbe() {
+  const { pathname, search } = useLocation();
+  return <div data-testid="location">{pathname + search}</div>;
+}
+const currentLocation = () => screen.getByTestId("location").textContent ?? "";
+
+function mountAt(route: string) {
+  return renderApp(<><Services /><LocationProbe /></>, route);
+}
 function mount() {
-  return renderApp(<Services />, "/services");
+  return mountAt("/services");
 }
 
 describe("Services page", () => {
@@ -138,32 +147,25 @@ describe("Services page", () => {
   });
 
   // P3A.2 — Services explainer
-  it("shows a durable-config explainer with a link to /tunnels (role=note, NOT alert)", async () => {
+  it("explains saved configuration against Live (role=note, NOT alert)", async () => {
     mount();
-    // explainer is always rendered — wait for it after mount
-    const explainer = await screen.findByText(/durable saved config/i);
-    expect(explainer).toBeInTheDocument();
-    // must contain a link to /tunnels
-    const wrapper = explainer.closest("[role='note']") ?? explainer.parentElement!;
-    const link = wrapper.querySelector("a[href='/tunnels']");
-    expect(link).not.toBeNull();
-    // must NOT be a role=alert (that role is reserved for the error notice)
-    expect(screen.queryByRole("alert", { name: /durable saved config/i })).toBeNull();
+    const note = await screen.findByRole("note");
+    expect(note).toHaveTextContent("Services are the saved configuration. Switch to Live to see what is connected right now.");
+    expect(note.querySelector("a")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("connected service status badge links to /tunnels (P3B.2)", async () => {
+  it("connected service status badge links to the Live filter (P3B.2)", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /services/i });
-    // "web" service is connected — its badge must be wrapped in a link to /tunnels
     const web = within(table).getByText("web").closest("tr")!;
     const connectedLink = within(web).getByRole("link", { name: /view live tunnel for web/i });
-    expect(connectedLink).toHaveAttribute("href", "/tunnels");
+    expect(connectedLink).toHaveAttribute("href", "/services?live=1");
   });
 
-  it("idle service status badge is NOT wrapped in a link to /tunnels (P3B.2)", async () => {
+  it("idle service status badge is NOT wrapped in a link (P3B.2)", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /services/i });
-    // "grafana" service is idle — its status badge must NOT be a link to /tunnels
     const gf = within(table).getByText("grafana").closest("tr")!;
     expect(within(gf).queryByRole("link", { name: /view live tunnel for grafana/i })).toBeNull();
     // The idle badge itself must still be present
@@ -355,5 +357,223 @@ describe("Services page", () => {
     await userEvent.clear(slug);
     await userEvent.type(slug, "-bad");
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+  });
+});
+
+// A fake event stream: jsdom has none. Installed per test, so the other suites keep running without one.
+class FakeES {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSED = 2;
+  static last: FakeES | undefined;
+  readyState: number = FakeES.OPEN;
+  onerror: ((e: unknown) => void) | null = null;
+  listeners: Record<string, ((e: unknown) => void)[]> = {};
+  constructor() { FakeES.last = this; }
+  addEventListener(t: string, fn: (e: unknown) => void) { (this.listeners[t] ||= []).push(fn); }
+  removeEventListener(t: string, fn: (e: unknown) => void) {
+    this.listeners[t] = (this.listeners[t] || []).filter((f) => f !== fn);
+  }
+  close() { this.readyState = FakeES.CLOSED; }
+  emit(t: string) { (this.listeners[t] || []).forEach((fn) => fn({})); }
+}
+
+describe("Services page — All | Live", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    FakeES.last = undefined;
+  });
+
+  const rowCount = () => within(screen.getByRole("table", { name: "Services" })).getAllByRole("row").length;
+
+  it("has an All | Live filter that follows the URL", async () => {
+    mount();
+    const filter = await screen.findByRole("radiogroup", { name: "Show" });
+    expect(within(filter).getByRole("radio", { name: "All" })).toBeChecked();
+    await screen.findByRole("table", { name: "Services" });
+    const all = rowCount();
+    await userEvent.click(within(filter).getByRole("radio", { name: "Live" }));
+    await waitFor(() => expect(within(screen.getByRole("table", { name: "Services" })).getByRole("columnheader", { name: "Client" })).toBeInTheDocument());
+    expect(rowCount()).toBeLessThan(all); // the fixtures contain an idle service
+    // the choice is in the URL, so a reload or a shared link keeps it
+    expect(currentLocation()).toMatch(/[?&]live=1/);
+    await userEvent.click(within(filter).getByRole("radio", { name: "All" }));
+    expect(currentLocation()).toBe("/services");
+    expect(rowCount()).toBe(all);
+  });
+
+  it("moves between the two choices with the arrow keys", async () => {
+    mount();
+    const all = await screen.findByRole("radio", { name: "All" });
+    all.focus();
+    await userEvent.keyboard("{ArrowRight}");
+    const live = screen.getByRole("radio", { name: "Live" });
+    expect(live).toBeChecked();
+    expect(live).toHaveFocus();
+    expect(live).toHaveAttribute("tabindex", "0");
+    expect(all).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("opens on Live when the URL says so and shows who holds each connection", async () => {
+    mountAt("/services?live=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    expect(screen.getByRole("radio", { name: "Live" })).toBeChecked();
+    expect(within(table).getByRole("columnheader", { name: "Client" })).toBeInTheDocument();
+    const holders = await within(table).findAllByRole("link", { name: /office-box-1/ });
+    expect(holders).toHaveLength(2);
+    expect(holders[0]).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
+    expect(within(table).queryByText("idle")).toBeNull();
+  });
+
+  it("has no Client column outside Live", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: "Services" });
+    for (const name of ["Client", "Local", "Remote", "Traffic"]) {
+      expect(within(table).queryByRole("columnheader", { name })).toBeNull();
+    }
+  });
+
+  it("shows a dash where the client is not known (the clients list is admin only)", async () => {
+    server.use(http.get("/api/v1/clients", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
+    mountAt("/services?live=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    expect(within(table).getAllByRole("row")).toHaveLength(3); // header + the two live tunnels
+    expect(within(table).queryByRole("link", { name: /office-box-1/ })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("joins a live http tunnel to its service: name, URL, access and Configure", async () => {
+    mountAt("/services?live=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    const row = within(table).getByRole("link", { name: "ollama" }).closest("tr")!;
+    expect(within(table).getByRole("link", { name: "ollama" })).toHaveAttribute("href", "/services/svc_ai001");
+    expect(within(row).getByText("/svc/ai4m2q/")).toBeInTheDocument();
+    expect(within(row).getByText("API key")).toBeInTheDocument();
+    expect(within(row).getByText("127.0.0.1:11434")).toBeInTheDocument();
+    expect(within(row).queryByText(":0")).toBeNull(); // an http tunnel has no remote port
+    expect(within(row).getByText("connected")).toBeInTheDocument();
+    // Configure from a live row opens the access dialog of the durable service.
+    await userEvent.click(within(row).getByRole("button", { name: /configure/i }));
+    expect(await screen.findByRole("dialog", { name: "Access · ollama" })).toBeInTheDocument();
+    expect(await screen.findByRole("radiogroup", { name: /access mode/i })).toBeInTheDocument();
+  });
+
+  it("gives a tcp tunnel without a service row its own line, with the relay's host:port to copy", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    mountAt("/services?live=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    const row = within(table).getByText("web-staging").closest("tr")!;
+    expect(within(row).queryByRole("link", { name: "web-staging" })).toBeNull();
+    expect(within(row).getByText("tcp")).toBeInTheDocument();
+    expect(within(row).getByText(":9000")).toBeInTheDocument();
+    expect(within(row).getByText("127.0.0.1:3000")).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /copy url/i })).toBeNull();
+    expect(within(row).queryByRole("button", { name: /configure/i })).toBeNull();
+    await userEvent.click(await within(row).findByRole("button", { name: "Copy endpoint relay.example.com:9000" }));
+    expect(writeText).toHaveBeenCalledWith("relay.example.com:9000");
+  });
+
+  it("shows traffic in one cell, in and out", async () => {
+    mountAt("/services?live=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    expect(within(table).getByRole("columnheader", { name: "Traffic" })).toBeInTheDocument();
+    expect(within(table).queryByRole("columnheader", { name: /^in$/i })).toBeNull();
+    const row = within(table).getByText("web-staging").closest("tr")!;
+    expect(within(row).getByTitle("In: 2048 bytes")).toBeInTheDocument();
+    expect(within(row).getByTitle("Out: 1024 bytes")).toBeInTheDocument();
+  });
+
+  it("keeps the text filter when switching between All and Live", async () => {
+    mount();
+    await screen.findByRole("table", { name: "Services" });
+    const box = screen.getByRole("searchbox", { name: "Filter services" });
+    await userEvent.type(box, "ollama");
+    expect(rowCount()).toBe(2); // header + ollama
+    await userEvent.click(screen.getByRole("radio", { name: "Live" }));
+    await waitFor(() => expect(within(screen.getByRole("table", { name: "Services" })).getByRole("columnheader", { name: "Client" })).toBeInTheDocument());
+    expect(screen.getByRole("searchbox", { name: "Filter services" })).toHaveValue("ollama");
+    expect(rowCount()).toBe(2); // header + the ollama tunnel
+    await userEvent.click(screen.getByRole("radio", { name: "All" }));
+    expect(screen.getByRole("searchbox", { name: "Filter services" })).toHaveValue("ollama");
+    expect(rowCount()).toBe(2);
+  });
+
+  it("filters Live by local address and sorts it by name", async () => {
+    mountAt("/services?live=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    const names = () => within(table).getAllByRole("row").slice(1).map((r) => r.querySelector("td")!.textContent);
+    expect(names()).toEqual(["ollama", "web-staging"]); // type asc: http before tcp
+    await userEvent.click(within(table).getByRole("button", { name: /sort by name/i }));
+    await userEvent.click(within(table).getByRole("button", { name: /sort by name/i }));
+    expect(names()).toEqual(["web-staging", "ollama"]);
+    await userEvent.type(screen.getByRole("searchbox", { name: "Filter services" }), "127.0.0.1:3000");
+    expect(names()).toEqual(["web-staging"]);
+  });
+
+  it("says so when nothing is live", async () => {
+    server.use(http.get("/api/v1/tunnels", () => HttpResponse.json([])));
+    mountAt("/services?live=1");
+    expect(await screen.findByText("Nothing is live right now")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Connect a client" })).toHaveAttribute("href", "/clients/connect");
+    expect(screen.queryByRole("table")).toBeNull();
+    // The way back to the saved services stays on the page.
+    await userEvent.click(screen.getByRole("radio", { name: "All" }));
+    expect(await screen.findByRole("table", { name: "Services" })).toBeInTheDocument();
+  });
+
+  it("shows an error notice when the live tunnels cannot be loaded", async () => {
+    server.use(http.get("/api/v1/tunnels", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    mountAt("/services?live=1");
+    expect(await screen.findByRole("alert")).toHaveTextContent(/boom/);
+  });
+
+  it("keeps the Live filter when ?new=1 opens the dialog", async () => {
+    mountAt("/services?live=1&new=1");
+    expect(await screen.findByRole("dialog", { name: "New service" })).toBeInTheDocument();
+    expect(currentLocation()).toBe("/services?live=1");
+  });
+
+  it("does not ask for tunnels or clients outside Live", async () => {
+    const asked: string[] = [];
+    server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
+    try {
+      mount();
+      await screen.findByRole("table", { name: "Services" });
+      expect(asked).toContain("/api/v1/services");
+      expect(asked.filter((p) => /\/(tunnels|clients)/.test(p))).toEqual([]);
+    } finally {
+      server.events.removeAllListeners();
+    }
+  });
+
+  it("refetches the live tunnels on an event from the stream", async () => {
+    vi.stubGlobal("EventSource", FakeES);
+    let calls = 0;
+    server.use(http.get("/api/v1/tunnels", () => { calls++; return HttpResponse.json([]); }));
+    mountAt("/services?live=1");
+    await screen.findByText("Nothing is live right now");
+    const before = calls;
+    act(() => FakeES.last!.emit("tunnels"));
+    await waitFor(() => expect(calls).toBeGreaterThan(before));
+  });
+
+  it("asks for /me again when the stream closes, and not while it is reconnecting", async () => {
+    vi.stubGlobal("EventSource", FakeES);
+    const { qc } = mountAt("/services?live=1");
+    await screen.findByRole("table", { name: "Services" });
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    const es = FakeES.last!;
+    act(() => { es.readyState = FakeES.CONNECTING; es.onerror?.({}); });
+    expect(invalidate).not.toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["me"] }));
+    act(() => { es.readyState = FakeES.CLOSED; es.onerror?.({}); });
+    expect(invalidate).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["me"] }));
+  });
+
+  it("opens no event stream outside Live", async () => {
+    vi.stubGlobal("EventSource", FakeES);
+    mount();
+    await screen.findByRole("table", { name: "Services" });
+    expect(FakeES.last).toBeUndefined();
   });
 });

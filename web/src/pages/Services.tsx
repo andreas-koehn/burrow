@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowDown, ArrowUp, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Badge, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, Select, SkeletonRows } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
-import type { Service, AccessMode } from "@/lib/contract";
+import { formatBytes } from "@/lib/format";
+import type { Service, AccessMode, ClientDetail, ClientView } from "@/lib/contract";
 import { ServiceUrl } from "@/components/ServiceUrl";
 import { SlugField, slugError } from "@/components/SlugField";
 import { AccessModePanel, type AccessModePanelHandle } from "@/components/AccessModePanel";
@@ -24,20 +25,154 @@ const ACCESS_MODE_OPTIONS = [
   { value: "burrow_login", label: "Burrow login" },
 ];
 
+interface ConnectInfo { server: string }
+
+/** One live tunnel: what a client is holding open right now. */
+interface Tunnel {
+  id: string; name: string; type: string; remote_port: number;
+  local_addr: string; bytes_in: number; bytes_out: number; connected: boolean;
+  url?: string; access_mode?: AccessMode;
+  // The durable service's id (http tunnels only); a tcp tunnel has no service row to join.
+  service_id?: string;
+}
+
+/** A table row: a saved service (All), or a live tunnel joined to its service (Live). */
+interface Row {
+  key: string;
+  name: string;
+  type: string;
+  connected: boolean;
+  haystack: string;
+  service?: Service;
+  tunnel?: Tunnel;
+}
+
+const SHOW = [{ value: "all", label: "All" }, { value: "live", label: "Live" }] as const;
+
+function ShowFilter({ live, onChange }: { live: boolean; onChange: (live: boolean) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const current = live ? "live" : "all";
+  return (
+    <div
+      ref={ref}
+      role="radiogroup"
+      aria-label="Show"
+      className="segmented"
+      onKeyDown={(e) => {
+        if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+        e.preventDefault();
+        // Two options: any arrow key selects the other one and takes the focus along.
+        onChange(!live);
+        ref.current?.querySelector<HTMLElement>('[aria-checked="false"]')?.focus();
+      }}
+    >
+      {SHOW.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={o.value === current}
+          tabIndex={o.value === current ? 0 : -1}
+          onClick={() => onChange(o.value === "live")}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function Services() {
   const qc = useQueryClient();
   const nav = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  // All | Live lives in the URL, so a reload or a shared link keeps the choice.
+  const live = searchParams.get("live") === "1";
+  const setLive = (on: boolean) => setSearchParams((prev) => {
+    const next = new URLSearchParams(prev);
+    if (on) next.set("live", "1"); else next.delete("live");
+    return next;
+  }, { replace: true });
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["services"],
     queryFn: () => apiFetch<Service[]>("/services"),
     retry: false,
   });
+  // Live only. SSE is primary; poll every 30 s as a fallback when SSE is unavailable.
+  const tunnels = useQuery({
+    queryKey: ["tunnels"],
+    queryFn: () => apiFetch<Tunnel[]>("/tunnels"),
+    refetchInterval: 30000,
+    retry: false,
+    enabled: live,
+  });
+  // The relay's host, so a tcp row can copy a real host:port. A 404 is tolerated:
+  // the dashboard's own hostname stands in.
+  const connectInfo = useQuery({
+    queryKey: ["connect-info"],
+    queryFn: () => apiFetch<ConnectInfo>("/clients/connect-info"),
+    retry: false,
+    staleTime: 5 * 60_000,
+    enabled: live,
+  });
+  const relayHost = (() => {
+    const winHost = typeof window !== "undefined" ? window.location.hostname : "";
+    const s = connectInfo.data?.server ?? "";
+    // ":7000" (port only, relay bound to all interfaces) carries no host.
+    const i = s.lastIndexOf(":");
+    return i <= 0 ? winHost : s.slice(0, i);
+  })();
+  // Who holds each connection. A tunnel does not name its client; a client's detail
+  // lists its tunnels by id. Both endpoints are admin only: everyone else sees "—".
+  const clients = useQuery({
+    queryKey: ["clients"],
+    queryFn: () => apiFetch<ClientView[]>("/clients"),
+    retry: false,
+    enabled: live,
+  });
+  const clientDetails = useQueries({
+    queries: (Array.isArray(clients.data) ? clients.data : []).map((c) => ({
+      queryKey: ["client", c.session_id],
+      queryFn: () => apiFetch<ClientDetail>(`/clients/${c.session_id}`),
+      retry: false,
+      enabled: live,
+    })),
+  });
+  const holders = new Map<string, { sessionId: string; name: string }>();
+  for (const d of clientDetails) {
+    for (const s of d.data?.services ?? []) holders.set(s.id, { sessionId: d.data!.session_id, name: d.data!.token_name });
+  }
+
+  useEffect(() => {
+    // EventSource requires same-origin (the Go server serves this SPA); jsdom has none.
+    if (!live || typeof EventSource === "undefined") return;
+    const es = new EventSource("/api/v1/events");
+    const onTunnels = () => {
+      qc.invalidateQueries({ queryKey: ["tunnels"] });
+      qc.invalidateQueries({ queryKey: ["clients"] });
+      qc.invalidateQueries({ queryKey: ["client"] });
+    };
+    es.addEventListener("tunnels", onTunnels);
+    es.onerror = () => {
+      // CONNECTING means the browser is retrying by itself. CLOSED may mean the session
+      // expired: asking for /me again lets RequireAuth send the visitor to /login.
+      if (es.readyState === EventSource.CLOSED) {
+        es.close();
+        qc.invalidateQueries({ queryKey: ["me"] });
+      }
+    };
+    return () => {
+      es.removeEventListener("tunnels", onTunnels);
+      es.onerror = null;
+      es.close();
+    };
+  }, [qc, live]);
+
   const [configure, setConfigure] = useState<Service | null>(null);
   const panelRef = useRef<AccessModePanelHandle>(null);
 
-  // P2-2 — filter + sort for the Services table. Default sort: type asc,
-  // name asc, matching Tunnels for muscle-memory parity.
+  // P2-2 — filter + sort for the Services table, in both All and Live.
+  // Default sort: type asc, name asc.
   const [q, setQ] = useState("");
   type SortKey = "name" | "type" | "status";
   const [sortKey, setSortKey] = useState<SortKey>("type");
@@ -49,26 +184,32 @@ export default function Services() {
   const sortIcon = (k: SortKey) => sortKey === k
     ? sortDir === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} />
     : null;
+  const tunnelList = tunnels.data;
   const filtered = useMemo(() => {
-    const list = data ?? [];
-    const f = q
-      ? list.filter((s) =>
-          `${s.name} ${s.type} ${s.slug ?? ""} ${s.url ?? ""}`.toLowerCase().includes(q.toLowerCase()))
-      : list;
+    const services = data ?? [];
+    const byId = new Map(services.map((s) => [s.id, s]));
+    const rows: Row[] = live
+      ? (tunnelList ?? []).map((t) => {
+          const s = t.service_id ? byId.get(t.service_id) : undefined;
+          return {
+            key: t.id, name: s?.name || t.name || s?.id || "", type: t.type, connected: t.connected, service: s, tunnel: t,
+            haystack: `${t.name} ${s?.name ?? ""} ${t.type} ${t.local_addr} ${s?.slug ?? ""} ${s?.url || t.url || ""}`,
+          };
+        })
+      : services.map((s) => ({
+          key: s.id, name: s.name || s.id, type: s.type, connected: s.connected, service: s,
+          haystack: `${s.name} ${s.type} ${s.slug ?? ""} ${s.url ?? ""}`,
+        }));
+    const f = q ? rows.filter((r) => r.haystack.toLowerCase().includes(q.toLowerCase())) : rows;
     const sgn = sortDir === "asc" ? 1 : -1;
     return [...f].sort((a, b) => {
       let cmp = 0;
-      if (sortKey === "name") cmp = a.name.localeCompare(b.name);
-      else if (sortKey === "type") {
-        cmp = a.type.localeCompare(b.type);
-        if (cmp === 0) cmp = a.name.localeCompare(b.name);
-      } else {
-        cmp = Number(b.connected) - Number(a.connected);
-        if (cmp === 0) cmp = a.name.localeCompare(b.name);
-      }
+      if (sortKey === "type") cmp = a.type.localeCompare(b.type);
+      else if (sortKey === "status") cmp = Number(b.connected) - Number(a.connected);
+      if (cmp === 0) cmp = a.name.localeCompare(b.name);
       return cmp * sgn;
     });
-  }, [data, q, sortKey, sortDir]);
+  }, [data, tunnelList, live, q, sortKey, sortDir]);
 
   // P2-1: minimal "New service" dialog. POST /services is admin-only on the
   // backend (v0.5.2 P3.6); 403 here surfaces a friendly message.
@@ -87,10 +228,12 @@ export default function Services() {
       setNewOpen(true);
       setNsAccessMode("api_key");
       setAiFlow(true);
-      setSearchParams({}, { replace: true });
     } else if (newParam === "1") {
       setNewOpen(true);
-      setSearchParams({}, { replace: true });
+    }
+    if (newParam !== null) {
+      // Only `new` is consumed; the rest of the query (the Live filter) stays.
+      setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete("new"); return next; }, { replace: true });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -169,6 +312,8 @@ export default function Services() {
     },
   });
 
+  const failure = error ?? (live ? tunnels.error : null);
+
   return (
     <div className="services-page">
       <PageHeader
@@ -177,87 +322,135 @@ export default function Services() {
         actions={<Button variant="primary" size="sm" onClick={() => { setNewOpen(true); setNsErr(null); }}>New service</Button>}
       />
       <ErrorNotice variant="info" role="note">
-        Services are the durable saved config and access mode. When a client is connected, the
-        live link appears in <Link to="/tunnels">Tunnels</Link>.
+        Services are the saved configuration. Switch to Live to see what is connected right now.
       </ErrorNotice>
 
-      {error ? (
+      {/* Always there, also while Live loads or fails: it is the way back to All. */}
+      <div className="toolbar-row">
+        <ShowFilter live={live} onChange={setLive} />
+        <Input
+          type="search"
+          aria-label="Filter services"
+          placeholder={live ? "filter by name, type, address…" : "filter by name, type, URL…"}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+      </div>
+      {failure ? (
         <ErrorNotice
-          action={<Button variant="secondary" size="sm" onClick={() => void refetch()}>Retry</Button>}
+          action={<Button variant="secondary" size="sm" onClick={() => { void refetch(); if (live) void tunnels.refetch(); }}>Retry</Button>}
         >
-          Couldn't load services: {error instanceof ApiError ? error.message : "Unknown error"}
+          Couldn't load services: {failure instanceof ApiError ? failure.message : "Unknown error"}
         </ErrorNotice>
-      ) : isLoading ? (
+      ) : isLoading || (live && tunnels.isLoading) ? (
         <div className="table-wrap skel-pad">
           <SkeletonRows n={4} />
         </div>
-      ) : !data || data.length === 0 ? (
+      ) : live && (tunnelList ?? []).length === 0 ? (
+        <EmptyState
+          title="Nothing is live right now"
+          action={<Link to="/clients/connect"><Button variant="primary" size="sm">Connect a client</Button></Link>}
+        >
+          A service goes live when a client runs <code>burrow connect</code> for it.
+        </EmptyState>
+      ) : !live && (data ?? []).length === 0 ? (
         <EmptyState title="No services yet">
           Run <code>burrow connect</code> with <code>--type http</code> to expose a service.
         </EmptyState>
       ) : (
-        <>
-          <div className="toolbar-row">
-            <Input
-              type="search"
-              aria-label="Filter services"
-              placeholder="filter by name, type, URL…"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
-          </div>
-          <div className="table-wrap">
-            <table className="data" aria-label="Services">
-              <thead>
-                <tr>
-                  <th>
-                    <button type="button" className="sort-header" onClick={() => toggleSort("name")}
-                      aria-label={`Sort by name (${sortKey === "name" ? sortDir : "asc"})`}>
-                      Name {sortIcon("name")}
-                    </button>
-                  </th>
-                  <th>
-                    <button type="button" className="sort-header" onClick={() => toggleSort("type")}
-                      aria-label={`Sort by type (${sortKey === "type" ? sortDir : "asc"})`}>
-                      Type {sortIcon("type")}
-                    </button>
-                  </th>
-                  <th>URL</th>
-                  <th>Access</th>
-                  <th>
-                    <button type="button" className="sort-header" onClick={() => toggleSort("status")}
-                      aria-label={`Sort by status (${sortKey === "status" ? sortDir : "asc"})`}>
-                      Status {sortIcon("status")}
-                    </button>
-                  </th>
-                  <th className="col-actions"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((s) => (
-                <tr key={s.id}>
-                  <td className="col-name link-row">
-                    <Link to={`/services/${s.id}`}>{s.name || s.id}</Link>
-                  </td>
-                  <td><Badge kind={`type-${s.type}`} nodot>{s.type}</Badge></td>
-                  <td>
-                    {s.type === "http" ? <ServiceUrl slug={s.slug} url={s.url} /> : <span className="muted">—</span>}
-                  </td>
-                  <td><Badge kind={`access-${s.access_mode}`} nodot>{ACCESS_LABEL[s.access_mode]}</Badge></td>
-                  <td>
-                    {s.connected
-                      ? <Link to="/tunnels" aria-label={`View live tunnel for ${s.name || s.id}`}><Badge kind="status-connected">connected</Badge></Link>
-                      : <Badge kind="status-idle">idle</Badge>}
-                  </td>
-                  <td className="col-actions">
-                    <Button variant="secondary" size="sm" onClick={() => setConfigure(s)}>Configure</Button>
-                  </td>
-                </tr>
-              ))}
-              </tbody>
-            </table>
-          </div>
-        </>
+        <div className="table-wrap">
+          <table className="data" aria-label="Services">
+            <thead>
+              <tr>
+                <th>
+                  <button type="button" className="sort-header" onClick={() => toggleSort("name")}
+                    aria-label={`Sort by name (${sortKey === "name" ? sortDir : "asc"})`}>
+                    Name {sortIcon("name")}
+                  </button>
+                </th>
+                <th>
+                  <button type="button" className="sort-header" onClick={() => toggleSort("type")}
+                    aria-label={`Sort by type (${sortKey === "type" ? sortDir : "asc"})`}>
+                    Type {sortIcon("type")}
+                  </button>
+                </th>
+                <th>URL</th>
+                <th>Access</th>
+                {live && <th>Client</th>}
+                {live && <th>Local</th>}
+                {live && <th>Remote</th>}
+                {live && <th>Traffic</th>}
+                <th>
+                  <button type="button" className="sort-header" onClick={() => toggleSort("status")}
+                    aria-label={`Sort by status (${sortKey === "status" ? sortDir : "asc"})`}>
+                    Status {sortIcon("status")}
+                  </button>
+                </th>
+                <th className="col-actions"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(({ key, name, type, connected, service: s, tunnel: t }) => {
+                const serviceId = s?.id ?? t?.service_id;
+                const access = s?.access_mode ?? t?.access_mode ?? "open";
+                const holder = t ? holders.get(t.id) : undefined;
+                return (
+              <tr key={key}>
+                <td className="col-name link-row">
+                  {serviceId ? <Link to={`/services/${serviceId}`}>{name}</Link> : name || "—"}
+                </td>
+                <td><Badge kind={`type-${type}`} nodot>{type}</Badge></td>
+                <td>
+                  {type === "http" ? <ServiceUrl slug={s?.slug ?? ""} url={s?.url || t?.url} /> : <span className="muted">—</span>}
+                </td>
+                <td><Badge kind={`access-${access}`} nodot>{ACCESS_LABEL[access]}</Badge></td>
+                {t && (
+                  <>
+                    <td>
+                      {holder ? <Link to={`/clients/${holder.sessionId}`}>{holder.name}</Link> : <span className="muted">—</span>}
+                    </td>
+                    <td className="col-local">{t.local_addr}</td>
+                    <td className="col-remote">
+                      {type === "http" ? <span className="muted">—</span> : (
+                        <span className="row row-center gap-2">
+                          <span className="mono">:{t.remote_port}</span>
+                          <button
+                            type="button"
+                            className="icon-btn"
+                            aria-label={`Copy endpoint ${relayHost}:${t.remote_port}`}
+                            onClick={() => {
+                              void navigator.clipboard?.writeText(`${relayHost}:${t.remote_port}`);
+                              toast.success("Copied.");
+                            }}
+                          >
+                            <Copy size={13} />
+                          </button>
+                        </span>
+                      )}
+                    </td>
+                    <td className="col-traffic small">
+                      <span title={`In: ${t.bytes_in} bytes`}>↓ {formatBytes(t.bytes_in)}</span>
+                      {"  "}
+                      <span title={`Out: ${t.bytes_out} bytes`}>↑ {formatBytes(t.bytes_out)}</span>
+                    </td>
+                  </>
+                )}
+                <td>
+                  {!connected
+                    ? <Badge kind="status-idle">idle</Badge>
+                    : live
+                      ? <Badge kind="status-connected">connected</Badge>
+                      : <Link to="/services?live=1" aria-label={`View live tunnel for ${name}`}><Badge kind="status-connected">connected</Badge></Link>}
+                </td>
+                <td className="col-actions">
+                  {s && <Button variant="secondary" size="sm" onClick={() => setConfigure(s)}>Configure</Button>}
+                </td>
+              </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <Dialog

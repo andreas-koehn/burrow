@@ -14,9 +14,9 @@ test.use({
 });
 
 test("21-dialog-tall: Configure dialog fits within the viewport at 1440×900", async ({ page }) => {
-  await page.goto("/tunnels");
+  await page.goto("/services?live=1");
 
-  const aiRow = page.locator('table[aria-label="Tunnels"] tr').filter({ hasText: "ai" });
+  const aiRow = page.locator('table[aria-label="Services"] tr').filter({ hasText: "ai" });
   await expect(aiRow).toBeVisible();
   await aiRow.getByRole("button", { name: "Configure" }).click();
 

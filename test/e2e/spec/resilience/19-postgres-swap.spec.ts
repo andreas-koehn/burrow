@@ -11,11 +11,11 @@ import { TUNNEL_NAMES } from "../../fixtures/env";
 
 test("19-postgres: dashboard + tunnels work identically on Postgres backend", async ({ page }) => {
   await loginAsAdmin(page);
-  await page.goto("/tunnels");
-  await expect(page.getByRole("heading", { name: "Tunnels" })).toBeVisible();
+  await page.goto("/services?live=1");
+  await expect(page.getByRole("heading", { name: "Services", level: 1 })).toBeVisible();
   for (const name of TUNNEL_NAMES) {
     await expect(
-      page.locator('table[aria-label="Tunnels"] tr').filter({ hasText: name }),
+      page.locator('table[aria-label="Services"] tr').filter({ hasText: name }),
     ).toBeVisible({ timeout: 15_000 });
   }
 });

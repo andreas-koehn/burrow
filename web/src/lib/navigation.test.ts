@@ -4,7 +4,6 @@ import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 import { matchPath } from "react-router-dom";
 import { NOT_YET_MOVED, OLD_ROUTES } from "./moved-routes";
-import { TEMPORARY_ENTRIES } from "./destinations";
 import { NAVIGATIONS, FOOTER_ENTRIES, navigationFor, workspacesFor, activeEntry, breadcrumbFor, allEntries } from "./navigation";
 
 const admin = { isAdmin: true, hasAiGateway: true };
@@ -151,7 +150,8 @@ describe("reachability", () => {
   it("every moved path redirects to a declared route", () => {
     for (const r of OLD_ROUTES) {
       expect(routes, r.from).not.toContain(r.from);
-      expect(routes, r.to).toContain(r.to);
+      // A target may name a filter or tab of its page (/services?live=1); a "?" that ends a segment is an optional param.
+      expect(routes, r.to).toContain(r.to.split(/\?(?!\/|$)/)[0]);
     }
   });
 
@@ -163,8 +163,6 @@ describe("reachability", () => {
       "/login": "outside the shell: where a signed-out visitor is sent",
       "*": "catch-all, sends unknown paths to the overview",
       "/settings": "the Settings index: sends an admin to General, everyone else to their profile",
-      // Temporary sidebar and palette entries until W04 folds these pages into Services and Clients.
-      ...Object.fromEntries(TEMPORARY_ENTRIES.map((e) => [e.to, "temporary Services entry (W04)"])),
       // The current home of a page whose navigation entry already names its future path.
       ...Object.fromEntries(NOT_YET_MOVED.map((r) => [r.to, `reached from the entry ${r.from} (W05)`])),
     };

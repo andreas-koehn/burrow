@@ -1493,21 +1493,44 @@ a.user-chip:focus-visible {
 }
 
 /* ──────────────────────────────────────────────────────────────
-   Tunnels list (adapted from design/tunnels.css — only the
-   columns the v0.1 API actually provides are skinned).
+   Services list, Live columns (the former Tunnels list).
    ────────────────────────────────────────────────────────────── */
-.tunnels-page table.data td.col-name {
-  font-weight: 500;
-}
-.tunnels-page table.data td.col-name.muted-em {
-  color: var(--muted-foreground);
-  font-style: normal;
-}
-.tunnels-page table.data td.col-remote,
-.tunnels-page table.data td.col-local {
+.services-page table.data td.col-remote,
+.services-page table.data td.col-local {
   font-family: var(--font-mono);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+/* Two or three exclusive choices in a toolbar (role="radiogroup"). */
+.segmented {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--muted);
+}
+.segmented [role="radio"] {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: calc(var(--radius) - 2px);
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.segmented [role="radio"]:hover { color: var(--foreground); }
+.segmented [role="radio"][aria-checked="true"] {
+  background: var(--card);
+  color: var(--foreground);
+}
+.segmented [role="radio"]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -2361,7 +2384,7 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
 /* ──────────────────────────────────────────────────────────────
    .toolbar — shared toolbar row for search/filter above tables.
    Replaces the repeated  style={{ margin: "12px 0" }}  inline
-   on search rows in Clients, Tunnels, Services, AuditLog, Users.
+   on search rows in Clients, Services, AuditLog, Users.
    ────────────────────────────────────────────────────────────── */
 .toolbar-row {
   display: flex;

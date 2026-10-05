@@ -15,6 +15,9 @@ export const OLD_ROUTES: { from: string; to: string }[] = [
   { from: "/openapi", to: "/settings/api" },
   { from: "/account", to: "/settings/profile" },
   { from: "/account/automation", to: "/settings/automation" },
+  // Tunnels are the Live filter of Services; client tokens are a tab of Clients.
+  { from: "/tunnels", to: "/services?live=1" },
+  { from: "/tokens", to: "/clients?tab=tokens" },
   // Custom domains need host routing, which is off; its retired settings page lands on General.
   { from: "/settings/custom-domains", to: "/settings/general" },
 ];

@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
-import Tokens from "./Tokens";
+import { ClientTokensPanel } from "./ClientTokensPanel";
 
 function setup() {
-  return renderApp(<Tokens />, "/tokens");
+  return renderApp(<ClientTokensPanel />, "/clients?tab=tokens");
 }
 
-describe("Tokens", () => {
+describe("ClientTokensPanel", () => {
   beforeEach(() => vi.restoreAllMocks());
 
   it("shows the plaintext token once after create", async () => {
@@ -146,18 +146,40 @@ describe("Tokens", () => {
     });
   });
 
-  // P4.1 — subtitle and Connect-a-client action
-  it("renders the client-tokens subtitle explaining the token list (P4.1)", () => {
+  it("Revoke, once confirmed, deletes the token", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url: any) => {
+      if (String(url).includes("/tokens")) {
+        return new Response(JSON.stringify([
+          { id: "tok1", name: "ci", created_at: "2026-05-25T07:00:00Z", last_used: null },
+        ]), { status: 200 }) as any;
+      }
+      return new Response("[]", { status: 200 }) as any;
+    });
+    setup();
+    await screen.findByText("ci");
+    await userEvent.click(screen.getByRole("button", { name: /revoke token ci/i }));
+    const dialog = await screen.findByRole("dialog", { name: /revoke token/i });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining("/tokens/tok1"),
+        expect.objectContaining({ method: "DELETE" }),
+      );
+    });
+  });
+
+  // P4.1 — what the list holds. The page header and its Connect-a-client action belong to Clients.
+  it("has no page header of its own", () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }) as any);
+    setup();
+    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+    expect(screen.queryByRole("link", { name: /connect a client/i })).toBeNull();
+  });
+
+  it("explains the token list (P4.1)", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }) as any);
     setup();
     expect(screen.getByText(/this list includes tokens minted here and via connect a client/i)).toBeInTheDocument();
-  });
-
-  it("renders a Connect a client link pointing to /clients/connect (P4.1)", () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }) as any);
-    setup();
-    const link = screen.getByRole("link", { name: /connect a client/i });
-    expect(link).toHaveAttribute("href", "/clients/connect");
   });
 
   // P4.2 — automation cross-link hint
@@ -166,5 +188,11 @@ describe("Tokens", () => {
     setup();
     const link = screen.getByRole("link", { name: /automation tokens/i });
     expect(link).toHaveAttribute("href", "/settings/automation");
+  });
+
+  it("says where the keys of a single service are", () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }) as any);
+    setup();
+    expect(screen.getByRole("link", { name: "Services" })).toHaveAttribute("href", "/services");
   });
 });

@@ -12,7 +12,7 @@ interface Options {
   clients?: unknown[];
 }
 
-function renderLayout(meRole?: "admin" | "user" | null, { path = "/tunnels", services, clients }: Options = {}) {
+function renderLayout(meRole?: "admin" | "user" | null, { path = "/services", services, clients }: Options = {}) {
   // Mock fetch: /api/v1/me returns a user with the given role, or 401 if null.
   vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
     const u = String(url);
@@ -122,8 +122,7 @@ describe("Layout workspace shell", () => {
   it("shows the Services sidebar on a services path", async () => {
     renderLayout("admin", { path: "/" });
     await chip();
-    // Tunnels and Tokens are temporary until W04.
-    expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Tunnels", "Tokens", "Traffic"]);
+    expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
     expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
     expect(await screen.findByRole("button", { name: "Workspace: Services" })).toBeInTheDocument();
   });
@@ -132,7 +131,7 @@ describe("Layout workspace shell", () => {
     renderLayout("admin", { path: "/gateway" });
     expect(await screen.findByRole("button", { name: "Workspace: AI Gateway" })).toBeInTheDocument();
     expect(sidebarLinks("AI Gateway")).toEqual(["Overview", "Providers", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
-    expect(screen.queryByRole("link", { name: "Tunnels" })).toBeNull();
+    expect(screen.queryByRole("link", { name: /^Clients(,|$)/ })).toBeNull();
   });
 
   it("shows the Settings sidebar on a settings path, with a way back", async () => {
@@ -169,9 +168,9 @@ describe("Layout workspace shell", () => {
   it("nav links use the design-system .nav-item class and mark the current page", async () => {
     renderLayout("user");
     await chip();
-    const tunnels = screen.getByRole("link", { name: "Tunnels" });
-    expect(tunnels.className).toContain("nav-item");
-    expect(tunnels).toHaveAttribute("aria-current", "page");
+    const services = within(screen.getByRole("navigation", { name: "Services" })).getByRole("link", { name: /^Services(,|$)/ });
+    expect(services.className).toContain("nav-item");
+    expect(services).toHaveAttribute("aria-current", "page");
   });
 
   it("the footer zone is the same in both workspaces", async () => {
@@ -200,7 +199,7 @@ describe("Layout workspace shell", () => {
     expect(screen.queryByRole("link", { name: "Users & roles" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Workspace:/ })).toBeNull();
-    expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Tunnels", "Tokens", "Traffic"]);
+    expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
   });
 
   it("a non-admin with a connected http service gets the switcher", async () => {

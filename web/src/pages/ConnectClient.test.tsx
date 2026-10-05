@@ -195,10 +195,10 @@ describe("P2.5 — Success-loop poller", () => {
 });
 
 describe("P4.4 — Manage tokens link", () => {
-  it("renders a 'Manage tokens' link pointing to /tokens", () => {
+  it("renders a 'Manage tokens' link pointing to the Tokens tab of Clients", () => {
     mount();
     const link = screen.getByRole("link", { name: /^manage tokens$/i });
-    expect(link).toHaveAttribute("href", "/tokens");
+    expect(link).toHaveAttribute("href", "/clients?tab=tokens");
   });
 });
 

@@ -6,8 +6,8 @@ import { pingTcpTunnel } from "../../fixtures/traffic";
 test.use({ storageState: AUTH_STORAGE_PATH });
 
 test("02-tunnels: tcp-echo bytes_in AND bytes_out counters increment via SSE under traffic", async ({ page, request }) => {
-  await page.goto("/tunnels");
-  const row = page.locator('table[aria-label="Tunnels"] tr').filter({ hasText: "tcp-echo" });
+  await page.goto("/services?live=1");
+  const row = page.locator('table[aria-label="Services"] tr').filter({ hasText: "tcp-echo" });
   await expect(row).toBeVisible();
   // After the IN/OUT merge into TRAFFIC (S6), both byte counters live in
   // .col-traffic. Select by the stable ASCII title attribute rather than the

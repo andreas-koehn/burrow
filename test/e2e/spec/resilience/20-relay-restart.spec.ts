@@ -9,8 +9,8 @@ test.use({ storageState: AUTH_STORAGE_PATH });
 test("20-relay-restart: all 4 clients reconnect within 60s", async ({ page }) => {
   test.setTimeout(180_000);
 
-  await page.goto("/tunnels");
-  const table = page.locator('table[aria-label="Tunnels"]');
+  await page.goto("/services?live=1");
+  const table = page.locator('table[aria-label="Services"]');
   for (const name of TUNNEL_NAMES) {
     await expect(
       table.locator("tr").filter({ hasText: name }).getByText("connected", { exact: true }),
@@ -30,7 +30,7 @@ test("20-relay-restart: all 4 clients reconnect within 60s", async ({ page }) =>
 
   for (const name of TUNNEL_NAMES) {
     await expect(
-      page.locator('table[aria-label="Tunnels"] tr').filter({ hasText: name }).getByText("connected", { exact: true }),
+      page.locator('table[aria-label="Services"] tr').filter({ hasText: name }).getByText("connected", { exact: true }),
       `${name} reconnects`,
     ).toBeVisible({ timeout: 60_000 });
   }

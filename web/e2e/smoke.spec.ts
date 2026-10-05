@@ -24,19 +24,22 @@ test("smoke: full happy-path", async ({ page }) => {
   await expect(page).toHaveURL(/\//);
   await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
 
-  // Navigate to the Tunnels page explicitly to verify its empty-state.
+  // An old /tunnels bookmark opens Services on Live; verify its empty-state.
   await page.goto("/tunnels");
-  await expect(page.getByRole("heading", { name: "Tunnels" })).toBeVisible();
+  await expect(page).toHaveURL(/\/services\?live=1$/);
+  await expect(page.getByRole("heading", { name: "Services", level: 1 })).toBeVisible();
+  await expect(page.getByRole("radio", { name: "Live" })).toBeChecked();
   // Empty-state message (no burrow clients connected in CI)
   await expect(
-    page.getByText("No live tunnels", { exact: false }),
+    page.getByText("Nothing is live right now", { exact: false }),
   ).toBeVisible();
 
   // ── 3. Tokens: create → one-time dialog → revoke ─────────────────────────
-  await page.locator(".sidebar").getByRole("link", { name: "Tokens", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Client tokens" })).toBeVisible();
+  await page.locator(".sidebar").getByRole("link", { name: /^Clients(,|$)/ }).click();
+  await page.getByRole("tab", { name: "Tokens" }).click();
+  await expect(page).toHaveURL(/\/clients\?tab=tokens$/);
 
-  // Fill token name — Label htmlFor="token-name" in Tokens.tsx
+  // Fill token name — Label htmlFor="token-name" in ClientTokensPanel.tsx
   await page.getByLabel("Token name").fill("e2e-smoke");
   await page.getByRole("button", { name: "Create" }).click();
 

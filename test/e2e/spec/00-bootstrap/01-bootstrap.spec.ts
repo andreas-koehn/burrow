@@ -6,11 +6,11 @@ import { TUNNEL_NAMES } from "../../fixtures/env";
 test("01-bootstrap: login + all 4 seeded tunnels visible + connected", async ({ page, context }) => {
   await loginAsAdmin(page);
 
-  // / now renders <Home /> (Overview); navigate explicitly to /tunnels.
-  await page.goto("/tunnels");
-  await expect(page.getByRole("heading", { name: "Tunnels" })).toBeVisible();
+  // / now renders <Home /> (Overview); navigate explicitly to Services on Live (formerly /tunnels).
+  await page.goto("/services?live=1");
+  await expect(page.getByRole("heading", { name: "Services", level: 1 })).toBeVisible();
 
-  const table = page.locator('table[aria-label="Tunnels"]');
+  const table = page.locator('table[aria-label="Services"]');
   for (const name of TUNNEL_NAMES) {
     const row = table.locator("tr").filter({ hasText: name });
     await expect(row, `${name} row visible`).toBeVisible({ timeout: 15_000 });

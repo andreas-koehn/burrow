@@ -5,9 +5,7 @@ import { RequireAdmin } from "@/components/RequireAdmin";
 import { Layout } from "@/components/Layout";
 import Login from "@/pages/Login";
 import Home from "@/pages/Home";
-import Tunnels from "@/pages/Tunnels";
 import Services from "@/pages/Services";
-import Tokens from "@/pages/Tokens";
 import Users from "@/pages/Users";
 import Roles from "@/pages/Roles";
 import GeneralSettings from "@/pages/settings/GeneralSettings";
@@ -58,7 +56,6 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route element={<RequireAuth><Layout /></RequireAuth>}>
         <Route path="/" element={<Home />} />
-        <Route path="/tunnels" element={<Tunnels />} />
         <Route path="/services" element={<Services />} />
         {/* /ai/ is the gateway's data plane and never reaches the SPA; its pages live under /gateway/. */}
         <Route path="/gateway" element={<GatewayOverview />} />
@@ -69,7 +66,6 @@ export default function App() {
         <Route path="/gateway/requests" element={<InspectorIndex />} />
         <Route path="/gateway/requests/:serviceId/:requestId?" element={<RequestInspector />} />
         <Route path="/gateway/cost" element={<CostBudgets />} />
-        <Route path="/tokens" element={<Tokens />} />
         <Route path="/clients" element={<Clients />} />
         <Route path="/clients/connect" element={<ConnectClient />} />
         <Route path="/clients/:id" element={<ClientDetail />} />

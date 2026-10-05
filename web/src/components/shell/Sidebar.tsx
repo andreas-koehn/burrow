@@ -21,19 +21,9 @@ export interface SidebarProps {
   onSearch(): void;
   onToggleTheme(): void;
   onLogout(): void;
-  /** Entries appended to the Connect group that are not part of the navigation description. */
-  extra?: NavEntry[];
 }
 
 const PROFILE = NAVIGATIONS.settings.groups.flatMap((g) => g.entries).find((e) => e.id === "profile")!;
-
-function withExtra(navigation: Navigation, extra: NavEntry[] | undefined): Navigation {
-  if (!extra?.length) return navigation;
-  return {
-    ...navigation,
-    groups: navigation.groups.map((g) => (g.title === "Connect" ? { ...g, entries: [...g.entries, ...extra] } : g)),
-  };
-}
 
 /** What the figure at the right edge shows, and how it is read out. */
 function countFor(entry: NavEntry, counts: SidebarProps["counts"]): { text: string; spoken: string } | undefined {
@@ -43,10 +33,9 @@ function countFor(entry: NavEntry, counts: SidebarProps["counts"]): { text: stri
 }
 
 export function Sidebar({
-  navigation, workspaces, footer, pathname, collapsed, counts, user, theme, onSearch, onToggleTheme, onLogout, extra,
+  navigation, workspaces, footer, pathname, collapsed, counts, user, theme, onSearch, onToggleTheme, onLogout,
 }: SidebarProps) {
-  const nav = withExtra(navigation, extra);
-  const active = activeEntry(pathname, nav);
+  const active = activeEntry(pathname, navigation);
   const back = workspaces.find((w) => w.workspace === lastWorkspace()) ?? workspaces[0] ?? NAVIGATIONS.services;
   const themeLabel = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
   const profileLabel = user.email ? `Your profile, ${user.email}` : "Your profile";
@@ -106,7 +95,7 @@ export function Sidebar({
           {!collapsed && <span className="nav-count"><span className="kbd-token">{shortcutLabel("K")}</span></span>}
         </button>
 
-        {nav.groups.map((g, i) => (
+        {navigation.groups.map((g, i) => (
           <div className="nav-group" key={g.title ?? `group-${i}`}>
             {g.title && !collapsed && <div className="nav-group-title">{g.title}</div>}
             {g.entries.map((e) => link(e, e === active))}

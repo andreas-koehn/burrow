@@ -4,13 +4,14 @@ import { Check, Copy } from "lucide-react";
 import { Link } from "react-router-dom";
 import { apiFetch } from "@/lib/api";
 import { formatTimestamp, formatRelativeTime } from "@/lib/format";
-import { Button, FormField, FormFieldGroup, Input, Dialog, PageHeader, TableEmptyRow } from "@/components/ds";
+import { Button, FormField, FormFieldGroup, Input, Dialog, TableEmptyRow } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 
 interface Token { id: string; name: string; last_used: string | null; created_at: string; }
 
-export default function Tokens() {
+/** The Tokens tab of Clients: create, show once and revoke the tokens a client connects with. */
+export function ClientTokensPanel() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["tokens"], queryFn: () => apiFetch<Token[]>("/tokens"), staleTime: 30_000 });
   const [name, setName] = useState("");
@@ -28,11 +29,9 @@ export default function Tokens() {
   });
   return (
     <div className="tokens-page">
-      <PageHeader
-        title="Client tokens"
-        subtitle="Tokens that let a machine running burrow connect to this relay. This list includes tokens minted here and via Connect a client."
-        actions={<Link to="/clients/connect"><Button variant="primary" size="sm">Connect a client</Button></Link>}
-      />
+      <p className="muted small">
+        Tokens that let a machine running burrow connect to this relay. This list includes tokens minted here and via Connect a client.
+      </p>
 
       <form
         className="tokens-form"
@@ -48,7 +47,10 @@ export default function Tokens() {
         </div>
       </form>
 
-      <p className="muted small">Need a token for CI, the CLI, or bots? <Link className="link-inline" to="/settings/automation">Automation tokens</Link></p>
+      <p className="muted small">
+        Need a token for CI, the CLI, or bots? <Link className="link-inline" to="/settings/automation">Automation tokens</Link>.
+        {" "}Keys for callers of one service are on that service's page, under <Link className="link-inline" to="/services">Services</Link>.
+      </p>
 
       <div className="table-wrap">
         <table className="data" aria-label="Tokens">

@@ -15,9 +15,7 @@ import App from "@/App";
 import Clients from "@/pages/Clients";
 import Services from "@/pages/Services";
 import Providers from "@/pages/Providers";
-import Tokens from "@/pages/Tokens";
 import AutomationTokens from "@/pages/AutomationTokens";
-import Tunnels from "@/pages/Tunnels";
 import Users from "@/pages/Users";
 
 // ---------------------------------------------------------------------------
@@ -55,7 +53,7 @@ describe("INTUITIVE — navigation & mental-model alignment", () => {
     expect((link as HTMLAnchorElement).href).toContain("/clients/sess_4f7a9c0b2e81");
   });
 
-  it("In-4: Tunnels page — http tunnel name links to the service detail view", async () => {
+  it("In-4: Services on Live — http tunnel name links to the service detail view", async () => {
     // Seed a non-empty tunnels list with an http tunnel that has a service_id
     server.use(
       http.get("/api/v1/tunnels", () =>
@@ -76,30 +74,30 @@ describe("INTUITIVE — navigation & mental-model alignment", () => {
         ]),
       ),
     );
-    renderApp(<Tunnels />, "/tunnels");
-    const link = await screen.findByRole("link", { name: /Open service web/i });
+    renderApp(<Services />, "/services?live=1");
+    const link = await screen.findByRole("link", { name: "web" });
     expect((link as HTMLAnchorElement).href).toContain("/services/svc_web01");
   });
 
-  it("In-4: Services page — connected row's status badge links to /tunnels", async () => {
+  it("In-4: Services page — connected row's status badge links to the Live filter", async () => {
     renderApp(<Services />, "/services");
     // db seeds svc_web01 with connected=true; the status cell renders
-    // <Link to="/tunnels" aria-label="View live tunnel for web">
+    // <Link to="/services?live=1" aria-label="View live tunnel for web">
     const link = await screen.findByRole("link", { name: /View live tunnel for web/i });
-    expect((link as HTMLAnchorElement).href).toContain("/tunnels");
+    expect(link).toHaveAttribute("href", "/services?live=1");
   });
 
-  it("In-5: Tokens page includes a cross-link to /settings/automation", async () => {
-    renderApp(<Tokens />, "/tokens");
+  it("In-5: the Tokens tab of Clients includes a cross-link to /settings/automation", async () => {
+    renderApp(<Clients />, "/clients?tab=tokens");
     // "Automation tokens" link in the muted helper text
     const link = await screen.findByRole("link", { name: /Automation tokens/i });
     expect((link as HTMLAnchorElement).href).toContain("/settings/automation");
   });
 
-  it("In-5: AutomationTokens page includes a cross-link to /tokens (client tokens)", async () => {
+  it("In-5: AutomationTokens page includes a cross-link to the client tokens", async () => {
     renderApp(<AutomationTokens />, "/settings/automation");
     const link = await screen.findByRole("link", { name: /Client tokens/i });
-    expect((link as HTMLAnchorElement).href).toContain("/tokens");
+    expect(link).toHaveAttribute("href", "/clients?tab=tokens");
   });
 
   // In-6: command palette (Ctrl+K) opens — Playwright-only; requires keyboard
@@ -110,18 +108,13 @@ describe("INTUITIVE — navigation & mental-model alignment", () => {
 // CLEAR — information architecture & labelling
 // ---------------------------------------------------------------------------
 describe("CLEAR — information architecture & labelling", () => {
-  it("Clr-1: Tunnels page shows a live-vs-config explainer mentioning Services", async () => {
-    renderApp(<Tunnels />, "/tunnels");
-    // ErrorNotice variant="info" role="note" is the explainer in Tunnels.tsx
-    const note = await screen.findByRole("note");
-    expect(note.textContent).toContain("Services");
-  });
-
-  it("Clr-2: Services page shows a live-vs-config explainer mentioning Tunnels", async () => {
-    renderApp(<Services />, "/services");
+  it("Clr-1/Clr-2: Services explains saved configuration against Live, in both views", async () => {
     // ErrorNotice variant="info" role="note" in Services.tsx
-    const note = await screen.findByRole("note");
-    expect(note.textContent).toContain("Tunnels");
+    const first = renderApp(<Services />, "/services");
+    expect((await screen.findByRole("note")).textContent).toContain("Switch to Live");
+    first.unmount();
+    renderApp(<Services />, "/services?live=1");
+    expect((await screen.findByRole("note")).textContent).toContain("saved configuration");
   });
 
   it("Clr-4: Providers page with no providers renders a 'New AI service' CTA button (admin)", async () => {
@@ -161,10 +154,11 @@ describe("EASY — onboarding & discoverability", () => {
   // Ea-5: empty states have a next action
   // ---------------------------------------------------------------------------
   describe("Ea-5 — empty states have a next action", () => {
-    it("Tunnels empty state has a 'Connect a client' CTA link", async () => {
-      // Default mock returns [] for /tunnels (see handlers.ts line ~350)
-      renderApp(<Tunnels />, "/tunnels");
-      // Added in Tunnels.tsx empty-state: <Link to="/clients/connect">
+    it("Services on Live: the empty state has a 'Connect a client' CTA link", async () => {
+      server.use(
+        http.get("/api/v1/tunnels", () => HttpResponse.json([])),
+      );
+      renderApp(<Services />, "/services?live=1");
       const link = await screen.findByRole("link", { name: /Connect a client/i });
       expect((link as HTMLAnchorElement).href).toContain("/clients/connect");
     });
@@ -199,11 +193,11 @@ describe("EASY — onboarding & discoverability", () => {
       expect(btns.length).toBeGreaterThanOrEqual(1);
     });
 
-    it("Tokens empty state has a 'Connect a client' CTA in the page header", async () => {
+    it("Tokens tab: the empty state has a 'Connect a client' CTA in the page header", async () => {
       server.use(
         http.get("/api/v1/tokens", () => HttpResponse.json([])),
       );
-      renderApp(<Tokens />, "/tokens");
+      renderApp(<Clients />, "/clients?tab=tokens");
       // PageHeader actions has the "Connect a client" link regardless of table content
       const link = await screen.findByRole("link", { name: /Connect a client/i });
       expect((link as HTMLAnchorElement).href).toContain("/clients/connect");

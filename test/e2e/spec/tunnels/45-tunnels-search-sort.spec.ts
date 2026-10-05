@@ -1,9 +1,9 @@
 // test-only — never deploy this shape.
 //
-// Covers the /tunnels list UI controls that the feature suite did not yet
-// exercise: the search/filter box and the sortable column headers. The page
-// seeds four tunnels (ai, tcp-echo, svc-a, svc-b); see web/src/pages/Tunnels.tsx
-// for the search input (aria-label="Filter tunnels") and the sort buttons
+// Covers the list controls of Services on Live (/services?live=1, formerly
+// /tunnels): the search/filter box and the sortable column headers. The stack
+// seeds four tunnels (ai, tcp-echo, svc-a, svc-b); see web/src/pages/Services.tsx
+// for the search input (aria-label="Filter services") and the sort buttons
 // (aria-label="Sort by name (asc|desc)" etc.). Read-only — no cleanup.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
@@ -11,9 +11,9 @@ import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
 test.use({ storageState: AUTH_STORAGE_PATH });
 
 test("45-tunnels-search-sort: filter box narrows rows; name header toggles asc/desc", async ({ page }) => {
-  await page.goto("/tunnels");
+  await page.goto("/services?live=1");
 
-  const table = page.locator('table[aria-label="Tunnels"]');
+  const table = page.locator('table[aria-label="Services"]');
   await expect(table).toBeVisible();
   // The stack seeds four tunnels.
   await expect.poll(async () => await table.locator("tbody tr").count(), {
@@ -23,8 +23,8 @@ test("45-tunnels-search-sort: filter box narrows rows; name header toggles asc/d
 
   // --- SEARCH --------------------------------------------------------------
   // The search box is a DS Input rendered as type="search" with
-  // aria-label="Filter tunnels".
-  const search = page.getByRole("searchbox", { name: "Filter tunnels" });
+  // aria-label="Filter services".
+  const search = page.getByRole("searchbox", { name: "Filter services" });
   await search.fill("tcp-echo");
 
   // Only the tcp-echo row should remain; the "ai" tunnel must be filtered out.

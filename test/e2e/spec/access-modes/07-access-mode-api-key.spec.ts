@@ -6,11 +6,12 @@ import { HTTPS_INGRESS, aiHost } from "../../fixtures/env";
 test.use({ storageState: AUTH_STORAGE_PATH });
 
 test("07-access-mode-api-key: api_key required; correct key 200; missing 401", async ({ page, request }) => {
-  // Plan-fidelity: /tunnels Configure dialog is the originally-planned UI
-  // path. After defect D1 was fixed (server.TunnelView surfaces service_id,
-  // Tunnels.tsx passes it instead of tunnel.id), this works for HTTP tunnels.
-  await page.goto("/tunnels");
-  const row = page.locator('table[aria-label="Tunnels"] tr').filter({ hasText: "ai" });
+  // Plan-fidelity: the Configure dialog of a live row (Services on Live,
+  // formerly /tunnels) is the originally-planned UI path. Since defect D1
+  // (server.TunnelView surfaces service_id, and the row is joined to its
+  // durable service by it), this works for HTTP tunnels.
+  await page.goto("/services?live=1");
+  const row = page.locator('table[aria-label="Services"] tr').filter({ hasText: "ai" });
   await row.getByRole("button", { name: "Configure" }).click();
 
   const dialog = page.getByRole("dialog", { name: /Access/ });

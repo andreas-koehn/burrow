@@ -6,7 +6,7 @@ test.use({ storageState: AUTH_STORAGE_PATH });
 
 test("15-audit-chain: UI mint → token.mint audit row → chain valid", async ({ page }) => {
   // Mint a token so the audit chain has an entry.
-  await page.goto("/tokens");
+  await page.goto("/clients?tab=tokens");
   const name = `audit-${Date.now()}`;
   await page.fill("#token-name", name);
   await page.getByRole("button", { name: "Create", exact: true }).click();

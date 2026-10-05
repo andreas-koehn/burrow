@@ -75,9 +75,9 @@ describe("CommandPalette — P6A.1: destinations", () => {
   it("lists the navigation description, grouped by workspace", () => {
     renderPalette({ isAdmin: true });
     const rows = screen.getAllByRole("option").map((o) => o.textContent);
-    // Services first (its two temporary entries last, until W04), then the gateway, then Settings.
-    expect(rows.slice(0, 7)).toEqual([
-      "OverviewServices", "ServicesServices", "ClientsServices", "TrafficServices", "TunnelsServices", "TokensServices",
+    // Services first, then the gateway, then Settings.
+    expect(rows.slice(0, 5)).toEqual([
+      "OverviewServices", "ServicesServices", "ClientsServices", "TrafficServices",
       "OverviewAI Gateway",
     ]);
     const groups = new Set(screen.getAllByRole("option").map((o) => o.querySelector(".shortcut")?.textContent));

@@ -3,7 +3,7 @@
 // Spec 40 — Client token revoke flow.
 //
 // Real-DOM notes (verified against web/src/pages/Tokens.tsx + the live stack):
-//   - Page heading is "Client tokens" (h1), not "Tokens".
+//   - The tokens are the Tokens tab of Clients (/clients?tab=tokens); the h1 is "Clients".
 //   - Mint form: #token-name + a primary "Create" button.
 //   - On mint a Dialog titled "Copy your token now" reveals the secret; its
 //     footer has a "Done" button.
@@ -18,8 +18,8 @@ import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
 test.use({ storageState: AUTH_STORAGE_PATH });
 
 test("40-token-revoke: mint then revoke via confirm dialog", async ({ page }) => {
-  await page.goto("/tokens");
-  await expect(page.getByRole("heading", { name: "Client tokens", level: 1 })).toBeVisible();
+  await page.goto("/clients?tab=tokens");
+  await expect(page.getByRole("tab", { name: "Tokens", selected: true })).toBeVisible();
 
   const name = `revoke${Date.now()}`;
 

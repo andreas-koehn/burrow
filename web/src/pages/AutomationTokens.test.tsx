@@ -42,11 +42,11 @@ describe("Automation tokens", () => {
     expect(screen.getByText(/not tunneling agents/i)).toBeInTheDocument();
   });
 
-  it("renders Client tokens cross-link pointing to /tokens (P4.3)", () => {
+  it("renders Client tokens cross-link pointing to the Tokens tab of Clients (P4.3)", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }) as Response);
     mount();
     const link = screen.getByRole("link", { name: /client tokens/i });
-    expect(link).toHaveAttribute("href", "/tokens");
+    expect(link).toHaveAttribute("href", "/clients?tab=tokens");
   });
 
   it("Creating a token reveals the plaintext once with the verbatim save-now warning", async () => {

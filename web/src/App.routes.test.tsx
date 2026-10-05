@@ -128,7 +128,10 @@ describe("App routes", () => {
 
   // Old bookmarks: every moved path lands on its new page, params, query and hash intact.
   // `current` names the Settings entry the page must be marked under; without it the page is an AI Gateway one.
-  const visit: Record<string, { url: string; lands: string; heading: RegExp; current?: string }> = {
+  // `services` names the Services entry instead (its accessible name may carry a count).
+  const visit: Record<string, { url: string; lands: string; heading: RegExp; current?: string; services?: RegExp }> = {
+    "/tunnels": { url: "/tunnels?q=web#row", lands: "/services?live=1&q=web#row", heading: /^Services$/, services: /^Services(,|$)/ },
+    "/tokens": { url: "/tokens#list", lands: "/clients?tab=tokens#list", heading: /^Clients$/, services: /^Clients(,|$)/ },
     "/users": { url: "/users?q=bob#invite", lands: "/settings/users?q=bob#invite", heading: /^Users$/, current: "Users" },
     "/roles": { url: "/roles", lands: "/settings/roles", heading: /^Roles$/, current: "Roles" },
     "/audit": { url: "/audit?actor=x", lands: "/settings/audit?actor=x", heading: /^Audit log$/, current: "Audit log" },
@@ -159,8 +162,18 @@ describe("App routes", () => {
     if (c.lands.endsWith("/")) expect(path.startsWith(c.lands)).toBe(true);
     else expect(path).toBe(c.lands);
     // The sidebar shows the workspace the page now belongs to.
-    const nav = within(await screen.findByRole("navigation", { name: c.current ? "Settings" : "AI Gateway" }));
-    if (c.current) expect(nav.getByRole("link", { name: c.current })).toHaveAttribute("aria-current", "page");
+    const nav = within(await screen.findByRole("navigation", { name: c.services ? "Services" : c.current ? "Settings" : "AI Gateway" }));
+    const current = c.services ?? c.current;
+    if (current) expect(nav.getByRole("link", { name: current })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("/tunnels opens Services on Live, /tokens opens the Tokens tab of Clients", async () => {
+    const first = renderAt("/tunnels");
+    expect(await screen.findByRole("radio", { name: "Live" })).toBeChecked();
+    first.unmount();
+    renderAt("/tokens");
+    expect(await screen.findByRole("tab", { name: "Tokens" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("table", { name: "Tokens" })).toBeInTheDocument();
   });
 
   it("an old path with one param keeps it", async () => {

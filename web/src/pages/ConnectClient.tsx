@@ -157,7 +157,7 @@ export default function ConnectClient() {
       <p className="muted page-intro">
         A client is a machine running <code>burrow connect</code>. Choose what it exposes, name it,
         then run the command on that machine. Already connected?{" "}
-        <Link className="link-inline" to="/tokens">Manage tokens</Link>.
+        <Link className="link-inline" to="/clients?tab=tokens">Manage tokens</Link>.
       </p>
 
       {/* P2.2 — What to expose section */}

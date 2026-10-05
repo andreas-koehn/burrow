@@ -5,8 +5,8 @@ import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
 test.use({ storageState: AUTH_STORAGE_PATH });
 
 test("04-tokens-mint: UI form mints bur_*; dialog reveals; list updates", async ({ page }) => {
-  await page.goto("/tokens");
-  await expect(page.getByRole("heading", { name: "Client tokens" })).toBeVisible();
+  await page.goto("/clients?tab=tokens");
+  await expect(page.getByRole("tab", { name: "Tokens", selected: true })).toBeVisible();
 
   const name = `e2e-full-04-${Date.now()}`;
   await page.fill("#token-name", name);

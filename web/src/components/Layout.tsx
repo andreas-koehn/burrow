@@ -10,7 +10,6 @@ import { Sidebar } from "@/components/shell/Sidebar";
 import { TopBar } from "@/components/shell/TopBar";
 import { FOOTER_ENTRIES, breadcrumbFor, navigationFor, workspacesFor } from "@/lib/navigation";
 import { rememberWorkspace, workspaceFor } from "@/lib/workspace";
-import { TEMPORARY_ENTRIES } from "@/lib/destinations";
 
 const COLLAPSED_KEY = "burrow.sidebarCollapsed";
 
@@ -116,8 +115,6 @@ export function Layout() {
         onSearch={openPalette}
         onToggleTheme={toggleTheme}
         onLogout={logout}
-        // Temporary: Tunnels and Tokens stay reachable until W04 folds them into Services and Clients.
-        extra={navigation.workspace === "services" ? TEMPORARY_ENTRIES : undefined}
       />
 
       <div className="shell-column">

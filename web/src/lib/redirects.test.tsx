@@ -39,6 +39,12 @@ describe("RedirectTo", () => {
     ["/account", "/settings/profile"],
     ["/account/automation?new=1#list", "/settings/automation?new=1#list"],
     ["/settings/custom-domains", "/settings/general"],
+    // A target with its own query keeps the visitor's query string and hash.
+    ["/tunnels", "/services?live=1"],
+    ["/tunnels?q=web#row", "/services?live=1&q=web#row"],
+    ["/tunnels?live=0", "/services?live=1"],
+    ["/tokens", "/clients?tab=tokens"],
+    ["/tokens?q=ci#list", "/clients?tab=tokens&q=ci#list"],
   ])("%s lands on %s", (from, to) => {
     expect(landingFor(from)).toBe(to);
   });

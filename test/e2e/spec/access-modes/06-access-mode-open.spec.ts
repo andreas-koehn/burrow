@@ -10,8 +10,8 @@ import { HTTPS_INGRESS, aiHost } from "../../fixtures/env";
 test.use({ storageState: AUTH_STORAGE_PATH });
 
 test("06-access-mode-open: ai service in Open mode accepts unauthenticated GET", async ({ page, request }) => {
-  await page.goto("/tunnels");
-  const aiRow = page.locator('table[aria-label="Tunnels"] tr').filter({ hasText: "ai" });
+  await page.goto("/services?live=1");
+  const aiRow = page.locator('table[aria-label="Services"] tr').filter({ hasText: "ai" });
   await aiRow.getByRole("button", { name: "Configure" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("radio", { name: /^Open/ }).click();
