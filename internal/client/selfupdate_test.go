@@ -6,11 +6,19 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -113,6 +121,9 @@ type updateRelay struct {
 	redirect http.HandlerFunc
 	// direct serves the files at the relay's own addresses, without a redirect.
 	direct bool
+	// releaseBase is the origin of another host that serves /files/; the
+	// relay's redirects go there when it is set.
+	releaseBase string
 }
 
 func newUpdateRelay(t *testing.T, tlsServer bool) *updateRelay {
@@ -131,7 +142,7 @@ func newUpdateRelay(t *testing.T, tlsServer bool) *updateRelay {
 				_, _ = io.WriteString(w, ur.checksums)
 				return
 			}
-			http.Redirect(w, r, "/files/v0.6.0/checksums.txt", http.StatusFound)
+			http.Redirect(w, r, ur.releaseBase+"/files/v0.6.0/checksums.txt", http.StatusFound)
 		case strings.HasPrefix(r.URL.Path, "/download/burrow/"):
 			if ur.redirect != nil {
 				ur.redirect(w, r)
@@ -148,7 +159,7 @@ func newUpdateRelay(t *testing.T, tlsServer bool) *updateRelay {
 			}
 			// Like a release host: the address the file is finally served
 			// from does not end in the file's name.
-			http.Redirect(w, r, "/files/v0.6.0/0b5c2a1e-asset", http.StatusFound)
+			http.Redirect(w, r, ur.releaseBase+"/files/v0.6.0/0b5c2a1e-asset", http.StatusFound)
 		case r.URL.Path == "/files/v0.6.0/checksums.txt":
 			_, _ = io.WriteString(w, ur.checksums)
 		case strings.HasPrefix(r.URL.Path, "/files/"):
@@ -811,7 +822,25 @@ func writeFile(t *testing.T, path, body string, mode fs.FileMode) {
 	}
 }
 
+// fakeClient is a "binary" that answers `version` the way burrow does.
+func fakeClient(v string) string {
+	return "#!/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = version ] || exit 64\necho 'burrow " + v + " (commit abc1234, built 2026-10-05, linux/amd64)'\n"
+}
+
+// thisPlatform asks for the run check of a binary of version v.
+func thisPlatform(v string) StagedCheck {
+	return StagedCheck{Version: v, OS: runtime.GOOS, Arch: runtime.GOARCH}
+}
+
+func needsScripts(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in binaries are shell scripts")
+	}
+}
+
 func TestReplaceExecutable(t *testing.T) {
+	needsScripts(t)
 	for _, aside := range []bool{false, true} {
 		name := "rename over"
 		if aside {
@@ -824,26 +853,24 @@ func TestReplaceExecutable(t *testing.T) {
 			// A leftover of an earlier update is in the way.
 			writeFile(t, current+".old", "older client", 0o600)
 			newBin := filepath.Join(t.TempDir(), "burrow.exe")
-			writeFile(t, newBin, "new client", 0o700)
+			writeFile(t, newBin, fakeClient("0.6.0"), 0o700)
 
-			if err := replaceExecutable(current, newBin, aside); err != nil {
+			if err := replaceExecutable(current, newBin, thisPlatform("0.6.0"), aside); err != nil {
 				t.Fatal(err)
 			}
 			got, err := os.ReadFile(current)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(got) != "new client" {
+			if string(got) != fakeClient("0.6.0") {
 				t.Fatalf("content %q", got)
 			}
-			if runtime.GOOS != "windows" {
-				st, err := os.Stat(current)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if st.Mode().Perm() != 0o750 {
-					t.Fatalf("mode %v, want 0750", st.Mode().Perm())
-				}
+			st, err := os.Stat(current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.Mode().Perm() != 0o750 {
+				t.Fatalf("mode %v, want 0750", st.Mode().Perm())
 			}
 			want := []string{"burrow.exe"}
 			if !aside {
@@ -861,15 +888,16 @@ func TestReplaceExecutable(t *testing.T) {
 }
 
 func TestReplaceExecutable_PublicUsesThisSystem(t *testing.T) {
+	needsScripts(t)
 	dir := t.TempDir()
 	current := filepath.Join(dir, "burrow")
 	writeFile(t, current, "old client", 0o755)
 	newBin := filepath.Join(t.TempDir(), "burrow")
-	writeFile(t, newBin, "new client", 0o755)
-	if err := ReplaceExecutable(current, newBin); err != nil {
+	writeFile(t, newBin, fakeClient("v0.6.0"), 0o755)
+	if err := ReplaceExecutable(current, newBin, thisPlatform("0.6.0")); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := os.ReadFile(current); string(got) != "new client" {
+	if got, _ := os.ReadFile(current); string(got) != fakeClient("v0.6.0") {
 		t.Fatalf("content %q", got)
 	}
 	if got := names(t, dir); len(got) != 1 {
@@ -877,9 +905,101 @@ func TestReplaceExecutable_PublicUsesThisSystem(t *testing.T) {
 	}
 }
 
+// The staged file is run with `version` before it takes the old one's place.
+func TestReplaceExecutable_RunCheck(t *testing.T) {
+	needsScripts(t)
+	t.Setenv("BURROW_TOKEN", "bur_test_0000")
+	prev := stagedCheckTimeout
+	stagedCheckTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { stagedCheckTimeout = prev })
+
+	cases := []struct {
+		name   string
+		body   string
+		check  StagedCheck
+		wantOK bool
+	}{
+		{"the expected version", fakeClient("0.6.0"), thisPlatform("0.6.0"), true},
+		{"another version", fakeClient("0.5.9"), thisPlatform("0.6.0"), false},
+		{"a version that only starts the same", fakeClient("0.6.01"), thisPlatform("0.6.0"), false},
+		{"the version elsewhere in the output", "#!/bin/sh\necho 'something 0.6.0'\n", thisPlatform("0.6.0"), false},
+		{"exit 1 with the right output", "#!/bin/sh\necho 'burrow 0.6.0 (x)'\nexit 1\n", thisPlatform("0.6.0"), false},
+		{"not a program", "new client", thisPlatform("0.6.0"), false},
+		{"never ends", "#!/bin/sh\nwhile :; do :; done\n", thisPlatform("0.6.0"), false},
+		{"endless output", "#!/bin/sh\nwhile :; do echo 'burrow 0.6.0 (x)'; done\n", thisPlatform("0.6.0"), false},
+		{"untagged build: exit 0 is enough", fakeClient("develop"), thisPlatform(""), true},
+		{"untagged build that fails", "#!/bin/sh\nexit 3\n", thisPlatform(""), false},
+		{"sees none of this process's environment", "#!/bin/sh\n[ -z \"$BURROW_TOKEN\" ] && [ -z \"$HOME\" ] || exit 1\necho 'burrow 0.6.0 (x)'\n", thisPlatform("0.6.0"), true},
+		{"a build for another platform is not run", "new client", StagedCheck{Version: "0.6.0", OS: "plan9", Arch: runtime.GOARCH}, true},
+		{"a platform that is not named is this one", "new client", StagedCheck{Version: "0.6.0"}, false},
+	}
+	for _, tc := range cases {
+		for _, aside := range []bool{false, true} {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				current := filepath.Join(dir, "burrow")
+				writeFile(t, current, "old client", 0o755)
+				newBin := filepath.Join(t.TempDir(), "burrow")
+				writeFile(t, newBin, tc.body, 0o755)
+
+				err := replaceExecutable(current, newBin, tc.check, aside)
+				got, _ := os.ReadFile(current)
+				if tc.wantOK {
+					if err != nil || string(got) != tc.body {
+						t.Fatalf("err = %v, content %q", err, got)
+					}
+				} else {
+					if !errors.Is(err, ErrRunCheck) {
+						t.Fatalf("err = %v, want ErrRunCheck", err)
+					}
+					// A mount that forbids running files must not look like
+					// a directory that cannot be written to.
+					if errors.Is(err, fs.ErrPermission) {
+						t.Fatalf("the error is a permission error: %v", err)
+					}
+					if string(got) != "old client" {
+						t.Fatalf("the old binary changed: %q", got)
+					}
+				}
+				if got := names(t, dir); len(got) != 1 {
+					t.Fatalf("directory holds %v", got)
+				}
+			})
+		}
+	}
+}
+
+// On Windows the previous binary of an earlier update cannot be removed while
+// a process still runs it. That is its own error, not "not writable".
+func TestReplaceExecutable_PreviousStillRunning(t *testing.T) {
+	needsScripts(t)
+	dir := t.TempDir()
+	current := filepath.Join(dir, "burrow.exe")
+	writeFile(t, current, "old client", 0o755)
+	// What cannot be removed stands in for a file that is still in use.
+	if err := os.Mkdir(current+".old", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(current+".old", "in-use"), "x", 0o600)
+	newBin := filepath.Join(t.TempDir(), "burrow.exe")
+	writeFile(t, newBin, fakeClient("0.6.0"), 0o755)
+
+	err := replaceExecutable(current, newBin, thisPlatform("0.6.0"), true)
+	if !errors.Is(err, ErrStillRunning) || errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("err = %v, want ErrStillRunning and no permission error", err)
+	}
+	if got, _ := os.ReadFile(current); string(got) != "old client" {
+		t.Fatalf("the old binary changed: %q", got)
+	}
+	if got := names(t, dir); strings.Join(got, ",") != "burrow.exe,burrow.exe.old" {
+		t.Fatalf("directory holds %v", got)
+	}
+}
+
 func TestReplaceExecutable_Failures(t *testing.T) {
+	needsScripts(t)
 	t.Run("directory not writable", func(t *testing.T) {
-		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		if os.Geteuid() == 0 {
 			t.Skip("needs a user that a directory mode can stop")
 		}
 		for _, aside := range []bool{false, true} {
@@ -887,7 +1007,7 @@ func TestReplaceExecutable_Failures(t *testing.T) {
 			current := filepath.Join(dir, "burrow")
 			writeFile(t, current, "old client", 0o755)
 			newBin := filepath.Join(t.TempDir(), "burrow")
-			writeFile(t, newBin, "new client", 0o755)
+			writeFile(t, newBin, fakeClient("0.6.0"), 0o755)
 			if err := os.Chmod(dir, 0o555); err != nil {
 				t.Fatal(err)
 			}
@@ -896,7 +1016,7 @@ func TestReplaceExecutable_Failures(t *testing.T) {
 			if err := CheckReplaceable(current); !errors.Is(err, fs.ErrPermission) {
 				t.Fatalf("CheckReplaceable: %v, want a permission error", err)
 			}
-			err := replaceExecutable(current, newBin, aside)
+			err := replaceExecutable(current, newBin, thisPlatform("0.6.0"), aside)
 			if !errors.Is(err, fs.ErrPermission) {
 				t.Fatalf("err = %v, want a permission error", err)
 			}
@@ -923,7 +1043,7 @@ func TestReplaceExecutable_Failures(t *testing.T) {
 		dir := t.TempDir()
 		current := filepath.Join(dir, "burrow")
 		writeFile(t, current, "old client", 0o755)
-		if err := replaceExecutable(current, filepath.Join(dir, "nothing-here"), false); err == nil {
+		if err := replaceExecutable(current, filepath.Join(dir, "nothing-here"), thisPlatform("0.6.0"), false); err == nil {
 			t.Fatal("no error")
 		}
 		if got, _ := os.ReadFile(current); string(got) != "old client" {
@@ -939,7 +1059,7 @@ func TestReplaceExecutable_Failures(t *testing.T) {
 		writeFile(t, current, "old client", 0o755)
 		newBin := filepath.Join(t.TempDir(), "burrow")
 		writeFile(t, newBin, "", 0o755)
-		if err := replaceExecutable(current, newBin, true); err == nil {
+		if err := replaceExecutable(current, newBin, thisPlatform("0.6.0"), true); err == nil {
 			t.Fatal("no error")
 		}
 		if got, _ := os.ReadFile(current); string(got) != "old client" {
@@ -956,14 +1076,174 @@ func TestReplaceExecutable_Failures(t *testing.T) {
 			t.Fatal(err)
 		}
 		newBin := filepath.Join(t.TempDir(), "burrow")
-		writeFile(t, newBin, "new client", 0o755)
-		if err := replaceExecutable(target, newBin, false); err == nil {
+		writeFile(t, newBin, fakeClient("0.6.0"), 0o755)
+		if err := replaceExecutable(target, newBin, thisPlatform("0.6.0"), false); err == nil {
 			t.Fatal("a directory was replaced")
 		}
 		if got := names(t, dir); len(got) != 1 {
 			t.Fatalf("directory holds %v", got)
 		}
 	})
+}
+
+// ownCertServer is an HTTPS server on this machine with a certificate of its
+// own: nothing trusts it but the pool that is returned.
+func ownCertServer(t *testing.T, h http.Handler) (*httptest.Server, *x509.CertPool) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "release host"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IsCA: true, BasicConstraintsValid: true,
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(h)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(cert)
+	return srv, pool
+}
+
+// releaseHost serves the relay's files from another address and counts what
+// it was asked.
+type releaseHost struct {
+	mu   sync.Mutex
+	hits int
+}
+
+func (rh *releaseHost) handler(ur *updateRelay) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rh.mu.Lock()
+		rh.hits++
+		rh.mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/checksums.txt") {
+			_, _ = io.WriteString(w, ur.checksums)
+			return
+		}
+		_, _ = w.Write(ur.archive)
+	})
+}
+
+func (rh *releaseHost) asked() int {
+	rh.mu.Lock()
+	defer rh.mu.Unlock()
+	return rh.hits
+}
+
+// The relay's TLS settings are for the relay. The release host its redirects
+// point at is checked like any other web site.
+func TestFetch_RelayTLSSettingsStayWithTheRelay(t *testing.T) {
+	setup := func(t *testing.T) (*updateRelay, *releaseHost) {
+		ur := newUpdateRelay(t, true)
+		ur.archive = tarGz(t, tarEntry{name: "burrow", body: "new client"})
+		ur.checksums = sumLine(ur.archive, linuxArchive)
+		return ur, &releaseHost{}
+	}
+	insecure := func() *http.Client {
+		return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // the setting under test
+	}
+
+	t.Run("relay with a private CA, release host trusted by default", func(t *testing.T) {
+		tmp := tempRoot(t)
+		ur, rh := setup(t)
+		release, pool := ownCertServer(t, rh.handler(ur))
+		ur.releaseBase = release.URL
+		s := ur.source("linux", "amd64") // trusts the relay's certificate and nothing else
+		s.ReleaseRootCAs = pool          // stands in for the system's roots
+		bin, cleanup, err := s.Fetch(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := os.ReadFile(bin); string(got) != "new client" {
+			t.Fatalf("extracted %q", got)
+		}
+		cleanup()
+		mustBeEmpty(t, tmp)
+		if rh.asked() != 2 {
+			t.Fatalf("the release host was asked %d times, want 2", rh.asked())
+		}
+	})
+	t.Run("relay's certificate unchecked, release host still checked", func(t *testing.T) {
+		tmp := tempRoot(t)
+		ur, rh := setup(t)
+		release, _ := ownCertServer(t, rh.handler(ur))
+		ur.releaseBase = release.URL
+		s := ur.source("linux", "amd64")
+		s.HTTP = insecure() // ReleaseRootCAs stays nil: the system's roots
+		_, _, err := s.Fetch(context.Background())
+		var ua x509.UnknownAuthorityError
+		if !errors.As(err, &ua) {
+			t.Fatalf("err = %v, want an untrusted-certificate error", err)
+		}
+		if rh.asked() != 0 {
+			t.Fatal("the release host was asked over an unchecked connection")
+		}
+		mustBeEmpty(t, tmp)
+	})
+	t.Run("the relay's own CA does not vouch for the release host", func(t *testing.T) {
+		tmp := tempRoot(t)
+		ur, rh := setup(t)
+		// A second server with the very certificate the relay's client trusts.
+		release := httptest.NewTLSServer(rh.handler(ur))
+		t.Cleanup(release.Close)
+		ur.releaseBase = release.URL
+		_, _, err := ur.source("linux", "amd64").Fetch(context.Background())
+		var ua x509.UnknownAuthorityError
+		if !errors.As(err, &ua) {
+			t.Fatalf("err = %v, want an untrusted-certificate error", err)
+		}
+		if rh.asked() != 0 {
+			t.Fatal("the release host was asked")
+		}
+		mustBeEmpty(t, tmp)
+	})
+	t.Run("a server name for the relay is not used for the release host", func(t *testing.T) {
+		tempRoot(t)
+		ur, rh := setup(t)
+		release, pool := ownCertServer(t, rh.handler(ur))
+		ur.releaseBase = release.URL
+		relayPool := x509.NewCertPool()
+		relayPool.AddCert(ur.Certificate())
+		s := ur.source("linux", "amd64")
+		// example.com is a name in the relay's test certificate, not in the release host's.
+		s.HTTP = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: relayPool, ServerName: "example.com"}}}
+		s.ReleaseRootCAs = pool
+		_, cleanup, err := s.Fetch(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		cleanup()
+	})
+}
+
+func TestUpdateSource_Validate(t *testing.T) {
+	ok := UpdateSource{Relay: "https://burrow.example.com", Version: "0.6.0", OS: "linux", Arch: "amd64"}
+	if err := ok.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []UpdateSource{
+		{Relay: "http://burrow.example.com", OS: "linux", Arch: "amd64"},
+		{Relay: "https://burrow.example.com", OS: "../x", Arch: "amd64"},
+		{Relay: "https://burrow.example.com", OS: "linux"},
+	} {
+		if err := s.Validate(); err == nil {
+			t.Errorf("%+v was accepted", s)
+		}
+	}
 }
 
 func TestRemoveReplacedExecutable(t *testing.T) {

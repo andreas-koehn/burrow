@@ -8,6 +8,8 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,10 +19,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ankoehn/burrow/internal/version"
@@ -45,6 +49,9 @@ var (
 	maxBinaryBytes int64 = 200 << 20
 	// updateTimeout bounds both downloads together.
 	updateTimeout = 15 * time.Minute
+	// stagedCheckTimeout is how long the new binary may take to answer
+	// `version` before it replaces the old one.
+	stagedCheckTimeout = 10 * time.Second
 )
 
 const (
@@ -59,6 +66,15 @@ const (
 // ErrChecksum says that the downloaded archive is not the file checksums.txt
 // lists, or that checksums.txt lists no usable SHA-256 for it.
 var ErrChecksum = errors.New("downloaded client does not match its checksum")
+
+// ErrRunCheck says that the new binary did not pass its run check: it could
+// not be started, did not end in time, failed, or reported another version
+// than the one that was asked for. It is never fs.ErrPermission.
+var ErrRunCheck = errors.New("the new burrow did not pass its run check")
+
+// ErrStillRunning says that the binary an earlier update put aside on Windows
+// cannot be removed, because a process started from it is still running.
+var ErrStillRunning = errors.New("a previous burrow is still running; stop it and run burrow update again")
 
 // ErrNoBuild says that the relay hands out no client for the platform.
 var ErrNoBuild = errors.New("the relay has no burrow build for this platform")
@@ -100,9 +116,13 @@ func ArchiveName(relayVersion, goos, goarch string) string {
 
 // UpdateSource is where a client for one platform comes from.
 type UpdateSource struct {
-	// HTTP supplies the transport and with it the TLS settings. Its redirect
+	// HTTP supplies the transport, and with it the TLS settings, for requests
+	// to the relay's own host and port — and for those only. Its redirect
 	// policy, cookie jar and timeout are not used.
 	HTTP *http.Client
+	// ReleaseRootCAs is what every other host a redirect leads to is verified
+	// against. Nil, the value outside tests, means the system's roots.
+	ReleaseRootCAs *x509.CertPool
 	// Relay is the relay's dashboard address, https://host[:port]. Plain
 	// http:// is accepted for this machine only (localhost or a loopback
 	// address).
@@ -147,16 +167,78 @@ func (s UpdateSource) origin() (string, error) {
 	return u.Scheme + "://" + u.Host, nil
 }
 
-// httpClient is the client for the downloads: the caller's transport, no
-// cookies, and a redirect policy that stays on HTTPS.
+// Validate checks the relay address and the platform without sending
+// anything. Fetch does the same before its first request.
+func (s UpdateSource) Validate() error {
+	if _, err := s.origin(); err != nil {
+		return err
+	}
+	if !platformPartRE.MatchString(s.OS) || !platformPartRE.MatchString(s.Arch) {
+		return errors.New("the platform to download for is not valid")
+	}
+	return nil
+}
+
+// originKey is scheme://host:port of u with the host in lower case and the
+// scheme's port filled in.
+func originKey(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		port = "443"
+		if u.Scheme == "http" {
+			port = "80"
+		}
+	}
+	return u.Scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port
+}
+
+// splitTransport sends requests for the relay's own origin through the
+// transport the caller configured for the relay, and every other request
+// through one with default TLS settings.
+type splitTransport struct {
+	relayKey string
+	relay    http.RoundTripper
+	other    http.RoundTripper
+}
+
+func (t *splitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if originKey(req.URL) == t.relayKey {
+		return t.relay.RoundTrip(req)
+	}
+	return t.other.RoundTrip(req)
+}
+
+// httpClient is the client for the downloads, and a function that closes what
+// it opened.
 //
 // A release host answers a download with a redirect to its storage, so
 // redirects are followed, to other hosts too. The requests carry no token, no
 // cookie and no credentials; a redirect whose address holds credentials, and
 // one that leaves HTTPS, is not followed. When the relay itself is on this
 // machine over plain HTTP, a redirect may stay on this machine over plain HTTP.
-func (s UpdateSource) httpClient(plainRelay bool) *http.Client {
+//
+// What the user set for the relay's certificate (a CA of its own, another
+// server name, no verification) holds for the relay's own host and port and
+// for nothing else. Every other host is verified against the system's roots
+// under its own name, whatever was set for the relay.
+func (s UpdateSource) httpClient(origin string) (*http.Client, func()) {
+	plainRelay := strings.HasPrefix(origin, "http://")
+	relay := http.DefaultTransport
+	if s.HTTP != nil && s.HTTP.Transport != nil {
+		relay = s.HTTP.Transport
+	}
+	other := &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		TLSClientConfig:     &tls.Config{RootCAs: s.ReleaseRootCAs, MinVersion: tls.VersionTLS12},
+		TLSHandshakeTimeout: 30 * time.Second,
+		DisableKeepAlives:   true,
+	}
+	key := origin
+	if u, err := url.Parse(origin); err == nil {
+		key = originKey(u)
+	}
 	hc := &http.Client{
+		Transport: &splitTransport{relayKey: key, relay: relay, other: other},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			switch {
 			case len(via) > maxUpdateRedirects:
@@ -171,10 +253,7 @@ func (s UpdateSource) httpClient(plainRelay bool) *http.Client {
 			return errors.New("a redirect away from https is not followed")
 		},
 	}
-	if s.HTTP != nil {
-		hc.Transport = s.HTTP.Transport
-	}
-	return hc
+	return hc, other.CloseIdleConnections
 }
 
 // download gets rawURL and writes at most limit bytes of the answer to w.
@@ -261,19 +340,20 @@ func checksumFor(sums []byte, name string) (string, error) {
 // carry no token.
 func (s UpdateSource) Fetch(ctx context.Context) (binPath string, cleanup func(), err error) {
 	nothing := func() {}
+	if err := s.Validate(); err != nil {
+		return "", nothing, err
+	}
 	origin, err := s.origin()
 	if err != nil {
 		return "", nothing, err
-	}
-	if !platformPartRE.MatchString(s.OS) || !platformPartRE.MatchString(s.Arch) {
-		return "", nothing, errors.New("the platform to download for is not valid")
 	}
 	archiveName := ArchiveName(s.Version, s.OS, s.Arch)
 	binName := "burrow"
 	if s.OS == "windows" {
 		binName = "burrow.exe"
 	}
-	hc := s.httpClient(strings.HasPrefix(origin, "http://"))
+	hc, closeHTTP := s.httpClient(origin)
+	defer closeHTTP()
 
 	ctx, cancel := context.WithTimeout(ctx, updateTimeout)
 	defer cancel()
@@ -512,6 +592,14 @@ func unpackZip(path, binName, dest string) error {
 // new one takes its place.
 const replacedSuffix = ".old"
 
+// stagedPattern is the os.CreateTemp pattern of the new file next to current.
+// It keeps the extension: Windows starts a file by it.
+func stagedPattern(current string) string {
+	base := filepath.Base(current)
+	ext := filepath.Ext(base)
+	return strings.TrimSuffix(base, ext) + ".new-*" + ext
+}
+
 // CheckReplaceable reports whether a new file can be put next to current: the
 // error is fs.ErrPermission when the directory is not writable by this user.
 // It leaves nothing behind.
@@ -523,7 +611,7 @@ func CheckReplaceable(current string) error {
 	if !st.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file", current)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(current), filepath.Base(current)+".*.new")
+	tmp, err := os.CreateTemp(filepath.Dir(current), stagedPattern(current))
 	if err != nil {
 		return err
 	}
@@ -532,22 +620,107 @@ func CheckReplaceable(current string) error {
 	return os.Remove(name)
 }
 
+// StagedCheck says what the new binary is, for the run check before it
+// replaces the old one.
+type StagedCheck struct {
+	// Version is the version the new binary must report: the relay's, as
+	// discovery gave it. For a release its `version` output must name exactly
+	// that version. For an untagged build, whose output names no version that
+	// could be compared, ending with exit code 0 is enough.
+	Version string
+	// OS and Arch are the platform the binary was downloaded for. A binary
+	// for another platform than the running one cannot be started and is not
+	// checked; empty values stand for the running platform.
+	OS, Arch string
+}
+
+// cappedBuffer keeps the first bytes written to it and drops the rest.
+type cappedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if room := c.max - c.buf.Len(); room > 0 {
+		c.buf.Write(p[:min(room, len(p))])
+	}
+	return len(p), nil
+}
+
+// runStaged starts the file at path with the one argument `version` and
+// checks what it answers. The process gets none of this process's environment
+// (so no token), no input, and nothing on its command line that was
+// downloaded. Every failure is ErrRunCheck.
+func runStaged(path string, c StagedCheck) error {
+	if (c.OS != "" && c.OS != runtime.GOOS) || (c.Arch != "" && c.Arch != runtime.GOARCH) {
+		return nil
+	}
+	path, err := filepath.Abs(path) // never a lookup in PATH
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrRunCheck, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), stagedCheckTimeout)
+	defer cancel()
+	out := &cappedBuffer{max: 4096}
+	for try := 0; ; try++ {
+		out.buf.Reset()
+		cmd := exec.CommandContext(ctx, path, "version")
+		cmd.Env = []string{"LC_ALL=C"}
+		cmd.Dir = filepath.Dir(path)
+		cmd.Stdout = out
+		cmd.WaitDelay = time.Second
+		err = cmd.Run()
+		// A file that was just written can be "busy" for a moment when
+		// another thread of this process forked meanwhile.
+		if !errors.Is(err, syscall.ETXTBSY) || try >= 4 || ctx.Err() != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	switch {
+	case ctx.Err() != nil:
+		return fmt.Errorf("%w: it did not answer `version` within %s", ErrRunCheck, stagedCheckTimeout)
+	case err != nil:
+		// %v, not %w: "permission denied" from a mount that forbids running
+		// files is not a directory that cannot be written to.
+		return fmt.Errorf("%w: it cannot be run on this machine (%v)", ErrRunCheck, err)
+	}
+	want, tagged := ReleaseVersion(c.Version)
+	if !tagged {
+		return nil
+	}
+	line, _, _ := strings.Cut(out.buf.String(), "\n")
+	fields := strings.Fields(line)
+	if len(fields) < 2 || fields[0] != "burrow" {
+		return fmt.Errorf("%w: it does not answer `version` like burrow", ErrRunCheck)
+	}
+	if got, ok := ReleaseVersion(fields[1]); !ok || got != want {
+		return fmt.Errorf("%w: it is not version %s", ErrRunCheck, want)
+	}
+	return nil
+}
+
 // ReplaceExecutable swaps newBin into the place of the binary at current,
 // which is a regular file (the caller resolves symbolic links first).
 //
 // The new content is written to a new file in the same directory with the old
-// file's permission bits and then renamed over the old one: the path holds the
-// old binary or the new one at every moment, never a part of one. On Windows a
-// running file cannot be replaced, so the old one is first renamed to
-// <current>.old; RemoveReplacedExecutable removes that on a later start. When
-// anything fails the old binary is where it was and the new file is removed.
-// A directory this user cannot write to gives an error that is
-// fs.ErrPermission. newBin itself is left alone.
-func ReplaceExecutable(current, newBin string) error {
-	return replaceExecutable(current, newBin, runtime.GOOS == "windows")
+// file's permission bits. That file is then run once with `version` (see
+// StagedCheck); only one that starts and reports the expected version goes
+// on. It is then renamed over the old one: the path holds the old binary or
+// the new one at every moment, never a part of one. On Windows a running file
+// cannot be replaced, so the old one is first renamed to <current>.old;
+// RemoveReplacedExecutable removes that on a later start.
+//
+// When anything fails the old binary is where it was and the new file is
+// removed. A directory this user cannot write to gives an error that is
+// fs.ErrPermission; a new binary that fails its run check gives ErrRunCheck;
+// on Windows, a <current>.old that a running process still holds gives
+// ErrStillRunning. newBin itself is left alone.
+func ReplaceExecutable(current, newBin string, check StagedCheck) error {
+	return replaceExecutable(current, newBin, check, runtime.GOOS == "windows")
 }
 
-func replaceExecutable(current, newBin string, aside bool) (err error) {
+func replaceExecutable(current, newBin string, check StagedCheck, aside bool) (err error) {
 	st, err := os.Lstat(current)
 	if err != nil {
 		return err
@@ -561,7 +734,7 @@ func replaceExecutable(current, newBin string, aside bool) (err error) {
 	}
 	defer src.Close()
 
-	tmp, err := os.CreateTemp(filepath.Dir(current), filepath.Base(current)+".*.new")
+	tmp, err := os.CreateTemp(filepath.Dir(current), stagedPattern(current))
 	if err != nil {
 		return err
 	}
@@ -587,13 +760,20 @@ func replaceExecutable(current, newBin string, aside bool) (err error) {
 	if err != nil {
 		return err
 	}
+	if err = runStaged(tmpName, check); err != nil {
+		return err
+	}
 
 	if !aside {
 		return os.Rename(tmpName, current)
 	}
 	old := current + replacedSuffix
 	if rerr := os.Remove(old); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
-		return rerr
+		// The directory took the new file a moment ago, so it is writable:
+		// what cannot be removed is in use. Not %w: this is no permission
+		// problem of the directory.
+		err = fmt.Errorf("%w (%s is in use)", ErrStillRunning, old)
+		return err
 	}
 	if err = os.Rename(current, old); err != nil {
 		return err

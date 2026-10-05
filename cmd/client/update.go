@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -28,6 +29,12 @@ var executablePath = func() (string, error) {
 	return filepath.EvalSymlinks(p)
 }
 
+// releaseRootCAs is what the hosts behind the relay's download redirects are
+// verified against. It is nil, the system's roots, outside tests: --cacert,
+// --server-name and --insecure are settings for the relay and reach no other
+// host.
+var releaseRootCAs *x509.CertPool
+
 // removeReplacedAtStart removes the previous binary that an update on Windows
 // had to leave next to the new one, because it was still running.
 func removeReplacedAtStart(goos string) {
@@ -53,8 +60,9 @@ func shellWord(s string) string {
 }
 
 // notWritableMessage says what to run instead when the directory of the binary
-// at exe cannot be written to. relay is the checked relay address.
-func notWritableMessage(goos, exe, relay string) string {
+// at exe cannot be written to. relay is the checked relay address; flags are
+// the flags of this run to repeat, each value its own element.
+func notWritableMessage(goos, exe, relay string, flags []string) string {
 	if goos == "windows" {
 		dir := exe
 		if i := strings.LastIndexAny(exe, `\/`); i >= 0 {
@@ -65,14 +73,40 @@ func notWritableMessage(goos, exe, relay string) string {
 			"  irm " + relay + "/install.ps1 | iex"
 	}
 	dir := filepath.Dir(exe)
-	msg := dir + " is not writable by this user. burrow was not updated. Run:\n" +
-		"  sudo " + shellWord(exe) + " update " + relay + "\n"
+	line := "  sudo " + shellWord(exe) + " update " + relay
+	for _, f := range flags {
+		line += " " + shellWord(f)
+	}
+	msg := dir + " is not writable by this user. burrow was not updated. Run:\n" + line + "\n"
 	if dir == "/usr/local/bin" {
 		// Where the installer puts it with --system.
 		msg += "or install it again:\n" +
 			"  curl -fsSL " + relay + "/install.sh | sudo sh -s -- --system\n"
 	}
 	return strings.TrimRight(msg, "\n")
+}
+
+// repeatedFlags are the flags of this run that the same command needs when it
+// is run again by another user. `update` takes no token, so none can be here.
+func repeatedFlags(g globalFlags, force bool) []string {
+	var out []string
+	if g.cacert != "" {
+		ca := g.cacert
+		if abs, err := filepath.Abs(ca); err == nil {
+			ca = abs
+		}
+		out = append(out, "--cacert", ca)
+	}
+	if g.serverName != "" {
+		out = append(out, "--server-name", g.serverName)
+	}
+	if g.insecure {
+		out = append(out, "--insecure")
+	}
+	if force {
+		out = append(out, "--force")
+	}
+	return out
 }
 
 // updateRelay returns the relay to update from: the argument, or else the
@@ -132,13 +166,20 @@ func updateDiscovery(ctx context.Context, d deps, g globalFlags, relay string) (
 }
 
 // notUpdated turns a failed download or a failed replacement into the
-// command's error. exe is the binary that stays as it was.
-func notUpdated(ctx context.Context, err error, exe, relay string) error {
+// command's error. exe is the binary that stays as it was; flags are the
+// flags to repeat in a command to run instead.
+func notUpdated(ctx context.Context, err error, exe, relay string, flags []string) error {
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled):
 		return &exitError{code: exitGeneral, msg: "Interrupted. burrow was not updated."}
+	case errors.Is(err, client.ErrStillRunning):
+		return &exitError{code: exitGeneral, msg: "burrow was not updated: " + err.Error() + ".\n" +
+			"Stop every running burrow (a service too), then run: burrow update"}
+	case errors.Is(err, client.ErrRunCheck):
+		return &exitError{code: exitGeneral, msg: "burrow was not updated: " + err.Error() + ".\n" +
+			"The download was started once with `version` before taking the old binary's place. The old one is still installed."}
 	case errors.Is(err, fs.ErrPermission):
-		return &exitError{code: exitGeneral, msg: notWritableMessage(runtime.GOOS, exe, relay)}
+		return &exitError{code: exitGeneral, msg: notWritableMessage(runtime.GOOS, exe, relay, flags)}
 	case errors.Is(err, client.ErrNoBuild):
 		return &exitError{code: exitGeneral, msg: "burrow was not updated: " + err.Error() + ".\n" +
 			"The builds a relay hands out are listed at " + relay + "/download/"}
@@ -147,7 +188,11 @@ func notUpdated(ctx context.Context, err error, exe, relay string) error {
 			"Nothing was installed. Run it again; when it fails the same way, the release behind this relay is damaged or incomplete."}
 	}
 	if problem, ok := certProblem(err); ok {
-		return &exitError{code: exitUnreachable, msg: "burrow was not updated: " + problem + ".\n" + fixCacert}
+		// Discovery reached the relay just before, so this is most likely the
+		// host its download redirect points at.
+		return &exitError{code: exitUnreachable, msg: "burrow was not updated: " + problem + ".\n" +
+			"That certificate came from the relay or from the host its download redirects to. " +
+			"The relay's TLS flags do not apply to that other host: it must have a certificate this system trusts."}
 	}
 	return &exitError{code: exitGeneral, msg: "burrow was not updated: " + err.Error() + "."}
 }
@@ -173,7 +218,7 @@ func runUpdate(cmd *cobra.Command, d deps, args []string) error {
 	defer stop()
 
 	if g.insecure {
-		fmt.Fprintln(errOut, "Warning: --insecure is set: the relay's certificate is not checked. The download is only as good as the network it crosses.")
+		fmt.Fprintln(errOut, "Warning: --insecure is set: the relay's certificate is not checked, so its answers and redirects can be replaced on the way.")
 	}
 	disc, err := updateDiscovery(ctx, d, g, relay)
 	if err != nil {
@@ -201,10 +246,23 @@ func runUpdate(cmd *cobra.Command, d deps, args []string) error {
 		fmt.Fprintf(out, "burrow %s is up to date\n", target)
 		return nil
 	}
+	// The client follows the relay, also back to an older version; that is
+	// said, not just done.
+	downgrade := false
+	if tagged {
+		if c, ok := compareVersions(cur, target); ok && c > 0 {
+			downgrade = true
+		}
+	}
 	if check {
+		if downgrade {
+			fmt.Fprintf(out, "burrow %s → %s is available. It is a downgrade: the relay runs the older version. Run: burrow update\n", cur, target)
+			return nil
+		}
 		fmt.Fprintf(out, "burrow %s → %s is available. Run: burrow update\n", cur, target)
 		return nil
 	}
+	flags := repeatedFlags(g, force)
 
 	// Where to, before anything is downloaded.
 	exe, err := executablePath()
@@ -212,25 +270,37 @@ func runUpdate(cmd *cobra.Command, d deps, args []string) error {
 		return &exitError{code: exitGeneral, msg: "burrow was not updated: cannot find the running binary: " + err.Error() + "."}
 	}
 	if err := client.CheckReplaceable(exe); err != nil {
-		return notUpdated(ctx, err, exe, relay)
+		return notUpdated(ctx, err, exe, relay, flags)
 	}
 
 	hc, err := relayHTTPClient(g)
 	if err != nil {
 		return err
 	}
+	src := client.UpdateSource{
+		HTTP: hc, ReleaseRootCAs: releaseRootCAs,
+		Relay: relay, Version: disc.Version, OS: runtime.GOOS, Arch: runtime.GOARCH,
+	}
+	if err := src.Validate(); err != nil {
+		return notUpdated(ctx, err, exe, relay, flags)
+	}
 	fmt.Fprintf(out, "Downloading burrow %s for %s/%s from %s\n", target, runtime.GOOS, runtime.GOARCH, relay)
-	src := client.UpdateSource{HTTP: hc, Relay: relay, Version: disc.Version, OS: runtime.GOOS, Arch: runtime.GOARCH}
 	bin, cleanup, err := src.Fetch(ctx)
 	if err != nil {
-		return notUpdated(ctx, err, exe, relay)
+		return notUpdated(ctx, err, exe, relay, flags)
 	}
 	defer cleanup()
 	if ctx.Err() != nil {
-		return notUpdated(ctx, ctx.Err(), exe, relay)
+		return notUpdated(ctx, ctx.Err(), exe, relay, flags)
 	}
-	if err := client.ReplaceExecutable(exe, bin); err != nil {
-		return notUpdated(ctx, err, exe, relay)
+	// The new binary is started once with `version` before it takes over.
+	staged := client.StagedCheck{Version: disc.Version, OS: runtime.GOOS, Arch: runtime.GOARCH}
+	if err := client.ReplaceExecutable(exe, bin, staged); err != nil {
+		return notUpdated(ctx, err, exe, relay, flags)
+	}
+	if downgrade {
+		fmt.Fprintf(out, "Downgraded burrow %s → %s, the relay's version\n", cur, target)
+		return nil
 	}
 	fmt.Fprintf(out, "Updated burrow %s → %s\n", cur, target)
 	return nil
@@ -244,14 +314,19 @@ func newUpdateCmd(d deps) *cobra.Command {
 		Long: "Replace this binary with the client that matches the relay's version.\n\n" +
 			"The relay is the one this machine is signed in to, or the address given.\n" +
 			"The client is downloaded through the relay's download address over HTTPS,\n" +
-			"its SHA-256 is compared with the release's checksums, and only then does it\n" +
-			"take the place of the running binary. The checksum catches a damaged or\n" +
+			"its SHA-256 is compared with the release's checksums, it is started once\n" +
+			"with `version`, and only then does it take the place of the running binary.\n" +
+			"A relay that runs an older version than this client is followed too; the\n" +
+			"output calls that a downgrade. The checksum catches a damaged or\n" +
 			"incomplete download; it comes from the same place as the client itself.\n" +
 			"The token is not sent.\n\n" +
 			"When the binary's directory is not writable, the command stops and prints\n" +
 			"what to run instead. Nothing updates by itself: only this command does.\n\n" +
-			"Exit code 0 when updated or already up to date, 3 when no relay is known,\n" +
-			"5 when the relay cannot be reached or its certificate is not trusted.",
+			"--cacert, --server-name and --insecure apply to the relay only. A host the\n" +
+			"relay's download address redirects to needs a certificate this system trusts.\n\n" +
+			"Exit code 0 when updated or already up to date, 1 when it was not updated\n" +
+			"(the old binary stays), 2 when used wrongly, 3 when no relay is known,\n" +
+			"5 when the relay or the download host cannot be reached or trusted.",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 1 {
 				return usageWithLine(cmd, "%s takes at most one relay address", cmd.CommandPath())

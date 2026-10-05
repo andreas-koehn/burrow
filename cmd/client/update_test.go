@@ -2,19 +2,29 @@ package main
 
 import (
 	"archive/tar"
-	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"errors"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/client"
 )
@@ -27,23 +37,16 @@ func init() {
 	}
 }
 
-// clientArchive packs body as the client binary the way a release does for
-// the platform the tests run on.
+// fakeClient is a stand-in for the client binary: a shell script that
+// answers `version` the way burrow does.
+func fakeClient(v string) string {
+	return "#!/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = version ] || exit 64\necho 'burrow " + v + " (commit abc1234, built 2026-10-05, linux/amd64)'\n"
+}
+
+// clientArchive packs body as the client binary the way a release does.
 func clientArchive(t *testing.T, body string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
-	if runtime.GOOS == "windows" {
-		zw := zip.NewWriter(&buf)
-		w, err := zw.Create("burrow.exe")
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, _ = io.WriteString(w, body)
-		if err := zw.Close(); err != nil {
-			t.Fatal(err)
-		}
-		return buf.Bytes()
-	}
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 	for _, f := range [][2]string{{"LICENSE", "text"}, {"burrow", body}} {
@@ -61,6 +64,38 @@ func clientArchive(t *testing.T, body string) []byte {
 	return buf.Bytes()
 }
 
+// ownCertServer is an HTTPS server on this machine with a certificate of its
+// own: nothing trusts it but the pool that is returned.
+func ownCertServer(t *testing.T, h http.Handler) (*httptest.Server, *x509.CertPool) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "release host"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IsCA: true, BasicConstraintsValid: true,
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(h)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(cert)
+	return srv, pool
+}
+
 // updateFixture is a relay that runs relayVersion and hands out a client, the
 // file that stands in for the running binary, and the directory temporary
 // files go to.
@@ -75,13 +110,22 @@ type updateFixture struct {
 	checksums string
 	// override answers every request instead of the relay when set.
 	override http.HandlerFunc
+	// newClient is the binary in the archive.
+	newClient string
+	ca        string // the relay's certificate, for --cacert
+	// releaseBase is the origin of another host the relay's redirects point
+	// at; releaseHits counts what that host was asked.
+	releaseBase string
+	releaseHits atomic.Int32
 }
 
 const oldClient = "the old client"
-const newClient = "the new client"
 
 func newUpdateFixture(t *testing.T, clientVersion, relayVersion string) *updateFixture {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in client is a shell script")
+	}
 	f := &updateFixture{h: newHarness(t)}
 	f.h.realDiscover = true
 	asVersion(t, clientVersion)
@@ -91,11 +135,7 @@ func newUpdateFixture(t *testing.T, clientVersion, relayVersion string) *updateF
 		t.Setenv(k, f.tmp)
 	}
 	f.exeDir = t.TempDir()
-	name := "burrow"
-	if runtime.GOOS == "windows" {
-		name = "burrow.exe"
-	}
-	f.exe = filepath.Join(f.exeDir, name)
+	f.exe = filepath.Join(f.exeDir, "burrow")
 	if err := os.WriteFile(f.exe, []byte(oldClient), 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +143,8 @@ func newUpdateFixture(t *testing.T, clientVersion, relayVersion string) *updateF
 	executablePath = func() (string, error) { return f.exe, nil }
 	t.Cleanup(func() { executablePath = prev })
 
-	f.archive = clientArchive(t, newClient)
+	f.newClient = fakeClient(relayVersion)
+	f.archive = clientArchive(t, f.newClient)
 	sum := sha256.Sum256(f.archive)
 	f.checksums = hex.EncodeToString(sum[:]) + "  " + client.ArchiveName(relayVersion, runtime.GOOS, runtime.GOARCH) + "\n"
 
@@ -117,9 +158,9 @@ func newUpdateFixture(t *testing.T, clientVersion, relayVersion string) *updateF
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"control":"127.0.0.1:7000","version":"`+relayVersion+`","min_client_version":"","protocol_version":1}`)
 		case "/download/burrow/checksums.txt":
-			http.Redirect(w, r, "/files/checksums.txt", http.StatusFound)
+			http.Redirect(w, r, f.releaseBase+"/files/checksums.txt", http.StatusFound)
 		case "/download/burrow/" + runtime.GOOS + "/" + runtime.GOARCH:
-			http.Redirect(w, r, "/files/asset-0b5c", http.StatusFound)
+			http.Redirect(w, r, f.releaseBase+"/files/asset-0b5c", http.StatusFound)
 		case "/files/checksums.txt":
 			_, _ = io.WriteString(w, f.checksums)
 		case "/files/asset-0b5c":
@@ -128,13 +169,37 @@ func newUpdateFixture(t *testing.T, clientVersion, relayVersion string) *updateF
 			http.NotFound(w, r)
 		}
 	})
+	f.ca = f.rs.caFile(t)
 	return f
 }
 
 // update runs `burrow update` with the relay's certificate trusted.
 func (f *updateFixture) update(args ...string) int {
 	f.h.t.Helper()
-	return f.h.exec(append([]string{"update", "--cacert", f.rs.caFile(f.h.t)}, args...)...)
+	return f.h.exec(append([]string{"update", "--cacert", f.ca}, args...)...)
+}
+
+// otherReleaseHost moves the files to a second server with a certificate of
+// its own and makes pool what stands in for the system's roots. trusted says
+// whether that pool knows the server.
+func (f *updateFixture) otherReleaseHost(trusted bool) {
+	t := f.h.t
+	t.Helper()
+	release, pool := ownCertServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.releaseHits.Add(1)
+		if strings.HasSuffix(r.URL.Path, "/checksums.txt") {
+			_, _ = io.WriteString(w, f.checksums)
+			return
+		}
+		_, _ = w.Write(f.archive)
+	}))
+	f.releaseBase = release.URL
+	if !trusted {
+		pool = x509.NewCertPool()
+	}
+	prev := releaseRootCAs
+	releaseRootCAs = pool
+	t.Cleanup(func() { releaseRootCAs = prev })
 }
 
 // downloads counts the requests for anything but discovery.
@@ -261,7 +326,7 @@ func TestUpdate_ReplacesTheBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != newClient {
+	if string(got) != f.newClient {
 		t.Fatalf("the binary holds %q", got)
 	}
 	if runtime.GOOS != "windows" {
@@ -304,7 +369,7 @@ func TestUpdate_UsesOnlyTheRelayOfTheSignIn(t *testing.T) {
 	if code := f.update(); code != 0 {
 		t.Fatalf("exit %d: %s", code, f.h.stderr.String())
 	}
-	if got, _ := os.ReadFile(f.exe); string(got) != newClient {
+	if got, _ := os.ReadFile(f.exe); string(got) != f.newClient {
 		t.Fatalf("the binary holds %q", got)
 	}
 	f.clean()
@@ -361,7 +426,7 @@ func TestUpdate_DirectoryNotWritable(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit %d, stderr %q", code, errOut)
 	}
-	for _, want := range []string{f.exeDir, "not writable", "  sudo " + f.exe + " update " + f.rs.URL + "\n"} {
+	for _, want := range []string{f.exeDir, "not writable", "  sudo " + f.exe + " update " + f.rs.URL + " --cacert " + f.ca + "\n"} {
 		if !strings.Contains(errOut, want) {
 			t.Fatalf("stderr does not contain %q:\n%s", want, errOut)
 		}
@@ -374,7 +439,7 @@ func TestUpdate_DirectoryNotWritable(t *testing.T) {
 
 func TestNotWritableMessage(t *testing.T) {
 	const relay = "https://burrow.example.com"
-	sys := notWritableMessage("linux", "/usr/local/bin/burrow", relay)
+	sys := notWritableMessage("linux", "/usr/local/bin/burrow", relay, nil)
 	for _, want := range []string{
 		"/usr/local/bin is not writable by this user",
 		"  sudo /usr/local/bin/burrow update https://burrow.example.com\n",
@@ -385,14 +450,145 @@ func TestNotWritableMessage(t *testing.T) {
 		}
 	}
 	// Somewhere else: the installer would not put it there, so it is not named.
-	opt := notWritableMessage("darwin", "/opt/my tools/burrow", relay)
-	if !strings.Contains(opt, "  sudo '/opt/my tools/burrow' update https://burrow.example.com") || strings.Contains(opt, "install.sh") {
+	opt := notWritableMessage("darwin", "/opt/my tools/burrow", relay, []string{"--cacert", "/etc/my ca.pem", "--insecure"})
+	if !strings.Contains(opt, "  sudo '/opt/my tools/burrow' update https://burrow.example.com --cacert '/etc/my ca.pem' --insecure") || strings.Contains(opt, "install.sh") {
 		t.Errorf("message:\n%s", opt)
 	}
-	win := notWritableMessage("windows", `C:\Program Files\burrow\burrow.exe`, relay)
+	win := notWritableMessage("windows", `C:\Program Files\burrow\burrow.exe`, relay, nil)
 	if strings.Contains(win, "sudo") || !strings.Contains(win, "as administrator") ||
 		!strings.Contains(win, "irm https://burrow.example.com/install.ps1 | iex") {
 		t.Errorf("message:\n%s", win)
+	}
+}
+
+// The command to run instead repeats what the user gave on the command line.
+func TestUpdate_HintRepeatsTheFlags(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("needs a user that a directory mode can stop")
+	}
+	f := newUpdateFixture(t, "0.5.0", "develop")
+	if err := os.Chmod(f.exeDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(f.exeDir, 0o755) })
+	code := f.update(f.rs.URL, "--force", "--server-name", "example.com", "--insecure")
+	want := "  sudo " + f.exe + " update " + f.rs.URL + " --cacert " + f.ca + " --server-name example.com --insecure --force\n"
+	if code != 1 || !strings.Contains(f.h.stderr.String(), want) {
+		t.Fatalf("exit %d, stderr:\n%s\nwant the line:\n%s", code, f.h.stderr.String(), want)
+	}
+	f.unchanged()
+	f.h.noToken()
+}
+
+func TestUpdate_Downgrade(t *testing.T) {
+	t.Run("check", func(t *testing.T) {
+		f := newUpdateFixture(t, "0.10.0", "0.9.2")
+		if code := f.update("--check", f.rs.URL); code != 0 {
+			t.Fatalf("exit %d: %s", code, f.h.stderr.String())
+		}
+		got := f.h.stdout.String()
+		if !strings.Contains(got, "burrow 0.10.0 → 0.9.2") || !strings.Contains(got, "downgrade") || !strings.Contains(got, "Run: burrow update") {
+			t.Fatalf("stdout = %q", got)
+		}
+		f.unchanged()
+	})
+	t.Run("update", func(t *testing.T) {
+		f := newUpdateFixture(t, "0.10.0", "0.9.2")
+		if code := f.update(f.rs.URL); code != 0 {
+			t.Fatalf("exit %d: %s", code, f.h.stderr.String())
+		}
+		got := f.h.stdout.String()
+		if !strings.Contains(got, "0.10.0 → 0.9.2") || !strings.Contains(strings.ToLower(got), "downgrade") {
+			t.Fatalf("stdout = %q", got)
+		}
+		if b, _ := os.ReadFile(f.exe); string(b) != f.newClient {
+			t.Fatalf("the binary holds %q", b)
+		}
+		f.clean()
+	})
+	t.Run("an upgrade is not called one", func(t *testing.T) {
+		f := newUpdateFixture(t, "0.9.2", "0.10.0")
+		if code := f.update(f.rs.URL); code != 0 {
+			t.Fatalf("exit %d: %s", code, f.h.stderr.String())
+		}
+		if strings.Contains(strings.ToLower(f.h.stdout.String()), "downgrade") {
+			t.Fatalf("stdout = %q", f.h.stdout.String())
+		}
+	})
+}
+
+// --cacert, --server-name and --insecure are about the relay. The release
+// host behind its redirects is checked against the system's roots regardless.
+func TestUpdate_ReleaseHostKeepsDefaultTrust(t *testing.T) {
+	t.Run("relay with its own CA, release host trusted by the system", func(t *testing.T) {
+		f := newUpdateFixture(t, "0.5.0", "0.6.0")
+		f.otherReleaseHost(true)
+		if code := f.update(f.rs.URL); code != 0 {
+			t.Fatalf("exit %d: %s", code, f.h.stderr.String())
+		}
+		if got, _ := os.ReadFile(f.exe); string(got) != f.newClient {
+			t.Fatalf("the binary holds %q", got)
+		}
+		if f.releaseHits.Load() != 2 {
+			t.Fatalf("the release host was asked %d times", f.releaseHits.Load())
+		}
+		f.clean()
+	})
+	for _, flags := range [][]string{{"--insecure"}, nil} {
+		t.Run("untrusted release host is refused "+strings.Join(flags, " "), func(t *testing.T) {
+			f := newUpdateFixture(t, "0.5.0", "0.6.0")
+			f.otherReleaseHost(false)
+			code := f.update(append([]string{f.rs.URL}, flags...)...)
+			errOut := f.h.stderr.String()
+			if code != 5 || !strings.Contains(errOut, "burrow was not updated") || !strings.Contains(errOut, "certificate is not trusted") {
+				t.Fatalf("exit %d, stderr %q", code, errOut)
+			}
+			// --cacert is for the relay; it is no fix for the release host.
+			if strings.Contains(errOut, "--cacert <ca.pem>") {
+				t.Fatalf("stderr points at --cacert: %q", errOut)
+			}
+			if f.releaseHits.Load() != 0 {
+				t.Fatal("the release host was asked over an unchecked connection")
+			}
+			f.unchanged()
+		})
+	}
+}
+
+// The downloaded binary is run once with `version` before it replaces the
+// old one.
+func TestUpdate_RunCheck(t *testing.T) {
+	cases := map[string]string{
+		"reports another version": fakeClient("0.5.9"),
+		"does not start":          "the new client",
+		"fails":                   "#!/bin/sh\nexit 1\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newUpdateFixture(t, "0.5.0", "0.6.0")
+			f.archive = clientArchive(t, body)
+			sum := sha256.Sum256(f.archive)
+			f.checksums = hex.EncodeToString(sum[:]) + "  " + client.ArchiveName("0.6.0", runtime.GOOS, runtime.GOARCH) + "\n"
+			code := f.update(f.rs.URL)
+			errOut := f.h.stderr.String()
+			if code != 1 || !strings.Contains(errOut, "burrow was not updated") || !strings.Contains(errOut, "run check") ||
+				strings.Contains(errOut, "not writable") {
+				t.Fatalf("exit %d, stderr %q", code, errOut)
+			}
+			f.unchanged()
+		})
+	}
+}
+
+func TestUpdate_HelpListsTheExitCodes(t *testing.T) {
+	h := newHarness(t)
+	if code := h.exec("update", "--help"); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	for _, want := range []string{"0 when", "1 when", "3 when", "5 when"} {
+		if !strings.Contains(h.stdout.String(), want) {
+			t.Errorf("help does not say %q", want)
+		}
 	}
 }
 
@@ -470,7 +666,7 @@ func TestUpdate_UntaggedRelayNeedsForce(t *testing.T) {
 		if !strings.HasSuffix(f.h.stdout.String(), "Updated burrow develop → develop\n") {
 			t.Fatalf("stdout = %q", f.h.stdout.String())
 		}
-		if got, _ := os.ReadFile(f.exe); string(got) != newClient {
+		if got, _ := os.ReadFile(f.exe); string(got) != f.newClient {
 			t.Fatalf("the binary holds %q", got)
 		}
 		f.clean()
