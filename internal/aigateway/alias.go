@@ -26,20 +26,19 @@ const maxAliasBody = 4 << 20
 // unchanged: an alias is a convenience, never a reason to fail a request.
 func rewriteModelAlias(r *http.Request, serviceID string, aliases AliasStore) error {
 	if aliases == nil || r.Method != http.MethodPost || r.Body == nil ||
-		!strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		!strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
 		return nil
 	}
 	head, err := io.ReadAll(io.LimitReader(r.Body, maxAliasBody+1))
-	if err != nil {
-		return err
-	}
-	if len(head) > maxAliasBody {
-		// Too large to inspect: stitch the read part back in front of the rest.
+	if err != nil || len(head) > maxAliasBody {
+		// Unreadable, or too large to inspect: stitch the read part back in
+		// front of the rest, so the upstream sees the body as the client
+		// sent it (and a read error where the client's stream broke).
 		r.Body = struct {
 			io.Reader
 			io.Closer
 		}{io.MultiReader(bytes.NewReader(head), r.Body), r.Body}
-		return nil
+		return err
 	}
 	restore := func(b []byte) {
 		r.Body = io.NopCloser(bytes.NewReader(b))

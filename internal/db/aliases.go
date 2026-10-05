@@ -84,7 +84,9 @@ func (x *DB) ListModelAliases(ctx context.Context) ([]ModelAlias, error) {
 }
 
 // GetAliasesByPriority returns all model_aliases rows matching the given alias
-// name, ordered by priority ASC then rowid ASC. This is the multi_provider
+// name, ordered by priority ASC. alias is the table's primary key, so at most
+// one row matches and the order needs no tie-breaker (SQLite's rowid, used
+// here before, does not exist on Postgres). This is the multi_provider
 // routing query — the idx_model_aliases_alias_priority index covers it.
 // v0.5.0 addition. The result is always a non-nil slice (possibly empty).
 func (x *DB) GetAliasesByPriority(ctx context.Context, alias string) ([]ModelAlias, error) {
@@ -92,7 +94,7 @@ func (x *DB) GetAliasesByPriority(ctx context.Context, alias string) ([]ModelAli
 		`SELECT alias, concrete_model, service_id, created_at, provider, priority
 		   FROM model_aliases
 		  WHERE alias=?
-		  ORDER BY priority ASC, rowid ASC`,
+		  ORDER BY priority ASC`,
 		alias,
 	)
 	if err != nil {

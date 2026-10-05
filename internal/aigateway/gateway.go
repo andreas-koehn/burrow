@@ -90,7 +90,8 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 
 	if err := rewriteModelAlias(r, p.ServiceID, g.Aliases); err != nil {
 		// Forwarding the request as sent is better than failing it.
-		g.Log.Warn("aigateway: alias lookup failed", "provider", p.Slug, "err", err)
+		// err is a failed body read or a failed alias lookup.
+		g.Log.Warn("aigateway: model alias not applied", "provider", p.Slug, "err", err)
 	}
 
 	if g.Chain == nil {

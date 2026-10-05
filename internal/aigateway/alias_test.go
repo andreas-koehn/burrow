@@ -3,10 +3,12 @@ package aigateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/ankoehn/burrow/internal/db"
 )
@@ -87,6 +89,33 @@ func TestRewriteModelAlias(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("content type is matched without regard to case", func(t *testing.T) {
+		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"fast"}`))
+		r.Header.Set("Content-Type", "Application/JSON; charset=utf-8")
+		if err := rewriteModelAlias(r, "svc1", aliases); err != nil {
+			t.Fatal(err)
+		}
+		if model, _ := bodyModel(t, r.Body); model != "qwen2.5:0.5b" {
+			t.Fatalf("model = %q", model)
+		}
+	})
+
+	// The upstream must see what the client sent up to the failure, and the
+	// failure itself: not a body that silently starts in the middle.
+	t.Run("read error keeps the bytes already read", func(t *testing.T) {
+		broken := errors.New("client went away")
+		r := httptest.NewRequest("POST", "/v1/chat/completions",
+			io.MultiReader(strings.NewReader(`{"model":"fa`), iotest.ErrReader(broken)))
+		r.Header.Set("Content-Type", "application/json")
+		if err := rewriteModelAlias(r, "svc1", aliases); !errors.Is(err, broken) {
+			t.Fatalf("err = %v, want the read error", err)
+		}
+		raw, err := io.ReadAll(r.Body)
+		if string(raw) != `{"model":"fa` || !errors.Is(err, broken) {
+			t.Fatalf("forwarded body = %q, err = %v", raw, err)
+		}
+	})
 
 	t.Run("oversized body passes through untouched", func(t *testing.T) {
 		big := `{"model":"fast","pad":"` + strings.Repeat("x", maxAliasBody) + `"}`

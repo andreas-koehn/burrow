@@ -185,6 +185,9 @@ acode DELETE "/api/v1/rate-limits/$RL" >/dev/null
 # --- model aliases -----------------------------------------------------------
 # An alias of the provider's service is rewritten on /ai/<provider>/. The
 # provider slug is the service name ("ollama"), lower-cased.
+# Keep this check below the "docker restart" in the resilience section: the
+# "ollama" provider row exists only because that restart re-runs the
+# start-time backfill while the service is in api_key mode.
 amut POST /api/v1/models/aliases "{\"alias\":\"gpt-4o-mini\",\"concrete_model\":\"$MODEL\",\"service_id\":\"$SID\",\"provider\":\"ollama\",\"priority\":0}" >/dev/null
 check "model alias gpt-4o-mini is rewritten to $MODEL" \
   "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" -H 'Content-Type: application/json' -d "$(chat "alias $RANDOM" 4 gpt-4o-mini)" "$B/ai/ollama/v1/chat/completions")" "200"

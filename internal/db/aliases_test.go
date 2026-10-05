@@ -245,3 +245,37 @@ func TestUpdateModelAliasFull(t *testing.T) {
 		t.Fatalf("update unknown: %v, want ErrNotFound", err)
 	}
 }
+
+// checkAliasLookup exercises GetAliasesByPriority the way the /ai/ gateway
+// calls it. It runs against SQLite here and against Postgres in
+// aliases_postgres_test.go, so the query has to be valid on both.
+func checkAliasLookup(t *testing.T, x *DB, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	mustUser(t, x, userID)
+	t.Cleanup(func() { _ = x.DeleteUser(context.Background(), userID) })
+	svc := seedSvc(t, x, userID, "alias-lookup")
+	alias := "alias-lookup-" + userID
+	if err := x.CreateModelAlias(ctx, ModelAlias{
+		Alias: alias, ConcreteModel: "qwen2.5:0.5b", ServiceID: svc, Provider: "ollama", Priority: 0,
+	}); err != nil {
+		t.Fatalf("create alias: %v", err)
+	}
+	t.Cleanup(func() { _ = x.DeleteModelAlias(context.Background(), alias) })
+
+	rows, err := x.GetAliasesByPriority(ctx, alias)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ConcreteModel != "qwen2.5:0.5b" || rows[0].ServiceID != svc {
+		t.Fatalf("rows = %+v", rows)
+	}
+	rows, err = x.GetAliasesByPriority(ctx, alias+"-missing")
+	if err != nil || rows == nil || len(rows) != 0 {
+		t.Fatalf("missing alias: rows %v err %v", rows, err)
+	}
+}
+
+func TestGetAliasesByPriority_Lookup(t *testing.T) {
+	checkAliasLookup(t, testDB(t), "u-alias")
+}
