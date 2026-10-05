@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"runtime/debug"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -12,13 +13,27 @@ import (
 )
 
 // AIPathHandler serves /ai/{provider}/*: it strips the "/ai/<provider>"
-// prefix and hands the request to the AI gateway.
+// prefix and hands the request to the AI gateway. Mounted on /ai and /ai/ as
+// well, where no provider is named, it answers with the JSON 404.
 func AIPathHandler(g *aigateway.Gateway) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Lets an operator match a client's failed call to the relay's logs.
 		if id := middleware.GetReqID(r.Context()); id != "" {
 			w.Header().Set("Burrow-Request-Id", id)
 		}
+		// A panic must not reach chi's Recoverer: it answers with an empty
+		// 500, and every error under /ai/ is JSON.
+		defer func() {
+			rec := recover()
+			if rec == nil {
+				return
+			}
+			if rec == http.ErrAbortHandler {
+				panic(rec)
+			}
+			g.Log.Error("aigateway: panic", "panic", rec, "stack", string(debug.Stack()))
+			aigateway.WriteError(w, http.StatusInternalServerError, "internal_error", "internal error")
+		}()
 		slug := chi.URLParam(r, "provider")
 		if !store.ValidProviderSlug(slug) {
 			aigateway.WriteError(w, http.StatusNotFound, "provider_not_found", "unknown provider")

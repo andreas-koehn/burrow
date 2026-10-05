@@ -11,8 +11,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/proxy"
 )
@@ -27,10 +31,15 @@ func (f fakeProviders) ProviderBySlug(_ context.Context, slug string) (db.AIProv
 	return p, nil
 }
 
-type fakeKeys struct{ good, id string }
+// fakeKeys holds one key, valid for one service only.
+type fakeKeys struct {
+	service, good, id string
+	calls             atomic.Int32
+}
 
-func (f fakeKeys) ValidateAPIKey(_ context.Context, _, presented string) (string, bool, error) {
-	if presented == f.good {
+func (f *fakeKeys) ValidateAPIKey(_ context.Context, serviceID, presented string) (string, bool, error) {
+	f.calls.Add(1)
+	if serviceID == f.service && presented == f.good {
 		return f.id, true, nil
 	}
 	return "", false, nil
@@ -38,11 +47,15 @@ func (f fakeKeys) ValidateAPIKey(_ context.Context, _, presented string) (string
 
 // fakeTunnels serves each dialled stream with upstream, over a net.Pipe.
 type fakeTunnels struct {
-	res      *proxy.Resolved
-	upstream http.Handler
+	res       *proxy.Resolved
+	upstream  http.Handler
+	lookupErr error
 }
 
 func (f fakeTunnels) LookupByServiceID(context.Context, string) (*proxy.Resolved, error) {
+	if f.lookupErr != nil {
+		return nil, f.lookupErr
+	}
 	if f.res == nil {
 		return nil, proxy.ErrNotFound
 	}
@@ -82,8 +95,11 @@ func (c *spyChain) DispatchMetered(w http.ResponseWriter, r *http.Request, servi
 
 func newGateway(up http.Handler, chain Chain) *Gateway {
 	return &Gateway{
-		Providers: fakeProviders{"ollama": {Slug: "ollama", Name: "Ollama", Kind: "tunnel", ServiceID: "svc1", APIFormat: "openai"}},
-		Keys:      fakeKeys{good: "sk-good", id: "key-1"},
+		Providers: fakeProviders{
+			"ollama": {Slug: "ollama", Name: "Ollama", Kind: "tunnel", ServiceID: "svc1", APIFormat: "openai"},
+			"vllm":   {Slug: "vllm", Name: "vLLM", Kind: "tunnel", ServiceID: "svc2", APIFormat: "openai"},
+		},
+		Keys: &fakeKeys{service: "svc1", good: "sk-good", id: "key-1"},
 		Tunnels: fakeTunnels{
 			res:      &proxy.Resolved{ServiceID: "svc1", AccessMode: "api_key", LocalHost: "127.0.0.1:11434"},
 			upstream: up,
@@ -231,6 +247,34 @@ func TestServe_Errors(t *testing.T) {
 		if rec.Code != 403 || errCode(t, rec) != "forbidden" {
 			t.Fatalf("status %d", rec.Code)
 		}
+		// A blocked address must not be able to probe keys.
+		if n := g.Keys.(*fakeKeys).calls.Load(); n != 0 {
+			t.Fatalf("key validator called %d times for a blocked address", n)
+		}
+		if rec.Header().Get("Burrow-Provider") != "" {
+			t.Fatal("Burrow-Provider set for an unauthenticated caller")
+		}
+	})
+	t.Run("key of another provider", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		newGateway(ok, nil).Serve(rec, withKey("sk-good"), "vllm")
+		if rec.Code != 401 || errCode(t, rec) != "invalid_api_key" {
+			t.Fatalf("status %d", rec.Code)
+		}
+	})
+	// The provider row outlived its service: the lookup fails for a reason
+	// other than "client offline".
+	t.Run("backing service gone", func(t *testing.T) {
+		g := newGateway(ok, nil)
+		g.Tunnels = fakeTunnels{lookupErr: errors.New("service by id: secret-detail")}
+		rec := httptest.NewRecorder()
+		g.Serve(rec, withKey("sk-good"), "ollama")
+		if rec.Code != 500 || errCode(t, rec) != "internal_error" {
+			t.Fatalf("status %d", rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "secret-detail") {
+			t.Fatal("internal error text leaked to the client")
+		}
 	})
 }
 
@@ -255,18 +299,123 @@ func TestServe_ValidatorErrorDoesNotLeak(t *testing.T) {
 	}
 }
 
+// streamTunnels dials a real HTTP server, so a response reaches the gateway
+// chunk by chunk instead of all at once.
+type streamTunnels struct {
+	res  *proxy.Resolved
+	addr string
+}
+
+func (f streamTunnels) LookupByServiceID(context.Context, string) (*proxy.Resolved, error) {
+	cp := *f.res
+	return &cp, nil
+}
+
+func (f streamTunnels) DialTunnelStreamByServiceID(ctx context.Context, _ string) (net.Conn, error) {
+	return (&net.Dialer{}).DialContext(ctx, "tcp", f.addr)
+}
+
+// The caller must see the first chunk while the upstream is still holding the
+// response open.
 func TestServe_StreamsWithoutBuffering(t *testing.T) {
-	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	release := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: one\n\n"))
+		_ = http.NewResponseController(w).Flush()
+		<-release
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	})
-	g := newGateway(up, nil)
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true}`))
+	}))
+	defer up.Close()
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+
+	g := newGateway(nil, nil)
+	g.Tunnels = streamTunnels{
+		res:  &proxy.Resolved{ServiceID: "svc1", AccessMode: "api_key", LocalHost: "127.0.0.1:11434"},
+		addr: up.Listener.Addr().String(),
+	}
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { g.Serve(w, r, "ollama") }))
+	defer front.Close()
+
+	req, _ := http.NewRequest("POST", front.URL+"/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true}`))
 	req.Header.Set("Authorization", "Bearer sk-good")
-	rec := httptest.NewRecorder()
-	g.Serve(rec, req, "ollama")
-	if !strings.Contains(rec.Body.String(), "data: one") || !strings.Contains(rec.Body.String(), "[DONE]") {
-		t.Fatalf("body = %q", rec.Body.String())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	first := make(chan string, 1)
+	br := bufio.NewReader(resp.Body)
+	go func() {
+		line, _ := br.ReadString('\n')
+		first <- line
+	}()
+	select {
+	case line := <-first:
+		if line != "data: one\n" {
+			t.Fatalf("first chunk = %q", line)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first chunk was held back until the upstream finished")
+	}
+	unblock()
+	rest, _ := io.ReadAll(br)
+	if !strings.Contains(string(rest), "[DONE]") {
+		t.Fatalf("rest = %q", rest)
+	}
+}
+
+func TestServe_QueryStringReachesUpstream(t *testing.T) {
+	var gotQuery string
+	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { gotQuery = r.URL.RawQuery })
+	g := newGateway(up, nil)
+	req := httptest.NewRequest("GET", "/v1/models?limit=5&q=a%20b&x=%2F", nil)
+	req.Header.Set("Authorization", "Bearer sk-good")
+	g.Serve(httptest.NewRecorder(), req, "ollama")
+	if gotQuery != "limit=5&q=a%20b&x=%2F" {
+		t.Fatalf("upstream query = %q", gotQuery)
+	}
+}
+
+// Errors the AI chain writes itself must have the /ai/ shape too.
+func TestServe_ChainErrorsUseAIShape(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	upstreamHit := false
+	up := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { upstreamHit = true })
+	post := func(g *Gateway) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[]}`))
+		req.Header.Set("Authorization", "Bearer sk-good")
+		rec := httptest.NewRecorder()
+		g.Serve(rec, req, "ollama")
+		return rec
+	}
+
+	t.Run("request too large", func(t *testing.T) {
+		chain := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, nil, log)
+		chain.MaxRequestBodyBytes = 8
+		rec := post(newGateway(up, chain))
+		if rec.Code != 413 || errCode(t, rec) != "request_too_large" {
+			t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+		}
+	})
+	t.Run("rate limited", func(t *testing.T) {
+		chain := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, nil, log)
+		// Stands in for the quota middleware: it answers through the
+		// request's error writer, as that middleware does.
+		chain.RateLimit = func(http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				aigw.ErrorWriterFrom(r.Context())(w, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded")
+			})
+		}
+		rec := post(newGateway(up, chain))
+		if rec.Code != 429 || errCode(t, rec) != "rate_limited" {
+			t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+		}
+	})
+	if upstreamHit {
+		t.Fatal("a refused request reached the upstream")
 	}
 }

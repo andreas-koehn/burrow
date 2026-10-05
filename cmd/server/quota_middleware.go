@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/quota"
 )
@@ -61,6 +62,12 @@ func buildQuotaMiddleware(e *quota.Engine, auditLogger *audit.Logger) func(http.
 			w.Header().Set("Content-Type", "application/json")
 			if dec.RetryAfter > 0 {
 				w.Header().Set("Retry-After", strconv.Itoa(dec.RetryAfter))
+			}
+			// An entry point with its own error shape (the /ai/ gateway)
+			// supplies the writer; the host route keeps the body below.
+			if ew := aigw.ErrorWriterFrom(ctx); ew != nil {
+				ew(w, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded")
+				return
 			}
 			w.WriteHeader(http.StatusTooManyRequests)
 			body429, _ := json.Marshal(map[string]string{"error": "rate limit exceeded"})

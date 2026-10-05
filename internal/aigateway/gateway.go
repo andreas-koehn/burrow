@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/proxy"
 )
@@ -65,6 +66,14 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 		return
 	}
 
+	// Resolve the upstream first: the backing service's IP/geo policy is
+	// enforced there, so a blocked address can neither probe keys nor touch
+	// a key's last-used time.
+	upstream, host, ok := g.upstreamFor(w, r, p)
+	if !ok {
+		return
+	}
+
 	keyID, ok := g.authenticate(w, r, p)
 	if !ok {
 		return
@@ -72,11 +81,6 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 	// Tell the caller which provider answered; set only once the caller is
 	// known to hold a valid key.
 	w.Header().Set("Burrow-Provider", p.Slug)
-
-	upstream, host, ok := g.upstreamFor(w, r, p)
-	if !ok {
-		return
-	}
 
 	// The Burrow key and the dashboard's cookies stop here.
 	r.Header.Del("Authorization")
@@ -87,6 +91,9 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 		upstream.ServeHTTP(w, r)
 		return
 	}
+	// Errors the chain writes itself (rate limit, body cap, guardrails) take
+	// the /ai/ shape too.
+	r = r.WithContext(aigw.WithErrorWriter(r.Context(), WriteError))
 	// Only inference calls are metered. A model listing or a health probe
 	// must not show up as usage.
 	if r.Method == http.MethodPost {
@@ -158,6 +165,7 @@ func (g *Gateway) tunnelUpstream(w http.ResponseWriter, r *http.Request, p db.AI
 		return nil, "", false
 	}
 	if g.IPGeoDeny != nil && g.IPGeoDeny(res, r) {
+		g.Log.Info("aigateway: ip-geo deny", "provider", p.Slug, "service_id", res.ServiceID, "remote_addr", r.RemoteAddr)
 		WriteError(w, http.StatusForbidden, "forbidden", "your address is not allowed to use this provider")
 		return nil, "", false
 	}

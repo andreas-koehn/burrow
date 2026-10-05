@@ -415,7 +415,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	}
 	body, overflow, _ := readBodyLimited(r, maxReqBody)
 	if overflow {
-		writeJSONError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		writeError(w, r, http.StatusRequestEntityTooLarge, "request body too large", "request_too_large", "request body too large")
 		c.Log.Info("aigw: request body exceeds limit",
 			slog.String("service_id", svc.ID),
 			slog.Int64("limit_bytes", maxReqBody),
@@ -457,7 +457,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		}
 		if redactDrop != nil {
 			// Drop-action rule fired — short-circuit with 400 redaction.drop.
-			writeJSONError(w, http.StatusBadRequest, "redaction.drop")
+			writeError(w, r, http.StatusBadRequest, "redaction.drop", "invalid_request", "the request was refused by a redaction rule")
 			c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusBadRequest, nil, nil, 0, false, "MISS", fromReplay)
 			return
 		}
@@ -479,7 +479,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		if hit {
 			switch cfg.Guardrails.Action {
 			case guardrails.ActionRefuse403, "":
-				writeJSONError(w, http.StatusForbidden, "guardrail.refuse")
+				writeError(w, r, http.StatusForbidden, "guardrail.refuse", "forbidden", "the request was refused by a guardrail")
 				c.Log.Info("aigw: guardrail refuse",
 					slog.String("service_id", svc.ID),
 					slog.String("pattern", pattern),

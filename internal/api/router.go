@@ -417,6 +417,8 @@ func NewRouter(d Deps) http.Handler {
 	// AI pages live under /gateway/, so /ai/ is free for it.
 	if d.AIGateway != nil {
 		ah := AIPathHandler(d.AIGateway)
+		r.Handle("/ai", ah)
+		r.Handle("/ai/", ah)
 		r.Handle("/ai/{provider}", ah)
 		r.Handle("/ai/{provider}/*", ah)
 	}
