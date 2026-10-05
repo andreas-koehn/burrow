@@ -40,16 +40,9 @@ var startClient = func(ctx context.Context, o client.Options) error {
 // client.Options, for `connect` and for every newer command.
 func runClient(ctx context.Context, creds client.Credentials, tunnels []client.TunnelSpec, g globalFlags) error {
 	log := logging.New(g.logLevel, g.logFormat)
-	var pool *x509.CertPool
-	if g.cacert != "" {
-		pem, err := os.ReadFile(g.cacert)
-		if err != nil {
-			return err
-		}
-		pool = x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pem) {
-			return fmt.Errorf("cacert %s: no certificates", g.cacert)
-		}
+	pool, err := loadRootCAs(g.cacert)
+	if err != nil {
+		return err
 	}
 	sn := g.serverName
 	if sn == "" {
@@ -73,6 +66,22 @@ func runClient(ctx context.Context, creds client.Credentials, tunnels []client.T
 		}
 	}
 	return startClient(ctx, o)
+}
+
+// loadRootCAs reads the PEM file of --cacert; nil without one.
+func loadRootCAs(path string) (*x509.CertPool, error) {
+	if path == "" {
+		return nil, nil
+	}
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("cacert %s: no certificates", path)
+	}
+	return pool, nil
 }
 
 // logFormatFlag returns the value of --log when it was given.

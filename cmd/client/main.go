@@ -252,6 +252,7 @@ func newRoot(d deps) *cobra.Command {
 		newExposeCmd(d, "tcp"),
 		newUpCmd(d),
 		newStatusCmd(d),
+		newDoctorCmd(d),
 		newConnectCmd(),
 		&cobra.Command{
 			Use:   "version",

@@ -3,12 +3,10 @@ package client
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"io"
 	"log/slog"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,7 +15,6 @@ import (
 
 	"github.com/ankoehn/burrow/internal/backoff"
 	"github.com/ankoehn/burrow/internal/proto"
-	"github.com/ankoehn/burrow/internal/version"
 )
 
 // atomicCounter wraps atomic.Uint64 so callers can pass &atomicCounter.v as *atomic.Uint64.
@@ -121,32 +118,17 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func (c *Client) connectOnce(ctx context.Context) error {
-	tlsCfg := &tls.Config{
-		InsecureSkipVerify: c.opts.Insecure, //nolint:gosec // dev-only opt-in (spec D4)
-		RootCAs:            c.opts.RootCAs,
-		ServerName:         c.opts.ServerName,
-		MinVersion:         tls.VersionTLS12,
-	}
-	d := &tls.Dialer{Config: tlsCfg}
-	rawConn, err := d.DialContext(ctx, "tcp", c.opts.Server)
+	conn, err := dialControl(ctx, c.opts)
 	if err != nil {
-		return fmt.Errorf("dial: %w", err)
+		return err
 	}
-	conn := rawConn
 	defer conn.Close()
 
-	if err := proto.WriteMessage(conn, proto.MsgAuthRequest, proto.AuthRequest{
-		ProtocolVersion: proto.ProtocolVersion, Token: c.opts.Token,
-		ClientVersion: version.Version, OS: runtime.GOOS, Arch: runtime.GOARCH,
-	}); err != nil {
+	ar, err := authenticate(conn, c.opts.Token)
+	if err != nil {
 		return err
 	}
-	var env proto.Envelope
-	if err := proto.ReadFrame(conn, &env); err != nil {
-		return err
-	}
-	var ar proto.AuthResponse
-	if env.Type != proto.MsgAuthResponse || proto.DecodePayload(env, &ar) != nil || !ar.OK {
+	if !ar.OK {
 		return fmt.Errorf("auth failed: %s", ar.Error)
 	}
 	c.log.Info("connected", "session_id", ar.SessionID)
@@ -164,6 +146,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		return err
 	}
 	defer ctrl.Close()
+	var env proto.Envelope
 	for _, tn := range c.opts.Tunnels {
 		if err := proto.WriteMessage(ctrl, proto.MsgTunnelRegister, proto.TunnelRegister{
 			Name: tn.Name, Type: tn.Type, RemotePort: tn.RemotePort, LocalAddr: tn.LocalAddr,
