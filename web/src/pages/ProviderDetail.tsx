@@ -49,7 +49,7 @@ function Sparkline({ data }: { data: number[] }) {
     <svg
       viewBox="0 0 240 60"
       role="img"
-      aria-label="requests per minute, last 24h"
+      aria-label="requests per minute, last hour"
       width="240"
       height="60"
     >
@@ -100,8 +100,11 @@ export default function ProviderDetail() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [renameOpen, setRenameOpen] = useState(false);
+  // The open tab lives in the URL fragment, so it can be linked to and the
+  // back button returns to it.
   const fragment = useLocation().hash.slice(1);
-  const [tab, setTab] = useState(TAB_VALUES.includes(fragment) ? fragment : "connect");
+  const tab = TAB_VALUES.includes(fragment) ? fragment : "connect";
+  const setTab = (next: string) => nav({ hash: `#${next}` }, { replace: true });
 
   const provider = useQuery({
     queryKey: ["ai", "provider", slug],
@@ -257,7 +260,8 @@ export default function ProviderDetail() {
   const resolvedAlias =
     alias && draft?.routing.model_alias
       ? `${draft.routing.model_alias} → ${alias.concrete_model}`
-      : aiRow
+      // A provider without an alias has no alias line; " → " alone says nothing.
+      : aiRow && (aiRow.model_alias || aiRow.concrete_model)
         ? `${aiRow.model_alias} → ${aiRow.concrete_model}`
         : null;
 
@@ -360,7 +364,7 @@ export default function ProviderDetail() {
             <DropdownMenu
               trigger={
                 <button type="button" className="icon-btn" aria-label="More actions">
-                  <MoreHorizontal size={14} />
+                  <MoreHorizontal size={14} aria-hidden="true" />
                 </button>
               }
               items={[
@@ -447,7 +451,11 @@ export default function ProviderDetail() {
                           role="button"
                           tabIndex={0}
                           onClick={() => nav(`/inspector/${id}/${r.id}`)}
-                          onKeyDown={(e) => { if (e.key === "Enter") nav(`/inspector/${id}/${r.id}`); }}
+                          onKeyDown={(e) => {
+                            if (e.key !== "Enter" && e.key !== " ") return;
+                            e.preventDefault();
+                            nav(`/inspector/${id}/${r.id}`);
+                          }}
                           className="clickable"
                         >
                           <td className="mono small">{r.ts}</td>
@@ -630,6 +638,7 @@ export default function ProviderDetail() {
               variant="primary"
               size="sm"
               disabled={createAlias.isPending || aliasForm.provider === ""}
+              aria-describedby={aliasForm.provider === "" ? "alias-field-provider-help" : undefined}
               onClick={() => createAlias.mutate(aliasForm)}
             >
               {createAlias.isPending ? "Creating…" : "Create alias"}
@@ -642,6 +651,9 @@ export default function ProviderDetail() {
             <Input
               id="alias-field-alias"
               value={aliasForm.alias}
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
               onChange={(e) => setAliasForm((f) => ({ ...f, alias: e.target.value }))}
               placeholder="e.g. fast"
             />
@@ -650,6 +662,9 @@ export default function ProviderDetail() {
             <Input
               id="alias-field-model"
               value={aliasForm.concrete_model}
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
               onChange={(e) => setAliasForm((f) => ({ ...f, concrete_model: e.target.value }))}
               placeholder="e.g. llama3.1:8b"
             />
@@ -662,7 +677,14 @@ export default function ProviderDetail() {
               options={serviceOptions.length > 0 ? serviceOptions : [{ value: id, label: id }]}
             />
           </FormField>
-          <FormField label="Provider" htmlFor="alias-field-provider" w="md">
+          <FormField
+            label="Provider"
+            htmlFor="alias-field-provider"
+            w="md"
+            help={aliasForm.provider === ""
+              ? <span id="alias-field-provider-help">Choose a backend type to create the alias.</span>
+              : undefined}
+          >
             <Select
               id="alias-field-provider"
               value={aliasForm.provider}
@@ -719,7 +741,7 @@ export default function ProviderDetail() {
             // Same backing service, so the numbers carry over: no skeleton, and
             // the Rename button keeps the focus the dialog handed back.
             qc.setQueryData(["ai", "provider", next.slug, "metrics"], metrics.data);
-            nav(`/gateway/providers/${next.slug}`, { replace: true });
+            nav(`/gateway/providers/${next.slug}#${tab}`, { replace: true });
           }}
         />
       )}

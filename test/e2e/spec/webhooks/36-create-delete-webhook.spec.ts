@@ -16,9 +16,9 @@ test("36-create-delete-webhook: create via UI (reveal secret) then delete via UI
   try {
     await page.goto("/webhooks");
 
-    // Open the "Add webhook" dialog from the PageHeader CTA.
+    // Open the "New webhook" dialog from the PageHeader CTA.
     await page.getByRole("button", { name: /add webhook|create webhook|new webhook/i }).click();
-    const addDialog = page.getByRole("dialog", { name: "Add webhook" });
+    const addDialog = page.getByRole("dialog", { name: "New webhook" });
     await expect(addDialog).toBeVisible();
 
     await addDialog.locator("#wh-name").fill(name);

@@ -25,7 +25,7 @@ test("35-create-service: pre-provision a service through the UI dialog", async (
     // PageHeader CTA — label is "+ New service".
     await page.getByRole("button", { name: /new service/i }).click();
 
-    const dialog = page.getByRole("dialog", { name: "Create service" });
+    const dialog = page.getByRole("dialog", { name: "New service" });
     await expect(dialog).toBeVisible();
     await dialog.locator("#ns-service-id").fill(serviceId);
     await dialog.locator("#ns-title").fill(title);

@@ -15,15 +15,21 @@ export interface TabsProps {
 
 export function Tabs({ tabs, value, onChange }: TabsProps) {
   const listRef = useRef<HTMLDivElement>(null);
+  // Selection follows focus: the arrow keys select the neighbouring tab and
+  // move the focus to it, so the next arrow key starts from there.
+  const go = (i: number) => {
+    onChange(tabs[i].value);
+    listRef.current?.querySelectorAll<HTMLElement>('[role="tab"]')[i]?.focus();
+  };
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
     const i = tabs.findIndex((t) => t.value === value);
     if (e.key === "ArrowRight") {
       e.preventDefault();
-      onChange(tabs[(i + 1) % tabs.length].value);
+      go((i + 1) % tabs.length);
     }
     if (e.key === "ArrowLeft") {
       e.preventDefault();
-      onChange(tabs[(i - 1 + tabs.length) % tabs.length].value);
+      go((i - 1 + tabs.length) % tabs.length);
     }
   };
   const active = tabs.find((t) => t.value === value);

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import {
   Button,
@@ -12,6 +13,7 @@ import {
   SkeletonRows,
   NotAuthorized,
   TableEmptyRow,
+  Tabs,
 } from "./index";
 
 const SCOPES = [
@@ -185,6 +187,72 @@ describe("ds primitives", () => {
     // With the list closed, Escape reaches the dialog again.
     fireEvent.keyDown(trigger, { key: "Escape" });
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+  it("Dialog keeps Tab and Shift+Tab inside, skipping disabled buttons", async () => {
+    render(
+      <>
+        <button>Outside before</button>
+        <Dialog
+          open
+          title="Edit"
+          onOpenChange={() => {}}
+          footer={<><Button>Cancel</Button><Button disabled>Save</Button></>}
+        >
+          <label htmlFor="trap-name">Name</label>
+          <input id="trap-name" />
+        </Dialog>
+        <button>Outside after</button>
+      </>,
+    );
+    const close = screen.getByRole("button", { name: "Close dialog" });
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    cancel.focus();
+    // Cancel is the last control that can take focus: Save is disabled.
+    await userEvent.tab();
+    expect(close).toHaveFocus();
+    await userEvent.tab({ shift: true });
+    expect(cancel).toHaveFocus();
+    // Focus that got out (a click on the page behind) is brought back in.
+    screen.getByRole("button", { name: "Outside after" }).focus();
+    await userEvent.tab();
+    expect(close).toHaveFocus();
+    screen.getByRole("button", { name: "Outside before" }).focus();
+    await userEvent.tab({ shift: true });
+    expect(cancel).toHaveFocus();
+  });
+  it("Dialog in a dialog: only the inner one holds the focus", async () => {
+    render(
+      <Dialog open title="Outer" onOpenChange={() => {}} footer={<Button>Outer cancel</Button>}>
+        <Dialog open title="Inner" footer={<><Button>Back</Button><Button>Done</Button></>} />
+      </Dialog>,
+    );
+    screen.getByRole("button", { name: "Done" }).focus();
+    await userEvent.tab();
+    expect(screen.getByRole("button", { name: "Back" })).toHaveFocus();
+    await userEvent.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Done" })).toHaveFocus();
+  });
+  it("Dialog does not pull focus out of a list its Select portals to the body", async () => {
+    render(<DialogWithSelect onOpenChange={() => {}} />);
+    fireEvent.click(screen.getByLabelText("Scope"));
+    const option = screen.getByRole("option", { name: "Beta" });
+    option.tabIndex = -1;
+    option.focus();
+    fireEvent.keyDown(option, { key: "Tab" });
+    expect(option).toHaveFocus();
+  });
+  it("Tabs: arrow keys move the focus with the selection", async () => {
+    function Harness() {
+      const [v, setV] = useState("a");
+      return <Tabs value={v} onChange={setV} tabs={[{ value: "a", label: "One" }, { value: "b", label: "Two" }]} />;
+    }
+    render(<Harness />);
+    screen.getByRole("tab", { name: "One" }).focus();
+    await userEvent.keyboard("{ArrowRight}");
+    expect(screen.getByRole("tab", { name: "Two" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Two" })).toHaveFocus();
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(screen.getByRole("tab", { name: "One" })).toHaveFocus();
   });
   it("TableEmptyRow spans the table and shows title + hint", () => {
     render(

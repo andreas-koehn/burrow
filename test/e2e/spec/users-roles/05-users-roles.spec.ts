@@ -2,7 +2,7 @@
 //
 // Plan-fidelity note: the plan-as-written invented selectors (#invite-email,
 // New role button, viewer role) that don't match the v0.5.2 UI. Real UI:
-//   - "Create user" button opens CreateUserDialog with cu-email / cu-pw / cu-role
+//   - "New user" button opens CreateUserDialog with cu-email / cu-pw / cu-role
 //   - Built-in roles are admin + user only; custom roles via /roles editor are
 //     a v0.4 surface — not exercised here to keep the spec resilient.
 //   - Deletion is via a confirm dialog after clicking the per-row Delete button.
@@ -17,8 +17,8 @@ test("05-users-roles: create user (built-in role) + delete", async ({ page }) =>
   await page.goto("/users");
   await expect(page.getByRole("heading", { name: "Users" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Create user", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Create user" });
+  await page.getByRole("button", { name: "New user", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "New user" });
   await expect(dialog).toBeVisible();
   await dialog.locator("#cu-email").fill(email);
   await dialog.locator("#cu-pw").fill("e2e-pass-bob");

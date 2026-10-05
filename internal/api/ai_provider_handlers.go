@@ -10,7 +10,6 @@ package api
 // always 0: usage_events has no latency column.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -433,29 +432,36 @@ func (u upstreamReq) input() store.DirectProviderInput {
 // error message.
 var plainFieldRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 
-// decodeUpstreamJSON decodes a body that carries upstream settings into v and
-// refuses a field v does not have, writing the 400 itself. A key pasted into
-// "api_key" or "credential" would otherwise be dropped without a word and
-// the provider saved without it. The message names the field; the field's
-// value is never repeated, logged or audited.
-func decodeUpstreamJSON(w http.ResponseWriter, body io.Reader, v any) bool {
+// credentialHint is appended to an unknown-field 400 of a direct provider.
+const credentialHint = "; the credential is set on the relay, credential_slot names its slot"
+
+// decodeStrictJSON decodes body into v and refuses a field v does not have.
+// A key pasted into "api_key" or "credential" would otherwise be dropped
+// without a word and the provider saved without it. The known fields of v are
+// filled even when an unknown one is refused. The returned message is the 400
+// to answer with ("" on success); it names the field, and the field's value
+// is never repeated, logged or audited. unknownField tells the caller whether
+// a hint about the field fits.
+func decodeStrictJSON(body io.Reader, v any) (msg string, unknownField bool) {
 	dec := json.NewDecoder(body)
 	dec.DisallowUnknownFields()
 	err := dec.Decode(v)
 	if err == nil {
-		return true
+		return "", false
 	}
-	const hint = "; the credential is set on the relay, credential_slot names its slot"
 	if quoted, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
 		if name, uerr := strconv.Unquote(quoted); uerr == nil && plainFieldRe.MatchString(name) {
-			writeErr(w, http.StatusBadRequest, "unknown field "+strconv.Quote(name)+hint)
-		} else {
-			writeErr(w, http.StatusBadRequest, "unknown field in the request body"+hint)
+			return "unknown field " + strconv.Quote(name), true
 		}
-		return false
+		return "unknown field in the request body", true
 	}
-	writeErr(w, http.StatusBadRequest, "invalid JSON body")
-	return false
+	return "invalid JSON body", false
+}
+
+// set reports whether the body carried any upstream setting.
+func (u upstreamReq) set() bool {
+	return u.APIFormat != "" || u.BaseURL != "" || u.CredentialSlot != "" || u.AuthHeader != "" ||
+		u.AuthFormat != "" || u.ExtraHeaders != nil || u.Billing != ""
 }
 
 // postProviderReq is the body of POST /api/v1/ai/providers. service_id is
@@ -593,20 +599,14 @@ func upstreamAudit(p db.AIProvider) map[string]any {
 // derived from the name.
 func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
-	raw, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
+	// The body is read strictly for both kinds: without a kind a body is a
+	// tunnel create, and a key next to a base_url must not vanish in a 201.
 	var in postProviderReq
-	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&in); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	// The body is read again, strictly, before anything is done with it,
-	// for both kinds: without a kind a body is a tunnel create, and a key
-	// next to a base_url must not vanish in a 201.
-	if !decodeUpstreamJSON(w, bytes.NewReader(raw), &postProviderReq{}) {
+	if msg, unknown := decodeStrictJSON(r.Body, &in); msg != "" {
+		if unknown && in.Kind == "direct" {
+			msg += credentialHint
+		}
+		writeErr(w, http.StatusBadRequest, msg)
 		return
 	}
 	name, ok := validProviderName(w, in.Name)
@@ -633,6 +633,12 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 
 	if in.Kind == "direct" {
 		d.postDirectProvider(w, r, slug, name, in.upstreamReq)
+		return
+	}
+	// Upstream settings on a tunnel provider would be dropped; say so instead
+	// of answering 201.
+	if in.upstreamReq.set() {
+		writeErr(w, http.StatusBadRequest, "api_format, base_url, credential_slot, auth_header, auth_format, extra_headers and billing are for kind 'direct'")
 		return
 	}
 
@@ -748,7 +754,11 @@ func (d Deps) providerForWrite(w http.ResponseWriter, r *http.Request) (db.AIPro
 func (d Deps) PutAIProviderUpstream(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	var in upstreamReq
-	if !decodeUpstreamJSON(w, r.Body, &in) {
+	if msg, unknown := decodeStrictJSON(r.Body, &in); msg != "" {
+		if unknown {
+			msg += credentialHint
+		}
+		writeErr(w, http.StatusBadRequest, msg)
 		return
 	}
 	old, ok := d.providerForWrite(w, r)

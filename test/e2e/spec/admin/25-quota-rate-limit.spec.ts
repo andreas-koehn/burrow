@@ -14,6 +14,21 @@ import { adminHeaders } from "../../fixtures/api";
 test.use({ storageState: AUTH_STORAGE_PATH });
 
 test("25-quota-rate-limit: 429 + audit row", async ({ page, request }) => {
+  // The requests below are anonymous, so the "ai" service must be in Open
+  // mode. Set it here instead of relying on what an earlier spec left behind,
+  // and put the previous mode back at the end.
+  const services = (await (await request.get("/api/v1/services")).json()) as {
+    id: string; name: string; access_mode: string;
+  }[];
+  const ai = services.find((s) => s.name === "ai");
+  if (!ai) throw new Error("ai service not found");
+  const setMode = (mode: string) =>
+    request.put(`/api/v1/services/${ai.id}/access-mode`, {
+      headers: adminHeaders(),
+      data: { access_mode: mode },
+    });
+  expect((await setMode("open")).status()).toBe(204);
+
   // 1. Create a rate-limit rule via the admin API.
   // API drift: plan used `lim` + `subject: "*"` — actual handler uses
   // `limit` (json:"limit") and requires subject="" for global scope.
@@ -49,6 +64,7 @@ test("25-quota-rate-limit: 429 + audit row", async ({ page, request }) => {
   await request.delete(`/api/v1/rate-limits/${rule.id}`, {
     headers: adminHeaders(),
   });
+  await setMode(ai.access_mode || "open");
 
   // At least one of the last 2 should be 429.
   expect(statuses.slice(5)).toContain(429);

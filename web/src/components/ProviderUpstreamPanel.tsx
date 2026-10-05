@@ -175,6 +175,8 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
   const save = useMutation({
     mutationFn: () =>
       apiFetch<AiProvider>(`/ai/providers/${provider.slug}/upstream`, { method: "PUT", body: JSON.stringify(body) }),
+    // A retry without an edit must not keep the last refusal on screen.
+    onMutate: () => edited(),
     onSuccess: async (next) => {
       qc.setQueryData(["ai", "provider", provider.slug], next);
       await qc.invalidateQueries({ queryKey: ["ai", "providers"] });

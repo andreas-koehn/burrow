@@ -4,12 +4,20 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
-import { Route, Routes, useLocation } from "react-router-dom";
+import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import ProviderDetail from "@/pages/ProviderDetail";
 import { addDirectProvider, db } from "@/mocks/db";
 
 function PathProbe() {
-  return <div data-testid="path">{useLocation().pathname}</div>;
+  const loc = useLocation();
+  const nav = useNavigate();
+  return (
+    <>
+      <div data-testid="path">{loc.pathname}</div>
+      <div data-testid="hash">{loc.hash}</div>
+      <button onClick={() => nav({ hash: "#models" })}>GO_MODELS_FRAGMENT</button>
+    </>
+  );
 }
 
 function mountAt(route: string) {
@@ -224,7 +232,7 @@ describe("Provider detail", () => {
 
   it("renders the 4-tile metric strip and a 60px sparkline svg", async () => {
     mount();
-    const spark = await screen.findByLabelText("requests per minute, last 24h");
+    const spark = await screen.findByLabelText("requests per minute, last hour");
     expect(spark.tagName.toLowerCase()).toBe("svg");
     expect(spark.getAttribute("viewBox")).toBe("0 0 240 60");
     const strip = screen.getByRole("list", { name: "Provider metrics" });
@@ -236,7 +244,7 @@ describe("Provider detail", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();
     // Wait for the form to hydrate.
-    await screen.findByLabelText("requests per minute, last 24h");
+    await screen.findByLabelText("requests per minute, last hour");
     await openTab("Routing");
     // Change strategy via the DS Select (custom listbox, not native <select>).
     await userEvent.click(screen.getByLabelText(/routing strategy/i));
@@ -263,7 +271,7 @@ describe("Provider detail", () => {
   it("toggling Pause issues PUT /services/:id/ai-config with routing.paused=true", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();
-    await screen.findByLabelText("requests per minute, last 24h");
+    await screen.findByLabelText("requests per minute, last hour");
     const pause = screen.getByRole("switch", { name: /pause provider/i });
     await userEvent.click(pause);
     await waitFor(() => {
@@ -280,7 +288,7 @@ describe("Provider detail", () => {
   it("Clear cache in the kebab calls DELETE /services/:id/cache/entries", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();
-    await screen.findByLabelText("requests per minute, last 24h");
+    await screen.findByLabelText("requests per minute, last hour");
     await userEvent.click(screen.getByRole("button", { name: /more actions/i }));
     await userEvent.click(await screen.findByRole("menuitem", { name: /clear cache/i }));
     await waitFor(() => {
@@ -303,9 +311,27 @@ describe("Provider detail", () => {
     expect(await screen.findByText("INSPECTOR_PAGE")).toBeInTheDocument();
   });
 
+  it("recent requests row opens with the Space key too", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: /recent requests/i });
+    const rows = await within(table).findAllByRole("button");
+    rows[0]!.focus();
+    await userEvent.keyboard(" ");
+    expect(await screen.findByText("INSPECTOR_PAGE")).toBeInTheDocument();
+  });
+
+  it("confirms a copy from the Connect tab", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "Copy curl example" }));
+    expect(writeText).toHaveBeenCalled();
+    expect(await screen.findByText("Copied.")).toBeInTheDocument();
+  });
+
   it("Routing strategy Select includes 'Multi-provider (cross-backend)' option", async () => {
     mount();
-    await screen.findByLabelText("requests per minute, last 24h");
+    await screen.findByLabelText("requests per minute, last hour");
     await openTab("Routing");
     await userEvent.click(screen.getByLabelText(/routing strategy/i));
     expect(await screen.findByRole("option", { name: /multi-provider \(cross-backend\)/i })).toBeInTheDocument();
@@ -313,7 +339,7 @@ describe("Provider detail", () => {
 
   it("Selecting Multi-provider shows the cross-provider failover banner verbatim", async () => {
     mount();
-    await screen.findByLabelText("requests per minute, last 24h");
+    await screen.findByLabelText("requests per minute, last hour");
     await openTab("Routing");
     await userEvent.click(screen.getByLabelText(/routing strategy/i));
     await userEvent.click(await screen.findByRole("option", { name: /multi-provider \(cross-backend\)/i }));
@@ -326,7 +352,7 @@ describe("Provider detail", () => {
 
   it("Backends table shows Provider chip and Priority column", async () => {
     mount();
-    await screen.findByLabelText("requests per minute, last 24h");
+    await screen.findByLabelText("requests per minute, last hour");
     await openTab("Routing");
     const backendsSection = await screen.findByRole("heading", { name: /backends/i });
     expect(backendsSection).toBeInTheDocument();
@@ -353,7 +379,7 @@ describe("Provider detail", () => {
     ];
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();
-    await screen.findByLabelText("requests per minute, last 24h");
+    await screen.findByLabelText("requests per minute, last hour");
     await openTab("Routing");
     // The alias "fast" maps to svc_ai001 with priority 100.
     const priorityInput = await screen.findByLabelText(/priority for fast/i);
@@ -377,7 +403,7 @@ describe("Provider detail", () => {
   it("Add alias button opens dialog and POST /models/aliases creates the alias", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();
-    await screen.findByLabelText("requests per minute, last 24h");
+    await screen.findByLabelText("requests per minute, last hour");
     await openTab("Routing");
     // Click "Add alias" button
     await userEvent.click(await screen.findByRole("button", { name: /add alias/i }));
@@ -432,6 +458,16 @@ describe("Provider detail", () => {
     expect(await screen.findByRole("table", { name: "API keys" })).toBeInTheDocument();
   });
 
+  it("keeps the open tab in the URL fragment, both ways", async () => {
+    mount();
+    await openTab("API keys");
+    expect(screen.getByTestId("hash")).toHaveTextContent("#api-keys");
+    // A fragment that changes while the page is open (a link, the back button) switches the tab.
+    await userEvent.click(screen.getByRole("button", { name: "GO_MODELS_FRAGMENT" }));
+    expect(await screen.findByRole("tab", { name: "Models" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("path")).toHaveTextContent("/gateway/providers/ollama");
+  });
+
   it("the API keys tab manages the keys of the backing service", async () => {
     mount();
     await openTab("API keys");
@@ -465,6 +501,8 @@ describe("Provider detail", () => {
       expect(screen.queryByRole("link", { name: /^sess_/ })).toBeNull();
       // No link to the hidden backing service.
       expect(document.querySelector('a[href^="/services"]')).toBeNull();
+      // Without a model alias there is no alias line, not a lone arrow.
+      expect(document.querySelector(".meta-strip")).toBeNull();
     });
 
     it("says how a flat-rate plan is counted, above the metrics", async () => {
@@ -639,6 +677,46 @@ describe("Provider detail", () => {
       await waitFor(() => expect(calls).toBe(2));
     });
 
+    it("Edit upstream: a retry takes the last refusal off the screen while it is pending", async () => {
+      let calls = 0;
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      server.use(http.put("/api/v1/ai/providers/openrouter/upstream", async () => {
+        if (++calls > 1) await held;
+        return HttpResponse.json({ error: "base URL host could not be resolved" }, { status: 400 });
+      }));
+      mountDirect();
+      const { dialog } = await openEdit();
+      const url = within(dialog).getByLabelText("Base URL");
+      await userEvent.type(url, "x");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(url).toHaveAttribute("aria-invalid", "true"));
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      // The second attempt is on its way: the first verdict is gone.
+      await within(dialog).findByRole("button", { name: "Saving…" });
+      expect(url).not.toHaveAttribute("aria-invalid");
+      expect(within(dialog).queryByText("base URL host could not be resolved")).toBeNull();
+      release();
+      await waitFor(() => expect(url).toHaveAccessibleDescription("base URL host could not be resolved"));
+    });
+
+    it("Edit upstream: a slot name ending in _FILE is refused before sending", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      fetchSpy.mockClear();
+      mountDirect();
+      const { dialog } = await openEdit();
+      const slot = within(dialog).getByLabelText("Credential slot");
+      await userEvent.clear(slot);
+      await userEvent.type(slot, "openrouter_file");
+      expect(slot).toHaveValue("OPENROUTER_FILE");
+      expect(slot).toHaveAttribute("aria-invalid", "true");
+      expect(slot).toHaveAccessibleDescription(
+        "A slot name cannot end in _FILE: the relay reads BURROW_UPSTREAM_KEY_OPENROUTER_FILE as the path of a key file for slot OPENROUTER.",
+      );
+      expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+      expect(upstreamPuts(fetchSpy)).toEqual([]);
+    });
+
     it("Edit upstream: editing any field clears what the server said about another", async () => {
       server.use(http.put("/api/v1/ai/providers/openrouter/upstream", () =>
         HttpResponse.json({ error: 'extra header "X-Title" is not allowed' }, { status: 400 })));
@@ -678,9 +756,15 @@ describe("Provider detail", () => {
       expect(within(dialog).getByLabelText("Service")).toHaveTextContent("OpenRouter");
       await userEvent.type(within(dialog).getByLabelText(/^alias$/i), "smart");
       await userEvent.type(within(dialog).getByLabelText(/concrete model/i), "acme/large-1");
-      expect(within(dialog).getByRole("button", { name: /create alias/i })).toBeDisabled();
+      // The disabled button says what it is waiting for.
+      const create = within(dialog).getByRole("button", { name: /create alias/i });
+      expect(create).toBeDisabled();
+      expect(create).toHaveAccessibleDescription("Choose a backend type to create the alias.");
       await userEvent.click(within(dialog).getByLabelText("Provider"));
       await userEvent.click(await screen.findByRole("option", { name: "OpenAI-compat" }));
+      expect(create).toBeEnabled();
+      expect(create).not.toHaveAccessibleDescription();
+      expect(within(dialog).queryByText("Choose a backend type to create the alias.")).toBeNull();
       await userEvent.click(within(dialog).getByRole("button", { name: /create alias/i }));
       await waitFor(() => expect(db.modelAliases.at(-1)).toMatchObject({
         alias: "smart", service_id: "prov-openrouter", provider: "openai-compat",
@@ -705,7 +789,6 @@ describe("Provider detail", () => {
   it("mounts exactly one toaster, whichever tab is open", async () => {
     mount();
     await screen.findByRole("heading", { name: /connect a client/i });
-    const toasters = () => document.querySelectorAll("[data-sonner-toaster], section[aria-label^='Notifications']");
     const sections = () => document.querySelectorAll("section[aria-label^='Notifications']").length;
     expect(sections()).toBe(1);
     await openTab("API keys");
@@ -713,7 +796,6 @@ describe("Provider detail", () => {
     expect(sections()).toBe(1);
     await openTab("Routing");
     expect(sections()).toBe(1);
-    expect(toasters().length).toBeGreaterThan(0);
   });
 
   it("describes the whole page in its subtitle", async () => {

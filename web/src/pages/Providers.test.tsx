@@ -170,6 +170,14 @@ describe("Providers page", () => {
       name: "Copy base URL https://tunnels.example.com/ai/ollama/v1",
     }));
     expect(writeText).toHaveBeenCalledWith("https://tunnels.example.com/ai/ollama/v1");
+    // The copy is confirmed, as on the other pages.
+    expect(await screen.findByText("Copied.")).toBeInTheDocument();
+  });
+
+  it("names the actions column for assistive technology", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: /providers/i });
+    expect(within(table).getByRole("columnheader", { name: "Actions" })).toBeInTheDocument();
   });
 
   it("⋯ Inspect goes to the provider's detail route", async () => {

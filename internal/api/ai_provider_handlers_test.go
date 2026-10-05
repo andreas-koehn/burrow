@@ -1547,6 +1547,64 @@ func TestDirectProvider_UnknownFieldRefused(t *testing.T) {
 	}
 }
 
+// Upstream settings on a tunnel create (or one without a kind) are refused:
+// answering 201 and dropping them would leave the admin believing the
+// provider calls that base URL.
+func TestPostProvider_UpstreamFieldsNeedKindDirect(t *testing.T) {
+	for name, in := range map[string]map[string]any{
+		"tunnel with base_url":        {"name": "Ollama", "slug": "ollama", "kind": "tunnel", "service_id": "svc1", "base_url": "https://api.z.ai/v4"},
+		"tunnel with credential_slot": {"name": "Ollama", "slug": "ollama", "kind": "tunnel", "service_id": "svc1", "credential_slot": "ZAI"},
+		"tunnel with extra_headers":   {"name": "Ollama", "slug": "ollama", "kind": "tunnel", "service_id": "svc1", "extra_headers": map[string]string{}},
+		"tunnel with billing":         {"name": "Ollama", "slug": "ollama", "kind": "tunnel", "service_id": "svc1", "billing": "flat"},
+		"no kind with base_url":       {"name": "Ollama", "slug": "ollama", "service_id": "svc1", "base_url": "https://api.z.ai/v4"},
+		"no kind with auth_header":    {"name": "Ollama", "slug": "ollama", "service_id": "svc1", "auth_header": "x-api-key", "auth_format": "{key}"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ss, ps := oneProviderFixture()
+			ps.rows = nil
+			aud := &stubAuditAppender{}
+			d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+			d.AuditAppender = aud
+			srv, c := newAIProviderServer(t, d)
+			defer srv.Close()
+			body := wantStatus(t, c.post(t, "/api/v1/ai/providers", in), http.StatusBadRequest)
+			if !strings.Contains(body, "kind 'direct'") {
+				t.Errorf("body does not point at kind 'direct': %s", body)
+			}
+			if ps.writes != 0 || len(ps.rows) != 0 || len(aud.events) != 0 {
+				t.Errorf("rejected request reached the store: writes=%d rows=%+v events=%+v", ps.writes, ps.rows, aud.events)
+			}
+		})
+	}
+}
+
+// The credential_slot hint on an unknown field belongs to direct providers;
+// on a tunnel create it would point at a setting the provider does not have.
+func TestPostProvider_UnknownFieldHintOnlyForDirect(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in       map[string]any
+		wantHint bool
+	}{
+		"direct":  {map[string]any{"name": "z.ai", "slug": "zai", "kind": "direct", "base_url": "https://api.z.ai/v4", "credential_slot": "ZAI", "api_key": "x"}, true},
+		"tunnel":  {map[string]any{"name": "Ollama", "slug": "ollama", "kind": "tunnel", "service_id": "svc1", "api_key": "x"}, false},
+		"no kind": {map[string]any{"name": "Ollama", "slug": "ollama", "service_id": "svc1", "api_key": "x"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ss, ps := oneProviderFixture()
+			ps.rows = nil
+			srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+			defer srv.Close()
+			body := wantStatus(t, c.post(t, "/api/v1/ai/providers", tc.in), http.StatusBadRequest)
+			if !strings.Contains(body, `unknown field \"api_key\"`) {
+				t.Errorf("body does not name the field: %s", body)
+			}
+			if got := strings.Contains(body, "credential_slot"); got != tc.wantHint {
+				t.Errorf("credential_slot hint present = %v, want %v: %s", got, tc.wantHint, body)
+			}
+		})
+	}
+}
+
 // Two admins saving the upstream settings at once, five times over: the
 // loser is told to try again, not handed a 500.
 func TestPutProviderUpstream_BusyIs409(t *testing.T) {

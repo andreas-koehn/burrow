@@ -34,9 +34,10 @@ test("38-user-edit: change a user's role to Admin via the Edit dialog", async ({
     await expect(dialog).toBeVisible();
 
     // #eu-role is a DS Select — a custom listbox, not a native <select>. Open
-    // it and pick "Admin" from the option list.
+    // it and pick "Admin" from the option list, which is portalled to <body>,
+    // outside the dialog.
     await dialog.locator("#eu-role").click();
-    await dialog.getByRole("option", { name: "Admin", exact: true }).click();
+    await page.getByRole("option", { name: "Admin", exact: true }).click();
     await dialog.getByRole("button", { name: "Save changes" }).click();
 
     // Toast confirms the update.

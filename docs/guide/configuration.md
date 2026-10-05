@@ -229,7 +229,16 @@ via environment:
 | `BURROW_MCP_TOKEN` | `""` | Bearer token for the MCP endpoint. Also accepts `BURROW_MCP_TOKEN_FILE`. |
 | `BURROW_GEO_DB_PATH` | `""` | Path to a MaxMind GeoLite2 `.mmdb` file. Required for the `geo` access mode (needs `-tags=geo` build). |
 | `BURROW_PRICING_PATH` | `""` | Path to a YAML file that overrides the embedded AI gateway pricing table. |
+| `BURROW_UPSTREAM_KEY_<SLOT>` | unset | The credential of an upstream API, stored under the slot name `<SLOT>`. A [direct AI provider](/guide/expose-services#direct-providers) names the slot it uses; the relay sends the value upstream and never returns it through the API or the dashboard. Slot names match `^[A-Z0-9_]{1,32}$` and must not end in `_FILE`. Read once at start: restart the relay after a change. Also accepts `BURROW_UPSTREAM_KEY_<SLOT>_FILE` (path of a file holding the value; wins when both are set). See the note on trust below. |
 | `BURROW_AI_ALLOW_PRIVATE_UPSTREAMS` | `false` | Lets direct AI providers use a base URL that resolves to a private, loopback or link-local address (a self-hosted model server on the LAN). Off = the relay refuses to connect to such addresses. Accepted values are Go boolean literals: `1`, `t`, `T`, `TRUE`, `true`, `True` to allow, `0`, `f`, `F`, `FALSE`, `false`, `False` to refuse; empty means `false`. Any other value, such as `yes` or `on`, is an error and the server does not start. |
+
+::: warning Credential slots are shared by all admins
+Any admin can create a direct provider that pairs any slot with a base URL of
+their choosing. The relay then sends that slot's value to that URL, so an
+admin who controls the URL can read the secret. Treat every
+`BURROW_UPSTREAM_KEY_<SLOT>` as readable by every admin of the relay: slots
+are an admin-level trust boundary, not a per-user one.
+:::
 
 ---
 
@@ -252,6 +261,7 @@ Variables that commonly use `_FILE`:
 | `BURROW_SMTP_PASSWORD_FILE` | SMTP auth password |
 | `BURROW_MCP_TOKEN_FILE` | MCP bearer token |
 | `BURROW_DATABASE_URL_FILE` | PostgreSQL DSN |
+| `BURROW_UPSTREAM_KEY_<SLOT>_FILE` | Upstream credential of slot `<SLOT>` |
 
 Example Docker Compose usage:
 

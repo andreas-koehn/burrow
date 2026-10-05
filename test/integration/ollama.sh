@@ -192,6 +192,27 @@ amut POST /api/v1/models/aliases "{\"alias\":\"gpt-4o-mini\",\"concrete_model\":
 check "model alias gpt-4o-mini is rewritten to $MODEL" \
   "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" -H 'Content-Type: application/json' -d "$(chat "alias $RANDOM" 4 gpt-4o-mini)" "$B/ai/$PROV/v1/chat/completions")" "200"
 
+# --- AI namespace --------------------------------------------------------------
+# The provider registered above, addressed as /ai/<provider>/v1 on the
+# dashboard's origin with the same API key.
+usage_rows() { aget "/api/v1/cost/export?format=ndjson&window=today" | jq -s "[.[] | select(.service_id==\"$SID\" and .api_key_id==\"$KEY_ID\")] | length"; }
+check "ai: provider is listed"             "$(aget /api/v1/ai/providers | jq -r ".[] | select(.service_id==\"$SID\") | .slug")" "$PROV"
+check "ai: models without key -> 401"      "$(curl -s -o /dev/null -w '%{http_code}' "$B/ai/$PROV/v1/models")" "401"
+check "ai: wrong key -> json invalid_api_key" "$(curl -s -H 'Authorization: Bearer buk_wrong' "$B/ai/$PROV/v1/models" | jq -r '.error.code')" "invalid_api_key"
+check "ai: models with key -> 200"         "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" "$B/ai/$PROV/v1/models")" "200"
+check "ai: unknown provider -> json 404"   "$(curl -s "$B/ai/nope/v1/models" | jq -r '.error.code')" "provider_not_found"
+check "ai: chat completion -> 200"         "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" -H 'Content-Type: application/json' -d "$(chat "ai-ns $RANDOM")" "$B/ai/$PROV/v1/chat/completions")" "200"
+check "ai: response names the provider"    "$(curl -s -o /dev/null -D - -H "$AUTH" -H 'Content-Type: application/json' -d "$(chat "ai-hdr $RANDOM")" "$B/ai/$PROV/v1/chat/completions" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-provider"{print $2}')" "$PROV"
+sleep 1
+check "ai: usage row carries the key id"   "$([ "$(usage_rows)" -gt 0 ] && echo true)" "true"
+# A client that hangs up in the middle of a stream still gets its usage row.
+BEFORE=$(metric requests_24h)
+curl -s -N -o /dev/null --max-time 0.4 -H "$AUTH" -H 'Content-Type: application/json' \
+  -d "{\"model\":\"$MODEL\",\"stream\":true,\"max_tokens\":400,\"messages\":[{\"role\":\"user\",\"content\":\"Write a long story about a burrow. $RANDOM\"}]}" \
+  "$B/ai/$PROV/v1/chat/completions" || true
+OK=""; for _ in $(seq 1 20); do [ "$(( $(metric requests_24h) - BEFORE ))" = "1" ] && { OK=yes; break; }; sleep 1; done
+check "ai: usage is recorded after a hangup mid-stream" "$OK" "yes"
+
 # --- known defects (XFAIL) ---------------------------------------------------
 # 4. An automation token's declared permission set is not enforced on
 #    admin-gated routes: a read-only token of an admin can still mint tokens.

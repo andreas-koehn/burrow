@@ -226,3 +226,93 @@ HTTP/1.1 401 Unauthorized
 
 For a full description of all access modes (`open`, `api_key`, `burrow_login`,
 `mtls`) and their configuration options, see [Access control](/guide/access-control).
+
+---
+
+## (D) Model providers at `/ai/<provider>/v1`
+
+A provider is a model backend with its own base URL,
+`https://<auth_domain>/ai/<provider>/v1`, which any OpenAI-compatible client
+can use with a Burrow API key. Providers are managed in the dashboard under
+**AI Gateway → Providers**.
+
+There are two kinds:
+
+- **Tunnel** — an HTTP service in API-key mode behind a Burrow client (a local
+  Ollama or vLLM, for example).
+- **Direct** — a hosted API that the relay calls itself (OpenRouter, z.ai, or
+  any other OpenAI-compatible HTTPS endpoint).
+
+Errors that Burrow produces under `/ai/` are JSON of the form
+`{"error":{"message":"…","type":"burrow_error","code":"…"}}`. Everything else
+is the upstream's own status, headers and body, with `Burrow-Request-Id` and
+`Burrow-Provider` added.
+
+### Tunnel providers
+
+Follow section (C) to expose the model server with the `api_key` access mode,
+then choose **New provider → A service behind a Burrow client** and pick the
+service.
+
+::: warning Switching a service to API-key mode does not create a provider
+Services that were already in API-key mode when the relay was upgraded were
+registered as providers once, at that first start. A service that is created
+or switched to API-key mode later has no provider until you add one.
+:::
+
+### Direct providers {#direct-providers}
+
+1. Put the upstream's API key into the relay's environment as
+   `BURROW_UPSTREAM_KEY_<SLOT>` (or `BURROW_UPSTREAM_KEY_<SLOT>_FILE`), for
+   example `BURROW_UPSTREAM_KEY_OPENROUTER=sk-or-…`, and restart the relay.
+   The key is never entered in the dashboard or sent through the API. See
+   [Configuration](/guide/configuration#advanced) for the slot naming rule
+   and for who can use a slot.
+2. Choose **New provider → A hosted API**, pick a preset (OpenRouter, z.ai) or
+   **Other OpenAI-compatible API**, and check the name, the slug, the base URL
+   and the credential slot. The base URL must be an `https` URL up to and
+   including the API's version path, for example
+   `https://openrouter.ai/api/v1`.
+3. Open the provider, add an API key on its **API keys** tab, and use the base
+   URL and the example on its **Connect** tab.
+
+::: details Alternatively, use the REST API
+```sh
+curl -X POST https://burrow.insingo.com/api/v1/ai/providers \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer bua_YOUR_AUTOMATION_TOKEN" \
+  -d '{"kind": "direct", "slug": "openrouter", "name": "OpenRouter",
+       "base_url": "https://openrouter.ai/api/v1", "credential_slot": "OPENROUTER"}'
+```
+:::
+
+While the slot is not set, or is set to an empty value, the provider is shown
+as **not configured** and answers `503` with the code
+`provider_not_configured`.
+
+What the relay does with a direct provider's traffic:
+
+- **Credentials.** The caller's Burrow API key and cookies stop at the relay.
+  The upstream receives the slot's value in the configured header
+  (`Authorization: Bearer <key>` by default).
+- **Rejected credential.** An upstream `401` or `403` is answered as `502`
+  with the code `upstream_auth_failed`: the caller's key was fine, the
+  relay's was not.
+- **Redirects are not followed.** An upstream redirect is answered as `502`
+  with the code `upstream_redirect`, so the credential never travels to
+  another host. Fix the base URL instead.
+- **Cookies.** `Set-Cookie` headers of the upstream are dropped; `/ai/` shares
+  the dashboard's origin.
+- **Private addresses.** The relay refuses to connect to a base URL that
+  resolves to a private, loopback or link-local address, both when the
+  provider is saved (`400`) and on every connection (`502` with the code
+  `upstream_unavailable`). Set `BURROW_AI_ALLOW_PRIVATE_UPSTREAMS=true` for a
+  self-hosted OpenAI-compatible server on your own network.
+- **Cost.** When a direct provider's response states what the request cost,
+  that figure is recorded and used on the cost pages. A cost stated by a
+  tunnel provider is ignored, because whoever runs the tunnel controls it;
+  its cost is always computed from the pricing table.
+- **Models.** **Sync models** on the provider's **Models** tab reads the
+  upstream's model list; `GET /ai/<provider>/v1/models` is answered from the
+  stored list. A tunnel provider's `/v1/models` is forwarded to the local
+  server unless models were added by hand.

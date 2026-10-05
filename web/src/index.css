@@ -467,7 +467,9 @@ select.input { height: 32px; padding-right: 8px; cursor: pointer; }
 
 .badge.status-connected { color: var(--success); border-color: color-mix(in oklch, var(--success) 35%, var(--border)); }
 .badge.status-connected .dot { background: var(--success); box-shadow: 0 0 0 3px color-mix(in oklch, var(--success) 18%, transparent); }
-.badge.status-idle { color: var(--warning); border-color: color-mix(in oklch, var(--warning) 40%, var(--border)); }
+/* --warning on the light card is about 2:1; the text is mixed towards the
+   foreground until it reads (the dot keeps the plain token). */
+.badge.status-idle { color: color-mix(in oklch, var(--warning) 45%, var(--foreground)); border-color: color-mix(in oklch, var(--warning) 40%, var(--border)); }
 .badge.status-idle .dot { background: var(--warning); }
 .badge.status-suspended { color: var(--destructive); border-color: color-mix(in oklch, var(--destructive) 35%, var(--border)); }
 .badge.status-suspended .dot { background: var(--destructive); }
@@ -477,7 +479,7 @@ select.input { height: 32px; padding-right: 8px; cursor: pointer; }
 .dark .badge { border-color: oklch(0.42 0 0); }
 /* Preserve tinted borders for coloured status variants in dark mode */
 .dark .badge.status-connected { border-color: color-mix(in oklch, var(--success) 35%, oklch(0.42 0 0)); }
-.dark .badge.status-idle      { border-color: color-mix(in oklch, var(--warning) 40%, oklch(0.42 0 0)); }
+.dark .badge.status-idle      { color: var(--warning); border-color: color-mix(in oklch, var(--warning) 40%, oklch(0.42 0 0)); }
 .dark .badge.status-suspended { border-color: color-mix(in oklch, var(--destructive) 35%, oklch(0.42 0 0)); }
 
 /* P0-6 — Access-mode badges are STATUS labels, not buttons. Flat tinted
@@ -1983,7 +1985,25 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   .ai-endpoints-page > .page-header,
   .ai-endpoint-detail-page > .page-header { flex-wrap: wrap; }
   .ai-endpoints-page > .page-header .actions,
-  .ai-endpoint-detail-page > .page-header .actions { flex-wrap: wrap; flex-shrink: 1; }
+  .ai-endpoint-detail-page > .page-header .actions { flex-wrap: wrap; flex-shrink: 1; min-width: 0; }
+  /* Next to the sidebar a phone leaves the page about 150px: nothing on the
+     provider pages may insist on more than that. */
+  .ai-endpoints-page > .page-header .actions .btn,
+  .ai-endpoint-detail-page > .page-header .actions .btn { white-space: normal; height: auto; min-height: 28px; }
+  .ai-endpoints-page .metric-strip,
+  .ai-endpoint-detail-page .metric-strip { grid-template-columns: minmax(0, 1fr); }
+  .ai-endpoints-page .metric-tile,
+  .ai-endpoint-detail-page .metric-tile { min-width: 0; overflow-wrap: anywhere; }
+  .ai-endpoint-detail-page .tabs-list { flex-wrap: wrap; }
+  .ai-endpoint-detail-page .panel-head { flex-wrap: wrap; }
+  .ai-endpoint-detail-page .card .btn { white-space: normal; height: auto; min-height: 28px; max-width: 100%; }
+  .ai-endpoint-detail-page .def-row { flex-wrap: wrap; }
+  .ai-endpoint-detail-page .def-row .def-val { min-width: 0; overflow-wrap: anywhere; }
+  .ai-endpoint-detail-page .def-row .badge { white-space: normal; height: auto; min-height: 20px; }
+  .ai-endpoint-detail-page .sparkline-wrap svg { max-width: 100%; height: auto; }
+  .ai-endpoint-detail-page .notice-inline .body { min-width: 0; overflow-wrap: anywhere; }
+  .provider-connect > .row { flex-wrap: wrap; }
+  .provider-connect .cmd-block { flex-basis: 100%; }
 }
 .meta-strip {
   display: flex;

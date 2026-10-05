@@ -20,7 +20,7 @@ test("07-access-mode-api-key: api_key required; correct key 200; missing 401", a
   await expect(dialog.getByRole("button", { name: "Save changes" })).toBeEnabled();
 
   // Mint a key. With D2's useId() fix, nested dialogs resolve by name cleanly.
-  await dialog.getByRole("button", { name: "Create key" }).click();
+  await dialog.getByRole("button", { name: "New key" }).click();
   const createDialog = page.getByRole("dialog", { name: "Create API key" });
   await expect(createDialog).toBeVisible();
   await createDialog.locator("#api-key-name").fill(`spec07-${Date.now()}`);

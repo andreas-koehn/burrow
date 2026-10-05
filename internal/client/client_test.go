@@ -395,6 +395,7 @@ func registerHTTPAgainstFake(t *testing.T, resp proto.TunnelRegisterResponse) st
 	defer ln.Close()
 
 	serverDone := make(chan struct{})
+	release := make(chan struct{})
 	go func() {
 		defer close(serverDone)
 		conn, e := ln.Accept()
@@ -422,9 +423,11 @@ func registerHTTPAgainstFake(t *testing.T, resp proto.TunnelRegisterResponse) st
 		if e := proto.ReadFrame(stream, &env); e != nil {
 			return
 		}
-		// Reply, then hang up: the client logs the registration before it
-		// notices the closed session.
+		// Reply and keep the session open until the test has seen the
+		// client's log line: hanging up at once races the client's read of
+		// the reply against the closing session.
 		_ = proto.WriteMessage(stream, proto.MsgTunnelRegisterResp, resp)
+		<-release
 	}()
 
 	caPEM, _ := os.ReadFile(filepath.Join(dir, "dev-ca.pem"))
@@ -437,10 +440,26 @@ func registerHTTPAgainstFake(t *testing.T, resp proto.TunnelRegisterResponse) st
 		Tunnels: []TunnelSpec{{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000"}},
 		Logger:  slog.New(slog.NewTextHandler(out, nil)),
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_ = c.connectOnce(ctx)
+	clientDone := make(chan struct{})
+	go func() { defer close(clientDone); _ = c.connectOnce(ctx) }()
+	// Wait for the registration to be logged (or for the client to give up),
+	// then end the session from both sides.
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+wait:
+	for !strings.Contains(out.String(), "tunnel registered") {
+		select {
+		case <-clientDone:
+			break wait
+		case <-tick.C:
+		}
+	}
+	close(release)
+	cancel()
 	<-serverDone
+	<-clientDone
 	return out.String()
 }
 

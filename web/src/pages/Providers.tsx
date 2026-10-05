@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, MoreHorizontal, Sparkles } from "lucide-react";
+import { Toaster } from "@/components/ui/sonner";
+import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { statusLabel } from "@/lib/status";
 import { Badge, Button, DropdownMenu, EmptyState, ErrorNotice, MetricStrip, MetricTile, PageHeader, SkeletonRows } from "@/components/ds";
@@ -171,7 +173,7 @@ export default function Providers() {
                 <th>Cache hits</th>
                 <th>Latency p95</th>
                 <th>Status</th>
-                <th className="col-actions"></th>
+                <th className="col-actions" aria-label="Actions"></th>
               </tr>
             </thead>
             <tbody>
@@ -196,9 +198,9 @@ export default function Providers() {
                         type="button"
                         className="icon-btn"
                         aria-label={`Copy base URL ${baseUrl}`}
-                        onClick={() => void navigator.clipboard?.writeText(baseUrl)}
+                        onClick={() => { void navigator.clipboard?.writeText(baseUrl); toast.success("Copied."); }}
                       >
-                        <Copy size={13} />
+                        <Copy size={13} aria-hidden="true" />
                       </button>
                     </span>
                   </td>
@@ -240,7 +242,7 @@ export default function Providers() {
                           className="icon-btn"
                           aria-label={`More actions for ${e.name}`}
                         >
-                          <MoreHorizontal size={14} />
+                          <MoreHorizontal size={14} aria-hidden="true" />
                         </button>
                       }
                       // A direct provider's backing service is not on the Services
@@ -265,6 +267,7 @@ export default function Providers() {
         </div>
       )}
       {isAdmin && <NewProviderDialog open={newOpen} onOpenChange={setNewOpen} />}
+      <Toaster />
     </div>
   );
 }

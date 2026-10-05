@@ -1,7 +1,9 @@
 // test-only — never deploy this shape.
 //
-// Custom domains need host routing, which is off. The service page must not
-// offer the tab, and the old /domains link must land on the service.
+// The dashboard no longer manages custom domains, also on a relay with host
+// routing on (the harness relay sets BURROW_HTTP_PROXY_LISTEN=:8443). The
+// service page must not offer the tab, and the old /domains link must land on
+// the service.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
 

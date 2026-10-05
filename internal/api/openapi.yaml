@@ -2562,7 +2562,11 @@ paths:
         https://<auth_domain>/ai/<provider>/v1. When slug is empty it is
         derived from name. A field this body does not have (for example
         api_key) is refused with 400 naming the field, for either kind:
-        the credential is set on the relay, not through this API.
+        the credential is set on the relay, not through this API. The
+        upstream settings (api_format, base_url, credential_slot,
+        auth_header, auth_format, extra_headers, billing) are for kind
+        "direct"; on a tunnel create, or one without a kind, they are
+        refused with 400 instead of being dropped.
       requestBody:
         required: true
         content:

@@ -9,7 +9,7 @@
 //   - The harness service set is {ai}; there is no "tcp-echo", so we fall back
 //     to the first service (per the recipe). API keys can be minted on any
 //     service regardless of its access mode — we do NOT change the mode.
-//   - Create: a primary "Create key" button opens a Dialog "Create API key"
+//   - Create: a primary "New key" button opens a Dialog "Create API key"
 //     with #api-key-name + a "Create" button.
 //   - On success a Dialog "Copy your API key now" reveals the key; footer "Done".
 //   - Keys table is <table className="data" aria-label="API keys">. Each row's
@@ -43,7 +43,7 @@ test("41-api-key-revoke: create + revoke a service API key", async ({ page, requ
     await page.getByRole("tab", { name: /api keys/i }).click();
 
     // --- Create key ---
-    await page.getByRole("button", { name: /create key/i }).click();
+    await page.getByRole("button", { name: "New key", exact: true }).click();
     const createDialog = page.getByRole("dialog", { name: "Create API key" });
     await expect(createDialog).toBeVisible();
     await createDialog.locator("#api-key-name").fill(keyName);

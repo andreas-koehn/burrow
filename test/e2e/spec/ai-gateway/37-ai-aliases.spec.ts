@@ -67,8 +67,9 @@ test("37-ai-aliases: create and delete a model alias (UI dialog when reachable, 
       await dialog.locator("#alias-field-alias").fill(aliasName);
       await dialog.locator("#alias-field-model").fill("llama3.1:8b");
       // #alias-field-provider is a DS Select (custom listbox); open + pick Ollama.
+      // Its list is portalled to <body>, outside the dialog.
       await dialog.locator("#alias-field-provider").click();
-      await dialog.getByRole("option", { name: "Ollama", exact: true }).click();
+      await page.getByRole("option", { name: "Ollama", exact: true }).click();
       await dialog.locator("#alias-field-priority").fill("100");
       await dialog.getByRole("button", { name: /create alias/i }).click();
       await expect(page.getByText("Alias created.")).toBeVisible({ timeout: 5_000 });

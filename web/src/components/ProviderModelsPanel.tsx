@@ -183,7 +183,7 @@ export function ProviderModelsPanel({ slug, kind, isAdmin }: ProviderModelsPanel
                   <th>Model id</th>
                   <th>Name</th>
                   <th>Context</th>
-                  {isAdmin && <th className="col-actions"><span className="visually-hidden">Actions</span></th>}
+                  {isAdmin && <th className="col-actions" aria-label="Actions"></th>}
                 </tr>
               </thead>
               <tbody>

@@ -19,6 +19,58 @@ export interface DialogProps {
 const FIELD_SELECTOR =
   'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled])';
 const FOOTER_SELECTOR = ".dialog-footer button:not([disabled])";
+// What Tab can stop on inside a dialog.
+const TABBABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  'input:not([type="hidden"]):not([disabled])',
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
+// Lists and menus a dialog's controls portal to <body>: focus in there still
+// belongs to the dialog.
+const PORTAL_SCOPE = '[role="listbox"], [role="menu"]';
+
+// A radio group is one Tab stop: its checked radio, or any of them when none
+// is checked. Unchecked radios of a group with a checked one are skipped.
+function tabbable(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(TABBABLE_SELECTOR)].filter((el) => {
+    if (el.closest("[hidden], [inert]")) return false;
+    if (el instanceof HTMLInputElement && el.type === "radio" && !el.checked && el.name) {
+      return !root.querySelector(`input[type="radio"][name="${CSS.escape(el.name)}"]:checked`);
+    }
+    return true;
+  });
+}
+
+// Keeps Tab inside the topmost open dialog: aria-modal alone does not stop
+// the keyboard from walking into the page behind it.
+function trapTab(e: KeyboardEvent, root: HTMLElement) {
+  const roots = document.querySelectorAll("[data-dialog-root]");
+  if (roots[roots.length - 1] !== root.parentElement) return;
+  const active = document.activeElement;
+  const inside = active instanceof Node && root.contains(active);
+  if (!inside && active instanceof Element && active.closest(PORTAL_SCOPE)) return;
+  const stops = tabbable(root);
+  if (stops.length === 0) {
+    e.preventDefault();
+    root.focus();
+    return;
+  }
+  const first = stops[0]!;
+  const last = stops[stops.length - 1]!;
+  if (!inside || active === root) {
+    e.preventDefault();
+    (e.shiftKey ? last : first).focus();
+  } else if (e.shiftKey && active === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
 
 // The opener a closing dialog just handed focus back to. A dialog opened from
 // inside another dialog (create, then reveal the secret) records a button of
@@ -73,6 +125,7 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
     const opener = openerRef.current;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onOpenChangeRef.current?.(false);
+      else if (e.key === "Tab" && ref.current) trapTab(e, ref.current);
     };
     document.addEventListener("keydown", onKey);
     // Initial focus, once, on open: first form field in the body, else the

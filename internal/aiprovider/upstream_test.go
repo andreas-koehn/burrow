@@ -532,7 +532,9 @@ func within(t *testing.T, what string, fn func()) {
 // the response open, and a stream that runs past the response-header timeout
 // must not be cut.
 func TestUpstream_FlushesAndOutlivesHeaderTimeout(t *testing.T) {
-	const headerTimeout = 100 * time.Millisecond
+	// Long enough that a loaded machine still gets the headers in time; the
+	// test then waits past it once.
+	const headerTimeout = time.Second
 	release := make(chan struct{})
 	h := realPair(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -559,7 +561,7 @@ func TestUpstream_FlushesAndOutlivesHeaderTimeout(t *testing.T) {
 	if first != "data: one\n" {
 		t.Fatalf("first chunk = %q", first)
 	}
-	time.Sleep(3 * headerTimeout)
+	time.Sleep(headerTimeout + 250*time.Millisecond)
 	close(release)
 	var rest []byte
 	within(t, "rest of the stream", func() { rest, err = io.ReadAll(br) })

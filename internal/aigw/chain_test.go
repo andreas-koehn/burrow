@@ -1011,13 +1011,16 @@ func TestChain_UsageWriteSurvivesClientHangup(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		cancel()
 	})
-	svc := aigw.Service{ID: "svc1", AIConfig: aigw.ServiceAIConfig{Anthropic: &aigw.AnthropicConfig{}}}
+	svc := aigw.Service{ID: "svc1", APIKeyID: "key-1", AIConfig: aigw.ServiceAIConfig{Anthropic: &aigw.AnthropicConfig{}}}
 	c.ServeHTTP(httptest.NewRecorder(), req, svc, up)
 	if !sink.got {
 		t.Fatal("no usage sample recorded")
 	}
 	if sink.ctxErr != nil {
 		t.Fatalf("usage write ran on a dead context: %v", sink.ctxErr)
+	}
+	if sink.sample.APIKeyID != "key-1" {
+		t.Fatalf("usage sample APIKeyID = %q, want key-1", sink.sample.APIKeyID)
 	}
 }
 
