@@ -570,3 +570,61 @@ func TestAuthGenerateSlug(t *testing.T) {
 		}
 	}
 }
+
+// policyStore serves one direct provider's backing service and its policy.
+type policyStore struct {
+	svc      db.Service
+	ipgeo    db.ServiceIPGeoConfig
+	ipgeoErr error
+}
+
+func (p policyStore) ServiceForSubdomain(context.Context, string) (db.Service, error) {
+	return db.Service{}, db.ErrNotFound
+}
+
+func (p policyStore) ServiceByID(_ context.Context, id string) (db.Service, error) {
+	if id != p.svc.ID {
+		return db.Service{}, db.ErrNotFound
+	}
+	return p.svc, nil
+}
+
+func (p policyStore) GetServiceIPGeo(context.Context, string) (db.ServiceIPGeoConfig, error) {
+	return p.ipgeo, p.ipgeoErr
+}
+
+// A direct provider has no tunnel: its access mode and IP/geo policy come
+// from the backing service's rows alone.
+func TestDirectServicePolicy(t *testing.T) {
+	st := policyStore{
+		svc: db.Service{ID: "prov-openrouter", Type: "direct", AccessMode: "api_key", APIKeyHeader: "Authorization"},
+		ipgeo: db.ServiceIPGeoConfig{
+			Enabled: true, AllowCIDRs: []string{"10.0.0.0/8"}, BlockCIDRs: []string{"10.1.0.0/16"},
+			AllowCountries: []string{"DE"}, BlockCountries: []string{"XX"},
+		},
+	}
+	res, err := directServicePolicy(st)(context.Background(), "prov-openrouter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ServiceID != "prov-openrouter" || res.AccessMode != "api_key" || res.TunnelID != "" || res.LocalHost != "" {
+		t.Fatalf("resolved = %+v", res)
+	}
+	if len(res.IPAllowCIDRs) != 1 || len(res.IPBlockCIDRs) != 1 || len(res.IPAllowCountries) != 1 || len(res.IPBlockCountries) != 1 {
+		t.Fatalf("policy not carried over: %+v", res)
+	}
+
+	st.ipgeo.Enabled = false
+	res, err = directServicePolicy(st)(context.Background(), "prov-openrouter")
+	if err != nil || len(res.IPAllowCIDRs) != 0 || len(res.IPBlockCountries) != 0 {
+		t.Fatalf("a disabled policy was applied: %+v err %v", res, err)
+	}
+
+	if _, err := directServicePolicy(st)(context.Background(), "gone"); !errors.Is(err, proxy.ErrNotFound) {
+		t.Fatalf("missing service err = %v", err)
+	}
+	st.ipgeoErr = errors.New("db down")
+	if _, err := directServicePolicy(st)(context.Background(), "prov-openrouter"); err == nil {
+		t.Fatal("a failed policy read must not look like an empty policy")
+	}
+}

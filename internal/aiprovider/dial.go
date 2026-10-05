@@ -86,7 +86,11 @@ func (g *guardedDialer) DialContext(ctx context.Context, network, address string
 		}
 	}
 	if firstErr == nil {
-		firstErr = context.DeadlineExceeded
+		// No attempt was made: the caller went away or the budget ran out
+		// while resolving.
+		if firstErr = ctx.Err(); firstErr == nil {
+			firstErr = context.DeadlineExceeded
+		}
 	}
 	return nil, firstErr
 }
@@ -104,13 +108,17 @@ func NewTransport(allowPrivate bool) *http.Transport {
 	return newTransport(allowPrivate, net.DefaultResolver)
 }
 
-func newTransport(allowPrivate bool, r Resolver) *http.Transport {
-	g := &guardedDialer{
+func newGuardedDialer(allowPrivate bool, r Resolver) *guardedDialer {
+	return &guardedDialer{
 		resolver:     r,
 		allowPrivate: allowPrivate,
 		timeout:      dialTimeout,
 		dial:         (&net.Dialer{KeepAlive: 30 * time.Second, Control: dialControl(allowPrivate)}).DialContext,
 	}
+}
+
+func newTransport(allowPrivate bool, r Resolver) *http.Transport {
+	g := newGuardedDialer(allowPrivate, r)
 	return &http.Transport{
 		// No proxy: an environment HTTP proxy would make the guard vet the
 		// proxy's address instead of the upstream's.

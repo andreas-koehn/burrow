@@ -2,6 +2,7 @@ package aigateway
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ankoehn/burrow/internal/aigw"
+	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/proxy"
@@ -548,4 +550,408 @@ func TestServe_ChainRefusalsUseAIShape(t *testing.T) {
 			t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
 		}
 	})
+}
+
+// noTunnels fails the test when the tunnel registry is used.
+type noTunnels struct{ t *testing.T }
+
+func (n noTunnels) LookupByServiceID(context.Context, string) (*proxy.Resolved, error) {
+	n.t.Error("a direct provider looked up a tunnel")
+	return nil, proxy.ErrNotFound
+}
+
+func (n noTunnels) DialTunnelStreamByServiceID(context.Context, string) (net.Conn, error) {
+	n.t.Error("a direct provider dialled a tunnel")
+	return nil, proxy.ErrNotFound
+}
+
+func directGateway(t *testing.T, direct func(db.AIProvider) (http.Handler, error), chain Chain) *Gateway {
+	g := newGateway(http.NotFoundHandler(), chain)
+	g.Providers = fakeProviders{"openrouter": {
+		Slug: "openrouter", Name: "OpenRouter", Kind: "direct", ServiceID: "prov-openrouter", APIFormat: "openai",
+		BaseURL: "https://openrouter.ai/api/v1", CredentialSlot: "OPENROUTER",
+	}}
+	g.Keys = &fakeKeys{service: "prov-openrouter", good: "sk-good", id: "key-1"}
+	g.Tunnels = noTunnels{t} // a direct provider must never touch the tunnel registry
+	g.ServicePolicy = func(_ context.Context, serviceID string) (*proxy.Resolved, error) {
+		return &proxy.Resolved{ServiceID: serviceID, AccessMode: "api_key"}, nil
+	}
+	g.Direct = direct
+	return g
+}
+
+func TestServe_Direct_DispatchesThroughChain(t *testing.T) {
+	var sawAuth, sawCookie string
+	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth, sawCookie = r.Header.Get("Authorization"), r.Header.Get("Cookie")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	chain := &spyChain{}
+	g := directGateway(t, func(p db.AIProvider) (http.Handler, error) {
+		if p.Slug != "openrouter" {
+			t.Fatalf("factory got %q", p.Slug)
+		}
+		return up, nil
+	}, chain)
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+	req.Header.Set("Authorization", "Bearer sk-good")
+	req.Header.Set("Cookie", "burrow_session=s")
+	rec := httptest.NewRecorder()
+	g.Serve(rec, req, "openrouter")
+
+	if rec.Code != 200 || rec.Body.String() != `{"ok":true}` {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if sawAuth != "" || sawCookie != "" {
+		t.Fatalf("the Burrow key or cookie reached the upstream handler: %q %q", sawAuth, sawCookie)
+	}
+	if chain.serviceID != "prov-openrouter" || chain.keyID != "key-1" || !chain.metered {
+		t.Fatalf("chain got service %q key %q metered=%v", chain.serviceID, chain.keyID, chain.metered)
+	}
+	if rec.Header().Get("Burrow-Provider") != "openrouter" {
+		t.Fatalf("Burrow-Provider = %q", rec.Header().Get("Burrow-Provider"))
+	}
+}
+
+func TestServe_Direct_Errors(t *testing.T) {
+	req := func() *http.Request {
+		r := httptest.NewRequest("GET", "/v1/models", nil)
+		r.Header.Set("Authorization", "Bearer sk-good")
+		return r
+	}
+	t.Run("slot missing", func(t *testing.T) {
+		g := directGateway(t, func(db.AIProvider) (http.Handler, error) { return nil, aiprovider.ErrNotConfigured }, nil)
+		rec := httptest.NewRecorder()
+		g.Serve(rec, req(), "openrouter")
+		if rec.Code != 503 || errCode(t, rec) != "provider_not_configured" {
+			t.Fatalf("status %d", rec.Code)
+		}
+	})
+	t.Run("bad stored config", func(t *testing.T) {
+		g := directGateway(t, func(db.AIProvider) (http.Handler, error) { return nil, aiprovider.ErrInvalidBaseURL }, nil)
+		rec := httptest.NewRecorder()
+		g.Serve(rec, req(), "openrouter")
+		if rec.Code != 503 || errCode(t, rec) != "provider_misconfigured" {
+			t.Fatalf("status %d", rec.Code)
+		}
+	})
+	t.Run("factory returns no handler", func(t *testing.T) {
+		g := directGateway(t, func(db.AIProvider) (http.Handler, error) { return nil, nil }, nil)
+		rec := httptest.NewRecorder()
+		g.Serve(rec, req(), "openrouter")
+		if rec.Code != 503 || errCode(t, rec) != "provider_misconfigured" {
+			t.Fatalf("status %d", rec.Code)
+		}
+	})
+	t.Run("direct providers not wired", func(t *testing.T) {
+		g := directGateway(t, nil, nil)
+		rec := httptest.NewRecorder()
+		g.Serve(rec, req(), "openrouter")
+		if rec.Code != 503 || errCode(t, rec) != "provider_unavailable" {
+			t.Fatalf("status %d", rec.Code)
+		}
+	})
+	t.Run("key is checked before the upstream is built", func(t *testing.T) {
+		built := false
+		g := directGateway(t, func(db.AIProvider) (http.Handler, error) { built = true; return http.NotFoundHandler(), nil }, nil)
+		r := httptest.NewRequest("GET", "/v1/models", nil)
+		r.Header.Set("Authorization", "Bearer sk-bad")
+		rec := httptest.NewRecorder()
+		g.Serve(rec, r, "openrouter")
+		if rec.Code != 401 || built {
+			t.Fatalf("status %d built=%v", rec.Code, built)
+		}
+	})
+}
+
+// The backing service's access mode and IP/geo policy bind a direct provider
+// as they bind a tunnelled one, and are checked before the key.
+func TestServe_Direct_ServicePolicy(t *testing.T) {
+	built := false
+	factory := func(db.AIProvider) (http.Handler, error) { built = true; return http.NotFoundHandler(), nil }
+	serve := func(g *Gateway) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
+		r.Header.Set("Authorization", "Bearer sk-good")
+		rec := httptest.NewRecorder()
+		g.Serve(rec, r, "openrouter")
+		return rec
+	}
+	unused := func(t *testing.T, g *Gateway) {
+		t.Helper()
+		if built || g.Keys.(*fakeKeys).calls.Load() != 0 {
+			t.Fatalf("a refused request got as far as the key check or the upstream (built=%v)", built)
+		}
+	}
+	t.Run("ip-geo deny", func(t *testing.T) {
+		g := directGateway(t, factory, nil)
+		var sawService string
+		g.IPGeoDeny = func(res *proxy.Resolved, _ *http.Request) bool { sawService = res.ServiceID; return true }
+		rec := serve(g)
+		if rec.Code != 403 || errCode(t, rec) != "forbidden" || sawService != "prov-openrouter" {
+			t.Fatalf("status %d policy for %q", rec.Code, sawService)
+		}
+		unused(t, g)
+	})
+	t.Run("not in api-key mode", func(t *testing.T) {
+		g := directGateway(t, factory, nil)
+		g.ServicePolicy = func(context.Context, string) (*proxy.Resolved, error) {
+			return &proxy.Resolved{ServiceID: "prov-openrouter", AccessMode: "private"}, nil
+		}
+		rec := serve(g)
+		if rec.Code != 403 || errCode(t, rec) != "provider_unavailable" {
+			t.Fatalf("status %d", rec.Code)
+		}
+		unused(t, g)
+	})
+	t.Run("policy lookup fails", func(t *testing.T) {
+		g := directGateway(t, factory, nil)
+		g.ServicePolicy = func(context.Context, string) (*proxy.Resolved, error) { return nil, errors.New("db down: secret-dsn") }
+		rec := serve(g)
+		if rec.Code != 500 || errCode(t, rec) != "internal_error" || strings.Contains(rec.Body.String(), "secret-dsn") {
+			t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+		}
+		unused(t, g)
+	})
+	t.Run("policy source not wired", func(t *testing.T) {
+		g := directGateway(t, factory, nil)
+		g.ServicePolicy = nil
+		rec := serve(g)
+		if rec.Code != 503 || errCode(t, rec) != "provider_unavailable" {
+			t.Fatalf("status %d", rec.Code)
+		}
+		unused(t, g)
+	})
+}
+
+// A tunnelled provider is never handed to the direct factory, so it can never
+// be sent an upstream credential.
+func TestServe_TunnelNeverUsesDirectFactory(t *testing.T) {
+	var gotAuth string
+	g := newGateway(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(204)
+	}), nil)
+	g.Direct = func(db.AIProvider) (http.Handler, error) {
+		t.Error("the direct factory was called for a tunnelled provider")
+		return http.NotFoundHandler(), nil
+	}
+	g.ServicePolicy = func(context.Context, string) (*proxy.Resolved, error) {
+		t.Error("the direct policy lookup was called for a tunnelled provider")
+		return nil, errors.New("unused")
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer sk-good")
+	rec := httptest.NewRecorder()
+	g.Serve(rec, req, "ollama")
+	if rec.Code != 204 || gotAuth != "" {
+		t.Fatalf("status %d upstream Authorization %q", rec.Code, gotAuth)
+	}
+}
+
+func TestServe_Direct_AppliesModelAlias(t *testing.T) {
+	var gotBody string
+	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+	})
+	g := directGateway(t, func(db.AIProvider) (http.Handler, error) { return up, nil }, &spyChain{})
+	g.Aliases = fakeAliases{"fast": {{Alias: "fast", ConcreteModel: "z-ai/glm-4.6", ServiceID: "prov-openrouter"}}}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"fast"}`))
+	req.Header.Set("Authorization", "Bearer sk-good")
+	req.Header.Set("Content-Type", "application/json")
+	g.Serve(httptest.NewRecorder(), req, "openrouter")
+	if !strings.Contains(gotBody, `"model":"z-ai/glm-4.6"`) {
+		t.Fatalf("upstream body = %s", gotBody)
+	}
+}
+
+// An upstream must not be able to set a cookie on the dashboard's origin.
+// Every other response header passes through.
+func TestServe_StripsSetCookie_Tunnel(t *testing.T) {
+	g := newGateway(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("Set-Cookie", "burrow_session=evil; Path=/")
+		w.Header().Add("Set-Cookie", "burrow_csrf=evil; Path=/")
+		w.Header().Set("X-Request-Id", "up-1")
+		w.WriteHeader(200)
+	}), &spyChain{})
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer sk-good")
+	rec := httptest.NewRecorder()
+	g.Serve(rec, req, "ollama")
+	if rec.Code != 200 || len(rec.Header().Values("Set-Cookie")) != 0 || rec.Header().Get("X-Request-Id") != "up-1" {
+		t.Fatalf("status %d headers %v", rec.Code, rec.Header())
+	}
+}
+
+type vaultMap map[string]string
+
+func (v vaultMap) Get(slot string) (string, bool) { s, ok := v[slot]; return s, ok }
+
+func TestServe_StripsSetCookie_Direct(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("Set-Cookie", "burrow_session=evil; Path=/")
+		w.Header().Add("Set-Cookie", "burrow_csrf=evil; Path=/")
+		w.Header().Set("X-Request-Id", "up-1")
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	g := directGateway(t, DirectUpstreams(vaultMap{"OPENROUTER": "sk-or"}, srv.Client().Transport), &spyChain{})
+	g.Providers.(fakeProviders)["openrouter"] = db.AIProvider{
+		Slug: "openrouter", Kind: "direct", ServiceID: "prov-openrouter", BaseURL: srv.URL + "/api/v1", CredentialSlot: "OPENROUTER",
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer sk-good")
+	rec := httptest.NewRecorder()
+	g.Serve(rec, req, "openrouter")
+	if rec.Code != 200 || len(rec.Header().Values("Set-Cookie")) != 0 || rec.Header().Get("X-Request-Id") != "up-1" {
+		t.Fatalf("status %d headers %v", rec.Code, rec.Header())
+	}
+}
+
+// End to end through the real factory against a TLS upstream.
+func TestDirectUpstreams_Factory(t *testing.T) {
+	var gotAuth, gotPath string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotPath = r.Header.Get("Authorization"), r.URL.Path
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	factory := DirectUpstreams(vaultMap{"ZAI": "sk-zai", "EMPTY": ""}, srv.Client().Transport)
+	h, err := factory(db.AIProvider{Slug: "zai", Kind: "direct", BaseURL: srv.URL + "/api/coding/paas/v4", CredentialSlot: "ZAI"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`)))
+	if gotAuth != "Bearer sk-zai" || gotPath != "/api/coding/paas/v4/chat/completions" {
+		t.Fatalf("auth %q path %q", gotAuth, gotPath)
+	}
+
+	for _, slot := range []string{"NOPE", "EMPTY", ""} {
+		if _, err := factory(db.AIProvider{Slug: "zai", Kind: "direct", BaseURL: srv.URL, CredentialSlot: slot}); !errors.Is(err, aiprovider.ErrNotConfigured) {
+			t.Fatalf("slot %q err = %v", slot, err)
+		}
+	}
+	// A missing transport is a wiring fault, reported and not ignored.
+	if _, err := DirectUpstreams(vaultMap{"ZAI": "sk-zai"}, nil)(db.AIProvider{Slug: "zai", BaseURL: srv.URL, CredentialSlot: "ZAI"}); err == nil {
+		t.Fatal("nil transport accepted")
+	}
+}
+
+// A provider without a usable credential answers a burrow_error and sends
+// nothing upstream; an edited provider is served with its new settings on the
+// next request, because nothing is kept between requests.
+func TestServe_Direct_RealFactory_CredentialAndEdits(t *testing.T) {
+	var hits atomic.Int32
+	var gotAuth, gotPath atomic.Value
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		gotAuth.Store(r.Header.Get("Authorization"))
+		gotPath.Store(r.URL.Path)
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	var logs bytes.Buffer
+	vault := vaultMap{"A": "sk-first-secret", "B": "sk-second-secret"}
+	g := directGateway(t, DirectUpstreams(vault, srv.Client().Transport), &spyChain{})
+	g.Log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	providers := g.Providers.(fakeProviders)
+	serve := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer sk-good")
+		rec := httptest.NewRecorder()
+		g.Serve(rec, req, "openrouter")
+		return rec
+	}
+	set := func(base, slot string) {
+		providers["openrouter"] = db.AIProvider{Slug: "openrouter", Kind: "direct", ServiceID: "prov-openrouter", BaseURL: base, CredentialSlot: slot}
+	}
+
+	set(srv.URL+"/one", "MISSING")
+	if rec := serve(); rec.Code != 503 || errCode(t, rec) != "provider_not_configured" || hits.Load() != 0 {
+		t.Fatalf("missing slot: status %d, upstream hits %d", rec.Code, hits.Load())
+	}
+	set(srv.URL+"/one", "A")
+	if rec := serve(); rec.Code != 200 || gotAuth.Load() != "Bearer sk-first-secret" || gotPath.Load() != "/one/chat/completions" {
+		t.Fatalf("status %d auth %v path %v", rec.Code, gotAuth.Load(), gotPath.Load())
+	}
+	set(srv.URL+"/two", "B")
+	if rec := serve(); rec.Code != 200 || gotAuth.Load() != "Bearer sk-second-secret" || gotPath.Load() != "/two/chat/completions" {
+		t.Fatalf("edited provider still served with old settings: auth %v path %v", gotAuth.Load(), gotPath.Load())
+	}
+	set("http://not-https.example/v1?x=1", "A")
+	if rec := serve(); rec.Code != 503 || errCode(t, rec) != "provider_misconfigured" {
+		t.Fatalf("bad base URL: status %d", rec.Code)
+	}
+	delete(providers, "openrouter")
+	if rec := serve(); rec.Code != 404 || hits.Load() != 2 {
+		t.Fatalf("deleted provider: status %d, upstream hits %d", rec.Code, hits.Load())
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, "slot=MISSING") {
+		t.Fatalf("the missing slot is not named in the log: %s", out)
+	}
+	for _, secret := range []string{"sk-first-secret", "sk-second-secret", "sk-good", srv.URL, "not-https.example"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("log contains %q: %s", secret, out)
+		}
+	}
+}
+
+// Through the real chain and the real factory the first chunk reaches the
+// caller while the upstream still holds the response open.
+func TestServe_Direct_StreamsThroughChain(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: one\n\n"))
+		_ = http.NewResponseController(w).Flush()
+		<-release
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	g := directGateway(t, DirectUpstreams(vaultMap{"OPENROUTER": "sk-or"}, srv.Client().Transport),
+		aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, nil, log))
+	g.Providers.(fakeProviders)["openrouter"] = db.AIProvider{
+		Slug: "openrouter", Kind: "direct", ServiceID: "prov-openrouter", BaseURL: srv.URL + "/api/v1", CredentialSlot: "OPENROUTER",
+	}
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { g.Serve(w, r, "openrouter") }))
+	defer front.Close()
+
+	req, _ := http.NewRequest("POST", front.URL+"/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true}`))
+	req.Header.Set("Authorization", "Bearer sk-good")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	first := make(chan string, 1)
+	br := bufio.NewReader(resp.Body)
+	go func() {
+		line, _ := br.ReadString('\n')
+		first <- line
+	}()
+	select {
+	case line := <-first:
+		if line != "data: one\n" {
+			t.Fatalf("first chunk = %q (status %d)", line, resp.StatusCode)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first chunk was held back until the upstream finished")
+	}
+	unblock()
+	rest, _ := io.ReadAll(br)
+	if !strings.Contains(string(rest), "[DONE]") {
+		t.Fatalf("rest = %q", rest)
+	}
 }

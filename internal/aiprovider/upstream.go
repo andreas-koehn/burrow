@@ -201,19 +201,28 @@ func NewUpstream(cfg Config, v Vault, rt http.RoundTripper, writeErr ErrorWriter
 			case resp.StatusCode >= 300 && resp.StatusCode < 400 && resp.StatusCode != http.StatusNotModified:
 				return &errUpstreamRejected{http.StatusBadGateway, "upstream_redirect", "the provider answered with a redirect"}
 			}
+			// The relay answers on the dashboard's origin: an upstream must
+			// not be able to set a cookie there.
+			resp.Header.Del("Set-Cookie")
 			return nil
 		},
 		// The client gets one neutral error whatever the cause; the cause goes
 		// to the log, as a reason only, because the transport's error can
 		// quote the upstream URL.
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			var rej *errUpstreamRejected
 			if errors.As(err, &rej) {
 				slog.Warn("ai upstream response replaced", "provider", cfg.Slug, "reason", rej.code)
 				writeErr(w, rej.status, rej.code, rej.message)
 				return
 			}
-			slog.Warn("ai upstream request failed", "provider", cfg.Slug, "reason", failureReason(err))
+			// A caller that hung up is not a fault of the provider.
+			level := slog.LevelWarn
+			reason := failureReason(err)
+			if reason == "canceled" {
+				level = slog.LevelDebug
+			}
+			slog.Log(r.Context(), level, "ai upstream request failed", "provider", cfg.Slug, "reason", reason)
 			writeErr(w, http.StatusBadGateway, "upstream_unavailable", "the provider did not answer")
 		},
 	}

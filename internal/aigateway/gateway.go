@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ankoehn/burrow/internal/aigw"
+	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/proxy"
 )
@@ -49,6 +50,14 @@ type Gateway struct {
 	IPGeoDeny  func(res *proxy.Resolved, r *http.Request) bool // nil = no policy check
 	PublicHost string                                          // auth domain, for X-Forwarded-Host
 	Log        *slog.Logger
+
+	// Direct builds the upstream handler for a provider the relay calls
+	// itself. nil = direct providers are not available on this relay.
+	Direct func(p db.AIProvider) (http.Handler, error)
+	// ServicePolicy reads the access mode and IP/geo policy of a direct
+	// provider's backing service; such a provider has no tunnel to read
+	// them from. Required for direct providers.
+	ServicePolicy func(ctx context.Context, serviceID string) (*proxy.Resolved, error)
 }
 
 // Serve handles one request for provider slug. r.URL.Path must already have
@@ -78,6 +87,13 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 	keyID, ok := g.authenticate(w, r, p)
 	if !ok {
 		return
+	}
+	if p.Kind == "direct" {
+		// Built only now: it reads the upstream credential, which is not
+		// done for a caller without a valid key.
+		if upstream, ok = g.directUpstream(w, p); !ok {
+			return
+		}
 	}
 	// Tell the caller which provider answered; set only once the caller is
 	// known to hold a valid key.
@@ -145,11 +161,18 @@ func presentedKey(r *http.Request) string {
 }
 
 // upstreamFor returns the handler that reaches the provider's upstream and the
-// upstream host (for diagnostics). It writes the error response itself.
+// upstream host (for diagnostics). It writes the error response itself. For a
+// direct provider it checks the policy only and returns no handler; Serve
+// builds that one after the key check.
 func (g *Gateway) upstreamFor(w http.ResponseWriter, r *http.Request, p db.AIProvider) (http.Handler, string, bool) {
 	switch p.Kind {
 	case "tunnel":
 		return g.tunnelUpstream(w, r, p)
+	case "direct":
+		if !g.directAllowed(w, r, p) {
+			return nil, "", false
+		}
+		return nil, upstreamHost(p.BaseURL), true
 	default:
 		WriteError(w, http.StatusServiceUnavailable, "provider_unavailable", "provider kind is not supported by this relay")
 		return nil, "", false
@@ -169,13 +192,7 @@ func (g *Gateway) tunnelUpstream(w http.ResponseWriter, r *http.Request, p db.AI
 	}
 	// The AI namespace is key-authenticated only. A service switched to
 	// another mode is no longer meant to be reached with an API key.
-	if res.AccessMode != "api_key" {
-		WriteError(w, http.StatusForbidden, "provider_unavailable", "this provider's service is not in API-key mode")
-		return nil, "", false
-	}
-	if g.IPGeoDeny != nil && g.IPGeoDeny(res, r) {
-		g.Log.Info("aigateway: ip-geo deny", "provider", p.Slug, "service_id", res.ServiceID, "remote_addr", r.RemoteAddr)
-		WriteError(w, http.StatusForbidden, "forbidden", "your address is not allowed to use this provider")
+	if !g.policyAllows(w, r, p, res) {
 		return nil, "", false
 	}
 
@@ -189,6 +206,7 @@ func (g *Gateway) tunnelUpstream(w http.ResponseWriter, r *http.Request, p db.AI
 			pr.Out.URL = &url.URL{Scheme: "http", Host: host, Path: pr.In.URL.Path, RawPath: pr.In.URL.RawPath, RawQuery: pr.In.URL.RawQuery}
 			pr.Out.Host = host
 		},
+		ModifyResponse: stripSetCookie,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return g.Tunnels.DialTunnelStreamByServiceID(ctx, serviceID)
@@ -206,4 +224,85 @@ func (g *Gateway) tunnelUpstream(w http.ResponseWriter, r *http.Request, p db.AI
 		},
 	}
 	return rp, host, true
+}
+
+// policyAllows enforces the backing service's access mode and IP/geo policy,
+// the same for every provider kind. It writes the error response itself.
+func (g *Gateway) policyAllows(w http.ResponseWriter, r *http.Request, p db.AIProvider, res *proxy.Resolved) bool {
+	if res.AccessMode != "api_key" {
+		WriteError(w, http.StatusForbidden, "provider_unavailable", "this provider's service is not in API-key mode")
+		return false
+	}
+	if g.IPGeoDeny != nil && g.IPGeoDeny(res, r) {
+		g.Log.Info("aigateway: ip-geo deny", "provider", p.Slug, "service_id", res.ServiceID, "remote_addr", r.RemoteAddr)
+		WriteError(w, http.StatusForbidden, "forbidden", "your address is not allowed to use this provider")
+		return false
+	}
+	return true
+}
+
+// stripSetCookie drops cookies an upstream tries to set: /ai/ is served on
+// the dashboard's origin, where a cookie named like the session or CSRF
+// cookie would replace the dashboard's own.
+func stripSetCookie(resp *http.Response) error {
+	resp.Header.Del("Set-Cookie")
+	return nil
+}
+
+// directAllowed is the policy step for a direct provider. It reads the
+// backing service's row, never the tunnel registry.
+func (g *Gateway) directAllowed(w http.ResponseWriter, r *http.Request, p db.AIProvider) bool {
+	if g.Direct == nil || g.ServicePolicy == nil {
+		WriteError(w, http.StatusServiceUnavailable, "provider_unavailable", "direct providers are not available on this relay")
+		return false
+	}
+	res, err := g.ServicePolicy(r.Context(), p.ServiceID)
+	if err != nil || res == nil {
+		g.Log.Error("aigateway: service policy lookup failed", "provider", p.Slug, "err", err)
+		WriteError(w, http.StatusInternalServerError, "internal_error", "internal error")
+		return false
+	}
+	return g.policyAllows(w, r, p, res)
+}
+
+func (g *Gateway) directUpstream(w http.ResponseWriter, p db.AIProvider) (http.Handler, bool) {
+	h, err := g.Direct(p)
+	switch {
+	case errors.Is(err, aiprovider.ErrNotConfigured):
+		g.Log.Warn("aigateway: credential slot is not set", "provider", p.Slug, "slot", p.CredentialSlot)
+		WriteError(w, http.StatusServiceUnavailable, "provider_not_configured", "this provider has no upstream credential configured")
+		return nil, false
+	case err != nil || h == nil:
+		// err names the provider and the faulty setting, never the
+		// credential or the base URL.
+		g.Log.Error("aigateway: provider configuration is invalid", "provider", p.Slug, "err", err)
+		WriteError(w, http.StatusServiceUnavailable, "provider_misconfigured", "this provider's configuration is invalid")
+		return nil, false
+	}
+	return h, true
+}
+
+// upstreamHost is the host part of a base URL, for diagnostics only.
+func upstreamHost(base string) string {
+	if u, err := url.Parse(base); err == nil {
+		return u.Host
+	}
+	return ""
+}
+
+// DirectUpstreams returns the factory used for Gateway.Direct. The handler is
+// built per request from the provider row and the vault, so nothing holding a
+// credential outlives the request and an edited or deleted provider leaves no
+// handler behind. rt is shared by all providers and carries no credential.
+func DirectUpstreams(v aiprovider.Vault, rt http.RoundTripper) func(db.AIProvider) (http.Handler, error) {
+	return func(p db.AIProvider) (http.Handler, error) {
+		return aiprovider.NewUpstream(aiprovider.Config{
+			Slug:           p.Slug,
+			BaseURL:        p.BaseURL,
+			CredentialSlot: p.CredentialSlot,
+			AuthHeader:     p.AuthHeader,
+			AuthFormat:     p.AuthFormat,
+			ExtraHeaders:   p.ExtraHeaders,
+		}, v, rt, WriteError)
+	}
 }

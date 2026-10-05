@@ -107,6 +107,24 @@ func TestServerHTTPSecureCookiesDefaultAndOverride(t *testing.T) {
 	}
 }
 
+func TestServerAIAllowPrivateUpstreamsDefaultAndOverride(t *testing.T) {
+	c, err := LoadServer(nil)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if c.AIAllowPrivateUpstreams {
+		t.Fatalf("default ai_allow_private_upstreams must be false, got true")
+	}
+	t.Setenv("BURROW_AI_ALLOW_PRIVATE_UPSTREAMS", "true")
+	c2, err := LoadServer(nil)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if !c2.AIAllowPrivateUpstreams {
+		t.Fatalf("env override BURROW_AI_ALLOW_PRIVATE_UPSTREAMS=true not applied")
+	}
+}
+
 // TestTrustedProxiesDefaultEmpty asserts that the default TrustedProxies is an
 // empty slice (safe: no forwarded headers trusted).
 func TestTrustedProxiesDefaultEmpty(t *testing.T) {

@@ -3,8 +3,10 @@ package aiprovider
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"log/slog"
@@ -608,5 +610,86 @@ func TestUpstream_StreamsRequestBody(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Replaced responses are logged with the provider and the reason only.
+func TestUpstream_ReplacedResponsesAreLogged(t *testing.T) {
+	cfg := Config{Slug: "openrouter", CredentialSlot: "S"}
+	v := mapVault{"S": "sk-up"}
+	cases := map[string]struct {
+		status int
+		reason string
+	}{
+		"401":      {401, "upstream_auth_failed"},
+		"403":      {403, "upstream_auth_failed"},
+		"redirect": {302, "upstream_redirect"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := newPair(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Location", "https://elsewhere.example/landing")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"error":"key sk-up is invalid for org 42"}`))
+			}, cfg, v)
+			logs := captureLog(t)
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/v1/models", nil))
+			out := logs.String()
+			if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "provider=openrouter") || !strings.Contains(out, "reason="+tc.reason) {
+				t.Fatalf("log = %q", out)
+			}
+			for _, leak := range []string{"sk-up", "org 42", "elsewhere.example", "landing"} {
+				if strings.Contains(out, leak) {
+					t.Fatalf("log contains %q: %s", leak, out)
+				}
+			}
+		})
+	}
+}
+
+type canceledRT struct{}
+
+func (canceledRT) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("round trip: %w", context.Canceled)
+}
+
+// A caller that hangs up before the response headers is not a provider
+// failure: it is logged at debug, not at warn.
+func TestUpstream_ClientDisconnectLogsAtDebug(t *testing.T) {
+	h, err := NewUpstream(Config{Slug: "p", BaseURL: "https://up.example/v1", CredentialSlot: "S"}, mapVault{"S": "k"}, canceledRT{}, testWriteErr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := new(syncBuffer)
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/v1/models", nil))
+	out := buf.String()
+	if !strings.Contains(out, "level=DEBUG") || !strings.Contains(out, "provider=p") || !strings.Contains(out, "reason=canceled") {
+		t.Fatalf("log = %q", out)
+	}
+	if strings.Contains(out, "level=WARN") {
+		t.Fatalf("a client disconnect was logged at warn: %s", out)
+	}
+}
+
+// An upstream cannot set cookies on the origin the relay is served from.
+func TestUpstream_StripsSetCookie(t *testing.T) {
+	h := newPair(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("Set-Cookie", "burrow_session=evil; Path=/")
+		w.Header().Add("Set-Cookie", "burrow_csrf=evil; Path=/")
+		w.Header().Set("X-Request-Id", "up-1")
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(429)
+	}, Config{Slug: "p", CredentialSlot: "S"}, mapVault{"S": "k"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+	if rec.Code != 429 || len(rec.Header().Values("Set-Cookie")) != 0 {
+		t.Fatalf("status %d Set-Cookie %v", rec.Code, rec.Header().Values("Set-Cookie"))
+	}
+	if rec.Header().Get("X-Request-Id") != "up-1" || rec.Header().Get("Retry-After") != "7" {
+		t.Fatalf("other headers were touched: %v", rec.Header())
 	}
 }

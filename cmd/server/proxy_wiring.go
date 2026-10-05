@@ -240,6 +240,34 @@ func (a proxyDialerAdapter) LookupByServiceID(ctx context.Context, serviceID str
 	return r, nil
 }
 
+// directServicePolicy returns the lookup the /ai/ gateway uses for a direct
+// provider: the backing service's access mode and IP/geo policy, read from
+// the service's rows. Such a service has no tunnel, so the tunnel registry is
+// not consulted.
+func directServicePolicy(st subdomainStore) func(ctx context.Context, serviceID string) (*proxy.Resolved, error) {
+	return func(ctx context.Context, serviceID string) (*proxy.Resolved, error) {
+		svc, err := st.ServiceByID(ctx, serviceID)
+		if err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				return nil, proxy.ErrNotFound
+			}
+			return nil, fmt.Errorf("direct service policy: service by id: %w", err)
+		}
+		ipgeo, err := st.GetServiceIPGeo(ctx, svc.ID)
+		if err != nil {
+			return nil, fmt.Errorf("direct service policy: ip-geo config: %w", err)
+		}
+		r := &proxy.Resolved{ServiceID: svc.ID, AccessMode: svc.AccessMode, APIKeyHeader: svc.APIKeyHeader}
+		if ipgeo.Enabled {
+			r.IPAllowCIDRs = ipgeo.AllowCIDRs
+			r.IPBlockCIDRs = ipgeo.BlockCIDRs
+			r.IPAllowCountries = ipgeo.AllowCountries
+			r.IPBlockCountries = ipgeo.BlockCountries
+		}
+		return r, nil
+	}
+}
+
 // DialTunnelStreamByServiceID implements proxy.StreamDialer.DialTunnelStreamByServiceID.
 func (a proxyDialerAdapter) DialTunnelStreamByServiceID(ctx context.Context, serviceID string) (net.Conn, error) {
 	tn, ok := a.srv.LookupHTTPTunnelByServiceID(serviceID)

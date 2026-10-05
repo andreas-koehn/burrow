@@ -31,6 +31,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/acme"
 	"github.com/ankoehn/burrow/internal/aigateway"
+	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/api"
 	"github.com/ankoehn/burrow/internal/config"
 	"github.com/ankoehn/burrow/internal/connlog"
@@ -745,6 +746,9 @@ func main() {
 				log,
 				proxyOpts...,
 			)
+			// One transport for all direct AI providers: it carries the
+			// address guard and the connection pool, never a credential.
+			aiUpstreamTransport := aiprovider.NewTransport(cfg.AIAllowPrivateUpstreams)
 			// The /ai/ data plane shares the proxy's dialer, AI chain and
 			// IP/geo policy. A nil chain must stay a nil interface.
 			aiGateway := &aigateway.Gateway{
@@ -755,6 +759,10 @@ func main() {
 				IPGeoDeny:  proxyHandler.IPGeoDenied,
 				PublicHost: proxyAuthDomain,
 				Log:        log,
+				// Direct providers: the upstream credential comes from the
+				// env vault, the policy from the backing service's rows.
+				Direct:        aigateway.DirectUpstreams(v05.CredVault, aiUpstreamTransport),
+				ServicePolicy: directServicePolicy(st),
 			}
 			if v04.AIChain != nil {
 				aiGateway.Chain = v04.AIChain
@@ -1065,6 +1073,8 @@ func main() {
 				_ = proxySrv.Shutdown(shutCtx)
 			}
 			_ = apiSrv.Shutdown(shutCtx)
+			// No /ai/ request is in flight any more.
+			aiUpstreamTransport.CloseIdleConnections()
 			if challengeSrv != nil {
 				_ = challengeSrv.Shutdown(shutCtx)
 			}

@@ -115,6 +115,11 @@ type ServerConfig struct {
 	// reads a file CONTAINING the path, kept for consistency with the
 	// generic _FILE pattern).
 	PricingPath string `koanf:"pricing_path"`
+	// AIAllowPrivateUpstreams lets direct AI providers point at private,
+	// loopback or link-local addresses (a self-hosted model server on the
+	// LAN). Off by default: the relay refuses to connect to such addresses.
+	// Env: BURROW_AI_ALLOW_PRIVATE_UPSTREAMS.
+	AIAllowPrivateUpstreams bool `koanf:"ai_allow_private_upstreams"`
 	// BackupDir is the on-disk directory the backup API and `burrowd backup`
 	// CLI write/read archives in (Task 20). Defaults to "<DatabasePath>.backups"
 	// so a stock deployment gets a working JSON API out of the box. When set
@@ -372,7 +377,8 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 		// once DatabasePath has been resolved through env+_FILE+overrides — so
 		// the derivation rule sees the final post-merge value.
 		"mcp_listen": "", "burrow_mcp_token": "", "geo_db_path": "", "pricing_path": "",
-		"backup_dir": "",
+		"ai_allow_private_upstreams": false,
+		"backup_dir":                 "",
 		// v0.5.0 (Task 15): Postgres backend defaults — both off by default.
 		"database_url": "", "experimental_postgres_backend": false,
 		// login_rate_limit_per_ip: 0 means use api.LoginRateLimitPerIP constant.
