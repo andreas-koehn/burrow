@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { render } from "@testing-library/react";
@@ -33,6 +33,21 @@ describe("v0.5.0 routes", () => {
     renderAt("/settings/custom-domains");
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
     expect(screen.getByTestId("path")).toHaveTextContent(/^\/settings$/);
+  });
+
+  it("keeps the hash of a service bookmark", async () => {
+    renderAt("/services/svc_web01#upstream-key");
+    expect(await screen.findByRole("tab", { name: "Access" })).toBeInTheDocument();
+    expect(screen.getByTestId("path")).toHaveTextContent(/^\/services\/svc_web01$/);
+    const nav = within(screen.getByRole("navigation", { name: "Services" }));
+    expect(nav.getByRole("link", { name: /^Services(,|$)/ })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("shows the Settings sidebar on the settings page", async () => {
+    renderAt("/settings");
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(await screen.findByRole("navigation", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /^Back to / })).toBeInTheDocument();
   });
 
   it("redirects a service's domains route to the service", async () => {

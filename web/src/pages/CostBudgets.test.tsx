@@ -7,7 +7,7 @@ import { renderApp } from "@/mocks/test-utils";
 import CostBudgets from "@/pages/CostBudgets";
 
 function mount() {
-  return renderApp(<CostBudgets />, "/cost");
+  return renderApp(<CostBudgets />, "/gateway/cost");
 }
 
 describe("Cost & budgets (§4.24)", () => {
@@ -102,7 +102,7 @@ describe("Cost & budgets (§4.24)", () => {
         });
       }),
     );
-    const { container } = renderApp(<CostBudgets />, "/cost");
+    const { container } = renderApp(<CostBudgets />, "/gateway/cost");
     // Wait for the MetricStrip "Spend by window" list to appear
     await screen.findByRole("list", { name: /spend by window/i });
     const bars = container.querySelectorAll(".pct-bar");

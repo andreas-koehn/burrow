@@ -1,104 +1,53 @@
 import { describe, it, expect } from "vitest";
-import { destinationsFor, DESTINATIONS } from "./destinations";
+import { destinationsFor, TEMPORARY_ENTRIES } from "./destinations";
+import { allEntries } from "./navigation";
 
-describe("DESTINATIONS", () => {
-  it("all paths are unique", () => {
-    const paths = DESTINATIONS.map((d) => d.path);
-    const unique = new Set(paths);
-    expect(unique.size).toBe(paths.length);
+const admin = { isAdmin: true, hasAiGateway: true };
+const plain = { isAdmin: false, hasAiGateway: false };
+const byGroup = (ctx: typeof admin, group: string) => destinationsFor(ctx).filter((d) => d.group === group).map((d) => d.label);
+
+describe("destinationsFor — the navigation description, flattened", () => {
+  it("lists every entry of the three navigations under its workspace label", () => {
+    expect(byGroup(admin, "Services")).toEqual(["Overview", "Services", "Clients", "Traffic", "Tunnels", "Tokens"]);
+    expect(byGroup(admin, "AI Gateway")).toEqual(["Overview", "Providers", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
+    expect(byGroup(admin, "Settings")).toEqual([
+      "General", "Email", "Retention", "Database", "Backups", "Users", "Roles", "Audit log",
+      "Webhooks", "API reference", "Profile & password", "Sessions", "Automation tokens",
+    ]);
+    expect(new Set(destinationsFor(admin).map((d) => d.group))).toEqual(new Set(["Services", "AI Gateway", "Settings"]));
   });
 
-  it("all labels are unique", () => {
-    const labels = DESTINATIONS.map((d) => d.label);
-    const unique = new Set(labels);
-    expect(unique.size).toBe(labels.length);
-  });
-});
-
-describe("destinationsFor — admin with AI and http service", () => {
-  const ctx = { isAdmin: true, hasAiGateway: true, firstHttpServiceId: "x" };
-  const result = destinationsFor(ctx);
-  const labels = result.map((d) => d.label);
-
-  const expectedLabels = [
-    "Home",
-    "Clients",
-    "Tunnels",
-    "Services",
-    "Tokens",
-    "Providers",
-    "Cost & budgets",
-    "Prompt cache",
-    "Guardrails",
-    "Request inspector",
-    "Users",
-    "Roles",
-    "Settings",
-    "Audit",
-    "Webhooks",
-    "Account",
-    "Automation",
-  ];
-
-  for (const label of expectedLabels) {
-    it(`includes "${label}"`, () => {
-      expect(labels).toContain(label);
-    });
-  }
-
-  it("Request inspector points at the stable /inspector entry route", () => {
-    const inspector = result.find((d) => d.label === "Request inspector");
-    expect(inspector?.path).toBe("/inspector");
-  });
-});
-
-describe("destinationsFor — non-admin, no AI, no http service", () => {
-  const ctx = { isAdmin: false, hasAiGateway: false };
-  const result = destinationsFor(ctx);
-  const labels = result.map((d) => d.label);
-
-  const excludedAdminLabels = ["Users", "Roles", "Settings", "Audit", "Webhooks"];
-  for (const label of excludedAdminLabels) {
-    it(`excludes admin-only "${label}"`, () => {
-      expect(labels).not.toContain(label);
-    });
-  }
-
-  const excludedAiLabels = [
-    "Providers",
-    "Cost & budgets",
-    "Prompt cache",
-    "Guardrails",
-    "Request inspector",
-  ];
-  for (const label of excludedAiLabels) {
-    it(`excludes AI group "${label}"`, () => {
-      expect(labels).not.toContain(label);
-    });
-  }
-});
-
-describe("destinationsFor — non-admin with AI but no http service", () => {
-  const ctx = { isAdmin: false, hasAiGateway: true, firstHttpServiceId: undefined };
-  const result = destinationsFor(ctx);
-  const labels = result.map((d) => d.label);
-
-  it("excludes Request inspector when no firstHttpServiceId", () => {
-    expect(labels).not.toContain("Request inspector");
+  it("adds nothing but the temporary entries to the navigation description", () => {
+    const fromNav = allEntries(admin).map((x) => x.entry.to);
+    const extra = destinationsFor(admin).map((d) => d.path).filter((p) => !fromNav.includes(p));
+    expect(extra).toEqual(TEMPORARY_ENTRIES.map((e) => e.to));
+    expect(extra).toEqual(["/tunnels", "/tokens"]);
   });
 
-  it("includes other AI group items", () => {
-    expect(labels).toContain("Providers");
-    expect(labels).toContain("Guardrails");
+  it("all paths are unique (the palette keys its rows by path)", () => {
+    const paths = destinationsFor(admin).map((d) => d.path);
+    expect(new Set(paths).size).toBe(paths.length);
   });
-});
 
-describe("destinationsFor — non-admin with AI and http service", () => {
-  const ctx = { isAdmin: false, hasAiGateway: true, firstHttpServiceId: "svc-42" };
-  const result = destinationsFor(ctx);
+  it("every destination carries an icon", () => {
+    for (const d of destinationsFor(admin)) expect(d.icon, d.label).toBeTruthy();
+  });
 
-  it("Request inspector points at the stable /inspector entry route", () => {
-    const inspector = result.find((d) => d.label === "Request inspector");
-    expect(inspector?.path).toBe("/inspector");
+  it("points the gateway entries at their /gateway/ paths", () => {
+    const path = (label: string) => destinationsFor(admin).find((d) => d.label === label)?.path;
+    expect(path("Requests")).toBe("/gateway/requests");
+    expect(path("Cost & budgets")).toBe("/gateway/cost");
+    expect(path("Prompt cache")).toBe("/gateway/cache");
+    expect(path("Guardrails")).toBe("/gateway/guardrails");
+  });
+
+  it("a non-admin without AI access sees Services and the Personal settings only", () => {
+    expect(byGroup(plain, "Services")).toEqual(["Overview", "Services", "Clients", "Traffic", "Tunnels", "Tokens"]);
+    expect(byGroup(plain, "AI Gateway")).toEqual([]);
+    expect(byGroup(plain, "Settings")).toEqual(["Profile & password", "Sessions", "Automation tokens"]);
+  });
+
+  it("a non-admin with AI access sees the gateway entries, Requests included", () => {
+    expect(byGroup({ isAdmin: false, hasAiGateway: true }, "AI Gateway")).toContain("Requests");
   });
 });

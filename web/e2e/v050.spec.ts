@@ -121,7 +121,7 @@ test("v0.5.0: OpenAPI viewer loads with zero external-CDN requests", async ({ pa
 
 // ── 5. Semantic cache tab is live (not disabled placeholder) ──────────────────
 test("v0.5.0: semantic cache tab is enabled and shows controls", async ({ page }) => {
-  await page.goto("/cache");
+  await page.goto("/gateway/cache");
   await expect(page.getByRole("heading", { name: "Prompt cache" })).toBeVisible();
 
   // Click the "Semantic" tab

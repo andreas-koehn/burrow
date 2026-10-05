@@ -79,12 +79,12 @@ test("44-ai-gateway-pages: every AI-gateway page renders for an unconfigured api
     await expect(page.getByRole("heading", { name: "Routing" })).toBeVisible();
 
     // 3) Prompt cache → Semantic tab — was a React TypeError ("reading 'semantic'").
-    await page.goto("/cache");
+    await page.goto("/gateway/cache");
     await page.getByRole("tab", { name: "Semantic" }).click();
     await expect(page.getByRole("switch", { name: "Enable semantic cache" })).toBeVisible({ timeout: 10_000 });
 
     // 4) Request inspector — was a React TypeError ("reading 'enabled'").
-    await page.goto(`/inspector/${id}`);
+    await page.goto(`/gateway/requests/${id}`);
     await expect(page.getByRole("heading", { name: "Request inspector", level: 1 })).toBeVisible({ timeout: 10_000 });
 
     // The regression guard: none of those pages threw.

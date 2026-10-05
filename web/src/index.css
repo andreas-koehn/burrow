@@ -941,15 +941,77 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 14px 16px 10px;
+  padding: 8px;
   border-bottom: 1px solid var(--border);
   color: var(--foreground);
   box-sizing: border-box;
 }
-.sidebar-brand .wordmark {
-  font-size: 15px;
+
+/* Workspace switcher — the head of the sidebar: mark, workspace, relay
+   namespace. A <button> when there is more than one workspace, a plain
+   <div> otherwise; both workspaces share the one accent and differ only by
+   name, icon and namespace. */
+.workspace-switcher {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  text-align: left;
+}
+button.workspace-switcher {
+  cursor: pointer;
+  transition: background var(--t-micro), border-color var(--t-micro);
+}
+button.workspace-switcher:hover,
+button.workspace-switcher[aria-expanded="true"] {
+  background: var(--hover);
+  border-color: var(--border);
+}
+button.workspace-switcher:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.workspace-switcher .workspace-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.workspace-switcher .workspace-name {
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: -0.01em;
+}
+.workspace-switcher .namespace {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.workspace-switcher .chev {
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+}
+
+/* Settings has no switcher: a way back to the last workspace, then its title. */
+.sidebar-back {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 8px 0 6px;
+}
+.sidebar-back .workspace-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  padding: 4px 18px;
 }
 
 .sidebar-nav {
@@ -1034,6 +1096,13 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
   font-variant-numeric: tabular-nums;
 }
 
+.nav-search {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+}
+
 .sidebar-footer {
   border-top: 1px solid var(--border);
   padding: 10px 10px;
@@ -1042,6 +1111,18 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
   align-items: stretch;
   gap: 8px;
   flex-shrink: 0;
+}
+/* Shortcuts into Settings above the user chip: full-bleed like the entries above. */
+.sidebar-footer-nav { margin: -4px -10px 0; }
+a.user-chip {
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--t-micro);
+}
+a.user-chip:hover { background: var(--hover); }
+a.user-chip:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
 }
 
 .user-chip {
@@ -1117,6 +1198,82 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
 .theme-toggle:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
+}
+
+/* Collapsed sidebar — icons only. Labels, counts and group titles are not
+   rendered at all; every control carries its name in aria-label (and a title
+   for the pointer), so nothing here hides text an accessible name depends on. */
+.sidebar.is-collapsed { width: 56px; }
+.sidebar.is-collapsed .sidebar-brand { padding: 8px 6px; }
+.sidebar.is-collapsed .sidebar-back { padding: 8px 0 6px; }
+.sidebar.is-collapsed .workspace-switcher {
+  justify-content: center;
+  padding: 6px 0;
+}
+.sidebar.is-collapsed .nav-item {
+  justify-content: center;
+  padding: 8px 0;
+}
+.sidebar.is-collapsed .nav-group + .nav-group {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.sidebar.is-collapsed .sidebar-footer-row { flex-direction: column; }
+.sidebar.is-collapsed .user-chip {
+  flex: none;
+  padding: 2px;
+}
+
+/* Column right of the sidebar: the top bar, then the page. */
+.shell-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 32px 6px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+  box-sizing: border-box;
+}
+.topbar .crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.topbar .crumbs li {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+.topbar .crumbs .sep {
+  margin: 0 8px;
+  color: var(--border-strong);
+}
+.topbar .crumbs a {
+  color: var(--muted-foreground);
+  text-decoration: none;
+  border-radius: 4px;
+}
+.topbar .crumbs a:hover { color: var(--foreground); }
+.topbar .crumbs a:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.topbar .crumbs [aria-current="page"] {
+  color: var(--foreground);
+  font-weight: 500;
 }
 
 .shell-main {

@@ -43,7 +43,7 @@ export default function InspectorIndex() {
   }
 
   const first = (Array.isArray(services.data) ? services.data : []).find((s) => s.type === "http");
-  if (first) return <Navigate to={`/inspector/${first.id}`} replace />;
+  if (first) return <Navigate to={`/gateway/requests/${first.id}`} replace />;
 
   return (
     <div className="inspector-page">

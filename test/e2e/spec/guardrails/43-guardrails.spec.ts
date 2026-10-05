@@ -68,7 +68,7 @@ test("43-guardrails: view sections + config round-trip", async ({ page, request 
   });
 
   try {
-    await page.goto("/guardrails");
+    await page.goto("/gateway/guardrails");
     await expect(page.getByRole("heading", { name: /Guardrails/i, level: 1 })).toBeVisible();
 
     // --- Assert the three accordion section titles render ---
@@ -133,7 +133,7 @@ test("43-guardrails: injection config round-trip (no pattern list)", async ({ pa
   const orig = ((await origResp.json()) as GuardrailSettingsResp).global;
 
   try {
-    await page.goto("/guardrails");
+    await page.goto("/gateway/guardrails");
     await expect(page.getByRole("heading", { name: /Guardrails/i, level: 1 })).toBeVisible();
 
     await page.locator("button.accordion-trigger").filter({ hasText: /prompt-injection/i }).click();

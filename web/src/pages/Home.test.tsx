@@ -149,7 +149,7 @@ describe("Home (Overview)", () => {
       });
       const link = screen.getByRole("link", { name: /view budgets/i });
       expect(link).toBeInTheDocument();
-      expect(link).toHaveAttribute("href", "/cost");
+      expect(link).toHaveAttribute("href", "/gateway/cost");
     });
   });
 

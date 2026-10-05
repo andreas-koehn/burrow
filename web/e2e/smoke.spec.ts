@@ -33,7 +33,7 @@ test("smoke: full happy-path", async ({ page }) => {
   ).toBeVisible();
 
   // ── 3. Tokens: create → one-time dialog → revoke ─────────────────────────
-  await page.getByRole("link", { name: "Tokens" }).click();
+  await page.locator(".sidebar").getByRole("link", { name: "Tokens", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Client tokens" })).toBeVisible();
 
   // Fill token name — Label htmlFor="token-name" in Tokens.tsx
@@ -91,7 +91,8 @@ test("smoke: full happy-path", async ({ page }) => {
   await expect(htmlHandle).not.toHaveClass(/dark/);
 
   // ── 5. Account: change password ──────────────────────────────────────────
-  await page.getByRole("link", { name: "Account" }).click();
+  // The user chip at the foot of the sidebar leads to the profile page.
+  await page.getByRole("link", { name: /^Your profile/ }).click();
   await expect(page.getByRole("heading", { name: "Change password" })).toBeVisible();
 
   // Labels from Account.tsx: htmlFor="current-password" / "new-password" / "confirm-password"

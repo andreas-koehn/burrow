@@ -30,6 +30,9 @@ import ServiceDetail from "@/pages/ServiceDetail";
 import Retention from "@/pages/Retention";
 import DatabaseBackend from "@/pages/DatabaseBackend";
 import OpenApiViewer from "@/pages/OpenApiViewer";
+import GatewayOverview from "@/pages/GatewayOverview";
+import { RedirectTo } from "@/lib/redirects";
+import { NOT_YET_MOVED, OLD_ROUTES } from "@/lib/moved-routes";
 
 // Custom domains need host routing, which is off; old links land on the service.
 function ServiceDomainsRedirect() {
@@ -46,13 +49,14 @@ export default function App() {
         <Route path="/tunnels" element={<Tunnels />} />
         <Route path="/services" element={<Services />} />
         {/* /ai/ is the gateway's data plane and never reaches the SPA; its pages live under /gateway/. */}
+        <Route path="/gateway" element={<GatewayOverview />} />
         <Route path="/gateway/providers" element={<Providers />} />
         <Route path="/gateway/providers/:slug" element={<ProviderDetail />} />
-        <Route path="/cache" element={<PromptCache />} />
-        <Route path="/guardrails" element={<Guardrails />} />
-        <Route path="/inspector" element={<InspectorIndex />} />
-        <Route path="/inspector/:serviceId/:requestId?" element={<RequestInspector />} />
-        <Route path="/cost" element={<CostBudgets />} />
+        <Route path="/gateway/cache" element={<PromptCache />} />
+        <Route path="/gateway/guardrails" element={<Guardrails />} />
+        <Route path="/gateway/requests" element={<InspectorIndex />} />
+        <Route path="/gateway/requests/:serviceId/:requestId?" element={<RequestInspector />} />
+        <Route path="/gateway/cost" element={<CostBudgets />} />
         <Route path="/audit" element={<AuditLog />} />
         <Route path="/webhooks" element={<Webhooks />} />
 
@@ -74,6 +78,10 @@ export default function App() {
         {/* P1-14: in-app OpenAPI viewer, framed inside the dashboard chrome. */}
         <Route path="/openapi" element={<OpenApiViewer />} />
         <Route path="/settings/custom-domains" element={<Navigate to="/settings" replace />} />
+        {/* Old bookmarks: every moved path lands on its new home, params, query and hash intact. */}
+        {OLD_ROUTES.map((r) => <Route key={r.from} path={r.from} element={<RedirectTo to={r.to} />} />)}
+        {/* Temporary (W03, W05): navigation entries whose page still lives at its old address. */}
+        {NOT_YET_MOVED.map((r) => <Route key={r.from} path={r.from} element={<RedirectTo to={r.to} />} />)}
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

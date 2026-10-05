@@ -27,7 +27,7 @@ function mountAt(route: string) {
         <Route path="/gateway/providers" element={<div>PROVIDERS_PAGE</div>} />
         <Route path="/gateway/providers/:slug" element={<ProviderDetail />} />
         <Route path="/clients/:id" element={<div>CLIENT_PAGE</div>} />
-        <Route path="/inspector/:serviceId/:requestId?" element={<div>INSPECTOR_PAGE</div>} />
+        <Route path="/gateway/requests/:serviceId/:requestId?" element={<div>INSPECTOR_PAGE</div>} />
       </Routes>
       <PathProbe />
     </>,
@@ -301,7 +301,7 @@ describe("Provider detail", () => {
     });
   });
 
-  it("recent requests row click navigates to /inspector/:serviceId/:requestId", async () => {
+  it("recent requests row click navigates to /gateway/requests/:serviceId/:requestId", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /recent requests/i });
     // Wait for the rows to populate from the inspector query (the table renders
@@ -449,7 +449,7 @@ describe("Provider detail", () => {
   it("links to the request inspector of the backing service", async () => {
     mountDirect();
     expect(await screen.findByRole("link", { name: "Open request inspector" }))
-      .toHaveAttribute("href", "/inspector/prov-openrouter");
+      .toHaveAttribute("href", "/gateway/requests/prov-openrouter");
   });
 
   it("opens the tab named in the URL fragment", async () => {

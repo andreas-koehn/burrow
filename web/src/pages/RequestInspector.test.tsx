@@ -8,10 +8,10 @@ import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
 import RequestInspector from "@/pages/RequestInspector";
 
-function mount(path = "/inspector/svc_ai001") {
+function mount(path = "/gateway/requests/svc_ai001") {
   return renderApp(
     <Routes>
-      <Route path="/inspector/:serviceId/:requestId?" element={<RequestInspector />} />
+      <Route path="/gateway/requests/:serviceId/:requestId?" element={<RequestInspector />} />
     </Routes>,
     path,
   );
@@ -101,10 +101,10 @@ describe("Request inspector (§4.23)", () => {
   });
 
   it("shows the API error with a way back for an unknown service, not an endless skeleton", async () => {
-    mount("/inspector/no-such-service");
+    mount("/gateway/requests/no-such-service");
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Couldn't load requests: service not found");
-    expect(within(alert).getByRole("link", { name: /request inspector/i })).toHaveAttribute("href", "/inspector");
+    expect(within(alert).getByRole("link", { name: /request inspector/i })).toHaveAttribute("href", "/gateway/requests");
     expect(screen.queryByRole("table", { name: /requests/i })).not.toBeInTheDocument();
   });
 

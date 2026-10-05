@@ -28,7 +28,9 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   await login(page);
 
   // ── Users: list (GET /users → {users,total}) ──────────────────────────────
-  await page.getByRole("link", { name: "Users" }).click();
+  // The sidebar's admin shortcut; scoped to the sidebar because the breadcrumb repeats names.
+  const sidebar = page.locator(".sidebar");
+  await sidebar.getByRole("link", { name: "Users & roles" }).click();
   await expect(page.getByRole("heading", { name: "Users" })).toBeVisible();
   const adminRow = page.locator("tbody tr").filter({ hasText: ADMIN_EMAIL });
   await expect(adminRow).toHaveCount(1);
@@ -71,7 +73,8 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   await expect(page.locator("tbody tr").filter({ hasText: NEW_USER_EMAIL })).toHaveCount(0);
 
   // ── Roles: list + detail w/ code-defined permissions ──────────────────────
-  await page.getByRole("link", { name: "Roles" }).click();
+  await sidebar.getByRole("link", { name: "Settings", exact: true }).click();
+  await sidebar.getByRole("link", { name: "Roles", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Roles" })).toBeVisible();
   const adminRoleRow = page.locator("tbody tr").filter({ hasText: "admin" });
   await expect(adminRoleRow).toHaveCount(1);
@@ -82,19 +85,21 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   await roleDlg.getByRole("button", { name: "Close", exact: true }).click();
 
   // ── Settings: GET then PUT round-trip (whitelisted keys persist) ──────────
-  await page.getByRole("link", { name: "Settings" }).click();
+  await sidebar.getByRole("link", { name: "Settings", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
   await page.getByLabel("SMTP server").fill("smtp.e2e.example.com");
   await page.getByLabel("Port").fill("587");
   await page.getByRole("button", { name: "Save settings" }).click();
   await expect(page.getByText("Email settings saved", { exact: false })).toBeVisible();
   // Round-trip: leave and return; GET /settings must return the persisted host.
-  await page.getByRole("link", { name: "Clients" }).click();
-  await page.getByRole("link", { name: "Settings" }).click();
+  await sidebar.getByRole("link", { name: /^Back to / }).click();
+  await sidebar.getByRole("link", { name: /^Clients/ }).click();
+  await sidebar.getByRole("link", { name: "Settings", exact: true }).click();
   await expect(page.getByLabel("SMTP server")).toHaveValue("smtp.e2e.example.com");
 
   // ── Clients: empty state (GET /clients → []) ─────────────────────────────
-  await page.getByRole("link", { name: "Clients" }).click();
+  await sidebar.getByRole("link", { name: /^Back to / }).click();
+  await sidebar.getByRole("link", { name: /^Clients/ }).click();
   await expect(page.getByRole("heading", { name: "Clients" })).toBeVisible();
   await expect(page.getByText("No clients connected", { exact: false })).toBeVisible();
 

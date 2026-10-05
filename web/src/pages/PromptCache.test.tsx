@@ -5,7 +5,7 @@ import { renderApp } from "@/mocks/test-utils";
 import PromptCache from "@/pages/PromptCache";
 
 function mount() {
-  return renderApp(<PromptCache />, "/cache");
+  return renderApp(<PromptCache />, "/gateway/cache");
 }
 
 describe("Prompt cache settings (§4.21)", () => {

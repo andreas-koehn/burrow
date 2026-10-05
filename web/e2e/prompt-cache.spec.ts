@@ -1,11 +1,11 @@
 import { test, expect } from "@playwright/test";
 
-// v0.4.0: /cache — exact-match prompt cache settings (spec Part B.1).
+// v0.4.0: /gateway/cache (was /cache) — exact-match prompt cache settings (spec Part B.1).
 
 test.use({ storageState: "playwright-auth.json" });
 
 test("v0.4.0: prompt cache — toggle enabled + save shows success toast", async ({ page }) => {
-  await page.goto("/cache");
+  await page.goto("/gateway/cache");
   await expect(page.getByRole("heading", { name: "Prompt cache" })).toBeVisible();
 
   // Exact-match tab is selected by default; its inputs are present.

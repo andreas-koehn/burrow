@@ -221,3 +221,39 @@ describe("narrow page column — form-only pages", () => {
     },
   );
 });
+
+describe("workspace shell", () => {
+  const rule = (selector: string) =>
+    css.match(new RegExp(`(?:^|\\n)${selector.replace(/[.[\]"=]/g, "\\$&")}\\s*\\{[^}]*\\}`))?.[0] ?? "";
+
+  it("gives the top bar a border and the page background from tokens", () => {
+    expect(rule(".topbar")).toMatch(/border-bottom:\s*1px solid var\(--border\)/);
+    expect(rule(".topbar")).toMatch(/background:\s*var\(--background\)/);
+  });
+  it("styles the breadcrumb as a plain inline list in the muted colour", () => {
+    expect(rule(".topbar .crumbs")).toMatch(/list-style:\s*none/);
+    expect(rule(".topbar .crumbs")).toMatch(/color:\s*var\(--muted-foreground\)/);
+    expect(rule('.topbar .crumbs [aria-current="page"]')).toMatch(/color:\s*var\(--foreground\)/);
+  });
+  it("draws the switcher with existing tokens and the namespace in the mono face", () => {
+    expect(rule(".workspace-switcher")).toMatch(/color:\s*var\(--foreground\)/);
+    expect(rule(".workspace-switcher")).toMatch(/font-family:\s*var\(--font-sans\)/);
+    expect(rule(".workspace-switcher .namespace")).toMatch(/font-family:\s*var\(--font-mono\)/);
+    expect(rule(".workspace-switcher .namespace")).toMatch(/color:\s*var\(--muted-foreground\)/);
+    expect(rule("button.workspace-switcher:focus-visible")).toMatch(/outline:\s*2px solid var\(--ring\)/);
+  });
+  it("narrows the collapsed sidebar to its icons without hiding named text", () => {
+    expect(rule(".sidebar.is-collapsed")).toMatch(/width:\s*56px/);
+    expect(rule(".sidebar.is-collapsed .nav-item")).toMatch(/justify-content:\s*center/);
+    // Names come from aria-label; no collapsed rule may switch an element off.
+    expect(css).not.toMatch(/\.sidebar\.is-collapsed[^{]*\{[^}]*display:\s*none/);
+  });
+  it("adds no colour of its own: every colour in the shell rules is a custom property", () => {
+    const shell = css.match(/\.(?:topbar|workspace-switcher|sidebar\.is-collapsed|sidebar-back|shell-column|nav-search|sidebar-footer-nav)[^{]*\{[^}]*\}/g) ?? [];
+    expect(shell.length).toBeGreaterThan(10);
+    for (const r of shell) expect(r).not.toMatch(/#[0-9a-f]{3,8}\b|oklch\(|rgba?\(|hsla?\(/i);
+  });
+  it("drops the wordmark rule with the brand row it belonged to", () => {
+    expect(css).not.toContain(".sidebar-brand .wordmark");
+  });
+});

@@ -1,72 +1,89 @@
 import { useState, useEffect } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  Moon, Sun, Waypoints, KeyRound, Users, UserCircle, LogOut, Boxes, ShieldCheck,
-  ServerCog, Globe, Sparkles, DollarSign, Database, ShieldAlert, Search, ScrollText,
-  Webhook as WebhookIcon, Bot, LayoutDashboard,
-} from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import { cx } from "@/components/ds";
-import { shortcutLabel } from "@/lib/platform";
 import { useTheme } from "@/components/theme-provider";
 import { useAuth } from "@/auth/useAuth";
-import type { Service } from "@/lib/contract";
+import type { ClientView, Service } from "@/lib/contract";
 import { CommandPalette } from "@/components/CommandPalette";
+import { Sidebar } from "@/components/shell/Sidebar";
+import { TopBar } from "@/components/shell/TopBar";
+import { FOOTER_ENTRIES, breadcrumbFor, navigationFor, workspacesFor } from "@/lib/navigation";
+import { rememberWorkspace, workspaceFor } from "@/lib/workspace";
+import { TEMPORARY_ENTRIES } from "@/lib/destinations";
 
-/* Brand mark — geometric tunnel-and-arrow glyph (currentColor, never Signal Teal). */
-function BurrowMark({ size = 20 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <rect x="3" y="5.5" width="12" height="13" rx="2.5" />
-      <path d="M9 12h11.5" />
-      <path d="M17 9l3.5 3-3.5 3" />
-    </svg>
-  );
+const COLLAPSED_KEY = "burrow.sidebarCollapsed";
+
+function storedCollapsed(): boolean {
+  try { return localStorage.getItem(COLLAPSED_KEY) === "1"; } catch { return false; }
 }
 
 export function Layout() {
   const nav = useNavigate();
+  const { pathname } = useLocation();
   const qc = useQueryClient();
   const { theme, toggleTheme } = useTheme();
   const { user } = useAuth();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteKey, setPaletteKey] = useState(0);
+  const [collapsed, setCollapsed] = useState(storedCollapsed);
   const openPalette = () => { setPaletteKey((k) => k + 1); setPaletteOpen(true); };
+  const toggleSidebar = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    try { localStorage.setItem(COLLAPSED_KEY, next ? "1" : "0"); } catch { /* storage unavailable: not remembered */ }
+  };
   async function logout() {
     try { await apiFetch("/auth/logout", { method: "POST" }); } catch { /* ignore */ }
     qc.clear();
     nav("/login", { replace: true });
   }
-  // AI GATEWAY group used to be gated on "≥1 service has access_mode === api_key"
-  // (P0-2). That keeps the group hidden on a fresh stack — even for admins —
-  // because the dashboard is needed to MINT an API-key gated service in the
-  // first place. The group is now visible to every admin (the only role that
-  // can configure those resources anyway). Non-admins still see the group
-  // when at least one http service is connected, so a user with only the
-  // ai:configure:own permission still finds the entry point.
+  // The AI Gateway used to be gated on "≥1 service has access_mode === api_key"
+  // (P0-2). That kept it hidden on a fresh stack — even for admins — because
+  // the dashboard is needed to MINT an API-key gated service in the first
+  // place. It is now visible to every admin (the only role that can configure
+  // those resources anyway). Non-admins still see it when at least one http
+  // service is connected, so a user with only the ai:configure:own permission
+  // still finds the entry point.
   const services = useQuery({
     queryKey: ["services"],
     queryFn: () => apiFetch<Service[]>("/services"),
     retry: false,
   });
   const isAdmin = user?.role === "admin";
+  // Same key and fetch as the Clients page, so the two share one cache entry.
+  // The endpoint is admin-gated; nobody else gets a count.
+  const clients = useQuery({
+    queryKey: ["clients"],
+    queryFn: () => apiFetch<ClientView[]>("/clients"),
+    retry: false,
+    enabled: isAdmin,
+  });
   const servicesList = Array.isArray(services.data) ? services.data : [];
-  const firstHttpServiceId = servicesList.find((s) => s.type === "http")?.id;
+  const clientsList = Array.isArray(clients.data) ? clients.data : [];
   const hasAiGateway = isAdmin
     || servicesList.some((s) => s.type === "http" && s.connected);
-  const navItem = ({ isActive }: { isActive: boolean }) => cx("nav-item", isActive && "is-active");
-  const avatarInitial = (user?.email?.[0] ?? "U").toUpperCase();
+  const ctx = { isAdmin, hasAiGateway };
+
+  // The sidebar follows the URL. The one exception: a /gateway/ deep link opened
+  // by someone the AI Gateway is not shown to. The page renders as it always
+  // did, but the shell offers neither the gateway's navigation nor a way to
+  // switch to it — it stays on Services, exactly what that user sees elsewhere.
+  const workspace = workspaceFor(pathname);
+  const gatewayHidden = workspace === "gateway" && !hasAiGateway;
+  const navigation = navigationFor(gatewayHidden ? "services" : workspace, ctx);
+
+  // Names for the breadcrumb's object crumb; an id nobody has a name for shows as itself.
+  const names: Record<string, string> = {};
+  for (const s of servicesList) names[s.id] = s.name;
+  for (const c of clientsList) names[c.session_id] = c.token_name;
+  const crumbs = gatewayHidden
+    ? [{ label: navigation.label, to: navigation.home }]
+    : breadcrumbFor(pathname, ctx, names);
+
+  useEffect(() => {
+    if (!gatewayHidden) rememberWorkspace(pathname);
+  }, [pathname, gatewayHidden]);
 
   // ⌘K / Ctrl+K global shortcut to open the command palette.
   useEffect(() => {
@@ -82,160 +99,33 @@ export function Layout() {
   return (
     <div className="app-shell" style={{ display: "flex", minHeight: "100vh", position: "relative", background: "var(--background)", color: "var(--foreground)" }}>
       <a className="skip-link" href="#main">Skip to content</a>
-      <nav className="sidebar" aria-label="Main">
-        <div className="sidebar-brand">
-          <BurrowMark />
-          <span className="wordmark">Burrow</span>
-        </div>
+      <Sidebar
+        navigation={navigation}
+        workspaces={workspacesFor(ctx)}
+        // Inside Settings both shortcuts would only repeat entries of the list above them.
+        footer={navigation.workspace === "settings" ? [] : FOOTER_ENTRIES.filter((e) => !e.adminOnly || isAdmin)}
+        pathname={pathname}
+        collapsed={collapsed}
+        counts={{
+          services: Array.isArray(services.data) ? servicesList.length : undefined,
+          // Every row of /clients is a connected session, so the list length is the online count.
+          clientsOnline: Array.isArray(clients.data) ? clientsList.length : undefined,
+        }}
+        user={{ email: user?.email ?? "", isAdmin, role: user?.role }}
+        theme={theme}
+        onSearch={openPalette}
+        onToggleTheme={toggleTheme}
+        onLogout={logout}
+        // Temporary: Tunnels and Tokens stay reachable until W04 folds them into Services and Clients.
+        extra={navigation.workspace === "services" ? TEMPORARY_ENTRIES : undefined}
+      />
 
-        <div className="sidebar-nav">
-          {/* ⌘K search affordance */}
-          <button
-            className="nav-item"
-            onClick={openPalette}
-            aria-label="Search"
-            style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer" }}
-          >
-            <span className="nav-icon"><Search size={16} /></span>
-            <span className="nav-label">Search</span>
-            <span className="nav-count"><span className="kbd-token">{shortcutLabel("K")}</span></span>
-          </button>
-
-          <NavLink to="/" end className={navItem}>
-            <span className="nav-icon"><LayoutDashboard size={16} /></span>
-            <span className="nav-label">Home</span>
-          </NavLink>
-
-          <div className="nav-group">
-            <div className="nav-group-title">Tunneling</div>
-            <NavLink to="/clients" className={navItem}>
-              <span className="nav-icon"><Boxes size={16} /></span>
-              <span className="nav-label">Clients</span>
-            </NavLink>
-            <NavLink to="/tunnels" className={navItem}>
-              <span className="nav-icon"><Waypoints size={16} /></span>
-              <span className="nav-label">Tunnels</span>
-            </NavLink>
-            <NavLink to="/services" className={navItem}>
-              <span className="nav-icon"><Globe size={16} /></span>
-              <span className="nav-label">Services</span>
-            </NavLink>
-            <NavLink to="/tokens" className={navItem}>
-              <span className="nav-icon"><KeyRound size={16} /></span>
-              <span className="nav-label">Tokens</span>
-            </NavLink>
-          </div>
-
-          {hasAiGateway && (
-            <div className="nav-group">
-              <div className="nav-group-title">AI GATEWAY</div>
-              <NavLink to="/gateway/providers" className={navItem}>
-                <span className="nav-icon"><Sparkles size={16} /></span>
-                <span className="nav-label">Providers</span>
-              </NavLink>
-              <NavLink to="/cost" className={navItem}>
-                <span className="nav-icon"><DollarSign size={16} /></span>
-                <span className="nav-label">Cost & budgets</span>
-              </NavLink>
-              <NavLink to="/cache" className={navItem}>
-                <span className="nav-icon"><Database size={16} /></span>
-                <span className="nav-label">Prompt cache</span>
-              </NavLink>
-              <NavLink to="/guardrails" className={navItem}>
-                <span className="nav-icon"><ShieldAlert size={16} /></span>
-                <span className="nav-label">Guardrails</span>
-              </NavLink>
-              {firstHttpServiceId && (
-                <NavLink to="/inspector" className={navItem}>
-                  <span className="nav-icon"><Search size={16} /></span>
-                  <span className="nav-label">Request inspector</span>
-                </NavLink>
-              )}
-            </div>
-          )}
-
-          {user?.role === "admin" && (
-            <div className="nav-group">
-              <div className="nav-group-title">Access control</div>
-              <NavLink to="/users" className={navItem}>
-                <span className="nav-icon"><Users size={16} /></span>
-                <span className="nav-label">Users</span>
-              </NavLink>
-              <NavLink to="/roles" className={navItem}>
-                <span className="nav-icon"><ShieldCheck size={16} /></span>
-                <span className="nav-label">Roles</span>
-              </NavLink>
-
-            </div>
-          )}
-
-          {user?.role === "admin" && (
-            <div className="nav-group">
-              <div className="nav-group-title">Administration</div>
-              <NavLink to="/settings" end className={navItem}>
-                <span className="nav-icon"><ServerCog size={16} /></span>
-                <span className="nav-label">Settings</span>
-              </NavLink>
-              <NavLink to="/audit" className={navItem}>
-                <span className="nav-icon"><ScrollText size={16} /></span>
-                <span className="nav-label">Audit</span>
-              </NavLink>
-              <NavLink to="/webhooks" className={navItem}>
-                <span className="nav-icon"><WebhookIcon size={16} /></span>
-                <span className="nav-label">Webhooks</span>
-              </NavLink>
-              {/* P2-10: Backup, Connection logs, OpenAPI moved off the top-level
-                  sidebar. They remain reachable from /settings cards so Settings
-                  is the single canonical configuration hub. */}
-            </div>
-          )}
-
-          <div className="nav-group">
-            <div className="nav-group-title">Account</div>
-            <NavLink to="/account" end className={navItem}>
-              <span className="nav-icon"><UserCircle size={16} /></span>
-              <span className="nav-label">Account</span>
-            </NavLink>
-            <NavLink to="/account/automation" className={navItem}>
-              <span className="nav-icon"><Bot size={16} /></span>
-              <span className="nav-label">Automation</span>
-            </NavLink>
-          </div>
-        </div>
-
-        <div className="sidebar-footer">
-          <div className="row row-center gap-2">
-            <div className="user-chip">
-              <span className="avatar">{avatarInitial}</span>
-              <span className="user-meta">
-                {user?.email && <span className="user-email" title={user.email}>{user.email}</span>}
-                {user?.role && <span className="user-role">{user.role.toUpperCase()}</span>}
-              </span>
-            </div>
-            <button
-              className="theme-toggle"
-              onClick={toggleTheme}
-              aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-              title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-            >
-              {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
-            </button>
-            <button
-              type="button"
-              className="icon-btn"
-              onClick={logout}
-              aria-label="Log out"
-              title="Log out"
-            >
-              <LogOut size={15} />
-            </button>
-          </div>
-        </div>
-      </nav>
-
-      <main className="shell-main" id="main" tabIndex={-1}>
-        <div className="shell-content"><Outlet /></div>
-      </main>
+      <div className="shell-column">
+        <TopBar crumbs={crumbs} collapsed={collapsed} onToggle={toggleSidebar} />
+        <main className="shell-main" id="main" tabIndex={-1}>
+          <div className="shell-content"><Outlet /></div>
+        </main>
+      </div>
 
       <CommandPalette
         key={paletteKey}
@@ -243,7 +133,6 @@ export function Layout() {
         onOpenChange={setPaletteOpen}
         isAdmin={isAdmin}
         hasAiGateway={hasAiGateway}
-        firstHttpServiceId={firstHttpServiceId}
       />
     </div>
   );

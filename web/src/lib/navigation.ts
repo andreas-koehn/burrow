@@ -136,8 +136,26 @@ export function activeEntry(pathname: string, nav: Navigation): NavEntry | undef
   return best;
 }
 
-/** Workspace, entry, and — on a detail page — the object named by the next path segment. */
-export function breadcrumbFor(pathname: string, ctx: NavContext): { label: string; to?: string }[] {
+/** Pages that sit under an entry without being one of its objects. */
+const SUBPAGES: Record<string, string> = {
+  "/clients/connect": "Connect a client",
+};
+
+function decoded(segment: string): string {
+  try { return decodeURIComponent(segment); } catch { return segment; }
+}
+
+/**
+ * Workspace, entry, and — on a detail page — the object named by the next path segment.
+ * `names` maps an object's id to what people call it (a service's or client's name); without
+ * an entry the id itself is shown. A page below an object (a single request of a service)
+ * adds a last crumb and turns the object into a link.
+ */
+export function breadcrumbFor(
+  pathname: string,
+  ctx: NavContext,
+  names: Record<string, string> = {},
+): { label: string; to?: string }[] {
   const nav = navigationFor(workspaceFor(pathname), ctx);
   const crumbs: { label: string; to?: string }[] = [{ label: nav.label, to: nav.home }];
   const entry = activeEntry(pathname, nav);
@@ -148,9 +166,15 @@ export function breadcrumbFor(pathname: string, ctx: NavContext): { label: strin
     return crumbs;
   }
   crumbs.push({ label: entry.label, to: entry.to });
-  let object = rest[0];
-  try { object = decodeURIComponent(object); } catch { /* keep the raw segment */ }
-  crumbs.push({ label: object });
+  const under = `${entry.to}/${rest[0]}`;
+  const id = decoded(rest[0]);
+  const label = SUBPAGES[under] ?? names[id] ?? id;
+  if (rest.length === 1 || SUBPAGES[under]) {
+    crumbs.push({ label });
+    return crumbs;
+  }
+  crumbs.push({ label, to: under });
+  crumbs.push({ label: decoded(rest[rest.length - 1]) });
   return crumbs;
 }
 

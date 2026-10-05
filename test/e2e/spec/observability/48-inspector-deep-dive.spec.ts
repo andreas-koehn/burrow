@@ -88,7 +88,7 @@ test("48-inspector-deep-dive: detail tabs + replay/compare controls render witho
     }
 
     // Navigate to the inspector page for this service.
-    await page.goto(`/inspector/${id}`);
+    await page.goto(`/gateway/requests/${id}`);
     await expect(
       page.getByRole("heading", { name: "Request inspector", level: 1 }),
     ).toBeVisible({ timeout: 10_000 });
@@ -115,8 +115,8 @@ test("48-inspector-deep-dive: detail tabs + replay/compare controls render witho
       console.log("[48-inspector] ENTRIES path — exercising detail tabs");
 
       await dataRows.first().click();
-      // The row onClick navigates to /inspector/{svcId}/{requestId}.
-      await page.waitForURL(`**/inspector/${id}/**`, { timeout: 10_000 });
+      // The row onClick navigates to /gateway/requests/{svcId}/{requestId}.
+      await page.waitForURL(`**/gateway/requests/${id}/**`, { timeout: 10_000 });
 
       // Detail pane renders once the detail fetch resolves.
       const toolbar = page.locator(".detail-toolbar");

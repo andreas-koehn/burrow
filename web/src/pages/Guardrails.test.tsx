@@ -8,7 +8,7 @@ import { db } from "@/mocks/db";
 import Guardrails from "@/pages/Guardrails";
 
 function mount() {
-  return renderApp(<Guardrails />, "/guardrails");
+  return renderApp(<Guardrails />, "/gateway/guardrails");
 }
 
 describe("Guardrails page (§4.22)", () => {

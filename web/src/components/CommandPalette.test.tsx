@@ -18,7 +18,6 @@ interface RenderOptions {
   open?: boolean;
   isAdmin?: boolean;
   hasAiGateway?: boolean;
-  firstHttpServiceId?: string;
   onOpenChange?: (open: boolean) => void;
 }
 
@@ -26,7 +25,6 @@ function renderPalette({
   open = true,
   isAdmin = true,
   hasAiGateway = true,
-  firstHttpServiceId = "svc_web01",
   onOpenChange = vi.fn(),
 }: RenderOptions = {}) {
   setCsrfCookie();
@@ -46,7 +44,6 @@ function renderPalette({
                     onOpenChange={onOpenChange}
                     isAdmin={isAdmin}
                     hasAiGateway={hasAiGateway}
-                    firstHttpServiceId={firstHttpServiceId}
                   />
                 </>
               }
@@ -75,14 +72,52 @@ describe("CommandPalette — P6A.1: destinations", () => {
     expect(screen.getByRole("searchbox")).toBeInTheDocument();
   });
 
-  it("typing 'sett' filters to only the Settings row (admin)", async () => {
+  it("lists the navigation description, grouped by workspace", () => {
+    renderPalette({ isAdmin: true });
+    const rows = screen.getAllByRole("option").map((o) => o.textContent);
+    // Services first (its two temporary entries last, until W04), then the gateway, then Settings.
+    expect(rows.slice(0, 7)).toEqual([
+      "OverviewServices", "ServicesServices", "ClientsServices", "TrafficServices", "TunnelsServices", "TokensServices",
+      "OverviewAI Gateway",
+    ]);
+    const groups = new Set(screen.getAllByRole("option").map((o) => o.querySelector(".shortcut")?.textContent));
+    expect(groups).toEqual(new Set(["Services", "AI Gateway", "Settings"]));
+  });
+
+  it("typing 'cost' finds 'Cost & budgets' under 'AI Gateway' and navigates to its new path", async () => {
+    renderPalette({ isAdmin: true });
+    await userEvent.type(screen.getByRole("searchbox"), "cost");
+    const rows = screen.getAllByRole("option");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent("Cost & budgets");
+    expect(rows[0].querySelector(".shortcut")).toHaveTextContent("AI Gateway");
+    fireEvent.click(rows[0]);
+    expect(screen.getByTestId("spy-location")).toHaveTextContent("/gateway/cost");
+  });
+
+  it("typing 'sett' lists the Settings pages (admin) and nothing from another workspace", async () => {
     renderPalette({ isAdmin: true });
     const input = screen.getByRole("searchbox");
     await userEvent.type(input, "sett");
-    // Settings destination should be visible (option name includes the group "Administration")
-    expect(screen.getByRole("option", { name: /settings/i })).toBeInTheDocument();
-    // Home should not be visible (no match on "sett")
-    expect(screen.queryByRole("option", { name: /^home/i })).not.toBeInTheDocument();
+    const rows = screen.getAllByRole("option");
+    expect(rows.length).toBeGreaterThan(3);
+    for (const r of rows) expect(r.querySelector(".shortcut")).toHaveTextContent("Settings");
+    expect(screen.queryByRole("option", { name: /^overview/i })).not.toBeInTheDocument();
+  });
+
+  it("without AI access there is no gateway destination", () => {
+    renderPalette({ isAdmin: false, hasAiGateway: false });
+    const groups = screen.getAllByRole("option").map((o) => o.querySelector(".shortcut")?.textContent);
+    expect(groups).not.toContain("AI Gateway");
+    expect(screen.queryByRole("option", { name: /providers/i })).toBeNull();
+  });
+
+  it("a non-admin sees no admin entry, only the Personal settings", () => {
+    renderPalette({ isAdmin: false });
+    const settings = screen.getAllByRole("option")
+      .filter((o) => o.querySelector(".shortcut")?.textContent === "Settings")
+      .map((o) => o.querySelector("span")?.textContent);
+    expect(settings).toEqual(["Profile & password", "Sessions", "Automation tokens"]);
   });
 
   it("typing 'zzz' shows 'No matches'", async () => {
@@ -102,7 +137,7 @@ describe("CommandPalette — P6A.1: destinations", () => {
     const keyTarget = dialog.querySelector(".dialog-body > div") as HTMLElement;
     expect(keyTarget).not.toBeNull();
 
-    // Arrow down from first item (index 0 = Home) to second item (index 1).
+    // Arrow down from first item (index 0 = Overview) to second item (index 1).
     fireEvent.keyDown(keyTarget, { key: "ArrowDown" });
     // Press Enter to activate index 1.
     fireEvent.keyDown(keyTarget, { key: "Enter" });
@@ -120,7 +155,7 @@ describe("CommandPalette — P6A.1: destinations", () => {
     const keyTarget = dialog.querySelector(".dialog-body > div") as HTMLElement;
     expect(keyTarget).not.toBeNull();
 
-    // Enter on focusIdx=0 (first item = Home → "/")
+    // Enter on focusIdx=0 (first item = Overview → "/")
     fireEvent.keyDown(keyTarget, { key: "Enter" });
 
     await waitFor(() => {
@@ -152,7 +187,7 @@ describe("CommandPalette — P6A.1: destinations", () => {
     renderPalette({ isAdmin: true });
     const input = screen.getByRole("searchbox");
     await userEvent.type(input, "users");
-    // The option accessible name includes the group label "Access control" too.
+    // The option accessible name includes the group label "Settings" too.
     expect(await screen.findByRole("option", { name: /users/i })).toBeInTheDocument();
   });
 });

@@ -51,7 +51,7 @@ test("24-inspector: row appears + replay creates a second row", async ({ page, r
   // Now navigate to the inspector page. The initial list query fetches
   // /services/{id}/inspector/requests from DB — the captured row will be
   // present without relying on SSE delivery timing.
-  await page.goto(`/inspector/${ai.id}`);
+  await page.goto(`/gateway/requests/${ai.id}`);
   await expect(page.getByRole("heading", { name: /Request inspector/i })).toBeVisible();
 
   // Wait for the captured row to appear in the Requests table.
@@ -60,11 +60,11 @@ test("24-inspector: row appears + replay creates a second row", async ({ page, r
   const requestRows = page.locator('table[aria-label="Requests"] tbody tr.clickable');
   await expect(requestRows.first()).toBeVisible({ timeout: 10_000 });
 
-  // Click the first (newest) row. The row's onClick calls nav(/inspector/{svcId}/{id})
+  // Click the first (newest) row. The row's onClick calls nav(/gateway/requests/{svcId}/{id})
   // which changes the URL — this proves we clicked a real data row and
   // `selected` state was set.
   await requestRows.first().click();
-  await page.waitForURL(`/inspector/${ai.id}/**`, { timeout: 10_000 });
+  await page.waitForURL(`/gateway/requests/${ai.id}/**`, { timeout: 10_000 });
 
   // Hard-wait for the detail-toolbar to be visible. The detail pane renders
   // only after the detail API fetch completes (detail.data becomes non-null).

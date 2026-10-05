@@ -5,7 +5,7 @@ import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
 test.use({ storageState: AUTH_STORAGE_PATH });
 
 test("11-ai-gateway-semantic-cache: surface present + enable round-trips (or skip)", async ({ page }) => {
-  await page.goto("/cache");
+  await page.goto("/gateway/cache");
   // Wait for the page to fully render before probing for the tab — without
   // this, the 2s `isVisible` race can fire before React hydrates the Tabs.
   await expect(page.getByRole("heading", { name: /Prompt cache/i })).toBeVisible();

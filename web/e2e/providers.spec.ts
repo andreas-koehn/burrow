@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-// Providers dashboard surface (/gateway/providers). The AI GATEWAY nav group
+// Providers dashboard surface (/gateway/providers). The AI Gateway workspace
 // is always shown to an admin (Layout.tsx).
 //
 // The test pre-provisions an api_key http service through the admin

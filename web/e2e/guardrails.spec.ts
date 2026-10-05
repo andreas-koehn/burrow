@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-// v0.4.0: /guardrails — regex redaction, Presidio sidecar, prompt-injection
+// v0.4.0: /gateway/guardrails (was /guardrails) — regex redaction, Presidio sidecar, prompt-injection
 // (spec Part B.2/B.3). The dashboard page uses three Accordion sections.
 // The "Save guardrails" UI flow is currently broken end-to-end because the
 // GET response wraps settings in {global, per_service} but the page's
@@ -9,7 +9,7 @@ import { test, expect } from "@playwright/test";
 test.use({ storageState: "playwright-auth.json" });
 
 test("v0.4.0: guardrails page mounts with three accordion sections", async ({ page }) => {
-  await page.goto("/guardrails");
+  await page.goto("/gateway/guardrails");
   await expect(page.getByRole("heading", { name: "Guardrails & redaction" })).toBeVisible();
 
   await expect(page.getByRole("button", { name: "Regex redaction" })).toBeVisible();

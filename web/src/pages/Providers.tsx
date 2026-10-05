@@ -250,12 +250,12 @@ export default function Providers() {
                       items={direct ? [
                         { label: "Inspect", onSelect: () => nav(`/gateway/providers/${e.slug}`) },
                         { label: "Keys", onSelect: () => nav(`/gateway/providers/${e.slug}#api-keys`) },
-                        { label: "Cost", onSelect: () => nav(`/cost`) },
+                        { label: "Cost", onSelect: () => nav(`/gateway/cost`) },
                       ] : [
                         { label: "Inspect", onSelect: () => nav(`/gateway/providers/${e.slug}`) },
                         { label: "Keys", onSelect: () => nav(`/services?focus=${e.service_id}&panel=api-keys`) },
                         { label: "Access settings", onSelect: () => nav(`/services?focus=${e.service_id}`) },
-                        { label: "Cost", onSelect: () => nav(`/cost`) },
+                        { label: "Cost", onSelect: () => nav(`/gateway/cost`) },
                       ]}
                     />
                   </td>

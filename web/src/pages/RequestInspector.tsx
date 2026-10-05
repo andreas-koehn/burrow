@@ -73,7 +73,7 @@ export default function RequestInspector() {
         id="inspector-service"
         options={httpServices.map((s) => ({ value: s.id, label: s.name }))}
         value={serviceId}
-        onChange={(id) => { setSelected(null); setQuery(""); nav(`/inspector/${id}`); }}
+        onChange={(id) => { setSelected(null); setQuery(""); nav(`/gateway/requests/${id}`); }}
       />
     </div>
   ) : undefined;
@@ -141,7 +141,7 @@ export default function RequestInspector() {
               <Button variant="secondary" size="sm" onClick={() => void list.refetch()}>
                 Retry
               </Button>
-              <Link to="/inspector">Back to request inspector</Link>
+              <Link to="/gateway/requests">Back to request inspector</Link>
             </>
           }
         >
@@ -198,7 +198,7 @@ export default function RequestInspector() {
                 : rows.map((r) => (
                     <tr
                       key={r.id}
-                      onClick={() => { setSelected(r.id); nav(`/inspector/${serviceId}/${r.id}`); }}
+                      onClick={() => { setSelected(r.id); nav(`/gateway/requests/${serviceId}/${r.id}`); }}
                       className="clickable"
                       aria-selected={selected === r.id}
                     >

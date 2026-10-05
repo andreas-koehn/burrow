@@ -32,8 +32,9 @@ async function login(page: Page) {
 test("v0.3.0: Services page renders + nav + empty-state copy", async ({ page }) => {
   await login(page);
 
-  // Sidebar nav has a "Services" link added in v0.3.0.
-  await page.getByRole("link", { name: "Services" }).click();
+  // Sidebar nav has a "Services" link added in v0.3.0. Scoped to the sidebar:
+  // the breadcrumb names the Services workspace too.
+  await page.locator(".sidebar").getByRole("link", { name: /^Services/ }).click();
   await expect(page).toHaveURL(/\/services$/);
 
   // Page heading + subhead. Use exact:true so the PageHeader <h1>Services</h1>

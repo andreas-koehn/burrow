@@ -189,7 +189,7 @@ export default function Home() {
             <ErrorNotice
               variant="error"
               role="status"
-              action={<Link to="/cost">View budgets →</Link>}
+              action={<Link to="/gateway/cost">View budgets →</Link>}
             >
               {exceededBudgets.length} budget(s) exceeded.
             </ErrorNotice>

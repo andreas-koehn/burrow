@@ -10,11 +10,11 @@ import InspectorIndex from "@/pages/InspectorIndex";
 function mount() {
   return renderApp(
     <Routes>
-      <Route path="/inspector" element={<InspectorIndex />} />
-      <Route path="/inspector/:serviceId" element={<p>inspector for service</p>} />
+      <Route path="/gateway/requests" element={<InspectorIndex />} />
+      <Route path="/gateway/requests/:serviceId" element={<p>inspector for service</p>} />
       <Route path="/clients/connect" element={<p>connect a client page</p>} />
     </Routes>,
-    "/inspector",
+    "/gateway/requests",
   );
 }
 

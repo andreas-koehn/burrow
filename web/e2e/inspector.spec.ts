@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-// v0.4.0: /inspector/:serviceId — request inspector (spec Part E). The UI is
+// v0.4.0: /gateway/requests/:serviceId (was /inspector/:serviceId) — request inspector (spec Part E). The UI is
 // scoped to a specific service; the e2e fixture has no live AI services to
 // populate. The full live-traffic flow is covered by the Go integration
 // tests (e2e_inspector_test.go).
@@ -9,8 +9,8 @@ test.describe("v0.4.0: inspector — authenticated surfaces", () => {
   test.use({ storageState: "playwright-auth.json" });
 
   test("page mounts with heading for an arbitrary service id", async ({ page }) => {
-    await page.goto("/inspector/no-such-service");
-    await expect(page).toHaveURL(/\/inspector\/no-such-service$/);
+    await page.goto("/gateway/requests/no-such-service");
+    await expect(page).toHaveURL(/\/gateway\/requests\/no-such-service$/);
     await expect(page.getByRole("heading", { name: "Request inspector" })).toBeVisible();
   });
 

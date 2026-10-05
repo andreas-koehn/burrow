@@ -1,4 +1,10 @@
+/// <reference types="node" />
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
+import { matchPath } from "react-router-dom";
+import { NOT_YET_MOVED, OLD_ROUTES } from "./moved-routes";
+import { TEMPORARY_ENTRIES } from "./destinations";
 import { NAVIGATIONS, FOOTER_ENTRIES, navigationFor, workspacesFor, activeEntry, breadcrumbFor, allEntries } from "./navigation";
 
 const admin = { isAdmin: true, hasAiGateway: true };
@@ -88,7 +94,101 @@ describe("breadcrumbFor", () => {
     expect(breadcrumbFor("/", admin)).toEqual([{ label: "Services", to: "/" }, { label: "Overview" }]);
     expect(breadcrumbFor("/settings/email", admin)).toEqual([{ label: "Settings", to: "/settings" }, { label: "Email" }]);
   });
+  it("names a page under an entry that is not an object", () => {
+    expect(breadcrumbFor("/clients/connect", admin)).toEqual([
+      { label: "Services", to: "/" }, { label: "Clients", to: "/clients" }, { label: "Connect a client" },
+    ]);
+  });
+  it("links the service and ends on the request", () => {
+    expect(breadcrumbFor("/gateway/requests/svc1/req9", admin)).toEqual([
+      { label: "AI Gateway", to: "/gateway" }, { label: "Requests", to: "/gateway/requests" },
+      { label: "svc1", to: "/gateway/requests/svc1" }, { label: "req9" },
+    ]);
+    expect(breadcrumbFor("/gateway/requests/svc1", admin).at(-1)).toEqual({ label: "svc1" });
+  });
+  it("shows an object's name when the caller knows it", () => {
+    const names = { svc1: "ollama", sess_1: "office-box-1" };
+    expect(breadcrumbFor("/services/svc1", admin, names).at(-1)).toEqual({ label: "ollama" });
+    expect(breadcrumbFor("/clients/sess_1", admin, names).at(-1)).toEqual({ label: "office-box-1" });
+    expect(breadcrumbFor("/gateway/requests/svc1/req9", admin, names).map((c) => c.label))
+      .toEqual(["AI Gateway", "Requests", "ollama", "req9"]);
+    expect(breadcrumbFor("/services/other", admin, names).at(-1)).toEqual({ label: "other" });
+  });
   it("decodes the object segment", () => {
     expect(breadcrumbFor("/services/my%20svc", admin).at(-1)).toEqual({ label: "my svc" });
+  });
+});
+
+// Review Focus 2 — no orphan page, in both directions. App.tsx is read as text: a route
+// counts as declared when it appears there as a literal path="…".
+describe("reachability", () => {
+  const app = readFileSync(resolve(__dirname, "..", "App.tsx"), "utf8");
+  const routes = [...app.matchAll(/path="([^"]+)"/g)].map((m) => m[1]);
+  const entries = allEntries(admin).map((x) => x.entry);
+
+  // Entries whose page has not moved to the entry's path yet: W03 moves the Settings
+  // pages, W05 adds /traffic. Each later task deletes its rows; the list ends up empty.
+  const PENDING = [
+    "/traffic",
+    "/settings/general", "/settings/email",
+    "/settings/users", "/settings/roles", "/settings/audit",
+    "/settings/webhooks", "/settings/api",
+    "/settings/profile", "/settings/sessions", "/settings/automation",
+  ];
+
+  it("reads the route list from App.tsx", () => {
+    expect(routes).toContain("/gateway/requests/:serviceId/:requestId?");
+    expect(routes.length).toBeGreaterThan(25);
+  });
+
+  it("every navigation entry has a route, or is listed as pending", () => {
+    const unrouted = [...entries, ...FOOTER_ENTRIES].map((e) => e.to).filter((to) => !routes.includes(to));
+    expect([...new Set(unrouted)].sort()).toEqual([...PENDING].sort());
+  });
+
+  it("a pending entry still leads somewhere: to the page's current, routed address", () => {
+    expect(NOT_YET_MOVED.map((r) => r.from).sort()).toEqual([...PENDING].sort());
+    for (const r of NOT_YET_MOVED) {
+      expect(routes, r.from).not.toContain(r.from); // once the page moves, the row goes
+      expect(routes, r.to).toContain(r.to);
+    }
+  });
+
+  it("every moved path redirects to a declared route", () => {
+    for (const r of OLD_ROUTES) {
+      expect(routes, r.from).not.toContain(r.from);
+      expect(routes, r.to).toContain(r.to);
+    }
+  });
+
+  it("every route is reachable from an entry, a tab or detail link below one, or a known way in", () => {
+    // A route below an entry's path is that entry's detail page, sub-page or tab.
+    const underEntry = (route: string) =>
+      (["services", "gateway", "settings"] as const).some((ws) => activeEntry(route, navigationFor(ws, admin)) !== undefined);
+    const waysIn: Record<string, string> = {
+      "/login": "outside the shell: where a signed-out visitor is sent",
+      "*": "catch-all, sends unknown paths to the overview",
+      "/settings/custom-domains": "retired page, redirects to Settings",
+      // Temporary sidebar and palette entries until W04 folds these pages into Services and Clients.
+      ...Object.fromEntries(TEMPORARY_ENTRIES.map((e) => [e.to, "temporary Services entry (W04)"])),
+      // The current home of a page whose navigation entry already names its future path.
+      ...Object.fromEntries(NOT_YET_MOVED.map((r) => [r.to, `reached from the entry ${r.from} (W03/W05)`])),
+    };
+    const orphans = routes.filter((r) => !underEntry(r) && !(r in waysIn));
+    expect(orphans).toEqual([]);
+    // No stale excuse: every way in names a route that exists and is not an entry's own page.
+    for (const r of Object.keys(waysIn)) {
+      expect(routes, r).toContain(r);
+      expect(underEntry(r), r).toBe(false);
+    }
+  });
+
+  it("every object crumb leads to a declared route", () => {
+    for (const path of ["/gateway/requests/svc1/req9", "/gateway/providers/zai", "/services/abc", "/clients/sess_1", "/clients/connect"]) {
+      for (const crumb of breadcrumbFor(path, admin)) {
+        if (!crumb.to) continue;
+        expect(routes.some((r) => matchPath(r, crumb.to!) !== null), `${path} → ${crumb.to}`).toBe(true);
+      }
+    }
   });
 });

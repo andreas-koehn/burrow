@@ -348,7 +348,7 @@ export default function ProviderDetail() {
                 Rename
               </Button>
             )}
-            <Link className="btn btn-secondary btn-sm" to={`/inspector/${id}`}>
+            <Link className="btn btn-secondary btn-sm" to={`/gateway/requests/${id}`}>
               Open request inspector
             </Link>
             {!direct && (
@@ -450,11 +450,11 @@ export default function ProviderDetail() {
                           key={r.id}
                           role="button"
                           tabIndex={0}
-                          onClick={() => nav(`/inspector/${id}/${r.id}`)}
+                          onClick={() => nav(`/gateway/requests/${id}/${r.id}`)}
                           onKeyDown={(e) => {
                             if (e.key !== "Enter" && e.key !== " ") return;
                             e.preventDefault();
-                            nav(`/inspector/${id}/${r.id}`);
+                            nav(`/gateway/requests/${id}/${r.id}`);
                           }}
                           className="clickable"
                         >

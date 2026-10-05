@@ -20,7 +20,7 @@ test("12-ai-gateway-metering-cost: chat-completions metered + cost page renders"
   expect(res.status()).toBe(200);
 
   // The Cost & budgets page renders — surface signal that metering wiring works.
-  await page.goto("/cost");
+  await page.goto("/gateway/cost");
   await expect(page.getByRole("heading", { name: /Cost.*budgets/i })).toBeVisible();
   // Metric tiles are present (24h / 7d / 30d windows).
   await expect(page.locator('[aria-label*="Spend by window"]').first()).toBeVisible();

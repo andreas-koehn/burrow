@@ -1,13 +1,13 @@
 import { test, expect } from "@playwright/test";
 
-// v0.4.0: /cost — cost summary tiles + budgets CRUD (spec Part F). Admin-
-// only. The AI GATEWAY nav group hides this when there's no api_key
+// v0.4.0: /gateway/cost (was /cost) — cost summary tiles + budgets CRUD (spec Part F). Admin-
+// only. The AI Gateway workspace hides this when there's no api_key
 // service in the fixture; navigate by URL.
 
 test.use({ storageState: "playwright-auth.json" });
 
 test("v0.4.0: cost page renders zeroed tiles + add-budget flow lists the row", async ({ page }) => {
-  await page.goto("/cost");
+  await page.goto("/gateway/cost");
   await expect(page.getByRole("heading", { name: "Cost & budgets" })).toBeVisible();
 
   // Four spend tiles (today/week/month/year).

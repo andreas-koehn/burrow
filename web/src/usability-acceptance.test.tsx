@@ -24,7 +24,7 @@ import Users from "@/pages/Users";
 // INTUITIVE — navigation & mental-model alignment
 // ---------------------------------------------------------------------------
 describe("INTUITIVE — navigation & mental-model alignment", () => {
-  // In-2: primary nav lists Home as the first entry — covered by Layout.test.tsx.
+  // In-2: primary nav lists Overview (the home page) as the first entry — covered by Layout.test.tsx.
   // (renderApp(<App/>, "/") already mounts Layout; Layout.test.tsx owns that assertion.)
 
   it("In-1: / (root route) renders Home/Dashboard, not a blank page or redirect loop", async () => {
