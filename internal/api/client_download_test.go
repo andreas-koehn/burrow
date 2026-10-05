@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ankoehn/burrow/internal/api/install"
+	"github.com/ankoehn/burrow/internal/config"
 	"github.com/ankoehn/burrow/internal/version"
 )
 
@@ -389,7 +389,7 @@ func TestClientDownload_BadBaseFallsBackToDefault(t *testing.T) {
 	withVersion(t, "0.6.0")
 	for _, base := range []string{"javascript:alert(1)", "https://x/\r\nSet-Cookie: a=b", "//evil.example.com", "https://u:p@x/y"} {
 		resp, _ := handOut(t, Deps{ClientDownloadBase: base}, http.MethodGet, "/download/burrow/linux/amd64", "")
-		if loc := resp.Header.Get("Location"); !strings.HasPrefix(loc, install.DefaultDownloadBase+"/v0.6.0/") {
+		if loc := resp.Header.Get("Location"); !strings.HasPrefix(loc, config.DefaultClientDownloadBase+"/v0.6.0/") {
 			t.Errorf("base %q: Location %q", base, loc)
 		}
 	}

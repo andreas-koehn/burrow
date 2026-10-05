@@ -11,7 +11,8 @@
 # not sign in, never calls sudo and never reads from stdin.
 #
 # Everything happens in main, which is called on the last line: a download of
-# this script that is cut off runs nothing.
+# this script that is cut off runs nothing. The call is a brace group, so the
+# shell has to read that line to its closing brace before it runs any of it.
 set -eu
 
 RELAY="{{.Relay}}"
@@ -99,12 +100,39 @@ unsupported() {
     exit 1
 }
 
+# plain_http_allowed: a relay address without TLS is used only for this
+# machine itself (localhost, 127.0.0.0/8, [::1]) or when the person running
+# the script says so. Over plain HTTP the archive and the checksums travel
+# the same open road, and whoever sits on it can replace both.
+plain_http_allowed() {
+    if [ "${BURROW_INSTALL_ALLOW_HTTP:-}" = 1 ]; then
+        return 0
+    fi
+    host=${RELAY#http://}
+    case "$host" in
+        "[::1]" | "[::1]":*) return 0 ;;
+    esac
+    host=${host%%:*}
+    case "$host" in
+        localhost) return 0 ;;
+        127.*)
+            # Digits and dots only: 127.0.0.1, not 127.example.com.
+            case "$host" in
+                *[!0-9.]*) return 1 ;;
+            esac
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 # fetch <url> <file>. A relay reached over HTTPS is never left for plain HTTP.
+# (wget has no switch for that; curl is used when both are there.)
 fetch() {
     if [ "$DL" = curl ]; then
         case "$RELAY" in
             https://*)
-                curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 20 -o "$2" "$1" </dev/null
+                curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 20 -o "$2" "$1" </dev/null
                 ;;
             *)
                 curl -fsSL --connect-timeout 20 -o "$2" "$1" </dev/null
@@ -166,6 +194,20 @@ main() {
                 ;;
         esac
     done
+
+    case "$RELAY" in
+        https://*) ;;
+        *)
+            if ! plain_http_allowed; then
+                err "this relay gave its address as $RELAY, without HTTPS."
+                err "A download over plain HTTP can be replaced on the way, checksums included."
+                err "Ask the relay's operator to serve it over HTTPS (behind a TLS proxy:"
+                err "BURROW_HTTP_SECURE_COOKIES=true). To install over plain HTTP anyway,"
+                err "set BURROW_INSTALL_ALLOW_HTTP=1 for the shell that runs this script."
+                fail "Nothing was installed."
+            fi
+            ;;
+    esac
 
     # 1. Which build.
     uname_s=$(uname -s) || fail "cannot tell the operating system (uname -s failed)."
@@ -276,6 +318,11 @@ main() {
     fi
 
     # 5. Verify before anything is unpacked or run.
+    # The checksum catches a download that is damaged, cut short or not the
+    # file that was asked for (an error page, another build). It does not
+    # protect against a relay or a release host that is itself compromised:
+    # the checksums come from the same place as the archive. What that rests
+    # on is the HTTPS connection to the relay and to the release host.
     want=$(checksum_for "$archive" "$TMP/checksums.txt")
     if [ -z "$want" ]; then
         err "checksums.txt has no line for $archive."
@@ -337,4 +384,8 @@ main() {
     say "Next: burrow login ${RELAY#*://}"
 }
 
-main "$@"
+# A brace group, not a bare call: every strict prefix of this line is a
+# syntax error (the group is not closed), so a download cut inside it runs
+# nothing — in particular not main without its arguments, which would turn
+# `--system` into an install to the home directory.
+{ main "$@"; }

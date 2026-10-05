@@ -15,19 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strings"
-	"sync"
 	"text/template"
 )
-
-// DefaultDownloadBase is where the client archives are published: the GitHub
-// releases of this repository. The redirects of /download/ point at
-// <base>/<tag>/<archive>. A fork sets client_download_base instead.
-//
-// It names the repository as it is today. An older owner name still redirects
-// there, but a redirect that somebody else could claim later must not be what
-// an installer trusts.
-const DefaultDownloadBase = "https://github.com/andreas-koehn/burrow/releases/download"
 
 // The two channels a relay installs from.
 const (
@@ -64,15 +53,9 @@ var shellSource string
 //go:embed install.ps1.tmpl
 var powerShellSource string
 
-// The templates are parsed on first use, not at start: internal/config uses
-// this package for the download base alone, and the client links config.
 var (
-	shellTmpl = sync.OnceValue(func() *template.Template {
-		return template.Must(template.New("install.sh").Parse(shellSource))
-	})
-	powerShellTmpl = sync.OnceValue(func() *template.Template {
-		return template.Must(template.New("install.ps1").Parse(powerShellSource))
-	})
+	shellTmpl      = template.Must(template.New("install.sh").Parse(shellSource))
+	powerShellTmpl = template.Must(template.New("install.ps1").Parse(powerShellSource))
 )
 
 var (
@@ -102,20 +85,6 @@ func Origin(scheme, host string) (origin string, ok bool) {
 		return "", false
 	}
 	return scheme + "://" + host, true
-}
-
-// CleanDownloadBase checks a client_download_base setting and returns it
-// without trailing slashes. Empty gives DefaultDownloadBase.
-func CleanDownloadBase(s string) (string, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return DefaultDownloadBase, nil
-	}
-	s = strings.TrimRight(s, "/")
-	if len(s) > 512 || !urlRE.MatchString(s) || strings.Contains(s, "/../") || strings.HasSuffix(s, "/..") {
-		return "", errors.New("must be an http(s) URL of host and path, without user, query or fragment")
-	}
-	return s, nil
 }
 
 func (p Params) check() error {
@@ -169,7 +138,7 @@ func Shell(p Params) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return render(shellTmpl(), p)
+	return render(shellTmpl, p)
 }
 
 // PowerShell renders the Windows installer.
@@ -178,5 +147,5 @@ func PowerShell(p Params) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return render(powerShellTmpl(), p)
+	return render(powerShellTmpl, p)
 }

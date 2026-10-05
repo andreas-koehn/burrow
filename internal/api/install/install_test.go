@@ -39,8 +39,19 @@ func TestShell_ShapeAndValues(t *testing.T) {
 	}
 	// All work happens in main, called on the very last line, so a download
 	// cut off anywhere before it runs nothing.
-	if got := lastLine(s); got != `main "$@"` {
-		t.Fatalf("last line = %q, want main \"$@\"", got)
+	// The call is a brace group: no strict prefix of that line parses, so a
+	// cut inside it cannot run main, with or without its arguments.
+	if got := lastLine(s); got != `{ main "$@"; }` {
+		t.Fatalf("last line = %q, want { main \"$@\"; }", got)
+	}
+	for _, want := range []string{
+		"BURROW_INSTALL_ALLOW_HTTP",
+		"--proto '=https' --proto-redir '=https' --tlsv1.2",
+		"compromised",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("script lacks %q", want)
+		}
 	}
 	if !strings.HasSuffix(s, "\n") {
 		t.Fatal("script does not end with a newline")
@@ -102,6 +113,14 @@ func TestPowerShell_ShapeAndValues(t *testing.T) {
 		if n == 0 || (strings.Contains(want, "' = '") || strings.HasPrefix(want, "$Relay") || strings.HasPrefix(want, "$Version")) && n != 1 {
 			t.Fatalf("%s appears %d times", want, n)
 		}
+	}
+	for _, want := range []string{"BURROW_INSTALL_ALLOW_HTTP", "DoNotExpandEnvironmentNames", "ExpandString", "compromised"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("script lacks %q", want)
+		}
+	}
+	if strings.Contains(s, "GetEnvironmentVariable('Path', 'User')") {
+		t.Fatal("the user Path is read expanded; %VAR% entries would be frozen")
 	}
 	if got := lastLine(s); got != "Install-Burrow" {
 		t.Fatalf("last line = %q, want Install-Burrow", got)
@@ -217,34 +236,5 @@ func TestOrigin(t *testing.T) {
 	}
 	if got, ok := Origin("http", "relay:8080"); !ok || got != "http://relay:8080" {
 		t.Errorf("Origin(http, relay:8080) = %q, %v", got, ok)
-	}
-}
-
-func TestCleanDownloadBase(t *testing.T) {
-	if DefaultDownloadBase != "https://github.com/andreas-koehn/burrow/releases/download" {
-		t.Fatalf("DefaultDownloadBase = %q", DefaultDownloadBase)
-	}
-	good := map[string]string{
-		"":                               DefaultDownloadBase,
-		"  ":                             DefaultDownloadBase,
-		DefaultDownloadBase:              DefaultDownloadBase,
-		DefaultDownloadBase + "/":        DefaultDownloadBase,
-		"https://mirror.example.com":     "https://mirror.example.com",
-		"http://assets:8080/dl/burrow//": "http://assets:8080/dl/burrow",
-	}
-	for in, want := range good {
-		got, err := CleanDownloadBase(in)
-		if err != nil || got != want {
-			t.Errorf("CleanDownloadBase(%q) = %q, %v; want %q", in, got, err, want)
-		}
-	}
-	for _, in := range []string{
-		"ftp://x/y", "//x/y", "x/y", "https://", "https://user:pw@x/y", "https://x/y?z=1", "https://x/y#z",
-		"https://x/a b", "https://x/$(id)", "https://x/`id`", "https://x/\"", "https://x/'", "https://x/a\nb",
-		"https://x/../y", "https://x/%2e%2e", "javascript:alert(1)", "https://x\\y",
-	} {
-		if got, err := CleanDownloadBase(in); err == nil {
-			t.Errorf("CleanDownloadBase accepted %q → %q", in, got)
-		}
 	}
 }

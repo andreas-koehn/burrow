@@ -75,10 +75,13 @@ bad() {
 }
 
 # in_image <image> <user> <script>: runs the script with sh in a fresh
-# container on the test network. Sets OUT (stdout+stderr) and RC.
+# container on the test network. Sets OUT (stdout+stderr) and RC. The relays
+# here speak plain HTTP, which the installers refuse for anything but
+# loopback, so BURROW_INSTALL_ALLOW_HTTP=1 is set; the cases about that
+# refusal unset it again.
 in_image() {
     set +e
-    OUT=$(docker run --rm --label "$LABEL" --network "$NET" --user "$2" "$1" sh -c "$3" 2>&1 </dev/null)
+    OUT=$(docker run --rm --label "$LABEL" --network "$NET" --user "$2" -e BURROW_INSTALL_ALLOW_HTTP=1 "$1" sh -c "$3" 2>&1 </dev/null)
     RC=$?
     set -e
 }
@@ -215,7 +218,7 @@ relay() {
     local name=$1 bin=$2 args=() e
     shift 2
     for e in "$@"; do args+=(-e "$e"); done
-    docker run -d --label "$LABEL" --network "$NET" --name "$name-$RUN_ID" --network-alias "$name" \
+    docker run -d --label "$LABEL" --network "$NET" --name "$name-$RUN_ID" --network-alias "$name" --network-alias "127.$name.test" \
         -w /tmp -e BURROW_DATABASE_PATH=/tmp/burrow.db "${args[@]}" \
         -v "$WORK/bin/$bin:/burrowd:ro" -v "$DL:/dl:ro" \
         alpine:latest /burrowd serve --dev-certs >/dev/null
@@ -299,6 +302,16 @@ check "alpine, non-root, --system: exit 1 with the wget sudo line" 1 \
 in_image "$DEBIAN" tester "PATH=/tmp/nocurl:\$PATH; mkdir /tmp/nocurl; for t in sh wget tar gzip sha256sum uname mktemp cat chmod mv rm mkdir ls; do ln -s \"\$(command -v \$t)\" /tmp/nocurl/\$t; done; wget -qO- $GOOD/install.sh >/tmp/i.sh && PATH=/tmp/nocurl sh /tmp/i.sh && \$HOME/.local/bin/burrow version"
 check "debian with GNU wget only (curl hidden): installs" 0 "burrow $VERSION"
 
+# Plain HTTP without the variable: fine for loopback, where nothing travels.
+# These two run inside the relay's own container.
+for lo in 127.0.0.1 localhost; do
+    set +e
+    OUT=$(docker exec "relay-good-$RUN_ID" sh -c "rm -rf /root/.local; wget -qO- http://$lo:8080/install.sh | sh && /root/.local/bin/burrow version" 2>&1 </dev/null)
+    RC=$?
+    set -e
+    check "plain http to $lo without BURROW_INSTALL_ALLOW_HTTP: installs" 0 "burrow $VERSION" "Next: burrow login $lo:8080"
+done
+
 for img in "$DEBIAN" "$ALPINE"; do
     f=$(fetch_of "$img")
     l=$(label_of "$img")
@@ -340,6 +353,15 @@ for img in "$DEBIAN" "$ALPINE"; do
     fails relay-missing "no archive on the relay (404)" "could not download http://relay-missing:8080/download/burrow/linux/$ARCH"
     fails relay-nobinary "a verified archive without a burrow binary" "could not unpack burrow"
     fails relay-broken "a verified archive whose burrow does not run" "does not run on this machine"
+
+    # A relay address without HTTPS is refused unless it is loopback or the
+    # person says so with exactly BURROW_INSTALL_ALLOW_HTTP=1.
+    in_image "$img" tester "unset BURROW_INSTALL_ALLOW_HTTP; $PRE; $f $GOOD/install.sh | sh; $POST"
+    check "$l: plain http relay without BURROW_INSTALL_ALLOW_HTTP is refused" 1 "gave its address as $GOOD, without HTTPS" "BURROW_INSTALL_ALLOW_HTTP=1" "Nothing was installed" "OLD_UNTOUCHED" "TMP_CLEAN" '!Downloading'
+    in_image "$img" tester "export BURROW_INSTALL_ALLOW_HTTP=yes; $PRE; $f $GOOD/install.sh | sh; $POST"
+    check "$l: BURROW_INSTALL_ALLOW_HTTP=yes is not 1: refused" 1 "without HTTPS" "OLD_UNTOUCHED" '!Downloading'
+    in_image "$img" tester "unset BURROW_INSTALL_ALLOW_HTTP; $PRE; $f http://127.relay-good.test:8080/install.sh | sh; $POST"
+    check "$l: a host name that only starts with 127. is not loopback: refused" 1 "gave its address as http://127.relay-good.test:8080, without HTTPS" "OLD_UNTOUCHED" '!Downloading'
 
     # Missing tools: named, before anything is downloaded.
     HIDE="mkdir /tmp/bin; for t in sh curl wget tar gzip sha256sum shasum uname mktemp cat chmod mv rm mkdir ls; do p=\$(command -v \$t) && ln -s \"\$p\" /tmp/bin/\$t; done; $f $GOOD/install.sh >/tmp/i.sh"
@@ -383,25 +405,45 @@ for img in "$DEBIAN" "$ALPINE"; do
         done
     done
 
-    # Cut off: every prefix of the script that stops before the last line
-    # must install nothing.
+    # Cut off: a prefix of the script either does nothing or does exactly
+    # what the whole script does with the same arguments. It is run with
+    # --system as a user who may not write /usr/local/bin: the whole script
+    # refuses with the sudo line; a prefix that ran main without its
+    # arguments would install to ~/.local/bin instead. Cuts: nine across the
+    # script and every byte offset of the last 40 bytes.
     in_image "$img" tester "
         $f $GOOD/install.sh >/tmp/i.sh
         total=\$(wc -c </tmp/i.sh)
-        last=\$(tail -n 1 /tmp/i.sh | wc -c)
-        body=\$((total - last))
         n=0
-        for cut in \$((total / 2)) \$((total / 16)) \$((total / 8)) \$((total / 4)) \$((total * 3 / 8)) \$((total * 5 / 8)) \$((total * 3 / 4)) \$((total * 7 / 8)) \$((total * 15 / 16)) \$((body - 1)) \$body \$((body + 1)) \$((body + 3)) \$((total - 4)) \$((total - 3)) \$((total - 2)); do
-            head -c \"\$cut\" /tmp/i.sh | sh >/tmp/out 2>&1; rc=\$?
-            if [ -e \$HOME/.local ] || grep -q -e Downloading -e Installed /tmp/out; then
+        kept=0
+        for cut in \$((total / 2)) \$((total / 16)) \$((total / 8)) \$((total / 4)) \$((total * 3 / 8)) \$((total * 5 / 8)) \$((total * 3 / 4)) \$((total * 7 / 8)) \$((total * 15 / 16)) \$(seq \$((total - 40)) \$((total - 1))); do
+            head -c \"\$cut\" /tmp/i.sh | sh -s -- --system >/tmp/out 2>&1; rc=\$?
+            if [ -e \$HOME/.local ] || [ -e /usr/local/bin/burrow ] || grep -q -e Downloading -e Installed /tmp/out; then
                 echo \"CUT_AT_\${cut}_RAN (exit \$rc)\"; cat /tmp/out
             fi
+            if grep -q 'is not writable by this user' /tmp/out; then kept=\$((kept + 1)); fi
             n=\$((n + 1))
         done
         echo \"TRIED_\$n\"
+        echo \"KEPT_ARGUMENTS_\$kept\"
         head -c \$((total / 2)) /tmp/i.sh | sh >/dev/null 2>&1; echo \"HALF_EXIT_\$?\"
         [ ! -e \$HOME/.local ] && echo NO_FILE_CREATED"
-    check "$l: the script cut off at half its length and at 15 other points" 0 "TRIED_16" "NO_FILE_CREATED" '!_RAN' '!HALF_EXIT_0'
+    # Only the cut that drops the final newline leaves a whole script.
+    check "$l: the script cut off at half its length, 8 other points and each of its last 40 bytes" 0 "TRIED_49" "KEPT_ARGUMENTS_1" "NO_FILE_CREATED" '!_RAN' '!HALF_EXIT_0'
+
+    # The same as root, where the whole script installs to /usr/local/bin:
+    # no prefix may install to /root/.local/bin instead.
+    in_image "$img" root "
+        $f $GOOD/install.sh >/tmp/i.sh
+        total=\$(wc -c </tmp/i.sh)
+        system=0
+        for cut in \$(seq \$((total - 40)) \$((total - 1))); do
+            head -c \"\$cut\" /tmp/i.sh | sh -s -- --system >/tmp/out 2>&1
+            if [ -e /root/.local ]; then echo \"CUT_AT_\${cut}_DROPPED_THE_ARGUMENTS\"; rm -rf /root/.local; fi
+            if [ -e /usr/local/bin/burrow ]; then system=\$((system + 1)); rm -f /usr/local/bin/burrow; fi
+        done
+        echo \"SYSTEM_INSTALLS_\$system\""
+    check "$l: as root with --system, no cut in the last 40 bytes installs to the home directory" 0 "SYSTEM_INSTALLS_1" '!DROPPED_THE_ARGUMENTS'
 done
 
 # ------------------------------------------------------------ PowerShell ----
@@ -411,7 +453,7 @@ if docker pull -q "$PWSH" >/dev/null 2>&1; then
     # user Path cannot be stored. Everything else is the script as served.
     ps_case() { # <relay> <arch> <more PowerShell>
         set +e
-        OUT=$(docker run --rm --label "$LABEL" --network "$NET" -e LOCALAPPDATA=/tmp/lad -e "PROCESSOR_ARCHITECTURE=$2" "$PWSH" \
+        OUT=$(docker run --rm --label "$LABEL" --network "$NET" -e LOCALAPPDATA=/tmp/lad -e "PROCESSOR_ARCHITECTURE=$2" -e BURROW_INSTALL_ALLOW_HTTP=1 "$PWSH" \
             pwsh -NoProfile -NonInteractive -Command "
                 \$ErrorActionPreference = 'Stop'
                 New-Item -ItemType Directory -Path /tmp/lad/Programs/burrow -Force | Out-Null
@@ -448,6 +490,10 @@ if docker pull -q "$PWSH" >/dev/null 2>&1; then
     ps_fails relay-htmlsum "an HTML error page instead of checksums.txt" "checksums.txt has no line for $ZIP"
     ps_fails relay-empty "an empty archive" "is empty"
     ps_fails relay-missing "no archive on the relay (404)" "could not download http://relay-missing:8080/download/burrow/windows/amd64"
+    ps_case relay-good AMD64 "\$env:BURROW_INSTALL_ALLOW_HTTP = \$null; Invoke-Expression (Invoke-RestMethod http://relay-good:8080/install.ps1)"
+    check "powershell: plain http relay without BURROW_INSTALL_ALLOW_HTTP is refused" 1 "gave its address as http://relay-good:8080, without HTTPS" "Nothing was installed" "OLD_UNTOUCHED" "DIR_CLEAN" "TMP_CLEAN" '!Downloading'
+    ps_case relay-good AMD64 "\$env:BURROW_INSTALL_ALLOW_HTTP = \$null; Invoke-Expression (Invoke-RestMethod http://127.relay-good.test:8080/install.ps1)"
+    check "powershell: a host name that only starts with 127. is not loopback: refused" 1 "without HTTPS" "OLD_UNTOUCHED" '!Downloading'
     for a in ARM64 x86 ""; do
         ps_case relay-good "$a" "Invoke-Expression (Invoke-RestMethod http://relay-good:8080/install.ps1)"
         check "powershell: PROCESSOR_ARCHITECTURE '$a' is refused" 1 "there is no burrow build this installer can set up" "Supported: windows/" "OLD_UNTOUCHED" "TMP_CLEAN" '!Downloading'

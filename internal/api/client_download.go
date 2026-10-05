@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ankoehn/burrow/internal/api/install"
+	"github.com/ankoehn/burrow/internal/config"
 	"github.com/ankoehn/burrow/internal/version"
 )
 
@@ -130,9 +131,9 @@ func archiveName(buildVersion, goos, goarch string) (string, bool) {
 // a caller that skipped config) falls back to the default instead of
 // reaching a Location header.
 func (d Deps) downloadBase() string {
-	base, err := install.CleanDownloadBase(d.ClientDownloadBase)
+	base, err := config.CleanClientDownloadBase(d.ClientDownloadBase)
 	if err != nil {
-		return install.DefaultDownloadBase
+		return config.DefaultClientDownloadBase
 	}
 	return base
 }

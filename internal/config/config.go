@@ -14,8 +14,6 @@ import (
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/v2"
-
-	"github.com/ankoehn/burrow/internal/api/install"
 )
 
 var validate = validator.New()
@@ -410,7 +408,7 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 		"login_rate_limit_per_ip": 0,
 		// min_client_version: empty = clients of any version are accepted.
 		"min_client_version": "",
-		// client_download_base: empty = install.DefaultDownloadBase;
+		// client_download_base: empty = DefaultClientDownloadBase;
 		// client_download_dir: empty = redirect instead of serving files.
 		"client_download_base": "", "client_download_dir": "",
 		// cert_validation_roots_file: empty = use system root pool.
@@ -460,11 +458,19 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 	// The download base ends up in a Location header and, as the manual
 	// download page, in the install scripts; only a plain URL is accepted.
 	// The value is not repeated in the error: a URL may carry credentials.
-	dlBase, err := install.CleanDownloadBase(c.ClientDownloadBase)
+	dlBase, err := CleanClientDownloadBase(c.ClientDownloadBase)
 	if err != nil {
 		return nil, fmt.Errorf("invalid server config: client_download_base %w", err)
 	}
 	c.ClientDownloadBase = dlBase
+	// A relay that is reached over HTTPS must not hand its clients on to a
+	// plain HTTP download: the archive and its checksums would both travel
+	// where they can be swapped. A mirror on this machine is the exception.
+	relayHTTPS := c.HTTPSecureCookies || c.ACMEDomain != "" || (c.HTTPTLSCert != "" && c.HTTPTLSKey != "")
+	if relayHTTPS && plainHTTPToAnotherHost(dlBase) {
+		return nil, fmt.Errorf("invalid server config: client_download_base must be an https URL on a relay that is served over HTTPS " +
+			"(http_tls_cert, acme_domain or http_secure_cookies is set); plain http is accepted for localhost only")
+	}
 	c.ClientDownloadDir = strings.TrimSpace(c.ClientDownloadDir)
 	if c.ClientDownloadDir != "" {
 		if st, err := os.Stat(c.ClientDownloadDir); err != nil || !st.IsDir() {

@@ -327,7 +327,7 @@ type Deps struct {
 	// tests; zero uses the const.
 	DiscoveryRateLimitPerIPOverride int
 	// ClientDownloadBase is where /download/ redirects to:
-	// <base>/<tag>/<archive>. Empty means install.DefaultDownloadBase.
+	// <base>/<tag>/<archive>. Empty means config.DefaultClientDownloadBase.
 	ClientDownloadBase string
 	// ClientDownloadDir, when set, is a directory of client archives and
 	// their checksums.txt that /download/ serves itself instead of
