@@ -34,7 +34,7 @@ the other.
 ::: info What ACME changes at runtime
 - The dashboard listener auto-promotes from `:8080` to `:443` (only when `BURROW_HTTP_LISTEN` is still the default `:8080`).
 - A `:80` listener starts to serve HTTP-01 challenges and redirect HTTP → HTTPS.
-- The `:8443` proxy ingress adopts the ACME-managed certificate.
+- The host-routed proxy ingress, if enabled, adopts the ACME-managed certificate.
 - The control channel (`:7000`) also uses the ACME certificate; the port itself does not change.
 - `BURROW_AUTH_DOMAIN` is **not required** when ACME is on — burrowd infers the base domain from the first ACME domain.
 :::
@@ -58,10 +58,15 @@ exercised. Switch back to the production CA (the default) when going live.
 |----------|---------|---------|
 | `BURROW_LISTEN` | `:7000` | Control channel (TLS + yamux). Clients connect here. |
 | `BURROW_HTTP_LISTEN` | `:8080` | Dashboard and REST API. Promoted to `:443` by ACME when still at its default value. |
-| `BURROW_HTTP_PROXY_LISTEN` | `:8443` | HTTP tunnel ingress (subdomain routing). Set to `""` to disable. |
+| `BURROW_HTTP_PROXY_LISTEN` | `""` | Opt-in host-routed ingress (for example `:8443`). Empty = off. See below. |
 | `BURROW_PUBLIC_BIND` | `0.0.0.0` | Network interface for TCP tunnel data ports. |
 | `BURROW_PORT_MIN` | `9000` | Inclusive lower bound for auto-assigned TCP tunnel ports. |
 | `BURROW_PORT_MAX` | `9100` | Inclusive upper bound for auto-assigned TCP tunnel ports. |
+
+`BURROW_HTTP_PROXY_LISTEN` is empty by default. Set it (for example to `:8443`)
+to start the opt-in host-routed ingress, which serves services at
+`https://<slug>.<domain>/` and needs wildcard DNS and a wildcard certificate.
+mTLS access mode and custom domains only work with this ingress.
 
 ::: tip Stable TCP ports
 Set `remote: 9001` (or any value in the `PORT_MIN`–`PORT_MAX` range) in
@@ -83,7 +88,7 @@ ACME variables.
 | `BURROW_TLS_KEY` | `certs/dev-server-key.pem` | PEM private key for the control channel. |
 | `BURROW_HTTP_TLS_CERT` | `""` | PEM certificate for the dashboard/API listener. Empty = plain HTTP. |
 | `BURROW_HTTP_TLS_KEY` | `""` | PEM private key for the dashboard/API listener. |
-| `BURROW_HTTP_PROXY_TLS_CERT` | `""` | PEM certificate for the proxy ingress (`:8443`). |
+| `BURROW_HTTP_PROXY_TLS_CERT` | `""` | PEM certificate for the host-routed proxy ingress. |
 | `BURROW_HTTP_PROXY_TLS_KEY` | `""` | PEM private key for the proxy ingress. |
 
 ::: tip Dev certs shortcut
@@ -198,7 +203,7 @@ BURROW_LOG_LEVEL=warn
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `BURROW_AUTH_DOMAIN` | `""` | Base domain for subdomain routing (`<id>.<domain>`) and path routing (`<domain>/t/<id>/`). Inferred from `BURROW_ACME_DOMAIN` when ACME is on — no need to set separately. |
+| `BURROW_AUTH_DOMAIN` | `""` | Base domain of the relay. HTTP services are served at `https://<domain>/svc/<slug>/`. Inferred from `BURROW_ACME_DOMAIN` when ACME is on — no need to set separately. |
 
 ---
 
@@ -291,7 +296,7 @@ services:
 | `services` | Yes | — | List of services to expose. |
 | `services[].name` | Yes | — | Display name; shown in the dashboard. |
 | `services[].local` | Yes | — | Local address to forward traffic to, e.g. `127.0.0.1:3000`. |
-| `services[].type` | No | `tcp` | `http` or `tcp`. HTTP tunnels get a subdomain; TCP tunnels get a port. |
+| `services[].type` | No | `tcp` | `http` or `tcp`. HTTP tunnels get a slug and a `/svc/<slug>/` URL; TCP tunnels get a port. |
 | `services[].remote` | No | `0` | TCP only. Requested public port. `0` = auto-assigned from `PORT_MIN`–`PORT_MAX`. |
 
 ### Single-tunnel flags (no config file)

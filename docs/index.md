@@ -20,7 +20,7 @@ features:
   - title: Automatic HTTPS — built-in Let's Encrypt
     details: Set BURROW_ACME_DOMAIN and BURROW_ACME_EMAIL. burrowd obtains and renews certificates via ACME before the first listener starts. One container, ports 80 and 443, done.
   - title: HTTP tunnels and TCP tunnels with access control
-    details: HTTP services reach clients via subdomain (https://id.burrow.insingo.com/) or path routing (https://burrow.insingo.com/t/id/). TCP ports are forwarded directly. Access modes — open, api_key, burrow_login, or mTLS — are set per service.
+    details: HTTP services are served at a path on your relay's domain (https://burrow.insingo.com/svc/slug/), so one A record and one certificate are enough. TCP ports are forwarded directly. Access modes — open, api_key, burrow_login, or mTLS — are set per service.
   - title: Apache-2.0 — no open core
     details: Every feature is in the repository. Nothing is held back for a paid tier. Build from source or pull the pre-built image.
 ---
@@ -59,7 +59,7 @@ burrow connect --server burrow.insingo.com:7000 --token bur_YOUR_TOKEN_HERE \
   --local 127.0.0.1:3000 --type http --name my-app
 ```
 
-Your app is live at `https://my-app.burrow.insingo.com/` (subdomain) and `https://burrow.insingo.com/t/my-app/` (path routing on the same origin).
+Your app is live at `https://burrow.insingo.com/svc/k7p2qx/`. The client prints the exact URL on `tunnel registered`.
 
 ::: tip No separate auth domain needed
 When `BURROW_ACME_DOMAIN` is set, burrowd infers the base domain from it automatically — you do not need `BURROW_AUTH_DOMAIN`.

@@ -3,7 +3,7 @@
 # test/integration/acme.sh
 #
 # End-to-end proof of burrowd's BUILT-IN ACME (CertMagic) + single-origin
-# /t/{id} path routing against Pebble (Let's Encrypt's test ACME server).
+# /svc/{slug} path routing against Pebble (Let's Encrypt's test ACME server).
 #
 # Brings up test/harness/compose.acme.yml, waits for the relay to obtain a
 # Pebble-issued cert, then asserts (from INSIDE the relay container — it has
@@ -13,10 +13,10 @@
 #   1. burrowd logged "acme: certificates ready" and the HTTPS dashboard answers.
 #   2. The cert served on :443 chains to Pebble's issuing root (/roots/0) for
 #      relay.test — i.e. a REAL Pebble-issued cert (curl --cacert, verify ok).
-#   3. The http tunnel is reachable at https://relay.test/t/<id>/healthz and
+#   3. The http tunnel is reachable at https://relay.test/svc/<slug>/healthz and
 #      returns the upstream body (path routing over the ACME cert works e2e).
-#   4. POST https://relay.test/t/<id>/echo round-trips method+header+body.
-#   5. A redirect emitted by the upstream comes back rewritten under /t/<id>
+#   4. POST https://relay.test/svc/<slug>/echo round-trips method+header+body.
+#   5. A redirect emitted by the upstream comes back rewritten under /svc/<slug>
 #      (Location header rewrite).
 #   6. The control channel on :7000 presents a cert chaining to Pebble's root.
 #
@@ -79,21 +79,21 @@ done
 echo "[acme] starting client (upstream-http)"
 docker compose -f "$COMPOSE" up -d upstream-http
 
-# --- discover the http tunnel's subdomain (= the /t/<id> id) ---------------
-echo "[acme] discovering http tunnel subdomain from relay logs"
+# --- discover the http tunnel slug (the /svc/<slug> segment) ---------------
+echo "[acme] discovering http tunnel slug from relay logs"
 ID=""
 for i in $(seq 1 60); do
-  ID="$(docker logs "$RELAY" 2>&1 | grep 'http tunnel registered' | tail -1 | grep -oE 'subdomain=[a-z0-9]+' | cut -d= -f2 || true)"
+  ID="$(docker logs "$RELAY" 2>&1 | grep 'http tunnel registered' | tail -1 | grep -oE 'slug=[a-z0-9-]+' | cut -d= -f2 || true)"
   [ -n "$ID" ] && break
   sleep 1
 done
 if [ -z "$ID" ]; then
-  echo "[acme] could not discover http tunnel subdomain — dumping relay + client logs:"
+  echo "[acme] could not discover http tunnel slug — dumping relay + client logs:"
   docker logs "$RELAY" 2>&1 | tail -40
   echo "--- client (upstream-http) ---"; docker compose -f "$COMPOSE" logs upstream-http 2>&1 | tail -30
   exit 1
 fi
-echo "[acme] http tunnel id (subdomain) = $ID"
+echo "[acme] http tunnel slug = $ID"
 
 # --- run all TLS/path assertions INSIDE the relay container ----------------
 # The relay image has curl + openssl, is on the acme network, resolves 'pebble'

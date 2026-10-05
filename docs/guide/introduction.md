@@ -42,19 +42,12 @@ Tunnels come in two types.
 
 ### HTTP tunnels
 
-The relay acts as a reverse proxy. Your local HTTP server is reachable at two
-equivalent URLs:
-
-- **Subdomain routing** — `https://<id>.burrow.insingo.com/`  
-  (requires wildcard DNS `*.burrow.insingo.com → relay IP`)
-- **Path routing** — `https://burrow.insingo.com/t/<id>/`  
-  (single-origin; no extra DNS; works from the same host as the dashboard)
-
-Both reach the same upstream. Path routing is the easier starting point because
-it needs no wildcard DNS record.
+The relay acts as a reverse proxy. Your local HTTP server is reachable at
+`https://burrow.insingo.com/svc/<slug>/`. One A record and one certificate are
+enough; there is no wildcard DNS to set up.
 
 ::: info
-Path routing strips the `/t/<id>` prefix before forwarding and rewrites
+The relay strips the `/svc/<slug>` prefix before forwarding and rewrites
 `Location` redirect headers so relative redirects work correctly.
 :::
 
@@ -98,8 +91,9 @@ from the dashboard or `POST /api/v1/services/{id}/api-keys`.
 
 ::: warning
 `mtls` requires a dedicated TLS handshake per service and is only available on
-the `:8443` listener (subdomain routing). Path-routed requests (`/t/<id>`) share
-the dashboard's TLS session and cannot carry a per-service client certificate.
+the opt-in host-routed ingress (`BURROW_HTTP_PROXY_LISTEN`). Path-routed requests
+(`/svc/<slug>`) share the dashboard's TLS session and cannot carry a per-service
+client certificate.
 :::
 
 ---
@@ -116,8 +110,8 @@ BURROW_ACME_EMAIL=admin@example.com
 
 On startup, `burrowd` obtains a certificate from Let's Encrypt, promotes the
 dashboard from `:8080` to `:443`, starts a `:80` listener for HTTP-01 challenges
-and HTTPS redirects, and applies the same certificate to the `:8443` proxy
-ingress. The control channel on `:7000` uses it too.
+and HTTPS redirects, and applies the same certificate to the host-routed proxy
+ingress if you enabled it. The control channel on `:7000` uses it too.
 
 ::: info
 When ACME is enabled, `BURROW_AUTH_DOMAIN` is inferred automatically from the
@@ -140,17 +134,17 @@ self-signed certificates instead.
   │ burrow       │◄──control chan────►│ burrowd                      │
   │ (client)     │                   │                              │
   │              │   tunnel bytes    │  :443   dashboard + API      │
-  │ :3000 (app)  │◄══════════════════│  :443   /t/<id>/ path routes │
-  │ :22   (ssh)  │                   │  :8443  *.burrow.insingo.com │
+  │ :3000 (app)  │◄══════════════════│  :443   /svc/<slug>/ routes  │
+  │ :22   (ssh)  │                   │                              │
   └──────────────┘                   │  :9001  TCP tunnel port      │
                                      └──────────────────────────────┘
                                               ▲          ▲
                                      browser / curl   SSH client
-                                     GET /t/abc123/   :9001
+                                     GET /svc/abc123/ :9001
 ```
 
 Inbound traffic from the internet arrives at the relay. For HTTP tunnels the
-relay looks up the tunnel by subdomain or by the `/t/<id>` path prefix, then
+relay looks up the tunnel by the slug in the `/svc/<slug>` path prefix, then
 forwards the request over the persistent control-channel connection to the client
 process, which hands it off to your local service. For TCP tunnels the relay
 splices the raw connection.

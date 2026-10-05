@@ -27,8 +27,8 @@ for port in 9002 9003 9004; do
 done
 
 echo "[smoke-full] AI SSE via host-routed proxy on :8443"
-SUB=$(docker logs burrow-e2e-full-relay-1 2>&1 | grep "http tunnel registered" | tail -1 | grep -oE 'subdomain=[a-z0-9]+' | cut -d= -f2)
-if [ -z "$SUB" ]; then echo "  could not discover AI subdomain from relay logs"; exit 1; fi
+SUB=$(docker logs burrow-e2e-full-relay-1 2>&1 | grep "http tunnel registered" | tail -1 | grep -oE 'slug=[a-z0-9-]+' | cut -d= -f2)
+if [ -z "$SUB" ]; then echo "  could not discover AI slug from relay logs"; exit 1; fi
 curl -fsS --ssl-no-revoke -k --resolve "$SUB.test.local:8443:127.0.0.1" \
   -X POST -H "content-type: application/json" \
   -d '{"model":"mock","stream":true,"messages":[{"role":"user","content":"hi"}]}' \

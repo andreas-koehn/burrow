@@ -82,7 +82,7 @@ tasks:
       - bash test/e2e/run.sh
 
   e2e:acme:
-    desc: "Tier 1: built-in ACME (Pebble) + single-origin /t/{id} path routing curl gate (up/assert/down)"
+    desc: "Tier 1: built-in ACME (Pebble) + single-origin /svc/{slug} path routing curl gate (up/assert/down)"
     cmds:
       - bash test/integration/acme.sh
 

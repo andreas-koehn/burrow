@@ -6,21 +6,19 @@ Get a public HTTPS tunnel running in under five minutes.
 
 ## Production deploy (recommended)
 
-The fastest path to a permanent relay is one Docker Compose file and two DNS records.
+The fastest path to a permanent relay is one Docker Compose file and one DNS record.
 
 ### 1. Point DNS at your server
 
-Create an A record (and, optionally, a wildcard) pointing to your VM's public IP:
+Create an A record pointing to your VM's public IP:
 
 ```
 burrow.insingo.com      A   <your-server-ip>
-*.burrow.insingo.com    A   <your-server-ip>
 ```
 
 ::: info
-The wildcard record is needed for subdomain-routed HTTP tunnels
-(`https://<id>.burrow.insingo.com/`). If you only need path-routed access
-(`https://burrow.insingo.com/t/<id>/`), the wildcard is optional.
+No wildcard record or wildcard certificate is needed. HTTP services are served
+at `https://burrow.insingo.com/svc/<slug>/`.
 :::
 
 ### 2. Open firewall ports
@@ -43,7 +41,6 @@ services:
       - "80:80"
       - "443:443"
       - "7000:7000"
-      - "8443:8443"
     volumes:
       - burrow_data:/data
     environment:
@@ -87,12 +84,8 @@ burrow connect \
   --name my-app
 ```
 
-Your local app is now reachable at:
-
-- `https://burrow.insingo.com/t/<id>/` — path-routed (same origin as the dashboard)
-- `https://<id>.burrow.insingo.com/` — subdomain-routed (requires the `*` DNS record)
-
-Both URLs reach the same upstream.
+Your local app is now reachable at `https://burrow.insingo.com/svc/<slug>/`. The
+client prints the URL on `tunnel registered`; the dashboard shows it too.
 
 See [Deploy on a server](/guide/deploy) for the full production setup, including
 binary installs, file-based TLS, firewall hardening, and backup configuration.

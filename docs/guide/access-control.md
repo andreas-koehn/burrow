@@ -48,12 +48,12 @@ access check is defense-in-depth.
 **When to use:** service-to-service calls where you control both ends and want
 cryptographic identity rather than shared secrets.
 
-::: warning mTLS is only available on the `:8443` ingress
-mTLS requires a per-service TLS handshake (SNI routing). The single-origin
-path-routing endpoint (`https://burrow.insingo.com/t/<id>/...`) shares the
-dashboard TLS connection and **cannot** carry a per-service client certificate.
-If you need mTLS, clients must connect to the subdomain URL
-(`https://<id>.burrow.insingo.com/`) on port 8443.
+::: warning mTLS requires the host-routed ingress
+mTLS requires the opt-in host-routed ingress (`BURROW_HTTP_PROXY_LISTEN`) and is
+not available with path URLs. The `https://burrow.insingo.com/svc/<slug>/`
+endpoint shares the dashboard TLS connection and **cannot** carry a per-service
+client certificate. The dashboard no longer offers mTLS; a service still in
+`mtls` mode must be moved to another mode by hand.
 :::
 
 ---
@@ -154,18 +154,17 @@ Open only the ports Burrow needs. With ACME (recommended):
 |------|---------|
 | `80` | ACME HTTP-01 challenge + HTTPS redirect |
 | `443` | Dashboard, REST API, and path-routed tunnels |
-| `8443` | HTTP tunnel ingress (subdomain routing, mTLS) |
+| `8443` | Host-routed ingress (opt-in, off by default; mTLS) |
 | `7000` | Client control channel (TLS) |
 
 If you use raw TCP tunnels, also open the specific port you pin in `remote:`
 (e.g. `9001`). No need to open the full `9000`–`9100` range unless you expose
 many dynamic TCP services.
 
-::: warning Block `8443` at the firewall if you do not use mTLS
-Port `8443` accepts unauthenticated HTTP connections by default. If all your
-services are `open` or `api_key` that is fine, but if you want to guarantee no
-one bypasses the subdomain host-check, restrict this port at the network level
-to known source IPs.
+::: warning Keep `8443` closed unless you enable the host-routed ingress
+`BURROW_HTTP_PROXY_LISTEN` is empty by default, so nothing listens on `8443`.
+If you turn it on, restrict the port at the network level to known source IPs
+unless you rely on it for mTLS.
 :::
 
 ### Strong admin password

@@ -10,7 +10,7 @@
 # so a here-doc'd `bash -s` would silently run an EMPTY script and report a
 # false green. A mounted file + `docker exec bash <file>` is deterministic.
 #
-# Inputs (env): PEBBLE_CA, DOMAIN, RELAY_IP, ID (the http tunnel subdomain).
+# Inputs (env): PEBBLE_CA, DOMAIN, RELAY_IP, ID (the http tunnel slug).
 # Emits one PASS/FAIL line per check and a final sentinel:
 #   ACME_ASSERT_RESULT pass=<n> fail=<m>
 # Exits non-zero if any assertion failed (and the caller ALSO greps the
@@ -48,39 +48,39 @@ else
   no "dashboard cert/health (http=$code ssl_verify=$vr; want 200/0)"
 fi
 
-# 2) http tunnel reachable at /t/<id>/healthz over the ACME cert (path routing).
-body="$(curl -s --cacert "$ROOT" "${RES[@]}" "https://$DOMAIN/t/$ID/healthz")"
+# 2) http tunnel reachable at /svc/<slug>/healthz over the ACME cert (path routing).
+body="$(curl -s --cacert "$ROOT" "${RES[@]}" "https://$DOMAIN/svc/$ID/healthz")"
 if echo "$body" | grep -q '"status":"ok"'; then
-  ok "GET https://$DOMAIN/t/$ID/healthz routed to upstream (body=$body)"
+  ok "GET https://$DOMAIN/svc/$ID/healthz routed to upstream (body=$body)"
 else
-  no "path route /t/$ID/healthz (body=$body)"
+  no "path route /svc/$ID/healthz (body=$body)"
 fi
 
-# 3) POST /t/<id>/echo round-trips method + custom header + body.
-er="$(curl -s --cacert "$ROOT" "${RES[@]}" -X POST -H 'X-Acme-T: y' -d 'hi-acme' "https://$DOMAIN/t/$ID/echo")"
+# 3) POST /svc/<slug>/echo round-trips method + custom header + body.
+er="$(curl -s --cacert "$ROOT" "${RES[@]}" -X POST -H 'X-Acme-T: y' -d 'hi-acme' "https://$DOMAIN/svc/$ID/echo")"
 if echo "$er" | grep -q '"body":"hi-acme"' \
   && echo "$er" | grep -q '"method":"POST"' \
   && echo "$er" | grep -q '"X-Acme-T":\["y"\]'; then
-  ok "POST https://$DOMAIN/t/$ID/echo echoes method+header+body"
+  ok "POST https://$DOMAIN/svc/$ID/echo echoes method+header+body"
 else
-  no "path route POST /t/$ID/echo (resp=$er)"
+  no "path route POST /svc/$ID/echo (resp=$er)"
 fi
 
-# 4) the proxy strips the /t/<id> prefix before the upstream (the echo upstream
-#    reports the path it actually received — must be /echo, not /t/<id>/echo).
+# 4) the proxy strips the /svc/<slug> prefix before the upstream (the echo upstream
+#    reports the path it actually received — must be /echo, not /svc/<slug>/echo).
 if echo "$er" | grep -q '"path":"/echo"'; then
-  ok "proxy stripped the /t/$ID prefix (upstream saw /echo)"
+  ok "proxy stripped the /svc/$ID prefix (upstream saw /echo)"
 else
   no "prefix strip (upstream path in resp=$er)"
 fi
 
 # 5) Location rewrite: the upstream's 302 -> /redirected must come back rewritten
-#    under /t/<id>/redirected (proxy uses X-Burrow-Path-Prefix; only path-
+#    under /svc/<slug>/redirected (proxy uses X-Burrow-Path-Prefix; only path-
 #    absolute Locations are rewritten, which is what the upstream emits).
-loc="$(curl -s -o /dev/null -D - --cacert "$ROOT" "${RES[@]}" "https://$DOMAIN/t/$ID/redirect" \
+loc="$(curl -s -o /dev/null -D - --cacert "$ROOT" "${RES[@]}" "https://$DOMAIN/svc/$ID/redirect" \
   | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}')"
-if echo "$loc" | grep -q "/t/$ID/redirected"; then
-  ok "Location header rewritten under /t/$ID (got: $loc)"
+if echo "$loc" | grep -q "/svc/$ID/redirected"; then
+  ok "Location header rewritten under /svc/$ID (got: $loc)"
 else
   no "Location rewrite (got: ${loc:-<none>})"
 fi

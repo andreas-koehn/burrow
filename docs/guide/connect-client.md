@@ -131,14 +131,10 @@ burrow connect --config burrow.yaml
 Once connected, each `http` service is reachable at:
 
 ```
-https://<tunnel-id>.burrow.insingo.com/
+https://burrow.insingo.com/svc/<slug>/
 ```
 
-or via the single-origin path route on the dashboard origin:
-
-```
-https://burrow.insingo.com/t/<tunnel-id>/
-```
+The client prints the full URL on `tunnel registered`.
 
 ::: tip TLS is validated automatically
 The client connects to port `7000` using TLS. When the relay uses
@@ -183,6 +179,6 @@ Never use it against a production relay.
 
 ## Next steps
 
-- [Expose services](/guide/expose-services) — HTTP vs TCP tunnels, stable TCP ports, path routing vs subdomain routing.
+- [Expose services](/guide/expose-services) — HTTP vs TCP tunnels, stable TCP ports, apps behind a path.
 - [Access control & security](/guide/access-control) — Lock a service behind an API key, Burrow login, or mTLS.
 - [CLI reference](/reference/cli) — Full `burrow` command tree.

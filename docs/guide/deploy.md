@@ -14,9 +14,8 @@ One container. One domain. Automatic HTTPS.
 - The relay server (`burrowd`) listens on port `443` for the dashboard and REST
   API, port `7000` for client connections, and port `80` solely for ACME
   HTTP-01 challenges and HTTPS redirects.
-- Every HTTP tunnel is reachable at two equivalent URLs:
-  - **Subdomain**: `https://<id>.burrow.insingo.com/`
-  - **Path** (same origin, no extra DNS): `https://burrow.insingo.com/t/<id>/`
+- Every HTTP tunnel is reachable at `https://burrow.insingo.com/svc/<slug>/`
+  (same origin as the dashboard, no extra DNS).
 - Raw TCP tunnels get a dedicated port in the `9000–9100` range (open only the
   ports you actually use).
 
@@ -40,10 +39,10 @@ One container. One domain. Automatic HTTPS.
           └─────────────┘
 ```
 
-::: info Path routing and mTLS
-The `/t/<id>/` path route and subdomain route reach the same upstream. The
-only feature not available on the path route is mTLS — mutual TLS requires a
-dedicated TLS handshake on the `:8443` ingress listener (subdomain route only).
+::: info Path URLs and mTLS
+The only feature not available on `/svc/<slug>/` URLs is mTLS. Mutual TLS
+requires a dedicated TLS handshake on the opt-in host-routed ingress
+(`BURROW_HTTP_PROXY_LISTEN`).
 :::
 
 ---
@@ -66,9 +65,9 @@ dedicated TLS handshake on the `:8443` ingress listener (subdomain route only).
 
 ## 3. DNS
 
-Create a single A record pointing to your server's IP. No wildcard is needed
-for path-routed HTTP tunnels; a wildcard is only required if you want subdomain
-routing without the `/t/<id>/` path.
+Create a single A record pointing to your server's IP. No wildcard record or
+wildcard certificate is needed; HTTP tunnels are served under
+`/svc/<slug>/`.
 
 ```
 burrow.insingo.com.  300  IN  A  SERVER_IP
@@ -270,8 +269,8 @@ default is the Let's Encrypt production directory.
 
 - [Connect a client](/guide/connect-client) — install the `burrow` CLI and
   expose your first service.
-- [Expose services](/guide/expose-services) — HTTP vs TCP tunnels, subdomain
-  vs path routing, stable TCP ports.
+- [Expose services](/guide/expose-services) — HTTP vs TCP tunnels, apps
+  behind a path, stable TCP ports.
 - [Access control & security](/guide/access-control) — lock down tunnels with
   API keys, `burrow_login`, or mTLS.
 - [Configuration](/guide/configuration) — full `BURROW_*` environment variable

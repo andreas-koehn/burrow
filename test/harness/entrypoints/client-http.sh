@@ -3,7 +3,7 @@
 # test/harness/entrypoints/client-http.sh
 # Waits for the relay-minted token, starts the tiny upstream HTTP service, then
 # runs `burrow connect --type http` so the relay exposes it as an http tunnel
-# reachable at https://relay.test/t/<id>/ (single-origin path routing).
+# reachable at https://relay.test/svc/<slug>/ (single-origin path routing).
 set -euo pipefail
 
 TOKEN_PATH="/run/burrow/token"

@@ -55,7 +55,7 @@ BURROW_ACME_EMAIL=ops@insingo.com
 # Listeners (defaults shown)
 BURROW_LISTEN=:7000
 BURROW_HTTP_LISTEN=:8080
-BURROW_HTTP_PROXY_LISTEN=:8443
+BURROW_HTTP_PROXY_LISTEN=
 
 # Database
 BURROW_DATABASE_PATH=./burrow.db
@@ -72,7 +72,7 @@ BURROW_LOG_FORMAT=text     # text | json
 | `:7000` | TLS (yamux) | Always — control channel |
 | `:8080` | HTTP | Default dashboard + API; promotes to `:443` when ACME is on |
 | `:443` | HTTPS | Dashboard + API when ACME is enabled |
-| `:8443` | HTTP or TLS | HTTP tunnel ingress (set `BURROW_HTTP_PROXY_LISTEN=""` to disable) |
+| `:8443` | HTTP or TLS | Opt-in host-routed ingress (off unless `BURROW_HTTP_PROXY_LISTEN=:8443` is set) |
 | `:80` | HTTP | ACME HTTP-01 challenge solver + HTTPS redirect (ACME mode only) |
 
 ---
@@ -275,8 +275,8 @@ burrow connect \
   --name   devserver
 ```
 
-The tunnel is then reachable at `https://<id>.burrow.insingo.com/` (subdomain
-routing) or `https://burrow.insingo.com/t/<id>/` (path routing).
+The tunnel is then reachable at `https://burrow.insingo.com/svc/<slug>/`. The
+client prints the URL on `tunnel registered`.
 
 **Forward a fixed TCP port (e.g. SSH)**
 
@@ -321,6 +321,6 @@ cleanly with Docker Secrets and systemd `LoadCredential`.
 
 - [Deploy on a server](/guide/deploy) — install burrowd, ACME setup, firewall ports
 - [Connect a client](/guide/connect-client) — install the burrow binary, create burrow.yaml
-- [Expose services](/guide/expose-services) — HTTP vs TCP tunnels, path vs subdomain routing
+- [Expose services](/guide/expose-services) — HTTP vs TCP tunnels, apps behind a path
 - [Configuration](/guide/configuration) — full `BURROW_*` env var reference
 - [HTTP API](/reference/api) — REST endpoints for tokens, services, and access policy

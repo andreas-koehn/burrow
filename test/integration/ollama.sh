@@ -61,6 +61,7 @@ docker exec "$NET-ollama" ollama pull "$MODEL" >/dev/null 2>&1
 echo "[ollama] starting relay"
 docker run -d --name "$NET-relay" --network "$NET" --network-alias "relay.$DOMAIN" \
   -p "${DASH_PORT}:8080" -p "${PROXY_PORT}:8443" \
+  -e BURROW_HTTP_PROXY_LISTEN=:8443 \
   -e BURROW_ADMIN_EMAIL="$ADMIN_EMAIL" -e BURROW_ADMIN_PASSWORD="$ADMIN_PASS" \
   -e BURROW_DATABASE_PATH=/data/burrow.db -e BURROW_AUTH_DOMAIN="$DOMAIN" \
   -v "$NET-data:/data" -w /data "$IMG" serve --dev-certs >/dev/null
@@ -86,14 +87,14 @@ docker run -d --name "$NET-client" --network "$NET" --entrypoint /usr/local/bin/
 SUB=""; SID=""
 for _ in $(seq 1 30); do
   SVC=$(aget /api/v1/services | jq -c '.[] | select(.name=="ollama" and .connected)')
-  [ -n "$SVC" ] && { SUB=$(echo "$SVC" | jq -r .subdomain); SID=$(echo "$SVC" | jq -r .id); break; }
+  [ -n "$SVC" ] && { SUB=$(echo "$SVC" | jq -r .slug); SID=$(echo "$SVC" | jq -r .id); break; }
   sleep 1
 done
 check "tunnel registered + connected" "$([ -n "$SUB" ] && echo yes)" "yes"
 
 # --- access: open ------------------------------------------------------------
 check "open: host route /v1/models"  "$(px -o /dev/null -w '%{http_code}' "$PX/v1/models")" "200"
-check "open: path route /t/<id>/v1/models" "$(curl -s -o /dev/null -w '%{http_code}' "$B/t/$SUB/v1/models")" "200"
+check "open: path route /svc/<slug>/v1/models" "$(curl -s -o /dev/null -w '%{http_code}' "$B/svc/$SUB/v1/models")" "200"
 
 # --- access: api_key ---------------------------------------------------------
 check "set access mode api_key" "$(acode PUT "/api/v1/services/$SID/access-mode" '{"access_mode":"api_key"}')" "204"
@@ -103,8 +104,8 @@ AUTH="Authorization: Bearer $KEY"
 check "api_key: no key -> 401"    "$(px -o /dev/null -w '%{http_code}' "$PX/v1/models")" "401"
 check "api_key: wrong key -> 401" "$(px -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer buk_wrong' "$PX/v1/models")" "401"
 check "api_key: valid key -> 200" "$(px -o /dev/null -w '%{http_code}' -H "$AUTH" "$PX/v1/models")" "200"
-check "api_key: path route without key -> 401" "$(curl -s -o /dev/null -w '%{http_code}' "$B/t/$SUB/v1/models")" "401"
-check "api_key: path route with key -> 200"    "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" "$B/t/$SUB/v1/models")" "200"
+check "api_key: path route without key -> 401" "$(curl -s -o /dev/null -w '%{http_code}' "$B/svc/$SUB/v1/models")" "401"
+check "api_key: path route with key -> 200"    "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" "$B/svc/$SUB/v1/models")" "200"
 
 # --- OpenAI-compatible inference --------------------------------------------
 R=$(px -H "$AUTH" -H 'Content-Type: application/json' -d "$(chat 'Say hello.')" "$PX/v1/chat/completions")
@@ -164,7 +165,7 @@ check "mutation without CSRF token is rejected" "$(curl -s -o /dev/null -w '%{ht
 docker restart "$NET-relay" >/dev/null
 for _ in $(seq 1 60); do curl -fsS -o /dev/null "$B/healthz" 2>/dev/null && break; sleep 1; done
 OK=""; for _ in $(seq 1 60); do [ "$(px -o /dev/null -w '%{http_code}' -H "$AUTH" -H 'Content-Type: application/json' -d "$(chat "after restart $RANDOM")" "$PX/v1/chat/completions")" = "200" ] && { OK=yes; break; }; sleep 1; done
-check "relay restart: client reconnects, same subdomain, key still valid" "$OK" "yes"
+check "relay restart: client reconnects, same slug, key still valid" "$OK" "yes"
 login
 
 # --- known defects (XFAIL) ---------------------------------------------------

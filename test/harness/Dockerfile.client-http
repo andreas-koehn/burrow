@@ -1,7 +1,7 @@
 # test-only — never deploy this shape.
 # test/harness/Dockerfile.client-http
 # Like Dockerfile.client but connects the upstream as an HTTP tunnel
-# (--type http) instead of TCP, so the relay exposes it for /t/{id} path
+# (--type http) instead of TCP, so the relay exposes it for /svc/{slug} path
 # routing. Builds both `burrow` (client CLI) and the tiny `upstream` HTTP
 # service used as the tunnel target.
 FROM golang:1.26-alpine AS builder

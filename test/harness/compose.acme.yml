@@ -1,7 +1,7 @@
 # test-only — never deploy this shape.
 # test/harness/compose.acme.yml
 #
-# Proves burrowd's BUILT-IN ACME (CertMagic) + single-origin /t/{id} path
+# Proves burrowd's BUILT-IN ACME (CertMagic) + single-origin /svc/{slug} path
 # routing end-to-end against Pebble — Let's Encrypt's test ACME server — with
 # a mock DNS server (pebble-challtestsrv) standing in for public DNS.
 #
@@ -12,7 +12,7 @@
 #   challtestsrv  10.30.50.3   mock DNS :8053 (answers every A -> relay), REST :8055
 #   relay         10.30.50.10  burrowd built from THIS branch, ACME-managed certs
 #   upstream-http (dynamic)    burrow client exposing a tiny HTTP upstream as an
-#                              http tunnel -> gives us a /t/<id> to hit
+#                              http tunnel -> gives us a /svc/<slug> to hit
 #
 # The curl+openssl assertions run via `docker exec` INTO the relay container
 # (it already has curl+openssl, sits on this network, and mounts Pebble's CA) —
@@ -91,9 +91,10 @@ services:
       BURROW_ACME_STORAGE: /data/acme
       # CertMagic -> pebble:14000 over HTTPS trusts this CA (Pebble's minica).
       SSL_CERT_FILE: /certs/pebble.minica.pem
+      # BURROW_HTTP_PROXY_LISTEN is unset: the host ingress is off by default.
       # BURROW_AUTH_DOMAIN intentionally UNSET: with ACME on, burrowd falls back
       # to the first ACME domain (relay.test) as the host-routing base, so the
-      # single-origin /t/{id} route registers against relay.test out of the box.
+      # single-origin /svc/{slug} route registers against relay.test out of the box.
     volumes:
       - token-share:/run/burrow
       - relay-data:/data

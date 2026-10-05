@@ -193,13 +193,13 @@ or
 The **default** header is `Authorization` with a `Bearer ` prefix:
 
 ```sh
-curl -H "Authorization: Bearer buk_YOUR_API_KEY" https://burrow.insingo.com/t/abc123/
+curl -H "Authorization: Bearer buk_YOUR_API_KEY" https://burrow.insingo.com/svc/abc123/
 ```
 
 If a **custom header** is configured (e.g. `X-Api-Key`), send the raw key value — no `Bearer ` prefix:
 
 ```sh
-curl -H "X-Api-Key: bur_YOUR_TOKEN_HERE" https://burrow.insingo.com/t/abc123/
+curl -H "X-Api-Key: bur_YOUR_TOKEN_HERE" https://burrow.insingo.com/svc/abc123/
 ```
 
 ::: tip
@@ -253,42 +253,33 @@ services:
 
 ---
 
-## mTLS not working on `/t/{id}` path
+## mTLS not working on `/svc/<slug>` URLs
 
-**Symptom:** mTLS access mode appears configured, but requests via
-`https://burrow.insingo.com/t/<id>/` are not challenged for a client certificate.
+**Symptom:** A service is in `mtls` access mode, but requests via
+`https://burrow.insingo.com/svc/<slug>/` are not challenged for a client certificate.
 
 **Cause:** This is expected. mTLS verification happens at the TLS handshake
-(`GetConfigForClient`) and requires a dedicated TLS connection per service. The
-`/t/{id}` path-routing endpoint shares the dashboard TLS connection and cannot
-perform a per-service handshake.
+and requires a dedicated TLS connection per service. Path URLs share the
+dashboard TLS connection and cannot perform a per-service handshake.
 
-**Fix:** Use the subdomain endpoint on port 8443, which has a dedicated TLS listener:
-
-```
-https://abc123.burrow.insingo.com/
-```
+**Fix:** mTLS needs the opt-in host-routed ingress (`BURROW_HTTP_PROXY_LISTEN`),
+wildcard DNS and a wildcard certificate. Otherwise move the service to another
+access mode.
 
 See [Access control & security](/guide/access-control) for the full mTLS setup guide.
 
 ---
 
-## Subdomain routing not working (`AUTH_DOMAIN` not set)
+## Old `/svc/` URL returns 404 after a slug change
 
-**Symptom:** Tunnels are created successfully, but `https://abc123.burrow.insingo.com/`
-returns a DNS error or hits the wrong host.
+**Symptom:** A service worked at `https://burrow.insingo.com/svc/abc123/` and now
+returns `404`.
 
-**Checks:**
+**Cause:** The slug was changed ("Edit URL" on the service's page). The old URL
+stops working at once, and there is no redirect.
 
-1. **Wildcard DNS**: Your DNS must have a wildcard `A` record pointing `*.burrow.insingo.com` to your server IP.
-
-2. **`BURROW_AUTH_DOMAIN`**: When ACME is enabled, `auth_domain` is inferred from `BURROW_ACME_DOMAIN` automatically — you do not need to set it separately. Without ACME, set it explicitly:
-
-   ```env
-   BURROW_AUTH_DOMAIN=burrow.insingo.com
-   ```
-
-3. **Proxy ingress port**: The HTTP tunnel ingress listens on `:8443` by default. Ensure port 8443 is published and reachable, or use the `/t/{id}` path-routing alternative on the dashboard origin (port 443).
+**Fix:** Use the new URL shown on the service's page or printed by the client on
+`tunnel registered`, and update any bookmarks, webhooks or callers.
 
 ---
 

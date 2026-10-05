@@ -70,7 +70,7 @@ port from the auto-pool and may assign a different one after a disconnect.
 
 ---
 
-## (B) HTTP app over HTTPS at `/t/<id>`
+## (B) HTTP app over HTTPS at `/svc/<slug>/`
 
 An `http` tunnel wraps your application in an HTTP reverse proxy. The relay
 terminates TLS, forwards requests to your local process, and rewrites
@@ -89,7 +89,7 @@ services:
 
 - **`type: http`** — enables HTTP reverse-proxy mode.
 - **No `remote:` needed** — HTTP tunnels do not use a raw port; they are
-  routed by subdomain or path prefix.
+  served under a path on the relay's domain.
 
 ### Connect
 
@@ -97,36 +97,39 @@ services:
 burrow connect --config burrow.yaml
 ```
 
-After connecting, open the dashboard at `https://burrow.insingo.com`. Your
-tunnel appears under **Tunnels**. The tunnel detail panel shows the assigned
-**subdomain ID** (e.g. `abc123`).
+The client prints the service URL on `tunnel registered`. You can also open the
+dashboard at `https://burrow.insingo.com`; the service appears under **Tunnels**
+with its URL.
 
-### Two ways to reach the tunnel
+### The service URL
 
-| Entry point | URL |
-|-------------|-----|
-| Subdomain routing | `https://abc123.burrow.insingo.com/` |
-| Path routing (same origin) | `https://burrow.insingo.com/t/abc123/` |
+Every HTTP service is served at:
 
-Both reach the same upstream. Use the path-routing URL when sharing a single
-hostname is simpler (e.g. for webhooks, embeds, or API consumers who cannot
-set a wildcard DNS record).
+```
+https://burrow.insingo.com/svc/k7p2qx/
+```
 
-::: info Path routing and base paths
-The relay strips the `/t/<id>` prefix before forwarding and rewrites
-`Location` redirect headers so most apps work without configuration. However,
-if your application hardcodes its root path (e.g. it generates links as `/`,
-not relative to its mount point), consider setting a base path in the
-application's own config before exposing it via path routing.
+`k7p2qx` is the slug. Burrow suggests one; you can change it in the "New
+service" dialog and on the service's page ("Edit URL"). Changing the slug breaks
+the old URL at once.
 
-Apps that serve from their own root with no path prefix work correctly under
-subdomain routing (`https://abc123.burrow.insingo.com/`).
-:::
+One A record and one certificate are enough; there is no wildcard DNS.
 
-::: info mTLS is not available on path-routed URLs
-The `/t/<id>` route shares the dashboard TLS handshake and cannot present a
-per-service client CA. If you need mTLS, use the subdomain entry point
-(`https://abc123.burrow.insingo.com/`) via the `:8443` listener. See
+The relay strips the `/svc/<slug>` prefix before forwarding and rewrites
+`Location` redirect headers so most apps work without configuration.
+
+### Apps behind a path
+
+- An app that loads assets from absolute paths (`/static/app.js`) needs
+  base-path support. Look for a setting such as `--base /svc/<slug>/` or a
+  "base URL" or "public path" option in the app's own configuration.
+- Path-routed apps share the dashboard's origin, so only expose apps you trust.
+  Burrow removes its own cookies before forwarding, but a page served under
+  `/svc/` can still call the dashboard API as the signed-in user.
+
+::: info mTLS is not available on path URLs
+`/svc/<slug>/` shares the dashboard TLS handshake and cannot present a
+per-service client CA. mTLS needs the opt-in host-routed ingress. See
 [Access control](/guide/access-control) for details.
 :::
 
@@ -187,7 +190,7 @@ curl -X POST https://burrow.insingo.com/api/v1/services/<id>/api-keys \
 **Default header — `Authorization: Bearer <key>`**
 
 ```sh
-curl https://burrow.insingo.com/t/abc123/health \
+curl https://burrow.insingo.com/svc/abc123/health \
   -H "Authorization: Bearer buk_YOUR_API_KEY"
 ```
 
@@ -197,7 +200,7 @@ If the dashboard access-policy is configured with a custom header name (e.g.
 `X-Api-Key`), callers send the key value directly:
 
 ```sh
-curl https://burrow.insingo.com/t/abc123/health \
+curl https://burrow.insingo.com/svc/abc123/health \
   -H "X-Api-Key: buk_YOUR_API_KEY"
 ```
 
@@ -223,19 +226,3 @@ HTTP/1.1 401 Unauthorized
 
 For a full description of all access modes (`open`, `api_key`, `burrow_login`,
 `mtls`) and their configuration options, see [Access control](/guide/access-control).
-
----
-
-## Choosing between path routing and subdomain routing
-
-| | Subdomain `https://<id>.burrow.insingo.com/` | Path `/t/<id>/` |
-|---|---|---|
-| Requires wildcard DNS | Yes | No |
-| mTLS support | Yes | No |
-| Works as webhook target | Yes | Yes |
-| App needs base-path config | Usually no | Sometimes |
-| Same origin as dashboard | No | Yes |
-
-Use subdomain routing when you control DNS and want the cleanest URL. Use
-path routing when you need a single domain or are behind a load balancer that
-does not support wildcard certificates.

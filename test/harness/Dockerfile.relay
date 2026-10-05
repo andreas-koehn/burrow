@@ -18,6 +18,7 @@ COPY test/harness/entrypoints/relay-full.sh /usr/local/bin/relay-full.sh
 ENV BURROW_DATABASE_PATH=/data/burrow.db \
     BURROW_LOG_LEVEL=info \
     BURROW_LOG_FORMAT=text \
+    BURROW_HTTP_PROXY_LISTEN=:8443 \
     BURROW_HTTP_PROXY_TLS_CERT=/certs/wildcard.test.local.crt \
     BURROW_HTTP_PROXY_TLS_KEY=/certs/wildcard.test.local.key \
     BURROW_AUTH_DOMAIN=test.local \
