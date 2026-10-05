@@ -509,33 +509,106 @@ func TestLogin_AlreadySignedIn_OpenTerminal(t *testing.T) {
 	}
 }
 
-// readHidden is what interprets the keys while the terminal is in raw mode.
-func TestReadHidden(t *testing.T) {
+// keys feeds what a terminal in raw mode delivers and then stays open, as a
+// terminal does: nothing here may wait for the end of the input.
+func keys(t *testing.T, typed string) io.Reader {
+	t.Helper()
+	pr, pw := io.Pipe()
+	go func() { _, _ = pw.Write([]byte(typed)) }()
+	t.Cleanup(func() { pr.Close() })
+	return pr
+}
+
+func TestReadHiddenLine(t *testing.T) {
+	const tok = "bur_test_0000"
 	cases := []struct {
-		name, in, want string
-		err            error
+		name, typed, want string
+		err               error
 	}{
-		{"enter", "bur_test_0000\r", "bur_test_0000", nil},
-		{"line feed", "bur_test_0000\n", "bur_test_0000", nil},
-		{"pasted with CRLF", "bur_test_0000\r\n", "bur_test_0000", nil},
-		{"backspace", "bur_xy\x7f\x08test\r", "bur_test", nil},
-		{"backspace on nothing", "\x7f\x7fab\r", "ab", nil},
+		{"typed, Enter", tok + "\r", tok, nil},
+		{"line feed", tok + "\n", tok, nil},
+		{"pasted with CRLF", tok + "\r\n", tok, nil},
+		{"bracketed paste, Enter", "\x1b[200~" + tok + "\x1b[201~\r", tok, nil},
+		{"bracketed paste with its own line end", "\x1b[200~" + tok + "\r\n\x1b[201~", tok, nil},
+		{"Backspace", "bur_tesX\x7ft_0000\r", tok, nil},
+		{"Backspace removes a whole rune", "bur_ä\x7ftest_0000\r", tok, nil},
+		{"Backspace on nothing", "\x7f\x7f" + tok + "\r", tok, nil},
+		{"Ctrl-U clears the line", "wrong\x15" + tok + "\r", tok, nil},
+		{"Ctrl-W deletes the word", "wrong\x17" + tok + "\r", tok, nil},
 		{"Ctrl-D on an empty line", "\x04", "", io.EOF},
-		{"Ctrl-D after input ends the line", "abc\x04", "abc", nil},
-		{"Ctrl-C", "abc\x03", "", errInterrupted},
-		{"input ends", "abc", "abc", nil},
-		{"input ends at once", "", "", io.EOF},
-		{"other control keys are dropped", "a\x1b\x00b\r", "ab", nil},
+		{"Ctrl-C", "bur_te\x03", "", errInterrupted},
+		{"Ctrl-C on an empty line", "\x03", "", errInterrupted},
+		// A key that moves the cursor would change a token nobody can see.
+		{"arrow key", "bur_test\x1b[D_0000\r", "", errControlKeys},
+		{"arrow key, SS3 form", "bur_test\x1bOD_0000\r", "", errControlKeys},
+		{"function key", "\x1b[15~" + tok + "\r", "", errControlKeys},
+		{"Alt and a letter", "bur\x1bb_test\r", "", errControlKeys},
 	}
 	for _, tc := range cases {
-		got, err := readHidden(strings.NewReader(tc.in))
-		if got != tc.want || !errors.Is(err, tc.err) || (tc.err == nil && err != nil) {
-			t.Fatalf("%s: got %d characters and %v", tc.name, len(got), err)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			type result struct {
+				line string
+				err  error
+			}
+			done := make(chan result, 1)
+			go func() {
+				line, err := readHiddenLine(keys(t, tc.typed))
+				done <- result{line, err}
+			}()
+			select {
+			case r := <-done:
+				if r.line != tc.want || !errors.Is(r.err, tc.err) || (tc.err == nil && r.err != nil) {
+					t.Fatalf("got %d characters (want %d) and error %v (want %v)", len(r.line), len(tc.want), r.err, tc.err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("still waiting for input after the line was complete")
+			}
+		})
 	}
-	// It stops at the end of the line and leaves the rest alone.
-	r := strings.NewReader("one\rtwo\r")
-	if got, _ := readHidden(r); got != "one" || r.Len() != 4 {
-		t.Fatalf("read %d characters, %d left", len(got), r.Len())
+}
+
+func TestLoginToken_ControlKeysAtTheHiddenPrompt(t *testing.T) {
+	h := newHarness(t)
+	h.terminal, h.secretErr = true, errControlKeys
+	code := h.exec("login", "burrow.example.com", "--token", "-")
+	if code != 2 || h.hasConfig() || strings.HasPrefix(h.stderr.String(), "error:") || !strings.Contains(h.stderr.String(), "Nothing was stored") {
+		t.Fatalf("exit %d, stderr %q", code, h.stderr.String())
+	}
+}
+
+// A token is printable ASCII without spaces. Anything else is refused, and not repeated.
+func TestLogin_RejectsWhatCannotBeAToken(t *testing.T) {
+	for name, tok := range map[string]string{
+		"non-ASCII letter":   "bur_ätest_0000",
+		"invalid UTF-8":      "bur_\xc3test_0000",
+		"escape sequence":    "bur_test\x1b[D_0000",
+		"paste markers":      "[200~bur_test_0000\x1b[201~",
+		"control character":  "bur_test\x00_0000",
+		"tab inside":         "bur_test\t0000",
+		"non-breaking space": "bur_test\u00a00000",
+		"zero-width space":   "bur_test\u200b0000",
+		"delete character":   "bur_test\x7f0000",
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, how := range []string{"flag", "stdin", "prompt"} {
+				h := newHarness(t)
+				args := []string{"login", "burrow.example.com", "--token", "-"}
+				switch how {
+				case "flag":
+					args[3] = tok
+				case "stdin":
+					h.stdin = tok + "\n"
+				case "prompt":
+					h.terminal, h.secret = true, tok
+				}
+				code := h.exec(args...)
+				if code != 2 || h.hasConfig() || !strings.Contains(h.stderr.String(), "Nothing was stored") {
+					t.Fatalf("%s: exit %d, config written %v, stderr %q", how, code, h.hasConfig(), strings.ToValidUTF8(h.stderr.String(), "?"))
+				}
+				if strings.Contains(h.stderr.String(), "0000") || strings.Contains(h.stdout.String(), "0000") {
+					t.Fatalf("%s: the input was repeated", how)
+				}
+			}
+		})
 	}
 }

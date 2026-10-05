@@ -67,6 +67,12 @@ func normalizeRelay(in string) (relay, host string, err error) {
 // the process list. It takes the relay as typed after `burrow login`.
 const msgPasteToken = "run: burrow login %s --token -\nthen paste the token and press Enter."
 
+const (
+	msgNotAToken    = "That is not a token: it contains a space or a character other than letters, digits and punctuation. Nothing was stored."
+	msgControlKeys  = "The input contained a key other than the token's characters, such as an arrow key. Nothing was stored; run the command again."
+	msgTokenOneLine = "The token must be a single word on one line. Nothing was stored."
+)
+
 // readAnswer reads one line and nothing beyond it, byte by byte: on a terminal
 // the input does not end after the line, and what is typed next belongs to
 // whoever reads next. end reports that the input ended without a line.
@@ -113,8 +119,12 @@ func cleanToken(token, relayArg string) (string, error) {
 	if token == "" {
 		return "", usageErrorf("The token is empty. Create one in the dashboard (Clients, tab Tokens), "+msgPasteToken, relayArg)
 	}
-	if strings.IndexFunc(token, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
-		return "", usageErrorf("The token must be a single word on one line.")
+	// A token is printable ASCII without spaces. Anything else is a slip of
+	// the keyboard or the clipboard and would be stored as a token that fails.
+	for i := 0; i < len(token); i++ {
+		if c := token[i]; c <= ' ' || c > '~' {
+			return "", usageErrorf(msgNotAToken)
+		}
 	}
 	return token, nil
 }
@@ -216,6 +226,9 @@ func newLoginCmd(d deps) *cobra.Command {
 				fmt.Fprint(errOut, "Token (input is hidden): ")
 				token, err = d.readSecret()
 				fmt.Fprintln(errOut)
+				if errors.Is(err, errControlKeys) {
+					return usageErrorf(msgControlKeys)
+				}
 				if err != nil && !errors.Is(err, io.EOF) {
 					return errors.New("could not read the token from the terminal")
 				}
@@ -223,7 +236,7 @@ func newLoginCmd(d deps) *cobra.Command {
 			case fromStdin:
 				var ok bool
 				if token, ok = readPipedToken(d.stdin); !ok {
-					return usageErrorf("The token must be a single word on one line.")
+					return usageErrorf(msgTokenOneLine)
 				}
 			}
 			if token, err = cleanToken(token, relayArg); err != nil {

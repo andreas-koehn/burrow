@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -62,77 +64,94 @@ func defaultDeps() deps {
 // errInterrupted reports Ctrl-C at the hidden prompt.
 var errInterrupted = errors.New("interrupted")
 
-// readHidden reads one line of keys as a terminal in raw mode delivers them:
-// Enter ends the line, backspace removes a character, Ctrl-D on an empty line
-// is the end of input (io.EOF) and Ctrl-C is errInterrupted. Nothing beyond
-// the end of the line is read.
-func readHidden(r io.Reader) (string, error) {
-	var line []byte
-	buf := make([]byte, 1)
-	for {
-		n, err := r.Read(buf)
-		if n == 1 {
-			switch c := buf[0]; {
-			case c == '\r' || c == '\n':
-				return string(line), nil
-			case c == 0x03:
-				return "", errInterrupted
-			case c == 0x04:
-				if len(line) == 0 {
-					return "", io.EOF
-				}
-				return string(line), nil
-			case c == 0x7f || c == 0x08:
-				if len(line) > 0 {
-					line = line[:len(line)-1]
-				}
-			case c >= 0x20:
-				line = append(line, c)
-			}
-		}
-		if err != nil || n == 0 {
-			if len(line) > 0 {
-				return string(line), nil
-			}
-			return "", io.EOF
-		}
+// errControlKeys reports a key at the hidden prompt that moves the cursor or
+// has some other function, such as an arrow key. It would change a line the
+// user cannot see, so the line is not used.
+var errControlKeys = errors.New("the input contained control keys")
+
+// The markers a terminal puts around pasted text in bracketed paste mode.
+var pasteStartMark, pasteEndMark = []byte("\x1b[200~"), []byte("\x1b[201~")
+
+// keyLog passes the keys through and keeps them, to tell afterwards what the
+// line editor does not report: Ctrl-C, and escape sequences.
+type keyLog struct {
+	r    io.Reader
+	seen []byte
+}
+
+func (k *keyLog) Read(p []byte) (int, error) {
+	n, err := k.r.Read(p)
+	k.seen = append(k.seen, p[:n]...)
+	return n, err
+}
+
+// readHiddenLine reads one line of keys as a terminal in raw mode delivers
+// them. The editing is that of x/term's line editor: Backspace, Ctrl-U,
+// Ctrl-W, pasted text with or without paste markers, Enter as CR, LF or CRLF.
+// Ctrl-D on an empty line is io.EOF, Ctrl-C is errInterrupted, and any other
+// escape sequence is errControlKeys.
+func readHiddenLine(r io.Reader) (string, error) {
+	keys := &keyLog{r: r}
+	defer func() { clear(keys.seen) }()
+	// The editor's own output (line ends, cursor movement) is not wanted.
+	editor := term.NewTerminal(struct {
+		io.Reader
+		io.Writer
+	}{keys, io.Discard}, "")
+	line, err := editor.ReadPassword("")
+	if errors.Is(err, term.ErrPasteIndicator) {
+		err = nil // the line was pasted, which is the usual way a token gets here
 	}
+	typed := bytes.ReplaceAll(bytes.ReplaceAll(keys.seen, pasteStartMark, nil), pasteEndMark, nil)
+	switch {
+	case err != nil && bytes.IndexByte(typed, 0x03) >= 0:
+		return "", errInterrupted
+	case bytes.IndexByte(typed, 0x1b) >= 0:
+		return "", errControlKeys
+	}
+	return line, err
 }
 
 // readSecretFromTerminal reads one line from the terminal without showing it.
 //
-// The terminal is put into raw mode, which has no echo and hands Ctrl-C and
-// Ctrl-D over as keys, and is put back before this returns. A termination
-// signal in between restores it too: the user's shell is never left without
-// echo. Ctrl-C ends the process the way an interrupt does.
+// The terminal is in raw mode while the line is read: no echo, and Ctrl-C and
+// Ctrl-D arrive as keys. It is put back on every way out: on return, on a
+// panic, and when a signal ends the process, which then exits with 128 plus
+// the signal's number as a shell reports it.
 func readSecretFromTerminal() (string, error) {
 	fd := int(os.Stdin.Fd())
 	state, err := term.MakeRaw(fd)
 	if err != nil {
 		return "", err
 	}
-	interrupted := func() {
-		_ = term.Restore(fd, state)
+	restore := sync.OnceFunc(func() { _ = term.Restore(fd, state) })
+	defer restore()
+	quit := func(sig syscall.Signal) {
+		restore()
 		fmt.Fprintln(os.Stderr)
-		os.Exit(130)
+		os.Exit(128 + int(sig))
 	}
+
 	sig := make(chan os.Signal, 1)
 	done := make(chan struct{})
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+	defer func() {
+		signal.Stop(sig)
+		close(done)
+	}()
 	go func() {
 		select {
-		case <-sig:
-			interrupted()
+		case s := <-sig:
+			n, _ := s.(syscall.Signal)
+			quit(n)
 		case <-done:
 		}
 	}()
-	line, err := readHidden(os.Stdin)
-	signal.Stop(sig)
-	close(done)
+
+	line, err := readHiddenLine(os.Stdin)
 	if errors.Is(err, errInterrupted) {
-		interrupted()
+		quit(syscall.SIGINT)
 	}
-	_ = term.Restore(fd, state)
 	return line, err
 }
 
