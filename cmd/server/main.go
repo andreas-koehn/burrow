@@ -782,6 +782,7 @@ func main() {
 					DB: database,
 					// v0.3.0: service API + live tunnel lookup + auth domain.
 					Services:    st,
+					AIProviders: st,
 					LiveTunnels: liveTunnelLookupAdapter{srv: srv},
 					// AuthDomain uses the same resolved value the proxy/access
 					// checker/gate route on (cfg.AuthDomain, or the first ACME

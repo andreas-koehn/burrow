@@ -227,6 +227,16 @@ type AIMetricsStore interface {
 	AIEndpointMetrics24h(ctx context.Context, serviceID string) (db.AIEndpointAgg, error)
 }
 
+// AIProviderStore is the provider surface the management API needs.
+// *store.Store satisfies it.
+type AIProviderStore interface {
+	ListProviders(ctx context.Context) ([]db.AIProvider, error)
+	ProviderBySlug(ctx context.Context, slug string) (db.AIProvider, error)
+	CreateTunnelProvider(ctx context.Context, slug, name, serviceID string) (db.AIProvider, error)
+	UpdateProvider(ctx context.Context, slug, newSlug, name string) (db.AIProvider, error)
+	DeleteProvider(ctx context.Context, slug string) error
+}
+
 type Deps struct {
 	Users         UserStore
 	Tunnels       TunnelLister
@@ -262,6 +272,8 @@ type Deps struct {
 	// v0.3.0 surfaces.
 	// Services is the durable service store (api keys, access mode, policy).
 	Services ServiceStore
+	// AIProviders is the providers table behind /ai/providers.
+	AIProviders AIProviderStore
 	// LiveTunnels allows the service handlers to compose live/runtime fields
 	// (connected, local_addr) into service responses. May be nil before
 	// Task 12 wires the concrete server.Server implementation.
@@ -346,7 +358,7 @@ type Deps struct {
 	// rows with current_usd=0.
 	CostEngine CostEngine
 	// AIMetrics aggregates usage_events into the per-endpoint request/token/
-	// cache numbers shown by GET /ai/endpoints and .../{id}/metrics. *db.DB
+	// cache numbers shown by GET /ai/providers and .../{slug}/metrics. *db.DB
 	// satisfies it; nil reports zeroed metering (early-wiring/test default).
 	AIMetrics AIMetricsStore
 	// AuditEvents is the read surface backing GET /audit/events (the

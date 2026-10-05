@@ -289,6 +289,7 @@ func TestMigrationParitySQLiteAndPostgres(t *testing.T) {
 		"users", "sessions", "client_tokens", "tunnels",
 		"roles", "settings", "services",
 		"audit_events", "webhooks", "automation_tokens",
+		"ai_providers",
 	}
 	for _, tbl := range coreTables {
 		var name string

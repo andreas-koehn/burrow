@@ -1,0 +1,481 @@
+package api
+
+// ai_provider_handlers.go — /ai/providers: list, read, metrics, create,
+// update, delete.
+//
+// A provider is a row of the ai_providers table: a slug under which a model
+// backend is served at https://<auth_domain>/ai/<slug>/v1.  The read handlers
+// join that row with live data of its backing service (model alias, key
+// count, tunnel status, trailing-24h request counts).  latency_p95_ms is
+// always 0: usage_events has no latency column.
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/auth"
+	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/store"
+)
+
+// aiProviderResp is the JSON wire shape for one provider, in the list and in
+// the single-provider responses.
+type aiProviderResp struct {
+	Slug            string `json:"slug"`
+	Name            string `json:"name"`
+	Kind            string `json:"kind"`
+	APIFormat       string `json:"api_format"`
+	ServiceID       string `json:"service_id"`
+	BaseURL         string `json:"base_url"`
+	ModelAlias      string `json:"model_alias"`
+	ConcreteModel   string `json:"concrete_model"`
+	BackendType     string `json:"backend_type"`
+	APIKeyCount     int    `json:"api_key_count"`
+	Requests24h     int    `json:"requests_24h"`
+	CacheHits24h    int    `json:"cache_hits_24h"`
+	LatencyP95ms    int    `json:"latency_p95_ms"`
+	Status          string `json:"status"`
+	ClientSessionID string `json:"client_session_id"`
+}
+
+// endpointMetricsResp is the JSON wire shape for the per-provider metrics
+// endpoint.  Mirrors the TypeScript EndpointMetrics interface in
+// AiEndpointDetail.tsx.
+type endpointMetricsResp struct {
+	Requests24h       int     `json:"requests_24h"`
+	TokensIn24h       int     `json:"tokens_in_24h"`
+	TokensOut24h      int     `json:"tokens_out_24h"`
+	CostUSD24h        float64 `json:"cost_usd_24h"`
+	CacheHitRatio24h  float64 `json:"cache_hit_ratio_24h"`
+	RequestsPerMinute []int   `json:"requests_per_minute"`
+}
+
+// providerToBackendType converts a model-alias provider string to the
+// backend_type enum the UI expects.
+//
+//	"openai"       → "openai-compat"
+//	"openai-compat"→ "openai-compat"
+//	"ollama"       → "ollama"
+//	"vllm"         → "vllm"
+//	anything else  → "other"
+func providerToBackendType(provider string) string {
+	switch provider {
+	case "openai", "openai-compat":
+		return "openai-compat"
+	case "ollama":
+		return "ollama"
+	case "vllm":
+		return "vllm"
+	default:
+		return "other"
+	}
+}
+
+// composeProviderURL returns "https://<authDomain>/ai/<slug>/v1", or "" when
+// the relay has no auth domain.
+func composeProviderURL(slug, authDomain string) string {
+	if slug == "" || authDomain == "" {
+		return ""
+	}
+	return "https://" + authDomain + "/ai/" + slug + "/v1"
+}
+
+// providerViews returns the response item for every provider whose backing
+// service the caller may see (same visibility as ListServices), ordered by
+// slug.  Identity fields come from the provider row; model_alias,
+// concrete_model, backend_type, api_key_count, status and the 24h counts are
+// read live from the backing service.
+func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
+	role, err := d.callerRole(r)
+	if err != nil {
+		return nil, err
+	}
+	uid := userID(r.Context())
+
+	svcs, err := d.Services.ListServices(r.Context(), uid, role)
+	if err != nil {
+		return nil, err
+	}
+	visible := make(map[string]bool, len(svcs))
+	for _, sv := range svcs {
+		visible[sv.ID] = true
+	}
+
+	providers, err := d.AIProviders.ListProviders(r.Context())
+	if err != nil {
+		return nil, err
+	}
+
+	// Build a service_id → first alias mapping from the model alias registry.
+	// We pick the alias with the highest priority (lowest priority number)
+	// for each service.  If ModelAliases is nil or the list fails, we proceed
+	// with an empty map — every provider will show empty alias fields.
+	aliasForService := map[string]modelAliasResp{}
+	if d.ModelAliases != nil {
+		if aliases, err := d.ModelAliases.ListModelAliases(r.Context()); err == nil {
+			for _, a := range aliases {
+				if a.ServiceID == "" {
+					continue
+				}
+				existing, seen := aliasForService[a.ServiceID]
+				// Lower priority number = higher priority.  Pick the first
+				// (lowest Priority) alias seen for each service.
+				if !seen || a.Priority < existing.Priority {
+					aliasForService[a.ServiceID] = toModelAliasResp(a)
+				}
+			}
+		}
+	}
+
+	// Trailing-24h request + cache-hit counts per service. Degrades to zeros
+	// when the metrics store isn't wired (early-wiring / handler tests).
+	counts := map[string]db.AIEndpointCount{}
+	if d.AIMetrics != nil {
+		if c, err := d.AIMetrics.AIEndpointCounts24h(r.Context()); err == nil {
+			counts = c
+		}
+	}
+
+	out := make([]aiProviderResp, 0, len(providers))
+	for _, p := range providers {
+		if !visible[p.ServiceID] {
+			continue
+		}
+
+		// Count API keys for this service via ListAPIKeys.  On error, default
+		// to 0 (non-fatal: the provider still renders).
+		keyCount := 0
+		if keys, err := d.Services.ListAPIKeys(r.Context(), uid, role, p.ServiceID); err == nil {
+			keyCount = len(keys)
+		}
+
+		// Live tunnel snapshot: determines status.  LiveTunnels may be nil in
+		// some wiring configurations; composeLive handles that gracefully
+		// (returns zero-value snapshot).  client_session_id stays empty:
+		// LiveTunnelSnapshot has no SessionID field today and the dashboard
+		// handles "" gracefully.
+		status := "Offline"
+		if d.composeLive(p.ServiceID).Connected {
+			status = "Connected"
+		}
+
+		alias := aliasForService[p.ServiceID]
+
+		out = append(out, aiProviderResp{
+			Slug:            p.Slug,
+			Name:            p.Name,
+			Kind:            p.Kind,
+			APIFormat:       p.APIFormat,
+			ServiceID:       p.ServiceID,
+			BaseURL:         composeProviderURL(p.Slug, d.AuthDomain),
+			ModelAlias:      alias.Alias,
+			ConcreteModel:   alias.ConcreteModel,
+			BackendType:     providerToBackendType(alias.Provider),
+			APIKeyCount:     keyCount,
+			Requests24h:     counts[p.ServiceID].Requests,
+			CacheHits24h:    counts[p.ServiceID].CacheHits,
+			LatencyP95ms:    0, // usage_events has no latency column — not derivable
+			Status:          status,
+			ClientSessionID: "",
+		})
+	}
+	return out, nil
+}
+
+// providerView returns the response item for one slug.  ok is false when no
+// provider has that slug or the caller may not see its service.
+func (d Deps) providerView(r *http.Request, slug string) (v aiProviderResp, ok bool, err error) {
+	views, err := d.providerViews(r)
+	if err != nil {
+		return aiProviderResp{}, false, err
+	}
+	for _, v := range views {
+		if v.Slug == slug {
+			return v, true, nil
+		}
+	}
+	return aiProviderResp{}, false, nil
+}
+
+// writeProviderView answers a successful write with the same body GET returns
+// for that provider.
+func (d Deps) writeProviderView(w http.ResponseWriter, r *http.Request, status int, p db.AIProvider) {
+	v, ok, err := d.providerView(r, p.Slug)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !ok {
+		// The write went through but the live join has no row for it (the
+		// backing service vanished in between): answer with the stored fields.
+		v = aiProviderResp{
+			Slug: p.Slug, Name: p.Name, Kind: p.Kind, APIFormat: p.APIFormat, ServiceID: p.ServiceID,
+			BaseURL:     composeProviderURL(p.Slug, d.AuthDomain),
+			BackendType: providerToBackendType(""), Status: "Offline",
+		}
+	}
+	writeJSON(w, status, v)
+}
+
+// GetAIProviders handles GET /api/v1/ai/providers.
+func (d Deps) GetAIProviders(w http.ResponseWriter, r *http.Request) {
+	views, err := d.providerViews(r)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, views)
+}
+
+// GetAIProvider handles GET /api/v1/ai/providers/{slug}.  A provider the
+// caller may not see answers 404, like one that does not exist.
+func (d Deps) GetAIProvider(w http.ResponseWriter, r *http.Request) {
+	v, ok, err := d.providerView(r, chi.URLParam(r, "slug"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !ok {
+		writeErr(w, http.StatusNotFound, "provider not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+// GetAIProviderMetrics handles GET /api/v1/ai/providers/{slug}/metrics.
+//
+// TODO(follow-up): replace zeroed values with real aggregations from
+// usage_events.  SQL sketch:
+//
+//	SELECT
+//	  COUNT(*)                                          AS requests_24h,
+//	  SUM(tokens_in)                                    AS tokens_in_24h,
+//	  SUM(tokens_out)                                   AS tokens_out_24h,
+//	  SUM(cost_usd)                                     AS cost_usd_24h,
+//	  AVG(CASE WHEN cache_hit THEN 1.0 ELSE 0.0 END)   AS cache_hit_ratio_24h
+//	FROM usage_events
+//	WHERE service_id = ?
+//	  AND ts >= strftime('%s','now') - 86400;
+//
+// The requests_per_minute array requires a per-minute bucket join.
+func (d Deps) GetAIProviderMetrics(w http.ResponseWriter, r *http.Request) {
+	p, err := d.AIProviders.ProviderBySlug(r.Context(), chi.URLParam(r, "slug"))
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "provider not found")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	serviceID := p.ServiceID
+
+	// Validate the backing service is accessible to the caller.
+	role, err := d.callerRole(r)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	uid := userID(r.Context())
+	_, err = d.Services.GetService(r.Context(), uid, role, serviceID)
+	if err != nil {
+		if !mapServiceErr(w, err, "provider not found") {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+
+	// 60 buckets — one request count per minute over the trailing hour.
+	rpm := make([]int, 60)
+	resp := endpointMetricsResp{RequestsPerMinute: rpm}
+
+	// Aggregate from usage_events when the metrics store is wired. Degrades to
+	// zeros on any read error (metrics are non-critical to the page rendering).
+	if d.AIMetrics != nil {
+		if agg, err := d.AIMetrics.AIEndpointMetrics24h(r.Context(), serviceID); err == nil {
+			resp.Requests24h = agg.Requests
+			resp.TokensIn24h = int(agg.TokensIn)
+			resp.TokensOut24h = int(agg.TokensOut)
+			if agg.Requests > 0 {
+				resp.CacheHitRatio24h = float64(agg.CacheHits) / float64(agg.Requests)
+			}
+			copy(rpm, agg.PerMinute[:])
+			// Cost from per-kind token subtotals via the pricing table.
+			if d.CostEngine != nil {
+				var usd float64
+				for _, k := range agg.ByKind {
+					usd += d.CostEngine.UsdFor(k.Kind, int(k.TokensIn), int(k.TokensOut))
+				}
+				resp.CostUSD24h = usd
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// postProviderReq is the body of POST /api/v1/ai/providers.
+type postProviderReq struct {
+	Slug      string `json:"slug"`
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	ServiceID string `json:"service_id"`
+}
+
+// putProviderReq is the body of PUT /api/v1/ai/providers/{slug}.
+type putProviderReq struct {
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+}
+
+// providerSlugRule is the 400 message for a malformed or reserved slug.
+const providerSlugRule = auth.SlugRule + `; "v1" is reserved`
+
+// mapProviderErr writes the HTTP error for a provider store error and reports
+// whether it handled it.
+func mapProviderErr(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, store.ErrInvalidProviderSlug):
+		writeErr(w, http.StatusBadRequest, providerSlugRule)
+	case errors.Is(err, store.ErrProviderNotFound):
+		writeErr(w, http.StatusNotFound, "provider not found")
+	case errors.Is(err, store.ErrProviderExists):
+		writeErr(w, http.StatusConflict, "provider slug or service already in use")
+	case errors.Is(err, store.ErrProviderService):
+		writeErr(w, http.StatusConflict, "a tunnel provider needs an http service in API-key mode")
+	default:
+		return false
+	}
+	return true
+}
+
+// validProviderName trims name and writes the 400 when it is empty or too long.
+func validProviderName(w http.ResponseWriter, name string) (string, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "name is required")
+		return "", false
+	}
+	if len(name) > 120 {
+		writeErr(w, http.StatusBadRequest, "name must be at most 120 chars")
+		return "", false
+	}
+	return name, true
+}
+
+// auditProvider appends one provider audit event (best-effort).
+func (d Deps) auditProvider(r *http.Request, action string, p db.AIProvider, payload map[string]any) {
+	if d.AuditAppender == nil {
+		return
+	}
+	lc := audit.LogContextFrom(r.Context())
+	_ = d.AuditAppender.Append(r.Context(), audit.Event{
+		ActorID: lc.ActorID, ActorEmail: lc.ActorEmail,
+		Action:    action,
+		SubjectID: p.Slug, SubjectLabel: p.Name,
+		Result:   "ok",
+		SourceIP: lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
+		Payload: audit.MustJSON(payload),
+	})
+}
+
+// PostAIProvider handles POST /api/v1/ai/providers (admin only).  It registers
+// an existing http service in API-key mode as a provider.  An empty slug is
+// derived from the name.
+func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	var in postProviderReq
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	name, ok := validProviderName(w, in.Name)
+	if !ok {
+		return
+	}
+	if in.Kind == "" {
+		in.Kind = "tunnel"
+	}
+	if in.Kind != "tunnel" {
+		writeErr(w, http.StatusBadRequest, "kind must be 'tunnel'")
+		return
+	}
+	slug := in.Slug
+	if slug == "" {
+		slug = store.ProviderSlugFromName(name)
+	}
+	// The store checks it too; checking here keeps a malformed or reserved
+	// slug out of every store implementation.
+	if !store.ValidProviderSlug(slug) {
+		writeErr(w, http.StatusBadRequest, providerSlugRule)
+		return
+	}
+
+	p, err := d.AIProviders.CreateTunnelProvider(r.Context(), slug, name, in.ServiceID)
+	if err != nil {
+		if !mapProviderErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+
+	d.auditProvider(r, audit.ActionAIProviderCreate, p, map[string]any{
+		"kind":       p.Kind,
+		"service_id": p.ServiceID,
+	})
+	d.writeProviderView(w, r, http.StatusCreated, p)
+}
+
+// PutAIProvider handles PUT /api/v1/ai/providers/{slug} (admin only).  Slug
+// and name are both required.  After a slug change the old base URL stops
+// working at once.
+func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
+	oldSlug := chi.URLParam(r, "slug")
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	var in putProviderReq
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	name, ok := validProviderName(w, in.Name)
+	if !ok {
+		return
+	}
+	if !store.ValidProviderSlug(in.Slug) {
+		writeErr(w, http.StatusBadRequest, providerSlugRule)
+		return
+	}
+
+	p, err := d.AIProviders.UpdateProvider(r.Context(), oldSlug, in.Slug, name)
+	if err != nil {
+		if !mapProviderErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+
+	d.auditProvider(r, audit.ActionAIProviderUpdate, p, map[string]any{
+		"old_slug": oldSlug,
+		"new_slug": p.Slug,
+	})
+	d.writeProviderView(w, r, http.StatusOK, p)
+}
+
+// DeleteAIProvider handles DELETE /api/v1/ai/providers/{slug} (admin only).
+// The backing service is kept.
+func (d Deps) DeleteAIProvider(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	if err := d.AIProviders.DeleteProvider(r.Context(), slug); err != nil {
+		if !mapProviderErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	d.auditProvider(r, audit.ActionAIProviderDelete, db.AIProvider{Slug: slug}, map[string]any{})
+	w.WriteHeader(http.StatusNoContent)
+}

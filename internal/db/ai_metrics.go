@@ -1,7 +1,7 @@
 package db
 
 // ai_metrics.go — trailing-24h aggregation over usage_events for the AI-endpoint
-// dashboard surfaces (GET /api/v1/ai/endpoints and .../{id}/metrics). The proxy
+// dashboard surfaces (GET /api/v1/ai/providers and .../{slug}/metrics). The proxy
 // hot path (internal/aimeter SQLSink) writes one usage_events row per proxied
 // request; these read-side aggregations turn that into the numbers the UI shows.
 // usage_events has no latency column, so p95 latency is not derivable here.

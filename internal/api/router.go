@@ -185,8 +185,12 @@ func NewRouter(d Deps) http.Handler {
 			r.Put("/services/{serviceID}/slug", d.PutServiceSlug)
 			// v0.5.x: AI endpoints — derived view over api_key-mode services
 			// with zeroed metering (real aggregation deferred; TODO in handler).
-			r.Get("/ai/endpoints", d.GetAIEndpoints)
-			r.Get("/ai/endpoints/{serviceID}/metrics", d.GetAIEndpointMetrics)
+			r.Get("/ai/providers", d.GetAIProviders)
+			r.Get("/ai/providers/{slug}", d.GetAIProvider)
+			r.Get("/ai/providers/{slug}/metrics", d.GetAIProviderMetrics)
+			r.With(d.RequireAdmin).Post("/ai/providers", d.PostAIProvider)
+			r.With(d.RequireAdmin).Put("/ai/providers/{slug}", d.PutAIProvider)
+			r.With(d.RequireAdmin).Delete("/ai/providers/{slug}", d.DeleteAIProvider)
 			r.Put("/services/{serviceID}/access-mode", d.SetServiceAccessMode)
 			r.Get("/services/{serviceID}/api-keys", d.ListAPIKeys)
 			r.Post("/services/{serviceID}/api-keys", d.CreateAPIKey)

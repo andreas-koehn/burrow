@@ -105,14 +105,25 @@ components:
         Value mirrors the burrow_csrf cookie.
 
   schemas:
-    AiEndpoint:
+    AIProvider:
       type: object
       description: >
-        Derived view of one api_key-mode service with identity and metering
-        fields.  Metering fields are zeroed pending usage_events aggregation.
+        One model provider: a slug under which a model backend is served at
+        base_url. Identity fields come from the providers table; model_alias,
+        concrete_model, backend_type, api_key_count, status and the 24h
+        counts are read live from the backing service. latency_p95_ms is
+        always 0.
       properties:
-        service_id: { type: string }
+        slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$' }
         name: { type: string }
+        kind: { type: string, enum: [tunnel] }
+        api_format: { type: string, enum: [openai] }
+        service_id: { type: string }
+        base_url:
+          type: string
+          description: >
+            https://<auth_domain>/ai/<provider>/v1, or "" when the relay has
+            no auth domain.
         model_alias: { type: string }
         concrete_model: { type: string }
         backend_type: { type: string, enum: [ollama, vllm, openai-compat, other] }
@@ -125,7 +136,7 @@ components:
     EndpointMetrics:
       type: object
       description: >
-        Metering aggregates for one AI endpoint over the trailing 24 h.  All
+        Metering aggregates for one AI provider over the trailing 24 h.  All
         numeric fields are zeroed pending usage_events aggregation.
       properties:
         requests_24h: { type: integer }
@@ -2407,52 +2418,159 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ────────────────────────────────────────────────────────────────────────
-  # AI endpoints (v0.5.x — minimal backend, zeroed metering)
+  # AI providers (v0.7.0)
   # ────────────────────────────────────────────────────────────────────────
-  /api/v1/ai/endpoints:
+  /api/v1/ai/providers:
     get:
-      tags: [services]
-      summary: List AI endpoints (api_key-mode services with identity + zeroed metrics)
+      tags: [models]
+      summary: List AI providers
       description: |
-        Returns one entry per service whose access_mode is "api_key".  Identity
-        fields (name, model_alias, concrete_model, backend_type, api_key_count,
-        status, client_session_id) are populated from live data.  Metering
-        fields (requests_24h, cache_hits_24h, latency_p95_ms) are zeroed
-        pending usage_events aggregation.
+        Returns one entry per row of the providers table, ordered by slug.
+        A caller who is not an admin sees only the providers whose backing
+        service they may see (same visibility as GET /api/v1/services).
       security:
         - CookieAuth: []
         - BearerAuth: []
       responses:
         '200':
-          description: Array of AI endpoint views.
+          description: Array of providers.
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/AiEndpoint'
+                  $ref: '#/components/schemas/AIProvider'
         '401': { $ref: '#/components/responses/Unauthorized' }
-
-  /api/v1/ai/endpoints/{serviceID}/metrics:
-    get:
-      tags: [services]
-      summary: Per-endpoint metrics (zeroed pending usage_events aggregation)
+    post:
+      tags: [models]
+      summary: Create a provider (admin)
       description: |
-        Returns metering aggregates for one AI endpoint.  All numeric fields
-        are zeroed in the current implementation; real aggregation from
-        usage_events is deferred.  Returns 404 when the service does not exist
-        or is not accessible to the caller.
+        Registers an existing http service in API-key mode as a provider.
+        The provider is then served at https://<auth_domain>/ai/<provider>/v1.
+        When slug is empty it is derived from name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, service_id]
+              properties:
+                slug:
+                  type: string
+                  pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$'
+                  description: Optional. "v1" is reserved.
+                name: { type: string, minLength: 1, maxLength: 120 }
+                kind: { type: string, enum: [tunnel], default: tunnel }
+                service_id: { type: string }
+      responses:
+        '201':
+          description: Provider created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIProvider'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: >
+            The slug is taken, the service already backs a provider, or the
+            service is not an http service in API-key mode.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/ai/providers/{slug}:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [models]
+      summary: Get one provider
+      description: |
+        Returns 404 when no provider has that slug or its backing service is
+        not visible to the caller.
+      security:
+        - CookieAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: The provider.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIProvider'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [models]
+      summary: Change a provider's slug and name (admin)
+      description: |
+        After a slug change the old base URL stops working immediately;
+        there is no redirect.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slug, name]
+              properties:
+                slug:
+                  type: string
+                  pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$'
+                  description: '"v1" is reserved.'
+                name: { type: string, minLength: 1, maxLength: 120 }
+      responses:
+        '200':
+          description: Provider updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIProvider'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Slug already in use.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [models]
+      summary: Delete a provider (admin)
+      description: |
+        Removes the provider; its base URL stops working immediately. The
+        backing service, its API keys and its tunnel are kept.
+      responses:
+        '204': { description: Provider deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/ai/providers/{slug}/metrics:
+    get:
+      tags: [models]
+      summary: Per-provider metrics over the trailing 24 h
+      description: |
+        Returns metering aggregates for one provider, read from usage_events
+        of its backing service. Returns 404 when the provider does not exist
+        or its backing service is not accessible to the caller.
       security:
         - CookieAuth: []
         - BearerAuth: []
       parameters:
-        - name: serviceID
+        - name: slug
           in: path
           required: true
           schema: { type: string }
       responses:
         '200':
-          description: Metering aggregates for the endpoint.
+          description: Metering aggregates for the provider.
           content:
             application/json:
               schema:
