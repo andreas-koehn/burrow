@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,8 +22,11 @@ import (
 
 // fakeProviderStore implements AIProviderStore over a slice. A non-nil
 // createErr/updateErr/deleteErr is returned instead of touching the slice.
+// It does not validate slugs — that is the handlers' job — and counts the
+// create/update calls it receives.
 type fakeProviderStore struct {
 	rows      []db.AIProvider
+	writes    int
 	createErr error
 	updateErr error
 	deleteErr error
@@ -40,11 +46,9 @@ func (f *fakeProviderStore) ProviderBySlug(_ context.Context, slug string) (db.A
 }
 
 func (f *fakeProviderStore) CreateTunnelProvider(_ context.Context, slug, name, serviceID string) (db.AIProvider, error) {
+	f.writes++
 	if f.createErr != nil {
 		return db.AIProvider{}, f.createErr
-	}
-	if !store.ValidProviderSlug(slug) {
-		return db.AIProvider{}, store.ErrInvalidProviderSlug
 	}
 	p := db.AIProvider{Slug: slug, Name: name, Kind: "tunnel", ServiceID: serviceID, APIFormat: "openai"}
 	f.rows = append(f.rows, p)
@@ -52,11 +56,9 @@ func (f *fakeProviderStore) CreateTunnelProvider(_ context.Context, slug, name, 
 }
 
 func (f *fakeProviderStore) UpdateProvider(_ context.Context, slug, newSlug, name string) (db.AIProvider, error) {
+	f.writes++
 	if f.updateErr != nil {
 		return db.AIProvider{}, f.updateErr
-	}
-	if !store.ValidProviderSlug(newSlug) {
-		return db.AIProvider{}, store.ErrInvalidProviderSlug
 	}
 	for i := range f.rows {
 		if f.rows[i].Slug == slug {
@@ -299,14 +301,15 @@ type fakeAIMetrics struct {
 	counts map[string]db.AIEndpointCount
 	agg    db.AIEndpointAgg
 	gotID  string
+	err    error
 }
 
 func (f *fakeAIMetrics) AIEndpointCounts24h(context.Context) (map[string]db.AIEndpointCount, error) {
-	return f.counts, nil
+	return f.counts, f.err
 }
 func (f *fakeAIMetrics) AIEndpointMetrics24h(_ context.Context, serviceID string) (db.AIEndpointAgg, error) {
 	f.gotID = serviceID
-	return f.agg, nil
+	return f.agg, f.err
 }
 
 func TestProviderMetrics(t *testing.T) {
@@ -343,13 +346,48 @@ func TestProviderMetrics(t *testing.T) {
 	wantStatus(t, c.get(t, "/api/v1/ai/providers/nope/metrics"), http.StatusNotFound)
 }
 
+// A provider that exists but whose service belongs to someone else answers
+// 404 like an unknown slug, so slugs cannot be enumerated through the status.
 func TestProviderMetrics_404WhenServiceNotVisible(t *testing.T) {
 	ss, ps := oneProviderFixture()
-	ss.getSvcErr = db.ErrNotFound
+	ss.getSvcErr = store.ErrForbidden
 	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
 	defer srv.Close()
 
-	wantStatus(t, c.get(t, "/api/v1/ai/providers/ollama/metrics"), http.StatusNotFound)
+	hidden := wantStatus(t, c.get(t, "/api/v1/ai/providers/ollama/metrics"), http.StatusNotFound)
+	unknown := wantStatus(t, c.get(t, "/api/v1/ai/providers/nope/metrics"), http.StatusNotFound)
+	if hidden != unknown {
+		t.Errorf("hidden provider body %q differs from unknown provider body %q", hidden, unknown)
+	}
+}
+
+// A failing metrics query is logged and the handlers still answer with zeros.
+func TestProviderMetrics_LogsQueryFailure(t *testing.T) {
+	ss, ps := oneProviderFixture()
+	var logs bytes.Buffer
+	d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+	d.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	d.AIMetrics = &fakeAIMetrics{err: errors.New("usage query broke")}
+	srv, c := newAIProviderServer(t, d)
+	defer srv.Close()
+
+	out := decodeProviders(t, c.get(t, "/api/v1/ai/providers"))
+	if len(out) != 1 || out[0].Requests24h != 0 {
+		t.Fatalf("list: want one zeroed entry, got %+v", out)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "usage query broke") {
+		t.Errorf("list: counts failure not logged at warn: %q", logs.String())
+	}
+
+	logs.Reset()
+	body := wantStatus(t, c.get(t, "/api/v1/ai/providers/ollama/metrics"), http.StatusOK)
+	if !strings.Contains(body, `"requests_24h":0`) {
+		t.Errorf("metrics: want zeros, got %s", body)
+	}
+	got := logs.String()
+	if !strings.Contains(got, "level=WARN") || !strings.Contains(got, "provider=ollama") || !strings.Contains(got, "usage query broke") {
+		t.Errorf("metrics: failure not logged at warn with the provider slug: %q", got)
+	}
 }
 
 func TestProviderMetrics_SurfacesAggregates(t *testing.T) {
@@ -457,8 +495,8 @@ func TestPostProvider(t *testing.T) {
 			if !strings.Contains(body, tc.want) {
 				t.Errorf("body %q does not mention %q", body, tc.want)
 			}
-			if len(ps.rows) != 0 || len(aud.events) != 0 {
-				t.Errorf("rejected request left traces: rows=%+v events=%+v", ps.rows, aud.events)
+			if ps.writes != 0 || len(ps.rows) != 0 || len(aud.events) != 0 {
+				t.Errorf("rejected request reached the store: writes=%d rows=%+v events=%+v", ps.writes, ps.rows, aud.events)
 			}
 		})
 	}
@@ -533,8 +571,8 @@ func TestPutProvider(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			c, ps, aud := newServer(t)
 			wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", body), http.StatusBadRequest)
-			if ps.rows[0].Slug != "ollama" || len(aud.events) != 0 {
-				t.Errorf("rejected request left traces: rows=%+v events=%+v", ps.rows, aud.events)
+			if ps.writes != 0 || ps.rows[0].Slug != "ollama" || len(aud.events) != 0 {
+				t.Errorf("rejected request reached the store: writes=%d rows=%+v events=%+v", ps.writes, ps.rows, aud.events)
 			}
 		})
 	}

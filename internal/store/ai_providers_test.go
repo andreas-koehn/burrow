@@ -97,6 +97,10 @@ func TestCreateTunnelProvider(t *testing.T) {
 	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Again", svcA); !errors.Is(err, ErrProviderExists) {
 		t.Fatalf("duplicate err = %v", err)
 	}
+	// One provider per service: a free slug does not help.
+	if _, err := s.CreateTunnelProvider(ctx, "second", "Second", svcA); !errors.Is(err, ErrProviderExists) {
+		t.Fatalf("second provider on the same service err = %v", err)
+	}
 	if _, err := s.CreateTunnelProvider(ctx, "v1", "Reserved", svcA); !errors.Is(err, ErrInvalidProviderSlug) {
 		t.Fatalf("reserved slug err = %v", err)
 	}

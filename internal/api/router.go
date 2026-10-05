@@ -183,8 +183,9 @@ func NewRouter(d Deps) http.Handler {
 			r.Get("/services/slug-suggestion", d.GetSlugSuggestion)
 			r.Get("/services/{serviceID}", d.GetService)
 			r.Put("/services/{serviceID}/slug", d.PutServiceSlug)
-			// v0.5.x: AI endpoints — derived view over api_key-mode services
-			// with zeroed metering (real aggregation deferred; TODO in handler).
+			// AI providers: the providers table joined with live data of each
+			// provider's backing service. Reads follow service visibility;
+			// writes are admin-only.
 			r.Get("/ai/providers", d.GetAIProviders)
 			r.Get("/ai/providers/{slug}", d.GetAIProvider)
 			r.Get("/ai/providers/{slug}/metrics", d.GetAIProviderMetrics)

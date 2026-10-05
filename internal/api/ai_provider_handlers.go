@@ -133,10 +133,13 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 	}
 
 	// Trailing-24h request + cache-hit counts per service. Degrades to zeros
-	// when the metrics store isn't wired (early-wiring / handler tests).
+	// when the metrics store isn't wired (early-wiring / handler tests) or
+	// the query fails (logged).
 	counts := map[string]db.AIEndpointCount{}
 	if d.AIMetrics != nil {
-		if c, err := d.AIMetrics.AIEndpointCounts24h(r.Context()); err == nil {
+		if c, err := d.AIMetrics.AIEndpointCounts24h(r.Context()); err != nil {
+			d.warn("ai provider counts query failed", "err", err)
+		} else {
 			counts = c
 		}
 	}
@@ -248,21 +251,9 @@ func (d Deps) GetAIProvider(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetAIProviderMetrics handles GET /api/v1/ai/providers/{slug}/metrics.
-//
-// TODO(follow-up): replace zeroed values with real aggregations from
-// usage_events.  SQL sketch:
-//
-//	SELECT
-//	  COUNT(*)                                          AS requests_24h,
-//	  SUM(tokens_in)                                    AS tokens_in_24h,
-//	  SUM(tokens_out)                                   AS tokens_out_24h,
-//	  SUM(cost_usd)                                     AS cost_usd_24h,
-//	  AVG(CASE WHEN cache_hit THEN 1.0 ELSE 0.0 END)   AS cache_hit_ratio_24h
-//	FROM usage_events
-//	WHERE service_id = ?
-//	  AND ts >= strftime('%s','now') - 86400;
-//
-// The requests_per_minute array requires a per-minute bucket join.
+// The aggregates are read from usage_events of the provider's backing
+// service.  A provider the caller may not see answers 404, like one that does
+// not exist.
 func (d Deps) GetAIProviderMetrics(w http.ResponseWriter, r *http.Request) {
 	p, err := d.AIProviders.ProviderBySlug(r.Context(), chi.URLParam(r, "slug"))
 	if err != nil {
@@ -284,9 +275,13 @@ func (d Deps) GetAIProviderMetrics(w http.ResponseWriter, r *http.Request) {
 	uid := userID(r.Context())
 	_, err = d.Services.GetService(r.Context(), uid, role, serviceID)
 	if err != nil {
-		if !mapServiceErr(w, err, "provider not found") {
-			writeErr(w, http.StatusInternalServerError, "internal error")
+		// Forbidden is reported as not found: a 403 would tell the caller
+		// that the slug exists.
+		if errors.Is(err, store.ErrForbidden) || errors.Is(err, db.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "provider not found")
+			return
 		}
+		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -295,9 +290,12 @@ func (d Deps) GetAIProviderMetrics(w http.ResponseWriter, r *http.Request) {
 	resp := endpointMetricsResp{RequestsPerMinute: rpm}
 
 	// Aggregate from usage_events when the metrics store is wired. Degrades to
-	// zeros on any read error (metrics are non-critical to the page rendering).
+	// zeros on any read error (logged; metrics are non-critical to the page
+	// rendering).
 	if d.AIMetrics != nil {
-		if agg, err := d.AIMetrics.AIEndpointMetrics24h(r.Context(), serviceID); err == nil {
+		if agg, err := d.AIMetrics.AIEndpointMetrics24h(r.Context(), serviceID); err != nil {
+			d.warn("ai provider metrics query failed", "provider", p.Slug, "err", err)
+		} else {
 			resp.Requests24h = agg.Requests
 			resp.TokensIn24h = int(agg.TokensIn)
 			resp.TokensOut24h = int(agg.TokensOut)
@@ -317,6 +315,13 @@ func (d Deps) GetAIProviderMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// warn logs at Warn level; Deps.Log may be nil in partial wirings.
+func (d Deps) warn(msg string, args ...any) {
+	if d.Log != nil {
+		d.Log.Warn(msg, args...)
+	}
 }
 
 // postProviderReq is the body of POST /api/v1/ai/providers.
