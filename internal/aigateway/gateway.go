@@ -45,6 +45,7 @@ type Gateway struct {
 	Keys       KeyValidator
 	Tunnels    TunnelDialer
 	Chain      Chain                                           // nil = call the upstream directly
+	Aliases    AliasStore                                      // nil = aliases are not applied
 	IPGeoDeny  func(res *proxy.Resolved, r *http.Request) bool // nil = no policy check
 	PublicHost string                                          // auth domain, for X-Forwarded-Host
 	Log        *slog.Logger
@@ -87,6 +88,11 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 	r.Header.Del("X-Api-Key")
 	r.Header.Del("Cookie")
 
+	if err := rewriteModelAlias(r, p.ServiceID, g.Aliases); err != nil {
+		// Forwarding the request as sent is better than failing it.
+		g.Log.Warn("aigateway: alias lookup failed", "provider", p.Slug, "err", err)
+	}
+
 	if g.Chain == nil {
 		upstream.ServeHTTP(w, r)
 		return
@@ -127,10 +133,12 @@ func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, p db.AIPr
 }
 
 // presentedKey reads the caller's key from "Authorization: Bearer …" (OpenAI
-// clients) or "X-Api-Key" (Anthropic clients).
+// clients) or "X-Api-Key" (Anthropic clients). The scheme name is matched
+// without regard to case.
 func presentedKey(r *http.Request) string {
-	if tok, ok := strings.CutPrefix(strings.TrimSpace(r.Header.Get("Authorization")), "Bearer "); ok {
-		return strings.TrimSpace(tok)
+	const scheme = "Bearer "
+	if auth := strings.TrimSpace(r.Header.Get("Authorization")); len(auth) > len(scheme) && strings.EqualFold(auth[:len(scheme)], scheme) {
+		return strings.TrimSpace(auth[len(scheme):])
 	}
 	return strings.TrimSpace(r.Header.Get("X-Api-Key"))
 }

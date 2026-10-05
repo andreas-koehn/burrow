@@ -182,12 +182,14 @@ CODES=""; for i in 1 2 3 4; do CODES="$CODES$(px -o /dev/null -w '%{http_code}' 
 check "rate limit (api_key scope) is enforced" "$(echo "$CODES" | grep -c 429 || true)" "1"
 acode DELETE "/api/v1/rate-limits/$RL" >/dev/null
 
-# --- known defects (XFAIL) ---------------------------------------------------
-# 3. Model aliases are stored and listed but not applied on the data plane.
+# --- model aliases -----------------------------------------------------------
+# An alias of the provider's service is rewritten on /ai/<provider>/. The
+# provider slug is the service name ("ollama"), lower-cased.
 amut POST /api/v1/models/aliases "{\"alias\":\"gpt-4o-mini\",\"concrete_model\":\"$MODEL\",\"service_id\":\"$SID\",\"provider\":\"ollama\",\"priority\":0}" >/dev/null
-xcheck "model alias gpt-4o-mini is rewritten to $MODEL" \
-  "$(px -o /dev/null -w '%{http_code}' -H "$AUTH" -H 'Content-Type: application/json' -d "$(chat "alias $RANDOM" 4 gpt-4o-mini)" "$PX/v1/chat/completions")" "200"
+check "model alias gpt-4o-mini is rewritten to $MODEL" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" -H 'Content-Type: application/json' -d "$(chat "alias $RANDOM" 4 gpt-4o-mini)" "$B/ai/ollama/v1/chat/completions")" "200"
 
+# --- known defects (XFAIL) ---------------------------------------------------
 # 4. An automation token's declared permission set is not enforced on
 #    admin-gated routes: a read-only token of an admin can still mint tokens.
 BUA=$(amut POST /api/v1/automation/tokens '{"name":"ro","permissions":["tunnels:read:any"]}' | jq -r .plaintext)

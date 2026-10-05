@@ -59,7 +59,6 @@ func buildQuotaMiddleware(e *quota.Engine, auditLogger *audit.Logger) func(http.
 			}
 
 			// Write 429.
-			w.Header().Set("Content-Type", "application/json")
 			if dec.RetryAfter > 0 {
 				w.Header().Set("Retry-After", strconv.Itoa(dec.RetryAfter))
 			}
@@ -69,6 +68,7 @@ func buildQuotaMiddleware(e *quota.Engine, auditLogger *audit.Logger) func(http.
 				ew(w, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded")
 				return
 			}
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
 			body429, _ := json.Marshal(map[string]string{"error": "rate limit exceeded"})
 			_, _ = w.Write(body429)

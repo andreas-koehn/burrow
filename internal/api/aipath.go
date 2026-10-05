@@ -21,6 +21,13 @@ func AIPathHandler(g *aigateway.Gateway) http.HandlerFunc {
 		if id := middleware.GetReqID(r.Context()); id != "" {
 			w.Header().Set("Burrow-Request-Id", id)
 		}
+		// Tracks whether a response has been started; chi's wrapper keeps
+		// Flush and the other optional interfaces of the writer it wraps.
+		ww, ok := w.(middleware.WrapResponseWriter)
+		if !ok {
+			ww = middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			w = ww
+		}
 		// A panic must not reach chi's Recoverer: it answers with an empty
 		// 500, and every error under /ai/ is JSON.
 		defer func() {
@@ -32,6 +39,11 @@ func AIPathHandler(g *aigateway.Gateway) http.HandlerFunc {
 				panic(rec)
 			}
 			g.Log.Error("aigateway: panic", "panic", rec, "stack", string(debug.Stack()))
+			if ww.Status() != 0 || ww.BytesWritten() > 0 {
+				// Part of the response is out: a JSON error would only be
+				// appended to it. Drop the connection instead.
+				panic(http.ErrAbortHandler)
+			}
 			aigateway.WriteError(w, http.StatusInternalServerError, "internal_error", "internal error")
 		}()
 		slug := chi.URLParam(r, "provider")

@@ -75,4 +75,13 @@ func TestQuotaMiddleware_DenialShape(t *testing.T) {
 	if body.Error.Type != "burrow_error" || body.Error.Code != "rate_limited" || body.Error.Message == "" {
 		t.Fatalf("body = %s", rec.Body.String())
 	}
+
+	// The error writer owns the whole response, Content-Type included.
+	bare := func(w http.ResponseWriter, status int, _, _ string) { w.WriteHeader(status) }
+	if ct := deny(aigw.WithErrorWriter(context.Background(), bare)).Header().Get("Content-Type"); ct != "" {
+		t.Fatalf("middleware set Content-Type %q ahead of the error writer", ct)
+	}
+	if ct := deny(context.Background()).Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("host route Content-Type = %q", ct)
+	}
 }

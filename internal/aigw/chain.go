@@ -487,6 +487,14 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
 				return
 			case guardrails.ActionRefuseSafe:
+				// No upstream answer to imitate for a kind the chain does not
+				// recognise: an entry point with its own error shape gets a
+				// plain refusal instead of the generic envelope below.
+				if ew := ErrorWriterFrom(r.Context()); ew != nil && kind != KindAnthropic && kind != KindOpenAI {
+					ew(w, http.StatusForbidden, "forbidden", "the request was refused by a guardrail")
+					c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
+					return
+				}
 				refusalBody, hdr := safeRefusalBody(kind)
 				for k, vs := range hdr {
 					for _, v := range vs {

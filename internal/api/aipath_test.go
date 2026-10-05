@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/aigateway"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/proxy"
 )
 
 type noProviders struct{}
@@ -134,5 +136,81 @@ func TestRouter_AIPanicIsJSON500(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "secret-detail") {
 		t.Fatal("panic text leaked to the client")
+	}
+}
+
+type oneProvider struct{}
+
+func (oneProvider) ProviderBySlug(_ context.Context, slug string) (db.AIProvider, error) {
+	return db.AIProvider{Slug: slug, Kind: "tunnel", ServiceID: "svc1"}, nil
+}
+
+type anyKey struct{}
+
+func (anyKey) ValidateAPIKey(context.Context, string, string) (string, bool, error) {
+	return "key-1", true, nil
+}
+
+type liveTunnel struct{}
+
+func (liveTunnel) LookupByServiceID(context.Context, string) (*proxy.Resolved, error) {
+	return &proxy.Resolved{ServiceID: "svc1", AccessMode: "api_key", LocalHost: "127.0.0.1:11434"}, nil
+}
+
+func (liveTunnel) DialTunnelStreamByServiceID(context.Context, string) (net.Conn, error) {
+	return nil, proxy.ErrNotFound
+}
+
+// chainFunc answers in place of the AI chain.
+type chainFunc func(w http.ResponseWriter, r *http.Request)
+
+func (f chainFunc) Dispatch(w http.ResponseWriter, r *http.Request, _, _, _, _ string, _ http.Handler) {
+	f(w, r)
+}
+
+func (f chainFunc) DispatchMetered(w http.ResponseWriter, r *http.Request, _, _, _, _ string, _ http.Handler) {
+	f(w, r)
+}
+
+// servePanicking runs one /ai/ request whose handler is f and returns what
+// the handler panicked with.
+func servePanicking(t *testing.T, f chainFunc) (rec *httptest.ResponseRecorder, panicked any) {
+	t.Helper()
+	g := &aigateway.Gateway{Providers: oneProvider{}, Keys: anyKey{}, Tunnels: liveTunnel{}, Chain: f, Log: discardLog()}
+	r := chi.NewRouter()
+	r.Handle("/ai/{provider}/*", AIPathHandler(g))
+	req := httptest.NewRequest("GET", "/ai/ollama/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer sk-good")
+	rec = httptest.NewRecorder()
+	defer func() { panicked = recover() }()
+	r.ServeHTTP(rec, req)
+	return rec, nil
+}
+
+// http.ErrAbortHandler is how a handler asks the server to drop the
+// connection: it is passed on, not turned into a 500.
+func TestAIPathHandler_AbortPanicPropagates(t *testing.T) {
+	rec, panicked := servePanicking(t, func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) })
+	if panicked != http.ErrAbortHandler {
+		t.Fatalf("panic = %v, want http.ErrAbortHandler", panicked)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("a body was written: %s", rec.Body.String())
+	}
+}
+
+// Once part of a response is out, a JSON error can only corrupt it: the
+// connection is aborted instead.
+func TestAIPathHandler_PanicAfterWriteAbortsWithoutJSON(t *testing.T) {
+	rec, panicked := servePanicking(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: one\n\n"))
+		panic("boom: secret-detail")
+	})
+	if panicked != http.ErrAbortHandler {
+		t.Fatalf("panic = %v, want http.ErrAbortHandler", panicked)
+	}
+	if rec.Code != http.StatusOK || rec.Body.String() != "data: one\n\n" {
+		t.Fatalf("status %d body %q", rec.Code, rec.Body.String())
 	}
 }
