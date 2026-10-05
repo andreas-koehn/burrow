@@ -126,15 +126,9 @@ describe("reachability", () => {
   const routes = [...app.matchAll(/path="([^"]+)"/g)].map((m) => m[1]);
   const entries = allEntries(admin).map((x) => x.entry);
 
-  // Entries whose page has not moved to the entry's path yet: W03 moves the Settings
-  // pages, W05 adds /traffic. Each later task deletes its rows; the list ends up empty.
-  const PENDING = [
-    "/traffic",
-    "/settings/general", "/settings/email",
-    "/settings/users", "/settings/roles", "/settings/audit",
-    "/settings/webhooks", "/settings/api",
-    "/settings/profile", "/settings/sessions", "/settings/automation",
-  ];
+  // Entries whose page has not moved to the entry's path yet: W05 adds /traffic and
+  // deletes its row; the list ends up empty.
+  const PENDING = ["/traffic"];
 
   it("reads the route list from App.tsx", () => {
     expect(routes).toContain("/gateway/requests/:serviceId/:requestId?");
@@ -168,11 +162,11 @@ describe("reachability", () => {
     const waysIn: Record<string, string> = {
       "/login": "outside the shell: where a signed-out visitor is sent",
       "*": "catch-all, sends unknown paths to the overview",
-      "/settings/custom-domains": "retired page, redirects to Settings",
+      "/settings": "the Settings index: sends an admin to General, everyone else to their profile",
       // Temporary sidebar and palette entries until W04 folds these pages into Services and Clients.
       ...Object.fromEntries(TEMPORARY_ENTRIES.map((e) => [e.to, "temporary Services entry (W04)"])),
       // The current home of a page whose navigation entry already names its future path.
-      ...Object.fromEntries(NOT_YET_MOVED.map((r) => [r.to, `reached from the entry ${r.from} (W03/W05)`])),
+      ...Object.fromEntries(NOT_YET_MOVED.map((r) => [r.to, `reached from the entry ${r.from} (W05)`])),
     };
     const orphans = routes.filter((r) => !underEntry(r) && !(r in waysIn));
     expect(orphans).toEqual([]);
@@ -180,6 +174,23 @@ describe("reachability", () => {
     for (const r of Object.keys(waysIn)) {
       expect(routes, r).toContain(r);
       expect(underEntry(r), r).toBe(false);
+    }
+  });
+
+  // Admin-only settings pages are guarded where they are routed, exactly as the navigation marks them.
+  it("wraps every admin-only settings route in RequireAdmin, and no other", () => {
+    const element = (path: string) => app.match(new RegExp(`path="${path}" element=\\{(<[A-Za-z]+)`))?.[1];
+    for (const e of NAVIGATIONS.settings.groups.flatMap((g) => g.entries)) {
+      expect(element(e.to), e.to).toBeDefined();
+      expect(element(e.to) === "<RequireAdmin", e.to).toBe(e.adminOnly === true);
+    }
+  });
+
+  it("every breadcrumb of a settings page leads to a declared route", () => {
+    for (const e of NAVIGATIONS.settings.groups.flatMap((g) => g.entries)) {
+      for (const crumb of breadcrumbFor(e.to, admin)) {
+        if (crumb.to) expect(routes, `${e.to} → ${crumb.to}`).toContain(crumb.to);
+      }
     }
   });
 

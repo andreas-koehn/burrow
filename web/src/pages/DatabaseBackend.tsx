@@ -3,7 +3,7 @@ import { apiFetch } from "@/lib/api";
 import { PageHeader } from "@/components/ds";
 import type { DatabaseStatus } from "@/lib/contract";
 
-const BACK = { to: "/settings", label: "Settings" } as const;
+const BACK = { to: "/settings/general", label: "Settings" } as const;
 
 export default function DatabaseBackend() {
   const { data } = useQuery({

@@ -58,7 +58,7 @@ test("30-webhooks-delivery: token.mint fires + row appears", async ({ page, requ
     expect(testResp.status()).toBe(204);
 
     // 3. Open /webhooks → wait for the delivery row to appear within 10s.
-    await page.goto("/webhooks");
+    await page.goto("/settings/webhooks");
     await expect(
       page.locator("tr").filter({ hasText: /webhook\.test|200/ }).first()
     ).toBeVisible({ timeout: 10_000 });

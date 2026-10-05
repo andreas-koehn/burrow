@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -6,7 +6,9 @@ import { render } from "@testing-library/react";
 import { ThemeProvider } from "@/components/theme-provider";
 import App from "@/App";
 import { setCsrfCookie } from "@/mocks/test-utils";
+import { db, resetDb } from "@/mocks/db";
 import { OLD_ROUTES } from "@/lib/moved-routes";
+import { NAVIGATIONS } from "@/lib/navigation";
 
 function PathProbe() {
   const { pathname, search, hash } = useLocation();
@@ -22,14 +24,8 @@ function renderAt(route: string) {
 }
 
 describe("App routes", () => {
-  it("renders Roles at /roles", async () => {
-    renderAt("/roles");
-    expect(await screen.findByRole("heading", { name: /^Roles$/i })).toBeInTheDocument();
-  });
-  it("renders Settings at /settings", async () => {
-    renderAt("/settings");
-    expect(await screen.findByRole("heading", { name: /^Settings$/i })).toBeInTheDocument();
-  });
+  afterEach(() => resetDb());
+
   it("renders Clients at /clients", async () => {
     renderAt("/clients");
     expect(await screen.findByRole("heading", { name: /^Clients$/i })).toBeInTheDocument();
@@ -39,7 +35,7 @@ describe("App routes", () => {
     expect(await screen.findByRole("heading", { name: /connect a client/i })).toBeInTheDocument();
   });
   it("shows the admin shortcuts and the Services entries for an admin", async () => {
-    renderAt("/account");
+    renderAt("/services");
     expect(await screen.findByRole("link", { name: "Users & roles" })).toHaveAttribute("href", "/settings/users");
     expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings/general");
     expect(screen.getByRole("link", { name: /^Clients(,|$)/ })).toHaveAttribute("href", "/clients");
@@ -54,14 +50,75 @@ describe("App routes", () => {
     ["/gateway/guardrails",            /^Guardrails & redaction$/i],
     ["/gateway/requests/svc_ai001",    /^Request inspector$/i],
     ["/gateway/cost",                  /^Cost & budgets$/i],
-    ["/audit",                         /^Audit log$/i],
-    ["/webhooks",                      /^Webhooks$/i],
-    ["/account/automation",            /^Automation tokens$/i],
     ["/settings/backups",              /^Backup & restore$/i],
   ])("resolves %s to its page heading", async (path, heading) => {
     renderAt(path);
     expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
   });
+
+  // ---- Settings: every relay-wide and personal page has its own address and sidebar entry ----
+  it.each([
+    ["/settings/general",    /^General$/,            "General"],
+    ["/settings/email",      /^Email$/,              "Email"],
+    ["/settings/users",      /^Users$/,              "Users"],
+    ["/settings/roles",      /^Roles$/,              "Roles"],
+    ["/settings/audit",      /^Audit log$/,          "Audit log"],
+    ["/settings/webhooks",   /^Webhooks$/,           "Webhooks"],
+    ["/settings/api",        /^API reference$/,      "API reference"],
+    ["/settings/profile",    /^Profile & password$/, "Profile & password"],
+    ["/settings/sessions",   /^Sessions$/,           "Sessions"],
+    ["/settings/automation", /^Automation tokens$/,  "Automation tokens"],
+  ])("%s renders its page inside the Settings navigation", async (path, heading, entry) => {
+    renderAt(path);
+    expect(await screen.findByRole("heading", { name: heading, level: 1 })).toBeInTheDocument();
+    expect(screen.getByTestId("path")).toHaveTextContent(path);
+    const nav = within(screen.getByRole("navigation", { name: "Settings" }));
+    expect(nav.getByRole("link", { name: entry })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("/settings opens General for an admin", async () => {
+    renderAt("/settings");
+    expect(await screen.findByRole("heading", { name: "General", level: 1 })).toBeInTheDocument();
+    expect(screen.getByTestId("path")).toHaveTextContent(/^\/settings\/general$/);
+  });
+
+  it("/settings keeps the query string and the hash", async () => {
+    renderAt("/settings?from=mail#privacy");
+    expect(await screen.findByRole("heading", { name: "General", level: 1 })).toBeInTheDocument();
+    expect(screen.getByTestId("path")).toHaveTextContent("/settings/general?from=mail#privacy");
+  });
+
+  it("/settings opens the profile for everyone else", async () => {
+    db.me = { ...db.me, role: "user" };
+    renderAt("/settings");
+    expect(await screen.findByRole("heading", { name: "Profile & password", level: 1 })).toBeInTheDocument();
+    expect(screen.getByTestId("path")).toHaveTextContent(/^\/settings\/profile$/);
+  });
+
+  const settingsEntries = NAVIGATIONS.settings.groups.flatMap((g) => g.entries);
+  it.each(settingsEntries.filter((e) => e.adminOnly).map((e) => e.to))(
+    "a non-admin opening %s is sent to their profile",
+    async (path) => {
+      db.me = { ...db.me, role: "user" };
+      renderAt(path);
+      expect(await screen.findByRole("heading", { name: "Profile & password", level: 1 })).toBeInTheDocument();
+      expect(screen.getByTestId("path")).toHaveTextContent(/^\/settings\/profile$/);
+      // Only the Personal group is offered.
+      const nav = within(screen.getByRole("navigation", { name: "Settings" }));
+      expect(nav.getAllByRole("link").map((a) => a.getAttribute("aria-label")))
+        .toEqual(["Profile & password", "Sessions", "Automation tokens"]);
+    },
+  );
+
+  it.each(settingsEntries.filter((e) => !e.adminOnly).map((e) => [e.to, e.label]))(
+    "a non-admin may open %s",
+    async (path, label) => {
+      db.me = { ...db.me, role: "user" };
+      renderAt(path);
+      expect(await screen.findByRole("heading", { name: label, level: 1 })).toBeInTheDocument();
+      expect(screen.getByTestId("path")).toHaveTextContent(path);
+    },
+  );
 
   it("/gateway/requests picks the first http service", async () => {
     renderAt("/gateway/requests");
@@ -70,7 +127,18 @@ describe("App routes", () => {
   });
 
   // Old bookmarks: every moved path lands on its new page, params, query and hash intact.
-  const visit: Record<string, { url: string; lands: string; heading: RegExp }> = {
+  // `current` names the Settings entry the page must be marked under; without it the page is an AI Gateway one.
+  const visit: Record<string, { url: string; lands: string; heading: RegExp; current?: string }> = {
+    "/users": { url: "/users?q=bob#invite", lands: "/settings/users?q=bob#invite", heading: /^Users$/, current: "Users" },
+    "/roles": { url: "/roles", lands: "/settings/roles", heading: /^Roles$/, current: "Roles" },
+    "/audit": { url: "/audit?actor=x", lands: "/settings/audit?actor=x", heading: /^Audit log$/, current: "Audit log" },
+    "/webhooks": { url: "/webhooks#deliveries", lands: "/settings/webhooks#deliveries", heading: /^Webhooks$/, current: "Webhooks" },
+    "/openapi": { url: "/openapi", lands: "/settings/api", heading: /^API reference$/, current: "API reference" },
+    "/account": { url: "/account", lands: "/settings/profile", heading: /^Profile & password$/, current: "Profile & password" },
+    "/account/automation": {
+      url: "/account/automation?new=1", lands: "/settings/automation?new=1", heading: /^Automation tokens$/, current: "Automation tokens",
+    },
+    "/settings/custom-domains": { url: "/settings/custom-domains", lands: "/settings/general", heading: /^General$/, current: "General" },
     "/cache": { url: "/cache", lands: "/gateway/cache", heading: /^Prompt cache$/i },
     "/guardrails": { url: "/guardrails#custom", lands: "/gateway/guardrails#custom", heading: /^Guardrails & redaction$/i },
     "/inspector": { url: "/inspector", lands: "/gateway/requests/", heading: /^Request inspector$/i },
@@ -85,13 +153,14 @@ describe("App routes", () => {
   it.each(OLD_ROUTES.map((r) => r.from))("old path %s lands on its new page", async (from) => {
     const c = visit[from];
     renderAt(c.url);
-    expect(await screen.findByRole("heading", { name: c.heading })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: c.heading, level: 1 })).toBeInTheDocument();
     // "/inspector" goes on to the first http service, so only its prefix is fixed.
     const path = screen.getByTestId("path").textContent ?? "";
     if (c.lands.endsWith("/")) expect(path.startsWith(c.lands)).toBe(true);
     else expect(path).toBe(c.lands);
     // The sidebar shows the workspace the page now belongs to.
-    expect(await screen.findByRole("navigation", { name: "AI Gateway" })).toBeInTheDocument();
+    const nav = within(await screen.findByRole("navigation", { name: c.current ? "Settings" : "AI Gateway" }));
+    if (c.current) expect(nav.getByRole("link", { name: c.current })).toHaveAttribute("aria-current", "page");
   });
 
   it("an old path with one param keeps it", async () => {
@@ -112,12 +181,8 @@ describe("App routes", () => {
     expect(nav.getByRole("link", { name: "Requests" })).toHaveAttribute("href", "/gateway/requests");
   });
 
-  // Until W03 and W05 move the pages, a navigation entry leads to the page's current address.
+  // Until W05 moves the page, the navigation entry leads to the page's current address.
   it.each([
-    ["/settings/users",      "/users",              /^Users$/i],
-    ["/settings/general",    "/settings",           /^Settings$/i],
-    ["/settings/profile",    "/account",            /^Account$/i],
-    ["/settings/automation", "/account/automation", /^Automation tokens$/i],
     ["/traffic",             "/connection-logs",    /^Connection logs$/i],
   ])("%s leads to the page that has not moved yet (%s)", async (from, lands, heading) => {
     renderAt(from);

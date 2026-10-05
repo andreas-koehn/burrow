@@ -14,7 +14,7 @@ test.use({ storageState: AUTH_STORAGE_PATH });
 test("05-users-roles: create user (built-in role) + delete", async ({ page }) => {
   const email = `bob-${Date.now()}@e2e.local`;
 
-  await page.goto("/users");
+  await page.goto("/settings/users");
   await expect(page.getByRole("heading", { name: "Users" })).toBeVisible();
 
   await page.getByRole("button", { name: "New user", exact: true }).click();

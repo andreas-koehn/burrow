@@ -89,15 +89,15 @@ describe("INTUITIVE — navigation & mental-model alignment", () => {
     expect((link as HTMLAnchorElement).href).toContain("/tunnels");
   });
 
-  it("In-5: Tokens page includes a cross-link to /account/automation", async () => {
+  it("In-5: Tokens page includes a cross-link to /settings/automation", async () => {
     renderApp(<Tokens />, "/tokens");
     // "Automation tokens" link in the muted helper text
     const link = await screen.findByRole("link", { name: /Automation tokens/i });
-    expect((link as HTMLAnchorElement).href).toContain("/account/automation");
+    expect((link as HTMLAnchorElement).href).toContain("/settings/automation");
   });
 
   it("In-5: AutomationTokens page includes a cross-link to /tokens (client tokens)", async () => {
-    renderApp(<AutomationTokens />, "/account/automation");
+    renderApp(<AutomationTokens />, "/settings/automation");
     const link = await screen.findByRole("link", { name: /Client tokens/i });
     expect((link as HTMLAnchorElement).href).toContain("/tokens");
   });
@@ -146,15 +146,15 @@ describe("EASY — onboarding & discoverability", () => {
   // Ea-2: command palette (Ctrl+K) opens a searchable dialog — Playwright-only.
   // Ea-3: InfoHint tooltips present — Playwright-only (hover required in a real browser).
 
-  it("Ea-4: Users page renders an SMTP-not-configured notice with a link to Settings", async () => {
+  it("Ea-4: Users page renders an SMTP-not-configured notice with a link to the email settings", async () => {
     // Default db.settings has no smtp.host, so smtpUnconfigured is true when settings loads.
-    renderApp(<Users />, "/users");
+    renderApp(<Users />, "/settings/users");
     // ErrorNotice variant="warn" role="status" — the SMTP warning
     const notice = await screen.findByRole("status");
     expect(notice.textContent).toContain("Email");
     // The action link inside that notice
     const link = within(notice).getByRole("link", { name: /Set up email/i });
-    expect((link as HTMLAnchorElement).href).toContain("/settings");
+    expect((link as HTMLAnchorElement).href).toContain("/settings/email");
   });
 
   // ---------------------------------------------------------------------------

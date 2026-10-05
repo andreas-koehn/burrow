@@ -70,7 +70,7 @@ test("25-quota-rate-limit: 429 + audit row", async ({ page, request }) => {
   expect(statuses.slice(5)).toContain(429);
 
   // 3. Open audit log, look for ratelimit.enforced row.
-  await page.goto("/audit");
+  await page.goto("/settings/audit");
   await expect(page.getByRole("heading", { name: /Audit/i })).toBeVisible();
   await expect(
     page.getByRole("table").locator("tr").filter({ hasText: /ratelimit\.enforced/ }).first()

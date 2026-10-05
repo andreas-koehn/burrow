@@ -32,7 +32,7 @@ test("46-users-search-filter: email search + Role filter select; pagination cont
     expect(userId).toBeTruthy();
     expect(adminId).toBeTruthy();
 
-    await page.goto("/users");
+    await page.goto("/settings/users");
     await expect(page.locator('table[aria-label="Users"]')).toBeVisible();
 
     // --- SEARCH ------------------------------------------------------------

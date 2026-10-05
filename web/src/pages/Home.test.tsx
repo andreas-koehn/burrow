@@ -96,10 +96,10 @@ describe("Home (Overview)", () => {
           screen.getByText(/Email isn't set up\. Password resets and test emails are unavailable until SMTP is configured\./),
         ).toBeInTheDocument();
       });
-      // The alert must contain a link to /settings
+      // The alert must contain a link to the email settings
       const link = screen.getByRole("link", { name: /set up email/i });
       expect(link).toBeInTheDocument();
-      expect(link).toHaveAttribute("href", "/settings");
+      expect(link).toHaveAttribute("href", "/settings/email");
     });
 
     it("hides SMTP alert when smtp.host is set", async () => {

@@ -7,8 +7,8 @@ import { test, expect } from "@playwright/test";
 test.use({ storageState: "playwright-auth.json" });
 
 test("v0.4.0: audit log table renders + Verify chain succeeds", async ({ page }) => {
-  await page.goto("/audit");
-  await expect(page).toHaveURL(/\/audit$/);
+  await page.goto("/settings/audit");
+  await expect(page).toHaveURL(/\/settings\/audit$/);
   await expect(page.getByRole("heading", { name: "Audit log" })).toBeVisible();
 
   // Events table renders with the documented header columns.

@@ -130,10 +130,10 @@ test.describe("Cross-feature wiring", () => {
     await expect(dialog.getByRole("button", { name: /access mode/i })).toHaveCount(0);
   });
 
-  test("Users page: SMTP notice 'Set up email' link navigates to /settings", async ({ page }) => {
+  test("Users page: SMTP notice 'Set up email' link navigates to /settings/email", async ({ page }) => {
     // The SMTP notice on Users.tsx appears when smtp.host is not set.
     // A fresh e2e server has no SMTP configured.
-    await page.goto("/users");
+    await page.goto("/settings/users");
     await expect(page.getByRole("heading", { name: "Users" })).toBeVisible();
 
     // SMTP notice should be visible (server not configured in test env)
@@ -145,11 +145,11 @@ test.describe("Cross-feature wiring", () => {
       const link = notice.getByRole("link", { name: /Set up email/i });
       await expect(link).toBeVisible();
       await link.click();
-      await expect(page).toHaveURL(/\/settings/);
+      await expect(page).toHaveURL(/\/settings\/email$/);
     } else {
-      // SMTP already configured — navigate to /settings manually and verify
-      await page.goto("/settings");
-      await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+      // SMTP already configured — navigate to the email settings manually and verify
+      await page.goto("/settings/email");
+      await expect(page.getByRole("heading", { name: "Email", exact: true })).toBeVisible();
     }
   });
 });

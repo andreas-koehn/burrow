@@ -30,7 +30,7 @@ test("39-roles: view built-in perms + create custom role", async ({ page, reques
   const roleName = `uirole${Date.now()}`;
 
   try {
-    await page.goto("/roles");
+    await page.goto("/settings/roles");
     await expect(page.getByRole("heading", { name: "Roles", level: 1 })).toBeVisible();
 
     const table = page.locator('table[aria-label="Roles"]');

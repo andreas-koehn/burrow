@@ -8,7 +8,7 @@ import { adminHeaders } from "../../fixtures/api";
 // use fresh, isolated contexts so we never mutate the admin session's password.
 test.use({ storageState: AUTH_STORAGE_PATH });
 
-test("34-account-password: user changes own password via /account, then logs in with the new one", async ({ browser, request }) => {
+test("34-account-password: user changes own password via /settings/profile, then logs in with the new one", async ({ browser, request }) => {
   const email = `pwuser-${Date.now()}@e2e.local`;
   const initPass = "init-pass-123";
   const newPass = "new-pass-456";
@@ -31,7 +31,7 @@ test("34-account-password: user changes own password via /account, then logs in 
     await p1.getByRole("button", { name: "Sign in", exact: true }).click();
     await p1.waitForURL((u) => !u.pathname.startsWith("/login"), { timeout: 10_000 });
 
-    await p1.goto("/account");
+    await p1.goto("/settings/profile");
     await p1.fill("#current-password", initPass);
     await p1.fill("#new-password", newPass);
     await p1.fill("#confirm-password", newPass);

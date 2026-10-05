@@ -1757,31 +1757,6 @@ p.small + .state-card { margin-top: var(--space-md); }
   margin-bottom: 8px;
 }
 
-/* Settings nav cards — hover affordance so cards read as clickable (C7) */
-.settings-nav-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 12px;
-}
-.settings-nav-card {
-  display: block;
-  padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--card);
-  text-decoration: none;
-  color: var(--foreground);
-  transition: border-color var(--t-micro), background var(--t-micro);
-}
-.settings-nav-card:hover {
-  border-color: var(--primary);
-  cursor: pointer;
-}
-.settings-nav-card:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-
 /* Form pages max-width — prevents inputs from stretching on wide viewports (S5) */
 .form-narrow { max-width: 840px; }
 

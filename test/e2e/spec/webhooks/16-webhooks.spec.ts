@@ -5,7 +5,7 @@ import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
 test.use({ storageState: AUTH_STORAGE_PATH });
 
 test("16-webhooks: page renders + New webhook flow opens", async ({ page }) => {
-  await page.goto("/webhooks");
+  await page.goto("/settings/webhooks");
   // The page now renders both an <h1>Webhooks</h1> (PageHeader title) and an
   // <h2>Configured webhooks</h2> section heading; non-exact match resolved to
   // both. Pin to the exact page title.

@@ -53,8 +53,8 @@ test("50-session-management: revoke a non-current session + sign out everywhere"
     const p1 = await loginUser(ctx1, email, password);
     await loginUser(ctx2, email, password);
 
-    // --- Context 1: open /account and inspect the sessions table. ---
-    await p1.goto("/account");
+    // --- Context 1: open the sessions page and inspect the sessions table. ---
+    await p1.goto("/settings/sessions");
     const sessionsTable = p1.getByRole("table", { name: "Active sessions" });
     await expect(sessionsTable).toBeVisible();
 

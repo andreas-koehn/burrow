@@ -27,7 +27,7 @@ function isOutOfRange(value: number, min: number, max: number): boolean {
   return isNaN(value) || value < min || value > max;
 }
 
-const BACK = { to: "/settings", label: "Settings" } as const;
+const BACK = { to: "/settings/general", label: "Settings" } as const;
 
 export default function Retention() {
   const qc = useQueryClient();

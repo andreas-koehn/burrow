@@ -15,10 +15,6 @@ export interface Destination {
  * because W04 folds them into Services (`/services?live=1`) and Clients
  * (`/clients?tab=tokens`). Until then the sidebar appends them to the Connect
  * group and the palette lists them, so neither page disappears. W04 removes this.
- *
- * The Settings-area pages need no such block: every one of them already has an
- * entry in the navigation description, and `NOT_YET_MOVED` (lib/moved-routes.ts)
- * leads that entry to the page's current address until W03 and W05 move it.
  */
 export const TEMPORARY_ENTRIES: NavEntry[] = [
   { id: "tunnels", label: "Tunnels", to: "/tunnels", icon: Waypoints },

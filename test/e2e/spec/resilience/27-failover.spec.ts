@@ -66,7 +66,7 @@ test("27-failover: stop primary upstream, verify failover + audit", async ({ pag
     }
 
     // Audit log should show upstream errors.
-    await page.goto("/audit");
+    await page.goto("/settings/audit");
     await expect(
       page.getByRole("table").locator("tr").filter({ hasText: /ai\.upstream_error|upstream/ }).first()
     ).toBeVisible({ timeout: 10_000 });

@@ -5,7 +5,7 @@ import { renderApp } from "@/mocks/test-utils";
 import AutomationTokens from "@/pages/AutomationTokens";
 
 function mount() {
-  return renderApp(<AutomationTokens />, "/account/automation");
+  return renderApp(<AutomationTokens />, "/settings/automation");
 }
 
 describe("Automation tokens", () => {

@@ -79,7 +79,7 @@ export default function Users() {
       />
 
       {smtpUnconfigured && (
-        <ErrorNotice variant="warn" role="status" action={<Link to="/settings">Set up email →</Link>}>
+        <ErrorNotice variant="warn" role="status" action={<Link to="/settings/email">Set up email →</Link>}>
           {EMAIL_NOT_CONFIGURED}
         </ErrorNotice>
       )}

@@ -93,6 +93,6 @@ describe("Retention & compliance", () => {
 describe("Retention back link", () => {
   it("links back to Settings (U1)", async () => {
     renderApp(<Retention />);
-    expect(await screen.findByRole("link", { name: "Back to Settings" })).toHaveAttribute("href", "/settings");
+    expect(await screen.findByRole("link", { name: "Back to Settings" })).toHaveAttribute("href", "/settings/general");
   });
 });

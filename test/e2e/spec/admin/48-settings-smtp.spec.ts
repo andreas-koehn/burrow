@@ -42,8 +42,8 @@ test("48-settings-smtp: SMTP save + test-email flow + privacy toggle", async ({ 
   const before = (await beforeResp.json()) as SettingsMap;
 
   try {
-    await page.goto("/settings");
-    await expect(page.getByRole("heading", { name: "Settings", level: 1 })).toBeVisible();
+    await page.goto("/settings/email");
+    await expect(page.getByRole("heading", { name: "Email", level: 1 })).toBeVisible();
 
     // ---- SMTP SAVE ----
     await page.fill("#smtp-host", "smtp.example.com");

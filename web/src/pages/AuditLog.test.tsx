@@ -5,7 +5,7 @@ import { renderApp } from "@/mocks/test-utils";
 import AuditLog from "@/pages/AuditLog";
 
 function mount() {
-  return renderApp(<AuditLog />, "/audit");
+  return renderApp(<AuditLog />, "/settings/audit");
 }
 
 describe("Audit log (§4.25)", () => {

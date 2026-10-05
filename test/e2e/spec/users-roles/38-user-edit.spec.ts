@@ -17,7 +17,7 @@ test("38-user-edit: change a user's role to Admin via the Edit dialog", async ({
   expect(userId).toBeTruthy();
 
   try {
-    await page.goto("/users");
+    await page.goto("/settings/users");
 
     // Filter to just this user via the searchbox.
     await page.getByRole("searchbox").fill(email);

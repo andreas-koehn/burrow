@@ -13,7 +13,7 @@ test("15-audit-chain: UI mint → token.mint audit row → chain valid", async (
   await page.locator('[role="dialog"]', { has: page.getByRole("heading", { name: "Copy your token now" }) }).last().getByRole("button", { name: "Done" }).click();
 
   // Now check the audit log.
-  await page.goto("/audit");
+  await page.goto("/settings/audit");
   await expect(page.getByRole("heading", { name: "Audit log" })).toBeVisible();
 
   // Search for the token's name (audit event JSON contains it).

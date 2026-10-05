@@ -48,7 +48,7 @@ export default function Tokens() {
         </div>
       </form>
 
-      <p className="muted small">Need a token for CI, the CLI, or bots? <Link className="link-inline" to="/account/automation">Automation tokens</Link></p>
+      <p className="muted small">Need a token for CI, the CLI, or bots? <Link className="link-inline" to="/settings/automation">Automation tokens</Link></p>
 
       <div className="table-wrap">
         <table className="data" aria-label="Tokens">

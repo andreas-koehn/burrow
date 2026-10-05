@@ -5,7 +5,7 @@ import { renderApp } from "@/mocks/test-utils";
 import Webhooks from "@/pages/Webhooks";
 
 function mount() {
-  return renderApp(<Webhooks />, "/webhooks");
+  return renderApp(<Webhooks />, "/settings/webhooks");
 }
 
 describe("Webhooks (§4.26)", () => {

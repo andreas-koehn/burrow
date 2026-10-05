@@ -76,10 +76,10 @@ test("v0.5.0: connection logs page renders and rollups toggle works", async ({ p
 
 // ── 4. OpenAPI viewer: no external CDN requests ───────────────────────────────
 test("v0.5.0: OpenAPI viewer loads with zero external-CDN requests", async ({ page }) => {
-  // The OpenAPI viewer is now an in-app page (P1-14): the Settings
-  // "OpenAPI viewer" nav card is a same-tab <Link to="/openapi"> (no
-  // target="_blank"), and /openapi frames /api/v1/openapi/viewer/ in an
-  // <iframe>. So we navigate in-app and inspect the iframe — no new tab opens.
+  // The OpenAPI viewer is an in-app page (P1-14): the Settings navigation's
+  // "API reference" entry is a same-tab link (no target="_blank"), and
+  // /settings/api frames /api/v1/openapi/viewer/ in an <iframe>. So we
+  // navigate in-app and inspect the iframe — no new tab opens.
 
   // Collect every external request made on this page (incl. iframe subresources).
   const externalRequests: string[] = [];
@@ -97,15 +97,13 @@ test("v0.5.0: OpenAPI viewer loads with zero external-CDN requests", async ({ pa
   });
 
   // Navigate to a page that renders the full Layout with the sidebar nav.
-  await page.goto("/settings");
-  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await page.goto("/settings/general");
+  await expect(page.getByRole("heading", { name: "General", exact: true })).toBeVisible();
 
-  // The Settings "OpenAPI viewer" card links in-app to /openapi (same tab).
-  // The card's accessible name is its full text ("OpenAPI viewer" + the
-  // description line), so match by substring rather than exact.
-  await page.getByRole("link", { name: /OpenAPI viewer/ }).click();
-  await expect(page).toHaveURL(/\/openapi$/);
-  await expect(page.getByRole("heading", { name: "OpenAPI", exact: true })).toBeVisible();
+  // The Settings navigation's "API reference" entry links in-app to /settings/api (same tab).
+  await page.locator(".sidebar").getByRole("link", { name: "API reference", exact: true }).click();
+  await expect(page).toHaveURL(/\/settings\/api$/);
+  await expect(page.getByRole("heading", { name: "API reference", exact: true })).toBeVisible();
 
   // The viewer is served inside an <iframe src="/api/v1/openapi/viewer/">.
   // Its bundled HTML contains the #route-list element (no external CDN deps).

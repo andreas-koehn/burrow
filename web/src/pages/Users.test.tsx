@@ -56,7 +56,7 @@ describe("Users — SMTP informational notice (P6B.1)", () => {
     expect(await screen.findByText(/Email isn't set up\. Password resets and test emails are unavailable until SMTP is configured\./)).toBeInTheDocument();
     const link = screen.getByRole("link", { name: /set up email/i });
     expect(link).toBeInTheDocument();
-    expect(link.getAttribute("href")).toBe("/settings");
+    expect(link.getAttribute("href")).toBe("/settings/email");
   });
 
   it("hides SMTP notice when smtp.host is set", async () => {
@@ -73,11 +73,11 @@ describe("Users — SMTP informational notice (P6B.1)", () => {
     });
   });
 
-  it("SMTP notice contains link to /settings", async () => {
+  it("SMTP notice contains link to /settings/email", async () => {
     renderApp(<Users />);
     await screen.findByText("bob@acme.io");
     const link = await screen.findByRole("link", { name: /set up email/i });
-    expect(link.getAttribute("href")).toBe("/settings");
+    expect(link.getAttribute("href")).toBe("/settings/email");
   });
 });
 

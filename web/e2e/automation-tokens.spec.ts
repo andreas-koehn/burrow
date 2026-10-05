@@ -1,12 +1,12 @@
 import { test, expect } from "@playwright/test";
 
-// v0.4.0: /account/automation — long-lived bearer tokens (spec Part M.1).
+// v0.4.0: /settings/automation — long-lived bearer tokens (spec Part M.1).
 
 test.use({ storageState: "playwright-auth.json" });
 
 test("v0.4.0: automation tokens — mint reveals plaintext once + lists with prefix", async ({ page }) => {
-  await page.goto("/account/automation");
-  await expect(page).toHaveURL(/\/account\/automation$/);
+  await page.goto("/settings/automation");
+  await expect(page).toHaveURL(/\/settings\/automation$/);
   await expect(page.getByRole("heading", { name: "Automation tokens" })).toBeVisible();
 
   // The list may already contain rows from other test runs against the

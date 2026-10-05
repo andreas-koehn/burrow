@@ -1,15 +1,19 @@
-import { Routes, Route, Navigate, useParams } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { RequireAuth } from "@/auth/RequireAuth";
+import { useAuth } from "@/auth/useAuth";
+import { RequireAdmin } from "@/components/RequireAdmin";
 import { Layout } from "@/components/Layout";
 import Login from "@/pages/Login";
 import Home from "@/pages/Home";
 import Tunnels from "@/pages/Tunnels";
 import Services from "@/pages/Services";
 import Tokens from "@/pages/Tokens";
-import Account from "@/pages/Account";
 import Users from "@/pages/Users";
 import Roles from "@/pages/Roles";
-import Settings from "@/pages/Settings";
+import GeneralSettings from "@/pages/settings/GeneralSettings";
+import EmailSettings from "@/pages/settings/EmailSettings";
+import Profile from "@/pages/settings/Profile";
+import Sessions from "@/pages/settings/Sessions";
 import Clients from "@/pages/Clients";
 import ClientDetail from "@/pages/ClientDetail";
 import ConnectClient from "@/pages/ConnectClient";
@@ -40,6 +44,14 @@ function ServiceDomainsRedirect() {
   return <Navigate to={`/services/${id}`} replace />;
 }
 
+// Settings has no page of its own: an admin starts on the relay's settings, everyone else on their profile.
+function SettingsIndex() {
+  const { user } = useAuth();
+  const { search, hash } = useLocation();
+  if (!user) return null; // RequireAuth above has not resolved yet
+  return <Navigate to={{ pathname: user.role === "admin" ? "/settings/general" : "/settings/profile", search, hash }} replace />;
+}
+
 export default function App() {
   return (
     <Routes>
@@ -57,30 +69,32 @@ export default function App() {
         <Route path="/gateway/requests" element={<InspectorIndex />} />
         <Route path="/gateway/requests/:serviceId/:requestId?" element={<RequestInspector />} />
         <Route path="/gateway/cost" element={<CostBudgets />} />
-        <Route path="/audit" element={<AuditLog />} />
-        <Route path="/webhooks" element={<Webhooks />} />
-
-        <Route path="/account/automation" element={<AutomationTokens />} />
-        <Route path="/settings/backups" element={<BackupRestore />} />
         <Route path="/tokens" element={<Tokens />} />
         <Route path="/clients" element={<Clients />} />
         <Route path="/clients/connect" element={<ConnectClient />} />
         <Route path="/clients/:id" element={<ClientDetail />} />
-        <Route path="/account" element={<Account />} />
-        <Route path="/users" element={<Users />} />
-        <Route path="/roles" element={<Roles />} />
-        <Route path="/settings" element={<Settings />} />
         <Route path="/connection-logs" element={<ConnectionLogs />} />
         <Route path="/services/:id" element={<ServiceDetail />} />
         <Route path="/services/:id/domains" element={<ServiceDomainsRedirect />} />
-        <Route path="/settings/retention" element={<Retention />} />
-        <Route path="/settings/database" element={<DatabaseBackend />} />
+        {/* Settings. The admin-only pages are the entries marked adminOnly in lib/navigation.ts. */}
+        <Route path="/settings" element={<SettingsIndex />} />
+        <Route path="/settings/general" element={<RequireAdmin><GeneralSettings /></RequireAdmin>} />
+        <Route path="/settings/email" element={<RequireAdmin><EmailSettings /></RequireAdmin>} />
+        <Route path="/settings/retention" element={<RequireAdmin><Retention /></RequireAdmin>} />
+        <Route path="/settings/database" element={<RequireAdmin><DatabaseBackend /></RequireAdmin>} />
+        <Route path="/settings/backups" element={<RequireAdmin><BackupRestore /></RequireAdmin>} />
+        <Route path="/settings/users" element={<RequireAdmin><Users /></RequireAdmin>} />
+        <Route path="/settings/roles" element={<RequireAdmin><Roles /></RequireAdmin>} />
+        <Route path="/settings/audit" element={<RequireAdmin><AuditLog /></RequireAdmin>} />
+        <Route path="/settings/webhooks" element={<RequireAdmin><Webhooks /></RequireAdmin>} />
         {/* P1-14: in-app OpenAPI viewer, framed inside the dashboard chrome. */}
-        <Route path="/openapi" element={<OpenApiViewer />} />
-        <Route path="/settings/custom-domains" element={<Navigate to="/settings" replace />} />
+        <Route path="/settings/api" element={<RequireAdmin><OpenApiViewer /></RequireAdmin>} />
+        <Route path="/settings/profile" element={<Profile />} />
+        <Route path="/settings/sessions" element={<Sessions />} />
+        <Route path="/settings/automation" element={<AutomationTokens />} />
         {/* Old bookmarks: every moved path lands on its new home, params, query and hash intact. */}
         {OLD_ROUTES.map((r) => <Route key={r.from} path={r.from} element={<RedirectTo to={r.to} />} />)}
-        {/* Temporary (W03, W05): navigation entries whose page still lives at its old address. */}
+        {/* Temporary (W05): navigation entries whose page still lives at its old address. */}
         {NOT_YET_MOVED.map((r) => <Route key={r.from} path={r.from} element={<RedirectTo to={r.to} />} />)}
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

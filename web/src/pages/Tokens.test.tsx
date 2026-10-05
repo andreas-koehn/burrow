@@ -165,6 +165,6 @@ describe("Tokens", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }) as any);
     setup();
     const link = screen.getByRole("link", { name: /automation tokens/i });
-    expect(link).toHaveAttribute("href", "/account/automation");
+    expect(link).toHaveAttribute("href", "/settings/automation");
   });
 });

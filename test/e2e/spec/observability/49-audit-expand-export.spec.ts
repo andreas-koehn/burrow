@@ -46,7 +46,7 @@ test("49-audit-expand-export: row expands to JSON payload + Export hits the expo
   expect(userId).toBeTruthy();
 
   try {
-    await page.goto("/audit");
+    await page.goto("/settings/audit");
     await expect(page.getByRole("heading", { name: "Audit log", level: 1 })).toBeVisible();
 
     const table = page.locator('table[aria-label="Audit events"]');

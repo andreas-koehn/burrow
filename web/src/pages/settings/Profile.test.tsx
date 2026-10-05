@@ -4,9 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "@/components/theme-provider";
-import Account from "./Account";
+import Profile from "./Profile";
 
-/** Render Account with all required providers.
+/** Render Profile with all required providers.
  *  mockMe: the user returned by GET /api/v1/me.
  *  mockPost: optional override for the POST /auth/change-password response.
  */
@@ -31,9 +31,9 @@ function setup(
   render(
     <ThemeProvider>
       <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={["/account"]}>
+        <MemoryRouter initialEntries={["/settings/profile"]}>
           <Routes>
-            <Route path="/account" element={<Account />} />
+            <Route path="/settings/profile" element={<Profile />} />
             <Route path="/login" element={<div>LOGIN PAGE</div>} />
           </Routes>
         </MemoryRouter>
@@ -43,8 +43,14 @@ function setup(
   return qc;
 }
 
-describe("Account", () => {
+describe("Profile", () => {
   beforeEach(() => vi.restoreAllMocks());
+
+  it("is headed Profile & password and leaves the sessions to their own page", async () => {
+    setup();
+    expect(await screen.findByRole("heading", { name: "Profile & password", level: 1 })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /active sessions/i })).toBeNull();
+  });
 
   it("renders email and role from useAuth", async () => {
     setup({ id: "u1", email: "alice@example.com", role: "admin" });
@@ -78,7 +84,7 @@ describe("Account", () => {
       <ThemeProvider>
         <QueryClientProvider client={qc}>
           <MemoryRouter>
-            <Account />
+            <Profile />
           </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>
@@ -111,7 +117,7 @@ describe("Account", () => {
       <ThemeProvider>
         <QueryClientProvider client={qc}>
           <MemoryRouter>
-            <Account />
+            <Profile />
           </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>

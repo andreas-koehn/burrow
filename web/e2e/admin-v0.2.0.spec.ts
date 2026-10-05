@@ -85,8 +85,9 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   await roleDlg.getByRole("button", { name: "Close", exact: true }).click();
 
   // ── Settings: GET then PUT round-trip (whitelisted keys persist) ──────────
-  await sidebar.getByRole("link", { name: "Settings", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  // Still inside Settings (Roles): its navigation lists the Email page.
+  await sidebar.getByRole("link", { name: "Email", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Email", exact: true })).toBeVisible();
   await page.getByLabel("SMTP server").fill("smtp.e2e.example.com");
   await page.getByLabel("Port").fill("587");
   await page.getByRole("button", { name: "Save settings" }).click();
@@ -95,6 +96,7 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   await sidebar.getByRole("link", { name: /^Back to / }).click();
   await sidebar.getByRole("link", { name: /^Clients/ }).click();
   await sidebar.getByRole("link", { name: "Settings", exact: true }).click();
+  await sidebar.getByRole("link", { name: "Email", exact: true }).click();
   await expect(page.getByLabel("SMTP server")).toHaveValue("smtp.e2e.example.com");
 
   // ── Clients: empty state (GET /clients → []) ─────────────────────────────

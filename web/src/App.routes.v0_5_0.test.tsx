@@ -31,8 +31,8 @@ describe("v0.5.0 routes", () => {
 
   it("redirects the retired custom-domains route", async () => {
     renderAt("/settings/custom-domains");
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
-    expect(screen.getByTestId("path")).toHaveTextContent(/^\/settings$/);
+    expect(await screen.findByRole("heading", { name: "General", level: 1 })).toBeInTheDocument();
+    expect(screen.getByTestId("path")).toHaveTextContent(/^\/settings\/general$/);
   });
 
   it("keeps the hash of a service bookmark", async () => {
@@ -43,10 +43,12 @@ describe("v0.5.0 routes", () => {
     expect(nav.getByRole("link", { name: /^Services(,|$)/ })).toHaveAttribute("aria-current", "page");
   });
 
-  it("shows the Settings sidebar on the settings page", async () => {
-    renderAt("/settings");
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
-    expect(await screen.findByRole("navigation", { name: "Settings" })).toBeInTheDocument();
+  it("shows the Settings sidebar on a settings page, with the page's entry current", async () => {
+    renderAt("/settings/email");
+    expect(await screen.findByRole("heading", { name: "Email", level: 1 })).toBeInTheDocument();
+    const nav = within(await screen.findByRole("navigation", { name: "Settings" }));
+    expect(nav.getByRole("link", { name: "Email" })).toHaveAttribute("aria-current", "page");
+    expect(nav.getByRole("link", { name: "General" })).not.toHaveAttribute("aria-current");
     expect(screen.getByRole("link", { name: /^Back to / })).toBeInTheDocument();
   });
 

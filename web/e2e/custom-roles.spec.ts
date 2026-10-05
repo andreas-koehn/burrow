@@ -5,7 +5,7 @@ import { test, expect } from "@playwright/test";
 test.use({ storageState: "playwright-auth.json" });
 
 test("v0.4.0: create a custom role with one permission grant", async ({ page }) => {
-  await page.goto("/roles");
+  await page.goto("/settings/roles");
   await expect(page.getByRole("heading", { name: "Roles" })).toBeVisible();
 
   await page.getByRole("button", { name: "New role" }).click();

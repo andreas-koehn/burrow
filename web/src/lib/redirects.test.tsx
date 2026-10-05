@@ -31,6 +31,14 @@ describe("RedirectTo", () => {
     ["/inspector/svc1", "/gateway/requests/svc1"],
     ["/inspector/svc1/req9?tab=diff#body", "/gateway/requests/svc1/req9?tab=diff#body"],
     ["/inspector/my%20svc", "/gateway/requests/my%20svc"],
+    ["/users", "/settings/users"],
+    ["/roles", "/settings/roles"],
+    ["/audit?actor=x", "/settings/audit?actor=x"],
+    ["/webhooks#deliveries", "/settings/webhooks#deliveries"],
+    ["/openapi", "/settings/api"],
+    ["/account", "/settings/profile"],
+    ["/account/automation?new=1#list", "/settings/automation?new=1#list"],
+    ["/settings/custom-domains", "/settings/general"],
   ])("%s lands on %s", (from, to) => {
     expect(landingFor(from)).toBe(to);
   });
@@ -54,8 +62,7 @@ describe("route tables", () => {
   });
 
   it("a page that has not moved yet is reached from its future path, query and hash intact", () => {
-    expect(landingFor("/settings/users?q=a#invite", NOT_YET_MOVED)).toBe("/users?q=a#invite");
-    expect(landingFor("/traffic", NOT_YET_MOVED)).toBe("/connection-logs");
+    expect(landingFor("/traffic?q=a#row", NOT_YET_MOVED)).toBe("/connection-logs?q=a#row");
   });
 
   it("the two tables never chain into a loop", () => {

@@ -16,7 +16,7 @@ function truncate(s: string, n = 12): string {
   return s.length <= n ? s : `${s.slice(0, n)}…`;
 }
 
-const BACK = { to: "/settings", label: "Settings" } as const;
+const BACK = { to: "/settings/general", label: "Settings" } as const;
 
 export default function BackupRestore() {
   const qc = useQueryClient();

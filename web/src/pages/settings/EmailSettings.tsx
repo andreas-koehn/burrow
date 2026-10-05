@@ -1,14 +1,13 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Checkbox, Input, Select, FormField, FormFieldGroup, PageHeader, InfoHint, ErrorNotice } from "@/components/ds";
+import { Button, Input, Select, FormField, FormFieldGroup, PageHeader, InfoHint, ErrorNotice } from "@/components/ds";
 import { EMAIL_NOT_CONFIGURED } from "@/lib/copy";
 import type { SettingsMap } from "@/lib/contract";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 
-export default function Settings() {
+export default function EmailSettings() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["settings"], queryFn: () => apiFetch<SettingsMap>("/settings"), retry: false });
   const [form, setForm] = useState<SettingsMap>({});
@@ -26,31 +25,6 @@ export default function Settings() {
     onError: (e: unknown) => toast.error(e instanceof ApiError ? e.message : "Save failed"),
   });
 
-  // v0.5.1 Q12 (UI landed in v0.5.2): connection-log privacy toggle for the
-  // per-day top-source-IPs aggregation. Default-true policy applied client-
-  // side when the key is absent (matches the backend reader).
-  const topIPsEnabled =
-    (form["connection_logs.rollup_include_top_ips"] ?? "true") !== "false";
-  const togglePrivacy = useMutation({
-    mutationFn: (next: boolean) =>
-      apiFetch("/settings", {
-        method: "PUT",
-        body: JSON.stringify({
-          "connection_logs.rollup_include_top_ips": next ? "true" : "false",
-        }),
-      }),
-    onSuccess: (_data, next) => {
-      // Update local form so the toggle UI reflects the new value
-      // without waiting for the GET refetch round-trip.
-      setForm((f) => ({
-        ...f,
-        "connection_logs.rollup_include_top_ips": next ? "true" : "false",
-      }));
-      void qc.invalidateQueries({ queryKey: ["settings"] });
-    },
-    onError: (e: unknown) =>
-      toast.error(e instanceof ApiError ? e.message : "Save failed"),
-  });
   const test = useMutation({
     mutationFn: () => apiFetch("/settings/test-email", { method: "POST", body: JSON.stringify({ to: testTo }) }),
     onSuccess: () => { setTestError(""); toast.success(`Sent a test email to ${testTo}.`); },
@@ -59,32 +33,12 @@ export default function Settings() {
 
   return (
     <div className="account-page page-narrow">
-      <PageHeader title="Settings" subtitle="Admin-only configuration for this Burrow relay." />
+      <PageHeader title="Email" subtitle="Outgoing mail for invitations and notifications." />
 
-      {/* ---- General section: Privacy + Email/SMTP (above the nav cards) ---- */}
-      <section className="account-section" aria-labelledby="sec-general">
-        <div className="section-head"><div className="left"><h2 id="sec-general">General</h2></div></div>
-
-        {/* ---- v0.5.2 Privacy section (Q12 toggle for connection-log top-source-IPs) ---- */}
-        <div className="section-head sub"><div className="left"><h3 id="sec-privacy">Privacy</h3></div></div>
-        <div className="form-field">
-          <label htmlFor="rollup-include-top-ips" className="checkbox-row">
-            <Checkbox
-              id="rollup-include-top-ips"
-              checked={topIPsEnabled}
-              onChange={(v) => { if (!togglePrivacy.isPending) togglePrivacy.mutate(v); }}
-            />
-            <span>Include top source IPs in daily connection-log rollups</span>
-          </label>
-          <p className="help">
-            When enabled, the daily rollup includes the top 10 source IPs per
-            service. Turn off for stricter privacy. Default-on.
-          </p>
-        </div>
-
-        <div className="section-head sub">
+      <section className="account-section" aria-labelledby="sec-smtp">
+        <div className="section-head">
           <div className="left">
-            <h3 id="sec-smtp">Email / SMTP</h3>
+            <h2 id="sec-smtp">Email / SMTP</h2>
             <InfoHint label="Email / SMTP" content="SMTP enables password-reset and test emails." />
           </div>
         </div>
@@ -115,7 +69,10 @@ export default function Settings() {
           </div>
         </form>
 
-        <div className="section-head sub"><div className="left"><h3>Test connection</h3></div></div>
+      </section>
+
+      <section className="account-section" aria-labelledby="sec-smtp-test">
+        <div className="section-head"><div className="left"><h2 id="sec-smtp-test">Test connection</h2></div></div>
         {!showTest ? (
           <Button variant="secondary" size="sm" onClick={() => setShowTest(true)}>Send test email</Button>
         ) : (
@@ -129,33 +86,6 @@ export default function Settings() {
           </div>
         )}
         {testError && <p role="alert" className="field-error">{testError}</p>}
-      </section>
-
-      {/* ---- v0.5.0 nav cards ---- */}
-      <section className="account-section" aria-labelledby="sec-configuration">
-        <div className="section-head"><div className="left"><h2 id="sec-configuration">Configuration</h2></div></div>
-        <div className="settings-nav-grid">
-          <Link to="/settings/retention" className="settings-nav-card">
-            <div className="settings-nav-card-title">Retention &amp; compliance</div>
-            <div className="settings-nav-card-desc muted">Audit log, usage events, inspector ring buffer, and other retention knobs.</div>
-          </Link>
-          <Link to="/settings/database" className="settings-nav-card">
-            <div className="settings-nav-card-title">Database backend</div>
-            <div className="settings-nav-card-desc muted">Driver in use (SQLite default; Postgres alpha).</div>
-          </Link>
-          <Link to="/settings/backups" className="settings-nav-card">
-            <div className="settings-nav-card-title">Backup &amp; restore</div>
-            <div className="settings-nav-card-desc muted">Snapshots of the relay&apos;s SQLite database.</div>
-          </Link>
-          <Link to="/openapi" className="settings-nav-card">
-            <div className="settings-nav-card-title">OpenAPI viewer</div>
-            <div className="settings-nav-card-desc muted">Browse the JSON/HTTP API docs.</div>
-          </Link>
-          <Link to="/connection-logs" className="settings-nav-card">
-            <div className="settings-nav-card-title">Connection logs</div>
-            <div className="settings-nav-card-desc muted">Per-tunnel HTTP/TCP/control connection history.</div>
-          </Link>
-        </div>
       </section>
       <Toaster />
     </div>

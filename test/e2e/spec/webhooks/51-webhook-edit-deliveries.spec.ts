@@ -53,7 +53,7 @@ test("51-webhook-edit-deliveries: edit dialog prefills + Send test lands a deliv
   expect(webhookId).toBeTruthy();
 
   try {
-    await page.goto("/webhooks");
+    await page.goto("/settings/webhooks");
 
     const row = page.locator('table[aria-label="Webhooks"] tr').filter({ hasText: name });
     await expect(row).toBeVisible({ timeout: 5_000 });

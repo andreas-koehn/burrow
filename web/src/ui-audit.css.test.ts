@@ -209,12 +209,12 @@ describe("narrow page column — form-only pages", () => {
     expect(px("--page-w-narrow")).toBeGreaterThan(px("--input-w-lg"));
     expect(px("--page-w-narrow")).toBeLessThan(1440);
   });
-  it.each(["Settings", "Retention", "DatabaseBackend", "ConnectClient"])("%s is a narrow page", (name) => {
+  it.each(["settings/GeneralSettings", "settings/EmailSettings", "settings/Profile", "Retention", "DatabaseBackend", "ConnectClient"])("%s is a narrow page", (name) => {
     const w = wrappers(name);
     expect(w.length).toBeGreaterThan(0);
     for (const c of w) expect(c.split(" ")).toContain("page-narrow");
   });
-  it.each(["Services", "Users", "Account", "BackupRestore", "CustomDomainsOverview", "ServiceDetail", "Home"])(
+  it.each(["Services", "Users", "settings/Sessions", "BackupRestore", "CustomDomainsOverview", "ServiceDetail", "Home"])(
     "%s keeps the full column (it shows a table, tiles or tabs)",
     (name) => {
       expect(page(name)).not.toContain("page-narrow");

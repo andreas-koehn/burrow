@@ -145,6 +145,27 @@ describe("Layout workspace shell", () => {
     expect(screen.queryByRole("link", { name: "Users & roles" })).toBeNull();
   });
 
+  it("marks the page's entry in the Settings navigation", async () => {
+    renderLayout("admin", { path: "/settings/email" });
+    const nav = within(await screen.findByRole("navigation", { name: "Settings" }));
+    expect(await nav.findByRole("link", { name: "Email" })).toHaveAttribute("aria-current", "page");
+    expect(nav.getAllByRole("link").filter((a) => a.getAttribute("aria-current") === "page")).toHaveLength(1);
+    expect(sidebarLinks("Settings")).toEqual([
+      "General", "Email", "Retention", "Database", "Backups", "Users", "Roles", "Audit log",
+      "Webhooks", "API reference", "Profile & password", "Sessions", "Automation tokens",
+    ]);
+  });
+
+  it("a non-admin sees only the Personal group in Settings", async () => {
+    renderLayout("user", { path: "/settings/sessions" });
+    await chip();
+    expect(sidebarLinks("Settings")).toEqual(["Profile & password", "Sessions", "Automation tokens"]);
+    const nav = within(screen.getByRole("navigation", { name: "Settings" }));
+    expect(nav.getByRole("link", { name: "Sessions" })).toHaveAttribute("aria-current", "page");
+    expect(nav.queryByText("Relay")).toBeNull();
+    expect(nav.getByText("Personal")).toBeInTheDocument();
+  });
+
   it("nav links use the design-system .nav-item class and mark the current page", async () => {
     renderLayout("user");
     await chip();
