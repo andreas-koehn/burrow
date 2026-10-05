@@ -36,6 +36,7 @@ type harness struct {
 	hostname    string
 	hostErr     error
 	terminal    bool
+	viewTerm    bool   // stdout is a terminal that can show the status view
 	secret      string // what a person types at the hidden token prompt
 	secretCalls int
 	typed       string // keys typed at the hidden prompt; they go through the real reader
@@ -74,7 +75,8 @@ func (h *harness) deps() deps {
 			h.runs = append(h.runs, runCall{creds, tunnels, g})
 			return h.runErr
 		},
-		isTerminal: func() bool { return h.terminal },
+		isTerminal:   func() bool { return h.terminal },
+		viewTerminal: func() bool { return h.viewTerm },
 		readSecret: func() (string, error) {
 			h.secretCalls++
 			if h.typed != "" {

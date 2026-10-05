@@ -24,6 +24,9 @@ type globalFlags struct {
 	cacert     string // PEM file of a CA to trust
 	serverName string // TLS server name; default: host of the control endpoint
 	insecure   bool
+	// view asks for the status view instead of log lines. Only readGlobals
+	// sets it; `connect` builds its flags itself and always logs.
+	view bool
 }
 
 // startClient connects and keeps the tunnels up until ctx ends. Tests replace it
@@ -59,11 +62,17 @@ func runClient(ctx context.Context, creds client.Credentials, tunnels []client.T
 	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return startClient(ctx, client.Options{
+	o := client.Options{
 		Server: creds.Control, Token: creds.Token, Insecure: g.insecure,
 		RootCAs: pool, ServerName: sn, Logger: log,
 		Tunnels: tunnels,
-	})
+	}
+	if g.view {
+		if t, ok := openTerminal(); ok {
+			return runWithView(ctx, stop, o, t)
+		}
+	}
+	return startClient(ctx, o)
 }
 
 // logFormatFlag returns the value of --log when it was given.
@@ -97,6 +106,11 @@ func readGlobals(cmd *cobra.Command, d deps) (globalFlags, error) {
 	if given {
 		g.logFormat = format
 	}
+	// The status view replaces the log lines when stdout is a terminal and
+	// nothing asks for log lines: neither --log nor one of the log variables.
+	g.view = !given && strings.TrimSpace(d.getenv("BURROW_LOG_FORMAT")) == "" &&
+		strings.TrimSpace(d.getenv("BURROW_LOG_LEVEL")) == "" &&
+		d.viewTerminal != nil && d.viewTerminal()
 	g.cacert, _ = cmd.Flags().GetString("cacert")
 	g.serverName, _ = cmd.Flags().GetString("server-name")
 	g.insecure, _ = cmd.Flags().GetBool("insecure")

@@ -1,0 +1,23 @@
+burrow  ●  connected
+  burrow.example.com
+  v0.6.0   12 ms
+
+  my-app
+https://burrow.example.com/svc/p7baeh/
+  → 127.0.0.1:3000
+  access: open (anyone with the URL)
+  3 open, 41 total
+
+  14:02:11  GET   /api/users      200
+  14:02:12  POST  /api/login      401
+
+  ! no listener on
+    127.0.0.1:3000
+
+  pg
+  burrow.example.com:9000
+  → 127.0.0.1:5432
+  1 open, 2 total
+
+  14:02:11  connection from 203.0.113.7
+  14:03:00  connection from 2001:db8::1

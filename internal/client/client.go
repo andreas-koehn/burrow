@@ -40,6 +40,8 @@ type Options struct {
 	ServerName string
 	Tunnels    []TunnelSpec
 	Logger     *slog.Logger
+	// Observer is told what the client does, for a status view. nil = none.
+	Observer Observer
 }
 
 // Client maintains an authenticated control session with auto-reconnect.
@@ -48,10 +50,15 @@ type Client struct {
 	log        *slog.Logger
 	bo         *backoff.Backoff
 	registered atomic.Bool
+	// events delivers to Options.Observer; nil without one.
+	events       *notifier
+	pingInterval time.Duration
 
 	mu             sync.Mutex
 	tunnelLocal    map[string]string // tunnelID → localAddr
 	lastRemotePort int
+	pingSent       time.Time       // when the ping that is still unanswered was sent
+	localReported  map[string]bool // localAddr → what the observer was last told
 }
 
 // New builds a Client.
@@ -59,12 +66,18 @@ func New(o Options) *Client {
 	if o.Logger == nil {
 		o.Logger = slog.Default()
 	}
-	return &Client{
-		opts:        o,
-		log:         o.Logger,
-		bo:          backoff.New(500*time.Millisecond, 30*time.Second),
-		tunnelLocal: map[string]string{},
+	c := &Client{
+		opts:          o,
+		log:           o.Logger,
+		bo:            backoff.New(500*time.Millisecond, 30*time.Second),
+		pingInterval:  60 * time.Second,
+		tunnelLocal:   map[string]string{},
+		localReported: map[string]bool{},
 	}
+	if o.Observer != nil {
+		c.events = newNotifier(o.Observer)
+	}
+	return c
 }
 
 // lastRemotePortForTest returns the remote port from the last successful registration (test helper).
@@ -81,15 +94,28 @@ func (c *Client) resetRegisteredForTest() { c.registered.Store(false) }
 
 // Run connects and keeps reconnecting until ctx is cancelled.
 func (c *Client) Run(ctx context.Context) error {
+	if c.events != nil {
+		defer c.events.start()()
+	}
 	for {
-		if err := c.connectOnce(ctx); err != nil && ctx.Err() == nil {
+		c.events.emit(func(o Observer) { o.State(StateConnecting, "", 0) })
+		err := c.connectOnce(ctx)
+		if err != nil && ctx.Err() == nil {
 			c.log.Warn("connection ended", "err", err)
 		}
 		c.registered.Store(false)
+		wait := c.bo.NextBackOff()
+		if ctx.Err() == nil {
+			detail := ""
+			if err != nil {
+				detail = err.Error()
+			}
+			c.events.emit(func(o Observer) { o.State(StateReconnecting, detail, wait) })
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(c.bo.NextBackOff()):
+		case <-time.After(wait):
 		}
 	}
 }
@@ -124,6 +150,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		return fmt.Errorf("auth failed: %s", ar.Error)
 	}
 	c.log.Info("connected", "session_id", ar.SessionID)
+	c.events.emit(func(o Observer) { o.State(StateConnected, "", 0) })
 
 	// yamux.DefaultConfig has EnableKeepAlive=true, KeepAliveInterval=30s.
 	// Dead-peer detection relies on this keepalive; do not override it.
@@ -150,6 +177,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		if env.Type != proto.MsgTunnelRegisterResp || proto.DecodePayload(env, &rr) != nil || !rr.OK {
 			return fmt.Errorf("register failed: %s", rr.Error)
 		}
+		reg := RegisteredTunnel{TunnelID: rr.TunnelID, Name: tn.Name, Type: tn.Type, LocalAddr: tn.LocalAddr}
 		if tn.Type == "http" {
 			// Older relays report only the hostname; keep printing that.
 			tunnelURL := rr.URL
@@ -157,9 +185,12 @@ func (c *Client) connectOnce(ctx context.Context) error {
 				tunnelURL = rr.Hostname
 			}
 			c.log.Info("tunnel registered", "name", tn.Name, "tunnel_id", rr.TunnelID, "url", tunnelURL)
+			reg.URL = tunnelURL
 		} else {
 			c.log.Info("tunnel registered", "tunnel_id", rr.TunnelID, "remote_port", rr.RemotePort)
+			reg.RemotePort = rr.RemotePort
 		}
+		c.events.emit(func(o Observer) { o.Registered(reg) })
 		c.mu.Lock()
 		c.tunnelLocal[rr.TunnelID] = tn.LocalAddr
 		c.lastRemotePort = rr.RemotePort
@@ -185,18 +216,65 @@ func (c *Client) connectOnce(ctx context.Context) error {
 }
 
 func (c *Client) pingLoop(ctx context.Context, ctrl *yamux.Stream) {
-	t := time.NewTicker(60 * time.Second)
+	ping := func() error {
+		// The time is taken before the write, so that the answer cannot be
+		// read before it is set.
+		c.mu.Lock()
+		c.pingSent = time.Now()
+		c.mu.Unlock()
+		return proto.WriteMessage(ctrl, proto.MsgPing, proto.Ping{Nonce: "hb"})
+	}
+	c.mu.Lock()
+	c.pingSent = time.Time{} // a ping of an earlier session gets no answer
+	c.mu.Unlock()
+	// An observer shows the round-trip time, so it gets one measurement at
+	// once instead of after the first interval.
+	if c.events != nil {
+		if err := ping(); err != nil {
+			return
+		}
+	}
+	t := time.NewTicker(c.pingInterval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := proto.WriteMessage(ctrl, proto.MsgPing, proto.Ping{Nonce: "hb"}); err != nil {
+			if err := ping(); err != nil {
 				return
 			}
 		}
 	}
+}
+
+// pongReceived reports the round-trip time of the ping that was answered.
+func (c *Client) pongReceived() {
+	c.mu.Lock()
+	sent := c.pingSent
+	c.pingSent = time.Time{}
+	c.mu.Unlock()
+	if sent.IsZero() {
+		return
+	}
+	rtt := time.Since(sent)
+	c.events.emit(func(o Observer) { o.Latency(rtt) })
+}
+
+// localTarget tells the observer whether the local service at addr took a
+// visitor connection, when that differs from what it was told last.
+func (c *Client) localTarget(addr string, reachable bool) {
+	if c.events == nil {
+		return
+	}
+	c.mu.Lock()
+	last, known := c.localReported[addr]
+	c.localReported[addr] = reachable
+	c.mu.Unlock()
+	if known && last == reachable {
+		return
+	}
+	c.events.emit(func(o Observer) { o.LocalTarget(addr, reachable) })
 }
 
 func (c *Client) controlReadLoop(sess *yamux.Session, ctrl io.Reader) error {
@@ -226,6 +304,8 @@ func (c *Client) controlReadLoop(sess *yamux.Session, ctrl io.Reader) error {
 			// authoritative liveness mechanism.
 			if env.Type == proto.MsgError {
 				c.log.Warn("server error message")
+			} else {
+				c.pongReceived()
 			}
 		}
 	}

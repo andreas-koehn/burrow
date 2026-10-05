@@ -1,0 +1,9 @@
+burrow  ●  connected to burrow.example.com     v0.6.0   12 ms
+
+  my-app   https://burrow.example.com/svc/p7baeh/  →  127.0.0.1:3000
+           3 open, 41 total
+
+  14:02:11  GET   /api/users      200
+  14:02:12  POST  /api/login      401
+
+  The relay runs v0.7.0. Run: burrow update

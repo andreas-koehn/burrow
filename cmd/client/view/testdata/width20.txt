@@ -1,0 +1,24 @@
+●  connected
+burrow.example.com
+  v0.6.0   12 ms
+
+  my-app
+https://burrow.exa…
+  → 127.0.0.1:3000
+  access: open
+(anyone with the U…
+  3 open, 41 total
+
+  GET /api/use… 200
+  POST /api/lo… 401
+
+  ! no listener on
+    127.0.0.1:3000
+
+  pg
+burrow.example.com…
+  → 127.0.0.1:5432
+  1 open, 2 total
+
+  203.0.113.7
+  2001:db8::1

@@ -44,6 +44,9 @@ type deps struct {
 	isTerminal func() bool
 	// readSecret reads one line from the terminal without showing it.
 	readSecret func() (string, error)
+	// viewTerminal reports whether stdout is a terminal that can show the
+	// status view.
+	viewTerminal func() bool
 }
 
 func defaultDeps() deps {
@@ -57,6 +60,7 @@ func defaultDeps() deps {
 		run:            runClient,
 		isTerminal:     func() bool { return term.IsTerminal(int(os.Stdin.Fd())) },
 		readSecret:     readSecretFromTerminal,
+		viewTerminal:   func() bool { return stdoutShowsView() },
 	}
 }
 
