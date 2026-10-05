@@ -29,9 +29,10 @@ describe("v0.5.0 routes", () => {
     expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
   });
 
-  it("redirects the retired custom-domain routes", async () => {
+  it("redirects the retired custom-domains route", async () => {
     renderAt("/settings/custom-domains");
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByTestId("path")).toHaveTextContent(/^\/settings$/);
   });
 
   it("redirects a service's domains route to the service", async () => {

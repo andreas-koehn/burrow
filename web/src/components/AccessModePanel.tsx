@@ -91,10 +91,13 @@ export function AccessModePanel({ serviceId, serviceName, mode, clientId, panelR
   // changes so the footer button's disabled state stays in sync (P1-7).
   useImperativeHandle(
     panelRef,
-    () => ({ save: () => {
+    () => ({
+      save() {
         if (selected) save.mutate();
         else setErr("Choose an access mode.");
-      }, isSaving: save.isPending }),
+      },
+      isSaving: save.isPending,
+    }),
     [save, selected],
   );
 
@@ -119,7 +122,7 @@ export function AccessModePanel({ serviceId, serviceName, mode, clientId, panelR
                 title={meta.title}
                 description={meta.help}
                 selected={selected === m}
-                onSelect={() => setSelected(m)}
+                onSelect={() => { setSelected(m); setErr(null); }}
               />
             );
           })}

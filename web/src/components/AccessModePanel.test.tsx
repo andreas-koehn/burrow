@@ -133,4 +133,38 @@ describe("AccessModePanel (v0.3.0)", () => {
     const puts = fetchSpy.mock.calls.slice(before).filter(([, init]) => (init as RequestInit | undefined)?.method === "PUT");
     expect(puts).toHaveLength(0);
   });
+
+  it("choosing a mode clears the 'Choose an access mode' alert", async () => {
+    const ref = createRef<AccessModePanelHandle>();
+    renderApp(<AccessModePanel serviceId="svc_web01" serviceName="web" mode="mtls" panelRef={ref} />);
+    act(() => ref.current!.save());
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("radio", { name: /open/i }));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  function putBodies(spy: { mock: { calls: unknown[][] } }) {
+    return spy.mock.calls
+      .filter(([url, init]) =>
+        String(url).endsWith("/api/v1/services/svc_web01/access-mode")
+        && (init as RequestInit | undefined)?.method === "PUT")
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+  }
+
+  it("save through panelRef sends the current mode", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const ref = createRef<AccessModePanelHandle>();
+    renderApp(<AccessModePanel serviceId="svc_web01" serviceName="web" mode="open" panelRef={ref} />);
+    act(() => ref.current!.save());
+    await waitFor(() => expect(putBodies(fetchSpy)).toContainEqual({ access_mode: "open" }));
+  });
+
+  it("save through panelRef on an mtls service sends the chosen mode", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const ref = createRef<AccessModePanelHandle>();
+    renderApp(<AccessModePanel serviceId="svc_web01" serviceName="web" mode="mtls" panelRef={ref} />);
+    await userEvent.click(screen.getByRole("radio", { name: /burrow login/i }));
+    act(() => ref.current!.save());
+    await waitFor(() => expect(putBodies(fetchSpy)).toContainEqual({ access_mode: "burrow_login" }));
+  });
 });
