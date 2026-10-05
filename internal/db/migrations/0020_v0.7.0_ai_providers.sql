@@ -11,3 +11,6 @@ CREATE TABLE ai_providers (
 
 -- +goose Down
 DROP TABLE ai_providers;
+-- The backfill of existing AI services into ai_providers is recorded in
+-- settings; forget it so a later Up runs the backfill again.
+DELETE FROM settings WHERE key = 'ai_providers.backfilled';

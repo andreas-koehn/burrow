@@ -1350,3 +1350,66 @@ func TestChain_DispatchMetered_TrustedReportedCost(t *testing.T) {
 		t.Fatalf("CostUSD = %v, want 0.25", sink.sample.CostUSD)
 	}
 }
+
+// The caller's Burrow key travels in the service's configured API-key header.
+// It must not be stored in the inspector capture, whatever that header is
+// called and however the client spelled it.
+func TestChain_InspectorRedactsConfiguredAPIKeyHeader(t *testing.T) {
+	const secret = "bk_live_super-secret-key"
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
+	for _, tc := range []struct{ name, configured, sent string }{
+		{"custom header", "X-Burrow-Key", "x-burrow-key"},
+		{"x-api-key configured", "X-Api-Key", "X-API-Key"},
+		{"x-api-key not configured", "Authorization", "X-Api-Key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := inspector.NewManager()
+			chain := aigw.NewChain(nil, nil, nil, nil, nil, mgr, nil, nil, testLog())
+			svc := aigw.Service{
+				ID:           "svc-insp-key",
+				APIKeyHeader: tc.configured,
+				AIConfig: aigw.ServiceAIConfig{
+					Inspector: &aigw.InspectorConfig{Enabled: true, MaxRequests: 10},
+				},
+			}
+			req := httptest.NewRequest("POST", "https://abc.example.com/v1/chat/completions",
+				strings.NewReader(`{"prompt":"hi"}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set(tc.sent, secret)
+
+			if rec := runChain(t, chain, upstream, svc, req); rec.Code != http.StatusOK {
+				t.Fatalf("status: want 200, got %d", rec.Code)
+			}
+			ring := mgr.Get("svc-insp-key")
+			if ring == nil {
+				t.Fatal("inspector ring not created")
+			}
+			entries := ring.List(inspector.ListQuery{})
+			if len(entries) != 1 {
+				t.Fatalf("inspector: want 1 entry, got %d", len(entries))
+			}
+			found := false
+			for k, v := range entries[0].ReqHeaders {
+				if strings.Contains(v, secret) {
+					t.Errorf("inspector stored the key in header %q", k)
+				}
+				if strings.EqualFold(k, tc.sent) {
+					found = true
+					if v != "[redacted]" {
+						t.Errorf("header %q = %q, want [redacted]", k, v)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("key header missing from the capture: %v", entries[0].ReqHeaders)
+			}
+			if got := entries[0].ReqHeaders["Content-Type"]; got != "application/json" {
+				t.Errorf("Content-Type = %q, want it kept", got)
+			}
+		})
+	}
+}

@@ -638,3 +638,22 @@ func TestDirectServicePolicy(t *testing.T) {
 		t.Fatal("a failed policy read must not look like an empty policy")
 	}
 }
+
+// The control server and the dashboard API must announce the same domain:
+// with built-in ACME and no auth_domain that is the first ACME domain.
+func TestResolveAuthDomain(t *testing.T) {
+	for _, tc := range []struct {
+		name, authDomain, acmeDomain string
+		acmeOn                       bool
+		want                         string
+	}{
+		{"explicit auth domain wins", "burrow.example.com", "other.example.com", true, "burrow.example.com"},
+		{"first ACME domain as fallback", "", " a.example.com , b.example.com", true, "a.example.com"},
+		{"ACME domain ignored when ACME is off", "", "a.example.com", false, ""},
+		{"nothing configured", "", "", false, ""},
+	} {
+		if got := resolveAuthDomain(tc.authDomain, tc.acmeDomain, tc.acmeOn); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

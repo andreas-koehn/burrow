@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import {
@@ -204,6 +204,9 @@ describe("ds primitives", () => {
         <button>Outside after</button>
       </>,
     );
+    // The dialog takes its initial focus on a short timer. Let it land first:
+    // fired later, with focus parked outside, it would move the focus itself.
+    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveFocus());
     const close = screen.getByRole("button", { name: "Close dialog" });
     const cancel = screen.getByRole("button", { name: "Cancel" });
     cancel.focus();

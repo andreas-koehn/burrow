@@ -248,6 +248,11 @@ Errors that Burrow produces under `/ai/` are JSON of the form
 is the upstream's own status, headers and body, with `Burrow-Request-Id` and
 `Burrow-Provider` added.
 
+- Requests under `/ai/` are recorded as usage events and in the inspector.
+  They write no connection-log rows.
+- The IP / geo policy of the provider's backing service applies to `/ai/`
+  requests and is checked before the API key.
+
 ### Tunnel providers
 
 Follow section (C) to expose the model server with the `api_key` access mode,

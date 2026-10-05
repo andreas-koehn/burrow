@@ -486,6 +486,10 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 			}
 			http.Error(w, "bad gateway", http.StatusBadGateway)
 		},
+		ModifyResponse: func(resp *http.Response) error {
+			dropBurrowSetCookies(resp.Header)
+			return nil
+		},
 	}
 
 	p.log.Debug("proxy custom domain request", "host", host, "service_id", serviceID, "method", r.Method, "path", r.URL.Path)
@@ -685,6 +689,7 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 		},
 
 		ModifyResponse: func(resp *http.Response) error {
+			dropBurrowSetCookies(resp.Header)
 			if pfx := PathPrefix(resp.Request.Context()); pfx != "" {
 				if loc := resp.Header.Get("Location"); loc != "" {
 					resp.Header.Set("Location", rewriteLocationPrefix(loc, pfx))
@@ -1100,6 +1105,36 @@ func stripBurrowCookies(out *http.Request) {
 		return
 	}
 	out.Header["Cookie"] = kept
+}
+
+// dropBurrowSetCookies removes Set-Cookie lines of an upstream response that
+// name one of the dashboard's cookies, so a tunnelled app on the shared origin
+// cannot fix or clear the dashboard session. The name is matched the way
+// browsers read it: the text before the first "=" of the name-value pair,
+// whitespace trimmed, case-sensitive. Every other line stays byte for byte
+// and in order.
+func dropBurrowSetCookies(h http.Header) {
+	lines := h["Set-Cookie"]
+	if len(lines) == 0 {
+		return
+	}
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		pair, _, _ := strings.Cut(line, ";")
+		name, _, hasValue := strings.Cut(pair, "=")
+		if hasValue && burrowCookies[strings.TrimSpace(name)] {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if len(kept) == len(lines) {
+		return
+	}
+	if len(kept) == 0 {
+		delete(h, "Set-Cookie")
+		return
+	}
+	h["Set-Cookie"] = kept
 }
 
 // pathPrefixKey is the context key under which the /svc/{slug} adapter records

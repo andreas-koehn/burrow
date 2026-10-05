@@ -435,13 +435,35 @@ func main() {
 				}
 			}
 
+			// proxyAuthDomain is the single resolved base domain used for ALL
+			// host-routing surfaces — the proxy's subdomain matcher, the access
+			// checker, the gate, AND the /svc/{slug} path route (api.Deps.AuthDomain
+			// + ServicePathHandler). It prefers the explicit BURROW_AUTH_DOMAIN;
+			// when that is empty but built-in ACME is on, it falls back to the
+			// first ACME-managed domain so single-origin path routing works out
+			// of the box on an ACME deployment without a separate auth_domain.
+			// In the common case (auth_domain set) this equals cfg.AuthDomain, so
+			// every consumer below is byte-for-byte unchanged. When it resolves
+			// to "" (no auth_domain, ACME off) the router does NOT register the
+			// /svc/{slug} routes (see api.NewRouter) — matching the prior behavior
+			// where subdomain routing is disabled.
+			//
+			// Keeping a single value here guarantees the path handler's
+			// synthesized host "<id>.<proxyAuthDomain>" always matches the
+			// suffix the proxy routes on — otherwise the route would register but
+			// 404 at the proxy.
+			//
+			// Resolved before server.New: the control server tells clients the
+			// public URL of their tunnels and must use the same domain.
+			proxyAuthDomain := resolveAuthDomain(cfg.AuthDomain, cfg.ACMEDomain, acmeMgr != nil)
+
 			srv, err := server.New(server.Options{
 				Listen: cfg.Listen, TLSCert: cfg.TLSCert, TLSKey: cfg.TLSKey,
 				PublicBind: cfg.PublicBind, PortMin: cfg.PortMin, PortMax: cfg.PortMax,
 				Auth: st, Tunnels: tunnelStoreAdapter{st}, Events: bus, Logger: log,
 				// v0.3.0: HTTP tunnel service identity + subdomain resolver.
 				Services:   serviceResolverAdapter{db: db.Wrap(database)},
-				AuthDomain: cfg.AuthDomain,
+				AuthDomain: proxyAuthDomain,
 				// v0.6.0: when ACME is enabled the control channel serves the
 				// ACME-managed certificate instead of TLSCert/TLSKey files.
 				// acmeGetCert returns nil when acmeMgr is nil, so the server
@@ -624,30 +646,6 @@ func main() {
 			// ACME is enabled (ACME manages the ingress cert too). Governs the
 			// WithTLSBase / proxySrv.TLSConfig wiring below.
 			proxyTLSEnabled := (cfg.HTTPProxyTLSCert != "" && cfg.HTTPProxyTLSKey != "") || acmeMgr != nil
-
-			// proxyAuthDomain is the single resolved base domain used for ALL
-			// host-routing surfaces — the proxy's subdomain matcher, the access
-			// checker, the gate, AND the /svc/{slug} path route (api.Deps.AuthDomain
-			// + ServicePathHandler). It prefers the explicit BURROW_AUTH_DOMAIN;
-			// when that is empty but built-in ACME is on, it falls back to the
-			// first ACME-managed domain so single-origin path routing works out
-			// of the box on an ACME deployment without a separate auth_domain.
-			// In the common case (auth_domain set) this equals cfg.AuthDomain, so
-			// every consumer below is byte-for-byte unchanged. When it resolves
-			// to "" (no auth_domain, ACME off) the router does NOT register the
-			// /svc/{slug} routes (see api.NewRouter) — matching the prior behavior
-			// where subdomain routing is disabled.
-			//
-			// Keeping a single value here guarantees the path handler's
-			// synthesized host "<id>.<proxyAuthDomain>" always matches the
-			// suffix the proxy routes on — otherwise the route would register but
-			// 404 at the proxy.
-			proxyAuthDomain := cfg.AuthDomain
-			if proxyAuthDomain == "" && acmeMgr != nil {
-				if d := splitAndTrim(cfg.ACMEDomain); len(d) > 0 {
-					proxyAuthDomain = d[0]
-				}
-			}
 
 			accessChecker := proxy.NewAccessCheckerWithSessionsAndLogger(st, st, proxyAuthDomain, log)
 			gate := proxy.NewGate(st, proxyAuthDomain, effectiveSecureCookies, log)
@@ -1223,6 +1221,18 @@ func (a proxyConnLogAdapter) Record(ctx context.Context, e proxy.ConnLogEntry) e
 		Status:          connlog.Status(e.Status),
 		Reason:          e.Reason,
 	})
+}
+
+// resolveAuthDomain returns the base domain of every public URL: the
+// configured auth domain, or the first ACME-managed domain when none is set
+// and built-in ACME is on.
+func resolveAuthDomain(authDomain, acmeDomain string, acmeEnabled bool) string {
+	if authDomain == "" && acmeEnabled {
+		if d := splitAndTrim(acmeDomain); len(d) > 0 {
+			return d[0]
+		}
+	}
+	return authDomain
 }
 
 // splitAndTrim splits a comma-separated string into a slice of trimmed,

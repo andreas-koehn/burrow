@@ -204,6 +204,11 @@ func buildTools(s ToolStore) map[string]Tool {
 			}
 			out := make([]svcOut, 0, len(svcs))
 			for _, sv := range svcs {
+				// The backing row of a direct AI provider is not a service
+				// anyone tunnels; it is managed under AI providers.
+				if sv.Type == "direct" {
+					continue
+				}
 				out = append(out, svcOut{
 					ID: sv.ID, UserID: sv.UserID, Name: sv.Name,
 					Type: sv.Type, Subdomain: sv.Subdomain,

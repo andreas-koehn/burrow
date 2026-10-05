@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -196,9 +197,19 @@ func (d Deps) requestLogger(next http.Handler) http.Handler {
 type statusWriter struct {
 	http.ResponseWriter
 	status int
+	wrote  bool // WriteHeader or Write was called
 }
 
-func (s *statusWriter) WriteHeader(c int) { s.status = c; s.ResponseWriter.WriteHeader(c) }
+func (s *statusWriter) WriteHeader(c int) {
+	s.status = c
+	s.wrote = true
+	s.ResponseWriter.WriteHeader(c)
+}
+
+func (s *statusWriter) Write(p []byte) (int, error) {
+	s.wrote = true
+	return s.ResponseWriter.Write(p)
+}
 
 // Flush implements http.Flusher so SSE keeps working through the wrapper.
 func (s *statusWriter) Flush() {
@@ -206,3 +217,22 @@ func (s *statusWriter) Flush() {
 		f.Flush()
 	}
 }
+
+// Hijack implements http.Hijacker so protocol upgrades (WebSocket under
+// /svc/<slug>/) pass through the wrapper. The reverse proxy writes the 101
+// response on the hijacked connection itself and never calls WriteHeader, so
+// a successful hijack with no status yet is logged as 101.
+func (s *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	c, rw, err := h.Hijack()
+	if err == nil && !s.wrote {
+		s.status = http.StatusSwitchingProtocols
+	}
+	return c, rw, err
+}
+
+// Unwrap exposes the wrapped writer to http.ResponseController.
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }

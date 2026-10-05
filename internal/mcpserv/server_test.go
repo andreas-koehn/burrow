@@ -607,3 +607,38 @@ func namesOf(td []ToolDescriptor) []string {
 	}
 	return out
 }
+
+// The backing row of a direct AI provider is not a service anyone tunnels;
+// REST hides it from the services list and so does the MCP tool.
+func TestToolsCall_ServicesList_HidesDirectBackingRows(t *testing.T) {
+	srv, tok, fs := newTestServer(t, []string{"services:configure:own"}, "admin")
+	fs.services = []store.ServiceView{
+		{ID: "svc-a", Name: "alpha", Type: "http", Subdomain: "alpha"},
+		{ID: "svc-direct", Name: "openrouter", Type: "direct", Subdomain: "openrouter"},
+		{ID: "svc-b", Name: "beta", Type: "tcp"},
+	}
+	status, body := rpcCall(t, srv.URL, tok, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{
+			"name":      "services.list",
+			"arguments": map[string]any{},
+		},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	env := decodeRPC(t, body)
+	if env.Error != nil {
+		t.Fatalf("unexpected error: %+v", env.Error)
+	}
+	var rows []struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(env.Result, &rows); err != nil {
+		t.Fatalf("decode result: %v body=%s", err, body)
+	}
+	if len(rows) != 2 || rows[0].ID != "svc-a" || rows[1].ID != "svc-b" {
+		t.Fatalf("rows = %+v, want svc-a and svc-b only", rows)
+	}
+}

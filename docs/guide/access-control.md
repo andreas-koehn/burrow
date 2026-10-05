@@ -37,6 +37,7 @@ without a valid session are redirected to the `/__burrow/login` gate. This is
 session-based authentication against the same user directory that drives the
 dashboard. After sign-in the visitor returns to the service on `/svc/<slug>/`
 only; over the host-routed ingress the visitor lands on the dashboard root.
+Over the opt-in host-routed ingress `burrow_login` is therefore not supported.
 
 **When to use:** internal tools that your team members access via a browser
 after logging in to `https://burrow.insingo.com`.

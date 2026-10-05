@@ -889,9 +889,9 @@ func (c *Chain) captureEntry(svc Service, r *http.Request,
 		Status:       status,
 		BytesIn:      int64(len(origBody)),
 		BytesOut:     int64(len(respBody)),
-		ReqHeaders:   firstValues(r.Header),
+		ReqHeaders:   inspectorHeaders(r.Header, svc.APIKeyHeader),
 		ReqBody:      reqBody,
-		RespHeaders:  firstValues(respHeaders),
+		RespHeaders:  inspectorHeaders(respHeaders, ""),
 		RespBody:     respBodyT,
 		Truncated:    reqTrunc || respTrunc,
 		BytesOmitted: reqOmitted + respOmitted,
@@ -1093,6 +1093,20 @@ func firstValues(h http.Header) map[string]string {
 			continue
 		}
 		out[k] = vs[0]
+	}
+	return out
+}
+
+// inspectorHeaders is firstValues for an inspector capture: on top of the
+// always-sensitive headers it redacts X-Api-Key and the service's configured
+// API-key header (matched case-insensitively), which carry the caller's
+// Burrow key on host- and path-routed services.
+func inspectorHeaders(h http.Header, apiKeyHeader string) map[string]string {
+	out := firstValues(h)
+	for k := range out {
+		if strings.EqualFold(k, "X-Api-Key") || (apiKeyHeader != "" && strings.EqualFold(k, apiKeyHeader)) {
+			out[k] = "[redacted]"
+		}
 	}
 	return out
 }
