@@ -4,6 +4,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { ArrowDown, ArrowUp, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
+import { useAuth } from "@/auth/useAuth";
 import { Button, Badge, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, Select, SkeletonRows } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { formatBytes } from "@/lib/format";
@@ -123,19 +124,27 @@ export default function Services() {
     return i <= 0 ? winHost : s.slice(0, i);
   })();
   // Who holds each connection. A tunnel does not name its client; a client's detail
-  // lists its tunnels by id. Both endpoints are admin only: everyone else sees "—".
+  // lists its tunnels by id. Both endpoints are admin only, so nobody else asks
+  // (same gate as the sidebar's count in Layout) and sees "—" instead.
+  const isAdmin = useAuth().user?.role === "admin";
   const clients = useQuery({
     queryKey: ["clients"],
     queryFn: () => apiFetch<ClientView[]>("/clients"),
     retry: false,
-    enabled: live,
+    refetchInterval: 30000,
+    enabled: live && isAdmin,
   });
+  // One request per connected client. A stream event refreshes the list above, so a
+  // client that just connected gets its detail at once (a new query). The detail of a
+  // client already listed is only polled: a tunnel it adds later shows "—" for up to 30 s.
   const clientDetails = useQueries({
     queries: (Array.isArray(clients.data) ? clients.data : []).map((c) => ({
       queryKey: ["client", c.session_id],
       queryFn: () => apiFetch<ClientDetail>(`/clients/${c.session_id}`),
       retry: false,
-      enabled: live,
+      staleTime: 30000,
+      refetchInterval: 30000,
+      enabled: live && isAdmin,
     })),
   });
   const holders = new Map<string, { sessionId: string; name: string }>();
@@ -149,8 +158,8 @@ export default function Services() {
     const es = new EventSource("/api/v1/events");
     const onTunnels = () => {
       qc.invalidateQueries({ queryKey: ["tunnels"] });
-      qc.invalidateQueries({ queryKey: ["clients"] });
-      qc.invalidateQueries({ queryKey: ["client"] });
+      // Exact: the per-client details are left to their own interval (see above).
+      qc.invalidateQueries({ queryKey: ["clients"], exact: true });
     };
     es.addEventListener("tunnels", onTunnels);
     es.onerror = () => {
@@ -168,7 +177,8 @@ export default function Services() {
     };
   }, [qc, live]);
 
-  const [configure, setConfigure] = useState<Service | null>(null);
+  // What the access dialog needs: a saved service, or a live http tunnel's service id when the join has no row.
+  const [configure, setConfigure] = useState<Pick<Service, "id" | "name" | "access_mode"> & { type: string } | null>(null);
   const panelRef = useRef<AccessModePanelHandle>(null);
 
   // P2-2 — filter + sort for the Services table, in both All and Live.
@@ -312,7 +322,8 @@ export default function Services() {
     },
   });
 
-  const failure = error ?? (live ? tunnels.error : null);
+  // Live lists tunnels and only decorates them with the saved service: it fails on its own query alone.
+  const failure = live ? tunnels.error : error;
 
   return (
     <div className="services-page">
@@ -338,7 +349,7 @@ export default function Services() {
       </div>
       {failure ? (
         <ErrorNotice
-          action={<Button variant="secondary" size="sm" onClick={() => { void refetch(); if (live) void tunnels.refetch(); }}>Retry</Button>}
+          action={<Button variant="secondary" size="sm" onClick={() => void (live ? tunnels.refetch() : refetch())}>Retry</Button>}
         >
           Couldn't load services: {failure instanceof ApiError ? failure.message : "Unknown error"}
         </ErrorNotice>
@@ -394,6 +405,9 @@ export default function Services() {
                 const serviceId = s?.id ?? t?.service_id;
                 const access = s?.access_mode ?? t?.access_mode ?? "open";
                 const holder = t ? holders.get(t.id) : undefined;
+              const target = s ?? (t && type === "http" && t.service_id
+                ? { id: t.service_id, name, type, access_mode: access }
+                : undefined);
                 return (
               <tr key={key}>
                 <td className="col-name link-row">
@@ -443,7 +457,7 @@ export default function Services() {
                       : <Link to="/services?live=1" aria-label={`View live tunnel for ${name}`}><Badge kind="status-connected">connected</Badge></Link>}
                 </td>
                 <td className="col-actions">
-                  {s && <Button variant="secondary" size="sm" onClick={() => setConfigure(s)}>Configure</Button>}
+                  {target && <Button variant="secondary" size="sm" onClick={() => setConfigure(target)}>Configure</Button>}
                 </td>
               </tr>
                 );

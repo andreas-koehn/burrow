@@ -534,6 +534,85 @@ describe("Services page — All | Live", () => {
     expect(currentLocation()).toBe("/services?live=1");
   });
 
+  it("a non-admin in Live makes no /clients request, not even on a stream event", async () => {
+    vi.stubGlobal("EventSource", FakeES);
+    db.me.role = "user";
+    const asked: string[] = [];
+    server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
+    try {
+      mountAt("/services?live=1");
+      const table = await screen.findByRole("table", { name: "Services" });
+      await waitFor(() => expect(asked).toContain("/api/v1/me"));
+      const tunnelCalls = () => asked.filter((p) => p === "/api/v1/tunnels").length;
+      const before = tunnelCalls();
+      act(() => FakeES.last!.emit("tunnels"));
+      await waitFor(() => expect(tunnelCalls()).toBeGreaterThan(before));
+      expect(asked.filter((p) => p.startsWith("/api/v1/clients") && p !== "/api/v1/clients/connect-info")).toEqual([]);
+      expect(within(table).queryByRole("link", { name: /office-box-1/ })).toBeNull();
+    } finally {
+      server.events.removeAllListeners();
+    }
+  });
+
+  it("a stream event refreshes the tunnels and the clients list, not every client's detail", async () => {
+    vi.stubGlobal("EventSource", FakeES);
+    const asked: string[] = [];
+    server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
+    try {
+      mountAt("/services?live=1");
+      const table = await screen.findByRole("table", { name: "Services" });
+      await within(table).findAllByRole("link", { name: /office-box-1/ });
+      const count = (path: string) => asked.filter((p) => p === path).length;
+      const lists = count("/api/v1/clients");
+      act(() => FakeES.last!.emit("tunnels"));
+      await waitFor(() => expect(count("/api/v1/clients")).toBeGreaterThan(lists));
+      expect(count("/api/v1/clients/sess_4f7a9c0b2e81")).toBe(1);
+    } finally {
+      server.events.removeAllListeners();
+    }
+  });
+
+  it("polls the clients and their details like the tunnels, for when there is no event stream", async () => {
+    const { qc } = mountAt("/services?live=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    await within(table).findAllByRole("link", { name: /office-box-1/ });
+    const interval = (key: unknown[]) =>
+      (qc.getQueryCache().find({ queryKey: key })!.observers[0].options as { refetchInterval?: unknown }).refetchInterval;
+    expect(interval(["tunnels"])).toBe(30000);
+    expect(interval(["clients"])).toBe(30000);
+    expect(interval(["client", "sess_4f7a9c0b2e81"])).toBe(30000);
+  });
+
+  it("Live still shows the tunnel rows when the saved services cannot be loaded", async () => {
+    server.use(http.get("/api/v1/services", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    mountAt("/services?live=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    expect(within(table).getAllByRole("row")).toHaveLength(3); // header + the two live tunnels
+    expect(screen.queryByRole("alert")).toBeNull();
+    // Without the join the row falls back to what the tunnel itself says.
+    const row = within(table).getByText("ollama").closest("tr")!;
+    expect(within(row).getByRole("link", { name: "ollama" })).toHaveAttribute("href", "/services/svc_ai001");
+    expect(within(row).getByText("/svc/ai4m2q/")).toBeInTheDocument();
+    expect(within(row).getByText("API key")).toBeInTheDocument();
+    // All still reports the failure.
+    await userEvent.click(screen.getByRole("radio", { name: "All" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/boom/);
+  });
+
+  it("Configure works on a live http row without a joined service row", async () => {
+    server.use(http.get("/api/v1/services", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    mountAt("/services?live=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    const row = within(table).getByText("ollama").closest("tr")!;
+    await userEvent.click(within(row).getByRole("button", { name: /configure/i }));
+    expect(await screen.findByRole("dialog", { name: "Access · ollama" })).toBeInTheDocument();
+    const modes = await screen.findByRole("radiogroup", { name: /access mode/i });
+    expect(within(modes).getByRole("radio", { name: /API key/ })).toBeChecked();
+    // A tcp tunnel has no service to configure.
+    const tcp = within(table).getByText("web-staging").closest("tr")!;
+    expect(within(tcp).queryByRole("button", { name: /configure/i })).toBeNull();
+  });
+
   it("does not ask for tunnels or clients outside Live", async () => {
     const asked: string[] = [];
     server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));

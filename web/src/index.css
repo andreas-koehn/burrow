@@ -1527,6 +1527,8 @@ a.user-chip:focus-visible {
 .segmented [role="radio"][aria-checked="true"] {
   background: var(--card);
   color: var(--foreground);
+  font-weight: 500;
+  box-shadow: 0 0 0 1px var(--border-strong);
 }
 .segmented [role="radio"]:focus-visible {
   outline: 2px solid var(--ring);
