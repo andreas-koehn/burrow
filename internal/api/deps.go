@@ -326,6 +326,13 @@ type Deps struct {
 	// DiscoveryRateLimitPerIPOverride overrides DiscoveryRateLimitPerIP for
 	// tests; zero uses the const.
 	DiscoveryRateLimitPerIPOverride int
+	// ClientDownloadBase is where /download/ redirects to:
+	// <base>/<tag>/<archive>. Empty means install.DefaultDownloadBase.
+	ClientDownloadBase string
+	// ClientDownloadDir, when set, is a directory of client archives and
+	// their checksums.txt that /download/ serves itself instead of
+	// redirecting, for installations without access to the release host.
+	ClientDownloadDir string
 
 	// v0.4.0 surfaces — additive; nil-safe handlers degrade gracefully.
 	// CacheEngine is the exact-match prompt cache (clear/stats surface for

@@ -43,7 +43,8 @@ type routeEntry struct {
 // convention — they exist for k8s/load-balancer use, not for SDK consumers.
 // The OpenAPI doc serve endpoints are also excluded: they describe the spec
 // itself, not the JSON API, and pinning them inside the doc would create a
-// self-referential surface that adds no SDK value.
+// self-referential surface that adds no SDK value. The client hand-out
+// (/install.sh, /install.ps1, /download/…) is excluded as well.
 func enumerateRoutes(t *testing.T, r chi.Router) []routeEntry {
 	t.Helper()
 	var out []routeEntry
@@ -52,6 +53,14 @@ func enumerateRoutes(t *testing.T, r chi.Router) []routeEntry {
 		case "/healthz", "/readyz":
 			return nil
 		case "/api/v1/openapi.yaml", "/api/v1/openapi.json":
+			return nil
+		case "/install.sh", "/install.ps1":
+			// The client hand-out serves scripts and archives to a shell,
+			// not JSON to an SDK; it is outside the documented API like the
+			// probes. client_download_test.go pins its behaviour.
+			return nil
+		}
+		if route == "/download" || strings.HasPrefix(route, "/download/") {
 			return nil
 		}
 		out = append(out, routeEntry{Method: method, Path: route})

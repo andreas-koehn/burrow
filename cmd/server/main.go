@@ -831,6 +831,9 @@ func main() {
 					ControlListen: cfg.Listen,
 					// Reported by the public /client/discovery endpoint.
 					MinClientVersion: cfg.MinClientVersion,
+					// Where /download/ and the install scripts send a client.
+					ClientDownloadBase: cfg.ClientDownloadBase,
+					ClientDownloadDir:  cfg.ClientDownloadDir,
 					// v0.4.0 Task 20: backup / restore wiring.
 					BackupDir:      backupDir,
 					BackupRunner:   backupRunnerAdapter{cfg: cfg},

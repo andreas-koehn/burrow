@@ -1,0 +1,172 @@
+# Burrow client installer for Windows. A Burrow relay serves this script at
+# /install.ps1 with its own address and version filled in.
+#
+#   irm https://<relay>/install.ps1 | iex
+#
+# It downloads the burrow archive through the relay, checks its SHA-256
+# against the release checksums and installs burrow.exe to
+# %LOCALAPPDATA%\Programs\burrow. It writes nothing else and does not sign in.
+#
+# Everything happens in Install-Burrow, which is called on the last line: a
+# download of this script that is cut off runs nothing. Failures are thrown,
+# never `exit`, so a failed run does not close the terminal it was pasted into.
+
+function Install-Burrow {
+    $ErrorActionPreference = 'Stop'
+    Set-StrictMode -Version Latest
+    $ProgressPreference = 'SilentlyContinue'
+
+    $Relay = '{{.Relay}}'
+    $Version = '{{.Version}}'
+    $Channel = '{{.Channel}}'
+    $Manual = '{{.ManualURL}}'
+    # One entry per Windows build of this channel: <os>/<arch> = <archive name>.
+    $Assets = @{
+{{- range .Assets}}
+        '{{.OS}}/{{.Arch}}' = '{{.Name}}'
+{{- end}}
+    }
+
+    # 1. Which build. A 32-bit PowerShell on 64-bit Windows reports the real
+    # architecture in PROCESSOR_ARCHITEW6432.
+    $machine = $env:PROCESSOR_ARCHITEW6432
+    if ([string]::IsNullOrEmpty($machine)) { $machine = $env:PROCESSOR_ARCHITECTURE }
+    $arch = $null
+    if ($machine -eq 'AMD64') { $arch = 'amd64' }
+    $key = "windows/$arch"
+    if ($null -eq $arch -or -not $Assets.ContainsKey($key)) {
+        $lines = @("install.ps1: there is no burrow build this installer can set up for Windows on '$machine' ($Channel channel).")
+        $lines += 'Supported: ' + ((@($Assets.Keys) | Sort-Object) -join ', ')
+        if ($Manual -ne '') { $lines += "Manual download: $Manual" }
+        throw ($lines -join [Environment]::NewLine)
+    }
+    $archive = $Assets[$key]
+
+    # 2. Where to.
+    $localAppData = $env:LOCALAPPDATA
+    if ([string]::IsNullOrEmpty($localAppData) -or -not [IO.Path]::IsPathRooted($localAppData)) {
+        throw 'install.ps1: LOCALAPPDATA is not set to a full path, so there is no place to install to. Nothing was installed.'
+    }
+    $dest = Join-Path (Join-Path $localAppData 'Programs') 'burrow'
+    $exe = Join-Path $dest 'burrow.exe'
+    if (Test-Path -LiteralPath $exe -PathType Container) {
+        throw "install.ps1: $exe is a directory. Nothing was installed."
+    }
+
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    } catch {
+        # Newer PowerShell versions negotiate TLS without this setting.
+    }
+
+    # 3. Download into a private directory that is removed on every exit.
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ('burrow-install-' + [IO.Path]::GetRandomFileName())
+    $staged = $null
+    try {
+        New-Item -ItemType Directory -Path $tmp | Out-Null
+        $archivePath = Join-Path $tmp 'archive.zip'
+        $sumsPath = Join-Path $tmp 'checksums.txt'
+
+        if ($Channel -eq 'develop') {
+            Write-Host 'This relay runs an untagged build: installing the rolling develop build of burrow.'
+        }
+        Write-Host "Downloading $archive from $Relay ..."
+        $url = "$Relay/download/burrow/windows/$arch"
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $archivePath
+        } catch {
+            throw "install.ps1: could not download $url. Nothing was installed. ($($_.Exception.Message))"
+        }
+        $sumsUrl = "$Relay/download/burrow/checksums.txt"
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $sumsUrl -OutFile $sumsPath
+        } catch {
+            throw "install.ps1: could not download $sumsUrl. Nothing was installed. ($($_.Exception.Message))"
+        }
+        if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf) -or (Get-Item -LiteralPath $archivePath).Length -eq 0) {
+            throw "install.ps1: the download of $archive is empty. Nothing was installed."
+        }
+
+        # 4. Verify before anything is unpacked or run.
+        $want = $null
+        foreach ($line in [IO.File]::ReadAllLines($sumsPath)) {
+            $parts = @($line.Trim() -split '\s+', 2)
+            if ($parts.Count -eq 2 -and ($parts[1] -ceq $archive -or $parts[1] -ceq "*$archive")) {
+                $want = $parts[0].ToLowerInvariant()
+                break
+            }
+        }
+        if ($null -eq $want) {
+            throw "install.ps1: checksums.txt has no line for $archive. The download cannot be verified. Nothing was installed."
+        }
+        if ($want -notmatch '^[0-9a-f]{64}$') {
+            throw "install.ps1: the line for $archive in checksums.txt does not hold a SHA-256. The download cannot be verified. Nothing was installed."
+        }
+        $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash.ToLowerInvariant()
+        if ($got -cne $want) {
+            $nl = [Environment]::NewLine
+            throw "install.ps1: checksum mismatch for $archive$nl  expected: $want$nl  got:      $got${nl}Nothing was installed."
+        }
+
+        # 5. Unpack.
+        $unpacked = Join-Path $tmp 'x'
+        try {
+            Expand-Archive -LiteralPath $archivePath -DestinationPath $unpacked -Force
+        } catch {
+            throw "install.ps1: could not unpack $archive. Nothing was installed. ($($_.Exception.Message))"
+        }
+        $newExe = Join-Path $unpacked 'burrow.exe'
+        if (-not (Test-Path -LiteralPath $newExe -PathType Leaf) -or (Get-Item -LiteralPath $newExe).Length -eq 0) {
+            throw "install.ps1: $archive does not hold burrow.exe. Nothing was installed."
+        }
+
+        # 6. Install: a new file next to the target, then one move over it.
+        if (-not (Test-Path -LiteralPath $dest -PathType Container)) {
+            New-Item -ItemType Directory -Path $dest -Force | Out-Null
+        }
+        $staged = Join-Path $dest ('burrow.exe.new-' + [IO.Path]::GetRandomFileName())
+        Copy-Item -LiteralPath $newExe -Destination $staged
+        try {
+            Move-Item -LiteralPath $staged -Destination $exe -Force
+        } catch {
+            throw "install.ps1: cannot replace $exe (is burrow running?). The previous version is unchanged. ($($_.Exception.Message))"
+        }
+        $staged = $null
+    } finally {
+        if ($null -ne $staged -and (Test-Path -LiteralPath $staged)) {
+            Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $tmp) {
+            Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $installed = "burrow $Version"
+    try {
+        $out = & $exe version 2>$null
+        if ($LASTEXITCODE -eq 0 -and $out) { $installed = (@($out))[0] }
+    } catch {
+        # The version line is information only; the file is verified and in place.
+    }
+    Write-Host "Installed $installed"
+    Write-Host "  at $exe"
+
+    # 7. PATH for this user.
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($null -eq $userPath) { $userPath = '' }
+    $onPath = $false
+    foreach ($entry in ($userPath -split ';')) {
+        if ($entry.TrimEnd('\') -ieq $dest.TrimEnd('\')) { $onPath = $true }
+    }
+    if (-not $onPath) {
+        $newPath = $dest
+        if ($userPath -ne '') { $newPath = $userPath.TrimEnd(';') + ';' + $dest }
+        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+        Write-Host ''
+        Write-Host "Added $dest to your Path. Open a new terminal to use burrow."
+    }
+    Write-Host ''
+    Write-Host ("Next: burrow login " + ($Relay -replace '^https?://', ''))
+}
+
+Install-Burrow

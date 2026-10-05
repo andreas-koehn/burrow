@@ -885,3 +885,66 @@ func TestMinClientVersion(t *testing.T) {
 		}
 	}
 }
+
+// TestClientDownloadSettings: the base defaults to this repository's
+// releases, is trimmed, and is refused at start when it is not a plain
+// http(s) URL; the directory is empty by default and must exist when set.
+func TestClientDownloadSettings(t *testing.T) {
+	const def = "https://github.com/andreas-koehn/burrow/releases/download"
+	c, err := LoadServer(nil)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if c.ClientDownloadBase != def {
+		t.Fatalf("client_download_base default = %q, want %q", c.ClientDownloadBase, def)
+	}
+	if c.ClientDownloadDir != "" {
+		t.Fatalf("client_download_dir default = %q, want empty", c.ClientDownloadDir)
+	}
+	for in, want := range map[string]string{
+		" https://mirror.example.com/burrow/ ": "https://mirror.example.com/burrow",
+		"http://assets:8080/dl":                "http://assets:8080/dl",
+		"":                                     def,
+	} {
+		t.Setenv("BURROW_CLIENT_DOWNLOAD_BASE", in)
+		c, err := LoadServer(nil)
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		if c.ClientDownloadBase != want {
+			t.Fatalf("client_download_base %q = %q, want %q", in, c.ClientDownloadBase, want)
+		}
+	}
+	for _, in := range []string{"ftp://x/y", "mirror.example.com", "https://u:p@x/y", "https://x/y?z", "https://x/$(id)", "https://x/a b", "https://x/\"", "javascript:alert(1)"} {
+		t.Setenv("BURROW_CLIENT_DOWNLOAD_BASE", in)
+		_, err := LoadServer(nil)
+		if err == nil || !strings.Contains(err.Error(), "client_download_base") {
+			t.Fatalf("%q: err = %v, want one naming client_download_base", in, err)
+		}
+		// The message must not carry a value that may hold credentials.
+		if strings.Contains(err.Error(), "u:p@") {
+			t.Fatalf("the error repeats the value: %v", err)
+		}
+	}
+	t.Setenv("BURROW_CLIENT_DOWNLOAD_BASE", "")
+
+	dir := t.TempDir()
+	t.Setenv("BURROW_CLIENT_DOWNLOAD_DIR", dir)
+	c, err = LoadServer(nil)
+	if err != nil {
+		t.Fatalf("existing directory: %v", err)
+	}
+	if c.ClientDownloadDir != dir {
+		t.Fatalf("client_download_dir = %q, want %q", c.ClientDownloadDir, dir)
+	}
+	file := filepath.Join(dir, "a-file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []string{filepath.Join(dir, "missing"), file} {
+		t.Setenv("BURROW_CLIENT_DOWNLOAD_DIR", in)
+		if _, err := LoadServer(nil); err == nil || !strings.Contains(err.Error(), "client_download_dir") {
+			t.Fatalf("%q: err = %v, want one naming client_download_dir", in, err)
+		}
+	}
+}

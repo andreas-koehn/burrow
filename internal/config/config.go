@@ -14,6 +14,8 @@ import (
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/ankoehn/burrow/internal/api/install"
 )
 
 var validate = validator.New()
@@ -164,6 +166,17 @@ type ServerConfig struct {
 	// "This relay needs burrow <min> or newer". Empty (the default) means no
 	// minimum. Env: BURROW_MIN_CLIENT_VERSION.
 	MinClientVersion string `koanf:"min_client_version"`
+
+	// ClientDownloadBase is where the relay's /download/ routes redirect to:
+	// <base>/<tag>/<archive>. The default is this repository's GitHub
+	// releases; a fork or a mirror sets its own. An http(s) URL of host and
+	// path. Env: BURROW_CLIENT_DOWNLOAD_BASE.
+	ClientDownloadBase string `koanf:"client_download_base"`
+	// ClientDownloadDir, when set, is a directory holding the client
+	// archives and their checksums.txt. The relay then serves /download/
+	// from it instead of redirecting, for installations without access to
+	// the release host. Env: BURROW_CLIENT_DOWNLOAD_DIR.
+	ClientDownloadDir string `koanf:"client_download_dir"`
 
 	// CertValidationRootsFile, when non-empty, is the path to a PEM file
 	// containing one or more CA certificates to use as the trust roots when
@@ -397,6 +410,9 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 		"login_rate_limit_per_ip": 0,
 		// min_client_version: empty = clients of any version are accepted.
 		"min_client_version": "",
+		// client_download_base: empty = install.DefaultDownloadBase;
+		// client_download_dir: empty = redirect instead of serving files.
+		"client_download_base": "", "client_download_dir": "",
 		// cert_validation_roots_file: empty = use system root pool.
 		"cert_validation_roots_file": "",
 		// ACME: empty domain = disabled. CA defaults to Let's Encrypt production.
@@ -440,6 +456,20 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 	c.MinClientVersion = strings.TrimSpace(c.MinClientVersion)
 	if c.MinClientVersion != "" && !minClientVersionRE.MatchString(c.MinClientVersion) {
 		return nil, fmt.Errorf("invalid server config: min_client_version %q must look like 0.6.0 or v0.6.0", c.MinClientVersion)
+	}
+	// The download base ends up in a Location header and, as the manual
+	// download page, in the install scripts; only a plain URL is accepted.
+	// The value is not repeated in the error: a URL may carry credentials.
+	dlBase, err := install.CleanDownloadBase(c.ClientDownloadBase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid server config: client_download_base %w", err)
+	}
+	c.ClientDownloadBase = dlBase
+	c.ClientDownloadDir = strings.TrimSpace(c.ClientDownloadDir)
+	if c.ClientDownloadDir != "" {
+		if st, err := os.Stat(c.ClientDownloadDir); err != nil || !st.IsDir() {
+			return nil, fmt.Errorf("invalid server config: client_download_dir %q is not a directory", c.ClientDownloadDir)
+		}
 	}
 	// v0.5.0 (Task 15): validate Postgres backend config. Both database_path
 	// and database_url being non-empty is ambiguous and therefore fatal.

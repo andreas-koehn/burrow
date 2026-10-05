@@ -1,0 +1,7 @@
+# Debian for the installer matrix: dash as /bin/sh, GNU coreutils and tar,
+# curl and GNU wget, and a user without root rights.
+FROM debian:stable-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl wget \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --create-home --shell /bin/sh tester

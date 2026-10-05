@@ -1,0 +1,4 @@
+# Alpine for the installer matrix: busybox sh, busybox wget, tar and
+# sha256sum, no curl, and a user without root rights.
+FROM alpine:latest
+RUN adduser -D tester && ! command -v curl

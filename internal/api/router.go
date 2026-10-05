@@ -87,6 +87,24 @@ func NewRouter(d Deps) http.Handler {
 		r.Get("/metrics", d.GetMetrics)
 	})
 
+	// Client hand-out: the install scripts and the client archives. Public —
+	// a machine asks before it has anything — and registered before the SPA
+	// catch-all; /install.sh, /install.ps1 and /download/ are reserved paths.
+	// Everything under /download/ that is not a build answers a plain 404
+	// here instead of the dashboard.
+	for path, h := range map[string]http.HandlerFunc{
+		"/install.sh":                    d.GetInstallSh,
+		"/install.ps1":                   d.GetInstallPs1,
+		"/download/burrow/checksums.txt": d.GetClientChecksums,
+		"/download/burrow/{os}/{arch}":   d.GetClientDownload,
+	} {
+		// Handle, not Get: with the SPA's catch-all present chi would hand
+		// any other method on these paths to the dashboard.
+		r.Handle(path, getOrHead(h))
+	}
+	r.Handle("/download", http.HandlerFunc(d.ClientDownloadNotFound))
+	r.Handle("/download/*", http.HandlerFunc(d.ClientDownloadNotFound))
+
 	loginPerIP, loginGlobal := d.loginRateLimiters()
 
 	r.Route("/api/v1", func(r chi.Router) {
