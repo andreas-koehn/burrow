@@ -1,12 +1,10 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ShieldAlert } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
-import { EMAIL_NOT_CONFIGURED } from "@/lib/copy";
 import { formatTimestamp } from "@/lib/format";
 import { useAuth } from "@/auth/useAuth";
-import { Button, EmptyState, ErrorNotice, Input, Select, Badge, Dialog, PageHeader, SkeletonRows } from "@/components/ds";
+import { Button, EmptyState, Input, Select, Badge, Dialog, PageHeader, SkeletonRows } from "@/components/ds";
 import type { UserAdmin, UsersPage, UserRole } from "@/lib/contract";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
@@ -30,13 +28,6 @@ export default function Users() {
     queryFn: () => apiFetch<UsersPage>(`/users?q=${encodeURIComponent(q)}&limit=${PAGE}&offset=${offset}`),
     retry: false,
   });
-
-  const settings = useQuery({
-    queryKey: ["settings"],
-    queryFn: () => apiFetch<Record<string, string>>("/settings"),
-    retry: false,
-  });
-  const smtpUnconfigured = settings.data !== undefined && !settings.data["smtp.host"];
 
   const deleteUser = useMutation({
     mutationFn: (id: string) => apiFetch(`/users/${id}`, { method: "DELETE" }),
@@ -78,11 +69,6 @@ export default function Users() {
         actions={<Button variant="primary" size="sm" onClick={() => setCreating(true)}>New user</Button>}
       />
 
-      {smtpUnconfigured && (
-        <ErrorNotice variant="warn" role="status" action={<Link to="/settings/email">Set up email →</Link>}>
-          {EMAIL_NOT_CONFIGURED}
-        </ErrorNotice>
-      )}
 
       <div className="users-filter-row toolbar-row">
         <Input

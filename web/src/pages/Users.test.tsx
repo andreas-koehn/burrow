@@ -47,37 +47,18 @@ describe("Users — delete self (U5)", () => {
   });
 });
 
-describe("Users — SMTP informational notice (P6B.1)", () => {
-  it("shows SMTP notice when settings has no smtp.host (default empty settings)", async () => {
-    // Default db.settings = {} so smtp.host is absent
-    renderApp(<Users />);
-    // Wait for users to load so settings query has had time to resolve
-    await screen.findByText("bob@acme.io");
-    expect(await screen.findByText(/Email isn't set up\. Password resets and test emails are unavailable until SMTP is configured\./)).toBeInTheDocument();
-    const link = screen.getByRole("link", { name: /set up email/i });
-    expect(link).toBeInTheDocument();
-    expect(link.getAttribute("href")).toBe("/settings/email");
-  });
-
-  it("hides SMTP notice when smtp.host is set", async () => {
-    server.use(
-      http.get("/api/v1/settings", () =>
-        HttpResponse.json({ "smtp.host": "smtp.example.com" }),
-      ),
-    );
+describe("Users — email notice", () => {
+  it("is not shown here: it is a relay notice on the overviews and a mark on Settings", async () => {
+    // Default db.settings = {}, so email is not set up.
+    const seen = { count: 0 };
+    server.use(http.get("/api/v1/settings", () => { seen.count += 1; return HttpResponse.json({}); }));
     renderApp(<Users />);
     await screen.findByText("bob@acme.io");
-    // Give the settings query time to resolve
-    await waitFor(() => {
-      expect(screen.queryByText(/email isn't set up/i)).not.toBeInTheDocument();
-    });
-  });
-
-  it("SMTP notice contains link to /settings/email", async () => {
-    renderApp(<Users />);
-    await screen.findByText("bob@acme.io");
-    const link = await screen.findByRole("link", { name: /set up email/i });
-    expect(link.getAttribute("href")).toBe("/settings/email");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/email isn't set up/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /set up email/i })).toBeNull();
+    // The page has no other use for the settings.
+    expect(seen.count).toBe(0);
   });
 });
 

@@ -18,6 +18,7 @@ function mount(path: string, ctx = admin, over: Partial<SidebarProps> = {}) {
     pathname: path,
     collapsed: false,
     counts: {},
+    settingsNeedsAttention: false,
     user: { email: "alice@example.com", isAdmin: ctx.isAdmin, role: ctx.isAdmin ? "admin" : "user" },
     theme: "light",
     onSearch: vi.fn(),
@@ -149,5 +150,27 @@ describe("Sidebar", () => {
     mount("/services", admin, { theme: "dark" });
     const toggle = screen.getByRole("button", { name: "Switch to light theme" });
     expect(toggle.getAttribute("title")).toBe(toggle.getAttribute("aria-label"));
+  });
+
+  it("marks Settings in the footer while a relay notice is open", () => {
+    mount("/", admin, { settingsNeedsAttention: true });
+    const settings = within(footerZone()).getByRole("link", { name: "Settings, needs attention" });
+    expect(settings).toHaveAttribute("href", "/settings/general");
+    expect(settings.querySelector(".nav-attention")).not.toBeNull();
+    expect(within(footerZone()).getByRole("link", { name: "Users & roles" }).querySelector(".nav-attention")).toBeNull();
+  });
+
+  it("keeps the mark when collapsed, in the entry's name and tooltip", () => {
+    mount("/", admin, { settingsNeedsAttention: true, collapsed: true });
+    const settings = within(footerZone()).getByRole("link", { name: "Settings, needs attention" });
+    expect(settings).toHaveAttribute("title", "Settings, needs attention");
+    expect(settings.querySelector(".nav-attention")).not.toBeNull();
+  });
+
+  it("has no mark without an open relay notice", () => {
+    mount("/");
+    expect(within(footerZone()).getByRole("link", { name: "Settings" })).toBeInTheDocument();
+    expect(document.querySelector(".nav-attention")).toBeNull();
+    expect(screen.queryByRole("link", { name: /needs attention/ })).toBeNull();
   });
 });

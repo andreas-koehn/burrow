@@ -28,15 +28,12 @@ describe("usability-clean — notice-inline is token-based (Cl-2 pre-condition)"
 
 // --- Pending: converted to real assertions as each phase lands ---
 
-describe("usability-clean — .home-explainer is token-based (Cl-1)", () => {
-  it(".home-explainer exists in index.css and uses only var(-- tokens for colour properties", () => {
-    // Extract the .home-explainer rule block
-    const rule = css.match(/\.home-explainer\s*\{[^}]*\}/)?.[0] ?? "";
-    expect(rule, ".home-explainer rule not found in index.css").not.toBe("");
-
-    // Must reference at least one CSS custom-property token
-    expect(rule).toContain("var(--");
-    // Must not use bare hex colour literals
+describe("usability-clean — the setup checklist is token-based (Cl-1)", () => {
+  it(".setup-step-marker exists in index.css and uses only var(-- tokens for colour properties", () => {
+    const rule = css.match(/\.setup-step-marker\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule, ".setup-step-marker rule not found in index.css").not.toBe("");
+    expect(rule).toMatch(/color:\s*var\(--/);
+    // Must not use bare hex colours
     expect(rule).not.toMatch(/#[0-9a-fA-F]{3,6}\b/);
     // Must not use bare rgb() colour literals
     expect(rule).not.toMatch(/\brgb\(/);
@@ -44,10 +41,19 @@ describe("usability-clean — .home-explainer is token-based (Cl-1)", () => {
     expect(rule).not.toMatch(/\boklch\(/);
   });
 });
-it("Cl-2: home-explainer and home-quick-actions rules use only var(-- tokens — no bare hex/oklch/rgb", () => {
-  // .home-explainer is already checked in the describe block below; here we pin
-  // the .home-quick-actions rule (quick-action buttons in Home.tsx header area).
-  // Both classes must only reference DS tokens for colour, never literals.
+it("Cl-2: overview rules use only var(-- tokens — no bare hex/oklch/rgb", () => {
+  // The quick-action buttons in the ServicesOverview.tsx header, the setup
+  // checklist and the linked metric tile must only reference DS tokens for
+  // colour, never literals.
+  for (const selector of ["setup-checklist", "setup-step", "metric-tile-link", "nav-attention", "alerts-strip"]) {
+    const rules = css.match(new RegExp(`[^{}]*\\.${selector}[^{}]*\\{[^}]*\\}`, "g")) ?? [];
+    expect(rules.length, selector).toBeGreaterThan(0);
+    for (const rule of rules) {
+      expect(rule).not.toMatch(/#[0-9a-fA-F]{3,6}\b/);
+      expect(rule).not.toMatch(/\boklch\(/);
+      expect(rule).not.toMatch(/\brgb\(/);
+    }
+  }
   const quickActionsRule = css.match(/\.home-quick-actions\s*\{[^}]*\}/)?.[0];
   // The rule may be absent if home-quick-actions has no colour properties (fine) —
   // but if it IS present it must be token-only.
@@ -59,7 +65,7 @@ it("Cl-2: home-explainer and home-quick-actions rules use only var(-- tokens —
 
   // The alerts strip reuses .notice-inline which is already validated in the
   // first describe block above. Verify .notice-inline exists in the CSS as a
-  // further guard that the Home alerts strip has the right class available.
+  // further guard that the overviews' alerts strip has the right class available.
   expect(css).toContain(".notice-inline");
 });
 // Cl-3: verified via CommandPalette.test.tsx (RTL: getByRole('dialog') present when open=true).

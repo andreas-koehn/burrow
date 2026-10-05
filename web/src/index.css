@@ -1096,6 +1096,18 @@ button.workspace-switcher:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+/* Something behind this entry is waiting for the reader. */
+.nav-item .nav-attention {
+  flex-shrink: 0;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+.sidebar.is-collapsed .nav-item .nav-attention {
+  position: absolute;
+  top: 6px; right: 6px;
+}
+
 .nav-search {
   width: 100%;
   text-align: left;
@@ -1853,6 +1865,20 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   flex-direction: column;
   gap: var(--space-2xs);
 }
+/* A tile that leads to the page behind its figure: the link fills the tile. */
+.metric-tile.is-link { padding: 0; }
+.metric-tile-link {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-md) var(--space-lg);
+  border-radius: inherit;
+  color: inherit;
+  text-decoration: none;
+  transition: background var(--t-micro);
+}
+.metric-tile-link:hover { background: var(--hover); }
+.metric-tile-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .metric-tile .label {
   font-size: 12px;
   color: color-mix(in oklch, var(--muted-foreground) 60%, var(--foreground));
@@ -2616,44 +2642,71 @@ td.empty-cell { text-align: center; padding: 1rem 0; }
   border-left: 2px solid color-mix(in oklch, var(--primary) 45%, var(--border));
 }
 
-/* ── Home page — quick actions + explainer ──────────────────────────────── */
+/* ── Services overview — quick actions ──────────────────────────────────── */
 .home-quick-actions {
   display: flex;
   gap: 0.5rem;
   align-items: center;
 }
 
-.home-explainer {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 1.25rem 1.5rem;
-  margin-top: 1.5rem;
-  color: var(--card-foreground);
-}
+/* Notices of an overview, between its figures and what follows. */
+.alerts-strip { margin-bottom: var(--space-lg); }
 
-.home-explainer h2 {
-  margin: 0 0 0.75rem;
+/* Setup checklist — what is left to do, one disclosure per step. */
+.setup-checklist { margin-top: var(--space-lg); }
+.setup-checklist-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+.setup-checklist-head h2 {
+  margin: 0;
   font-size: 1rem;
   font-weight: 600;
 }
-
-.home-explainer ol {
+.setup-checklist ol {
   margin: 0;
-  padding-left: 1.5rem;
-  list-style: decimal;
+  padding: 0;
+  list-style: none;
 }
-
-.home-explainer li {
-  margin-bottom: 0.5rem;
-  font-size: 0.875rem;
-  line-height: 1.5;
+.setup-step {
+  display: flex;
+  gap: var(--space-md);
+  padding-block: var(--space-md);
+  border-top: 1px solid var(--border);
+}
+.setup-step-marker {
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-top: 2px;
   color: var(--muted-foreground);
 }
-
-.home-explainer li:last-child {
-  margin-bottom: 0;
+.setup-step.is-done .setup-step-marker { color: var(--success); }
+.setup-step-body { flex: 1; min-width: 0; }
+.setup-step-body > p { margin: 2px 0 0; }
+button.setup-step-title {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
 }
+button.setup-step-title:hover { text-decoration: underline; }
+button.setup-step-title:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.setup-step.is-done button.setup-step-title { color: var(--muted-foreground); font-weight: 400; }
+.setup-step-panel:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+}
+.setup-step-panel > .card { align-self: stretch; margin: 0; }
 
 /* OpenAPI viewer page — full-height iframe wrapper */
 .openapi-viewer-page {

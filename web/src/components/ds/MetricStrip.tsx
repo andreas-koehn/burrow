@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { cx } from "./cx";
 
 export interface MetricStripProps {
@@ -20,17 +21,24 @@ export interface MetricTileProps {
   value: ReactNode;
   sub?: ReactNode;
   tooltip?: string;
+  /** Where the figure is broken down; makes the whole tile a link. */
+  to?: string;
   children?: ReactNode;
   className?: string;
 }
 
-export function MetricTile({ label, value, sub, tooltip, children, className }: MetricTileProps) {
-  return (
-    <div role="listitem" title={tooltip} className={cx("metric-tile", className)}>
+export function MetricTile({ label, value, sub, tooltip, to, children, className }: MetricTileProps) {
+  const body = (
+    <>
       <span className="label">{label}</span>
       <span className="value">{value}</span>
       {sub != null && <span className="sub">{sub}</span>}
       {children}
+    </>
+  );
+  return (
+    <div role="listitem" title={tooltip} className={cx("metric-tile", to && "is-link", className)}>
+      {to ? <Link to={to} className="metric-tile-link">{body}</Link> : body}
     </div>
   );
 }

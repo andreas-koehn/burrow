@@ -14,9 +14,9 @@ import { renderApp } from "@/mocks/test-utils";
 import App from "@/App";
 import Clients from "@/pages/Clients";
 import Services from "@/pages/Services";
+import ServicesOverview from "@/pages/ServicesOverview";
 import Providers from "@/pages/Providers";
 import AutomationTokens from "@/pages/AutomationTokens";
-import Users from "@/pages/Users";
 
 // ---------------------------------------------------------------------------
 // INTUITIVE — navigation & mental-model alignment
@@ -25,24 +25,23 @@ describe("INTUITIVE — navigation & mental-model alignment", () => {
   // In-2: primary nav lists Overview (the home page) as the first entry — covered by Layout.test.tsx.
   // (renderApp(<App/>, "/") already mounts Layout; Layout.test.tsx owns that assertion.)
 
-  it("In-1: / (root route) renders Home/Dashboard, not a blank page or redirect loop", async () => {
+  it("In-1: / (root route) renders the Services overview, not a blank page or redirect loop", async () => {
     renderApp(<App />, "/");
-    // The Overview heading comes from Home.tsx <PageHeader title="Overview" …>
+    // The Overview heading comes from ServicesOverview.tsx <PageHeader title="Overview" …>
     const heading = await screen.findByRole("heading", { name: "Overview" });
     expect(heading).toBeDefined();
     // The top-level "Tunnels" page-heading should NOT appear on the home page
     expect(screen.queryByRole("heading", { name: "Tunnels" })).toBeNull();
   });
 
-  it("In-3: Home page contains a 'How Burrow works' explainer section with Clients/Services/Tunnels", async () => {
+  it("In-3: the overview explains itself through its figures and setup steps, not a static card", async () => {
     renderApp(<App />, "/");
-    // The section header from Home.tsx <h2>How Burrow works</h2>
-    await screen.findByRole("heading", { name: "How Burrow works" });
-    // The explainer copy names all three concepts
-    const body = document.body.textContent ?? "";
-    expect(body).toContain("Client");
-    expect(body).toContain("Service");
-    expect(body).toContain("Tunnel");
+    const strip = await screen.findByRole("list", { name: "Overview" });
+    // The tiles name the three concepts and lead to their pages.
+    for (const label of ["Clients online", "Services", "Live now"]) {
+      expect(within(strip).getByText(label)).toBeInTheDocument();
+    }
+    expect(screen.queryByRole("heading", { name: "How Burrow works" })).toBeNull();
   });
 
   it("In-4: Clients page — services-count badge links to the client detail view", async () => {
@@ -139,9 +138,9 @@ describe("EASY — onboarding & discoverability", () => {
   // Ea-2: command palette (Ctrl+K) opens a searchable dialog — Playwright-only.
   // Ea-3: InfoHint tooltips present — Playwright-only (hover required in a real browser).
 
-  it("Ea-4: Users page renders an SMTP-not-configured notice with a link to the email settings", async () => {
-    // Default db.settings has no smtp.host, so smtpUnconfigured is true when settings loads.
-    renderApp(<Users />, "/settings/users");
+  it("Ea-4: the overview renders an email-not-set-up notice with a link to the email settings", async () => {
+    // Default db.settings has no smtp.host, so the relay notice is open once the settings load.
+    renderApp(<ServicesOverview />, "/");
     // ErrorNotice variant="warn" role="status" — the SMTP warning
     const notice = await screen.findByRole("status");
     expect(notice.textContent).toContain("Email");

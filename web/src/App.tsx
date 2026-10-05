@@ -4,7 +4,7 @@ import { useAuth } from "@/auth/useAuth";
 import { RequireAdmin } from "@/components/RequireAdmin";
 import { Layout } from "@/components/Layout";
 import Login from "@/pages/Login";
-import Home from "@/pages/Home";
+import ServicesOverview from "@/pages/ServicesOverview";
 import Services from "@/pages/Services";
 import Users from "@/pages/Users";
 import Roles from "@/pages/Roles";
@@ -55,7 +55,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route element={<RequireAuth><Layout /></RequireAuth>}>
-        <Route path="/" element={<Home />} />
+        <Route path="/" element={<ServicesOverview />} />
         <Route path="/services" element={<Services />} />
         {/* /ai/ is the gateway's data plane and never reaches the SPA; its pages live under /gateway/. */}
         <Route path="/gateway" element={<GatewayOverview />} />

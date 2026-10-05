@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import { MetricStrip, MetricTile } from "./MetricStrip";
 
 describe("MetricStrip", () => {
@@ -45,5 +46,23 @@ describe("MetricStrip", () => {
       </MetricStrip>,
     );
     expect(container.querySelector('[data-testid="bar"]')).not.toBeNull();
+  });
+
+  it("MetricTile with `to` is a link around label, value and sub; the tile stays the list item", () => {
+    render(
+      <MemoryRouter>
+        <MetricStrip ariaLabel="x">
+          <MetricTile label="Services" value="4" sub="saved" to="/services" />
+          <MetricTile label="Plain" value="1" />
+        </MetricStrip>
+      </MemoryRouter>,
+    );
+    const items = screen.getAllByRole("listitem");
+    const link = screen.getByRole("link", { name: /Services/ });
+    expect(link).toHaveAttribute("href", "/services");
+    expect(items[0]).toContainElement(link);
+    expect(link.querySelector(".value")?.textContent).toBe("4");
+    expect(link.querySelector(".sub")?.textContent).toBe("saved");
+    expect(items[1]!.querySelector("a")).toBeNull();
   });
 });

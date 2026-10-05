@@ -10,6 +10,7 @@ import { Sidebar } from "@/components/shell/Sidebar";
 import { TopBar } from "@/components/shell/TopBar";
 import { FOOTER_ENTRIES, breadcrumbFor, navigationFor, workspacesFor } from "@/lib/navigation";
 import { rememberWorkspace, workspaceFor } from "@/lib/workspace";
+import { useRelayNotices } from "@/lib/useRelayNotices";
 
 const COLLAPSED_KEY = "burrow.sidebarCollapsed";
 
@@ -50,6 +51,8 @@ export function Layout() {
     retry: false,
   });
   const isAdmin = user?.role === "admin";
+  // Empty for non-admins, and no request is made for them.
+  const relayNotices = useRelayNotices();
   // Same key and fetch as the Clients page, so the two share one cache entry.
   // The endpoint is admin-gated; nobody else gets a count.
   const clients = useQuery({
@@ -110,6 +113,7 @@ export function Layout() {
           // Every row of /clients is a connected session, so the list length is the online count.
           clientsOnline: Array.isArray(clients.data) ? clientsList.length : undefined,
         }}
+        settingsNeedsAttention={relayNotices.length > 0}
         user={{ email: user?.email ?? "", isAdmin, role: user?.role }}
         theme={theme}
         onSearch={openPalette}

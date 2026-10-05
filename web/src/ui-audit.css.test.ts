@@ -124,8 +124,9 @@ describe("T15 — controls", () => {
     expect(css).toMatch(/\.switch::before\s*\{[^}]*inset:\s*-7px/);
     expect(css).toMatch(/button\.sort-header\s*\{[^}]*min-height:\s*28px/);
   });
-  it("restores list numbers in the Home explainer", () => {
-    expect(css).toMatch(/\.home-explainer ol\s*\{[^}]*list-style:\s*decimal/);
+  it("the setup checklist draws its own step markers instead of list numbers", () => {
+    expect(css).toMatch(/\.setup-checklist ol\s*\{[^}]*list-style:\s*none/);
+    expect(css).not.toContain(".home-explainer");
   });
 });
 
@@ -214,7 +215,7 @@ describe("narrow page column — form-only pages", () => {
     expect(w.length).toBeGreaterThan(0);
     for (const c of w) expect(c.split(" ")).toContain("page-narrow");
   });
-  it.each(["Services", "Users", "settings/Sessions", "BackupRestore", "CustomDomainsOverview", "ServiceDetail", "Home"])(
+  it.each(["Services", "Users", "settings/Sessions", "BackupRestore", "CustomDomainsOverview", "ServiceDetail", "ServicesOverview", "GatewayOverview"])(
     "%s keeps the full column (it shows a table, tiles or tabs)",
     (name) => {
       expect(page(name)).not.toContain("page-narrow");

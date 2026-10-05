@@ -10,9 +10,15 @@ interface Options {
   path?: string;
   services?: unknown[];
   clients?: unknown[];
+  /** GET /settings; email is set up unless a test says otherwise. */
+  settings?: Record<string, string> | "fail";
 }
 
-function renderLayout(meRole?: "admin" | "user" | null, { path = "/services", services, clients }: Options = {}) {
+const EMAIL_SET_UP = { "smtp.host": "smtp.example.com" };
+
+const settingsRequests = { count: 0 };
+
+function renderLayout(meRole?: "admin" | "user" | null, { path = "/services", services, clients, settings = EMAIL_SET_UP }: Options = {}) {
   // Mock fetch: /api/v1/me returns a user with the given role, or 401 if null.
   vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
     const u = String(url);
@@ -26,6 +32,12 @@ function renderLayout(meRole?: "admin" | "user" | null, { path = "/services", se
       ) as Response;
     }
     if (services && u.endsWith("/api/v1/services")) return new Response(JSON.stringify(services), { status: 200 }) as Response;
+    if (u.endsWith("/api/v1/settings")) {
+      settingsRequests.count += 1;
+      return (settings === "fail"
+        ? new Response(JSON.stringify({ error: "boom" }), { status: 500 })
+        : new Response(JSON.stringify(settings), { status: 200 })) as Response;
+    }
     if (clients && u.endsWith("/api/v1/clients")) return new Response(JSON.stringify(clients), { status: 200 }) as Response;
     return new Response("{}", { status: 200 }) as Response;
   });
@@ -190,6 +202,34 @@ describe("Layout workspace shell", () => {
       ["Switch to dark theme", null],
       ["Log out", null],
     ]);
+  });
+
+  it("marks the Settings shortcut while email is not set up", async () => {
+    renderLayout("admin", { settings: {} });
+    const settings = await screen.findByRole("link", { name: "Settings, needs attention" });
+    expect(settings).toHaveAttribute("href", "/settings/general");
+    expect(within(settings).getByText("needs attention")).toHaveClass("visually-hidden");
+  });
+
+  it("leaves the Settings shortcut unmarked when email is set up, or when the settings cannot be read", async () => {
+    for (const settings of [EMAIL_SET_UP, "fail"] as const) {
+      settingsRequests.count = 0;
+      const view = renderLayout("admin", { settings });
+      await screen.findByRole("link", { name: "Settings" });
+      await waitFor(() => expect(settingsRequests.count).toBe(1));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.queryByRole("link", { name: /needs attention/ })).toBeNull();
+      view.unmount();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("does not ask for the settings on behalf of a non-admin", async () => {
+    settingsRequests.count = 0;
+    renderLayout("user", { settings: {} });
+    await waitFor(() => expect(screen.getByRole("link", { name: /^Your profile, alice/ })).toBeInTheDocument());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(settingsRequests.count).toBe(0);
   });
 
   it("a non-admin sees no Settings or Users shortcut, and no switcher without AI access", async () => {

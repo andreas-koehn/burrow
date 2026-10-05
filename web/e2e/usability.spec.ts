@@ -7,7 +7,7 @@ import { test, expect } from "@playwright/test";
 //   2. "Onboarding success loop"  — Ea-1 (connect-client form, command, Waiting indicator)
 //   3. "Command palette"          — In-6, Ea-2 (Ctrl+K opens, type, Enter navigates)
 //   4. "Cross-feature wiring"     — Clr-4 (Providers → "New AI service" dialog prefilled)
-//                                  Ea-4 (Users SMTP notice → /settings link)
+//                                  Ea-4 (Overview email notice → /settings/email)
 //
 // This spec runs against the REAL built burrowd (no MSW mocks).
 // Use `playwright-auth.json` for the admin session so the login rate-limit
@@ -32,13 +32,11 @@ test.describe("Home is default", () => {
     const strip = page.getByRole("list", { name: "Overview" });
     await expect(strip).toBeVisible();
 
-    // In-3: explainer section present — use the bold terms inside the explainer
-    // to avoid strict-mode violations from sidebar nav items with the same words.
-    const explainer = page.locator("section.home-explainer");
-    await expect(page.getByRole("heading", { name: "How Burrow works" })).toBeVisible();
-    await expect(explainer.getByText("Client", { exact: true })).toBeVisible();
-    await expect(explainer.getByText("Services", { exact: true })).toBeVisible();
-    await expect(explainer.getByText("Tunnel", { exact: true })).toBeVisible();
+    // In-3: each tile leads to the page behind its figure; the static
+    // "How Burrow works" card is gone.
+    await expect(strip.getByRole("link", { name: /Clients online/ })).toHaveAttribute("href", "/clients");
+    await expect(strip.getByRole("link", { name: /Live now/ })).toHaveAttribute("href", "/services?live=1");
+    await expect(page.getByRole("heading", { name: "How Burrow works" })).toHaveCount(0);
 
     // Quick-action links in the page header
     await expect(page.getByRole("link", { name: /Connect a client/i })).toBeVisible();
@@ -130,14 +128,15 @@ test.describe("Cross-feature wiring", () => {
     await expect(dialog.getByRole("button", { name: /access mode/i })).toHaveCount(0);
   });
 
-  test("Users page: SMTP notice 'Set up email' link navigates to /settings/email", async ({ page }) => {
-    // The SMTP notice on Users.tsx appears when smtp.host is not set.
+  test("Overview: the email notice's 'Set up email' link navigates to /settings/email", async ({ page }) => {
+    // The relay notice on the overview appears when smtp.host is not set.
     // A fresh e2e server has no SMTP configured.
-    await page.goto("/settings/users");
-    await expect(page.getByRole("heading", { name: "Users" })).toBeVisible();
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+    await expect(page.getByRole("list", { name: "Overview" })).toBeVisible();
 
-    // SMTP notice should be visible (server not configured in test env)
-    const notice = page.getByRole("status");
+    // Email notice should be visible (server not configured in test env)
+    const notice = page.getByRole("status").filter({ hasText: "Email" });
     // We check whether the notice shows or not — if SMTP IS configured in
     // the e2e env the test skips the link assertion gracefully.
     const noticeVisible = await notice.isVisible().catch(() => false);
