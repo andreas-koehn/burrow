@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { ArrowLeft, LogOut, Moon, Search, Sun } from "lucide-react";
 import { cx } from "@/components/ds";
 import { shortcutLabel } from "@/lib/platform";
-import { NAVIGATIONS, activeEntry, type NavEntry, type Navigation } from "@/lib/navigation";
+import { NAVIGATIONS, activeEntry, attentionTarget, type NavEntry, type Navigation } from "@/lib/navigation";
 import { lastWorkspace } from "@/lib/workspace";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
@@ -16,8 +16,8 @@ export interface SidebarProps {
   pathname: string;
   collapsed: boolean;
   counts: { services?: number; clientsOnline?: number };
-  /** A relay notice is open; it is resolved in Settings, so that shortcut carries a dot. */
-  settingsNeedsAttention: boolean;
+  /** Pages where an open relay notice is resolved; their entries carry a dot. */
+  attention: string[];
   user: { email: string; isAdmin: boolean; role?: string };
   theme: "light" | "dark";
   onSearch(): void;
@@ -27,8 +27,7 @@ export interface SidebarProps {
 
 const PROFILE = NAVIGATIONS.settings.groups.flatMap((g) => g.entries).find((e) => e.id === "profile")!;
 
-/** The footer shortcut that leads to where relay notices are resolved. */
-const SETTINGS_SHORTCUT = "footer-settings";
+/** Read out with an entry that carries the dot; the dot alone is only colour. */
 const ATTENTION = "needs attention";
 
 /** What the figure at the right edge shows, and how it is read out. */
@@ -39,7 +38,7 @@ function countFor(entry: NavEntry, counts: SidebarProps["counts"]): { text: stri
 }
 
 export function Sidebar({
-  navigation, workspaces, footer, pathname, collapsed, counts, settingsNeedsAttention, user, theme, onSearch, onToggleTheme, onLogout,
+  navigation, workspaces, footer, pathname, collapsed, counts, attention, user, theme, onSearch, onToggleTheme, onLogout,
 }: SidebarProps) {
   const active = activeEntry(pathname, navigation);
   const back = workspaces.find((w) => w.workspace === lastWorkspace()) ?? workspaces[0] ?? NAVIGATIONS.services;
@@ -49,12 +48,12 @@ export function Sidebar({
   const link = (entry: NavEntry, current: boolean) => {
     const Icon = entry.icon;
     const count = countFor(entry, counts);
-    const attention = settingsNeedsAttention && entry.id === SETTINGS_SHORTCUT;
-    const name = [entry.label, count?.spoken, attention && ATTENTION].filter(Boolean).join(", ");
+    const waiting = attentionTarget(entry, attention);
+    const name = [entry.label, count?.spoken, waiting && ATTENTION].filter(Boolean).join(", ");
     return (
       <Link
         key={entry.id}
-        to={entry.to}
+        to={waiting ?? entry.to}
         className={cx("nav-item", current && "is-active")}
         aria-current={current ? "page" : undefined}
         aria-label={name}
@@ -63,7 +62,7 @@ export function Sidebar({
         <span className="nav-icon"><Icon size={16} aria-hidden="true" /></span>
         {!collapsed && <span className="nav-label">{entry.label}</span>}
         {!collapsed && count && <span className="nav-count">{count.text}</span>}
-        {attention && <span className="nav-attention"><span className="visually-hidden">{ATTENTION}</span></span>}
+        {waiting && <span className="nav-attention"><span className="visually-hidden">{ATTENTION}</span></span>}
       </Link>
     );
   };

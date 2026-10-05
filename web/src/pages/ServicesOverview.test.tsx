@@ -39,8 +39,11 @@ describe("ServicesOverview", () => {
       ["Clients online", "1", "/clients"],
       ["Services", "4", "/services"],
       ["Live now", "3", "/services?live=1"],
-      ["Traffic 24h", "10.0 KiB / 4.0 KiB", "/traffic"],
+      ["Traffic", "10.0 KiB / 4.0 KiB", "/traffic"],
     ]));
+    // Session totals of the clients connected right now, not a 24-hour figure.
+    expect(within(el).getByText("in / out, connected clients")).toBeInTheDocument();
+    expect(el.textContent).not.toMatch(/24h/);
     expect(el.textContent).not.toContain("`");
   });
 
@@ -165,5 +168,28 @@ describe("ServicesOverview", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load services/i);
     expect(screen.getByRole("link", { name: /connect a client/i })).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Set up Services" })).toBeNull();
+  });
+
+  it("someone without a token of their own on a relay that is set up: the token step counts as done", async () => {
+    // GET /tokens lists only the caller's tokens; a second admin has none.
+    db.tokens = [];
+    const { qc } = renderApp(<ServicesOverview />);
+    const el = await strip();
+    await waitFor(() => expect(tiles(el)[0]![1]).toBe("1"));
+    await waitFor(() => expect(qc.isFetching()).toBe(0));
+    expect(screen.queryByRole("list", { name: "Set up Services" })).toBeNull();
+  });
+
+  it("no own token and no client, but a saved service: the token step is done all the same", async () => {
+    db.tokens = []; db.clients = []; db.connectionLogs = [];
+    db.services = db.services.slice(0, 1).map((s) => ({ ...s, connected: false }));
+    renderApp(<ServicesOverview />);
+    const list = await checklist();
+    expect(stepStates(list).map((s) => [s[0], s[1]])).toEqual([
+      ["Create a client token", "done"],
+      ["Connect a client", "to do"],
+      ["Expose a service", "done"],
+      ["Receive the first request", "to do"],
+    ]);
   });
 });

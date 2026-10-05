@@ -65,4 +65,18 @@ describe("MetricStrip", () => {
     expect(link.querySelector(".sub")?.textContent).toBe("saved");
     expect(items[1]!.querySelector("a")).toBeNull();
   });
+
+  it("MetricTile with `to` keeps its children outside the link, so a control in them never nests", () => {
+    render(
+      <MemoryRouter>
+        <MetricStrip ariaLabel="x">
+          <MetricTile label="Services" value="4" to="/services"><button type="button">Refresh</button></MetricTile>
+        </MetricStrip>
+      </MemoryRouter>,
+    );
+    const tile = screen.getByRole("listitem");
+    const button = screen.getByRole("button", { name: "Refresh" });
+    expect(tile).toContainElement(button);
+    expect(screen.getByRole("link")).not.toContainElement(button);
+  });
 });

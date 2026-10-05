@@ -39,8 +39,10 @@ test.describe("Home is default", () => {
     await expect(page.getByRole("heading", { name: "How Burrow works" })).toHaveCount(0);
 
     // Quick-action links in the page header
-    await expect(page.getByRole("link", { name: /Connect a client/i })).toBeVisible();
-    await expect(page.getByRole("link", { name: /New service/i })).toBeVisible();
+    // Scoped to the header: the setup checklist's open step links to the same pages.
+    const header = page.locator(".page-header");
+    await expect(header.getByRole("link", { name: /Connect a client/i })).toBeVisible();
+    await expect(header.getByRole("link", { name: /New service/i })).toBeVisible();
   });
 });
 

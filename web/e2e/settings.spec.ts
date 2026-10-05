@@ -12,7 +12,7 @@ test("settings: an admin lands on General, and the navigation replaces the card 
 
   const sidebar = page.locator(".sidebar");
   await expect(sidebar.getByRole("link", { name: "General", exact: true })).toHaveAttribute("aria-current", "page");
-  await sidebar.getByRole("link", { name: "Email", exact: true }).click();
+  await sidebar.getByRole("link", { name: /^Email(,|$)/ }).click();
   await expect(page).toHaveURL(/\/settings\/email$/);
   await expect(page.getByLabel("SMTP server")).toBeVisible();
 });

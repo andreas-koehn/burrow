@@ -113,7 +113,7 @@ export function Layout() {
           // Every row of /clients is a connected session, so the list length is the online count.
           clientsOnline: Array.isArray(clients.data) ? clientsList.length : undefined,
         }}
-        settingsNeedsAttention={relayNotices.length > 0}
+        attention={relayNotices.map((n) => n.action.to)}
         user={{ email: user?.email ?? "", isAdmin, role: user?.role }}
         theme={theme}
         onSearch={openPalette}

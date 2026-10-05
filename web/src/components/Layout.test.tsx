@@ -207,8 +207,25 @@ describe("Layout workspace shell", () => {
   it("marks the Settings shortcut while email is not set up", async () => {
     renderLayout("admin", { settings: {} });
     const settings = await screen.findByRole("link", { name: "Settings, needs attention" });
-    expect(settings).toHaveAttribute("href", "/settings/general");
+    expect(settings).toHaveAttribute("href", "/settings/email");
     expect(within(settings).getByText("needs attention")).toHaveClass("visually-hidden");
+  });
+
+  it("inside Settings, where the shortcut is gone, the Email entry carries the mark", async () => {
+    renderLayout("admin", { path: "/settings/general", settings: {} });
+    const email = await screen.findByRole("link", { name: "Email, needs attention" });
+    expect(email).toHaveAttribute("href", "/settings/email");
+    expect(email.closest("nav")).toHaveAttribute("aria-label", "Settings");
+    expect(document.querySelectorAll(".nav-attention")).toHaveLength(1);
+  });
+
+  it("inside Settings with email set up no entry is marked", async () => {
+    settingsRequests.count = 0;
+    renderLayout("admin", { path: "/settings/general", settings: EMAIL_SET_UP });
+    await screen.findByRole("link", { name: "Email" });
+    await waitFor(() => expect(settingsRequests.count).toBe(1));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(document.querySelector(".nav-attention")).toBeNull();
   });
 
   it("leaves the Settings shortcut unmarked when email is set up, or when the settings cannot be read", async () => {

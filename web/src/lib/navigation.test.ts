@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 import { matchPath } from "react-router-dom";
 import { OLD_ROUTES } from "./moved-routes";
-import { NAVIGATIONS, FOOTER_ENTRIES, navigationFor, workspacesFor, activeEntry, breadcrumbFor, allEntries } from "./navigation";
+import { NAVIGATIONS, FOOTER_ENTRIES, navigationFor, workspacesFor, activeEntry, attentionTarget, breadcrumbFor, allEntries } from "./navigation";
 
 const admin = { isAdmin: true, hasAiGateway: true };
 const user = { isAdmin: false, hasAiGateway: false };
@@ -185,5 +185,24 @@ describe("reachability", () => {
         expect(routes.some((r) => matchPath(r, crumb.to!) !== null), `${path} → ${crumb.to}`).toBe(true);
       }
     }
+  });
+});
+
+describe("attentionTarget", () => {
+  const all = [...allEntries(admin).map((e) => e.entry), ...FOOTER_ENTRIES];
+  const entry = (id: string) => all.find((e) => e.id === id)!;
+
+  it("marks the entry of the page a notice is resolved on", () => {
+    expect(attentionTarget(entry("email"), ["/settings/email"])).toBe("/settings/email");
+    expect(attentionTarget(entry("general"), ["/settings/email"])).toBeUndefined();
+  });
+
+  it("the Settings shortcut stands for all of them and leads to the first", () => {
+    expect(attentionTarget(entry("footer-settings"), ["/settings/email", "/settings/backups"])).toBe("/settings/email");
+    expect(attentionTarget(entry("footer-users"), ["/settings/email"])).toBeUndefined();
+  });
+
+  it("marks nothing without an open notice", () => {
+    for (const e of all) expect(attentionTarget(e, [])).toBeUndefined();
   });
 });

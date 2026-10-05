@@ -92,6 +92,11 @@ export default function GatewayOverview() {
   const costAbsent = cost.error instanceof ApiError && cost.error.status === 404;
   const notices = budgetNotices(isAdmin && Array.isArray(budgets.data) ? budgets.data : []);
 
+  // requests_24h alone would reopen the last step after a quiet day; tokens or
+  // cost counted in the current window are proof of a request as well.
+  const served = totalRequests > 0
+    || (cost.data ? cost.data.total_usd > 0 || cost.data.tokens_in > 0 || cost.data.tokens_out > 0 : false);
+
   const steps: ChecklistStep[] = [
     // Only an admin can add a provider.
     ...(isAdmin ? [{
@@ -112,10 +117,11 @@ export default function GatewayOverview() {
       id: "request",
       title: "Send the first request",
       description: "Point any OpenAI-compatible client at the provider's base URL.",
-      done: totalRequests > 0,
-      content: first
-        ? <ProviderConnect baseUrl={providerBaseUrl(first.slug, first.base_url)} exampleModel={first.concrete_model} />
-        : undefined,
+      done: served,
+      // Without a provider there is nothing to connect to yet.
+      ...(first
+        ? { content: <ProviderConnect baseUrl={providerBaseUrl(first.slug, first.base_url)} exampleModel={first.concrete_model} /> }
+        : { action: { label: "Add a provider", to: "/gateway/providers" } }),
     },
   ];
 
@@ -194,7 +200,8 @@ export default function GatewayOverview() {
               An administrator can add one from a service in API-key mode, or add a hosted API.
             </EmptyState>
           ) : (
-            <SetupChecklist title="Set up the AI Gateway" steps={steps} />
+            // The last step reads the cost summary, so the list waits for that answer.
+            !cost.isPending && <SetupChecklist title="Set up the AI Gateway" steps={steps} />
           )}
         </>
       )}

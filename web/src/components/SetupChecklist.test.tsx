@@ -18,9 +18,12 @@ describe("SetupChecklist", () => {
   it("is a list named by its title; each step shows title, description and its state", () => {
     mount(STEPS);
     expect(screen.getByRole("heading", { name: "Set up things" })).toBeInTheDocument();
-    const items = within(screen.getByRole("list", { name: "Set up things" })).getAllByRole("listitem");
+    const list = screen.getByRole("list", { name: "Set up things" });
+    // Stated outright: a list without markers loses its role in Safari with VoiceOver.
+    expect(list).toHaveAttribute("role", "list");
+    const items = within(list).getAllByRole("listitem");
     expect(items).toHaveLength(4);
-    expect(items.map((li) => within(li).getByRole("button").textContent)).toEqual(["First", "Second", "Third", "Fourth"]);
+    expect(items.map((li) => li.querySelector(".setup-step-title")?.textContent)).toEqual(["First", "Second", "Third", "Fourth"]);
     STEPS.forEach((s, i) => expect(within(items[i]!).getByText(s.description)).toBeInTheDocument());
     expect(items.map((li) => li.querySelector(".visually-hidden")?.textContent)).toEqual(["done", "to do", "done", "to do"]);
   });
@@ -28,7 +31,7 @@ describe("SetupChecklist", () => {
   it("opens the first open step only, showing its action link", () => {
     mount(STEPS);
     const expanded = (name: string) => screen.getByRole("button", { name }).getAttribute("aria-expanded");
-    expect(["First", "Second", "Third", "Fourth"].map(expanded)).toEqual(["false", "true", "false", "false"]);
+    expect(["First", "Second", "Fourth"].map(expanded)).toEqual(["false", "true", "false"]);
     expect(screen.getByRole("link", { name: "Open second" })).toHaveAttribute("href", "/second");
     expect(screen.queryByRole("link", { name: "Open first" })).toBeNull();
     expect(screen.queryByText("Fourth body")).toBeNull();
@@ -62,5 +65,22 @@ describe("SetupChecklist", () => {
   it("renders nothing without steps", () => {
     const { container } = mount([]);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("a step with nothing to expand is plain text, not a toggle over an empty panel", () => {
+    mount(STEPS);
+    // "Third" has neither an action nor content.
+    expect(screen.queryByRole("button", { name: "Third" })).toBeNull();
+    const third = within(screen.getByRole("list", { name: "Set up things" })).getAllByRole("listitem")[2]!;
+    expect(within(third).getByText("Third")).toHaveClass("setup-step-title");
+    expect(third.querySelector("[aria-expanded]")).toBeNull();
+    expect(third.querySelector(".setup-step-panel")).toBeNull();
+  });
+
+  it("an open step with nothing to expand still reads as open work", () => {
+    mount([{ id: "x", title: "Only", description: "Do it.", done: false }]);
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByText("to do")).toBeInTheDocument();
+    expect(screen.getByText("0 of 1 done")).toBeInTheDocument();
   });
 });

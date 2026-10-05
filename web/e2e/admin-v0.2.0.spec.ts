@@ -73,7 +73,7 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   await expect(page.locator("tbody tr").filter({ hasText: NEW_USER_EMAIL })).toHaveCount(0);
 
   // ── Roles: list + detail w/ code-defined permissions ──────────────────────
-  await sidebar.getByRole("link", { name: "Settings", exact: true }).click();
+  await sidebar.getByRole("link", { name: /^Settings(,|$)/ }).click();
   await sidebar.getByRole("link", { name: "Roles", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Roles" })).toBeVisible();
   const adminRoleRow = page.locator("tbody tr").filter({ hasText: "admin" });
@@ -86,7 +86,7 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
 
   // ── Settings: GET then PUT round-trip (whitelisted keys persist) ──────────
   // Still inside Settings (Roles): its navigation lists the Email page.
-  await sidebar.getByRole("link", { name: "Email", exact: true }).click();
+  await sidebar.getByRole("link", { name: /^Email(,|$)/ }).click();
   await expect(page.getByRole("heading", { name: "Email", exact: true })).toBeVisible();
   await page.getByLabel("SMTP server").fill("smtp.e2e.example.com");
   await page.getByLabel("Port").fill("587");
@@ -95,8 +95,8 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   // Round-trip: leave and return; GET /settings must return the persisted host.
   await sidebar.getByRole("link", { name: /^Back to / }).click();
   await sidebar.getByRole("link", { name: /^Clients/ }).click();
-  await sidebar.getByRole("link", { name: "Settings", exact: true }).click();
-  await sidebar.getByRole("link", { name: "Email", exact: true }).click();
+  await sidebar.getByRole("link", { name: /^Settings(,|$)/ }).click();
+  await sidebar.getByRole("link", { name: /^Email(,|$)/ }).click();
   await expect(page.getByLabel("SMTP server")).toHaveValue("smtp.e2e.example.com");
 
   // ── Clients: empty state (GET /clients → []) ─────────────────────────────

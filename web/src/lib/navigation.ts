@@ -17,6 +17,8 @@ export interface NavEntry {
   also?: string[];
   /** Live figure shown at the right edge of the entry. */
   count?: "services" | "clientsOnline";
+  /** A shortcut into a whole area: it is marked for any page that needs attention, and then leads there. */
+  gathersAttention?: boolean;
 }
 
 export interface NavGroup {
@@ -103,8 +105,17 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
 /** Shortcuts into Settings shown at the foot of the sidebar; admin only. */
 export const FOOTER_ENTRIES: NavEntry[] = [
   { id: "footer-users", label: "Users & roles", to: "/settings/users", icon: Users, adminOnly: true },
-  { id: "footer-settings", label: "Settings", to: "/settings/general", icon: ServerCog, adminOnly: true },
+  { id: "footer-settings", label: "Settings", to: "/settings/general", icon: ServerCog, adminOnly: true, gathersAttention: true },
 ];
+
+/**
+ * The page behind this entry that needs attention, if any. `pages` are the
+ * paths where open relay notices are resolved, most urgent first.
+ */
+export function attentionTarget(entry: NavEntry, pages: string[]): string | undefined {
+  if (pages.includes(entry.to)) return entry.to;
+  return entry.gathersAttention ? pages[0] : undefined;
+}
 
 /** The navigation of a workspace as this user sees it; groups left empty are dropped. */
 export function navigationFor(workspace: Workspace, ctx: NavContext): Navigation {

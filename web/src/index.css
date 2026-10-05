@@ -1877,6 +1877,8 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   text-decoration: none;
   transition: background var(--t-micro);
 }
+/* What follows the link keeps the tile's inset. */
+.metric-tile.is-link > :not(.metric-tile-link) { margin: 0 var(--space-lg) var(--space-md); }
 .metric-tile-link:hover { background: var(--hover); }
 .metric-tile-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .metric-tile .label {
@@ -2686,6 +2688,7 @@ td.empty-cell { text-align: center; padding: 1rem 0; }
 .setup-step.is-done .setup-step-marker { color: var(--success); }
 .setup-step-body { flex: 1; min-width: 0; }
 .setup-step-body > p { margin: 2px 0 0; }
+.setup-step-title { font-weight: 500; }
 button.setup-step-title {
   padding: 0;
   border: none;
@@ -2698,7 +2701,7 @@ button.setup-step-title {
 }
 button.setup-step-title:hover { text-decoration: underline; }
 button.setup-step-title:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-.setup-step.is-done button.setup-step-title { color: var(--muted-foreground); font-weight: 400; }
+.setup-step.is-done .setup-step-title { color: var(--muted-foreground); font-weight: 400; }
 .setup-step-panel:not([hidden]) {
   display: flex;
   flex-direction: column;

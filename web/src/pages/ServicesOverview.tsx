@@ -66,7 +66,9 @@ export default function ServicesOverview() {
       id: "token",
       title: "Create a client token",
       description: "A token is what a machine signs in to this relay with.",
-      done: toks.length > 0,
+      // GET /tokens lists only the caller's own tokens. A client, a live or a
+      // saved service proves that somebody's token did the job.
+      done: toks.length > 0 || cls.length > 0 || liveNow > 0 || svc.length > 0,
       action: { label: "Create a token", to: "/clients?tab=tokens" },
     },
     {
@@ -143,7 +145,8 @@ export default function ServicesOverview() {
             tooltip={GLOSSARY.tunnel}
             to="/services?live=1"
           />
-          <MetricTile label="Traffic 24h" value={trafficValue} sub="in / out" to="/traffic" />
+          {/* Session totals of the clients connected right now; the relay has no 24-hour figure. */}
+          <MetricTile label="Traffic" value={trafficValue} sub="in / out, connected clients" to="/traffic" />
         </MetricStrip>
       )}
 

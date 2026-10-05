@@ -32,6 +32,10 @@ const tiles = (el: HTMLElement) =>
     t.querySelector(".value")?.textContent,
     within(t).getByRole("link").getAttribute("href"),
   ]);
+const withCost = (total_usd: number, tokens_in: number) =>
+  server.use(http.get("/api/v1/cost/summary", () => HttpResponse.json({
+    window: "today", total_usd, tokens_in, tokens_out: 0, top_consumers: [], pct_of_budget: null,
+  })));
 const checklist = () => screen.findByRole("list", { name: "Set up the AI Gateway" });
 const stepStates = (list: HTMLElement) =>
   within(list).getAllByRole("listitem").map((li) => [
@@ -98,6 +102,7 @@ describe("GatewayOverview", () => {
   });
 
   it("with no provider at all: zero requests, and the checklist's first step instead of the list", async () => {
+    withCost(0, 0);
     withProviders([]);
     renderApp(<GatewayOverview />);
     const list = await checklist();
@@ -108,10 +113,17 @@ describe("GatewayOverview", () => {
     ]);
     expect(within(list).getByRole("link", { name: "Add a provider" })).toHaveAttribute("href", "/gateway/providers");
     expect(tiles(await strip())[0]).toEqual(["Requests 24h", "0", "/gateway/requests"]);
+    // Nothing to connect to yet: the last step leads to the providers instead of opening an empty panel.
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(within(list).getByRole("button", { name: "Send the first request" }));
+    const last = within(list).getAllByRole("listitem")[2]!;
+    expect(within(last).getByRole("link", { name: "Add a provider" })).toHaveAttribute("href", "/gateway/providers");
+    expect(within(last).queryByRole("heading", { name: "Connect a client" })).toBeNull();
     expect(screen.queryByRole("table", { name: "Providers" })).toBeNull();
   });
 
   it("a provider without a key: the key step is open and leads to the first provider's page", async () => {
+    withCost(0, 0);
     withProviders([provider({ slug: "zai", name: "zai", api_key_count: 0, requests_24h: 0 }), provider({ slug: "b", name: "b", api_key_count: 0, requests_24h: 0 })]);
     renderApp(<GatewayOverview />);
     const list = await checklist();
@@ -124,6 +136,7 @@ describe("GatewayOverview", () => {
   });
 
   it("a provider with a key but no request yet: the last step shows how to connect to the first provider", async () => {
+    withCost(0, 0);
     withProviders([provider({ slug: "zai", name: "zai", base_url: "https://b.example.com/ai/zai/v1", concrete_model: "glm-4", api_key_count: 1, requests_24h: 0 })]);
     renderApp(<GatewayOverview />);
     const list = await checklist();
@@ -166,6 +179,7 @@ describe("GatewayOverview", () => {
     const asked: string[] = [];
     const spy = (path: string) => http.get(`/api/v1/${path}`, () => { asked.push(path); return HttpResponse.json({ error: "admin required" }, { status: 403 }); });
     server.use(spy("settings"), spy("budgets"), spy("clients"));
+    withCost(0, 0);
     withProviders([provider({ api_key_count: 0, requests_24h: 0 })]);
     const { qc } = renderApp(<GatewayOverview />);
     const list = await checklist();
@@ -198,5 +212,31 @@ describe("GatewayOverview", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "AI Gateway" })).toBeNull();
     expect(screen.queryByRole("list", { name: "Set up the AI Gateway" })).toBeNull();
+  });
+
+  it("a quiet day does not reopen 'Send the first request': tokens counted today are proof too", async () => {
+    withCost(0, 1200);
+    withProviders([provider({ api_key_count: 1, requests_24h: 0 })]);
+    const { qc } = renderApp(<GatewayOverview />);
+    await screen.findByRole("table", { name: "Providers" });
+    await waitFor(() => expect(qc.isFetching()).toBe(0));
+    expect(screen.queryByRole("list", { name: "Set up the AI Gateway" })).toBeNull();
+  });
+
+  it("so is a cost above zero", async () => {
+    withCost(0.4, 0);
+    withProviders([provider({ api_key_count: 1, requests_24h: 0 })]);
+    const first = renderApp(<GatewayOverview />);
+    await screen.findByRole("table", { name: "Providers" });
+    await waitFor(() => expect(first.qc.isFetching()).toBe(0));
+    expect(screen.queryByRole("list", { name: "Set up the AI Gateway" })).toBeNull();
+  });
+
+  it("without any such proof the step stays open, and waits for the cost answer before saying so", async () => {
+    withCost(0, 0);
+    withProviders([provider({ api_key_count: 1, requests_24h: 0 })]);
+    renderApp(<GatewayOverview />);
+    const list = await checklist();
+    expect(stepStates(list).map((s) => s[1])).toEqual(["done", "done", "to do"]);
   });
 });

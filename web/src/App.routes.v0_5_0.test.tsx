@@ -47,7 +47,7 @@ describe("v0.5.0 routes", () => {
     renderAt("/settings/email");
     expect(await screen.findByRole("heading", { name: "Email", level: 1 })).toBeInTheDocument();
     const nav = within(await screen.findByRole("navigation", { name: "Settings" }));
-    expect(nav.getByRole("link", { name: "Email" })).toHaveAttribute("aria-current", "page");
+    expect(nav.getByRole("link", { name: /^Email(,|$)/ })).toHaveAttribute("aria-current", "page");
     expect(nav.getByRole("link", { name: "General" })).not.toHaveAttribute("aria-current");
     expect(screen.getByRole("link", { name: /^Back to / })).toBeInTheDocument();
   });

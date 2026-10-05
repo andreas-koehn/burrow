@@ -18,7 +18,7 @@ function mount(path: string, ctx = admin, over: Partial<SidebarProps> = {}) {
     pathname: path,
     collapsed: false,
     counts: {},
-    settingsNeedsAttention: false,
+    attention: [],
     user: { email: "alice@example.com", isAdmin: ctx.isAdmin, role: ctx.isAdmin ? "admin" : "user" },
     theme: "light",
     onSearch: vi.fn(),
@@ -152,24 +152,35 @@ describe("Sidebar", () => {
     expect(toggle.getAttribute("title")).toBe(toggle.getAttribute("aria-label"));
   });
 
-  it("marks Settings in the footer while a relay notice is open", () => {
-    mount("/", admin, { settingsNeedsAttention: true });
+  it("the Settings shortcut carries the mark and leads to the page that resolves the notice", () => {
+    mount("/", admin, { attention: ["/settings/email"] });
     const settings = within(footerZone()).getByRole("link", { name: "Settings, needs attention" });
-    expect(settings).toHaveAttribute("href", "/settings/general");
+    expect(settings).toHaveAttribute("href", "/settings/email");
+    expect(within(settings).getByText("needs attention")).toHaveClass("visually-hidden");
     expect(settings.querySelector(".nav-attention")).not.toBeNull();
     expect(within(footerZone()).getByRole("link", { name: "Users & roles" }).querySelector(".nav-attention")).toBeNull();
   });
 
   it("keeps the mark when collapsed, in the entry's name and tooltip", () => {
-    mount("/", admin, { settingsNeedsAttention: true, collapsed: true });
+    mount("/", admin, { attention: ["/settings/email"], collapsed: true });
     const settings = within(footerZone()).getByRole("link", { name: "Settings, needs attention" });
     expect(settings).toHaveAttribute("title", "Settings, needs attention");
     expect(settings.querySelector(".nav-attention")).not.toBeNull();
   });
 
+  it("inside Settings the entry of that page carries the mark, and only that one", () => {
+    mount("/settings/general", admin, { attention: ["/settings/email"], footer: [] });
+    const nav = within(screen.getByRole("navigation", { name: "Settings" }));
+    const email = nav.getByRole("link", { name: "Email, needs attention" });
+    expect(email).toHaveAttribute("href", "/settings/email");
+    expect(within(email).getByText("needs attention")).toHaveClass("visually-hidden");
+    expect(document.querySelectorAll(".nav-attention")).toHaveLength(1);
+    expect(nav.getByRole("link", { name: "General" })).toHaveAttribute("aria-current", "page");
+  });
+
   it("has no mark without an open relay notice", () => {
     mount("/");
-    expect(within(footerZone()).getByRole("link", { name: "Settings" })).toBeInTheDocument();
+    expect(within(footerZone()).getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings/general");
     expect(document.querySelector(".nav-attention")).toBeNull();
     expect(screen.queryByRole("link", { name: /needs attention/ })).toBeNull();
   });

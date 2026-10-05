@@ -21,24 +21,25 @@ export interface MetricTileProps {
   value: ReactNode;
   sub?: ReactNode;
   tooltip?: string;
-  /** Where the figure is broken down; makes the whole tile a link. */
+  /** Where the figure is broken down; makes label, value and sub one link. */
   to?: string;
   children?: ReactNode;
   className?: string;
 }
 
 export function MetricTile({ label, value, sub, tooltip, to, children, className }: MetricTileProps) {
-  const body = (
+  const figure = (
     <>
       <span className="label">{label}</span>
       <span className="value">{value}</span>
       {sub != null && <span className="sub">{sub}</span>}
-      {children}
     </>
   );
   return (
     <div role="listitem" title={tooltip} className={cx("metric-tile", to && "is-link", className)}>
-      {to ? <Link to={to} className="metric-tile-link">{body}</Link> : body}
+      {to ? <Link to={to} className="metric-tile-link">{figure}</Link> : figure}
+      {/* Outside the link, so a control among them never nests inside it. */}
+      {children}
     </div>
   );
 }

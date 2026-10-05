@@ -37,9 +37,12 @@ export function SetupChecklist({ title, steps }: SetupChecklistProps) {
         <h2 id={`${uid}-title`}>{title}</h2>
         <span className="muted small">{done} of {steps.length} done</span>
       </div>
-      <ol aria-labelledby={`${uid}-title`}>
+      {/* role stated outright: without list markers Safari drops the list semantics. */}
+      <ol role="list" aria-labelledby={`${uid}-title`}>
         {steps.map((s) => {
-          const open = toggled[s.id] ?? s.id === firstOpen;
+          // A step with neither content nor action has nothing to disclose.
+          const expandable = s.content != null || s.action != null;
+          const open = expandable && (toggled[s.id] ?? s.id === firstOpen);
           const panelId = `${uid}-${s.id}`;
           const Marker = s.done ? CircleCheck : Circle;
           return (
@@ -49,20 +52,26 @@ export function SetupChecklist({ title, steps }: SetupChecklistProps) {
                 <span className="visually-hidden">{s.done ? "done" : "to do"}</span>
               </span>
               <div className="setup-step-body">
-                <button
-                  type="button"
-                  className="setup-step-title"
-                  aria-expanded={open}
-                  aria-controls={panelId}
-                  onClick={() => setToggled((t) => ({ ...t, [s.id]: !open }))}
-                >
-                  {s.title}
-                </button>
+                {expandable ? (
+                  <button
+                    type="button"
+                    className="setup-step-title"
+                    aria-expanded={open}
+                    aria-controls={panelId}
+                    onClick={() => setToggled((t) => ({ ...t, [s.id]: !open }))}
+                  >
+                    {s.title}
+                  </button>
+                ) : (
+                  <span className="setup-step-title">{s.title}</span>
+                )}
                 <p className="muted small">{s.description}</p>
-                <div id={panelId} className="setup-step-panel" hidden={!open}>
-                  {open && s.content}
-                  {open && s.action && <Link to={s.action.to}>{s.action.label}<span aria-hidden="true"> →</span></Link>}
-                </div>
+                {expandable && (
+                  <div id={panelId} className="setup-step-panel" hidden={!open}>
+                    {open && s.content}
+                    {open && s.action && <Link to={s.action.to}>{s.action.label}<span aria-hidden="true"> →</span></Link>}
+                  </div>
+                )}
               </div>
             </li>
           );
