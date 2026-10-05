@@ -36,7 +36,7 @@ export default function Providers() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [newOpen, setNewOpen] = useState(false);
-  const endpoints = useQuery({
+  const providers = useQuery({
     queryKey: ["ai", "providers"],
     queryFn: () => apiFetch<AiProvider[]>("/ai/providers"),
     retry: false,
@@ -60,8 +60,8 @@ export default function Providers() {
     };
   }, [qc]);
 
-  const list = endpoints.data ?? [];
-  const hasEndpoints = list.length > 0;
+  const list = providers.data ?? [];
+  const hasProviders = list.length > 0;
   const totalRequests = list.reduce((a, e) => a + e.requests_24h, 0);
   const totalCacheHits = list.reduce((a, e) => a + e.cache_hits_24h, 0);
   const tokensIn = summary.data?.tokens_in ?? 0;
@@ -72,7 +72,7 @@ export default function Providers() {
   // endpoint returns 404; rendering the KPI strip with zeros next to the
   // error banner suggests an empty-but-working install. Detect that case
   // and show a single "feature unavailable" card instead.
-  const featureAbsent = endpoints.error instanceof ApiError && endpoints.error.status === 404;
+  const featureAbsent = providers.error instanceof ApiError && providers.error.status === 404;
 
   if (featureAbsent) {
     return (
@@ -112,11 +112,11 @@ export default function Providers() {
         <MetricTile label="Requests (24h)" value={fmtInt(totalRequests)} />
         <MetricTile
           label="Tokens in/out (24h)"
-          value={hasEndpoints ? `${fmtInt(tokensIn)} → ${fmtInt(tokensOut)}` : "—"}
+          value={hasProviders ? `${fmtInt(tokensIn)} → ${fmtInt(tokensOut)}` : "—"}
         />
         <MetricTile
           label="Cost estimate (24h)"
-          value={hasEndpoints ? fmtUsd(totalUsd) : "—"}
+          value={hasProviders ? fmtUsd(totalUsd) : "—"}
           tooltip="Estimates from the bundled pricing table — operator-overridable."
         />
         <MetricTile
@@ -126,18 +126,18 @@ export default function Providers() {
         />
       </MetricStrip>
 
-      {endpoints.error ? (
+      {providers.error ? (
         <ErrorNotice
           action={
-            <Button variant="secondary" size="sm" onClick={() => void endpoints.refetch()}>
+            <Button variant="secondary" size="sm" onClick={() => void providers.refetch()}>
               Retry
             </Button>
           }
         >
           Couldn't load providers:{" "}
-          {endpoints.error instanceof ApiError ? endpoints.error.message : "Unknown error"}
+          {providers.error instanceof ApiError ? providers.error.message : "Unknown error"}
         </ErrorNotice>
-      ) : endpoints.isLoading ? (
+      ) : providers.isLoading ? (
         <div className="table-wrap skel-pad">
           <SkeletonRows n={3} />
         </div>
@@ -154,6 +154,7 @@ export default function Providers() {
           {isAdmin
             ? "Add one from a service in API-key mode."
             : "An administrator can add one from a service in API-key mode."}
+          {" Switching a service to API-key mode does not create a provider."}
         </EmptyState>
       ) : (
         <div className="table-wrap">

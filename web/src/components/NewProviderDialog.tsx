@@ -24,9 +24,8 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [serviceId, setServiceId] = useState("");
-  // nameErr and slugErr belong to one field; formErr is everything else
-  // (service taken or not eligible, permission, network).
-  const [nameErr, setNameErr] = useState<string | null>(null);
+  // slugErr belongs to the slug field; formErr is everything else (name,
+  // service taken or not eligible, permission, network).
   const [slugErr, setSlugErr] = useState<string | null>(null);
   const [formErr, setFormErr] = useState<string | null>(null);
 
@@ -63,8 +62,8 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
     },
     onError: (e: unknown) => {
       if (!(e instanceof ApiError)) setFormErr("Couldn't create the provider.");
-      else if (e.status === 400 && e.message.startsWith("name")) setNameErr(e.message);
-      else if (e.status === 400) setSlugErr(e.message);
+      // Only the slug rule ("slug must be …") is about the slug.
+      else if (e.status === 400 && e.message.startsWith("slug")) setSlugErr(e.message);
       else if (e.status === 403) setFormErr("You don't have permission to add providers.");
       else setFormErr(e.message);
     },
@@ -88,21 +87,14 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
       }
     >
       <FormFieldGroup>
-        <FormField
-          label="Name"
-          htmlFor="np-name"
-          w="md"
-          error={nameErr ? <span id="np-name-err">{nameErr}</span> : undefined}
-        >
+        <FormField label="Name" htmlFor="np-name" w="md">
           <Input
             id="np-name"
             value={name}
             maxLength={120}
             required
             autoComplete="off"
-            invalid={!!nameErr}
-            aria-describedby={nameErr ? "np-name-err" : undefined}
-            onChange={(e) => { setName(e.target.value); setNameErr(null); setFormErr(null); }}
+            onChange={(e) => { setName(e.target.value); setFormErr(null); }}
           />
         </FormField>
         <SlugField

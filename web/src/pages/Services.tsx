@@ -142,10 +142,12 @@ export default function Services() {
           qc.invalidateQueries({ queryKey: ["ai", "providers"] });
           closeNew();
           nav(`/gateway/providers/${p.slug}`);
-        } catch {
-          // The service exists; the provider can still be added from Providers.
+        } catch (e) {
+          // The service exists, the provider does not. Say why and stay here:
+          // this page's toaster would not survive a navigation.
+          const why = e instanceof ApiError ? e.message : "the request failed";
+          toast.error(`Service ${resp.id} created, but it was not registered as a provider: ${why}. Add it under Providers.`);
           closeNew();
-          nav(`/services/${resp.id}`);
         }
       } else {
         toast.success(`Service ${nsServiceId} created.`);

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
+import { server } from "@/mocks/server";
 import { Route, Routes, useLocation } from "react-router-dom";
 import ProviderDetail from "@/pages/ProviderDetail";
 import { db } from "@/mocks/db";
@@ -98,6 +100,86 @@ describe("Provider detail", () => {
     await userEvent.type(slug, "v1");
     expect(slug).toHaveAccessibleDescription('"v1" is reserved.');
     expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("rename: a 400 that is not about the slug shows in the dialog", async () => {
+    server.use(http.put("/api/v1/ai/providers/ollama", () =>
+      HttpResponse.json({ error: "kind must be 'tunnel'" }, { status: 400 })));
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "Rename" }));
+    const dialog = await screen.findByRole("dialog", { name: /rename provider/i });
+    const name = within(dialog).getByLabelText("Name");
+    await userEvent.clear(name);
+    await userEvent.type(name, "Other");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("kind must be 'tunnel'");
+    expect(within(dialog).getByLabelText("Provider slug")).not.toHaveAttribute("aria-invalid");
+  });
+
+  it("lets an admin delete the provider after confirming, and returns to the list", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    mount();
+    await screen.findByRole("heading", { name: /connect a client/i });
+    await userEvent.click(screen.getByRole("button", { name: /more actions/i }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Delete provider" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete provider · ollama" });
+    expect(dialog).toHaveTextContent("https://tunnels.example.com/ai/ollama/v1 stops working at once.");
+    expect(dialog).toHaveTextContent("The service, its API keys and its tunnel are kept.");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete provider" }));
+    expect(await screen.findByText("PROVIDERS_PAGE")).toBeInTheDocument();
+    expect(db.aiProviders).toHaveLength(0);
+    // The backing service is untouched: nothing was sent to /services.
+    expect(db.services.some((s) => s.id === "svc_ai001")).toBe(true);
+    expect(fetchSpy.mock.calls.some(([url, init]) =>
+      (init as RequestInit | undefined)?.method === "DELETE" && /\/api\/v1\/services\/[^/]+$/.test(String(url)),
+    )).toBe(false);
+  });
+
+  it("delete: cancel sends nothing and hands focus back to the menu button", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockClear(); // the spy is shared with earlier cases
+    mount();
+    await screen.findByRole("heading", { name: /connect a client/i });
+    const more = screen.getByRole("button", { name: /more actions/i });
+    await userEvent.click(more);
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Delete provider" }));
+    const dialog = await screen.findByRole("dialog", { name: /delete provider/i });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(more).toHaveFocus());
+    expect(fetchSpy.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "DELETE")).toBe(false);
+    expect(db.aiProviders).toHaveLength(1);
+  });
+
+  it("delete: a failure shows in the dialog and keeps it open", async () => {
+    server.use(http.delete("/api/v1/ai/providers/ollama", () =>
+      HttpResponse.json({ error: "internal error" }, { status: 500 })));
+    mount();
+    await screen.findByRole("heading", { name: /connect a client/i });
+    await userEvent.click(screen.getByRole("button", { name: /more actions/i }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Delete provider" }));
+    const dialog = await screen.findByRole("dialog", { name: /delete provider/i });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete provider" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("internal error");
+    expect(screen.getByTestId("path")).toHaveTextContent(/^\/gateway\/providers\/ollama$/);
+  });
+
+  it("offers neither Delete provider nor the old Disable to a non-admin", async () => {
+    db.me = { ...db.me, role: "user" };
+    mount();
+    await screen.findByRole("heading", { name: /connect a client/i });
+    await userEvent.click(screen.getByRole("button", { name: /more actions/i }));
+    await screen.findByRole("menuitem", { name: "Clear cache" });
+    expect(screen.queryByRole("menuitem", { name: "Delete provider" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Disable" })).toBeNull();
+  });
+
+  it("has no Disable item for an admin either", async () => {
+    mount();
+    await screen.findByRole("heading", { name: /connect a client/i });
+    await userEvent.click(screen.getByRole("button", { name: /more actions/i }));
+    await screen.findByRole("menuitem", { name: "Delete provider" });
+    expect(screen.queryByRole("menuitem", { name: "Disable" })).toBeNull();
   });
 
   it("hides Rename from non-admins", async () => {

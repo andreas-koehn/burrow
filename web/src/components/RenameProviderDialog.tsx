@@ -24,8 +24,7 @@ function RenameProviderForm({ provider, onOpenChange, onRenamed }: Omit<RenamePr
   const qc = useQueryClient();
   const [name, setName] = useState(provider.name);
   const [slug, setSlug] = useState(provider.slug);
-  // Same split as EditSlugDialog: field errors on their field, the rest in the body.
-  const [nameErr, setNameErr] = useState<string | null>(null);
+  // Same split as EditSlugDialog: slug errors on the field, the rest in the body.
   const [slugErr, setSlugErr] = useState<string | null>(null);
   const [formErr, setFormErr] = useState<string | null>(null);
 
@@ -45,9 +44,8 @@ function RenameProviderForm({ provider, onOpenChange, onRenamed }: Omit<RenamePr
     },
     onError: (e: unknown) => {
       if (!(e instanceof ApiError)) setFormErr("Couldn't rename the provider.");
-      else if (e.status === 400 && e.message.startsWith("name")) setNameErr(e.message);
-      // On a rename the only conflict is the slug.
-      else if (e.status === 400 || e.status === 409) setSlugErr(e.message);
+      // The slug rule ("slug must be …"), and on a rename the only conflict is the slug.
+      else if ((e.status === 400 && e.message.startsWith("slug")) || e.status === 409) setSlugErr(e.message);
       else if (e.status === 403) setFormErr("You don't have permission to rename providers.");
       else setFormErr(e.message);
     },
@@ -79,21 +77,14 @@ function RenameProviderForm({ provider, onOpenChange, onRenamed }: Omit<RenamePr
         The old base URL stops working immediately. Clients that use it must be updated.
       </ErrorNotice>
       <FormFieldGroup>
-        <FormField
-          label="Name"
-          htmlFor="rp-name"
-          w="md"
-          error={nameErr ? <span id="rp-name-err">{nameErr}</span> : undefined}
-        >
+        <FormField label="Name" htmlFor="rp-name" w="md">
           <Input
             id="rp-name"
             value={name}
             maxLength={120}
             required
             autoComplete="off"
-            invalid={!!nameErr}
-            aria-describedby={nameErr ? "rp-name-err" : undefined}
-            onChange={(e) => { setName(e.target.value); setNameErr(null); setFormErr(null); }}
+            onChange={(e) => { setName(e.target.value); setFormErr(null); }}
           />
         </FormField>
         <SlugField

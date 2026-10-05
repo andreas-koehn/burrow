@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { resetDb } from "@/mocks/db";
+import { db, resetDb } from "@/mocks/db";
 import "@/mocks/server"; // installed via test setup; import asserts module loads
 
 const CSRF = "test-csrf-token";
@@ -121,5 +121,58 @@ describe("MSW redaction rule handlers mirror the API's errors", () => {
     const created = await (await post({ name: "n", pattern: "a", action: "mask", scope: "both" })).json();
     const ok = await fetch(`/api/v1/redaction/rules/${created.id}`, authed("DELETE"));
     expect(ok.status).toBe(204);
+  });
+});
+
+describe("MSW provider handlers mirror the API", () => {
+  beforeEach(() => { resetDb(); document.cookie = `burrow_csrf=${CSRF}; path=/`; });
+
+  const postProvider = (body: unknown) =>
+    fetch("/api/v1/ai/providers", { ...authed("POST"), body: JSON.stringify(body) });
+
+  it("POST /ai/providers: an unknown service is a 409, like a service in the wrong mode", async () => {
+    for (const service_id of ["nope", "svc_web01", "svc_pg001"]) {
+      const r = await postProvider({ name: "Local", service_id });
+      expect(r.status).toBe(409);
+      expect((await r.json()).error).toBe("a tunnel provider needs an http service in API-key mode");
+    }
+  });
+
+  it("POST /ai/providers validates name and kind before anything else", async () => {
+    let r = await postProvider({ name: "   ", service_id: "svc_ai001" });
+    expect([r.status, (await r.json()).error]).toEqual([400, "name is required"]);
+    r = await postProvider({ name: "n".repeat(121), service_id: "svc_ai001" });
+    expect([r.status, (await r.json()).error]).toEqual([400, "name must be at most 120 chars"]);
+    r = await postProvider({ name: "Local", kind: "direct", service_id: "svc_ai001" });
+    expect([r.status, (await r.json()).error]).toEqual([400, "kind must be 'tunnel'"]);
+  });
+
+  it("POST /ai/providers derives the slug like the server: collapsed, trimmed, cut at 40", async () => {
+    db.aiProviders = [];
+    let r = await postProvider({ name: "  My  Local -- LLM! ", service_id: "svc_ai001" });
+    expect(r.status).toBe(201);
+    expect((await r.json()).slug).toBe("my-local-llm");
+
+    db.aiProviders = [];
+    // 39 letters, a separator, more letters: the cut at 40 leaves a trailing hyphen to trim.
+    r = await postProvider({ name: `${"a".repeat(39)} tail`, service_id: "svc_ai001" });
+    expect((await r.json()).slug).toBe("a".repeat(39));
+
+    db.aiProviders = [];
+    for (const name of ["AI", "v1", "!!!"]) {
+      r = await postProvider({ name, service_id: "svc_ai001" });
+      expect(r.status).toBe(400);
+      expect((await r.json()).error).toMatch(/^slug must be 3-40 characters.*"v1" is reserved$/);
+    }
+  });
+
+  it("DELETE /ai/providers/:slug: 403 for a non-admin, 404 when unknown, 204 and the service stays", async () => {
+    db.me = { ...db.me, role: "user" };
+    expect((await fetch("/api/v1/ai/providers/ollama", authed("DELETE"))).status).toBe(403);
+    db.me = { ...db.me, role: "admin" };
+    expect((await fetch("/api/v1/ai/providers/nope", authed("DELETE"))).status).toBe(404);
+    expect((await fetch("/api/v1/ai/providers/ollama", authed("DELETE"))).status).toBe(204);
+    expect(db.aiProviders).toHaveLength(0);
+    expect(db.services.some((x) => x.id === "svc_ai001")).toBe(true);
   });
 });

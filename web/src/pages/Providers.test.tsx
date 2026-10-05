@@ -76,14 +76,18 @@ describe("Providers page", () => {
     db.aiProviders = [];
     mount();
     expect(await screen.findByRole("heading", { name: "No providers yet" })).toBeInTheDocument();
-    expect(screen.getByText("Add one from a service in API-key mode.")).toBeInTheDocument();
+    expect(screen.getByText(
+      "Add one from a service in API-key mode. Switching a service to API-key mode does not create a provider.",
+    )).toBeInTheDocument();
   });
 
   it("tells a non-admin who can add a provider, without an action", async () => {
     db.aiProviders = [];
     mountAs("user");
     expect(await screen.findByRole("heading", { name: "No providers yet" })).toBeInTheDocument();
-    expect(screen.getByText("An administrator can add one from a service in API-key mode.")).toBeInTheDocument();
+    expect(screen.getByText(
+      "An administrator can add one from a service in API-key mode. Switching a service to API-key mode does not create a provider.",
+    )).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New provider" })).toBeNull();
     expect(screen.queryByRole("button", { name: "New AI service" })).toBeNull();
   });
@@ -240,6 +244,32 @@ describe("Providers page", () => {
     await userEvent.click(await screen.findByRole("option", { name: "vllm" }));
     await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("provider slug or service already in use");
+  });
+
+  it("New provider: a 400 that is not about the slug shows in the dialog, not on the slug field", async () => {
+    db.services.push({ ...db.services.find((x) => x.id === "svc_ai001")!, id: "svc_ai002", name: "vllm", slug: "vl9k2p" });
+    server.use(http.post("/api/v1/ai/providers", () =>
+      HttpResponse.json({ error: "kind must be 'tunnel'" }, { status: 400 })));
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New provider" }));
+    const dialog = await screen.findByRole("dialog", { name: "New provider" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Local");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("kind must be 'tunnel'");
+    expect(within(dialog).getByLabelText("Provider slug")).not.toHaveAttribute("aria-invalid");
+  });
+
+  it("New provider: a 400 about the slug shows on the slug field", async () => {
+    db.services.push({ ...db.services.find((x) => x.id === "svc_ai001")!, id: "svc_ai002", name: "vllm", slug: "vl9k2p" });
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New provider" }));
+    const dialog = await screen.findByRole("dialog", { name: "New provider" });
+    // "AI" derives a slug that is too short; the server says so.
+    await userEvent.type(within(dialog).getByLabelText("Name"), "AI");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    const slug = within(dialog).getByLabelText("Provider slug");
+    await waitFor(() => expect(slug).toHaveAttribute("aria-invalid", "true"));
+    expect(slug).toHaveAccessibleDescription(/^slug must be 3-40 characters/);
   });
 
   it("hides 'New provider' from non-admins", async () => {

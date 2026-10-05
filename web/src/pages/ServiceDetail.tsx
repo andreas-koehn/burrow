@@ -117,7 +117,7 @@ export default function ServiceDetail() {
             content: (
               <>
                 <p className="muted small" style={{ marginBottom: "var(--space-3, 12px)" }}>
-                  This service can be used as a model provider — see it under{" "}
+                  This service can be used as a model provider — an admin can register it under{" "}
                   <Link to="/gateway/providers">Providers</Link>.
                 </p>
                 <UpstreamCredentialsPanel

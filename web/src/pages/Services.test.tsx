@@ -287,21 +287,33 @@ describe("Services page", () => {
     expect(db.aiProviders.at(-1)).toMatchObject({ slug: "local-llm", name: "Local LLM", service_id: "local-llm" });
   });
 
-  it("?new=ai falls back to the service page when the provider cannot be created", async () => {
-    server.use(http.post("/api/v1/ai/providers", () =>
-      HttpResponse.json({ error: "provider slug or service already in use" }, { status: 409 })));
+  it("?new=ai falls back to the services list and says why when the provider cannot be created", async () => {
+    // The title "AI" derives a slug the server rejects (too short): the
+    // service exists afterwards, the provider does not.
     renderApp(
-      <Routes>
-        <Route path="/services" element={<Services />} />
-        <Route path="/gateway/providers/:slug" element={<PathProbe />} />
-        <Route path="/services/:id" element={<PathProbe />} />
-      </Routes>,
+      <>
+        <Routes>
+          <Route path="/services" element={<Services />} />
+          <Route path="/gateway/providers/:slug" element={<div>PROVIDER_PAGE</div>} />
+          <Route path="/services/:id" element={<div>SERVICE_PAGE</div>} />
+        </Routes>
+        <PathProbe />
+      </>,
       "/services?new=ai",
     );
     const dialog = await screen.findByRole("dialog", { name: "New AI service" });
     await userEvent.type(within(dialog).getByLabelText(/service id/i), "local-llm");
+    await userEvent.type(within(dialog).getByLabelText("Title"), "AI");
     await userEvent.click(within(dialog).getByRole("button", { name: "Create and continue" }));
-    expect(await screen.findByTestId("path")).toHaveTextContent(/^\/services\/local-llm$/);
+    // The message names the server's reason and where to finish the job. It
+    // stays on the Services page: its toaster would not survive a navigation.
+    const toastText = await screen.findByText(/created, but it was not registered as a provider/i);
+    expect(toastText).toHaveTextContent(/slug must be 3-40 characters/);
+    expect(toastText).toHaveTextContent(/add it under Providers/i);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByTestId("path")).toHaveTextContent(/^\/services$/);
+    expect(db.services.some((s) => s.id === "local-llm")).toBe(true);
+    expect(db.aiProviders.some((p) => p.service_id === "local-llm")).toBe(false);
   });
 
   it("keeps the generic dialog for the normal flow", async () => {

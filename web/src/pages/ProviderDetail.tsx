@@ -15,7 +15,7 @@ import type {
 } from "@/lib/contract";
 import { withAIConfigDefaults } from "@/lib/aiConfig";
 
-interface EndpointMetrics {
+interface ProviderMetrics {
   requests_24h: number;
   tokens_in_24h: number;
   tokens_out_24h: number;
@@ -123,7 +123,7 @@ export default function ProviderDetail() {
   });
   const metrics = useQuery({
     queryKey: ["ai", "provider", slug, "metrics"],
-    queryFn: () => apiFetch<EndpointMetrics>(`/ai/providers/${slug}/metrics`),
+    queryFn: () => apiFetch<ProviderMetrics>(`/ai/providers/${slug}/metrics`),
     retry: false,
     enabled: Boolean(slug),
   });
@@ -183,16 +183,22 @@ export default function ProviderDetail() {
       toast.error(e instanceof ApiError ? e.message : "Couldn't clear cache."),
   });
 
-  const disable = useMutation({
-    mutationFn: () => apiFetch<void>(`/services/${id}`, { method: "DELETE" }),
-    onSuccess: () => {
-      toast.success("Provider disabled.");
-      qc.invalidateQueries({ queryKey: ["services"] });
-      qc.invalidateQueries({ queryKey: ["ai", "providers"] });
+  // Deleting removes only the provider; services are managed on the Services page.
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteErr, setDeleteErr] = useState<string | null>(null);
+  const remove = useMutation({
+    mutationFn: () => apiFetch<void>(`/ai/providers/${slug}`, { method: "DELETE" }),
+    onSuccess: async () => {
+      // Leave first, so this page never refetches the provider it just removed.
       nav("/gateway/providers");
+      qc.removeQueries({ queryKey: ["ai", "provider", slug] });
+      await qc.invalidateQueries({ queryKey: ["ai", "providers"] });
     },
-    onError: (e: unknown) =>
-      toast.error(e instanceof ApiError ? e.message : "Couldn't disable provider."),
+    onError: (e: unknown) => {
+      if (!(e instanceof ApiError)) setDeleteErr("Couldn't delete the provider.");
+      else if (e.status === 403) setDeleteErr("You don't have permission to delete providers.");
+      else setDeleteErr(e.message);
+    },
   });
 
   const createAlias = useMutation({
@@ -332,8 +338,10 @@ export default function ProviderDetail() {
               items={[
                 { label: "Rotate cache", onSelect: () => clearCache.mutate() },
                 { label: "Clear cache", onSelect: () => clearCache.mutate() },
-                { label: "Disable", danger: true, onSelect: () => disable.mutate() },
                 { label: "Export logs (NDJSON)", onSelect: () => { void apiFetch(`/services/${id}/inspector/export?format=ndjson`); } },
+                ...(isAdmin
+                  ? [{ label: "Delete provider", danger: true, onSelect: () => { setDeleteErr(null); setDeleteOpen(true); } }]
+                  : []),
               ]}
             />
           </>
@@ -592,6 +600,28 @@ export default function ProviderDetail() {
           </FormField>
         </FormFieldGroup>
       </Dialog>
+
+      {isAdmin && (
+        <Dialog
+          open={deleteOpen}
+          onOpenChange={(o) => { if (!remove.isPending) setDeleteOpen(o); }}
+          title={`Delete provider · ${provider.data.name}`}
+          description={`${providerBaseUrl(provider.data.slug, provider.data.base_url)} stops working at once. This cannot be undone.`}
+          footer={
+            <>
+              <Button variant="secondary" disabled={remove.isPending} onClick={() => setDeleteOpen(false)}>Cancel</Button>
+              <Button variant="primary" disabled={remove.isPending} onClick={() => remove.mutate()}>
+                {remove.isPending ? "Deleting…" : "Delete provider"}
+              </Button>
+            </>
+          }
+        >
+          <p className="muted">
+            Clients that use this base URL will start receiving errors. The service, its API keys and its tunnel are kept.
+          </p>
+          {deleteErr && <ErrorNotice>{deleteErr}</ErrorNotice>}
+        </Dialog>
+      )}
 
       {isAdmin && (
         <RenameProviderDialog

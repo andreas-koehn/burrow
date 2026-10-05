@@ -103,6 +103,10 @@ describe("ServiceDetail page", () => {
     // Explainer text + link to /gateway/providers
     const link = await screen.findByRole("link", { name: "Providers" });
     expect(link).toHaveAttribute("href", "/gateway/providers");
+    // It does not claim the service is listed there already.
+    expect(link.closest("p")).toHaveTextContent(
+      "This service can be used as a model provider — an admin can register it under Providers.",
+    );
   });
 
   it("renders the API keys table only in the API keys tab (C7)", async () => {

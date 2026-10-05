@@ -6,7 +6,7 @@ describe("GLOSSARY", () => {
     "client",
     "tunnel",
     "service",
-    "endpoint",
+    "provider",
     "customDomain",
     "clientToken",
     "automationToken",

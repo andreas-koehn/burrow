@@ -48,8 +48,25 @@ async function body<T>(req: Request): Promise<T | null> {
 
 const PROVIDER_SLUG_RE = /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/;
 const PROVIDER_SLUG_RULE =
-  'slug must be 3-40 characters: lowercase letters, digits and hyphens; "v1" is reserved';
+  'slug must be 3-40 characters: lowercase letters, digits and hyphens, not starting or ending with a hyphen; "v1" is reserved';
+const PROVIDER_SERVICE = "a tunnel provider needs an http service in API-key mode";
 const providerSlugOk = (slug: string) => PROVIDER_SLUG_RE.test(slug) && slug !== "v1";
+
+// Same rules as the server's validProviderName: trimmed, 1–120 characters.
+function providerNameError(name: string): string | null {
+  if (name === "") return "name is required";
+  if (name.length > 120) return "name must be at most 120 chars";
+  return null;
+}
+
+// Same rules as the server's ProviderSlugFromName: lower-cased, runs of other
+// characters collapsed to one hyphen, trimmed, cut at 40. An unusable result
+// is left for the slug check to reject.
+function providerSlugFromName(name: string): string {
+  let slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (slug.length > 40) slug = slug.slice(0, 40).replace(/-+$/, "");
+  return slug;
+}
 
 // A provider is visible when its backing service is (same rule as GET /services).
 function providerVisible(p: AiProviderRow): boolean {
@@ -416,13 +433,15 @@ export const handlers = [
     const g = gate(request, { admin: true }); if (g) return g;
     const b = await body<{ slug?: string; name?: string; kind?: string; service_id?: string }>(request);
     const name = (b?.name ?? "").trim();
-    if (!name) return err(400, "name is required");
-    const slug = b?.slug || name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    const nameErr = providerNameError(name);
+    if (nameErr) return err(400, nameErr);
+    if ((b?.kind || "tunnel") !== "tunnel") return err(400, "kind must be 'tunnel'");
+    const slug = b?.slug || providerSlugFromName(name);
     if (!providerSlugOk(slug)) return err(400, PROVIDER_SLUG_RULE);
+    // An unknown service is the same conflict as one in the wrong mode.
     const svc = db.services.find((s) => s.id === b?.service_id);
-    if (!svc) return err(404, "provider not found");
-    if (svc.type !== "http" || svc.access_mode !== "api_key") {
-      return err(409, "a tunnel provider needs an http service in API-key mode");
+    if (!svc || svc.type !== "http" || svc.access_mode !== "api_key") {
+      return err(409, PROVIDER_SERVICE);
     }
     if (db.aiProviders.some((p) => p.slug === slug || p.service_id === svc.id)) {
       return err(409, "provider slug or service already in use");
@@ -465,7 +484,8 @@ export const handlers = [
     if (!p) return err(404, "provider not found");
     const b = await body<{ slug?: string; name?: string }>(request);
     const name = (b?.name ?? "").trim();
-    if (!name) return err(400, "name is required");
+    const nameErr = providerNameError(name);
+    if (nameErr) return err(400, nameErr);
     const slug = b?.slug ?? "";
     if (!providerSlugOk(slug)) return err(400, PROVIDER_SLUG_RULE);
     if (db.aiProviders.some((x) => x !== p && x.slug === slug)) {
