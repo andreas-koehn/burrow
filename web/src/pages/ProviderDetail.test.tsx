@@ -6,7 +6,7 @@ import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { Route, Routes, useLocation } from "react-router-dom";
 import ProviderDetail from "@/pages/ProviderDetail";
-import { db } from "@/mocks/db";
+import { addDirectProvider, db } from "@/mocks/db";
 
 function PathProbe() {
   return <div data-testid="path">{useLocation().pathname}</div>;
@@ -29,6 +29,22 @@ function mountAt(route: string) {
 
 function mount() {
   return mountAt("/gateway/providers/ollama");
+}
+
+async function openTab(name: string) {
+  await userEvent.click(await screen.findByRole("tab", { name }));
+}
+
+// OPENROUTER is set in the fixtures, ZAI is not.
+function mountDirect(slug: "openrouter" | "zai" = "openrouter", row: Parameters<typeof addDirectProvider>[1] = {}) {
+  addDirectProvider(slug, {
+    name: slug === "zai" ? "z.ai" : "OpenRouter",
+    upstream_base_url: slug === "zai" ? "https://api.z.ai/api/coding/paas/v4" : "https://openrouter.ai/api/v1",
+    credential_slot: slug === "zai" ? "ZAI" : "OPENROUTER",
+    billing: slug === "zai" ? "flat" : "metered",
+    ...row,
+  });
+  return mountAt(`/gateway/providers/${slug}`);
 }
 
 describe("Provider detail", () => {
@@ -125,9 +141,17 @@ describe("Provider detail", () => {
     const dialog = await screen.findByRole("dialog", { name: "Delete provider · ollama" });
     expect(dialog).toHaveTextContent("https://tunnels.example.com/ai/ollama/v1 stops working at once.");
     expect(dialog).toHaveTextContent("The service, its API keys and its tunnel are kept.");
+    expect(within(dialog).getByRole("button", { name: "Delete provider" })).toHaveClass("btn-destructive");
+    fetchSpy.mockClear();
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete provider" }));
     expect(await screen.findByText("PROVIDERS_PAGE")).toBeInTheDocument();
     expect(db.aiProviders).toHaveLength(0);
+    // Nothing asks for the deleted provider again: no GET follows the DELETE.
+    const calls = fetchSpy.mock.calls.map(([url, init]) =>
+      `${(init as RequestInit | undefined)?.method ?? "GET"} ${String(url)}`);
+    const del = calls.findIndex((c) => c === "DELETE /api/v1/ai/providers/ollama");
+    expect(del).toBeGreaterThanOrEqual(0);
+    expect(calls.slice(del + 1).filter((c) => c.includes("/ai/providers/ollama"))).toEqual([]);
     // The backing service is untouched: nothing was sent to /services.
     expect(db.services.some((s) => s.id === "svc_ai001")).toBe(true);
     expect(fetchSpy.mock.calls.some(([url, init]) =>
@@ -213,6 +237,7 @@ describe("Provider detail", () => {
     mount();
     // Wait for the form to hydrate.
     await screen.findByLabelText("requests per minute, last 24h");
+    await openTab("Routing");
     // Change strategy via the DS Select (custom listbox, not native <select>).
     await userEvent.click(screen.getByLabelText(/routing strategy/i));
     await userEvent.click(await screen.findByRole("option", { name: /weighted/i }));
@@ -281,6 +306,7 @@ describe("Provider detail", () => {
   it("Routing strategy Select includes 'Multi-provider (cross-backend)' option", async () => {
     mount();
     await screen.findByLabelText("requests per minute, last 24h");
+    await openTab("Routing");
     await userEvent.click(screen.getByLabelText(/routing strategy/i));
     expect(await screen.findByRole("option", { name: /multi-provider \(cross-backend\)/i })).toBeInTheDocument();
   });
@@ -288,6 +314,7 @@ describe("Provider detail", () => {
   it("Selecting Multi-provider shows the cross-provider failover banner verbatim", async () => {
     mount();
     await screen.findByLabelText("requests per minute, last 24h");
+    await openTab("Routing");
     await userEvent.click(screen.getByLabelText(/routing strategy/i));
     await userEvent.click(await screen.findByRole("option", { name: /multi-provider \(cross-backend\)/i }));
     const banner = await screen.findByTestId("multi-provider-banner");
@@ -300,6 +327,7 @@ describe("Provider detail", () => {
   it("Backends table shows Provider chip and Priority column", async () => {
     mount();
     await screen.findByLabelText("requests per minute, last 24h");
+    await openTab("Routing");
     const backendsSection = await screen.findByRole("heading", { name: /backends/i });
     expect(backendsSection).toBeInTheDocument();
     const table = await screen.findByRole("table", { name: /backends/i });
@@ -309,6 +337,7 @@ describe("Provider detail", () => {
 
   it("shows a centred empty row when no backend is configured (C6)", async () => {
     mount();
+    await openTab("Routing");
     const table = await screen.findByRole("table", { name: /backends/i });
     const cell = within(table).getByText("No backends configured.").closest("td")!;
     expect(cell).toHaveClass("table-empty");
@@ -325,6 +354,7 @@ describe("Provider detail", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();
     await screen.findByLabelText("requests per minute, last 24h");
+    await openTab("Routing");
     // The alias "fast" maps to svc_ai001 with priority 100.
     const priorityInput = await screen.findByLabelText(/priority for fast/i);
     expect(priorityInput).not.toBeDisabled();
@@ -348,6 +378,7 @@ describe("Provider detail", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();
     await screen.findByLabelText("requests per minute, last 24h");
+    await openTab("Routing");
     // Click "Add alias" button
     await userEvent.click(await screen.findByRole("button", { name: /add alias/i }));
     // Dialog should open
@@ -380,5 +411,227 @@ describe("Provider detail", () => {
       expect(b.service_id).toBe("svc_ai001");
     });
     expect((await screen.findAllByText(/alias created/i)).length).toBeGreaterThan(0);
+  });
+
+  it("a tunnel provider has the tabs Connect, API keys, Models and Routing, and no Upstream", async () => {
+    mount();
+    await screen.findByRole("heading", { name: /connect a client/i });
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Connect", "API keys", "Models", "Routing"]);
+    expect(screen.getByRole("tab", { name: "Connect" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("links to the request inspector of the backing service", async () => {
+    mountDirect();
+    expect(await screen.findByRole("link", { name: "Open request inspector" }))
+      .toHaveAttribute("href", "/inspector/prov-openrouter");
+  });
+
+  it("opens the tab named in the URL fragment", async () => {
+    mountAt("/gateway/providers/ollama#api-keys");
+    expect(await screen.findByRole("tab", { name: "API keys" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("table", { name: "API keys" })).toBeInTheDocument();
+  });
+
+  it("the API keys tab manages the keys of the backing service", async () => {
+    mount();
+    await openTab("API keys");
+    const table = await screen.findByRole("table", { name: "API keys" });
+    expect(await within(table).findByText("prod")).toBeInTheDocument();
+  });
+
+  it("the Models tab lists the stored models and the example uses the first of them", async () => {
+    db.aiProviderModels["ollama"] = [
+      { id: "qwen3:8b", display_name: "", context_length: 0, synced_at: "2026-10-05T00:00:00Z" },
+    ];
+    mount();
+    expect(await screen.findByText(/"model": "qwen3:8b"/)).toBeInTheDocument();
+    await openTab("Models");
+    expect(await within(await screen.findByRole("table", { name: "Models" })).findByText("qwen3:8b")).toBeInTheDocument();
+  });
+
+  describe("direct provider", () => {
+    it("shows the tabs Connect, API keys, Models, Routing and Upstream", async () => {
+      mountDirect();
+      expect(await screen.findByRole("heading", { name: "Provider · OpenRouter" })).toBeInTheDocument();
+      expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Connect", "API keys", "Models", "Routing", "Upstream"]);
+      expect(screen.getByText("https://tunnels.example.com/ai/openrouter/v1")).toBeInTheDocument();
+    });
+
+    it("has nothing that assumes a tunnel or a client", async () => {
+      mountDirect();
+      await screen.findByRole("heading", { name: /connect a client/i });
+      expect(screen.queryByRole("switch", { name: /pause provider/i })).toBeNull();
+      expect(screen.queryByText(/last seen/i)).toBeNull();
+      expect(screen.queryByRole("link", { name: /^sess_/ })).toBeNull();
+      // No link to the hidden backing service.
+      expect(document.querySelector('a[href^="/services"]')).toBeNull();
+    });
+
+    it("says how a flat-rate plan is counted, above the metrics", async () => {
+      mountDirect("zai");
+      const note = await screen.findByText("Flat-rate plan: usage is counted in tokens, not in USD.");
+      const strip = screen.getByRole("list", { name: "Provider metrics" });
+      expect(note.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      const cost = within(strip).getByText("Cost (24h)").closest("[role=listitem]") as HTMLElement;
+      expect(within(cost).getByText("—")).toBeInTheDocument();
+    });
+
+    it("a metered provider shows its cost and no flat-rate note", async () => {
+      mountDirect();
+      const strip = await screen.findByRole("list", { name: "Provider metrics" });
+      expect(within(strip).getByText("$1.23")).toBeInTheDocument();
+      expect(screen.queryByText(/flat-rate plan/i)).toBeNull();
+    });
+
+    it("Upstream tab: shows where requests go and that the credential is configured", async () => {
+      mountDirect("openrouter", { extra_headers: { "X-Title": "Burrow" } });
+      await openTab("Upstream");
+      const panel = screen.getByRole("tabpanel");
+      expect(within(panel).getByText("https://openrouter.ai/api/v1")).toBeInTheDocument();
+      expect(within(panel).getByText("OPENROUTER")).toBeInTheDocument();
+      expect(within(panel).getByText("configured", { selector: "span.badge" })).toBeInTheDocument();
+      expect(within(panel).getByText("Metered")).toBeInTheDocument();
+      expect(within(panel).getByText("Bearer {key}")).toBeInTheDocument();
+      // Extra headers by name only; their values never reach the page.
+      expect(within(panel).getByText("X-Title")).toBeInTheDocument();
+      expect(document.body).not.toHaveTextContent("Burrow\"");
+      expect(within(panel).queryByText(/BURROW_UPSTREAM_KEY_/)).toBeNull();
+    });
+
+    it("Upstream tab: names the variable to set when the credential is missing", async () => {
+      mountDirect("zai");
+      await openTab("Upstream");
+      const panel = screen.getByRole("tabpanel");
+      expect(within(panel).getByText("not configured", { selector: "span.badge" })).toBeInTheDocument();
+      const note = within(panel).getByRole("note");
+      expect(note).toHaveTextContent("BURROW_UPSTREAM_KEY_ZAI");
+      expect(note).toHaveTextContent(/restart/i);
+      expect(within(panel).getByText("Flat rate")).toBeInTheDocument();
+    });
+
+    it("Upstream tab: a non-admin reads it and gets no Edit", async () => {
+      db.me = { ...db.me, role: "user" };
+      mountDirect();
+      await openTab("Upstream");
+      const panel = screen.getByRole("tabpanel");
+      expect(within(panel).getByText("https://openrouter.ai/api/v1")).toBeInTheDocument();
+      expect(within(panel).queryByRole("button", { name: "Edit" })).toBeNull();
+      expect(within(panel).queryByText("Auth header")).toBeNull();
+    });
+
+    async function openEdit() {
+      await openTab("Upstream");
+      const opener = within(screen.getByRole("tabpanel")).getByRole("button", { name: "Edit" });
+      await userEvent.click(opener);
+      const dialog = await screen.findByRole("dialog", { name: "Edit upstream · OpenRouter" });
+      return { opener, dialog };
+    }
+
+    function upstreamPuts(spy: ReturnType<typeof vi.spyOn>) {
+      return (spy.mock.calls as [unknown, RequestInit | undefined][])
+        .filter(([url, init]) => String(url).endsWith("/api/v1/ai/providers/openrouter/upstream") && init?.method === "PUT")
+        .map(([, init]) => JSON.parse(String(init!.body)) as Record<string, unknown>);
+    }
+
+    it("Edit upstream: sends only what changed and leaves the extra headers alone", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      fetchSpy.mockClear();
+      mountDirect("openrouter", { extra_headers: { "X-Title": "Burrow" } });
+      const { opener, dialog } = await openEdit();
+      const url = within(dialog).getByLabelText("Base URL");
+      await waitFor(() => expect(url).toHaveFocus());
+      expect(url).toHaveValue("https://openrouter.ai/api/v1");
+      expect(within(dialog).getByLabelText("Credential slot")).toHaveValue("OPENROUTER");
+      expect(within(dialog).getByLabelText("Auth header")).toHaveValue("Authorization");
+      expect(within(dialog).getByLabelText("Auth format")).toHaveValue("Bearer {key}");
+      // The stored values are not shown; the field says what leaving it empty means.
+      const extra = within(dialog).getByLabelText("Extra headers");
+      expect(extra).toHaveValue("");
+      expect(extra).toHaveAccessibleDescription(/Set now: X-Title\..*Leave this empty to keep them.*replaces all of them/);
+      expect(within(dialog).queryByLabelText(/api key|secret|token/i)).toBeNull();
+      // Nothing changed yet.
+      expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+      await userEvent.click(within(dialog).getByLabelText("Billing"));
+      await userEvent.click(await screen.findByRole("option", { name: "Flat rate" }));
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(upstreamPuts(fetchSpy)).toEqual([{ billing: "flat" }]);
+      expect(db.aiProviders.at(-1)).toMatchObject({ billing: "flat", extra_headers: { "X-Title": "Burrow" } });
+      expect(await within(screen.getByRole("tabpanel")).findByText("Flat rate")).toBeInTheDocument();
+      await waitFor(() => expect(opener).toHaveFocus());
+    });
+
+    it("Edit upstream: entered extra headers replace all of them", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      fetchSpy.mockClear();
+      mountDirect("openrouter", { extra_headers: { "X-Title": "Burrow" } });
+      const { dialog } = await openEdit();
+      await userEvent.type(within(dialog).getByLabelText("Extra headers"), "X-Team: blue{Enter}HTTP-Referer: https://example.org");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(upstreamPuts(fetchSpy)).toEqual([
+        { extra_headers: { "X-Team": "blue", "HTTP-Referer": "https://example.org" } },
+      ]);
+    });
+
+    it("Edit upstream: removing all extra headers is an explicit choice", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      fetchSpy.mockClear();
+      mountDirect("openrouter", { extra_headers: { "X-Title": "Burrow" } });
+      const { dialog } = await openEdit();
+      await userEvent.click(within(dialog).getByRole("checkbox", { name: "Remove all extra headers" }));
+      expect(within(dialog).getByLabelText("Extra headers")).toBeDisabled();
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(upstreamPuts(fetchSpy)).toEqual([{ extra_headers: {} }]);
+      expect(db.aiProviders.at(-1)!.extra_headers).toEqual({});
+    });
+
+    it("Edit upstream: a malformed extra header line is refused before sending", async () => {
+      mountDirect();
+      const { dialog } = await openEdit();
+      const extra = within(dialog).getByLabelText("Extra headers");
+      await userEvent.type(extra, "no colon here");
+      expect(extra).toHaveAttribute("aria-invalid", "true");
+      expect(extra).toHaveAccessibleDescription(/One header per line, as Name: value/);
+      expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+    });
+
+    it("Edit upstream: a refused base URL is reported on its field", async () => {
+      mountDirect();
+      const { dialog } = await openEdit();
+      const url = within(dialog).getByLabelText("Base URL");
+      await userEvent.clear(url);
+      await userEvent.type(url, "https://10.0.0.5/v1");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(url).toHaveAttribute("aria-invalid", "true"));
+      expect(url).toHaveAccessibleDescription("base URL resolves to a private or loopback address");
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+
+    it("Edit upstream: a lost update asks to try again, in the dialog", async () => {
+      server.use(http.put("/api/v1/ai/providers/openrouter/upstream", () =>
+        HttpResponse.json({ error: "the provider was changed by someone else at the same time; try again" }, { status: 409 })));
+      mountDirect();
+      const { dialog } = await openEdit();
+      await userEvent.click(within(dialog).getByLabelText("Billing"));
+      await userEvent.click(await screen.findByRole("option", { name: "Flat rate" }));
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      expect(await within(dialog).findByRole("alert")).toHaveTextContent(/changed by someone else.*try again/);
+    });
+
+    it("delete says that the API keys and the model list go with it", async () => {
+      mountDirect();
+      await screen.findByRole("heading", { name: /connect a client/i });
+      await userEvent.click(screen.getByRole("button", { name: /more actions/i }));
+      await userEvent.click(await screen.findByRole("menuitem", { name: "Delete provider" }));
+      const dialog = await screen.findByRole("dialog", { name: "Delete provider · OpenRouter" });
+      expect(dialog).toHaveTextContent("Its API keys, its AI configuration and its model list are deleted with it.");
+      expect(dialog).toHaveTextContent("The credential slot OPENROUTER on the relay is not touched.");
+      expect(dialog).not.toHaveTextContent(/are kept/);
+      await userEvent.click(within(dialog).getByRole("button", { name: "Delete provider" }));
+      expect(await screen.findByText("PROVIDERS_PAGE")).toBeInTheDocument();
+      expect(db.services.some((s) => s.id === "prov-openrouter")).toBe(false);
+    });
   });
 });

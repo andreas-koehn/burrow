@@ -2,14 +2,19 @@ import { describe, it, expect, vi } from "vitest";
 import { screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { Route, Routes } from "react-router-dom";
+import { Route, Routes, useLocation } from "react-router-dom";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
-import { db } from "@/mocks/db";
+import { addDirectProvider, db } from "@/mocks/db";
 import Providers from "@/pages/Providers";
 
 function mount() {
   return renderApp(<Providers />, "/gateway/providers");
+}
+
+function HashProbe() {
+  const l = useLocation();
+  return <div data-testid="where">{l.pathname + l.hash}</div>;
 }
 
 function mountAs(role: "admin" | "user") {
@@ -77,7 +82,7 @@ describe("Providers page", () => {
     mount();
     expect(await screen.findByRole("heading", { name: "No providers yet" })).toBeInTheDocument();
     expect(screen.getByText(
-      "Add one from a service in API-key mode. Switching a service to API-key mode does not create a provider.",
+      "Add one from a service in API-key mode, or add a hosted API. Switching a service to API-key mode does not create a provider.",
     )).toBeInTheDocument();
   });
 
@@ -86,7 +91,7 @@ describe("Providers page", () => {
     mountAs("user");
     expect(await screen.findByRole("heading", { name: "No providers yet" })).toBeInTheDocument();
     expect(screen.getByText(
-      "An administrator can add one from a service in API-key mode. Switching a service to API-key mode does not create a provider.",
+      "An administrator can add one from a service in API-key mode, or add a hosted API. Switching a service to API-key mode does not create a provider.",
     )).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New provider" })).toBeNull();
     expect(screen.queryByRole("button", { name: "New AI service" })).toBeNull();
@@ -193,7 +198,8 @@ describe("Providers page", () => {
     const opener = await screen.findByRole("button", { name: "New provider" });
     await userEvent.click(opener);
     const dialog = await screen.findByRole("dialog", { name: "New provider" });
-    await waitFor(() => expect(within(dialog).getByLabelText("Name")).toHaveFocus());
+    // Focus lands on the first control: the choice of what the provider serves.
+    await waitFor(() => expect(within(dialog).getByRole("radio", { name: /a service behind a burrow client/i })).toHaveFocus());
     await userEvent.type(within(dialog).getByLabelText("Name"), "Local");
     // Only http services in API-key mode that back no provider yet are offered.
     await userEvent.click(within(dialog).getByLabelText("Service"));
@@ -285,5 +291,54 @@ describe("Providers page", () => {
     await userEvent.click(within(table).getAllByRole("button", { name: /more actions for/i })[0]);
     expect(screen.getByRole("menuitem", { name: "Inspect" })).toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "Disable" })).toBeNull();
+  });
+
+  it("shows the kind of each provider, and for a direct one whether its credential is configured", async () => {
+    addDirectProvider("openrouter", { name: "OpenRouter", credential_slot: "OPENROUTER" });
+    addDirectProvider("zai", { name: "z.ai", credential_slot: "ZAI" }); // slot not set in the fixtures
+    mount();
+    const table = await screen.findByRole("table", { name: /providers/i });
+    expect(within(table).getByRole("columnheader", { name: "Kind" })).toBeInTheDocument();
+    const row = (name: string) => within(table).getByRole("link", { name }).closest("tr")!;
+    expect(within(row("ollama")).getByText("tunnel", { selector: "span.badge" })).toBeInTheDocument();
+    expect(within(row("ollama")).getByText("connected", { selector: "span.badge" })).toBeInTheDocument();
+    expect(within(row("OpenRouter")).getByText("direct", { selector: "span.badge" })).toBeInTheDocument();
+    expect(within(row("OpenRouter")).getByText("ready", { selector: "span.badge" })).toBeInTheDocument();
+    expect(within(row("z.ai")).getByText("direct", { selector: "span.badge" })).toBeInTheDocument();
+    expect(within(row("z.ai")).getByText("not configured", { selector: "span.badge" })).toBeInTheDocument();
+    // A direct provider has no client that could be offline.
+    expect(within(row("z.ai")).queryByText("offline")).toBeNull();
+  });
+
+  it("a direct provider's row menu stays on the provider: no link to its hidden service", async () => {
+    addDirectProvider("openrouter", { name: "OpenRouter", credential_slot: "OPENROUTER" });
+    renderApp(
+      <Routes>
+        <Route path="/gateway/providers" element={<Providers />} />
+        <Route path="/gateway/providers/:slug" element={<HashProbe />} />
+      </Routes>,
+      "/gateway/providers",
+    );
+    const table = await screen.findByRole("table", { name: /providers/i });
+    await userEvent.click(within(table).getByRole("button", { name: "More actions for OpenRouter" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getAllByRole("menuitem").map((n) => n.textContent)).toEqual(["Inspect", "Keys", "Cost"]);
+    await userEvent.click(within(menu).getByRole("menuitem", { name: "Keys" }));
+    expect(await screen.findByTestId("where")).toHaveTextContent("/gateway/providers/openrouter#api-keys");
+  });
+
+  it("lets an admin add a hosted API from a preset", async () => {
+    mount();
+    const opener = await screen.findByRole("button", { name: "New provider" });
+    await userEvent.click(opener);
+    const dialog = await screen.findByRole("dialog", { name: "New provider" });
+    await userEvent.click(within(dialog).getByRole("radio", { name: /a hosted api/i }));
+    await userEvent.click(within(dialog).getByLabelText("Provider"));
+    await userEvent.click(await screen.findByRole("option", { name: "OpenRouter" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const table = screen.getByRole("table", { name: /providers/i });
+    expect(await within(table).findByRole("link", { name: "OpenRouter" })).toHaveAttribute("href", "/gateway/providers/openrouter");
+    await waitFor(() => expect(opener).toHaveFocus());
   });
 });

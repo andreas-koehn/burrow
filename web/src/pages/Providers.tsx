@@ -105,7 +105,8 @@ export default function Providers() {
         ) : undefined}
       />
       <p className="muted small" style={{ marginBottom: "var(--space-3, 12px)" }}>
-        A provider serves a <Link to="/services">Service</Link> with API-key access and an OpenAI-compatible upstream.
+        A provider serves a <Link to="/services">Service</Link> with API-key access and an OpenAI-compatible upstream,
+        or a hosted API that the relay calls itself.
       </p>
 
       <MetricStrip ariaLabel="Provider metrics">
@@ -152,8 +153,8 @@ export default function Providers() {
           ) : undefined}
         >
           {isAdmin
-            ? "Add one from a service in API-key mode."
-            : "An administrator can add one from a service in API-key mode."}
+            ? "Add one from a service in API-key mode, or add a hosted API."
+            : "An administrator can add one from a service in API-key mode, or add a hosted API."}
           {" Switching a service to API-key mode does not create a provider."}
         </EmptyState>
       ) : (
@@ -162,6 +163,7 @@ export default function Providers() {
             <thead>
               <tr>
                 <th>Name</th>
+                <th>Kind</th>
                 <th>Base URL</th>
                 <th>Backend</th>
                 <th>Keys</th>
@@ -175,6 +177,7 @@ export default function Providers() {
             <tbody>
               {list.map((e) => {
                 const baseUrl = providerBaseUrl(e.slug, e.base_url);
+                const direct = e.kind === "direct";
                 return (
                 <tr key={e.slug}>
                   <td className="col-name">
@@ -185,6 +188,7 @@ export default function Providers() {
                       </div>
                     )}
                   </td>
+                  <td><Badge kind={`type-${e.kind}`} nodot>{e.kind}</Badge></td>
                   <td>
                     <span className="row row-center gap-2 service-url">
                       <span className="mono service-url-path" title={baseUrl}>{`/ai/${e.slug}/v1`}</span>
@@ -199,9 +203,14 @@ export default function Providers() {
                     </span>
                   </td>
                   <td>
-                    <Badge kind={`backend-${e.backend_type}`} nodot>
-                      {e.backend_type}
-                    </Badge>
+                    {/* The backend is what a local service runs; a hosted API has none. */}
+                    {direct && e.backend_type === "other" ? (
+                      <span className="muted">—</span>
+                    ) : (
+                      <Badge kind={`backend-${e.backend_type}`} nodot>
+                        {e.backend_type}
+                      </Badge>
+                    )}
                   </td>
                   <td className="mono">{fmtInt(e.api_key_count)}</td>
                   <td className="mono">{fmtInt(e.requests_24h)}</td>
@@ -214,7 +223,14 @@ export default function Providers() {
                   </td>
                   <td className="mono">{fmtInt(e.latency_p95_ms)} ms</td>
                   <td>
-                    <Badge kind={STATUS_BADGE[e.status]}>{statusLabel(e.status)}</Badge>
+                    {/* A direct provider has no client to be connected: it is ready once its credential is set. */}
+                    {direct ? (
+                      e.credential_present
+                        ? <Badge kind="status-connected">ready</Badge>
+                        : <Badge kind="status-idle">not configured</Badge>
+                    ) : (
+                      <Badge kind={STATUS_BADGE[e.status]}>{statusLabel(e.status)}</Badge>
+                    )}
                   </td>
                   <td className="col-actions">
                     <DropdownMenu
@@ -227,7 +243,13 @@ export default function Providers() {
                           <MoreHorizontal size={14} />
                         </button>
                       }
-                      items={[
+                      // A direct provider's backing service is not on the Services
+                      // page: its keys live on the provider's own page.
+                      items={direct ? [
+                        { label: "Inspect", onSelect: () => nav(`/gateway/providers/${e.slug}`) },
+                        { label: "Keys", onSelect: () => nav(`/gateway/providers/${e.slug}#api-keys`) },
+                        { label: "Cost", onSelect: () => nav(`/cost`) },
+                      ] : [
                         { label: "Inspect", onSelect: () => nav(`/gateway/providers/${e.slug}`) },
                         { label: "Keys", onSelect: () => nav(`/services?focus=${e.service_id}&panel=api-keys`) },
                         { label: "Access settings", onSelect: () => nav(`/services?focus=${e.service_id}`) },

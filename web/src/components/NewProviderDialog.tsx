@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
 import { SlugField } from "@/components/SlugField";
 import { providerSlugError } from "@/lib/providerSlug";
+import { CREDENTIAL_SLOT_HINT, CREDENTIAL_SLOT_RE, PROVIDER_PRESETS, envVarForSlot } from "@/lib/providerPresets";
 import { providerBaseUrl } from "@/lib/serviceUrl";
 import type { AiProvider, Service } from "@/lib/contract";
 
@@ -13,21 +14,43 @@ export interface NewProviderDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-/** Registers an existing http service in API-key mode as a model provider. */
+/**
+ * Adds a model provider: an existing http service in API-key mode (kind
+ * "tunnel"), or a hosted API the relay calls itself (kind "direct"). A hosted
+ * API's credential is set on the relay; this dialog only names its slot.
+ */
 export function NewProviderDialog({ open, onOpenChange }: NewProviderDialogProps) {
   // Mounted per opening, so every opening starts from an empty form.
   return open ? <NewProviderForm onOpenChange={onOpenChange} /> : null;
 }
 
+type Kind = "tunnel" | "direct";
+
+const BILLING_OPTIONS = [
+  { value: "metered", label: "Metered" },
+  { value: "flat", label: "Flat rate" },
+];
+const PRESET_OPTIONS = PROVIDER_PRESETS.map((p) => ({ value: p.id, label: p.label }));
+
 function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenChange">) {
   const qc = useQueryClient();
+  const kindId = useId();
+  const [kind, setKind] = useState<Kind>("tunnel");
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [serviceId, setServiceId] = useState("");
-  // slugErr belongs to the slug field; formErr is everything else (name,
-  // service taken or not eligible, permission, network).
+  // Hosted API only.
+  const [presetId, setPresetId] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [slot, setSlot] = useState("");
+  const [billing, setBilling] = useState<"metered" | "flat">("metered");
+  // slugErr, urlErr and slotErr belong to their fields; formErr is everything
+  // else (name, service taken or not eligible, permission, network).
   const [slugErr, setSlugErr] = useState<string | null>(null);
+  const [urlErr, setUrlErr] = useState<string | null>(null);
+  const [slotErr, setSlotErr] = useState<string | null>(null);
   const [formErr, setFormErr] = useState<string | null>(null);
+  const direct = kind === "direct";
 
   const services = useQuery({
     queryKey: ["services"],
@@ -39,6 +62,13 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
     queryFn: () => apiFetch<AiProvider[]>("/ai/providers"),
     retry: false,
   });
+  // Names of the credential slots set on the relay; never their values.
+  const slots = useQuery({
+    queryKey: ["upstream-credential-slots"],
+    queryFn: () => apiFetch<{ slots: string[] }>("/upstream-credentials/slots"),
+    retry: false,
+    enabled: direct,
+  });
 
   const taken = new Set((providers.data ?? []).map((p) => p.service_id));
   const eligible = (services.data ?? []).filter(
@@ -49,11 +79,30 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
   // With a single candidate there is nothing to choose.
   const chosen = serviceId || (eligible.length === 1 ? eligible[0]!.id : "");
 
+  const preset = PROVIDER_PRESETS.find((p) => p.id === presetId);
+  function choosePreset(id: string) {
+    const p = PROVIDER_PRESETS.find((x) => x.id === id);
+    if (!p) return;
+    // Choosing a preset fills every field below it, also on a second choice.
+    setPresetId(p.id);
+    setName(p.name);
+    setSlug(p.slug);
+    setBaseUrl(p.baseUrl);
+    setSlot(p.credentialSlot);
+    setBilling(p.billing);
+    clearErrors();
+  }
+  function clearErrors() {
+    setSlugErr(null); setUrlErr(null); setSlotErr(null); setFormErr(null);
+  }
+
   const create = useMutation({
     mutationFn: () =>
       apiFetch<AiProvider>("/ai/providers", {
         method: "POST",
-        body: JSON.stringify({ slug: slug || undefined, name: name.trim(), kind: "tunnel", service_id: chosen }),
+        body: JSON.stringify(direct
+          ? { kind: "direct", slug: slug || undefined, name: name.trim(), base_url: baseUrl.trim(), credential_slot: slot, billing }
+          : { slug: slug || undefined, name: name.trim(), kind: "tunnel", service_id: chosen }),
       }),
     // Wait for the refetch so the list behind the dialog already shows the provider.
     onSuccess: async () => {
@@ -64,19 +113,31 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
       if (!(e instanceof ApiError)) setFormErr("Couldn't create the provider.");
       // Only the slug rule ("slug must be …") is about the slug.
       else if (e.status === 400 && e.message.startsWith("slug")) setSlugErr(e.message);
+      // A hosted API has no service to be taken: its only conflict is the slug.
+      else if (direct && e.status === 409) setSlugErr(e.message);
+      else if (direct && e.status === 400 && e.message.startsWith("base URL")) setUrlErr(e.message);
+      else if (direct && e.status === 400 && e.message.startsWith("credential slot")) setSlotErr(e.message);
       else if (e.status === 403) setFormErr("You don't have permission to add providers.");
       else setFormErr(e.message);
     },
   });
 
   const slugMessage = slugErr ?? providerSlugError(slug);
-  const canCreate = name.trim() !== "" && chosen !== "" && slugMessage === null && !create.isPending;
+  const slotMessage = slotErr ?? (slot !== "" && !CREDENTIAL_SLOT_RE.test(slot) ? CREDENTIAL_SLOT_HINT : null);
+  const slotMissing = direct && slot !== "" && slotMessage === null
+    && slots.data !== undefined && !slots.data.slots.includes(slot);
+  const filled = direct
+    ? baseUrl.trim() !== "" && slot !== "" && slotMessage === null
+    : chosen !== "";
+  const canCreate = name.trim() !== "" && filled && slugMessage === null && !create.isPending;
   return (
     <Dialog
       open
       onOpenChange={onOpenChange}
       title="New provider"
-      description="Serve a service in API-key mode as a model provider under its own base URL."
+      description={direct
+        ? "Serve a hosted OpenAI-compatible API under its own base URL. The relay calls it with a credential set on the relay."
+        : "Serve a service in API-key mode as a model provider under its own base URL."}
       footer={
         <>
           <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancel</Button>
@@ -86,7 +147,36 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
         </>
       }
     >
+      <div role="radiogroup" aria-labelledby={kindId} className="col gap-2">
+        <span id={kindId} className="muted small">What the provider serves</span>
+        {([
+          ["tunnel", "A service behind a Burrow client"],
+          ["direct", "A hosted API"],
+        ] as const).map(([value, label]) => (
+          <label key={value} className="row row-center gap-2">
+            <input
+              type="radio"
+              name={kindId}
+              value={value}
+              checked={kind === value}
+              onChange={() => { setKind(value); clearErrors(); }}
+            />
+            <span>{label}</span>
+          </label>
+        ))}
+      </div>
       <FormFieldGroup>
+        {direct && (
+          <FormField label="Provider" htmlFor="np-preset" w="md" help={preset?.note}>
+            <Select
+              id="np-preset"
+              value={presetId}
+              onChange={choosePreset}
+              options={PRESET_OPTIONS}
+              placeholder="Choose a provider…"
+            />
+          </FormField>
+        )}
         <FormField label="Name" htmlFor="np-name" w="md">
           <Input
             id="np-name"
@@ -105,7 +195,63 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
           error={slugMessage}
           preview={(s) => providerBaseUrl(s)}
         />
-        {eligible.length > 0 && (
+        {direct && (
+          <>
+            <FormField
+              label="Base URL"
+              htmlFor="np-base-url"
+              error={urlErr ? <span id="np-base-url-err">{urlErr}</span> : undefined}
+              help={<span id="np-base-url-help">The https URL of the API, up to and including its version path.</span>}
+            >
+              <Input
+                id="np-base-url"
+                mono
+                type="url"
+                inputMode="url"
+                value={baseUrl}
+                maxLength={2048}
+                required
+                invalid={!!urlErr}
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                placeholder="https://"
+                aria-describedby={urlErr ? "np-base-url-err" : "np-base-url-help"}
+                onChange={(e) => { setBaseUrl(e.target.value); setUrlErr(null); setFormErr(null); }}
+              />
+            </FormField>
+            <FormField
+              label="Credential slot"
+              htmlFor="np-slot"
+              w="md"
+              error={slotMessage ? <span id="np-slot-err">{slotMessage}</span> : undefined}
+              help={<span id="np-slot-help">The name of the slot, not the key. The key is set on the relay.</span>}
+            >
+              <Input
+                id="np-slot"
+                mono
+                value={slot}
+                maxLength={32}
+                required
+                invalid={!!slotMessage}
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                aria-describedby={slotMessage ? "np-slot-err" : "np-slot-help"}
+                onChange={(e) => { setSlot(e.target.value.toUpperCase()); setSlotErr(null); setFormErr(null); }}
+              />
+            </FormField>
+            <FormField label="Billing" htmlFor="np-billing" w="md">
+              <Select
+                id="np-billing"
+                value={billing}
+                onChange={(v) => { setBilling(v as "metered" | "flat"); setFormErr(null); }}
+                options={BILLING_OPTIONS}
+              />
+            </FormField>
+          </>
+        )}
+        {!direct && eligible.length > 0 && (
           <FormField label="Service" htmlFor="np-service" w="md">
             <Select
               id="np-service"
@@ -118,7 +264,13 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
         )}
       </FormFieldGroup>
       <p className="muted small">Leave the slug empty to derive it from the name.</p>
-      {loadFailed ? (
+      {slotMissing && (
+        <ErrorNotice variant="info" role="note">
+          No credential found in slot {slot}. Set <code>{envVarForSlot(slot)}</code> in the relay's
+          environment and restart it. You can create the provider now; it answers 503 until the key is set.
+        </ErrorNotice>
+      )}
+      {direct ? null : loadFailed ? (
         <ErrorNotice>Couldn't load the services to choose from.</ErrorNotice>
       ) : loaded && eligible.length === 0 ? (
         <ErrorNotice variant="info" role="status">

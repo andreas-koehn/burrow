@@ -52,12 +52,105 @@ const PROVIDER_SLUG_RULE =
 const PROVIDER_SERVICE = "a tunnel provider needs an http service in API-key mode";
 const providerSlugOk = (slug: string) => PROVIDER_SLUG_RE.test(slug) && slug !== "v1";
 
-// Same rules as the server's validProviderName: trimmed, 1–120 characters.
+// Same rules as the server's validProviderName: trimmed, 1–120 bytes (Go's len).
 function providerNameError(name: string): string | null {
   if (name === "") return "name is required";
-  if (name.length > 120) return "name must be at most 120 chars";
+  if (new TextEncoder().encode(name).length > 120) return "name must be at most 120 chars";
   return null;
 }
+
+// ---- direct providers: same checks, order and messages as the server ----
+const MSG_BASE_URL = "base URL must be an https URL without credentials, query or fragment";
+const MSG_BASE_URL_PRIVATE = "base URL resolves to a private or loopback address";
+const MSG_MODEL_ID = "id must be 1-200 characters without control characters";
+const UPSTREAM_FIELDS = ["api_format", "base_url", "credential_slot", "auth_header", "auth_format", "extra_headers", "billing"];
+const CREATE_FIELDS = ["slug", "name", "kind", "service_id", ...UPSTREAM_FIELDS];
+const HEADER_NAME_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
+const RELAY_HEADERS = new Set([
+  "host", "content-length", "transfer-encoding", "connection", "keep-alive", "te", "trailer", "upgrade", "cookie", "forwarded",
+]);
+const isRelayHeader = (lower: string) =>
+  RELAY_HEADERS.has(lower) || lower.startsWith("proxy-") || lower.startsWith("x-forwarded-");
+// eslint-disable-next-line no-control-regex
+const hasControl = (v: string) => /[\u0000-\u001f\u007f-\u009f]/.test(v);
+const byteLen = (v: string) => new TextEncoder().encode(v).length;
+
+interface UpstreamBody {
+  api_format?: string;
+  base_url?: string;
+  credential_slot?: string;
+  auth_header?: string;
+  auth_format?: string;
+  extra_headers?: Record<string, string>;
+  billing?: string;
+}
+
+// The server decodes these bodies strictly: a field it does not know, such as
+// api_key, is a 400 that names the field and never repeats its value.
+function unknownField(b: object, allowed: string[]): string | null {
+  const extra = Object.keys(b).find((k) => !allowed.includes(k));
+  if (extra === undefined) return null;
+  const hint = "; the credential is set on the relay, credential_slot names its slot";
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(extra)
+    ? `unknown field "${extra}"${hint}`
+    : `unknown field in the request body${hint}`;
+}
+
+// Shape only (no DNS in the mock): https, no userinfo, query or fragment, and
+// no host that is itself a private or loopback address.
+function baseUrlError(raw: string): string | null {
+  let u: URL;
+  try { u = new URL(raw); } catch { return MSG_BASE_URL; }
+  if (u.protocol !== "https:" || u.username || u.password || raw.includes("?") || raw.includes("#") || raw.length > 2048) {
+    return MSG_BASE_URL;
+  }
+  const h = u.hostname;
+  if (h === "localhost" || h.endsWith(".localhost") || h === "[::1]"
+    || /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h)) {
+    return MSG_BASE_URL_PRIVATE;
+  }
+  return null;
+}
+
+// Mirror of the store's normalizeDirect: validates the merged settings and
+// fills the defaults.
+function normalizeDirect(p: AiProviderRow): string | null {
+  if (!/^[A-Z0-9_]{1,32}$/.test(p.credential_slot ?? "")) return "credential slot must be 1-32 characters: A-Z, 0-9, _";
+  p.auth_header ||= "Authorization";
+  if (!HEADER_NAME_RE.test(p.auth_header) || isRelayHeader(p.auth_header.toLowerCase())) {
+    return "auth header is not a valid header name";
+  }
+  p.auth_format ||= "Bearer {key}";
+  if (p.auth_format.split("{key}").length !== 2 || hasControl(p.auth_format) || byteLen(p.auth_format) > 128) {
+    return 'auth format must contain "{key}" once, at most 128 characters, no control characters';
+  }
+  p.billing ||= "metered";
+  if (p.billing !== "metered" && p.billing !== "flat") return "billing must be 'metered' or 'flat'";
+  p.api_format ||= "openai";
+  if (p.api_format !== "openai" && p.api_format !== "anthropic") return "api_format must be 'openai' or 'anthropic'";
+  const extra = Object.entries(p.extra_headers ?? {});
+  if (extra.length > 16) return "at most 16 extra headers";
+  let total = 0;
+  for (const [k, v] of extra) {
+    if (!HEADER_NAME_RE.test(k)) return "an extra header has an invalid name";
+    const lower = k.toLowerCase();
+    if (isRelayHeader(lower) || lower === "authorization" || lower === "x-api-key" || lower === p.auth_header.toLowerCase()) {
+      return `extra header "${k}" is not allowed`;
+    }
+    if (typeof v !== "string" || hasControl(v) || byteLen(v) > 512) return `extra header "${k}" has an invalid value`;
+    total += byteLen(k) + byteLen(v);
+  }
+  if (total > 4096) return "extra headers are larger than 4096 bytes in total";
+  return null;
+}
+
+// True only when the slot exists on the relay and is non-empty.
+const credentialPresent = (slot: string | undefined) =>
+  !!slot && db.upstreamSlots.includes(slot) && !db.absentSlots.has(slot);
+
+// Same rule as the server's ValidModelID.
+const modelIdOk = (id: unknown): id is string =>
+  typeof id === "string" && id !== "" && byteLen(id) <= 200 && !hasControl(id) && id.trim() === id;
 
 // Same rules as the server's ProviderSlugFromName: lower-cased, runs of other
 // characters collapsed to one hyphen, trimmed, cut at 40. An unusable result
@@ -77,8 +170,27 @@ function providerVisible(p: AiProviderRow): boolean {
 function providerView(p: AiProviderRow): AiProvider {
   const meta = db.aiMeta[p.service_id];
   const alias = db.modelAliases.find((a) => a.service_id === p.service_id);
+  const direct = p.kind === "direct";
+  const present = direct && credentialPresent(p.credential_slot);
   return {
-    ...p,
+    slug: p.slug,
+    name: p.name,
+    kind: p.kind,
+    api_format: p.api_format,
+    service_id: p.service_id,
+    upstream_base_url: p.upstream_base_url ?? "",
+    credential_slot: p.credential_slot ?? "",
+    credential_present: present,
+    billing: p.billing ?? "metered",
+    model_count: (db.aiProviderModels[p.slug] ?? []).length,
+    // The upstream routes are admin only; header values are never returned.
+    ...(direct && db.me.role === "admin"
+      ? {
+          auth_header: p.auth_header ?? "Authorization",
+          auth_format: p.auth_format ?? "Bearer {key}",
+          extra_header_names: Object.keys(p.extra_headers ?? {}).sort(),
+        }
+      : {}),
     base_url: `https://tunnels.example.com/ai/${p.slug}/v1`,
     model_alias: alias?.alias ?? "",
     concrete_model: alias?.concrete_model ?? "",
@@ -87,7 +199,8 @@ function providerView(p: AiProviderRow): AiProvider {
     requests_24h: meta?.requests_24h ?? 0,
     cache_hits_24h: meta?.cache_hits_24h ?? 0,
     latency_p95_ms: meta?.latency_p95_ms ?? 0,
-    status: meta?.status ?? "Offline",
+    // A direct provider has no tunnel: it is usable when its slot is set.
+    status: direct ? (present ? "Connected" : "Offline") : meta?.status ?? "Offline",
     client_session_id: meta?.client_session_id ?? "",
   };
 }
@@ -286,9 +399,10 @@ export const handlers = [
   http.get("/api/v1/services", ({ request }) => {
     const g = gate(request); if (g) return g;
     // Owner-scoped; admin (tunnels:read:any) sees all.
-    const rows = db.me.role === "admin"
+    // The backing row of a direct AI provider is not listed.
+    const rows = (db.me.role === "admin"
       ? db.services
-      : db.services.filter((s) => s.user_id === db.me.id);
+      : db.services.filter((s) => s.user_id === db.me.id)).filter((s) => s.type !== "direct");
     return json(rows.map(({ user_id: _u, ...s }) => s));
   }),
   // Registered before /services/:id so the literal segment wins.
@@ -431,15 +545,43 @@ export const handlers = [
   }),
   http.post("/api/v1/ai/providers", async ({ request }) => {
     const g = gate(request, { admin: true }); if (g) return g;
-    const b = await body<{ slug?: string; name?: string; kind?: string; service_id?: string }>(request);
-    const name = (b?.name ?? "").trim();
+    const b = await body<{ slug?: string; name?: string; kind?: string; service_id?: string } & UpstreamBody>(request);
+    if (!b || typeof b !== "object") return err(400, "invalid JSON body");
+    const unknown = unknownField(b, CREATE_FIELDS);
+    if (unknown) return err(400, unknown);
+    const name = (b.name ?? "").trim();
     const nameErr = providerNameError(name);
     if (nameErr) return err(400, nameErr);
-    if ((b?.kind || "tunnel") !== "tunnel") return err(400, "kind must be 'tunnel'");
-    const slug = b?.slug || providerSlugFromName(name);
+    const kind = b.kind || "tunnel";
+    if (kind !== "tunnel" && kind !== "direct") return err(400, "kind must be 'tunnel' or 'direct'");
+    const slug = b.slug || providerSlugFromName(name);
     if (!providerSlugOk(slug)) return err(400, PROVIDER_SLUG_RULE);
+    if (kind === "direct") {
+      const urlErr = baseUrlError(b.base_url ?? "");
+      if (urlErr) return err(400, urlErr);
+      const row: AiProviderRow = {
+        slug, name, kind: "direct", service_id: `prov-${slug}`,
+        api_format: (b.api_format ?? "") as AiProviderRow["api_format"],
+        upstream_base_url: b.base_url,
+        credential_slot: b.credential_slot ?? "",
+        auth_header: b.auth_header,
+        auth_format: b.auth_format,
+        extra_headers: b.extra_headers ?? {},
+        billing: b.billing as AiProviderRow["billing"],
+      };
+      const reason = normalizeDirect(row);
+      if (reason) return err(400, reason);
+      if (db.aiProviders.some((p) => p.slug === slug)) return err(409, "provider slug or service already in use");
+      // The backing service is created with the provider and owned by the caller.
+      db.services.push({
+        id: row.service_id, user_id: db.me.id, name, type: "direct", slug: "", url: "",
+        access_mode: "api_key", api_key_header: "Authorization", connected: false, remote_port: 0, local_addr: "",
+      });
+      db.aiProviders.push(row);
+      return json(providerView(row), 201);
+    }
     // An unknown service is the same conflict as one in the wrong mode.
-    const svc = db.services.find((s) => s.id === b?.service_id);
+    const svc = db.services.find((s) => s.id === b.service_id);
     if (!svc || svc.type !== "http" || svc.access_mode !== "api_key") {
       return err(409, PROVIDER_SERVICE);
     }
@@ -450,7 +592,82 @@ export const handlers = [
     db.aiProviders.push(row);
     return json(providerView(row), 201);
   }),
-  // Registered before /ai/providers/:slug so the longer path wins.
+  // Registered before /ai/providers/:slug so the longer paths win.
+  http.put("/api/v1/ai/providers/:slug/upstream", async ({ request, params }) => {
+    const g = gate(request, { admin: true }); if (g) return g;
+    const b = await body<UpstreamBody>(request);
+    if (!b || typeof b !== "object") return err(400, "invalid JSON body");
+    const unknown = unknownField(b, UPSTREAM_FIELDS);
+    if (unknown) return err(400, unknown);
+    const p = db.aiProviders.find((x) => x.slug === params.slug);
+    if (!p) return err(404, "provider not found");
+    if (p.kind !== "direct") return err(409, "only direct providers have upstream settings");
+    if (b.base_url !== undefined) {
+      const urlErr = baseUrlError(b.base_url);
+      if (urlErr) return err(400, urlErr);
+    }
+    // A field that is left out keeps its stored value; extra_headers replaces all.
+    const next: AiProviderRow = {
+      ...p,
+      api_format: (b.api_format ?? p.api_format) as AiProviderRow["api_format"],
+      upstream_base_url: b.base_url ?? p.upstream_base_url,
+      credential_slot: b.credential_slot ?? p.credential_slot,
+      auth_header: b.auth_header ?? p.auth_header,
+      auth_format: b.auth_format ?? p.auth_format,
+      extra_headers: b.extra_headers ?? p.extra_headers,
+      billing: (b.billing ?? p.billing) as AiProviderRow["billing"],
+    };
+    const reason = normalizeDirect(next);
+    if (reason) return err(400, reason);
+    Object.assign(p, next);
+    return json(providerView(p));
+  }),
+  http.post("/api/v1/ai/providers/:slug/models/sync", ({ request, params }) => {
+    const g = gate(request, { admin: true }); if (g) return g;
+    const p = db.aiProviders.find((x) => x.slug === params.slug);
+    if (!p) return err(404, "provider not found");
+    if (p.kind !== "direct") return err(409, "sync is available for direct providers");
+    if (!credentialPresent(p.credential_slot)) return err(409, `the credential slot ${p.credential_slot} is not set`);
+    const synced_at = new Date().toISOString();
+    // The answer replaces the stored list, hand-added ids included.
+    db.aiProviderModels[p.slug] = [
+      { id: "acme/large-1", display_name: "Acme Large 1", context_length: 200000, synced_at },
+      { id: "acme/small-1", display_name: "Acme Small 1", context_length: 32000, synced_at },
+    ];
+    return json({ count: 2 });
+  }),
+  http.get("/api/v1/ai/providers/:slug/models", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const p = db.aiProviders.find((x) => x.slug === params.slug);
+    if (!p || !providerVisible(p)) return err(404, "provider not found");
+    return json((db.aiProviderModels[p.slug] ?? []).slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
+  }),
+  http.post("/api/v1/ai/providers/:slug/models", async ({ request, params }) => {
+    const g = gate(request, { admin: true }); if (g) return g;
+    const b = await body<{ id?: unknown }>(request);
+    if (!b || typeof b !== "object") return err(400, "invalid JSON body");
+    if (!modelIdOk(b.id)) return err(400, MSG_MODEL_ID);
+    const p = db.aiProviders.find((x) => x.slug === params.slug);
+    if (!p) return err(404, "provider not found");
+    const list = (db.aiProviderModels[p.slug] ||= []);
+    // Adding an id that is already listed changes nothing.
+    if (!list.some((m) => m.id === b.id)) {
+      list.push({ id: b.id, display_name: "", context_length: 0, synced_at: new Date().toISOString() });
+    }
+    return noContent();
+  }),
+  http.delete("/api/v1/ai/providers/:slug/models", ({ request, params }) => {
+    const g = gate(request, { admin: true }); if (g) return g;
+    const id = new URL(request.url).searchParams.get("id") ?? "";
+    if (!modelIdOk(id)) return err(400, MSG_MODEL_ID);
+    const p = db.aiProviders.find((x) => x.slug === params.slug);
+    if (!p) return err(404, "provider not found");
+    const list = db.aiProviderModels[p.slug] ?? [];
+    const i = list.findIndex((m) => m.id === id);
+    if (i < 0) return err(404, "model not found");
+    list.splice(i, 1);
+    return noContent();
+  }),
   http.get("/api/v1/ai/providers/:slug/metrics", ({ request, params }) => {
     const g = gate(request); if (g) return g;
     const p = db.aiProviders.find((x) => x.slug === params.slug);
@@ -491,6 +708,10 @@ export const handlers = [
     if (db.aiProviders.some((x) => x !== p && x.slug === slug)) {
       return err(409, "provider slug or service already in use");
     }
+    if (slug !== p.slug && db.aiProviderModels[p.slug]) {
+      db.aiProviderModels[slug] = db.aiProviderModels[p.slug]!;
+      delete db.aiProviderModels[p.slug];
+    }
     p.slug = slug;
     p.name = name;
     return json(providerView(p));
@@ -499,7 +720,15 @@ export const handlers = [
     const g = gate(request, { admin: true }); if (g) return g;
     const i = db.aiProviders.findIndex((x) => x.slug === params.slug);
     if (i < 0) return err(404, "provider not found");
-    db.aiProviders.splice(i, 1);
+    const [gone] = db.aiProviders.splice(i, 1);
+    delete db.aiProviderModels[gone!.slug];
+    // A direct provider takes its backing service, API keys and AI
+    // configuration with it; a tunnel provider's service stays.
+    if (gone!.kind === "direct") {
+      db.services = db.services.filter((x) => x.id !== gone!.service_id);
+      delete db.serviceApiKeys[gone!.service_id];
+      delete db.aiConfigs[gone!.service_id];
+    }
     return noContent();
   }),
 

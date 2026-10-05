@@ -53,8 +53,10 @@ test("37-ai-aliases: create and delete a model alias (UI dialog when reachable, 
     if (slug) {
       await page.goto(`/gateway/providers/${slug}`);
       const loadError = page.getByText(/Couldn't load provider/i);
-      // Race: either the page renders (Add alias button) or it errors.
-      await expect(addAlias.or(loadError).first()).toBeVisible({ timeout: 10_000 });
+      // Race: either the page renders (its tabs; Add alias is on Routing) or it errors.
+      const routingTab = page.getByRole("tab", { name: "Routing" });
+      await expect(routingTab.or(loadError).first()).toBeVisible({ timeout: 10_000 });
+      if (await routingTab.isVisible().catch(() => false)) await routingTab.click();
     }
 
     if (slug && (await addAlias.isVisible().catch(() => false))) {

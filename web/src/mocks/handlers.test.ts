@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { db, resetDb } from "@/mocks/db";
+import { addDirectProvider, db, resetDb } from "@/mocks/db";
 import "@/mocks/server"; // installed via test setup; import asserts module loads
 
 const CSRF = "test-csrf-token";
@@ -143,8 +143,140 @@ describe("MSW provider handlers mirror the API", () => {
     expect([r.status, (await r.json()).error]).toEqual([400, "name is required"]);
     r = await postProvider({ name: "n".repeat(121), service_id: "svc_ai001" });
     expect([r.status, (await r.json()).error]).toEqual([400, "name must be at most 120 chars"]);
-    r = await postProvider({ name: "Local", kind: "direct", service_id: "svc_ai001" });
-    expect([r.status, (await r.json()).error]).toEqual([400, "kind must be 'tunnel'"]);
+    // The limit is counted in bytes, as Go's len does: 61 two-byte letters are 122.
+    r = await postProvider({ name: "ä".repeat(61), service_id: "svc_ai001" });
+    expect([r.status, (await r.json()).error]).toEqual([400, "name must be at most 120 chars"]);
+    r = await postProvider({ name: "Local", kind: "other", service_id: "svc_ai001" });
+    expect([r.status, (await r.json()).error]).toEqual([400, "kind must be 'tunnel' or 'direct'"]);
+  });
+
+  const direct = { name: "OpenRouter", slug: "openrouter", kind: "direct", base_url: "https://openrouter.ai/api/v1", credential_slot: "OPENROUTER" };
+
+  it("POST /ai/providers refuses a field it does not know, for either kind, naming it", async () => {
+    for (const b of [{ ...direct, api_key: "sk-secret" }, { name: "Local", service_id: "svc_ai001", api_key: "sk-secret" }]) {
+      const r = await postProvider(b);
+      const msg = (await r.json()).error as string;
+      expect(r.status).toBe(400);
+      expect(msg).toBe('unknown field "api_key"; the credential is set on the relay, credential_slot names its slot');
+      expect(msg).not.toContain("sk-secret");
+    }
+    expect(db.aiProviders).toHaveLength(1);
+  });
+
+  it("POST /ai/providers kind direct: creates the provider with a hidden backing service", async () => {
+    const r = await postProvider({ ...direct, extra_headers: { "X-Title": "Burrow" } });
+    expect(r.status).toBe(201);
+    const v = await r.json();
+    expect(v).toMatchObject({
+      slug: "openrouter", kind: "direct", upstream_base_url: "https://openrouter.ai/api/v1", credential_slot: "OPENROUTER",
+      credential_present: true, billing: "metered", model_count: 0, status: "Connected",
+      auth_header: "Authorization", auth_format: "Bearer {key}", extra_header_names: ["X-Title"],
+    });
+    expect(JSON.stringify(v)).not.toContain('"Burrow"'); // header values are write-only
+    const list = await (await fetch("/api/v1/services", authed("GET"))).json();
+    expect(list.some((x: { id: string }) => x.id === v.service_id)).toBe(false);
+    expect((await postProvider(direct)).status).toBe(409);
+  });
+
+  it("POST /ai/providers kind direct: validates like the server", async () => {
+    const cases: [Record<string, unknown>, string][] = [
+      [{ base_url: "http://openrouter.ai/api/v1" }, "base URL must be an https URL without credentials, query or fragment"],
+      [{ base_url: "https://u:p@openrouter.ai/v1" }, "base URL must be an https URL without credentials, query or fragment"],
+      [{ base_url: "https://openrouter.ai/v1?x=1" }, "base URL must be an https URL without credentials, query or fragment"],
+      [{ base_url: "https://10.0.0.5/v1" }, "base URL resolves to a private or loopback address"],
+      [{ credential_slot: "open-router" }, "credential slot must be 1-32 characters: A-Z, 0-9, _"],
+      [{ auth_format: "Bearer" }, 'auth format must contain "{key}" once, at most 128 characters, no control characters'],
+      [{ auth_format: "{key}{key}" }, 'auth format must contain "{key}" once, at most 128 characters, no control characters'],
+      [{ billing: "free" }, "billing must be 'metered' or 'flat'"],
+      [{ extra_headers: { Authorization: "x" } }, 'extra header "Authorization" is not allowed'],
+      [{ extra_headers: { "X-Forwarded-For": "x" } }, 'extra header "X-Forwarded-For" is not allowed'],
+    ];
+    for (const [patch, message] of cases) {
+      const r = await postProvider({ ...direct, ...patch });
+      expect([r.status, (await r.json()).error]).toEqual([400, message]);
+    }
+  });
+
+  it("a direct provider's credential is present only when its slot is set and non-empty", async () => {
+    addDirectProvider("zai", { credential_slot: "ZAI" });
+    addDirectProvider("openrouter", { credential_slot: "OPENROUTER" });
+    const get = async (slug: string) => (await fetch(`/api/v1/ai/providers/${slug}`, authed("GET"))).json();
+    expect(await get("zai")).toMatchObject({ credential_present: false, status: "Offline" });
+    expect(await get("openrouter")).toMatchObject({ credential_present: true, status: "Connected" });
+    db.absentSlots.add("OPENROUTER");
+    expect(await get("openrouter")).toMatchObject({ credential_present: false });
+    // The upstream auth settings are for admins only.
+    db.me = { ...db.me, role: "user" };
+    const v = await get("openrouter");
+    expect(v).not.toHaveProperty("auth_header");
+    expect(v).not.toHaveProperty("auth_format");
+    expect(v).not.toHaveProperty("extra_header_names");
+  });
+
+  const putUpstream = (slug: string, body: unknown) =>
+    fetch(`/api/v1/ai/providers/${slug}/upstream`, { ...authed("PUT"), body: JSON.stringify(body) });
+
+  it("PUT …/upstream: omitted fields keep, extra_headers replaces all, {} clears, unknown fields are refused", async () => {
+    addDirectProvider("openrouter", { credential_slot: "OPENROUTER", extra_headers: { "X-Title": "Burrow", "X-Team": "a" } });
+    let r = await putUpstream("openrouter", { billing: "flat" });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toMatchObject({ billing: "flat", credential_slot: "OPENROUTER", extra_header_names: ["X-Team", "X-Title"] });
+    r = await putUpstream("openrouter", { extra_headers: { "X-Other": "1" } });
+    expect((await r.json()).extra_header_names).toEqual(["X-Other"]);
+    r = await putUpstream("openrouter", { extra_headers: {} });
+    expect((await r.json()).extra_header_names).toEqual([]);
+    r = await putUpstream("openrouter", { api_key: "sk-secret" });
+    expect([r.status, (await r.json()).error]).toEqual([400, 'unknown field "api_key"; the credential is set on the relay, credential_slot names its slot']);
+    r = await putUpstream("openrouter", { base_url: "http://x.example/v1" });
+    expect(r.status).toBe(400);
+    expect((await putUpstream("ollama", { billing: "flat" })).status).toBe(409);
+    expect((await putUpstream("nope", { billing: "flat" })).status).toBe(404);
+    db.me = { ...db.me, role: "user" };
+    expect((await putUpstream("openrouter", { billing: "flat" })).status).toBe(403);
+  });
+
+  it("model catalog routes: statuses as the server answers them", async () => {
+    addDirectProvider("zai", { credential_slot: "ZAI" });
+    addDirectProvider("openrouter", { credential_slot: "OPENROUTER" });
+    const models = (slug: string, method: string, body?: unknown, q = "") =>
+      fetch(`/api/v1/ai/providers/${slug}/models${q}`, { ...authed(method), ...(body ? { body: JSON.stringify(body) } : {}) });
+    expect((await models("nope", "GET")).status).toBe(404);
+    expect(await (await models("openrouter", "GET")).json()).toEqual([]);
+    expect((await models("openrouter", "POST", { id: "" })).status).toBe(400);
+    expect((await models("openrouter", "POST", { id: " padded " })).status).toBe(400);
+    expect((await models("openrouter", "POST", { id: "x".repeat(201) })).status).toBe(400);
+    expect((await models("openrouter", "POST", { id: "z/model" })).status).toBe(204);
+    expect((await models("openrouter", "POST", { id: "z/model" })).status).toBe(204); // idempotent
+    expect((await models("openrouter", "POST", { id: "a/model" })).status).toBe(204);
+    const list = await (await models("openrouter", "GET")).json();
+    expect(list.map((m: { id: string }) => m.id)).toEqual(["a/model", "z/model"]); // ordered by id
+    expect((await models("openrouter", "DELETE", undefined, "")).status).toBe(400);
+    expect((await models("openrouter", "DELETE", undefined, "?id=nope")).status).toBe(404);
+    expect((await models("openrouter", "DELETE", undefined, `?id=${encodeURIComponent("z/model")}`)).status).toBe(204);
+
+    const sync = (slug: string) => fetch(`/api/v1/ai/providers/${slug}/models/sync`, authed("POST"));
+    let r = await sync("zai");
+    expect([r.status, (await r.json()).error]).toEqual([409, "the credential slot ZAI is not set"]);
+    r = await sync("ollama");
+    expect([r.status, (await r.json()).error]).toEqual([409, "sync is available for direct providers"]);
+    r = await sync("openrouter");
+    expect([r.status, await r.json()]).toEqual([200, { count: 2 }]);
+    expect(db.aiProviderModels["openrouter"]).toHaveLength(2); // the answer replaces the list
+
+    db.me = { ...db.me, role: "user" };
+    expect((await sync("openrouter")).status).toBe(403);
+    expect((await models("openrouter", "POST", { id: "b" })).status).toBe(403);
+    expect((await models("openrouter", "DELETE", undefined, "?id=b")).status).toBe(403);
+  });
+
+  it("DELETE of a direct provider takes its backing service, keys and model list with it", async () => {
+    const p = addDirectProvider("openrouter", { credential_slot: "OPENROUTER" });
+    db.serviceApiKeys[p.service_id] = [{ id: "sak_x", name: "x", last_used: null, created_at: "2026-10-05T00:00:00Z" }];
+    db.aiProviderModels["openrouter"] = [{ id: "m", display_name: "", context_length: 0, synced_at: "2026-10-05T00:00:00Z" }];
+    expect((await fetch("/api/v1/ai/providers/openrouter", authed("DELETE"))).status).toBe(204);
+    expect(db.services.some((x) => x.id === p.service_id)).toBe(false);
+    expect(db.serviceApiKeys[p.service_id]).toBeUndefined();
+    expect(db.aiProviderModels["openrouter"]).toBeUndefined();
   });
 
   it("POST /ai/providers derives the slug like the server: collapsed, trimmed, cut at 40", async () => {

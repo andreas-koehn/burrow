@@ -146,7 +146,11 @@ export default function Services() {
           // The service exists, the provider does not. Say why and stay here:
           // this page's toaster would not survive a navigation.
           const why = e instanceof ApiError ? e.message : "the request failed";
-          toast.error(`Service ${resp.id} created, but it was not registered as a provider: ${why}. Add it under Providers.`);
+          // The only pointer to the next step: keep it up longer and make it the way there.
+          toast.error(`Service ${resp.id} created, but it was not registered as a provider: ${why}. Add it under Providers.`, {
+            duration: 20_000,
+            action: { label: "Open Providers", onClick: () => nav("/gateway/providers") },
+          });
           closeNew();
         }
       } else {

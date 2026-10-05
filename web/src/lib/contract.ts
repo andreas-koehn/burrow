@@ -139,6 +139,21 @@ export interface AiProvider {
   service_id: string;
   /** https://<auth_domain>/ai/<provider>/v1, or "" when the relay has no auth domain. */
   base_url: string;
+  /** Direct providers only: where the relay sends requests; "" for a tunnel provider. */
+  upstream_base_url: string;
+  /** Direct providers only: name of the vault slot. The credential itself never passes the API. */
+  credential_slot: string;
+  /** Whether the vault slot holds a value. */
+  credential_present: boolean;
+  /** Direct providers, admin callers only. */
+  auth_header?: string;
+  /** Direct providers, admin callers only: header value with the literal {key} placeholder. */
+  auth_format?: string;
+  /** Direct providers, admin callers only: names of the static extra headers; values are write-only. */
+  extra_header_names?: string[];
+  billing: "metered" | "flat";
+  /** Number of entries in the provider's stored model list. */
+  model_count: number;
   model_alias: string;
   concrete_model: string;
   backend_type: "ollama" | "vllm" | "openai-compat" | "other";
@@ -148,6 +163,27 @@ export interface AiProvider {
   latency_p95_ms: number;
   status: "Connected" | "Degraded" | "Offline";
   client_session_id: string;
+}
+
+// One entry of a provider's stored model list.
+export interface AiProviderModel {
+  id: string;
+  display_name: string;
+  context_length: number;
+  synced_at: string;
+}
+
+// Body of PUT /ai/providers/{slug}/upstream; a field left out keeps its stored
+// value. There is no field for the credential.
+export interface AiProviderUpstreamInput {
+  api_format?: "openai" | "anthropic";
+  base_url?: string;
+  credential_slot?: string;
+  auth_header?: string;
+  auth_format?: string;
+  /** Replaces all extra headers; {} removes them. */
+  extra_headers?: Record<string, string>;
+  billing?: "metered" | "flat";
 }
 
 // Service AI config (spec Part B.7) — one row per service, default-filled.

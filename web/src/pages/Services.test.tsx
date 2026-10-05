@@ -294,6 +294,7 @@ describe("Services page", () => {
       <>
         <Routes>
           <Route path="/services" element={<Services />} />
+          <Route path="/gateway/providers" element={<div>PROVIDERS_PAGE</div>} />
           <Route path="/gateway/providers/:slug" element={<div>PROVIDER_PAGE</div>} />
           <Route path="/services/:id" element={<div>SERVICE_PAGE</div>} />
         </Routes>
@@ -314,6 +315,12 @@ describe("Services page", () => {
     expect(screen.getByTestId("path")).toHaveTextContent(/^\/services$/);
     expect(db.services.some((s) => s.id === "local-llm")).toBe(true);
     expect(db.aiProviders.some((p) => p.service_id === "local-llm")).toBe(false);
+    // The service that was created is in the list behind the closed dialog.
+    const table = screen.getByRole("table", { name: /services/i });
+    expect(await within(table).findByRole("link", { name: "AI" })).toHaveAttribute("href", "/services/local-llm");
+    // The toast is the only pointer to the next step, so it carries the way there.
+    await userEvent.click(screen.getByRole("button", { name: "Open Providers" }));
+    expect(await screen.findByText("PROVIDERS_PAGE")).toBeInTheDocument();
   });
 
   it("keeps the generic dialog for the normal flow", async () => {

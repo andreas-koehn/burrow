@@ -1,5 +1,5 @@
 import type {
-  UserAdmin, RoleSummary, Session, ClientDetail, SettingsMap,
+  UserAdmin, RoleSummary, Session, ClientDetail, SettingsMap, AiProviderModel,
   Service, ServiceApiKey, CostSummary, ServiceAIConfig,
   InspectorEntry, CacheSettings, RedactionRule, RedactionSettings,
   GuardrailPattern, GuardrailSettingsResponse, Budget, PricingTable, AuditEvent, Webhook,
@@ -19,7 +19,10 @@ export interface CacheSettingsPayload {
 
 // Internal service row: the wire Service plus the owning user_id (stripped
 // before serialization — owner-scoping the v0.3.0 /services surface).
-export interface ServiceRow extends Service {
+// Type "direct" is the backing row of a direct AI provider; GET /services
+// leaves it out.
+export interface ServiceRow extends Omit<Service, "type"> {
+  type: Service["type"] | "direct";
   user_id: string;
 }
 
@@ -41,6 +44,14 @@ export interface AiProviderRow {
   kind: "tunnel" | "direct";
   api_format: "openai" | "anthropic";
   service_id: string;
+  // Upstream settings of a direct provider; absent on a tunnel provider.
+  upstream_base_url?: string;
+  credential_slot?: string;
+  auth_header?: string;
+  auth_format?: string;
+  // Stored here, never serialized: the API returns the names only.
+  extra_headers?: Record<string, string>;
+  billing?: "metered" | "flat";
 }
 
 export interface MockDb {
@@ -60,6 +71,8 @@ export interface MockDb {
   serviceAccessPolicy: Record<string, string[]>;
   aiMeta: Record<string, AiMetaRow>;
   aiProviders: AiProviderRow[];
+  // Stored model list per provider slug.
+  aiProviderModels: Record<string, AiProviderModel[]>;
   modelAliases: ModelAliasV5[];
   costSummary: Record<"today" | "week" | "month" | "year", CostSummary>;
   aiConfigs: Record<string, ServiceAIConfig>;
@@ -164,6 +177,7 @@ function seed(): MockDb {
     aiProviders: [
       { slug: "ollama", name: "ollama", kind: "tunnel", api_format: "openai", service_id: "svc_ai001" },
     ],
+    aiProviderModels: {},
     modelAliases: [
       { alias: "fast", concrete_model: "llama3.1:8b", service_id: "svc_ai001", provider: "ollama", priority: 100, created_at: "2026-05-19T00:00:00Z" },
     ],
@@ -253,7 +267,8 @@ function seed(): MockDb {
     ],
     // v0.5.0 upstream credentials (spec Part B).
     // Slots sorted alphabetically; ANTHROPIC_TEAM_A is "absent" by default in tests that need it.
-    upstreamSlots: ["ANTHROPIC_TEAM_A", "OPENAI"],
+    // OPENROUTER is set and ZAI is not, so both credential states of a direct provider are testable.
+    upstreamSlots: ["ANTHROPIC_TEAM_A", "OPENAI", "OPENROUTER"],
     absentSlots: new Set<string>(),
     upstreamBindings: {
       svc_ai001: {
@@ -471,4 +486,31 @@ export let db: MockDb = seed();
 
 export function resetDb(): void {
   db = seed();
+}
+
+/**
+ * Test helper: a direct provider with its backing service, as POST
+ * /ai/providers with kind "direct" would leave it.
+ */
+export function addDirectProvider(slug: string, row: Partial<AiProviderRow> = {}): AiProviderRow {
+  const p: AiProviderRow = {
+    slug,
+    name: slug,
+    kind: "direct",
+    api_format: "openai",
+    service_id: `prov-${slug}`,
+    upstream_base_url: `https://${slug}.example.net/api/v1`,
+    credential_slot: slug.toUpperCase().replace(/[^A-Z0-9]+/g, "_"),
+    auth_header: "Authorization",
+    auth_format: "Bearer {key}",
+    extra_headers: {},
+    billing: "metered",
+    ...row,
+  };
+  db.services.push({
+    id: p.service_id, user_id: db.me.id, name: p.name, type: "direct", slug: "", url: "",
+    access_mode: "api_key", api_key_header: "Authorization", connected: false, remote_port: 0, local_addr: "",
+  });
+  db.aiProviders.push(p);
+  return p;
 }
