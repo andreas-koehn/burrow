@@ -509,61 +509,156 @@ func TestLogin_AlreadySignedIn_OpenTerminal(t *testing.T) {
 	}
 }
 
-// keys feeds what a terminal in raw mode delivers and then stays open, as a
-// terminal does: nothing here may wait for the end of the input.
-func keys(t *testing.T, typed string) io.Reader {
+// keys feeds what a terminal in raw mode delivers, one write per chunk, and
+// then stays open as a terminal does: a reader that waits for more than it
+// needs never returns.
+func keys(t *testing.T, chunks ...string) *io.PipeReader {
 	t.Helper()
 	pr, pw := io.Pipe()
-	go func() { _, _ = pw.Write([]byte(typed)) }()
+	go func() {
+		for _, c := range chunks {
+			if _, err := pw.Write([]byte(c)); err != nil {
+				return
+			}
+		}
+	}()
 	t.Cleanup(func() { pr.Close() })
 	return pr
 }
 
+// hiddenLine runs readHiddenLine and fails the test when it does not return.
+func hiddenLine(t *testing.T, r io.Reader) (string, error) {
+	t.Helper()
+	type result struct {
+		line string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		line, err := readHiddenLine(r)
+		done <- result{line, err}
+	}()
+	select {
+	case r := <-done:
+		return r.line, r.err
+	case <-time.After(5 * time.Second):
+		t.Fatal("the prompt is still waiting although the line was complete")
+		return "", nil
+	}
+}
+
 func TestReadHiddenLine(t *testing.T) {
 	const tok = "bur_test_0000"
+	const ps, pe = "\x1b[200~", "\x1b[201~"
+	long := strings.Repeat("a", 5000)
 	cases := []struct {
-		name, typed, want string
-		err               error
+		name  string
+		typed []string
+		want  string
+		err   error
 	}{
-		{"typed, Enter", tok + "\r", tok, nil},
-		{"line feed", tok + "\n", tok, nil},
-		{"pasted with CRLF", tok + "\r\n", tok, nil},
-		{"bracketed paste, Enter", "\x1b[200~" + tok + "\x1b[201~\r", tok, nil},
-		{"bracketed paste with its own line end", "\x1b[200~" + tok + "\r\n\x1b[201~", tok, nil},
-		{"Backspace", "bur_tesX\x7ft_0000\r", tok, nil},
-		{"Backspace removes a whole rune", "bur_ä\x7ftest_0000\r", tok, nil},
-		{"Backspace on nothing", "\x7f\x7f" + tok + "\r", tok, nil},
-		{"Ctrl-U clears the line", "wrong\x15" + tok + "\r", tok, nil},
-		{"Ctrl-W deletes the word", "wrong\x17" + tok + "\r", tok, nil},
-		{"Ctrl-D on an empty line", "\x04", "", io.EOF},
-		{"Ctrl-C", "bur_te\x03", "", errInterrupted},
-		{"Ctrl-C on an empty line", "\x03", "", errInterrupted},
-		// A key that moves the cursor would change a token nobody can see.
-		{"arrow key", "bur_test\x1b[D_0000\r", "", errControlKeys},
-		{"arrow key, SS3 form", "bur_test\x1bOD_0000\r", "", errControlKeys},
-		{"function key", "\x1b[15~" + tok + "\r", "", errControlKeys},
-		{"Alt and a letter", "bur\x1bb_test\r", "", errControlKeys},
+		{"typed, Enter", []string{tok + "\r"}, tok, nil},
+		{"one key at a time", strings.Split(tok+"\r", ""), tok, nil},
+		{"line feed", []string{tok + "\n"}, tok, nil},
+		{"CRLF", []string{tok + "\r\n"}, tok, nil},
+		{"empty line", []string{"\r"}, "", nil},
+		{"bracketed paste, Enter", []string{ps + tok + pe + "\r"}, tok, nil},
+		{"bracketed paste, markers split across writes", []string{"\x1b", "[2", "00", "~bur_test", "_0000\x1b[", "201", "~", "\r"}, tok, nil},
+		{"bracketed paste with CRLF inside", []string{ps + tok + "\r\n" + pe}, tok, nil},
+		{"Backspace", []string{"bur_tesX\x7ft_0000\r"}, tok, nil},
+		{"Ctrl-H", []string{"bur_tesXY\x08\x08t_0000\r"}, tok, nil},
+		{"Backspace on nothing", []string{"\x7f\x08" + tok + "\r"}, tok, nil},
+		{"Ctrl-U", []string{"wrong\x15" + tok + "\r"}, tok, nil},
+		{"Ctrl-W", []string{"wrong\x17" + tok + "\r"}, tok, nil},
+		{"4096 characters", []string{long[:4096] + "\r"}, long[:4096], nil},
+
+		{"Esc then Enter", []string{"\x1b\r"}, "", errControlKeys},
+		{"Esc, later Enter", []string{"\x1b", "\r"}, "", errControlKeys},
+		{"Esc then Ctrl-C", []string{"\x1b\x03"}, "", errInterrupted},
+		{"arrow key mid-token, Enter", []string{"bur_test\x1b[D_0000\r"}, "", errControlKeys},
+		{"arrow key, SS3 form", []string{"bur_test\x1bOD_0000\r"}, "", errControlKeys},
+		{"half a paste marker", []string{"\x1b[20x" + tok + "\r"}, "", errControlKeys},
+		{"half a paste marker then Ctrl-C", []string{"\x1b[20\x03"}, "", errInterrupted},
+		{"invalid UTF-8 byte", []string{"bur_\xc3test_0000\r"}, "", errControlKeys},
+		{"Latin-1 letter", []string{"bur_\xe4\r"}, "", errControlKeys},
+		{"UTF-8 letter", []string{"bur_ä\r"}, "", errControlKeys},
+		{"invalid byte, then Ctrl-C", []string{"bur_\xc3test_0000", "\x03"}, "", errInterrupted},
+		{"refused line, Backspace does not repair it", []string{"bur_\xc3\x7ftest\r"}, "", errControlKeys},
+		{"refused line, Ctrl-U does not repair it", []string{"\x1b[D\x15" + tok + "\r"}, "", errControlKeys},
+		{"tab inside", []string{"bur_test\t0000\r"}, "", errControlKeys},
+		{"space inside", []string{"bur_test 0000\r"}, "", errControlKeys},
+		{"NUL inside", []string{"bur_test\x000000\r"}, "", errControlKeys},
+		{"5000 characters", []string{long + "\r"}, "", errControlKeys},
+		{"4097 characters", []string{long[:4097] + "\r"}, "", errControlKeys},
+		{"Ctrl-D on an empty line", []string{"\x04"}, "", io.EOF},
+		{"Ctrl-D mid-token, Enter", []string{"bur_te\x04st\r"}, "", errControlKeys},
+		{"Ctrl-D on a refused empty line, Enter", []string{"\x1b[D\x15\x04\r"}, "", errControlKeys},
+		{"Ctrl-C", []string{"\x03"}, "", errInterrupted},
+		{"Ctrl-C mid-token", []string{"bur_te\x03"}, "", errInterrupted},
+		{"Ctrl-C inside a paste", []string{ps + "bur_te\x03"}, "", errInterrupted},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			type result struct {
-				line string
-				err  error
-			}
-			done := make(chan result, 1)
-			go func() {
-				line, err := readHiddenLine(keys(t, tc.typed))
-				done <- result{line, err}
-			}()
-			select {
-			case r := <-done:
-				if r.line != tc.want || !errors.Is(r.err, tc.err) || (tc.err == nil && r.err != nil) {
-					t.Fatalf("got %d characters (want %d) and error %v (want %v)", len(r.line), len(tc.want), r.err, tc.err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("still waiting for input after the line was complete")
+			line, err := hiddenLine(t, keys(t, tc.typed...))
+			if line != tc.want || !errors.Is(err, tc.err) || (tc.err == nil && err != nil) {
+				t.Fatalf("got %d characters (want %d) and error %v (want %v)", len(line), len(tc.want), err, tc.err)
 			}
 		})
+	}
+
+	t.Run("the input ends", func(t *testing.T) {
+		// never a partial token
+		for _, in := range []string{"", "bur_te", "\x1b"} {
+			if line, err := hiddenLine(t, strings.NewReader(in)); line != "" || !errors.Is(err, io.EOF) {
+				t.Fatalf("input of %d bytes: got %d characters and %v", len(in), len(line), err)
+			}
+		}
+		pr, pw := io.Pipe()
+		broken := errors.New("terminal gone")
+		go func() { _, _ = pw.Write([]byte("bur_te")); pw.CloseWithError(broken) }()
+		if line, err := hiddenLine(t, pr); line != "" || !errors.Is(err, broken) {
+			t.Fatalf("got %d characters and %v", len(line), err)
+		}
+	})
+
+	t.Run("nothing beyond the line end is consumed", func(t *testing.T) {
+		for _, first := range []string{"one\r", "\x1b[D\r", "x\x03", "\x04"} {
+			pr := keys(t, first+"rest")
+			_, _ = hiddenLine(t, pr)
+			rest := make([]byte, 4)
+			if _, err := io.ReadFull(pr, rest); err != nil || string(rest) != "rest" {
+				t.Fatalf("after %q: what follows was consumed (%q left, %v)", first, rest, err)
+			}
+		}
+	})
+}
+
+// The login flow with the real reader behind the prompt.
+func TestLoginToken_PromptRunsTheReader(t *testing.T) {
+	h := newHarness(t)
+	h.terminal, h.typed = true, "wrong\x15\x1b[200~"+testToken+"\x1b[201~\r"
+	if code := h.exec("login", "burrow.example.com", "--token", "-"); code != 0 || h.stored(h.cfgPath).Token != testToken {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	h.noToken()
+
+	for name, typed := range map[string]string{
+		"Esc then Enter":      "\x1b\r",
+		"arrow key mid-token": "bur_test\x1b[D_0000\r",
+		"invalid UTF-8":       "bur_\xc3test_0000\r",
+		"Ctrl-D mid-token":    "bur_te\x04st_0000\r",
+	} {
+		h := newHarness(t)
+		h.terminal, h.typed = true, typed
+		code := h.exec("login", "burrow.example.com", "--token", "-")
+		if code != 2 || h.hasConfig() || !strings.Contains(h.stderr.String(), "Nothing was stored") || strings.Contains(h.stderr.String(), "0000") {
+			t.Fatalf("%s: exit %d, config written %v", name, code, h.hasConfig())
+		}
+	}
+	h = newHarness(t)
+	h.terminal, h.typed = true, "\x04"
+	if code := h.exec("login", "burrow.example.com", "--token", "-"); code != 2 || h.hasConfig() || !strings.Contains(h.stderr.String(), "The token is empty") {
+		t.Fatalf("Ctrl-D: exit %d, stderr %q", code, h.stderr.String())
 	}
 }
 
@@ -571,35 +666,49 @@ func TestLoginToken_ControlKeysAtTheHiddenPrompt(t *testing.T) {
 	h := newHarness(t)
 	h.terminal, h.secretErr = true, errControlKeys
 	code := h.exec("login", "burrow.example.com", "--token", "-")
-	if code != 2 || h.hasConfig() || strings.HasPrefix(h.stderr.String(), "error:") || !strings.Contains(h.stderr.String(), "Nothing was stored") {
+	if code != 2 || h.hasConfig() || strings.HasPrefix(h.stderr.String(), "error:") || !strings.Contains(h.stderr.String(), "Nothing was stored") || !strings.Contains(h.stderr.String(), "paste the token") {
 		t.Fatalf("exit %d, stderr %q", code, h.stderr.String())
 	}
 }
 
-// A token is printable ASCII without spaces. Anything else is refused, and not repeated.
+// A token is printable ASCII without spaces. Anything else is refused on every
+// way in, and not repeated. At the prompt the keys go through the real reader.
 func TestLogin_RejectsWhatCannotBeAToken(t *testing.T) {
-	for name, tok := range map[string]string{
-		"non-ASCII letter":   "bur_ätest_0000",
-		"invalid UTF-8":      "bur_\xc3test_0000",
-		"escape sequence":    "bur_test\x1b[D_0000",
-		"paste markers":      "[200~bur_test_0000\x1b[201~",
-		"control character":  "bur_test\x00_0000",
-		"tab inside":         "bur_test\t0000",
-		"non-breaking space": "bur_test\u00a00000",
-		"zero-width space":   "bur_test\u200b0000",
-		"delete character":   "bur_test\x7f0000",
-	} {
-		t.Run(name, func(t *testing.T) {
+	cases := []struct {
+		name, tok string
+		// editKey: at the prompt the byte is an editing key, so only the flag
+		// and the pipe are checked.
+		editKey bool
+	}{
+		{"non-ASCII letter", "bur_ätest_0000", false},
+		{"Latin-1 byte", "bur_\xe4test_0000", false},
+		{"invalid UTF-8", "bur_\xc3test_0000", false},
+		{"escape sequence", "bur_test\x1b[D_0000", false},
+		{"lone escape", "bur_test\x1b_0000", false},
+		{"control character", "bur_test\x00_0000", false},
+		{"tab inside", "bur_test\t0000", false},
+		{"space inside", "bur_test 0000", false},
+		{"non-breaking space", "bur_test\u00a00000", false},
+		{"zero-width space", "bur_test\u200b0000", false},
+		{"paste marker", "\x1b[200~bur_test_0000", true},
+		{"delete character", "bur_test\x7f0000", true},
+		{"Ctrl-U", "bur_test\x150000", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			for _, how := range []string{"flag", "stdin", "prompt"} {
 				h := newHarness(t)
 				args := []string{"login", "burrow.example.com", "--token", "-"}
 				switch how {
 				case "flag":
-					args[3] = tok
+					args[3] = tc.tok
 				case "stdin":
-					h.stdin = tok + "\n"
+					h.stdin = tc.tok + "\n"
 				case "prompt":
-					h.terminal, h.secret = true, tok
+					if tc.editKey {
+						continue
+					}
+					h.terminal, h.typed = true, tc.tok+"\r"
 				}
 				code := h.exec(args...)
 				if code != 2 || h.hasConfig() || !strings.Contains(h.stderr.String(), "Nothing was stored") {

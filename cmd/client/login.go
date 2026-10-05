@@ -69,7 +69,7 @@ const msgPasteToken = "run: burrow login %s --token -\nthen paste the token and 
 
 const (
 	msgNotAToken    = "That is not a token: it contains a space or a character other than letters, digits and punctuation. Nothing was stored."
-	msgControlKeys  = "The input contained a key other than the token's characters, such as an arrow key. Nothing was stored; run the command again."
+	msgControlKeys  = "The input contained something other than a token, such as an arrow key, Esc or a character that is not plain ASCII. Nothing was stored; run the command again and paste the token."
 	msgTokenOneLine = "The token must be a single word on one line. Nothing was stored."
 )
 

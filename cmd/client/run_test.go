@@ -38,6 +38,7 @@ type harness struct {
 	terminal    bool
 	secret      string // what a person types at the hidden token prompt
 	secretCalls int
+	typed       string // keys typed at the hidden prompt; they go through the real reader
 	cfgPath     string // where the user config lives when --config is not given
 	runs        []runCall
 	runErr      error
@@ -76,6 +77,10 @@ func (h *harness) deps() deps {
 		isTerminal: func() bool { return h.terminal },
 		readSecret: func() (string, error) {
 			h.secretCalls++
+			if h.typed != "" {
+				// the real reader, on input that stays open like a terminal
+				return readHiddenLine(keys(h.t, h.typed))
+			}
 			return h.secret, h.secretErr
 		},
 	}

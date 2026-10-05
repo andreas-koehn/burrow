@@ -6,7 +6,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -64,52 +63,99 @@ func defaultDeps() deps {
 // errInterrupted reports Ctrl-C at the hidden prompt.
 var errInterrupted = errors.New("interrupted")
 
-// errControlKeys reports a key at the hidden prompt that moves the cursor or
-// has some other function, such as an arrow key. It would change a line the
-// user cannot see, so the line is not used.
-var errControlKeys = errors.New("the input contained control keys")
+// errControlKeys reports that the line typed at the hidden prompt held
+// something that cannot be part of a token: a key with a function, such as an
+// arrow key or Esc, or a character outside printable ASCII. The line is refused
+// as a whole; nothing of it is used.
+var errControlKeys = errors.New("the input contained something other than a token")
 
-// The markers a terminal puts around pasted text in bracketed paste mode.
-var pasteStartMark, pasteEndMark = []byte("\x1b[200~"), []byte("\x1b[201~")
+// maxHiddenLine is the longest line the hidden prompt accepts.
+const maxHiddenLine = 4096
 
-// keyLog passes the keys through and keeps them, to tell afterwards what the
-// line editor does not report: Ctrl-C, and escape sequences.
-type keyLog struct {
-	r    io.Reader
-	seen []byte
-}
-
-func (k *keyLog) Read(p []byte) (int, error) {
-	n, err := k.r.Read(p)
-	k.seen = append(k.seen, p[:n]...)
-	return n, err
+// pasteMarker reports whether c is byte i (1 to 5) of one of the two markers a
+// terminal puts around pasted text, ESC [ 2 0 0 ~ and ESC [ 2 0 1 ~.
+func pasteMarker(i int, c byte) bool {
+	switch i {
+	case 1:
+		return c == '['
+	case 2:
+		return c == '2'
+	case 3:
+		return c == '0'
+	case 4:
+		return c == '0' || c == '1'
+	case 5:
+		return c == '~'
+	}
+	return false
 }
 
 // readHiddenLine reads one line of keys as a terminal in raw mode delivers
-// them. The editing is that of x/term's line editor: Backspace, Ctrl-U,
-// Ctrl-W, pasted text with or without paste markers, Enter as CR, LF or CRLF.
-// Ctrl-D on an empty line is io.EOF, Ctrl-C is errInterrupted, and any other
-// escape sequence is errControlKeys.
+// them, one byte at a time and never beyond the byte that ends it.
+//
+// A token is printable ASCII, so the line is bytes: 0x21 to 0x7e are kept,
+// Backspace and Ctrl-H delete one, Ctrl-U and Ctrl-W clear the line, CR or LF
+// ends it. The markers of a bracketed paste are dropped and what is between
+// them is treated like typed keys. Anything else (Esc and the sequences that
+// start with it, other control characters, space, bytes from 0x80 on, Ctrl-D
+// in the middle, more than maxHiddenLine characters) refuses the line: reading
+// goes on, nothing waits for a sequence to end, and the line end then gives
+// errControlKeys. Ctrl-C gives errInterrupted at once, in every state. Ctrl-D
+// on an untouched empty line gives io.EOF. When the input ends or fails, that
+// error is returned and never a part of a line.
 func readHiddenLine(r io.Reader) (string, error) {
-	keys := &keyLog{r: r}
-	defer func() { clear(keys.seen) }()
-	// The editor's own output (line ends, cursor movement) is not wanted.
-	editor := term.NewTerminal(struct {
-		io.Reader
-		io.Writer
-	}{keys, io.Discard}, "")
-	line, err := editor.ReadPassword("")
-	if errors.Is(err, term.ErrPasteIndicator) {
-		err = nil // the line was pasted, which is the usual way a token gets here
+	var line []byte
+	defer func() { clear(line[:cap(line)]) }()
+	refused := false
+	marker := 0 // bytes of a paste marker seen so far, the ESC included
+	buf := make([]byte, 1)
+	for {
+		n, err := r.Read(buf)
+		if n == 0 {
+			if err == nil {
+				err = io.EOF // a reader that gives nothing and no reason has ended
+			}
+			return "", err
+		}
+		c := buf[0]
+		if marker > 0 {
+			if pasteMarker(marker, c) {
+				marker = (marker + 1) % 6 // the sixth byte completes the marker
+				continue
+			}
+			// Some other sequence: the line is refused, and c is a key like any other.
+			marker, refused = 0, true
+		}
+		switch {
+		case c == 0x1b:
+			marker = 1
+		case c == '\r' || c == '\n':
+			if refused {
+				return "", errControlKeys
+			}
+			return string(line), nil
+		case c == 0x03:
+			return "", errInterrupted
+		case c == 0x04:
+			if len(line) == 0 && !refused {
+				return "", io.EOF
+			}
+			refused = true
+		case c == 0x7f || c == 0x08:
+			if len(line) > 0 {
+				line = line[:len(line)-1]
+			}
+		case c == 0x15 || c == 0x17:
+			line = line[:0]
+		case c >= 0x21 && c <= 0x7e && len(line) < maxHiddenLine:
+			line = append(line, c)
+		default:
+			refused = true
+		}
+		if err != nil {
+			return "", err
+		}
 	}
-	typed := bytes.ReplaceAll(bytes.ReplaceAll(keys.seen, pasteStartMark, nil), pasteEndMark, nil)
-	switch {
-	case err != nil && bytes.IndexByte(typed, 0x03) >= 0:
-		return "", errInterrupted
-	case bytes.IndexByte(typed, 0x1b) >= 0:
-		return "", errControlKeys
-	}
-	return line, err
 }
 
 // readSecretFromTerminal reads one line from the terminal without showing it.
@@ -125,7 +171,6 @@ func readSecretFromTerminal() (string, error) {
 		return "", err
 	}
 	restore := sync.OnceFunc(func() { _ = term.Restore(fd, state) })
-	defer restore()
 	quit := func(sig syscall.Signal) {
 		restore()
 		fmt.Fprintln(os.Stderr)
@@ -136,6 +181,9 @@ func readSecretFromTerminal() (string, error) {
 	done := make(chan struct{})
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
 	defer func() {
+		// The terminal first: a signal that still arrives before the
+		// notification stops finds it restored and ends the process as above.
+		restore()
 		signal.Stop(sig)
 		close(done)
 	}()
