@@ -7,11 +7,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -52,11 +55,85 @@ func defaultDeps() deps {
 		getenv:         os.Getenv,
 		run:            runClient,
 		isTerminal:     func() bool { return term.IsTerminal(int(os.Stdin.Fd())) },
-		readSecret: func() (string, error) {
-			b, err := term.ReadPassword(int(os.Stdin.Fd()))
-			return string(b), err
-		},
+		readSecret:     readSecretFromTerminal,
 	}
+}
+
+// errInterrupted reports Ctrl-C at the hidden prompt.
+var errInterrupted = errors.New("interrupted")
+
+// readHidden reads one line of keys as a terminal in raw mode delivers them:
+// Enter ends the line, backspace removes a character, Ctrl-D on an empty line
+// is the end of input (io.EOF) and Ctrl-C is errInterrupted. Nothing beyond
+// the end of the line is read.
+func readHidden(r io.Reader) (string, error) {
+	var line []byte
+	buf := make([]byte, 1)
+	for {
+		n, err := r.Read(buf)
+		if n == 1 {
+			switch c := buf[0]; {
+			case c == '\r' || c == '\n':
+				return string(line), nil
+			case c == 0x03:
+				return "", errInterrupted
+			case c == 0x04:
+				if len(line) == 0 {
+					return "", io.EOF
+				}
+				return string(line), nil
+			case c == 0x7f || c == 0x08:
+				if len(line) > 0 {
+					line = line[:len(line)-1]
+				}
+			case c >= 0x20:
+				line = append(line, c)
+			}
+		}
+		if err != nil || n == 0 {
+			if len(line) > 0 {
+				return string(line), nil
+			}
+			return "", io.EOF
+		}
+	}
+}
+
+// readSecretFromTerminal reads one line from the terminal without showing it.
+//
+// The terminal is put into raw mode, which has no echo and hands Ctrl-C and
+// Ctrl-D over as keys, and is put back before this returns. A termination
+// signal in between restores it too: the user's shell is never left without
+// echo. Ctrl-C ends the process the way an interrupt does.
+func readSecretFromTerminal() (string, error) {
+	fd := int(os.Stdin.Fd())
+	state, err := term.MakeRaw(fd)
+	if err != nil {
+		return "", err
+	}
+	interrupted := func() {
+		_ = term.Restore(fd, state)
+		fmt.Fprintln(os.Stderr)
+		os.Exit(130)
+	}
+	sig := make(chan os.Signal, 1)
+	done := make(chan struct{})
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-sig:
+			interrupted()
+		case <-done:
+		}
+	}()
+	line, err := readHidden(os.Stdin)
+	signal.Stop(sig)
+	close(done)
+	if errors.Is(err, errInterrupted) {
+		interrupted()
+	}
+	_ = term.Restore(fd, state)
+	return line, err
 }
 
 // newRoot builds the command tree.

@@ -30,6 +30,8 @@ type harness struct {
 	stdout      bytes.Buffer
 	stderr      bytes.Buffer
 	stdin       string
+	stdinR      io.Reader // used instead of stdin when set
+	secretErr   error
 	env         map[string]string
 	hostname    string
 	hostErr     error
@@ -51,10 +53,14 @@ func newHarness(t *testing.T) *harness {
 }
 
 func (h *harness) deps() deps {
+	var stdin io.Reader = strings.NewReader(h.stdin)
+	if h.stdinR != nil {
+		stdin = h.stdinR
+	}
 	return deps{
 		stdout:   &h.stdout,
 		stderr:   &h.stderr,
-		stdin:    strings.NewReader(h.stdin),
+		stdin:    stdin,
 		hostname: func() (string, error) { return h.hostname, h.hostErr },
 		userConfigPath: func(override string) (string, error) {
 			if override != "" {
@@ -70,7 +76,7 @@ func (h *harness) deps() deps {
 		isTerminal: func() bool { return h.terminal },
 		readSecret: func() (string, error) {
 			h.secretCalls++
-			return h.secret, nil
+			return h.secret, h.secretErr
 		},
 	}
 }

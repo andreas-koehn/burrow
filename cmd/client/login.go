@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"strconv"
@@ -66,23 +67,51 @@ func normalizeRelay(in string) (relay, host string, err error) {
 // the process list. It takes the relay as typed after `burrow login`.
 const msgPasteToken = "run: burrow login %s --token -\nthen paste the token and press Enter."
 
-// readLine reads one line. end reports that the input ended without one; more
-// that further input follows the line.
-func readLine(r *bufio.Reader) (line string, end, more bool) {
-	line, err := r.ReadString('\n')
-	line = strings.TrimSpace(line)
-	if err != nil {
-		return line, line == "", false
+// readAnswer reads one line and nothing beyond it, byte by byte: on a terminal
+// the input does not end after the line, and what is typed next belongs to
+// whoever reads next. end reports that the input ended without a line.
+func readAnswer(r io.Reader) (line string, end bool) {
+	var b strings.Builder
+	buf := make([]byte, 1)
+	for {
+		n, err := r.Read(buf)
+		if n == 1 {
+			if buf[0] == '\n' {
+				return strings.TrimSpace(b.String()), false
+			}
+			b.WriteByte(buf[0])
+		}
+		if err != nil {
+			line = strings.TrimSpace(b.String())
+			return line, line == ""
+		}
 	}
-	_, err = r.Peek(1)
-	return line, false, err == nil
+}
+
+// readPipedToken reads a token from input that is not a terminal, to its end.
+// Blank lines around the token are skipped; ok is false when more than one
+// line has content.
+func readPipedToken(r io.Reader) (token string, ok bool) {
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		switch {
+		case line == "":
+		case token != "":
+			return "", false
+		default:
+			token = line
+		}
+	}
+	return token, sc.Err() == nil
 }
 
 // cleanToken checks a token as typed or read. The token is never repeated.
-func cleanToken(token string) (string, error) {
+// relayArg is the relay as it goes after `burrow login` in the hint.
+func cleanToken(token, relayArg string) (string, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return "", usageErrorf("The token is empty. Create one in the dashboard (Clients, tab Tokens), "+msgPasteToken, "<relay>")
+		return "", usageErrorf("The token is empty. Create one in the dashboard (Clients, tab Tokens), "+msgPasteToken, relayArg)
 	}
 	if strings.IndexFunc(token, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
 		return "", usageErrorf("The token must be a single word on one line.")
@@ -141,10 +170,10 @@ func newLoginCmd(d deps) *cobra.Command {
 				}
 			}
 
+			relayArg := strings.TrimPrefix(relay, "https://")
 			if !flags.Changed("token") {
 				return usageErrorf("Browser sign-in arrives with a newer version of burrow.\n"+
-					"Create a token in the dashboard (Clients, tab Tokens), "+msgPasteToken,
-					strings.TrimPrefix(relay, "https://"))
+					"Create a token in the dashboard (Clients, tab Tokens), "+msgPasteToken, relayArg)
 			}
 			token, _ := flags.GetString("token")
 			fromStdin := strings.TrimSpace(token) == "-"
@@ -153,8 +182,7 @@ func newLoginCmd(d deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out := cmd.OutOrStdout()
-			in := bufio.NewReader(d.stdin)
+			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 			terminal := d.isTerminal()
 			force, _ := flags.GetBool("force")
 			// A stored file that cannot be read or holds no token is not a
@@ -168,11 +196,12 @@ func newLoginCmd(d deps) *cobra.Command {
 				if !terminal {
 					return needForce
 				}
-				fmt.Fprintf(out, "This machine is already signed in to %s. Replace the stored sign-in? [y/N] ", where)
-				answer, end, _ := readLine(in)
-				fmt.Fprintln(out)
+				// Asked on stderr, like the token: it shows when stdout is piped.
+				fmt.Fprintf(errOut, "This machine is already signed in to %s. Replace the stored sign-in? [y/N] ", where)
+				answer, end := readAnswer(d.stdin)
 				if end {
-					// Nobody is there to answer, as with input from /dev/null.
+					// Nobody is there to answer, as with Ctrl-D or input from /dev/null.
+					fmt.Fprintln(errOut)
 					return needForce
 				}
 				if a := strings.ToLower(answer); a != "y" && a != "yes" {
@@ -184,21 +213,20 @@ func newLoginCmd(d deps) *cobra.Command {
 			switch {
 			case fromStdin && terminal:
 				// Asked on stderr and read without echo: the token is on no screen.
-				errOut := cmd.ErrOrStderr()
 				fmt.Fprint(errOut, "Token (input is hidden): ")
 				token, err = d.readSecret()
 				fmt.Fprintln(errOut)
-				if err != nil {
+				if err != nil && !errors.Is(err, io.EOF) {
 					return errors.New("could not read the token from the terminal")
 				}
+				// Ctrl-D gives an empty token, which is reported below.
 			case fromStdin:
-				line, _, more := readLine(in)
-				if more {
+				var ok bool
+				if token, ok = readPipedToken(d.stdin); !ok {
 					return usageErrorf("The token must be a single word on one line.")
 				}
-				token = line
 			}
-			if token, err = cleanToken(token); err != nil {
+			if token, err = cleanToken(token, relayArg); err != nil {
 				return err
 			}
 

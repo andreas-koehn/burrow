@@ -2,11 +2,13 @@ package main
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/client"
 )
@@ -114,7 +116,16 @@ func TestLoginToken_FromStdin(t *testing.T) {
 	}
 	h.noToken()
 
-	for name, in := range map[string]string{"empty": "", "blank": " \n", "two lines": "bur_aaaaaaaa\nbur_bbbbbbbb\n"} {
+	// Blank lines around the token do not matter.
+	for _, in := range []string{testToken + "\n\n", testToken + "\n \r\n\n", "\n" + testToken, testToken} {
+		h := newHarness(t)
+		h.stdin = in
+		if code := h.exec("login", "burrow.example.com", "--token", "-"); code != 0 || h.stored(h.cfgPath).Token != testToken {
+			t.Fatalf("input with blank lines: exit %d: %s", code, h.stderr.String())
+		}
+	}
+
+	for name, in := range map[string]string{"empty": "", "blank": " \n", "two lines": "bur_aaaaaaaa\nbur_bbbbbbbb\n", "two lines apart": "bur_aaaaaaaa\n\nbur_bbbbbbbb"} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
 			h.stdin = in
@@ -190,7 +201,7 @@ func TestLogin_MessagesAndHelpSteerToStdin(t *testing.T) {
 	if code := h.exec("login", "burrow.example.com", "--token", ""); code != 2 {
 		t.Fatalf("exit %d", code)
 	}
-	if s := h.stderr.String(); strings.Contains(s, "--token <") || !strings.Contains(s, "--token -") || !strings.Contains(s, "paste the token") {
+	if s := h.stderr.String(); strings.Contains(s, "--token <") || !strings.Contains(s, "burrow login burrow.example.com --token -") || !strings.Contains(s, "paste the token") {
 		t.Fatalf("stderr = %q", s)
 	}
 	if code := h.exec("login", "--help"); code != 0 {
@@ -222,6 +233,14 @@ func TestLoginToken_PromptOnATerminal(t *testing.T) {
 		h.terminal, h.secret = true, ""
 		if code := h.exec("login", "burrow.example.com", "--token", "-"); code != 2 || h.hasConfig() {
 			t.Fatalf("exit %d", code)
+		}
+	})
+	t.Run("Ctrl-D at the hidden prompt", func(t *testing.T) {
+		h := newHarness(t)
+		h.terminal, h.secretErr = true, io.EOF
+		code := h.exec("login", "burrow.example.com", "--token", "-")
+		if code != 2 || h.hasConfig() || strings.HasPrefix(h.stderr.String(), "error:") || !strings.Contains(h.stderr.String(), "The token is empty") {
+			t.Fatalf("exit %d, stderr %q", code, h.stderr.String())
 		}
 	})
 	t.Run("not a terminal reads the line and shows no prompt", func(t *testing.T) {
@@ -257,8 +276,11 @@ func TestLogin_AlreadySignedIn(t *testing.T) {
 			if h.stored(h.cfgPath) != before {
 				t.Fatalf("answer %q: the stored sign-in changed", answer)
 			}
-			if !strings.Contains(h.stdout.String(), "https://burrow.example.com") {
-				t.Fatalf("the question does not name the current relay: %q", h.stdout.String())
+			// The question is for the person at the terminal: stderr, so that it
+			// shows when stdout is piped. An answered question adds no blank line.
+			wantQ := "This machine is already signed in to https://burrow.example.com. Replace the stored sign-in? [y/N] "
+			if h.stderr.String() != wantQ || h.stdout.String() != "Kept the stored sign-in.\n" {
+				t.Fatalf("answer %q: stderr %q, stdout %q", answer, h.stderr.String(), h.stdout.String())
 			}
 			h.noToken(newToken)
 		}
@@ -286,8 +308,8 @@ func TestLogin_AlreadySignedIn(t *testing.T) {
 		if h.stored(h.cfgPath).Token != newToken {
 			t.Fatal("the sign-in was not replaced")
 		}
-		if strings.Contains(h.stdout.String(), "?") {
-			t.Fatalf("a question was asked: %q", h.stdout.String())
+		if strings.Contains(h.stdout.String(), "?") || h.stderr.Len() != 0 {
+			t.Fatalf("a question was asked: %q %q", h.stdout.String(), h.stderr.String())
 		}
 	})
 	// A "terminal" that gives no answer at all, like /dev/null, cannot be asked.
@@ -393,4 +415,127 @@ func TestLogout(t *testing.T) {
 			t.Fatalf("the file given with --config is still there: %v", err)
 		}
 	})
+}
+
+// openStdin is a stdin that, like a terminal, gives what was typed so far and
+// then blocks instead of ending. readPast is closed when the further input was
+// taken, which means the command read beyond the first line.
+func openStdin(t *testing.T, first, extra string) (r io.Reader, readPast <-chan struct{}) {
+	t.Helper()
+	pr, pw := io.Pipe()
+	past := make(chan struct{})
+	go func() {
+		if _, err := pw.Write([]byte(first)); err != nil {
+			return
+		}
+		if _, err := pw.Write([]byte(extra)); err == nil {
+			close(past)
+		}
+	}()
+	t.Cleanup(func() { pr.Close() })
+	return pr, past
+}
+
+// execWithin fails the test when the command does not return: it is waiting
+// for input nobody will type.
+func (h *harness) execWithin(args ...string) int {
+	h.t.Helper()
+	done := make(chan int, 1)
+	go func() { done <- h.exec(args...) }()
+	select {
+	case code := <-done:
+		return code
+	case <-time.After(5 * time.Second):
+		h.t.Fatal("the command did not return after the answer line")
+		return -1
+	}
+}
+
+// On a terminal the input does not end after the answer. The question must
+// return with the line alone, and must not take anything typed after it.
+func TestLogin_AlreadySignedIn_OpenTerminal(t *testing.T) {
+	const newToken = "bur_new_token_9876543210"
+	const typedAhead = "bur_typed_ahead_00000001\n"
+
+	for _, tokenArg := range []string{newToken, "-"} {
+		kind := "value"
+		if tokenArg == "-" {
+			kind = "-"
+		}
+		t.Run("n, --token "+kind, func(t *testing.T) {
+			h := newHarness(t)
+			before := h.signIn()
+			var past <-chan struct{}
+			h.terminal, h.secret = true, newToken
+			h.stdinR, past = openStdin(t, "n\n", typedAhead)
+			if code := h.execWithin("login", "other.example.com", "--token", tokenArg); code != 0 {
+				t.Fatalf("exit %d: %s", code, h.stderr.String())
+			}
+			if h.stdout.String() != "Kept the stored sign-in.\n" || h.stored(h.cfgPath) != before || h.secretCalls != 0 {
+				t.Fatalf("stdout %q, hidden prompt calls %d", h.stdout.String(), h.secretCalls)
+			}
+			select {
+			case <-past:
+				t.Fatal("input after the answer line was read")
+			default:
+			}
+			h.noToken(newToken, strings.TrimSpace(typedAhead))
+		})
+		t.Run("y, --token "+kind, func(t *testing.T) {
+			h := newHarness(t)
+			h.signIn()
+			var past <-chan struct{}
+			h.terminal, h.secret = true, newToken
+			h.stdinR, past = openStdin(t, "y\n", typedAhead)
+			if code := h.execWithin("login", "other.example.com", "--token", tokenArg); code != 0 {
+				t.Fatalf("exit %d: %s", code, h.stderr.String())
+			}
+			wantPrompts := 0
+			if tokenArg == "-" {
+				wantPrompts = 1
+			}
+			if h.stored(h.cfgPath).Token != newToken || h.secretCalls != wantPrompts {
+				t.Fatalf("new token stored: %v, hidden prompt calls %d", h.stored(h.cfgPath).Token == newToken, h.secretCalls)
+			}
+			// Nothing after the answer was taken from the terminal: the hidden
+			// prompt gets it all, and no token is read in clear and dropped.
+			select {
+			case <-past:
+				t.Fatal("input after the answer line was read")
+			default:
+			}
+			h.noToken(newToken, strings.TrimSpace(typedAhead))
+		})
+	}
+}
+
+// readHidden is what interprets the keys while the terminal is in raw mode.
+func TestReadHidden(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+		err            error
+	}{
+		{"enter", "bur_test_0000\r", "bur_test_0000", nil},
+		{"line feed", "bur_test_0000\n", "bur_test_0000", nil},
+		{"pasted with CRLF", "bur_test_0000\r\n", "bur_test_0000", nil},
+		{"backspace", "bur_xy\x7f\x08test\r", "bur_test", nil},
+		{"backspace on nothing", "\x7f\x7fab\r", "ab", nil},
+		{"Ctrl-D on an empty line", "\x04", "", io.EOF},
+		{"Ctrl-D after input ends the line", "abc\x04", "abc", nil},
+		{"Ctrl-C", "abc\x03", "", errInterrupted},
+		{"input ends", "abc", "abc", nil},
+		{"input ends at once", "", "", io.EOF},
+		{"other control keys are dropped", "a\x1b\x00b\r", "ab", nil},
+	}
+	for _, tc := range cases {
+		got, err := readHidden(strings.NewReader(tc.in))
+		if got != tc.want || !errors.Is(err, tc.err) || (tc.err == nil && err != nil) {
+			t.Fatalf("%s: got %d characters and %v", tc.name, len(got), err)
+		}
+	}
+	// It stops at the end of the line and leaves the rest alone.
+	r := strings.NewReader("one\rtwo\r")
+	if got, _ := readHidden(r); got != "one" || r.Len() != 4 {
+		t.Fatalf("read %d characters, %d left", len(got), r.Len())
+	}
 }
