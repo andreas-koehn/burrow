@@ -20,6 +20,16 @@ func goodParams() Params {
 	}
 }
 
+// firstCodeLine is the first line that is neither blank nor a comment.
+func firstCodeLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" && !strings.HasPrefix(t, "#") {
+			return line
+		}
+	}
+	return ""
+}
+
 func lastLine(s string) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	return lines[len(lines)-1]
@@ -34,15 +44,22 @@ func TestShell_ShapeAndValues(t *testing.T) {
 	if !strings.HasPrefix(s, "#!/bin/sh\n") {
 		t.Fatalf("script does not start with #!/bin/sh: %q", s[:20])
 	}
-	if !strings.Contains(s, "\nset -eu\n") {
+	if !strings.Contains(s, "\n{\n    set -eu\n") {
 		t.Fatal("script lacks `set -eu`")
 	}
 	// All work happens in main, called on the very last line, so a download
 	// cut off anywhere before it runs nothing.
-	// The call is a brace group: no strict prefix of that line parses, so a
-	// cut inside it cannot run main, with or without its arguments.
-	if got := lastLine(s); got != `{ main "$@"; }` {
-		t.Fatalf("last line = %q, want { main \"$@\"; }", got)
+	// The whole script is one brace group, opened before the first command
+	// and closed on the last line: the shell runs nothing of a group it has
+	// not read to its end, so no strict prefix of the file runs anything.
+	if got := lastLine(s); got != "}" {
+		t.Fatalf("last line = %q, want the closing brace of the outer group", got)
+	}
+	if !strings.HasSuffix(s, "\n    main \"$@\"\n}\n") {
+		t.Fatal("the outer group does not end with the call of main")
+	}
+	if first := firstCodeLine(s); first != "{" {
+		t.Fatalf("first line that is not a comment = %q, want {", first)
 	}
 	for _, want := range []string{
 		"BURROW_INSTALL_ALLOW_HTTP",
@@ -122,8 +139,23 @@ func TestPowerShell_ShapeAndValues(t *testing.T) {
 	if strings.Contains(s, "GetEnvironmentVariable('Path', 'User')") {
 		t.Fatal("the user Path is read expanded; %VAR% entries would be frozen")
 	}
-	if got := lastLine(s); got != "Install-Burrow" {
-		t.Fatalf("last line = %q, want Install-Burrow", got)
+	// One script block, invoked as a whole: a cut-off copy does not parse.
+	if got := lastLine(s); got != "}" {
+		t.Fatalf("last line = %q, want the closing brace of the script block", got)
+	}
+	if !strings.HasSuffix(s, "\n    Install-Burrow\n}\n") {
+		t.Fatal("the script block does not end with the call of Install-Burrow")
+	}
+	if first := firstCodeLine(s); first != "& {" {
+		t.Fatalf("first line that is not a comment = %q, want & {", first)
+	}
+	for _, want := range []string{"BURROW_INSTALL_REFRESH", ".Dispose()", "GetValueKind"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("script lacks %q", want)
+		}
+	}
+	if strings.Contains(s, "Set-ItemProperty") || strings.Contains(s, "sign out") {
+		t.Fatal("the Path is stored without a broadcast, or the sign-out hint is still there")
 	}
 	if strings.Contains(s, "burrow_linux") || strings.Contains(s, "Invoke-Expression") || strings.Contains(s, "{{") {
 		t.Fatal("PowerShell installer contains a foreign archive, Invoke-Expression or template residue")

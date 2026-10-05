@@ -10,382 +10,411 @@
 # ~/.local/bin (or /usr/local/bin with --system). It writes nothing else, does
 # not sign in, never calls sudo and never reads from stdin.
 #
-# Everything happens in main, which is called on the last line: a download of
-# this script that is cut off runs nothing. The call is a brace group, so the
-# shell has to read that line to its closing brace before it runs any of it.
-set -eu
+# A download of this script that is cut off runs nothing: after these
+# comments the whole script is one brace group, closed on the last line. A
+# shell reads a group to its closing brace before it runs any of it, and a
+# group that is never closed is a syntax error. So no strict prefix of this
+# file runs a command — not `set`, not a function, and not the piece of a
+# word the cut happens to leave behind (a script of plain top-level lines
+# would run `s` or `su` for a cut inside a name). `set -eu` therefore sits
+# inside the group, as its first command.
+{
+    set -eu
 
-RELAY="{{.Relay}}"
-VERSION="{{.Version}}"
-CHANNEL="{{.Channel}}"
-MANUAL="{{.ManualURL}}"
-# One line per build of this channel: <os>/<arch> <archive name>.
-ASSETS="{{range .Assets}}{{.OS}}/{{.Arch}} {{.Name}}
+    RELAY="{{.Relay}}"
+    VERSION="{{.Version}}"
+    CHANNEL="{{.Channel}}"
+    MANUAL="{{.ManualURL}}"
+    # One line per build of this channel: <os>/<arch> <archive name>.
+    ASSETS="{{range .Assets}}{{.OS}}/{{.Arch}} {{.Name}}
 {{end}}"
 
-TMP=""
-STAGED=""
-MADE_DIR=""
-MADE_PARENT=""
-DL=""
-SHA=""
-
-say() {
-    printf '%s\n' "$*"
-}
-
-err() {
-    printf 'install.sh: %s\n' "$*" >&2
-}
-
-fail() {
-    err "$@"
-    exit 1
-}
-
-cleanup() {
-    if [ -n "$STAGED" ]; then
-        rm -f "$STAGED"
-    fi
-    if [ -n "$TMP" ]; then
-        rm -rf "$TMP"
-    fi
-    # Directories this run made are removed again while they are empty, so
-    # a failed run leaves nothing. After a successful one they hold burrow
-    # and rmdir leaves them alone.
-    if [ -n "$MADE_DIR" ]; then
-        rmdir "$MADE_DIR" 2>/dev/null || :
-    fi
-    if [ -n "$MADE_PARENT" ]; then
-        rmdir "$MADE_PARENT" 2>/dev/null || :
-    fi
-}
-
-have() {
-    command -v "$1" >/dev/null 2>&1
-}
-
-usage() {
-    say "Usage: install.sh [--system]"
-    say ""
-    say "Installs burrow $VERSION from $RELAY to ~/.local/bin."
-    say "  --system   install to /usr/local/bin instead"
-}
-
-supported() {
-    printf '%s' "$ASSETS" | while read -r pair _; do
-        if [ -n "$pair" ]; then
-            printf '  %s\n' "$pair"
-        fi
-    done
-}
-
-# asset_for <os>/<arch> prints the archive name, or nothing.
-asset_for() {
-    printf '%s' "$ASSETS" | while read -r pair name; do
-        if [ "$pair" = "$1" ]; then
-            printf '%s\n' "$name"
-        fi
-    done
-}
-
-unsupported() {
-    err "there is no burrow build for $1 ($CHANNEL channel)."
-    err "Supported:"
-    supported >&2
-    err "Windows uses $RELAY/install.ps1 instead."
-    if [ -n "$MANUAL" ]; then
-        err "Manual download: $MANUAL"
-    fi
-    exit 1
-}
-
-# plain_http_allowed: a relay address without TLS is used only for this
-# machine itself (localhost, 127.0.0.0/8, [::1]) or when the person running
-# the script says so. Over plain HTTP the archive and the checksums travel
-# the same open road, and whoever sits on it can replace both.
-plain_http_allowed() {
-    if [ "${BURROW_INSTALL_ALLOW_HTTP:-}" = 1 ]; then
-        return 0
-    fi
-    host=${RELAY#http://}
-    case "$host" in
-        "[::1]" | "[::1]":*) return 0 ;;
-    esac
-    host=${host%%:*}
-    case "$host" in
-        localhost) return 0 ;;
-        127.*)
-            # Digits and dots only: 127.0.0.1, not 127.example.com.
-            case "$host" in
-                *[!0-9.]*) return 1 ;;
-            esac
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-# fetch <url> <file>. A relay reached over HTTPS is never left for plain HTTP.
-# (wget has no switch for that; curl is used when both are there.)
-fetch() {
-    if [ "$DL" = curl ]; then
-        case "$RELAY" in
-            https://*)
-                curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 20 -o "$2" "$1" </dev/null
-                ;;
-            *)
-                curl -fsSL --connect-timeout 20 -o "$2" "$1" </dev/null
-                ;;
-        esac
-    else
-        wget -q -T 20 -O "$2" "$1" </dev/null
-    fi
-}
-
-# sha256_of <file> prints the file's SHA-256 in lower-case hex.
-sha256_of() {
-    if [ "$SHA" = sha256sum ]; then
-        out=$(sha256sum <"$1") || return 1
-    else
-        out=$(shasum -a 256 <"$1") || return 1
-    fi
-    printf '%s\n' "${out%% *}"
-}
-
-# is_sha256 <text>: 64 lower-case hex digits.
-is_sha256() {
-    if [ "${#1}" -ne 64 ]; then
-        return 1
-    fi
-    case "$1" in
-        *[!0-9a-f]*) return 1 ;;
-    esac
-    return 0
-}
-
-# checksum_for <archive name> <checksums file> prints the listed SHA-256.
-checksum_for() {
-    sum=""
-    name=""
-    # The second test keeps a last line that has no newline.
-    while read -r sum name _ || [ -n "$sum" ]; do
-        if [ "$name" = "$1" ] || [ "$name" = "*$1" ]; then
-            printf '%s\n' "$sum"
-            return 0
-        fi
-        sum=""
-    done <"$2"
-    return 0
-}
-
-main() {
-    system=0
-    for arg in "$@"; do
-        case "$arg" in
-            --system) system=1 ;;
-            -h | --help)
-                usage
-                exit 0
-                ;;
-            *)
-                usage >&2
-                fail "unknown option: $arg"
-                ;;
-        esac
-    done
-
-    case "$RELAY" in
-        https://*) ;;
-        *)
-            if ! plain_http_allowed; then
-                err "this relay gave its address as $RELAY, without HTTPS."
-                err "A download over plain HTTP can be replaced on the way, checksums included."
-                err "Ask the relay's operator to serve it over HTTPS (behind a TLS proxy:"
-                err "BURROW_HTTP_SECURE_COOKIES=true). To install over plain HTTP anyway,"
-                err "set BURROW_INSTALL_ALLOW_HTTP=1 for the shell that runs this script."
-                fail "Nothing was installed."
-            fi
-            ;;
-    esac
-
-    # 1. Which build.
-    uname_s=$(uname -s) || fail "cannot tell the operating system (uname -s failed)."
-    uname_m=$(uname -m) || fail "cannot tell the architecture (uname -m failed)."
-    case "$uname_s" in
-        Linux) os=linux ;;
-        Darwin) os=darwin ;;
-        *) unsupported "$uname_s" ;;
-    esac
-    case "$uname_m" in
-        x86_64 | amd64) arch=amd64 ;;
-        aarch64 | arm64) arch=arm64 ;;
-        armv7l) arch=arm ;;
-        i386 | i686) arch=386 ;;
-        *) unsupported "$uname_s $uname_m" ;;
-    esac
-    archive=$(asset_for "$os/$arch")
-    if [ -z "$archive" ]; then
-        unsupported "$os/$arch"
-    fi
-
-    # 2. Tools, before anything is downloaded.
-    if have curl; then
-        DL=curl
-    elif have wget; then
-        DL=wget
-    else
-        fail "curl or wget is needed to download burrow. Install one and run this again."
-    fi
-    if ! have tar; then
-        fail "tar is needed to unpack burrow. Install it and run this again."
-    fi
-    if have sha256sum; then
-        SHA=sha256sum
-    elif have shasum; then
-        SHA=shasum
-    else
-        fail "sha256sum or shasum is needed to verify the download. Install one and run this again."
-    fi
-    if ! have mktemp; then
-        fail "mktemp is needed. Install it and run this again."
-    fi
-
-    # 3. Where to.
-    if [ "$system" -eq 1 ]; then
-        dir=/usr/local/bin
-        if [ ! -d "$dir" ] || [ ! -w "$dir" ]; then
-            err "$dir is not writable by this user. Nothing was installed. Run:"
-            if [ "$DL" = curl ]; then
-                err "  curl -fsSL $RELAY/install.sh | sudo sh -s -- --system"
-            else
-                err "  wget -qO- $RELAY/install.sh | sudo sh -s -- --system"
-            fi
-            exit 1
-        fi
-    else
-        home=${HOME:-}
-        case "$home" in
-            /*) ;;
-            *) fail "HOME is not an absolute path, so there is no place to install to. Use --system." ;;
-        esac
-        if [ ! -d "$home" ]; then
-            fail "the home directory $home does not exist. Use --system."
-        fi
-        dir=$home/.local/bin
-        if [ -e "$dir" ]; then
-            if [ ! -d "$dir" ] || [ ! -w "$dir" ]; then
-                fail "$dir is not a writable directory. Nothing was installed."
-            fi
-        fi
-    fi
-    if [ -d "$dir/burrow" ]; then
-        fail "$dir/burrow is a directory. Nothing was installed."
-    fi
-
-    # 4. Download into a private directory that is removed on every exit.
-    trap cleanup EXIT
-    trap 'exit 129' HUP
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    TMP=$(mktemp -d) || {
-        TMP=""
-        fail "cannot create a temporary directory."
-    }
-    case "$TMP" in
-        /*) ;;
-        *)
-            TMP=""
-            fail "mktemp did not give an absolute path."
-            ;;
-    esac
-
-    if [ "$CHANNEL" = develop ]; then
-        say "This relay runs an untagged build: installing the rolling develop build of burrow."
-    fi
-    say "Downloading $archive from $RELAY ..."
-    url=$RELAY/download/burrow/$os/$arch
-    if ! fetch "$url" "$TMP/archive"; then
-        err "could not download $url"
-        fail "Nothing was installed."
-    fi
-    if ! fetch "$RELAY/download/burrow/checksums.txt" "$TMP/checksums.txt"; then
-        err "could not download $RELAY/download/burrow/checksums.txt"
-        fail "Nothing was installed."
-    fi
-    if [ ! -s "$TMP/archive" ]; then
-        fail "the download of $archive is empty. Nothing was installed."
-    fi
-
-    # 5. Verify before anything is unpacked or run.
-    # The checksum catches a download that is damaged, cut short or not the
-    # file that was asked for (an error page, another build). It does not
-    # protect against a relay or a release host that is itself compromised:
-    # the checksums come from the same place as the archive. What that rests
-    # on is the HTTPS connection to the relay and to the release host.
-    want=$(checksum_for "$archive" "$TMP/checksums.txt")
-    if [ -z "$want" ]; then
-        err "checksums.txt has no line for $archive."
-        fail "The download cannot be verified. Nothing was installed."
-    fi
-    if ! is_sha256 "$want"; then
-        err "the line for $archive in checksums.txt does not hold a SHA-256."
-        fail "The download cannot be verified. Nothing was installed."
-    fi
-    got=$(sha256_of "$TMP/archive") || fail "cannot compute the SHA-256 of the download."
-    if [ "$got" != "$want" ]; then
-        err "checksum mismatch for $archive"
-        err "  expected: $want"
-        err "  got:      $got"
-        fail "Nothing was installed."
-    fi
-
-    # 6. Unpack the one binary.
-    mkdir "$TMP/x"
-    if ! tar -xzf "$TMP/archive" -C "$TMP/x" burrow </dev/null; then
-        fail "could not unpack burrow from $archive. Nothing was installed."
-    fi
-    if [ -L "$TMP/x/burrow" ] || [ ! -f "$TMP/x/burrow" ] || [ ! -s "$TMP/x/burrow" ]; then
-        fail "$archive does not hold a burrow binary. Nothing was installed."
-    fi
-
-    # 7. Install: a new file next to the target, then one rename over it.
-    if [ ! -d "$dir" ]; then
-        if [ ! -e "${dir%/*}" ]; then
-            MADE_PARENT=${dir%/*}
-        fi
-        MADE_DIR=$dir
-        mkdir -p "$dir" || fail "cannot create $dir. Nothing was installed."
-    fi
-    STAGED=$(mktemp "$dir/.burrow.new.XXXXXX") || {
-        STAGED=""
-        fail "cannot write to $dir. Nothing was installed."
-    }
-    cat "$TMP/x/burrow" >"$STAGED" || fail "cannot write to $dir. Nothing was installed."
-    chmod 755 "$STAGED"
-    if ! "$STAGED" version >/dev/null 2>&1 </dev/null; then
-        fail "the downloaded burrow does not run on this machine. Nothing was installed."
-    fi
-    mv -f "$STAGED" "$dir/burrow" || fail "cannot replace $dir/burrow. The previous version is unchanged."
+    TMP=""
     STAGED=""
+    MADE_DIR=""
+    MADE_PARENT=""
+    DL=""
+    SHA=""
 
-    installed=$("$dir/burrow" version </dev/null) || installed="burrow"
-    say "Installed $installed"
-    say "  at $dir/burrow"
-    case ":${PATH:-}:" in
-        *":$dir:"*) ;;
-        *)
-            say ""
-            say "$dir is not on your PATH. Add this line to your shell profile:"
-            say "  export PATH=\"$dir:\$PATH\""
-            ;;
-    esac
-    say ""
-    say "Next: burrow login ${RELAY#*://}"
+    say() {
+        printf '%s\n' "$*"
+    }
+
+    err() {
+        printf 'install.sh: %s\n' "$*" >&2
+    }
+
+    fail() {
+        err "$@"
+        exit 1
+    }
+
+    cleanup() {
+        if [ -n "$STAGED" ]; then
+            rm -f "$STAGED"
+        fi
+        if [ -n "$TMP" ]; then
+            rm -rf "$TMP"
+        fi
+        # Directories this run made are removed again while they are empty, so
+        # a failed run leaves nothing. After a successful one they hold burrow
+        # and rmdir leaves them alone.
+        if [ -n "$MADE_DIR" ]; then
+            rmdir "$MADE_DIR" 2>/dev/null || :
+        fi
+        if [ -n "$MADE_PARENT" ]; then
+            rmdir "$MADE_PARENT" 2>/dev/null || :
+        fi
+    }
+
+    have() {
+        command -v "$1" >/dev/null 2>&1
+    }
+
+    usage() {
+        say "Usage: install.sh [--system]"
+        say ""
+        say "Installs burrow $VERSION from $RELAY to ~/.local/bin."
+        say "  --system   install to /usr/local/bin instead"
+    }
+
+    supported() {
+        printf '%s' "$ASSETS" | while read -r pair _; do
+            if [ -n "$pair" ]; then
+                printf '  %s\n' "$pair"
+            fi
+        done
+    }
+
+    # asset_for <os>/<arch> prints the archive name, or nothing.
+    asset_for() {
+        printf '%s' "$ASSETS" | while read -r pair name; do
+            if [ "$pair" = "$1" ]; then
+                printf '%s\n' "$name"
+            fi
+        done
+    }
+
+    unsupported() {
+        err "there is no burrow build for $1 ($CHANNEL channel)."
+        err "Supported:"
+        supported >&2
+        err "Windows uses $RELAY/install.ps1 instead."
+        if [ -n "$MANUAL" ]; then
+            err "Manual download: $MANUAL"
+        fi
+        exit 1
+    }
+
+    # plain_http_allowed: a relay address without TLS is used only for this
+    # machine itself or when the person running the script says so. Over plain
+    # HTTP the archive and the checksums travel the same open road, and whoever
+    # sits on it can replace both.
+    #
+    # "This machine" is decided here alone, whatever the relay checked before it
+    # filled in RELAY: no `@` anywhere; an optional port of digits; and then
+    # exactly localhost, [::1], or four decimal numbers of 0-255 separated by
+    # dots, the first being 127.
+    plain_http_allowed() {
+        if [ "${BURROW_INSTALL_ALLOW_HTTP:-}" = 1 ]; then
+            return 0
+        fi
+        host=${RELAY#http://}
+        case "$host" in
+            *@*) return 1 ;;
+            "[::1]") return 0 ;;
+            "[::1]":*)
+                port=${host#"[::1]:"}
+                case "$port" in
+                    "" | *[!0-9]*) return 1 ;;
+                esac
+                return 0
+                ;;
+            *:*)
+                port=${host##*:}
+                host=${host%:*}
+                case "$port" in
+                    "" | *[!0-9]*) return 1 ;;
+                esac
+                ;;
+        esac
+        case "$host" in
+            localhost) return 0 ;;
+            "" | *[!0-9.]* | .* | *. | *..*) return 1 ;;
+        esac
+        old_ifs=$IFS
+        IFS=.
+        # shellcheck disable=SC2086 # split on the dots; only digits and dots are left
+        set -- $host
+        IFS=$old_ifs
+        if [ "$#" -ne 4 ] || [ "$1" != 127 ]; then
+            return 1
+        fi
+        for octet in "$@"; do
+            if [ "${#octet}" -gt 3 ] || [ "$octet" -gt 255 ]; then
+                return 1
+            fi
+        done
+        return 0
+    }
+
+    # fetch <url> <file>. A relay reached over HTTPS is never left for plain HTTP.
+    # (wget has no switch for that; curl is used when both are there.)
+    fetch() {
+        if [ "$DL" = curl ]; then
+            case "$RELAY" in
+                https://*)
+                    curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 20 -o "$2" "$1" </dev/null
+                    ;;
+                *)
+                    curl -fsSL --connect-timeout 20 -o "$2" "$1" </dev/null
+                    ;;
+            esac
+        else
+            wget -q -T 20 -O "$2" "$1" </dev/null
+        fi
+    }
+
+    # sha256_of <file> prints the file's SHA-256 in lower-case hex.
+    sha256_of() {
+        if [ "$SHA" = sha256sum ]; then
+            out=$(sha256sum <"$1") || return 1
+        else
+            out=$(shasum -a 256 <"$1") || return 1
+        fi
+        printf '%s\n' "${out%% *}"
+    }
+
+    # is_sha256 <text>: 64 lower-case hex digits.
+    is_sha256() {
+        if [ "${#1}" -ne 64 ]; then
+            return 1
+        fi
+        case "$1" in
+            *[!0-9a-f]*) return 1 ;;
+        esac
+        return 0
+    }
+
+    # checksum_for <archive name> <checksums file> prints the listed SHA-256.
+    checksum_for() {
+        sum=""
+        name=""
+        # The second test keeps a last line that has no newline.
+        while read -r sum name _ || [ -n "$sum" ]; do
+            if [ "$name" = "$1" ] || [ "$name" = "*$1" ]; then
+                printf '%s\n' "$sum"
+                return 0
+            fi
+            sum=""
+        done <"$2"
+        return 0
+    }
+
+    main() {
+        system=0
+        for arg in "$@"; do
+            case "$arg" in
+                --system) system=1 ;;
+                -h | --help)
+                    usage
+                    exit 0
+                    ;;
+                *)
+                    usage >&2
+                    fail "unknown option: $arg"
+                    ;;
+            esac
+        done
+
+        case "$RELAY" in
+            https://*) ;;
+            *)
+                if ! plain_http_allowed; then
+                    err "this relay gave its address as $RELAY, without HTTPS."
+                    err "A download over plain HTTP can be replaced on the way, checksums included."
+                    err "Ask the relay's operator to serve it over HTTPS (behind a TLS proxy:"
+                    err "BURROW_HTTP_SECURE_COOKIES=true). To install over plain HTTP anyway,"
+                    err "set BURROW_INSTALL_ALLOW_HTTP=1 for the shell that runs this script."
+                    fail "Nothing was installed."
+                fi
+                ;;
+        esac
+
+        # 1. Which build.
+        uname_s=$(uname -s) || fail "cannot tell the operating system (uname -s failed)."
+        uname_m=$(uname -m) || fail "cannot tell the architecture (uname -m failed)."
+        case "$uname_s" in
+            Linux) os=linux ;;
+            Darwin) os=darwin ;;
+            *) unsupported "$uname_s" ;;
+        esac
+        case "$uname_m" in
+            x86_64 | amd64) arch=amd64 ;;
+            aarch64 | arm64) arch=arm64 ;;
+            armv7l) arch=arm ;;
+            i386 | i686) arch=386 ;;
+            *) unsupported "$uname_s $uname_m" ;;
+        esac
+        archive=$(asset_for "$os/$arch")
+        if [ -z "$archive" ]; then
+            unsupported "$os/$arch"
+        fi
+
+        # 2. Tools, before anything is downloaded.
+        if have curl; then
+            DL=curl
+        elif have wget; then
+            DL=wget
+        else
+            fail "curl or wget is needed to download burrow. Install one and run this again."
+        fi
+        if ! have tar; then
+            fail "tar is needed to unpack burrow. Install it and run this again."
+        fi
+        if have sha256sum; then
+            SHA=sha256sum
+        elif have shasum; then
+            SHA=shasum
+        else
+            fail "sha256sum or shasum is needed to verify the download. Install one and run this again."
+        fi
+        if ! have mktemp; then
+            fail "mktemp is needed. Install it and run this again."
+        fi
+
+        # 3. Where to.
+        if [ "$system" -eq 1 ]; then
+            dir=/usr/local/bin
+            if [ ! -d "$dir" ] || [ ! -w "$dir" ]; then
+                err "$dir is not writable by this user. Nothing was installed. Run:"
+                if [ "$DL" = curl ]; then
+                    err "  curl -fsSL $RELAY/install.sh | sudo sh -s -- --system"
+                else
+                    err "  wget -qO- $RELAY/install.sh | sudo sh -s -- --system"
+                fi
+                exit 1
+            fi
+        else
+            home=${HOME:-}
+            case "$home" in
+                /*) ;;
+                *) fail "HOME is not an absolute path, so there is no place to install to. Use --system." ;;
+            esac
+            if [ ! -d "$home" ]; then
+                fail "the home directory $home does not exist. Use --system."
+            fi
+            dir=$home/.local/bin
+            if [ -e "$dir" ]; then
+                if [ ! -d "$dir" ] || [ ! -w "$dir" ]; then
+                    fail "$dir is not a writable directory. Nothing was installed."
+                fi
+            fi
+        fi
+        if [ -d "$dir/burrow" ]; then
+            fail "$dir/burrow is a directory. Nothing was installed."
+        fi
+
+        # 4. Download into a private directory that is removed on every exit.
+        trap cleanup EXIT
+        trap 'exit 129' HUP
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        TMP=$(mktemp -d) || {
+            TMP=""
+            fail "cannot create a temporary directory."
+        }
+        case "$TMP" in
+            /*) ;;
+            *)
+                TMP=""
+                fail "mktemp did not give an absolute path."
+                ;;
+        esac
+
+        if [ "$CHANNEL" = develop ]; then
+            say "This relay runs an untagged build: installing the rolling develop build of burrow."
+        fi
+        say "Downloading $archive from $RELAY ..."
+        url=$RELAY/download/burrow/$os/$arch
+        if ! fetch "$url" "$TMP/archive"; then
+            err "could not download $url"
+            fail "Nothing was installed."
+        fi
+        if ! fetch "$RELAY/download/burrow/checksums.txt" "$TMP/checksums.txt"; then
+            err "could not download $RELAY/download/burrow/checksums.txt"
+            fail "Nothing was installed."
+        fi
+        if [ ! -s "$TMP/archive" ]; then
+            fail "the download of $archive is empty. Nothing was installed."
+        fi
+
+        # 5. Verify before anything is unpacked or run.
+        # The checksum catches a download that is damaged, cut short or not the
+        # file that was asked for (an error page, another build). It does not
+        # protect against a relay or a release host that is itself compromised:
+        # the checksums come from the same place as the archive. What that rests
+        # on is the HTTPS connection to the relay and to the release host.
+        want=$(checksum_for "$archive" "$TMP/checksums.txt")
+        if [ -z "$want" ]; then
+            err "checksums.txt has no line for $archive."
+            fail "The download cannot be verified. Nothing was installed."
+        fi
+        if ! is_sha256 "$want"; then
+            err "the line for $archive in checksums.txt does not hold a SHA-256."
+            fail "The download cannot be verified. Nothing was installed."
+        fi
+        got=$(sha256_of "$TMP/archive") || fail "cannot compute the SHA-256 of the download."
+        if [ "$got" != "$want" ]; then
+            err "checksum mismatch for $archive"
+            err "  expected: $want"
+            err "  got:      $got"
+            fail "Nothing was installed."
+        fi
+
+        # 6. Unpack the one binary.
+        mkdir "$TMP/x"
+        if ! tar -xzf "$TMP/archive" -C "$TMP/x" burrow </dev/null; then
+            fail "could not unpack burrow from $archive. Nothing was installed."
+        fi
+        if [ -L "$TMP/x/burrow" ] || [ ! -f "$TMP/x/burrow" ] || [ ! -s "$TMP/x/burrow" ]; then
+            fail "$archive does not hold a burrow binary. Nothing was installed."
+        fi
+
+        # 7. Install: a new file next to the target, then one rename over it.
+        if [ ! -d "$dir" ]; then
+            if [ ! -e "${dir%/*}" ]; then
+                MADE_PARENT=${dir%/*}
+            fi
+            MADE_DIR=$dir
+            mkdir -p "$dir" || fail "cannot create $dir. Nothing was installed."
+        fi
+        STAGED=$(mktemp "$dir/.burrow.new.XXXXXX") || {
+            STAGED=""
+            fail "cannot write to $dir. Nothing was installed."
+        }
+        cat "$TMP/x/burrow" >"$STAGED" || fail "cannot write to $dir. Nothing was installed."
+        chmod 755 "$STAGED"
+        if ! "$STAGED" version >/dev/null 2>&1 </dev/null; then
+            fail "the downloaded burrow does not run on this machine. Nothing was installed."
+        fi
+        mv -f "$STAGED" "$dir/burrow" || fail "cannot replace $dir/burrow. The previous version is unchanged."
+        STAGED=""
+
+        installed=$("$dir/burrow" version </dev/null) || installed="burrow"
+        say "Installed $installed"
+        say "  at $dir/burrow"
+        case ":${PATH:-}:" in
+            *":$dir:"*) ;;
+            *)
+                say ""
+                say "$dir is not on your PATH. Add this line to your shell profile:"
+                say "  export PATH=\"$dir:\$PATH\""
+                ;;
+        esac
+        say ""
+        say "Next: burrow login ${RELAY#*://}"
+    }
+
+    main "$@"
 }
-
-# A brace group, not a bare call: every strict prefix of this line is a
-# syntax error (the group is not closed), so a download cut inside it runs
-# nothing — in particular not main without its arguments, which would turn
-# `--system` into an install to the home directory.
-{ main "$@"; }

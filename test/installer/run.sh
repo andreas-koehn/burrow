@@ -312,6 +312,12 @@ for lo in 127.0.0.1 localhost; do
     check "plain http to $lo without BURROW_INSTALL_ALLOW_HTTP: installs" 0 "burrow $VERSION" "Next: burrow login $lo:8080"
 done
 
+# Addresses that look like this machine and are not, and the ones that are.
+REFUSED_HOSTS="'localhost:80@evil.test' '127.0.0.1:80@evil.test' '[::1]:80@evil.test' '127.0.0.1:evil.test' '127.0.0.1.' '127.0.0.1.5' '127.999.1.1' '127.0.0.256' '127.1' '128.0.0.1' '0127.0.0.1' '127.0.0.0001' 'localhost.evil.test' 'localhost:' ':80' '' '[::1]x' '[::1]:' '[::2]' 'user@localhost' '127.0.0.1:80:80' '127..0.1' '.127.0.0.1'"
+REFUSED_COUNT=23
+LOOPBACK_HOSTS="'localhost' 'localhost:8080' '127.0.0.1' '127.0.0.1:9' '127.255.0.9:8080' '[::1]' '[::1]:8080'"
+LOOPBACK_COUNT=7
+
 for img in "$DEBIAN" "$ALPINE"; do
     f=$(fetch_of "$img")
     l=$(label_of "$img")
@@ -362,6 +368,24 @@ for img in "$DEBIAN" "$ALPINE"; do
     check "$l: BURROW_INSTALL_ALLOW_HTTP=yes is not 1: refused" 1 "without HTTPS" "OLD_UNTOUCHED" '!Downloading'
     in_image "$img" tester "unset BURROW_INSTALL_ALLOW_HTTP; $PRE; $f http://127.relay-good.test:8080/install.sh | sh; $POST"
     check "$l: a host name that only starts with 127. is not loopback: refused" 1 "gave its address as http://127.relay-good.test:8080, without HTTPS" "OLD_UNTOUCHED" '!Downloading'
+
+    # The script's own idea of "this machine", whatever address it was given:
+    # RELAY is rewritten in the served script and the variable is not set.
+    in_image "$img" tester "
+        unset BURROW_INSTALL_ALLOW_HTTP
+        $f $GOOD/install.sh >/tmp/i.sh
+        r=0; a=0
+        for h in $REFUSED_HOSTS; do
+            sed \"s|^ *RELAY=.*|RELAY=\\\"http://\$h\\\"|\" /tmp/i.sh | sh >/tmp/out 2>&1
+            if grep -q 'without HTTPS' /tmp/out && ! grep -q Downloading /tmp/out; then r=\$((r + 1)); else echo \"NOT_REFUSED <\$h>\"; fi
+        done
+        for h in $LOOPBACK_HOSTS; do
+            sed \"s|^ *RELAY=.*|RELAY=\\\"http://\$h\\\"|\" /tmp/i.sh | sh >/tmp/out 2>&1
+            if grep -q Downloading /tmp/out && ! grep -q 'without HTTPS' /tmp/out; then a=\$((a + 1)); else echo \"NOT_ACCEPTED <\$h>\"; fi
+        done
+        echo \"REFUSED_\$r ACCEPTED_\$a\"
+        [ ! -e \$HOME/.local ] && echo NO_FILE_CREATED"
+    check "$l: loopback is exactly localhost, [::1] or 127.x.y.z; look-alikes are refused" 0 "REFUSED_$REFUSED_COUNT ACCEPTED_$LOOPBACK_COUNT" "NO_FILE_CREATED" '!NOT_REFUSED' '!NOT_ACCEPTED'
 
     # Missing tools: named, before anything is downloaded.
     HIDE="mkdir /tmp/bin; for t in sh curl wget tar gzip sha256sum shasum uname mktemp cat chmod mv rm mkdir ls; do p=\$(command -v \$t) && ln -s \"\$p\" /tmp/bin/\$t; done; $f $GOOD/install.sh >/tmp/i.sh"
@@ -430,6 +454,35 @@ for img in "$DEBIAN" "$ALPINE"; do
         [ ! -e \$HOME/.local ] && echo NO_FILE_CREATED"
     # Only the cut that drops the final newline leaves a whole script.
     check "$l: the script cut off at half its length, 8 other points and each of its last 40 bytes" 0 "TRIED_49" "KEPT_ARGUMENTS_1" "NO_FILE_CREATED" '!_RAN' '!HALF_EXIT_0'
+
+    # Every strict prefix of the script, byte by byte, with a PATH that holds
+    # nothing but stubs which record being called: no prefix may run a
+    # command (the stubs stay silent), run a piece of a word as a command
+    # (no "not found" from the shell) or leave a file in the home directory.
+    # The last cut only drops the final newline; it is the whole script and
+    # shows that the stubs do notice a script that runs.
+    in_image "$img" tester "
+        $f $GOOD/install.sh >/tmp/i.sh
+        mkdir /tmp/stubs /tmp/dest
+        for c in curl wget tar gzip sha256sum shasum uname mktemp cat chmod mv rm rmdir mkdir cp ln sed awk grep head tail sudo su id env printf; do
+            printf '#!/bin/sh\\necho \"\$0\" >>/tmp/calls\\n' >/tmp/stubs/\$c; chmod +x /tmp/stubs/\$c
+        done
+        total=\$(wc -c </tmp/i.sh)
+        : >/tmp/calls; : >/tmp/err
+        cut=0
+        while [ \$cut -le \$((total - 2)) ]; do
+            head -c \$cut /tmp/i.sh | HOME=/tmp/dest PATH=/tmp/stubs /bin/sh >>/tmp/err 2>&1
+            cut=\$((cut + 1))
+        done
+        echo \"SWEPT_\$cut OF_\$((total - 1))\"
+        [ ! -s /tmp/calls ] && echo NO_COMMAND_RAN
+        grep -q 'not found' /tmp/err || echo NO_FRAGMENT_RAN
+        [ -z \"\$(ls -A /tmp/dest)\" ] && echo DEST_EMPTY
+        grep -c -i 'syntax error' /tmp/err | sed 's/^/SYNTAX_ERRORS_/'
+        head -c \$((total - 1)) /tmp/i.sh | HOME=/tmp/dest PATH=/tmp/stubs /bin/sh >/dev/null 2>&1
+        [ -s /tmp/calls ] && echo DETECTOR_SEES_THE_WHOLE_SCRIPT"
+    check "$l: every strict prefix of the script, byte by byte: no command runs, nothing is written" 0 \
+        "SWEPT_" "NO_COMMAND_RAN" "NO_FRAGMENT_RAN" "DEST_EMPTY" "DETECTOR_SEES_THE_WHOLE_SCRIPT"
 
     # The same as root, where the whole script installs to /usr/local/bin:
     # no prefix may install to /root/.local/bin instead.
@@ -501,7 +554,42 @@ if docker pull -q "$PWSH" >/dev/null 2>&1; then
     ps_case relay-good AMD64 "\$s = Invoke-RestMethod http://relay-good:8080/install.ps1; Invoke-Expression \$s.Substring(0, [int](\$s.Length / 2))"
     check "powershell: the script cut off at half its length" 1 "OLD_UNTOUCHED" "DIR_CLEAN" '!Downloading'
     ps_case relay-good AMD64 "\$s = Invoke-RestMethod http://relay-good:8080/install.ps1; Invoke-Expression \$s.Substring(0, \$s.LastIndexOf('Install-Burrow'))"
-    check "powershell: the script without its last line does nothing" 0 "OLD_UNTOUCHED" "DIR_CLEAN" '!Downloading'
+    check "powershell: the script without its last two lines does not parse" 1 "OLD_UNTOUCHED" "DIR_CLEAN" '!Downloading'
+    # Every strict prefix, character by character: comments only, or a parse
+    # error. Nothing may run and nothing may fail in another way.
+    ps_case relay-good AMD64 "
+        \$s = (Invoke-RestMethod http://relay-good:8080/install.ps1).TrimEnd()
+        # The block opens on a line of its own; the comments above mention it.
+        \$start = \$s.IndexOf(\"\`n& {\") + 1
+        \$ran = 0; \$parse = 0; \$comment = 0
+        for (\$i = 1; \$i -lt \$s.Length; \$i++) {
+            try {
+                Invoke-Expression \$s.Substring(0, \$i)
+                if (\$i -gt \$start) { \$ran++; Write-Host \"RAN_AT_\$i\" } else { \$comment++ }
+            } catch [System.Management.Automation.ParseException] {
+                \$parse++
+            } catch {
+                \$ran++; Write-Host \"OTHER_ERROR_AT_\$i \$(\$_.Exception.Message)\"
+            }
+        }
+        Write-Host \"PREFIXES_RAN_\$ran COMMENT_ONLY_IS_\$(\$comment -eq \$start) PARSE_ERRORS_ARE_THE_REST_\$(\$parse -eq \$s.Length - 1 - \$start)\""
+    check "powershell: every strict prefix of the script, character by character, is comments or a parse error" 0 \
+        "PREFIXES_RAN_0 COMMENT_ONLY_IS_True PARSE_ERRORS_ARE_THE_REST_True" "OLD_UNTOUCHED" "DIR_CLEAN" '!Downloading'
+    ps_case relay-good AMD64 "
+        \$env:BURROW_INSTALL_ALLOW_HTTP = \$null
+        \$s = Invoke-RestMethod http://relay-good:8080/install.ps1
+        \$r = 0; \$a = 0
+        foreach (\$h in @($(printf '%s' "$REFUSED_HOSTS" | sed "s/' '/', '/g"))) {
+            try { Invoke-Expression \$s.Replace(\"'http://relay-good:8080'\", \"'http://\$h'\"); Write-Host \"NOT_REFUSED <\$h>\" }
+            catch { if (\$_.Exception.Message -match 'without HTTPS') { \$r++ } else { Write-Host \"NOT_REFUSED <\$h> \$(\$_.Exception.Message)\" } }
+        }
+        foreach (\$h in @($(printf '%s' "$LOOPBACK_HOSTS" | sed "s/' '/', '/g"))) {
+            try { Invoke-Expression \$s.Replace(\"'http://relay-good:8080'\", \"'http://\$h'\"); Write-Host \"UNEXPECTED_INSTALL <\$h>\" }
+            catch { if (\$_.Exception.Message -match 'could not download') { \$a++ } else { Write-Host \"NOT_ACCEPTED <\$h> \$(\$_.Exception.Message)\" } }
+        }
+        Write-Host \"REFUSED_\$r ACCEPTED_\$a\""
+    check "powershell: loopback is exactly localhost, [::1] or 127.x.y.z; look-alikes are refused" 0 \
+        "REFUSED_$REFUSED_COUNT ACCEPTED_$LOOPBACK_COUNT" "OLD_UNTOUCHED" '!NOT_REFUSED' '!NOT_ACCEPTED' '!UNEXPECTED_INSTALL'
 else
     bad "powershell cases" "$PWSH could not be pulled; install.ps1 was not run"
 fi
