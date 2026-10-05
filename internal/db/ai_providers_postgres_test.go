@@ -42,8 +42,10 @@ func TestDirectAIProvider_Postgres(t *testing.T) {
 		t.Fatalf("get: %v %+v", err, got)
 	}
 
-	got.BaseURL, got.Billing, got.ExtraHeaders = "https://y.example/v2", "flat", map[string]string{"X-Title": "Burrow"}
-	if err := x.UpdateAIProviderUpstream(ctx, got); err != nil {
+	if err := x.ModifyAIProviderUpstream(ctx, "pg-direct", func(p AIProvider) (AIProvider, error) {
+		p.BaseURL, p.Billing, p.ExtraHeaders = "https://y.example/v2", "flat", map[string]string{"X-Title": "Burrow"}
+		return p, nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if after, _ := x.GetAIProvider(ctx, "pg-direct"); after.BaseURL != "https://y.example/v2" || after.Billing != "flat" || after.ExtraHeaders["X-Title"] != "Burrow" {
@@ -149,6 +151,24 @@ func TestReportedCostAndProviderRename_Postgres(t *testing.T) {
 		t.Fatalf("aggregate = %+v, want tokens 117, reported 0.25, priced 10/5", u)
 	}
 
+	// The per-kind expressions of the 24 h provider metrics.
+	var k AIEndpointKindTokens
+	if err := x.sqlDB.QueryRowContext(ctx, `
+		SELECT kind,
+		       COALESCE(SUM(tokens_in), 0),
+		       COALESCE(SUM(tokens_out), 0),
+		       COALESCE(SUM(cost_usd), 0),
+		       COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_in  ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_out ELSE 0 END), 0)
+		  FROM usage_events
+		 WHERE service_id = ?
+		 GROUP BY kind`, svc.ID).Scan(&k.Kind, &k.TokensIn, &k.TokensOut, &k.ReportedUSD, &k.PricedTokensIn, &k.PricedTokensOut); err != nil {
+		t.Fatal(err)
+	}
+	if k.TokensIn != 117 || k.ReportedUSD != 0.25 || k.PricedTokensIn != 10 || k.PricedTokensOut != 5 {
+		t.Fatalf("per-kind aggregate = %+v", k)
+	}
+
 	if err := x.UpdateAIProvider(ctx, "pg-cost", "pg-cost2", "PG Cost Two"); err != nil {
 		t.Fatal(err)
 	}
@@ -159,9 +179,10 @@ func TestReportedCostAndProviderRename_Postgres(t *testing.T) {
 	calls := 0
 	if err := x.ModifyAIProviderUpstream(ctx, "pg-cost2", func(p AIProvider) (AIProvider, error) {
 		if calls++; calls == 1 {
-			other := p
-			other.Billing = "flat"
-			if err := x.UpdateAIProviderUpstream(ctx, other); err != nil {
+			if err := x.ModifyAIProviderUpstream(ctx, "pg-cost2", func(other AIProvider) (AIProvider, error) {
+				other.Billing = "flat"
+				return other, nil
+			}); err != nil {
 				t.Fatal(err)
 			}
 		}

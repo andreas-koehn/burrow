@@ -105,6 +105,13 @@ type Service struct {
 	// AIConfig is the parsed service_ai_config blob. Any nil section means
 	// "feature disabled for this service" — Chain treats it as a no-op.
 	AIConfig ServiceAIConfig
+	// TrustReportedCost says the upstream is one the relay calls itself and
+	// whose own figure for the request's cost (usage.cost) is to be believed.
+	// Only the /ai/ gateway sets it, and only for a direct provider. Without
+	// it a reported cost is ignored and the price table applies: a tunnelled
+	// model is run by the key's owner, who could report 0 to stay under a
+	// budget or a large figure to exhaust one. A config loader cannot set it.
+	TrustReportedCost bool
 }
 
 // ServiceAIConfig is the typed view of service_ai_config.config JSON. Any
@@ -296,12 +303,15 @@ func (c *Chain) Dispatch(w http.ResponseWriter, r *http.Request,
 
 // DispatchMetered is Dispatch for callers that must account for every
 // request (the /ai/ gateway): it runs the chain, and so records usage, even
-// when the service has no AI features configured.
+// when the service has no AI features configured. trustReportedCost is
+// Service.TrustReportedCost for this request.
 func (c *Chain) DispatchMetered(w http.ResponseWriter, r *http.Request,
 	serviceID, localHost, apiKeyHeader, apiKeyID string,
+	trustReportedCost bool,
 	proxyHandler http.Handler,
 ) {
 	svc := c.resolve(r, serviceID, localHost, apiKeyHeader, apiKeyID)
+	svc.TrustReportedCost = trustReportedCost
 	r, ok := c.allow(w, r, svc)
 	if !ok {
 		return
@@ -337,8 +347,10 @@ func (c *Chain) resolve(r *http.Request, serviceID, localHost, apiKeyHeader, api
 				loaded.APIKeyHeader = apiKeyHeader
 			}
 			svc = loaded
-			// The loader never knows which key authorised the request.
+			// The loader never knows which key authorised the request, and
+			// whether the upstream is trusted is the caller's decision.
 			svc.APIKeyID = apiKeyID
+			svc.TrustReportedCost = false
 		}
 	}
 	return svc
@@ -712,13 +724,16 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// read from the bytes already copied to the client, never from a second
 	// pass that could hold the response back. A response that reports none,
 	// or was cut off before the chunk that does, leaves this nil and the
-	// price table applies.
+	// price table applies. So does every upstream that is not trusted with
+	// its own price (see Service.TrustReportedCost).
 	var reportedUSD *float64
-	if usd, ok := stream.Cost(); ok {
-		reportedUSD = &usd
-	} else if kind == KindOpenAI && !isStreamedResponse(wrapped.Header()) && !capw.truncated() {
-		if usd, ok := aimeter.ParseOpenAICost(capw.bytes()); ok {
+	if svc.TrustReportedCost {
+		if usd, ok := stream.Cost(); ok {
 			reportedUSD = &usd
+		} else if kind == KindOpenAI && !isStreamedResponse(wrapped.Header()) && !capw.truncated() {
+			if usd, ok := aimeter.ParseOpenAICost(capw.bytes()); ok {
+				reportedUSD = &usd
+			}
 		}
 	}
 
@@ -797,7 +812,8 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 
 // cachedCost is the cost of an answer served from the cache: nothing was
 // spent upstream, so the row says zero instead of leaving it to the price
-// table.
+// table. This is the relay's own knowledge, not an upstream's claim, so it
+// does not depend on Service.TrustReportedCost.
 func cachedCost() *float64 {
 	zero := 0.0
 	return &zero

@@ -16,6 +16,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/cost"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -873,16 +874,14 @@ func (f *directFixture) serve(t *testing.T) *authClient {
 	return c
 }
 
-// noSecrets fails when the upstream credential shows up in body, in an audit
-// payload or in the log, or a header value in an audit payload or in the log.
-// (An admin's provider view carries the extra headers; see
-// TestProviderView_UpstreamFieldsForAdminsOnly.)
+// noSecrets fails when the upstream credential or a header value shows up in
+// body, in an audit payload or in the log.
 func (f *directFixture) noSecrets(t *testing.T, body string) {
 	t.Helper()
-	if strings.Contains(body, upstreamSecret) {
-		t.Errorf("response leaks %q: %s", upstreamSecret, body)
-	}
 	for _, secret := range []string{upstreamSecret, "header-value-do-not-leak"} {
+		if strings.Contains(body, secret) {
+			t.Errorf("response leaks %q: %s", secret, body)
+		}
 		for _, ev := range f.aud.events {
 			if strings.Contains(string(ev.Payload), secret) || strings.Contains(ev.SubjectLabel, secret) {
 				t.Errorf("audit event %s leaks %q: %s", ev.Action, secret, ev.Payload)
@@ -1136,7 +1135,7 @@ func TestDirectProviderResponses_CarryNoCredential(t *testing.T) {
 	// The raw JSON has no field that could hold the value.
 	var raw map[string]any
 	_ = json.Unmarshal([]byte(wantStatus(t, c.get(t, "/api/v1/ai/providers/openrouter"), http.StatusOK)), &raw)
-	for _, k := range []string{"credential", "api_key", "key"} {
+	for _, k := range []string{"credential", "api_key", "extra_headers", "key"} {
 		if _, ok := raw[k]; ok {
 			t.Errorf("response has field %q", k)
 		}
@@ -1421,35 +1420,36 @@ func TestAIProviderAuditActionsRegistered(t *testing.T) {
 
 // PUT …/upstream keeps the fields a body leaves out, so a caller who may
 // configure the provider is shown what it keeps: the header name, the format
-// with its {key} placeholder and the extra headers. Other callers are not.
+// with its {key} placeholder and the NAMES of the extra headers. A header
+// value is free text an admin typed and may be a secret: no response has it.
 func TestProviderView_UpstreamFieldsForAdminsOnly(t *testing.T) {
 	f := newDirectFixture()
+	f.ps.rows[len(f.ps.rows)-1].ExtraHeaders = map[string]string{"X-Title": "header-value-do-not-leak", "HTTP-Referer": "header-value-do-not-leak"}
 	c := f.serve(t)
 	for _, path := range []string{"/api/v1/ai/providers/openrouter", "/api/v1/ai/providers"} {
 		body := wantStatus(t, c.get(t, path), http.StatusOK)
-		for _, want := range []string{`"auth_header":"Authorization"`, `"auth_format":"Bearer {key}"`, `"extra_headers":{"X-Title":"header-value-do-not-leak"}`} {
+		for _, want := range []string{`"auth_header":"Authorization"`, `"auth_format":"Bearer {key}"`, `"extra_header_names":["HTTP-Referer","X-Title"]`} {
 			if !strings.Contains(body, want) {
 				t.Errorf("%s: admin view lacks %s: %s", path, want, body)
 			}
 		}
-		if strings.Contains(body, upstreamSecret) {
-			t.Errorf("%s leaks the credential: %s", path, body)
-		}
+		f.noSecrets(t, body)
 	}
 	// The write answers with the same view.
 	body := wantStatus(t, c.put(t, "/api/v1/ai/providers/openrouter/upstream", map[string]any{"billing": "flat"}), http.StatusOK)
-	if p := decodeProvider(t, body); p.AuthHeader != "Authorization" || p.AuthFormat != "Bearer {key}" || p.ExtraHeaders["X-Title"] == "" {
+	if p := decodeProvider(t, body); p.AuthHeader != "Authorization" || p.AuthFormat != "Bearer {key}" || !slices.Equal(p.ExtraHeaderNames, []string{"HTTP-Referer", "X-Title"}) {
 		t.Errorf("view after PUT: %s", body)
 	}
+	f.noSecrets(t, body)
 	// A direct provider without extra headers says so; a tunnel provider has
 	// no such fields.
 	f.ps.rows[len(f.ps.rows)-1].ExtraHeaders = nil
-	if body := wantStatus(t, c.get(t, "/api/v1/ai/providers/openrouter"), http.StatusOK); !strings.Contains(body, `"extra_headers":{}`) {
+	if body := wantStatus(t, c.get(t, "/api/v1/ai/providers/openrouter"), http.StatusOK); !strings.Contains(body, `"extra_header_names":[]`) {
 		t.Errorf("no extra headers: %s", body)
 	}
 	var raw map[string]any
 	_ = json.Unmarshal([]byte(wantStatus(t, c.get(t, "/api/v1/ai/providers/ollama"), http.StatusOK)), &raw)
-	for _, k := range []string{"auth_header", "auth_format", "extra_headers"} {
+	for _, k := range []string{"auth_header", "auth_format", "extra_header_names", "extra_headers"} {
 		if _, ok := raw[k]; ok {
 			t.Errorf("tunnel provider has field %q", k)
 		}
@@ -1461,7 +1461,7 @@ func TestProviderView_UpstreamFieldsForAdminsOnly(t *testing.T) {
 	c = f.serve(t)
 	for _, path := range []string{"/api/v1/ai/providers/openrouter", "/api/v1/ai/providers"} {
 		body := wantStatus(t, c.get(t, path), http.StatusOK)
-		for _, k := range []string{"auth_header", "auth_format", "extra_headers", "header-value-do-not-leak"} {
+		for _, k := range []string{"auth_header", "auth_format", "extra_header", "X-Title", "header-value-do-not-leak"} {
 			if strings.Contains(body, k) {
 				t.Errorf("%s: non-admin view contains %q: %s", path, k, body)
 			}
@@ -1515,12 +1515,72 @@ func TestDirectProvider_UnknownFieldRefused(t *testing.T) {
 	if !strings.Contains(body, "unknown field") || strings.Contains(body, stray) {
 		t.Errorf("body = %s", body)
 	}
-	// A tunnel provider is created as before.
+	// The same for a tunnel provider and for a body without a kind, which is
+	// a tunnel create: a key next to a base_url must not vanish in a 201.
+	for name, in := range map[string]map[string]any{
+		"kind tunnel": {"name": "Ollama", "slug": "ollama", "kind": "tunnel", "service_id": "svc1", "api_key": stray},
+		"no kind":     {"name": "Ollama", "slug": "ollama", "base_url": "https://api.z.ai/v4", "api_key": stray},
+	} {
+		ss, ps := oneProviderFixture()
+		ps.rows = nil
+		logs := &bytes.Buffer{}
+		d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+		d.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		srv, tc := newAIProviderServer(t, d)
+		body := wantStatus(t, tc.post(t, "/api/v1/ai/providers", in), http.StatusBadRequest)
+		if !strings.Contains(body, `unknown field \"api_key\"`) || strings.Contains(body, stray) || strings.Contains(logs.String(), stray) || ps.writes != 0 {
+			t.Errorf("%s: body %s, log %s, writes %d", name, body, logs.String(), ps.writes)
+		}
+		srv.Close()
+	}
+	// What the dashboard sends for a tunnel create is accepted: with and
+	// without slug (NewProviderDialog.tsx, Services.tsx).
+	for _, in := range []map[string]any{
+		{"slug": "ollama", "name": "Ollama", "kind": "tunnel", "service_id": "svc1"},
+		{"name": "Ollama", "kind": "tunnel", "service_id": "svc1"},
+	} {
+		ss, ps := oneProviderFixture()
+		ps.rows = nil
+		srv, tc := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+		wantStatus(t, tc.post(t, "/api/v1/ai/providers", in), http.StatusCreated)
+		srv.Close()
+	}
+}
+
+// Two admins saving the upstream settings at once, five times over: the
+// loser is told to try again, not handed a 500.
+func TestPutProviderUpstream_BusyIs409(t *testing.T) {
+	f := newDirectFixture()
+	f.ps.updateErr = fmt.Errorf("wrapped: %w", store.ErrProviderBusy)
+	c := f.serve(t)
+	body := wantStatus(t, c.put(t, "/api/v1/ai/providers/openrouter/upstream", map[string]any{"billing": "flat"}), http.StatusConflict)
+	if !strings.Contains(body, "try again") {
+		t.Errorf("body = %s", body)
+	}
+	if len(f.aud.events) != 0 {
+		t.Errorf("a refused update was audited: %+v", f.aud.events)
+	}
+}
+
+// cost_usd_24h is the cost engine's figure: what upstreams reported plus the
+// price table for the tokens of rows without a reported cost.
+func TestProviderMetrics_CostUsesReportedCost(t *testing.T) {
 	ss, ps := oneProviderFixture()
-	ps.rows = nil
-	srv, tc := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+	d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+	d.AIMetrics = &fakeAIMetrics{agg: db.AIEndpointAgg{Requests: 3, TokensIn: 3_000_000, ByKind: []db.AIEndpointKindTokens{
+		{Kind: "k", TokensIn: 3_000_000, ReportedUSD: 0.25, PricedTokensIn: 1_000_000},
+		{Kind: "no-price", TokensIn: 5, TokensOut: 5, ReportedUSD: 0.5},
+	}}}
+	d.CostEngine = &fakeCostEngine{pricing: cost.Pricing{Entries: map[string]cost.Entry{"k": {InputPerMillion: 1, OutputPerMillion: 2}}}}
+	srv, c := newAIProviderServer(t, d)
 	defer srv.Close()
-	wantStatus(t, tc.post(t, "/api/v1/ai/providers", map[string]any{"name": "Ollama", "slug": "ollama", "service_id": "svc1"}), http.StatusCreated)
+	var out endpointMetricsResp
+	if err := json.Unmarshal([]byte(wantStatus(t, c.get(t, "/api/v1/ai/providers/ollama/metrics"), http.StatusOK)), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.CostUSD24h != 1.75 || out.TokensIn24h != 3_000_000 {
+		t.Fatalf("cost_usd_24h = %v tokens_in = %d, want 1.75 over all 3000000 tokens", out.CostUSD24h, out.TokensIn24h)
+	}
 }
 
 // The sync's own deadline has to be the first one to fire: the router gives

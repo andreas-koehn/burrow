@@ -22,8 +22,14 @@ type AIEndpointCount struct {
 // the cost-engine pricing-lookup key, so the handler can derive USD from these.
 type AIEndpointKindTokens struct {
 	Kind      string
-	TokensIn  int64
-	TokensOut int64
+	TokensIn  int64 // all rows
+	TokensOut int64 // all rows
+	// ReportedUSD is the sum of cost_usd over the rows that carry one;
+	// PricedTokensIn/Out are the tokens of the rows without one, which the
+	// price table applies to. Same split as UsageRow.
+	ReportedUSD     float64
+	PricedTokensIn  int64
+	PricedTokensOut int64
 }
 
 // AIEndpointAgg is the per-service trailing-24h aggregate behind the endpoint
@@ -85,7 +91,10 @@ func (x *DB) AIEndpointMetrics24h(ctx context.Context, serviceID string) (AIEndp
 	krows, err := x.sqlDB.QueryContext(ctx, `
 		SELECT kind,
 		       COALESCE(SUM(tokens_in), 0),
-		       COALESCE(SUM(tokens_out), 0)
+		       COALESCE(SUM(tokens_out), 0),
+		       COALESCE(SUM(cost_usd), 0),
+		       COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_in  ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_out ELSE 0 END), 0)
 		  FROM usage_events
 		 WHERE service_id = ? AND ts >= datetime('now', '-1 day')
 		 GROUP BY kind`, serviceID)
@@ -95,7 +104,8 @@ func (x *DB) AIEndpointMetrics24h(ctx context.Context, serviceID string) (AIEndp
 	defer krows.Close()
 	for krows.Next() {
 		var k AIEndpointKindTokens
-		if err := krows.Scan(&k.Kind, &k.TokensIn, &k.TokensOut); err != nil {
+		if err := krows.Scan(&k.Kind, &k.TokensIn, &k.TokensOut,
+			&k.ReportedUSD, &k.PricedTokensIn, &k.PricedTokensOut); err != nil {
 			return agg, fmt.Errorf("scan kind tokens: %w", err)
 		}
 		agg.ByKind = append(agg.ByKind, k)

@@ -119,6 +119,9 @@ var (
 	ErrProviderExists = errors.New("store: provider slug or service already in use")
 	// ErrProviderNotFound: no provider has that slug.
 	ErrProviderNotFound = errors.New("store: provider not found")
+	// ErrProviderBusy: concurrent writers kept changing the provider; the
+	// caller may try again.
+	ErrProviderBusy = errors.New("store: provider is being changed concurrently")
 	// ErrProviderService: a tunnel provider needs an http service in api_key mode.
 	ErrProviderService = errors.New("store: provider needs an http service in api_key mode")
 )
@@ -366,6 +369,9 @@ func (s *Store) UpdateProviderUpstream(ctx context.Context, slug string, in Dire
 	})
 	if errors.Is(err, db.ErrNotFound) {
 		return db.AIProvider{}, ErrProviderNotFound
+	}
+	if errors.Is(err, db.ErrProviderBusy) {
+		return db.AIProvider{}, ErrProviderBusy
 	}
 	if err != nil {
 		return db.AIProvider{}, err

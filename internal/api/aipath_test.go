@@ -168,7 +168,7 @@ func (f chainFunc) Dispatch(w http.ResponseWriter, r *http.Request, _, _, _, _ s
 	f(w, r)
 }
 
-func (f chainFunc) DispatchMetered(w http.ResponseWriter, r *http.Request, _, _, _, _ string, _ http.Handler) {
+func (f chainFunc) DispatchMetered(w http.ResponseWriter, r *http.Request, _, _, _, _ string, _ bool, _ http.Handler) {
 	f(w, r)
 }
 

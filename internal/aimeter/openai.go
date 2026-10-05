@@ -98,8 +98,12 @@ func (p *openAIParser) inspect(line []byte) {
 		return
 	}
 	p.s.recordTokens(env.Usage.PromptTokens, env.Usage.CompletionTokens, env.Usage.TotalTokens)
+	// Cost and tokens come from the same chunk: a usage chunk without a
+	// valid cost takes back what an earlier one reported.
 	if usd, ok := reportedCost(env.Usage.Cost); ok {
 		p.s.recordCost(usd)
+	} else {
+		p.s.clearCost()
 	}
 }
 

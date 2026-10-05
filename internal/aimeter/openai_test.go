@@ -297,3 +297,35 @@ func TestStream_InvalidCostKeepsTokens(t *testing.T) {
 		}
 	}
 }
+
+// Cost and tokens always come from the same usage chunk: a later chunk that
+// reports no cost, or one the relay cannot trust, takes the earlier cost away
+// with the earlier token counts.
+func TestStream_CostFollowsLastUsageChunk(t *testing.T) {
+	const first = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5,\"cost\":0.0015}}\n\n"
+	for name, second := range map[string]string{
+		"no cost":      "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":30,\"completion_tokens\":20,\"total_tokens\":50}}\n\n",
+		"invalid cost": "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":30,\"completion_tokens\":20,\"total_tokens\":50,\"cost\":-1}}\n\n",
+	} {
+		s := aimeter.WrapResponse(io.Discard, aimeter.KindOpenAI)
+		_, _ = s.Write([]byte(first))
+		if usd, ok := s.Cost(); !ok || usd != 0.0015 {
+			t.Fatalf("%s: after the first chunk Cost() = (%v, %v)", name, usd, ok)
+		}
+		_, _ = s.Write([]byte(second))
+		_ = s.Close()
+		if usd, ok := s.Cost(); ok {
+			t.Errorf("%s: Cost() = %v kept from an earlier chunk", name, usd)
+		}
+		if tok := s.Tokens(); tok.In != 30 || tok.Out != 20 {
+			t.Errorf("%s: tokens = %+v, want 30/20", name, tok)
+		}
+	}
+	// A later valid cost replaces the earlier one.
+	s := aimeter.WrapResponse(io.Discard, aimeter.KindOpenAI)
+	_, _ = s.Write([]byte(first))
+	_, _ = s.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":30,\"completion_tokens\":20,\"cost\":0.02}}\n\n"))
+	if usd, ok := s.Cost(); !ok || usd != 0.02 {
+		t.Errorf("Cost() = (%v, %v), want (0.02, true)", usd, ok)
+	}
+}

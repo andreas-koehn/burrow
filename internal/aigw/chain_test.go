@@ -1043,7 +1043,7 @@ func TestChain_DispatchMetered_RecordsUsageWithoutAIConfig(t *testing.T) {
 		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
 	})
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
-	c.DispatchMetered(httptest.NewRecorder(), req, "svc1", "host", "Authorization", "key-1", up)
+	c.DispatchMetered(httptest.NewRecorder(), req, "svc1", "host", "Authorization", "key-1", false, up)
 	if !sink.got || sink.sample.TokensIn != 10 || sink.sample.TokensOut != 5 || sink.sample.APIKeyID != "key-1" {
 		t.Fatalf("sample = %+v got=%v", sink.sample, sink.got)
 	}
@@ -1209,7 +1209,7 @@ func TestChain_RecordsReportedCost(t *testing.T) {
 			})
 			req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
 			rec := httptest.NewRecorder()
-			ch.ServeHTTP(rec, req, aigw.Service{ID: "s", AIConfig: aigw.ServiceAIConfig{Anthropic: &aigw.AnthropicConfig{}}}, up)
+			ch.ServeHTTP(rec, req, aigw.Service{ID: "s", TrustReportedCost: true, AIConfig: aigw.ServiceAIConfig{Anthropic: &aigw.AnthropicConfig{}}}, up)
 			got := sink.sample.CostUSD
 			switch {
 			case c.want == nil && got != nil:
@@ -1236,7 +1236,7 @@ func ptr(f float64) *float64 { return &f }
 func TestChain_AbortedStreamHasNoReportedCost(t *testing.T) {
 	sink := newMemSink()
 	c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, testLog())
-	svc := aigw.Service{ID: "svc1", APIKeyID: "key-1", AIConfig: aigw.ServiceAIConfig{Anthropic: &aigw.AnthropicConfig{}}}
+	svc := aigw.Service{ID: "svc1", APIKeyID: "key-1", TrustReportedCost: true, AIConfig: aigw.ServiceAIConfig{Anthropic: &aigw.AnthropicConfig{}}}
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true}`))
 	const sent = "data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"cost\":0.0"
 	if got := serveRecovering(c, httptest.NewRecorder(), req, svc, abortingUpstream("text/event-stream", 0, sent)); got != http.ErrAbortHandler {
@@ -1256,7 +1256,7 @@ func TestChain_AbortedStreamHasNoReportedCost(t *testing.T) {
 func TestChain_CacheHitRecordsZeroCost(t *testing.T) {
 	sink := newMemSink()
 	c := aigw.NewChain(freshCache(t), nil, nil, nil, nil, nil, nil, sink, testLog())
-	svc := aigw.Service{ID: "svc-cache", AIConfig: aigw.ServiceAIConfig{
+	svc := aigw.Service{ID: "svc-cache", TrustReportedCost: true, AIConfig: aigw.ServiceAIConfig{
 		Cache: &exact.Settings{Enabled: true, AppliesPer: "global", TTLSeconds: 300, MaxEntries: 100, MaxPerEntryKB: 64},
 	}}
 	const body = `{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"cost":0.5}}`
@@ -1279,5 +1279,71 @@ func TestChain_CacheHitRecordsZeroCost(t *testing.T) {
 	}
 	if samples[1].CostUSD == nil || *samples[1].CostUSD != 0 {
 		t.Fatalf("hit CostUSD = %v, want an explicit 0", samples[1].CostUSD)
+	}
+}
+
+// Only an upstream the relay calls itself is believed about its price. A
+// service that does not carry the trust flag - a tunnelled model, anything on
+// the host route - could report 0 to slip under a budget or a large figure to
+// exhaust one: its usage.cost is ignored and the price table applies.
+func TestChain_IgnoresReportedCostWithoutTrust(t *testing.T) {
+	bodies := map[string][2]string{
+		"json":       {"application/json", `{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0}}`},
+		"json large": {"application/json", `{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":9999}}`},
+		"sse":        {"text/event-stream", "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15,\"cost\":0.0015}}\n\n"},
+	}
+	cfg := aigw.ServiceAIConfig{Anthropic: &aigw.AnthropicConfig{}}
+	entries := map[string]func(c *aigw.Chain, w http.ResponseWriter, r *http.Request, up http.Handler){
+		"ServeHTTP without the flag": func(c *aigw.Chain, w http.ResponseWriter, r *http.Request, up http.Handler) {
+			c.ServeHTTP(w, r, aigw.Service{ID: "s", AIConfig: cfg}, up)
+		},
+		// The host route and /svc/ enter through Dispatch. A loader cannot
+		// grant the trust either.
+		"Dispatch (host route)": func(c *aigw.Chain, w http.ResponseWriter, r *http.Request, up http.Handler) {
+			c.Loader = staticLoader{ok: true, svc: aigw.Service{ID: "s", TrustReportedCost: true, AIConfig: cfg}}
+			c.Dispatch(w, r, "s", "127.0.0.1:11434", "Authorization", "key-1", up)
+		},
+		"DispatchMetered untrusted (tunnel provider)": func(c *aigw.Chain, w http.ResponseWriter, r *http.Request, up http.Handler) {
+			c.Loader = staticLoader{ok: true, svc: aigw.Service{ID: "s", TrustReportedCost: true, AIConfig: cfg}}
+			c.DispatchMetered(w, r, "s", "127.0.0.1:11434", "Authorization", "key-1", false, up)
+		},
+	}
+	for entry, serve := range entries {
+		for name, b := range bodies {
+			t.Run(entry+"/"+name, func(t *testing.T) {
+				sink := &ctxSink{}
+				c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, nil)
+				up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", b[0])
+					_, _ = w.Write([]byte(b[1]))
+				})
+				rec := httptest.NewRecorder()
+				serve(c, rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`)), up)
+				if !sink.got || sink.sample.TokensIn != 10 || sink.sample.TokensOut != 5 {
+					t.Fatalf("sample = %+v got=%v", sink.sample, sink.got)
+				}
+				if sink.sample.CostUSD != nil {
+					t.Fatalf("CostUSD = %v from an untrusted upstream, want nil", *sink.sample.CostUSD)
+				}
+				if rec.Body.String() != b[1] {
+					t.Fatalf("body changed: %q", rec.Body.String())
+				}
+			})
+		}
+	}
+}
+
+// DispatchMetered hands the caller's trust decision to the chain.
+func TestChain_DispatchMetered_TrustedReportedCost(t *testing.T) {
+	sink := &ctxSink{}
+	c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, nil)
+	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}}`))
+	})
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+	c.DispatchMetered(httptest.NewRecorder(), req, "s", "host", "Authorization", "key-1", true, up)
+	if sink.sample.CostUSD == nil || *sink.sample.CostUSD != 0.25 {
+		t.Fatalf("CostUSD = %v, want 0.25", sink.sample.CostUSD)
 	}
 }

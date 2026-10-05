@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,11 +63,12 @@ type aiProviderResp struct {
 	// How the relay presents the credential upstream, for callers who may
 	// change it (admins): PUT …/upstream keeps what a body leaves out, and
 	// these fields show what that is. auth_format holds the literal {key}
-	// placeholder, never the credential. Left out for other callers and for
-	// tunnel providers.
-	AuthHeader   string            `json:"auth_header,omitempty"`
-	AuthFormat   string            `json:"auth_format,omitempty"`
-	ExtraHeaders map[string]string `json:"extra_headers,omitzero"`
+	// placeholder, never the credential. Of the extra headers only the names
+	// are shown, sorted: a value is free text and may be a secret. Left out
+	// for other callers and for tunnel providers.
+	AuthHeader       string   `json:"auth_header,omitempty"`
+	AuthFormat       string   `json:"auth_format,omitempty"`
+	ExtraHeaderNames []string `json:"extra_header_names,omitzero"`
 }
 
 // upstreamAuthView fills the fields of v that only a caller who may configure
@@ -75,10 +77,12 @@ func upstreamAuthView(v *aiProviderResp, p db.AIProvider) {
 	if p.Kind != "direct" {
 		return
 	}
-	v.AuthHeader, v.AuthFormat, v.ExtraHeaders = p.AuthHeader, p.AuthFormat, p.ExtraHeaders
-	if v.ExtraHeaders == nil {
-		v.ExtraHeaders = map[string]string{}
+	v.AuthHeader, v.AuthFormat = p.AuthHeader, p.AuthFormat
+	v.ExtraHeaderNames = make([]string, 0, len(p.ExtraHeaders))
+	for name := range p.ExtraHeaders {
+		v.ExtraHeaderNames = append(v.ExtraHeaderNames, name)
 	}
+	slices.Sort(v.ExtraHeaderNames)
 }
 
 // credentialPresent reports whether the vault holds a non-empty value for
@@ -381,14 +385,17 @@ func (d Deps) GetAIProviderMetrics(w http.ResponseWriter, r *http.Request) {
 				resp.CacheHitRatio24h = float64(agg.CacheHits) / float64(agg.Requests)
 			}
 			copy(rpm, agg.PerMinute[:])
-			// Cost from per-kind token subtotals via the pricing table.
-			if d.CostEngine != nil {
-				var usd float64
-				for _, k := range agg.ByKind {
-					usd += d.CostEngine.UsdFor(k.Kind, int(k.TokensIn), int(k.TokensOut))
+			// Cost per kind, as the cost engine computes it: what upstreams
+			// reported, plus the pricing table for the tokens of the rows
+			// without a reported cost.
+			var usd float64
+			for _, k := range agg.ByKind {
+				usd += k.ReportedUSD
+				if d.CostEngine != nil {
+					usd += d.CostEngine.UsdFor(k.Kind, int(k.PricedTokensIn), int(k.PricedTokensOut))
 				}
-				resp.CostUSD24h = usd
 			}
+			resp.CostUSD24h = usd
 		}
 	}
 
@@ -480,6 +487,8 @@ func mapProviderErr(w http.ResponseWriter, err error) bool {
 		writeErr(w, http.StatusNotFound, "provider not found")
 	case errors.Is(err, store.ErrProviderExists):
 		writeErr(w, http.StatusConflict, "provider slug or service already in use")
+	case errors.Is(err, store.ErrProviderBusy):
+		writeErr(w, http.StatusConflict, "the provider was changed by someone else at the same time; try again")
 	case errors.Is(err, store.ErrProviderService):
 		writeErr(w, http.StatusConflict, "a tunnel provider needs an http service in API-key mode")
 	case errors.Is(err, store.ErrInvalidProviderConfig):
@@ -594,9 +603,10 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	// A direct provider's body is read again, strictly, before anything is
-	// done with it.
-	if in.Kind == "direct" && !decodeUpstreamJSON(w, bytes.NewReader(raw), &postProviderReq{}) {
+	// The body is read again, strictly, before anything is done with it,
+	// for both kinds: without a kind a body is a tunnel create, and a key
+	// next to a base_url must not vanish in a 201.
+	if !decodeUpstreamJSON(w, bytes.NewReader(raw), &postProviderReq{}) {
 		return
 	}
 	name, ok := validProviderName(w, in.Name)

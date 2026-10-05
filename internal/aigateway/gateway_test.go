@@ -88,6 +88,7 @@ func (f fakeTunnels) DialTunnelStreamByServiceID(context.Context, string) (net.C
 type spyChain struct {
 	serviceID, keyID string
 	metered          bool
+	trustCost        bool
 }
 
 func (c *spyChain) Dispatch(w http.ResponseWriter, r *http.Request, serviceID, _, _, apiKeyID string, up http.Handler) {
@@ -95,8 +96,8 @@ func (c *spyChain) Dispatch(w http.ResponseWriter, r *http.Request, serviceID, _
 	up.ServeHTTP(w, r)
 }
 
-func (c *spyChain) DispatchMetered(w http.ResponseWriter, r *http.Request, serviceID, _, _, apiKeyID string, up http.Handler) {
-	c.serviceID, c.keyID, c.metered = serviceID, apiKeyID, true
+func (c *spyChain) DispatchMetered(w http.ResponseWriter, r *http.Request, serviceID, _, _, apiKeyID string, trustReportedCost bool, up http.Handler) {
+	c.serviceID, c.keyID, c.metered, c.trustCost = serviceID, apiKeyID, true, trustReportedCost
 	up.ServeHTTP(w, r)
 }
 
@@ -1318,5 +1319,61 @@ func TestServe_Direct_BackingServiceNotDirect(t *testing.T) {
 	}
 	if built || g.Keys.(*fakeKeys).calls.Load() != 0 {
 		t.Fatalf("a refused request got as far as the key check or the upstream (built=%v)", built)
+	}
+}
+
+// Only a direct provider's upstream is believed about its price: the same
+// response through a tunnel provider leaves the usage row without a cost, so
+// a local model cannot report 0 to slip under a budget.
+func TestServe_ReportedCostOnlyFromDirectProvider(t *testing.T) {
+	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10,"cost":0.5}}`))
+	}
+	for kind, build := range hangupGateways(t, upstream) {
+		t.Run(kind, func(t *testing.T) {
+			url, sink := build()
+			req, _ := http.NewRequest("POST", url+"/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+			req.Header.Set("Authorization", "Bearer sk-good")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != 200 || !strings.Contains(string(body), `"cost":0.5`) {
+				t.Fatalf("status %d body %s", resp.StatusCode, body)
+			}
+			sm := sink.one(t)
+			if sm.TokensIn != 7 || sm.TokensOut != 3 {
+				t.Fatalf("sample = %+v", sm)
+			}
+			switch {
+			case kind == "direct" && (sm.CostUSD == nil || *sm.CostUSD != 0.5):
+				t.Fatalf("direct provider: CostUSD = %v, want 0.5", sm.CostUSD)
+			case kind == "tunnel" && sm.CostUSD != nil:
+				t.Fatalf("tunnel provider: CostUSD = %v, want nil", *sm.CostUSD)
+			}
+		})
+	}
+}
+
+// The gateway tells the chain which kind it is serving.
+func TestServe_TrustFlagFollowsProviderKind(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	post := func(g *Gateway, slug string) {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+		req.Header.Set("Authorization", "Bearer sk-good")
+		g.Serve(httptest.NewRecorder(), req, slug)
+	}
+	tunnel := &spyChain{trustCost: true}
+	post(newGateway(ok, tunnel), "ollama")
+	if !tunnel.metered || tunnel.trustCost {
+		t.Fatalf("tunnel provider: metered=%v trustCost=%v, want true/false", tunnel.metered, tunnel.trustCost)
+	}
+	direct := &spyChain{}
+	post(directGateway(t, func(db.AIProvider) (http.Handler, error) { return ok, nil }, direct), "openrouter")
+	if !direct.metered || !direct.trustCost {
+		t.Fatalf("direct provider: metered=%v trustCost=%v, want true/true", direct.metered, direct.trustCost)
 	}
 }

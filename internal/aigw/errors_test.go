@@ -19,7 +19,7 @@ func TestChain_ErrorWriterFromContext(t *testing.T) {
 
 	// Default: the shape host-routed services have always had.
 	rec := httptest.NewRecorder()
-	chain.DispatchMetered(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body)), "svc1", "h", "", "", up)
+	chain.DispatchMetered(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body)), "svc1", "h", "", "", false, up)
 	if rec.Code != http.StatusRequestEntityTooLarge || rec.Body.String() != `{"error":"request body too large"}` {
 		t.Fatalf("default: status %d body %s", rec.Code, rec.Body.String())
 	}
@@ -33,7 +33,7 @@ func TestChain_ErrorWriterFromContext(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
 	req = req.WithContext(aigw.WithErrorWriter(req.Context(), ew))
 	rec = httptest.NewRecorder()
-	chain.DispatchMetered(rec, req, "svc1", "h", "", "", up)
+	chain.DispatchMetered(rec, req, "svc1", "h", "", "", false, up)
 	if gotStatus != http.StatusRequestEntityTooLarge || gotCode != "request_too_large" || rec.Body.Len() != 0 {
 		t.Fatalf("custom writer: status %d code %q body %s", gotStatus, gotCode, rec.Body.String())
 	}

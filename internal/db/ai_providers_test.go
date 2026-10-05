@@ -3,7 +3,9 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 )
 
 func newDBWithService(t *testing.T) (*DB, string) {
@@ -176,7 +178,7 @@ func TestCreateDirectAIProvider_ForcesDirect(t *testing.T) {
 	}
 }
 
-func TestUpdateAIProviderUpstream(t *testing.T) {
+func TestModifyAIProviderUpstream(t *testing.T) {
 	x, _ := newDBWithService(t)
 	ctx := context.Background()
 	_, p := directFixture(t, x)
@@ -184,7 +186,14 @@ func TestUpdateAIProviderUpstream(t *testing.T) {
 	p.BaseURL, p.CredentialSlot, p.Billing, p.APIFormat = "https://api.z.ai/v4", "ZAI", "flat", "anthropic"
 	p.AuthHeader, p.AuthFormat = "X-Api-Key", "{key}"
 	p.ExtraHeaders = map[string]string{"X-Title": "Burrow"}
-	if err := x.UpdateAIProviderUpstream(ctx, p); err != nil {
+	if err := x.ModifyAIProviderUpstream(ctx, "openrouter", func(stored AIProvider) (AIProvider, error) {
+		if stored.BaseURL != "https://openrouter.ai/api/v1" || stored.CredentialSlot != "OPENROUTER" {
+			t.Errorf("modify was handed %+v, want the stored row", stored)
+		}
+		// Only the upstream settings of the result are stored.
+		p.Name, p.Kind = "Ignored", "tunnel"
+		return p, nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := x.GetAIProvider(ctx, "openrouter")
@@ -197,8 +206,10 @@ func TestUpdateAIProviderUpstream(t *testing.T) {
 		t.Fatalf("after update: %+v", got)
 	}
 
-	p.Slug = "gone"
-	if err := x.UpdateAIProviderUpstream(ctx, p); !errors.Is(err, ErrNotFound) {
+	if err := x.ModifyAIProviderUpstream(ctx, "gone", func(p AIProvider) (AIProvider, error) {
+		t.Error("modify ran for an unknown slug")
+		return p, nil
+	}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown slug err = %v, want ErrNotFound", err)
 	}
 }
@@ -315,9 +326,10 @@ func TestModifyAIProviderUpstream_NoLostUpdate(t *testing.T) {
 		calls++
 		if calls == 1 {
 			// The other admin gets in between this read and this write.
-			other := p
-			other.Billing, other.ExtraHeaders = "flat", map[string]string{"X-Title": "Burrow"}
-			if err := x.UpdateAIProviderUpstream(ctx, other); err != nil {
+			if err := x.ModifyAIProviderUpstream(ctx, "openrouter", func(other AIProvider) (AIProvider, error) {
+				other.Billing, other.ExtraHeaders = "flat", map[string]string{"X-Title": "Burrow"}
+				return other, nil
+			}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -348,5 +360,68 @@ func TestModifyAIProviderUpstream_NoLostUpdate(t *testing.T) {
 	}
 	if err := x.ModifyAIProviderUpstream(ctx, "gone", func(p AIProvider) (AIProvider, error) { return p, nil }); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown slug err = %v", err)
+	}
+}
+
+// A row that changes under every attempt ends in ErrProviderBusy, with the
+// other writer's last value in place.
+func TestModifyAIProviderUpstream_GivesUpWithErrProviderBusy(t *testing.T) {
+	x, _ := newDBWithService(t)
+	ctx := context.Background()
+	directFixture(t, x)
+
+	calls := 0
+	err := x.ModifyAIProviderUpstream(ctx, "openrouter", func(p AIProvider) (AIProvider, error) {
+		calls++
+		if _, err := x.sqlDB.ExecContext(ctx, `UPDATE ai_providers SET credential_slot=? WHERE slug=?`, fmt.Sprintf("SLOT_%d", calls), "openrouter"); err != nil {
+			t.Fatal(err)
+		}
+		p.BaseURL = "https://openrouter.ai/api/v2"
+		return p, nil
+	})
+	if !errors.Is(err, ErrProviderBusy) {
+		t.Fatalf("err = %v, want ErrProviderBusy", err)
+	}
+	if p, _ := x.GetAIProvider(ctx, "openrouter"); calls != 5 || p.BaseURL != "https://openrouter.ai/api/v1" || p.CredentialSlot != "SLOT_5" {
+		t.Fatalf("calls=%d row=%+v", calls, p)
+	}
+}
+
+// The 24 h metrics split each kind into what upstreams reported and the
+// tokens that are left to the price table.
+func TestAIEndpointMetrics24h_ReportedCost(t *testing.T) {
+	x, svc := newDBWithService(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	quarter, zero := 0.25, 0.0
+	for i, ev := range []UsageEvent{
+		{Kind: "openai", TokensIn: 100, TokensOut: 50, CostUSD: &quarter},
+		{Kind: "openai", TokensIn: 10, TokensOut: 5},
+		{Kind: "openai", TokensIn: 7, TokensOut: 3, CostUSD: &zero},
+		{Kind: "anthropic", TokensIn: 4, TokensOut: 2},
+	} {
+		if _, err := x.sqlDB.ExecContext(ctx,
+			`INSERT INTO usage_events(id, service_id, api_key_id, ts, kind, tokens_in, tokens_out, cost_usd)
+			 VALUES(?,?,?,?,?,?,?,?)`,
+			fmt.Sprintf("m-%d", i), svc, "k1", now, ev.Kind, ev.TokensIn, ev.TokensOut, ev.CostUSD); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agg, err := x.AIEndpointMetrics24h(ctx, svc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agg.Requests != 4 || agg.TokensIn != 121 || agg.TokensOut != 60 {
+		t.Fatalf("totals = %+v", agg)
+	}
+	byKind := map[string]AIEndpointKindTokens{}
+	for _, k := range agg.ByKind {
+		byKind[k.Kind] = k
+	}
+	if k := byKind["openai"]; k.TokensIn != 117 || k.TokensOut != 58 || k.ReportedUSD != 0.25 || k.PricedTokensIn != 10 || k.PricedTokensOut != 5 {
+		t.Errorf("openai = %+v, want tokens 117/58, reported 0.25, priced 10/5", k)
+	}
+	if k := byKind["anthropic"]; k.ReportedUSD != 0 || k.PricedTokensIn != 4 || k.PricedTokensOut != 2 {
+		t.Errorf("anthropic = %+v, want reported 0, priced 4/2", k)
 	}
 }

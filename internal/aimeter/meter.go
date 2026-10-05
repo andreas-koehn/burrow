@@ -220,6 +220,11 @@ func (s *Stream) recordCost(usd float64) {
 	s.costUSD, s.hasCost = usd, true
 }
 
+// clearCost is called by parsers when a usage chunk carries no valid cost.
+func (s *Stream) clearCost() {
+	s.costUSD, s.hasCost = 0, false
+}
+
 // Cost returns the cost the upstream reported for this response, if any. A
 // stream that was cut off before its usage chunk reports none.
 func (s *Stream) Cost() (float64, bool) {

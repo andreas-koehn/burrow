@@ -38,7 +38,8 @@ type Chain interface {
 	// Dispatch is pass-through for a service without AI config (no usage row).
 	Dispatch(w http.ResponseWriter, r *http.Request, serviceID, localHost, apiKeyHeader, apiKeyID string, upstream http.Handler)
 	// DispatchMetered always runs the chain and records usage.
-	DispatchMetered(w http.ResponseWriter, r *http.Request, serviceID, localHost, apiKeyHeader, apiKeyID string, upstream http.Handler)
+	// trustReportedCost lets the upstream's own cost figure into the usage row.
+	DispatchMetered(w http.ResponseWriter, r *http.Request, serviceID, localHost, apiKeyHeader, apiKeyID string, trustReportedCost bool, upstream http.Handler)
 }
 
 // ModelLister reads a provider's stored model list.
@@ -130,7 +131,9 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 	// Only inference calls are metered. A model listing or a health probe
 	// must not show up as usage.
 	if r.Method == http.MethodPost {
-		g.Chain.DispatchMetered(w, r, p.ServiceID, host, "Authorization", keyID, upstream)
+		// Only an upstream the relay calls itself is believed about what a
+		// request cost. A tunnelled model is run by whoever holds the tunnel.
+		g.Chain.DispatchMetered(w, r, p.ServiceID, host, "Authorization", keyID, p.Kind == "direct", upstream)
 		return
 	}
 	g.Chain.Dispatch(w, r, p.ServiceID, host, "Authorization", keyID, upstream)

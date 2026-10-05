@@ -13,6 +13,10 @@ import (
 // service already backs another provider.
 var ErrDuplicateProvider = errors.New("db: provider slug or service already in use")
 
+// ErrProviderBusy is returned by ModifyAIProviderUpstream when other writers
+// changed the row under every one of its attempts.
+var ErrProviderBusy = errors.New("db: provider is being changed concurrently")
+
 const aiProviderCols = `slug, name, kind, service_id, api_format, base_url, credential_slot, auth_header, auth_format, extra_headers, billing, created_at`
 
 func scanAIProvider(row interface{ Scan(...any) error }) (AIProvider, error) {
@@ -120,22 +124,6 @@ func (x *DB) CreateDirectAIProvider(ctx context.Context, svc Service, p AIProvid
 	return nil
 }
 
-// UpdateAIProviderUpstream replaces the upstream settings of the provider p.Slug.
-func (x *DB) UpdateAIProviderUpstream(ctx context.Context, p AIProvider) error {
-	headers, err := json.Marshal(nonNilHeaders(p.ExtraHeaders))
-	if err != nil {
-		return fmt.Errorf("update ai provider upstream: extra_headers: %w", err)
-	}
-	res, err := x.sqlDB.ExecContext(ctx,
-		`UPDATE ai_providers SET base_url=?, credential_slot=?, auth_header=?, auth_format=?, extra_headers=?, billing=?, api_format=? WHERE slug=?`,
-		p.BaseURL, p.CredentialSlot, orDefault(p.AuthHeader, "Authorization"), orDefault(p.AuthFormat, "Bearer {key}"),
-		string(headers), orDefault(p.Billing, "metered"), p.APIFormat, p.Slug)
-	if err != nil {
-		return fmt.Errorf("update ai provider upstream: %w", err)
-	}
-	return notFoundIfNoRows(res, "update ai provider upstream")
-}
-
 // modifyUpstreamAttempts bounds how often ModifyAIProviderUpstream starts
 // over because another writer changed the row in between.
 const modifyUpstreamAttempts = 5
@@ -145,7 +133,8 @@ const modifyUpstreamAttempts = 5
 // while the row still holds the settings that were read, and modify runs
 // again on the fresh row when another writer got in between. So two
 // concurrent updates cannot lose one another's fields. modify's error stops
-// the update and is returned as is. ErrNotFound when no provider has the slug.
+// the update and is returned as is. ErrNotFound when no provider has the
+// slug; ErrProviderBusy when the row changed under every attempt.
 func (x *DB) ModifyAIProviderUpstream(ctx context.Context, slug string, modify func(AIProvider) (AIProvider, error)) error {
 	for i := 0; i < modifyUpstreamAttempts; i++ {
 		old, oldHeaders, err := scanAIProviderRaw(x.sqlDB.QueryRowContext(ctx,
@@ -182,7 +171,7 @@ func (x *DB) ModifyAIProviderUpstream(ctx context.Context, slug string, modify f
 		}
 		// The row changed or is gone; the next read tells which.
 	}
-	return fmt.Errorf("modify ai provider upstream %s: the row kept changing", slug)
+	return fmt.Errorf("modify ai provider upstream %s: %w", slug, ErrProviderBusy)
 }
 
 // DeleteAIProviderAndBacking deletes the provider and, for kind "direct", its

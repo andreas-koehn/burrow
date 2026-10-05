@@ -116,7 +116,13 @@ func (f *fakeCostEngine) CurrentUsdFor(_ context.Context, _ db.Budget) (float64,
 	return 0, nil
 }
 
-func (f *fakeCostEngine) UsdFor(_ string, _, _ int) float64 { return 0 }
+func (f *fakeCostEngine) UsdFor(model string, in, out int) float64 {
+	e, ok := f.Pricing().Lookup(model)
+	if !ok {
+		return 0
+	}
+	return float64(in)*e.InputPerMillion/1_000_000 + float64(out)*e.OutputPerMillion/1_000_000
+}
 
 // --- /cost/pricing -----------------------------------------------------------
 
