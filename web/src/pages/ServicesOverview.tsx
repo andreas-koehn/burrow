@@ -2,12 +2,17 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { PageHeader, MetricStrip, MetricTile, ErrorNotice, Button, SkeletonRows } from "@/components/ds";
 import { SetupChecklist, type ChecklistStep } from "@/components/SetupChecklist";
+import { InstallLines } from "@/components/InstallLines";
 import { useAuth } from "@/auth/useAuth";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { GLOSSARY } from "@/lib/glossary";
 import { useRelayNotices } from "@/lib/useRelayNotices";
 import type { ClientView, ConnectionLog, Service } from "@/lib/contract";
+
+// The three lines of the Connect page, split over the first two steps.
+const SIGN_IN_LINES = ["install", "login"] as const;
+const RUN_LINE = ["run"] as const;
 
 /** A client token as GET /tokens lists it. */
 interface Token { id: string; name: string; last_used: string | null; created_at: string; }
@@ -61,22 +66,25 @@ export default function ServicesOverview() {
   // and stays away when one of them failed.
   const checklistReady = !authLoading && services.isSuccess && tokens.isSuccess
     && (!isAdmin || (clients.isSuccess && anyTraffic.isSuccess));
+  // The relay serves this dashboard, so its address is where the page came from.
+  const relayOrigin = typeof window !== "undefined" ? window.location.origin : "";
   const steps: ChecklistStep[] = [
     {
       id: "token",
-      title: "Create a client token",
-      description: "A token is what a machine signs in to this relay with.",
+      title: "Install and sign in",
+      description: "Install burrow on your machine and sign it in to this relay with a client token.",
       // GET /tokens lists only the caller's own tokens. A client, a live or a
       // saved service proves that somebody's token did the job.
       done: toks.length > 0 || cls.length > 0 || liveNow > 0 || svc.length > 0,
-      action: { label: "Create a token", to: "/clients?tab=tokens" },
+      content: <InstallLines relayOrigin={relayOrigin} lines={SIGN_IN_LINES} />,
     },
     {
       id: "client",
       title: "Connect a client",
-      description: "Run burrow connect on your machine; that registers it as a client of this relay.",
+      description: "Run burrow on your machine; that registers it as a client of this relay.",
       // A used token or a live service is proof enough for someone who cannot list clients.
       done: cls.length > 0 || toks.some((t) => t.last_used) || liveNow > 0,
+      content: <InstallLines relayOrigin={relayOrigin} lines={RUN_LINE} />,
       action: { label: "Connect a client", to: "/clients/connect" },
     },
     {

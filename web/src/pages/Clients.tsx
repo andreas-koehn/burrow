@@ -7,10 +7,35 @@ import { useAuth } from "@/auth/useAuth";
 import { formatBytes } from "@/lib/format";
 import { Input, Badge, PageHeader, SkeletonRows, Tabs } from "@/components/ds";
 import { ClientTokensPanel } from "@/components/ClientTokensPanel";
-import type { ClientView } from "@/lib/contract";
+import type { ClientDiscovery, ClientView } from "@/lib/contract";
+
+/** MAJOR.MINOR.PATCH with an optional v; anything else (develop, a commit) has no order. */
+function versionNumbers(v: string): [number, number, number] | null {
+  const m = /^v?(\d{1,9})\.(\d{1,9})\.(\d{1,9})$/.exec(v.trim());
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/** True only when both are release versions and the client's is the lower one. */
+function olderThan(client: string, relay: string | undefined): boolean {
+  const c = versionNumbers(client);
+  const r = relay === undefined ? null : versionNumbers(relay);
+  if (!c || !r) return false;
+  for (let i = 0; i < 3; i++) {
+    if (c[i] !== r[i]) return c[i]! < r[i]!;
+  }
+  return false;
+}
 
 function ClientList() {
   const [q, setQ] = useState("");
+  // The relay's own version, to mark clients that are behind it. Without an answer nothing is marked.
+  const relay = useQuery({
+    queryKey: ["client-discovery"],
+    queryFn: () => apiFetch<ClientDiscovery>("/client/discovery"),
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
+  const relayVersion = relay.data?.version;
   const { data, isLoading, error } = useQuery({
     queryKey: ["clients"],
     queryFn: () => apiFetch<ClientView[]>("/clients"),
@@ -42,12 +67,22 @@ function ClientList() {
       ) : (
         <div className="table-wrap">
           <table className="data" aria-label="Clients">
-            <thead><tr><th>Client</th><th>Platform</th><th>Remote IP</th><th>Status</th><th>Services</th><th>Traffic</th><th className="col-actions"></th></tr></thead>
+            <thead><tr><th>Client</th><th>Platform</th><th>Version</th><th>Remote IP</th><th>Status</th><th>Services</th><th>Traffic</th><th className="col-actions"></th></tr></thead>
             <tbody>
               {rows.map((c) => (
                 <tr key={c.session_id}>
                   <td>{c.token_name}<div className="muted mono">{c.session_id}</div></td>
-                  <td>{c.os} · burrow {c.client_version}</td>
+                  <td>{c.os} · {c.arch}</td>
+                  <td>
+                    <span className="row row-center gap-2">
+                      <span className="mono">{c.client_version || "—"}</span>
+                      {olderThan(c.client_version, relayVersion) && (
+                        <Badge kind="status-idle" nodot>
+                          update available<span className="visually-hidden"> (older than the relay)</span>
+                        </Badge>
+                      )}
+                    </span>
+                  </td>
                   <td className="col-created">{c.remote_addr}</td>
                   {/* P1-8 — every row of /clients comes from the live session
                       registry, so presence in the list IS the "connected"

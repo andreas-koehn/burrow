@@ -1,5 +1,5 @@
 import type {
-  UserAdmin, RoleSummary, Session, ClientDetail, SettingsMap, AiProviderModel,
+  UserAdmin, RoleSummary, Session, ClientDetail, ClientDiscovery, SettingsMap, AiProviderModel,
   Service, ServiceApiKey, CostSummary, ServiceAIConfig,
   InspectorEntry, CacheSettings, RedactionRule, RedactionSettings,
   GuardrailPattern, GuardrailSettingsResponse, Budget, PricingTable, AuditEvent, Webhook,
@@ -58,6 +58,8 @@ export interface MockDb {
   me: { id: string; email: string; role: "admin" | "user" };
   csrf: string;
   connectServer: string;
+  /** GET /client/discovery */
+  discovery: ClientDiscovery;
   users: UserAdmin[];
   roles: RoleSummary[];
   rolePerms: Record<string, string[]>;
@@ -113,6 +115,7 @@ function seed(): MockDb {
     me: { id: meId, email: "alice@acme.io", role: "admin" },
     csrf: "test-csrf-token",
     connectServer: "relay.example.com:7000",
+    discovery: { control: "relay.example.com:7000", version: "0.6.0", min_client_version: "0.1.0", protocol_version: 1 },
     users: [
       { id: meId, email: "alice@acme.io", role: "admin", status: "active", last_login: "2026-05-18T09:00:00Z", created_at: "2026-01-12T08:00:00Z" },
       { id: "bur_usr_bob0002", email: "bob@acme.io", role: "user", status: "active", last_login: null, created_at: "2026-02-01T08:00:00Z" },

@@ -368,6 +368,8 @@ export const handlers = [
     return json(db.clients.map(({ services: _services, ...v }) => v));
   }),
   http.get("/api/v1/clients/connect-info", ({ request }) => gate(request) ?? json({ server: db.connectServer })),
+  // Public: a client asks before it has a token.
+  http.get("/api/v1/client/discovery", () => json(db.discovery)),
   http.get("/api/v1/clients/:id", ({ request, params }) => {
     const g = gate(request, { admin: true }); if (g) return g;
     const c = db.clients.find((x) => x.session_id === params.id);

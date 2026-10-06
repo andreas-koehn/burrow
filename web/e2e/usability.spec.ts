@@ -54,6 +54,9 @@ test.describe("Onboarding success loop", () => {
     await page.goto("/clients/connect");
     await expect(page.getByRole("heading", { name: "Connect a client" })).toBeVisible();
 
+    // The form lives behind "Other ways to connect" since the page leads with the three lines.
+    await page.getByRole("button", { name: "Other ways to connect" }).click();
+
     // Fill form fields
     const localInput = page.getByLabel("Local address");
     await localInput.clear();
@@ -67,18 +70,17 @@ test.describe("Onboarding success loop", () => {
     await expect(page.getByRole("heading", { name: /run on the client/i })).toBeVisible();
 
     // Command shows the real relay endpoint (not a hardcoded placeholder)
-    const cmdBlock = page.locator("pre.cmd-block code");
+    const cmdBlock = page.locator("pre#connect-command code");
     await expect(cmdBlock).toBeVisible();
     const cmdText = (await cmdBlock.textContent()) ?? "";
     expect(cmdText).toContain("--server ");
     expect(cmdText).toContain(`--name ${clientName}`);
 
     // Command block uses the .wrap class — pre-wrap / break-all applied
-    await expect(page.locator("pre.cmd-block.wrap")).toBeVisible();
+    await expect(page.locator("pre#connect-command.cmd-block.wrap")).toBeVisible();
 
     // Waiting indicator (D9 honest state) — no real client connecting in CI
-    const statusDiv = page.locator("[role=status]").last();
-    await expect(statusDiv.getByText(/waiting for/i)).toBeVisible();
+    await expect(page.locator("[role=status]").filter({ hasText: /to connect…/ })).toBeVisible();
   });
 });
 

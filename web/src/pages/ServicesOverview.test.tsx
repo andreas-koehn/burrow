@@ -16,10 +16,11 @@ const tiles = (el: HTMLElement) =>
   ]);
 const checklist = () => screen.findByRole("list", { name: "Set up Services" });
 const stepStates = (list: HTMLElement) =>
-  within(list).getAllByRole("listitem").map((li) => [
-    within(li).getByRole("button").textContent,
+  // The open step may hold a list of its own (the commands), so only the steps count.
+  within(list).getAllByRole("listitem").filter((li) => li.classList.contains("setup-step")).map((li) => [
+    li.querySelector(".setup-step-title")?.textContent,
     li.querySelector(".visually-hidden")?.textContent,
-    within(li).getByRole("button").getAttribute("aria-expanded"),
+    li.querySelector(".setup-step-title")?.getAttribute("aria-expanded"),
   ]);
 
 describe("ServicesOverview", () => {
@@ -62,16 +63,40 @@ describe("ServicesOverview", () => {
     renderApp(<ServicesOverview />);
     const list = await checklist();
     expect(stepStates(list)).toEqual([
-      ["Create a client token", "to do", "true"],
+      ["Install and sign in", "to do", "true"],
       ["Connect a client", "to do", "false"],
       ["Expose a service", "to do", "false"],
       ["Receive the first request", "to do", "false"],
     ]);
     expect(screen.getByText("0 of 4 done")).toBeInTheDocument();
-    expect(within(list).getByRole("link", { name: "Create a token" })).toHaveAttribute("href", "/clients?tab=tokens");
     // The glossary sentences of the old explainer card live on as the steps' descriptions.
-    expect(list.textContent).toMatch(/burrow connect/);
     expect(list.textContent).toMatch(/access mode/i);
+  });
+
+  it("the first two steps show the commands instead of sending the reader to the token page", async () => {
+    db.tokens = []; db.clients = []; db.services = []; db.connectionLogs = [];
+    const { default: userEvent } = await import("@testing-library/user-event");
+    renderApp(<ServicesOverview />);
+    const list = await checklist();
+    const [first, second] = within(list).getAllByRole("listitem").filter((li) => li.classList.contains("setup-step"));
+    const lines = (li: HTMLElement) => Array.from(li.querySelectorAll(".install-line pre code")).map((c) => c.textContent);
+    // Install and sign in: the first two lines, for the relay this dashboard is served from.
+    expect(lines(first!)).toEqual([
+      `curl -fsSL ${window.location.origin}/install.sh | sh`,
+      `burrow login ${window.location.origin} --token -`,
+    ]);
+    expect(within(first!).getByRole("radiogroup", { name: "Operating system" })).toBeInTheDocument();
+    expect(within(first!).getByRole("button", { name: "Copy install command" })).toBeInTheDocument();
+    expect(within(first!).getByRole("button", { name: "Copy sign-in command" })).toBeInTheDocument();
+    expect(within(list).queryByRole("link", { name: "Create a token" })).toBeNull();
+    // The sign-in asks for a token, so the way to one stays within reach.
+    expect(within(first!).getByRole("link", { name: "Clients, tab Tokens" })).toHaveAttribute("href", "/clients?tab=tokens");
+    // Connect a client: the third line.
+    await userEvent.click(within(list).getByRole("button", { name: "Connect a client" }));
+    expect(lines(second!)).toEqual(["burrow http 3000"]);
+    expect(within(second!).getByRole("button", { name: "Copy run command" })).toBeInTheDocument();
+    expect(within(second!).queryByRole("radiogroup")).toBeNull();
+    expect(list.textContent).not.toMatch(/burrow connect/);
   });
 
   it("follows the relay: with a token and a connected client the third step is the open one", async () => {
@@ -79,7 +104,7 @@ describe("ServicesOverview", () => {
     renderApp(<ServicesOverview />);
     const list = await checklist();
     expect(stepStates(list)).toEqual([
-      ["Create a client token", "done", "false"],
+      ["Install and sign in", "done", "false"],
       ["Connect a client", "done", "false"],
       ["Expose a service", "to do", "true"],
       ["Receive the first request", "to do", "false"],
@@ -158,7 +183,7 @@ describe("ServicesOverview", () => {
     const el = await strip();
     expect(tiles(el).map((t) => t[1])).toEqual(["—", "0", "0", "—"]);
     // The traffic log is admin-only, so its step is not theirs to tick off.
-    expect(stepStates(list).map((s) => s[0])).toEqual(["Create a client token", "Connect a client", "Expose a service"]);
+    expect(stepStates(list).map((s) => s[0])).toEqual(["Install and sign in", "Connect a client", "Expose a service"]);
     expect(asked).toEqual([]);
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByText(/email isn't set up/i)).toBeNull();
@@ -188,7 +213,7 @@ describe("ServicesOverview", () => {
     renderApp(<ServicesOverview />);
     const list = await checklist();
     expect(stepStates(list).map((s) => [s[0], s[1]])).toEqual([
-      ["Create a client token", "done"],
+      ["Install and sign in", "done"],
       ["Connect a client", "to do"],
       ["Expose a service", "done"],
       ["Receive the first request", "to do"],

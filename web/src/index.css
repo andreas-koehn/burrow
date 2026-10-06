@@ -2774,3 +2774,30 @@ button.setup-step-title:focus-visible { outline: 2px solid var(--ring); outline-
   z-index: 50;
   pointer-events: none;
 }
+
+/* ──────────────────────────────────────────────────────────────
+   InstallLines — the commands that bring a client online, one per
+   row with its copy button; the Connect page's waiting state and
+   its "Other ways to connect" section.
+   ────────────────────────────────────────────────────────────── */
+.install-lines { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-md); min-width: 0; }
+.install-lines > p { margin: 0; }
+.install-lines-list {
+  align-self: stretch;
+  display: flex; flex-direction: column; gap: var(--space-md);
+  margin: 0; padding: 0; list-style: none; min-width: 0;
+}
+.install-line { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.install-line > p { margin: 0; }
+.install-line-label { font-size: 12.5px; font-weight: 500; color: var(--foreground); }
+.install-line .cmd-block { min-width: 0; }
+.install-line .icon-btn { flex-shrink: 0; }
+/* Empty until something was copied; it keeps its line so nothing jumps. */
+.install-lines-status { min-height: 1.4em; }
+.setup-step-panel > .install-lines { align-self: stretch; }
+.connect-wait { display: flex; align-items: center; gap: var(--space-sm); margin-top: var(--space-md); }
+.connect-other-head { margin: 0; }
+.connect-downloads { display: flex; flex-direction: column; gap: var(--space-sm); margin: var(--space-md) 0; padding: 0; list-style: none; }
+.connect-downloads li { display: flex; flex-wrap: wrap; gap: var(--space-md); align-items: baseline; }
+.connect-downloads-os { min-width: 5.5em; font-weight: 500; }
+.connect-wait-done { color: var(--success); flex-shrink: 0; }

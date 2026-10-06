@@ -21,6 +21,8 @@ test("22-clients: all 3 seeded clients visible + connected", async ({ page }) =>
 test("22-clients: Connect-a-client wizard mints a token", async ({ page }) => {
   await loginAsAdmin(page);
   await page.goto("/clients/connect");
+  // The form lives behind "Other ways to connect" since the page leads with the three lines.
+  await page.getByRole("button", { name: "Other ways to connect" }).click();
 
   await page.getByLabel("Client name").fill(`spec-22-${Date.now()}`);
   await page.getByRole("button", { name: /generate token/i }).click();

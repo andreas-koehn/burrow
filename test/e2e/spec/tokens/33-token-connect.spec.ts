@@ -22,6 +22,8 @@ const TUNNEL_NAME = `ephem-${Date.now().toString().slice(-6)}`;
 test("33-token-connect: UI-minted token connects a real client + traffic flows", async ({ page, request }) => {
   // 1. Mint a token via the Connect-a-client wizard UI (reuse spec 22 selectors).
   await page.goto("/clients/connect");
+  // The form lives behind "Other ways to connect" since the page leads with the three lines.
+  await page.getByRole("button", { name: "Other ways to connect" }).click();
 
   // Fill the client name and generate a token.
   await page.getByLabel("Client name").fill(TUNNEL_NAME);

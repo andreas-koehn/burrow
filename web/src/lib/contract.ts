@@ -77,6 +77,14 @@ export interface ClientView {
   total_bytes_out: number;
 }
 
+/** GET /client/discovery: what a client may know before it has a token. Public. */
+export interface ClientDiscovery {
+  control: string;
+  version: string;
+  min_client_version: string;
+  protocol_version: number;
+}
+
 export interface ClientDetail extends ClientView {
   services: ServiceView[];
 }

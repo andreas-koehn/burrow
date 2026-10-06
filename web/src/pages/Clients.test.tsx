@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { server } from "@/mocks/server";
@@ -47,6 +47,63 @@ describe("Clients overview", () => {
     await screen.findByText("office-box-1");
     const link = screen.getByRole("link", { name: /view \d+ services for office-box-1/i });
     expect(link).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
+  });
+});
+
+describe("Clients — version", () => {
+  const row = async () => (await screen.findByText("office-box-1")).closest("tr")!;
+  const versionCell = (tr: HTMLElement) => {
+    const at = within(screen.getByRole("table", { name: "Clients" })).getAllByRole("columnheader").findIndex((h) => h.textContent === "Version");
+    return within(tr).getAllByRole("cell")[at]!;
+  };
+
+  it("has a Version column with the client's version", async () => {
+    mount();
+    const tr = await row();
+    expect(within(screen.getByRole("table", { name: "Clients" })).getByRole("columnheader", { name: "Version" })).toBeInTheDocument();
+    expect(versionCell(tr)).toHaveTextContent("0.2.0");
+  });
+
+  it("marks a client older than the relay", async () => {
+    // Seed: client 0.2.0, relay 0.6.0.
+    mount();
+    const tr = await row();
+    const badge = await within(tr).findByText("update available");
+    expect(badge.closest(".badge")).toHaveTextContent("update available (older than the relay)");
+    expect(badge.closest(".badge")!.querySelector(".visually-hidden")).toHaveTextContent("(older than the relay)");
+  });
+
+  it.each([
+    ["the same version", "0.6.0", "0.6.0"],
+    ["the same version with a v", "v0.6.0", "0.6.0"],
+    ["a newer client", "0.10.0", "0.9.9"],
+    ["a client build without a version number", "develop", "0.6.0"],
+    ["no client version", "", "0.6.0"],
+    ["a relay build without a version number", "0.2.0", "develop"],
+  ])("has no mark for %s", async (_label, clientVersion, relayVersion) => {
+    db.clients[0]!.client_version = clientVersion;
+    db.discovery.version = relayVersion;
+    const { qc } = mount();
+    const tr = await row();
+    await waitFor(() => expect(qc.isFetching()).toBe(0));
+    expect(within(tr).queryByText("update available")).toBeNull();
+    expect(versionCell(tr)).toHaveTextContent(clientVersion || "—");
+  });
+
+  it("compares number by number: 0.9.9 is older than 0.10.0", async () => {
+    db.clients[0]!.client_version = "0.9.9";
+    db.discovery.version = "v0.10.0";
+    mount();
+    expect(await within(await row()).findByText("update available")).toBeInTheDocument();
+  });
+
+  it("has no mark when the relay does not say its version", async () => {
+    server.use(http.get("/api/v1/client/discovery", () => HttpResponse.json({ error: "not found" }, { status: 404 })));
+    const { qc } = mount();
+    const tr = await row();
+    await waitFor(() => expect(qc.isFetching()).toBe(0));
+    expect(within(tr).queryByText("update available")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });
 

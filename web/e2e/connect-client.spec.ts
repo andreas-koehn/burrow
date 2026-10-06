@@ -21,6 +21,17 @@ test("connect-client: fill fields, mint, check command and waiting indicator", a
   // ── 2. Page-level explainer must be visible ──────────────────────────────
   await expect(page.getByText(/machine running/i)).toBeVisible();
 
+  // ── 2a. The three lines come first; none of them holds a token ───────────
+  for (const name of ["Copy install command", "Copy sign-in command", "Copy run command"]) {
+    await expect(page.getByRole("button", { name })).toBeVisible();
+  }
+  await expect(page.locator(".install-line pre code")).toHaveText([
+    /\/install\.(sh \| sh|ps1 \| iex)$/, /^burrow login .+ --token -$/, "burrow http 3000",
+  ]);
+
+  // The form lives behind "Other ways to connect" since the page leads with the three lines.
+  await page.getByRole("button", { name: "Other ways to connect" }).click();
+
   // ── 3. Fill in the What to expose section ────────────────────────────────
   // The "Local address" field defaults to 127.0.0.1:3000; override it.
   const localInput = page.getByLabel("Local address");
@@ -44,7 +55,7 @@ test("connect-client: fill fields, mint, check command and waiting indicator", a
   // ── 5. Assert command shows the real relay endpoint ───────────────────────
   // The /clients/connect-info endpoint returns the server's actual listen addr.
   // We assert the command contains the connect-info server value (not hardcoded).
-  const cmdBlock = page.locator("pre.cmd-block code");
+  const cmdBlock = page.locator("pre#connect-command code");
   await expect(cmdBlock).toBeVisible();
   const cmdText = await cmdBlock.textContent() ?? "";
   expect(cmdText).toContain("--server ");
@@ -58,7 +69,7 @@ test("connect-client: fill fields, mint, check command and waiting indicator", a
   // The .cmd-block.wrap variant allows the pre to wrap rather than overflow.
   // In a standard viewport it may still scroll if truly long, but the CSS
   // class must be applied (pre-wrap / break-all) so overflow is visual only.
-  const preEl = page.locator("pre.cmd-block.wrap");
+  const preEl = page.locator("pre#connect-command.cmd-block.wrap");
   await expect(preEl).toBeVisible();
   // Verify the wrap class is present (compile-check that CSS is applied)
   await expect(preEl).toHaveClass(/wrap/);
@@ -66,21 +77,23 @@ test("connect-client: fill fields, mint, check command and waiting indicator", a
   // ── 7. Waiting indicator ──────────────────────────────────────────────────
   // Since no burrow client is running in the e2e test environment, the
   // success-loop poller shows "Waiting for <name> to connect…".
-  const statusDiv = page.locator("[role=status]").last();
-  await expect(statusDiv.getByText(/waiting for/i)).toBeVisible();
+  await expect(page.locator("[role=status]").filter({ hasText: /to connect…/ })).toBeVisible();
 
   // ── 8. Relay endpoint explainer is visible ────────────────────────────────
   await expect(page.getByText(/reachable address/i)).toBeVisible();
 
-  // ── 9. Copy install command button is present ─────────────────────────────
+  // ── 9. Copy connect command button is present; the command holds no token ──
+  expect(cmdText).toContain('--token "$BURROW_TOKEN"');
   await expect(
-    page.getByRole("button", { name: /copy install command/i }),
+    page.getByRole("button", { name: /copy connect command/i }),
   ).toBeVisible();
 });
 
 test("connect-client: HTTP mode omits --remote and adds --type http", async ({ page }) => {
   await page.goto("/clients/connect");
   await expect(page.getByRole("heading", { name: "Connect a client" })).toBeVisible();
+  // The form lives behind "Other ways to connect" since the page leads with the three lines.
+  await page.getByRole("button", { name: "Other ways to connect" }).click();
 
   // Switch protocol to HTTP — target the Select trigger by its id
   const protocolTrigger = page.locator("#ob-protocol");
@@ -97,7 +110,7 @@ test("connect-client: HTTP mode omits --remote and adds --type http", async ({ p
 
   await expect(page.getByRole("heading", { name: /run on the client/i })).toBeVisible();
 
-  const cmdText = (await page.locator("pre.cmd-block code").textContent()) ?? "";
+  const cmdText = (await page.locator("pre#connect-command code").textContent()) ?? "";
   expect(cmdText).toContain("--type http");
   expect(cmdText).not.toContain("--remote");
 });
