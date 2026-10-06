@@ -14,8 +14,10 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ankoehn/burrow/internal/aigateway"
+	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/proxy"
+	"github.com/ankoehn/burrow/internal/store"
 )
 
 type noProviders struct{}
@@ -111,12 +113,104 @@ func TestRouter_MountsAIGateway(t *testing.T) {
 		}
 	}
 
-	// The reserved slug is refused by the router's handler without a lookup.
-	strict := NewRouter(Deps{AIGateway: &aigateway.Gateway{Providers: strictProviders{t}, Log: discardLog()}, Log: discardLog()})
+}
+
+type gwKeys map[string]store.GatewayKey
+
+func (k gwKeys) ValidateGatewayKey(_ context.Context, presented string) (store.GatewayKey, bool, error) {
+	key, ok := k[presented]
+	return key, ok, nil
+}
+
+// The dialect endpoints answer at /openai/v1 and /ai/v1. Nothing under
+// /openai/ or /ai/v1 is the dashboard's or a provider named "v1".
+func TestRouter_MountsDialectEndpoints(t *testing.T) {
+	spa := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html>"))
+	})
+	// strictProviders: no path below may be taken for a provider path.
+	strict := NewRouter(Deps{AIGateway: &aigateway.Gateway{Providers: strictProviders{t}, Log: discardLog()}, SPA: spa, Log: discardLog()})
+	for _, p := range []string{"/openai/v1/models", "/ai/v1/models", "/openai/v1", "/ai/v1", "/ai/v1/", "/openai", "/openai/", "/openai/index.html", "/openai/v1/chat/completions"} {
+		for _, method := range []string{"GET", "POST"} {
+			rec := httptest.NewRecorder()
+			strict.ServeHTTP(rec, httptest.NewRequest(method, p, strings.NewReader(`{"model":"x"}`)))
+			if rec.Code != http.StatusUnauthorized || aiErrCode(t, rec) != "invalid_api_key" || rec.Header().Get("Burrow-Error-Code") != "invalid_api_key" {
+				t.Errorf("%s %s: status %d body %s", method, p, rec.Code, rec.Body.String())
+			}
+			if rec.Header().Get("Burrow-Request-Id") == "" {
+				t.Errorf("%s %s: missing Burrow-Request-Id", method, p)
+			}
+		}
+	}
+
+	// With a key the gateway sees the path from "/v1" on, under both prefixes.
+	var gotPath string
+	g := &aigateway.Gateway{
+		Providers:   oneDirect{},
+		GatewayKeys: gwKeys{"bgw_k": {ID: "gk"}},
+		Direct: func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { gotPath = r.URL.Path }), nil
+		},
+		ServicePolicy: func(_ context.Context, id string) (*proxy.Resolved, error) {
+			return &proxy.Resolved{ServiceID: id, AccessMode: "api_key"}, nil
+		},
+		Log: discardLog(),
+	}
+	h := NewRouter(Deps{AIGateway: g, SPA: spa, Log: discardLog()})
+	for _, prefix := range []string{"/openai", "/ai"} {
+		gotPath = ""
+		req := httptest.NewRequest("POST", prefix+"/v1/chat/completions", strings.NewReader(`{"model":"zai/glm"}`))
+		req.Header.Set("Authorization", "Bearer bgw_k")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != 200 || gotPath != "/v1/chat/completions" || rec.Header().Get("Burrow-Provider") != "zai" {
+			t.Errorf("%s: status %d upstream path %q body %s", prefix, rec.Code, gotPath, rec.Body.String())
+		}
+	}
+	for p, want := range map[string]string{"/openai/": "endpoint_not_found", "/openai/v2/models": "endpoint_not_found", "/ai/v1/nope": "endpoint_not_found"} {
+		req := httptest.NewRequest("GET", p, nil)
+		req.Header.Set("Authorization", "Bearer bgw_k")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound || aiErrCode(t, rec) != want {
+			t.Errorf("%s: status %d body %s", p, rec.Code, rec.Body.String())
+		}
+	}
+
+	// /ai/<provider>/… still reaches the provider path.
 	rec := httptest.NewRecorder()
-	strict.ServeHTTP(rec, httptest.NewRequest("GET", "/ai/v1/models", nil))
+	NewRouter(Deps{AIGateway: &aigateway.Gateway{Providers: noProviders{}, Log: discardLog()}, SPA: spa, Log: discardLog()}).
+		ServeHTTP(rec, httptest.NewRequest("GET", "/ai/ollama/v1/models", nil))
 	if rec.Code != http.StatusNotFound || aiErrCode(t, rec) != "provider_not_found" {
-		t.Errorf("/ai/v1/models: status %d body %s", rec.Code, rec.Body.String())
+		t.Errorf("/ai/ollama/v1/models: status %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+type oneDirect struct{}
+
+func (oneDirect) ProviderBySlug(_ context.Context, slug string) (db.AIProvider, error) {
+	return db.AIProvider{Slug: slug, Kind: "direct", ServiceID: "prov-" + slug, APIFormat: "openai"}, nil
+}
+
+type panicKeys struct{}
+
+func (panicKeys) ValidateGatewayKey(context.Context, string) (store.GatewayKey, bool, error) {
+	panic("boom: secret-detail")
+}
+
+// A panic on a dialect endpoint is answered as a JSON 500, like on /ai/<provider>/.
+func TestRouter_DialectPanicIsJSON500(t *testing.T) {
+	h := NewRouter(Deps{AIGateway: &aigateway.Gateway{GatewayKeys: panicKeys{}, Log: discardLog()}, Log: discardLog()})
+	req := httptest.NewRequest("GET", "/openai/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer bgw_k")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError || aiErrCode(t, rec) != "internal_error" {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "secret-detail") {
+		t.Fatal("panic text leaked to the client")
 	}
 }
 

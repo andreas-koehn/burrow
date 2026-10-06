@@ -215,6 +215,20 @@ curl -s -N -o /dev/null --max-time 0.4 -H "$AUTH" -H 'Content-Type: application/
 OK=""; for _ in $(seq 1 20); do [ "$(( $(metric requests_24h) - BEFORE ))" = "1" ] && { OK=yes; break; }; sleep 1; done
 check "ai: usage is recorded after a hangup mid-stream" "$OK" "yes"
 
+# --- global endpoint -----------------------------------------------------------
+# One base URL for every model: /openai/v1 (and /ai/v1), authenticated with a
+# gateway key. The synthetic model and the key are created through the API of
+# G09; until then the checks that need them are expected to fail.
+GWKEY="${GWKEY:-bgw_not-created-yet}" # enabled in G09: create burrow-simple -> $PROV/$MODEL and a gateway key
+check "openai: models without key -> 401"   "$(curl -s -o /dev/null -w '%{http_code}' "$B/openai/v1/models")" "401"
+check "openai: /ai/v1 is the same endpoint" "$(curl -s -o /dev/null -w '%{http_code}' "$B/ai/v1/models")" "401"
+check "openai: a service key is not a gateway key" "$(curl -s -H "$AUTH" "$B/openai/v1/models" | jq -r '.error.code')" "invalid_api_key"
+check "openai: errors carry Burrow-Error-Code" "$(curl -s -o /dev/null -D - "$B/openai/v1/models" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-error-code"{print $2}')" "invalid_api_key"
+check "openai: /openai/ is never the dashboard" "$(curl -s "$B/openai/" | jq -r '.error.code')" "invalid_api_key"
+xcheck "openai: chat via synthetic model"   "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d "$(chat "global $RANDOM" 8 burrow-simple)" "$B/openai/v1/chat/completions")" "200" # enabled in G09
+xcheck "openai: Burrow-Provider header"     "$(curl -s -D - -o /dev/null -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d "$(chat "global-hdr $RANDOM" 8 burrow-simple)" "$B/openai/v1/chat/completions" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-provider"{print $2}')" "$PROV" # enabled in G09
+xcheck "openai: unknown model -> 404"       "$(curl -s -o /dev/null -D - -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d '{"model":"nope"}' "$B/openai/v1/chat/completions" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-error-code"{print $2}')" "model_not_found" # enabled in G09
+
 # --- known defects (XFAIL) ---------------------------------------------------
 # 4. An automation token's declared permission set is not enforced on
 #    admin-gated routes: a read-only token of an admin can still mint tokens.

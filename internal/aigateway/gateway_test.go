@@ -564,7 +564,7 @@ func (n noTunnels) DialTunnelStreamByServiceID(context.Context, string) (net.Con
 	return nil, proxy.ErrNotFound
 }
 
-func directGateway(t *testing.T, direct func(db.AIProvider) (http.Handler, error), chain Chain) *Gateway {
+func directGateway(t *testing.T, direct func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error), chain Chain) *Gateway {
 	g := newGateway(http.NotFoundHandler(), chain)
 	g.Providers = fakeProviders{"openrouter": {
 		Slug: "openrouter", Name: "OpenRouter", Kind: "direct", ServiceID: "prov-openrouter", APIFormat: "openai",
@@ -586,7 +586,7 @@ func TestServe_Direct_DispatchesThroughChain(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
 	chain := &spyChain{}
-	g := directGateway(t, func(p db.AIProvider) (http.Handler, error) {
+	g := directGateway(t, func(p db.AIProvider, _ aiprovider.ErrorWriter) (http.Handler, error) {
 		if p.Slug != "openrouter" {
 			t.Fatalf("factory got %q", p.Slug)
 		}
@@ -620,7 +620,9 @@ func TestServe_Direct_Errors(t *testing.T) {
 		return r
 	}
 	t.Run("slot missing", func(t *testing.T) {
-		g := directGateway(t, func(db.AIProvider) (http.Handler, error) { return nil, aiprovider.ErrNotConfigured }, nil)
+		g := directGateway(t, func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
+			return nil, aiprovider.ErrNotConfigured
+		}, nil)
 		rec := httptest.NewRecorder()
 		g.Serve(rec, req(), "openrouter")
 		if rec.Code != 503 || errCode(t, rec) != "provider_not_configured" {
@@ -628,7 +630,9 @@ func TestServe_Direct_Errors(t *testing.T) {
 		}
 	})
 	t.Run("bad stored config", func(t *testing.T) {
-		g := directGateway(t, func(db.AIProvider) (http.Handler, error) { return nil, aiprovider.ErrInvalidBaseURL }, nil)
+		g := directGateway(t, func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
+			return nil, aiprovider.ErrInvalidBaseURL
+		}, nil)
 		rec := httptest.NewRecorder()
 		g.Serve(rec, req(), "openrouter")
 		if rec.Code != 503 || errCode(t, rec) != "provider_misconfigured" {
@@ -636,7 +640,7 @@ func TestServe_Direct_Errors(t *testing.T) {
 		}
 	})
 	t.Run("factory returns no handler", func(t *testing.T) {
-		g := directGateway(t, func(db.AIProvider) (http.Handler, error) { return nil, nil }, nil)
+		g := directGateway(t, func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) { return nil, nil }, nil)
 		rec := httptest.NewRecorder()
 		g.Serve(rec, req(), "openrouter")
 		if rec.Code != 503 || errCode(t, rec) != "provider_misconfigured" {
@@ -653,7 +657,10 @@ func TestServe_Direct_Errors(t *testing.T) {
 	})
 	t.Run("key is checked before the upstream is built", func(t *testing.T) {
 		built := false
-		g := directGateway(t, func(db.AIProvider) (http.Handler, error) { built = true; return http.NotFoundHandler(), nil }, nil)
+		g := directGateway(t, func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
+			built = true
+			return http.NotFoundHandler(), nil
+		}, nil)
 		r := httptest.NewRequest("GET", "/v1/models", nil)
 		r.Header.Set("Authorization", "Bearer sk-bad")
 		rec := httptest.NewRecorder()
@@ -668,7 +675,10 @@ func TestServe_Direct_Errors(t *testing.T) {
 // as they bind a tunnelled one, and are checked before the key.
 func TestServe_Direct_ServicePolicy(t *testing.T) {
 	built := false
-	factory := func(db.AIProvider) (http.Handler, error) { built = true; return http.NotFoundHandler(), nil }
+	factory := func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
+		built = true
+		return http.NotFoundHandler(), nil
+	}
 	serve := func(g *Gateway) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
 		r.Header.Set("Authorization", "Bearer sk-good")
@@ -731,7 +741,7 @@ func TestServe_TunnelNeverUsesDirectFactory(t *testing.T) {
 		gotAuth = r.Header.Get("Authorization")
 		w.WriteHeader(204)
 	}), nil)
-	g.Direct = func(db.AIProvider) (http.Handler, error) {
+	g.Direct = func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
 		t.Error("the direct factory was called for a tunnelled provider")
 		return http.NotFoundHandler(), nil
 	}
@@ -803,7 +813,7 @@ func TestDirectUpstreams_Factory(t *testing.T) {
 	defer srv.Close()
 
 	factory := DirectUpstreams(vaultMap{"ZAI": "sk-zai", "EMPTY": ""}, srv.Client().Transport)
-	h, err := factory(db.AIProvider{Slug: "zai", Kind: "direct", BaseURL: srv.URL + "/api/coding/paas/v4", CredentialSlot: "ZAI"})
+	h, err := factory(db.AIProvider{Slug: "zai", Kind: "direct", BaseURL: srv.URL + "/api/coding/paas/v4", CredentialSlot: "ZAI"}, WriteError)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -814,12 +824,12 @@ func TestDirectUpstreams_Factory(t *testing.T) {
 	}
 
 	for _, slot := range []string{"NOPE", "EMPTY", ""} {
-		if _, err := factory(db.AIProvider{Slug: "zai", Kind: "direct", BaseURL: srv.URL, CredentialSlot: slot}); !errors.Is(err, aiprovider.ErrNotConfigured) {
+		if _, err := factory(db.AIProvider{Slug: "zai", Kind: "direct", BaseURL: srv.URL, CredentialSlot: slot}, WriteError); !errors.Is(err, aiprovider.ErrNotConfigured) {
 			t.Fatalf("slot %q err = %v", slot, err)
 		}
 	}
 	// A missing transport is a wiring fault, reported and not ignored.
-	if _, err := DirectUpstreams(vaultMap{"ZAI": "sk-zai"}, nil)(db.AIProvider{Slug: "zai", BaseURL: srv.URL, CredentialSlot: "ZAI"}); err == nil {
+	if _, err := DirectUpstreams(vaultMap{"ZAI": "sk-zai"}, nil)(db.AIProvider{Slug: "zai", BaseURL: srv.URL, CredentialSlot: "ZAI"}, WriteError); err == nil {
 		t.Fatal("nil transport accepted")
 	}
 }
@@ -946,7 +956,7 @@ func TestServe_UnknownKindTouchesNothing(t *testing.T) {
 	g := newGateway(http.NotFoundHandler(), &spyChain{})
 	g.Providers = fakeProviders{"odd": {Slug: "odd", Kind: "other", ServiceID: "svc1"}}
 	g.Tunnels = noTunnels{t}
-	g.Direct = func(db.AIProvider) (http.Handler, error) {
+	g.Direct = func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
 		t.Error("the direct factory was called")
 		return http.NotFoundHandler(), nil
 	}
@@ -1269,7 +1279,10 @@ func TestServe_ModelsForwardedWhenCatalogEmpty(t *testing.T) {
 // without reading the credential.
 func TestServe_Direct_ModelsFromCatalog(t *testing.T) {
 	built := false
-	g := directGateway(t, func(db.AIProvider) (http.Handler, error) { built = true; return http.NotFoundHandler(), nil }, nil)
+	g := directGateway(t, func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
+		built = true
+		return http.NotFoundHandler(), nil
+	}, nil)
 	g.Models = fakeModels{"openrouter": {{ProviderSlug: "openrouter", ModelID: "google/gemini-x"}}}
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer sk-good")
@@ -1284,7 +1297,10 @@ func TestServe_Direct_ModelsFromCatalog(t *testing.T) {
 // is a broken configuration, not a server fault.
 func TestServe_Direct_BackingServiceNotDirect(t *testing.T) {
 	built := false
-	g := directGateway(t, func(db.AIProvider) (http.Handler, error) { built = true; return http.NotFoundHandler(), nil }, nil)
+	g := directGateway(t, func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
+		built = true
+		return http.NotFoundHandler(), nil
+	}, nil)
 	g.ServicePolicy = func(context.Context, string) (*proxy.Resolved, error) {
 		return nil, fmt.Errorf("direct service policy: %w", proxy.ErrNotFound)
 	}
@@ -1350,8 +1366,179 @@ func TestServe_TrustFlagFollowsProviderKind(t *testing.T) {
 		t.Fatalf("tunnel provider: metered=%v trustCost=%v, want true/false", tunnel.metered, tunnel.trustCost)
 	}
 	direct := &spyChain{}
-	post(directGateway(t, func(db.AIProvider) (http.Handler, error) { return ok, nil }, direct), "openrouter")
+	post(directGateway(t, func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) { return ok, nil }, direct), "openrouter")
 	if !direct.metered || !direct.trustCost {
 		t.Fatalf("direct provider: metered=%v trustCost=%v, want true/true", direct.metered, direct.trustCost)
+	}
+}
+
+// A gateway key is accepted on a provider path too, limited by its allow-list.
+func TestServe_GatewayKeyOnProviderPath(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	g := newGateway(ok, nil) // provider "ollama" on svc1
+	g.GatewayKeys = fakeGatewayKeys{
+		"bgw_all":    {ID: "gk-all"},
+		"bgw_ollama": {ID: "gk-o", AllowedModels: []string{"ollama/*"}},
+		"bgw_one":    {ID: "gk-1", AllowedModels: []string{"ollama/mistral"}},
+		"bgw_other":  {ID: "gk-x", AllowedModels: []string{"zai/*", "burrow-simple"}},
+	}
+	do := func(key, method, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, "/v1/chat/completions", strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+key)
+		r.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		g.Serve(rec, r, "ollama")
+		return rec
+	}
+	cases := []struct {
+		key, method, body string
+		want              int
+		code              string
+		why               string
+	}{
+		{"bgw_all", "POST", `{"model":"mistral"}`, 200, "", "unrestricted key"},
+		{"bgw_ollama", "POST", `{"model":"anything"}`, 200, "", "provider wildcard"},
+		{"bgw_one", "POST", `{"model":"mistral"}`, 200, "", "exact model"},
+		{"bgw_one", "POST", `{"model":"llama3"}`, 403, "model_not_allowed", "other model with an exact-model key"},
+		{"bgw_one", "POST", `not json`, 403, "model_not_allowed", "unreadable model with an exact-model key"},
+		{"bgw_one", "POST", `{"Model":"llama3"}`, 403, "model_not_allowed", "model in another letter case with an exact-model key"},
+		{"bgw_one", "POST", `{"model":"mistral","Model":"llama3"}`, 400, "invalid_request", "two model fields"},
+		{"bgw_all", "POST", `{"model":"mistral","model":"llama3"}`, 400, "invalid_request", "two model fields, unrestricted key"},
+		{"bgw_one", "DELETE", `{"model":"llama3"}`, 403, "model_not_allowed", "another method naming another model"},
+		{"bgw_one", "DELETE", `{"model":"mistral"}`, 200, "", "another method naming the allowed model"},
+		{"bgw_ollama", "POST", `not json`, 200, "", "unreadable model with a provider wildcard"},
+		{"bgw_other", "POST", `{"model":"mistral"}`, 403, "model_not_allowed", "key for other providers"},
+		{"bgw_other", "GET", ``, 403, "model_not_allowed", "GET with a key that has no entry for this provider"},
+		{"bgw_one", "GET", ``, 200, "", "GET with a key that has an entry for this provider"},
+		{"bgw_unknown", "POST", `{"model":"mistral"}`, 401, "invalid_api_key", "unknown gateway key"},
+		{"sk-good", "POST", `{"model":"mistral"}`, 200, "", "service key still works"},
+		{"sk-good", "POST", `{"model":"mistral","model":"llama3"}`, 200, "", "a service key's body is not inspected"},
+		{"sk-bad", "POST", `{"model":"mistral"}`, 401, "invalid_api_key", "unknown service key"},
+	}
+	for _, c := range cases {
+		rec := do(c.key, c.method, c.body)
+		if rec.Code != c.want || rec.Header().Get("Burrow-Error-Code") != c.code {
+			t.Errorf("%s: status %d code %q, want %d %q", c.why, rec.Code, rec.Header().Get("Burrow-Error-Code"), c.want, c.code)
+		}
+	}
+
+	g.MaxBody = 16
+	if rec := do("bgw_all", "POST", `{"model":"mistral","pad":"xxxxxxxxxxxxxxxx"}`); rec.Code != 413 || errCode(t, rec) != "request_too_large" {
+		t.Errorf("body over the limit: status %d", rec.Code)
+	}
+}
+
+// The body a gateway key's check has read goes upstream unchanged, and the
+// key itself does not.
+func TestServe_GatewayKeyOnProviderPath_BodyUntouched(t *testing.T) {
+	const sent = `{ "model" : "mistral" , "x":1 }`
+	var gotBody, gotAuth string
+	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody, gotAuth = string(b), r.Header.Get("Authorization")
+		w.WriteHeader(200)
+	})
+	chain := &routeChain{}
+	g := newGateway(up, chain)
+	g.GatewayKeys = fakeGatewayKeys{"bgw_all": {ID: "gk-all"}}
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(sent))
+	r.Header.Set("Authorization", "Bearer bgw_all")
+	rec := httptest.NewRecorder()
+	rec.Header().Set("Burrow-Request-Id", "req-9")
+	g.Serve(rec, r, "ollama")
+	if rec.Code != 200 || gotBody != sent || gotAuth != "" {
+		t.Fatalf("status %d body %q auth %q", rec.Code, gotBody, gotAuth)
+	}
+	// No service key id; the gateway key travels in the route (id only).
+	want := aigw.RouteInfo{GatewayKeyID: "gk-all", Dialect: "openai", ProviderSlug: "ollama", RequestedModel: "mistral", TargetModel: "mistral", RequestID: "req-9"}
+	if chain.keyID != "" || chain.serviceID != "svc1" || chain.route != want {
+		t.Fatalf("chain key %q service %q route %+v", chain.keyID, chain.serviceID, chain.route)
+	}
+}
+
+// routeChain records what the chain is handed, the request's route included.
+type routeChain struct {
+	serviceID, keyID string
+	route            aigw.RouteInfo
+}
+
+func (c *routeChain) Dispatch(w http.ResponseWriter, r *http.Request, serviceID, _, _, apiKeyID string, up http.Handler) {
+	c.serviceID, c.keyID = serviceID, apiKeyID
+	c.route, _ = aigw.RouteFrom(r.Context())
+	up.ServeHTTP(w, r)
+}
+
+func (c *routeChain) DispatchMetered(w http.ResponseWriter, r *http.Request, serviceID, _, _, apiKeyID string, _ bool, up http.Handler) {
+	c.Dispatch(w, r, serviceID, "", "", apiKeyID, up)
+}
+
+func TestProviderAllowed(t *testing.T) {
+	cases := []struct {
+		allowed   []string
+		model     string
+		inference bool
+		want      bool
+		why       string
+	}{
+		{nil, "", true, true, "unrestricted key"},
+		{[]string{"ollama/mistral"}, "mistral", true, true, "known model, exact entry"},
+		{[]string{"ollama/*"}, "llama3", true, true, "known model, wildcard"},
+		{[]string{"ollama/mistral"}, "llama3", true, false, "known model, no entry"},
+		{[]string{"mistral", "zai/mistral"}, "mistral", true, false, "a synthetic name or another provider's model is not this provider's"},
+		{[]string{"ollama/mistral"}, "llama3", false, false, "a known model is checked whatever the method"},
+		{[]string{"ollama/*"}, "", true, true, "unreadable model, wildcard"},
+		{[]string{"ollama/mistral"}, "", true, false, "unreadable model, exact entry only"},
+		{[]string{"ollama/mistral"}, "", false, true, "no inference, an entry for this provider"},
+		{[]string{"ollama/*"}, "", false, true, "no inference, wildcard"},
+		{[]string{"ollama2/x", "zai/*", "burrow-simple"}, "", false, false, "no inference, no entry for this provider"},
+	}
+	for _, c := range cases {
+		if got := providerAllowed(c.allowed, "ollama", c.model, c.inference); got != c.want {
+			t.Errorf("%s: got %v", c.why, got)
+		}
+	}
+}
+
+// On a provider path a restricted gateway key is listed only the models it
+// may use, and its model listing is never handed to the upstream.
+func TestServe_GatewayKeyOnProviderPath_ModelList(t *testing.T) {
+	upstreamHit := false
+	g := newGateway(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit = true
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"upstream-secret"}]}`))
+	}), nil)
+	g.Models = fakeModels{"ollama": {{ModelID: "mistral"}, {ModelID: "llama3"}}}
+	g.GatewayKeys = fakeGatewayKeys{
+		"bgw_all":    {ID: "gk-all"},
+		"bgw_ollama": {ID: "gk-o", AllowedModels: []string{"ollama/*"}},
+		"bgw_one":    {ID: "gk-1", AllowedModels: []string{"ollama/llama3", "zai/glm"}},
+	}
+	list := func(key string) string {
+		r := httptest.NewRequest("GET", "/v1/models", nil)
+		r.Header.Set("Authorization", "Bearer "+key)
+		rec := httptest.NewRecorder()
+		g.Serve(rec, r, "ollama")
+		if rec.Code != 200 {
+			t.Fatalf("%s: status %d", key, rec.Code)
+		}
+		return strings.TrimSpace(rec.Body.String())
+	}
+	const all = `{"object":"list","data":[{"id":"mistral","object":"model","owned_by":"ollama"},{"id":"llama3","object":"model","owned_by":"ollama"}]}`
+	for _, key := range []string{"sk-good", "bgw_all", "bgw_ollama"} {
+		if got := list(key); got != all {
+			t.Errorf("%s: %s", key, got)
+		}
+	}
+	if got := list("bgw_one"); got != `{"object":"list","data":[{"id":"llama3","object":"model","owned_by":"ollama"}]}` {
+		t.Errorf("bgw_one: %s", got)
+	}
+	// Empty catalog: forwarded for a key that may use every model here, an
+	// empty list for one that may not.
+	g.Models = fakeModels{}
+	if got := list("bgw_one"); got != `{"object":"list","data":[]}` || upstreamHit {
+		t.Errorf("bgw_one, empty catalog: %s (upstream hit: %v)", got, upstreamHit)
+	}
+	if got := list("bgw_ollama"); !strings.Contains(got, "upstream-secret") {
+		t.Errorf("bgw_ollama, empty catalog: %s", got)
 	}
 }

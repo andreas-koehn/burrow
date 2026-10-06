@@ -790,6 +790,11 @@ func newRootCmd() *cobra.Command {
 				Models:        st,
 				Direct:        aigateway.DirectUpstreams(v05.CredVault, aiUpstreamTransport),
 				ServicePolicy: directServicePolicy(st),
+				// The dialect endpoints (/openai/v1, /ai/v1): gateway keys,
+				// synthetic models and the model list.
+				GatewayKeys: st,
+				Synthetic:   st,
+				Catalog:     st,
 			}
 			if v04.AIChain != nil {
 				aiGateway.Chain = v04.AIChain

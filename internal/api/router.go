@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ankoehn/burrow/internal/aigateway"
 	"github.com/ankoehn/burrow/internal/openapi/viewer"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -475,6 +476,18 @@ func NewRouter(d Deps) http.Handler {
 	// AI data plane. Registered before the SPA catch-all. The dashboard's own
 	// AI pages live under /gateway/, so /ai/ is free for it.
 	if d.AIGateway != nil {
+		// Dialect endpoints: the addresses pasted into clients. /openai sits
+		// at the root because "openai" is a provider slug an operator will
+		// want under /ai/. /ai/v1 is the same endpoint; the static route
+		// wins over /ai/{provider}, and "v1" cannot be a provider slug.
+		// Everything under /openai/ is the gateway's, never the SPA's.
+		oh := AIDialectHandler(d.AIGateway, aigateway.DialectOpenAI, "/openai")
+		r.Handle("/openai", oh)
+		r.Handle("/openai/*", oh)
+		av1 := AIDialectHandler(d.AIGateway, aigateway.DialectOpenAI, "/ai")
+		r.Handle("/ai/v1", av1)
+		r.Handle("/ai/v1/*", av1)
+
 		ah := AIPathHandler(d.AIGateway)
 		r.Handle("/ai", ah)
 		r.Handle("/ai/", ah)

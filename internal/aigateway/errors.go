@@ -18,9 +18,11 @@ type errorDetail struct {
 }
 
 // WriteError writes an error in the shape OpenAI-compatible clients parse.
-// Every error under /ai/ uses it, so a client never receives an HTML page.
+// Every error under /ai/ and /openai/ uses it, so a client never receives an
+// HTML page. The code is repeated in the Burrow-Error-Code header.
 func WriteError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Burrow-Error-Code", code)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(errorBody{Error: errorDetail{Message: message, Type: "burrow_error", Code: code}})
 }
