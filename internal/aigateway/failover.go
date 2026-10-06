@@ -149,6 +149,15 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sent := 0 // attempts that reached an upstream handler
 	outOfTime := false
 	admitted := map[string]*admission{} // by provider slug
+	// However the chain ends (another provider answered, the total timeout,
+	// the end of the list, a stream that broke off), a provider that failed
+	// and was not heard from again keeps that failure. Only a client that
+	// went away leaves nothing behind: it is not the providers' fault.
+	defer func() {
+		if r.Context().Err() == nil {
+			f.reportPending(order, admitted)
+		}
+	}()
 	for i, c := range order {
 		if r.Context().Err() != nil {
 			return // the client is gone; nothing more to try
@@ -157,9 +166,6 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !deadline.IsZero() {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
-				// Providers whose later candidates are now never tried
-				// keep the failure they showed.
-				f.reportPending(order, admitted)
 				outOfTime = true
 				break
 			}
@@ -447,7 +453,7 @@ type admission struct {
 // provider is judged once per request, whatever number of candidates it has
 // (several credential slots, or the same provider listed again further down):
 // a success is reported at once; a failure when no later candidate of the
-// provider remains, so one dead key cannot take a working provider out of
+// provider remains or the chain ends (see reportPending), so one dead key cannot take a working provider out of
 // service and one request cannot count against it twice. A failure that does
 // not count (the client's fault, the client gone) is never reported.
 func (f *failover) report(c candidate, rest []candidate, outcome int, adm *admission) {
@@ -471,7 +477,7 @@ func (f *failover) report(c candidate, rest []candidate, outcome int, adm *admis
 }
 
 // reportPending reports the failures that were waiting for a later candidate
-// of their provider, when the total timeout ends the chain before it is tried.
+// of their provider, when the chain ends before that candidate is tried.
 func (f *failover) reportPending(order []candidate, admitted map[string]*admission) {
 	if f.g.Breaker == nil {
 		return
