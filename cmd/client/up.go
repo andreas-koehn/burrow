@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 
@@ -42,6 +43,32 @@ func findServiceFile(d deps, given string) (string, error) {
 	return "", usageErrorf("%s", msg)
 }
 
+// runUp is `burrow up`: it runs every service of the file until it is stopped.
+func runUp(cmd *cobra.Command, d deps) error {
+	given, _ := cmd.Flags().GetString("file")
+	path, err := findServiceFile(d, given)
+	if err != nil {
+		return err
+	}
+	fc, err := client.LoadFileConfig(path)
+	if err != nil {
+		return err
+	}
+	g, err := readGlobals(cmd, d)
+	if err != nil {
+		return err
+	}
+	userPath, err := userConfigFile(cmd, d)
+	if err != nil {
+		return err
+	}
+	creds, err := resolveCredentials(d, userPath, &fc)
+	if err != nil {
+		return err
+	}
+	return foreground(cmd, d, creds, fc.Tunnels, g)
+}
+
 // newUpCmd builds `burrow up`.
 func newUpCmd(d deps) *cobra.Command {
 	cmd := &cobra.Command{
@@ -55,28 +82,19 @@ func newUpCmd(d deps) *cobra.Command {
 			"from `burrow connect --config`, which uses the file alone.",
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			given, _ := cmd.Flags().GetString("file")
-			path, err := findServiceFile(d, given)
-			if err != nil {
-				return err
+			if underServiceManager() {
+				// The Windows service: the manager starts and stops the run,
+				// and the log lines go to a file next to the sign-in.
+				logPath := ""
+				if p, err := userConfigFile(cmd, d); err == nil {
+					logPath = filepath.Join(filepath.Dir(p), "burrow.log")
+				}
+				return runUnderServiceManager(logPath, func(ctx context.Context) error {
+					cmd.SetContext(ctx)
+					return runUp(cmd, d)
+				})
 			}
-			fc, err := client.LoadFileConfig(path)
-			if err != nil {
-				return err
-			}
-			g, err := readGlobals(cmd, d)
-			if err != nil {
-				return err
-			}
-			userPath, err := userConfigFile(cmd, d)
-			if err != nil {
-				return err
-			}
-			creds, err := resolveCredentials(d, userPath, &fc)
-			if err != nil {
-				return err
-			}
-			return foreground(cmd, d, creds, fc.Tunnels, g)
+			return runUp(cmd, d)
 		},
 	}
 	cmd.Flags().String("file", "", "path to burrow.yaml")

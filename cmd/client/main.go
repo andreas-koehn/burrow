@@ -65,6 +65,9 @@ type deps struct {
 	stdoutTerminal func() bool
 	// sleep waits between two polls of a sign-in; nil waits on a timer.
 	sleep func(ctx context.Context, d time.Duration) error
+	// service is the machine's service manager and what `burrow service`
+	// needs around it. nil: nothing is asked about a service.
+	service *serviceEnv
 }
 
 func defaultDeps() deps {
@@ -83,6 +86,7 @@ func defaultDeps() deps {
 		relayHTTP:      signInHTTPClient,
 		openBrowser:    openBrowser,
 		stdoutTerminal: func() bool { return term.IsTerminal(int(os.Stdout.Fd())) },
+		service:        realServiceEnv(),
 	}
 }
 
@@ -275,6 +279,7 @@ func newRoot(d deps) *cobra.Command {
 		newUpCmd(d),
 		newStatusCmd(d),
 		newDoctorCmd(d),
+		newServiceCmd(d),
 		newUpdateCmd(d),
 		newConnectCmd(),
 		&cobra.Command{

@@ -68,6 +68,9 @@ type harness struct {
 	sleep func(ctx context.Context, d time.Duration) error
 	mu    sync.Mutex
 	slept []time.Duration // the waits the sign-in asked for
+	// service stands for the system's service manager; nil is a machine
+	// where nothing is asked about a service.
+	service *serviceEnv
 }
 
 // sleeps returns the waits the sign-in asked for so far.
@@ -92,6 +95,7 @@ func (h *harness) deps() deps {
 		stdin = h.stdinR
 	}
 	return deps{
+		service:  h.service,
 		stdout:   &h.stdout,
 		stderr:   &h.stderr,
 		stdin:    stdin,

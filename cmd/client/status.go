@@ -53,7 +53,8 @@ func newStatusCmd(d deps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show what this machine is signed in to",
-		Long: "Show what this machine is signed in to, without connecting.\n\n" +
+		Long: "Show what this machine is signed in to, and whether the system service\n" +
+			"(burrow service) is installed and running, without connecting.\n\n" +
 			"The relay is asked for its version at its web address; the token is not sent.\n" +
 			"When the relay does not answer, the version is shown as unknown.\n\n" +
 			"Exit code 0 when signed in, 3 when not.",
@@ -84,6 +85,10 @@ func newStatusCmd(d deps) *cobra.Command {
 			fmt.Fprintf(out, "Token:    %s\n", tokenLabel(creds.TokenName, creds.Token))
 			fmt.Fprintf(out, "Source:   %s\n", creds.Source)
 			fmt.Fprintf(out, "Client:   %s\n", versionLine())
+			if d.service != nil {
+				_, st, err := d.service.state()
+				fmt.Fprintf(out, "Service:  %s\n", describeService(st, err))
+			}
 			return nil
 		},
 	}
