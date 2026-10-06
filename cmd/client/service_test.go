@@ -97,11 +97,14 @@ func newServiceHarness(t *testing.T, goos string) *serviceHarness {
 		// in it; the copies are its siblings. Good enough to see what is
 		// written where and with which mode.
 		programData: func() string { return filepath.Join(root, "pd") },
-		lookupHome: func(user string) (string, error) {
-			if user != "kohn" {
-				return "", errors.New("no such user")
+		lookupUser: func(user string) (string, string, error) {
+			switch user {
+			case "kohn":
+				return s.home, "1000", nil
+			case "toor": // root under another name
+				return filepath.Join(root, "roothome"), "0", nil
 			}
-			return s.home, nil
+			return "", "", errors.New("no such user")
 		},
 		homeDir: func() (string, error) { return s.home, nil },
 		system: func() string {
@@ -205,13 +208,99 @@ func TestServiceInstall_LinuxDefaultPathsUnderSudo(t *testing.T) {
 	}
 }
 
-func TestServiceInstall_SudoUserUnknown(t *testing.T) {
+// SUDO_USER ends up after User= in the unit: it is a user of this system, by
+// name, or nothing is installed. Naming the files does not change that.
+func TestServiceInstall_SudoUser(t *testing.T) {
+	for _, name := range []string{"nobody-here", "0", "1000"} {
+		s := newServiceHarness(t, "linux")
+		s.signIn()
+		s.harness.env["SUDO_USER"] = name
+		code := s.exec("service", "install", s.yaml, "--config", s.cfgPath)
+		if code != 1 || len(s.m.calls) != 0 || !strings.Contains(s.stderr.String(), "SUDO_USER") || !strings.Contains(s.stderr.String(), "Nothing was installed") {
+			t.Fatalf("%q: exit %d, calls %q, stderr %q", name, code, s.m.calls, s.stderr.String())
+		}
+	}
+
+	// A name that is root's: the service is root's, with all that asks.
 	s := newServiceHarness(t, "linux")
 	s.signIn()
-	s.harness.env["SUDO_USER"] = "nobody-here"
-	code := s.exec("service", "install")
-	if code != 1 || s.m.did("install") || !strings.Contains(s.stderr.String(), "--config") {
-		t.Fatalf("exit %d, calls %q, stderr %q", code, s.m.calls, s.stderr.String())
+	s.harness.env["SUDO_USER"] = "toor"
+	if code := s.exec("service", "install", s.yaml, "--config", s.cfgPath); code != 0 {
+		t.Fatalf("exit %d: %s", code, s.stderr.String())
+	}
+	if s.m.cfg.UserName != "" || !strings.Contains(s.stdout.String(), "Runs as:  root") {
+		t.Fatalf("user %q, stdout %q", s.m.cfg.UserName, s.stdout.String())
+	}
+	s = newServiceHarness(t, "linux")
+	s.signIn()
+	s.harness.env["SUDO_USER"] = "toor"
+	s.env.trusted = func(p string) bool { return p != s.yaml }
+	if code := s.exec("service", "install", s.yaml, "--config", s.cfgPath); code != 1 || s.m.did("install") {
+		t.Fatalf("exit %d, calls %q", code, s.m.calls)
+	}
+}
+
+// As root the service reads these files with root's rights on every start:
+// each has to be root's alone.
+func TestServiceInstall_RootReadsOnlyRootsFiles(t *testing.T) {
+	setup := func(t *testing.T) (s *serviceHarness, ca, tok string) {
+		s = newServiceHarness(t, "linux")
+		delete(s.harness.env, "SUDO_USER")
+		s.signIn()
+		ca = filepath.Join(s.home, "ca.pem")
+		tok = filepath.Join(s.home, "tok")
+		writeAt(t, ca, "not read at install\n")
+		writeAt(t, tok, testToken+"\n")
+		writeAt(t, s.yaml, "token_file: "+tok+"\n"+servicesOnly)
+		return s, ca, tok
+	}
+	s, ca, tok := setup(t)
+	var asked []string
+	s.env.trusted = func(p string) bool { asked = append(asked, p); return true }
+	if code := s.exec("service", "install", "--cacert", ca); code != 0 {
+		t.Fatalf("exit %d: %s", code, s.stderr.String())
+	}
+	if !reflect.DeepEqual(asked, []string{s.exe, s.yaml, s.cfgPath, ca, tok}) {
+		t.Fatalf("asked about %q", asked)
+	}
+	s.noTokenAnywhere()
+
+	for _, which := range []string{"yaml", "config", "cacert", "token_file"} {
+		s, ca, tok := setup(t)
+		bad := map[string]string{"yaml": s.yaml, "config": s.cfgPath, "cacert": ca, "token_file": tok}[which]
+		s.env.trusted = func(p string) bool { return p != bad }
+		code := s.exec("service", "install", "--cacert", ca)
+		if code != 1 || len(s.dirs) != 0 || s.m.did("install") || !strings.Contains(s.stderr.String(), "read "+bad+" on every start") {
+			t.Fatalf("%s: exit %d, calls %q, stderr %q", which, code, s.m.calls, s.stderr.String())
+		}
+		s.noTokenAnywhere()
+	}
+
+	// A service that runs as the installing user reads that user's files as
+	// that user: nothing is asked about them.
+	s, ca, _ = setup(t)
+	s.harness.env["SUDO_USER"] = "kohn"
+	s.env.trusted = func(string) bool { return false }
+	if code := s.exec("service", "install", "--cacert", ca); code != 0 {
+		t.Fatalf("exit %d: %s", code, s.stderr.String())
+	}
+}
+
+// As root the unit names the files themselves: a link in a directory of
+// somebody else could be pointed elsewhere after the install.
+func TestServiceInstall_RootResolvesLinks(t *testing.T) {
+	s := newServiceHarness(t, "linux")
+	delete(s.harness.env, "SUDO_USER")
+	s.signIn()
+	link := filepath.Join(t.TempDir(), "link.yaml")
+	if err := os.Symlink(s.yaml, link); err != nil {
+		t.Fatal(err)
+	}
+	if code := s.exec("service", "install", link); code != 0 {
+		t.Fatalf("exit %d: %s", code, s.stderr.String())
+	}
+	if got := s.m.cfg.Arguments[2]; got != s.yaml {
+		t.Fatalf("--file %q, want the file the link points to", got)
 	}
 }
 
@@ -347,14 +436,16 @@ func TestServiceInstall_Darwin(t *testing.T) {
 func TestServiceInstall_Windows(t *testing.T) {
 	s := newServiceHarness(t, "windows")
 	s.signIn()
-	if code := s.exec("service", "install", "--config", s.cfgPath); code != 0 {
+	ca := filepath.Join(s.home, "ca.pem")
+	writeAt(t, ca, "-----BEGIN CERTIFICATE-----\n")
+	if code := s.exec("service", "install", "--config", s.cfgPath, "--cacert", ca); code != 0 {
 		t.Fatalf("exit %d: %s", code, s.stderr.String())
 	}
 	dir := s.env.programData() + `\burrow`
 	if !reflect.DeepEqual(s.dirs, []string{dir}) {
 		t.Fatalf("private directories %q", s.dirs)
 	}
-	for from, to := range map[string]string{s.cfgPath: dir + `\config.yaml`, s.yaml: dir + `\burrow.yaml`} {
+	for from, to := range map[string]string{s.cfgPath: dir + `\config.yaml`, s.yaml: dir + `\burrow.yaml`, ca: dir + `\ca.pem`} {
 		want, _ := os.ReadFile(from)
 		got, err := os.ReadFile(to)
 		if err != nil || string(got) != string(want) {
@@ -369,7 +460,7 @@ func TestServiceInstall_Windows(t *testing.T) {
 		}
 	}
 	cfg := s.m.cfg
-	wantArgs := []string{"up", "--file", dir + `\burrow.yaml`, "--config", dir + `\config.yaml`, "--log", "json"}
+	wantArgs := []string{"up", "--file", dir + `\burrow.yaml`, "--config", dir + `\config.yaml`, "--cacert", dir + `\ca.pem`, "--log", "json"}
 	if cfg.UserName != "" || !reflect.DeepEqual(cfg.Arguments, wantArgs) || cfg.Option["OnFailure"] != "restart" {
 		t.Fatalf("config %+v", *cfg)
 	}
@@ -382,20 +473,108 @@ func TestServiceInstall_Windows(t *testing.T) {
 	// uninstall takes the copies away again, and the directory with them.
 	s.m.calls, s.m.status, s.m.statusErr = nil, service.StatusRunning, nil
 	writeAt(t, dir+`\burrow.log`, "a log line\n")
+	writeAt(t, dir+`\burrow.log.1`, "an older log line\n")
 	if code := s.exec("service", "uninstall"); code != 0 {
 		t.Fatalf("exit %d: %s", code, s.stderr.String())
 	}
-	for _, p := range []string{dir, dir + `\config.yaml`, dir + `\burrow.yaml`, dir + `\burrow.log`} {
+	for _, p := range []string{dir, dir + `\config.yaml`, dir + `\burrow.yaml`, dir + `\ca.pem`, dir + `\burrow.log`, dir + `\burrow.log.1`} {
 		if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("%s is still there (%v)", p, err)
 		}
 	}
 	// The user's own files are not the install's to remove.
-	for _, p := range []string{s.cfgPath, s.yaml} {
+	for _, p := range []string{s.cfgPath, s.yaml, ca} {
 		if _, err := os.Stat(p); err != nil {
 			t.Fatal(err)
 		}
 	}
+}
+
+// uninstall removes what an install of this client made, and only that: with
+// no service installed, a directory of that name is somebody else's.
+func TestServiceUninstall_WindowsLeavesWhatIsNotOurs(t *testing.T) {
+	s := newServiceHarness(t, "windows")
+	dir := s.env.programData() + `\burrow`
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	files := []string{dir + `\config.yaml`, dir + `\burrow.yaml`, dir + `\burrow.log`}
+	for _, f := range files {
+		writeAt(t, f, "not this client's\n")
+	}
+	if code := s.exec("service", "uninstall"); code != 0 {
+		t.Fatalf("exit %d: %s", code, s.stderr.String())
+	}
+	for _, p := range append(files, dir) {
+		if _, err := os.Lstat(p); err != nil {
+			t.Fatalf("%s was removed although no service was installed", p)
+		}
+	}
+	if !strings.Contains(s.stdout.String(), "The burrow service is not installed.") || !strings.Contains(s.stdout.String(), dir) {
+		t.Fatalf("stdout %q", s.stdout.String())
+	}
+
+	// With the service installed: a link where a copy was is not followed
+	// and not removed, and what is behind it stays.
+	s = newServiceHarness(t, "windows")
+	s.m.status, s.m.statusErr = service.StatusStopped, nil
+	dir = s.env.programData() + `\burrow`
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(t.TempDir(), "victim")
+	writeAt(t, victim, "keep\n")
+	if err := os.Symlink(victim, dir+`\burrow.log`); err != nil {
+		t.Fatal(err)
+	}
+	writeAt(t, dir+`\config.yaml`, "a copy\n")
+	if code := s.exec("service", "uninstall"); code != 0 {
+		t.Fatalf("exit %d: %s", code, s.stderr.String())
+	}
+	if _, err := os.Lstat(dir + `\burrow.log`); err != nil {
+		t.Fatal("a link was removed")
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "keep\n" {
+		t.Fatal("the file behind the link was touched")
+	}
+	if _, err := os.Lstat(dir + `\config.yaml`); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the copy is still there")
+	}
+
+	// The directory itself is a link (on Windows: a junction): nothing
+	// behind it is touched.
+	s = newServiceHarness(t, "windows")
+	s.m.status, s.m.statusErr = service.StatusStopped, nil
+	dir = s.env.programData() + `\burrow`
+	elsewhere := t.TempDir()
+	if err := os.Symlink(elsewhere, dir); err != nil {
+		t.Fatal(err)
+	}
+	writeAt(t, dir+`\config.yaml`, "somebody's\n")
+	if code := s.exec("service", "uninstall"); code != 0 {
+		t.Fatalf("exit %d: %s", code, s.stderr.String())
+	}
+	for _, p := range []string{dir, dir + `\config.yaml`} {
+		if _, err := os.Lstat(p); err != nil {
+			t.Fatalf("%s was removed through a link", p)
+		}
+	}
+	if !strings.Contains(s.stdout.String(), "left alone") {
+		t.Fatalf("stdout %q", s.stdout.String())
+	}
+}
+
+func TestServiceInstall_WindowsRefusesTokenFile(t *testing.T) {
+	s := newServiceHarness(t, "windows")
+	s.signIn()
+	tok := filepath.Join(s.home, "tok")
+	writeAt(t, tok, testToken+"\n")
+	writeAt(t, s.yaml, "token_file: "+tok+"\n"+servicesOnly)
+	code := s.exec("service", "install")
+	if code != 1 || len(s.dirs) != 0 || s.m.did("install") || !strings.Contains(s.stderr.String(), "token_file") {
+		t.Fatalf("exit %d, dirs %q, calls %q, stderr %q", code, s.dirs, s.m.calls, s.stderr.String())
+	}
+	s.noTokenAnywhere()
 }
 
 func TestServiceInstall_WindowsRefusals(t *testing.T) {
@@ -853,34 +1032,55 @@ func TestUp_UnderTheServiceManager(t *testing.T) {
 	}
 }
 
-func TestOpenServiceLog(t *testing.T) {
+// The service's log on Windows does not grow without end while the service
+// runs: past the limit the file becomes burrow.log.1, in place of the one
+// before, and a new one begins.
+func TestServiceLog_Rotates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "burrow.log")
-	write := func(s string) {
-		t.Helper()
-		f, err := openServiceLog(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.WriteString(s); err != nil {
-			t.Fatal(err)
-		}
-		f.Close()
-	}
-	write("one\n")
-	write("two\n")
-	if b, _ := os.ReadFile(path); string(b) != "one\ntwo\n" {
-		t.Fatalf("log %q", b)
-	}
-	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
-		t.Fatalf("mode %v", fi.Mode())
-	}
-	// It does not grow without end: a full log starts again.
-	if err := os.Truncate(path, serviceLogMax+1); err != nil {
+	l, err := openServiceLog(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	write("three\n")
-	if b, _ := os.ReadFile(path); string(b) != "three\n" {
-		t.Fatalf("log has %d bytes", len(b))
+	defer l.Close()
+	l.max = 20
+	write := func(s string) {
+		t.Helper()
+		if n, err := l.Write([]byte(s)); err != nil || n != len(s) {
+			t.Fatalf("write: %d, %v", n, err)
+		}
+	}
+	read := func(p string) string { b, _ := os.ReadFile(p); return string(b) }
+	write("0123456789\n")
+	write("abcdefgh\n") // 20 bytes: still within the limit
+	if read(path) != "0123456789\nabcdefgh\n" || read(path+".1") != "" {
+		t.Fatalf("log %q, older %q", read(path), read(path+".1"))
+	}
+	write("next\n")
+	if read(path) != "next\n" || read(path+".1") != "0123456789\nabcdefgh\n" {
+		t.Fatalf("log %q, older %q", read(path), read(path+".1"))
+	}
+	write("0123456789abcdefghij\n") // one line longer than the limit is still written whole
+	if read(path) != "0123456789abcdefghij\n" || read(path+".1") != "next\n" {
+		t.Fatalf("log %q, older %q", read(path), read(path+".1"))
+	}
+	for _, p := range []string{path, path + ".1"} {
+		if fi, err := os.Stat(p); err != nil || fi.Mode().Perm() != 0o600 {
+			t.Fatalf("%s: %v", p, err)
+		}
+	}
+	l.Close()
+
+	// A start finds the log of the run before and goes on in it.
+	l2, err := openServiceLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	if _, err := l2.Write([]byte("again\n")); err != nil {
+		t.Fatal(err)
+	}
+	if read(path) != "0123456789abcdefghij\nagain\n" {
+		t.Fatalf("log %q", read(path))
 	}
 }
 

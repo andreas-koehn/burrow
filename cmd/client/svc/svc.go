@@ -41,8 +41,18 @@ type Inputs struct {
 	// HomeDir is the home directory of the current user. macOS only: the
 	// agent's log goes below it.
 	HomeDir string
-	// ExtraArguments are flags of the install to repeat on every start
-	// (--cacert and its like), each value its own element. Never a token.
+	// UntrustedFiles are those of the files the service reads on every start
+	// (burrow.yaml, the user config, the CA file, the token_file of the
+	// yaml) that somebody other than root can change, the first one first.
+	// It matters on Linux when the service runs as root.
+	UntrustedFiles []string
+	// TokenFile is what the burrow.yaml names as token_file, "" for none.
+	TokenFile string
+	// CACert is the file of --cacert at the install, "" for none.
+	CACert string
+	// ExtraArguments are the other flags of the install to repeat on every
+	// start (--server-name, --insecure), each value its own element. Never
+	// a token.
 	ExtraArguments []string
 	// Command is the exact line to run again with more rights.
 	Command string
@@ -115,6 +125,18 @@ func (e *UntrustedExecutableError) Error() string {
 		"or run the install through sudo from your own account: the service then runs as you."
 }
 
+// UntrustedFileError says that the service would read, with root's rights, a
+// file that is not root's alone.
+type UntrustedFileError struct{ File string }
+
+func (e *UntrustedFileError) Error() string {
+	return "The service would run as root and read " + e.File + " on every start, but that file is not root's alone: " +
+		"it or a directory above it can be changed by another user, or its path is relative or goes through a symbolic link. " +
+		"Whoever changes it decides what root reads and sends to the relay. Nothing was installed.\n" +
+		"Put it in a directory only root can write to (for example /etc/burrow), owned by root and not writable by others, " +
+		"and name it by its full path; or run the install through sudo from your own account: the service then runs as you."
+}
+
 // PathError says that a path or a name cannot be written into the service
 // definition of this system.
 type PathError struct{ GOOS, Value string }
@@ -124,23 +146,39 @@ func (e *PathError) Error() string {
 		return fmt.Sprintf("%q has a character that a systemd unit cannot carry (one of %% $ \\ \" or a control character). "+
 			"Nothing was installed. Use a path without it.", e.Value)
 	}
+	if e.GOOS == "windows" {
+		return fmt.Sprintf("%q has a character that the command line of a Windows service cannot carry (%% or a control character). "+
+			"Nothing was installed. Use a path without it.", e.Value)
+	}
 	return fmt.Sprintf("%q has a control character. Nothing was installed. Use a path without it.", e.Value)
 }
 
 // carried reports whether s can stand in the service definition of goos as it
 // is. systemd expands % and $ in a command line and reads \ and " in it, and
-// what writes the unit escapes none of them.
+// what writes the unit escapes none of them; the command line of a Windows
+// service expands %VAR%.
 func carried(goos, s string) bool {
 	for _, r := range s {
 		if r < 0x20 || r == 0x7f || r == '\u2028' || r == '\u2029' {
 			return false
 		}
 	}
-	return goos != "linux" || !strings.ContainsAny(s, "%$\\\"")
+	switch goos {
+	case "linux":
+		return !strings.ContainsAny(s, "%$\\\"")
+	case "windows":
+		// The service manager expands %VAR% in the command line it starts.
+		return !strings.Contains(s, "%")
+	}
+	return true
 }
 
-// userName reports whether s can follow User= in a unit.
+// userName reports whether s can follow User= in a unit as a name. Digits
+// alone are a user id to systemd, and 0 is root: that is no name.
 func userName(s string) bool {
+	if s != "" && strings.Trim(s, "0123456789") == "" {
+		return false
+	}
 	for i, r := range s {
 		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' ||
 			i > 0 && (r == '-' || r == '.' || r == '@')
@@ -197,7 +235,13 @@ func BuildPlan(in Inputs) (Plan, error) {
 		return Plan{}, err
 	}
 
-	for _, v := range append([]string{exe, yaml, cfg}, in.ExtraArguments...) {
+	ca := in.CACert
+	if ca != "" {
+		if ca, err = abs(ca); err != nil {
+			return Plan{}, err
+		}
+	}
+	for _, v := range append([]string{exe, yaml, cfg, ca, in.ProgramData}, in.ExtraArguments...) {
 		if !carried(in.GOOS, v) {
 			return Plan{}, &PathError{GOOS: in.GOOS, Value: v}
 		}
@@ -240,12 +284,33 @@ func BuildPlan(in Inputs) (Plan, error) {
 			{From: cfg, To: p.ConfigDir + `\config.yaml`},
 		}
 		yaml, cfg = p.Copies[0].To, p.Copies[1].To
+		if ca != "" {
+			p.Copies = append(p.Copies, Copy{From: ca, To: p.ConfigDir + `\ca.pem`})
+			ca = p.ConfigDir + `\ca.pem`
+		}
 	}
 	if privileged && !in.ExecutableTrusted {
 		return Plan{}, &UntrustedExecutableError{GOOS: in.GOOS, Executable: exe}
 	}
+	// With more rights than the installer, the service reads only what the
+	// installer cannot change afterwards. On Windows that is the copies in
+	// its own directory; a token_file would be one more file, wherever the
+	// copied burrow.yaml points.
+	if privileged && in.GOOS == "linux" && len(in.UntrustedFiles) > 0 {
+		return Plan{}, &UntrustedFileError{File: in.UntrustedFiles[0]}
+	}
+	if in.GOOS == "windows" && in.TokenFile != "" {
+		return Plan{}, errors.New("The burrow.yaml names a token_file. The service runs as LocalSystem from a copy of the file " +
+			"and would read that path with LocalSystem's rights. Nothing was installed.\n" +
+			"Remove token_file from the burrow.yaml: the service uses the stored sign-in (burrow login), " +
+			"or a token: line in the file, whose copy only SYSTEM and Administrators can read.")
+	}
 
-	p.Arguments = append([]string{"up", "--file", yaml, "--config", cfg}, in.ExtraArguments...)
+	p.Arguments = []string{"up", "--file", yaml, "--config", cfg}
+	if ca != "" {
+		p.Arguments = append(p.Arguments, "--cacert", ca)
+	}
+	p.Arguments = append(p.Arguments, in.ExtraArguments...)
 	// A service has no terminal: log lines, and in a form a journal can index.
 	p.Arguments = append(p.Arguments, "--log", "json")
 	return p, nil

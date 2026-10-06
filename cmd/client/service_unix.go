@@ -11,17 +11,23 @@ import (
 // isElevated reports whether this process is root.
 func isElevated() bool { return os.Geteuid() == 0 }
 
-// executableTrusted reports whether only root can change the binary at exe:
-// the file and every directory above it belong to root and can be written by
-// nobody else. A service that runs as root must not start anything less.
-func executableTrusted(exe string) bool {
-	p, err := filepath.EvalSymlinks(exe)
-	if err != nil || !filepath.IsAbs(p) {
+// pathTrusted reports whether only root can change the file at path: path is
+// a full path with no symbolic link in it, and the file and every directory
+// above it belong to root and can be written by nobody else. A service that
+// runs as root must not start, or read on root's behalf, anything less.
+func pathTrusted(path string) bool {
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	p := filepath.Clean(path)
+	// A link on the way is somebody's to point elsewhere, or root's own
+	// business: either way the caller names the file itself.
+	if r, err := filepath.EvalSymlinks(p); err != nil || r != p {
 		return false
 	}
 	for {
-		fi, err := os.Stat(p)
-		if err != nil {
+		fi, err := os.Lstat(p)
+		if err != nil || fi.Mode()&os.ModeSymlink != 0 {
 			return false
 		}
 		st, ok := fi.Sys().(*syscall.Stat_t)
@@ -35,6 +41,10 @@ func executableTrusted(exe string) bool {
 		p = parent
 	}
 }
+
+// isLink reports whether fi, from Lstat, is a link rather than a file or a
+// directory of its own.
+func isLink(fi os.FileInfo) bool { return fi.Mode()&os.ModeSymlink != 0 }
 
 // programDataDir is Windows' ProgramData directory; there is none here.
 func programDataDir() string { return "" }

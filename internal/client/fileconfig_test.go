@@ -388,3 +388,89 @@ func TestAccessModeAndName(t *testing.T) {
 		t.Errorf("AccessName(mtls) = %q", got)
 	}
 }
+
+// What token_file yields is sent to the relay as the token. A file that
+// cannot hold one (several lines, a space inside, bytes outside printable
+// ASCII) is refused before anything is sent, and none of it is shown.
+func TestLoadFileConfig_TokenFileMustHoldAToken(t *testing.T) {
+	const svc = "services:\n  - { name: app, local: 127.0.0.1:3000 }\n"
+	const secret = "s3cretOfAnotherKind"
+	bad := map[string]string{
+		"several lines":  "root:" + secret + ":19000:0:99999:7:::\ndaemon:*:19000:0:99999:7:::\n",
+		"a space inside": "user " + secret + "\n",
+		"a tab inside":   "user\t" + secret + "\n",
+		"binary":         secret + "\x00\x01\x02",
+		"not ASCII":      secret + "ü\n",
+	}
+	loaders := map[string]func(string) (FileConfig, error){"up": LoadFileConfig, "connect --config": LoadCompleteFileConfig}
+	for name, content := range bad {
+		for which, load := range loaders {
+			dir := t.TempDir()
+			tok := filepath.Join(dir, "tok")
+			os.WriteFile(tok, []byte(content), 0o600)
+			yml := filepath.Join(dir, "burrow.yaml")
+			os.WriteFile(yml, []byte("server: relay.example.com:7000\ntoken_file: "+tok+"\n"+svc), 0o600)
+			c, err := load(yml)
+			if err == nil || c.Token != "" {
+				t.Fatalf("%s, %s: the file's content was taken as a token", name, which)
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("%s, %s: the message shows the file's content", name, which)
+			}
+			want := `loadfileconfig: token_file "` + tok + `": the file does not hold a token`
+			if err.Error() != want {
+				t.Fatalf("%s, %s: err = %q, want %q", name, which, err, want)
+			}
+		}
+	}
+
+	// A token as the relay makes them, with the white space an editor leaves
+	// around it, is taken as before by both.
+	for which, load := range loaders {
+		for _, content := range []string{
+			"bur_Zm9vYmFyLWJhel9xdXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWo\n",
+			"bur_Zm9vYmFyLWJhel9xdXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWo\r\n",
+			"  bur_Zm9vYmFyLWJhel9xdXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWo \n\n",
+			"anything-printable!#$%&~\n",
+		} {
+			dir := t.TempDir()
+			tok := filepath.Join(dir, "tok")
+			os.WriteFile(tok, []byte(content), 0o600)
+			yml := filepath.Join(dir, "burrow.yaml")
+			os.WriteFile(yml, []byte("server: relay.example.com:7000\ntoken_file: "+tok+"\n"+svc), 0o600)
+			c, err := load(yml)
+			if err != nil || strings.TrimSpace(c.Token) != strings.TrimSpace(content) {
+				t.Fatalf("%s, %q: err = %v", which, content, err)
+			}
+		}
+	}
+
+	// An empty file is no token; that is as it was: `up` goes on to the
+	// sign-in, `connect --config` hands on the empty value.
+	dir := t.TempDir()
+	tok := filepath.Join(dir, "tok")
+	os.WriteFile(tok, []byte("\n"), 0o600)
+	yml := filepath.Join(dir, "burrow.yaml")
+	os.WriteFile(yml, []byte("server: relay.example.com:7000\ntoken_file: "+tok+"\n"+svc), 0o600)
+	for which, load := range loaders {
+		if c, err := load(yml); err != nil || c.Token != "" {
+			t.Fatalf("%s: err = %v", which, err)
+		}
+	}
+}
+
+func TestTokenFilePath(t *testing.T) {
+	dir := t.TempDir()
+	yml := filepath.Join(dir, "burrow.yaml")
+	os.WriteFile(yml, []byte("token_file: /etc/burrow/token\nservices:\n  - { name: app, local: 127.0.0.1:3000 }\n"), 0o600)
+	if p, err := TokenFilePath(yml); err != nil || p != "/etc/burrow/token" {
+		t.Fatalf("%q, %v", p, err)
+	}
+	os.WriteFile(yml, []byte("services:\n  - { name: app, local: 127.0.0.1:3000 }\n"), 0o600)
+	if p, err := TokenFilePath(yml); err != nil || p != "" {
+		t.Fatalf("%q, %v", p, err)
+	}
+	if _, err := TokenFilePath(filepath.Join(dir, "missing.yaml")); err == nil {
+		t.Fatal("no error for a missing file")
+	}
+}

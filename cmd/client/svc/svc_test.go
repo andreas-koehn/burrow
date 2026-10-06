@@ -279,7 +279,8 @@ func TestBuildPlan_UnknownSystem(t *testing.T) {
 // that nobody adds it as one, and that the arguments name files only.
 func TestBuildPlan_NoTokenAnywhere(t *testing.T) {
 	if _, ok := reflect.TypeOf(Inputs{}).FieldByNameFunc(func(n string) bool {
-		return strings.Contains(strings.ToLower(n), "token")
+		// TokenFile is a path the burrow.yaml names, not a token.
+		return n != "TokenFile" && strings.Contains(strings.ToLower(n), "token")
 	}); ok {
 		t.Fatal("Inputs has a token field")
 	}
@@ -357,7 +358,8 @@ func TestBuildPlan_PathsAUnitCannotCarry(t *testing.T) {
 			func(in *Inputs) { in.YAMLPath = bad },
 			func(in *Inputs) { in.UserConfigPath = bad },
 			func(in *Inputs) { in.Executable = bad },
-			func(in *Inputs) { in.ExtraArguments = []string{"--cacert", bad} },
+			func(in *Inputs) { in.CACert = bad },
+			func(in *Inputs) { in.ExtraArguments = []string{"--server-name", bad} },
 		} {
 			in := linuxInputs()
 			set(&in)
@@ -372,31 +374,120 @@ func TestBuildPlan_PathsAUnitCannotCarry(t *testing.T) {
 			}
 		}
 	}
-	// Elsewhere only control characters are refused.
-	in := windowsInputs()
-	in.YAMLPath = `C:\Users\kohn\100%\burrow.yaml`
+	// The command line of a Windows service expands %VAR%.
+	for _, bad := range []string{`C:\Users\kohn\100%\burrow.yaml`, `C:\Users\%ProgramData%\burrow.yaml`, "C:\\Users\\kohn\\a\nb.yaml"} {
+		for _, set := range []func(*Inputs){
+			func(in *Inputs) { in.YAMLPath = bad },
+			func(in *Inputs) { in.Executable = bad },
+			func(in *Inputs) { in.ProgramData = bad },
+			func(in *Inputs) { in.ExtraArguments = []string{"--server-name", bad} },
+		} {
+			in := windowsInputs()
+			set(&in)
+			var pe *PathError
+			if _, err := BuildPlan(in); !errors.As(err, &pe) {
+				t.Fatalf("%q: err = %v", bad, err)
+			}
+		}
+	}
+	// macOS writes its arguments into XML, escaped: only control characters.
+	in := linuxInputs()
+	in.GOOS, in.Elevated, in.YAMLPath = "darwin", false, "/Users/kohn/100%/$x.yaml"
 	if _, err := BuildPlan(in); err != nil {
 		t.Fatal(err)
-	}
-	in.YAMLPath = "C:\\Users\\kohn\\a\nb.yaml"
-	if _, err := BuildPlan(in); err == nil {
-		t.Fatal("a path with a line break was accepted")
 	}
 }
 
 func TestBuildPlan_UserNameAUnitCannotCarry(t *testing.T) {
-	for _, bad := range []string{"kohn\nExecStartPre=/bin/x", "ko hn", "-kohn", "k%u", "kohn;"} {
+	// A name of digits only is a user id to systemd: User=0 is root.
+	for _, bad := range []string{"kohn\nExecStartPre=/bin/x", "ko hn", "-kohn", "k%u", "kohn;", "0", "1000", "00"} {
 		in := linuxInputs()
 		in.UserName = bad
 		if _, err := BuildPlan(in); err == nil {
 			t.Fatalf("user %q was accepted", bad)
 		}
 	}
-	for _, ok := range []string{"kohn", "a.koehn", "svc_burrow-1", "DOMAIN.user@example"} {
+	for _, ok := range []string{"kohn", "a.koehn", "svc_burrow-1", "DOMAIN.user@example", "7of9"} {
 		in := linuxInputs()
 		in.UserName = ok
 		if _, err := BuildPlan(in); err != nil {
 			t.Fatalf("user %q: %v", ok, err)
 		}
+	}
+}
+
+// As root the service reads its files with root's rights on every start. A
+// file another user can change decides what root reads and sends: such an
+// install is refused, and the file is named.
+func TestBuildPlan_RootReadsOnlyRootsFiles(t *testing.T) {
+	in := linuxInputs()
+	in.UserName, in.ExecutableTrusted = "", true
+	in.UntrustedFiles = []string{"/home/kohn/.config/burrow/burrow.yaml", "/home/kohn/tok"}
+	_, err := BuildPlan(in)
+	var ue *UntrustedFileError
+	if !errors.As(err, &ue) || ue.File != "/home/kohn/.config/burrow/burrow.yaml" {
+		t.Fatalf("err = %v", err)
+	}
+	for _, w := range []string{"root", "/home/kohn/.config/burrow/burrow.yaml", "Nothing was installed", "/etc/burrow"} {
+		if !strings.Contains(err.Error(), w) {
+			t.Fatalf("message does not contain %q: %s", w, err)
+		}
+	}
+	// The binary comes first: it is the shorter way to root.
+	in.ExecutableTrusted = false
+	var ee *UntrustedExecutableError
+	if _, err := BuildPlan(in); !errors.As(err, &ee) {
+		t.Fatalf("err = %v", err)
+	}
+	// A service that runs as the installing user reads that user's files
+	// with that user's rights.
+	in = linuxInputs()
+	in.UntrustedFiles = []string{in.YAMLPath}
+	if _, err := BuildPlan(in); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBuildPlan_CACert(t *testing.T) {
+	in := linuxInputs()
+	in.CACert, in.ExtraArguments = "/etc/burrow/ca.pem", []string{"--server-name", "relay.internal"}
+	p, err := BuildPlan(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"up", "--file", in.YAMLPath, "--config", in.UserConfigPath, "--cacert", "/etc/burrow/ca.pem", "--server-name", "relay.internal", "--log", "json"}
+	if !reflect.DeepEqual(p.Arguments, want) {
+		t.Fatalf("arguments %q", p.Arguments)
+	}
+
+	// LocalSystem reads the copy in its own directory, not a file in a
+	// user's profile.
+	in = windowsInputs()
+	in.CACert = `C:\Users\kohn\ca.pem`
+	if p, err = BuildPlan(in); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Copies) != 3 || p.Copies[2] != (Copy{From: `C:\Users\kohn\ca.pem`, To: `C:\ProgramData\burrow\ca.pem`}) {
+		t.Fatalf("copies %#v", p.Copies)
+	}
+	want = []string{"up", "--file", `C:\ProgramData\burrow\burrow.yaml`, "--config", `C:\ProgramData\burrow\config.yaml`, "--cacert", `C:\ProgramData\burrow\ca.pem`, "--log", "json"}
+	if !reflect.DeepEqual(p.Arguments, want) {
+		t.Fatalf("arguments %q", p.Arguments)
+	}
+}
+
+// A token_file is a path inside the copied burrow.yaml that LocalSystem
+// would read wherever it points.
+func TestBuildPlan_WindowsRefusesTokenFile(t *testing.T) {
+	in := windowsInputs()
+	in.TokenFile = `C:\Users\kohn\token.txt`
+	_, err := BuildPlan(in)
+	if err == nil || !strings.Contains(err.Error(), "token_file") || !strings.Contains(err.Error(), "Nothing was installed") {
+		t.Fatalf("err = %v", err)
+	}
+	in = linuxInputs()
+	in.TokenFile = "/home/kohn/tok"
+	if _, err := BuildPlan(in); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kardianos/service"
@@ -39,12 +40,12 @@ type serviceEnv struct {
 	// executable is the running binary, symbolic links resolved.
 	executable func() (string, error)
 	// trusted reports whether only root or an administrator can change the
-	// binary at exe or a directory above it.
-	trusted func(exe string) bool
+	// file at path, a full path without links, or a directory above it.
+	trusted func(path string) bool
 	// programData is the machine's ProgramData directory (Windows).
 	programData func() string
-	// lookupHome is the home directory of a user by name.
-	lookupHome func(user string) (string, error)
+	// lookupUser is the home directory and the user id of a user by name.
+	lookupUser func(name string) (home, uid string, err error)
 	// homeDir is the home directory of the current user.
 	homeDir func() (string, error)
 	// system names the service manager that was found: "linux-systemd",
@@ -75,17 +76,17 @@ func realServiceEnv() *serviceEnv {
 		goos:        runtime.GOOS,
 		elevated:    isElevated,
 		executable:  func() (string, error) { return executablePath() },
-		trusted:     executableTrusted,
+		trusted:     pathTrusted,
 		programData: programDataDir,
-		lookupHome: func(name string) (string, error) {
+		lookupUser: func(name string) (string, string, error) {
 			u, err := user.Lookup(name)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
-			if u.HomeDir == "" {
-				return "", errors.New("no home directory")
+			if u.HomeDir == "" || u.Uid == "" {
+				return "", "", errors.New("no home directory")
 			}
-			return u.HomeDir, nil
+			return u.HomeDir, u.Uid, nil
 		},
 		homeDir: os.UserHomeDir,
 		system:  service.Platform,
@@ -254,17 +255,28 @@ func copyPrivate(src, dst string) error {
 // the user the service is to run as on Linux ("" is root).
 func installPaths(cmd *cobra.Command, d deps, e *serviceEnv, args []string) (yaml, cfg, userName string, err error) {
 	override, _ := cmd.Flags().GetString("config")
-	// Through sudo the environment is root's, the files are not.
+	// Through sudo the environment is root's, the files are not. The name
+	// ends up after User= in the unit: it has to be a user of this system,
+	// by name. Digits alone are a user id to systemd, and 0 is root.
 	home := ""
 	if e.goos == "linux" && e.elevated() {
 		if u := strings.TrimSpace(d.getenv("SUDO_USER")); u != "" && u != "root" {
-			userName = u
-			if override == "" || len(args) == 0 {
-				if home, err = e.lookupHome(u); err != nil {
-					return "", "", "", &exitError{code: exitGeneral, msg: fmt.Sprintf(
-						"The home directory of %q, who ran sudo, cannot be found. Nothing was installed.\n"+
-							"Name the files: burrow service install <burrow.yaml> --config <config.yaml>", plainText(u))}
-				}
+			refuse := func(why string) error {
+				return &exitError{code: exitGeneral, msg: fmt.Sprintf(
+					"SUDO_USER is %q, %s. Nothing was installed.\n"+
+						"Run the install through sudo from the account the service is to run as.", plainText(u), why)}
+			}
+			if strings.Trim(u, "0123456789") == "" {
+				return "", "", "", refuse("a number and not a user name")
+			}
+			h, uid, lerr := e.lookupUser(u)
+			if lerr != nil {
+				return "", "", "", refuse("and this system has no such user")
+			}
+			// Root under another name is root: the service is root's, with
+			// root's own files and everything that asks of them.
+			if uid != "0" {
+				userName, home = u, h
 			}
 		}
 	}
@@ -348,12 +360,50 @@ func runServiceInstall(cmd *cobra.Command, d deps, args []string) error {
 	if err != nil {
 		return err
 	}
-	in := svc.Inputs{
-		GOOS: e.goos, Executable: exe, YAMLPath: yaml, UserConfigPath: cfg, UserName: userName,
-		Elevated: e.elevated(), YAMLExists: isFile(yaml), ExecutableTrusted: e.trusted(exe),
-		ExtraArguments: repeatedFlags(g, false),
+	cacert := g.cacert
+	if cacert != "" {
+		if cacert, err = filepath.Abs(cacert); err != nil {
+			return err
+		}
 	}
-	in.Command = e.again(append([]string{"service", "install", yaml, "--config", cfg}, in.ExtraArguments...)...)
+	others := g
+	others.cacert = ""
+	in := svc.Inputs{
+		GOOS: e.goos, Executable: exe, UserName: userName,
+		Elevated: e.elevated(), ExecutableTrusted: e.trusted(exe),
+		ExtraArguments: repeatedFlags(others, false),
+	}
+	words := []string{"service", "install", yaml, "--config", cfg}
+	if cacert != "" {
+		words = append(words, "--cacert", cacert)
+	}
+	in.Command = e.again(append(words, in.ExtraArguments...)...)
+	in.YAMLExists = isFile(yaml)
+	if in.YAMLExists {
+		// A file that cannot be read as YAML is reported below, by the loader.
+		in.TokenFile, _ = client.TokenFilePath(yaml)
+	}
+	if e.goos == "linux" && in.Elevated && userName == "" {
+		// The service will be root's and read these files with root's
+		// rights on every start. The unit names the files themselves, not
+		// links to them, and each has to be root's alone.
+		resolved := func(p string) string {
+			if r, err := filepath.EvalSymlinks(p); err == nil {
+				return r
+			}
+			return p
+		}
+		yaml, cfg = resolved(yaml), resolved(cfg)
+		if cacert != "" {
+			cacert = resolved(cacert)
+		}
+		for _, f := range []string{yaml, cfg, cacert, in.TokenFile} {
+			if f != "" && !e.trusted(f) {
+				in.UntrustedFiles = append(in.UntrustedFiles, f)
+			}
+		}
+	}
+	in.YAMLPath, in.UserConfigPath, in.CACert = yaml, cfg, cacert
 	if in.SignedIn, err = signedInFor(yaml, cfg, in.YAMLExists); err != nil {
 		return err
 	}
@@ -471,22 +521,36 @@ func (e *serviceEnv) windowsConfigDir() string {
 	return pd + `\` + svc.Name
 }
 
-// removeCopies takes away what the install on Windows put under ProgramData:
-// the two copies, the service's log, and the directory when nothing else is
-// in it.
+// copyNames are the files this client puts into its directory under
+// ProgramData: the copies of the install, and the service's log.
+var copyNames = []string{"burrow.yaml", "config.yaml", "ca.pem", "burrow.log", "burrow.log.1"}
+
+// removeCopies takes away what the install on Windows put under ProgramData,
+// after the service of that install was removed: the copies, the service's
+// log, and the directory when nothing else is in it. Only plain files in a
+// plain directory are removed: a link or a junction in their place was not
+// made by the install, and what is behind it is not this client's.
 func (e *serviceEnv) removeCopies(out io.Writer) {
 	dir := e.windowsConfigDir()
 	if dir == "" {
 		return
 	}
-	if _, err := os.Lstat(dir); err != nil {
+	fi, err := os.Lstat(dir)
+	if err != nil {
 		return
 	}
-	for _, name := range []string{"burrow.yaml", "config.yaml", "burrow.log"} {
-		_ = os.Remove(dir + `\` + name)
+	if !fi.IsDir() || isLink(fi) {
+		fmt.Fprintf(out, "%s is a link and was left alone, with everything behind it.\n", dir)
+		return
+	}
+	for _, name := range copyNames {
+		p := dir + `\` + name
+		if fi, err := os.Lstat(p); err == nil && fi.Mode().IsRegular() && !isLink(fi) {
+			_ = os.Remove(p)
+		}
 	}
 	if err := os.Remove(dir); err != nil {
-		fmt.Fprintf(out, "%s was not removed: it holds files this client did not put there.\n", dir)
+		fmt.Fprintf(out, "%s was not removed: it holds something this client did not put there.\n", dir)
 		return
 	}
 	fmt.Fprintf(out, "Removed %s and the copies in it.\n", dir)
@@ -503,9 +567,15 @@ func runServiceUninstall(cmd *cobra.Command, d deps) error {
 	out := cmd.OutOrStdout()
 	m, _, err := e.state()
 	if errors.Is(err, service.ErrNotInstalled) {
-		// Copies an interrupted install or a removal by other means left.
-		e.removeCopies(out)
 		fmt.Fprintln(out, "The burrow service is not installed.")
+		// Without a service of this client, a directory of that name is not
+		// known to be its own: nothing in it is removed.
+		if dir := e.windowsConfigDir(); dir != "" {
+			if _, err := os.Lstat(dir); err == nil {
+				fmt.Fprintf(out, "%s exists and was left alone: no installed service says it is this client's.\n"+
+					"Look at it and remove it from an elevated terminal before the next install.\n", dir)
+			}
+		}
 		return nil
 	}
 	if m == nil {
@@ -642,6 +712,14 @@ func newServiceCmd(d deps) *cobra.Command {
 // underServiceManager reports whether this process was started by the Windows
 // service manager. A service there has to answer the manager, or it is ended
 // after half a minute; systemd and launchd ask nothing of the kind.
+//
+// The library answers this once, in its package initialisation on Windows
+// (service_windows.go: svc.IsWindowsService, and a panic when that fails).
+// Go runs the initialisation of every linked package, so that call is made
+// at the start of every burrow command on Windows, `connect` included, not
+// only here. IsWindowsService asks the system for this process and for the
+// process list (NtQueryInformationProcess, NtQuerySystemInformation); when
+// either is refused, burrow ends with that panic before any command runs.
 var underServiceManager = func() bool {
 	return runtime.GOOS == "windows" && !service.Interactive()
 }
@@ -649,7 +727,7 @@ var underServiceManager = func() bool {
 // serviceStopWait is how long a stop waits for the client to end.
 const serviceStopWait = 10 * time.Second
 
-// serviceLogMax is the size at which the service's log file starts again.
+// serviceLogMax is the size past which the service's log file is put aside.
 const serviceLogMax = 10 << 20
 
 // serviceProgram is `burrow up` as the service manager starts and stops it.
@@ -682,15 +760,76 @@ func (p *serviceProgram) Stop(service.Service) error {
 	return nil
 }
 
-// openServiceLog opens the file the service's log lines go to where the
-// system keeps none for it. A file that has grown past serviceLogMax starts
-// again.
-func openServiceLog(path string) (*os.File, error) {
-	flags := os.O_WRONLY | os.O_CREATE | os.O_APPEND
-	if fi, err := os.Stat(path); err == nil && fi.Size() > serviceLogMax {
-		flags |= os.O_TRUNC
+// rotatingLog is the file the service's log lines go to where the system
+// keeps none for it. A write that would take the file past max first moves it
+// to <path>.1, in place of the one that was there, and begins a new file: at
+// most twice max is kept, however long the service runs.
+type rotatingLog struct {
+	mu   sync.Mutex
+	path string
+	f    *os.File
+	size int64
+	max  int64
+}
+
+// openServiceLog opens the log at path and goes on at its end.
+func openServiceLog(path string) (*rotatingLog, error) {
+	l := &rotatingLog{path: path, max: serviceLogMax}
+	if err := l.open(os.O_APPEND); err != nil {
+		return nil, err
 	}
-	return os.OpenFile(path, flags, 0o600)
+	return l, nil
+}
+
+func (l *rotatingLog) open(flag int) error {
+	f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_CREATE|flag, 0o600)
+	if err != nil {
+		return err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	l.f, l.size = f, fi.Size()
+	return nil
+}
+
+func (l *rotatingLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.f != nil && l.size > 0 && l.size+int64(len(p)) > l.max {
+		_ = l.f.Close()
+		l.f = nil
+		// Rename replaces an older burrow.log.1. When it cannot be done, the
+		// file starts again where it is: the limit holds either way.
+		flag := os.O_APPEND
+		if err := os.Rename(l.path, l.path+".1"); err != nil {
+			flag = os.O_TRUNC
+		}
+		if err := l.open(flag); err != nil {
+			return 0, err
+		}
+	}
+	if l.f == nil {
+		if err := l.open(os.O_APPEND); err != nil {
+			return 0, err
+		}
+	}
+	n, err := l.f.Write(p)
+	l.size += int64(n)
+	return n, err
+}
+
+func (l *rotatingLog) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.f == nil {
+		return nil
+	}
+	err := l.f.Close()
+	l.f = nil
+	return err
 }
 
 // runUnderServiceManager runs the client as the program of the Windows

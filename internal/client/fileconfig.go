@@ -46,6 +46,22 @@ func LoadFileConfig(path string) (FileConfig, error) { return loadFileConfig(pat
 // the one that command has always had.
 func LoadCompleteFileConfig(path string) (FileConfig, error) { return loadFileConfig(path, true) }
 
+// TokenFilePath returns what the burrow.yaml at path names as token_file,
+// "" when it names none. The file itself is not read.
+func TokenFilePath(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("loadfileconfig: read %s: %w", path, err)
+	}
+	var raw struct {
+		TokenFile string `yaml:"token_file"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return "", fmt.Errorf("loadfileconfig: parse %s: %w", path, err)
+	}
+	return raw.TokenFile, nil
+}
+
 func loadFileConfig(path string, complete bool) (FileConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -85,6 +101,13 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 			token = strings.TrimRight(string(b), "\r\n")
 		} else {
 			token = strings.TrimSpace(string(b))
+		}
+		// What the file yields is sent to the relay. A file that cannot hold
+		// a token (several lines, a space inside, other than printable ASCII)
+		// is some other file: it is not sent anywhere, and nothing of it is
+		// shown. An empty one is no token, as it always was.
+		if t := strings.TrimSpace(token); t != "" && !ValidToken(t) {
+			return FileConfig{}, fmt.Errorf("loadfileconfig: token_file %q: the file does not hold a token", raw.TokenFile)
 		}
 	}
 
