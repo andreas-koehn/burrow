@@ -186,10 +186,12 @@ check "rate limit (api_key scope) is enforced" "$(echo "$CODES" | grep -c 429 ||
 acode DELETE "/api/v1/rate-limits/$RL" >/dev/null
 
 # --- model aliases -----------------------------------------------------------
-# An alias of the provider's service is rewritten on /ai/<provider>/. The
-# provider is the one registered in the api_key section above.
+# moved to the global endpoint, enabled in G09
+# /ai/<provider>/ forwards the body untouched: an alias is no longer rewritten
+# there. Aliases live on as synthetic models, addressed through /openai/v1.
+# The provider is the one registered in the api_key section above.
 amut POST /api/v1/models/aliases "{\"alias\":\"gpt-4o-mini\",\"concrete_model\":\"$MODEL\",\"service_id\":\"$SID\",\"provider\":\"ollama\",\"priority\":0}" >/dev/null
-check "model alias gpt-4o-mini is rewritten to $MODEL" \
+xcheck "model alias gpt-4o-mini is rewritten to $MODEL" \
   "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" -H 'Content-Type: application/json' -d "$(chat "alias $RANDOM" 4 gpt-4o-mini)" "$B/ai/$PROV/v1/chat/completions")" "200"
 
 # --- AI namespace --------------------------------------------------------------

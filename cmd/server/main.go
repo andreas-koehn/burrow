@@ -781,7 +781,6 @@ func newRootCmd() *cobra.Command {
 				Providers:  st,
 				Keys:       st,
 				Tunnels:    proxyDialerAdapter{st: st, srv: srv},
-				Aliases:    db.Wrap(database),
 				IPGeoDeny:  proxyHandler.IPGeoDenied,
 				PublicHost: proxyAuthDomain,
 				Log:        log,

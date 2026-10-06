@@ -53,7 +53,7 @@ type Gateway struct {
 	Keys       KeyValidator
 	Tunnels    TunnelDialer
 	Chain      Chain                                           // nil = call the upstream directly
-	Aliases    AliasStore                                      // nil = aliases are not applied
+	Synthetic  SyntheticModels                                 // nil = no synthetic models
 	IPGeoDeny  func(res *proxy.Resolved, r *http.Request) bool // nil = no policy check
 	PublicHost string                                          // auth domain, for X-Forwarded-Host
 	Log        *slog.Logger
@@ -114,12 +114,6 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 	r.Header.Del("Authorization")
 	r.Header.Del("X-Api-Key")
 	r.Header.Del("Cookie")
-
-	if err := rewriteModelAlias(r, p.ServiceID, g.Aliases); err != nil {
-		// Forwarding the request as sent is better than failing it.
-		// err is a failed body read or a failed alias lookup.
-		g.Log.Warn("aigateway: model alias not applied", "provider", p.Slug, "err", err)
-	}
 
 	if g.Chain == nil {
 		upstream.ServeHTTP(w, r)
