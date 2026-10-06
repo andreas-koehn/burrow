@@ -6,21 +6,40 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"sort"
 	"strconv"
 )
 
 var errBodyTooLarge = errors.New("aigateway: request body too large")
 
-// requestBody is a buffered request body. For a JSON object its top-level
-// fields are kept as raw messages, so replacing one field leaves the value of
-// every other field exactly as the client sent it.
+// errDuplicateModel reports a JSON object with more than one top-level
+// "model" field. Which of them an upstream reads is not defined, so such a
+// body must not be forwarded: the endpoint answers it with a coded 400.
+var errDuplicateModel = errors.New("aigateway: request body has more than one model field")
+
+// requestBody is a buffered request body and the place of its "model" field.
+//
+// What a caller must do with it:
+//   - readRequestBody refuses a body with two top-level "model" fields
+//     (errDuplicateModel) and returns no requestBody; answer 400, never
+//     forward.
+//   - Model() == "" means "no model": the body is not a JSON object, has no
+//     top-level "model", or it is not a non-empty string. There is nothing
+//     to route by; answer a coded 400. WithModel leaves such a body as it is.
+//   - Otherwise the model Burrow checks is the one an upstream reads: it is
+//     the only top-level "model" field, and WithModel replaces exactly the
+//     bytes of its value. Every other byte is forwarded as the client sent it.
 type requestBody struct {
-	raw    []byte
-	fields map[string]json.RawMessage // nil when raw is not a JSON object
+	raw   []byte
+	model string // "" = no model
+	// raw[start:end] is the top-level model value, quotes included. Only
+	// meaningful when model != "".
+	start, end int
 }
 
-// readRequestBody buffers r's body, up to limit bytes.
+// readRequestBody buffers r's body, up to limit bytes, and locates its
+// top-level "model" field. It fails with errBodyTooLarge, errDuplicateModel
+// or the error of the read. A body that is not JSON is not an error: it has
+// no model.
 func readRequestBody(r *http.Request, limit int64) (*requestBody, error) {
 	raw, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
@@ -30,59 +49,103 @@ func readRequestBody(r *http.Request, limit int64) (*requestBody, error) {
 		return nil, errBodyTooLarge
 	}
 	b := &requestBody{raw: raw}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) == nil {
-		b.fields = fields // stays nil for the JSON value null
+	if err := b.locateModel(); err != nil {
+		return nil, err
 	}
 	return b, nil
+}
+
+// locateModel walks the top level of the object in b.raw. Nested objects and
+// arrays are skipped as one value each, so a "model" key inside them is never
+// seen. The only error is errDuplicateModel.
+func (b *requestBody) locateModel() error {
+	// One valid JSON value and nothing else: no byte-order mark, no
+	// trailing data.
+	if !json.Valid(b.raw) {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(b.raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil
+	}
+	var (
+		seen       int
+		model      string
+		start, end int
+	)
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		if key, _ := tok.(string); key != "model" { // keys compare decoded: "model" is "model"
+			var skip skipValue
+			if dec.Decode(&skip) != nil {
+				return nil
+			}
+			continue
+		}
+		seen++
+		// The value starts after the key, a colon and optional whitespace.
+		at := skipSpace(b.raw, int(dec.InputOffset()))
+		if at >= len(b.raw) || b.raw[at] != ':' {
+			return nil
+		}
+		at = skipSpace(b.raw, at+1)
+		var val json.RawMessage // the value's exact bytes
+		if dec.Decode(&val) != nil {
+			return nil
+		}
+		if at+len(val) > len(b.raw) || !bytes.Equal(b.raw[at:at+len(val)], val) {
+			return nil // offsets do not line up: do not splice
+		}
+		var s string
+		if len(val) > 0 && val[0] == '"' && json.Unmarshal(val, &s) == nil {
+			model, start, end = s, at, at+len(val)
+		}
+	}
+	if seen > 1 {
+		return errDuplicateModel
+	}
+	b.model, b.start, b.end = model, start, end
+	return nil
+}
+
+// skipValue consumes one JSON value without keeping it.
+type skipValue struct{}
+
+func (*skipValue) UnmarshalJSON([]byte) error { return nil }
+
+// skipSpace returns the index of the first byte at or after i that is not
+// JSON whitespace.
+func skipSpace(raw []byte, i int) int {
+	for i < len(raw) && (raw[i] == ' ' || raw[i] == '\t' || raw[i] == '\n' || raw[i] == '\r') {
+		i++
+	}
+	return i
 }
 
 // Raw returns the body exactly as it was read.
 func (b *requestBody) Raw() []byte { return b.raw }
 
-// Model returns the request's "model" field, or "" when there is none.
-func (b *requestBody) Model() string {
-	var model string
-	if b.fields == nil || json.Unmarshal(b.fields["model"], &model) != nil {
-		return ""
-	}
-	return model
-}
+// Model returns the request's top-level "model" field. "" means there is no
+// model to route by (see requestBody); the endpoint answers that with a
+// coded 400.
+func (b *requestBody) Model() string { return b.model }
 
-// WithModel returns the body with "model" set to model. The receiver is not
-// modified, so each fallback attempt can derive its own body. The values of
-// the other fields are copied verbatim; only the order of the top-level
-// fields and the whitespace between them may differ from what was read.
+// WithModel returns the body with the value of "model" replaced by model.
+// Only the bytes of that value change. A body without a model (Model() == "")
+// is returned as it is: nothing is injected and nothing is overwritten. The
+// receiver is not modified, so each fallback attempt can derive its own body.
 func (b *requestBody) WithModel(model string) []byte {
-	if b.fields == nil {
+	if b.model == "" {
 		return b.raw
 	}
-	keys := make([]string, 0, len(b.fields)+1)
-	for k := range b.fields {
-		if k != "model" {
-			keys = append(keys, k)
-		}
-	}
-	keys = append(keys, "model")
-	sort.Strings(keys)
-
-	var out bytes.Buffer
-	out.Grow(len(b.raw) + len(model) + 16)
-	out.WriteByte('{')
-	for i, k := range keys {
-		if i > 0 {
-			out.WriteByte(',')
-		}
-		out.Write(jsonString(k))
-		out.WriteByte(':')
-		if k == "model" {
-			out.Write(jsonString(model))
-		} else {
-			out.Write(b.fields[k])
-		}
-	}
-	out.WriteByte('}')
-	return out.Bytes()
+	name := jsonString(model)
+	out := make([]byte, 0, len(b.raw)-(b.end-b.start)+len(name))
+	out = append(out, b.raw[:b.start]...)
+	out = append(out, name...)
+	return append(out, b.raw[b.end:]...)
 }
 
 // jsonString encodes s as a JSON string without HTML escaping.

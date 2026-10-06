@@ -178,6 +178,42 @@ func (errSynthetic) ModelByName(context.Context, string) (db.AIModel, error) {
 	return db.AIModel{}, errors.New("db down")
 }
 
+// downProviders fails the lookup of the listed slugs.
+type downProviders struct {
+	fakeProviders
+	down map[string]bool
+}
+
+func (f downProviders) ProviderBySlug(ctx context.Context, slug string) (db.AIProvider, error) {
+	if f.down[slug] {
+		return db.AIProvider{}, errors.New("db down")
+	}
+	return f.fakeProviders.ProviderBySlug(ctx, slug)
+}
+
+// A provider this request can never use is not looked up: its failure must
+// not fail the request.
+func TestResolve_OtherDialectProviderIsNotLookedUp(t *testing.T) {
+	g := resolveGateway()
+	g.Providers = downProviders{g.Providers.(fakeProviders), map[string]bool{"zai-anthropic": true}}
+	res, err := g.resolve(context.Background(), "burrow-intelligence", "openai")
+	if err != nil || len(res.Targets) != 2 {
+		t.Fatalf("openai: %v %+v", err, res)
+	}
+	// Asked in the dialect whose provider is down, it is a real error ...
+	_, err = g.resolve(context.Background(), "burrow-intelligence", "anthropic")
+	var fm *formatMismatchError
+	if err == nil || errors.Is(err, errModelNotFound) || errors.As(err, &fm) {
+		t.Fatalf("anthropic: err = %v, want a real error", err)
+	}
+	// ... and so it is when telling a mismatch from an unknown model needs it.
+	g.Providers = downProviders{resolveGateway().Providers.(fakeProviders), map[string]bool{"ollama": true}}
+	_, err = g.resolve(context.Background(), "burrow-simple", "anthropic")
+	if err == nil || errors.Is(err, errModelNotFound) || errors.As(err, &fm) {
+		t.Fatalf("burrow-simple: err = %v, want a real error", err)
+	}
+}
+
 type errProviders struct{}
 
 func (errProviders) ProviderBySlug(context.Context, string) (db.AIProvider, error) {

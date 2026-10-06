@@ -3,7 +3,6 @@ package aigateway
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/ankoehn/burrow/internal/db"
@@ -54,9 +53,6 @@ func (e *formatMismatchError) Error() string {
 // Errors: errModelNotFound and *formatMismatchError describe the request; any
 // other error is a failed lookup.
 func (g *Gateway) resolve(ctx context.Context, name, dialect string) (Resolution, error) {
-	if dialect != "openai" && dialect != "anthropic" {
-		return Resolution{}, fmt.Errorf("aigateway: unknown dialect %q", dialect)
-	}
 	if name == "" {
 		return Resolution{}, errModelNotFound
 	}
@@ -95,32 +91,51 @@ func (g *Gateway) resolveSynthetic(ctx context.Context, name, dialect string) (R
 		return Resolution{}, errModelNotFound
 	}
 	res := Resolution{Requested: name, Dialect: dialect, Synthetic: true, Model: m}
-	other := "" // a dialect that does serve this model, for the mismatch error
 	for _, t := range m.Targets {
-		p, err := g.Providers.ProviderBySlug(ctx, t.ProviderSlug)
-		if errors.Is(err, db.ErrNotFound) {
-			continue // the store refuses to delete a provider in use; tolerate a stale row anyway
+		if t.Dialect != dialect {
+			continue // never looked up: this request cannot use it
 		}
+		p, ok, err := g.targetProvider(ctx, t)
 		if err != nil {
 			return Resolution{}, err
 		}
-		// The store's format lock is check-then-write, so a target row can
-		// disagree with its provider. The provider row decides, and a row
-		// that disagrees is not a target in either dialect.
-		if p.APIFormat != t.Dialect {
-			continue
+		if ok {
+			res.Targets = append(res.Targets, Target{Provider: p, Model: t.TargetModel})
 		}
-		if t.Dialect != dialect {
-			other = t.Dialect
-			continue
-		}
-		res.Targets = append(res.Targets, Target{Provider: p, Model: t.TargetModel})
 	}
 	if len(res.Targets) > 0 {
 		return res, nil
 	}
-	if other != "" {
-		return Resolution{}, &formatMismatchError{Model: name, Dialect: dialect, ServedBy: other}
+	// Nothing in this dialect. Only now look at the other one, to tell a
+	// model served elsewhere from one that is not served at all.
+	for _, t := range m.Targets {
+		if t.Dialect == dialect {
+			continue
+		}
+		_, ok, err := g.targetProvider(ctx, t)
+		if err != nil {
+			return Resolution{}, err
+		}
+		if ok {
+			return Resolution{}, &formatMismatchError{Model: name, Dialect: dialect, ServedBy: t.Dialect}
+		}
 	}
 	return Resolution{}, errModelNotFound
+}
+
+// targetProvider returns the provider of a target row. ok is false when the
+// target cannot be used: its provider is gone (the store refuses to delete a
+// provider in use; a stale row is tolerated anyway), or the provider does not
+// speak the row's dialect. The store's format lock is check-then-write, so a
+// row can disagree with its provider; the provider row decides and a request
+// is never sent across formats.
+func (g *Gateway) targetProvider(ctx context.Context, t db.AIModelTarget) (db.AIProvider, bool, error) {
+	p, err := g.Providers.ProviderBySlug(ctx, t.ProviderSlug)
+	if errors.Is(err, db.ErrNotFound) {
+		return db.AIProvider{}, false, nil
+	}
+	if err != nil {
+		return db.AIProvider{}, false, err
+	}
+	return p, p.APIFormat == t.Dialect, nil
 }
