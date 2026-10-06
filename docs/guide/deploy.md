@@ -265,6 +265,130 @@ default is the Let's Encrypt production directory.
 
 ---
 
+## 8. Client downloads and the first tagged release {#client-release}
+
+Your relay serves the client installers (`/install.sh`, `/install.ps1`) and
+redirects `/download/burrow/<os>/<arch>` and `/download/burrow/checksums.txt` to
+release files. `burrow update` uses the same addresses. All of them depend on
+the files of a **version-tagged release** being there under the right names.
+
+::: warning No tagged release exists yet
+Until one does, a relay built from an untagged commit redirects to the rolling
+`develop` pre-release, and the installer prints
+`This relay runs an untagged build: installing the rolling develop build of burrow.`
+The install one-liner works that way, but it hands out whatever `develop`
+currently holds. Cut a tagged release before you rely on it.
+:::
+
+### What a tagged release must contain
+
+The relay computes the file names from its own version. For a relay at version
+`0.7.0` (tag `v0.7.0`) it redirects to
+`<client_download_base>/v0.7.0/<archive>`. The release must hold exactly these
+files, as CI (`.goreleaser.yml`, on `v*` tags) produces them:
+
+| Platform | Archive |
+|----------|---------|
+| Linux amd64 | `burrow_linux_amd64_0.7.0.tar.gz` |
+| Linux arm64 | `burrow_linux_arm64_0.7.0.tar.gz` |
+| Linux arm (32-bit) | `burrow_linux_armv7_0.7.0.tar.gz` |
+| Linux 386 | `burrow_linux_386_0.7.0.tar.gz` |
+| macOS amd64 | `burrow_darwin_amd64_0.7.0.tar.gz` |
+| macOS arm64 | `burrow_darwin_arm64_0.7.0.tar.gz` |
+| Windows amd64 | `burrow_windows_amd64_0.7.0.zip` |
+| Windows 386 | `burrow_windows_386_0.7.0.zip` |
+| all of the above | `checksums.txt`, listing the SHA-256 of every archive |
+
+That is eight platform pairs. The pattern is
+`burrow_<os>_<arch>_<version>.tar.gz` (`.zip` on Windows), with the version
+without the leading `v` and `arm` spelled `armv7`. Each archive holds the
+single `burrow` (or `burrow.exe`) binary. A file under another name, a missing
+pair or a missing `checksums.txt` breaks the installer and `burrow update` on
+that platform: the relay does not check that the target exists.
+
+The rolling `develop` pre-release has the shorter names
+`burrow_<os>_<arch>.tar.gz` / `.zip` for four pairs (`linux/amd64`,
+`linux/arm64`, `darwin/arm64`, `windows/amd64`) and its own `checksums.txt`.
+
+Release checklist, for whoever cuts the tag (nothing in the repository tags or
+publishes by itself):
+
+1. Tag `v<version>` and let CI publish. Confirm the release lists all eight
+   archives and `checksums.txt` under the names above.
+2. Deploy a relay built from that tag (its version must be exactly
+   `<version>`; builds with a suffix such as `-rc1` or a dirty tree hand out
+   `develop`).
+3. From a clean machine, run the installer and then `burrow login` and
+   `burrow http 3000` against that relay.
+4. Check the relay settings (see below) if you changed them.
+5. Run the platform checks in the next list. They need real machines and have
+   **not** been run on Windows, macOS or under real systemd.
+
+### Relay settings involved
+
+| Setting | Environment variable | Purpose |
+|---------|----------------------|---------|
+| `client_download_base` | `BURROW_CLIENT_DOWNLOAD_BASE` | Where the redirects point; default `https://github.com/andreas-koehn/burrow/releases/download`. A fork must set its own, or its relay hands out the upstream project's client. |
+| `client_download_dir` | `BURROW_CLIENT_DOWNLOAD_DIR` | Serve the files from a directory instead (below). |
+| `min_client_version` | `BURROW_MIN_CLIENT_VERSION` | Oldest client the relay accepts. Set it only to a version that exists as a release, or clients are told to `burrow update` to something they cannot get. |
+
+See [Configuration](/guide/configuration#client-downloads).
+
+### Checks that only a person on a real machine can do
+
+Group them by platform. Each describes what to observe.
+
+**Windows**
+
+- `irm https://<relay>/install.ps1 | iex` on Windows PowerShell 5.1 and on
+  PowerShell 7: one entry is added to the user `Path`, and a new terminal finds
+  `burrow`; an existing `Path` that holds `%VARIABLES%` stays unexpanded; a
+  missing `Path` is created; a second run adds no duplicate; a long `Path` is
+  not truncated; a failed run leaves the terminal open.
+- The hidden token prompt of `burrow login --token -` in the Windows console.
+- `burrow update` while `burrow up` or the service is running; a second update
+  while the previous `burrow.exe.old` is still held; the staged file under
+  Defender and SmartScreen (it must start within 10 seconds); the hint when the
+  directory is not writable.
+- `burrow service install` from `%ProgramFiles%\burrow` only: the owner and
+  ACL of `%ProgramData%\burrow` (SYSTEM and Administrators), start, stop,
+  restart, the command line in `sc qc burrow`, a pre-planted directory is
+  refused, the hint in a non-elevated terminal, and that the install from
+  `%LOCALAPPDATA%\Programs\burrow` is refused.
+
+**Linux (systemd)**
+
+- `sudo burrow service install` with a path that contains a space; the unit
+  file is `0644` and root-owned; the service starts after a reboot without a
+  login; it restarts after `kill -9`; `journalctl -u burrow` shows its log; the
+  hint printed without `sudo`.
+
+**macOS (launchd)**
+
+- `burrow service install` loads the agent; it starts at login; the log file
+  `~/Library/Logs/burrow/burrow.err.log` appears; `sudo` is refused;
+  `burrow service uninstall` unloads it.
+- A client downloaded in a browser is quarantined (see below); one fetched by
+  the installer runs.
+
+### Installing without GitHub {#air-gapped}
+
+For machines that cannot reach the release host, put the archives and
+`checksums.txt` of the release (the same file names as above) in a directory on
+the relay and set `BURROW_CLIENT_DOWNLOAD_DIR` to it. The relay then serves
+`/download/…` itself instead of redirecting, and the installers and
+`burrow update` work unchanged. The directory must hold the files directly (not
+in a subdirectory), and symbolic links that lead out of it are not followed.
+
+### macOS and the client binary
+
+A binary fetched with `curl`, which is what the installer uses, runs as it is.
+One downloaded in a browser is quarantined by macOS until you allow it in
+**System Settings → Privacy & Security**. The binaries are not signed or
+notarised.
+
+---
+
 ## Next steps
 
 - [Connect a client](/guide/connect-client) — install the `burrow` CLI and

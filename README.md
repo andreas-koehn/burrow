@@ -17,6 +17,18 @@ This is **early software**: single-admin, TCP only, expect rough edges and break
 
 ## Quickstart
 
+With a relay already running at `burrow.example.com`, a local service goes online with three lines, two of which are needed once per machine:
+
+```sh
+curl -fsSL https://burrow.example.com/install.sh | sh
+burrow login burrow.example.com
+burrow http 3000
+```
+
+On Windows, install with `irm https://burrow.example.com/install.ps1 | iex` in PowerShell. `burrow login` shows a short code and a page of your dashboard; approve the sign-in there, no token is copied by hand. See the [client guide](docs/guide/connect-client.md) for manual downloads, tokens, `burrow.yaml`, running as a service and updating.
+
+To try Burrow without a domain, run your own relay with self-signed certificates.
+
 You need a host with a public IP (the relay) and the machine running the service you want to expose.
 
 **1. Run the relay** on your VPS. This generates self-signed dev TLS certs into `./certs`, seeds the admin user, serves the dashboard + API on `:8080`, and the control channel on `:7000`:
@@ -41,7 +53,7 @@ burrow connect --server <your-vps>:7000 --token bur_xxx \
 
 ### Install
 
-Prebuilt binaries for Linux (amd64 / arm64 / armv7), macOS (amd64 / arm64), and Windows (amd64), plus a multi-arch container image, are published on the [Releases](https://github.com/ankoehn/burrow/releases) page for each tagged version. If you cloned `main` before the first release tag, build from source (below).
+Prebuilt client binaries for Linux (amd64 / arm64 / armv7 / 386), macOS (amd64 / arm64), and Windows (amd64 / 386), plus a multi-arch container image, are published on the [Releases](https://github.com/andreas-koehn/burrow/releases) page for each tagged version. Your relay also serves an installer for its own version at `/install.sh` and `/install.ps1`. No version-tagged release exists yet: until one does, a relay hands out the rolling `develop` build and the installer says so. If you cloned `main` before the first release tag, build from source (below).
 
 Docker (`./data` must be writable by the container's non-root user, uid 65532 — e.g. `mkdir -p data && sudo chown 65532:65532 data`):
 

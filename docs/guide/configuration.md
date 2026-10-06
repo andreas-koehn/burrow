@@ -117,6 +117,13 @@ If the dashboard is served over HTTPS through a reverse proxy and
 session cookie will be silently dropped by modern browsers.
 :::
 
+::: warning Browser sign-in of the client
+`burrow login` starts sign-in requests without being logged in, and the relay
+allows at most 5 open requests per source IP. Behind a reverse proxy, set
+`BURROW_TRUSTED_PROXIES` to the proxy. Without it, every client appears to come
+from the proxy's address and shares that limit of 5.
+:::
+
 Example for a proxy running on localhost:
 
 ```env
@@ -209,6 +216,26 @@ BURROW_LOG_LEVEL=warn
 
 ---
 
+### Client downloads and versions {#client-downloads}
+
+These settings control what `/install.sh`, `/install.ps1`, `/download/…` and
+`burrow update` hand out. See [Deploy on a server](/guide/deploy#client-release)
+for what the files must be called.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `BURROW_MIN_CLIENT_VERSION` | `""` (no minimum) | Oldest client the relay accepts, as `0.7.0` or `v0.7.0`. Older clients stop with `This relay needs burrow <min> or newer. Run: burrow update` (exit code 6). The relay reports the value at its discovery endpoint. |
+| `BURROW_CLIENT_DOWNLOAD_BASE` | `https://github.com/andreas-koehn/burrow/releases/download` | Where `/download/` redirects: `<base>/<tag>/<archive>`. An `http(s)` URL of host and path, without user, query or fragment. A fork or mirror sets its own. `http://` is refused at start when the relay itself runs on HTTPS. |
+| `BURROW_CLIENT_DOWNLOAD_DIR` | `""` | A directory holding the client archives and `checksums.txt`. When set, the relay serves `/download/` itself instead of redirecting, for machines without access to GitHub. |
+
+::: warning A fork must set the download base
+With the default base, a relay hands out the upstream project's client. If you
+run a fork, set `BURROW_CLIENT_DOWNLOAD_BASE` (or `BURROW_CLIENT_DOWNLOAD_DIR`) to
+your own release files.
+:::
+
+---
+
 ### SMTP
 
 SMTP host, port, username, and sender address are configured through the
@@ -282,9 +309,61 @@ secrets:
 
 ---
 
-## `burrow.yaml` — client configuration {#burrow-yaml}
+## Client configuration
 
-The client reads a YAML file when started with `burrow connect --config burrow.yaml`.
+### User config file {#user-config}
+
+`burrow login` stores the sign-in in `config.yaml` in the `burrow` directory of
+your user config directory, written with mode `0600`:
+
+| OS | Path |
+|----|------|
+| Linux | `~/.config/burrow/config.yaml` |
+| macOS | `~/Library/Application Support/burrow/config.yaml` |
+| Windows | `%AppData%\burrow\config.yaml` |
+
+```yaml
+relay: https://burrow.insingo.com
+control: burrow.insingo.com:7000
+token: bur_…
+token_name: kohns-laptop
+```
+
+| Key | Meaning |
+|-----|---------|
+| `relay` | The relay's dashboard address |
+| `control` | The control endpoint, `host:port` |
+| `token` | The client token (a secret; keep the file's mode) |
+| `token_name` | The token's name, shown by `burrow status` |
+
+Every `burrow` command accepts `--config <file>` to use another user config
+file. `burrow doctor` warns when the file can be read by other users.
+`burrow logout` deletes the stored token; revoke it in the dashboard
+(**Clients → Tokens**).
+
+### Precedence {#client-precedence}
+
+For `burrow http`, `burrow tcp`, `burrow up`, `burrow status` and `burrow doctor`,
+highest first:
+
+1. Command-line flags.
+2. Environment: `BURROW_SERVER`, `BURROW_TOKEN`, `BURROW_TOKEN_FILE`.
+3. `burrow.yaml` (`server`, `token`, `token_file`), for `burrow up` only.
+4. The user config file.
+
+A stored token is sent only to the relay it was stored for. A token given
+explicitly (flag, environment or `burrow.yaml`) goes with whatever server you
+name. When nothing provides a control endpoint and a token, the command stops
+with exit code 3 and `Not signed in. Run: burrow login <your relay address>`.
+
+`burrow connect` does not follow this list: it uses only its flags or its file,
+and ignores the user config file, `BURROW_SERVER` and `BURROW_TOKEN`.
+
+### `burrow.yaml` {#burrow-yaml}
+
+`burrow up` reads this file (see [Connect a client](/guide/connect-client#burrow-yaml-and-burrow-up));
+`burrow connect --config burrow.yaml` reads it too, and for `connect` the file
+must hold `server` and a token.
 
 ```yaml
 server: burrow.insingo.com:7000
@@ -303,14 +382,16 @@ services:
 
 | Field | Required | Default | Notes |
 |-------|----------|---------|-------|
-| `server` | Yes | — | Relay address including port, e.g. `burrow.insingo.com:7000`. |
-| `token` | One of `token`/`token_file` | — | Client token minted from the dashboard or via `burrowd token`. |
-| `token_file` | One of `token`/`token_file` | — | Path to a file containing the token value. |
+| `server` | For `connect`; optional for `up` | the sign-in | Relay address including port, e.g. `burrow.insingo.com:7000`. |
+| `token` | For `connect`: one of `token`/`token_file` | the sign-in | Client token minted from the dashboard or via `burrowd token`. |
+| `token_file` | For `connect`: one of `token`/`token_file` | the sign-in | Path to a file containing the token value. |
 | `services` | Yes | — | List of services to expose. |
 | `services[].name` | Yes | — | Display name; shown in the dashboard. |
 | `services[].local` | Yes | — | Local address to forward traffic to, e.g. `127.0.0.1:3000`. |
 | `services[].type` | No | `tcp` | `http` or `tcp`. HTTP tunnels get a slug and a `/svc/<slug>/` URL; TCP tunnels get a port. |
 | `services[].remote` | No | `0` | TCP only. Requested public port. `0` = auto-assigned from `PORT_MIN`–`PORT_MAX`. |
+| `services[].slug` | No | — | `http` only. Path under `/svc/`. Used only when the service is created (`burrow up`). |
+| `services[].access` | No | `open` | `http` only: `open`, `login` or `api-key`. Used only when the service is created (`burrow up`). |
 
 ### Single-tunnel flags (no config file)
 
@@ -323,7 +404,7 @@ burrow connect \
   --name my-app
 ```
 
-Available flags: `--server`, `--token`, `--local` (default `127.0.0.1:3000`),
+Available flags of `burrow connect`: `--server`, `--token`, `--local` (default `127.0.0.1:3000`),
 `--remote` (default `0`), `--name`, `--type` (default `tcp`), `--insecure`,
 `--cacert`, `--server-name`.
 

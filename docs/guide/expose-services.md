@@ -6,6 +6,69 @@ access-control surface.
 
 ---
 
+## The short way: `burrow http` and `burrow tcp`
+
+After `burrow login` (see [Connect a client](/guide/connect-client)), one
+command exposes a local port:
+
+```sh
+burrow http 3000
+burrow tcp 22
+```
+
+`<target>` is what is listening locally: `3000` means `127.0.0.1:3000`;
+`localhost:3000` and `192.168.1.20:8080` name a host and port; `http://localhost:3000`
+means the same as `localhost:3000`. A path or an `https://` address is
+rejected: HTTPS upstreams are not supported.
+
+| Flag | Applies to | Meaning |
+|------|-----------|---------|
+| `--name <name>` | both | Service name; default `<hostname>-<port>` |
+| `--slug <slug>` | `http` | Path under `/svc/`; 3 to 40 lowercase letters, digits and hyphens. Used only when the service is created |
+| `--access open\|login\|api-key` | `http` | Access mode. Used only when the service is created |
+| `--remote <port>` | `tcp` | Fixed public port; default any free port |
+
+```sh
+burrow http 3000 --name my-app --slug my-app --access login
+burrow tcp 22 --remote 9001 --name ssh
+```
+
+The default name is stable for a machine and port, so running the same command
+again reuses the same service, its URL and its access settings. `--slug` and
+`--access` apply **only when the service is created**; the client never changes
+an existing service. If the service already exists with other values, the
+client says so and names the dashboard page where they are changed.
+
+### Access {#access}
+
+A service created by `burrow http` is **`open` by default**: anyone who has the
+URL can use it, with no login and no key. The status view says "anyone with the
+URL". The three values of `--access` map to the relay's access modes:
+
+| `--access` | Relay access mode | Who can use the service |
+|------------|-------------------|-------------------------|
+| `open` | `open` | anyone with the URL |
+| `login` | `burrow_login` | people who log in to this Burrow relay |
+| `api-key` | `api_key` | callers with an API key for the service |
+
+`--access api-key` creates **no key**. The service refuses every request until
+you create a key in the dashboard (the client prints the page).
+
+Setting `login` or `api-key` at creation needs permission to configure
+services (`services:configure:own` or `services:configure:any`); asking for
+`open` needs none. Against a relay that is too old to apply the wish,
+`burrow http --access login` (or `api-key`) ends with exit code 1 and tells you
+so. The service entry it left on the relay is open: set its access mode in the
+dashboard. `--access open` works against any relay. See
+[Access control](/guide/access-control) for what each mode does.
+
+The examples below use `burrow.yaml` with `burrow connect --config`, which
+still works unchanged. The same files work with `burrow up` (which can also read
+the stored sign-in, so `server` and `token` may be left out); see
+[Connect a client](/guide/connect-client#burrow-yaml-and-burrow-up).
+
+---
+
 ## (A) TCP tunnel — SSH, Postgres, and other raw protocols
 
 A TCP tunnel forwards any TCP connection to a port on the relay. The upstream

@@ -125,9 +125,118 @@ proxy, so this issue does not apply. Secure cookies work automatically.
 
 ---
 
+## Start with `burrow doctor`
+
+When the client does not work, run:
+
+```sh
+burrow doctor
+```
+
+It prints one line per check, with a sentence on how to fix a failure, and
+never prints the token. The checks, in order: user config, relay name, relay
+discovery over HTTPS, control endpoint (TCP, then TLS), token, client and relay
+versions, system clock (within two minutes of the relay's), and, when a
+`burrow.yaml` is found, whether each service's local target accepts a
+connection.
+
+The exit code is 0 when nothing failed. Otherwise it is the code of the first
+failure: 3 not signed in, 4 token rejected, 5 relay unreachable or certificate
+not trusted, 6 client too old, 1 anything else. `burrow status` shows what this
+machine is signed in to without connecting.
+
+### Not signed in
+
+```
+Not signed in. Run: burrow login <your relay address>
+```
+
+Exit code 3. No flag, environment variable, `burrow.yaml` or stored sign-in
+gave a control endpoint and a token. Run `burrow login burrow.insingo.com`. If
+the message says the stored sign-in is for another relay, a stored token is
+only ever sent to the relay it was created for: sign in to the relay you mean,
+or give a token with `BURROW_TOKEN`.
+
+### The relay rejected this machine's token
+
+```
+The relay rejected this machine's token. It may have been revoked. Run: burrow login <relay>
+```
+
+Exit code 4. The token was revoked or deleted, or belongs to another relay. Run
+`burrow login <relay>` again (add `--force` to replace the stored sign-in
+without the question).
+
+### Cannot reach the relay
+
+```
+Cannot reach burrow.insingo.com:7000. Check the address and that port 7000 is open. Details: burrow doctor
+```
+
+`burrow login`, `burrow update` and `burrow doctor` stop with exit code 5;
+`burrow http`, `burrow tcp` and `burrow up` print the line once and keep
+retrying. Check the address for typos and that the control port (7000 unless
+your relay uses another) is open in the firewall:
+
+```sh
+nc -zv burrow.insingo.com 7000
+```
+
+A relay without a discovery endpoint (an older relay) is assumed to have its
+control endpoint at `<relay host>:7000`. If yours is elsewhere, give it:
+`burrow login <relay> --control host:port`.
+
+### The certificate is not trusted
+
+`burrow login`, `burrow update` and `burrow doctor` stop with exit code 5 and
+say that the certificate is not trusted, naming who issued it. If the relay uses
+its own CA, trust it with `--cacert <ca.pem>` (and `--server-name` when the name
+in the certificate differs from the address). `--insecure` skips the check; use
+it only against a local dev relay.
+
+### The client is too old
+
+```
+This relay needs burrow 0.7.0 or newer. Run: burrow update
+```
+
+Exit code 6. The relay sets a minimum client version
+(`BURROW_MIN_CLIENT_VERSION`). Run `burrow update`; if the binary's directory is
+not writable, the command prints what to run instead.
+
+### Browser sign-in does not work
+
+- **"This relay does not support browser sign-in"** (exit code 2): the relay is
+  older. Create a token under **Clients → Tokens** and run
+  `burrow login <relay> --token -`.
+- **The approval page refuses you**: approving needs an admin, or a role with
+  `tokens:manage:own` or `tokens:manage:any`. A user without it can still create
+  a token in the dashboard and use `--token -`.
+- **Too many open sign-in requests**: the relay allows 5 per source IP and 20 in
+  total, each valid for 10 minutes. Behind a reverse proxy without
+  `BURROW_TRUSTED_PROXIES`, all clients share one address, so 5 is the limit for
+  everybody. See [Configuration](/guide/configuration#behind-a-reverse-proxy).
+
+### `--access login` or `api-key` was not applied
+
+Against an older relay, `burrow http --access login` (or `api-key`) ends with
+exit code 1 and says the relay did not apply it. The service entry it created is
+open. Open the dashboard and set the access mode there. `--access api-key` also
+never creates a key: add one in the dashboard before callers can use the
+service.
+
+### `burrow service install` refuses on Windows
+
+The service runs as LocalSystem and refuses a `burrow.exe` that a normal user
+can change. The installer puts it in `%LOCALAPPDATA%\Programs\burrow`; copy it
+to `%ProgramFiles%\burrow` from an elevated terminal and install from that copy.
+See [Keep it running](/guide/connect-client#keep-it-running).
+
+---
+
 ## Client cannot connect to the relay
 
-**Symptom:** `burrow connect` fails or times out immediately.
+**Symptom:** `burrow connect` fails or times out immediately. (For `burrow http`, `burrow tcp` and `burrow up`, run `burrow doctor` first.)
 
 Work through these checks:
 
@@ -167,8 +276,8 @@ burrow connect --config burrow.yaml --cacert /path/to/ca.pem
 ### 4. Token is invalid or missing
 
 Make sure the token is set in `burrow.yaml` (`token: bur_YOUR_TOKEN_HERE`) or
-passed via `--token`. Mint a token in the dashboard under **Settings → Tokens**,
-or with:
+passed via `--token`. (`burrow login` stores a token for you.) Mint a token in the
+dashboard under **Clients → Tokens**, or with:
 
 ```sh
 burrowd token --email admin@example.com --name my-laptop

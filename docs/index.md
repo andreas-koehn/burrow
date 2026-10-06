@@ -55,8 +55,9 @@ volumes:
 Then connect a local service from any machine:
 
 ```sh
-burrow connect --server burrow.insingo.com:7000 --token bur_YOUR_TOKEN_HERE \
-  --local 127.0.0.1:3000 --type http --name my-app
+curl -fsSL https://burrow.insingo.com/install.sh | sh
+burrow login burrow.insingo.com
+burrow http 3000
 ```
 
 Your app is live at `https://burrow.insingo.com/svc/k7p2qx/`. The client prints the exact URL on `tunnel registered`.
@@ -66,7 +67,7 @@ When `BURROW_ACME_DOMAIN` is set, burrowd infers the base domain from it automat
 :::
 
 ::: info No stable release yet
-Burrow does not have a tagged release. Use the `develop` channel: image `ghcr.io/ankoehn/burrow:develop` or [pre-built binaries](https://github.com/ankoehn/burrow/releases/tag/develop). The GHCR package is private by default — make it public or `docker login ghcr.io` before pulling.
+Burrow does not have a tagged release. Use the `develop` channel: image `ghcr.io/ankoehn/burrow:develop` or [pre-built binaries](https://github.com/andreas-koehn/burrow/releases/tag/develop). The GHCR package is private by default — make it public or `docker login ghcr.io` before pulling.
 :::
 
 See the [Quickstart](/guide/quickstart) for the full step-by-step walkthrough, or [Deploy on a server](/guide/deploy) for a production setup with firewall rules and first-boot verification.

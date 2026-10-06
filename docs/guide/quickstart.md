@@ -72,20 +72,59 @@ settings, and change it immediately.
 
 ### 5. Connect a client
 
-Mint a token in the dashboard (Users → your user → Tokens → New token), then
-run the client on your local machine:
+On the machine that runs your local app, install the client, sign in once, and
+run:
+
+**Linux and macOS**
 
 ```sh
-burrow connect \
-  --server burrow.insingo.com:7000 \
-  --token bur_YOUR_TOKEN_HERE \
-  --local 127.0.0.1:3000 \
-  --type http \
-  --name my-app
+curl -fsSL https://burrow.insingo.com/install.sh | sh
+burrow login burrow.insingo.com
+burrow http 3000
 ```
 
-Your local app is now reachable at `https://burrow.insingo.com/svc/<slug>/`. The
-client prints the URL on `tunnel registered`; the dashboard shows it too.
+**Windows (PowerShell)**
+
+```powershell
+irm https://burrow.insingo.com/install.ps1 | iex
+burrow login burrow.insingo.com
+burrow http 3000
+```
+
+`burrow login` prints a page address and a short code. Open the page (it opens
+by itself on a desktop), check that it shows the same code, and approve. No
+token is copied by hand.
+
+```
+Open this page to sign this machine in:
+
+  https://burrow.insingo.com/link?code=BRRW-7Q4K
+
+Check that the page shows the code BRRW-7Q4K.
+Waiting for approval…  signed in as admin@insingo.com (token "kohns-laptop")
+```
+
+`burrow http 3000` then shows the status view with the address of your app:
+
+```
+burrow  ●  connected to burrow.insingo.com     v0.7.0   12 ms
+
+  kohns-laptop-3000   https://burrow.insingo.com/svc/p7baeh/  →  127.0.0.1:3000
+                      access: open (anyone with the URL)       3 open, 41 total
+```
+
+Your local app is now reachable at `https://burrow.insingo.com/svc/<slug>/`; the
+dashboard shows the address too.
+
+::: warning The service is open by default
+A service created this way is open: anyone who has the URL can use it. Add
+`--access login` or `--access api-key` to the first `burrow http` command, or
+change the access mode in the dashboard. See
+[Expose services](/guide/expose-services#access).
+:::
+
+Other ways to connect (a manual download, a token instead of the browser,
+`burrow.yaml`, a system service) are in [Connect a client](/guide/connect-client).
 
 See [Deploy on a server](/guide/deploy) for the full production setup, including
 binary installs, file-based TLS, firewall hardening, and backup configuration.
@@ -105,7 +144,7 @@ The dashboard is at `https://localhost:8080` (accept the browser TLS warning).
 
 ::: tip Getting the binary
 Download a pre-built binary from the
-[develop release](https://github.com/ankoehn/burrow/releases/tag/develop) or
+[develop release](https://github.com/andreas-koehn/burrow/releases/tag/develop) or
 build from source:
 
 ```sh
@@ -150,4 +189,4 @@ burrow connect \
 ## Next steps
 
 - [Deploy on a server](/guide/deploy) — full production setup with all options
-- [Connect a client](/guide/connect-client) — `burrow.yaml` multi-service config, flags reference
+- [Connect a client](/guide/connect-client) — other ways to sign in, `burrow.yaml`, running as a service, updating

@@ -98,7 +98,7 @@ services:
 Download the latest rolling binary from the `develop` release page:
 
 ```
-https://github.com/ankoehn/burrow/releases/tag/develop
+https://github.com/andreas-koehn/burrow/releases/tag/develop
 ```
 
 Replace the running `burrowd` binary and restart the service.
