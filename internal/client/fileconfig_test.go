@@ -424,13 +424,14 @@ func TestLoadFileConfig_TokenFileMustHoldAToken(t *testing.T) {
 		}
 	}
 
-	// A token as the relay makes them, with the white space an editor leaves
+	// A token of the shape the relay makes them (an obviously made-up one:
+	// bur_, then letters, digits, - and _), with the white space an editor leaves
 	// around it, is taken as before by both.
 	for which, load := range loaders {
 		for _, content := range []string{
-			"bur_Zm9vYmFyLWJhel9xdXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWo\n",
-			"bur_Zm9vYmFyLWJhel9xdXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWo\r\n",
-			"  bur_Zm9vYmFyLWJhel9xdXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWo \n\n",
+			"bur_test_0000-not_a_real_token-0000000000000000000\n",
+			"bur_test_0000-not_a_real_token-0000000000000000000\r\n",
+			"  bur_test_0000-not_a_real_token-0000000000000000000 \n\n",
 			"anything-printable!#$%&~\n",
 		} {
 			dir := t.TempDir()

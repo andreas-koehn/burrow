@@ -315,19 +315,25 @@ The rolling `develop` pre-release has the shorter names
 Release checklist, for whoever cuts the tag (nothing in the repository tags or
 publishes by itself):
 
-1. Tag `v<version>` and let CI publish. Confirm the release lists all eight
+1. Before tagging, run the two test suites that are **not** part of CI, on a
+   machine with Docker (the second also needs `jq`):
+   `bash test/installer/run.sh` (the installer matrix) and
+   `bash test/integration/client-cli.sh` (install, sign in and expose a service
+   against a relay of this commit, plus an old client against it). Both must
+   end without a failure.
+2. Tag `v<version>` and let CI publish. Confirm the release lists all eight
    archives and `checksums.txt` under the names above.
-2. Deploy a relay built from that tag (its version must be exactly
+3. Deploy a relay built from that tag (its version must be exactly
    `<version>`; builds with a suffix such as `-rc1` or a dirty tree hand out
    `develop`).
-3. From a clean machine, run the installer and then `burrow login` and
+4. From a clean machine, run the installer and then `burrow login` and
    `burrow http 3000` against that relay.
-4. Check the relay settings (see below) if you changed them.
-5. Before the first tag, point the image name in `.goreleaser.yml`
+5. Check the relay settings (see below) if you changed them.
+6. Before the first tag, point the image name in `.goreleaser.yml`
    (`dockers_v2`) at the current account, `ghcr.io/andreas-koehn/burrow`: it still
    names the old owner, `ghcr.io/ankoehn/burrow`. The `:latest` and versioned image tags exist
    only after that release.
-6. Run the platform checks in the next list. They need real machines and have
+7. Run the platform checks in the next list. They need real machines and have
    **not** been run on Windows, macOS or under real systemd.
 
 ### Relay settings involved

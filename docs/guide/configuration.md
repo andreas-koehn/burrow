@@ -119,9 +119,11 @@ session cookie will be silently dropped by modern browsers.
 
 ::: warning Browser sign-in of the client
 `burrow login` starts sign-in requests without being logged in, and the relay
-allows at most 5 open requests per source IP. Behind a reverse proxy, set
-`BURROW_TRUSTED_PROXIES` to the proxy. Without it, every client appears to come
-from the proxy's address and shares that limit of 5.
+allows at most 5 open requests per source address. An IPv4 address is one
+source; an IPv6 address counts as its /64 network, so all addresses of one /64
+share the 5. Behind a reverse proxy, set `BURROW_TRUSTED_PROXIES` to the proxy.
+Without it, every client appears to come from the proxy's address and shares
+that limit of 5.
 :::
 
 Example for a proxy running on localhost:
@@ -354,7 +356,7 @@ These commands have no `--server` or `--token` flag. (`burrow login --token -`
 stores a token; `--control` sets the control endpoint at sign-in.)
 
 A stored token is sent only to the relay it was stored for. A token given
-explicitly (flag, environment or `burrow.yaml`) goes with whatever server you
+explicitly (environment or `burrow.yaml`) goes with whatever server you
 name. When nothing provides a control endpoint and a token, the command stops
 with exit code 3 and `Not signed in. Run: burrow login <your relay address>`.
 

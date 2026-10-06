@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"regexp"
 	"strings"
 	"unicode"
@@ -28,13 +29,23 @@ const (
 // The spec's messages, verbatim. The ones with a verb take the control
 // endpoint and the minimum version.
 const (
-	msgNotSignedIn      = "Not signed in. Run: burrow login <your relay address>"
-	msgTokenRejected    = "The relay rejected this machine's token. It may have been revoked. Run: burrow login <relay>"
-	msgRelayUnreachable = "Cannot reach %s. Check the address and that port 7000 is open. Details: burrow doctor"
-	msgClientTooOld     = "This relay needs burrow %s or newer. Run: burrow update"
+	msgNotSignedIn   = "Not signed in. Run: burrow login <your relay address>"
+	msgTokenRejected = "The relay rejected this machine's token. It may have been revoked. Run: burrow login <relay>"
+	msgClientTooOld  = "This relay needs burrow %s or newer. Run: burrow update"
 	// When the relay's text names no minimum.
 	msgClientTooOldNoMin = "This relay needs a newer burrow. Run: burrow update"
 )
+
+// relayUnreachable is the spec's line for a relay that cannot be reached. The
+// port it names is the one of the control endpoint in use: 7000 unless the
+// relay listens elsewhere.
+func relayUnreachable(control string) string {
+	port := "its control port"
+	if _, p, err := net.SplitHostPort(control); err == nil && p != "" {
+		port = "port " + p
+	}
+	return "Cannot reach " + control + ". Check the address and that " + port + " is open. Details: burrow doctor"
+}
 
 // accessNotApplied is what is printed when an older relay took a registration
 // and ignored --access (client.AccessNotAppliedError). What the error holds

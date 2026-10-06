@@ -33,14 +33,6 @@ func Size(f *os.File) (cols, rows int) {
 	return max(c, 0), max(r, 0)
 }
 
-// Width returns the columns of the terminal f, and 80 when that is not known.
-func Width(f *os.File) int {
-	if cols, _ := Size(f); cols > 0 {
-		return cols
-	}
-	return defaultWidth
-}
-
 // Colour reports whether output to f may be coloured: f is a terminal and
 // NO_COLOR is not set.
 func Colour(f *os.File, getenv func(string) string) bool {

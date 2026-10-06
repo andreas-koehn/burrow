@@ -51,8 +51,6 @@ func (c Credentials) LogValue() slog.Value {
 
 // Sources are the places a control endpoint and a token can come from, highest precedence first.
 type Sources struct {
-	FlagServer string      `json:"flag_server"`
-	FlagToken  string      `json:"-" yaml:"-"`
 	EnvServer  string      `json:"env_server"`  // BURROW_SERVER
 	EnvToken   string      `json:"-" yaml:"-"`  // BURROW_TOKEN (BURROW_TOKEN_FILE already resolved by the caller)
 	FileServer string      `json:"file_server"` // burrow.yaml, for `up` only
@@ -66,9 +64,8 @@ func (s Sources) String() string {
 	if s.User != nil {
 		user = s.User.String()
 	}
-	return fmt.Sprintf("Sources{FlagServer:%q FlagToken:%s EnvServer:%q EnvToken:%s FileServer:%q FileToken:%s User:%s}",
-		s.FlagServer, redactToken(s.FlagToken), s.EnvServer, redactToken(s.EnvToken),
-		s.FileServer, redactToken(s.FileToken), user)
+	return fmt.Sprintf("Sources{EnvServer:%q EnvToken:%s FileServer:%q FileToken:%s User:%s}",
+		s.EnvServer, redactToken(s.EnvToken), s.FileServer, redactToken(s.FileToken), user)
 }
 
 // GoString keeps %#v from printing a token.
@@ -82,8 +79,10 @@ func (s Sources) LogValue() slog.Value { return slog.StringValue(s.String()) }
 var ErrNotSignedIn = errors.New("Not signed in. Run: burrow login <your relay address>") //nolint:staticcheck // the wording is the spec's
 
 // Resolve picks the control endpoint and the token, each on its own, from the
-// first source that has it: flags, then the environment, then burrow.yaml, then
-// the user config. It returns ErrNotSignedIn when either is missing.
+// first source that has it: the environment, then burrow.yaml, then the user
+// config. It returns ErrNotSignedIn when either is missing. (No command of
+// the new CLI takes the server or the token as a flag; `connect`, which does,
+// builds its Credentials itself with SourceFlags.)
 //
 // Values are trimmed, and one that is blank counts as not set.
 //
@@ -102,9 +101,10 @@ func Resolve(s Sources) (Credentials, error) {
 		userControl, userToken = s.User.Control, s.User.Token
 	}
 	trim := strings.TrimSpace
-	names := [...]string{SourceFlags, SourceEnvironment, SourceFile, SourceUserConfig}
-	controls := [...]string{trim(s.FlagServer), trim(s.EnvServer), trim(s.FileServer), trim(userControl)}
-	tokens := [...]string{trim(s.FlagToken), trim(s.EnvToken), trim(s.FileToken), trim(userToken)}
+	names := [...]string{SourceEnvironment, SourceFile, SourceUserConfig}
+	controls := [...]string{trim(s.EnvServer), trim(s.FileServer), trim(userControl)}
+	tokens := [...]string{trim(s.EnvToken), trim(s.FileToken), trim(userToken)}
+	stored := len(controls) - 1 // the user config is the last source
 
 	ci, ti := firstSet(controls[:]), firstSet(tokens[:])
 	if ci < 0 || ti < 0 {
@@ -113,9 +113,9 @@ func Resolve(s Sources) (Credentials, error) {
 
 	// The stored token belongs to the relay it was stored with. A server named
 	// some other way gets it only when it is that same control endpoint.
-	if names[ti] == SourceUserConfig && names[ci] != SourceUserConfig && !sameEndpoint(controls[ci], controls[3]) {
+	if names[ti] == SourceUserConfig && names[ci] != SourceUserConfig && !sameEndpoint(controls[ci], controls[stored]) {
 		return Credentials{}, &RelayMismatchError{
-			Control: controls[ci], StoredControl: controls[3], StoredRelay: trim(s.User.Relay),
+			Control: controls[ci], StoredControl: controls[stored], StoredRelay: trim(s.User.Relay),
 		}
 	}
 

@@ -73,8 +73,8 @@ func TestMessagesAreTheSpecs(t *testing.T) {
 	if msgTokenRejected != "The relay rejected this machine's token. It may have been revoked. Run: burrow login <relay>" {
 		t.Fatalf("msgTokenRejected = %q", msgTokenRejected)
 	}
-	if got := fmt.Sprintf(msgRelayUnreachable, "burrow.example.com:7000"); got != "Cannot reach burrow.example.com:7000. Check the address and that port 7000 is open. Details: burrow doctor" {
-		t.Fatalf("msgRelayUnreachable = %q", got)
+	if got := relayUnreachable("burrow.example.com:7000"); got != "Cannot reach burrow.example.com:7000. Check the address and that port 7000 is open. Details: burrow doctor" {
+		t.Fatalf("relayUnreachable = %q", got)
 	}
 	if got := fmt.Sprintf(msgClientTooOld, "1.2.0"); got != "This relay needs burrow 1.2.0 or newer. Run: burrow update" {
 		t.Fatalf("msgClientTooOld = %q", got)
@@ -248,5 +248,20 @@ func TestReport_AccessNotApplied(t *testing.T) {
 	report(&b, &client.AccessNotAppliedError{Name: "a\x1b[2Jb", Access: "x\x1b[31m", URL: "https://relay.example.com/\r\nx"})
 	if out := b.String(); strings.ContainsAny(strings.ReplaceAll(out, "\n", ""), "\x1b\r") || strings.Contains(out, "relay.example.com") {
 		t.Fatalf("unsafe text was printed: %q", out)
+	}
+}
+
+// The port to open is the one of the control endpoint in use, not always 7000.
+func TestRelayUnreachable_NamesThePortInUse(t *testing.T) {
+	for control, want := range map[string]string{
+		"burrow.example.com:7443": "Cannot reach burrow.example.com:7443. Check the address and that port 7443 is open. Details: burrow doctor",
+		"[2001:db8::1]:443":       "Cannot reach [2001:db8::1]:443. Check the address and that port 443 is open. Details: burrow doctor",
+		// Not host:port: no port is made up.
+		"burrow.example.com":  "Cannot reach burrow.example.com. Check the address and that its control port is open. Details: burrow doctor",
+		"burrow.example.com:": "Cannot reach burrow.example.com:. Check the address and that its control port is open. Details: burrow doctor",
+	} {
+		if got := relayUnreachable(control); got != want {
+			t.Errorf("relayUnreachable(%q) = %q, want %q", control, got, want)
+		}
 	}
 }

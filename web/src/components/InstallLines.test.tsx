@@ -33,17 +33,31 @@ describe("InstallLines", () => {
 
   // A command is one line: at any width it is read whole by scrolling its
   // box, never broken in the middle of a word. The box takes the keyboard so
-  // that it can be scrolled without a pointer.
-  it("keeps each command on one line in a box that scrolls and takes the focus", () => {
+  // that it can be scrolled without a pointer, and a stop of the keyboard
+  // needs a role and a name: a screen reader says what the focus is on.
+  it("keeps each command in a named box that takes the focus", () => {
+    fakeBrowser("Linux x86_64", "");
     renderApp(<InstallLines relayOrigin={ORIGIN} />);
-    const boxes = Array.from(document.querySelectorAll<HTMLElement>(".install-line pre"));
-    expect(boxes).toHaveLength(3);
-    for (const pre of boxes) {
-      expect(pre).toHaveClass("cmd-block");
-      expect(pre).not.toHaveClass("wrap");
-      expect(pre).toHaveAttribute("tabindex", "0");
-      expect(pre.parentElement).toHaveClass("install-line-cmd");
+    const list = screen.getByRole("list", { name: "Commands" });
+    const boxes = within(list).getAllByRole("group");
+    expect(boxes.map((b) => b.getAttribute("aria-label"))).toEqual(["Install command", "Sign-in command", "Run command"]);
+    for (const [name, text] of [
+      ["Install command", "curl -fsSL https://b.example.com/install.sh | sh"],
+      ["Sign-in command", "burrow login b.example.com"],
+      ["Run command", "burrow http 3000"],
+    ]) {
+      const box = within(list).getByRole("group", { name });
+      expect(box).toHaveTextContent(text);
+      expect(box).toHaveAttribute("tabindex", "0");
+      box.focus();
+      expect(box).toHaveFocus();
     }
+  });
+
+  it("names the box of a single line too", () => {
+    renderApp(<InstallLines relayOrigin={ORIGIN} lines={["run"]} />);
+    expect(screen.getAllByRole("group")).toHaveLength(1);
+    expect(screen.getByRole("group", { name: "Run command" })).toHaveTextContent("burrow http 3000");
   });
 
   it("shows three numbered lines as selectable text", () => {

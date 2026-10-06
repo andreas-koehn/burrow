@@ -526,6 +526,25 @@ func TestDoctor_StoredSignInAndAnotherServer(t *testing.T) {
 	}
 }
 
+func TestDoctor_TokenFileVariableHoldsNoToken(t *testing.T) {
+	const secret = "s3cret-line-of-another-file"
+	h := newHarness(t)
+	h.signIn()
+	h.env["BURROW_TOKEN_FILE"] = writeFile(t, "tok", "first "+secret+"\nsecond\n")
+	dd, err := newDoctorDeps(h.deps(), globalFlags{}, h.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	netForbidden(t, &dd)
+	r := find(t, runDoctor(context.Background(), dd), checkConfig)
+	if r.status != "fail" || r.detail != "the file that BURROW_TOKEN_FILE names does not hold a token" || !strings.Contains(r.fix, "BURROW_TOKEN_FILE") {
+		t.Fatalf("status %q, fix %q", r.status, r.fix)
+	}
+	if strings.Contains(r.detail+r.fix, secret) {
+		t.Fatal("the file's content was printed")
+	}
+}
+
 func TestDoctor_UnreadableTokenFile(t *testing.T) {
 	h := newHarness(t)
 	h.signIn()

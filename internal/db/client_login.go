@@ -55,16 +55,22 @@ func scanClientLogin(row *sql.Row) (ClientLoginRequest, error) {
 	return r, nil
 }
 
+// clientLoginUnknownSource is the source of every caller whose address is
+// not an address.
+const clientLoginUnknownSource = "unknown"
+
 // ClientLoginSourceKey says which source a caller's address counts as for
 // the cap of one source. An IPv4 address is itself, also when it is written
 // as an IPv6 one (::ffff:203.0.113.7). An IPv6 address is its /64: that is
 // what one host or one home network is handed, so counting single addresses
 // would let one machine take every place by changing its address. Text that
-// is not an address is its own key.
+// is not an address is one source for all such callers ("unknown"): it can
+// come from a forwarded header, and a caller who writes a new text each time
+// must not get a new cap each time.
 func ClientLoginSourceKey(ip string) string {
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
-		return ip
+		return clientLoginUnknownSource
 	}
 	addr = addr.Unmap().WithZone("")
 	if addr.Is4() {
@@ -79,8 +85,9 @@ func ClientLoginSourceKey(ip string) string {
 
 // InsertClientLogin stores a new pending request. inserted is false when
 // maxPending live pending requests exist already, or maxPerIP of them came
-// from the source of r.SourceIP (ClientLoginSourceKey: the address, or its
-// /64 for IPv6): one source cannot use up the places of everybody else.
+// from the source of r.SourceIP (ClientLoginSourceKey: the address, its /64
+// for IPv6, or one shared source for what is not an address): one source
+// cannot use up the places of everybody else.
 // r.SourceIP itself is stored as given.
 //
 // The count of the source and the insert with the count of all are two

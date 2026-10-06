@@ -21,18 +21,16 @@ func TestResolve_Precedence(t *testing.T) {
 			Credentials{Control: "f.example:7000", Token: "bur_file", Source: "burrow.yaml"}},
 		{"environment overrides file", Sources{EnvServer: "e.example:7000", EnvToken: "bur_env", FileServer: "f:7000", FileToken: "bur_file", User: user},
 			Credentials{Control: "e.example:7000", Token: "bur_env", Source: "environment"}},
-		{"flags override everything", Sources{FlagServer: "x.example:7000", FlagToken: "bur_flag", EnvServer: "e:7000", EnvToken: "bur_env", User: user},
-			Credentials{Control: "x.example:7000", Token: "bur_flag", Source: "flags"}},
 		// The two values are resolved independently, but the stored token goes
 		// only to the control endpoint it was stored with.
-		{"flag server that is the stored one, stored token", Sources{FlagServer: "R.Example.:7000", User: user},
-			Credentials{Control: "R.Example.:7000", Token: "bur_user", TokenName: "laptop", Relay: "", Source: "flags"}},
+		{"env server that is the stored one, stored token", Sources{EnvServer: "R.Example.:7000", User: user},
+			Credentials{Control: "R.Example.:7000", Token: "bur_user", TokenName: "laptop", Relay: "", Source: "environment"}},
 		{"env token, stored server", Sources{EnvToken: "bur_env", User: user},
 			Credentials{Control: "r.example:7000", Token: "bur_env", Relay: "https://r.example", Source: "environment"}},
 		{"file token, stored server", Sources{FileToken: "bur_file", User: user},
 			Credentials{Control: "r.example:7000", Token: "bur_file", Relay: "https://r.example", Source: "burrow.yaml"}},
-		{"flag token, env server", Sources{FlagToken: "bur_flag", EnvServer: "e.example:7000", User: user},
-			Credentials{Control: "e.example:7000", Token: "bur_flag", Source: "flags"}},
+		{"env token, file server", Sources{EnvToken: "bur_env", FileServer: "f.example:7000", User: user},
+			Credentials{Control: "f.example:7000", Token: "bur_env", Source: "environment"}},
 		{"no user config at all", Sources{EnvServer: "e.example:7000", FileToken: "bur_file"},
 			Credentials{Control: "e.example:7000", Token: "bur_file", Source: "environment"}},
 	}
@@ -65,7 +63,7 @@ func TestResolve_Precedence(t *testing.T) {
 func TestResolve_NotSignedIn(t *testing.T) {
 	for i, s := range []Sources{
 		{},
-		{FlagServer: "x:7000"},
+		{EnvServer: "x:7000"},
 		{EnvToken: "t"},
 		{FileServer: "x:7000"},
 		{User: &UserConfig{}},
@@ -101,7 +99,7 @@ func TestTokenTail(t *testing.T) {
 
 func TestCredentialsAndSources_NeverPrintTheToken(t *testing.T) {
 	user := sampleUserConfig()
-	s := Sources{FlagToken: testToken, EnvToken: testToken, FileToken: testToken, User: &user}
+	s := Sources{EnvToken: testToken, FileToken: testToken, User: &user}
 	assertNoToken(t, "Sources", s)
 	assertNoToken(t, "*Sources", &s)
 
@@ -118,7 +116,7 @@ func TestCredentialsAndSources_YAMLHasNoToken(t *testing.T) {
 	user := sampleUserConfig()
 	for name, v := range map[string]any{
 		"Credentials": Credentials{Control: "c.example:7000", Token: testToken, TokenName: "laptop", Source: SourceUserConfig},
-		"Sources":     Sources{FlagToken: testToken, EnvToken: testToken, FileToken: testToken, User: &user},
+		"Sources":     Sources{EnvToken: testToken, FileToken: testToken, User: &user},
 	} {
 		out, err := yaml.Marshal(v)
 		if err != nil {
@@ -137,7 +135,7 @@ func TestCredentialsAndSources_YAMLHasNoToken(t *testing.T) {
 // A value of spaces only is not a value: the next source is asked.
 func TestResolve_BlankValuesCountAsNotSet(t *testing.T) {
 	user := &UserConfig{Relay: "https://r.example", Control: "r.example:7000", Token: "bur_user", TokenName: "laptop"}
-	c, err := Resolve(Sources{FlagServer: " ", FlagToken: "\t", EnvServer: "  ", EnvToken: " \n", FileServer: " ", FileToken: " ", User: user})
+	c, err := Resolve(Sources{EnvServer: "  ", EnvToken: " \n\t", FileServer: " ", FileToken: " ", User: user})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -175,7 +173,6 @@ func TestResolve_StoredTokenForAnotherRelay(t *testing.T) {
 		control string
 		run     string
 	}{
-		{"flag server", Sources{FlagServer: "other.example.com:7000", User: &user}, "other.example.com:7000", "burrow login other.example.com"},
 		{"env server", Sources{EnvServer: "other.example.com:7000", User: &user}, "other.example.com:7000", "burrow login other.example.com"},
 		{"file server", Sources{FileServer: "other.example.com:7000", User: &user}, "other.example.com:7000", "burrow login other.example.com"},
 		{"same host, other port", Sources{EnvServer: "burrow.example.com:7001", User: &user}, "burrow.example.com:7001",
@@ -209,9 +206,9 @@ func TestResolve_StoredTokenForAnotherRelay(t *testing.T) {
 
 	// An explicit token may go to any server, and the stored server may take any token.
 	for name, s := range map[string]Sources{
-		"env token, flag server":    {FlagServer: "other.example.com:7000", EnvToken: "bur_env", User: &user},
-		"file token, env server":    {EnvServer: "other.example.com:7000", FileToken: "bur_file", User: &user},
-		"flag token, stored server": {FlagToken: "bur_flag", User: &user},
+		"env token, file server":   {FileServer: "other.example.com:7000", EnvToken: "bur_env", User: &user},
+		"file token, env server":   {EnvServer: "other.example.com:7000", FileToken: "bur_file", User: &user},
+		"env token, stored server": {EnvToken: "bur_env", User: &user},
 	} {
 		if _, err := Resolve(s); err != nil {
 			t.Fatalf("%s: %v", name, err)

@@ -20,6 +20,9 @@ const ALL_LINES: readonly InstallLineId[] = ["install", "login", "run"];
 const LINE_LABEL: Record<InstallLineId, string> = { install: "Install", login: "Sign in", run: "Run" };
 // What the copy button of a line is called, and what is said once it worked.
 const LINE_NAME: Record<InstallLineId, string> = { install: "install", login: "sign-in", run: "run" };
+// What the box of a line is called: it takes the keyboard's focus, and a stop
+// without a role and a name is announced as nothing.
+const BOX_NAME: Record<InstallLineId, string> = { install: "Install command", login: "Sign-in command", run: "Run command" };
 
 /**
  * The commands that bring a machine online: install the client from this
@@ -70,8 +73,9 @@ export function InstallLines({ relayOrigin, target, lines = ALL_LINES }: Install
               {numbered ? `${i + 1}. ` : ""}{LINE_LABEL[id]}
             </span>
             <div className="row gap-2 install-line-cmd">
-              {/* One line that scrolls in its box; focusable so the keyboard can scroll it. */}
-              <pre className="cmd-block fill-rest" tabIndex={0}><code>{text[id]}</code></pre>
+              {/* One line that scrolls in its box; focusable so the keyboard can scroll it.
+                  A group and not a region: three more landmarks would only be in the way. */}
+              <pre className="cmd-block fill-rest" tabIndex={0} role="group" aria-label={BOX_NAME[id]}><code>{text[id]}</code></pre>
               <button type="button" className="icon-btn" aria-label={`Copy ${LINE_NAME[id]} command`} onClick={() => void copy(id)}>
                 <Copy size={13} aria-hidden="true" />
               </button>

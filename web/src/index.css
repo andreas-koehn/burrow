@@ -1,4 +1,12 @@
-@import "tailwindcss";
+/* Tailwind looks for class names in the web app only: index.html and src.
+   Its automatic detection also reads files outside web/ (notes, plans and
+   other untracked files of a working copy), so that a word such as "italic"
+   in one of them adds a rule and the built CSS depends on the machine it was
+   built on. web/dist is committed and must come out the same from a clean
+   checkout. Paths are relative to this file. */
+@import "tailwindcss" source(none);
+@source "../index.html";
+@source ".";
 
 @custom-variant dark (&:is(.dark *));
 

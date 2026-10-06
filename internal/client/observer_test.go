@@ -466,11 +466,22 @@ func TestObserver_SlowObserverDoesNotDelayTraffic(t *testing.T) {
 
 func TestNotifier_NeverBlocksAndKeepsTheNewest(t *testing.T) {
 	release := make(chan struct{})
+	entered := make(chan struct{})
 	var mu sync.Mutex
 	var got []int
-	n := newNotifier(blockingObserver{release})
+	n := newNotifier(blockingObserver{release: release, entered: entered})
 	stop := n.start()
 	defer stop()
+
+	// The observer must hang in a call before the burst starts. Emitted in
+	// the middle of the burst, the call can be dropped from a full queue
+	// before it is delivered, and then nothing blocks at all.
+	n.emit(func(o Observer) { o.Latency(0) })
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the observer was never called")
+	}
 
 	done := make(chan struct{})
 	go func() {
@@ -478,10 +489,6 @@ func TestNotifier_NeverBlocksAndKeepsTheNewest(t *testing.T) {
 		for i := 0; i < 5000; i++ {
 			i := i
 			n.emit(func(Observer) { mu.Lock(); got = append(got, i); mu.Unlock() })
-			if i == 0 {
-				// the first event is the one the observer hangs in
-				n.emit(func(o Observer) { o.Latency(0) })
-			}
 		}
 	}()
 	select {
@@ -495,7 +502,7 @@ func TestNotifier_NeverBlocksAndKeepsTheNewest(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(got) > maxPendingEvents+2 {
+	if len(got) > maxPendingEvents {
 		t.Fatalf("%d events were delivered, the queue holds at most %d", len(got), maxPendingEvents)
 	}
 	for i := 1; i < len(got); i++ {
@@ -505,15 +512,21 @@ func TestNotifier_NeverBlocksAndKeepsTheNewest(t *testing.T) {
 	}
 }
 
-// blockingObserver hangs in Latency until release is closed.
-type blockingObserver struct{ release chan struct{} }
+// blockingObserver hangs in Latency until release is closed. It closes
+// entered, when there is one, as soon as it is inside that call.
+type blockingObserver struct{ release, entered chan struct{} }
 
 func (blockingObserver) State(ConnState, string, time.Duration) {}
 func (blockingObserver) Registered(RegisteredTunnel)            {}
 func (blockingObserver) Connection(string, time.Time, string)   {}
 func (blockingObserver) ConnectionClosed(string)                {}
-func (b blockingObserver) Latency(time.Duration)                { <-b.release }
-func (blockingObserver) LocalTarget(string, bool)               {}
+func (b blockingObserver) Latency(time.Duration) {
+	if b.entered != nil {
+		close(b.entered)
+	}
+	<-b.release
+}
+func (blockingObserver) LocalTarget(string, bool) {}
 func (blockingObserver) Request(string, time.Time, string, string, int) {
 }
 
@@ -547,7 +560,7 @@ func TestNotifier_LinesGiveWayToEverythingElse(t *testing.T) {
 	rec := func(s string) func(Observer) {
 		return func(Observer) { mu.Lock(); got = append(got, s); mu.Unlock() }
 	}
-	n := newNotifier(blockingObserver{release})
+	n := newNotifier(blockingObserver{release: release})
 	stop := n.start()
 	defer stop()
 	n.emit(func(o Observer) { o.Latency(0) }) // the observer hangs in this one
@@ -615,7 +628,7 @@ func (c *countingObserver) Counts(id string, open, total int) {
 // connections as open that have ended.
 func TestNotifier_CountsSurviveABurst(t *testing.T) {
 	release := make(chan struct{})
-	obs := &countingObserver{blockingObserver: blockingObserver{release}}
+	obs := &countingObserver{blockingObserver: blockingObserver{release: release}}
 	n := newNotifier(obs)
 	stop := n.start()
 	defer stop()

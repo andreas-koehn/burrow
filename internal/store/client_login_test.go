@@ -564,6 +564,26 @@ func TestClientLogin_PendingCapPerIPv6Network(t *testing.T) {
 	}
 }
 
+// A source that is not an address (a forwarded header a trusted proxy passed
+// on as it came) is not its own source: all such callers share one cap, so
+// that a new text each time does not buy a new cap.
+func TestClientLogin_PendingCapOfUnparsableSources(t *testing.T) {
+	s, _, _, _ := loginFixture(t)
+	for i, src := range []string{"garbage-a", "garbage-b", "", "203.0.113.7:4711", "x y"} {
+		if _, err := startFrom(s, src); err != nil {
+			t.Fatalf("start %d from %q: %v", i+1, src, err)
+		}
+	}
+	for _, src := range []string{"garbage-f", "garbage-a"} {
+		if _, err := startFrom(s, src); !errors.Is(err, ErrLoginTooMany) {
+			t.Fatalf("sixth start from a source that is not an address (%q): %v, want ErrLoginTooMany", src, err)
+		}
+	}
+	if _, err := startFrom(s, "203.0.113.7"); err != nil {
+		t.Fatalf("start from an address: %v", err)
+	}
+}
+
 // A poll that lands right after the decision removes the row (a denial is
 // reported once; an approval is collected). The decision took effect, so the
 // approver gets the request back, not a 404, and the audit row is written.

@@ -302,6 +302,48 @@ func TestResolveCredentials_TokenFileVariable(t *testing.T) {
 	h.noToken("bur_from_the_variable")
 }
 
+// What BURROW_TOKEN_FILE names is sent to the relay as the token. A file that
+// cannot hold one (several lines, a space inside, other than printable ASCII)
+// is some other file: it is sent nowhere and nothing of it is shown, as for
+// token_file in burrow.yaml.
+func TestResolveCredentials_TokenFileVariableHoldsNoToken(t *testing.T) {
+	const secret = "s3cret-line-of-another-file"
+	for name, content := range map[string]string{
+		"several lines":  "first " + secret + "\nsecond line\n",
+		"a space inside": "bur_test " + secret + "\n",
+		"not ASCII":      secret + "\u00e9\n",
+		"a control byte": secret + "\x1b[2J\n",
+		"far too long":   strings.Repeat("a", 600) + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.signIn() // a stored sign-in must not be used in its place
+			h.env["BURROW_SERVER"] = "env.example.com:7000"
+			h.env["BURROW_TOKEN_FILE"] = writeFile(t, "tok", content)
+			if code := h.exec("http", "3000"); code != 1 || len(h.runs) != 0 {
+				t.Fatalf("exit %d, runs %d: want exit 1 and no connection", code, len(h.runs))
+			}
+			if got, want := h.stderr.String(), "error: BURROW_TOKEN_FILE: the file does not hold a token\n"; got != want {
+				t.Fatalf("stderr = %q, want %q", strings.ReplaceAll(got, secret, "<the content>"), want)
+			}
+			if strings.Contains(h.stdout.String()+h.stderr.String(), secret) {
+				t.Fatal("the file's content was printed")
+			}
+		})
+	}
+
+	// A token with the white space an editor leaves around it is taken as before.
+	h := newHarness(t)
+	h.env["BURROW_SERVER"] = "env.example.com:7000"
+	h.env["BURROW_TOKEN_FILE"] = writeFile(t, "tok", "  "+testToken+" \r\n\n")
+	if code := h.exec("http", "3000"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	if r := h.oneRun(); r.creds.Token != testToken {
+		t.Fatal("the token of the file was not used")
+	}
+}
+
 func TestResolveCredentials_BrokenUserConfig(t *testing.T) {
 	h := newHarness(t)
 	if err := os.MkdirAll(filepath.Dir(h.cfgPath), 0o700); err != nil {

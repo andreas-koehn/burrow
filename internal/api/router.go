@@ -505,22 +505,23 @@ func NewRouter(d Deps) http.Handler {
 		// frame anyway; this is the second lock. Nothing frames the shell
 		// itself (the OpenAPI viewer is an /api/v1 page framed by it), and
 		// tunnelled /svc/ and /ai/ answers never pass through here.
+		//
+		// For the same reason no shell passes its address on as a referrer:
+		// the address of the approval page holds the code of a sign-in, and
+		// /LINK?code=… is that page as much as /link?code=… is.
 		shell := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := w.Header()
 			h.Set("X-Frame-Options", "DENY")
 			h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+			h.Set("Referrer-Policy", "no-referrer")
 			d.SPA.ServeHTTP(w, r)
 		})
 		// /link is where `burrow login` sends the browser to approve a
 		// sign-in. It is a reserved path and the one of them that is a
-		// dashboard page, so it is routed by name: reading only, answered
-		// for a visitor without a session too (the page sends them through
-		// the login and back), and the code in its address is not passed on
-		// as a referrer.
-		link := getOrHead(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Referrer-Policy", "no-referrer")
-			shell.ServeHTTP(w, r)
-		})
+		// dashboard page, so it is routed by name: reading only, and
+		// answered for a visitor without a session too (the page sends them
+		// through the login and back).
+		link := getOrHead(shell.ServeHTTP)
 		r.Handle("/link", link)
 		r.Handle("/link/", link)
 		// Only a root catch-all: "/api/v1" is a mounted subrouter so chi

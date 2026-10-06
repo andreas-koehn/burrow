@@ -157,8 +157,12 @@ func discoverRelay(ctx context.Context, relay string, g globalFlags) (client.Dis
 	return client.Discover(ctx, hc, relay)
 }
 
-// tokenFileError says that the file BURROW_TOKEN_FILE names cannot be read.
+// tokenFileError says that the file BURROW_TOKEN_FILE names cannot be read,
+// or that what it holds cannot be a token (errTokenFileContent).
 type tokenFileError struct{ err error }
+
+// errTokenFileContent never shows anything of the file.
+var errTokenFileContent = errors.New("the file does not hold a token")
 
 func (e *tokenFileError) Error() string { return "BURROW_TOKEN_FILE: " + e.err.Error() }
 func (e *tokenFileError) Unwrap() error { return e.err }
@@ -228,6 +232,13 @@ func resolveCredentials(d deps, userPath string, file *client.FileConfig) (clien
 		b, err := os.ReadFile(p)
 		if err != nil {
 			return client.Credentials{}, &tokenFileError{err: err}
+		}
+		// What the file yields is sent to the relay. As for token_file in
+		// burrow.yaml, a file that cannot hold a token is some other file:
+		// it is sent nowhere and nothing of it is shown. An empty one is no
+		// token, as it always was.
+		if t := strings.TrimSpace(string(b)); t != "" && !client.ValidToken(t) {
+			return client.Credentials{}, &tokenFileError{err: errTokenFileContent}
 		}
 		s.EnvToken = string(b)
 	}

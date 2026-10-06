@@ -23,17 +23,22 @@ func TestClientLogin_PerNetworkCap_SQLite(t *testing.T) {
 
 func TestClientLoginSourceKey(t *testing.T) {
 	for in, want := range map[string]string{
-		"203.0.113.7":                  "203.0.113.7",
-		"::ffff:203.0.113.7":           "203.0.113.7",
-		"2001:db8:1:2::1":              "2001:db8:1:2::/64",
-		"2001:DB8:1:2:ffff:0:0:9":      "2001:db8:1:2::/64",
-		"2001:db8:1:3::1":              "2001:db8:1:3::/64",
-		"2001:db8::1":                  "2001:db8::/64",
-		"fe80::1%eth0":                 "fe80::/64",
-		"::1":                          "::/64",
-		"":                             "",
-		"not an address":               "not an address",
-		"2001:db8:1:2::1/64":           "2001:db8:1:2::1/64",
+		"203.0.113.7":             "203.0.113.7",
+		"::ffff:203.0.113.7":      "203.0.113.7",
+		"2001:db8:1:2::1":         "2001:db8:1:2::/64",
+		"2001:DB8:1:2:ffff:0:0:9": "2001:db8:1:2::/64",
+		"2001:db8:1:3::1":         "2001:db8:1:3::/64",
+		"2001:db8::1":             "2001:db8::/64",
+		"fe80::1%eth0":            "fe80::/64",
+		"::1":                     "::/64",
+		// What is not an address is one source, whatever it says: a caller
+		// who can choose the text must not get a cap of its own each time.
+		"":                   "unknown",
+		"not an address":     "unknown",
+		"another text":       "unknown",
+		"2001:db8:1:2::1/64": "unknown",
+		"203.0.113.7:4711":   "unknown",
+		"unknown":            "unknown",
 	} {
 		if got := ClientLoginSourceKey(in); got != want {
 			t.Errorf("ClientLoginSourceKey(%q) = %q, want %q", in, got, want)

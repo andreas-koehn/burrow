@@ -287,9 +287,6 @@ func TestTerminal_AFileIsNotATerminal(t *testing.T) {
 	if IsTerminal(f) {
 		t.Fatal("a regular file was taken for a terminal")
 	}
-	if got := Width(f); got != 80 {
-		t.Fatalf("width of a file = %d, want the fallback 80", got)
-	}
 	if cols, rows := Size(f); cols != 0 || rows != 0 {
 		t.Fatalf("size of a file = %d x %d, want unknown", cols, rows)
 	}

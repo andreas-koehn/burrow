@@ -205,20 +205,17 @@ func TestEveryDashboardShellRefusesFrames(t *testing.T) {
 		if got := resp.Header.Values("Content-Security-Policy"); len(got) != 1 || got[0] != "frame-ancestors 'none'" {
 			t.Errorf("GET %s: Content-Security-Policy = %q, want one frame-ancestors 'none'", path, got)
 		}
-		// The referrer rule belongs to the page whose address holds a code.
-		wantReferrer := ""
-		if path == "/link?code=BRRW-7Q4K" {
-			wantReferrer = "no-referrer"
-		}
-		if got := resp.Header.Get("Referrer-Policy"); got != wantReferrer {
-			t.Errorf("GET %s: Referrer-Policy = %q, want %q", path, got, wantReferrer)
+		// The address of the approval page holds a code, and /LINK is that
+		// page too: no shell passes its address on as a referrer.
+		if got := resp.Header.Values("Referrer-Policy"); len(got) != 1 || got[0] != "no-referrer" {
+			t.Errorf("GET %s: Referrer-Policy = %q, want one no-referrer", path, got)
 		}
 	}
 
 	for _, path := range []string{"/svc/k7p2qx/", "/svc/k7p2qx/page", "/api/v1/me", "/api/v1/nope", "/healthz", "/install.sh",
 		"/ai/k7p2qx/v1/models", "/download/burrow/linux/amd64", "/download/nope", "/api/v1/openapi/viewer/"} {
 		resp := get(path)
-		for _, name := range []string{"X-Frame-Options", "Content-Security-Policy"} {
+		for _, name := range []string{"X-Frame-Options", "Content-Security-Policy", "Referrer-Policy"} {
 			if got := resp.Header.Get(name); got != "" {
 				t.Errorf("GET %s: %s = %q, want none (not a dashboard shell)", path, name, got)
 			}

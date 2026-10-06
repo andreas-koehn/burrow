@@ -175,8 +175,9 @@ Cannot reach burrow.insingo.com:7000. Check the address and that port 7000 is op
 
 `burrow login`, `burrow update` and `burrow doctor` stop with exit code 5;
 `burrow http`, `burrow tcp` and `burrow up` print the line once and keep
-retrying. Check the address for typos and that the control port (7000 unless
-your relay uses another) is open in the firewall:
+retrying. The line names the port of the control endpoint in use. Check the
+address for typos and that the control port (7000 unless your relay uses
+another) is open in the firewall:
 
 ```sh
 nc -zv burrow.insingo.com 7000
@@ -212,8 +213,9 @@ not writable, the command prints what to run instead.
 - **The approval page refuses you**: approving needs an admin, or a role with
   `tokens:manage:own` or `tokens:manage:any`. A user without it can still create
   a token in the dashboard and use `--token -`.
-- **Too many open sign-in requests**: the relay allows 5 per source IP and 20 in
-  total, each valid for 10 minutes. Behind a reverse proxy without
+- **Too many open sign-in requests**: the relay allows 5 per source address and
+  20 in total, each valid for 10 minutes. An IPv6 source counts as its /64
+  network, so machines in the same /64 share the 5. Behind a reverse proxy without
   `BURROW_TRUSTED_PROXIES`, all clients share one address, so 5 is the limit for
   everybody. See [Configuration](/guide/configuration#behind-a-reverse-proxy).
 

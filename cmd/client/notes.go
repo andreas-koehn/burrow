@@ -105,7 +105,7 @@ func (n *runNotes) State(s client.ConnState, detail string, retryIn time.Duratio
 	}
 	n.mu.Unlock()
 	if tell {
-		n.unreachable(fmt.Sprintf(msgRelayUnreachable, n.control))
+		n.unreachable(relayUnreachable(n.control))
 	}
 }
 

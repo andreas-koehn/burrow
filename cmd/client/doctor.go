@@ -175,6 +175,9 @@ func (r *doctorRun) checkConfig() {
 		var mm *client.RelayMismatchError
 		var tf *tokenFileError
 		switch {
+		case errors.Is(err, errTokenFileContent):
+			// Nothing of the file is printed.
+			r.add(checkConfig, "fail", "the file that BURROW_TOKEN_FILE names does not hold a token", "put the token alone into that file, or unset BURROW_TOKEN_FILE", 0)
 		case errors.As(err, &tf):
 			// Not the stored sign-in: the variable names a file that is not there
 			// or not readable. The path is the user's own; the error text is not printed.

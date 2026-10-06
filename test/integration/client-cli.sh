@@ -18,6 +18,13 @@
 # Also: an OLD client (built from OLD_REF) against this relay, and the new
 # client's `burrow connect` next to it, log line for log line.
 #
+# Needs on the host: Docker (the Go build, the relay and the machine all run
+# in containers) and jq. It is not part of CI: run it by hand before a
+# release. The containers, the network and the work directory are removed at
+# the end; the images it builds (burrow-client-cli-it:relay, :machine,
+# :old-client) are left behind as a build cache. Remove them with
+#   docker image rm burrow-client-cli-it:relay burrow-client-cli-it:machine burrow-client-cli-it:old-client
+#
 # Usage:
 #   bash test/integration/client-cli.sh           # up / assert / down
 #   bash test/integration/client-cli.sh --keep    # leave the two containers running
@@ -172,8 +179,10 @@ check "0. the tiny server answers on 127.0.0.1:3000" "$(m 'curl -fsS http://127.
 
 # ------------------------------------------------------- 1. the install ----
 # As typed into a new shell: the PATH is the image's, without ~/.local/bin.
-OUT=$(docker exec "$MACHINE" sh -c "curl -fsSL $B/install.sh | sh" 2>&1) || true
-check "1. install line exits 0 and names the next step" "$(has "$OUT" "Next: burrow login $HOST")" "yes"
+RC=0
+OUT=$(docker exec "$MACHINE" sh -c "curl -fsSL $B/install.sh | sh" 2>&1) || RC=$?
+check "1. install line exits 0" "$RC" "0"
+check "1. install line names the next step" "$(has "$OUT" "Next: burrow login $HOST")" "yes"
 HINT_DIR=$(printf '%s\n' "$OUT" | sed -n 's/^ *export PATH="\([^:]*\):.*/\1/p' | head -n 1)
 check "1. the PATH hint names ~/.local/bin" "$HINT_DIR" "/home/tester/.local/bin"
 check "1. burrow is in the PATH hint's directory and runs" "$(mrc "$HINT_DIR/burrow version")" "0"
@@ -272,8 +281,10 @@ stop_clients
 
 # --------------------------------------- 13.-14. burrow connect, old and new ----
 # The same flags for both. What differs between two runs is cut out: the
-# time, the ids the relay draws, and the client's own version.
-norm() { sed -E 's/^time=[^ ]+ //; s/(session_id|tunnel_id|client_version|version)=[^ ]+/\1=…/g'; }
+# time, the ids the relay draws, and the version of the client and of the
+# relay. Each key is matched as a whole word, so that another key that ends
+# in "version" (protocol_version above all) is compared and not masked.
+norm() { sed -E 's/^time=[^ ]+ //; s/(^|[[:space:]])(session_id|tunnel_id|client_version|relay_version|version)=[^ ]+/\1\2=…/g'; }
 run_connect() { # <binary> <output file>: registers, serves one request, is stopped
   mbg "$1 connect --server $HOST:7000 --token \"\$(cat \$HOME/token.txt)\" --local 127.0.0.1:3000 --type http >$2 2>&1"
   REG=$(wait_for "$2" "tunnel registered")
