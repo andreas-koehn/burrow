@@ -11,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -676,6 +677,7 @@ func TestChain_GuardrailCaptureIncludesBody(t *testing.T) {
 type stubSemanticCache struct {
 	hitCandidate *semantic.Candidate // non-nil → hit on every Lookup
 	promotes     []stubPromoteCall
+	promoteDelay time.Duration // how long Promote takes
 }
 
 type stubPromoteCall struct {
@@ -692,6 +694,7 @@ func (s *stubSemanticCache) Lookup(_ context.Context, _ string, _ []byte, _ sema
 }
 
 func (s *stubSemanticCache) Promote(_ context.Context, serviceID, exactKeyHash string, prompt []byte, _ semantic.Settings) error {
+	time.Sleep(s.promoteDelay)
 	s.promotes = append(s.promotes, stubPromoteCall{serviceID: serviceID, exactKeyHash: exactKeyHash, prompt: prompt})
 	return nil
 }
@@ -1462,5 +1465,41 @@ func TestChain_UsageRowWithoutRoute(t *testing.T) {
 	}
 	if s.LatencyMs < 0 {
 		t.Fatalf("LatencyMs = %d, want >= 0", s.LatencyMs)
+	}
+}
+
+// Latency ends when the response does. Storing the answer in the cache and
+// promoting it into the semantic index happen afterwards and must not count.
+func TestChain_UsageRowLatencyExcludesPostResponseWork(t *testing.T) {
+	const promoteDelay = 300 * time.Millisecond
+	sink := &ctxSink{}
+	semCache := &stubSemanticCache{promoteDelay: promoteDelay}
+	c := aigw.NewChain(freshCache(t), semCache, nil, nil, nil, nil, nil, sink, testLog())
+	svc := aigw.Service{
+		ID:           "svc-latency",
+		APIKeyHeader: "Authorization",
+		AIConfig: aigw.ServiceAIConfig{
+			Cache:    &exact.Settings{Enabled: true, AppliesPer: "global", TTLSeconds: 300, MaxEntries: 100, MaxPerEntryKB: 64},
+			Semantic: &semantic.Settings{Enabled: true, FallbackPolicy: "return_cached_marked", PromoteOnMiss: true},
+		},
+	}
+	const answer = `{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(answer)))
+		_, _ = w.Write([]byte(answer))
+	})
+	req := httptest.NewRequest("POST", "https://abc.example.com/v1/chat/completions", strings.NewReader(`{"model":"m","prompt":"latency"}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.ServeHTTP(httptest.NewRecorder(), req, svc, up)
+
+	if len(semCache.promotes) != 1 {
+		t.Fatalf("Promote calls = %d, want 1 (the test must exercise the slow path)", len(semCache.promotes))
+	}
+	if !sink.got {
+		t.Fatal("no usage sample recorded")
+	}
+	if got := sink.sample.LatencyMs; got >= promoteDelay.Milliseconds() {
+		t.Fatalf("LatencyMs = %d, includes the %s spent after the response", got, promoteDelay)
 	}
 }

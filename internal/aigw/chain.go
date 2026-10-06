@@ -548,6 +548,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		if hit {
 			cacheStatus = "HIT"
 			c.serveCacheHit(w, entry)
+			elapsed := time.Since(started)
 			// Convert the cached entry's flat header map to http.Header so
 			// the inspector entry's RespHeaders mirrors what the visitor
 			// saw (Content-Type drives the replay-compare diff path).
@@ -556,7 +557,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				cacheHdr.Set(k, v)
 			}
 			c.captureEntry(svc, r, body, redactedBody, redactHits, kind, entry.Status, entry.Body, cacheHdr, 0, false, cacheStatus, fromReplay)
-			c.recordMeter(r.Context(), svc, kind, 0, 0, int64(len(redactedBody)), int64(len(entry.Body)), false, true, entry.Status, cachedCost(), time.Since(started))
+			c.recordMeter(r.Context(), svc, kind, 0, 0, int64(len(redactedBody)), int64(len(entry.Body)), false, true, entry.Status, cachedCost(), elapsed)
 			return
 		}
 		cacheStatus = "MISS"
@@ -605,12 +606,13 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				}
 				w.WriteHeader(status)
 				_, _ = w.Write(exactEntry.Body)
+				elapsed := time.Since(started)
 				cacheHdr := make(http.Header, len(exactEntry.Headers))
 				for k, v := range exactEntry.Headers {
 					cacheHdr.Set(k, v)
 				}
 				c.captureEntry(svc, r, body, redactedBody, redactHits, kind, status, exactEntry.Body, cacheHdr, 0, false, "similar", fromReplay)
-				c.recordMeter(r.Context(), svc, kind, 0, 0, int64(len(redactedBody)), int64(len(exactEntry.Body)), false, true, status, cachedCost(), time.Since(started))
+				c.recordMeter(r.Context(), svc, kind, 0, 0, int64(len(redactedBody)), int64(len(exactEntry.Body)), false, true, status, cachedCost(), elapsed)
 				return
 			}
 		}
@@ -691,6 +693,9 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// same, so the bookkeeping below still runs; the panic is then raised
 	// again, unchanged, so the server aborts the connection as before.
 	aborted, abort := serveUpstream(proxyHandler, wrapped, r)
+	// The response ends here; what follows (cache store, semantic promote,
+	// inspector capture) is the relay's own bookkeeping and is not latency.
+	elapsed := time.Since(started)
 	if aborted {
 		defer panic(abort)
 	}
@@ -808,7 +813,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		isStreamedResponse(wrapped.Header()), false,
 		wrapped.statusCode,
 		reportedUSD,
-		time.Since(started),
+		elapsed,
 	)
 }
 
@@ -909,7 +914,8 @@ func (c *Chain) captureEntry(svc Service, r *http.Request,
 // recordMeter writes one usage_events row when a Meter sink is configured.
 // Non-blocking: any error is logged + swallowed by the SQLSink. costUSD is
 // what the upstream reported for the request, nil when it reported nothing.
-// latency is the time from the request's arrival in the chain to this call.
+// latency is the time from the request's arrival in the chain to the end of
+// the response; the caller takes it before any post-response bookkeeping.
 // The route is read here, not earlier, so the row names the target that
 // answered even when the gateway switched target while serving.
 func (c *Chain) recordMeter(ctx context.Context, svc Service, kind Kind,
