@@ -213,7 +213,7 @@ func TestProviderGuards(t *testing.T) {
 	}
 
 	// A provider cannot take a model's name, on any path that sets a slug.
-	if _, err := s.UpdateProvider(ctx, "ollama", "burrow-simple", "x"); !errors.Is(err, ErrProviderExists) {
+	if _, err := s.UpdateProvider(ctx, "ollama", "burrow-simple", "x", nil); !errors.Is(err, ErrProviderExists) {
 		t.Fatalf("rename onto model name err = %v", err)
 	}
 	if _, err := s.CreateDirectProvider(ctx, adminID, DirectProviderInput{Slug: "burrow-simple", Name: "X", BaseURL: "https://x.example/v1", CredentialSlot: "S"}); !errors.Is(err, ErrProviderExists) {
@@ -232,7 +232,7 @@ func TestProviderGuards(t *testing.T) {
 	}
 
 	// A rename is followed by the targets.
-	if _, err := s.UpdateProvider(ctx, "ollama", "local", "Local"); err != nil {
+	if _, err := s.UpdateProvider(ctx, "ollama", "local", "Local", nil); err != nil {
 		t.Fatal(err)
 	}
 	m, err := s.ModelByName(ctx, "burrow-simple")

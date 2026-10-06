@@ -175,8 +175,10 @@ components:
             (POST /responses), as its operator stated; nothing probes the
             upstream. While it is false, POST /openai/v1/responses (and
             /ai/v1/responses) for a model of this provider answers 400
-            endpoint_unsupported without calling the provider. Always false
-            for a provider whose api_format is anthropic.
+            endpoint_unsupported without calling the provider. The
+            provider's own path, /ai/<provider>/v1/responses, is passed
+            through whatever this says. Always false for a provider whose
+            api_format is anthropic.
         model_count:
           type: integer
           description: Number of entries in the provider's stored model list.
@@ -2964,9 +2966,10 @@ paths:
         After a slug change the old base URL stops working immediately;
         there is no redirect. supports_responses is optional: it states
         whether the provider offers the OpenAI Responses API and is how a
-        tunnel provider is flagged. Left out, the stored value stays. true
-        is refused with 400 for a provider whose api_format is not openai,
-        before anything is changed.
+        tunnel provider is flagged. Left out, the stored value stays. Slug,
+        name and supports_responses are stored together or not at all: true
+        for a provider whose api_format is not openai is refused with 400
+        and slug and name stay as they were.
       requestBody:
         required: true
         content:
@@ -2995,10 +2998,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: >
-            Slug already in use, or the provider was changed by someone else
-            while supports_responses was being stored (the rename went
-            through; try again).
+          description: Slug already in use. Nothing was changed.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

@@ -370,3 +370,32 @@ func TestStream_ResponsesEventsWithoutUsage(t *testing.T) {
 		t.Fatalf("cost = %v %v", usd, ok)
 	}
 }
+
+// A response that ends early still reports what it used: the closing event
+// is then response.incomplete or response.failed, with the same response
+// object. A failed response without usage leaves the counts unset.
+func TestStream_ResponsesIncompleteAndFailedEvents(t *testing.T) {
+	for _, typ := range []string{"response.incomplete", "response.failed"} {
+		s := aimeter.WrapResponse(io.Discard, aimeter.KindOpenAI)
+		_, _ = s.Write([]byte("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"usage\":null}}\n\n"))
+		_, _ = s.Write([]byte("event: " + typ + "\ndata: {\"type\":\"" + typ + "\",\"response\":{\"id\":\"resp_1\",\"status\":\"x\",\"usage\":{\"input_tokens\":9,\"output_tokens\":4,\"total_tokens\":13}}}\n\n"))
+		_ = s.Close()
+		if tok := s.Tokens(); tok.In != 9 || tok.Out != 4 || tok.Total != 13 {
+			t.Errorf("%s: tokens = %+v, want 9 in, 4 out", typ, tok)
+		}
+	}
+
+	// No usage was reported, so none is recorded: the counts are the stream's
+	// estimate from its size (no input, a quarter of the bytes as output),
+	// not a reported 0/0.
+	const failed = "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_1\",\"error\":{\"code\":\"server_error\"},\"usage\":null}}\n\n"
+	s := aimeter.WrapResponse(io.Discard, aimeter.KindOpenAI)
+	_, _ = s.Write([]byte(failed))
+	_ = s.Close()
+	if tok, est := s.Tokens(), len(failed)/4; tok.In != 0 || tok.Out != est || tok.Total != est {
+		t.Errorf("failed without usage: tokens = %+v, want the estimate {0 %d %d}", tok, est, est)
+	}
+	if _, ok := s.Cost(); ok {
+		t.Error("failed without usage: a cost was recorded")
+	}
+}

@@ -699,7 +699,8 @@ func (d Deps) postDirectProvider(w http.ResponseWriter, r *http.Request, slug, n
 // PutAIProvider handles PUT /api/v1/ai/providers/{slug} (admin only).  Slug
 // and name are both required.  After a slug change the old base URL stops
 // working at once.  supports_responses is optional and states whether the
-// provider offers POST /responses; left out, the stored value stays.
+// provider offers POST /responses; left out, the stored value stays.  The
+// three are stored together or not at all.
 func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
 	oldSlug := chi.URLParam(r, "slug")
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
@@ -717,20 +718,9 @@ func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if in.SupportsResponses != nil && *in.SupportsResponses {
-		// Checked before the rename, so a refused flag changes nothing. The
-		// store checks it again when it writes.
-		old, ok := d.providerForWrite(w, r)
-		if !ok {
-			return
-		}
-		if old.APIFormat != "openai" {
-			writeErr(w, http.StatusBadRequest, "the Responses API belongs to the OpenAI format")
-			return
-		}
-	}
-
-	p, err := d.AIProviders.UpdateProvider(r.Context(), oldSlug, in.Slug, name)
+	// Slug, name and the flag are one write in the store: a flag the
+	// provider's format does not allow is a 400 and nothing has changed.
+	p, err := d.AIProviders.UpdateProvider(r.Context(), oldSlug, in.Slug, name, in.SupportsResponses)
 	if err != nil {
 		if !mapProviderErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
@@ -742,22 +732,7 @@ func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
 		"new_slug": p.Slug,
 	}
 	if in.SupportsResponses != nil {
-		var flagErr error
-		if *in.SupportsResponses != p.SupportsResponses {
-			if flagErr = d.AIProviders.SetProviderResponses(r.Context(), p.Slug, *in.SupportsResponses); flagErr == nil {
-				p.SupportsResponses = *in.SupportsResponses
-			}
-		}
-		// What the provider holds now, also when the flag could not be set:
-		// the rename before it went through and is on record.
 		payload["supports_responses"] = p.SupportsResponses
-		if flagErr != nil {
-			d.auditProvider(r, audit.ActionAIProviderUpdate, p, payload)
-			if !mapProviderErr(w, flagErr) {
-				writeErr(w, http.StatusInternalServerError, "internal error")
-			}
-			return
-		}
 	}
 
 	d.auditProvider(r, audit.ActionAIProviderUpdate, p, payload)

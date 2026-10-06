@@ -131,7 +131,7 @@ func TestUpdateAndDeleteProvider(t *testing.T) {
 	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA); err != nil {
 		t.Fatal(err)
 	}
-	p, err := s.UpdateProvider(ctx, "ollama", "local", "Local models")
+	p, err := s.UpdateProvider(ctx, "ollama", "local", "Local models", nil)
 	if err != nil || p.Slug != "local" || p.Name != "Local models" {
 		t.Fatalf("update: %v %+v", err, p)
 	}
@@ -139,10 +139,10 @@ func TestUpdateAndDeleteProvider(t *testing.T) {
 	if _, err := s.ProviderBySlug(ctx, "ollama"); !errors.Is(err, db.ErrNotFound) {
 		t.Fatalf("old slug err = %v", err)
 	}
-	if _, err := s.UpdateProvider(ctx, "local", "v1", "x"); !errors.Is(err, ErrInvalidProviderSlug) {
+	if _, err := s.UpdateProvider(ctx, "local", "v1", "x", nil); !errors.Is(err, ErrInvalidProviderSlug) {
 		t.Fatalf("reserved err = %v", err)
 	}
-	if _, err := s.UpdateProvider(ctx, "gone", "abc", "x"); !errors.Is(err, ErrProviderNotFound) {
+	if _, err := s.UpdateProvider(ctx, "gone", "abc", "x", nil); !errors.Is(err, ErrProviderNotFound) {
 		t.Fatalf("missing err = %v", err)
 	}
 	if err := s.DeleteProvider(ctx, "local"); err != nil {
@@ -497,7 +497,7 @@ func TestRenameDirectProvider_FreesSlugAndName(t *testing.T) {
 	if strings.Contains(first.ServiceID, "openrouter") {
 		t.Fatalf("service id %q is derived from the slug", first.ServiceID)
 	}
-	renamed, err := s.UpdateProvider(ctx, "openrouter", "router2", "Router Two")
+	renamed, err := s.UpdateProvider(ctx, "openrouter", "router2", "Router Two", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -573,46 +573,42 @@ func TestProviderSupportsResponses(t *testing.T) {
 	}
 }
 
-func TestSetProviderResponses(t *testing.T) {
+// Slug, name and the Responses flag of a provider change together or not at all.
+func TestUpdateProvider_Responses(t *testing.T) {
 	s := newStore(t)
 	ownerID := mustCreateUser(t, s, "admin@x", "admin").ID
 	svcA, _, _ := providerFixture(t, s)
 	ctx := context.Background()
+	on, off := true, false
 	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "claude", Name: "Claude", BaseURL: "https://x.example/v1", CredentialSlot: "C", APIFormat: "anthropic",
-		ExtraHeaders: map[string]string{"X-Title": "Burrow"}}); err != nil {
+	if _, err := s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "claude", Name: "Claude", BaseURL: "https://x.example/v1", CredentialSlot: "C", APIFormat: "anthropic"}); err != nil {
 		t.Fatal(err)
 	}
 
-	// A tunnel provider has no upstream settings; this is how it is flagged.
-	if err := s.SetProviderResponses(ctx, "ollama", true); err != nil {
-		t.Fatal(err)
+	p, err := s.UpdateProvider(ctx, "ollama", "local", "Local", &on)
+	if err != nil || p.Slug != "local" || p.Name != "Local" || !p.SupportsResponses {
+		t.Fatalf("update: %v %+v", err, p)
 	}
-	if p, _ := s.ProviderBySlug(ctx, "ollama"); !p.SupportsResponses || p.Kind != "tunnel" || p.ServiceID != svcA || p.APIFormat != "openai" {
-		t.Fatalf("after on: %+v", p)
+	if p, err = s.UpdateProvider(ctx, "local", "local", "Local", nil); err != nil || !p.SupportsResponses {
+		t.Fatalf("flag left out: %v %+v", err, p)
 	}
-	if err := s.SetProviderResponses(ctx, "ollama", true); err != nil { // unchanged is no error
-		t.Fatal(err)
-	}
-	if err := s.SetProviderResponses(ctx, "ollama", false); err != nil {
-		t.Fatal(err)
-	}
-	if p, _ := s.ProviderBySlug(ctx, "ollama"); p.SupportsResponses {
-		t.Fatalf("after off: %+v", p)
+	if p, err = s.UpdateProvider(ctx, "local", "local", "Local", &off); err != nil || p.SupportsResponses {
+		t.Fatalf("flag off: %v %+v", err, p)
 	}
 
-	if err := s.SetProviderResponses(ctx, "gone", true); !errors.Is(err, ErrProviderNotFound) {
-		t.Fatalf("unknown provider: %v", err)
-	}
-	if err := s.SetProviderResponses(ctx, "claude", true); !errors.Is(err, ErrInvalidProviderConfig) {
+	_, err = s.UpdateProvider(ctx, "claude", "claude2", "Claude Two", &on)
+	if !errors.Is(err, ErrInvalidProviderConfig) || !strings.Contains(err.Error(), "the Responses API belongs to the OpenAI format") {
 		t.Fatalf("anthropic provider: %v", err)
 	}
-	if err := s.SetProviderResponses(ctx, "claude", false); err != nil {
-		t.Fatalf("off on an anthropic provider: %v", err)
+	if got, err := s.ProviderBySlug(ctx, "claude"); err != nil || got.Name != "Claude" || got.SupportsResponses {
+		t.Fatalf("a refused update changed the row: %v %+v", err, got)
 	}
-	if p, _ := s.ProviderBySlug(ctx, "claude"); p.SupportsResponses || p.ExtraHeaders["X-Title"] != "Burrow" || p.CredentialSlot != "C" {
-		t.Fatalf("the setter changed other settings: %+v", p)
+	if _, err := s.ProviderBySlug(ctx, "claude2"); err == nil {
+		t.Fatal("the new slug exists after a refused update")
+	}
+	if _, err := s.UpdateProvider(ctx, "gone", "abc", "x", &on); !errors.Is(err, ErrProviderNotFound) {
+		t.Fatalf("unknown provider: %v", err)
 	}
 }

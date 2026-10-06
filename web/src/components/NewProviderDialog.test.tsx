@@ -72,7 +72,7 @@ describe("New provider dialog", () => {
     const box = screen.getByRole("checkbox", { name: RESPONSES });
     expect(box).not.toBeChecked();
     expect(box).toHaveAccessibleDescription(
-      "Leave off unless the provider documents POST /responses. Requests to that endpoint are refused for this provider while it is off.",
+      "Leave off unless the provider documents POST /responses. While off, /openai/v1/responses refuses this provider's models.",
     );
     await choosePreset("OpenRouter");
     expect(box).toBeChecked();

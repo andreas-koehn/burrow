@@ -43,14 +43,14 @@ func TestAIProviders_CRUD(t *testing.T) {
 		t.Fatalf("missing err = %v", err)
 	}
 
-	if err := x.UpdateAIProvider(ctx, "ollama", "local", "Local models"); err != nil {
+	if err := x.UpdateAIProvider(ctx, "ollama", "local", "Local models", nil); err != nil {
 		t.Fatal(err)
 	}
 	list, err := x.ListAIProviders(ctx)
 	if err != nil || len(list) != 1 || list[0].Slug != "local" || list[0].Name != "Local models" {
 		t.Fatalf("list after rename: %v %+v", err, list)
 	}
-	if err := x.UpdateAIProvider(ctx, "gone", "x-y-z", "n"); !errors.Is(err, ErrNotFound) {
+	if err := x.UpdateAIProvider(ctx, "gone", "x-y-z", "n", nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("update missing err = %v", err)
 	}
 
@@ -287,7 +287,7 @@ func TestUpdateAIProvider_RenamesDirectBackingService(t *testing.T) {
 	x, svcID := newDBWithService(t)
 	ctx := context.Background()
 	svc, _ := directFixture(t, x)
-	if err := x.UpdateAIProvider(ctx, "openrouter", "router2", "Router Two"); err != nil {
+	if err := x.UpdateAIProvider(ctx, "openrouter", "router2", "Router Two", nil); err != nil {
 		t.Fatal(err)
 	}
 	if backing, _ := x.GetServiceByID(ctx, svc.ID); backing.Name != "Router Two" || backing.Type != "direct" {
@@ -298,7 +298,7 @@ func TestUpdateAIProvider_RenamesDirectBackingService(t *testing.T) {
 	if err := x.CreateAIProvider(ctx, AIProvider{Slug: "local", Name: "Local", Kind: "tunnel", ServiceID: svcID, APIFormat: "openai"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := x.UpdateAIProvider(ctx, "local", "local2", "Renamed"); err != nil {
+	if err := x.UpdateAIProvider(ctx, "local", "local2", "Renamed", nil); err != nil {
 		t.Fatal(err)
 	}
 	if after, _ := x.GetServiceByID(ctx, svcID); after.Name != before.Name {
@@ -306,7 +306,7 @@ func TestUpdateAIProvider_RenamesDirectBackingService(t *testing.T) {
 	}
 
 	// A name the owner already uses is refused and nothing changes.
-	if err := x.UpdateAIProvider(ctx, "router2", "router3", before.Name); !errors.Is(err, ErrDuplicateProvider) {
+	if err := x.UpdateAIProvider(ctx, "router2", "router3", before.Name, nil); !errors.Is(err, ErrDuplicateProvider) {
 		t.Fatalf("name clash err = %v, want ErrDuplicateProvider", err)
 	}
 	if p, err := x.GetAIProvider(ctx, "router2"); err != nil || p.Name != "Router Two" {
@@ -456,4 +456,84 @@ func TestAIProviders_ResponsesAndConcurrency(t *testing.T) {
 	if !got.SupportsResponses || got.MaxConcurrent != 5 {
 		t.Fatalf("after modify: %+v", got)
 	}
+}
+
+// checkUpdateAIProviderResponses is shared with the Postgres test: slug, name
+// and the Responses flag are written by one statement, and a flag the
+// provider's format does not allow leaves all three as they were.
+func checkUpdateAIProviderResponses(t *testing.T, x *DB, userID, tag string) {
+	t.Helper()
+	ctx := context.Background()
+	slugs := []string{tag + "-o", tag + "-o2", tag + "-a", tag + "-a2"}
+	clean := func() {
+		for _, s := range slugs {
+			_ = x.DeleteAIProviderAndBacking(ctx, s)
+		}
+	}
+	clean() // a database that outlives the run may hold an earlier run's rows
+	t.Cleanup(clean)
+	on, off := true, false
+	for slug, format := range map[string]string{tag + "-o": "openai", tag + "-a": "anthropic"} {
+		svc := Service{ID: "prov-" + slug, UserID: userID, Name: "Name " + slug, Type: "http", AccessMode: "api_key"}
+		p := AIProvider{Slug: slug, Name: svc.Name, APIFormat: format, BaseURL: "https://x.example/v1", CredentialSlot: "S"}
+		if err := x.CreateDirectAIProvider(ctx, svc, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// All three in one go.
+	if err := x.UpdateAIProvider(ctx, tag+"-o", tag+"-o2", "New "+tag, &on); err != nil {
+		t.Fatal(err)
+	}
+	p, err := x.GetAIProvider(ctx, tag+"-o2")
+	if err != nil || p.Name != "New "+tag || !p.SupportsResponses {
+		t.Fatalf("after update: %v %+v", err, p)
+	}
+	if svc, _ := x.GetServiceByID(ctx, p.ServiceID); svc.Name != "New "+tag {
+		t.Fatalf("backing service = %+v", svc)
+	}
+	// Left out, the flag stays.
+	if err := x.UpdateAIProvider(ctx, tag+"-o2", tag+"-o2", "New "+tag, nil); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ = x.GetAIProvider(ctx, tag+"-o2"); !p.SupportsResponses {
+		t.Fatalf("a rename dropped the flag: %+v", p)
+	}
+	if err := x.UpdateAIProvider(ctx, tag+"-o2", tag+"-o2", "New "+tag, &off); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ = x.GetAIProvider(ctx, tag+"-o2"); p.SupportsResponses {
+		t.Fatalf("flag off: %+v", p)
+	}
+
+	// The flag does not fit the format: nothing is written.
+	if err := x.UpdateAIProvider(ctx, tag+"-a", tag+"-a2", "Other "+tag, &on); !errors.Is(err, ErrResponsesFormat) {
+		t.Fatalf("anthropic provider err = %v, want ErrResponsesFormat", err)
+	}
+	p, err = x.GetAIProvider(ctx, tag+"-a")
+	if err != nil || p.Name != "Name "+tag+"-a" || p.SupportsResponses {
+		t.Fatalf("a refused update changed the row: %v %+v", err, p)
+	}
+	if svc, _ := x.GetServiceByID(ctx, p.ServiceID); svc.Name != "Name "+tag+"-a" {
+		t.Fatalf("a refused update renamed the backing service: %+v", svc)
+	}
+	if _, err := x.GetAIProvider(ctx, tag+"-a2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the new slug exists after a refused update: %v", err)
+	}
+	// Off always fits.
+	if err := x.UpdateAIProvider(ctx, tag+"-a", tag+"-a2", "Other "+tag, &off); err != nil {
+		t.Fatal(err)
+	}
+	if p, err = x.GetAIProvider(ctx, tag+"-a2"); err != nil || p.Name != "Other "+tag || p.SupportsResponses {
+		t.Fatalf("after off: %v %+v", err, p)
+	}
+	if err := x.UpdateAIProvider(ctx, tag+"-gone", tag+"-o", "n", &on); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown provider err = %v", err)
+	}
+}
+
+func TestUpdateAIProvider_Responses(t *testing.T) {
+	x := testDB(t)
+	mustUser(t, x, "u1")
+	checkUpdateAIProviderResponses(t, x, "u1", "t")
 }

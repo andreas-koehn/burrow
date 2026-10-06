@@ -802,7 +802,7 @@ describe("Provider detail", () => {
       const box = await screen.findByRole("checkbox", { name: RESPONSES });
       expect(box).not.toBeChecked();
       expect(box).toHaveAccessibleDescription(
-        "Leave off unless the provider documents POST /responses. Requests to that endpoint are refused for this provider while it is off.",
+        "Leave off unless the provider documents POST /responses. While off, /openai/v1/responses refuses this provider's models.",
       );
       await userEvent.click(box);
       await waitFor(() => expect(providerPuts(fetchSpy, "ollama")).toEqual([{ slug: "ollama", name: "ollama", supports_responses: true }]));
@@ -835,6 +835,14 @@ describe("Provider detail", () => {
       await screen.findByRole("heading", { name: /connect a client/i });
       expect(screen.queryByRole("checkbox", { name: RESPONSES })).toBeNull();
       expect(screen.getByText("This provider offers the Responses API.")).toBeInTheDocument();
+    });
+
+    it("tunnel provider: a non-admin is told which endpoint refuses its models while it is off", async () => {
+      db.me = { ...db.me, role: "user" };
+      mount();
+      await screen.findByRole("heading", { name: /connect a client/i });
+      expect(screen.getByText("This provider does not offer the Responses API: /openai/v1/responses refuses its models.")).toBeInTheDocument();
+      expect(screen.queryByText(/refused for this provider/)).toBeNull();
     });
 
     it("direct provider: the Upstream tab shows it and Edit sends only the flag", async () => {

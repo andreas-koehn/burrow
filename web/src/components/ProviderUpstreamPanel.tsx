@@ -34,7 +34,9 @@ export interface ResponsesCheckboxProps {
 
 /**
  * The operator's statement that a provider offers the OpenAI Responses API.
- * Nothing probes the upstream; the gateway refuses the endpoint while it is off.
+ * Nothing probes the upstream. While it is off, the model-routed endpoint
+ * (/openai/v1/responses) refuses the provider's models; the provider's own
+ * path (/ai/<provider>/v1/responses) is passed through either way.
  */
 export function ResponsesCheckbox({ id, checked, onChange }: ResponsesCheckboxProps) {
   return (
@@ -44,8 +46,8 @@ export function ResponsesCheckbox({ id, checked, onChange }: ResponsesCheckboxPr
         <label htmlFor={id}>Offers the Responses API (needed by Codex)</label>
       </div>
       <p id={`${id}-help`} className="muted small">
-        Leave off unless the provider documents <code>POST /responses</code>. Requests to that endpoint are
-        refused for this provider while it is off.
+        Leave off unless the provider documents <code>POST /responses</code>. While off,{" "}
+        <code>/openai/v1/responses</code> refuses this provider's models.
       </p>
     </div>
   );
@@ -95,7 +97,7 @@ export function ProviderResponsesSetting({ provider, isAdmin }: ProviderResponse
         <p className="muted small">
           {provider.supports_responses
             ? "This provider offers the Responses API."
-            : "This provider does not offer the Responses API; requests to that endpoint are refused."}
+            : "This provider does not offer the Responses API: /openai/v1/responses refuses its models."}
         </p>
       )}
       {error && <ErrorNotice>{error}</ErrorNotice>}

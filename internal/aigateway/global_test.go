@@ -1823,12 +1823,27 @@ func TestServeDialect_Responses_UnsupportedTouchesNothing(t *testing.T) {
 			t.Errorf("%s: a refused request names a target: %v", c.name, rec.Header())
 		}
 	}
-	// The refusal names the provider and the model the client asked for, not
-	// the native one behind a synthetic name.
+	// A synthetic name says nothing of what stands behind it, and neither
+	// does the refusal: a key may be allowed the name alone. The message
+	// names the model the client asked for and the endpoint that works.
+	for _, key := range []string{"bgw_all", "bgw_some"} {
+		rec := httptest.NewRecorder()
+		g.ServeDialect(rec, post("/v1/responses", key, `{"model":"burrow-intelligence"}`), DialectOpenAI)
+		b := rec.Body.String()
+		if !strings.Contains(b, "burrow-intelligence") || !strings.Contains(b, "/v1/chat/completions") {
+			t.Errorf("%s: message = %s", key, b)
+		}
+		for _, hidden := range []string{"zai", "glm", "openrouter", "provider"} {
+			if strings.Contains(b, hidden) {
+				t.Errorf("%s: the refusal of a synthetic name tells of its target (%q): %s", key, hidden, b)
+			}
+		}
+	}
+	// A direct address named the provider itself; the refusal may too.
 	rec := httptest.NewRecorder()
-	g.ServeDialect(rec, post("/v1/responses", "bgw_all", `{"model":"burrow-intelligence"}`), DialectOpenAI)
-	if b := rec.Body.String(); !strings.Contains(b, "burrow-intelligence") || strings.Contains(b, "glm-5.1") {
-		t.Errorf("message = %s", b)
+	g.ServeDialect(rec, post("/v1/responses", "bgw_all", `{"model":"zai/glm-5.1"}`), DialectOpenAI)
+	if b := rec.Body.String(); !strings.Contains(b, "provider zai does not offer the Responses API") || !strings.Contains(b, "zai/glm-5.1") || !strings.Contains(b, "/v1/chat/completions") {
+		t.Errorf("direct address: message = %s", b)
 	}
 }
 

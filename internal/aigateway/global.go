@@ -111,8 +111,14 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 	// Before the target's policy and credential: a provider that does not
 	// offer the endpoint is not called, and nothing of it is read.
 	if !endpointSupported(path, target.Provider) {
-		g.fail(w, r, http.StatusBadRequest, "endpoint_unsupported",
-			"provider "+target.Provider.Slug+" does not offer the Responses API; use /v1/chat/completions for model "+shownName(requested))
+		// A synthetic name does not tell what stands behind it, and a key
+		// may be allowed that name alone: the provider is named only to a
+		// client that named it itself.
+		msg := "model " + shownName(requested) + " is not available on the Responses API; use /v1/chat/completions"
+		if !res.Synthetic {
+			msg = "provider " + target.Provider.Slug + " does not offer the Responses API; use /v1/chat/completions for model " + shownName(requested)
+		}
+		g.fail(w, r, http.StatusBadRequest, "endpoint_unsupported", msg)
 		return
 	}
 	upstream, host, ok := g.targetUpstream(w, r, target.Provider)

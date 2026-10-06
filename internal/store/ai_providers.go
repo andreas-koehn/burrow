@@ -168,11 +168,15 @@ func (s *Store) CreateTunnelProvider(ctx context.Context, slug, name, serviceID 
 	return s.q.GetAIProvider(ctx, slug)
 }
 
-// UpdateProvider changes a provider's slug and display name. The old base URL
-// stops working at once. The backing service of a direct provider is renamed
-// with it, and model targets follow the new slug. A slug that a synthetic
-// model has as its name is refused with ErrProviderExists.
-func (s *Store) UpdateProvider(ctx context.Context, slug, newSlug, name string) (db.AIProvider, error) {
+// UpdateProvider changes a provider's slug and display name and, when
+// responses is not nil, whether it offers POST /responses (the only way to
+// say so in the same step as a rename, and how a tunnel provider is flagged).
+// The three are written together or not at all: a flag that the provider's
+// format does not allow is ErrInvalidProviderConfig and changes nothing. The
+// old base URL stops working at once. The backing service of a direct
+// provider is renamed with it, and model targets follow the new slug. A slug
+// that a synthetic model has as its name is refused with ErrProviderExists.
+func (s *Store) UpdateProvider(ctx context.Context, slug, newSlug, name string, responses *bool) (db.AIProvider, error) {
 	if !ValidProviderSlug(newSlug) {
 		return db.AIProvider{}, ErrInvalidProviderSlug
 	}
@@ -181,9 +185,11 @@ func (s *Store) UpdateProvider(ctx context.Context, slug, newSlug, name string) 
 	} else if taken {
 		return db.AIProvider{}, ErrProviderExists
 	}
-	switch err := s.q.UpdateAIProvider(ctx, slug, newSlug, name); {
+	switch err := s.q.UpdateAIProvider(ctx, slug, newSlug, name, responses); {
 	case errors.Is(err, db.ErrNotFound):
 		return db.AIProvider{}, ErrProviderNotFound
+	case errors.Is(err, db.ErrResponsesFormat):
+		return db.AIProvider{}, errResponsesFormat()
 	case errors.Is(err, db.ErrDuplicateProvider):
 		return db.AIProvider{}, ErrProviderExists
 	case err != nil:
@@ -437,28 +443,6 @@ func (s *Store) UpdateProviderUpstream(ctx context.Context, slug string, in Dire
 		return db.AIProvider{}, err
 	}
 	return s.q.GetAIProvider(ctx, slug)
-}
-
-// SetProviderResponses states whether a provider offers POST /responses. It
-// works for every kind of provider and is the only way to say it for a tunnel
-// provider, which has no upstream settings. Only a provider of the OpenAI
-// format can be flagged. The data plane reads the row per request, so the
-// change applies at once.
-func (s *Store) SetProviderResponses(ctx context.Context, slug string, on bool) error {
-	err := s.q.ModifyAIProviderUpstream(ctx, slug, func(p db.AIProvider) (db.AIProvider, error) {
-		if on && p.APIFormat != "openai" {
-			return p, errResponsesFormat()
-		}
-		p.SupportsResponses = on
-		return p, nil
-	})
-	switch {
-	case errors.Is(err, db.ErrNotFound):
-		return ErrProviderNotFound
-	case errors.Is(err, db.ErrProviderBusy):
-		return ErrProviderBusy
-	}
-	return err
 }
 
 func (s *Store) providerOrNotFound(ctx context.Context, slug string) (db.AIProvider, error) {
