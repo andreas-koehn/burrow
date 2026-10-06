@@ -38,9 +38,10 @@ const (
 	// clientLoginMaxPending caps the pending requests, so that the
 	// unauthenticated start endpoint cannot fill the table.
 	clientLoginMaxPending = 20
-	// clientLoginMaxPendingPerIP caps the pending requests of one source
-	// address. Without it one address starting a request every thirty seconds
-	// would hold all twenty places and turn the sign-in off for everybody.
+	// clientLoginMaxPendingPerIP caps the pending requests of one source: an
+	// IPv4 address, or the /64 of an IPv6 address (db.ClientLoginSourceKey).
+	// Without it one source starting a request every thirty seconds would
+	// hold all twenty places and turn the sign-in off for everybody.
 	clientLoginMaxPendingPerIP = 5
 
 	// userCodeAlphabet has no I, L, O, 0 or 1: nothing that reads as

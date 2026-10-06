@@ -37,6 +37,27 @@ func TestPathTrusted(t *testing.T) {
 	if pathTrusted(link) {
 		t.Error("a link in a user's directory is trusted")
 	}
+	// The path is taken as written or not at all: one with "..", "." or a
+	// doubled or trailing slash names the same file today, and what is
+	// checked must be what the unit file then holds.
+	dir, base := filepath.Dir(sh), filepath.Base(sh)
+	for _, p := range []string{
+		dir + "//" + base,
+		dir + "/./" + base,
+		dir + "/../" + filepath.Base(dir) + "/" + base,
+		"//" + sh[1:],
+		dir + "/",
+	} {
+		if p == filepath.Clean(p) {
+			continue // "/" + "/" on a system where sh is in the root
+		}
+		if pathTrusted(p) {
+			t.Errorf("%q is trusted although it is not a clean path", p)
+		}
+	}
+	if !pathTrusted(dir) {
+		t.Errorf("%s is not trusted", dir)
+	}
 	// Root's file, but through a world-writable directory's name is fine
 	// only when no element of the path is a link; a relative path never is.
 	for _, p := range []string{"", "burrow", "bin/sh", "/bin/../bin/missing", filepath.Join(t.TempDir(), "missing")} {

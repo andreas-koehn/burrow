@@ -12,14 +12,17 @@ import (
 func isElevated() bool { return os.Geteuid() == 0 }
 
 // pathTrusted reports whether only root can change the file at path: path is
-// a full path with no symbolic link in it, and the file and every directory
-// above it belong to root and can be written by nobody else. A service that
-// runs as root must not start, or read on root's behalf, anything less.
+// a full path in its plain form (no "..", no ".", no doubled or trailing
+// slash) with no symbolic link in it, and the file and every directory above
+// it belong to root and can be written by nobody else. A service that runs as
+// root must not start, or read on root's behalf, anything less. The plain
+// form is required rather than produced: the caller writes the path it gave
+// into the unit file, and what was checked must be what is written.
 func pathTrusted(path string) bool {
-	if !filepath.IsAbs(path) {
+	if !filepath.IsAbs(path) || path != filepath.Clean(path) {
 		return false
 	}
-	p := filepath.Clean(path)
+	p := path
 	// A link on the way is somebody's to point elsewhere, or root's own
 	// business: either way the caller names the file itself.
 	if r, err := filepath.EvalSymlinks(p); err != nil || r != p {

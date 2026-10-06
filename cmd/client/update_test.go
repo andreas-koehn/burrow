@@ -454,6 +454,20 @@ func TestNotWritableMessage(t *testing.T) {
 	if !strings.Contains(opt, "  sudo '/opt/my tools/burrow' update https://burrow.example.com --cacert '/etc/my ca.pem' --insecure") || strings.Contains(opt, "install.sh") {
 		t.Errorf("message:\n%s", opt)
 	}
+	// The relay address is a word of the command like the others: one that a
+	// shell would split or expand is quoted.
+	odd := notWritableMessage("linux", "/usr/local/bin/burrow", "https://burrow.example.com/a b;$(id)'x", nil)
+	for _, want := range []string{
+		`  sudo /usr/local/bin/burrow update 'https://burrow.example.com/a b;$(id)'\''x'` + "\n",
+		`  curl -fsSL 'https://burrow.example.com/a b;$(id)'\''x/install.sh' | sudo sh -s -- --system`,
+	} {
+		if !strings.Contains(odd, want) {
+			t.Errorf("message does not contain %q:\n%s", want, odd)
+		}
+	}
+	if v6 := notWritableMessage("linux", "/opt/burrow", "https://[::1]:8443", nil); !strings.Contains(v6, "update 'https://[::1]:8443'") {
+		t.Errorf("message:\n%s", v6)
+	}
 	win := notWritableMessage("windows", `C:\Program Files\burrow\burrow.exe`, relay, nil)
 	if strings.Contains(win, "sudo") || !strings.Contains(win, "as administrator") ||
 		!strings.Contains(win, "irm https://burrow.example.com/install.ps1 | iex") {

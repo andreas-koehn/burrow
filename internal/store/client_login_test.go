@@ -548,6 +548,22 @@ func TestClientLogin_PendingCapPerIP(t *testing.T) {
 	}
 }
 
+// An IPv6 caller has a /64 of addresses: the cap counts the network.
+func TestClientLogin_PendingCapPerIPv6Network(t *testing.T) {
+	s, _, _, _ := loginFixture(t)
+	for i := 0; i < 5; i++ {
+		if _, err := startFrom(s, fmt.Sprintf("2001:db8:1:2::%x", i+1)); err != nil {
+			t.Fatalf("start %d of the /64: %v", i+1, err)
+		}
+	}
+	if _, err := startFrom(s, "2001:db8:1:2:aaaa::1"); !errors.Is(err, ErrLoginTooMany) {
+		t.Fatalf("sixth address of the /64: %v, want ErrLoginTooMany", err)
+	}
+	if _, err := startFrom(s, "2001:db8:1:3::1"); err != nil {
+		t.Fatalf("start from the neighbouring /64: %v", err)
+	}
+}
+
 // A poll that lands right after the decision removes the row (a denial is
 // reported once; an approval is collected). The decision took effect, so the
 // approver gets the request back, not a 404, and the audit row is written.

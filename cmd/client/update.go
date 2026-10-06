@@ -73,7 +73,7 @@ func notWritableMessage(goos, exe, relay string, flags []string) string {
 			"  irm " + relay + "/install.ps1 | iex"
 	}
 	dir := filepath.Dir(exe)
-	line := "  sudo " + shellWord(exe) + " update " + relay
+	line := "  sudo " + shellWord(exe) + " update " + shellWord(relay)
 	for _, f := range flags {
 		line += " " + shellWord(f)
 	}
@@ -81,7 +81,7 @@ func notWritableMessage(goos, exe, relay string, flags []string) string {
 	if dir == "/usr/local/bin" {
 		// Where the installer puts it with --system.
 		msg += "or install it again:\n" +
-			"  curl -fsSL " + relay + "/install.sh | sudo sh -s -- --system\n"
+			"  curl -fsSL " + shellWord(relay+"/install.sh") + " | sudo sh -s -- --system\n"
 	}
 	return strings.TrimRight(msg, "\n")
 }

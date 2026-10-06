@@ -114,3 +114,45 @@ test("connect-client: HTTP mode omits --remote and adds --type http", async ({ p
   expect(cmdText).toContain("--type http");
   expect(cmdText).not.toContain("--remote");
 });
+
+test("connect-client: on a phone the three lines are readable and nothing leaves the page", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/clients/connect");
+  await expect(page.getByRole("heading", { name: "Connect a client" })).toBeVisible();
+
+  // Every operating system can be chosen: none of the three is cut off.
+  for (const name of ["Linux", "macOS", "Windows"]) {
+    const box = await page.getByRole("radio", { name }).boundingBox();
+    expect(box, name).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+  }
+  await page.getByRole("radio", { name: "Windows" }).click();
+  await expect(page.locator(".install-line pre code").first()).toHaveText(/install\.ps1 \| iex$/);
+  await page.getByRole("radio", { name: "Linux" }).click();
+
+  // Each command is one line in its box; a long one scrolls inside the box.
+  const boxes = await page.locator(".install-line pre").evaluateAll((els) => els.map((el) => {
+    const r = el.getBoundingClientRect();
+    const row = el.closest(".install-line")!.getBoundingClientRect();
+    return { left: r.left, right: r.right, width: r.width, rowWidth: row.width, height: r.height, scrolls: el.scrollWidth > el.clientWidth, overflowX: getComputedStyle(el).overflowX };
+  }));
+  expect(boxes).toHaveLength(3);
+  for (const b of boxes) {
+    expect(b.right).toBeLessThanOrEqual(390);
+    expect(b.height).toBeLessThan(60); // one line of text, not a column of letters
+    // The box has the whole width the page has there (the sidebar keeps its
+    // own); the copy button is on the line below, not beside it.
+    expect(b.width).toBeGreaterThanOrEqual(b.rowWidth - 1);
+    expect(b.overflowX).toBe("auto");
+  }
+  expect(boxes[0]!.scrolls).toBe(true); // the install line is longer than a phone is wide
+
+  // The copy buttons stay on the page too.
+  for (const name of ["Copy install command", "Copy sign-in command", "Copy run command"]) {
+    const box = await page.getByRole("button", { name }).boundingBox();
+    expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+  }
+  // And the page itself does not scroll sideways.
+  expect(await page.evaluate(() => document.scrollingElement!.scrollWidth <= window.innerWidth)).toBe(true);
+});

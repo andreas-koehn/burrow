@@ -468,9 +468,11 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 	// closes nothing that is in use: the reverse proxy returns only after
 	// the response body was copied to the visitor, and a connection that was
 	// upgraded (a WebSocket) has left the pool and is closed by the reverse
-	// proxy when both ends are done. A connection that becomes idle a moment
-	// after this is closed too, because the transport remembers. Keep-alives
-	// stay on, so the request the app sees carries no "Connection: close".
+	// proxy when both ends are done. A connection that is handed back to the
+	// pool a moment after this call is closed as well: from the call on, the
+	// transport closes a connection that becomes idle instead of keeping it
+	// until the next request, which never comes. Keep-alives stay on, so the
+	// request the app sees carries no "Connection: close".
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return p.dialer.DialTunnelStreamByServiceID(ctx, capturedServiceID)
@@ -638,13 +640,16 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 	// closes nothing that is in use: the reverse proxy returns only after
 	// the response body was copied to the visitor, and a connection that was
 	// upgraded (a WebSocket) has left the pool and is closed by the reverse
-	// proxy when both ends are done. A connection that becomes idle a moment
-	// after this is closed too, because the transport remembers. Keep-alives
-	// stay on, so the request the app sees carries no "Connection: close".
+	// proxy when both ends are done. A connection that is handed back to the
+	// pool a moment after this call is closed as well: from the call on, the
+	// transport closes a connection that becomes idle instead of keeping it
+	// until the next request, which never comes. Keep-alives stay on, so the
+	// request the app sees carries no "Connection: close".
 	tr := &http.Transport{
 		// DialContext ignores the addr argument: we always connect to the
 		// tunnel stream of the resolved service. The Transport calls this for each
-		// new connection (i.e. each proxied request, since we do not pool).
+		// new connection: once per proxied request, since this transport
+		// serves one request and is not used again.
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			conn, err := p.dialer.DialTunnelStreamByServiceID(ctx, res.ServiceID)
 			if err != nil {

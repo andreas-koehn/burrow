@@ -43,12 +43,17 @@
         if ($Relay -notmatch '^https://') {
             # "This machine" is decided here alone: no `@` anywhere, an optional
             # port of digits, and then exactly localhost, [::1], or four decimal
-            # numbers of 0-255 separated by dots, the first being 127.
-            $relayHost = ($Relay -creplace '^http://', '') -replace ':[0-9]+$', ''
+            # numbers of 0-255 separated by dots, the first being 127, none
+            # written with a leading zero. The comparisons are by code unit
+            # (Ordinal), not by the rules of the machine's language, and the
+            # patterns end at the very end of the text (\z): `$` would also
+            # match before a final line break.
+            $relayHost = ($Relay -creplace '^http://', '') -creplace ':[0-9]+\z', ''
             $octet = '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
             $loopback = (-not $Relay.Contains('@')) -and (
-                ($relayHost -ceq 'localhost') -or ($relayHost -ceq '[::1]') -or
-                ($relayHost -cmatch "^127\.$octet\.$octet\.$octet$"))
+                [string]::Equals($relayHost, 'localhost', 'Ordinal') -or
+                [string]::Equals($relayHost, '[::1]', 'Ordinal') -or
+                ($relayHost -cmatch "^127\.$octet\.$octet\.$octet\z"))
             if (-not $loopback -and $env:BURROW_INSTALL_ALLOW_HTTP -ne '1') {
                 throw ("install.ps1: this relay gave its address as $Relay, without HTTPS. " +
                     'A download over plain HTTP can be replaced on the way, checksums included. ' +

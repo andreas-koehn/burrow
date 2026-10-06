@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -91,12 +92,19 @@ func (d Deps) clientLoginAnon(next http.Handler) http.Handler {
 }
 
 // remoteIP is the caller's address without the port, as
-// TrustedProxyMiddleware left it.
+// TrustedProxyMiddleware left it, in one spelling per address: an IPv4
+// address that arrives written as an IPv6 one (::ffff:203.0.113.7, on a
+// dual-stack listener) is the IPv4 address, and an IPv6 address is in its
+// short lower-case form. What is not an address is returned as it came.
 func remoteIP(r *http.Request) string {
-	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return h
+	h := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		h = host
 	}
-	return r.RemoteAddr
+	if addr, err := netip.ParseAddr(h); err == nil {
+		return addr.Unmap().String()
+	}
+	return h
 }
 
 type clientLoginStartReq struct {

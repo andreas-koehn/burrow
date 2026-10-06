@@ -47,7 +47,7 @@ export default defineConfig({
     },
     search: { provider: 'local' },
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/ankoehn/burrow' },
+      { icon: 'github', link: 'https://github.com/andreas-koehn/burrow' },
     ],
     footer: {
       message: 'Released under the Apache-2.0 License.',

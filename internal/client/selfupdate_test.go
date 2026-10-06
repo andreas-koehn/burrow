@@ -887,6 +887,30 @@ func TestReplaceExecutable(t *testing.T) {
 	}
 }
 
+// The new file never gets more than the old one had, and never write access
+// for the group or for others: a binary that was 0777 by accident is not
+// handed on as one that anybody may replace.
+func TestReplaceExecutable_Mode(t *testing.T) {
+	needsScripts(t)
+	for old, want := range map[fs.FileMode]fs.FileMode{0o777: 0o755, 0o775: 0o755, 0o755: 0o755, 0o750: 0o750, 0o700: 0o700, 0o557: 0o555} {
+		dir := t.TempDir()
+		current := filepath.Join(dir, "burrow")
+		writeFile(t, current, "old client", old)
+		newBin := filepath.Join(t.TempDir(), "burrow")
+		writeFile(t, newBin, fakeClient("0.6.0"), 0o700)
+		if err := replaceExecutable(current, newBin, thisPlatform("0.6.0"), false); err != nil {
+			t.Fatalf("old mode %v: %v", old, err)
+		}
+		st, err := os.Stat(current)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm() != want {
+			t.Errorf("old mode %v: new mode %v, want %v", old, st.Mode().Perm(), want)
+		}
+	}
+}
+
 func TestReplaceExecutable_PublicUsesThisSystem(t *testing.T) {
 	needsScripts(t)
 	dir := t.TempDir()

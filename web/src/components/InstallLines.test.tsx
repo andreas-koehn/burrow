@@ -31,6 +31,21 @@ describe("InstallLines", () => {
     expect(screen.getByRole("radio", { name: label })).toHaveAttribute("aria-checked", "true");
   });
 
+  // A command is one line: at any width it is read whole by scrolling its
+  // box, never broken in the middle of a word. The box takes the keyboard so
+  // that it can be scrolled without a pointer.
+  it("keeps each command on one line in a box that scrolls and takes the focus", () => {
+    renderApp(<InstallLines relayOrigin={ORIGIN} />);
+    const boxes = Array.from(document.querySelectorAll<HTMLElement>(".install-line pre"));
+    expect(boxes).toHaveLength(3);
+    for (const pre of boxes) {
+      expect(pre).toHaveClass("cmd-block");
+      expect(pre).not.toHaveClass("wrap");
+      expect(pre).toHaveAttribute("tabindex", "0");
+      expect(pre.parentElement).toHaveClass("install-line-cmd");
+    }
+  });
+
   it("shows three numbered lines as selectable text", () => {
     fakeBrowser("Linux x86_64", "");
     renderApp(<InstallLines relayOrigin={ORIGIN} />);

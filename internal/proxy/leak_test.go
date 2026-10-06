@@ -312,6 +312,167 @@ func TestProxy_UpgradedConnectionStaysOpen(t *testing.T) {
 	}
 }
 
+// A request sent with "Expect: 100-continue": the app's go-ahead reaches the
+// visitor, the body follows, and the stream is closed after the answer.
+func TestProxy_ExpectContinueLeavesNothingOpen(t *testing.T) {
+	for _, prefix := range []string{"", "/svc/abc123"} {
+		var got atomic.Int64
+		d, ts := leakStack(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n, _ := io.Copy(io.Discard, r.Body) // reading sends the 100 Continue
+			got.Store(n)
+			_, _ = io.WriteString(w, "stored")
+		}), prefix)
+		conn, err := net.Dial("tcp", strings.TrimPrefix(ts.URL, "http://"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+		const body = "twenty bytes of body"
+		fmt.Fprintf(conn, "POST /upload HTTP/1.1\r\nHost: abc123.%s\r\nContent-Length: %d\r\nExpect: 100-continue\r\n\r\n", authDomain, len(body))
+		br := bufio.NewReader(conn)
+		status, err := br.ReadString('\n')
+		if err != nil || !strings.HasPrefix(status, "HTTP/1.1 100") {
+			t.Fatalf("prefix %q: before the body was sent: %q %v", prefix, status, err)
+		}
+		if blank, err := br.ReadString('\n'); err != nil || blank != "\r\n" {
+			t.Fatalf("prefix %q: after the 100 line: %q %v", prefix, blank, err)
+		}
+		// The stream is in use while the app waits for the body.
+		if o, c := d.opened.Load(), d.closed.Load(); o != 1 || c != 0 {
+			t.Fatalf("prefix %q: while the app waits for the body: %d opened, %d closed", prefix, o, c)
+		}
+		_, _ = io.WriteString(conn, body)
+		// The app's own go-ahead is passed on as well; a client takes any
+		// number of interim answers before the final one.
+		var resp *http.Response
+		for {
+			resp, err = http.ReadResponse(br, nil)
+			if err != nil {
+				t.Fatalf("prefix %q: %v", prefix, err)
+			}
+			if resp.StatusCode != http.StatusContinue {
+				break
+			}
+		}
+		answer, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || string(answer) != "stored" || got.Load() != int64(len(body)) {
+			t.Fatalf("prefix %q: status %d, answer %q, the app read %d bytes", prefix, resp.StatusCode, answer, got.Load())
+		}
+		// The visitor's connection stays open (keep-alive); the stream does not.
+		if opened, closed := d.settled(); opened != 1 || closed != 1 {
+			t.Fatalf("prefix %q: %d streams opened, %d closed", prefix, opened, closed)
+		}
+		_ = conn.Close()
+	}
+}
+
+// A large upload arrives whole, and its stream is closed after the answer.
+func TestProxy_LargeUploadLeavesNothingOpen(t *testing.T) {
+	const size = 24 << 20
+	var got atomic.Int64
+	d, ts := leakStack(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, _ := io.Copy(io.Discard, r.Body)
+		got.Store(n)
+		fmt.Fprintf(w, "%d", n)
+	}), "/svc/abc123")
+	hc := &http.Client{Transport: &http.Transport{}}
+	defer hc.CloseIdleConnections()
+	before := runtime.NumGoroutine()
+	for i := 0; i < 3; i++ {
+		// Once with a length, then chunked (a reader of unknown length).
+		var body io.Reader = strings.NewReader(strings.Repeat("u", size))
+		if i > 0 {
+			body = io.LimitReader(endless('u'), size)
+		}
+		req, _ := http.NewRequest("POST", ts.URL+"/upload", body)
+		req.Host = "abc123." + authDomain
+		resp, err := hc.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		answer, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || string(answer) != fmt.Sprint(size) || got.Load() != size {
+			t.Fatalf("upload %d: status %d, answer %q, the app read %d of %d bytes", i, resp.StatusCode, answer, got.Load(), size)
+		}
+	}
+	if opened, closed := d.settled(); opened != 3 || closed != 3 {
+		t.Fatalf("%d streams opened, %d closed", opened, closed)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for runtime.NumGoroutine() > before+4 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if after := runtime.NumGoroutine(); after > before+4 {
+		t.Fatalf("%d goroutines before the uploads, %d after", before, after)
+	}
+}
+
+type endless byte
+
+func (e endless) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(e)
+	}
+	return len(p), nil
+}
+
+// A visitor who hangs up in the middle of an upload: the app sees the body
+// end early, and the stream is closed although no answer was ever sent.
+func TestProxy_AbortedUploadLeavesNothingOpen(t *testing.T) {
+	const announced, sent = 4 << 20, 1 << 20
+	type seen struct {
+		n   int64
+		err error
+	}
+	ended := make(chan seen, 8)
+	started := make(chan struct{}, 8)
+	d, ts := leakStack(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		n, err := io.Copy(io.Discard, r.Body)
+		ended <- seen{n, err}
+		_, _ = io.WriteString(w, "never read")
+	}), "/svc/abc123")
+	before := runtime.NumGoroutine()
+	const rounds = 5
+	for i := 0; i < rounds; i++ {
+		conn, err := net.Dial("tcp", strings.TrimPrefix(ts.URL, "http://"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+		fmt.Fprintf(conn, "POST /upload HTTP/1.1\r\nHost: abc123.%s\r\nContent-Length: %d\r\n\r\n", authDomain, announced)
+		if _, err := io.WriteString(conn, strings.Repeat("u", sent)); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the request did not reach the app")
+		}
+		_ = conn.Close() // in the middle of the body
+		select {
+		case s := <-ended:
+			if s.err == nil || s.n >= announced {
+				t.Fatalf("round %d: the app read %d bytes without an error (announced %d)", i, s.n, announced)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("round %d: the app still waits for the rest of the body: the stream was not closed", i)
+		}
+	}
+	if opened, closed := d.settled(); opened != rounds || closed != rounds {
+		t.Fatalf("%d streams opened, %d closed", opened, closed)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for runtime.NumGoroutine() > before+2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if after := runtime.NumGoroutine(); after > before+2 {
+		t.Fatalf("%d goroutines before %d aborted uploads, %d after", before, rounds, after)
+	}
+}
+
 // wantSink says for which tunnels it wants summaries and counts what it is
 // asked and handed.
 type wantSink struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -54,15 +55,41 @@ func scanClientLogin(row *sql.Row) (ClientLoginRequest, error) {
 	return r, nil
 }
 
+// ClientLoginSourceKey says which source a caller's address counts as for
+// the cap of one source. An IPv4 address is itself, also when it is written
+// as an IPv6 one (::ffff:203.0.113.7). An IPv6 address is its /64: that is
+// what one host or one home network is handed, so counting single addresses
+// would let one machine take every place by changing its address. Text that
+// is not an address is its own key.
+func ClientLoginSourceKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	addr = addr.Unmap().WithZone("")
+	if addr.Is4() {
+		return addr.String()
+	}
+	p, err := addr.Prefix(64)
+	if err != nil {
+		return addr.String()
+	}
+	return p.String()
+}
+
 // InsertClientLogin stores a new pending request. inserted is false when
 // maxPending live pending requests exist already, or maxPerIP of them came
-// from r.SourceIP: one address cannot use up the places of everybody else.
+// from the source of r.SourceIP (ClientLoginSourceKey: the address, or its
+// /64 for IPv6): one source cannot use up the places of everybody else.
+// r.SourceIP itself is stored as given.
 //
-// Both counts and the insert are one statement, so on SQLite (one writer)
-// neither cap can be passed between a check and a write. Postgres evaluates
-// the counts against a snapshot, so two concurrent statements could both see
-// room; there the transaction first takes an advisory lock that makes starts
-// wait for each other (lockClientLoginStart). r.CreatedAt is the time the
+// The count of the source and the insert with the count of all are two
+// statements of one transaction, and no other start runs between them. On
+// SQLite the pool holds one connection and the transaction keeps it. On
+// Postgres the transaction first takes an advisory lock that makes starts
+// wait for each other, and reads at READ COMMITTED, so that each statement
+// sees what the starts before it committed (lockClientLoginStart). The cap of
+// all is still part of the insert statement. r.CreatedAt is the time the
 // request starts at.
 func (x *DB) InsertClientLogin(ctx context.Context, r ClientLoginRequest, maxPending, maxPerIP int) (inserted bool, err error) {
 	tx, err := x.sqlDB.BeginTx(ctx, nil)
@@ -74,18 +101,41 @@ func (x *DB) InsertClientLogin(ctx context.Context, r ClientLoginRequest, maxPen
 		return false, fmt.Errorf("insert client login request: lock: %w", err)
 	}
 	created := r.CreatedAt.UTC()
+	// At most maxPending rows are pending, so this reads a handful of rows.
+	rows, err := tx.QueryContext(ctx,
+		`SELECT source_ip FROM client_login_requests WHERE status='pending' AND expires_at > ?`, created)
+	if err != nil {
+		return false, fmt.Errorf("insert client login request: count source: %w", err)
+	}
+	key, fromSource := ClientLoginSourceKey(r.SourceIP), 0
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			_ = rows.Close()
+			return false, fmt.Errorf("insert client login request: count source: %w", err)
+		}
+		if ClientLoginSourceKey(ip) == key {
+			fromSource++
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return false, fmt.Errorf("insert client login request: count source: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("insert client login request: count source: %w", err)
+	}
+	if fromSource >= maxPerIP {
+		return false, nil
+	}
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO client_login_requests(device_code_hash, user_code, hostname, os, arch, client_version,
 		   source_ip, status, token_name, created_at, expires_at)
 		 SELECT ?,?,?,?,?,?,?,'pending',?,?,?
 		 WHERE (SELECT COUNT(*) FROM client_login_requests
-		         WHERE status='pending' AND expires_at > ?) < ?
-		   AND (SELECT COUNT(*) FROM client_login_requests
-		         WHERE source_ip=? AND status='pending' AND expires_at > ?) < ?`,
+		         WHERE status='pending' AND expires_at > ?) < ?`,
 		r.DeviceCodeHash, r.UserCode, r.Hostname, r.OS, r.Arch, r.ClientVersion,
 		r.SourceIP, r.TokenName, created, r.ExpiresAt.UTC(),
 		created, maxPending,
-		r.SourceIP, created, maxPerIP,
 	)
 	if err != nil {
 		return false, fmt.Errorf("insert client login request: %w", err)

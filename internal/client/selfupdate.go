@@ -669,6 +669,7 @@ func runStaged(path string, c StagedCheck) error {
 		cmd.Dir = filepath.Dir(path)
 		cmd.Stdout = out
 		cmd.WaitDelay = time.Second
+		ownProcessGroup(cmd)
 		err = cmd.Run()
 		// A file that was just written can be "busy" for a moment when
 		// another thread of this process forked meanwhile.
@@ -704,7 +705,7 @@ func runStaged(path string, c StagedCheck) error {
 // which is a regular file (the caller resolves symbolic links first).
 //
 // The new content is written to a new file in the same directory with the old
-// file's permission bits. That file is then run once with `version` (see
+// file's permission bits, less write access for the group and for others. That file is then run once with `version` (see
 // StagedCheck); only one that starts and reports the expected version goes
 // on. It is then renamed over the old one: the path holds the old binary or
 // the new one at every moment, never a part of one. On Windows a running file
@@ -749,13 +750,16 @@ func replaceExecutable(current, newBin string, check StagedCheck, aside bool) (e
 		err = errors.New("the new binary is empty")
 	}
 	if err == nil {
+		// On the open file, not by its name: the name could be made to point
+		// elsewhere between the two. The old file's bits, but never write
+		// access for the group or for others.
+		err = tmp.Chmod(st.Mode().Perm() &^ 0o022)
+	}
+	if err == nil {
 		err = tmp.Sync()
 	}
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
-	}
-	if err == nil {
-		err = os.Chmod(tmpName, st.Mode().Perm())
 	}
 	if err != nil {
 		return err

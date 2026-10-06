@@ -313,8 +313,8 @@ for lo in 127.0.0.1 localhost; do
 done
 
 # Addresses that look like this machine and are not, and the ones that are.
-REFUSED_HOSTS="'localhost:80@evil.test' '127.0.0.1:80@evil.test' '[::1]:80@evil.test' '127.0.0.1:evil.test' '127.0.0.1.' '127.0.0.1.5' '127.999.1.1' '127.0.0.256' '127.1' '128.0.0.1' '0127.0.0.1' '127.0.0.0001' 'localhost.evil.test' 'localhost:' ':80' '' '[::1]x' '[::1]:' '[::2]' 'user@localhost' '127.0.0.1:80:80' '127..0.1' '.127.0.0.1'"
-REFUSED_COUNT=23
+REFUSED_HOSTS="'localhost:80@evil.test' '127.0.0.1:80@evil.test' '[::1]:80@evil.test' '127.0.0.1:evil.test' '127.0.0.1.' '127.0.0.1.5' '127.999.1.1' '127.0.0.256' '127.1' '128.0.0.1' '0127.0.0.1' '127.0.0.0001' 'localhost.evil.test' 'localhost:' ':80' '' '[::1]x' '[::1]:' '[::2]' 'user@localhost' '127.0.0.1:80:80' '127..0.1' '.127.0.0.1' '127.0.0.01' '127.00.0.1' '127.0.0.010' '127.0.0.08'"
+REFUSED_COUNT=27
 LOOPBACK_HOSTS="'localhost' 'localhost:8080' '127.0.0.1' '127.0.0.1:9' '127.255.0.9:8080' '[::1]' '[::1]:8080'"
 LOOPBACK_COUNT=7
 
@@ -575,11 +575,14 @@ if docker pull -q "$PWSH" >/dev/null 2>&1; then
         Write-Host \"PREFIXES_RAN_\$ran COMMENT_ONLY_IS_\$(\$comment -eq \$start) PARSE_ERRORS_ARE_THE_REST_\$(\$parse -eq \$s.Length - 1 - \$start)\""
     check "powershell: every strict prefix of the script, character by character, is comments or a parse error" 0 \
         "PREFIXES_RAN_0 COMMENT_ONLY_IS_True PARSE_ERRORS_ARE_THE_REST_True" "OLD_UNTOUCHED" "DIR_CLEAN" '!Downloading'
+    # Two more hosts for PowerShell alone: a line break after the address. A
+    # dollar sign in a pattern matches before it; the script's patterns end
+    # with \z.
     ps_case relay-good AMD64 "
         \$env:BURROW_INSTALL_ALLOW_HTTP = \$null
         \$s = Invoke-RestMethod http://relay-good:8080/install.ps1
         \$r = 0; \$a = 0
-        foreach (\$h in @($(printf '%s' "$REFUSED_HOSTS" | sed "s/' '/', '/g"))) {
+        foreach (\$h in @($(printf '%s' "$REFUSED_HOSTS" | sed "s/' '/', '/g")) + @(\"127.0.0.1\`n\", \"127.0.0.1:80\`n\")) {
             try { Invoke-Expression \$s.Replace(\"'http://relay-good:8080'\", \"'http://\$h'\"); Write-Host \"NOT_REFUSED <\$h>\" }
             catch { if (\$_.Exception.Message -match 'without HTTPS') { \$r++ } else { Write-Host \"NOT_REFUSED <\$h> \$(\$_.Exception.Message)\" } }
         }
@@ -589,7 +592,7 @@ if docker pull -q "$PWSH" >/dev/null 2>&1; then
         }
         Write-Host \"REFUSED_\$r ACCEPTED_\$a\""
     check "powershell: loopback is exactly localhost, [::1] or 127.x.y.z; look-alikes are refused" 0 \
-        "REFUSED_$REFUSED_COUNT ACCEPTED_$LOOPBACK_COUNT" "OLD_UNTOUCHED" '!NOT_REFUSED' '!NOT_ACCEPTED' '!UNEXPECTED_INSTALL'
+        "REFUSED_$((REFUSED_COUNT + 2)) ACCEPTED_$LOOPBACK_COUNT" "OLD_UNTOUCHED" '!NOT_REFUSED' '!NOT_ACCEPTED' '!UNEXPECTED_INSTALL'
 else
     bad "powershell cases" "$PWSH could not be pulled; install.ps1 was not run"
 fi

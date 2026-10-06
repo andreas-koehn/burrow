@@ -575,6 +575,10 @@ select.input { height: 32px; padding-right: 8px; cursor: pointer; }
   overflow-x: auto;
   overflow-y: hidden;
   max-width: 100%;
+  /* The containing block of what is positioned inside (the text for screen
+     readers in a badge): without it such text sits outside the scroll box,
+     where the table would be without one, and widens the page. */
+  position: relative;
 }
 table.data {
   width: 100%;
@@ -2868,7 +2872,16 @@ button.setup-step-title:focus-visible { outline: 2px solid var(--ring); outline-
 .install-line > p { margin: 0; }
 .install-line-label { font-size: 12.5px; font-weight: 500; color: var(--foreground); }
 .install-line .cmd-block { min-width: 0; }
+.install-line .cmd-block:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .install-line .icon-btn { flex-shrink: 0; }
+/* The three choices stay reachable where the page is narrower than they are. */
+.install-lines > .segmented { flex-wrap: wrap; max-width: 100%; }
+/* Next to the sidebar a phone leaves the page about 150px: the command gets
+   the whole width and its copy button the line below. */
+@media (max-width: 560px) {
+  .install-line-cmd { flex-wrap: wrap; }
+  .install-line .cmd-block { flex-basis: 100%; }
+}
 /* Empty until something was copied; it keeps its line so nothing jumps. */
 .install-lines-status { min-height: 1.4em; }
 .setup-step-panel > .install-lines { align-self: stretch; }

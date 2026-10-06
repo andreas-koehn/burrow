@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"testing"
+
+	"github.com/ankoehn/burrow/internal/aigateway"
 )
 
 func spaSpy() (http.Handler, *bool) {
@@ -181,6 +183,7 @@ func TestEveryDashboardShellRefusesFrames(t *testing.T) {
 	ts := newTestServer(Deps{
 		Users: u, Log: discardLog(), SPA: spa,
 		TunnelProxy: upstream, AuthDomain: "tunnels.example.com",
+		AIGateway: &aigateway.Gateway{Providers: noProviders{}, Log: discardLog()},
 	})
 	defer ts.Close()
 
@@ -212,7 +215,8 @@ func TestEveryDashboardShellRefusesFrames(t *testing.T) {
 		}
 	}
 
-	for _, path := range []string{"/svc/k7p2qx/", "/svc/k7p2qx/page", "/api/v1/me", "/api/v1/nope", "/healthz", "/install.sh"} {
+	for _, path := range []string{"/svc/k7p2qx/", "/svc/k7p2qx/page", "/api/v1/me", "/api/v1/nope", "/healthz", "/install.sh",
+		"/ai/k7p2qx/v1/models", "/download/burrow/linux/amd64", "/download/nope", "/api/v1/openapi/viewer/"} {
 		resp := get(path)
 		for _, name := range []string{"X-Frame-Options", "Content-Security-Policy"} {
 			if got := resp.Header.Get(name); got != "" {

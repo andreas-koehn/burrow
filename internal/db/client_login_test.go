@@ -17,6 +17,85 @@ func TestClientLogin_PerIPCap_SQLite(t *testing.T) {
 	checkClientLoginPerIPCap(t, testDB(t))
 }
 
+func TestClientLogin_PerNetworkCap_SQLite(t *testing.T) {
+	checkClientLoginPerNetworkCap(t, testDB(t))
+}
+
+func TestClientLoginSourceKey(t *testing.T) {
+	for in, want := range map[string]string{
+		"203.0.113.7":                  "203.0.113.7",
+		"::ffff:203.0.113.7":           "203.0.113.7",
+		"2001:db8:1:2::1":              "2001:db8:1:2::/64",
+		"2001:DB8:1:2:ffff:0:0:9":      "2001:db8:1:2::/64",
+		"2001:db8:1:3::1":              "2001:db8:1:3::/64",
+		"2001:db8::1":                  "2001:db8::/64",
+		"fe80::1%eth0":                 "fe80::/64",
+		"::1":                          "::/64",
+		"":                             "",
+		"not an address":               "not an address",
+		"2001:db8:1:2::1/64":           "2001:db8:1:2::1/64",
+	} {
+		if got := ClientLoginSourceKey(in); got != want {
+			t.Errorf("ClientLoginSourceKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// checkClientLoginPerNetworkCap: an IPv6 host has a whole /64 of addresses to
+// call from, so the cap of one source counts the /64, not the address. IPv4
+// addresses stay one source each, and an IPv4 address written as an IPv6 one
+// is the same source.
+func checkClientLoginPerNetworkCap(t *testing.T, x *DB) {
+	t.Helper()
+	ctx := context.Background()
+	clear := func() { _, _ = x.DB().ExecContext(context.Background(), `DELETE FROM client_login_requests`) }
+	clear()
+	t.Cleanup(clear)
+
+	t0 := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	n := 0
+	insert := func(ip string) bool {
+		t.Helper()
+		n++
+		ok, err := x.InsertClientLogin(ctx, ClientLoginRequest{
+			DeviceCodeHash: fmt.Sprintf("net-hash-%d", n), UserCode: fmt.Sprintf("NETC%04d", n),
+			SourceIP: ip, CreatedAt: t0, ExpiresAt: t0.Add(10 * time.Minute),
+		}, 20, 5)
+		if err != nil {
+			t.Fatalf("insert %d from %s: %v", n, ip, err)
+		}
+		return ok
+	}
+	for i, ip := range []string{"2001:db8:1:2::1", "2001:db8:1:2::2", "2001:db8:1:2:ffff:ffff:ffff:ffff", "2001:db8:1:2:0:0:a:b", "2001:db8:1:2:8000::"} {
+		if !insert(ip) {
+			t.Fatalf("start %d of the /64 (%s) was refused below its cap", i+1, ip)
+		}
+	}
+	if insert("2001:db8:1:2::99") {
+		t.Fatal("a sixth address of one /64 started a pending request")
+	}
+	// The stored address is the caller's own, not the network.
+	if got, err := x.GetClientLoginByUserCode(ctx, "NETC0003", t0); err != nil || got.SourceIP != "2001:db8:1:2:ffff:ffff:ffff:ffff" {
+		t.Fatalf("stored source = %q (%v)", got.SourceIP, err)
+	}
+	// The neighbouring /64 is somebody else.
+	if !insert("2001:db8:1:3::1") {
+		t.Fatal("another /64 was refused although only its neighbour is at its cap")
+	}
+	// IPv4: one address, one source, in either spelling.
+	for i, ip := range []string{"203.0.113.1", "::ffff:203.0.113.1", "203.0.113.1", "::ffff:203.0.113.1", "203.0.113.1"} {
+		if !insert(ip) {
+			t.Fatalf("start %d of the IPv4 address (%s) was refused below its cap", i+1, ip)
+		}
+	}
+	if insert("::ffff:203.0.113.1") {
+		t.Fatal("an IPv4 address passed its cap by calling itself an IPv6 one")
+	}
+	if !insert("203.0.113.2") {
+		t.Fatal("the next IPv4 address was refused although only its neighbour is at its cap")
+	}
+}
+
 // checkClientLoginPerIPCap: one source address may hold only so many pending
 // requests, so that it cannot use up the places of everybody else. Runs on
 // SQLite here and on Postgres in the tagged test.

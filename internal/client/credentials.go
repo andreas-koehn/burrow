@@ -197,11 +197,16 @@ func TokenTail(token string) string {
 	return string(r[len(r)-4:])
 }
 
+// maxTokenLen bounds what is taken for a token. A relay's tokens are a small
+// fraction of this; a longer line from a file, a pipe or a relay's answer is
+// something else and is neither stored nor sent.
+const maxTokenLen = 512
+
 // ValidToken reports whether s can be a client token: printable ASCII without
-// spaces, and not empty. It is the one rule for a token a person pastes and
-// for one a relay hands out.
+// spaces, not empty, and at most 512 characters. It is the one rule for a
+// token a person pastes and for one a relay hands out.
 func ValidToken(s string) bool {
-	if s == "" {
+	if s == "" || len(s) > maxTokenLen {
 		return false
 	}
 	for i := 0; i < len(s); i++ {

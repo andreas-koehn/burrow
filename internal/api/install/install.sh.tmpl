@@ -151,6 +151,11 @@
             return 1
         fi
         for octet in "$@"; do
+            # Plain decimal only: a number written with a leading zero is read
+            # as octal by some resolvers, so 127.0.0.010 is not one address.
+            case "$octet" in
+                0?*) return 1 ;;
+            esac
             if [ "${#octet}" -gt 3 ] || [ "$octet" -gt 255 ]; then
                 return 1
             fi

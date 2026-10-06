@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -29,7 +30,35 @@ func TestClientLogin_Postgres(t *testing.T) {
 	t.Cleanup(func() { _ = x.Close() })
 	checkClientLogin(t, x, "u-login-pg")
 	checkClientLoginPerIPCap(t, x)
+	checkClientLoginPerNetworkCap(t, x)
 	checkClientLoginCapUnderConcurrency(t, x)
+}
+
+// The caps hold whatever isolation level the database hands out by default:
+// the start transaction asks for READ COMMITTED itself. With a snapshot taken
+// before the advisory lock was granted (REPEATABLE READ), a start would count
+// the rows as they were before the starts it waited for.
+func TestClientLogin_Postgres_CapUnderRepeatableReadDefault(t *testing.T) {
+	pgURL := os.Getenv("BURROW_TEST_POSTGRES_URL")
+	if pgURL == "" {
+		t.Skip("BURROW_TEST_POSTGRES_URL not set; skipping postgres client sign-in check")
+	}
+	sep := "?"
+	if strings.Contains(pgURL, "?") {
+		sep = "&"
+	}
+	b, err := OpenPostgres(pgURL + sep + "default_transaction_isolation=repeatable%20read")
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	x := Wrap(b.DB())
+	t.Cleanup(func() { _ = x.Close() })
+	var level string
+	if err := x.DB().QueryRow(`SHOW default_transaction_isolation`).Scan(&level); err != nil || level != "repeatable read" {
+		t.Fatalf("default_transaction_isolation = %q (%v), want repeatable read", level, err)
+	}
+	checkClientLoginCapUnderConcurrency(t, x)
+	t.Cleanup(func() { _, _ = x.DB().ExecContext(context.Background(), `DELETE FROM client_login_requests`) })
 }
 
 // checkClientLoginCapUnderConcurrency: sixty clients start at the same moment

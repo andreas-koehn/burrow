@@ -69,8 +69,9 @@ export function InstallLines({ relayOrigin, target, lines = ALL_LINES }: Install
             <span className="install-line-label">
               {numbered ? `${i + 1}. ` : ""}{LINE_LABEL[id]}
             </span>
-            <div className="row gap-2">
-              <pre className="cmd-block wrap fill-rest"><code>{text[id]}</code></pre>
+            <div className="row gap-2 install-line-cmd">
+              {/* One line that scrolls in its box; focusable so the keyboard can scroll it. */}
+              <pre className="cmd-block fill-rest" tabIndex={0}><code>{text[id]}</code></pre>
               <button type="button" className="icon-btn" aria-label={`Copy ${LINE_NAME[id]} command`} onClick={() => void copy(id)}>
                 <Copy size={13} aria-hidden="true" />
               </button>

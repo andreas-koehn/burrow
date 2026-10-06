@@ -728,6 +728,14 @@ func TestValidToken(t *testing.T) {
 			t.Errorf("a plain token is refused (length %d)", len(ok))
 		}
 	}
+	// No relay hands out a token anywhere near this long; a longer line is
+	// not a token, whatever it is made of.
+	if !ValidToken(strings.Repeat("a", 512)) {
+		t.Error("a token of 512 characters is refused")
+	}
+	if ValidToken(strings.Repeat("a", 513)) {
+		t.Error("a token of 513 characters is accepted")
+	}
 	for name, bad := range map[string]string{"empty": "", "space": "bur a", "leading space": " bur", "tab": "bur\tx", "newline": "bur\n",
 		"esc": "bur\x1b[2J", "del": "bur\x7f", "not ascii": "bür", "nul": "bur\x00"} {
 		if ValidToken(bad) {
