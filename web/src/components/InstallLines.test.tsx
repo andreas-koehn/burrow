@@ -38,7 +38,7 @@ describe("InstallLines", () => {
     expect(items.map((li) => li.querySelector(".install-line-label")?.textContent)).toEqual(["1. Install", "2. Sign in", "3. Run"]);
     expect(lineTexts()).toEqual([
       "curl -fsSL https://b.example.com/install.sh | sh",
-      "burrow login b.example.com --token -",
+      "burrow login b.example.com",
       "burrow http 3000",
     ]);
   });
@@ -79,8 +79,12 @@ describe("InstallLines", () => {
     expect(await screen.findByText("Could not copy. Select the text instead.")).toHaveAttribute("role", "status");
   });
 
-  it("leads to the Tokens tab for the token the sign-in asks for, and shows no token", () => {
+  it("says that the sign-in is approved in the browser, points to a token for machines without one, and shows no token", () => {
     renderApp(<InstallLines relayOrigin={ORIGIN} />);
+    const hint = screen.getByText(/compare the code/i);
+    expect(hint).toHaveTextContent("It opens this dashboard in your browser: compare the code with the one in your terminal and approve.");
+    expect(hint).toHaveTextContent("Or sign in with a token: add --token - and paste one from Clients, tab Tokens.");
+    expect(document.querySelector(".install-lines")!.textContent).not.toMatch(/asks for a client token/);
     expect(screen.getByRole("link", { name: "Clients, tab Tokens" })).toHaveAttribute("href", "/clients?tab=tokens");
     expect(document.querySelector(".install-lines")!.textContent).not.toMatch(/bur_/);
   });
@@ -89,7 +93,7 @@ describe("InstallLines", () => {
     fakeBrowser("Linux x86_64", "");
     const first = renderApp(<InstallLines relayOrigin={ORIGIN} lines={["install", "login"]} />);
     expect(screen.getByRole("radiogroup", { name: "Operating system" })).toBeInTheDocument();
-    expect(lineTexts()).toEqual(["curl -fsSL https://b.example.com/install.sh | sh", "burrow login b.example.com --token -"]);
+    expect(lineTexts()).toEqual(["curl -fsSL https://b.example.com/install.sh | sh", "burrow login b.example.com"]);
     first.unmount();
     renderApp(<InstallLines relayOrigin={ORIGIN} lines={["run"]} />);
     expect(screen.queryByRole("radiogroup")).toBeNull();

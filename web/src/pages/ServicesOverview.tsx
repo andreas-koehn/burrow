@@ -72,8 +72,7 @@ export default function ServicesOverview() {
     {
       id: "token",
       title: "Install and sign in",
-      // C12: drop when browser sign-in lands ("with a client token").
-      description: "Install burrow on your machine and sign it in to this relay with a client token.",
+      description: "Install burrow on your machine and sign it in to this relay.",
       // GET /tokens lists only the caller's own tokens. A client, a live or a
       // saved service proves that somebody's token did the job.
       done: toks.length > 0 || cls.length > 0 || liveNow > 0 || svc.length > 0,

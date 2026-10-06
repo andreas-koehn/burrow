@@ -85,6 +85,26 @@ export interface ClientDiscovery {
   protocol_version: number;
 }
 
+/**
+ * GET /client/login/requests/{user_code}: a machine asking to be signed in
+ * (`burrow login`), as the approval page shows it. Hostname, OS, architecture,
+ * client version and the suggested token name were sent by that machine and
+ * are untrusted display text; the source IP and the age are the relay's own.
+ */
+export interface ClientLoginRequest {
+  user_code: string;
+  hostname: string;
+  os: string;
+  arch: string;
+  client_version: string;
+  source_ip: string;
+  status: "pending" | "approved" | "denied";
+  suggested_token_name: string;
+  age_seconds: number;
+  created_at: string;
+  expires_at: string;
+}
+
 export interface ClientDetail extends ClientView {
   services: ServiceView[];
 }

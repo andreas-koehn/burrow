@@ -26,7 +26,7 @@ test("connect-client: fill fields, mint, check command and waiting indicator", a
     await expect(page.getByRole("button", { name })).toBeVisible();
   }
   await expect(page.locator(".install-line pre code")).toHaveText([
-    /\/install\.(sh \| sh|ps1 \| iex)$/, /^burrow login .+ --token -$/, "burrow http 3000",
+    /\/install\.(sh \| sh|ps1 \| iex)$/, /^burrow login \S+$/, "burrow http 3000",
   ]);
 
   // The form lives behind "Other ways to connect" since the page leads with the three lines.

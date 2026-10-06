@@ -15,6 +15,7 @@ import Sessions from "@/pages/settings/Sessions";
 import Clients from "@/pages/Clients";
 import ClientDetail from "@/pages/ClientDetail";
 import ConnectClient from "@/pages/ConnectClient";
+import LinkClient from "@/pages/LinkClient";
 import Providers from "@/pages/Providers";
 import ProviderDetail from "@/pages/ProviderDetail";
 import PromptCache from "@/pages/PromptCache";
@@ -54,6 +55,8 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      {/* Where `burrow login` sends the browser: outside the shell, behind the login. */}
+      <Route path="/link" element={<RequireAuth><LinkClient /></RequireAuth>} />
       <Route element={<RequireAuth><Layout /></RequireAuth>}>
         <Route path="/" element={<ServicesOverview />} />
         <Route path="/services" element={<Services />} />

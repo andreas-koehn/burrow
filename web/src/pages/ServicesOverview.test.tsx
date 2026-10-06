@@ -83,13 +83,15 @@ describe("ServicesOverview", () => {
     // Install and sign in: the first two lines, for the relay this dashboard is served from.
     expect(lines(first!)).toEqual([
       `curl -fsSL ${window.location.origin}/install.sh | sh`,
-      `burrow login ${window.location.origin} --token -`,
+      `burrow login ${window.location.origin}`,
     ]);
     expect(within(first!).getByRole("radiogroup", { name: "Operating system" })).toBeInTheDocument();
     expect(within(first!).getByRole("button", { name: "Copy install command" })).toBeInTheDocument();
     expect(within(first!).getByRole("button", { name: "Copy sign-in command" })).toBeInTheDocument();
     expect(within(list).queryByRole("link", { name: "Create a token" })).toBeNull();
-    // The sign-in asks for a token, so the way to one stays within reach.
+    // The sign-in goes through the browser; a token stays within reach for machines without one.
+    expect(first!).toHaveTextContent("Install burrow on your machine and sign it in to this relay.");
+    expect(first!.textContent).not.toMatch(/with a client token/);
     expect(within(first!).getByRole("link", { name: "Clients, tab Tokens" })).toHaveAttribute("href", "/clients?tab=tokens");
     // Connect a client: the third line.
     await userEvent.click(within(list).getByRole("button", { name: "Connect a client" }));

@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, FormField, FormFieldGroup, Input } from "@/components/ds";
+import { returnPathFrom } from "@/lib/returnPath";
 
-function BurrowMark({ size = 26 }: { size?: number }) {
+export function BurrowMark({ size = 26 }: { size?: number }) {
   return (
     <svg
       width={size}
@@ -30,6 +31,8 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const nav = useNavigate();
+  // Where RequireAuth sent the visitor away from; the start page otherwise.
+  const back = returnPathFrom(useLocation().state);
   const qc = useQueryClient();
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -37,7 +40,7 @@ export default function Login() {
     try {
       await apiFetch("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
       await qc.invalidateQueries({ queryKey: ["me"] });
-      nav("/", { replace: true });
+      nav(back, { replace: true });
     } catch (err: unknown) {
       if (err instanceof ApiError && err.status === 429) {
         setErr("Too many login attempts. Please wait a minute and try again.");

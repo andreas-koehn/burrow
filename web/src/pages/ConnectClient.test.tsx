@@ -65,7 +65,7 @@ describe("Connect a client — three lines", () => {
     mount();
     expect(lineTexts()).toEqual([
       `curl -fsSL ${window.location.origin}/install.sh | sh`,
-      `burrow login ${window.location.origin} --token -`,
+      `burrow login ${window.location.origin}`,
       "burrow http 3000",
     ]);
     const lines = document.querySelector(".install-lines")!;
@@ -75,7 +75,7 @@ describe("Connect a client — three lines", () => {
     }
   });
 
-  it("leads to the Tokens tab for the token the sign-in asks for", () => {
+  it("points to the Tokens tab for signing in with a token instead", () => {
     mount();
     expect(screen.getByRole("link", { name: "Clients, tab Tokens" })).toHaveAttribute("href", "/clients?tab=tokens");
   });

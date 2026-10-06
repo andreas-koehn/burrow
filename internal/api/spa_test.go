@@ -78,3 +78,91 @@ func TestNoSPAKeeps4bBehavior(t *testing.T) {
 		t.Fatalf("with SPA nil, / must be chi 404 (4b behavior), got %d", r.StatusCode)
 	}
 }
+
+// /link is where `burrow login` sends the browser. It is a dashboard page:
+// the SPA shell answers it, for a visitor without a session too (the page
+// itself sends them through the login), with the query left alone and with
+// the headers that keep the approval page out of foreign frames.
+func TestLinkPageIsServedByTheSPA(t *testing.T) {
+	var hit bool
+	var gotQuery string
+	spa := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<div id=\"root\"></div>"))
+	})
+	u := &tokUsers{}
+	u.verify = func(_, _ string) (bool, error) { return true, nil }
+	ts := newTestServer(Deps{Users: u, Log: discardLog(), SPA: spa})
+	defer ts.Close()
+	// A redirect would be a failure: it could drop the code.
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+	for _, path := range []string{"/link?code=BRRW-7Q4K", "/link/?code=BRRW-7Q4K", "/link"} {
+		hit, gotQuery = false, ""
+		resp, err := client.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !hit {
+			t.Fatalf("GET %s: status=%d spa=%v, want 200 from the SPA", path, resp.StatusCode, hit)
+		}
+		if path != "/link" && gotQuery != "code=BRRW-7Q4K" {
+			t.Errorf("GET %s: the SPA saw query %q, want the code untouched", path, gotQuery)
+		}
+		for name, want := range map[string]string{
+			"X-Frame-Options":         "DENY",
+			"Content-Security-Policy": "frame-ancestors 'none'",
+			"Referrer-Policy":         "no-referrer",
+		} {
+			if got := resp.Header.Get(name); got != want {
+				t.Errorf("GET %s: %s = %q, want %q", path, name, got, want)
+			}
+		}
+	}
+
+	// Only reading: nothing is decided by a request to the page itself.
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		hit = false
+		req, _ := http.NewRequest(method, ts.URL+"/link?code=BRRW-7Q4K", nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s /link: %v", method, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusMethodNotAllowed || hit {
+			t.Errorf("%s /link: status=%d spa=%v, want 405 without the SPA", method, resp.StatusCode, hit)
+		}
+	}
+
+	// The other reserved paths stay the relay's own.
+	for _, path := range []string{"/install.sh", "/install.ps1", "/download/burrow/linux/amd64", "/download/nope"} {
+		hit = false
+		resp, err := client.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if hit {
+			t.Errorf("GET %s reached the SPA; it is a reserved relay path", path)
+		}
+	}
+}
+
+// Without a dashboard there is no link page either.
+func TestLinkPageWithoutSPAIsNotFound(t *testing.T) {
+	u := &tokUsers{}
+	u.verify = func(_, _ string) (bool, error) { return true, nil }
+	ts := newTestServer(Deps{Users: u, Log: discardLog()})
+	defer ts.Close()
+	r, err := http.Get(ts.URL + "/link?code=BRRW-7Q4K")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.StatusCode != http.StatusNotFound {
+		t.Fatalf("with SPA nil, /link must be 404, got %d", r.StatusCode)
+	}
+}

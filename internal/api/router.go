@@ -496,6 +496,24 @@ func NewRouter(d Deps) http.Handler {
 	}
 
 	if d.SPA != nil {
+		// /link is where `burrow login` sends the browser to approve a
+		// sign-in. It is a reserved path and the one of them that is a
+		// dashboard page, so it is routed by name instead of being left to
+		// the catch-all: reading only, answered for a visitor without a
+		// session too (the page sends them through the login and back), and
+		// never inside a foreign frame, where a click could be steered onto
+		// Approve. The session cookie is SameSite=Lax and is not sent to a
+		// cross-site frame anyway; the headers are the second lock. The code
+		// in the address is not passed on as a referrer.
+		link := getOrHead(func(w http.ResponseWriter, r *http.Request) {
+			h := w.Header()
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+			h.Set("Referrer-Policy", "no-referrer")
+			d.SPA.ServeHTTP(w, r)
+		})
+		r.Handle("/link", link)
+		r.Handle("/link/", link)
 		// Only a root catch-all: "/api/v1" is a mounted subrouter so chi
 		// matches it first; unknown/unauth /api/v1/* stays in the API group's
 		// own JSON 404/401 and never falls through here. (r.NotFound is NOT

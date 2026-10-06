@@ -5,7 +5,7 @@ describe("installLines", () => {
   it.each(["linux", "macos"] as const)("%s: curl installer, sign-in and run", (os) => {
     expect(installLines(os, "https://b.example.com")).toEqual({
       install: "curl -fsSL https://b.example.com/install.sh | sh",
-      login: "burrow login b.example.com --token -",
+      login: "burrow login b.example.com",
       run: "burrow http 3000",
     });
   });
@@ -13,7 +13,7 @@ describe("installLines", () => {
   it("windows: the PowerShell installer, the other two the same", () => {
     expect(installLines("windows", "https://b.example.com")).toEqual({
       install: "irm https://b.example.com/install.ps1 | iex",
-      login: "burrow login b.example.com --token -",
+      login: "burrow login b.example.com",
       run: "burrow http 3000",
     });
   });
@@ -21,7 +21,7 @@ describe("installLines", () => {
   it("keeps the port of the origin", () => {
     const l = installLines("linux", "https://b.example.com:8443");
     expect(l.install).toBe("curl -fsSL https://b.example.com:8443/install.sh | sh");
-    expect(l.login).toBe("burrow login b.example.com:8443 --token -");
+    expect(l.login).toBe("burrow login b.example.com:8443");
   });
 
   it("ignores a trailing slash on the origin", () => {
@@ -36,14 +36,14 @@ describe("installLines", () => {
   it("passes an origin that is not https through, scheme included", () => {
     const l = installLines("linux", "http://localhost:8080");
     expect(l.install).toBe("curl -fsSL http://localhost:8080/install.sh | sh");
-    expect(l.login).toBe("burrow login http://localhost:8080 --token -");
+    expect(l.login).toBe("burrow login http://localhost:8080");
   });
 
-  it("never puts a token on a line: the sign-in reads it from standard input", () => {
+  it("never puts a token on a line: the sign-in goes through the browser", () => {
     for (const os of ["linux", "macos", "windows"] as const) {
       const l = installLines(os, "https://b.example.com");
       expect(Object.values(l).join("\n")).not.toMatch(/bur_/);
-      expect(l.login).toMatch(/--token -$/);
+      expect(l.login).not.toMatch(/--token/);
     }
   });
 });

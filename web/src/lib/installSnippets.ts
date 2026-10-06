@@ -6,7 +6,7 @@ export type { ClientOs };
 export interface InstallLineSet {
   /** Downloads and installs the client from the relay itself. */
   install: string;
-  /** Signs the machine in. The token is read from standard input, never from the command line. */
+  /** Signs the machine in: the client opens /link in the browser, where the sign-in is approved. */
   login: string;
   /** Publishes a local port. */
   run: string;
@@ -34,9 +34,7 @@ export function installLines(os: ClientOs, relayOrigin: string, target = "3000")
   const relay = isHttpsOrigin(origin) ? origin.slice("https://".length) : origin;
   return {
     install: os === "windows" ? `irm ${origin}/install.ps1 | iex` : `curl -fsSL ${origin}/install.sh | sh`,
-    // Browser sign-in is not there yet: the client asks for a token and reads it from standard input.
-    // C12: drop when browser sign-in lands (the `--token -` suffix).
-    login: `burrow login ${relay} --token -`,
+    login: `burrow login ${relay}`,
     run: `burrow http ${shellQuote(target)}`,
   };
 }

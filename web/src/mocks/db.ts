@@ -1,5 +1,5 @@
 import type {
-  UserAdmin, RoleSummary, Session, ClientDetail, ClientDiscovery, SettingsMap, AiProviderModel,
+  UserAdmin, RoleSummary, Session, ClientDetail, ClientDiscovery, ClientLoginRequest, SettingsMap, AiProviderModel,
   Service, ServiceApiKey, CostSummary, ServiceAIConfig,
   InspectorEntry, CacheSettings, RedactionRule, RedactionSettings,
   GuardrailPattern, GuardrailSettingsResponse, Budget, PricingTable, AuditEvent, Webhook,
@@ -60,6 +60,10 @@ export interface MockDb {
   connectServer: string;
   /** GET /client/discovery */
   discovery: ClientDiscovery;
+  /** Sign-in requests of `burrow login`, by user code. A row past expires_at is gone, as on the relay. */
+  clientLogins: ClientLoginRequest[];
+  /** Wrong user codes this user sent in the current minute; at 20 the request endpoints answer 429. */
+  clientLoginWrongCodes: number;
   users: UserAdmin[];
   roles: RoleSummary[];
   rolePerms: Record<string, string[]>;
@@ -116,6 +120,14 @@ function seed(): MockDb {
     csrf: "test-csrf-token",
     connectServer: "relay.example.com:7000",
     discovery: { control: "relay.example.com:7000", version: "0.6.0", min_client_version: "0.1.0", protocol_version: 1 },
+    clientLogins: [
+      {
+        user_code: "BRRW-7Q4K", hostname: "kohns-laptop", os: "linux", arch: "amd64", client_version: "0.7.0",
+        source_ip: "203.0.113.24", status: "pending", suggested_token_name: "kohns-laptop", age_seconds: 95,
+        created_at: new Date(Date.now() - 95_000).toISOString(), expires_at: new Date(Date.now() + 505_000).toISOString(),
+      },
+    ],
+    clientLoginWrongCodes: 0,
     users: [
       { id: meId, email: "alice@acme.io", role: "admin", status: "active", last_login: "2026-05-18T09:00:00Z", created_at: "2026-01-12T08:00:00Z" },
       { id: "bur_usr_bob0002", email: "bob@acme.io", role: "user", status: "active", last_login: null, created_at: "2026-02-01T08:00:00Z" },

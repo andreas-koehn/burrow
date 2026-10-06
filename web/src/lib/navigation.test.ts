@@ -149,6 +149,8 @@ describe("reachability", () => {
       (["services", "gateway", "settings"] as const).some((ws) => activeEntry(route, navigationFor(ws, admin)) !== undefined);
     const waysIn: Record<string, string> = {
       "/login": "outside the shell: where a signed-out visitor is sent",
+      // Reached from a terminal: `burrow login` prints and opens /link?code=…; no entry leads there.
+      "/link": "outside the shell: where burrow login sends the browser to approve a sign-in",
       "*": "catch-all, sends unknown paths to the overview",
       "/settings": "the Settings index: sends an admin to General, everyone else to their profile",
     };

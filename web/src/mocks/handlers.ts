@@ -1,6 +1,6 @@
 import { http, HttpResponse } from "msw";
 import { db, type MockDb, type CacheSettingsPayload, type AiProviderRow } from "@/mocks/db";
-import type { AccessMode, AiProvider, CostSummary, ModelAliasV5, Provider, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
+import type { AccessMode, AiProvider, ClientLoginRequest, CostSummary, ModelAliasV5, Provider, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
 
 const VALID_PROVIDERS = new Set<string>(["ollama", "vllm", "openai-compat", "openai", "anthropic", "other"]);
 
@@ -44,6 +44,51 @@ async function body<T>(req: Request): Promise<T | null> {
     if (!t) return null;
     return JSON.parse(t) as T;
   } catch { return null; }
+}
+
+// ---- client sign-in requests (internal/api/client_login_handlers.go) ----
+const USER_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+const CLIENT_LOGIN_GUESS_LIMIT = 20;
+
+// The store's normalizeUserCode: upper case, no dashes or blanks, eight characters of the alphabet.
+function normalizeUserCode(raw: string): string | null {
+  if (raw.length > 64) return null;
+  const code = raw.replace(/[- \t]/g, "").toUpperCase();
+  if (code.length !== 8 || [...code].some((c) => !USER_CODE_ALPHABET.includes(c))) return null;
+  return code;
+}
+
+// The store's cleanTokenName: trimmed, 1 to 120 characters, no control or format characters.
+function cleanTokenName(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const name = raw.trim();
+  if (name === "" || [...name].length > 120 || /[\p{Cc}\p{Cf}]/u.test(name)) return null;
+  return name;
+}
+
+// requireDashboardSession, then the lookup every request endpoint starts with.
+// An unknown, malformed and an expired code are the same 404 and count as a wrong code.
+function clientLoginFor(req: Request, rawCode: string): { row: ClientLoginRequest } | { res: Response } {
+  const g = gate(req);
+  if (g) return { res: g };
+  if (db.clientLoginWrongCodes >= CLIENT_LOGIN_GUESS_LIMIT) {
+    return { res: err(429, "too many wrong codes; try again in a minute") };
+  }
+  const code = normalizeUserCode(rawCode);
+  const row = code === null ? undefined
+    : db.clientLogins.find((r) => r.user_code.replace("-", "") === code && Date.parse(r.expires_at) > Date.now());
+  if (!row) {
+    db.clientLoginWrongCodes++;
+    return { res: err(404, "sign-in request not found or expired") };
+  }
+  return { row };
+}
+
+// requireClientTokensManage: admin, or a role holding tokens:manage:own or :any.
+function mayManageClientTokens(): boolean {
+  if (db.me.role === "admin") return true;
+  const perms = db.rolePerms[db.me.role] ?? [];
+  return perms.includes("tokens:manage:own") || perms.includes("tokens:manage:any");
 }
 
 const PROVIDER_SLUG_RE = /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/;
@@ -370,6 +415,32 @@ export const handlers = [
   http.get("/api/v1/clients/connect-info", ({ request }) => gate(request) ?? json({ server: db.connectServer })),
   // Public: a client asks before it has a token.
   http.get("/api/v1/client/discovery", () => json(db.discovery)),
+
+  // ---- client sign-in requests: lookup, approve, deny (session + CSRF) ----
+  http.get("/api/v1/client/login/requests/:code", ({ request, params }) => {
+    const found = clientLoginFor(request, String(params.code));
+    return "res" in found ? found.res : json(found.row);
+  }),
+  http.post("/api/v1/client/login/requests/:code/approve", async ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    if (!mayManageClientTokens()) return err(403, "tokens:manage required");
+    const b = await body<{ token_name?: unknown }>(request);
+    if (!b) return err(400, "token_name is required");
+    const name = cleanTokenName(b.token_name);
+    if (name === null) return err(400, "token_name must be 1 to 120 characters without control characters");
+    const found = clientLoginFor(request, String(params.code));
+    if ("res" in found) return found.res;
+    if (found.row.status !== "pending") return err(409, "sign-in request was already decided");
+    found.row.status = "approved";
+    return json(found.row);
+  }),
+  http.post("/api/v1/client/login/requests/:code/deny", ({ request, params }) => {
+    const found = clientLoginFor(request, String(params.code));
+    if ("res" in found) return found.res;
+    if (found.row.status !== "pending") return err(409, "sign-in request was already decided");
+    found.row.status = "denied";
+    return json(found.row);
+  }),
   http.get("/api/v1/clients/:id", ({ request, params }) => {
     const g = gate(request, { admin: true }); if (g) return g;
     const c = db.clients.find((x) => x.session_id === params.id);

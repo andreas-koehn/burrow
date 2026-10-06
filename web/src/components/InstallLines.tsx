@@ -24,7 +24,7 @@ const LINE_NAME: Record<InstallLineId, string> = { install: "install", login: "s
 /**
  * The commands that bring a machine online: install the client from this
  * relay, sign it in, publish a port. No line ever holds a token; the sign-in
- * reads it from standard input.
+ * is approved in the browser, on /link.
  */
 export function InstallLines({ relayOrigin, target, lines = ALL_LINES }: InstallLinesProps) {
   const [os, setOs] = useState<ClientOs>(() => detectOs());
@@ -75,12 +75,11 @@ export function InstallLines({ relayOrigin, target, lines = ALL_LINES }: Install
                 <Copy size={13} aria-hidden="true" />
               </button>
             </div>
-            {/* C12: drop when browser sign-in lands (the hint goes with the --token - suffix). */}
             {id === "login" && (
               <p className="muted small">
-                It asks for a client token: create one under{" "}
-                <Link className="link-inline" to="/clients?tab=tokens">Clients, tab Tokens</Link>, then paste it
-                and press Enter. Typed this way, the token stays out of the shell history.
+                It opens this dashboard in your browser: compare the code with the one in your terminal and
+                approve. Or sign in with a token: add <code>--token -</code> and paste one from{" "}
+                <Link className="link-inline" to="/clients?tab=tokens">Clients, tab Tokens</Link>.
               </p>
             )}
             {id === "run" && (

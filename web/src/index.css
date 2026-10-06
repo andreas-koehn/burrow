@@ -1511,6 +1511,83 @@ a.user-chip:focus-visible {
 }
 
 /* ──────────────────────────────────────────────────────────────
+   Link page (/link): approve a client sign-in. Sits in the sign-in
+   page's centred column. Text that came from the client wraps
+   anywhere, so a long value cannot push the buttons out of view.
+   ────────────────────────────────────────────────────────────── */
+.linkpage-code {
+  margin: 0;
+  text-align: center;
+  font-size: 32px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.linkpage-compare {
+  margin: 6px 0 20px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.linkpage-facts {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.linkpage-facts-title {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+
+.linkpage-facts dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 12.5px;
+}
+.linkpage-facts dt { color: var(--muted-foreground); }
+.linkpage-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.linkpage-warning,
+.linkpage-problem { margin: 0 0 14px; }
+.linkpage-problem { margin-top: 14px; }
+
+.linkpage-result { margin: 18px 0 0; }
+.linkpage-result:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+.linkpage-next {
+  margin: 14px 0 0;
+  text-align: center;
+  font-size: 12.5px;
+}
+
+.linkpage-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+.linkpage-actions > .btn {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 38px;
+  justify-content: center;
+  font-size: 13px;
+}
+
+/* ──────────────────────────────────────────────────────────────
    Services list, Live columns (the former Tunnels list).
    ────────────────────────────────────────────────────────────── */
 .services-page table.data td.col-remote,

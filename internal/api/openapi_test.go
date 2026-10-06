@@ -231,6 +231,10 @@ func TestOpenAPIRouteCoverage_FullIntegrationMux(t *testing.T) {
 		if e.Path == "/*" || strings.HasPrefix(e.Path, "/api/v1/internal/") {
 			continue
 		}
+		// /link is a dashboard page as well, routed by name (spa_test.go).
+		if e.Path == "/link" || e.Path == "/link/" {
+			continue
+		}
 		filtered = append(filtered, e)
 	}
 	routes = filtered
