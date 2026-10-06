@@ -148,7 +148,7 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	sent := 0 // attempts that reached an upstream handler
 	outOfTime := false
-	admitted := map[string]admission{} // by provider slug
+	admitted := map[string]*admission{} // by provider slug
 	for i, c := range order {
 		if r.Context().Err() != nil {
 			return // the client is gone; nothing more to try
@@ -157,6 +157,9 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !deadline.IsZero() {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
+				// Providers whose later candidates are now never tried
+				// keep the failure they showed.
+				f.reportPending(order, admitted)
 				outOfTime = true
 				break
 			}
@@ -173,11 +176,13 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// one report per provider decides it. A breaker that opened since
 		// the order was made skips the candidate, unless it is the last
 		// thing to try.
-		adm, asked := admitted[c.provider.Slug]
-		if !asked && f.g.Breaker != nil {
-			adm.refused = true
-			if ok, trial := f.g.Breaker.Allow(c.provider.Slug); ok {
-				adm = admission{trial: trial}
+		adm := admitted[c.provider.Slug]
+		if adm == nil {
+			adm = &admission{}
+			if f.g.Breaker != nil {
+				var ok bool
+				ok, adm.trial = f.g.Breaker.Allow(c.provider.Slug)
+				adm.refused = !ok
 			}
 			admitted[c.provider.Slug] = adm
 		}
@@ -189,7 +194,7 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sent++
 		res := f.attempt(w, r, c, next, body.WithModel(c.model), timeout, sent)
 		rows = append(rows, res.row)
-		f.report(c, next, res.outcome, adm.trial)
+		f.report(c, order[i+1:], res.outcome, adm)
 		if res.panicked && res.committed {
 			// The response had started and broke off. The server must abort
 			// the connection so the client sees a truncated response, not a
@@ -429,25 +434,53 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 	return res
 }
 
-// admission is what the breaker said about a provider for this request.
+// admission is what the breaker said about a provider for this request, and
+// what this request has told the breaker about it.
 type admission struct {
-	refused bool
-	trial   uint64 // non-zero: this request is the provider's trial
+	refused  bool
+	trial    uint64 // non-zero: this request is the provider's trial
+	failed   bool   // an attempt failed in a way that counts against the provider
+	reported bool   // the breaker has this request's verdict; there is no second
 }
 
 // report tells the breaker what an attempt showed about its provider. A
-// provider with several credential slots is judged once per request: while
-// another of its keys is still to be tried, a failure is not yet the
-// provider's, so one dead key cannot take a working provider out of service.
-func (f *failover) report(c candidate, next *candidate, outcome int, trial uint64) {
+// provider is judged once per request, whatever number of candidates it has
+// (several credential slots, or the same provider listed again further down):
+// a success is reported at once; a failure when no later candidate of the
+// provider remains, so one dead key cannot take a working provider out of
+// service and one request cannot count against it twice. A failure that does
+// not count (the client's fault, the client gone) is never reported.
+func (f *failover) report(c candidate, rest []candidate, outcome int, adm *admission) {
+	if f.g.Breaker == nil || adm.reported {
+		return
+	}
+	switch outcome {
+	case outcomeOK:
+		adm.reported = true
+		f.g.Breaker.Report(c.provider.Slug, true, adm.trial)
+	case outcomeFailed:
+		adm.failed = true
+		for _, later := range rest {
+			if later.provider.Slug == c.provider.Slug {
+				return // not yet the provider's last word
+			}
+		}
+		adm.reported = true
+		f.g.Breaker.Report(c.provider.Slug, false, adm.trial)
+	}
+}
+
+// reportPending reports the failures that were waiting for a later candidate
+// of their provider, when the total timeout ends the chain before it is tried.
+func (f *failover) reportPending(order []candidate, admitted map[string]*admission) {
 	if f.g.Breaker == nil {
 		return
 	}
-	switch {
-	case outcome == outcomeOK:
-		f.g.Breaker.Report(c.provider.Slug, true, trial)
-	case outcome == outcomeFailed && (next == nil || next.provider.Slug != c.provider.Slug):
-		f.g.Breaker.Report(c.provider.Slug, false, trial)
+	for _, c := range order {
+		if adm := admitted[c.provider.Slug]; adm != nil && adm.failed && !adm.reported {
+			adm.reported = true
+			f.g.Breaker.Report(c.provider.Slug, false, adm.trial)
+		}
 	}
 }
 

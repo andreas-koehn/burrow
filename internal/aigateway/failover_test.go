@@ -1649,3 +1649,93 @@ func TestFailover_TrialCoversAllKeysOfAProvider(t *testing.T) {
 		t.Fatalf("state %s", g.Breaker.State("zai"))
 	}
 }
+
+// zaiTwice lists zai, then openrouter, then zai again.
+func zaiTwice(m *db.AIModel) {
+	m.Targets = []db.AIModelTarget{
+		{Dialect: "openai", Position: 0, ProviderSlug: "zai", TargetModel: "glm-5.1"},
+		{Dialect: "openai", Position: 1, ProviderSlug: "openrouter", TargetModel: "google/gemini-x"},
+		{Dialect: "openai", Position: 2, ProviderSlug: "zai", TargetModel: "glm-4"},
+	}
+}
+
+// A provider is judged once per request, when its last candidate has been
+// tried, wherever in the chain its candidates stand.
+func TestFailover_ProviderListedTwiceIsReportedOnce(t *testing.T) {
+	// A trial: the first listing fails, the second answers. The answer decides.
+	calls := 0
+	s := script(map[string]http.HandlerFunc{
+		"zai#ZAI": func(w http.ResponseWriter, _ *http.Request) {
+			if calls++; calls == 1 {
+				w.WriteHeader(500)
+				return
+			}
+			_, _ = w.Write([]byte(`{"from":"zai"}`))
+		},
+		"openrouter#OR": status(500, "or down"),
+	})
+	g, _ := failoverGateway(s, "ZAI", zaiTwice)
+	now := time.Now()
+	g.Breaker.now = func() time.Time { return now }
+	for i := 0; i < 5; i++ {
+		g.Breaker.Report("zai", false, 0)
+	}
+	now = now.Add(31 * time.Second)
+	rec := call(g, smartBody)
+	wantHeaders(t, rec, "zai", "glm-4", "3")
+	if g.Breaker.State("zai") != BreakerClosed {
+		t.Fatalf("zai answered its trial, state %s", g.Breaker.State("zai"))
+	}
+
+	// Closed: everything fails. One failure per request and provider, so the
+	// breaker opens with the fifth request, not the third.
+	s = script(map[string]http.HandlerFunc{"zai#ZAI": status(500, "zai down"), "openrouter#OR": status(500, "or down")})
+	g, _ = failoverGateway(s, "ZAI", zaiTwice)
+	for i := 0; i < 4; i++ {
+		wantHeaders(t, call(g, smartBody), "zai", "glm-4", "3")
+	}
+	if g.Breaker.Open("zai") || g.Breaker.Open("openrouter") {
+		t.Fatal("four failing requests opened a breaker: a provider was counted twice in one request")
+	}
+	_ = call(g, smartBody)
+	if !g.Breaker.Open("zai") || !g.Breaker.Open("openrouter") {
+		t.Fatal("five failing requests did not open the breakers")
+	}
+}
+
+// When the total timeout ends the chain before a provider's next key is
+// tried, the failure that was seen still counts, once. When the client leaves
+// instead, nothing does.
+func TestFailover_FailureIsReportedWhenTheDeadlineEndsTheChain(t *testing.T) {
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": untilCancelled, "zai#ZAI2": status(200, "{}"), "openrouter#OR": status(200, "{}")})
+	g, _ := failoverGateway(s, "ZAI,ZAI2", func(m *db.AIModel) { m.AttemptTimeoutS, m.TotalTimeoutS = 40, 40 })
+	for i := 0; i < 4; i++ {
+		if rec := call(g, smartBody); rec.Code != 504 {
+			t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+		}
+	}
+	if g.Breaker.Open("zai") {
+		t.Fatal("four timeouts opened the breaker: counted more than once per request")
+	}
+	_ = call(g, smartBody)
+	if !g.Breaker.Open("zai") || s.n("zai#ZAI2") != 0 || s.n("openrouter#OR") != 0 {
+		t.Fatalf("a provider that hangs on its first key was never counted: open %v, second key calls %d", g.Breaker.Open("zai"), s.n("zai#ZAI2"))
+	}
+
+	var cancel context.CancelFunc
+	s = script(map[string]http.HandlerFunc{
+		"zai#ZAI":       func(w http.ResponseWriter, _ *http.Request) { cancel(); w.WriteHeader(500) },
+		"zai#ZAI2":      status(200, "{}"),
+		"openrouter#OR": status(200, "{}"),
+	})
+	g, _ = failoverGateway(s, "ZAI,ZAI2", nil)
+	for i := 0; i < 8; i++ {
+		var ctx context.Context
+		ctx, cancel = context.WithCancel(context.Background())
+		_ = serve(g, post("/v1/chat/completions", "bgw_all", smartBody).WithContext(ctx), DialectOpenAI)
+		cancel()
+	}
+	if g.Breaker.Open("zai") || s.n("zai#ZAI2") != 0 {
+		t.Fatal("a client that left was counted against the provider")
+	}
+}
