@@ -3,6 +3,7 @@
 //
 // Mock OpenAI-compatible server for Burrow e2e tests.
 // Implements POST /v1/chat/completions (SSE), POST /v1/embeddings,
+// POST /v1/responses (JSON, or SSE with "stream": true),
 // POST /v1/messages and /v1/messages/count_tokens (Anthropic shape).
 // Deterministic seeded responses — no real model, no phone-home.
 // Apache-2.0, stdlib only.
@@ -78,6 +79,52 @@ func handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"object": "list", "model": req.Model, "data": items,
 		})
+	})
+	// The Responses API: creating a response only. The mock keeps none, so
+	// /v1/responses/<id> is a 404 like any unknown path.
+	mux.HandleFunc("/v1/responses", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		// Echo the model that arrived, so a test sees what a gateway in
+		// front of the mock forwarded.
+		var req struct {
+			Model  string `json:"model"`
+			Stream bool   `json:"stream"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		const inputTokens = 4
+		response := map[string]any{
+			"id":     "resp_mock",
+			"object": "response",
+			"model":  req.Model,
+			"output": []map[string]any{{
+				"type": "message", "role": "assistant",
+				"content": []map[string]string{{"type": "output_text", "text": "ok"}},
+			}},
+			"usage": map[string]int{"input_tokens": inputTokens, "output_tokens": 1, "total_tokens": inputTokens + 1},
+		}
+		if !req.Stream {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(response)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Accel-Buffering", "no")
+		flusher, _ := w.(http.Flusher)
+		// Usage arrives inside the response object of the closing event.
+		for _, ev := range []map[string]any{
+			{"type": "response.output_text.delta", "delta": "ok"},
+			{"type": "response.completed", "response": response},
+		} {
+			data, _ := json.Marshal(ev)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev["type"], data)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
 	})
 	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

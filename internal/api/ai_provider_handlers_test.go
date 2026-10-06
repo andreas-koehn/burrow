@@ -41,6 +41,23 @@ type fakeProviderStore struct {
 	modelErr   error
 	lastOwner  string
 	lastDirect store.DirectProviderInput
+
+	responsesErr  error
+	responsesSets int // SetProviderResponses calls
+}
+
+func (f *fakeProviderStore) SetProviderResponses(_ context.Context, slug string, on bool) error {
+	f.responsesSets++
+	if f.responsesErr != nil {
+		return f.responsesErr
+	}
+	for i := range f.rows {
+		if f.rows[i].Slug == slug {
+			f.rows[i].SupportsResponses = on
+			return nil
+		}
+	}
+	return store.ErrProviderNotFound
 }
 
 func (f *fakeProviderStore) CreateDirectProvider(_ context.Context, ownerID string, in store.DirectProviderInput) (db.AIProvider, error) {
@@ -53,6 +70,7 @@ func (f *fakeProviderStore) CreateDirectProvider(_ context.Context, ownerID stri
 		Slug: in.Slug, Name: in.Name, Kind: "direct", ServiceID: "prov-" + in.Slug, APIFormat: "openai",
 		BaseURL: in.BaseURL, CredentialSlot: in.CredentialSlot, AuthHeader: in.AuthHeader, AuthFormat: in.AuthFormat,
 		ExtraHeaders: in.ExtraHeaders, Billing: "metered",
+		SupportsResponses: in.SupportsResponses != nil && *in.SupportsResponses,
 	}
 	if in.Billing != "" {
 		p.Billing = in.Billing
@@ -80,6 +98,9 @@ func (f *fakeProviderStore) UpdateProviderUpstream(_ context.Context, slug strin
 			}
 			if in.ExtraHeaders != nil {
 				f.rows[i].ExtraHeaders = in.ExtraHeaders
+			}
+			if in.SupportsResponses != nil {
+				f.rows[i].SupportsResponses = *in.SupportsResponses
 			}
 			return f.rows[i], nil
 		}
@@ -931,7 +952,7 @@ func TestPostDirectProvider(t *testing.T) {
 		}
 		var payload map[string]any
 		_ = json.Unmarshal(f.aud.events[0].Payload, &payload)
-		if payload["kind"] != "direct" || payload["base_url"] != "https://api.z.ai/v4" || payload["credential_slot"] != "OPENROUTER" || payload["billing"] != "flat" || len(payload) != 4 {
+		if payload["kind"] != "direct" || payload["base_url"] != "https://api.z.ai/v4" || payload["credential_slot"] != "OPENROUTER" || payload["billing"] != "flat" || payload["supports_responses"] != false || len(payload) != 5 {
 			t.Errorf("audit payload: %s", f.aud.events[0].Payload)
 		}
 		f.noSecrets(t, body)
@@ -1646,5 +1667,189 @@ func TestProviderMetrics_CostUsesReportedCost(t *testing.T) {
 func TestModelSyncTimeout_BelowRequestTimeout(t *testing.T) {
 	if modelSyncTimeout >= 30*time.Second || modelSyncTimeout <= 0 {
 		t.Fatalf("modelSyncTimeout = %v, want below the 30 s request timeout", modelSyncTimeout)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// supports_responses: whether a provider offers POST /responses
+// ---------------------------------------------------------------------------
+
+func auditPayload(t *testing.T, ev audit.Event) map[string]any {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		t.Fatalf("audit payload: %v", err)
+	}
+	return payload
+}
+
+func TestDirectProvider_SupportsResponses(t *testing.T) {
+	f := newDirectFixture()
+	c := f.serve(t)
+
+	// Shown for every provider, off by default.
+	for _, p := range decodeProviders(t, c.get(t, "/api/v1/ai/providers")) {
+		if p.SupportsResponses {
+			t.Errorf("%s: supports_responses is on by default", p.Slug)
+		}
+	}
+	if body := wantStatus(t, c.get(t, "/api/v1/ai/providers/openrouter"), http.StatusOK); !strings.Contains(body, `"supports_responses":false`) {
+		t.Errorf("the field is missing from the response: %s", body)
+	}
+
+	// Create with the flag.
+	body := wantStatus(t, c.post(t, "/api/v1/ai/providers", map[string]any{
+		"name": "z.ai", "slug": "zai", "kind": "direct", "base_url": "https://api.z.ai/v4", "credential_slot": "ZAI", "supports_responses": true,
+	}), http.StatusCreated)
+	if p := decodeProvider(t, body); !p.SupportsResponses {
+		t.Errorf("created view: %+v", p)
+	}
+	if f.ps.lastDirect.SupportsResponses == nil || !*f.ps.lastDirect.SupportsResponses {
+		t.Errorf("the flag did not reach the store: %+v", f.ps.lastDirect)
+	}
+	if got := auditPayload(t, f.aud.events[len(f.aud.events)-1])["supports_responses"]; got != true {
+		t.Errorf("create audit payload: supports_responses = %v", got)
+	}
+
+	// An upstream update that leaves it out sends nothing to the store, so it is kept.
+	p := decodeProvider(t, wantStatus(t, c.put(t, "/api/v1/ai/providers/zai/upstream", map[string]any{"billing": "flat"}), http.StatusOK))
+	if f.ps.lastDirect.SupportsResponses != nil || !p.SupportsResponses {
+		t.Errorf("flag left out: store input %+v view %+v", f.ps.lastDirect, p)
+	}
+	// Naming it changes it, false included.
+	p = decodeProvider(t, wantStatus(t, c.put(t, "/api/v1/ai/providers/zai/upstream", map[string]any{"supports_responses": false}), http.StatusOK))
+	if f.ps.lastDirect.SupportsResponses == nil || *f.ps.lastDirect.SupportsResponses || p.SupportsResponses {
+		t.Errorf("flag off: store input %+v view %+v", f.ps.lastDirect, p)
+	}
+	ev := f.aud.events[len(f.aud.events)-1]
+	if got := auditPayload(t, ev); ev.Action != audit.ActionAIProviderUpdate || got["supports_responses"] != false || got["upstream"] != true {
+		t.Errorf("upstream audit: %s %v", ev.Action, got)
+	}
+
+	// The store's refusal (wrong format) is a 400 with its reason.
+	f.ps.updateErr = fmt.Errorf("%w: the Responses API belongs to the OpenAI format", store.ErrInvalidProviderConfig)
+	body = wantStatus(t, c.put(t, "/api/v1/ai/providers/zai/upstream", map[string]any{"api_format": "anthropic", "supports_responses": true}), http.StatusBadRequest)
+	if !strings.Contains(body, "the Responses API belongs to the OpenAI format") {
+		t.Errorf("body = %s", body)
+	}
+	// Not a boolean.
+	wantStatus(t, c.put(t, "/api/v1/ai/providers/zai/upstream", map[string]any{"supports_responses": "yes"}), http.StatusBadRequest)
+	f.noSecrets(t, body)
+}
+
+func TestPutProvider_SupportsResponses(t *testing.T) {
+	newServer := func(t *testing.T) (*authClient, *fakeProviderStore, *stubAuditAppender) {
+		ss, ps := oneProviderFixture()
+		aud := &stubAuditAppender{}
+		d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+		d.AuditAppender = aud
+		srv, c := newAIProviderServer(t, d)
+		t.Cleanup(srv.Close)
+		return c, ps, aud
+	}
+
+	t.Run("flags a tunnel provider and survives a refetch", func(t *testing.T) {
+		c, ps, aud := newServer(t)
+		body := wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "ollama", "name": "Ollama", "supports_responses": true}), http.StatusOK)
+		if p := decodeProvider(t, body); !p.SupportsResponses || p.Slug != "ollama" || p.Kind != "tunnel" {
+			t.Errorf("view: %+v", p)
+		}
+		if !ps.rows[0].SupportsResponses || ps.responsesSets != 1 {
+			t.Errorf("store: %+v sets=%d", ps.rows[0], ps.responsesSets)
+		}
+		if p := decodeProvider(t, wantStatus(t, c.get(t, "/api/v1/ai/providers/ollama"), http.StatusOK)); !p.SupportsResponses {
+			t.Errorf("after refetch: %+v", p)
+		}
+		if len(aud.events) != 1 || aud.events[0].Action != audit.ActionAIProviderUpdate {
+			t.Fatalf("audit events: %+v", aud.events)
+		}
+		if got := auditPayload(t, aud.events[0]); got["supports_responses"] != true || got["old_slug"] != "ollama" || got["new_slug"] != "ollama" {
+			t.Errorf("audit payload: %v", got)
+		}
+		// Off again.
+		body = wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "ollama", "name": "Ollama", "supports_responses": false}), http.StatusOK)
+		if p := decodeProvider(t, body); p.SupportsResponses || ps.rows[0].SupportsResponses {
+			t.Errorf("after off: %+v", p)
+		}
+		if got := auditPayload(t, aud.events[1]); got["supports_responses"] != false {
+			t.Errorf("audit payload: %v", got)
+		}
+	})
+
+	t.Run("a rename that does not name the flag keeps it", func(t *testing.T) {
+		c, ps, aud := newServer(t)
+		ps.rows[0].SupportsResponses = true
+		body := wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "local", "name": "Local"}), http.StatusOK)
+		if p := decodeProvider(t, body); !p.SupportsResponses || p.Slug != "local" || ps.responsesSets != 0 {
+			t.Errorf("view: %+v sets=%d", p, ps.responsesSets)
+		}
+		if _, named := auditPayload(t, aud.events[0])["supports_responses"]; named {
+			t.Errorf("the audit payload names a flag the request did not: %s", aud.events[0].Payload)
+		}
+	})
+
+	t.Run("rename and flag together", func(t *testing.T) {
+		c, ps, _ := newServer(t)
+		body := wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "local", "name": "Local", "supports_responses": true}), http.StatusOK)
+		if p := decodeProvider(t, body); !p.SupportsResponses || p.Slug != "local" || !ps.rows[0].SupportsResponses {
+			t.Errorf("view: %+v row: %+v", p, ps.rows[0])
+		}
+	})
+
+	t.Run("refused for another format before anything is written", func(t *testing.T) {
+		c, ps, aud := newServer(t)
+		ps.rows[0].APIFormat = "anthropic"
+		body := wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "local", "name": "Local", "supports_responses": true}), http.StatusBadRequest)
+		if !strings.Contains(body, "the Responses API belongs to the OpenAI format") {
+			t.Errorf("body = %s", body)
+		}
+		if ps.writes != 0 || ps.responsesSets != 0 || ps.rows[0].Slug != "ollama" || len(aud.events) != 0 {
+			t.Errorf("a refused request reached the store: writes=%d sets=%d rows=%+v", ps.writes, ps.responsesSets, ps.rows)
+		}
+		// Turning it off is always possible.
+		wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "ollama", "name": "Ollama", "supports_responses": false}), http.StatusOK)
+	})
+
+	t.Run("unknown provider", func(t *testing.T) {
+		c, ps, _ := newServer(t)
+		wantStatus(t, c.put(t, "/api/v1/ai/providers/nope", map[string]any{"slug": "local", "name": "Local", "supports_responses": true}), http.StatusNotFound)
+		if ps.writes != 0 || ps.responsesSets != 0 {
+			t.Errorf("writes=%d sets=%d", ps.writes, ps.responsesSets)
+		}
+	})
+
+	t.Run("the store's refusal is reported and the rename is still audited", func(t *testing.T) {
+		c, ps, aud := newServer(t)
+		ps.responsesErr = store.ErrProviderBusy
+		wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "local", "name": "Local", "supports_responses": true}), http.StatusConflict)
+		if len(aud.events) != 1 {
+			t.Fatalf("audit events: %+v", aud.events)
+		}
+		if got := auditPayload(t, aud.events[0]); got["new_slug"] != "local" || got["supports_responses"] != false {
+			t.Errorf("audit payload: %v", got)
+		}
+	})
+
+	t.Run("not a boolean", func(t *testing.T) {
+		c, ps, _ := newServer(t)
+		wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "ollama", "name": "Ollama", "supports_responses": "yes"}), http.StatusBadRequest)
+		if ps.writes != 0 {
+			t.Errorf("writes=%d", ps.writes)
+		}
+	})
+}
+
+// A tunnel provider is flagged through PUT; a create that names the flag
+// would otherwise answer 201 and drop it.
+func TestPostProvider_TunnelWithSupportsResponsesRefused(t *testing.T) {
+	ss, ps := oneProviderFixture()
+	ps.rows = nil
+	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+	defer srv.Close()
+	for _, on := range []bool{true, false} {
+		body := wantStatus(t, c.post(t, "/api/v1/ai/providers", map[string]any{"name": "Ollama", "slug": "ollama", "service_id": "svc1", "supports_responses": on}), http.StatusBadRequest)
+		if !strings.Contains(body, "PUT /api/v1/ai/providers/{slug}") || ps.writes != 0 {
+			t.Errorf("body = %s writes = %d", body, ps.writes)
+		}
 	}
 }

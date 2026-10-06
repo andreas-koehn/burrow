@@ -26,6 +26,83 @@ function parseExtraHeaders(text: string): Record<string, string> | null {
   return out;
 }
 
+export interface ResponsesCheckboxProps {
+  id: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}
+
+/**
+ * The operator's statement that a provider offers the OpenAI Responses API.
+ * Nothing probes the upstream; the gateway refuses the endpoint while it is off.
+ */
+export function ResponsesCheckbox({ id, checked, onChange }: ResponsesCheckboxProps) {
+  return (
+    <div className="col gap-2">
+      <div className="row row-center gap-2">
+        <Checkbox id={id} checked={checked} onChange={onChange} describedBy={`${id}-help`} />
+        <label htmlFor={id}>Offers the Responses API (needed by Codex)</label>
+      </div>
+      <p id={`${id}-help`} className="muted small">
+        Leave off unless the provider documents <code>POST /responses</code>. Requests to that endpoint are
+        refused for this provider while it is off.
+      </p>
+    </div>
+  );
+}
+
+export interface ProviderResponsesSettingProps {
+  /** A provider without upstream settings (kind "tunnel") in the OpenAI format. */
+  provider: AiProvider;
+  isAdmin: boolean;
+}
+
+/**
+ * Whether a tunnelled provider offers the Responses API. It is saved at once,
+ * through the provider's own update; slug and name are sent back unchanged.
+ */
+export function ProviderResponsesSetting({ provider, isAdmin }: ProviderResponsesSettingProps) {
+  const qc = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const save = useMutation({
+    mutationFn: (on: boolean) =>
+      apiFetch<AiProvider>(`/ai/providers/${provider.slug}`, {
+        method: "PUT",
+        body: JSON.stringify({ slug: provider.slug, name: provider.name, supports_responses: on }),
+      }),
+    onMutate: () => setError(null),
+    onSuccess: async (next) => {
+      qc.setQueryData(["ai", "provider", provider.slug], next);
+      await qc.invalidateQueries({ queryKey: ["ai", "providers"] });
+    },
+    onError: (e: unknown) => {
+      if (!(e instanceof ApiError)) setError("Couldn't save the setting.");
+      else if (e.status === 403) setError("You don't have permission to change this provider.");
+      else setError(e.message);
+    },
+  });
+  // While a save is under way the box shows what was asked for.
+  const checked = save.isPending ? save.variables : provider.supports_responses;
+  return (
+    <section className="card col gap-2" aria-label="Responses API">
+      {isAdmin ? (
+        <ResponsesCheckbox
+          id="pr-responses"
+          checked={checked}
+          onChange={(on) => { if (!save.isPending) save.mutate(on); }}
+        />
+      ) : (
+        <p className="muted small">
+          {provider.supports_responses
+            ? "This provider offers the Responses API."
+            : "This provider does not offer the Responses API; requests to that endpoint are refused."}
+        </p>
+      )}
+      {error && <ErrorNotice>{error}</ErrorNotice>}
+    </section>
+  );
+}
+
 export interface ProviderUpstreamPanelProps {
   /** A direct provider. Admins also get auth_header, auth_format and extra_header_names. */
   provider: AiProvider;
@@ -70,6 +147,12 @@ export function ProviderUpstreamPanel({ provider, isAdmin }: ProviderUpstreamPan
           <dt className="def-key">Billing</dt>
           <dd className="def-val">{BILLING_LABEL[provider.billing]}</dd>
         </div>
+        {provider.api_format === "openai" && (
+          <div className="def-row">
+            <dt className="def-key">Responses API</dt>
+            <dd className="def-val">{provider.supports_responses ? "offered" : "not offered"}</dd>
+          </div>
+        )}
         {isAdmin && provider.auth_header !== undefined && (
           <div className="def-row">
             <dt className="def-key">Auth header</dt>
@@ -137,6 +220,7 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
   // keeps them, text replaces all of them, and removing them is its own choice.
   const [extraText, setExtraText] = useState("");
   const [clearExtra, setClearExtra] = useState(false);
+  const [responses, setResponses] = useState(provider.supports_responses);
   // What the server said about one field of the last attempt; formErr is
   // everything else. Shown until the next edit of any field (one setting can
   // be refused because of another) and never a reason to disable Save: a
@@ -169,6 +253,7 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
     ...(authHeader.trim() !== stored.authHeader ? { auth_header: authHeader.trim() } : {}),
     ...(authFormat !== stored.authFormat ? { auth_format: authFormat } : {}),
     ...(parsedExtra ? { extra_headers: parsedExtra } : {}),
+    ...(responses !== provider.supports_responses ? { supports_responses: responses } : {}),
   };
   const unchanged = Object.keys(body).length === 0;
 
@@ -334,6 +419,9 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
             <Checkbox id="eu-extra-clear" checked={clearExtra} onChange={(v) => { setClearExtra(v); edited(); }} />
             <label htmlFor="eu-extra-clear">Remove all extra headers</label>
           </div>
+        )}
+        {provider.api_format === "openai" && (
+          <ResponsesCheckbox id="eu-responses" checked={responses} onChange={(v) => { setResponses(v); edited(); }} />
         )}
       </FormFieldGroup>
       {slotMissing && (

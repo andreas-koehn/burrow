@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
 import { SlugField } from "@/components/SlugField";
+import { ResponsesCheckbox } from "@/components/ProviderUpstreamPanel";
 import { providerSlugError } from "@/lib/providerSlug";
 import { PROVIDER_PRESETS, credentialSlotError, envVarForSlot } from "@/lib/providerPresets";
 import { providerBaseUrl } from "@/lib/serviceUrl";
@@ -44,6 +45,8 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
   const [baseUrl, setBaseUrl] = useState("");
   const [slot, setSlot] = useState("");
   const [billing, setBilling] = useState<"metered" | "flat">("metered");
+  // The operator's statement that the API offers POST /responses.
+  const [responses, setResponses] = useState(false);
   // slugErr, urlErr and slotErr belong to their fields; formErr is everything
   // else (name, service taken or not eligible, permission, network).
   const [slugErr, setSlugErr] = useState<string | null>(null);
@@ -90,6 +93,7 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
     setBaseUrl(p.baseUrl);
     setSlot(p.credentialSlot);
     setBilling(p.billing);
+    setResponses(p.supportsResponses);
     clearErrors();
   }
   function clearErrors() {
@@ -101,7 +105,7 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
       apiFetch<AiProvider>("/ai/providers", {
         method: "POST",
         body: JSON.stringify(direct
-          ? { kind: "direct", slug: slug || undefined, name: name.trim(), base_url: baseUrl.trim(), credential_slot: slot, billing }
+          ? { kind: "direct", slug: slug || undefined, name: name.trim(), base_url: baseUrl.trim(), credential_slot: slot, billing, supports_responses: responses }
           : { slug: slug || undefined, name: name.trim(), kind: "tunnel", service_id: chosen }),
       }),
     // Wait for the refetch so the list behind the dialog already shows the provider.
@@ -251,6 +255,7 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
                 options={BILLING_OPTIONS}
               />
             </FormField>
+            <ResponsesCheckbox id="np-responses" checked={responses} onChange={(v) => { setResponses(v); setFormErr(null); }} />
           </>
         )}
         {!direct && eligible.length > 0 && (

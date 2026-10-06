@@ -49,6 +49,9 @@ type aiProviderResp struct {
 	LatencyP95ms    int    `json:"latency_p95_ms"`
 	Status          string `json:"status"`
 	ClientSessionID string `json:"client_session_id"`
+	// Whether the provider offers POST /responses, as its operator stated.
+	// While it is off, /openai/v1/responses refuses a model of this provider.
+	SupportsResponses bool `json:"supports_responses"`
 
 	// Direct providers. The credential itself is never part of a response:
 	// credential_slot is the name of a vault slot and credential_present
@@ -253,6 +256,8 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 			Status:          status,
 			ClientSessionID: "",
 
+			SupportsResponses: p.SupportsResponses,
+
 			UpstreamBaseURL:   p.BaseURL,
 			CredentialSlot:    p.CredentialSlot,
 			CredentialPresent: present,
@@ -299,6 +304,7 @@ func (d Deps) writeProviderView(w http.ResponseWriter, r *http.Request, status i
 			BaseURL:     composeProviderURL(p.Slug, d.AuthDomain),
 			BackendType: providerToBackendType(""), Status: "Offline",
 			UpstreamBaseURL: p.BaseURL, CredentialSlot: p.CredentialSlot, Billing: p.Billing,
+			SupportsResponses: p.SupportsResponses,
 		}
 		// Only the admin-only write handlers answer through here.
 		upstreamAuthView(&v, p)
@@ -419,12 +425,15 @@ type upstreamReq struct {
 	AuthFormat     string            `json:"auth_format"`
 	ExtraHeaders   map[string]string `json:"extra_headers"`
 	Billing        string            `json:"billing"`
+	// Left out = off on create, unchanged on update.
+	SupportsResponses *bool `json:"supports_responses"`
 }
 
 func (u upstreamReq) input() store.DirectProviderInput {
 	return store.DirectProviderInput{
 		APIFormat: u.APIFormat, BaseURL: u.BaseURL, CredentialSlot: u.CredentialSlot,
 		AuthHeader: u.AuthHeader, AuthFormat: u.AuthFormat, ExtraHeaders: u.ExtraHeaders, Billing: u.Billing,
+		SupportsResponses: u.SupportsResponses,
 	}
 }
 
@@ -459,6 +468,7 @@ func decodeStrictJSON(body io.Reader, v any) (msg string, unknownField bool) {
 }
 
 // set reports whether the body carried any upstream setting.
+// supports_responses is not one of them: a tunnel provider has it too.
 func (u upstreamReq) set() bool {
 	return u.APIFormat != "" || u.BaseURL != "" || u.CredentialSlot != "" || u.AuthHeader != "" ||
 		u.AuthFormat != "" || u.ExtraHeaders != nil || u.Billing != ""
@@ -478,6 +488,9 @@ type postProviderReq struct {
 type putProviderReq struct {
 	Slug string `json:"slug"`
 	Name string `json:"name"`
+	// Optional: states whether the provider offers POST /responses. This is
+	// how a tunnel provider, which has no upstream settings, is flagged.
+	SupportsResponses *bool `json:"supports_responses"`
 }
 
 // providerSlugRule is the 400 message for a malformed or reserved slug.
@@ -590,6 +603,8 @@ func upstreamAudit(p db.AIProvider) map[string]any {
 		"base_url":        p.BaseURL,
 		"credential_slot": p.CredentialSlot,
 		"billing":         p.Billing,
+
+		"supports_responses": p.SupportsResponses,
 	}
 }
 
@@ -641,6 +656,11 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "api_format, base_url, credential_slot, auth_header, auth_format, extra_headers and billing are for kind 'direct'")
 		return
 	}
+	// A 201 that dropped the flag would leave the operator believing it is set.
+	if in.SupportsResponses != nil {
+		writeErr(w, http.StatusBadRequest, "supports_responses of a tunnel provider is set with PUT /api/v1/ai/providers/{slug}")
+		return
+	}
 
 	p, err := d.AIProviders.CreateTunnelProvider(r.Context(), slug, name, in.ServiceID)
 	if err != nil {
@@ -678,7 +698,8 @@ func (d Deps) postDirectProvider(w http.ResponseWriter, r *http.Request, slug, n
 
 // PutAIProvider handles PUT /api/v1/ai/providers/{slug} (admin only).  Slug
 // and name are both required.  After a slug change the old base URL stops
-// working at once.
+// working at once.  supports_responses is optional and states whether the
+// provider offers POST /responses; left out, the stored value stays.
 func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
 	oldSlug := chi.URLParam(r, "slug")
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
@@ -696,6 +717,19 @@ func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if in.SupportsResponses != nil && *in.SupportsResponses {
+		// Checked before the rename, so a refused flag changes nothing. The
+		// store checks it again when it writes.
+		old, ok := d.providerForWrite(w, r)
+		if !ok {
+			return
+		}
+		if old.APIFormat != "openai" {
+			writeErr(w, http.StatusBadRequest, "the Responses API belongs to the OpenAI format")
+			return
+		}
+	}
+
 	p, err := d.AIProviders.UpdateProvider(r.Context(), oldSlug, in.Slug, name)
 	if err != nil {
 		if !mapProviderErr(w, err) {
@@ -703,11 +737,30 @@ func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-
-	d.auditProvider(r, audit.ActionAIProviderUpdate, p, map[string]any{
+	payload := map[string]any{
 		"old_slug": oldSlug,
 		"new_slug": p.Slug,
-	})
+	}
+	if in.SupportsResponses != nil {
+		var flagErr error
+		if *in.SupportsResponses != p.SupportsResponses {
+			if flagErr = d.AIProviders.SetProviderResponses(r.Context(), p.Slug, *in.SupportsResponses); flagErr == nil {
+				p.SupportsResponses = *in.SupportsResponses
+			}
+		}
+		// What the provider holds now, also when the flag could not be set:
+		// the rename before it went through and is on record.
+		payload["supports_responses"] = p.SupportsResponses
+		if flagErr != nil {
+			d.auditProvider(r, audit.ActionAIProviderUpdate, p, payload)
+			if !mapProviderErr(w, flagErr) {
+				writeErr(w, http.StatusInternalServerError, "internal error")
+			}
+			return
+		}
+	}
+
+	d.auditProvider(r, audit.ActionAIProviderUpdate, p, payload)
 	d.writeProviderView(w, r, http.StatusOK, p)
 }
 

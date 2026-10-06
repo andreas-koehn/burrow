@@ -25,7 +25,12 @@ describe("provider presets", () => {
   });
   it("carries nothing but public endpoint data", () => {
     const keys = new Set(PROVIDER_PRESETS.flatMap((p) => Object.keys(p)));
-    expect([...keys].sort()).toEqual(["baseUrl", "billing", "credentialSlot", "id", "label", "name", "note", "slug"]);
+    expect([...keys].sort()).toEqual(["baseUrl", "billing", "credentialSlot", "id", "label", "name", "note", "slug", "supportsResponses"]);
+  });
+  it("marks only OpenRouter as offering the Responses API", () => {
+    expect(Object.fromEntries(PROVIDER_PRESETS.map((p) => [p.id, p.supportsResponses]))).toEqual({
+      openrouter: true, "zai-coding": false, "zai-api": false, custom: false,
+    });
   });
   it("accepts a slot name the relay accepts and rejects the rest", () => {
     expect(credentialSlotError("")).toBeNull(); // nothing typed yet

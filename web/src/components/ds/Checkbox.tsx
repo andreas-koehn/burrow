@@ -5,9 +5,11 @@ export interface CheckboxProps {
   onChange?: (checked: boolean) => void;
   id?: string;
   indeterminate?: boolean;
+  /** Id of the element that describes the checkbox (help text). */
+  describedBy?: string;
 }
 
-export function Checkbox({ checked, onChange, id, indeterminate }: CheckboxProps) {
+export function Checkbox({ checked, onChange, id, indeterminate, describedBy }: CheckboxProps) {
   const state = indeterminate ? "mixed" : checked ? "true" : "false";
   return (
     <button
@@ -15,6 +17,7 @@ export function Checkbox({ checked, onChange, id, indeterminate }: CheckboxProps
       id={id}
       role="checkbox"
       aria-checked={state}
+      aria-describedby={describedBy}
       className="checkbox"
       onClick={() => onChange?.(!checked)}
     >

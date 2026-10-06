@@ -180,6 +180,11 @@ export interface AiProvider {
   /** Direct providers, admin callers only: names of the static extra headers; values are write-only. */
   extra_header_names?: string[];
   billing: "metered" | "flat";
+  /**
+   * Whether the provider offers the OpenAI Responses API (POST /responses), as
+   * its operator stated. While false, /openai/v1/responses refuses its models.
+   */
+  supports_responses: boolean;
   /** Number of entries in the provider's stored model list. */
   model_count: number;
   model_alias: string;
@@ -212,6 +217,8 @@ export interface AiProviderUpstreamInput {
   /** Replaces all extra headers; {} removes them. */
   extra_headers?: Record<string, string>;
   billing?: "metered" | "flat";
+  /** Only for api_format "openai". */
+  supports_responses?: boolean;
 }
 
 // Service AI config (spec Part B.7) — one row per service, default-filled.

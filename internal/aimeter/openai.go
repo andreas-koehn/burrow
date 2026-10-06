@@ -88,19 +88,30 @@ func (p *openAIParser) inspect(line []byte) {
 	if payload[0] != '{' {
 		return
 	}
+	// Chat Completions puts usage at the top level of a chunk. The Responses
+	// API puts it inside the response object of its closing event
+	// ({"type":"response.completed","response":{"usage":{…}}}); earlier events
+	// carry that object with no usage yet.
 	var env struct {
-		Usage *openAIUsage `json:"usage"`
+		Usage    *openAIUsage `json:"usage"`
+		Response *struct {
+			Usage *openAIUsage `json:"usage"`
+		} `json:"response"`
 	}
 	if err := json.Unmarshal(payload, &env); err != nil {
 		return
 	}
-	if env.Usage == nil {
+	usage := env.Usage
+	if usage == nil && env.Response != nil {
+		usage = env.Response.Usage
+	}
+	if usage == nil {
 		return
 	}
-	p.s.recordTokens(env.Usage.PromptTokens, env.Usage.CompletionTokens, env.Usage.TotalTokens)
+	p.s.recordTokens(usage.counts())
 	// Cost and tokens come from the same chunk: a usage chunk without a
 	// valid cost takes back what an earlier one reported.
-	if usd, ok := reportedCost(env.Usage.Cost); ok {
+	if usd, ok := reportedCost(usage.Cost); ok {
 		p.s.recordCost(usd)
 	} else {
 		p.s.clearCost()
@@ -111,11 +122,29 @@ type openAIUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// The Responses API names the same two counts differently.
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 	// Cost is the amount the upstream charged for this request, in USD.
 	// OpenRouter sets it; most upstreams do not. Kept raw so that a value of
 	// the wrong type does not make the token counts fail to decode;
 	// reportedCost validates it.
 	Cost json.RawMessage `json:"cost"`
+}
+
+// counts returns the token counts of a usage object in either OpenAI spelling:
+// Chat Completions (prompt/completion) or Responses (input/output). The chat
+// spelling wins when both are present.
+func (u *openAIUsage) counts() (in, out, total int) {
+	in, out = u.PromptTokens, u.CompletionTokens
+	if in == 0 && out == 0 {
+		in, out = u.InputTokens, u.OutputTokens
+	}
+	total = u.TotalTokens
+	if total == 0 {
+		total = in + out
+	}
+	return in, out, total
 }
 
 // maxReportedCostUSD rejects figures that can only be a bug or an attack on
@@ -163,9 +192,9 @@ func ParseOpenAICost(body []byte) (float64, bool) {
 	return reportedCost(env.Usage.Cost)
 }
 
-// ParseOpenAIBody parses a fully-buffered non-streaming OpenAI chat
-// completion response and returns its token counts. Returns the zero Tokens
-// if the body is not valid JSON or has no usage object.
+// ParseOpenAIBody parses a fully-buffered non-streaming OpenAI response (Chat
+// Completions or Responses) and returns its token counts. Returns the zero
+// Tokens if the body is not valid JSON or has no usage object.
 func ParseOpenAIBody(body []byte) Tokens {
 	var env struct {
 		Usage *openAIUsage `json:"usage"`
@@ -173,13 +202,6 @@ func ParseOpenAIBody(body []byte) Tokens {
 	if err := json.Unmarshal(body, &env); err != nil || env.Usage == nil {
 		return Tokens{}
 	}
-	total := env.Usage.TotalTokens
-	if total == 0 {
-		total = env.Usage.PromptTokens + env.Usage.CompletionTokens
-	}
-	return Tokens{
-		In:    env.Usage.PromptTokens,
-		Out:   env.Usage.CompletionTokens,
-		Total: total,
-	}
+	in, out, total := env.Usage.counts()
+	return Tokens{In: in, Out: out, Total: total}
 }

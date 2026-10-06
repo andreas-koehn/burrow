@@ -239,6 +239,7 @@ type AIProviderStore interface {
 	DeleteProvider(ctx context.Context, slug string) error
 	CreateDirectProvider(ctx context.Context, ownerID string, in store.DirectProviderInput) (db.AIProvider, error)
 	UpdateProviderUpstream(ctx context.Context, slug string, in store.DirectProviderInput) (db.AIProvider, error)
+	SetProviderResponses(ctx context.Context, slug string, on bool) error
 	ListProviderModels(ctx context.Context, slug string) ([]db.AIProviderModel, error)
 	ReplaceProviderModels(ctx context.Context, slug string, models []db.AIProviderModel) error
 	AddProviderModel(ctx context.Context, slug, modelID string) error

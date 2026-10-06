@@ -168,6 +168,15 @@ components:
             when there are none. The values are write-only: they are set
             with extra_headers in the request body and never returned.
         billing: { type: string, enum: [metered, flat] }
+        supports_responses:
+          type: boolean
+          description: >
+            Whether the provider offers the OpenAI Responses API
+            (POST /responses), as its operator stated; nothing probes the
+            upstream. While it is false, POST /openai/v1/responses (and
+            /ai/v1/responses) for a model of this provider answers 400
+            endpoint_unsupported without calling the provider. Always false
+            for a provider whose api_format is anthropic.
         model_count:
           type: integer
           description: Number of entries in the provider's stored model list.
@@ -229,6 +238,14 @@ components:
             by any endpoint.
           example: { X-Title: Burrow }
         billing: { type: string, enum: [metered, flat], default: metered }
+        supports_responses:
+          type: boolean
+          description: >
+            Whether the provider offers the OpenAI Responses API
+            (POST /responses). Left out, it is false on create and keeps
+            its stored value on update. true is refused with 400 unless
+            api_format is openai; a provider cannot change to another
+            format while it is true.
     AIProviderModel:
       type: object
       description: One entry of a provider's stored model list.
@@ -2867,7 +2884,9 @@ paths:
         upstream settings (api_format, base_url, credential_slot,
         auth_header, auth_format, extra_headers, billing) are for kind
         "direct"; on a tunnel create, or one without a kind, they are
-        refused with 400 instead of being dropped.
+        refused with 400 instead of being dropped. So is supports_responses
+        on a tunnel create: a tunnel provider is flagged with
+        PUT /api/v1/ai/providers/{slug}.
       requestBody:
         required: true
         content:
@@ -2943,7 +2962,11 @@ paths:
       summary: Change a provider's slug and name (admin)
       description: |
         After a slug change the old base URL stops working immediately;
-        there is no redirect.
+        there is no redirect. supports_responses is optional: it states
+        whether the provider offers the OpenAI Responses API and is how a
+        tunnel provider is flagged. Left out, the stored value stays. true
+        is refused with 400 for a provider whose api_format is not openai,
+        before anything is changed.
       requestBody:
         required: true
         content:
@@ -2957,6 +2980,9 @@ paths:
                   pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$'
                   description: '"v1" is reserved.'
                 name: { type: string, minLength: 1, maxLength: 120 }
+                supports_responses:
+                  type: boolean
+                  description: Optional. Whether the provider offers POST /responses.
       responses:
         '200':
           description: Provider updated.
@@ -2969,7 +2995,10 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: Slug already in use.
+          description: >
+            Slug already in use, or the provider was changed by someone else
+            while supports_responses was being stored (the rename went
+            through; try again).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

@@ -1728,3 +1728,293 @@ func TestServe_ProviderPath_CountTokensWithoutUsageOrCache(t *testing.T) {
 		t.Fatalf("at the end: %d usage rows, %d promotes", len(sink.all()), len(sem.promoted))
 	}
 }
+
+// ---- the Responses API ----
+
+func TestServeDialect_Responses(t *testing.T) {
+	var gotPath, gotBody string
+	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotPath, gotBody = r.URL.Path, string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","model":"gpt-x","output":[],"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}`))
+	})
+	g := globalGateway(up, &spyChain{})
+	// mark openrouter as offering the endpoint; zai stays without it
+	providers := g.Providers.(fakeProviders)
+	or := providers["openrouter"]
+	or.SupportsResponses = true
+	providers["openrouter"] = or
+
+	body := `{"model":"openrouter/openai/gpt-x","input":[{"role":"user","content":"hi"}],"previous_response_id":"resp_0","store":true,"tools":[{"type":"function","name":"t"}]}`
+	rec := httptest.NewRecorder()
+	g.ServeDialect(rec, post("/v1/responses", "bgw_all", body), DialectOpenAI)
+	if rec.Code != 200 || gotPath != "/v1/responses" {
+		t.Fatalf("status %d path %s body %s", rec.Code, gotPath, rec.Body.String())
+	}
+	// Forwarded as sent: state fields included, only the model rewritten.
+	if want := strings.Replace(body, "openrouter/openai/gpt-x", "openai/gpt-x", 1); gotBody != want {
+		t.Errorf("upstream body = %s\nwant          %s", gotBody, want)
+	}
+
+	// A target without the capability.
+	rec = httptest.NewRecorder()
+	g.ServeDialect(rec, post("/v1/responses", "bgw_all", `{"model":"zai/glm-5.1","input":"hi"}`), DialectOpenAI)
+	if rec.Code != 400 || rec.Header().Get("Burrow-Error-Code") != "endpoint_unsupported" {
+		t.Fatalf("status %d code %s", rec.Code, rec.Header().Get("Burrow-Error-Code"))
+	}
+	if !strings.Contains(rec.Body.String(), "/v1/chat/completions") {
+		t.Errorf("the message should point at the endpoint that works: %s", rec.Body.String())
+	}
+	var e struct {
+		Error struct{ Type, Code string } `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil || e.Error.Type != "burrow_error" || e.Error.Code != "endpoint_unsupported" {
+		t.Errorf("not the OpenAI error shape: %s", rec.Body.String())
+	}
+	// Chat completions to the same provider is unaffected.
+	rec = httptest.NewRecorder()
+	g.ServeDialect(rec, post("/v1/chat/completions", "bgw_all", `{"model":"zai/glm-5.1"}`), DialectOpenAI)
+	if rec.Code != 200 {
+		t.Fatalf("chat completions status %d", rec.Code)
+	}
+}
+
+// A provider that does not offer the endpoint is refused before anything of
+// it is touched: no policy lookup, no credential, no upstream call. A key or
+// a model that would be refused anyway is refused the usual way first.
+func TestServeDialect_Responses_UnsupportedTouchesNothing(t *testing.T) {
+	g := globalGateway(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("the upstream was called")
+	}), &spyChain{})
+	g.Direct = func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
+		t.Error("the upstream credential was read")
+		return nil, errors.New("unused")
+	}
+	g.ServicePolicy = func(context.Context, string) (*proxy.Resolved, error) {
+		t.Error("the target's policy was read")
+		return nil, errors.New("unused")
+	}
+	for _, c := range []struct {
+		name, key, path, body string
+		status                int
+		code                  string
+	}{
+		{"direct address", "bgw_all", "/v1/responses", `{"model":"zai/glm-5.1"}`, 400, "endpoint_unsupported"},
+		{"trailing slash", "bgw_all", "/v1/responses/", `{"model":"zai/glm-5.1"}`, 400, "endpoint_unsupported"},
+		{"synthetic model", "bgw_all", "/v1/responses", `{"model":"burrow-intelligence"}`, 400, "endpoint_unsupported"},
+		{"allowed synthetic model", "bgw_some", "/v1/responses", `{"model":"burrow-intelligence"}`, 400, "endpoint_unsupported"},
+		// The allow-list and the lookup answer first, as on every endpoint.
+		{"no key", "", "/v1/responses", `{"model":"zai/glm-5.1"}`, 401, "invalid_api_key"},
+		{"model outside the allow-list", "bgw_some", "/v1/responses", `{"model":"zai/glm-5.1"}`, 403, "model_not_allowed"},
+		{"unknown model outside the allow-list", "bgw_some", "/v1/responses", `{"model":"nope/x"}`, 403, "model_not_allowed"},
+		{"model query, restricted key", "bgw_some", "/v1/responses?model=zai/x", `{"model":"burrow-intelligence"}`, 403, "model_not_allowed"},
+		{"unknown model", "bgw_all", "/v1/responses", `{"model":"nope/x"}`, 404, "model_not_found"},
+		{"other dialect", "bgw_all", "/v1/responses", `{"model":"zai-anthropic/glm-5.1"}`, 400, "format_mismatch"},
+		{"no model", "bgw_all", "/v1/responses", `{"input":"hi"}`, 400, "model_required"},
+		{"two models", "bgw_all", "/v1/responses", `{"model":"zai/a","Model":"openrouter/b"}`, 400, "invalid_request"},
+	} {
+		rec := httptest.NewRecorder()
+		g.ServeDialect(rec, post(c.path, c.key, c.body), DialectOpenAI)
+		if rec.Code != c.status || rec.Header().Get("Burrow-Error-Code") != c.code {
+			t.Errorf("%s: status %d code %q, want %d %s", c.name, rec.Code, rec.Header().Get("Burrow-Error-Code"), c.status, c.code)
+		}
+		if rec.Header().Get("Burrow-Provider") != "" || rec.Header().Get("Burrow-Model") != "" {
+			t.Errorf("%s: a refused request names a target: %v", c.name, rec.Header())
+		}
+	}
+	// The refusal names the provider and the model the client asked for, not
+	// the native one behind a synthetic name.
+	rec := httptest.NewRecorder()
+	g.ServeDialect(rec, post("/v1/responses", "bgw_all", `{"model":"burrow-intelligence"}`), DialectOpenAI)
+	if b := rec.Body.String(); !strings.Contains(b, "burrow-intelligence") || strings.Contains(b, "glm-5.1") {
+		t.Errorf("message = %s", b)
+	}
+}
+
+// Burrow keeps no Responses state and a response id names no model, so only
+// creating a response is an endpoint; the body limit holds there too.
+func TestServeDialect_Responses_OnlyCreateIsAnEndpoint(t *testing.T) {
+	hits := 0
+	g := globalGateway(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits++; w.WriteHeader(200) }), &spyChain{})
+	providers := g.Providers.(fakeProviders)
+	for _, slug := range []string{"openrouter", "ollama"} {
+		p := providers[slug]
+		p.SupportsResponses = true
+		providers[slug] = p
+	}
+	g.MaxBody = 64
+	for _, c := range []struct {
+		method, path, body string
+		status             int
+		code               string
+	}{
+		{"GET", "/v1/responses/resp_1", ``, 404, "endpoint_not_found"},
+		{"DELETE", "/v1/responses/resp_1", ``, 404, "endpoint_not_found"},
+		{"POST", "/v1/responses/resp_1/cancel", `{"model":"openrouter/x"}`, 404, "endpoint_not_found"},
+		{"GET", "/v1/responses/resp_1/input_items", ``, 404, "endpoint_not_found"},
+		{"POST", "/v1/responses/input_tokens", `{"model":"openrouter/x"}`, 404, "endpoint_not_found"},
+		{"POST", "/v1/responses/compact", `{"model":"openrouter/x"}`, 404, "endpoint_not_found"},
+		{"POST", "/v1//responses", `{"model":"openrouter/x"}`, 404, "endpoint_not_found"},
+		{"GET", "/v1/responses", ``, 405, "method_not_allowed"},
+		{"POST", "/v1/responses", `{"model":"openrouter/x","input":"` + strings.Repeat("a", 64) + `"}`, 413, "request_too_large"},
+	} {
+		hits = 0
+		r := httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))
+		r.Header.Set("Authorization", "Bearer bgw_all")
+		rec := httptest.NewRecorder()
+		g.ServeDialect(rec, r, DialectOpenAI)
+		if rec.Code != c.status || rec.Header().Get("Burrow-Error-Code") != c.code || hits != 0 {
+			t.Errorf("%s %s: status %d code %q upstream hits %d, want %d %s", c.method, c.path, rec.Code, rec.Header().Get("Burrow-Error-Code"), hits, c.status, c.code)
+		}
+	}
+	// A restricted key reaches the endpoint for a model on its list.
+	hits = 0
+	rec := httptest.NewRecorder()
+	g.ServeDialect(rec, post("/v1/responses", "bgw_some", `{"model":"ollama/mistral"}`), DialectOpenAI)
+	if rec.Code != 200 || hits != 1 || rec.Header().Get("Burrow-Provider") != "ollama" {
+		t.Errorf("restricted key, allowed model: status %d hits %d", rec.Code, hits)
+	}
+}
+
+func TestEndpointSupported(t *testing.T) {
+	off, on := db.AIProvider{APIFormat: "openai"}, db.AIProvider{APIFormat: "openai", SupportsResponses: true}
+	for _, c := range []struct {
+		path string
+		p    db.AIProvider
+		want bool
+	}{
+		{"/v1/responses", off, false}, {"/v1/responses/", off, false}, {"/v1/responses", on, true},
+		{"/v1/chat/completions", off, true}, {"/v1/embeddings", off, true}, {"/v1/completions", off, true}, {"/v1/messages", off, true},
+	} {
+		if got := endpointSupported(c.path, c.p); got != c.want {
+			t.Errorf("endpointSupported(%q, responses=%v) = %v", c.path, c.p.SupportsResponses, got)
+		}
+	}
+}
+
+// Through the real chain and the real direct upstream: the request reaches
+// the provider with only the model value replaced, a stream is handed on
+// while the upstream still holds it open, and both a stream and a plain
+// answer are metered from the Responses usage shape.
+func TestServeDialect_Responses_RealStackStreamsAndMeters(t *testing.T) {
+	const (
+		delta     = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n"
+		completed = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"openai/gpt-x\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"total_tokens\":10}}}\n\n"
+		plain     = "{ \"id\":\"resp_2\",\"object\":\"response\",\"future\":[1],\"usage\":{\"input_tokens\":11,\"output_tokens\":5,\"total_tokens\":16}}\n"
+	)
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	var mu sync.Mutex
+	var gotPath, gotAuth, gotBody string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotPath, gotAuth, gotBody = r.URL.Path, r.Header.Get("Authorization"), string(b)
+		mu.Unlock()
+		if !bytes.Contains(b, []byte(`"stream":true`)) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(plain))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(delta))
+		_ = http.NewResponseController(w).Flush()
+		<-release
+		_, _ = w.Write([]byte(completed))
+	}))
+	defer srv.Close()
+
+	sink := &recSink{}
+	g := globalGateway(http.NotFoundHandler(), aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	g.Direct = DirectUpstreams(vaultMap{"OR": "sk-or"}, srv.Client().Transport)
+	g.Providers.(fakeProviders)["openrouter"] = db.AIProvider{
+		Slug: "openrouter", Kind: "direct", ServiceID: "prov-openrouter", APIFormat: "openai", BaseURL: srv.URL + "/api/v1", CredentialSlot: "OR", SupportsResponses: true,
+	}
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { g.ServeDialect(w, r, DialectOpenAI) }))
+	defer front.Close()
+	send := func(body string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest("POST", front.URL+"/v1/responses", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer bgw_all")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	sample := func(n int) aimeter.Sample {
+		t.Helper()
+		var samples []aimeter.Sample
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			if samples = sink.all(); len(samples) >= n {
+				break
+			}
+		}
+		if len(samples) != n {
+			t.Fatalf("usage rows: %d, want %d", len(samples), n)
+		}
+		return samples[n-1]
+	}
+	upstreamSaw := func(wantBody string) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if gotPath != "/api/v1/responses" || gotAuth != "Bearer sk-or" || gotBody != wantBody {
+			t.Fatalf("upstream path %q auth %q body %s\nwant body %s", gotPath, gotAuth, gotBody, wantBody)
+		}
+	}
+
+	// Streamed. Odd spacing, state fields and an unknown field survive.
+	pre, rest := "{ \"previous_response_id\":\"resp_0\",\t\"store\":true,\"x_future\":{\"model\":\"inner\"},  \"model\" :  ", " ,\"input\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}\n"
+	resp := send(pre + `"openrouter/openai/gpt-x"` + rest)
+	defer resp.Body.Close()
+	br := bufio.NewReader(resp.Body)
+	first := make(chan string, 1)
+	go func() {
+		var got strings.Builder
+		for got.Len() < len(delta) {
+			line, err := br.ReadString('\n')
+			got.WriteString(line)
+			if err != nil {
+				break
+			}
+		}
+		first <- got.String()
+	}()
+	select {
+	case got := <-first:
+		if got != delta {
+			t.Fatalf("first event = %q (status %d)", got, resp.StatusCode)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first event was held back until the upstream finished")
+	}
+	unblock()
+	if tail, err := io.ReadAll(br); string(tail) != completed {
+		t.Fatalf("rest = %q err = %v", tail, err)
+	}
+	upstreamSaw(pre + `"openai/gpt-x"` + rest)
+	s := sample(1)
+	if s.Kind != aimeter.KindOpenAI || s.TokensIn != 7 || s.TokensOut != 3 || !s.Streamed || s.UpstreamStatus != 200 {
+		t.Fatalf("streamed sample = %+v, want openai, 7 in, 3 out, streamed", s)
+	}
+	if s.Dialect != "openai" || s.ProviderSlug != "openrouter" || s.RequestedModel != "openrouter/openai/gpt-x" || s.TargetModel != "openai/gpt-x" || s.GatewayKeyID != "gk-all" {
+		t.Fatalf("streamed sample route = %+v", s)
+	}
+
+	// Not streamed: the answer comes back byte for byte.
+	resp2 := send(`{"model":"openrouter/openai/gpt-x","input":"hi"}`)
+	got, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != 200 || string(got) != plain {
+		t.Fatalf("status %d body %q", resp2.StatusCode, got)
+	}
+	upstreamSaw(`{"model":"openai/gpt-x","input":"hi"}`)
+	if s := sample(2); s.TokensIn != 11 || s.TokensOut != 5 || s.Streamed || s.TargetModel != "openai/gpt-x" {
+		t.Fatalf("plain sample = %+v, want 11 in, 5 out", s)
+	}
+}

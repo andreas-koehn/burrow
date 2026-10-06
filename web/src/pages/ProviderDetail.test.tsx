@@ -786,6 +786,97 @@ describe("Provider detail", () => {
     });
   });
 
+  describe("Responses API", () => {
+    const RESPONSES = "Offers the Responses API (needed by Codex)";
+
+    function providerPuts(spy: ReturnType<typeof vi.spyOn>, slug: string, suffix = "") {
+      return (spy.mock.calls as [unknown, RequestInit | undefined][])
+        .filter(([url, init]) => String(url).endsWith(`/api/v1/ai/providers/${slug}${suffix}`) && init?.method === "PUT")
+        .map(([, init]) => JSON.parse(String(init!.body)) as Record<string, unknown>);
+    }
+
+    it("tunnel provider: the Connect tab flags it through PUT, and the state survives a refetch", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      fetchSpy.mockClear();
+      const first = mount();
+      const box = await screen.findByRole("checkbox", { name: RESPONSES });
+      expect(box).not.toBeChecked();
+      expect(box).toHaveAccessibleDescription(
+        "Leave off unless the provider documents POST /responses. Requests to that endpoint are refused for this provider while it is off.",
+      );
+      await userEvent.click(box);
+      await waitFor(() => expect(providerPuts(fetchSpy, "ollama")).toEqual([{ slug: "ollama", name: "ollama", supports_responses: true }]));
+      await waitFor(() => expect(db.aiProviders[0]).toMatchObject({ slug: "ollama", supports_responses: true }));
+      await waitFor(() => expect(screen.getByRole("checkbox", { name: RESPONSES })).toBeChecked());
+      // A fresh page reads it from the server.
+      first.unmount();
+      mount();
+      expect(await screen.findByRole("checkbox", { name: RESPONSES })).toBeChecked();
+      await userEvent.click(screen.getByRole("checkbox", { name: RESPONSES }));
+      await waitFor(() => expect(db.aiProviders[0]).toMatchObject({ supports_responses: false }));
+      await waitFor(() => expect(screen.getByRole("checkbox", { name: RESPONSES })).not.toBeChecked());
+    });
+
+    it("tunnel provider: a refusal is shown and the box goes back", async () => {
+      server.use(http.put("/api/v1/ai/providers/ollama", () =>
+        HttpResponse.json({ error: "the provider was changed by someone else at the same time; try again" }, { status: 409 })));
+      mount();
+      const box = await screen.findByRole("checkbox", { name: RESPONSES });
+      await userEvent.click(box);
+      expect(await screen.findByText("the provider was changed by someone else at the same time; try again")).toBeInTheDocument();
+      expect(screen.getByRole("checkbox", { name: RESPONSES })).not.toBeChecked();
+      expect(db.aiProviders[0]!.supports_responses ?? false).toBe(false);
+    });
+
+    it("tunnel provider: a non-admin reads the state and cannot change it", async () => {
+      db.me = { ...db.me, role: "user" };
+      db.aiProviders[0]!.supports_responses = true;
+      mount();
+      await screen.findByRole("heading", { name: /connect a client/i });
+      expect(screen.queryByRole("checkbox", { name: RESPONSES })).toBeNull();
+      expect(screen.getByText("This provider offers the Responses API.")).toBeInTheDocument();
+    });
+
+    it("direct provider: the Upstream tab shows it and Edit sends only the flag", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      fetchSpy.mockClear();
+      mountDirect();
+      await openTab("Upstream");
+      const panel = screen.getByRole("tabpanel");
+      expect(within(panel).getByText("Responses API")).toBeInTheDocument();
+      expect(within(panel).getByText("not offered")).toBeInTheDocument();
+      // The Connect tab's own control is for providers without upstream settings.
+      await userEvent.click(within(panel).getByRole("button", { name: "Edit" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit upstream · OpenRouter" });
+      const box = within(dialog).getByRole("checkbox", { name: RESPONSES });
+      expect(box).not.toBeChecked();
+      expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+      await userEvent.click(box);
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(providerPuts(fetchSpy, "openrouter", "/upstream")).toEqual([{ supports_responses: true }]);
+      expect(db.aiProviders.at(-1)).toMatchObject({ slug: "openrouter", supports_responses: true });
+      expect(await within(screen.getByRole("tabpanel")).findByText("offered")).toBeInTheDocument();
+      expect(providerPuts(fetchSpy, "openrouter")).toEqual([]);
+    });
+
+    it("direct provider: the Connect tab has no second control for it", async () => {
+      mountDirect();
+      await screen.findByRole("heading", { name: /connect a client/i });
+      expect(screen.queryByRole("checkbox", { name: RESPONSES })).toBeNull();
+    });
+
+    it("a provider of the Anthropic format is not offered the choice", async () => {
+      mountDirect("openrouter", { api_format: "anthropic" });
+      await openTab("Upstream");
+      const panel = screen.getByRole("tabpanel");
+      expect(within(panel).queryByText("Responses API")).toBeNull();
+      await userEvent.click(within(panel).getByRole("button", { name: "Edit" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit upstream · OpenRouter" });
+      expect(within(dialog).queryByRole("checkbox", { name: RESPONSES })).toBeNull();
+    });
+  });
+
   it("mounts exactly one toaster, whichever tab is open", async () => {
     mount();
     await screen.findByRole("heading", { name: /connect a client/i });

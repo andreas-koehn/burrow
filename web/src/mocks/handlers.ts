@@ -108,7 +108,8 @@ function providerNameError(name: string): string | null {
 const MSG_BASE_URL = "base URL must be an https URL without credentials, query or fragment";
 const MSG_BASE_URL_PRIVATE = "base URL resolves to a private or loopback address";
 const MSG_MODEL_ID = "id must be 1-200 characters without control characters";
-const UPSTREAM_FIELDS = ["api_format", "base_url", "credential_slot", "auth_header", "auth_format", "extra_headers", "billing"];
+const UPSTREAM_FIELDS = ["api_format", "base_url", "credential_slot", "auth_header", "auth_format", "extra_headers", "billing", "supports_responses"];
+const RESPONSES_FORMAT = "the Responses API belongs to the OpenAI format";
 const CREATE_FIELDS = ["slug", "name", "kind", "service_id", ...UPSTREAM_FIELDS];
 const HEADER_NAME_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
 const RELAY_HEADERS = new Set([
@@ -128,6 +129,7 @@ interface UpstreamBody {
   auth_format?: string;
   extra_headers?: Record<string, string>;
   billing?: string;
+  supports_responses?: boolean;
 }
 
 // The server decodes these bodies strictly: a field it does not know, such as
@@ -173,6 +175,7 @@ function normalizeDirect(p: AiProviderRow): string | null {
   if (p.billing !== "metered" && p.billing !== "flat") return "billing must be 'metered' or 'flat'";
   p.api_format ||= "openai";
   if (p.api_format !== "openai" && p.api_format !== "anthropic") return "api_format must be 'openai' or 'anthropic'";
+  if (p.supports_responses && p.api_format !== "openai") return RESPONSES_FORMAT;
   const extra = Object.entries(p.extra_headers ?? {});
   if (extra.length > 16) return "at most 16 extra headers";
   let total = 0;
@@ -227,6 +230,7 @@ function providerView(p: AiProviderRow): AiProvider {
     credential_slot: p.credential_slot ?? "",
     credential_present: present,
     billing: p.billing ?? "metered",
+    supports_responses: p.supports_responses ?? false,
     model_count: (db.aiProviderModels[p.slug] ?? []).length,
     // The upstream routes are admin only; header values are never returned.
     ...(direct && db.me.role === "admin"
@@ -648,6 +652,7 @@ export const handlers = [
         auth_format: b.auth_format,
         extra_headers: b.extra_headers ?? {},
         billing: b.billing as AiProviderRow["billing"],
+        supports_responses: b.supports_responses ?? false,
       };
       const reason = normalizeDirect(row);
       if (reason) return err(400, reason);
@@ -659,6 +664,9 @@ export const handlers = [
       });
       db.aiProviders.push(row);
       return json(providerView(row), 201);
+    }
+    if (b.supports_responses !== undefined) {
+      return err(400, "supports_responses of a tunnel provider is set with PUT /api/v1/ai/providers/{slug}");
     }
     // An unknown service is the same conflict as one in the wrong mode.
     const svc = db.services.find((s) => s.id === b.service_id);
@@ -696,6 +704,7 @@ export const handlers = [
       auth_format: b.auth_format ?? p.auth_format,
       extra_headers: b.extra_headers ?? p.extra_headers,
       billing: (b.billing ?? p.billing) as AiProviderRow["billing"],
+      supports_responses: b.supports_responses ?? p.supports_responses,
     };
     const reason = normalizeDirect(next);
     if (reason) return err(400, reason);
@@ -779,12 +788,14 @@ export const handlers = [
     const g = gate(request, { admin: true }); if (g) return g;
     const p = db.aiProviders.find((x) => x.slug === params.slug);
     if (!p) return err(404, "provider not found");
-    const b = await body<{ slug?: string; name?: string }>(request);
+    const b = await body<{ slug?: string; name?: string; supports_responses?: boolean }>(request);
     const name = (b?.name ?? "").trim();
     const nameErr = providerNameError(name);
     if (nameErr) return err(400, nameErr);
     const slug = b?.slug ?? "";
     if (!providerSlugOk(slug)) return err(400, PROVIDER_SLUG_RULE);
+    // Optional; left out, the stored value stays.
+    if (b?.supports_responses && p.api_format !== "openai") return err(400, RESPONSES_FORMAT);
     if (db.aiProviders.some((x) => x !== p && x.slug === slug)) {
       return err(409, "provider slug or service already in use");
     }
@@ -794,6 +805,7 @@ export const handlers = [
     }
     p.slug = slug;
     p.name = name;
+    if (b?.supports_responses !== undefined) p.supports_responses = b.supports_responses;
     return json(providerView(p));
   }),
   http.delete("/api/v1/ai/providers/:slug", ({ request, params }) => {

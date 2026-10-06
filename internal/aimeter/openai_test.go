@@ -329,3 +329,44 @@ func TestStream_CostFollowsLastUsageChunk(t *testing.T) {
 		t.Errorf("Cost() = (%v, %v), want (0.02, true)", usd, ok)
 	}
 }
+
+func TestParseOpenAIBody_ResponsesShape(t *testing.T) {
+	tok := aimeter.ParseOpenAIBody([]byte(`{"object":"response","usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}`))
+	if tok.In != 7 || tok.Out != 3 || tok.Total != 10 {
+		t.Fatalf("tokens = %+v", tok)
+	}
+	// Without a total it is the sum.
+	if tok = aimeter.ParseOpenAIBody([]byte(`{"usage":{"input_tokens":7,"output_tokens":3}}`)); tok.Total != 10 {
+		t.Fatalf("total = %+v", tok)
+	}
+	// The chat shape still wins when both spellings are present.
+	tok = aimeter.ParseOpenAIBody([]byte(`{"usage":{"prompt_tokens":5,"completion_tokens":2,"input_tokens":99,"output_tokens":99}}`))
+	if tok.In != 5 || tok.Out != 2 {
+		t.Fatalf("chat shape must take precedence: %+v", tok)
+	}
+}
+
+func TestStream_ResponsesCompletedEvent(t *testing.T) {
+	s := aimeter.WrapResponse(io.Discard, aimeter.KindOpenAI)
+	_, _ = s.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n"))
+	_, _ = s.Write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"total_tokens\":10}}}\n\n"))
+	_ = s.Close()
+	if tok := s.Tokens(); tok.In != 7 || tok.Out != 3 {
+		t.Fatalf("tokens = %+v", tok)
+	}
+}
+
+// Events before the last one carry the response without usage (or with a
+// null one); they must neither count nor wipe what a later event reports.
+func TestStream_ResponsesEventsWithoutUsage(t *testing.T) {
+	s := aimeter.WrapResponse(io.Discard, aimeter.KindOpenAI)
+	_, _ = s.Write([]byte("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"usage\":null}}\n\n"))
+	_, _ = s.Write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"cost\":0.25}}}\n\n"))
+	_ = s.Close()
+	if tok := s.Tokens(); tok.In != 7 || tok.Out != 3 || tok.Total != 10 {
+		t.Fatalf("tokens = %+v", tok)
+	}
+	if usd, ok := s.Cost(); !ok || usd != 0.25 {
+		t.Fatalf("cost = %v %v", usd, ok)
+	}
+}

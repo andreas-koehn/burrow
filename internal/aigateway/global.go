@@ -48,8 +48,9 @@ type Catalog interface {
 // nothing after it). Neither header reaches an upstream.
 //
 // Order of checks: gateway key, the key's allow-list on the name the client
-// asked for, model resolution, the target's service policy (access mode,
-// IP/geo), and only then the upstream credential. Nothing of the request but
+// asked for, model resolution, whether the target's provider offers the
+// endpoint, the target's service policy (access mode, IP/geo), and only then
+// the upstream credential. Nothing of the request but
 // its key is looked at before the key is accepted.
 func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialect) {
 	// Everything the gateway and the chain write from here on is in d's shape.
@@ -107,6 +108,13 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 	}
 
 	target := res.Targets[0]
+	// Before the target's policy and credential: a provider that does not
+	// offer the endpoint is not called, and nothing of it is read.
+	if !endpointSupported(path, target.Provider) {
+		g.fail(w, r, http.StatusBadRequest, "endpoint_unsupported",
+			"provider "+target.Provider.Slug+" does not offer the Responses API; use /v1/chat/completions for model "+shownName(requested))
+		return
+	}
 	upstream, host, ok := g.targetUpstream(w, r, target.Provider)
 	if !ok {
 		return
@@ -303,4 +311,16 @@ func servedIn(m db.AIModel, dialect string, speaks map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// pathResponses is the one Responses API endpoint the gateway serves:
+// creating a response. Burrow keeps no response state, and a request for a
+// stored response names no model to route or to check a key's list by.
+const pathResponses = "/v1/responses"
+
+// endpointSupported reports whether provider p offers the inference endpoint
+// at path. Every provider of a dialect offers that dialect's endpoints, except
+// the Responses API, which an operator states per provider.
+func endpointSupported(path string, p db.AIProvider) bool {
+	return strings.TrimRight(path, "/") != pathResponses || p.SupportsResponses
 }

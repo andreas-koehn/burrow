@@ -19,6 +19,8 @@ async function choosePreset(label: string) {
   await userEvent.click(await screen.findByRole("option", { name: label }));
 }
 
+const RESPONSES = "Offers the Responses API (needed by Codex)";
+
 async function hosted() {
   await userEvent.click(screen.getByRole("radio", { name: /a hosted api/i }));
 }
@@ -49,14 +51,47 @@ describe("New provider dialog", () => {
     expect(screen.queryByText(/BURROW_UPSTREAM_KEY_OPENROUTER/)).toBeNull(); // slot exists → no warning
     // A slot that exists can still be empty; the field says what counts.
     expect(screen.getByLabelText("Credential slot")).toHaveAccessibleDescription(/must be set to a non-empty value/);
+    // OpenRouter documents POST /responses: the preset ticks the box.
+    expect(screen.getByRole("checkbox", { name: RESPONSES })).toBeChecked();
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(posted).toMatchObject({
       kind: "direct", slug: "openrouter", name: "OpenRouter",
       base_url: "https://openrouter.ai/api/v1", credential_slot: "OPENROUTER", billing: "metered",
+      supports_responses: true,
     }));
     // Only what the API accepts; nothing that could carry a credential.
-    expect(Object.keys(posted!).sort()).toEqual(["base_url", "billing", "credential_slot", "kind", "name", "slug"]);
+    expect(Object.keys(posted!).sort()).toEqual(["base_url", "billing", "credential_slot", "kind", "name", "slug", "supports_responses"]);
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
+  it("leaves the Responses API off for z.ai, also after OpenRouter was chosen first", async () => {
+    const { onOpenChange } = renderDialog();
+    // A local service has no such choice in this dialog.
+    expect(screen.queryByRole("checkbox", { name: RESPONSES })).toBeNull();
+    await hosted();
+    const box = screen.getByRole("checkbox", { name: RESPONSES });
+    expect(box).not.toBeChecked();
+    expect(box).toHaveAccessibleDescription(
+      "Leave off unless the provider documents POST /responses. Requests to that endpoint are refused for this provider while it is off.",
+    );
+    await choosePreset("OpenRouter");
+    expect(box).toBeChecked();
+    await choosePreset("z.ai — API (pay as you go)");
+    expect(box).not.toBeChecked();
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(db.aiProviders.at(-1)).toMatchObject({ slug: "zai", supports_responses: false });
+  });
+
+  it("the operator can tick the Responses API for any hosted API", async () => {
+    const { onOpenChange } = renderDialog();
+    await hosted();
+    await choosePreset("z.ai — Coding Plan");
+    await userEvent.click(screen.getByRole("checkbox", { name: RESPONSES }));
+    expect(screen.getByRole("checkbox", { name: RESPONSES })).toBeChecked();
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(db.aiProviders.at(-1)).toMatchObject({ slug: "zai", supports_responses: true });
   });
 
   it("creates through the mock API and choosing another preset overwrites the fields", async () => {

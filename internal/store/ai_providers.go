@@ -217,6 +217,15 @@ var ErrInvalidProviderConfig = errors.New("store: invalid provider configuration
 type DirectProviderInput struct {
 	Slug, Name, APIFormat, BaseURL, CredentialSlot, AuthHeader, AuthFormat, Billing string
 	ExtraHeaders                                                                    map[string]string
+	// SupportsResponses says whether the provider offers POST /responses. It
+	// is the operator's statement; nothing probes the upstream. nil means off
+	// on create and "keep the stored value" on update.
+	SupportsResponses *bool
+}
+
+// errResponsesFormat refuses the Responses flag on a provider of another format.
+func errResponsesFormat() error {
+	return invalidConfig("the Responses API belongs to the OpenAI format")
 }
 
 var (
@@ -293,6 +302,9 @@ func normalizeDirect(in DirectProviderInput) (DirectProviderInput, error) {
 	default:
 		return in, invalidConfig("api_format must be 'openai' or 'anthropic'")
 	}
+	if in.SupportsResponses != nil && *in.SupportsResponses && in.APIFormat != "openai" {
+		return in, errResponsesFormat()
+	}
 	if len(in.ExtraHeaders) > maxExtraHeaders {
 		return in, invalidConfig("at most 16 extra headers")
 	}
@@ -347,6 +359,7 @@ func (s *Store) CreateDirectProvider(ctx context.Context, ownerID string, in Dir
 		Slug: in.Slug, Name: in.Name, Kind: "direct", ServiceID: svc.ID, APIFormat: in.APIFormat,
 		BaseURL: in.BaseURL, CredentialSlot: in.CredentialSlot, AuthHeader: in.AuthHeader, AuthFormat: in.AuthFormat,
 		ExtraHeaders: in.ExtraHeaders, Billing: in.Billing,
+		SupportsResponses: in.SupportsResponses != nil && *in.SupportsResponses,
 	}
 	if err := s.q.CreateDirectAIProvider(ctx, svc, p); err != nil {
 		if errors.Is(err, db.ErrDuplicateProvider) {
@@ -387,6 +400,11 @@ func (s *Store) UpdateProviderUpstream(ctx context.Context, slug string, in Dire
 		if in.ExtraHeaders == nil {
 			in.ExtraHeaders = p.ExtraHeaders
 		}
+		if in.SupportsResponses == nil {
+			// Kept like any other field, and checked against the new format:
+			// a provider cannot leave the OpenAI format with the flag on.
+			in.SupportsResponses = &p.SupportsResponses
+		}
 		in, err := normalizeDirect(in)
 		if err != nil {
 			return p, err
@@ -406,6 +424,7 @@ func (s *Store) UpdateProviderUpstream(ctx context.Context, slug string, in Dire
 		}
 		p.BaseURL, p.CredentialSlot, p.AuthHeader, p.AuthFormat = in.BaseURL, in.CredentialSlot, in.AuthHeader, in.AuthFormat
 		p.Billing, p.APIFormat, p.ExtraHeaders = in.Billing, in.APIFormat, in.ExtraHeaders
+		p.SupportsResponses = *in.SupportsResponses
 		return p, nil
 	})
 	if errors.Is(err, db.ErrNotFound) {
@@ -418,6 +437,28 @@ func (s *Store) UpdateProviderUpstream(ctx context.Context, slug string, in Dire
 		return db.AIProvider{}, err
 	}
 	return s.q.GetAIProvider(ctx, slug)
+}
+
+// SetProviderResponses states whether a provider offers POST /responses. It
+// works for every kind of provider and is the only way to say it for a tunnel
+// provider, which has no upstream settings. Only a provider of the OpenAI
+// format can be flagged. The data plane reads the row per request, so the
+// change applies at once.
+func (s *Store) SetProviderResponses(ctx context.Context, slug string, on bool) error {
+	err := s.q.ModifyAIProviderUpstream(ctx, slug, func(p db.AIProvider) (db.AIProvider, error) {
+		if on && p.APIFormat != "openai" {
+			return p, errResponsesFormat()
+		}
+		p.SupportsResponses = on
+		return p, nil
+	})
+	switch {
+	case errors.Is(err, db.ErrNotFound):
+		return ErrProviderNotFound
+	case errors.Is(err, db.ErrProviderBusy):
+		return ErrProviderBusy
+	}
+	return err
 }
 
 func (s *Store) providerOrNotFound(ctx context.Context, slug string) (db.AIProvider, error) {

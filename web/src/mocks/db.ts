@@ -52,6 +52,8 @@ export interface AiProviderRow {
   // Stored here, never serialized: the API returns the names only.
   extra_headers?: Record<string, string>;
   billing?: "metered" | "flat";
+  // Offers POST /responses; any kind of provider. Absent = false.
+  supports_responses?: boolean;
 }
 
 export interface MockDb {

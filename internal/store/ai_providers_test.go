@@ -515,3 +515,104 @@ func TestRenameDirectProvider_FreesSlugAndName(t *testing.T) {
 		t.Fatal("both providers share a backing service")
 	}
 }
+
+func TestProviderSupportsResponses(t *testing.T) {
+	s := newStore(t)
+	ownerID := mustCreateUser(t, s, "admin@x", "admin").ID
+	providerFixture(t, s)
+	ctx := context.Background()
+	on, off := true, false
+	const u = "https://x.example/v1"
+
+	// Off unless the operator says otherwise.
+	p, err := s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "zai", Name: "z.ai", BaseURL: u, CredentialSlot: "ZAI"})
+	if err != nil || p.SupportsResponses {
+		t.Fatalf("default: %v %+v", err, p)
+	}
+	p, err = s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "openrouter", Name: "OpenRouter", BaseURL: u, CredentialSlot: "OR", SupportsResponses: &on})
+	if err != nil || !p.SupportsResponses {
+		t.Fatalf("create with the flag: %v %+v", err, p)
+	}
+	// The Responses API is an OpenAI endpoint.
+	_, err = s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "claude", Name: "Claude", BaseURL: u, CredentialSlot: "C", APIFormat: "anthropic", SupportsResponses: &on})
+	if !errors.Is(err, ErrInvalidProviderConfig) || !strings.Contains(err.Error(), "the Responses API belongs to the OpenAI format") {
+		t.Fatalf("anthropic with the flag: %v", err)
+	}
+	if _, err = s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "claude", Name: "Claude", BaseURL: u, CredentialSlot: "C", APIFormat: "anthropic", SupportsResponses: &off}); err != nil {
+		t.Fatalf("anthropic with the flag off: %v", err)
+	}
+
+	// An upstream update that does not name the flag keeps it.
+	if p, err = s.UpdateProviderUpstream(ctx, "openrouter", DirectProviderInput{Billing: "flat"}); err != nil || !p.SupportsResponses || p.Billing != "flat" {
+		t.Fatalf("update without the flag: %v %+v", err, p)
+	}
+	if p, err = s.UpdateProviderUpstream(ctx, "openrouter", DirectProviderInput{SupportsResponses: &off}); err != nil || p.SupportsResponses || p.Billing != "flat" {
+		t.Fatalf("flag off: %v %+v", err, p)
+	}
+	if p, err = s.UpdateProviderUpstream(ctx, "openrouter", DirectProviderInput{SupportsResponses: &on}); err != nil || !p.SupportsResponses {
+		t.Fatalf("flag on: %v %+v", err, p)
+	}
+	// The format cannot leave OpenAI while the flag stays on, named or kept.
+	for name, in := range map[string]DirectProviderInput{
+		"flag kept":  {APIFormat: "anthropic"},
+		"flag named": {APIFormat: "anthropic", SupportsResponses: &on},
+	} {
+		if _, err := s.UpdateProviderUpstream(ctx, "openrouter", in); !errors.Is(err, ErrInvalidProviderConfig) {
+			t.Errorf("%s: err = %v, want ErrInvalidProviderConfig", name, err)
+		}
+	}
+	if _, err := s.UpdateProviderUpstream(ctx, "claude", DirectProviderInput{SupportsResponses: &on}); !errors.Is(err, ErrInvalidProviderConfig) {
+		t.Errorf("flag on an anthropic provider: %v", err)
+	}
+	if got, _ := s.ProviderBySlug(ctx, "openrouter"); got.APIFormat != "openai" || !got.SupportsResponses {
+		t.Fatalf("a refused update changed the row: %+v", got)
+	}
+	// Turning it off in the same update lets the format change.
+	if p, err = s.UpdateProviderUpstream(ctx, "openrouter", DirectProviderInput{APIFormat: "anthropic", SupportsResponses: &off}); err != nil || p.SupportsResponses || p.APIFormat != "anthropic" {
+		t.Fatalf("format change with the flag off: %v %+v", err, p)
+	}
+}
+
+func TestSetProviderResponses(t *testing.T) {
+	s := newStore(t)
+	ownerID := mustCreateUser(t, s, "admin@x", "admin").ID
+	svcA, _, _ := providerFixture(t, s)
+	ctx := context.Background()
+	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "claude", Name: "Claude", BaseURL: "https://x.example/v1", CredentialSlot: "C", APIFormat: "anthropic",
+		ExtraHeaders: map[string]string{"X-Title": "Burrow"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A tunnel provider has no upstream settings; this is how it is flagged.
+	if err := s.SetProviderResponses(ctx, "ollama", true); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := s.ProviderBySlug(ctx, "ollama"); !p.SupportsResponses || p.Kind != "tunnel" || p.ServiceID != svcA || p.APIFormat != "openai" {
+		t.Fatalf("after on: %+v", p)
+	}
+	if err := s.SetProviderResponses(ctx, "ollama", true); err != nil { // unchanged is no error
+		t.Fatal(err)
+	}
+	if err := s.SetProviderResponses(ctx, "ollama", false); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := s.ProviderBySlug(ctx, "ollama"); p.SupportsResponses {
+		t.Fatalf("after off: %+v", p)
+	}
+
+	if err := s.SetProviderResponses(ctx, "gone", true); !errors.Is(err, ErrProviderNotFound) {
+		t.Fatalf("unknown provider: %v", err)
+	}
+	if err := s.SetProviderResponses(ctx, "claude", true); !errors.Is(err, ErrInvalidProviderConfig) {
+		t.Fatalf("anthropic provider: %v", err)
+	}
+	if err := s.SetProviderResponses(ctx, "claude", false); err != nil {
+		t.Fatalf("off on an anthropic provider: %v", err)
+	}
+	if p, _ := s.ProviderBySlug(ctx, "claude"); p.SupportsResponses || p.ExtraHeaders["X-Title"] != "Burrow" || p.CredentialSlot != "C" {
+		t.Fatalf("the setter changed other settings: %+v", p)
+	}
+}
