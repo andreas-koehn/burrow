@@ -59,7 +59,7 @@ type aiModelResp struct {
 	// The formats the model is served in, sorted; derived from the targets.
 	Dialects []string `json:"dialects"`
 	// Per dialect the model has a target in: the first available target, or
-	// null when none is available.
+	// null when none is available or the model is disabled.
 	Serving   map[string]*aiServingTarget `json:"serving"`
 	CreatedAt time.Time                   `json:"created_at"`
 	UpdatedAt time.Time                   `json:"updated_at"`
@@ -130,16 +130,25 @@ func (d Deps) modelView(m db.AIModel, providers map[string]db.AIProvider) aiMode
 			}
 		}
 	}
+	// Requests for a disabled model are refused whatever its targets can do.
+	if !m.Enabled {
+		for dialect := range out.Serving {
+			out.Serving[dialect] = nil
+		}
+	}
 	slices.Sort(out.Dialects)
 	return out
 }
 
-// writeModelView answers with the view of m.
+// writeModelView answers with the view of m. It also answers the writes,
+// which are stored and audited by then: when the providers cannot be read the
+// answer keeps its status and reports every target as unavailable, so that a
+// client does not repeat a create that went through.
 func (d Deps) writeModelView(w http.ResponseWriter, r *http.Request, status int, m db.AIModel) {
 	providers, err := d.providersBySlug(r.Context())
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return
+		d.warn("ai model view: provider list failed, targets reported as unavailable", "model", m.Name, "err", err)
+		providers = map[string]db.AIProvider{}
 	}
 	writeJSON(w, status, d.modelView(m, providers))
 }

@@ -404,6 +404,13 @@ describe("MSW gateway handlers mirror the API", () => {
     expect(smart.serving).toEqual({ anthropic: { provider: "zai-anthropic", model: "glm-5.1" }, openai: null });
   });
 
+  it("a disabled model serves nothing; its targets keep their availability", async () => {
+    db.aiModels[0]!.enabled = false;
+    expect(await (await send("GET", "/ai/models/burrow-simple")).json()).toMatchObject({
+      enabled: false, targets: [{ provider: "ollama", available: true }], serving: { openai: null },
+    });
+  });
+
   it("refuses the status fields in a model body, like the relay's strict decoder", async () => {
     expect(await refusal(await send("PUT", "/ai/models/burrow-simple", { serving: {}, targets: [target] }))).toEqual([400, 'unknown field "serving"']);
     expect(await refusal(await send("PUT", "/ai/models/burrow-simple", { targets: [{ ...target, available: true }] })))
@@ -437,6 +444,14 @@ describe("MSW gateway handlers mirror the API", () => {
     expect(await (await send("GET", "/ai/requests/nope/attempts")).json()).toEqual([]);
     expect(await refusal(await send("GET", `/ai/requests/${"x".repeat(129)}/attempts`)))
       .toEqual([400, "request id must be 1-128 characters without control characters"]);
+    // The id is decoded once, as the relay does: %2F is the "/" of the relay's ids, %25 a "%".
+    db.aiAttempts["relay-1/AbC-000042"] = [{ position: 0, provider: "zai", model: "m", status: 0, error_code: "timeout", duration_ms: 1, ts: "2026-10-06T09:30:00Z" }];
+    expect(await (await send("GET", "/ai/requests/relay-1%2FAbC-000042/attempts")).json()).toHaveLength(1);
+    expect(await (await send("GET", "/ai/requests/relay-1%252FAbC-000042/attempts")).json()).toEqual([]);
+    const percent = await send("GET", "/ai/requests/100%25/attempts");
+    expect([percent.status, await percent.json()]).toEqual([200, []]);
+    db.aiAttempts["100%"] = db.aiAttempts["req-1"]!;
+    expect(await (await send("GET", "/ai/requests/100%25/attempts")).json()).toHaveLength(2);
     db.me = { ...db.me, role: "user" };
     expect(await refusal(await send("GET", "/ai/requests/req-1/attempts"))).toEqual([403, "admin required"]);
   });

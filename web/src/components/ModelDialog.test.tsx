@@ -191,7 +191,7 @@ describe("ModelDialog", () => {
     await chooseOption("Provider", "openrouter", second);
     await userEvent.click(await within(second).findByRole("button", { name: "Enter a model id instead" }));
     await userEvent.type(within(second).getByLabelText("Target model id"), "google/gemini-x");
-    await userEvent.click(within(second).getByRole("button", { name: "Move target 2 up" }));
+    await userEvent.click(within(second).getByRole("button", { name: "Move OpenAI target 2 up" }));
     await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(put).toMatchObject({
       targets: [{ dialect: "openai", provider: "openrouter", model: "google/gemini-x" }, { dialect: "openai", provider: "ollama", model: "mistral" }],
@@ -205,7 +205,7 @@ describe("ModelDialog", () => {
 
   it("cannot remove the only target and caps the list at eight", async () => {
     renderDialog({ model: fixtureModel("burrow-simple") });
-    expect(screen.queryByRole("button", { name: "Remove target 1" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove OpenAI target 1" })).toBeNull();
     for (let i = 0; i < 7; i++) await userEvent.click(screen.getByRole("button", { name: "Add fallback target" }));
     expect(screen.getByRole("button", { name: "Add fallback target" })).toBeDisabled();
     expect(screen.getAllByRole("group", { name: /^OpenAI format, target \d$/ })).toHaveLength(8);
@@ -223,23 +223,54 @@ describe("ModelDialog", () => {
     const openai = await group("OpenAI format");
     const first = within(openai).getByRole("group", { name: "OpenAI format, target 1" });
     // The ends offer one direction only.
-    expect(within(first).queryByRole("button", { name: "Move target 1 up" })).toBeNull();
-    expect(within(openai).queryByRole("button", { name: "Move target 2 down" })).toBeNull();
-    within(first).getByRole("button", { name: "Move target 1 down" }).focus();
+    expect(within(first).queryByRole("button", { name: "Move OpenAI target 1 up" })).toBeNull();
+    expect(within(openai).queryByRole("button", { name: "Move OpenAI target 2 down" })).toBeNull();
+    within(first).getByRole("button", { name: "Move OpenAI target 1 down" }).focus();
     await userEvent.keyboard("{Enter}");
     const moved = within(openai).getByRole("group", { name: "OpenAI format, target 2" });
     expect(await within(moved).findByLabelText("Target model")).toHaveTextContent("mistral");
     expect(moved).toHaveFocus();
-    expect(screen.getByRole("status")).toHaveTextContent("ollama/mistral is now target 2 of 2 in the OpenAI format.");
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("ollama/mistral is now target 2 of 2 in the OpenAI format."));
+  });
+
+  it("names the format in every move and remove button, so the two lists do not repeat a name", async () => {
+    withOpenRouter();
+    const model = fixtureModel("burrow-intelligence");
+    model.targets = [
+      ...model.targets,
+      { dialect: "anthropic", provider: "zai-anthropic", model: "glm-4", available: false },
+      { dialect: "openai", provider: "openrouter", model: "google/gemini-x", available: false },
+    ];
+    renderDialog({ model });
+    await group("OpenAI format");
+    const names = screen.getAllByRole("button", { name: /^(Move|Remove) / }).map((b) => b.getAttribute("aria-label"));
+    expect(names.sort()).toEqual([
+      "Move Anthropic target 1 down", "Move Anthropic target 2 up", "Move OpenAI target 1 down", "Move OpenAI target 2 up",
+      "Remove Anthropic target 1", "Remove Anthropic target 2", "Remove OpenAI target 1", "Remove OpenAI target 2",
+    ]);
+  });
+
+  it("announces the same words again: the region is emptied before each announcement", async () => {
+    renderDialog({ model: fixtureModel("burrow-simple") });
+    const add = await screen.findByRole("button", { name: "Add fallback target" });
+    await userEvent.click(add);
+    await userEvent.click(add);
+    const status = screen.getByRole("status");
+    // Two empty entries, removed one after the other from the same place.
+    await userEvent.click(screen.getByRole("button", { name: "Remove OpenAI target 2" }));
+    await waitFor(() => expect(status).toHaveTextContent("Target 2 removed from the OpenAI format."));
+    await userEvent.click(screen.getByRole("button", { name: "Remove OpenAI target 2" }));
+    expect(status).toBeEmptyDOMElement();
+    await waitFor(() => expect(status).toHaveTextContent("Target 2 removed from the OpenAI format."));
   });
 
   it("a reorder is a change; back in the stored order nothing has changed", async () => {
     renderDialog({ model: twoTargets() });
     const save = screen.getByRole("button", { name: "Save changes" });
     expect(save).toBeDisabled();
-    await userEvent.click(await screen.findByRole("button", { name: "Move target 2 up" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Move OpenAI target 2 up" }));
     expect(save).toBeEnabled();
-    await userEvent.click(screen.getByRole("button", { name: "Move target 2 up" }));
+    await userEvent.click(screen.getByRole("button", { name: "Move OpenAI target 2 up" }));
     expect(save).toBeDisabled();
   });
 
@@ -250,10 +281,10 @@ describe("ModelDialog", () => {
       return HttpResponse.json({ name: "burrow-simple" });
     }));
     renderDialog({ model: twoTargets() });
-    await userEvent.click(await screen.findByRole("button", { name: "Remove target 1" }));
-    expect(screen.getByRole("status")).toHaveTextContent("ollama/mistral removed from the OpenAI format.");
+    await userEvent.click(await screen.findByRole("button", { name: "Remove OpenAI target 1" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("ollama/mistral removed from the OpenAI format."));
     expect(screen.queryByRole("group", { name: "OpenAI format, target 2" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Remove target 1" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove OpenAI target 1" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(put).toMatchObject({ targets: [{ dialect: "openai", provider: "openrouter", model: "google/gemini-x" }] }));
     expect(put!.targets).toHaveLength(1);

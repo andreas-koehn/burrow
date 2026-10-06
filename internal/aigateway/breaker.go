@@ -11,8 +11,8 @@ import (
 //
 // One breaker serves every request of the relay; all state is behind mu. What
 // it keeps per key is a fixed number of counters, whatever the traffic. Forget
-// drops a key; closed keys without recent samples are dropped as new keys
-// appear.
+// drops a key; keys nobody asks about any more are dropped as new keys appear
+// (dropIdle).
 type Breaker struct {
 	mu         sync.Mutex
 	now        func() time.Time
@@ -126,22 +126,39 @@ func (b *Breaker) State(key string) BreakerState {
 // provider is deleted or renamed, so that the slug reads as closed and a
 // provider that takes it later starts clean.
 //
-// A request that is under way may still report on key afterwards: that
-// starts a fresh, closed entry with one sample, which dropIdle removes again.
+// Requests that are under way may still report on key afterwards. That starts
+// a fresh entry, which enough late failures can even open; dropIdle removes
+// it again once nobody asks for the key.
 func (b *Breaker) Forget(key string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.states, key)
 }
 
-// dropIdle removes every closed entry without a sample inside the window.
-// Such an entry says the same as no entry. It runs when a new key appears,
-// so the map holds no more keys than were seen within one window, plus the
-// open ones. The caller holds mu.
+// dropIdle removes the entries that say the same as no entry, or that nobody
+// asks about any more:
+//
+//   - a closed entry without a sample inside the window;
+//   - an open entry with no trial under way whose cool-down ended more than a
+//     window ago. A provider that is still asked for takes its trial right
+//     after the cool-down, so such an entry belongs to a slug no request names
+//     any more (a provider deleted while requests to it were under way, whose
+//     late failures opened it again after Forget). Dropping it lets a
+//     provider that takes the slug later start closed.
+//
+// An entry with a trial under way is always kept: the trial's report must
+// find it. dropIdle runs when a new key appears, so the map holds no more
+// keys than were seen within one cool-down plus window. The caller holds mu.
 func (b *Breaker) dropIdle(now time.Time) {
 	oldest := now.UnixNano()/(int64(b.window)/breakerBuckets) - breakerBuckets
 	for key, s := range b.states {
-		if !s.openedAt.IsZero() || !s.trialAt.IsZero() {
+		if !s.trialAt.IsZero() {
+			continue
+		}
+		if !s.openedAt.IsZero() {
+			if now.Sub(s.openedAt) > b.coolDown+b.window {
+				delete(b.states, key)
+			}
 			continue
 		}
 		idle := true

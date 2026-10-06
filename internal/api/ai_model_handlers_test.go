@@ -1,10 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -626,6 +629,13 @@ type fakeBreaker struct {
 func (f *fakeBreaker) Open(slug string) bool { return f.open[slug] }
 func (f *fakeBreaker) Forget(slug string)    { f.forgot = append(f.forgot, slug) }
 
+// failingProviderList is a provider store whose list cannot be read.
+type failingProviderList struct{ *fakeProviderStore }
+
+func (failingProviderList) ListProviders(context.Context) ([]db.AIProvider, error) {
+	return nil, errors.New("provider list is down")
+}
+
 func directProvider(slug, format, slot string) db.AIProvider {
 	return db.AIProvider{Slug: slug, Name: slug, Kind: "direct", ServiceID: "prov-" + slug, APIFormat: format,
 		BaseURL: "https://" + slug + ".example/v1", CredentialSlot: slot}
@@ -771,6 +781,48 @@ func TestModelView_ServingAndAvailability(t *testing.T) {
 		openai, serving := servingOf(t, wantStatus(t, f.serve(t).get(t, path), http.StatusOK))
 		if fmt.Sprint(openai) != "[true false true]" || serving["anthropic"] != nil {
 			t.Errorf("availability = %v serving = %v", openai, serving)
+		}
+	})
+
+	t.Run("a disabled model serves nothing, its targets keep their availability", func(t *testing.T) {
+		f, _ := servingFixture()
+		f.ms.rows[0].Enabled = false
+		body := wantStatus(t, f.serve(t).get(t, path), http.StatusOK)
+		openai, serving := servingOf(t, body)
+		if fmt.Sprint(openai) != "[false true true]" {
+			t.Errorf("openai availability = %v", openai)
+		}
+		for _, dialect := range []string{"openai", "anthropic"} {
+			if v, has := serving[dialect]; !has || v != nil {
+				t.Errorf("serving.%s = %v (present %v), want null in %s", dialect, v, has, body)
+			}
+		}
+	})
+
+	t.Run("a write that went through is answered even when the providers cannot be read", func(t *testing.T) {
+		f, _ := servingFixture()
+		logs := &bytes.Buffer{}
+		f.d.Log = slog.New(slog.NewTextHandler(logs, nil))
+		f.d.AIProviders = failingProviderList{f.d.AIProviders.(*fakeProviderStore)}
+		c := f.serve(t)
+		body := wantStatus(t, c.post(t, "/api/v1/ai/models", map[string]any{"name": "new-one",
+			"targets": []map[string]any{{"provider": "zai", "model": "glm-5.1"}}}), http.StatusCreated)
+		openai, serving := servingOf(t, body)
+		if v, has := serving["openai"]; fmt.Sprint(openai) != "[false]" || !has || v != nil {
+			t.Errorf("availability = %v serving = %v", openai, serving)
+		}
+		body = wantStatus(t, c.put(t, path, map[string]any{"targets": []map[string]any{{"provider": "zai", "model": "glm-5.1"}}}), http.StatusOK)
+		if openai, _ := servingOf(t, body); fmt.Sprint(openai) != "[false]" {
+			t.Errorf("availability = %v", openai)
+		}
+		if f.ms.writes != 2 || len(f.aud.events) != 2 {
+			t.Errorf("writes = %d, audit events = %d", f.ms.writes, len(f.aud.events))
+		}
+		if !strings.Contains(logs.String(), "provider list is down") {
+			t.Errorf("the lookup error was not logged: %s", logs.String())
+		}
+		if strings.Contains(body, "provider list is down") {
+			t.Errorf("the lookup error reached the client: %s", body)
 		}
 	})
 

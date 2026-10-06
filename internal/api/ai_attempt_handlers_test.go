@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 )
 
@@ -90,7 +91,10 @@ func TestGetAttempts(t *testing.T) {
 	})
 
 	t.Run("refused callers reach no store", func(t *testing.T) {
-		for _, role := range []string{"user", "viewer"} {
+		// A role that may configure the gateway is still not an admin.
+		authz.SetRoles(map[string][]authz.Permission{"ai-operator": {authz.PermAIConfigureAny}})
+		defer authz.SetRoles(nil)
+		for _, role := range []string{"user", "viewer", "ai-operator"} {
 			d, fa := attemptDeps(role)
 			_, c := serve(t, d)
 			if body := wantStatus(t, c.get(t, path), http.StatusForbidden); strings.Contains(body, "zai") {

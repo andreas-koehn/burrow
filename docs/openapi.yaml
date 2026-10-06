@@ -423,7 +423,8 @@ components:
           readOnly: true
           description: >
             Per dialect the model has a target in: the first target that is
-            available, in the order they are tried, or null when none is.
+            available, in the order they are tried, or null when none is or
+            the model is disabled (requests for it are refused).
             A dialect without targets has no key. A request that carries
             this field is refused with 400.
           properties:

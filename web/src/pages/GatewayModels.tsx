@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, Layers, MoreHorizontal } from "lucide-react";
+import { Layers, MoreHorizontal } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
@@ -18,12 +18,13 @@ const FORMAT_NAME: Record<Dialect, string> = { openai: "OpenAI format", anthropi
 /**
  * Where a model goes in one format: its targets in the order they are tried,
  * which one is answering right now and which cannot be tried. Every state is
- * also said in words.
+ * said in words, never by colour alone.
  */
 function FormatCell({ model, dialect }: { model: AiModel; dialect: Dialect }) {
   const targets = model.targets.filter((t) => t.dialect === dialect);
   if (targets.length === 0) return <span className="muted">not served</span>;
-  const serving = model.serving?.[dialect];
+  // A disabled model serves nothing; the Status column says why.
+  const serving = model.enabled ? model.serving?.[dialect] : null;
   const servingAt = serving
     ? targets.findIndex((t) => t.available && t.provider === serving.provider && t.model === serving.model)
     : -1;
@@ -39,16 +40,11 @@ function FormatCell({ model, dialect }: { model: AiModel; dialect: Dialect }) {
                 <span aria-hidden="true">serving</span>
                 <span className="visually-hidden">serving now</span>
               </Badge>
-            ) : !t.available && (
-              <>
-                <Ban size={12} className="muted" aria-hidden="true" />
-                <span className="visually-hidden">unavailable</span>
-              </>
-            )}
+            ) : !t.available && <Badge kind="status-idle">unavailable</Badge>}
           </li>
         ))}
       </ol>
-      {servingAt < 0 && <Badge kind="status-offline">no target available</Badge>}
+      {model.enabled && servingAt < 0 && <Badge kind="status-offline">no target available</Badge>}
     </>
   );
 }

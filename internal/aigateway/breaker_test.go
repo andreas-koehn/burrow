@@ -324,13 +324,57 @@ func TestBreaker_Forget(t *testing.T) {
 	}
 }
 
-// An open breaker and one with fresh samples are never dropped as idle.
+// Late failures of requests that were under way when a provider was deleted
+// can open its slug again after Forget. Nobody asks for that slug any more, so
+// the entry goes once the cool-down and a window have passed, and a provider
+// that takes the slug later starts closed.
+func TestBreaker_ForgetThenLateFailures(t *testing.T) {
+	b, now := newTestBreaker()
+	for i := 0; i < 5; i++ {
+		b.Report("gone", false, 0)
+	}
+	b.Forget("gone")
+	for i := 0; i < 5; i++ {
+		b.Report("gone", false, 0)
+	}
+	if !b.Open("gone") {
+		t.Fatal("five late failures did not open the slug: the test proves nothing")
+	}
+	*now = now.Add(b.coolDown + b.window + time.Second)
+	b.Report("other", true, 0)
+	if _, kept := b.states["gone"]; kept {
+		t.Fatal("stale open entry of a forgotten key was kept")
+	}
+	ok, trial := b.Allow("gone")
+	if !ok || trial != 0 || b.State("gone") != BreakerClosed || b.Open("gone") {
+		t.Fatalf("a new provider under the slug does not start closed: allowed %v trial %d state %s", ok, trial, b.State("gone"))
+	}
+}
+
+// A trial under way is never dropped, however old its entry is: its report
+// must still find the trial it belongs to.
+func TestBreaker_IdleSweepKeepsTrialUnderWay(t *testing.T) {
+	b, now := newTestBreaker()
+	token := trial(t, b, now, "p")
+	*now = now.Add(b.coolDown + b.window + time.Hour)
+	b.Report("other", true, 0)
+	if b.State("p") != BreakerHalfOpen {
+		t.Fatalf("entry with a trial under way was dropped: state %s", b.State("p"))
+	}
+	b.Report("p", false, token)
+	if b.State("p") != BreakerOpen {
+		t.Fatalf("the trial's failure did not reopen: state %s", b.State("p"))
+	}
+}
+
+// An open breaker within its cool-down and window, and a key with fresh
+// samples, are never dropped as idle.
 func TestBreaker_IdleSweepKeepsLiveStates(t *testing.T) {
 	b, now := newTestBreaker()
 	for i := 0; i < 5; i++ {
 		b.Report("down", false, 0)
 	}
-	*now = now.Add(10 * time.Minute)
+	*now = now.Add(b.coolDown + b.window - time.Second)
 	b.Report("fresh", false, 0)
 	b.Report("new", true, 0)
 	if b.State("down") != BreakerHalfOpen {

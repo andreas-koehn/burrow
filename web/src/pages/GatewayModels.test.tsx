@@ -138,7 +138,9 @@ describe("Models page", () => {
     expect(items).toHaveLength(2);
     expect(chain).toHaveTextContent(/zai\/glm-5\.1.*→.*openrouter\/google\/gemini-x/);
     expect(within(items[0]!).getByText("zai/glm-5.1")).toBeInTheDocument();
-    expect(within(items[0]!).getByText("unavailable")).toHaveClass("visually-hidden");
+    // In words anyone can see, not by colour.
+    expect(within(items[0]!).getByText("unavailable", { selector: "span.badge" })).toBeVisible();
+    expect(within(items[0]!).getByText("unavailable")).not.toHaveClass("visually-hidden");
     expect(within(items[1]!).getByText("openrouter/google/gemini-x")).toBeInTheDocument();
     expect(within(items[1]!).getByText("serving now")).toHaveClass("visually-hidden");
     expect(within(items[1]!).queryByText("unavailable")).toBeNull();
@@ -164,6 +166,19 @@ describe("Models page", () => {
     const simple = within(table).getByRole("row", { name: /burrow-simple/ });
     expect(within(simple).getByText("no target available")).toBeInTheDocument();
     expect(within(simple).getByText("unavailable")).toBeInTheDocument();
+  });
+
+  it("a disabled model serves nothing: no target is marked, and the row says disabled", async () => {
+    db.aiModels[0]!.enabled = false;
+    mount();
+    const table = await screen.findByRole("table", { name: "Models" });
+    const simple = within(table).getByRole("row", { name: /burrow-simple/ });
+    expect(within(simple).getByText("disabled")).toBeInTheDocument();
+    expect(within(simple).getByText("ollama/mistral")).toBeInTheDocument();
+    expect(within(simple).queryByText("serving now")).toBeNull();
+    // Its target could be tried; it is the model that is off.
+    expect(within(simple).queryByText("unavailable")).toBeNull();
+    expect(within(simple).queryByText("no target available")).toBeNull();
   });
 
   it("offers the attempt lookup to admins only", async () => {

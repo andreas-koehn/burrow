@@ -303,7 +303,8 @@ function modelView(m: AiModel): AiModel {
   const serving: AiModel["serving"] = {};
   for (const t of targets) {
     if (serving[t.dialect]) continue;
-    serving[t.dialect] = t.available ? { provider: t.provider, model: t.model } : null;
+    // Requests for a disabled model are refused whatever its targets can do.
+    serving[t.dialect] = m.enabled && t.available ? { provider: t.provider, model: t.model } : null;
   }
   return { ...m, targets, serving };
 }
@@ -1540,7 +1541,9 @@ export const handlers = [
   // without a log is an empty list.
   http.get("/api/v1/ai/requests/:requestID/attempts", ({ request, params }) => {
     const g = gate(request, { admin: true }); if (g) return g;
-    const id = decodeURIComponent(String(params.requestID));
+    // MSW hands the path parameter over decoded; decoding it again would
+    // read "a%252Fb" as "a/b" and throw on "100%25".
+    const id = String(params.requestID);
     if (id === "" || byteLen(id) > 128 || hasControl(id)) return err(400, "request id must be 1-128 characters without control characters");
     const rows: AiRequestAttempt[] = db.aiAttempts[id] ?? [];
     return json([...rows].sort((a, b) => a.position - b.position));

@@ -15,9 +15,10 @@ export interface ModelDialogProps {
   model?: AiModel;
 }
 
-const FORMATS: { dialect: Dialect; legend: string }[] = [
-  { dialect: "openai", legend: "OpenAI format" },
-  { dialect: "anthropic", legend: "Anthropic format" },
+// short names the format in a button's label: both lists are on screen at once.
+const FORMATS: { dialect: Dialect; legend: string; short: string }[] = [
+  { dialect: "openai", legend: "OpenAI format", short: "OpenAI" },
+  { dialect: "anthropic", legend: "Anthropic format", short: "Anthropic" },
 ];
 
 /** As many targets as the relay takes per format. */
@@ -40,6 +41,7 @@ interface TargetChoice {
 interface TargetRowProps {
   dialect: Dialect;
   legend: string;
+  short: string;
   /** 1-based place in the format's list. */
   n: number;
   count: number;
@@ -52,7 +54,7 @@ interface TargetRowProps {
   onRemove: () => void;
 }
 
-function TargetRow({ dialect, legend, n, count, providers, value, groupRef, onChange, onMove, onRemove }: TargetRowProps) {
+function TargetRow({ dialect, legend, short, n, count, providers, value, groupRef, onChange, onMove, onRemove }: TargetRowProps) {
   const id = `model-target-${dialect}-${value.key}`;
   // Same key as ProviderModelsPanel: the provider's stored model list.
   const catalog = useQuery({
@@ -72,16 +74,16 @@ function TargetRow({ dialect, legend, n, count, providers, value, groupRef, onCh
         <div className="target-row-actions">
           <span className="muted small" aria-hidden="true">{n}.</span>
           {n > 1 && (
-            <button type="button" className="icon-btn" aria-label={`Move target ${n} up`} onClick={() => onMove(-1)}>
+            <button type="button" className="icon-btn" aria-label={`Move ${short} target ${n} up`} onClick={() => onMove(-1)}>
               <ArrowUp size={14} aria-hidden="true" />
             </button>
           )}
           {n < count && (
-            <button type="button" className="icon-btn" aria-label={`Move target ${n} down`} onClick={() => onMove(1)}>
+            <button type="button" className="icon-btn" aria-label={`Move ${short} target ${n} down`} onClick={() => onMove(1)}>
               <ArrowDown size={14} aria-hidden="true" />
             </button>
           )}
-          <button type="button" className="icon-btn" aria-label={`Remove target ${n}`} onClick={onRemove}>
+          <button type="button" className="icon-btn" aria-label={`Remove ${short} target ${n}`} onClick={onRemove}>
             <X size={14} aria-hidden="true" />
           </button>
         </div>
@@ -151,6 +153,7 @@ function TargetRow({ dialect, legend, n, count, providers, value, groupRef, onCh
 interface TargetListProps {
   dialect: Dialect;
   legend: string;
+  short: string;
   /** undefined while the providers are still loading. */
   providers: AiProvider[] | undefined;
   value: TargetChoice[];
@@ -165,7 +168,7 @@ function targetName(t: TargetChoice, n: number): string {
 }
 
 /** The ordered targets of one format: edit, add, remove, move up and down. */
-function TargetList({ dialect, legend, providers, value, onChange, announce }: TargetListProps) {
+function TargetList({ dialect, legend, short, providers, value, onChange, announce }: TargetListProps) {
   const rows = useRef(new Map<number, HTMLFieldSetElement>());
   // The row to focus once the list has rendered in its new order.
   const focusNext = useRef<number | null>(null);
@@ -223,6 +226,7 @@ function TargetList({ dialect, legend, providers, value, onChange, announce }: T
               key={t.key}
               dialect={dialect}
               legend={legend}
+              short={short}
               n={i + 1}
               count={value.length}
               providers={speaking}
@@ -290,6 +294,17 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
   const [advanced, setAdvanced] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const [formErr, setFormErr] = useState<string | null>(null);
+
+  // A live region is read when its text changes. The same words twice in a
+  // row (two unnamed entries removed from the same place) would not be read
+  // again, so the region is emptied first and filled a moment later.
+  const announceTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(announceTimer.current), []);
+  const announce = (message: string) => {
+    window.clearTimeout(announceTimer.current);
+    setAnnouncement("");
+    announceTimer.current = window.setTimeout(() => setAnnouncement(message), 100);
+  };
 
   // Same key and fetch as the Providers page.
   const providers = useQuery({
@@ -417,15 +432,16 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
         </label>
       </FormFieldGroup>
 
-      {FORMATS.map(({ dialect, legend }) => (
+      {FORMATS.map(({ dialect, legend, short }) => (
         <TargetList
           key={dialect}
           dialect={dialect}
           legend={legend}
+          short={short}
           providers={providerList}
           value={choices[dialect]}
           onChange={(next) => { setChoices((c) => ({ ...c, [dialect]: next })); setFormErr(null); }}
-          announce={setAnnouncement}
+          announce={announce}
         />
       ))}
       {/* Moves and removals, for a screen reader. */}
