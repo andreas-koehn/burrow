@@ -27,6 +27,32 @@ func TestGatewayModels_Postgres(t *testing.T) {
 	t.Run("models", func(t *testing.T) { checkAIModels(t, x, "u-models-pg") })
 	t.Run("provider rename", func(t *testing.T) { checkAIModelsFollowProviderRename(t, x, "u-models-pg") })
 	t.Run("gateway keys", func(t *testing.T) { checkAIGatewayKeys(t, x, "u-gwkey-pg-1", "u-gwkey-pg-2") })
+	t.Run("delete keeps other errors", func(t *testing.T) {
+		const fn = "burrow_test_refuse_delete"
+		if _, err := x.DB().Exec(`CREATE OR REPLACE FUNCTION ` + fn + `() RETURNS trigger LANGUAGE plpgsql AS ` +
+			`'BEGIN RAISE EXCEPTION ''refused by test''; END'`); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = x.DB().Exec(`DROP FUNCTION IF EXISTS ` + fn + `() CASCADE`) })
+		checkDeleteKeepsOtherErrors(t, x, "u-models-pg", func(name, table, when string) string {
+			return `CREATE TRIGGER ` + name + ` BEFORE DELETE ON ` + table + ` FOR EACH ROW WHEN (` + when + `) EXECUTE FUNCTION ` + fn + `()`
+		}, func(name, table string) string { return `DROP TRIGGER IF EXISTS ` + name + ` ON ` + table })
+	})
+	// The migration leaves the foreign key of ai_model_targets.provider_slug
+	// with the name Postgres gives it; the delete mapping compares against it.
+	t.Run("target foreign key name", func(t *testing.T) {
+		var name string
+		if err := x.DB().QueryRow(`
+			SELECT c.conname
+			  FROM pg_constraint c
+			  JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+			 WHERE c.contype = 'f' AND c.conrelid = 'ai_model_targets'::regclass AND a.attname = 'provider_slug'`).Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		if name != pgTargetProviderFK {
+			t.Fatalf("constraint = %q, the mapping expects %q", name, pgTargetProviderFK)
+		}
+	})
 	t.Run("usage attempts", func(t *testing.T) { checkUsageAttempts(t, x) })
 	t.Run("gateway only", func(t *testing.T) { checkServiceGatewayOnly(t, x, "u-gwonly-pg") })
 }

@@ -179,6 +179,66 @@ func checkAIModelsFollowProviderRename(t *testing.T, x *DB, userID string) {
 	}
 }
 
+func TestAIModels_DeleteKeepsOtherErrors(t *testing.T) {
+	checkDeleteKeepsOtherErrors(t, testDB(t), "u1", func(name, table, when string) string {
+		return `CREATE TRIGGER ` + name + ` BEFORE DELETE ON ` + table + ` WHEN ` + when +
+			` BEGIN SELECT RAISE(ABORT, 'refused by test'); END`
+	}, func(name, table string) string { return `DROP TRIGGER IF EXISTS ` + name })
+}
+
+// checkDeleteKeepsOtherErrors: only a violation of the target's foreign key
+// is reported as ErrProviderInUse. Here a model targets the provider, so the
+// name query finds it, but each delete is stopped earlier by a trigger: that
+// error must come back as it is. createTrigger and dropTrigger give the
+// engine's statements; when is a condition on the OLD row.
+func checkDeleteKeepsOtherErrors(t *testing.T, x *DB, userID string,
+	createTrigger func(name, table, when string) string, dropTrigger func(name, table string) string) {
+	t.Helper()
+	ctx := context.Background()
+	seedModelProviders(t, x, userID)
+	if err := x.CreateAIModel(ctx, AIModel{Name: "m1", Enabled: true,
+		Targets: []AIModelTarget{{Dialect: "openai", ProviderSlug: "zai", TargetModel: "g"}}}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := x.GetAIProvider(ctx, "zai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		what, table, when string
+		del               func() error
+	}{
+		{"provider", "ai_providers", `OLD.slug = 'zai'`, func() error { return x.DeleteAIProviderAndBacking(ctx, "zai") }},
+		{"service", "services", `OLD.id = '` + p.ServiceID + `'`, func() error { return x.DeleteService(ctx, p.ServiceID) }},
+		{"user", "users", `OLD.id = '` + userID + `'`, func() error { return x.DeleteUser(ctx, userID) }},
+	} {
+		name := "burrow_test_refuse_" + c.table
+		drop := func() { _, _ = x.DB().ExecContext(ctx, dropTrigger(name, c.table)) }
+		drop()
+		if _, err := x.DB().ExecContext(ctx, createTrigger(name, c.table, c.when)); err != nil {
+			t.Fatalf("%s: create trigger: %v", c.what, err)
+		}
+		t.Cleanup(drop)
+		err := c.del()
+		drop()
+		if err == nil || errors.Is(err, ErrProviderInUse) || !strings.Contains(err.Error(), "refused by test") {
+			t.Errorf("delete %s err = %v, want the trigger's own error", c.what, err)
+		}
+		// Without the trigger the same delete hits the foreign key.
+		if err := c.del(); !errors.Is(err, ErrProviderInUse) {
+			t.Errorf("delete %s without the trigger err = %v, want ErrProviderInUse", c.what, err)
+		}
+	}
+}
+
+func TestIsForeignKeyViolation_PlainErrors(t *testing.T) {
+	for _, err := range []error{nil, context.Canceled, ErrNotFound, errors.New("FOREIGN KEY constraint failed")} {
+		if isTargetProviderFKViolation(err) {
+			t.Errorf("isTargetProviderFKViolation(%v) = true", err)
+		}
+	}
+}
+
 func TestAIModels_ListEmptyIsNonNil(t *testing.T) {
 	x := testDB(t)
 	list, err := x.ListAIModels(context.Background())

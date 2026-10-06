@@ -241,13 +241,15 @@ func (x *DB) ListAIModelNamesByProvider(ctx context.Context, slug string) ([]str
 
 // providerInUseOr explains a failed delete. ai_model_targets.provider_slug
 // has no ON DELETE, so deleting a provider, its service or the service's
-// owner fails on the foreign key while a model targets the provider. The
-// models are read after the failure, not before the delete: a check made
-// first could be overtaken by a model created in between. When the filter
-// finds models, the result wraps ErrProviderInUse with their names; any other
-// failure, and nil, come back as they are.
+// owner fails on the foreign key while a model targets the provider. Only
+// that failure is explained (see isTargetProviderFKViolation): a locked
+// database, a lost connection or another constraint comes back as it is,
+// whether or not models exist. The models are read after the failure, not
+// before the delete: a check made first could be overtaken by a model created
+// in between. When the filter finds models, the result wraps ErrProviderInUse
+// with their names; otherwise the delete's own error is returned.
 func (x *DB) providerInUseOr(ctx context.Context, deleteErr error, filter, arg string) error {
-	if deleteErr == nil || errors.Is(deleteErr, ErrNotFound) {
+	if !isTargetProviderFKViolation(deleteErr) {
 		return deleteErr
 	}
 	names, err := x.modelNamesUsing(ctx, filter, arg)
