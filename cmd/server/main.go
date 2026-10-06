@@ -831,6 +831,8 @@ func main() {
 					ControlListen: cfg.Listen,
 					// Reported by the public /client/discovery endpoint.
 					MinClientVersion: cfg.MinClientVersion,
+					// Browser-approved client sign-in (/client/login/*).
+					ClientLogins: st,
 					// Where /download/ and the install scripts send a client.
 					ClientDownloadBase: cfg.ClientDownloadBase,
 					ClientDownloadDir:  cfg.ClientDownloadDir,

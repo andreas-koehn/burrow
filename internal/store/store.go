@@ -111,6 +111,11 @@ type Store struct {
 	// so future store-side mutations can append without an additional
 	// constructor change. Nil-safe (no caller calls .Append on it today).
 	auditLogger AuditAppender
+
+	// clientLoginNow is the clock of the client sign-in requests (their
+	// expiry and poll interval). Nil means time.Now; tests inject one with
+	// SetClientLoginClock.
+	clientLoginNow func() time.Time
 }
 
 // New builds a Store over an open, migrated *sql.DB.
@@ -213,24 +218,34 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (db.User, error) {
 // IssueClientToken generates a new client token for the given user and name,
 // persists the hash, and returns the plaintext (shown once).
 func (s *Store) IssueClientToken(ctx context.Context, userID, name string) (plaintext string, err error) {
-	pt, hash, err := auth.GenerateClientToken()
+	pt, ct, err := newClientToken(userID, name)
 	if err != nil {
 		return "", err
 	}
-	id := uuid.NewString()
-	if err := s.q.CreateClientToken(ctx, db.ClientToken{
-		ID:        id,
-		UserID:    userID,
-		Name:      name,
-		TokenHash: hash,
-	}); err != nil {
+	if err := s.q.CreateClientToken(ctx, ct); err != nil {
 		return "", err
 	}
 	s.emitAudit(ctx, audit.ActionTokenMint, func(e *audit.Event) {
-		e.SubjectID = id
+		e.SubjectID = ct.ID
 		e.SubjectLabel = name
 	})
 	return pt, nil
+}
+
+// newClientToken generates a client token for the user: the plaintext (shown
+// once) and the row to persist, which holds its hash only. Every client token
+// is made here, whether POST /tokens or an approved sign-in request asks.
+func newClientToken(userID, name string) (plaintext string, ct db.ClientToken, err error) {
+	pt, hash, err := auth.GenerateClientToken()
+	if err != nil {
+		return "", db.ClientToken{}, err
+	}
+	return pt, db.ClientToken{
+		ID:        uuid.NewString(),
+		UserID:    userID,
+		Name:      name,
+		TokenHash: hash,
+	}, nil
 }
 
 // ListClientTokens returns all client tokens belonging to the given user.

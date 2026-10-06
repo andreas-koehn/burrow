@@ -144,6 +144,14 @@ func (c *Compactor) RunOnce(ctx context.Context) (map[string]int, error) {
 		}
 	}
 
+	// client_login_requests: sign-in requests live ten minutes; whatever has
+	// expired goes, independent of any retention setting.
+	if n, err := c.b.DeleteExpiredClientLogins(ctx, now); err != nil {
+		c.log.Error("retention: delete client_login_requests", "err", err)
+	} else {
+		counts["client_login_requests"] = n
+	}
+
 	// Emit one audit event per table with rows_deleted > 0.
 	if c.audit != nil {
 		for table, n := range counts {

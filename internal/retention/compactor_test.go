@@ -230,3 +230,36 @@ func TestNextFiring(t *testing.T) {
 		t.Errorf("nextFiring after target: got %v, want %v", got, want)
 	}
 }
+
+// TestCompactorSweepsExpiredClientLogins: expired sign-in requests go with
+// every run, whatever the retention settings say; live ones stay.
+func TestCompactorSweepsExpiredClientLogins(t *testing.T) {
+	x := testDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for i, expires := range []time.Time{now.Add(-time.Hour), now.Add(-time.Second), now.Add(5 * time.Minute)} {
+		ok, err := x.InsertClientLogin(ctx, db.ClientLoginRequest{
+			DeviceCodeHash: "hash" + string(rune('0'+i)), UserCode: "CODE000" + string(rune('0'+i)),
+			CreatedAt: expires.Add(-10 * time.Minute), ExpiresAt: expires,
+		}, 20)
+		if err != nil || !ok {
+			t.Fatalf("seed %d: ok=%v err=%v", i, ok, err)
+		}
+	}
+	al := &noopAuditLogger{}
+	// All retention settings zero: "keep forever" for every other table.
+	c := New(x, &staticLoader{}, al, discardLog())
+	counts, err := c.RunOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["client_login_requests"] != 2 {
+		t.Fatalf("client_login_requests: want 2 deleted, got %d", counts["client_login_requests"])
+	}
+	if _, err := x.GetClientLoginByDeviceHash(ctx, "hash2"); err != nil {
+		t.Fatalf("the live request was swept: %v", err)
+	}
+	if len(al.calls) != 1 || al.calls[0] != "client_login_requests" {
+		t.Fatalf("audit calls = %v", al.calls)
+	}
+}

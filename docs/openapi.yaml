@@ -319,6 +319,25 @@ components:
         id: { type: string }
         name: { type: string }
         created_at: { type: string, format: date-time }
+    ClientLoginRequest:
+      type: object
+      description: >
+        A client sign-in request as the dashboard shows it. hostname, os, arch,
+        client_version and suggested_token_name were sent by the client: treat
+        them as untrusted text. Holds neither the device code nor a token.
+      required: [user_code, hostname, os, arch, client_version, source_ip, status, suggested_token_name, age_seconds, created_at, expires_at]
+      properties:
+        user_code: { type: string, example: "ABCD-EFGH" }
+        hostname: { type: string }
+        os: { type: string }
+        arch: { type: string }
+        client_version: { type: string }
+        source_ip: { type: string, description: Address the client started the request from, as the relay saw it. }
+        status: { type: string, enum: [pending, approved, denied] }
+        suggested_token_name: { type: string, description: The client's suggestion, else its hostname. }
+        age_seconds: { type: integer, description: Seconds since the request was started, by the relay's clock. }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
     AccessModeReq:
       type: object
       required: [mode]
@@ -2148,6 +2167,241 @@ paths:
                     example: 1
         '429':
           description: Rate-limited (per source IP).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/client/login/start:
+    post:
+      tags: [clients]
+      summary: Start a browser-approved client sign-in
+      description: >
+        Public (no authentication): `burrow login <relay>` asks here before it
+        has a token. The shape follows the OAuth device authorization grant
+        (RFC 8628). The client shows `user_code` and `verification_url` to the
+        user and polls `/client/login/poll` with `device_code`. `device_code`
+        is returned here once and stored only as a hash. A request lives ten
+        minutes. The strings in the body are display text only: the relay
+        strips control characters and caps their length. Rate-limited per
+        source IP (10 requests per minute); at most 20 requests may be
+        pending at a time. Not cacheable.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hostname: { type: string, maxLength: 253, example: "laptop.local" }
+                os: { type: string, maxLength: 64, example: "linux" }
+                arch: { type: string, maxLength: 64, example: "amd64" }
+                client_version: { type: string, maxLength: 64, example: "0.6.0" }
+                token_name:
+                  type: string
+                  maxLength: 120
+                  description: Optional name the client suggests for its token; the approver decides.
+      responses:
+        '200':
+          description: Sign-in request opened.
+          headers:
+            Cache-Control:
+              schema: { type: string, example: no-store }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [device_code, user_code, verification_url, expires_in, interval]
+                properties:
+                  device_code:
+                    type: string
+                    description: Secret of the client (32 random bytes, base64url). Never shown to the user.
+                  user_code:
+                    type: string
+                    description: Code the user confirms in the dashboard.
+                    example: "ABCD-EFGH"
+                  verification_url:
+                    type: string
+                    example: "https://burrow.example.com/link?code=ABCD-EFGH"
+                  expires_in:
+                    type: integer
+                    description: Lifetime of the request in seconds.
+                    example: 600
+                  interval:
+                    type: integer
+                    description: Shortest time between two polls, in seconds.
+                    example: 2
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429':
+          description: Rate-limited (per source IP), or too many pending sign-in requests.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/client/login/poll:
+    post:
+      tags: [clients]
+      summary: Collect the outcome of a client sign-in
+      description: >
+        Public (no authentication): `device_code` is the credential. Once the
+        request is approved, the first poll mints the client token for the
+        approving user, returns it and deletes the request in one
+        transaction; the plaintext token is never stored and every later poll
+        answers 410. Rate-limited per source IP (60 requests per minute);
+        polling one device code more often than every `interval` seconds
+        answers 429 with `error: slow_down`. Not cacheable.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_code]
+              properties:
+                device_code: { type: string }
+      responses:
+        '200':
+          description: Approved. The token is returned exactly once.
+          headers:
+            Cache-Control:
+              schema: { type: string, example: no-store }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [token, token_name, email]
+                properties:
+                  token: { type: string, description: The new client token (plaintext). }
+                  token_name: { type: string }
+                  email: { type: string, description: Email of the user who approved and owns the token. }
+        '202':
+          description: No decision yet; poll again after `interval` seconds.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [pending] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403':
+          description: The request was denied (`error` is `access_denied`). Reported once.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '410':
+          description: Unknown device code, expired request, or token collected already (`error` is `expired_token`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Polled too fast (`error` is `slow_down`), or rate-limited per source IP.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/client/login/requests/{user_code}:
+    get:
+      tags: [clients]
+      summary: Show a client sign-in request to the signed-in user
+      description: >
+        Dashboard session only (automation bearer tokens are refused). The
+        code is accepted with or without the dash, in any case. Unknown and
+        expired codes are the same 404; after 20 wrong codes in a minute the
+        user gets 429 on all three request endpoints. The strings that came
+        from the client are untrusted display text.
+      parameters:
+        - { name: user_code, in: path, required: true, schema: { type: string }, example: "ABCD-EFGH" }
+      responses:
+        '200':
+          description: The request.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientLoginRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429':
+          description: Too many wrong codes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/client/login/requests/{user_code}/approve:
+    post:
+      tags: [clients]
+      summary: Approve a client sign-in request
+      description: >
+        Dashboard session with the permission to manage client tokens
+        (`tokens:manage:own` or `tokens:manage:any`), CSRF-protected like every
+        state-changing session request. Marks the pending request approved by
+        the caller; the client token is minted for the caller, with
+        `token_name`, when the client collects it. Audited as
+        `client.login.approved`.
+      parameters:
+        - { name: user_code, in: path, required: true, schema: { type: string }, example: "ABCD-EFGH" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token_name]
+              properties:
+                token_name:
+                  type: string
+                  minLength: 1
+                  maxLength: 120
+                  description: Name of the token to create; no control characters.
+      responses:
+        '200':
+          description: Approved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientLoginRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The request was approved or denied already; nothing changed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Too many wrong codes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/client/login/requests/{user_code}/deny:
+    post:
+      tags: [clients]
+      summary: Deny a client sign-in request
+      description: >
+        Dashboard session, CSRF-protected. Marks the pending request denied;
+        the client's next poll answers 403. Audited as `client.login.denied`.
+      parameters:
+        - { name: user_code, in: path, required: true, schema: { type: string }, example: "ABCD-EFGH" }
+      responses:
+        '200':
+          description: Denied.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientLoginRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The request was approved or denied already; nothing changed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Too many wrong codes.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

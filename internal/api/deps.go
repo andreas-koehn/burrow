@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/aigateway"
 	"github.com/ankoehn/burrow/internal/aiprovider"
@@ -326,6 +327,18 @@ type Deps struct {
 	// DiscoveryRateLimitPerIPOverride overrides DiscoveryRateLimitPerIP for
 	// tests; zero uses the const.
 	DiscoveryRateLimitPerIPOverride int
+	// ClientLogins is the browser-approved client sign-in (the five
+	// /client/login routes). *store.Store satisfies it. Nil makes the routes
+	// answer 404, as a relay without the feature does.
+	ClientLogins ClientLoginStore
+	// ClientLoginStartLimitOverride and ClientLoginPollLimitOverride override
+	// the per-IP limits of start and poll for tests; zero uses the consts.
+	ClientLoginStartLimitOverride int
+	ClientLoginPollLimitOverride  int
+	// clientLoginGuesses counts wrong user codes per user. NewRouter creates
+	// it; clientLoginGuessClock is its clock in tests (nil: time.Now).
+	clientLoginGuesses    *guessLimiter
+	clientLoginGuessClock func() time.Time
 	// ClientDownloadBase is where /download/ redirects to:
 	// <base>/<tag>/<archive>. Empty means config.DefaultClientDownloadBase.
 	ClientDownloadBase string

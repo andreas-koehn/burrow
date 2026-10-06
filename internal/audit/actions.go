@@ -114,6 +114,14 @@ const (
 	// the same underlying event.
 	ActionAICachePromoted = "ai.cache.promoted"
 	ActionAIUpstreamError = "ai.upstream_error"
+
+	// Browser-approved client sign-in. A row carries the hostname and the
+	// source IP of the request, never its device code, user code or token.
+	// The token minted when an approved request is collected is a
+	// ActionTokenMint row of its own.
+	ActionClientLoginStarted  = "client.login.started"
+	ActionClientLoginApproved = "client.login.approved"
+	ActionClientLoginDenied   = "client.login.denied"
 )
 
 // AllActions is the closed set of every audit action Burrow defines, in a
@@ -147,6 +155,7 @@ var AllActions = []string{
 	ActionServiceCustomDomainStatusChanged,
 	ActionRetentionCompact,
 	ActionConnectionSessionSummary, ActionAICachePromoted, ActionAIUpstreamError,
+	ActionClientLoginStarted, ActionClientLoginApproved, ActionClientLoginDenied,
 }
 
 // aggregatedActions is the set of actions that are sample-rated at 1/hour

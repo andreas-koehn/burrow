@@ -106,6 +106,9 @@ func NewRouter(d Deps) http.Handler {
 	r.Handle("/download/*", http.HandlerFunc(d.ClientDownloadNotFound))
 
 	loginPerIP, loginGlobal := d.loginRateLimiters()
+	loginStartLimit, loginPollLimit := d.clientLoginRateLimiters()
+	// d is a copy: the counter of wrong user codes belongs to this router.
+	d.clientLoginGuesses = newGuessLimiter(ClientLoginGuessLimit, time.Minute, d.clientLoginGuessClock)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		// Test-only: under -tags=integration, registers
@@ -155,6 +158,16 @@ func NewRouter(d Deps) http.Handler {
 		// public control endpoint and versions only (see ClientDiscovery).
 		r.With(d.discoveryRateLimiter()).Get("/client/discovery", d.GetClientDiscovery)
 
+		// Client sign-in, the client's side: public, because a client has no
+		// token yet. start opens a request, poll collects its outcome with
+		// the device code start returned. Both are rate-limited per source
+		// IP and never cacheable. The dashboard's side (look at a request,
+		// approve, deny) is in the session group below, behind the CSRF check.
+		r.With(loginStartLimit, d.clientLoginAnon, middleware.Timeout(JSONHandlerTimeout)).
+			Post("/client/login/start", d.PostClientLoginStart)
+		r.With(loginPollLimit, d.clientLoginAnon, middleware.Timeout(JSONHandlerTimeout)).
+			Post("/client/login/poll", d.PostClientLoginPoll)
+
 		// JSON routes: session-protected + CSRF-protected + JSONHandlerTimeout.
 		// RequireCSRF is placed after RequireSession so unauthenticated requests
 		// get 401 before CSRF validation runs. Safe methods (GET/HEAD/OPTIONS)
@@ -196,6 +209,17 @@ func NewRouter(d Deps) http.Handler {
 			r.Get("/tokens", d.ListTokens)
 			r.Post("/tokens", d.CreateToken)
 			r.Delete("/tokens/{id}", d.RevokeToken)
+			// Client sign-in, the dashboard's side. State-changing session
+			// requests like any other here: session, then CSRF. A cookie
+			// session is required (no automation bearer token), and wrong
+			// user codes are counted per user. Approving needs the permission
+			// to manage client tokens, because it creates one.
+			r.With(d.requireDashboardSession).
+				Get("/client/login/requests/{user_code}", d.GetClientLoginRequest)
+			r.With(d.requireClientTokensManage, d.requireDashboardSession).
+				Post("/client/login/requests/{user_code}/approve", d.PostClientLoginApprove)
+			r.With(d.requireDashboardSession).
+				Post("/client/login/requests/{user_code}/deny", d.PostClientLoginDeny)
 			r.Get("/tunnels", d.ListTunnels)
 			r.Get("/sessions", d.ListSessions)
 			r.Delete("/sessions/{id}", d.RevokeSession)
