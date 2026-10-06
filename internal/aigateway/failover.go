@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -16,7 +17,7 @@ import (
 
 const headerAttempts = "Burrow-Attempts"
 
-// Timeouts, in seconds, of a request that has no model row to take them from.
+// Timeouts, in seconds, of a synthetic model whose row holds no usable value.
 const (
 	defaultAttemptTimeoutS = 60
 	defaultTotalTimeoutS   = 120
@@ -93,8 +94,8 @@ type failover struct {
 	requestID  string
 
 	rateLimitFallback bool
-	attemptTimeout    time.Duration
-	totalTimeout      time.Duration
+	attemptTimeout    time.Duration // 0 = none
+	totalTimeout      time.Duration // 0 = none
 }
 
 // newFailover builds the handler for a resolved request. candidates are the
@@ -104,17 +105,19 @@ func (g *Gateway) newFailover(res Resolution, candidates []candidate, route *aig
 	if unit <= 0 {
 		unit = time.Second
 	}
-	// A direct address has no model row and gets the defaults; so does a
-	// model without a usable value, rather than no time at all.
+	// A direct address gets no clock from here (0 = none): it has one target
+	// and nothing to fall over to, no model row an operator could set a
+	// timeout on, and is bounded as it always was, by its transport. A model
+	// without a usable value gets the defaults rather than no time at all.
 	attempt, total := 0, 0
 	if res.Synthetic {
 		attempt, total = res.Model.AttemptTimeoutS, res.Model.TotalTimeoutS
-	}
-	if attempt <= 0 {
-		attempt = defaultAttemptTimeoutS
-	}
-	if total <= 0 {
-		total = defaultTotalTimeoutS
+		if attempt <= 0 {
+			attempt = defaultAttemptTimeoutS
+		}
+		if total <= 0 {
+			total = defaultTotalTimeoutS
+		}
 	}
 	return &failover{
 		g: g, candidates: candidates, dialect: res.Dialect, route: route, requestID: requestID,
@@ -139,17 +142,24 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() { f.record(rows) }()
 
 	order, forced := f.order(&rows)
-	deadline := time.Now().Add(f.totalTimeout)
+	var deadline time.Time // zero = no total timeout
+	if f.totalTimeout > 0 {
+		deadline = time.Now().Add(f.totalTimeout)
+	}
 	sent := 0 // attempts that reached an upstream handler
 	outOfTime := false
 	for i, c := range order {
 		if r.Context().Err() != nil {
 			return // the client is gone; nothing more to try
 		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			outOfTime = true
-			break
+		timeout := f.attemptTimeout
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				outOfTime = true
+				break
+			}
+			timeout = min(timeout, remaining)
 		}
 		var next *candidate
 		if i+1 < len(order) {
@@ -164,7 +174,7 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		sent++
-		res := f.attempt(w, r, c, next, body.WithModel(c.model), min(f.attemptTimeout, remaining), sent)
+		res := f.attempt(w, r, c, next, body.WithModel(c.model), timeout, sent)
 		rows = append(rows, res.row)
 		f.report(c, next, res.outcome)
 		if res.panicked && res.committed {
@@ -264,12 +274,15 @@ type attemptResult struct {
 	panicValue any
 }
 
-// States of an attempt. The timeout and the commit race for the pending
-// state, so exactly one of them wins: a response that has started cannot be
-// cancelled by the timer, and an attempt that timed out cannot start one.
+// States of an attempt. The timeout and the decision on the status race for
+// the pending state, so exactly one of them wins: a response that has started
+// cannot be cancelled by the timer, an attempt that timed out cannot start
+// one, and an attempt that was discarded for its status is not turned into a
+// timeout while its body is still arriving.
 const (
 	attemptPending int32 = iota
 	attemptCommitted
+	attemptDiscarded
 	attemptTimedOut
 )
 
@@ -280,11 +293,14 @@ const (
 func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, next *candidate, body []byte, timeout time.Duration, n int) (res attemptResult) {
 	ctx, cancel := context.WithCancel(r.Context())
 	var state atomic.Int32
-	timer := time.AfterFunc(timeout, func() {
-		if state.CompareAndSwap(attemptPending, attemptTimedOut) {
-			cancel()
-		}
-	})
+	var timer *time.Timer // nil = no timeout
+	if timeout > 0 {
+		timer = time.AfterFunc(timeout, func() {
+			if state.CompareAndSwap(attemptPending, attemptTimedOut) {
+				cancel()
+			}
+		})
+	}
 	reached := false // the target's policy and credential passed; its upstream handler was called
 	late := false    // the status came after the time was up: it is the cancellation's, not the upstream's
 	cw := newCommitWriter(w,
@@ -295,6 +311,13 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 			}
 			// A client that is gone gets no second attempt.
 			if r.Context().Err() == nil && f.retryable(status, c, next) {
+				if state.CompareAndSwap(attemptPending, attemptDiscarded) {
+					// Nobody will see the rest of this answer: stop the
+					// upstream now instead of reading its body to the end.
+					cancel()
+				} else {
+					late = true
+				}
 				return true
 			}
 			if !state.CompareAndSwap(attemptPending, attemptCommitted) {
@@ -308,6 +331,10 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 			// response names it when its upstream was reached: a caller the
 			// target's policy refused is not told which provider that was.
 			f.route.SetTarget(c.provider.Slug, c.model)
+			if first := f.candidates[0]; c.provider.Slug != first.provider.Slug || c.model != first.model {
+				// Not the target the chain's cache is keyed on.
+				f.route.MarkFallback()
+			}
 			h := w.Header()
 			if reached {
 				h.Set(headerProvider, c.provider.Slug)
@@ -321,21 +348,26 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 		if p := recover(); p != nil {
 			res.panicked, res.panicValue = true, p
 		}
-		timer.Stop()
+		if timer != nil {
+			timer.Stop()
+		}
 		cancel()
 
 		res.committed = cw.committed
-		res.timedOut = state.Load() == attemptTimedOut
+		// Out of time: the attempt's own clock, or the upstream handler's
+		// transport giving up on the response headers.
+		gaveUp := cw.upstreamTimeout || state.Load() == attemptTimedOut
+		res.timedOut = gaveUp && !cw.committed
 		clientGone := r.Context().Err() != nil
 		status := cw.status
-		if late {
-			status = 0
+		if late || cw.upstreamTimeout {
+			status = 0 // what was written is the gateway's word for it, not an upstream's status
 		}
 		code := ""
 		switch {
 		case clientGone:
 			code, res.outcome = attemptClientClosed, outcomeNeutral
-		case res.timedOut:
+		case gaveUp:
 			code, res.outcome = attemptTimeout, outcomeFailed
 		case res.panicked && res.committed:
 			code, res.outcome = attemptStreamAborted, outcomeFailed
@@ -353,7 +385,8 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 			res.outcome = outcomeOK
 		}
 		if res.panicked && !res.committed && res.panicValue != http.ErrAbortHandler {
-			f.g.Log.Error("aigateway: upstream handler panicked", "provider", c.provider.Slug, "request_id", f.requestID, "panic", res.panicValue)
+			f.g.Log.Error("aigateway: upstream handler panicked", "provider", c.provider.Slug, "request_id", f.requestID,
+				"panic", res.panicValue, "stack", string(debug.Stack()))
 		}
 		// Provider, model, outcome, status, time: nothing of the request, the
 		// response or a credential.
@@ -417,15 +450,23 @@ func (f *failover) record(rows []db.UsageAttempt) {
 // store that has stopped answering must not grow the relay's memory.
 const maxPendingAttemptLogs = 1024
 
-const attemptLogTimeout = 5 * time.Second
+const (
+	attemptLogTimeout = 5 * time.Second
+	// attemptLogWarnEvery is how often, at most, dropped logs are reported.
+	attemptLogWarnEvery = 10 * time.Second
+)
 
 // attemptLog queues attempt logs and writes them off the request path. One
 // goroutine writes while there is something to write and ends when the queue
-// is empty, so nothing is left running and nothing has to be shut down.
+// is empty, so nothing is left running between requests.
 type attemptLog struct {
 	mu      sync.Mutex
 	pending [][]db.UsageAttempt
 	running bool
+	idle    chan struct{} // closed when the writer ends; nil when none runs
+
+	dropped  int       // logs dropped since the last warning
+	lastWarn time.Time // when dropped logs were last reported
 }
 
 // logAttempts queues one request's attempt rows. It never blocks.
@@ -436,13 +477,24 @@ func (g *Gateway) logAttempts(rows []db.UsageAttempt) {
 	q := &g.attempts
 	q.mu.Lock()
 	if len(q.pending) >= maxPendingAttemptLogs {
+		// One line per interval, with a count: a store that is down must
+		// not turn every request into a log line.
+		q.dropped++
+		n, now := 0, time.Now()
+		if now.Sub(q.lastWarn) >= attemptLogWarnEvery {
+			n, q.dropped, q.lastWarn = q.dropped, 0, now
+		}
 		q.mu.Unlock()
-		g.Log.Warn("aigateway: attempt log dropped, the store is not keeping up", "request_id", rows[0].RequestID)
+		if n > 0 {
+			g.Log.Warn("aigateway: attempt logs dropped, the store is not keeping up", "dropped", n)
+		}
 		return
 	}
 	q.pending = append(q.pending, rows)
 	start := !q.running
-	q.running = true
+	if start {
+		q.running, q.idle = true, make(chan struct{})
+	}
 	q.mu.Unlock()
 	if start {
 		go g.writeAttempts()
@@ -455,6 +507,8 @@ func (g *Gateway) writeAttempts() {
 		q.mu.Lock()
 		if len(q.pending) == 0 {
 			q.running = false
+			close(q.idle)
+			q.idle = nil
 			q.mu.Unlock()
 			return
 		}
@@ -469,6 +523,26 @@ func (g *Gateway) writeAttempts() {
 		cancel()
 		if err != nil {
 			g.Log.Warn("aigateway: recording attempts failed", "request_id", rows[0].RequestID, "err", err)
+		}
+	}
+}
+
+// FlushAttempts waits until the attempt logs queued so far are written, or
+// ctx ends (its error is returned and the rest stays queued). Call it on
+// shutdown, after the listeners have stopped taking requests.
+func (g *Gateway) FlushAttempts(ctx context.Context) error {
+	q := &g.attempts
+	for {
+		q.mu.Lock()
+		idle := q.idle
+		q.mu.Unlock()
+		if idle == nil {
+			return nil
+		}
+		select {
+		case <-idle:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -18,6 +19,8 @@ import (
 
 	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/aiprovider"
+	"github.com/ankoehn/burrow/internal/cache/exact"
+	"github.com/ankoehn/burrow/internal/cache/semantic"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/proxy"
@@ -532,13 +535,15 @@ func TestFailover_NeverAfterFirstByte(t *testing.T) {
 // dialect endpoint behind the real chain, and one TLS upstream that plays zai
 // (/zai/v1) and openrouter (/or/v1) through the real direct upstream handler.
 type streamRig struct {
-	g       *Gateway
-	att     *memAttempts
-	sink    *recSink
-	front   *httptest.Server
-	mu      sync.Mutex
-	hits    map[string]int
-	release chan struct{}
+	g     *Gateway
+	att   *memAttempts
+	sink  *recSink
+	front *httptest.Server
+	// transport reaches the upstream; set its timeouts before the first request.
+	transport *http.Transport
+	mu        sync.Mutex
+	hits      map[string]int
+	release   chan struct{}
 }
 
 func newStreamRig(t *testing.T, zai, or http.HandlerFunc) *streamRig {
@@ -558,7 +563,8 @@ func newStreamRig(t *testing.T, zai, or http.HandlerFunc) *streamRig {
 	}))
 	t.Cleanup(up.Close)
 	rig.g, rig.att = failoverGateway(script(nil), "ZAI", nil)
-	rig.g.Direct = DirectUpstreams(vaultMap{"ZAI": "sk-zai", "OR": "sk-or"}, up.Client().Transport)
+	rig.transport = up.Client().Transport.(*http.Transport).Clone()
+	rig.g.Direct = DirectUpstreams(vaultMap{"ZAI": "sk-zai", "OR": "sk-or"}, rig.transport)
 	p := rig.g.Providers.(fakeProviders)
 	zp, op := p["zai"], p["openrouter"]
 	zp.BaseURL, op.BaseURL = up.URL+"/zai/v1", up.URL+"/or/v1"
@@ -587,7 +593,19 @@ func (rig *streamRig) n(who string) int {
 
 func (rig *streamRig) post(t *testing.T) *http.Response {
 	t.Helper()
-	req, _ := http.NewRequest("POST", rig.front.URL+"/v1/chat/completions", strings.NewReader(`{"model":"smart","stream":true}`))
+	return rig.postModel(t, "smart")
+}
+
+// timeouts sets the timeouts of model "smart", in milliseconds.
+func (rig *streamRig) timeouts(attempt, total int) {
+	m := rig.g.Synthetic.(fakeSynthetic)["smart"]
+	m.AttemptTimeoutS, m.TotalTimeoutS = attempt, total
+	rig.g.Synthetic.(fakeSynthetic)["smart"] = m
+}
+
+func (rig *streamRig) postModel(t *testing.T, model string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest("POST", rig.front.URL+"/v1/chat/completions", strings.NewReader(`{"model":"`+model+`","stream":true}`))
 	req.Header.Set("Authorization", "Bearer bgw_all")
 	resp, err := rig.front.Client().Do(req)
 	if err != nil {
@@ -1226,7 +1244,10 @@ func TestFailover_AttemptLogDoesNotBlockTheResponse(t *testing.T) {
 		t.Fatal("the response waited for the attempt log")
 	}
 
-	// While the store is stuck, more logs queue up to a bound and no further.
+	// While the store is stuck, more logs queue up to a bound and no further,
+	// and the overflow is reported in one line, not one per request.
+	var logged syncBuffer
+	g.Log = slog.New(slog.NewTextHandler(&logged, nil))
 	for i := 0; i < 3*maxPendingAttemptLogs; i++ {
 		g.logAttempts([]db.UsageAttempt{{RequestID: "r" + strconv.Itoa(i), ErrorCode: "http_500"}})
 	}
@@ -1236,8 +1257,29 @@ func TestFailover_AttemptLogDoesNotBlockTheResponse(t *testing.T) {
 	if pending > maxPendingAttemptLogs || !running {
 		t.Fatalf("pending %d (limit %d), writer running %v", pending, maxPendingAttemptLogs, running)
 	}
+	if n := strings.Count(logged.String(), "attempt logs dropped"); n != 1 || !strings.Contains(logged.String(), "dropped=1\n") {
+		t.Fatalf("%d warnings for the dropped logs: %s", n, logged.String())
+	}
+	// A flush gives up when its context ends...
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	if err := g.FlushAttempts(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("flush with a stuck store: %v", err)
+	}
+	cancel()
+	// ...and returns once everything queued is written.
 	close(att.block)
-	drained(g) // the writer catches up and ends
+	if err := g.FlushAttempts(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g.attempts.mu.Lock()
+	pending, running = len(g.attempts.pending), g.attempts.running
+	g.attempts.mu.Unlock()
+	if pending != 0 || running {
+		t.Fatalf("after the flush: pending %d, writer running %v", pending, running)
+	}
+	if err := g.FlushAttempts(context.Background()); err != nil { // nothing to do
+		t.Fatal(err)
+	}
 	if n := len(att.all()); n < 2 || n > 2+maxPendingAttemptLogs+1 {
 		t.Fatalf("%d rows written", n)
 	}
@@ -1315,4 +1357,243 @@ func TestFailover_ProviderPathIsUnchanged(t *testing.T) {
 	if s.n("zai#ZAI") != 1 || s.n("zai#ZAI2") != 0 || s.n("openrouter#OR") != 0 || len(s.built) != 1 || len(att.all()) != 0 {
 		t.Fatalf("calls %v, credential reads %v, attempts %+v", s.calls, s.built, att.all())
 	}
+}
+
+// --- review follow-ups ---------------------------------------------------------
+
+// endless500 answers 500 and then never stops sending.
+func endless500(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(500)
+	chunk := []byte(strings.Repeat("x", 1024))
+	for r.Context().Err() == nil {
+		if _, err := w.Write(chunk); err != nil {
+			return
+		}
+		w.(http.Flusher).Flush()
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// A discarded answer is not read to its end: the move to the next target does
+// not wait for a body nobody will see, and a status that did arrive stays the
+// attempt's outcome.
+func TestFailover_DiscardedBodyDoesNotDelayTheNextTarget(t *testing.T) {
+	rig := newStreamRig(t, endless500, status(503, "or down"))
+	rig.timeouts(3000, 6000)
+	start := time.Now()
+	resp := rig.post(t)
+	body, _ := io.ReadAll(resp.Body)
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("the next target waited %s for the discarded body", el)
+	}
+	// The last answer, not a timeout of the gateway's.
+	if resp.StatusCode != 503 || string(body) != "or down" || resp.Header.Get("Burrow-Attempts") != "2" {
+		t.Fatalf("status %d body %q headers %v", resp.StatusCode, body, resp.Header)
+	}
+	for end := time.Now().Add(10 * time.Second); len(rig.att.all()) < 2; time.Sleep(time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatal("no attempt rows")
+		}
+	}
+	rows := rig.att.all()
+	if rows[0].ErrorCode != "http_500" || rows[0].Status != 500 || rows[1].ErrorCode != "http_503" {
+		t.Fatalf("attempts: %+v", rows)
+	}
+}
+
+// A direct address has one target and no model row an operator could set
+// timeouts on: the failover handler puts no clock on it. A synthetic model
+// with the very same target keeps its timeouts.
+func TestFailover_DirectAddressHasNoTimeout(t *testing.T) {
+	slow := func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(300 * time.Millisecond): // past the 60 ms and 120 ms a unit of 1 ms would give
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case <-r.Context().Done():
+		}
+	}
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": slow})
+	g, att := failoverGateway(s, "ZAI", func(m *db.AIModel) {
+		m.Targets = m.Targets[:1]
+		m.AttemptTimeoutS, m.TotalTimeoutS = 60, 120
+	})
+	rec := call(g, `{"model":"zai/glm-5.1"}`)
+	if rec.Code != 200 || rec.Body.String() != `{"ok":true}` {
+		t.Fatalf("direct address: status %d body %s", rec.Code, rec.Body.String())
+	}
+	wantHeaders(t, rec, "zai", "glm-5.1", "1")
+
+	rec = call(g, smartBody)
+	if rec.Code != 504 || errCode(t, rec) != "gateway_timeout" {
+		t.Fatalf("synthetic model: status %d body %s", rec.Code, rec.Body.String())
+	}
+	if rows := att.all(); len(rows) != 1 || rows[0].ErrorCode != "timeout" {
+		t.Fatalf("attempts: %+v", rows)
+	}
+}
+
+// A hosted provider's transport gives up waiting for response headers on its
+// own clock. That is a timeout in the log, whatever status the client is
+// given, and the chain moves on.
+func TestFailover_TransportHeaderTimeoutIsATimeout(t *testing.T) {
+	stall := func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(2 * time.Second):
+		case <-r.Context().Done():
+		}
+	}
+	rig := newStreamRig(t, stall, status(200, `{"ok":true}`))
+	rig.transport.ResponseHeaderTimeout = 50 * time.Millisecond
+	rows := func(n int) []db.UsageAttempt {
+		t.Helper()
+		for end := time.Now().Add(10 * time.Second); len(rig.att.all()) < n; time.Sleep(time.Millisecond) {
+			if time.Now().After(end) {
+				t.Fatalf("attempt rows: %+v", rig.att.all())
+			}
+		}
+		return rig.att.all()
+	}
+
+	resp := rig.post(t)
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || string(body) != `{"ok":true}` || resp.Header.Get("Burrow-Provider") != "openrouter" {
+		t.Fatalf("synthetic: status %d body %s", resp.StatusCode, body)
+	}
+	if r := rows(2); r[0].ProviderSlug != "zai" || r[0].ErrorCode != "timeout" || r[0].Status != 0 {
+		t.Fatalf("attempts: %+v", r)
+	}
+
+	// A direct address: nothing to move on to; the answer is the provider
+	// handler's own 502, and the row still says what happened.
+	resp = rig.postModel(t, "zai/glm-5.1")
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != 502 || resp.Header.Get("Burrow-Error-Code") != "upstream_unavailable" {
+		t.Fatalf("direct address: status %d headers %v", resp.StatusCode, resp.Header)
+	}
+	if r := rows(3); r[2].ErrorCode != "timeout" {
+		t.Fatalf("attempts: %+v", r)
+	}
+}
+
+// The cache is the first target's: its key is that service and that model. An
+// answer another target gave after a fallover is not stored under it, or a
+// request for the first target itself would be served the other one's answer.
+func TestFailover_FalloverAnswerIsNotCached(t *testing.T) {
+	raw, err := db.Open(filepath.Join(t.TempDir(), "cache.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(raw); err != nil {
+		t.Fatal(err)
+	}
+	d := db.Wrap(raw)
+	t.Cleanup(func() { _ = d.Close() })
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	zaiDown := true
+	answer := func(body string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			_, _ = w.Write([]byte(body))
+		}
+	}
+	s := script(map[string]http.HandlerFunc{
+		"zai#ZAI": func(w http.ResponseWriter, r *http.Request) {
+			if zaiDown {
+				w.WriteHeader(503)
+				return
+			}
+			answer(`{"from":"zai"}`)(w, r)
+		},
+		"openrouter#OR": answer(`{"from":"openrouter"}`),
+	})
+	g, _ := failoverGateway(s, "ZAI", nil)
+	sem := &semStub{}
+	chain := aigw.NewChain(exact.New(d, log), sem, nil, nil, nil, nil, nil, &recSink{}, log)
+	chain.Loader = cfgLoader{
+		Cache:    &exact.Settings{Enabled: true, AppliesPer: "global", TTLSeconds: 300, MaxEntries: 100, MaxPerEntryKB: 64},
+		Semantic: &semantic.Settings{Enabled: true, FallbackPolicy: "treat_as_miss", PromoteOnMiss: true},
+	}
+	g.Chain = chain
+	const rest = `,"messages":[{"role":"user","content":"hi"}]}`
+
+	// zai is down, openrouter answers.
+	rec := call(g, `{"model":"smart"`+rest)
+	if rec.Code != 200 || rec.Body.String() != `{"from":"openrouter"}` {
+		t.Fatalf("fallover: status %d body %s", rec.Code, rec.Body.String())
+	}
+	if len(sem.promoted) != 0 {
+		t.Fatalf("a fallover answer was promoted to the semantic cache: %v", sem.promoted)
+	}
+	// zai is back. A request for zai itself gets zai's answer, not a HIT.
+	zaiDown = false
+	rec = call(g, `{"model":"zai/glm-5.1"`+rest)
+	if rec.Code != 200 || rec.Body.String() != `{"from":"zai"}` || rec.Header().Get("Burrow-Cache") == "HIT" {
+		t.Fatalf("after the fallover: status %d body %s Burrow-Cache %q", rec.Code, rec.Body.String(), rec.Header().Get("Burrow-Cache"))
+	}
+	// The first target's own answer is cached as before.
+	n := s.n("zai#ZAI")
+	rec = call(g, `{"model":"smart"`+rest)
+	if rec.Body.String() != `{"from":"zai"}` || rec.Header().Get("Burrow-Cache") != "HIT" || s.n("zai#ZAI") != n {
+		t.Fatalf("first target's answer: body %s Burrow-Cache %q", rec.Body.String(), rec.Header().Get("Burrow-Cache"))
+	}
+}
+
+// The policy of a tunnelled first target is checked before the chain, too.
+func TestFailover_TunnelFirstTargetPolicyBeforeTheChain(t *testing.T) {
+	s := script(map[string]http.HandlerFunc{"openrouter#OR": status(200, "{}")})
+	g, _ := failoverGateway(s, "ZAI", func(m *db.AIModel) {
+		m.Targets = []db.AIModelTarget{
+			{Dialect: "openai", Position: 0, ProviderSlug: "ollama", TargetModel: "mistral"},
+			{Dialect: "openai", Position: 1, ProviderSlug: "openrouter", TargetModel: "google/gemini-x"},
+		}
+	})
+	g.Tunnels = fakeTunnels{res: &proxy.Resolved{ServiceID: "svc1", AccessMode: "open", LocalHost: "127.0.0.1:11434"}, upstream: http.NotFoundHandler()}
+	chain := &cacheSpy{}
+	g.Chain = chain
+	rec := call(g, smartBody)
+	if rec.Code != 403 || errCode(t, rec) != "provider_unavailable" || chain.dispatched != 0 || len(s.built) != 0 {
+		t.Fatalf("status %d body %s dispatched %d", rec.Code, rec.Body.String(), chain.dispatched)
+	}
+	// Offline: no refusal, no cache, on to the next target.
+	g.Tunnels = fakeTunnels{}
+	rec = call(g, smartBody)
+	if rec.Code != 200 || chain.dispatched != 1 || chain.cacheHeader != "bypass" {
+		t.Fatalf("offline tunnel: status %d dispatched %d cache header %q", rec.Code, chain.dispatched, chain.cacheHeader)
+	}
+}
+
+// A recovered panic is logged with the stack that led to it.
+func TestFailover_RecoveredPanicIsLoggedWithItsStack(t *testing.T) {
+	s := script(map[string]http.HandlerFunc{
+		"zai#ZAI":       func(http.ResponseWriter, *http.Request) { panic("boom") },
+		"openrouter#OR": status(200, "{}"),
+	})
+	g, _ := failoverGateway(s, "ZAI", nil)
+	var buf syncBuffer
+	g.Log = slog.New(slog.NewTextHandler(&buf, nil))
+	if rec := call(g, smartBody); rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if out := buf.String(); !strings.Contains(out, "boom") || !strings.Contains(out, "goroutine ") || !strings.Contains(out, "failover") {
+		t.Fatalf("log: %s", out)
+	}
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

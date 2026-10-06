@@ -9,6 +9,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -173,25 +174,33 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 }
 
 // firstTargetPolicy checks the policy (access mode, IP/geo) of the service a
-// fallback chain runs under, without reading a credential. A refusal is
-// written to the client and ends the request: ok is false. Anything else that
-// keeps the policy from being read (the tunnel is offline, a lookup failed)
-// is not a refusal, and the failover handler meets it again as a failed
-// attempt and moves on; but the caller was then not checked against this
-// service's policy, so the request must not be answered from its cache.
+// fallback chain runs under: one lookup and the verdict, no upstream handler
+// and no credential. A refusal is written to the client and ends the request:
+// ok is false. When the policy cannot be read (the tunnel is offline, a
+// lookup failed) that is not a refusal, and the failover handler meets it
+// again as a failed attempt and moves on; but the caller was then not checked
+// against this service's policy, so the request must not be answered from
+// its cache.
 func (g *Gateway) firstTargetPolicy(w http.ResponseWriter, r *http.Request, p db.AIProvider) (host string, ok bool) {
-	refused := false
-	cw := newCommitWriter(w,
-		func(status int) bool { return status != http.StatusForbidden },
-		func(int) { refused = true })
-	_, host, passed := g.upstreamFor(cw, r, p)
-	switch {
-	case refused:
-		return "", false
-	case !passed:
-		r.Header.Set("Burrow-Cache", "bypass")
+	var res *proxy.Resolved
+	switch p.Kind {
+	case "tunnel":
+		if found, err := g.Tunnels.LookupByServiceID(r.Context(), p.ServiceID); err == nil && found != nil {
+			res, host = found, found.LocalHost
+		}
+	case "direct":
+		host = upstreamHost(p.BaseURL)
+		if g.Direct != nil && g.ServicePolicy != nil {
+			if found, err := g.ServicePolicy(r.Context(), p.ServiceID); err == nil {
+				res = found
+			}
+		}
 	}
-	return host, true
+	if res == nil {
+		r.Header.Set("Burrow-Cache", "bypass")
+		return host, true
+	}
+	return host, g.policyAllows(w, r, p, res)
 }
 
 func (g *Gateway) maxBody() int64 {

@@ -111,6 +111,14 @@ func failureReason(err error) string {
 	return "other"
 }
 
+// TimeoutNoter is a response writer that wants to know when the upstream did
+// not answer in time: the transport gave up waiting (its header timeout is
+// 120 s, see newTransport) or a deadline passed. The client is answered like
+// any other failure; the note is for the caller's own records.
+type TimeoutNoter interface {
+	NoteUpstreamTimeout()
+}
+
 // isNil reports whether an interface holds nothing or a nil pointer.
 func isNil(v any) bool {
 	if v == nil {
@@ -229,6 +237,9 @@ func NewUpstream(cfg Config, v Vault, rt http.RoundTripper, writeErr ErrorWriter
 				level = slog.LevelDebug
 			}
 			slog.Log(r.Context(), level, "ai upstream request failed", "provider", cfg.Slug, "reason", reason)
+			if tn, ok := w.(TimeoutNoter); ok && reason == "timeout" {
+				tn.NoteUpstreamTimeout()
+			}
 			writeErr(w, http.StatusBadGateway, "upstream_unavailable", "the provider did not answer")
 		},
 	}

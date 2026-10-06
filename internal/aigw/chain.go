@@ -814,7 +814,14 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	//    would be truncated and a later HIT would serve an incomplete
 	//    body with the original Content-Length → silent corruption)
 	//  - the response was not cut off (an aborted response is a fragment)
-	if !aborted && cfg.Cache != nil && cfg.Cache.Enabled && c.Cache != nil && !bypass &&
+	//  - the answer is the first target's: the key is that target's service
+	//    and model, and a fallback target's answer is neither's (this also
+	//    keeps it out of the semantic index, which is filled from here)
+	fallbackAnswer := false
+	if ri, ok := RouteFrom(r.Context()); ok {
+		fallbackAnswer = ri.Fallback
+	}
+	if !aborted && !fallbackAnswer && cfg.Cache != nil && cfg.Cache.Enabled && c.Cache != nil && !bypass &&
 		wrapped.statusCode >= 200 && wrapped.statusCode < 300 &&
 		!isStreamedResponse(wrapped.Header()) &&
 		wrapped.Header().Get("Content-Length") != "" {

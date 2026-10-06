@@ -1134,6 +1134,10 @@ func newRootCmd() *cobra.Command {
 			_ = apiSrv.Shutdown(shutCtx)
 			// No /ai/ request is in flight any more.
 			aiUpstreamTransport.CloseIdleConnections()
+			// What the last requests tried is written before the database closes.
+			if err := aiGateway.FlushAttempts(shutCtx); err != nil {
+				log.Warn("ai gateway: attempt log not fully written", "err", err)
+			}
 			if challengeSrv != nil {
 				_ = challengeSrv.Shutdown(shutCtx)
 			}

@@ -22,11 +22,15 @@ type Route struct {
 	requestedModel string
 	targetModel    string
 	requestID      string
+	fallback       bool
 }
 
 // RouteInfo is an immutable copy of a Route.
 type RouteInfo struct {
 	GatewayKeyID, Dialect, ProviderSlug, RequestedModel, TargetModel, RequestID string
+	// Fallback: the answer came from another target than the first one, the
+	// one whose service the chain (and its cache) ran under.
+	Fallback bool
 }
 
 // NewRoute starts a route for a request; the target is set once it is known.
@@ -42,6 +46,15 @@ func (r *Route) SetTarget(providerSlug, targetModel string) {
 	r.mu.Unlock()
 }
 
+// MarkFallback records that the target answering is not the first target. The
+// chain keeps such an answer out of the cache: the cache key is the first
+// target's service and model, and the answer is neither's.
+func (r *Route) MarkFallback() {
+	r.mu.Lock()
+	r.fallback = true
+	r.mu.Unlock()
+}
+
 // Snapshot returns the route as it is now.
 func (r *Route) Snapshot() RouteInfo {
 	r.mu.Lock()
@@ -53,6 +66,7 @@ func (r *Route) Snapshot() RouteInfo {
 		RequestedModel: r.requestedModel,
 		TargetModel:    r.targetModel,
 		RequestID:      r.requestID,
+		Fallback:       r.fallback,
 	}
 }
 

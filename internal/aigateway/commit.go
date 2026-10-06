@@ -20,7 +20,13 @@ type commitWriter struct {
 	status    int
 	committed bool
 	discarded bool
+	// upstreamTimeout: the upstream handler said its transport gave up
+	// waiting for the response (see aiprovider.TimeoutNoter).
+	upstreamTimeout bool
 }
+
+// NoteUpstreamTimeout implements aiprovider.TimeoutNoter.
+func (c *commitWriter) NoteUpstreamTimeout() { c.upstreamTimeout = true }
 
 // newCommitWriter wraps w. retry is asked once, with the attempt's status:
 // true discards the attempt. onCommit runs just before the status line of a

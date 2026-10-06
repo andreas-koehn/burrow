@@ -2,6 +2,7 @@ package aigateway
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -140,4 +141,72 @@ func TestBreaker_Concurrent(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// Half-open admits one trial, not everyone who asks.
+func TestBreaker_HalfOpenAdmitsExactlyOne(t *testing.T) {
+	b, now := newTestBreaker()
+	for i := 0; i < 5; i++ {
+		b.Report("zai", false)
+	}
+	*now = now.Add(31 * time.Second)
+	var admitted atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if b.Allow("zai") {
+				admitted.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := admitted.Load(); n != 1 {
+		t.Fatalf("%d of 200 admitted in half-open, want exactly 1", n)
+	}
+	if !b.Open("zai") || b.State("zai") != BreakerHalfOpen {
+		t.Fatalf("while the trial is under way: Open %v State %s", b.Open("zai"), b.State("zai"))
+	}
+}
+
+// A trial nobody reports on (the client left, the provider answered 4xx) does
+// not leave the breaker half-open for good: after another cool-down one more
+// trial is admitted, and not before.
+func TestBreaker_AbandonedTrialIsGrantedAgain(t *testing.T) {
+	b, now := newTestBreaker()
+	for i := 0; i < 5; i++ {
+		b.Report("zai", false)
+	}
+	*now = now.Add(31 * time.Second)
+	if !b.Allow("zai") {
+		t.Fatal("no trial after the cool-down")
+	}
+	*now = now.Add(29 * time.Second)
+	if b.Allow("zai") {
+		t.Fatal("a second trial before the first one's cool-down was over")
+	}
+	*now = now.Add(2 * time.Second)
+	if b.Open("zai") || b.State("zai") != BreakerHalfOpen {
+		t.Fatalf("after the abandoned trial's cool-down: Open %v State %s", b.Open("zai"), b.State("zai"))
+	}
+	if !b.Allow("zai") || b.Allow("zai") {
+		t.Fatal("an abandoned trial must be granted again, once")
+	}
+	// The second trial succeeds: closed, for everyone.
+	b.Report("zai", true)
+	if !b.Allow("zai") || !b.Allow("zai") || b.State("zai") != BreakerClosed {
+		t.Fatal("a successful trial did not close the breaker")
+	}
+	// And a failed trial reopens for a full cool-down.
+	for i := 0; i < 5; i++ {
+		b.Report("zai", false)
+	}
+	*now = now.Add(31 * time.Second)
+	_ = b.Allow("zai")
+	b.Report("zai", false)
+	*now = now.Add(29 * time.Second)
+	if b.Allow("zai") || b.State("zai") != BreakerOpen {
+		t.Fatal("a failed trial did not reopen the breaker")
+	}
 }

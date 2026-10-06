@@ -294,7 +294,16 @@ components:
         description: { type: string, maxLength: 500 }
         enabled: { type: boolean }
         fallback_on_rate_limit: { type: boolean }
-        attempt_timeout_s: { type: integer, minimum: 1, maximum: 600, default: 60 }
+        attempt_timeout_s:
+          type: integer
+          minimum: 1
+          maximum: 600
+          default: 60
+          description: >
+            How long one target may take to start its response before the
+            next one is tried. A hosted provider (kind direct) gives up
+            waiting for the response after 120 s whatever this value is; the
+            attempt is then recorded as a timeout.
         total_timeout_s:
           type: integer
           minimum: 1
