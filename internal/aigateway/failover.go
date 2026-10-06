@@ -149,13 +149,14 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sent := 0 // attempts that reached an upstream handler
 	outOfTime := false
 	admitted := map[string]*admission{} // by provider slug
-	// However the chain ends (another provider answered, the total timeout,
-	// the end of the list, a stream that broke off), a provider that failed
-	// and was not heard from again keeps that failure. Only a client that
-	// went away leaves nothing behind: it is not the providers' fault.
+	// A chain that ends without a response (the total timeout, the end of
+	// the list, a panic before one started) leaves the failures it saw with
+	// their providers. With a response that is done at the commit, see
+	// below. Only a client that went away leaves nothing behind: it is not
+	// the providers' fault.
 	defer func() {
 		if r.Context().Err() == nil {
-			f.reportPending(order, admitted)
+			f.reportPending(order, admitted, "")
 		}
 	}()
 	for i, c := range order {
@@ -197,8 +198,25 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// The breaker hears about the request the moment a response starts,
+		// not when its body ends: the first byte shows the answering provider
+		// is up, and the providers that failed before it will not be heard
+		// from again. A long stream then holds no trial open, and a client
+		// leaving mid-stream takes nothing back. What happens to the body
+		// afterwards is not reported; the price, accepted, is that a provider
+		// which always dies mid-stream never opens its breaker.
+		atCommit := func(status int) {
+			if r.Context().Err() != nil {
+				return
+			}
+			if status < 400 {
+				f.report(c, nil, outcomeOK, adm)
+			}
+			f.reportPending(order, admitted, c.provider.Slug)
+		}
+
 		sent++
-		res := f.attempt(w, r, c, next, body.WithModel(c.model), timeout, sent)
+		res := f.attempt(w, r, c, next, body.WithModel(c.model), timeout, sent, atCommit)
 		rows = append(rows, res.row)
 		f.report(c, order[i+1:], res.outcome, adm)
 		if res.panicked && res.committed {
@@ -314,7 +332,7 @@ const (
 // among those sent. It always returns: a panic of the upstream handler is
 // caught, the timer is stopped and the attempt's context released before the
 // next candidate is looked at.
-func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, next *candidate, body []byte, timeout time.Duration, n int) (res attemptResult) {
+func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, next *candidate, body []byte, timeout time.Duration, n int, atCommit func(status int)) (res attemptResult) {
 	ctx, cancel := context.WithCancel(r.Context())
 	var state atomic.Int32
 	var timer *time.Timer // nil = no timeout
@@ -350,7 +368,8 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 			}
 			return false
 		},
-		func(int) {
+		func(status int) {
+			defer atCommit(status)
 			// The usage row names the target the answer belongs to. The
 			// response names it when its upstream was reached: a caller the
 			// target's policy refused is not told which provider that was.
@@ -394,7 +413,12 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 		case gaveUp:
 			code, res.outcome = attemptTimeout, outcomeFailed
 		case res.panicked && res.committed:
-			code, res.outcome = attemptStreamAborted, outcomeFailed
+			// The response started and broke off. The row says so; for the
+			// breaker the start was the answer (reported at the commit).
+			code, res.outcome = attemptStreamAborted, outcomeNeutral
+			if status >= 500 {
+				res.outcome = outcomeFailed
+			}
 		case res.panicked && status == 0:
 			code, res.outcome = attemptPanic, outcomeFailed
 		case status == 0:
@@ -452,12 +476,14 @@ type admission struct {
 // report tells the breaker what an attempt showed about its provider. A
 // provider is judged once per request, whatever number of candidates it has
 // (several credential slots, or the same provider listed again further down):
-// a success is reported at once; a failure when no later candidate of the
+// a success is reported at once (at the commit); a failure when no later candidate of the
 // provider remains or the chain ends (see reportPending), so one dead key cannot take a working provider out of
 // service and one request cannot count against it twice. A failure that does
 // not count (the client's fault, the client gone) is never reported.
 func (f *failover) report(c candidate, rest []candidate, outcome int, adm *admission) {
-	if f.g.Breaker == nil || adm.reported {
+	// A provider the breaker refused and that was tried all the same, as a
+	// last resort, was not asked for: its attempt tells the breaker nothing.
+	if f.g.Breaker == nil || adm.reported || adm.refused {
 		return
 	}
 	switch outcome {
@@ -478,12 +504,16 @@ func (f *failover) report(c candidate, rest []candidate, outcome int, adm *admis
 
 // reportPending reports the failures that were waiting for a later candidate
 // of their provider, when the chain ends before that candidate is tried.
-func (f *failover) reportPending(order []candidate, admitted map[string]*admission) {
+// except names the provider whose attempt is under way and speaks for itself.
+func (f *failover) reportPending(order []candidate, admitted map[string]*admission, except string) {
 	if f.g.Breaker == nil {
 		return
 	}
 	for _, c := range order {
-		if adm := admitted[c.provider.Slug]; adm != nil && adm.failed && !adm.reported {
+		if c.provider.Slug == except {
+			continue
+		}
+		if adm := admitted[c.provider.Slug]; adm != nil && adm.failed && !adm.reported && !adm.refused {
 			adm.reported = true
 			f.g.Breaker.Report(c.provider.Slug, false, adm.trial)
 		}

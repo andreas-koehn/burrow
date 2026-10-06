@@ -518,13 +518,15 @@ func TestFailover_NeverAfterFirstByte(t *testing.T) {
 			t.Fatal("a second target was tried after the response had started")
 		}
 	}
-	// Recorded as a failure: in the log, against the provider, and in one usage row each.
+	// Recorded as what it was in the log, and in one usage row each.
 	rows := att.all()
 	if len(rows) != 5 || rows[0].ErrorCode != "stream_aborted" || rows[0].Status != 200 || rows[0].ProviderSlug != "zai" {
 		t.Fatalf("attempts: %+v", rows)
 	}
-	if !g.Breaker.Open("zai") {
-		t.Fatal("five streams that died were not counted against the provider")
+	// For the breaker a response that started is a success, and what happens
+	// to its body afterwards changes nothing: one OK per request, no failure.
+	if ok, failed := reports(g.Breaker, "zai"); ok != 5 || failed != 0 || g.Breaker.Open("zai") {
+		t.Fatalf("reports for zai: %d ok, %d failed; open %v", ok, failed, g.Breaker.Open("zai"))
 	}
 	if usage := sink.all(); len(usage) != 5 || usage[0].ProviderSlug != "zai" {
 		t.Fatalf("usage rows: %+v", usage)
@@ -1785,5 +1787,142 @@ func TestFailover_FailureIsReportedWhenTheDeadlineEndsTheChain(t *testing.T) {
 	}
 	if g.Breaker.Open("zai") || s.n("zai#ZAI2") != 0 {
 		t.Fatal("a client that left was counted against the provider")
+	}
+}
+
+// reports returns what the breaker has been told about key in its window.
+func reports(b *Breaker, key string) (ok, failed int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if s := b.states[key]; s != nil {
+		for _, c := range s.buckets {
+			ok += c.ok
+			failed += c.failed
+		}
+	}
+	return ok, failed
+}
+
+// The breaker hears about a request at the moment a response starts: the
+// answering provider is up, and the ones that failed before it failed. Neither
+// waits for the end of a long stream, and a client leaving mid-stream finds
+// both already said.
+func TestFailover_ReportsAtCommit(t *testing.T) {
+	for name, clientLeaves := range map[string]bool{"stream runs to its end": false, "client leaves mid-stream": true} {
+		t.Run(name, func(t *testing.T) {
+			var rig *streamRig
+			rig = newStreamRig(t, status(500, "zai down"), func(w http.ResponseWriter, r *http.Request) {
+				sseFirstThenWait(rig.release, func(w http.ResponseWriter) { _, _ = w.Write([]byte("data: [DONE]\n\n")) })(w, r)
+			})
+			m := rig.g.Synthetic.(fakeSynthetic)["smart"]
+			zaiTwice(&m)
+			rig.g.Synthetic.(fakeSynthetic)["smart"] = m
+
+			resp := rig.post(t)
+			br := bufio.NewReader(resp.Body)
+			if ev, err := readEvent(t, br); ev != "data: one\n\n" || err != nil {
+				t.Fatalf("first event %q, %v", ev, err)
+			}
+			check := func(when string) {
+				t.Helper()
+				zok, zfailed := reports(rig.g.Breaker, "zai")
+				ook, ofailed := reports(rig.g.Breaker, "openrouter")
+				if zok != 0 || zfailed != 1 || ook != 1 || ofailed != 0 {
+					t.Fatalf("%s: zai %d ok / %d failed, openrouter %d ok / %d failed; want 0/1 and 1/0", when, zok, zfailed, ook, ofailed)
+				}
+			}
+			check("while the stream is open")
+			if clientLeaves {
+				_ = resp.Body.Close()
+			}
+			close(rig.release)
+			if !clientLeaves {
+				if rest, err := io.ReadAll(br); string(rest) != "data: [DONE]\n\n" || err != nil {
+					t.Fatalf("rest %q, %v", rest, err)
+				}
+			}
+			// The relay's handler has finished when its usage row is written.
+			for end := time.Now().Add(10 * time.Second); len(rig.sink.all()) == 0; time.Sleep(time.Millisecond) {
+				if time.Now().After(end) {
+					t.Fatal("the request did not finish")
+				}
+			}
+			drained(rig.g)
+			check("after the request")
+		})
+	}
+}
+
+// A half-open trial is decided by the first byte: the provider answered. That
+// the stream then broke off does not reopen the breaker.
+func TestFailover_TrialIsDecidedAtCommit(t *testing.T) {
+	s := script(map[string]http.HandlerFunc{
+		"zai#ZAI": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("data: one\n\n"))
+			panic(http.ErrAbortHandler)
+		},
+	})
+	g, att := failoverGateway(s, "ZAI", func(m *db.AIModel) { m.Targets = m.Targets[:1] })
+	now := time.Now()
+	g.Breaker.now = func() time.Time { return now }
+	for i := 0; i < 5; i++ {
+		g.Breaker.Report("zai", false, 0)
+	}
+	now = now.Add(31 * time.Second)
+	func() {
+		defer func() { _ = recover() }()
+		rec := httptest.NewRecorder()
+		rec.Header().Set("Burrow-Request-Id", "req-1")
+		g.ServeDialect(rec, post("/v1/chat/completions", "bgw_all", smartBody), DialectOpenAI)
+	}()
+	drained(g)
+	if g.Breaker.State("zai") != BreakerClosed {
+		t.Fatalf("state %s after a trial that started its response", g.Breaker.State("zai"))
+	}
+	if rows := att.all(); len(rows) != 1 || rows[0].ErrorCode != "stream_aborted" {
+		t.Fatalf("attempts: %+v", rows)
+	}
+}
+
+// A provider the breaker refused may still be tried as a last resort, but
+// that attempt tells the breaker nothing: it was not asked for.
+func TestFailover_RefusedProviderIsNeverReported(t *testing.T) {
+	open := func(g *Gateway) {
+		for i := 0; i < 5; i++ {
+			g.Breaker.Report("zai", false, 0)
+		}
+	}
+	// zai open behind openrouter: skipped, rows say so, only openrouter is reported.
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": status(200, "{}"), "zai#ZAI2": status(200, "{}"), "openrouter#OR": status(200, `{"from":"or"}`)})
+	g, att := failoverGateway(s, "ZAI,ZAI2", func(m *db.AIModel) {
+		m.Targets = []db.AIModelTarget{
+			{Dialect: "openai", Position: 0, ProviderSlug: "openrouter", TargetModel: "google/gemini-x"},
+			{Dialect: "openai", Position: 1, ProviderSlug: "zai", TargetModel: "glm-5.1"},
+		}
+	})
+	open(g)
+	wantHeaders(t, call(g, smartBody), "openrouter", "google/gemini-x", "1")
+	rows := att.all()
+	if len(rows) != 3 || rows[0].ErrorCode != "breaker_open" || rows[1].ErrorCode != "breaker_open" || rows[2].ProviderSlug != "openrouter" {
+		t.Fatalf("attempts: %+v", rows)
+	}
+	if ok, failed := reports(g.Breaker, "zai"); ok != 0 || failed != 5 {
+		t.Fatalf("zai was reported: %d ok, %d failed", ok, failed)
+	}
+	if ok, failed := reports(g.Breaker, "openrouter"); ok != 1 || failed != 0 {
+		t.Fatalf("openrouter: %d ok, %d failed", ok, failed)
+	}
+
+	// zai open and the only provider: both keys are tried as a last resort,
+	// whatever they return, and nothing is reported.
+	for name, second := range map[string]http.HandlerFunc{"answers": status(200, `{"from":"zai"}`), "fails": status(500, "down")} {
+		s = script(map[string]http.HandlerFunc{"zai#ZAI": status(500, "down"), "zai#ZAI2": second})
+		g, _ = failoverGateway(s, "ZAI,ZAI2", func(m *db.AIModel) { m.Targets = m.Targets[:1] })
+		open(g)
+		rec := call(g, smartBody)
+		wantHeaders(t, rec, "zai", "glm-5.1", "2")
+		if ok, failed := reports(g.Breaker, "zai"); ok != 0 || failed != 5 || s.n("zai#ZAI2") != 1 {
+			t.Fatalf("last resort %s: zai was reported: %d ok, %d failed", name, ok, failed)
+		}
 	}
 }
