@@ -14,6 +14,14 @@ import (
 // Places are handed out in the order requests arrived. A key has an entry
 // only while a request holds a place or waits for one, so a provider that is
 // renamed or deleted leaves nothing behind once its requests have ended.
+//
+// Three limits of this design are accepted; do not "fix" them in passing:
+//   - Nothing watches the setting. A raised or lifted limit lets waiters in at
+//     the next Acquire or release for that key, not at the moment it is saved.
+//   - Requests admitted while a key had no limit are not counted. When a limit
+//     is set later they run on beside it until they end.
+//   - The key is the provider's slug. After a rename the requests admitted or
+//     queued under the old slug drain under the old key, next to the new one's.
 type Limiter struct {
 	mu    sync.Mutex
 	state map[string]*limitState
@@ -141,16 +149,6 @@ func (l *Limiter) InUse(key string) int {
 	defer l.mu.Unlock()
 	if s := l.state[key]; s != nil {
 		return s.inUse
-	}
-	return 0
-}
-
-// Waiting reports how many requests wait for a place at key now.
-func (l *Limiter) Waiting(key string) int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if s := l.state[key]; s != nil {
-		return len(s.waiters)
 	}
 	return 0
 }

@@ -16,6 +16,16 @@ func (l *Limiter) entries() int {
 	return len(l.state)
 }
 
+// Waiting is the number of requests waiting for a place at key.
+func (l *Limiter) Waiting(key string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if s := l.state[key]; s != nil {
+		return len(s.waiters)
+	}
+	return 0
+}
+
 // waitFor polls cond; it fails the test when cond never holds.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()

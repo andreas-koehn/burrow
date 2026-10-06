@@ -165,14 +165,9 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return // the client is gone; nothing more to try
 		}
-		timeout := f.attemptTimeout
-		if !deadline.IsZero() {
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
-				outOfTime = true
-				break
-			}
-			timeout = min(timeout, remaining)
+		if !deadline.IsZero() && time.Until(deadline) <= 0 {
+			outOfTime = true
+			break
 		}
 		var next *candidate
 		if i+1 < len(order) {
@@ -226,7 +221,7 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		sent++
-		res := f.attempt(w, r, c, next, body.WithModel(c.model), timeout, sent, atCommit)
+		res := f.attempt(w, r, c, next, body.WithModel(c.model), deadline, sent, atCommit)
 		rows = append(rows, res.row)
 		f.report(c, order[i+1:], res.outcome, adm)
 		if res.panicked && res.committed {
@@ -350,23 +345,26 @@ const (
 )
 
 // attempt sends the request to one candidate. n is the number of this attempt
-// among those sent. It always returns: a panic of the upstream handler is
+// among those sent; deadline is the end of the request's total time (zero =
+// none).
+//
+// An attempt has two clocks. Waiting for a place at a provider with a
+// concurrency limit is bounded by slotWait. The attempt timeout starts only
+// when the place is obtained: it is the upstream's time to answer, and a
+// request that queued long must not run out of it before the provider has
+// seen it. Otherwise a full but healthy provider would collect timeouts and
+// be taken out of service by the breaker. The total time runs through both.
+//
+// It always returns: a panic of the upstream handler is
 // caught, the timer is stopped and the attempt's context released before the
 // next candidate is looked at.
-func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, next *candidate, body []byte, timeout time.Duration, n int, atCommit func(status int)) (res attemptResult) {
+func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, next *candidate, body []byte, deadline time.Time, n int, atCommit func(status int)) (res attemptResult) {
 	ctx, cancel := context.WithCancel(r.Context())
 	var state atomic.Int32
-	var timer *time.Timer // nil = no timeout
-	if timeout > 0 {
-		timer = time.AfterFunc(timeout, func() {
-			if state.CompareAndSwap(attemptPending, attemptTimedOut) {
-				cancel()
-			}
-		})
-	}
-	reached := false // the target's policy and credential passed; its upstream handler was called
-	late := false    // the status came after the time was up: it is the cancellation's, not the upstream's
-	busy := false    // no place came free at the provider in time; its upstream handler was not called
+	var timer *time.Timer // nil = no timeout, or not admitted yet
+	reached := false      // the target's policy and credential passed; its upstream handler was called
+	late := false         // the status came after the time was up: it is the cancellation's, not the upstream's
+	busy := false         // no place came free at the provider in time; its upstream handler was not called
 	cw := newCommitWriter(w,
 		func(status int) bool {
 			if state.Load() == attemptTimedOut {
@@ -481,12 +479,32 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 	// writes is an attempt's answer like any other.
 	if upstream, _, ok := f.g.targetUpstream(cw, req, c.provider); ok {
 		// A place at the provider, for as long as its handler runs: that is
-		// the whole response, a streamed body included. The wait ends with the
-		// attempt's context: its timer, the client leaving.
-		release, admitted := f.g.admit(ctx, c.provider)
+		// the whole response, a streamed body included. The wait has its own
+		// limit and ends when the client leaves; no attempt timer runs yet.
+		release, admitted := f.g.admit(ctx, c.provider, f.slotWait(deadline))
 		if !admitted {
 			busy = true
 			return res
+		}
+		// Admitted: from here the upstream's time runs, within what is left
+		// of the request's.
+		timeout := f.attemptTimeout
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				// The request's time ended in the queue.
+				release()
+				busy = true
+				return res
+			}
+			timeout = min(timeout, remaining)
+		}
+		if timeout > 0 {
+			timer = time.AfterFunc(timeout, func() {
+				if state.CompareAndSwap(attemptPending, attemptTimedOut) {
+					cancel()
+				}
+			})
 		}
 		reached = true
 		func() {
@@ -502,6 +520,21 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 		}
 	}
 	return res
+}
+
+// slotWait is the longest an attempt waits for a place at its provider: the
+// smallest of the gateway's wait limit, the model's attempt timeout and what
+// is left of the request's total time. A direct address has neither timer and
+// waits for the gateway's limit.
+func (f *failover) slotWait(deadline time.Time) time.Duration {
+	wait := slotWaitUnits * f.g.unit()
+	if f.attemptTimeout > 0 {
+		wait = min(wait, f.attemptTimeout)
+	}
+	if !deadline.IsZero() {
+		wait = min(wait, time.Until(deadline))
+	}
+	return wait
 }
 
 // admission is what the breaker said about a provider for this request, and

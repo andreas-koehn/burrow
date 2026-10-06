@@ -173,8 +173,8 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 }
 
 // slotWaitUnits is the longest a request waits for a place at a provider with
-// a concurrency limit, in units (seconds). An attempt's own timeout ends the
-// wait earlier.
+// a concurrency limit, in units (seconds). On a dialect endpoint the model's
+// timeouts can end the wait earlier (see (*failover).slotWait).
 const slotWaitUnits = 60
 
 // unit is the unit of the gateway's timeouts.
@@ -186,18 +186,18 @@ func (g *Gateway) unit() time.Duration {
 }
 
 // admit takes a place at the provider if it has a concurrency limit, waiting
-// for one until ctx ends or the wait limit passes. When ok, release must be
-// called once the provider's handler has returned.
-func (g *Gateway) admit(ctx context.Context, p db.AIProvider) (release func(), ok bool) {
+// for one until ctx ends or wait has passed. When ok, release must be called
+// once the provider's handler has returned.
+func (g *Gateway) admit(ctx context.Context, p db.AIProvider, wait time.Duration) (release func(), ok bool) {
 	if g.Limiter == nil {
 		return func() {}, true
 	}
 	if p.MaxConcurrent <= 0 {
 		return g.Limiter.Acquire(ctx, p.Slug, 0) // never waits
 	}
-	wait, cancel := context.WithTimeout(ctx, slotWaitUnits*g.unit())
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
-	return g.Limiter.Acquire(wait, p.Slug, p.MaxConcurrent)
+	return g.Limiter.Acquire(waitCtx, p.Slug, p.MaxConcurrent)
 }
 
 // limited wraps the upstream of a provider path so that each call holds a
@@ -208,7 +208,7 @@ func (g *Gateway) limited(next http.Handler, p db.AIProvider) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		release, ok := g.admit(r.Context(), p)
+		release, ok := g.admit(r.Context(), p, slotWaitUnits*g.unit())
 		if !ok {
 			w.Header().Set("Retry-After", "1")
 			g.fail(w, r, http.StatusTooManyRequests, "provider_busy", msgProviderBusy)

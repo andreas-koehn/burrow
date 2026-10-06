@@ -2076,6 +2076,7 @@ func TestFailover_BusyUntilTheTotalTimeout(t *testing.T) {
 	})
 	limit(g, "zai", 1)
 	a := inFlight(t, g, "zai", post("/v1/chat/completions", "bgw_all", zaiDirect), DialectOpenAI)
+	start := time.Now()
 	rec := call(g, smartBody)
 	if rec.Code != 429 || errCode(t, rec) != "provider_busy" {
 		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
@@ -2083,7 +2084,117 @@ func TestFailover_BusyUntilTheTotalTimeout(t *testing.T) {
 	if rows := att.all(); len(rows) != 1 || rows[0].ErrorCode != "busy" {
 		t.Fatalf("attempts: %+v", rows)
 	}
+	if el := time.Since(start); el < 25*time.Millisecond || el > 10*time.Second {
+		t.Fatalf("the total timeout of 30 ms ended the wait after %s", el)
+	}
+	if _, failed := reports(g.Breaker, "zai"); failed != 0 {
+		t.Fatalf("%d failures reported for a wait the total timeout ended", failed)
+	}
 	close(hold)
+	<-a
+	noPlaces(t, g)
+}
+
+// The attempt's clock starts when the place is obtained, not when the wait
+// begins: a full but healthy provider answers everybody it admits in time.
+// Requests come faster than a limit of 1 serves them; each either gets its
+// answer from the provider or, after waiting an attempt's time in vain, moves
+// on. None is cut short by a clock that ran while it queued, so no attempt is
+// a "timeout" and the breaker hears of no failure.
+func TestFailover_WaitDoesNotEatTheUpstreamsTime(t *testing.T) {
+	s := script(map[string]http.HandlerFunc{
+		"zai#ZAI": func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(15 * time.Millisecond)
+			_, _ = w.Write([]byte(`{"from":"zai"}`))
+		},
+		"openrouter#OR": status(200, `{"from":"or"}`),
+	})
+	// 55 ms for an answer that takes 15: a request admitted after 50 ms of
+	// waiting needs its own 15 ms. (The wait itself ends after 55 ms: the
+	// attempt timeout, which is below the 60 units every wait is capped at.)
+	g, att := failoverGateway(s, "ZAI", func(m *db.AIModel) { m.AttemptTimeoutS, m.TotalTimeoutS = 55, 60000 })
+	limit(g, "zai", 1)
+	const n = 30
+	var wg sync.WaitGroup
+	codes := make([]int, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			rec.Header().Set("Burrow-Request-Id", "req-"+strconv.Itoa(i))
+			g.ServeDialect(rec, post("/v1/chat/completions", "bgw_all", smartBody), DialectOpenAI)
+			codes[i] = rec.Code
+		}(i)
+		time.Sleep(5 * time.Millisecond)
+	}
+	wg.Wait()
+	drained(g)
+	for i, c := range codes {
+		if c != 200 {
+			t.Fatalf("request %d: status %d", i, c)
+		}
+	}
+	busy := 0
+	for _, row := range att.all() {
+		switch row.ErrorCode {
+		case "busy":
+			busy++
+		case "":
+		default:
+			t.Fatalf("an attempt on a healthy provider ended as %q: %+v", row.ErrorCode, row)
+		}
+	}
+	if busy == 0 || s.n("zai#ZAI") < 2 {
+		t.Fatalf("the test did not queue: %d busy rows, %d zai calls", busy, s.n("zai#ZAI"))
+	}
+	if ok, failed := reports(g.Breaker, "zai"); failed != 0 || ok == 0 || g.Breaker.Open("zai") {
+		t.Fatalf("breaker for zai: %d ok, %d failed, open %v", ok, failed, g.Breaker.Open("zai"))
+	}
+	noPlaces(t, g)
+}
+
+// An upstream that is slow once the request is in still runs out of time, on
+// a clock that started at admission, and that is the provider's failure.
+func TestFailover_SlowAfterAdmissionStillTimesOut(t *testing.T) {
+	hold := make(chan struct{})
+	var calls atomic.Int32
+	s := script(map[string]http.HandlerFunc{
+		"zai#ZAI": func(w http.ResponseWriter, r *http.Request) {
+			if calls.Add(1) == 1 {
+				<-hold
+				_, _ = w.Write([]byte("{}"))
+				return
+			}
+			<-r.Context().Done() // admitted, and then silent
+		},
+		"openrouter#OR": status(200, `{"from":"or"}`),
+	})
+	g, att := failoverGateway(s, "ZAI", func(m *db.AIModel) { m.AttemptTimeoutS, m.TotalTimeoutS = 55, 60000 })
+	limit(g, "zai", 1)
+	a := inFlight(t, g, "zai", post("/v1/chat/completions", "bgw_all", zaiDirect), DialectOpenAI)
+
+	b := make(chan *httptest.ResponseRecorder, 1)
+	go func() { b <- call(g, smartBody) }()
+	waitFor(t, "the second request waits", func() bool { return g.Limiter.Waiting("zai") == 1 })
+	time.Sleep(30 * time.Millisecond) // it waits 30 of the 55 ms a wait may take
+	close(hold)
+	rec := <-b
+	if rec.Code != 200 || rec.Body.String() != `{"from":"or"}` {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	wantHeaders(t, rec, "openrouter", "google/gemini-x", "2")
+	rows := att.all()
+	if len(rows) != 2 || rows[0].ErrorCode != "timeout" || rows[0].ProviderSlug != "zai" || rows[0].Status != 0 {
+		t.Fatalf("attempts: %+v", rows)
+	}
+	// 30 ms in the queue and then the whole 55 ms at the upstream.
+	if rows[0].DurationMs < 80 {
+		t.Fatalf("the attempt ended after %d ms: its clock ran while it waited", rows[0].DurationMs)
+	}
+	if _, failed := reports(g.Breaker, "zai"); failed != 1 {
+		t.Fatalf("failures reported for zai = %d, want 1", failed)
+	}
 	<-a
 	noPlaces(t, g)
 }

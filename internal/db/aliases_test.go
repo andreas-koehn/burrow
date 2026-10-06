@@ -35,7 +35,8 @@ func insertModelAlias(t *testing.T, x *DB, m ModelAlias) {
 func checkListModelAliases(t *testing.T, x *DB, userID string) {
 	t.Helper()
 	ctx := context.Background()
-	mustUser(t, x, userID)
+	// The user may be there already: a Postgres database outlives the run.
+	_ = x.CreateUser(ctx, User{ID: userID, Email: userID + "@test.invalid", PasswordHash: "h", Role: "user"})
 	svcA := seedSvc(t, x, userID, "alias-list-a")
 	svcB := seedSvc(t, x, userID, "alias-list-b")
 	clean := func() {
