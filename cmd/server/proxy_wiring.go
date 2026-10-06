@@ -26,9 +26,13 @@ import (
 	"net"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/ankoehn/burrow/internal/api"
 	"github.com/ankoehn/burrow/internal/auth"
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/proto"
 	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/ankoehn/burrow/internal/server"
 )
@@ -43,13 +47,22 @@ import (
 type serviceDB interface {
 	GetOrCreateService(ctx context.Context, userID, name, typ string) (db.Service, error)
 	SetServiceSubdomain(ctx context.Context, id, sub string) error
+	// For ResolveWithOptions.
+	ListServicesByUser(ctx context.Context, userID string) ([]db.Service, error)
+	CreateService(ctx context.Context, s db.Service) error
+	GetServiceBySubdomain(ctx context.Context, sub string) (db.Service, error)
+	GetUserByID(ctx context.Context, id string) (db.User, error)
 }
 
-// serviceResolverAdapter adapts the db layer to server.ServiceResolver.
-// It owns the collision-retry logic: GenerateSlug is called up to N
-// times, retrying whenever SetServiceSubdomain returns a UNIQUE error.
+// serviceResolverAdapter adapts the db layer to server.ServiceResolver and
+// server.OptionsResolver. It owns the collision-retry logic: GenerateSlug is
+// called up to N times, retrying whenever SetServiceSubdomain returns a UNIQUE
+// error.
 type serviceResolverAdapter struct {
 	db serviceDB
+	// authDomain is the domain services are served under; "" means the
+	// burrow_login mode cannot be chosen, as in the API.
+	authDomain string
 }
 
 const subdomainRetries = 8
@@ -83,6 +96,167 @@ func (a serviceResolverAdapter) Resolve(ctx context.Context, userID, name, typ s
 		return "", "", fmt.Errorf("resolve service: set subdomain: %w", serr)
 	}
 	return "", "", fmt.Errorf("resolve service: exhausted %d subdomain attempts (all collided)", subdomainRetries)
+}
+
+// refuse builds a refusal the control loop sends to the client as it is.
+func refuse(code, msg string) error { return &server.RefusalError{Code: code, Message: msg} }
+
+// accessModesOnCreate are the access modes a client may ask for. mtls is not
+// among them: it needs a CA, which is configured in the dashboard.
+const accessModesOnCreate = "open, api_key, burrow_login"
+
+// findService returns the user's service of that name. A row that backs a
+// direct AI provider is never handed out (see db.GetOrCreateService).
+func (a serviceResolverAdapter) findService(ctx context.Context, userID, name string) (db.Service, bool, error) {
+	rows, err := a.db.ListServicesByUser(ctx, userID)
+	if err != nil {
+		return db.Service{}, false, fmt.Errorf("resolve service: list: %w", err)
+	}
+	for _, r := range rows {
+		if r.Name != name {
+			continue
+		}
+		if r.Type == "direct" {
+			return db.Service{}, false, db.ErrServiceNameReserved
+		}
+		return r, true, nil
+	}
+	return db.Service{}, false, nil
+}
+
+// ResolveWithOptions implements server.OptionsResolver. The options are
+// checked whatever the client checked, and they are applied only to a service
+// this call creates:
+//
+//   - the service exists: it is returned as it is, through Resolve; Ignored
+//     names the wishes that differ from what it has.
+//   - it does not exist and nothing is wished for: Resolve creates it as it
+//     always has (generated slug, mode open).
+//   - it does not exist and something is wished for: the owner must be
+//     allowed to configure services, as for the same change in the dashboard;
+//     the row is then inserted with slug and mode at once, so that a refused
+//     slug leaves nothing behind.
+func (a serviceResolverAdapter) ResolveWithOptions(ctx context.Context, userID, name, typ string, o server.ResolveOptions) (server.Resolved, error) {
+	if o.Slug != "" && !auth.ValidSlug(o.Slug) {
+		return server.Resolved{}, refuse(proto.CodeSlugInvalid, auth.SlugRule)
+	}
+	switch o.Access {
+	case "", "open", "api_key", "burrow_login":
+	default:
+		return server.Resolved{}, refuse(proto.CodeAccessInvalid, "access must be one of: "+accessModesOnCreate)
+	}
+
+	// Two rounds: when another registration creates the service between the
+	// lookup and the insert, the second round finds it.
+	for round := 0; round < 2; round++ {
+		svc, found, err := a.findService(ctx, userID, name)
+		if err != nil {
+			return server.Resolved{}, err
+		}
+		if found || (o.Slug == "" && o.Access == "") {
+			id, slug, err := a.Resolve(ctx, userID, name, typ)
+			if err != nil {
+				return server.Resolved{}, err
+			}
+			res := server.Resolved{ServiceID: id, Slug: slug, AccessMode: "open", Created: !found}
+			if found {
+				res.AccessMode = svc.AccessMode
+				if o.Access != "" && o.Access != svc.AccessMode {
+					res.Ignored = append(res.Ignored, "access")
+				}
+				if o.Slug != "" && o.Slug != slug {
+					res.Ignored = append(res.Ignored, "slug")
+				}
+			}
+			return res, nil
+		}
+
+		res, raced, err := a.createWithOptions(ctx, userID, name, typ, o)
+		if err != nil {
+			return server.Resolved{}, err
+		}
+		if !raced {
+			return res, nil
+		}
+	}
+	return server.Resolved{}, fmt.Errorf("resolve service: %q was created and removed while registering", name)
+}
+
+// createWithOptions inserts the service with the wished slug and mode. raced
+// is true when the name was taken by another registration meanwhile.
+func (a serviceResolverAdapter) createWithOptions(ctx context.Context, userID, name, typ string, o server.ResolveOptions) (res server.Resolved, raced bool, err error) {
+	u, err := a.db.GetUserByID(ctx, userID)
+	if err != nil {
+		return res, false, fmt.Errorf("resolve service: owner: %w", err)
+	}
+	if !authz.Can(u.Role, authz.PermServicesConfigureOwn) && !authz.Can(u.Role, authz.PermServicesConfigureAny) {
+		return res, false, refuse(proto.CodeForbidden, "your role may not choose a slug or an access mode; leave them out and ask an administrator to set them")
+	}
+	mode := o.Access
+	if mode == "" {
+		mode = "open"
+	}
+	if mode == "burrow_login" && a.authDomain == "" {
+		return res, false, refuse(proto.CodeAccessInvalid, "burrow_login requires a configured auth_domain")
+	}
+
+	insert := func(slug string) (inserted bool, err error) {
+		id := uuid.NewString()
+		err = a.db.CreateService(ctx, db.Service{ID: id, UserID: userID, Name: name, Type: typ, Subdomain: slug, AccessMode: mode})
+		if err == nil {
+			res = server.Resolved{ServiceID: id, Slug: slug, AccessMode: mode, Created: true}
+			return true, nil
+		}
+		if !errors.Is(err, db.ErrDuplicateService) {
+			return false, fmt.Errorf("resolve service: create: %w", err)
+		}
+		// Either the name or the slug is in use.
+		_, found, ferr := a.findService(ctx, userID, name)
+		if ferr != nil {
+			return false, ferr
+		}
+		raced = found
+		return false, nil
+	}
+
+	if o.Slug != "" {
+		inserted, err := insert(o.Slug)
+		if err != nil || inserted || raced {
+			return res, raced, err
+		}
+		msg := "slug already in use"
+		if free, ferr := a.freeSlug(ctx); ferr == nil {
+			msg += "; try: " + free
+		}
+		return res, false, refuse(proto.CodeSlugTaken, msg)
+	}
+	for i := 0; i < subdomainRetries; i++ {
+		slug, err := auth.GenerateSlug()
+		if err != nil {
+			return res, false, fmt.Errorf("resolve service: generate slug: %w", err)
+		}
+		inserted, err := insert(slug)
+		if err != nil || inserted || raced {
+			return res, raced, err
+		}
+	}
+	return res, false, fmt.Errorf("resolve service: exhausted %d subdomain attempts (all collided)", subdomainRetries)
+}
+
+// freeSlug returns a generated slug that no service uses right now.
+func (a serviceResolverAdapter) freeSlug(ctx context.Context) (string, error) {
+	for i := 0; i < subdomainRetries; i++ {
+		slug, err := auth.GenerateSlug()
+		if err != nil {
+			return "", err
+		}
+		if _, err := a.db.GetServiceBySubdomain(ctx, slug); errors.Is(err, db.ErrNotFound) {
+			return slug, nil
+		} else if err != nil {
+			return "", err
+		}
+	}
+	return "", errors.New("no free slug")
 }
 
 // isUNIQUESubdomainError reports whether err is a UNIQUE constraint violation

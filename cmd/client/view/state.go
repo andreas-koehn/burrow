@@ -15,6 +15,9 @@ import (
 // maxRecent is how many recent lines a service keeps.
 const maxRecent = 10
 
+// maxNotes is how many notes the view keeps; further ones are dropped.
+const maxNotes = 8
+
 // Model is everything the status view shows. It is a plain value: Render is a
 // pure function of it.
 type Model struct {
@@ -24,13 +27,16 @@ type Model struct {
 	RetryIn        time.Duration
 	RTT            time.Duration // 0 = not measured yet
 	Services       []Service
-	Notice         string // one line, e.g. a version notice
+	// Notes are things the person should read once, each shown as a warning
+	// below the services: what was not applied, who can reach an open app.
+	Notes  []string
+	Notice string // one line, e.g. a version notice
 }
 
 // Service is one exposed service.
 type Service struct {
 	Name, Type, Public, Local string
-	Access                    string // "" = unknown
+	Access                    string // the relay's access mode; "" = unknown
 	Open, Total               int
 	Recent                    []Line // newest last, at most 10
 	LocalDown                 bool
@@ -88,6 +94,7 @@ func (s *Store) Snapshot() Model {
 		sv.Recent = append([]Line(nil), sv.Recent...)
 		m.Services[i] = sv
 	}
+	m.Notes = append([]string(nil), s.m.Notes...)
 	return m
 }
 
@@ -146,6 +153,8 @@ func (s *Store) Registered(t client.RegisteredTunnel) {
 		}
 		s.claimed[i] = true
 		s.byTunnel[t.TunnelID] = i
+		// What the relay says now; an older relay says nothing.
+		s.m.Services[i].Access = t.AccessMode
 		switch {
 		case t.URL != "":
 			s.m.Services[i].Public = t.URL
@@ -200,4 +209,27 @@ func (s *Store) LocalTarget(localAddr string, reachable bool) {
 			}
 		}
 	})
+}
+
+// Note adds a note to the view. A text that is already there is not added
+// again, and neither is one beyond maxNotes.
+func (s *Store) Note(text string) {
+	if text == "" {
+		return
+	}
+	s.update(func() {
+		for _, n := range s.m.Notes {
+			if n == text {
+				return
+			}
+		}
+		if len(s.m.Notes) < maxNotes {
+			s.m.Notes = append(s.m.Notes, text)
+		}
+	})
+}
+
+// SetNotice sets the one-line notice at the bottom of the view.
+func (s *Store) SetNotice(text string) {
+	s.update(func() { s.m.Notice = text })
 }

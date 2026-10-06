@@ -4,6 +4,7 @@ package client
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,6 +27,11 @@ type TunnelSpec struct {
 	Type       string
 	RemotePort int
 	LocalAddr  string
+	// Slug and Access (a relay access mode: open, api_key, burrow_login) are
+	// wishes for an http service that does not exist yet; the relay applies
+	// them only when it creates the service. "" = no wish, nothing is sent.
+	Slug   string
+	Access string
 }
 
 // Options configures a Client.
@@ -39,6 +45,11 @@ type Options struct {
 	Logger     *slog.Logger
 	// Observer is told what the client does, for a status view. nil = none.
 	Observer Observer
+	// StopOnRefusal makes Run return a *RefusedError when the relay refuses
+	// for a reason that trying again does not change (see RefusedError.Final).
+	// Without it Run keeps reconnecting whatever the relay says, as `burrow
+	// connect` always has.
+	StopOnRefusal bool
 }
 
 // Client maintains an authenticated control session with auto-reconnect.
@@ -97,6 +108,13 @@ func (c *Client) Run(ctx context.Context) error {
 	for {
 		c.events.emit(func(o Observer) { o.State(StateConnecting, "", 0) })
 		err := c.connectOnce(ctx)
+		if c.opts.StopOnRefusal && ctx.Err() == nil {
+			var re *RefusedError
+			if errors.As(err, &re) && re.Final() {
+				c.registered.Store(false)
+				return err
+			}
+		}
 		if err != nil && ctx.Err() == nil {
 			c.log.Warn("connection ended", "err", err)
 		}
@@ -129,10 +147,16 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		return err
 	}
 	if !ar.OK {
-		return fmt.Errorf("auth failed: %s", ar.Error)
+		return newRefused(stageAuth, ar.Code, ar.Error)
 	}
 	c.log.Info("connected", "session_id", ar.SessionID)
 	c.events.emit(func(o Observer) { o.State(StateConnected, "", 0) })
+	info := SessionInfo{RelayVersion: ar.RelayVersion, UserEmail: ar.UserEmail}
+	c.events.emit(func(o Observer) {
+		if so, ok := o.(SessionObserver); ok {
+			so.Session(info)
+		}
+	})
 
 	// yamux.DefaultConfig has EnableKeepAlive=true, KeepAliveInterval=30s.
 	// Dead-peer detection relies on this keepalive; do not override it.
@@ -150,6 +174,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 	for _, tn := range c.opts.Tunnels {
 		if err := proto.WriteMessage(ctrl, proto.MsgTunnelRegister, proto.TunnelRegister{
 			Name: tn.Name, Type: tn.Type, RemotePort: tn.RemotePort, LocalAddr: tn.LocalAddr,
+			Slug: tn.Slug, Access: tn.Access,
 		}); err != nil {
 			return err
 		}
@@ -157,10 +182,30 @@ func (c *Client) connectOnce(ctx context.Context) error {
 			return err
 		}
 		var rr proto.TunnelRegisterResponse
-		if env.Type != proto.MsgTunnelRegisterResp || proto.DecodePayload(env, &rr) != nil || !rr.OK {
+		if env.Type != proto.MsgTunnelRegisterResp || proto.DecodePayload(env, &rr) != nil {
 			return fmt.Errorf("register failed: %s", rr.Error)
 		}
-		reg := RegisteredTunnel{TunnelID: rr.TunnelID, Name: tn.Name, Type: tn.Type, LocalAddr: tn.LocalAddr}
+		if !rr.OK {
+			return newRefused(stageRegister, rr.Code, rr.Error)
+		}
+		reg := RegisteredTunnel{
+			TunnelID: rr.TunnelID, Name: tn.Name, Type: tn.Type, LocalAddr: tn.LocalAddr,
+			AccessMode: rr.AccessMode, Created: rr.Created, DashboardURL: rr.DashboardURL,
+		}
+		for _, name := range rr.Ignored {
+			switch name {
+			case "slug":
+				reg.Ignored.Slug = true
+			case "access":
+				reg.Ignored.Access = true
+			}
+		}
+		// A relay that knows slug and access says what the access mode is,
+		// or that it ignored them. One that says neither is older and never
+		// saw the wishes.
+		if tn.Type == "http" && rr.AccessMode == "" && !reg.Ignored.Any() {
+			reg.Unacknowledged = OptionSet{Slug: tn.Slug != "", Access: tn.Access != ""}
+		}
 		if tn.Type == "http" {
 			// Older relays report only the hostname; keep printing that.
 			tunnelURL := rr.URL

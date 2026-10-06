@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -10,22 +8,9 @@ import (
 	"github.com/ankoehn/burrow/internal/client"
 )
 
-// accessModes maps the names of --access to the relay's access modes.
-var accessModes = map[string]string{
-	"open":    "open",
-	"login":   "burrow_login",
-	"api-key": "api_key",
-}
-
-// slugRe is the relay's rule for a service slug (auth.ValidSlug). It is
-// repeated here so that the client does not link the relay's auth package.
-var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$`)
-
 const (
-	msgSlugRule   = "--slug must be 3 to 40 characters: lowercase letters, digits and hyphens, starting and ending with a letter or digit"
-	msgAccessRule = "--access must be one of: open, login, api-key"
-	// msgCreateOptionsLater is printed until the protocol carries the options.
-	msgCreateOptionsLater = "Note: --slug and --access are applied once the relay supports it; this version does not send them yet."
+	msgSlugRule   = "--slug " + client.SlugRule
+	msgAccessRule = "--access " + client.AccessRule
 )
 
 // newExposeCmd builds `burrow http <target>` (typ "http") and
@@ -68,14 +53,20 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 				return err
 			}
 
+			// The relay checks both again; this is for a quick answer.
 			slug, _ := flags.GetString("slug")
 			access, _ := flags.GetString("access")
+			mode := ""
 			if flags.Changed("access") {
-				if _, ok := accessModes[access]; !ok {
+				m, ok := client.AccessMode(access)
+				if !ok {
 					return usageErrorf(msgAccessRule)
 				}
+				mode = m
 			}
-			if flags.Changed("slug") && !slugRe.MatchString(slug) {
+			if !flags.Changed("slug") {
+				slug = ""
+			} else if !client.ValidSlug(slug) {
 				return usageErrorf(msgSlugRule)
 			}
 			remote, _ := flags.GetInt("remote")
@@ -106,10 +97,7 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 				return err
 			}
 
-			if flags.Changed("slug") || flags.Changed("access") {
-				fmt.Fprintln(cmd.ErrOrStderr(), msgCreateOptionsLater)
-			}
-			spec := client.TunnelSpec{Name: name, Type: typ, LocalAddr: local, RemotePort: remote}
+			spec := client.TunnelSpec{Name: name, Type: typ, LocalAddr: local, RemotePort: remote, Slug: slug, Access: mode}
 			return foreground(cmd, d, creds, []client.TunnelSpec{spec}, g)
 		},
 	}

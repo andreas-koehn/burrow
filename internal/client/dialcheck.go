@@ -15,7 +15,10 @@ import (
 type AuthResult struct {
 	OK           bool
 	Error        string // the relay's reason when !OK
-	RelayVersion string // "" until the relay reports it
+	RelayVersion string // "" when the relay does not report it
+	// Code is the reason of a refusal as one of the proto.Code… values; for an
+	// older relay it is derived from Error, and "" when that is not possible.
+	Code string
 }
 
 // dialControl opens the TLS connection to the control endpoint.
@@ -73,5 +76,9 @@ func CheckAuth(ctx context.Context, o Options) (AuthResult, error) {
 		}
 		return AuthResult{}, err
 	}
-	return AuthResult{OK: ar.OK, Error: ar.Error}, nil
+	res := AuthResult{OK: ar.OK, Error: ar.Error, RelayVersion: ar.RelayVersion}
+	if !ar.OK {
+		res.Code = refusalCode(stageAuth, ar.Code, ar.Error)
+	}
+	return res, nil
 }

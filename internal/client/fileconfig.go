@@ -30,6 +30,9 @@ type rawService struct {
 	Local      string `yaml:"local"`
 	Type       string `yaml:"type"`
 	RemotePort int    `yaml:"remote"`
+	// Slug and Access are read by `burrow up` only (see loadFileConfig).
+	Slug   string `yaml:"slug"`
+	Access string `yaml:"access"`
 }
 
 // LoadFileConfig reads and validates a burrow.yaml file at path for
@@ -112,12 +115,37 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 		if typ == "tcp" {
 			remotePort = svc.RemotePort
 		}
-		tunnels = append(tunnels, TunnelSpec{
+		spec := TunnelSpec{
 			Name:       svc.Name,
 			Type:       typ,
 			LocalAddr:  svc.Local,
 			RemotePort: remotePort,
-		})
+		}
+		// slug and access are the wishes of `burrow http --slug --access`.
+		// `connect --config` does not know them: it reads past both keys, as
+		// it does with any key it has never had.
+		if !complete {
+			if typ != "http" {
+				if svc.Slug != "" {
+					return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: slug applies to http services", i, svc.Name)
+				}
+				if svc.Access != "" {
+					return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: access applies to http services", i, svc.Name)
+				}
+			}
+			if svc.Slug != "" && !ValidSlug(svc.Slug) {
+				return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: slug %s", i, svc.Name, SlugRule)
+			}
+			if svc.Access != "" {
+				mode, ok := AccessMode(svc.Access)
+				if !ok {
+					return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: access %s", i, svc.Name, AccessRule)
+				}
+				spec.Access = mode
+			}
+			spec.Slug = svc.Slug
+		}
+		tunnels = append(tunnels, spec)
 	}
 
 	return FileConfig{

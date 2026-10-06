@@ -115,7 +115,11 @@ func runWithView(ctx context.Context, release func(), o client.Options, t termin
 
 	store := view.NewStore(relayHost(o.Server), version.Version, o.Tunnels)
 	gate := &probeGate{Store: store, stops: map[string]context.CancelFunc{}}
-	o.Observer = gate
+	// What there is to say about the run is shown in the view, not printed
+	// over it.
+	notes := newRunNotes(gate, o.Server, len(o.Tunnels))
+	notes.note, notes.notice, notes.inView = store.Note, store.SetNotice, true
+	o.Observer = notes
 	// The view shows what the log lines would say; an error that ends the
 	// command is printed after the view has closed.
 	o.Logger = slog.New(slog.DiscardHandler)

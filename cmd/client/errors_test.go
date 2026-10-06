@@ -149,3 +149,62 @@ func TestReport_StoredTokenForAnotherRelay(t *testing.T) {
 		t.Fatalf("report = %d %q, want 3 %q", code, b.String(), want)
 	}
 }
+
+// The relay's refusals become the spec's messages and exit codes.
+func TestReport_Refusals(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+		code int
+	}{
+		{"token rejected", &client.RefusedError{Code: "invalid_token", Message: "invalid token", Auth: true},
+			"The relay rejected this machine's token. It may have been revoked. Run: burrow login <relay>\n", 4},
+		{"token rejected, wrapped", fmt.Errorf("x: %w", &client.RefusedError{Code: "invalid_token", Message: "invalid token", Auth: true}),
+			"The relay rejected this machine's token. It may have been revoked. Run: burrow login <relay>\n", 4},
+		{"client too old", &client.RefusedError{Code: "client_too_old", Message: "client too old: this relay needs burrow 0.9.0 or newer", Auth: true},
+			"This relay needs burrow 0.9.0 or newer. Run: burrow update\n", 6},
+		{"client too old, minimum with a v", &client.RefusedError{Code: "client_too_old", Message: "needs v1.10.3", Auth: true},
+			"This relay needs burrow 1.10.3 or newer. Run: burrow update\n", 6},
+		{"client too old, no minimum in the text", &client.RefusedError{Code: "client_too_old", Message: "too old", Auth: true},
+			"This relay needs a newer burrow. Run: burrow update\n", 6},
+		{"slug taken", &client.RefusedError{Code: "slug_taken", Message: "slug already in use; try: abc234"},
+			"The relay refused the slug: slug already in use; try: abc234\n", 1},
+		{"slug invalid", &client.RefusedError{Code: "slug_invalid", Message: "slug must be 3-40 characters"},
+			"The relay refused the slug: slug must be 3-40 characters\n", 1},
+		{"access invalid", &client.RefusedError{Code: "access_invalid", Message: "burrow_login requires a configured auth_domain"},
+			"The relay refused the access mode: burrow_login requires a configured auth_domain\n", 1},
+		{"forbidden", &client.RefusedError{Code: "forbidden", Message: "your role may not choose a slug or an access mode"},
+			"The relay refused: your role may not choose a slug or an access mode\n", 1},
+		{"http not enabled", &client.RefusedError{Code: "http_not_enabled", Message: "http tunnels not configured"},
+			"HTTP services are not enabled on this relay. Its administrator enables them with the relay setting auth_domain.\n", 1},
+		// Anything else is printed as it always was.
+		{"another refusal", &client.RefusedError{Code: "port_unavailable", Message: "port 9000 in use"}, "error: register failed: port 9000 in use\n", 1},
+		{"no code", &client.RefusedError{Message: "nope", Auth: true}, "error: auth failed: nope\n", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			if code := report(&b, tc.err); code != tc.code || b.String() != tc.want {
+				t.Fatalf("report = %d %q, want %d %q", code, b.String(), tc.code, tc.want)
+			}
+			if got := exitCode(tc.err); got != tc.code {
+				t.Fatalf("exitCode = %d, want %d", got, tc.code)
+			}
+		})
+	}
+}
+
+// The relay's reason is text from outside: what could move the cursor or
+// colour the terminal is not printed, and it does not grow without bound.
+func TestReport_RefusalTextIsMadeSafe(t *testing.T) {
+	var b bytes.Buffer
+	report(&b, &client.RefusedError{Code: "slug_taken", Message: "taken\x1b[2J\r\nsecond line‮" + strings.Repeat("x", 2000)})
+	out := b.String()
+	if strings.ContainsAny(out[:len(out)-1], "\x1b\r\n‮") {
+		t.Fatalf("control characters reached the terminal: %q", out)
+	}
+	if len(out) > 400 {
+		t.Fatalf("%d bytes were printed", len(out))
+	}
+}

@@ -39,6 +39,9 @@ type AuthRequest struct {
 	Arch            string `json:"arch"`
 	// hostname (optional, since v0.3 extension)
 	Hostname string `json:"hostname,omitempty"`
+	// Capabilities names the optional messages this client understands. A
+	// relay that does not know a name ignores it. Optional.
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // AuthResponse is the server's reply to an AuthRequest.
@@ -46,6 +49,13 @@ type AuthResponse struct {
 	OK        bool   `json:"ok"`
 	SessionID string `json:"session_id,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// RelayVersion and UserEmail (the token's owner) are sent on success by a
+	// relay that knows them. Optional.
+	RelayVersion string `json:"relay_version,omitempty"`
+	UserEmail    string `json:"user_email,omitempty"`
+	// Code names the reason of a refusal (see the Code constants). Optional:
+	// an older relay sends Error alone.
+	Code string `json:"code,omitempty"`
 }
 
 // TunnelRegister asks the server to allocate a public port for a tunnel.
@@ -54,6 +64,11 @@ type TunnelRegister struct {
 	Type       string `json:"type"`        // "tcp" | "http"
 	RemotePort int    `json:"remote_port"` // 0 = auto-assign
 	LocalAddr  string `json:"local_addr"`  // "127.0.0.1:3000"
+	// Slug and Access (a relay access mode: open, api_key, burrow_login) are
+	// wishes for an http service that does not exist yet. The relay applies
+	// them only when it creates the service. Optional.
+	Slug   string `json:"slug,omitempty"`
+	Access string `json:"access,omitempty"`
 }
 
 // TunnelRegisterResponse is the server's reply to a TunnelRegister message.
@@ -64,6 +79,20 @@ type TunnelRegisterResponse struct {
 	URL        string `json:"url,omitempty"`         // e.g. "https://burrow.example.com/svc/k7p2qx/" (http only)
 	Hostname   string `json:"hostname,omitempty"`    // no longer set by the server; kept so older peers still decode
 	Error      string `json:"error,omitempty"`
+	// The fields below are optional; an older relay sends none of them.
+	//
+	// AccessMode is the access mode of the http service as it is now.
+	AccessMode string `json:"access_mode,omitempty"`
+	// Created says that this registration created the service.
+	Created bool `json:"created,omitempty"`
+	// DashboardURL is the page of the service in the dashboard.
+	DashboardURL string `json:"dashboard_url,omitempty"`
+	// Ignored lists, sorted, which of "access" and "slug" the client asked
+	// for and the relay did not apply: the service existed with other values,
+	// or it is a tcp service, which has neither.
+	Ignored []string `json:"ignored,omitempty"`
+	// Code names the reason of a refusal (see the Code constants).
+	Code string `json:"code,omitempty"`
 }
 
 // NewConnection notifies the client that a visitor has connected to a tunnel port.
@@ -91,7 +120,27 @@ type Pong struct {
 // Error is a generic protocol error message.
 type Error struct {
 	Message string `json:"message"`
+	Code    string `json:"code,omitempty"`
 }
+
+// Codes of control-plane refusals. They travel next to the text, which stays
+// as it was for peers that match on it.
+const (
+	CodeInvalidToken      = "invalid_token"
+	CodeClientTooOld      = "client_too_old"
+	CodeHTTPNotEnabled    = "http_not_enabled"
+	CodeSlugInvalid       = "slug_invalid"
+	CodeSlugTaken         = "slug_taken"
+	CodeAccessInvalid     = "access_invalid"
+	CodeUnknownTunnelType = "unknown_tunnel_type"
+	CodeInternal          = "internal"
+	// CodeForbidden: the token's owner may not do what was asked.
+	CodeForbidden = "forbidden"
+	// CodePortUnavailable: the public port of a tcp tunnel cannot be had.
+	CodePortUnavailable = "port_unavailable"
+	// CodeBadRequest: a message that could not be read or was not expected.
+	CodeBadRequest = "bad_request"
+)
 
 // StreamHeader is the first frame the client writes on a new data stream,
 // pairing it (by StreamID) to a pending visitor connection on the server.

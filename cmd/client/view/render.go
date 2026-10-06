@@ -49,6 +49,24 @@ func Render(m Model, width int, color bool) []string {
 		rows = append(rows, row{})
 		rows = append(rows, service(s, w)...)
 	}
+	// A note starts with "! " and its further lines are indented to its
+	// text; a narrow terminal gets the smaller margin.
+	first, next := "  ! ", "    "
+	if w < 16 {
+		first, next = "! ", "  "
+	}
+	for _, n := range m.Notes {
+		if lines := wrap(clean(n), w-length(first)); len(lines) > 0 {
+			rows = append(rows, row{})
+			for i, l := range lines {
+				prefix := next
+				if i == 0 {
+					prefix = first
+				}
+				rows = append(rows, row{text: prefix + l, warn: true})
+			}
+		}
+	}
 	if n := clean(m.Notice); n != "" {
 		rows = append(rows, row{}, row{text: "  " + n})
 	}
@@ -198,7 +216,7 @@ func service(s Service, w int) []row {
 	}
 
 	counts := fmt.Sprintf("%d open, %d total", s.Open, s.Total)
-	if access := clean(s.Access); access != "" {
+	if access := accessLabel(clean(s.Access)); access != "" {
 		access = "access: " + access
 		remark := ""
 		if s.Access == "open" {
@@ -237,6 +255,53 @@ func service(s Service, w int) []row {
 		}
 	}
 	return rows
+}
+
+// accessLabel names a relay access mode for a person. A mode without a name
+// here is shown as the relay calls it.
+func accessLabel(mode string) string {
+	switch mode {
+	case "burrow_login":
+		return "Burrow login"
+	case "api_key":
+		return "API key"
+	}
+	return mode
+}
+
+// wrap breaks text into lines of at most n characters, at spaces. A word
+// longer than a line (an address) continues on the next one instead of being
+// cut, so that all of it stays readable.
+func wrap(text string, n int) []string {
+	if n < 1 {
+		n = 1
+	}
+	var lines []string
+	line := ""
+	for _, word := range strings.Fields(text) {
+		for length(word) > n {
+			if line != "" {
+				lines = append(lines, line)
+				line = ""
+			}
+			r := []rune(word)
+			lines = append(lines, string(r[:n]))
+			word = string(r[n:])
+		}
+		switch {
+		case line == "":
+			line = word
+		case length(line)+1+length(word) <= n:
+			line += " " + word
+		default:
+			lines = append(lines, line)
+			line = word
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 // recent renders one request or connection, in the widest form that fits.

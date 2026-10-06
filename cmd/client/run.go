@@ -42,7 +42,7 @@ var startClient = func(ctx context.Context, o client.Options) error {
 // until the process is interrupted. It is the one place that turns flags into
 // client.Options, for `connect` and for every newer command.
 func runClient(ctx context.Context, creds client.Credentials, tunnels []client.TunnelSpec, g globalFlags) error {
-	log := logging.New(g.logLevel, g.logFormat)
+	log := logging.NewTo(viewErr, g.logLevel, g.logFormat)
 	pool, err := loadRootCAs(g.cacert)
 	if err != nil {
 		return err
@@ -56,17 +56,31 @@ func runClient(ctx context.Context, creds client.Credentials, tunnels []client.T
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// `connect` is neither: it runs as it always has.
+	fg, after := foregroundFrom(ctx)
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	o := client.Options{
 		Server: creds.Control, Token: creds.Token, Insecure: g.insecure,
 		RootCAs: pool, ServerName: sn, Logger: log,
 		Tunnels: tunnels,
+		// A refusal that trying again does not change ends the command with
+		// its message and exit code.
+		StopOnRefusal: after || g.view,
 	}
 	if g.view {
 		if t, ok := openTerminal(); ok {
 			return runWithView(ctx, stop, o, t)
 		}
+	}
+	if after {
+		// Log lines: what there is to say about the run is one more of them.
+		n := newRunNotes(noObserver{}, creds.Control, len(tunnels))
+		n.note = func(text string) { log.Warn(text) }
+		if !fg.logsAsked {
+			n.unreachable = func(text string) { fmt.Fprintln(viewErr, text) }
+		}
+		o.Observer = n
 	}
 	return startClient(ctx, o)
 }
@@ -182,13 +196,16 @@ func readGlobals(cmd *cobra.Command, d deps) (globalFlags, error) {
 	}
 	// The status view replaces the log lines when stdout is a terminal and
 	// nothing asks for log lines: neither --log nor one of the log variables.
-	g.view = !given && strings.TrimSpace(d.getenv("BURROW_LOG_FORMAT")) == "" &&
-		strings.TrimSpace(d.getenv("BURROW_LOG_LEVEL")) == "" &&
-		d.viewTerminal != nil && d.viewTerminal()
+	g.view = !given && !logVariablesSet(d) && d.viewTerminal != nil && d.viewTerminal()
 	g.cacert, _ = cmd.Flags().GetString("cacert")
 	g.serverName, _ = cmd.Flags().GetString("server-name")
 	g.insecure, _ = cmd.Flags().GetBool("insecure")
 	return g, nil
+}
+
+// logVariablesSet reports whether the environment asks for log lines.
+func logVariablesSet(d deps) bool {
+	return strings.TrimSpace(d.getenv("BURROW_LOG_FORMAT")) != "" || strings.TrimSpace(d.getenv("BURROW_LOG_LEVEL")) != ""
 }
 
 // userConfigFile returns the user config path for a command of the root: the
@@ -235,7 +252,12 @@ func resolveCredentials(d deps, userPath string, file *client.FileConfig) (clien
 // foreground. Ctrl-C is how such a command is meant to end, so the cancelled
 // context is not an error.
 func foreground(cmd *cobra.Command, d deps, creds client.Credentials, tunnels []client.TunnelSpec, g globalFlags) error {
-	err := d.run(cmd.Context(), creds, tunnels, g)
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, logFlag, _ := logFormatFlag(cmd)
+	err := d.run(foregroundContext(ctx, logFlag || logVariablesSet(d)), creds, tunnels, g)
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}

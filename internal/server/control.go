@@ -2,35 +2,54 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/ankoehn/burrow/internal/proto"
+	"github.com/ankoehn/burrow/internal/version"
 )
 
 const authReadTimeout = 10 * time.Second
 
-// HandleHandshake reads the auth frame from a raw conn, validates the token via
-// the supplied TokenAuthenticator, replies auth_response, and returns a new
+// HandshakeOptions are the parts of a handshake that depend on the relay's
+// configuration.
+type HandshakeOptions struct {
+	// MinClientVersion: see Options.MinClientVersion.
+	MinClientVersion string
+	// UserEmail: see Options.UserEmail.
+	UserEmail func(ctx context.Context, userID string) string
+}
+
+// HandleHandshake is HandleHandshakeWith without a minimum client version and
+// without the owner's address.
+func HandleHandshake(conn net.Conn, auth TokenAuthenticator, sessionID string) (*ClientSession, error) {
+	return HandleHandshakeWith(conn, auth, sessionID, HandshakeOptions{})
+}
+
+// HandleHandshakeWith reads the auth frame from a raw conn, validates the token
+// via the supplied TokenAuthenticator, replies auth_response, and returns a new
 // ClientSession on success. On failure it writes an error/auth_response and
 // returns nil.
-func HandleHandshake(conn net.Conn, auth TokenAuthenticator, sessionID string) (*ClientSession, error) {
+func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID string, o HandshakeOptions) (*ClientSession, error) {
 	_ = conn.SetReadDeadline(time.Now().Add(authReadTimeout))
 	var env proto.Envelope
 	if err := proto.ReadFrame(conn, &env); err != nil {
 		return nil, fmt.Errorf("read auth frame: %w", err)
 	}
 	if env.Type != proto.MsgAuthRequest {
-		_ = proto.WriteMessage(conn, proto.MsgError, proto.Error{Message: "expected auth_request"})
+		_ = proto.WriteMessage(conn, proto.MsgError, proto.Error{Message: "expected auth_request", Code: proto.CodeBadRequest})
 		return nil, fmt.Errorf("first message was %s", env.Type)
 	}
 	var ar proto.AuthRequest
 	if err := proto.DecodePayload(env, &ar); err != nil {
-		_ = proto.WriteMessage(conn, proto.MsgError, proto.Error{Message: "bad auth payload"})
+		_ = proto.WriteMessage(conn, proto.MsgError, proto.Error{Message: "bad auth payload", Code: proto.CodeBadRequest})
 		return nil, err
 	}
 	var userID, tokenName string
@@ -43,11 +62,24 @@ func HandleHandshake(conn net.Conn, auth TokenAuthenticator, sessionID string) (
 		userID, err = auth.Authenticate(context.Background(), ar.Token)
 	}
 	if err != nil {
-		_ = proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{OK: false, Error: "invalid token"})
+		_ = proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{OK: false, Error: "invalid token", Code: proto.CodeInvalidToken})
 		return nil, fmt.Errorf("token auth: %w", err)
 	}
+	// After the token: only a client that may connect is told it is too old.
+	if olderThan(ar.ClientVersion, o.MinClientVersion) {
+		min := strings.TrimPrefix(strings.TrimSpace(o.MinClientVersion), "v")
+		_ = proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{
+			OK: false, Code: proto.CodeClientTooOld,
+			Error: "client too old: this relay needs burrow " + min + " or newer",
+		})
+		return nil, fmt.Errorf("client version %q is older than the minimum %s", ar.ClientVersion, min)
+	}
+	resp := proto.AuthResponse{OK: true, SessionID: sessionID, RelayVersion: version.Version}
+	if o.UserEmail != nil {
+		resp.UserEmail = o.UserEmail(context.Background(), userID)
+	}
 	_ = conn.SetReadDeadline(time.Time{}) // clear deadline
-	if err := proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{OK: true, SessionID: sessionID}); err != nil {
+	if err := proto.WriteMessage(conn, proto.MsgAuthResponse, resp); err != nil {
 		return nil, err
 	}
 	return &ClientSession{
@@ -55,6 +87,72 @@ func HandleHandshake(conn net.Conn, auth TokenAuthenticator, sessionID string) (
 		OS: ar.OS, Arch: ar.Arch, ClientVersion: ar.ClientVersion, TokenName: tokenName,
 		Tunnels: map[string]*Tunnel{},
 	}, nil
+}
+
+// olderThan reports whether the client version is older than min. Both are
+// MAJOR.MINOR.PATCH with an optional leading v; anything else (no version, a
+// branch name, a pre-release) cannot be compared and is not older.
+func olderThan(client, min string) bool {
+	c, okc := releaseVersion(client)
+	m, okm := releaseVersion(min)
+	if !okc || !okm {
+		return false
+	}
+	for i := range c {
+		if c[i] != m[i] {
+			return c[i] < m[i]
+		}
+	}
+	return false
+}
+
+func releaseVersion(v string) ([3]int, bool) {
+	var out [3]int
+	parts := strings.Split(strings.TrimPrefix(strings.TrimSpace(v), "v"), ".")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		if p == "" || len(p) > 9 {
+			return out, false
+		}
+		for _, r := range p {
+			if r < '0' || r > '9' {
+				return out, false
+			}
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+// ignoredOptions lists, sorted, which of the two wishes msg carries.
+func ignoredOptions(tr proto.TunnelRegister) []string {
+	var out []string
+	if tr.Access != "" {
+		out = append(out, "access")
+	}
+	if tr.Slug != "" {
+		out = append(out, "slug")
+	}
+	return out
+}
+
+// resolveHTTP binds an http tunnel to its service. A resolver that cannot
+// take the client's wishes reports them as ignored.
+func (s *Server) resolveHTTP(cs *ClientSession, tr proto.TunnelRegister) (Resolved, error) {
+	if or, ok := s.opts.Services.(OptionsResolver); ok {
+		return or.ResolveWithOptions(context.Background(), cs.UserID, tr.Name, "http", ResolveOptions{Slug: tr.Slug, Access: tr.Access})
+	}
+	serviceID, slug, err := s.opts.Services.Resolve(context.Background(), cs.UserID, tr.Name, "http")
+	if err != nil {
+		return Resolved{}, err
+	}
+	return Resolved{ServiceID: serviceID, Slug: slug, Ignored: ignoredOptions(tr)}, nil
 }
 
 // RunControlLoop processes control-stream messages until the stream closes.
@@ -69,20 +167,28 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 		case proto.MsgTunnelRegister:
 			var tr proto.TunnelRegister
 			if err := proto.DecodePayload(env, &tr); err != nil {
-				_ = cs.SendControl(proto.MsgError, proto.Error{Message: "bad tunnel_register"})
+				_ = cs.SendControl(proto.MsgError, proto.Error{Message: "bad tunnel_register", Code: proto.CodeBadRequest})
 				continue
 			}
 			switch tr.Type {
 			case "http":
 				if s.opts.Services == nil {
-					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: "http tunnels not configured"})
+					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: "http tunnels not configured", Code: proto.CodeHTTPNotEnabled})
 					continue
 				}
-				serviceID, subdomain, rerr := s.opts.Services.Resolve(context.Background(), cs.UserID, tr.Name, "http")
+				res, rerr := s.resolveHTTP(cs, tr)
 				if rerr != nil {
-					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: "resolve service: " + rerr.Error()})
+					// A refusal is for the client to read; any other failure
+					// keeps the text it has always had.
+					refused := proto.TunnelRegisterResponse{OK: false, Error: "resolve service: " + rerr.Error(), Code: proto.CodeInternal}
+					var re *RefusalError
+					if errors.As(rerr, &re) {
+						refused.Error, refused.Code = re.Message, re.Code
+					}
+					_ = cs.SendControl(proto.MsgTunnelRegisterResp, refused)
 					continue
 				}
+				serviceID, subdomain := res.ServiceID, res.Slug
 				tn := &Tunnel{
 					ID: uuid.NewString(), Name: tr.Name, Type: tr.Type, LocalAddr: tr.LocalAddr, sess: cs,
 					IsHTTP: true, Subdomain: subdomain, ServiceID: serviceID,
@@ -92,22 +198,26 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 					s.log.Warn("persist tunnel failed", "tunnel_id", tn.ID, "err", err)
 				}
 				s.opts.Events.PublishTunnelsChanged(cs.UserID)
-				var tunnelURL string
+				var tunnelURL, dashboardURL string
 				if s.opts.AuthDomain != "" {
 					tunnelURL = "https://" + s.opts.AuthDomain + "/svc/" + subdomain + "/"
+					dashboardURL = "https://" + s.opts.AuthDomain + "/services/" + serviceID
 				}
 				s.log.Info("http tunnel registered", "tunnel_id", tn.ID, "slug", subdomain, "url", tunnelURL, "session_id", cs.SessionID)
-				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: true, TunnelID: tn.ID, RemotePort: 0, URL: tunnelURL})
+				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{
+					OK: true, TunnelID: tn.ID, RemotePort: 0, URL: tunnelURL,
+					AccessMode: res.AccessMode, Created: res.Created, DashboardURL: dashboardURL, Ignored: res.Ignored,
+				})
 			case "", "tcp":
 				port, perr := s.ports.Allocate(tr.RemotePort)
 				if perr != nil {
-					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: perr.Error()})
+					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: perr.Error(), Code: proto.CodePortUnavailable})
 					continue
 				}
 				tn := &Tunnel{ID: uuid.NewString(), Name: tr.Name, Type: tr.Type, RemotePort: port, LocalAddr: tr.LocalAddr, sess: cs}
 				if lerr := s.startPublicListener(tn); lerr != nil {
 					s.ports.Release(port)
-					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: lerr.Error()})
+					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: lerr.Error(), Code: proto.CodePortUnavailable})
 					continue
 				}
 				reg.AddTunnel(cs, tn)
@@ -120,9 +230,13 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 				}
 				s.opts.Events.PublishTunnelsChanged(cs.UserID)
 				s.log.Info("tunnel registered", "tunnel_id", tn.ID, "remote_port", port, "session_id", cs.SessionID)
-				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: true, TunnelID: tn.ID, RemotePort: port})
+				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{
+					OK: true, TunnelID: tn.ID, RemotePort: port,
+					// A tcp service has neither a slug nor an access mode.
+					Ignored: ignoredOptions(tr),
+				})
 			default:
-				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: "unknown tunnel type \"" + tr.Type + "\""})
+				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: "unknown tunnel type \"" + tr.Type + "\"", Code: proto.CodeUnknownTunnelType})
 				continue
 			}
 		case proto.MsgTunnelUnregister:
@@ -147,7 +261,7 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 			// lightweight application-level liveness signal retained for future use;
 			// yamux keepalive is the authoritative liveness mechanism.
 		default:
-			_ = cs.SendControl(proto.MsgError, proto.Error{Message: "unexpected: " + string(env.Type)})
+			_ = cs.SendControl(proto.MsgError, proto.Error{Message: "unexpected: " + string(env.Type), Code: proto.CodeBadRequest})
 		}
 	}
 }

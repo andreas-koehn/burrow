@@ -2,15 +2,22 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
+	"log/slog"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/api"
 	"github.com/ankoehn/burrow/internal/auth"
+	"github.com/ankoehn/burrow/internal/client"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/devcert"
 	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/ankoehn/burrow/internal/server"
 	"github.com/ankoehn/burrow/internal/store"
@@ -45,6 +52,30 @@ func (f *fakeServiceDB) GetOrCreateService(_ context.Context, userID, name, typ 
 	}
 	f.services[key] = s
 	return s, nil
+}
+
+// The methods below serve ResolveWithOptions; the tests that use this double
+// go through Resolve and never reach them.
+func (f *fakeServiceDB) ListServicesByUser(_ context.Context, userID string) ([]db.Service, error) {
+	var out []db.Service
+	for _, s := range f.services {
+		if s.UserID == userID {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeServiceDB) CreateService(context.Context, db.Service) error {
+	return errors.New("fakeServiceDB: CreateService is not supported")
+}
+
+func (f *fakeServiceDB) GetServiceBySubdomain(context.Context, string) (db.Service, error) {
+	return db.Service{}, db.ErrNotFound
+}
+
+func (f *fakeServiceDB) GetUserByID(context.Context, string) (db.User, error) {
+	return db.User{Role: "user"}, nil
 }
 
 func (f *fakeServiceDB) SetServiceSubdomain(_ context.Context, id, sub string) error {
@@ -655,5 +686,447 @@ func TestResolveAuthDomain(t *testing.T) {
 		if got := resolveAuthDomain(tc.authDomain, tc.acmeDomain, tc.acmeOn); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// serviceResolverAdapter.ResolveWithOptions (slug and access on creation)
+// ---------------------------------------------------------------------------
+
+// optionsDB opens a migrated database with one admin and returns the wrapped
+// handle and the admin's id.
+func optionsDB(t *testing.T) (*db.DB, string) {
+	t.Helper()
+	d, err := db.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if err := db.Migrate(d); err != nil {
+		t.Fatal(err)
+	}
+	st := store.New(d)
+	if err := st.SeedAdmin(context.Background(), "a@x.com", "password1"); err != nil {
+		t.Fatal(err)
+	}
+	u, err := st.GetUserByEmail(context.Background(), "a@x.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db.Wrap(d), u.ID
+}
+
+// servicesOf returns the user's service rows by name.
+func servicesOf(t *testing.T, x *db.DB, userID string) map[string]db.Service {
+	t.Helper()
+	rows, err := x.ListServicesByUser(context.Background(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]db.Service{}
+	for _, r := range rows {
+		out[r.Name] = r
+	}
+	return out
+}
+
+// refusal fails the test unless err is a refusal with the given code, and
+// returns its text.
+func refusal(t *testing.T, err error, code string) string {
+	t.Helper()
+	var re *server.RefusalError
+	if !errors.As(err, &re) {
+		t.Fatalf("error = %v, want a refusal with code %q", err, code)
+	}
+	if re.Code != code {
+		t.Fatalf("code = %q (%s), want %q", re.Code, re.Message, code)
+	}
+	return re.Message
+}
+
+func TestResolveWithOptions_CreatesWithSlugAndAccess(t *testing.T) {
+	x, uid := optionsDB(t)
+	a := serviceResolverAdapter{db: x, authDomain: "burrow.example.com"}
+	ctx := context.Background()
+
+	r, err := a.ResolveWithOptions(ctx, uid, "web", "http", server.ResolveOptions{Slug: "my-app", Access: "burrow_login"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ServiceID == "" || r.Slug != "my-app" || r.AccessMode != "burrow_login" || !r.Created || len(r.Ignored) != 0 {
+		t.Fatalf("created: %+v", r)
+	}
+	row := servicesOf(t, x, uid)["web"]
+	if row.ID != r.ServiceID || row.Subdomain != "my-app" || row.AccessMode != "burrow_login" || row.Type != "http" || row.APIKeyHeader != "Authorization" {
+		t.Fatalf("row: %+v", row)
+	}
+
+	// The same name again with other values: nothing changes on the service.
+	r2, err := a.ResolveWithOptions(ctx, uid, "web", "http", server.ResolveOptions{Slug: "other", Access: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.ServiceID != r.ServiceID || r2.Slug != "my-app" || r2.AccessMode != "burrow_login" || r2.Created ||
+		len(r2.Ignored) != 2 || r2.Ignored[0] != "access" || r2.Ignored[1] != "slug" {
+		t.Fatalf("existing service: %+v", r2)
+	}
+	if got := servicesOf(t, x, uid); len(got) != 1 || got["web"] != row {
+		t.Fatalf("the service changed: %+v", got)
+	}
+
+	// One wish that matches and one that does not.
+	r3, err := a.ResolveWithOptions(ctx, uid, "web", "http", server.ResolveOptions{Slug: "my-app", Access: "api_key"})
+	if err != nil || len(r3.Ignored) != 1 || r3.Ignored[0] != "access" {
+		t.Fatalf("one differing wish: %+v %v", r3, err)
+	}
+
+	// The same values are not "ignored": they are what the service has.
+	r4, err := a.ResolveWithOptions(ctx, uid, "web", "http", server.ResolveOptions{Slug: "my-app", Access: "burrow_login"})
+	if err != nil || r4.Created || len(r4.Ignored) != 0 {
+		t.Fatalf("same values: %+v %v", r4, err)
+	}
+}
+
+// Without the wishes the service is what Resolve has always made of it.
+func TestResolveWithOptions_NoOptionsIsTheOldBehaviour(t *testing.T) {
+	x, uid := optionsDB(t)
+	a := serviceResolverAdapter{db: x, authDomain: "burrow.example.com"}
+	ctx := context.Background()
+
+	r, err := a.ResolveWithOptions(ctx, uid, "web", "http", server.ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Created || r.AccessMode != "open" || len(r.Slug) != 6 || !auth.ValidSlug(r.Slug) || len(r.Ignored) != 0 {
+		t.Fatalf("created: %+v", r)
+	}
+	id, sub, err := a.Resolve(ctx, uid, "web", "http")
+	if err != nil || id != r.ServiceID || sub != r.Slug {
+		t.Fatalf("Resolve sees another service: %q %q %v", id, sub, err)
+	}
+	r2, err := a.ResolveWithOptions(ctx, uid, "web", "http", server.ResolveOptions{})
+	if err != nil || r2.Created || r2.ServiceID != r.ServiceID || r2.Slug != r.Slug {
+		t.Fatalf("second time: %+v %v", r2, err)
+	}
+	// A service Resolve made is found, too.
+	id3, sub3, err := a.Resolve(ctx, uid, "legacy", "http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r3, err := a.ResolveWithOptions(ctx, uid, "legacy", "http", server.ResolveOptions{Slug: "wanted", Access: "open"})
+	if err != nil || r3.Created || r3.ServiceID != id3 || r3.Slug != sub3 || len(r3.Ignored) != 1 || r3.Ignored[0] != "slug" {
+		t.Fatalf("service made by Resolve: %+v %v", r3, err)
+	}
+}
+
+func TestResolveWithOptions_AccessAloneGetsAGeneratedSlug(t *testing.T) {
+	x, uid := optionsDB(t)
+	a := serviceResolverAdapter{db: x}
+	r, err := a.ResolveWithOptions(context.Background(), uid, "api", "http", server.ResolveOptions{Access: "api_key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Created || r.AccessMode != "api_key" || len(r.Slug) != 6 || !auth.ValidSlug(r.Slug) {
+		t.Fatalf("created: %+v", r)
+	}
+	if row := servicesOf(t, x, uid)["api"]; row.Subdomain != r.Slug || row.AccessMode != "api_key" {
+		t.Fatalf("row: %+v", row)
+	}
+}
+
+func TestResolveWithOptions_Refusals(t *testing.T) {
+	x, uid := optionsDB(t)
+	ctx := context.Background()
+	withDomain := serviceResolverAdapter{db: x, authDomain: "burrow.example.com"}
+	noDomain := serviceResolverAdapter{db: x}
+
+	// Another service holds the slug "taken".
+	if _, err := withDomain.ResolveWithOptions(ctx, uid, "first", "http", server.ResolveOptions{Slug: "taken"}); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		a    serviceResolverAdapter
+		o    server.ResolveOptions
+		code string
+		text string
+	}{
+		{"slug with capitals", withDomain, server.ResolveOptions{Slug: "Bad_Slug"}, "slug_invalid", auth.SlugRule},
+		{"slug too short", withDomain, server.ResolveOptions{Slug: "ab"}, "slug_invalid", auth.SlugRule},
+		{"slug with a path", withDomain, server.ResolveOptions{Slug: "a/../b"}, "slug_invalid", auth.SlugRule},
+		{"slug taken", withDomain, server.ResolveOptions{Slug: "taken"}, "slug_taken", "slug already in use"},
+		{"mtls", withDomain, server.ResolveOptions{Access: "mtls"}, "access_invalid", "open, api_key, burrow_login"},
+		{"cli name", withDomain, server.ResolveOptions{Access: "login"}, "access_invalid", "open, api_key, burrow_login"},
+		{"nonsense", withDomain, server.ResolveOptions{Access: "x"}, "access_invalid", "open, api_key, burrow_login"},
+		{"login without an auth domain", noDomain, server.ResolveOptions{Access: "burrow_login"}, "access_invalid", "burrow_login requires a configured auth_domain"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := c.a.ResolveWithOptions(ctx, uid, "new", "http", c.o)
+			msg := refusal(t, err, c.code)
+			if !strings.Contains(msg, c.text) {
+				t.Fatalf("message %q does not contain %q", msg, c.text)
+			}
+			if got := servicesOf(t, x, uid); len(got) != 1 {
+				t.Fatalf("a refusal left a service behind: %+v", got)
+			}
+		})
+	}
+
+	t.Run("a taken slug comes with a free one to try", func(t *testing.T) {
+		_, err := withDomain.ResolveWithOptions(ctx, uid, "new", "http", server.ResolveOptions{Slug: "taken"})
+		msg := refusal(t, err, "slug_taken")
+		i := strings.LastIndex(msg, "try: ")
+		if i < 0 {
+			t.Fatalf("no suggestion in %q", msg)
+		}
+		free := msg[i+len("try: "):]
+		if !auth.ValidSlug(free) || free == "taken" {
+			t.Fatalf("suggestion %q", free)
+		}
+		if _, err := x.GetServiceBySubdomain(ctx, free); !errors.Is(err, db.ErrNotFound) {
+			t.Fatalf("the suggested slug is in use: %v", err)
+		}
+	})
+
+	// A value that could never be applied is refused for a service that
+	// exists as well: the relay checks what it is sent.
+	t.Run("an existing service does not excuse a malformed value", func(t *testing.T) {
+		_, err := withDomain.ResolveWithOptions(ctx, uid, "first", "http", server.ResolveOptions{Access: "mtls"})
+		refusal(t, err, "access_invalid")
+		_, err = withDomain.ResolveWithOptions(ctx, uid, "first", "http", server.ResolveOptions{Slug: "Bad_Slug"})
+		refusal(t, err, "slug_invalid")
+	})
+	// Whether login is available only matters when the mode would be set.
+	t.Run("login on a relay without an auth domain is ignored for an existing service", func(t *testing.T) {
+		r, err := noDomain.ResolveWithOptions(ctx, uid, "first", "http", server.ResolveOptions{Access: "burrow_login"})
+		if err != nil || len(r.Ignored) != 1 || r.Ignored[0] != "access" || r.AccessMode != "open" {
+			t.Fatalf("%+v %v", r, err)
+		}
+	})
+}
+
+// Choosing a slug or an access mode is configuring a service. A role that may
+// not do that in the dashboard cannot do it through the client either.
+func TestResolveWithOptions_NeedsThePermissionToConfigure(t *testing.T) {
+	x, _ := optionsDB(t)
+	ctx := context.Background()
+	if err := x.CreateUser(ctx, db.User{ID: "u-limited", Email: "l@x.com", PasswordHash: "x", Role: "no-such-role"}); err != nil {
+		t.Fatal(err)
+	}
+	a := serviceResolverAdapter{db: x, authDomain: "burrow.example.com"}
+	for _, o := range []server.ResolveOptions{{Slug: "my-app"}, {Access: "api_key"}, {Access: "open"}} {
+		_, err := a.ResolveWithOptions(ctx, "u-limited", "web", "http", o)
+		refusal(t, err, "forbidden")
+	}
+	if got := servicesOf(t, x, "u-limited"); len(got) != 0 {
+		t.Fatalf("a refusal left a service behind: %+v", got)
+	}
+	// What that user could always do still works: a service with the defaults.
+	r, err := a.ResolveWithOptions(ctx, "u-limited", "web", "http", server.ResolveOptions{})
+	if err != nil || !r.Created || r.AccessMode != "open" {
+		t.Fatalf("%+v %v", r, err)
+	}
+}
+
+// The backing row of a direct AI provider is never handed to a tunnel.
+func TestResolveWithOptions_DirectProviderNameStaysReserved(t *testing.T) {
+	x, uid := optionsDB(t)
+	ctx := context.Background()
+	if err := x.CreateService(ctx, db.Service{ID: "direct-1", UserID: uid, Name: "llm", Type: "direct", AccessMode: "api_key"}); err != nil {
+		t.Fatal(err)
+	}
+	a := serviceResolverAdapter{db: x, authDomain: "burrow.example.com"}
+	for _, o := range []server.ResolveOptions{{}, {Slug: "my-app", Access: "open"}} {
+		if _, err := a.ResolveWithOptions(ctx, uid, "llm", "http", o); !errors.Is(err, db.ErrServiceNameReserved) {
+			t.Fatalf("options %+v: error = %v", o, err)
+		}
+	}
+}
+
+// Two registrations of one new name at the same moment end with one service.
+func TestResolveWithOptions_ConcurrentCreation(t *testing.T) {
+	x, uid := optionsDB(t)
+	a := serviceResolverAdapter{db: x, authDomain: "burrow.example.com"}
+	type out struct {
+		r   server.Resolved
+		err error
+	}
+	res := make(chan out, 8)
+	for i := 0; i < 8; i++ {
+		go func() {
+			r, err := a.ResolveWithOptions(context.Background(), uid, "web", "http", server.ResolveOptions{Slug: "my-app", Access: "api_key"})
+			res <- out{r, err}
+		}()
+	}
+	created := 0
+	for i := 0; i < 8; i++ {
+		o := <-res
+		if o.err != nil {
+			t.Fatalf("registration %d: %v", i, o.err)
+		}
+		if o.r.Slug != "my-app" || o.r.AccessMode != "api_key" || len(o.r.Ignored) != 0 {
+			t.Fatalf("registration %d: %+v", i, o.r)
+		}
+		if o.r.Created {
+			created++
+		}
+	}
+	if created != 1 || len(servicesOf(t, x, uid)) != 1 {
+		t.Fatalf("created %d times, %d rows", created, len(servicesOf(t, x, uid)))
+	}
+}
+
+// lastRegistration is a client observer that keeps the last registration.
+type lastRegistration struct {
+	mu  sync.Mutex
+	reg *client.RegisteredTunnel
+}
+
+func (l *lastRegistration) State(client.ConnState, string, time.Duration) {}
+func (l *lastRegistration) Connection(string, time.Time, string)          {}
+func (l *lastRegistration) ConnectionClosed(string)                       {}
+func (l *lastRegistration) Latency(time.Duration)                         {}
+func (l *lastRegistration) LocalTarget(string, bool)                      {}
+func (l *lastRegistration) Registered(t client.RegisteredTunnel) {
+	l.mu.Lock()
+	l.reg = &t
+	l.mu.Unlock()
+}
+
+// The whole way: the client of this code base, the control server, the
+// resolver and a real database, wired as main wires them.
+func TestCreateOptions_ClientToDatabase(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if err := db.Migrate(d); err != nil {
+		t.Fatal(err)
+	}
+	st := store.New(d)
+	ctx := context.Background()
+	if err := st.SeedAdmin(ctx, "a@x.com", "password1"); err != nil {
+		t.Fatal(err)
+	}
+	u, err := st.GetUserByEmail(ctx, "a@x.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := st.IssueClientToken(ctx, u.ID, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	x := db.Wrap(d)
+
+	dir := t.TempDir()
+	if err := devcert.Generate(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := server.New(server.Options{
+		Listen: "127.0.0.1:0", TLSCert: filepath.Join(dir, "dev-server.pem"), TLSKey: filepath.Join(dir, "dev-server-key.pem"),
+		PublicBind: "127.0.0.1", Auth: st, Logger: slog.New(slog.DiscardHandler),
+		Services:   serviceResolverAdapter{db: x, authDomain: "burrow.example.com"},
+		AuthDomain: "burrow.example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx, cancel := context.WithCancel(ctx)
+	go func() { _ = srv.Serve(sctx) }()
+	t.Cleanup(func() { cancel(); srv.Wait() })
+	for i := 0; i < 200 && srv.Addr() == ""; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	caPEM, _ := os.ReadFile(filepath.Join(dir, "dev-ca.pem"))
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(caPEM)
+
+	// register runs a client with one http tunnel until the relay answered,
+	// and returns the registration or the error Run ended with.
+	register := func(spec client.TunnelSpec) (*client.RegisteredTunnel, error) {
+		t.Helper()
+		obs := &lastRegistration{}
+		c := client.New(client.Options{
+			Server: srv.Addr(), Token: token, RootCAs: pool, ServerName: "localhost",
+			Tunnels: []client.TunnelSpec{spec}, Observer: obs, StopOnRefusal: true,
+			Logger: slog.New(slog.DiscardHandler),
+		})
+		cctx, stop := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() { done <- c.Run(cctx) }()
+		defer func() { stop() }()
+		deadline := time.After(5 * time.Second)
+		for {
+			obs.mu.Lock()
+			reg := obs.reg
+			obs.mu.Unlock()
+			if reg != nil {
+				stop()
+				<-done
+				return reg, nil
+			}
+			select {
+			case err := <-done:
+				return nil, err
+			case <-deadline:
+				t.Fatal("the relay did not answer the registration")
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+
+	reg, err := register(client.TunnelSpec{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000", Slug: "my-app", Access: "api_key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := servicesOf(t, x, u.ID)["web"]
+	if row.Subdomain != "my-app" || row.AccessMode != "api_key" {
+		t.Fatalf("row: %+v", row)
+	}
+	if reg.URL != "https://burrow.example.com/svc/my-app/" || reg.AccessMode != "api_key" || !reg.Created ||
+		reg.DashboardURL != "https://burrow.example.com/services/"+row.ID || reg.Ignored.Any() || reg.Unacknowledged.Any() {
+		t.Fatalf("registration: %+v", reg)
+	}
+	// Creating a service with api-key access makes no key: none exists that
+	// could travel to the client or into a log.
+	if keys, err := x.ListServiceAPIKeys(ctx, row.ID); err != nil || len(keys) != 0 {
+		t.Fatalf("keys: %d %v", len(keys), err)
+	}
+
+	// Other values for the service that exists: nothing changes.
+	reg, err = register(client.TunnelSpec{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000", Slug: "other", Access: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.URL != "https://burrow.example.com/svc/my-app/" || reg.AccessMode != "api_key" || reg.Created ||
+		reg.Ignored != (client.OptionSet{Slug: true, Access: true}) {
+		t.Fatalf("existing service: %+v", reg)
+	}
+	if got := servicesOf(t, x, u.ID)["web"]; got != row {
+		t.Fatalf("the service changed: %+v", got)
+	}
+
+	// A slug another service has: the client ends with the relay's reason,
+	// and no service is left behind.
+	_, err = register(client.TunnelSpec{Name: "second", Type: "http", LocalAddr: "127.0.0.1:3001", Slug: "my-app"})
+	var re *client.RefusedError
+	if !errors.As(err, &re) || re.Code != "slug_taken" || !strings.Contains(re.Message, "try: ") {
+		t.Fatalf("taken slug: %v", err)
+	}
+	if got := servicesOf(t, x, u.ID); len(got) != 1 {
+		t.Fatalf("services after a refusal: %+v", got)
+	}
+
+	// No wishes: the service the relay has always made.
+	reg, err = register(client.TunnelSpec{Name: "plain", Type: "http", LocalAddr: "127.0.0.1:3002"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain := servicesOf(t, x, u.ID)["plain"]; plain.AccessMode != "open" || len(plain.Subdomain) != 6 ||
+		reg.AccessMode != "open" || !reg.Created || reg.URL != "https://burrow.example.com/svc/"+plain.Subdomain+"/" {
+		t.Fatalf("row %+v, registration %+v", plain, reg)
 	}
 }

@@ -235,3 +235,72 @@ func TestStore_ConcurrentUse(t *testing.T) {
 		t.Fatalf("total %d open %d recent %d", a.Total, a.Open, len(a.Recent))
 	}
 }
+
+func TestStore_RegisteredFillsTheAccessMode(t *testing.T) {
+	s := NewStore("burrow.example.com", "v0.6.0", specs())
+	s.State(client.StateConnected, "", 0)
+	s.Registered(client.RegisteredTunnel{TunnelID: "a1", Name: "my-app", Type: "http", LocalAddr: "127.0.0.1:3000",
+		URL: "https://burrow.example.com/svc/p7baeh/", AccessMode: "burrow_login"})
+	if got := s.Snapshot().Services[0].Access; got != "burrow_login" {
+		t.Fatalf("access = %q", got)
+	}
+	// After a reconnect to a relay that does not say (an older one took over),
+	// the view does not go on showing what it no longer knows.
+	s.State(client.StateReconnecting, "session closed", time.Second)
+	s.State(client.StateConnected, "", 0)
+	register(s, "2")
+	if got := s.Snapshot().Services[0].Access; got != "" {
+		t.Fatalf("access after an answer without it = %q", got)
+	}
+}
+
+func TestStore_NotesAreKeptOnceAndBounded(t *testing.T) {
+	s := NewStore("burrow.example.com", "v0.6.0", specs())
+	<-drain(s)
+	s.Note("first")
+	select {
+	case <-s.Changed():
+	default:
+		t.Fatal("a note did not signal a change")
+	}
+	s.Note("first")
+	s.Note("")
+	s.Note("second")
+	if got := s.Snapshot().Notes; len(got) != 2 || got[0] != "first" || got[1] != "second" {
+		t.Fatalf("notes = %q", got)
+	}
+	// The snapshot is a copy.
+	snap := s.Snapshot()
+	snap.Notes[0] = "changed"
+	if s.Snapshot().Notes[0] != "first" {
+		t.Fatal("the snapshot shares the notes with the store")
+	}
+	for i := 0; i < 100; i++ {
+		s.Note(fmt.Sprintf("note %d", i))
+	}
+	if n := len(s.Snapshot().Notes); n != maxNotes {
+		t.Fatalf("%d notes are kept, want %d", n, maxNotes)
+	}
+	// A reconnect keeps them: they are about the run, not the session.
+	s.State(client.StateReconnecting, "x", time.Second)
+	if n := len(s.Snapshot().Notes); n != maxNotes {
+		t.Fatalf("%d notes after a reconnect", n)
+	}
+
+	s.SetNotice("The relay runs v0.7.0. Run: burrow update")
+	if got := s.Snapshot().Notice; got != "The relay runs v0.7.0. Run: burrow update" {
+		t.Fatalf("notice = %q", got)
+	}
+}
+
+// drain empties the change signal and returns a closed channel, so that a
+// test can start from "no change pending".
+func drain(s *Store) <-chan struct{} {
+	select {
+	case <-s.Changed():
+	default:
+	}
+	c := make(chan struct{})
+	close(c)
+	return c
+}

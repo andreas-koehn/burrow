@@ -316,3 +316,78 @@ func TestFit(t *testing.T) {
 		t.Fatal("Fit changed its argument")
 	}
 }
+
+// The access modes are shown under the names a person knows; only "open" gets
+// the remark about the URL.
+func TestRender_AccessModes(t *testing.T) {
+	cases := map[string]string{
+		"open":         "           access: open (anyone with the URL)       3 open, 41 total",
+		"burrow_login": "           access: Burrow login       3 open, 41 total",
+		"api_key":      "           access: API key       3 open, 41 total",
+		"mtls":         "           access: mtls       3 open, 41 total",
+		"":             "           3 open, 41 total",
+	}
+	for mode, want := range cases {
+		s := httpService()
+		s.Access = mode
+		if lines := Render(connected(s), 100, false); !hasLine(lines, want) {
+			t.Errorf("access %q: %q is not in:\n%s", mode, want, strings.Join(lines, "\n"))
+		}
+	}
+}
+
+func TestRender_Notes(t *testing.T) {
+	m := connected(httpService())
+	m.Notes = []string{
+		"This app shares the dashboard's origin; expose only apps you trust.",
+		"This service already exists with slug p7baeh and access login. --slug and --access apply only when a service is created. " +
+			"Change them in the dashboard: https://burrow.example.com/services/0b1f7c1e-6f0e-4c58-9a51-3b0f8f2f6a11",
+	}
+	m.Notice = "The relay runs v0.7.0. Run: burrow update"
+	golden(t, "notes.txt", Render(m, 100, false))
+
+	for _, width := range []int{100, 80, 60, 40, 30, 20, 12, 5, 1} {
+		lines := Render(m, width, false)
+		for _, l := range lines {
+			if n := utf8.RuneCountInString(l); n > width {
+				t.Errorf("width %d: line of %d characters: %q", width, n, l)
+			}
+		}
+		if width < 12 {
+			continue
+		}
+		// A note is wrapped, not cut: every word of it is on the screen, and
+		// the address can be put together again from its pieces.
+		joined := strings.Join(lines, "")
+		squeezed := strings.NewReplacer(" ", "", "!", "").Replace(joined)
+		for _, want := range []string{"sharesthedashboard'sorigin", "https://burrow.example.com/services/0b1f7c1e-6f0e-4c58-9a51-3b0f8f2f6a11"} {
+			if !strings.Contains(squeezed, want) {
+				t.Errorf("width %d: %q was cut:\n%s", width, want, strings.Join(lines, "\n"))
+			}
+		}
+	}
+
+	// Notes are warnings: yellow with colour, and nothing but colour differs.
+	plain := Render(m, 100, false)
+	coloured := Render(m, 100, true)
+	if got := stripSGR(strings.Join(coloured, "\n")); got != strings.Join(plain, "\n") {
+		t.Fatalf("coloured lines differ in more than colour")
+	}
+	found := false
+	for _, l := range coloured {
+		if strings.Contains(l, "! This app shares") {
+			found = strings.HasPrefix(l, "\x1b[33m") && strings.HasSuffix(l, "\x1b[0m")
+		}
+	}
+	if !found {
+		t.Fatalf("the note is not a yellow line:\n%q", coloured)
+	}
+
+	// A note is text that partly comes from the relay.
+	m.Notes = []string{"evil \x1b[2J\r\nnote ‮"}
+	for _, l := range Render(m, 100, false) {
+		if strings.ContainsAny(l, "\x1b\r\n‮") {
+			t.Fatalf("control characters in %q", l)
+		}
+	}
+}

@@ -4,10 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ankoehn/burrow/internal/client"
+	"github.com/ankoehn/burrow/internal/proto"
 )
 
 // Exit codes, as the spec's table "Messages and exit codes" assigns them.
@@ -27,7 +32,61 @@ const (
 	msgTokenRejected    = "The relay rejected this machine's token. It may have been revoked. Run: burrow login <relay>"
 	msgRelayUnreachable = "Cannot reach %s. Check the address and that port 7000 is open. Details: burrow doctor"
 	msgClientTooOld     = "This relay needs burrow %s or newer. Run: burrow update"
+	// When the relay's text names no minimum.
+	msgClientTooOldNoMin = "This relay needs a newer burrow. Run: burrow update"
+	msgHTTPNotEnabled    = "HTTP services are not enabled on this relay. Its administrator enables them with the relay setting auth_domain."
 )
+
+// maxRelayText is how much of a text from the relay is printed.
+const maxRelayText = 300
+
+// plainText makes a text that came from the relay fit for a terminal: no
+// control or formatting characters, one line, at most maxRelayText characters.
+func plainText(s string) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if n == maxRelayText {
+			b.WriteString("…")
+			break
+		}
+		switch {
+		case r == utf8.RuneError || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp):
+			continue
+		case unicode.IsControl(r):
+			r = ' '
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+var versionRe = regexp.MustCompile(`\d{1,9}\.\d{1,9}\.\d{1,9}`)
+
+// refusal returns the message and the exit code for a refusal of the relay
+// the spec has a line for. ok is false for any other refusal: it is printed
+// the way every other error is.
+func refusal(re *client.RefusedError) (msg string, code int, ok bool) {
+	switch re.Code {
+	case proto.CodeInvalidToken:
+		return msgTokenRejected, exitTokenRejected, true
+	case proto.CodeClientTooOld:
+		if min := versionRe.FindString(re.Message); min != "" {
+			return fmt.Sprintf(msgClientTooOld, min), exitClientTooOld, true
+		}
+		return msgClientTooOldNoMin, exitClientTooOld, true
+	case proto.CodeSlugTaken, proto.CodeSlugInvalid:
+		return "The relay refused the slug: " + plainText(re.Message), exitGeneral, true
+	case proto.CodeAccessInvalid:
+		return "The relay refused the access mode: " + plainText(re.Message), exitGeneral, true
+	case proto.CodeForbidden:
+		return "The relay refused: " + plainText(re.Message), exitGeneral, true
+	case proto.CodeHTTPNotEnabled:
+		return msgHTTPNotEnabled, exitGeneral, true
+	}
+	return "", 0, false
+}
 
 // exitError is an error with its own exit code. Its message is complete: main
 // prints it as it is, without the "error:" prefix.
@@ -67,6 +126,7 @@ func noArgs(cmd *cobra.Command, args []string) error {
 func classified(err error) (int, bool) {
 	var ee *exitError
 	var te *client.TargetError
+	var re *client.RefusedError
 	switch {
 	case errors.As(err, &ee):
 		return ee.code, true
@@ -74,6 +134,10 @@ func classified(err error) (int, bool) {
 		return exitNotSignedIn, true
 	case errors.As(err, &te):
 		return exitUsage, true
+	case errors.As(err, &re):
+		if _, code, ok := refusal(re); ok {
+			return code, true
+		}
 	}
 	return 0, false
 }
@@ -99,6 +163,13 @@ func report(w io.Writer, err error) int {
 	var ee *exitError
 	var te *client.TargetError
 	var me *client.RelayMismatchError
+	var re *client.RefusedError
+	if errors.As(err, &re) && !errors.As(err, &ee) {
+		if msg, _, ok := refusal(re); ok {
+			fmt.Fprintln(w, msg)
+			return exitCode(err)
+		}
+	}
 	switch {
 	case errors.As(err, &ee):
 		fmt.Fprintln(w, ee.msg)

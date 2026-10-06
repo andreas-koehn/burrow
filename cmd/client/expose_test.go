@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -273,28 +274,64 @@ func TestExpose_LogSettingsFromTheEnvironment(t *testing.T) {
 	}
 }
 
-// --slug and --access are checked now and sent from the protocol task on.
-func TestHTTP_SlugAndAccessAreAcceptedButNotSentYet(t *testing.T) {
-	for _, access := range []string{"open", "login", "api-key"} {
+// --slug and --access travel in the tunnel spec, the access mode under the
+// relay's name.
+func TestHTTP_SlugAndAccessAreSent(t *testing.T) {
+	for access, mode := range map[string]string{"open": "open", "login": "burrow_login", "api-key": "api_key"} {
 		t.Run(access, func(t *testing.T) {
 			h := newHarness(t)
 			h.signIn()
-			if code := h.exec("http", "3000", "--slug", "my-app", "--access", access); code != 0 {
+			if code := h.exec("http", "3000", "--access", access, "--slug", "my-app"); code != 0 {
 				t.Fatalf("exit %d: %s", code, h.stderr.String())
 			}
-			want := []client.TunnelSpec{{Name: "kohns-laptop-3000", Type: "http", LocalAddr: "127.0.0.1:3000"}}
+			want := []client.TunnelSpec{{Name: "kohns-laptop-3000", Type: "http", LocalAddr: "127.0.0.1:3000", Slug: "my-app", Access: mode}}
 			if r := h.oneRun(); !reflect.DeepEqual(r.tunnels, want) {
-				t.Fatalf("tunnels = %+v", r.tunnels)
+				t.Fatalf("tunnels = %+v, want %+v", r.tunnels, want)
 			}
-			if !strings.Contains(h.stderr.String(), "applied once the relay supports it") {
+			if h.stderr.Len() != 0 {
 				t.Fatalf("stderr = %q", h.stderr.String())
 			}
 		})
 	}
+	t.Run("one of the two", func(t *testing.T) {
+		h := newHarness(t)
+		h.signIn()
+		if code := h.exec("http", "3000", "--slug", "my-app"); code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+		if sp := h.oneRun().tunnels[0]; sp.Slug != "my-app" || sp.Access != "" {
+			t.Fatalf("spec = %+v", sp)
+		}
+		h.runs = nil
+		if code := h.exec("http", "3000", "--access", "api-key"); code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+		if sp := h.oneRun().tunnels[0]; sp.Slug != "" || sp.Access != "api_key" {
+			t.Fatalf("spec = %+v", sp)
+		}
+	})
+	// The help no longer says the flags are for later.
+	h := newHarness(t)
+	h.exec("http", "--help")
+	if out := h.stdout.String() + h.stderr.String(); strings.Contains(out, "does not send them yet") || !strings.Contains(out, "--slug") {
+		t.Fatalf("help: %s", out)
+	}
+}
+
+// `up` passes on what burrow.yaml wishes for its services.
+func TestUp_SlugAndAccessFromTheFile(t *testing.T) {
 	h := newHarness(t)
 	h.signIn()
-	if h.exec("http", "3000"); h.stderr.Len() != 0 {
-		t.Fatalf("a note was printed without the flags: %q", h.stderr.String())
+	file := filepath.Join(t.TempDir(), "burrow.yaml")
+	if err := os.WriteFile(file, []byte("services:\n  - { name: app, local: 127.0.0.1:3000, type: http, slug: my-app, access: login }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := h.exec("up", "--file", file); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	want := []client.TunnelSpec{{Name: "app", Type: "http", LocalAddr: "127.0.0.1:3000", Slug: "my-app", Access: "burrow_login"}}
+	if r := h.oneRun(); !reflect.DeepEqual(r.tunnels, want) {
+		t.Fatalf("tunnels = %+v", r.tunnels)
 	}
 }
 

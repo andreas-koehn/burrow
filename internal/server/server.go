@@ -29,6 +29,36 @@ type ServiceResolver interface {
 	Resolve(ctx context.Context, userID, name, typ string) (serviceID, subdomain string, err error)
 }
 
+// ResolveOptions are what a client wishes for an http service that does not
+// exist yet. Both are optional; Access is a relay access mode.
+type ResolveOptions struct{ Slug, Access string }
+
+// Resolved is the service an http tunnel was bound to.
+type Resolved struct {
+	ServiceID, Slug, AccessMode string
+	// Created says that this call created the service.
+	Created bool
+	// Ignored lists, sorted, which of "access" and "slug" were asked for and
+	// not applied because the service existed with other values.
+	Ignored []string
+}
+
+// OptionsResolver is a ServiceResolver that can create a service with a
+// chosen slug and access mode. The options apply only when the service is
+// created; an existing service is returned unchanged, with Ignored saying
+// what was left out. It validates what it is given: the control loop passes
+// the client's values on as they came. A refusal the client can act on is a
+// *RefusalError.
+type OptionsResolver interface {
+	ResolveWithOptions(ctx context.Context, userID, name, typ string, o ResolveOptions) (Resolved, error)
+}
+
+// RefusalError is a refusal with one of the proto.Code… values. Message is
+// sent to the client as it is, so it holds nothing internal.
+type RefusalError struct{ Code, Message string }
+
+func (e *RefusalError) Error() string { return e.Message }
+
 // TunnelStore persists tunnel rows (best-effort; never blocks the data path).
 // Implementations MUST be fast and non-blocking: SaveTunnel is called inline on
 // the serial control loop, and MarkTunnelSeen is called at session/tunnel
@@ -131,6 +161,14 @@ type Options struct {
 	// Only GetCertificate is used (no TLS-ALPN NextProtos) since the control
 	// channel speaks yamux, not an ACME challenge protocol.
 	GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	// MinClientVersion is the oldest client version let in (MAJOR.MINOR.PATCH,
+	// a leading v allowed). Empty lets every client in, and so does a client
+	// that names no version or one that cannot be compared.
+	MinClientVersion string
+	// UserEmail returns the address of a user, "" when it is not known. It is
+	// told to the client that authenticated with one of that user's tokens.
+	// nil = not told.
+	UserEmail func(ctx context.Context, userID string) string
 }
 
 // Server is the burrowd relay control server.
@@ -259,7 +297,9 @@ func yamuxConfig() *yamux.Config {
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	sid := uuid.NewString()
-	cs, err := HandleHandshake(conn, s.opts.Auth, sid)
+	cs, err := HandleHandshakeWith(conn, s.opts.Auth, sid, HandshakeOptions{
+		MinClientVersion: s.opts.MinClientVersion, UserEmail: s.opts.UserEmail,
+	})
 	if err != nil {
 		s.log.Warn("handshake failed", "remote_addr", conn.RemoteAddr().String(), "err", err)
 		return

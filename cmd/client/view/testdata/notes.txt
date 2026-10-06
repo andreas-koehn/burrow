@@ -1,0 +1,15 @@
+burrow  ●  connected to burrow.example.com     v0.6.0   12 ms
+
+  my-app   https://burrow.example.com/svc/p7baeh/  →  127.0.0.1:3000
+           3 open, 41 total
+
+  14:02:11  GET   /api/users      200
+  14:02:12  POST  /api/login      401
+
+  ! This app shares the dashboard's origin; expose only apps you trust.
+
+  ! This service already exists with slug p7baeh and access login. --slug and --access apply only
+    when a service is created. Change them in the dashboard:
+    https://burrow.example.com/services/0b1f7c1e-6f0e-4c58-9a51-3b0f8f2f6a11
+
+  The relay runs v0.7.0. Run: burrow update

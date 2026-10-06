@@ -23,6 +23,44 @@ type RegisteredTunnel struct {
 	URL string
 	// RemotePort is the public port of a tcp tunnel.
 	RemotePort int
+
+	// What follows is known only from a relay that reports it; an older one
+	// leaves it empty.
+	//
+	// AccessMode is the relay's access mode of an http service: open, api_key,
+	// burrow_login or mtls.
+	AccessMode string
+	// Created says that this registration created the service.
+	Created bool
+	// DashboardURL is the page of the service in the dashboard.
+	DashboardURL string
+	// Ignored names the wishes (TunnelSpec.Slug, .Access) the relay did not
+	// apply because the service existed with other values.
+	Ignored OptionSet
+	// Unacknowledged names the wishes the relay said nothing about: it is
+	// older and never saw them, so they were not applied.
+	Unacknowledged OptionSet
+}
+
+// OptionSet names some of the two things a client can wish for a new service.
+type OptionSet struct{ Slug, Access bool }
+
+// Any reports whether the set names anything.
+func (s OptionSet) Any() bool { return s.Slug || s.Access }
+
+// SessionInfo is what the relay says of itself and of the token after a
+// successful sign-in. An older relay says nothing: both are "".
+type SessionInfo struct {
+	RelayVersion string
+	UserEmail    string // the owner of the token
+}
+
+// SessionObserver is an Observer that also wants to know what the relay said
+// when the control connection was accepted. It is optional: an Observer
+// without the method is not told.
+type SessionObserver interface {
+	// Session is called after State(StateConnected), once per connection.
+	Session(info SessionInfo)
 }
 
 // Observer receives what the client does.

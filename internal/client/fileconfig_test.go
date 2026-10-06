@@ -299,3 +299,92 @@ func TestLoadCompleteFileConfig(t *testing.T) {
 		t.Fatalf("server %q, tunnels %d, token as before: %v", c.Server, len(c.Tunnels), c.Token == "bur_abc ")
 	}
 }
+
+// services[].slug and .access are the wishes of `burrow http --slug --access`,
+// with the same names and the same rules.
+func TestLoadFileConfig_SlugAndAccess(t *testing.T) {
+	dir := t.TempDir()
+	yml := filepath.Join(dir, "burrow.yaml")
+	os.WriteFile(yml, []byte("services:\n"+
+		"  - { name: app, local: 127.0.0.1:3000, type: http, slug: my-app, access: login }\n"+
+		"  - { name: api, local: 127.0.0.1:3001, type: http, access: api-key }\n"+
+		"  - { name: pub, local: 127.0.0.1:3002, type: http, slug: pub, access: open }\n"+
+		"  - { name: plain, local: 127.0.0.1:3003, type: http }\n"+
+		"  - { name: db, local: 127.0.0.1:5432 }\n"), 0o600)
+	c, err := LoadFileConfig(yml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []TunnelSpec{
+		{Name: "app", Type: "http", LocalAddr: "127.0.0.1:3000", Slug: "my-app", Access: "burrow_login"},
+		{Name: "api", Type: "http", LocalAddr: "127.0.0.1:3001", Access: "api_key"},
+		{Name: "pub", Type: "http", LocalAddr: "127.0.0.1:3002", Slug: "pub", Access: "open"},
+		{Name: "plain", Type: "http", LocalAddr: "127.0.0.1:3003"},
+		{Name: "db", Type: "tcp", LocalAddr: "127.0.0.1:5432"},
+	}
+	if len(c.Tunnels) != len(want) {
+		t.Fatalf("tunnels: %+v", c.Tunnels)
+	}
+	for i := range want {
+		if c.Tunnels[i] != want[i] {
+			t.Errorf("service %d:\n got %+v\nwant %+v", i, c.Tunnels[i], want[i])
+		}
+	}
+
+	bad := []struct{ name, service, want string }{
+		{"slug with capitals", "{ name: app, local: 127.0.0.1:3000, type: http, slug: Bad_Slug }", `service[0] "app": slug must be 3 to 40 characters`},
+		{"slug too short", "{ name: app, local: 127.0.0.1:3000, type: http, slug: ab }", `service[0] "app": slug must be 3 to 40 characters`},
+		{"unknown access", "{ name: app, local: 127.0.0.1:3000, type: http, access: nonsense }", `service[0] "app": access must be one of: open, login, api-key`},
+		{"the relay's name for an access mode", "{ name: app, local: 127.0.0.1:3000, type: http, access: burrow_login }", `access must be one of: open, login, api-key`},
+		{"mtls", "{ name: app, local: 127.0.0.1:3000, type: http, access: mtls }", `access must be one of: open, login, api-key`},
+		{"slug on tcp", "{ name: db, local: 127.0.0.1:5432, type: tcp, slug: my-db }", `service[0] "db": slug applies to http services`},
+		{"access on tcp", "{ name: db, local: 127.0.0.1:5432, type: tcp, access: open }", `service[0] "db": access applies to http services`},
+		{"slug on the default type", "{ name: db, local: 127.0.0.1:5432, slug: my-db }", `service[0] "db": slug applies to http services`},
+	}
+	for _, tc := range bad {
+		os.WriteFile(yml, []byte("services:\n  - "+tc.service+"\n"), 0o600)
+		if _, err := LoadFileConfig(yml); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want it to contain %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+// `burrow connect --config` reads the file as it always has: the two keys are
+// not part of what it knows, so it neither checks nor sends them.
+func TestLoadCompleteFileConfig_IgnoresSlugAndAccess(t *testing.T) {
+	yml := filepath.Join(t.TempDir(), "burrow.yaml")
+	for _, svc := range []string{
+		"{ name: app, local: 127.0.0.1:3000, type: http, slug: my-app, access: login }",
+		"{ name: app, local: 127.0.0.1:3000, type: http, slug: Bad_Slug, access: nonsense }",
+		"{ name: app, local: 127.0.0.1:3000, slug: my-db, access: open }",
+	} {
+		os.WriteFile(yml, []byte("server: relay.example.com:7000\ntoken: bur_test_0000\nservices:\n  - "+svc+"\n"), 0o600)
+		c, err := LoadCompleteFileConfig(yml)
+		if err != nil {
+			t.Fatalf("%s: %v", svc, err)
+		}
+		if len(c.Tunnels) != 1 || c.Tunnels[0].Slug != "" || c.Tunnels[0].Access != "" {
+			t.Fatalf("%s: %+v", svc, c.Tunnels)
+		}
+	}
+}
+
+func TestAccessModeAndName(t *testing.T) {
+	for cli, mode := range map[string]string{"open": "open", "login": "burrow_login", "api-key": "api_key"} {
+		if got, ok := AccessMode(cli); !ok || got != mode {
+			t.Errorf("AccessMode(%q) = %q, %v", cli, got, ok)
+		}
+		if got := AccessName(mode); got != cli {
+			t.Errorf("AccessName(%q) = %q", mode, got)
+		}
+	}
+	for _, bad := range []string{"", "burrow_login", "api_key", "mtls", "Open", " open"} {
+		if _, ok := AccessMode(bad); ok {
+			t.Errorf("AccessMode(%q) is accepted", bad)
+		}
+	}
+	// A mode the client has no name for keeps the relay's.
+	if got := AccessName("mtls"); got != "mtls" {
+		t.Errorf("AccessName(mtls) = %q", got)
+	}
+}
