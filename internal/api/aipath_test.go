@@ -369,3 +369,139 @@ func TestAIPathHandler_PanicAfterWriteAbortsWithoutJSON(t *testing.T) {
 		t.Fatalf("status %d body %q", rec.Code, rec.Body.String())
 	}
 }
+
+// anthropicErrCode decodes an error in the Anthropic shape.
+func anthropicErrCode(t *testing.T, rec *httptest.ResponseRecorder) (typ, code string) {
+	t.Helper()
+	var body struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+		Code string `json:"burrow_code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Type != "error" || body.Error.Message == "" {
+		t.Fatalf("not the anthropic error shape: %q", rec.Body.String())
+	}
+	if body.Code != rec.Header().Get("Burrow-Error-Code") {
+		t.Fatalf("burrow_code %q, header %q", body.Code, rec.Header().Get("Burrow-Error-Code"))
+	}
+	return body.Error.Type, body.Code
+}
+
+type anthropicDirect struct{}
+
+func (anthropicDirect) ProviderBySlug(_ context.Context, slug string) (db.AIProvider, error) {
+	return db.AIProvider{Slug: slug, Kind: "direct", ServiceID: "prov-" + slug, APIFormat: "anthropic"}, nil
+}
+
+// The anthropic dialect answers at /anthropic. Nothing under /anthropic is
+// the dashboard's, and every answer is in the Anthropic error shape.
+func TestRouter_MountsAnthropicEndpoint(t *testing.T) {
+	spa := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("the SPA was served")
+		_, _ = w.Write([]byte("<html>"))
+	})
+	strict := NewRouter(Deps{AIGateway: &aigateway.Gateway{Providers: strictProviders{t}, Log: discardLog()}, SPA: spa, Log: discardLog()})
+	for _, p := range []string{
+		"/anthropic", "/anthropic/", "/anthropic/index.html", "/anthropic/v1", "/anthropic/v1/messages", "/anthropic/v1/messages/count_tokens",
+		"/anthropic/v1/messages/batches", "/anthropic/v1/models", "/anthropic/v1/models/x", "/anthropic/v1/files", "/anthropic/api/v1/users",
+	} {
+		for _, method := range []string{"GET", "POST", "DELETE"} {
+			rec := httptest.NewRecorder()
+			strict.ServeHTTP(rec, httptest.NewRequest(method, p, strings.NewReader(`{"model":"x"}`)))
+			typ, code := anthropicErrCode(t, rec)
+			if rec.Code != http.StatusUnauthorized || typ != "authentication_error" || code != "invalid_api_key" {
+				t.Errorf("%s %s: status %d body %s", method, p, rec.Code, rec.Body.String())
+			}
+			if rec.Header().Get("Burrow-Request-Id") == "" {
+				t.Errorf("%s %s: missing Burrow-Request-Id", method, p)
+			}
+		}
+	}
+
+	var gotPath, gotQuery, gotVersion string
+	g := &aigateway.Gateway{
+		Providers:   anthropicDirect{},
+		GatewayKeys: gwKeys{"bgw_k": {ID: "gk"}},
+		Direct: func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath, gotQuery, gotVersion = r.URL.Path, r.URL.RawQuery, r.Header.Get("anthropic-version")
+			}), nil
+		},
+		ServicePolicy: func(_ context.Context, id string) (*proxy.Resolved, error) {
+			return &proxy.Resolved{ServiceID: id, AccessMode: "api_key"}, nil
+		},
+		Log: discardLog(),
+	}
+	h := NewRouter(Deps{AIGateway: g, SPA: spa, Log: discardLog()})
+	// With a key the gateway sees the path from "/v1" on; the key may come
+	// in either header.
+	for _, path := range []string{"/v1/messages", "/v1/messages/count_tokens"} {
+		for _, header := range []string{"x-api-key", "Authorization"} {
+			gotPath = ""
+			req := httptest.NewRequest("POST", "/anthropic"+path+"?beta=true", strings.NewReader(`{"model":"zai-a/glm"}`))
+			if header == "Authorization" {
+				req.Header.Set(header, "Bearer bgw_k")
+			} else {
+				req.Header.Set(header, "bgw_k")
+			}
+			req.Header.Set("anthropic-version", "2023-06-01")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != 200 || gotPath != path || gotQuery != "beta=true" || gotVersion != "2023-06-01" || rec.Header().Get("Burrow-Provider") != "zai-a" {
+				t.Errorf("%s via %s: status %d upstream path %q query %q body %s", path, header, rec.Code, gotPath, gotQuery, rec.Body.String())
+			}
+		}
+	}
+	// The model list, in the Anthropic shape.
+	req := httptest.NewRequest("GET", "/anthropic/v1/models", nil)
+	req.Header.Set("x-api-key", "bgw_k")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"data":[],"has_more":false,"first_id":null,"last_id":null}` || rec.Header().Get("Burrow-Request-Id") == "" {
+		t.Errorf("model list: status %d body %s", rec.Code, rec.Body.String())
+	}
+
+	// Everything else under /anthropic is no endpoint, and odd spellings of a
+	// path reach neither an upstream, nor the API, nor the SPA.
+	g.Direct = func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
+		t.Error("an upstream was built")
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("an upstream was called") }), nil
+	}
+	for _, rest := range []string{
+		"", "/", "/v2/messages", "/v1/messages/batches", "/v1/models/x", "/v1/files", "/v1/chat/completions", "/messages",
+		"/v1/../../api/v1/users", "/v1/../../openai/v1/chat/completions", "//v1/messages", "/v1//messages", "/v1/messages%2fcount_tokens",
+		"/v1/messages.", "/v1/./messages", "/v1/messages/..", "/v1/%2e%2e/%2e%2e/api/v1/users", "/v1/m%65ssages",
+	} {
+		for _, method := range []string{"GET", "POST"} {
+			req := httptest.NewRequest(method, "/anthropic"+rest, strings.NewReader(`{"model":"zai-a/glm"}`))
+			req.Header.Set("x-api-key", "bgw_k")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			typ, code := anthropicErrCode(t, rec)
+			if rec.Code != http.StatusNotFound || typ != "not_found_error" || code != "endpoint_not_found" || rec.Header().Get("Burrow-Provider") != "" {
+				t.Errorf("%s /anthropic%s: status %d body %s", method, rest, rec.Code, rec.Body.String())
+			}
+		}
+	}
+}
+
+// A panic on /anthropic is answered as a 500 in the Anthropic shape.
+func TestRouter_AnthropicPanicIsAnthropic500(t *testing.T) {
+	h := NewRouter(Deps{AIGateway: &aigateway.Gateway{GatewayKeys: panicKeys{}, Log: discardLog()}, Log: discardLog()})
+	for _, p := range []string{"/anthropic/v1/messages", "/anthropic/v1/models"} {
+		req := httptest.NewRequest("POST", p, strings.NewReader(`{"model":"x"}`))
+		req.Header.Set("x-api-key", "bgw_k")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		typ, code := anthropicErrCode(t, rec)
+		if rec.Code != http.StatusInternalServerError || typ != "api_error" || code != "internal_error" {
+			t.Fatalf("%s: status %d body %s", p, rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "secret-detail") || rec.Header().Get("Burrow-Request-Id") == "" {
+			t.Fatalf("%s: body %s headers %v", p, rec.Body.String(), rec.Header())
+		}
+	}
+}

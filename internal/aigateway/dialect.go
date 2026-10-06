@@ -45,7 +45,24 @@ var DialectOpenAI = &Dialect{
 	writeModels: writeOpenAIModels,
 }
 
-var dialects = map[string]*Dialect{DialectOpenAI.Name: DialectOpenAI}
+// DialectAnthropic is the Anthropic Messages API. Counting tokens is routed
+// by "model" like a message, but it is no inference: it produces no usage row
+// and does not run through the chain.
+var DialectAnthropic = &Dialect{
+	Name:       "anthropic",
+	WriteError: WriteAnthropicError,
+	inferencePaths: map[string]bool{
+		"/v1/messages":              true,
+		"/v1/messages/count_tokens": true,
+	},
+	unmeteredPaths: map[string]bool{"/v1/messages/count_tokens": true},
+	writeModels:    writeAnthropicModels,
+}
+
+var dialects = map[string]*Dialect{
+	DialectOpenAI.Name:    DialectOpenAI,
+	DialectAnthropic.Name: DialectAnthropic,
+}
 
 // DialectByName returns the dialect with that name.
 func DialectByName(name string) (*Dialect, bool) {
@@ -67,6 +84,36 @@ func writeOpenAIModels(w http.ResponseWriter, items []modelItem) {
 	}{Object: "list", Data: make([]item, len(items))}
 	for i, m := range items {
 		out.Data[i] = item{ID: m.ID, Object: "model", OwnedBy: m.OwnedBy}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// writeAnthropicModels writes a model list in the Anthropic shape. The whole
+// list is one page.
+func writeAnthropicModels(w http.ResponseWriter, items []modelItem) {
+	type item struct {
+		Type        string `json:"type"`
+		ID          string `json:"id"`
+		DisplayName string `json:"display_name"`
+		CreatedAt   string `json:"created_at"`
+	}
+	out := struct {
+		Data    []item  `json:"data"`
+		HasMore bool    `json:"has_more"`
+		FirstID *string `json:"first_id"`
+		LastID  *string `json:"last_id"`
+	}{Data: make([]item, len(items))}
+	for i, m := range items {
+		name := m.DisplayName
+		if name == "" {
+			name = m.ID
+		}
+		// Burrow does not know when a model was released; the shape requires the field.
+		out.Data[i] = item{Type: "model", ID: m.ID, DisplayName: name, CreatedAt: "1970-01-01T00:00:00Z"}
+	}
+	if len(items) > 0 {
+		out.FirstID, out.LastID = &items[0].ID, &items[len(items)-1].ID
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)

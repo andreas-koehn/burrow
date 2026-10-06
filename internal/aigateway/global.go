@@ -41,13 +41,18 @@ type Catalog interface {
 // request's "model" names a synthetic model or "<provider>/<model>".
 // r.URL.Path must start at "/v1".
 //
+// The key is read from "Authorization: Bearer" or, as Anthropic clients send
+// it, "x-api-key". When both are present the bearer token is the key and
+// x-api-key is ignored; neither reaches an upstream.
+//
 // Order of checks: gateway key, the key's allow-list on the name the client
 // asked for, model resolution, the target's service policy (access mode,
 // IP/geo), and only then the upstream credential. Nothing of the request but
 // its key is looked at before the key is accepted.
 func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialect) {
 	// Everything the gateway and the chain write from here on is in d's shape.
-	r = r.WithContext(aigw.WithErrorWriter(r.Context(), d.WriteError))
+	// The URL prefix, not a header, says which format the request is in.
+	r = r.WithContext(aigw.WithKind(aigw.WithErrorWriter(r.Context(), d.WriteError), aigw.Kind(d.Name)))
 
 	key, ok := g.authenticateGatewayKey(w, r)
 	if !ok {
@@ -68,6 +73,13 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		g.fail(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
+		return
+	}
+
+	// A key held to some models names its model in the body and nowhere
+	// else: an upstream may read a "model" parameter of the URL instead.
+	if len(key.AllowedModels) > 0 && hasModelQuery(r) {
+		g.fail(w, r, http.StatusForbidden, "model_not_allowed", msgModelNotAllowed)
 		return
 	}
 

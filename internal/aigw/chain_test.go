@@ -1503,3 +1503,35 @@ func TestChain_UsageRowLatencyExcludesPostResponseWork(t *testing.T) {
 		t.Fatalf("LatencyMs = %d, includes the %s spent after the response", got, promoteDelay)
 	}
 }
+
+// A dialect endpoint knows the request's format from its URL. Its hint wins
+// over what the chain would guess from the path and headers: a Messages
+// request without anthropic-version is still metered as Anthropic.
+func TestChain_KindHintOverridesDetection(t *testing.T) {
+	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","model":"m","content":[],"usage":{"input_tokens":11,"output_tokens":7}}`))
+	})
+	run := func(ctx context.Context) aimeter.Sample {
+		sink := &ctxSink{}
+		c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, nil)
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"m","max_tokens":8}`)).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		c.DispatchMetered(httptest.NewRecorder(), req, "svc1", "host", "Authorization", "", false, up)
+		if !sink.got {
+			t.Fatal("no usage row")
+		}
+		return sink.sample
+	}
+	// Without the hint the body's "model" makes it look like OpenAI.
+	if s := run(context.Background()); s.Kind == aimeter.KindAnthropic {
+		t.Fatalf("test premise: detection alone already says anthropic: %+v", s)
+	}
+	s := run(aigw.WithKind(context.Background(), aigw.KindAnthropic))
+	if s.Kind != aimeter.KindAnthropic || s.TokensIn != 11 || s.TokensOut != 7 {
+		t.Fatalf("sample = %+v, want anthropic with 11/7 tokens", s)
+	}
+	if k, ok := aigw.KindFrom(context.Background()); ok || k != "" {
+		t.Fatalf("KindFrom without a hint = %q %v", k, ok)
+	}
+}

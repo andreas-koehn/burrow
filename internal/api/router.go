@@ -487,6 +487,11 @@ func NewRouter(d Deps) http.Handler {
 		av1 := AIDialectHandler(d.AIGateway, aigateway.DialectOpenAI, "/ai")
 		r.Handle("/ai/v1", av1)
 		r.Handle("/ai/v1/*", av1)
+		// The Messages API for Anthropic-format clients. Everything under
+		// /anthropic/ is the gateway's, never the SPA's.
+		anth := AIDialectHandler(d.AIGateway, aigateway.DialectAnthropic, "/anthropic")
+		r.Handle("/anthropic", anth)
+		r.Handle("/anthropic/*", anth)
 
 		ah := AIPathHandler(d.AIGateway)
 		r.Handle("/ai", ah)

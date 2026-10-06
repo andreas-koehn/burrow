@@ -82,6 +82,22 @@ const (
 	KindUnknown   Kind = "unknown"
 )
 
+type kindKey struct{}
+
+// WithKind tells the chain which API format a request is in. An entry point
+// that knows the format from its URL (a dialect endpoint) sets it; the chain
+// then does not guess from the path and headers, so a Messages request
+// without an anthropic-version header is still read as Anthropic.
+func WithKind(ctx context.Context, k Kind) context.Context {
+	return context.WithValue(ctx, kindKey{}, k)
+}
+
+// KindFrom returns the kind set by WithKind.
+func KindFrom(ctx context.Context) (Kind, bool) {
+	k, ok := ctx.Value(kindKey{}).(Kind)
+	return k, ok
+}
+
 // Service is the per-request input the Chain needs. proxy.Proxy constructs
 // one of these from its own *proxy.Resolved + the AI config blob, then
 // calls Chain.ServeHTTP. Defining it here (rather than re-exporting
@@ -440,6 +456,9 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// Step 1: detect — tag the request kind for metering + logging.
 	// ---------------------------------------------------------------
 	kind := DetectKind(r, body)
+	if k, ok := KindFrom(r.Context()); ok {
+		kind = k // the entry point knows; detection is a guess
+	}
 
 	// ---------------------------------------------------------------
 	// Step 2: ipgeo — STUB. Task 16 swaps in the real impl.
@@ -634,7 +653,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 			Kind:           string(kind),
 			Model:          extractModelFromBody(redactedBody),
 			IdempotencyKey: r.Header.Get("Idempotency-Key"),
-			APIKeyID:       svc.APIKeyID,
+			APIKeyID:       keySubject(r, svc),
 			HeaderValues:   firstValues(r.Header),
 		}
 		if pick, err := c.Router.Pick(r.Context(), *cfg.Routing, rc); err == nil {

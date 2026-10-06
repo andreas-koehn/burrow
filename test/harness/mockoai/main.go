@@ -3,8 +3,9 @@
 //
 // Mock OpenAI-compatible server for Burrow e2e tests.
 // Implements POST /v1/chat/completions (SSE), POST /v1/embeddings,
-// POST /v1/messages (Anthropic shape). Deterministic seeded responses
-// — no real model, no phone-home. Apache-2.0, stdlib only.
+// POST /v1/messages and /v1/messages/count_tokens (Anthropic shape).
+// Deterministic seeded responses — no real model, no phone-home.
+// Apache-2.0, stdlib only.
 package main
 
 import (
@@ -83,16 +84,33 @@ func handler() http.Handler {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		// Echo the model that arrived, so a test sees what a gateway in
+		// front of the mock forwarded.
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Model == "" {
+			req.Model = "claude-mock"
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":          "msg_mock",
 			"type":        "message",
 			"role":        "assistant",
 			"content":     []map[string]string{{"type": "text", "text": "Hello from mockoai (Anthropic)."}},
-			"model":       "claude-mock",
+			"model":       req.Model,
 			"stop_reason": "end_turn",
 			"usage":       map[string]int{"input_tokens": 4, "output_tokens": 8},
 		})
+	})
+	mux.HandleFunc("/v1/messages/count_tokens", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]int{"input_tokens": 4})
 	})
 	return mux
 }

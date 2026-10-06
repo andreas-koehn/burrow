@@ -78,3 +78,42 @@ func TestDialectOpenAI_ModelList(t *testing.T) {
 		t.Fatalf("empty list = %s", rec.Body.String())
 	}
 }
+
+func TestDialectAnthropic(t *testing.T) {
+	d := DialectAnthropic
+	if d.Name != "anthropic" {
+		t.Fatal(d.Name)
+	}
+	if !d.inference("/v1/messages") || !d.inference("/v1/messages/count_tokens") {
+		t.Error("messages and count_tokens are inference paths")
+	}
+	for _, p := range []string{"/v1/chat/completions", "/v1/responses", "/v1/models", "/v1/models/x", "/v1/messages/batches", "/v1/files", "/v1/complete"} {
+		if d.inference(p) {
+			t.Errorf("%s must not be an inference path of the anthropic dialect", p)
+		}
+	}
+	if !d.metered("/v1/messages") || d.metered("/v1/messages/count_tokens") {
+		t.Error("messages is metered, count_tokens is not")
+	}
+	if got, ok := DialectByName("anthropic"); !ok || got != d {
+		t.Error("DialectByName(anthropic)")
+	}
+	// The other dialect does not learn the Messages API by this.
+	if DialectOpenAI.inference("/v1/messages") {
+		t.Error("/v1/messages is not an openai path")
+	}
+}
+
+func TestDialectAnthropic_ModelList(t *testing.T) {
+	rec := httptest.NewRecorder()
+	DialectAnthropic.writeModels(rec, []modelItem{{ID: "burrow-intelligence", DisplayName: "burrow-intelligence"}, {ID: "zai-anthropic/glm-5.1", DisplayName: "GLM 5.1"}, {ID: "zai-anthropic/bare"}})
+	want := `{"data":[{"type":"model","id":"burrow-intelligence","display_name":"burrow-intelligence","created_at":"1970-01-01T00:00:00Z"},{"type":"model","id":"zai-anthropic/glm-5.1","display_name":"GLM 5.1","created_at":"1970-01-01T00:00:00Z"},{"type":"model","id":"zai-anthropic/bare","display_name":"zai-anthropic/bare","created_at":"1970-01-01T00:00:00Z"}],"has_more":false,"first_id":"burrow-intelligence","last_id":"zai-anthropic/bare"}`
+	if strings.TrimSpace(rec.Body.String()) != want || rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	DialectAnthropic.writeModels(rec, nil)
+	if strings.TrimSpace(rec.Body.String()) != `{"data":[],"has_more":false,"first_id":null,"last_id":null}` {
+		t.Fatalf("empty list = %s", rec.Body.String())
+	}
+}

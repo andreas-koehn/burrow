@@ -48,7 +48,7 @@ type ModelLister interface {
 }
 
 // Gateway serves requests under /ai/<provider>/ and the dialect endpoints
-// (/openai/v1, /ai/v1).
+// (/openai/v1, /ai/v1, /anthropic).
 type Gateway struct {
 	Providers  ProviderStore
 	Keys       KeyValidator
@@ -177,10 +177,11 @@ func stripCredentials(r *http.Request) {
 // A gateway key that may use every model of the provider (empty allow-list,
 // or "<slug>/*") has the whole provider path. Any other gateway key gets two
 // things: POST on an inference path of the provider's dialect with an allowed
-// "model" in the body, and GET of the model list, answered from the filtered
-// catalog. Everything else is refused: a native API can name a model where
+// "model" in the body, and, when its list names this provider at all, GET of
+// the model list, answered from the filtered catalog. Everything else is refused: a native API can name a model where
 // Burrow does not look (the URL, "source", "from", a batch file), so a body
-// with an allowed model proves nothing there.
+// with an allowed model proves nothing there. For the same reason such a key
+// may not send a "model" query parameter next to the body.
 func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, p db.AIProvider) (*http.Request, string, bool) {
 	presented := presentedKey(r)
 	if !strings.HasPrefix(presented, gatewayKeyPrefix) {
@@ -198,9 +199,13 @@ func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, p db.AIPr
 	full := store.ModelAllowed(key.AllowedModels, p.Slug+"/*")
 	model := ""
 	switch {
-	case !full && isModelList(r):
-		// serveModels answers it, filtered; it is never forwarded.
+	case !full && isModelList(r) && namesProvider(key.AllowedModels, p.Slug):
+		// serveModels answers it, filtered; it is never forwarded. A key
+		// with no entry for this provider has no list here to be shown.
 	case r.Method == http.MethodPost && (full || providerInference(p, r)):
+		if !full && hasModelQuery(r) {
+			return deny()
+		}
 		body, ok := g.readBodyOrFail(w, r)
 		if !ok {
 			return r, "", false
@@ -223,6 +228,33 @@ func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, p db.AIPr
 	route.SetTarget(p.Slug, model)
 	ctx := aigw.WithRoute(r.Context(), route)
 	return r.WithContext(context.WithValue(ctx, allowListKey{}, key.AllowedModels)), "", true
+}
+
+// namesProvider reports whether an allow-list has an entry for a model of
+// provider slug ("<slug>/<model>" or "<slug>/*").
+func namesProvider(allowed []string, slug string) bool {
+	for _, e := range allowed {
+		if strings.HasPrefix(e, slug+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasModelQuery reports whether r's query string names a model, in any
+// letter case, or cannot be read the way an upstream might read it. The
+// allow-list is checked on the body's "model" alone.
+func hasModelQuery(r *http.Request) bool {
+	q, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return true
+	}
+	for k := range q {
+		if strings.EqualFold(strings.TrimSpace(k), "model") {
+			return true
+		}
+	}
+	return false
 }
 
 // allowListKey carries a gateway key's allow-list to the model listing of a

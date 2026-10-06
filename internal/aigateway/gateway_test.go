@@ -1515,6 +1515,87 @@ func TestServe_RestrictedGatewayKeyOnProviderPath_MethodsAndPaths(t *testing.T) 
 	}
 }
 
+// A key without any entry for this provider has nothing on its path, the
+// model list included: a slug that merely starts like this one, or a
+// synthetic model that happens to target this provider, grants nothing here.
+func TestServe_RestrictedGatewayKeyOnProviderPath_NoEntryForProvider(t *testing.T) {
+	hits := 0
+	g := newGateway(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits++; w.WriteHeader(200) }), nil)
+	g.Models = fakeModels{"ollama": {{ModelID: "mistral"}, {ModelID: "m"}}}
+	g.Synthetic = fakeSynthetic{"burrow-simple": {Name: "burrow-simple", Enabled: true, Targets: []db.AIModelTarget{
+		{Dialect: "openai", Position: 0, ProviderSlug: "ollama", TargetModel: "mistral"},
+	}}}
+	g.GatewayKeys = fakeGatewayKeys{
+		"bgw_near":      {ID: "gk-n", AllowedModels: []string{"ollama2/*", "ollama-x/m"}},
+		"bgw_synthetic": {ID: "gk-s", AllowedModels: []string{"burrow-simple"}},
+	}
+	var denial string
+	for _, key := range []string{"bgw_near", "bgw_synthetic"} {
+		for _, method := range []string{"POST", "GET", "HEAD", "DELETE"} {
+			for _, path := range []string{"/v1/chat/completions", "/v1/embeddings", "/v1/models", "/v1/models/", "/v1/models/mistral", "/api/tags", "/"} {
+				for _, model := range []string{"mistral", "m", "burrow-simple", "*"} {
+					hits = 0
+					r := httptest.NewRequest(method, path, strings.NewReader(`{"model":"`+model+`"}`))
+					r.Header.Set("Authorization", "Bearer "+key)
+					rec := httptest.NewRecorder()
+					g.Serve(rec, r, "ollama")
+					name := key + " " + method + " " + path + " model " + model
+					if rec.Code != 403 || rec.Header().Get("Burrow-Error-Code") != "model_not_allowed" || hits != 0 {
+						t.Errorf("%s: status %d code %q upstream hits %d", name, rec.Code, rec.Header().Get("Burrow-Error-Code"), hits)
+						continue
+					}
+					if method == "HEAD" {
+						continue
+					}
+					if denial == "" {
+						denial = rec.Body.String()
+					}
+					if rec.Body.String() != denial {
+						t.Errorf("%s: denial differs: %s", name, rec.Body.String())
+					}
+				}
+			}
+		}
+	}
+}
+
+// Ruling: a restricted gateway key names its model in the body only. A
+// "model" in the query string is refused, since an upstream may read it
+// instead of the body's; a key that has the whole provider is not affected.
+func TestServe_RestrictedGatewayKeyOnProviderPath_ModelQuery(t *testing.T) {
+	hits := 0
+	g := newGateway(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits++; w.WriteHeader(200) }), nil)
+	g.GatewayKeys = fakeGatewayKeys{
+		"bgw_all":    {ID: "gk-all"},
+		"bgw_ollama": {ID: "gk-o", AllowedModels: []string{"ollama/*"}},
+		"bgw_one":    {ID: "gk-1", AllowedModels: []string{"ollama/mistral"}},
+	}
+	do := func(key, target string) *httptest.ResponseRecorder {
+		hits = 0
+		r := httptest.NewRequest("POST", target, strings.NewReader(`{"model":"mistral"}`))
+		r.Header.Set("Authorization", "Bearer "+key)
+		rec := httptest.NewRecorder()
+		g.Serve(rec, r, "ollama")
+		return rec
+	}
+	for _, q := range []string{"?model=other", "?model=mistral", "?Model=other", "?x=1&MODEL=other", "?%6dodel=other", "?model", "?model=a;b", "?x=%zz"} {
+		rec := do("bgw_one", "/v1/chat/completions"+q)
+		if rec.Code != 403 || rec.Header().Get("Burrow-Error-Code") != "model_not_allowed" || hits != 0 {
+			t.Errorf("%s: status %d code %q upstream hits %d", q, rec.Code, rec.Header().Get("Burrow-Error-Code"), hits)
+		}
+	}
+	for _, q := range []string{"", "?beta=true", "?models=x", "?x=model"} {
+		if rec := do("bgw_one", "/v1/chat/completions"+q); rec.Code != 200 || hits != 1 {
+			t.Errorf("%q: status %d upstream hits %d, want it forwarded", q, rec.Code, hits)
+		}
+	}
+	for _, key := range []string{"bgw_all", "bgw_ollama", "sk-good"} {
+		if rec := do(key, "/v1/chat/completions?model=other"); rec.Code != 200 || hits != 1 {
+			t.Errorf("%s: status %d upstream hits %d", key, rec.Code, hits)
+		}
+	}
+}
+
 // The body a gateway key's check has read goes upstream unchanged, and the
 // key itself does not.
 func TestServe_GatewayKeyOnProviderPath_BodyUntouched(t *testing.T) {

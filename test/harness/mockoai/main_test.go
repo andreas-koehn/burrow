@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,5 +63,47 @@ func TestAnthropicMessages(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"type":"message"`) {
 		t.Fatalf("missing type=message: %s", rec.Body.String())
+	}
+}
+
+// The Messages mock names the model it was asked for, so a test can see which
+// model a gateway in front of it forwarded.
+func TestAnthropicMessages_EchoesModelAndReportsUsage(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"glm-5.1","max_tokens":32,"messages":[]}`))
+	handler().ServeHTTP(rec, req)
+	var out struct {
+		Type  string `json:"type"`
+		Model string `json:"model"`
+		Usage struct {
+			In  int `json:"input_tokens"`
+			Out int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("body: %s", rec.Body.String())
+	}
+	if rec.Code != 200 || out.Type != "message" || out.Model != "glm-5.1" || out.Usage.In != 4 || out.Usage.Out != 8 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	// Without a model in the request the mock keeps its own name.
+	rec = httptest.NewRecorder()
+	handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`)))
+	if !strings.Contains(rec.Body.String(), `"model":"claude-mock"`) {
+		t.Fatalf("default model: %s", rec.Body.String())
+	}
+}
+
+func TestAnthropicCountTokens(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(`{"model":"glm-5.1","messages":[{"role":"user","content":"hi"}]}`))
+	handler().ServeHTTP(rec, req)
+	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"input_tokens":4}` || rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/messages/count_tokens", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET: status %d", rec.Code)
 	}
 }
