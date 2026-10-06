@@ -412,6 +412,7 @@ func (c *Chain) Replay(ctx context.Context, svc Service, r *http.Request, proxyH
 // fromReplay flag exists only to flip the inspector entry's downstream
 // labelling; the rest of the steps run unchanged.
 func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHandler http.Handler, fromReplay bool) {
+	started := time.Now()
 	cfg := svc.AIConfig
 
 	// ---------------------------------------------------------------
@@ -555,7 +556,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				cacheHdr.Set(k, v)
 			}
 			c.captureEntry(svc, r, body, redactedBody, redactHits, kind, entry.Status, entry.Body, cacheHdr, 0, false, cacheStatus, fromReplay)
-			c.recordMeter(r.Context(), svc, kind, 0, 0, int64(len(redactedBody)), int64(len(entry.Body)), false, true, entry.Status, cachedCost())
+			c.recordMeter(r.Context(), svc, kind, 0, 0, int64(len(redactedBody)), int64(len(entry.Body)), false, true, entry.Status, cachedCost(), time.Since(started))
 			return
 		}
 		cacheStatus = "MISS"
@@ -609,7 +610,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 					cacheHdr.Set(k, v)
 				}
 				c.captureEntry(svc, r, body, redactedBody, redactHits, kind, status, exactEntry.Body, cacheHdr, 0, false, "similar", fromReplay)
-				c.recordMeter(r.Context(), svc, kind, 0, 0, int64(len(redactedBody)), int64(len(exactEntry.Body)), false, true, status, cachedCost())
+				c.recordMeter(r.Context(), svc, kind, 0, 0, int64(len(redactedBody)), int64(len(exactEntry.Body)), false, true, status, cachedCost(), time.Since(started))
 				return
 			}
 		}
@@ -807,6 +808,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		isStreamedResponse(wrapped.Header()), false,
 		wrapped.statusCode,
 		reportedUSD,
+		time.Since(started),
 	)
 }
 
@@ -907,14 +909,18 @@ func (c *Chain) captureEntry(svc Service, r *http.Request,
 // recordMeter writes one usage_events row when a Meter sink is configured.
 // Non-blocking: any error is logged + swallowed by the SQLSink. costUSD is
 // what the upstream reported for the request, nil when it reported nothing.
+// latency is the time from the request's arrival in the chain to this call.
+// The route is read here, not earlier, so the row names the target that
+// answered even when the gateway switched target while serving.
 func (c *Chain) recordMeter(ctx context.Context, svc Service, kind Kind,
-	tokensIn, tokensOut int, bytesIn, bytesOut int64, streamed, cacheHit bool, status int, costUSD *float64) {
+	tokensIn, tokensOut int, bytesIn, bytesOut int64, streamed, cacheHit bool, status int, costUSD *float64,
+	latency time.Duration) {
 	if c.Meter == nil {
 		return
 	}
 	ctx, cancel := detached(ctx)
 	defer cancel()
-	_ = c.Meter.Record(ctx, aimeter.Sample{
+	sample := aimeter.Sample{
 		ServiceID:      svc.ID,
 		APIKeyID:       svc.APIKeyID,
 		Model:          "", // Task 12 fills this once routing supplies the post-alias model
@@ -927,7 +933,13 @@ func (c *Chain) recordMeter(ctx context.Context, svc Service, kind Kind,
 		CacheHit:       cacheHit,
 		UpstreamStatus: status,
 		CostUSD:        costUSD,
-	})
+		LatencyMs:      latency.Milliseconds(),
+	}
+	if ri, ok := RouteFrom(ctx); ok {
+		sample.GatewayKeyID, sample.Dialect, sample.ProviderSlug = ri.GatewayKeyID, ri.Dialect, ri.ProviderSlug
+		sample.RequestedModel, sample.TargetModel, sample.RequestID = ri.RequestedModel, ri.TargetModel, ri.RequestID
+	}
+	_ = c.Meter.Record(ctx, sample)
 }
 
 // serveCacheHit writes a cache entry back to the visitor with the spec

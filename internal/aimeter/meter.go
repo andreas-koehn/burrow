@@ -81,6 +81,21 @@ type Sample struct {
 	// CostUSD is the cost the upstream reported for this request. nil means
 	// it reported none and the price table applies.
 	CostUSD *float64
+	// GatewayKeyID is the gateway key that made the request; "" when it did
+	// not come through a gateway key.
+	GatewayKeyID string
+	// Dialect is the API format the caller spoke ("openai" or "anthropic").
+	Dialect string
+	// ProviderSlug is the provider that answered.
+	ProviderSlug string
+	// RequestedModel is the model name the caller asked for.
+	RequestedModel string
+	// TargetModel is the provider's model that answered.
+	TargetModel string
+	// RequestID is the Burrow-Request-Id of the request.
+	RequestID string
+	// LatencyMs is the time from the request's arrival to the end of the response.
+	LatencyMs int64
 }
 
 // Accumulator is the read-side of a Stream: it exposes the running token

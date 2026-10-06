@@ -68,6 +68,13 @@ func (s *SQLSink) Record(ctx context.Context, sm Sample) error {
 		Streamed:       sm.Streamed,
 		CacheHit:       sm.CacheHit,
 		UpstreamStatus: sm.UpstreamStatus,
+		GatewayKeyID:   sm.GatewayKeyID,
+		Dialect:        sm.Dialect,
+		ProviderSlug:   sm.ProviderSlug,
+		RequestedModel: sm.RequestedModel,
+		TargetModel:    sm.TargetModel,
+		RequestID:      sm.RequestID,
+		LatencyMs:      sm.LatencyMs,
 	}
 	// The parsers only hand over a validated cost; checking again here keeps
 	// NaN, an infinity, a negative or an absurd amount out of the table and
@@ -83,11 +90,15 @@ func (s *SQLSink) Record(ctx context.Context, sm Sample) error {
 		INSERT INTO usage_events
 		  (id, service_id, api_key_id, ts, kind,
 		   tokens_in, tokens_out, bytes_in, bytes_out,
-		   streamed, cache_hit, upstream_status, cost_usd)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   streamed, cache_hit, upstream_status, cost_usd,
+		   gateway_key_id, dialect, provider_slug, requested_model, target_model,
+		   request_id, latency_ms)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		row.ID, row.ServiceID, row.APIKeyID, row.Ts, row.Kind,
 		row.TokensIn, row.TokensOut, row.BytesIn, row.BytesOut,
 		boolToInt(row.Streamed), boolToInt(row.CacheHit), row.UpstreamStatus, cost,
+		row.GatewayKeyID, row.Dialect, row.ProviderSlug, row.RequestedModel, row.TargetModel,
+		row.RequestID, row.LatencyMs,
 	)
 	if err != nil {
 		log.Warn("aimeter: usage_events insert failed",

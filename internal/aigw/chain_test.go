@@ -1413,3 +1413,54 @@ func TestChain_InspectorRedactsConfiguredAPIKeyHeader(t *testing.T) {
 		})
 	}
 }
+
+// The usage row says how the gateway routed the request and how long it took.
+// The target is read when the row is written, so a target chosen while the
+// request is served (a fallback) is the one recorded.
+func TestChain_UsageRowCarriesRouteAndLatency(t *testing.T) {
+	sink := &ctxSink{}
+	c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, nil)
+	route := aigw.NewRoute("gk1", "openai", "burrow-medium", "req-9")
+	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		route.SetTarget("openrouter", "google/gemini-x") // decided while serving, as a fallback would
+		time.Sleep(15 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	})
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"burrow-medium"}`))
+	req = req.WithContext(aigw.WithRoute(req.Context(), route))
+	c.DispatchMetered(httptest.NewRecorder(), req, "svc1", "host", "Authorization", "", false, up)
+
+	s := sink.sample
+	if s.GatewayKeyID != "gk1" || s.Dialect != "openai" || s.ProviderSlug != "openrouter" || s.RequestedModel != "burrow-medium" ||
+		s.TargetModel != "google/gemini-x" || s.RequestID != "req-9" {
+		t.Fatalf("route fields: %+v", s)
+	}
+	if s.LatencyMs < 10 {
+		t.Fatalf("LatencyMs = %d, want >= 10", s.LatencyMs)
+	}
+}
+
+// Without a route in the context the row is written as before, with empty
+// route fields.
+func TestChain_UsageRowWithoutRoute(t *testing.T) {
+	sink := &ctxSink{}
+	c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, nil)
+	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	})
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+	c.DispatchMetered(httptest.NewRecorder(), req, "svc1", "host", "Authorization", "key-1", false, up)
+
+	s := sink.sample
+	if !sink.got {
+		t.Fatal("no usage sample recorded")
+	}
+	if s.GatewayKeyID != "" || s.Dialect != "" || s.ProviderSlug != "" || s.RequestedModel != "" || s.TargetModel != "" || s.RequestID != "" {
+		t.Fatalf("route fields must be empty: %+v", s)
+	}
+	if s.LatencyMs < 0 {
+		t.Fatalf("LatencyMs = %d, want >= 0", s.LatencyMs)
+	}
+}

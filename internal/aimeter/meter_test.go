@@ -254,3 +254,44 @@ func TestSQLSinkRecord_DropsInsaneCost(t *testing.T) {
 		}
 	}
 }
+
+// The route of a request and its latency are stored on the usage row; a
+// sample without them leaves the columns at their defaults.
+func TestSQLSinkRecord_RouteAndLatency(t *testing.T) {
+	ctx := context.Background()
+	x := testDB(t)
+	serviceID := seedService(t, x)
+	sink := aimeter.NewSQLSink(x)
+
+	if err := sink.Record(ctx, aimeter.Sample{
+		ServiceID: serviceID, APIKeyID: "k-route", Kind: aimeter.KindOpenAI, UpstreamStatus: 200,
+		GatewayKeyID: "gk1", Dialect: "openai", ProviderSlug: "openrouter",
+		RequestedModel: "burrow-medium", TargetModel: "google/gemini-x", RequestID: "req-9",
+		LatencyMs: 1234,
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if err := sink.Record(ctx, aimeter.Sample{ServiceID: serviceID, APIKeyID: "k-plain", Kind: aimeter.KindOpenAI, UpstreamStatus: 200}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	read := func(apiKeyID string) (got [6]string, latency int64) {
+		t.Helper()
+		err := x.DB().QueryRowContext(ctx, `
+			SELECT gateway_key_id, dialect, provider_slug, requested_model, target_model, request_id, latency_ms
+			  FROM usage_events WHERE api_key_id = ?`, apiKeyID).
+			Scan(&got[0], &got[1], &got[2], &got[3], &got[4], &got[5], &latency)
+		if err != nil {
+			t.Fatalf("select %s: %v", apiKeyID, err)
+		}
+		return got, latency
+	}
+	got, latency := read("k-route")
+	want := [6]string{"gk1", "openai", "openrouter", "burrow-medium", "google/gemini-x", "req-9"}
+	if got != want || latency != 1234 {
+		t.Fatalf("route row = %v latency=%d, want %v 1234", got, latency, want)
+	}
+	if got, latency := read("k-plain"); got != [6]string{} || latency != 0 {
+		t.Fatalf("plain row = %v latency=%d, want empty and 0", got, latency)
+	}
+}

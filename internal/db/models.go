@@ -106,6 +106,15 @@ type UsageEvent struct {
 	// CostUSD is the cost the upstream reported for the request; nil (NULL)
 	// when it reported none and the price table applies.
 	CostUSD *float64
+	// How the gateway routed the request; all "" for traffic that did not
+	// come through a gateway key.
+	GatewayKeyID   string
+	Dialect        string // openai|anthropic
+	ProviderSlug   string
+	RequestedModel string
+	TargetModel    string
+	RequestID      string
+	LatencyMs      int64
 }
 
 // CacheEntry is a row of the cache_entries table (AI response cache).
