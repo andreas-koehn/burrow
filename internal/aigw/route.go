@@ -11,7 +11,9 @@ import (
 const GatewayKeySubjectPrefix = "gw:"
 
 // Route describes how the gateway routed one request: which gateway key asked,
-// which model name it asked for, and which provider and model answered. The
+// which model name it asked for (on a provider's own path: "<provider>/<id>",
+// the name that model has on the gateway endpoints), and which provider and
+// model answered. The
 // gateway may still change the target while the request is being served (a
 // fallback), so the chain reads it only when it writes the usage row.
 type Route struct {

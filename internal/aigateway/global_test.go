@@ -28,6 +28,7 @@ import (
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/proxy"
+	"github.com/ankoehn/burrow/internal/quota"
 	"github.com/ankoehn/burrow/internal/redact"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -2186,5 +2187,94 @@ func TestSecondsUntilUTCMidnight(t *testing.T) {
 		if got := secondsUntilUTCMidnight(c.now); got != c.want {
 			t.Errorf("%v: %d, want %d", c.now, got, c.want)
 		}
+	}
+}
+
+// --- model rate limits ----------------------------------------------------------
+
+type limitRows []db.RateLimit
+
+func (l limitRows) ListRateLimits(context.Context) ([]db.RateLimit, error) { return l, nil }
+
+// chargingLimiter is the relay's quota middleware reduced to its decision:
+// one request charged against the subjects the chain attached.
+func chargingLimiter(e *quota.Engine) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if d := e.Charge(r.Context(), quota.SubjectsFromCtx(r.Context()), quota.DimensionRPM, 1); !d.Allow {
+				aigw.ErrorWriterFrom(r.Context())(w, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// A model has one name for limits and budgets, "<provider>/<model>", whether
+// the request came to the gateway endpoint with that direct address or to the
+// provider's own path with the bare id. Another provider's model of the same
+// id is another model, and so is a synthetic model that targets it.
+func TestModelRateLimit_OneSubjectOnEveryDoor(t *testing.T) {
+	engine := quota.NewWithStores(limitRows{
+		{ID: "rl", Scope: quota.ScopeModel, Subject: "zai/glm-5.1", Dimension: quota.DimensionRPM, Lim: 2, Burst: 2, Window: quota.WindowMinute},
+	}, nil)
+	if err := engine.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	hits := 0
+	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	})
+	sink := &recSink{}
+	chain := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	chain.RateLimit = chargingLimiter(engine)
+	g := globalGateway(up, chain)
+
+	gatewayDoor := func(model string) int {
+		rec := httptest.NewRecorder()
+		g.ServeDialect(rec, post("/v1/chat/completions", "bgw_all", `{"model":"`+model+`"}`), DialectOpenAI)
+		return rec.Code
+	}
+	providerDoor := func(slug, model string) int {
+		rec := httptest.NewRecorder()
+		g.Serve(rec, post("/v1/chat/completions", "bgw_all", `{"model":"`+model+`"}`), slug)
+		return rec.Code
+	}
+	if c := gatewayDoor("zai/glm-5.1"); c != 200 {
+		t.Fatalf("first request, gateway endpoint: %d", c)
+	}
+	if c := providerDoor("zai", "glm-5.1"); c != 200 {
+		t.Fatalf("second request, provider path: %d", c)
+	}
+	// The limit of two is used up, by one request through each door.
+	if c := gatewayDoor("zai/glm-5.1"); c != 429 {
+		t.Fatalf("third request, gateway endpoint: %d, want 429", c)
+	}
+	if c := providerDoor("zai", "glm-5.1"); c != 429 {
+		t.Fatalf("third request, provider path: %d, want 429", c)
+	}
+	// Not held by it: the same id at another provider, through either door,
+	// and the synthetic model whose target is zai/glm-5.1.
+	if c := gatewayDoor("ollama/glm-5.1"); c != 200 {
+		t.Fatalf("same id at another provider, gateway endpoint: %d", c)
+	}
+	if c := providerDoor("ollama", "glm-5.1"); c != 200 {
+		t.Fatalf("same id at another provider, provider path: %d", c)
+	}
+	if c := gatewayDoor("burrow-intelligence"); c != 200 {
+		t.Fatalf("synthetic model on the same target: %d", c)
+	}
+	if hits != 5 {
+		t.Fatalf("upstream hits = %d, want 5", hits)
+	}
+	// The usage rows carry the same name the limit goes by.
+	var names []string
+	for _, s := range sink.all() {
+		names = append(names, s.RequestedModel)
+	}
+	if got := strings.Join(names, " "); got != "zai/glm-5.1 zai/glm-5.1 ollama/glm-5.1 ollama/glm-5.1 burrow-intelligence" {
+		t.Fatalf("requested models in the usage rows: %s", got)
 	}
 }

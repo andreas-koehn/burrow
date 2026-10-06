@@ -81,8 +81,10 @@ type Subjects struct {
 	// GatewayKeyID is the bare id of the gateway key that asked; "" for
 	// other traffic. gateway_key limits match it.
 	GatewayKeyID string
-	// Model is the model name the client asked for; "" when the request
-	// names none. model limits match it.
+	// Model is the requested model as the usage row records it: a synthetic
+	// model's name, or "<provider>/<native id>" for a direct address and for
+	// a request on that provider's own path; "" when the request names none.
+	// model limits match it exactly.
 	Model string
 }
 

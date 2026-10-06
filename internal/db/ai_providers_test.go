@@ -668,3 +668,86 @@ func TestUpdateAIProvider_MaxConcurrent(t *testing.T) {
 	mustUser(t, x, "u1")
 	checkUpdateAIProviderMaxConcurrent(t, x, "u1", "mc")
 }
+
+// TestAIEndpointMetrics_Shared runs the check the Postgres test runs too.
+func TestAIEndpointMetrics_Shared(t *testing.T) {
+	checkAIEndpointMetrics(t, testDB(t), "u-metrics")
+}
+
+// checkAIEndpointMetrics: the trailing-24h counts, the cache hits and the
+// requests-per-minute series of the trailing hour, on whatever database x is.
+func checkAIEndpointMetrics(t *testing.T, x *DB, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	_ = x.DeleteUser(ctx, userID)
+	mustUser(t, x, userID)
+	t.Cleanup(func() { _ = x.DeleteUser(ctx, userID) })
+	svc := seedSvc(t, x, userID, "svc-metrics")
+	other := seedSvc(t, x, userID, "svc-metrics-other")
+	now := time.Now().UTC()
+	half := 0.5
+	for i, e := range []struct {
+		svc      string
+		ago      time.Duration
+		kind     string
+		in, out  int64
+		cacheHit bool
+		cost     *float64
+	}{
+		{svc, 0, "openai", 100, 50, true, nil},
+		{svc, 20 * time.Second, "openai", 10, 5, false, &half},
+		{svc, 5*time.Minute + 10*time.Second, "anthropic", 7, 3, true, nil},
+		{svc, 59*time.Minute + 10*time.Second, "openai", 1, 1, false, nil},
+		{svc, 61 * time.Minute, "openai", 1000, 1000, false, nil}, // in the day, outside the hour
+		{svc, 25 * time.Hour, "openai", 9999, 9999, true, nil},    // outside the day
+		{other, 0, "openai", 3, 3, true, nil},
+	} {
+		// The two flags are bound as booleans, the way the usage sink binds them.
+		if _, err := x.sqlDB.ExecContext(ctx,
+			`INSERT INTO usage_events(id, service_id, api_key_id, ts, kind, tokens_in, tokens_out, streamed, cache_hit, cost_usd)
+			 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+			fmt.Sprintf("met-%s-%d", userID, i), e.svc, "k1", now.Add(-e.ago), e.kind, e.in, e.out, false, e.cacheHit, e.cost); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counts, err := x.AIEndpointCounts24h(ctx)
+	if err != nil {
+		t.Fatalf("AIEndpointCounts24h: %v", err)
+	}
+	if c := counts[svc]; c.Requests != 5 || c.CacheHits != 2 {
+		t.Errorf("counts[svc] = %+v, want 5 requests, 2 cache hits", c)
+	}
+	if c := counts[other]; c.Requests != 1 || c.CacheHits != 1 {
+		t.Errorf("counts[other] = %+v, want 1/1", c)
+	}
+	agg, err := x.AIEndpointMetrics24h(ctx, svc)
+	if err != nil {
+		t.Fatalf("AIEndpointMetrics24h: %v", err)
+	}
+	if agg.Requests != 5 || agg.TokensIn != 1118 || agg.TokensOut != 1059 || agg.CacheHits != 2 {
+		t.Errorf("totals = %+v", agg)
+	}
+	byKind := map[string]AIEndpointKindTokens{}
+	for _, k := range agg.ByKind {
+		byKind[k.Kind] = k
+	}
+	if k := byKind["openai"]; k.TokensIn != 1111 || k.ReportedUSD != 0.5 || k.PricedTokensIn != 1101 || k.PricedTokensOut != 1051 {
+		t.Errorf("openai = %+v", k)
+	}
+	if k := byKind["anthropic"]; len(byKind) != 2 || k.TokensIn != 7 || k.PricedTokensOut != 3 {
+		t.Errorf("anthropic = %+v of %d kinds", k, len(byKind))
+	}
+	// Newest minute last: two requests in the current minute, one five
+	// minutes ago, one 59 minutes ago; the one of 61 minutes ago is not in.
+	total := 0
+	for _, n := range agg.PerMinute {
+		total += n
+	}
+	if total != 4 || agg.PerMinute[59] != 2 || agg.PerMinute[54] != 1 || agg.PerMinute[0] != 1 {
+		t.Errorf("per minute: total %d, [59]=%d [54]=%d [0]=%d: %v", total, agg.PerMinute[59], agg.PerMinute[54], agg.PerMinute[0], agg.PerMinute)
+	}
+	empty, err := x.AIEndpointMetrics24h(ctx, "no-such-service-"+userID)
+	if err != nil || empty.Requests != 0 || empty.CacheHits != 0 || len(empty.ByKind) != 0 {
+		t.Errorf("unknown service: %+v (%v)", empty, err)
+	}
+}

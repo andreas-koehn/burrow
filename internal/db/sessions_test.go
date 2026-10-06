@@ -130,3 +130,45 @@ func TestDeleteExpiredSessions_Empty(t *testing.T) {
 		t.Fatalf("want 0 deleted, got %d", n)
 	}
 }
+
+// TestDeleteExpiredSessions_Shared runs the check the Postgres test runs too.
+func TestDeleteExpiredSessions_Shared(t *testing.T) {
+	checkDeleteExpiredSessions(t, testDB(t), "u-sess")
+}
+
+// checkDeleteExpiredSessions: sessions whose expires_at has passed are
+// purged, the others stay, on whatever database x is.
+func checkDeleteExpiredSessions(t *testing.T, x *DB, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	_ = x.DeleteUser(ctx, userID)
+	mustUser(t, x, userID)
+	t.Cleanup(func() { _ = x.DeleteUser(ctx, userID) })
+	now := time.Now().UTC()
+	for id, at := range map[string]time.Time{
+		"long-gone":  now.Add(-48 * time.Hour),
+		"just-gone":  now.Add(-2 * time.Second),
+		"soon":       now.Add(time.Minute),
+		"next-month": now.Add(30 * 24 * time.Hour),
+	} {
+		if err := x.CreateSession(ctx, Session{ID: userID + "-" + id, UserID: userID, ExpiresAt: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := x.DeleteExpiredSessions(ctx)
+	if err != nil || n < 2 {
+		t.Fatalf("DeleteExpiredSessions: n=%d err=%v, want at least the 2 expired ones", n, err)
+	}
+	for id, gone := range map[string]bool{"long-gone": true, "just-gone": true, "soon": false, "next-month": false} {
+		_, err := x.GetSession(ctx, userID+"-"+id)
+		if gone && err != ErrNotFound {
+			t.Errorf("%s: expired session still there (%v)", id, err)
+		}
+		if !gone && err != nil {
+			t.Errorf("%s: live session purged (%v)", id, err)
+		}
+	}
+	if n, err := x.DeleteExpiredSessions(ctx); err != nil || n != 0 {
+		t.Errorf("second purge: n=%d err=%v", n, err)
+	}
+}

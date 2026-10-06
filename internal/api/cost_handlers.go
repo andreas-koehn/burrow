@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -449,10 +450,47 @@ func validateBudget(in budgetReq) string {
 	if in.Scope == "global" && in.SubjectID != "" {
 		return "global scope must not specify a subject_id"
 	}
+	// The subject is compared byte for byte with what the gateway records;
+	// it is taken as sent or refused, never trimmed.
+	if in.SubjectID != strings.TrimSpace(in.SubjectID) {
+		return "subject_id must not have leading or trailing whitespace"
+	}
+	if strings.ContainsFunc(in.SubjectID, unicode.IsControl) {
+		return "subject_id must not contain control characters"
+	}
 	if len(in.SubjectID) > 256 {
 		return "subject_id too long (max 256 chars)"
 	}
 	return ""
+}
+
+// msgUnknownGatewayKey answers a gateway_key budget whose subject_id is no
+// gateway key's id.
+const msgUnknownGatewayKey = "unknown gateway key"
+
+// checkBudgetSubject checks what validateBudget cannot: that the subject of a
+// gateway_key budget is the id of a key that exists (revoked or not). It
+// writes the error itself and reports whether the budget may be stored.
+// Budgets are an admin's to set, so the key may be anyone's.
+func (d Deps) checkBudgetSubject(w http.ResponseWriter, r *http.Request, in budgetReq) bool {
+	if in.Scope != "gateway_key" {
+		return true
+	}
+	if d.AIGatewayKeys != nil {
+		keys, err := d.AIGatewayKeys.ListGatewayKeys(r.Context(), userID(r.Context()), "admin")
+		if err != nil {
+			d.warn("gateway keys could not be read", "err", err)
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return false
+		}
+		for _, k := range keys {
+			if k.ID == in.SubjectID {
+				return true
+			}
+		}
+	}
+	writeErr(w, http.StatusBadRequest, msgUnknownGatewayKey)
+	return false
 }
 
 // GetBudgets handles GET /api/v1/budgets — admin-only. Live current_usd +
@@ -493,10 +531,12 @@ func (d Deps) PostBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.Scope = strings.TrimSpace(in.Scope)
-	in.SubjectID = strings.TrimSpace(in.SubjectID)
 	in.ActionOnExceed = strings.TrimSpace(in.ActionOnExceed)
 	if msg := validateBudget(in); msg != "" {
 		writeErr(w, http.StatusBadRequest, msg)
+		return
+	}
+	if !d.checkBudgetSubject(w, r, in) {
 		return
 	}
 	row := db.Budget{
@@ -544,10 +584,12 @@ func (d Deps) PutBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.Scope = strings.TrimSpace(in.Scope)
-	in.SubjectID = strings.TrimSpace(in.SubjectID)
 	in.ActionOnExceed = strings.TrimSpace(in.ActionOnExceed)
 	if msg := validateBudget(in); msg != "" {
 		writeErr(w, http.StatusBadRequest, msg)
+		return
+	}
+	if !d.checkBudgetSubject(w, r, in) {
 		return
 	}
 	row := db.Budget{

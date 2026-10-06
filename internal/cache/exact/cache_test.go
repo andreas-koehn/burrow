@@ -471,3 +471,76 @@ func TestSetOnMissClearCallback(t *testing.T) {
 		t.Errorf("OnMiss fired after being cleared: called %d times", called.Load())
 	}
 }
+
+// TestCacheLifecycle_Shared runs the check the Postgres test runs too.
+func TestCacheLifecycle_Shared(t *testing.T) {
+	checkCacheLifecycle(t, testCache(t), "shared")
+}
+
+// checkCacheLifecycle: store, hit, expiry by each entry's own ttl, stats and
+// clear, on whatever database the cache sits on. Its keys carry prefix, so it
+// can run again against the same database.
+func checkCacheLifecycle(t *testing.T, c *Cache, prefix string) {
+	t.Helper()
+	ctx := context.Background()
+	scope := "endpoint:" + prefix + ":/v1/chat/completions"
+	key := func(name string) string { return scope + ":" + name }
+	_ = c.Clear(ctx, scope)
+	t.Cleanup(func() { _ = c.Clear(ctx, scope) })
+	hits, misses := c.hits.Load(), c.misses.Load()
+
+	if _, hit, err := c.Lookup(ctx, key("fresh")); err != nil || hit {
+		t.Fatalf("empty Lookup: hit=%v err=%v", hit, err)
+	}
+	now := time.Now().UTC()
+	for name, e := range map[string]Entry{
+		"fresh":       {CreatedAt: now, TTLSeconds: 3600},
+		"almost-gone": {CreatedAt: now.Add(-50 * time.Second), TTLSeconds: 60},
+		"just-gone":   {CreatedAt: now.Add(-61 * time.Second), TTLSeconds: 60},
+		"long-gone":   {CreatedAt: now.Add(-2 * time.Hour), TTLSeconds: 60},
+		"long-lived":  {CreatedAt: now.Add(-2 * time.Hour), TTLSeconds: 3 * 3600},
+		"zero-ttl":    {CreatedAt: now, TTLSeconds: 0},
+	} {
+		e.Body, e.Status, e.Headers = []byte(`{"id":"`+name+`"}`), 201, map[string]string{"Content-Type": "application/json"}
+		if err := c.Store(ctx, key(name), e); err != nil {
+			t.Fatalf("Store %s: %v", name, err)
+		}
+	}
+	for name, want := range map[string]bool{
+		"fresh": true, "almost-gone": true, "long-lived": true,
+		"just-gone": false, "long-gone": false, "zero-ttl": false,
+	} {
+		got, hit, err := c.Lookup(ctx, key(name))
+		if err != nil || hit != want {
+			t.Errorf("%s: hit=%v err=%v, want hit=%v", name, hit, err, want)
+			continue
+		}
+		if hit && (string(got.Body) != `{"id":"`+name+`"}` || got.Status != 201 || got.Headers["Content-Type"] != "application/json") {
+			t.Errorf("%s: entry %+v", name, got)
+		}
+	}
+	// A hit carries when the entry was stored (to the millisecond) and its ttl.
+	got, _, _ := c.Lookup(ctx, key("almost-gone"))
+	if d := got.CreatedAt.Sub(now.Add(-50 * time.Second)); d < -time.Millisecond || d > time.Millisecond || got.TTLSeconds != 60 {
+		t.Errorf("almost-gone: created_at off by %v, ttl %d", d, got.TTLSeconds)
+	}
+	if h, m := c.hits.Load()-hits, c.misses.Load()-misses; h != 4 || m != 4 {
+		t.Errorf("counters: %d hits, %d misses, want 4/4", h, m)
+	}
+	// A second store under the same key keeps the first entry.
+	if err := c.Store(ctx, key("fresh"), Entry{Body: []byte(`other`), Status: 200, CreatedAt: now, TTLSeconds: 60}); err != nil {
+		t.Fatalf("second Store: %v", err)
+	}
+	if got, hit, _ := c.Lookup(ctx, key("fresh")); !hit || string(got.Body) != `{"id":"fresh"}` {
+		t.Errorf("second Store replaced the entry: %+v", got)
+	}
+	if n, bytes, _, err := c.Stats(ctx); err != nil || n < 6 || bytes <= 0 {
+		t.Errorf("Stats: %d entries, %d bytes (%v)", n, bytes, err)
+	}
+	if err := c.Clear(ctx, scope); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	if _, hit, err := c.Lookup(ctx, key("fresh")); err != nil || hit {
+		t.Errorf("after Clear: hit=%v err=%v", hit, err)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 // CreateSession inserts a new session row.
@@ -117,23 +118,15 @@ func (x *DB) DeleteSessionsByUser(ctx context.Context, userID string) (int64, er
 // DeleteExpiredSessions removes all sessions whose expires_at is in the past
 // and returns the number of rows deleted.
 //
-// modernc/sqlite v1.50.1 binds a Go time.Time via time.Time.String(), which
-// produces text of the form "YYYY-MM-DD HH:MM:SS.fffffffff +0000 UTC" (space-
-// separated, up to 9 fractional digits, " +0000 UTC" suffix). SQLite's
-// datetime() / strftime() cannot parse this format directly — bare
-// datetime(expires_at) would return ” — because of the " +0000 UTC" suffix.
-//
-// substr(expires_at, 1, 23) strips the unparseable suffix and keeps
-// "YYYY-MM-DD HH:MM:SS.fff" (millisecond precision), which strftime can parse.
-// Applying strftime('%Y-%m-%d %H:%M:%f', …) to BOTH sides of the comparison
-// produces a true datetime (not lexical) comparison that is offset- and
-// format-independent. No bound parameter is needed: strftime('now') returns
-// the current UTC time directly inside SQLite.
+// The current time is taken in Go, in UTC, and bound: no date function of
+// either database is used, so the statement runs on SQLite and Postgres.
+// On Postgres expires_at is a timestamp and the comparison is one of
+// instants. On SQLite both sides are the text modernc/sqlite writes for a
+// time.Time ("YYYY-MM-DD HH:MM:SS.fffffffff +0000 UTC"), which sorts by time
+// as long as both are UTC; sessions are created with a UTC expiry.
 func (x *DB) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 	res, err := x.sqlDB.ExecContext(ctx,
-		`DELETE FROM sessions
-		 WHERE strftime('%Y-%m-%d %H:%M:%f', substr(expires_at, 1, 23))
-		    <= strftime('%Y-%m-%d %H:%M:%f', 'now')`,
+		`DELETE FROM sessions WHERE expires_at <= ?`, time.Now().UTC(),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("delete expired sessions: %w", err)

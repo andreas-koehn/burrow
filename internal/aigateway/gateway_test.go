@@ -1618,10 +1618,27 @@ func TestServe_GatewayKeyOnProviderPath_BodyUntouched(t *testing.T) {
 	if rec.Code != 200 || gotBody != sent || gotAuth != "" {
 		t.Fatalf("status %d body %q auth %q", rec.Code, gotBody, gotAuth)
 	}
-	// No service key id; the gateway key travels in the route (id only).
-	want := aigw.RouteInfo{GatewayKeyID: "gk-all", Dialect: "openai", ProviderSlug: "ollama", RequestedModel: "mistral", TargetModel: "mistral", RequestID: "req-9"}
+	// No service key id; the gateway key travels in the route (id only). The
+	// requested model is recorded under the name the model has on the
+	// gateway endpoints, "<provider>/<model>": usage, model budgets and model
+	// rate limits go by one name whichever door a request came through. The
+	// body the upstream gets still carries what the client sent.
+	want := aigw.RouteInfo{GatewayKeyID: "gk-all", Dialect: "openai", ProviderSlug: "ollama", RequestedModel: "ollama/mistral", TargetModel: "mistral", RequestID: "req-9"}
 	if chain.keyID != "" || chain.serviceID != "svc1" || chain.route != want {
 		t.Fatalf("chain key %q service %q route %+v", chain.keyID, chain.serviceID, chain.route)
+	}
+
+	// A native id that has slashes of its own, and a request without a model.
+	for body, want := range map[string][2]string{
+		`{"model":"openai/gpt-4o"}`: {"ollama/openai/gpt-4o", "openai/gpt-4o"},
+		`{"input":"x"}`:             {"", ""},
+	} {
+		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer bgw_all")
+		g.Serve(httptest.NewRecorder(), r, "ollama")
+		if chain.route.RequestedModel != want[0] || chain.route.TargetModel != want[1] {
+			t.Fatalf("%s: requested %q target %q, want %q %q", body, chain.route.RequestedModel, chain.route.TargetModel, want[0], want[1])
+		}
 	}
 }
 

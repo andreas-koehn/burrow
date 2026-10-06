@@ -1514,8 +1514,10 @@ paths:
         Each rule is {id, scope, subject, dimension, limit, burst, window}.
         scope is one of api_key, gateway_key, model, role, service, global.
         The subject of a gateway_key rule is the gateway key's id; that of a
-        model rule is the model name clients ask for (a synthetic model, or
-        "<provider>/<model>"), and it holds across all keys. dimension is rpm
+        model rule is the model's name on the gateway endpoints (a synthetic
+        model's name, or "<provider>/<model>", which also covers requests on
+        /ai/<provider>/…), matched exactly; it holds across all keys.
+        dimension is rpm
         (requests) or bpm (estimated bytes / 4); window is minute or day (a
         day runs from UTC midnight).
       responses:
@@ -1641,7 +1643,8 @@ paths:
         total_usd, tokens_in, tokens_out, top_consumers, pct_of_budget}. With
         group_by it also carries group_by and groups: one {key, requests,
         tokens_in, tokens_out, usd} per gateway key (key = the key's id),
-        model (the name clients asked for), provider (slug), target_model
+        model (the name clients asked for; a request on /ai/<provider>/… is
+        recorded as "<provider>/<model>"), provider (slug), target_model
         ("<provider>/<model>" that answered) or dialect. Groups are sorted by
         usd descending, then key; the group with the empty key comes last and
         holds the traffic the dimension does not apply to, plus whatever lies
@@ -1708,7 +1711,10 @@ paths:
         action_on_exceed, alert_webhook_id, current_usd, current_tokens,
         exceeded}. scope is one of api_key, service, user, global,
         gateway_key (subject_id = the gateway key's id) and model (subject_id
-        = the model name clients ask for). daily_tokens caps input plus
+        = the model's name on the gateway endpoints: a synthetic model's name
+        or "<provider>/<model>"; a request on /ai/<provider>/… counts for
+        "<provider>/<model>" too, and a budget on a synthetic name counts
+        only requests that asked for that name). daily_tokens caps input plus
         output tokens per UTC day; 0 means no token cap. A budget with a
         token cap is exceeded when current_tokens is above it, or when it
         also has a daily_usd above 0 and current_usd is above that; a budget
@@ -1736,7 +1742,13 @@ paths:
         alert_webhook_id}. daily_usd and daily_tokens must not be negative
         and at least one must be above 0: a token cap alone is a complete
         budget (a flat-rate provider costs 0 USD). Every scope but global
-        needs a subject_id of at most 256 characters.
+        needs a subject_id of at most 256 characters. subject_id is taken as
+        sent, never trimmed: 400 "subject_id must not have leading or
+        trailing whitespace" or "subject_id must not contain control
+        characters" otherwise. For scope gateway_key it must be the id of an
+        existing gateway key (revoked or not, of any user): 400 "unknown
+        gateway key" otherwise. For scope model it is the model's name on the
+        gateway endpoints: a synthetic model's name, or "<provider>/<model>".
       requestBody:
         required: true
         content:

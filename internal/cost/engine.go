@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -22,8 +21,9 @@ type Subjects struct {
 	UserID    string // budgets with scope=user match by this
 	// GatewayKeyID is the gateway key that asked; "" for other traffic.
 	GatewayKeyID string
-	// Model is the model name the client asked for (a synthetic model, a
-	// direct address, or the bare id sent on a provider path).
+	// Model is the requested model as the usage row records it: a synthetic
+	// model's name, or "<provider>/<native id>" for a direct address and for
+	// a request on that provider's own path.
 	Model string
 }
 
@@ -62,7 +62,8 @@ type APIKeyRevoker interface {
 // GatewayKeyRevoker revokes a gateway key when a gateway_key budget with
 // action_on_exceed=disable_key is exceeded. *store.Store satisfies it.
 type GatewayKeyRevoker interface {
-	RevokeGatewayKeyByID(ctx context.Context, id string) error
+	// budgetID is the budget that was exceeded; the revoker records it.
+	RevokeGatewayKeyByID(ctx context.Context, id, budgetID string) error
 }
 
 // Dispatcher is the narrow surface the engine uses to publish the
@@ -354,22 +355,6 @@ func (e *Engine) CheckBudgets(ctx context.Context, subj Subjects) (string, db.Bu
 	return "", db.Budget{}, nil
 }
 
-// CurrentUsdFor returns today's spend in USD for the given budget, computed
-// live from usage_events × pricing. Exposed for the GET /budgets handler so
-// the wire response includes current_usd + exceeded without the caller
-// repeating the math.
-func (e *Engine) CurrentUsdFor(ctx context.Context, b db.Budget) (float64, error) {
-	usd, _, err := e.budgetUsage(ctx, b, &todayUsage{e: e})
-	return usd, err
-}
-
-// CurrentTokensFor returns today's tokens (input + output) for the given
-// budget, over the same usage rows CurrentUsdFor prices.
-func (e *Engine) CurrentTokensFor(ctx context.Context, b db.Budget) (int64, error) {
-	_, tokens, err := e.budgetUsage(ctx, b, &todayUsage{e: e})
-	return tokens, err
-}
-
 // BudgetUsage is what a budget has used in the current UTC day.
 type BudgetUsage struct {
 	USD      float64
@@ -434,29 +419,18 @@ func budgetRowFilter(b db.Budget) func(db.UsageRow) bool {
 	case "gateway_key":
 		return func(r db.UsageRow) bool { return r.GatewayKeyID == id }
 	case "model":
-		return func(r db.UsageRow) bool { return rowAskedFor(r, id) }
+		// The name the client asked for, exactly. A request on a provider's
+		// own path is recorded as "<provider>/<native id>", the model's
+		// direct address, so both doors count for the same budget. A
+		// request answered by a fallback target counts for the model the
+		// client asked for, not for the one that answered.
+		return func(r db.UsageRow) bool { return r.RequestedModel == id }
 	}
 	return nil
 }
 
-// rowAskedFor reports whether the requests of r asked for model: by that
-// name, or, for a direct address "<provider>/<id>", by the bare id on that
-// provider's own path (/ai/<provider>/…), where requested and target model
-// are the same string. A request answered by a fallback target counts for the
-// model the client asked for, not for the one that answered.
-func rowAskedFor(r db.UsageRow, model string) bool {
-	if r.RequestedModel == "" {
-		return false
-	}
-	if r.RequestedModel == model {
-		return true
-	}
-	return r.RequestedModel == r.TargetModel && r.ProviderSlug != "" &&
-		r.ProviderSlug+"/"+r.RequestedModel == model
-}
-
 // budgetUsage is the shared implementation behind CheckBudgets, the guard
-// and the GET /budgets figures: today's spend and tokens of the usage rows
+// and BudgetUsages (the GET /budgets figures): today's spend and tokens of the usage rows
 // that count for b. scope=user reports 0 (usage_events has no user column).
 func (e *Engine) budgetUsage(ctx context.Context, b db.Budget, today *todayUsage) (float64, int64, error) {
 	match := budgetRowFilter(b)
@@ -583,12 +557,18 @@ func (e *Engine) fireAction(ctx context.Context, b db.Budget, currentUSD float64
 					slog.String("budget_id", b.ID))
 				return
 			}
-			if err := gwRevoker.RevokeGatewayKeyByID(ctx, b.SubjectID); err != nil {
+			if err := gwRevoker.RevokeGatewayKeyByID(ctx, b.SubjectID, b.ID); err != nil {
 				e.log.Warn("cost: disable_key revoke failed",
 					slog.String("gateway_key_id", b.SubjectID),
+					slog.String("budget_id", b.ID),
 					slog.String("err", err.Error()))
 				return
 			}
+			e.log.Info("cost: gateway key revoked, its budget is exceeded",
+				slog.String("gateway_key_id", b.SubjectID),
+				slog.String("budget_id", b.ID),
+				slog.Float64("current_usd", currentUSD),
+				slog.Int64("current_tokens", currentTokens))
 		case "api_key":
 			if e.revoker == nil || e.keyLocator == nil {
 				e.log.Warn("cost: disable_key requested but no revoker wired",
@@ -837,11 +817,8 @@ func (e *Engine) SummaryBy(ctx context.Context, window, dimension string) ([]Gro
 
 // --- helpers -----------------------------------------------------------------
 
-// budgetMatchesSubjects reports whether the request described by s can have
-// added to budget b: only then is b looked at after the request's usage row.
-// For a model budget this is a pre-filter (the name asked for, or the bare id
-// of a direct address); what the budget has used is computed from the usage
-// rows either way.
+// budgetMatchesSubjects reports whether the request described by s adds to
+// budget b: only then is b looked at after the request's usage row.
 func budgetMatchesSubjects(b db.Budget, s Subjects) bool {
 	switch b.Scope {
 	case "api_key":
@@ -853,7 +830,7 @@ func budgetMatchesSubjects(b db.Budget, s Subjects) bool {
 	case "gateway_key":
 		return s.GatewayKeyID != "" && s.GatewayKeyID == b.SubjectID
 	case "model":
-		return s.Model != "" && (s.Model == b.SubjectID || strings.HasSuffix(b.SubjectID, "/"+s.Model))
+		return s.Model != "" && s.Model == b.SubjectID
 	case "global":
 		return true
 	}

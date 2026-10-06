@@ -139,19 +139,23 @@ func usageKeyColumn(subject string) (column, id string) {
 	return "api_key_id", subject
 }
 
+// sumDailyUsageSQL sums the bytes of the rows whose column equals the first
+// parameter since the second (a time). Each column it is called with has an
+// index (column, ts): service_id, api_key_id, gateway_key_id, requested_model.
+func sumDailyUsageSQL(column string) string {
+	return `SELECT CAST(COALESCE(SUM(bytes_in), 0) + COALESCE(SUM(bytes_out), 0) AS BIGINT)
+		   FROM usage_events
+		  WHERE ` + column + ` = ?
+		    AND ts >= ?`
+}
+
 // sumDailyUsage returns today's byte estimate of the rows whose column equals
 // id. column is a constant of this file, never input.
 func (x *DB) sumDailyUsage(ctx context.Context, column, id string) (int64, error) {
 	if id == "" {
 		return 0, nil
 	}
-	row := x.sqlDB.QueryRowContext(ctx,
-		`SELECT CAST(COALESCE(SUM(bytes_in), 0) + COALESCE(SUM(bytes_out), 0) AS BIGINT)
-		   FROM usage_events
-		  WHERE `+column+` = ?
-		    AND ts >= ?`,
-		id, utcDayStart(),
-	)
+	row := x.sqlDB.QueryRowContext(ctx, sumDailyUsageSQL(column), id, utcDayStart())
 	var totalBytes int64
 	if err := row.Scan(&totalBytes); err != nil {
 		return 0, fmt.Errorf("sum daily usage by %s: %w", column, err)

@@ -190,11 +190,9 @@ type UsageRow struct {
 	Requests int64
 }
 
-// ListUsageForWindow returns one UsageRow per (service_id, api_key_id, kind,
-// gateway_key_id, dialect, provider_slug, requested_model, target_model)
-// combination over the named window (see UsageWindowStart).
-func (x *DB) ListUsageForWindow(ctx context.Context, window string) ([]UsageRow, error) {
-	rows, err := x.sqlDB.QueryContext(ctx, `
+// listUsageForWindowSQL is the window aggregation; its one parameter is the
+// start of the window. Index idx_usage_events_ts serves the ts range.
+const listUsageForWindowSQL = `
 		SELECT service_id, api_key_id, kind,
 		       gateway_key_id, dialect, provider_slug, requested_model, target_model,
 		       COUNT(*) AS requests,
@@ -208,7 +206,13 @@ func (x *DB) ListUsageForWindow(ctx context.Context, window string) ([]UsageRow,
 		  FROM usage_events
 		 WHERE ts >= ?
 		 GROUP BY service_id, api_key_id, kind,
-		          gateway_key_id, dialect, provider_slug, requested_model, target_model`,
+		          gateway_key_id, dialect, provider_slug, requested_model, target_model`
+
+// ListUsageForWindow returns one UsageRow per (service_id, api_key_id, kind,
+// gateway_key_id, dialect, provider_slug, requested_model, target_model)
+// combination over the named window (see UsageWindowStart).
+func (x *DB) ListUsageForWindow(ctx context.Context, window string) ([]UsageRow, error) {
+	rows, err := x.sqlDB.QueryContext(ctx, listUsageForWindowSQL,
 		UsageWindowStart(window, time.Now()))
 	if err != nil {
 		return nil, fmt.Errorf("list usage for window %s: %w", window, err)

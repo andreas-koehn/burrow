@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ankoehn/burrow/internal/audit"
 	"strings"
 	"testing"
 
@@ -141,11 +142,29 @@ func TestRevokeGatewayKeyByID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RevokeGatewayKeyByID(ctx, "missing"); !errors.Is(err, ErrKeyNotFound) {
+	sink := &auditSink{}
+	s.SetAuditLogger(sink)
+	if err := s.RevokeGatewayKeyByID(ctx, "missing", "bud-1"); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("missing key err = %v", err)
 	}
-	if err := s.RevokeGatewayKeyByID(ctx, k.ID); err != nil {
+	if len(sink.ev) != 0 {
+		t.Fatalf("a revoke that did nothing was audited: %+v", sink.ev)
+	}
+	if err := s.RevokeGatewayKeyByID(ctx, k.ID, "bud-1"); err != nil {
 		t.Fatal(err)
+	}
+	// Audited as the system's doing, with the budget that caused it and
+	// nothing of the key but its id and name.
+	if len(sink.ev) != 1 {
+		t.Fatalf("audit events = %+v, want one", sink.ev)
+	}
+	ev := sink.ev[0]
+	if ev.Action != audit.ActionAIGatewayKeyRevoke || ev.ActorID != "system" || ev.SubjectID != k.ID || ev.SubjectLabel != "ci" || ev.Result != "ok" ||
+		string(ev.Payload) != `{"budget_id":"bud-1","reason":"budget_exceeded"}` {
+		t.Fatalf("audit event = %+v payload %s", ev, ev.Payload)
+	}
+	if strings.Contains(fmt.Sprintf("%+v %s", ev, ev.Payload), plain) || strings.Contains(fmt.Sprintf("%+v %s", ev, ev.Payload), plain[4:20]) {
+		t.Fatal("the audit event carries key material")
 	}
 	if _, ok, err := s.ValidateGatewayKey(ctx, plain); ok || err != nil {
 		t.Fatalf("revoked key: ok=%v err=%v", ok, err)
@@ -155,8 +174,11 @@ func TestRevokeGatewayKeyByID(t *testing.T) {
 		t.Fatalf("list: %+v", mine)
 	}
 	first := *mine[0].RevokedAt
-	if err := s.RevokeGatewayKeyByID(ctx, k.ID); err != nil {
+	if err := s.RevokeGatewayKeyByID(ctx, k.ID, "bud-1"); err != nil {
 		t.Fatalf("second revoke: %v", err)
+	}
+	if len(sink.ev) != 1 {
+		t.Fatalf("revoking a revoked key was audited again: %+v", sink.ev)
 	}
 	if again, _ := s.ListGatewayKeys(ctx, owner, "user"); !again[0].RevokedAt.Equal(first) {
 		t.Fatalf("a second revoke moved revoked_at: %v -> %v", first, again[0].RevokedAt)

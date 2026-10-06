@@ -12,6 +12,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/cost"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/store"
 )
 
 // fakeBudgetStore is an in-memory BudgetStore for the handler tests.
@@ -858,7 +859,8 @@ func TestBudgetHandler_GatewayKeyModelAndTokens(t *testing.T) {
 		"gk1":          {USD: 0, Tokens: 1500},
 		"burrow-smart": {USD: 2.5, Tokens: 10},
 	}}
-	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, Budgets: st, CostEngine: eng}
+	keys := &fakeKeyStore{rows: []store.GatewayKey{{ID: "gk1", UserID: "u-other"}}}
+	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, Budgets: st, CostEngine: eng, AIGatewayKeys: keys}
 	srv := newTestServer(d)
 	defer srv.Close()
 	c := authedClient(t, srv)
@@ -948,5 +950,70 @@ func TestBudgetHandler_GetWithoutUsage(t *testing.T) {
 	body := readBody(t, r)
 	if r.StatusCode != http.StatusOK || !strings.Contains(body, `"id":"b1"`) || !strings.Contains(body, `"current_tokens":0`) {
 		t.Fatalf("status=%d body=%s", r.StatusCode, body)
+	}
+}
+
+// subject_id is taken as it is sent or not at all: nothing is trimmed, and a
+// gateway_key budget names a key that exists.
+func TestBudgetHandler_SubjectID(t *testing.T) {
+	st := newFakeBudgetStore()
+	keys := &fakeKeyStore{rows: []store.GatewayKey{{ID: "gk1", UserID: "u-other"}}}
+	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, Budgets: st, CostEngine: &fakeCostEngine{}, AIGatewayKeys: keys}
+	srv := newTestServer(d)
+	defer srv.Close()
+	c := authedClient(t, srv)
+	body := func(scope, subject string) map[string]any {
+		return map[string]any{"scope": scope, "subject_id": subject, "daily_tokens": 5, "action_on_exceed": "throttle_zero"}
+	}
+	r := c.post(t, "/api/v1/budgets", body("model", "zai/glm-5.1"))
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("model budget: status=%d body=%s", r.StatusCode, readBody(t, r))
+	}
+	var created budgetResp
+	if err := json.Unmarshal([]byte(readBody(t, r)), &created); err != nil {
+		t.Fatal(err)
+	}
+	// Another user's key is a key: budgets are the admin's to set.
+	if r := c.post(t, "/api/v1/budgets", body("gateway_key", "gk1")); r.StatusCode != http.StatusCreated {
+		t.Fatalf("gateway_key budget: status=%d body=%s", r.StatusCode, readBody(t, r))
+	}
+	n := len(st.rows)
+	for name, tc := range map[string]struct {
+		scope, subject, msg string
+	}{
+		"leading space":      {"model", " zai/glm-5.1", "subject_id must not have leading or trailing whitespace"},
+		"trailing space":     {"model", "zai/glm-5.1 ", "subject_id must not have leading or trailing whitespace"},
+		"trailing newline":   {"api_key", "k1\n", "subject_id must not have leading or trailing whitespace"},
+		"tab inside":         {"model", "zai/glm\t5.1", "subject_id must not contain control characters"},
+		"NUL inside":         {"service", "svc\x00x", "subject_id must not contain control characters"},
+		"DEL inside":         {"model", "a\x7fb", "subject_id must not contain control characters"},
+		"only spaces":        {"model", "   ", "subject_id is required for non-global scopes"},
+		"unknown key":        {"gateway_key", "gk-none", "unknown gateway key"},
+		"key with a space":   {"gateway_key", "gk1 ", "subject_id must not have leading or trailing whitespace"},
+		"key in other case":  {"gateway_key", "GK1", "unknown gateway key"},
+		"global with spaces": {"global", " ", "global scope must not specify a subject_id"},
+	} {
+		for _, method := range []string{"POST", "PUT"} {
+			var r *http.Response
+			if method == "POST" {
+				r = c.post(t, "/api/v1/budgets", body(tc.scope, tc.subject))
+			} else {
+				r = c.put(t, "/api/v1/budgets/"+created.ID, body(tc.scope, tc.subject))
+			}
+			if got := readBody(t, r); r.StatusCode != http.StatusBadRequest || !strings.Contains(got, tc.msg) {
+				t.Errorf("%s %s: status=%d body=%s, want 400 %q", method, name, r.StatusCode, got, tc.msg)
+			}
+		}
+	}
+	if len(st.rows) != n || st.rows[created.ID].SubjectID != "zai/glm-5.1" {
+		t.Fatalf("a refused request changed the budgets: %+v", st.rows)
+	}
+	// Without a key store no key is known.
+	d.AIGatewayKeys = nil
+	srv2 := newTestServer(d)
+	defer srv2.Close()
+	r = authedClient(t, srv2).post(t, "/api/v1/budgets", body("gateway_key", "gk1"))
+	if got := readBody(t, r); r.StatusCode != http.StatusBadRequest || !strings.Contains(got, "unknown gateway key") {
+		t.Fatalf("no key store: status=%d body=%s", r.StatusCode, got)
 	}
 }

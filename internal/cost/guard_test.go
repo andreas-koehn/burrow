@@ -197,25 +197,231 @@ func TestGuard_NilAndEmpty(t *testing.T) {
 	}
 }
 
+// Budgets are per UTC day. A key blocked late in the evening is free again
+// at midnight: the guard does not carry yesterday's verdict over, whatever is
+// left of its ttl, and reads the new day's usage at once.
+func TestGuard_NewDayDropsTheVerdict(t *testing.T) {
+	f := newGuardFixture(time.Hour)
+	ctx := context.Background()
+	*f.now = time.Date(2026, 5, 19, 23, 59, 55, 0, time.UTC)
+	if _, blocked := f.g.Blocked(ctx, "gk1", "burrow-smart"); !blocked {
+		t.Fatal("not blocked before midnight")
+	}
+	f.usage.set(nil, nil) // the new day has no usage yet
+	reads := f.usage.count()
+	*f.now = time.Date(2026, 5, 20, 0, 0, 5, 0, time.UTC)
+	if reason, blocked := f.g.Blocked(ctx, "gk1", "burrow-smart"); blocked {
+		t.Fatalf("still blocked ten seconds later, on the next day: %q", reason)
+	}
+	if f.usage.count() != reads+1 {
+		t.Fatalf("%d reads on the new day, want 1", f.usage.count()-reads)
+	}
+	// Over again on the new day: blocked again, from the next read on.
+	f.usage.set(guardRows(), nil)
+	f.g.Invalidate()
+	if _, blocked := f.g.Blocked(ctx, "gk1", "m"); !blocked {
+		t.Fatal("not blocked after going over on the new day")
+	}
+	// Midnight while the usage cannot be read: the old verdict is void all
+	// the same.
+	f.usage.set(nil, errors.New("db is down"))
+	*f.now = time.Date(2026, 5, 21, 0, 0, 1, 0, time.UTC)
+	if _, blocked := f.g.Blocked(ctx, "gk1", "m"); blocked {
+		t.Fatal("yesterday's block survived midnight on a failed read")
+	}
+}
+
+// The read behind a verdict is the gateway's, not the request's: a client
+// that has gone away by the time it runs does not make it fail.
+func TestGuard_CallerContextDoesNotFailTheRead(t *testing.T) {
+	f := newGuardFixture(time.Minute)
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, blocked := f.g.Blocked(gone, "gk1", "m"); !blocked {
+		t.Fatal("a cancelled caller made the first read fail: the key over its budget got through")
+	}
+	if _, blocked := f.g.Blocked(gone, "gk3", "m"); blocked {
+		t.Fatal("gk3 blocked")
+	}
+	*f.now = f.now.Add(2 * time.Minute)
+	f.usage.set(append(guardRows(), db.UsageRow{GatewayKeyID: "gk3", ReportedUSD: 5}), nil)
+	if _, blocked := f.g.Blocked(gone, "gk3", "m"); !blocked {
+		t.Fatal("a cancelled caller made the refresh fail: gk3 is over and got through")
+	}
+	if logs := f.logs.String(); logs != "" {
+		t.Fatalf("a read failed: %s", logs)
+	}
+}
+
+// One caller reads; the others answer from the last verdict and do not wait
+// for the database.
+func TestGuard_SlowReadDoesNotHoldOtherCallers(t *testing.T) {
+	f := newGuardFixture(time.Minute)
+	ctx := context.Background()
+	if _, blocked := f.g.Blocked(ctx, "gk1", "m"); !blocked {
+		t.Fatal("gk1 not blocked")
+	}
+	*f.now = f.now.Add(2 * time.Minute) // the verdict is due for a refresh
+	f.usage.set(nil, nil)               // which will find gk1 free again
+	entered, release := f.usage.hold()
+	reads := f.usage.count()
+	reader := make(chan bool)
+	go func() {
+		_, blocked := f.g.Blocked(ctx, "gk1", "m")
+		reader <- blocked
+	}()
+	<-entered // the read is under way and held
+	done := make(chan [2]bool)
+	go func() {
+		_, a := f.g.Blocked(ctx, "gk1", "m")
+		_, b := f.g.Blocked(ctx, "gk3", "m")
+		done <- [2]bool{a, b}
+	}()
+	select {
+	case got := <-done:
+		if got != [2]bool{true, false} {
+			t.Fatalf("while the read is held: gk1 %v gk3 %v, want the last verdict (true, false)", got[0], got[1])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("other callers waited for the held read")
+	}
+	if n := f.usage.count() - reads; n != 1 {
+		t.Fatalf("%d reads under way, want 1", n)
+	}
+	release()
+	if <-reader {
+		t.Fatal("the caller that read got the old verdict")
+	}
+	if _, blocked := f.g.Blocked(ctx, "gk1", "m"); blocked {
+		t.Fatal("the new verdict was not kept")
+	}
+}
+
+// Before the first verdict there is nothing to answer from: callers wait for
+// the read that is under way, for as long as their own request lives.
+func TestGuard_FirstReadIsWaitedFor(t *testing.T) {
+	f := newGuardFixture(time.Minute)
+	ctx := context.Background()
+	entered, release := f.usage.hold()
+	results := make(chan bool, 4)
+	go func() {
+		_, blocked := f.g.Blocked(ctx, "gk1", "m")
+		results <- blocked
+	}()
+	<-entered
+	for i := 0; i < 3; i++ {
+		go func() {
+			_, blocked := f.g.Blocked(ctx, "gk1", "m")
+			results <- blocked
+		}()
+	}
+	// A caller whose request ends while it waits is let go, not blocked.
+	short, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	if _, blocked := f.g.Blocked(short, "gk1", "m"); blocked {
+		t.Fatal("blocked without a verdict")
+	}
+	select {
+	case <-results:
+		t.Fatal("a caller answered before the first read ended")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	for i := 0; i < 4; i++ {
+		if !<-results {
+			t.Fatal("a caller that waited for the first read let gk1 through")
+		}
+	}
+	if n := f.usage.count(); n != 1 {
+		t.Fatalf("%d reads, want 1", n)
+	}
+}
+
+// A database that does not answer costs one caller the read timeout, once per
+// ttl, and no one else anything.
+func TestGuard_ReadTimesOut(t *testing.T) {
+	f := newGuardFixture(time.Minute)
+	f.g.SetReadTimeout(30 * time.Millisecond)
+	ctx := context.Background()
+	_, release := f.usage.hold()
+	defer release()
+	start := time.Now()
+	if _, blocked := f.g.Blocked(ctx, "gk1", "m"); blocked {
+		t.Fatal("blocked on a read that timed out")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("the read was not cut off: %v", d)
+	}
+	if !strings.Contains(f.logs.String(), "deadline exceeded") {
+		t.Fatalf("the timeout was not logged: %q", f.logs.String())
+	}
+	start = time.Now()
+	f.g.Blocked(ctx, "gk1", "m")
+	if d := time.Since(start); d > 20*time.Millisecond || f.usage.count() != 1 {
+		t.Fatalf("second call within the ttl: %v, %d reads", d, f.usage.count())
+	}
+}
+
 func TestGuard_Concurrent(t *testing.T) {
-	f := newGuardFixture(0) // every call reads
+	f := newGuardFixture(0) // every call is due for a read
 	ctx := context.Background()
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 50; j++ {
-				if _, blocked := f.g.Blocked(ctx, "gk1", "m"); !blocked {
-					t.Error("gk1 not blocked")
-				}
+	stop := make(chan struct{})
+	// Budgets fire and reads fail while 200 callers ask.
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				f.g.Invalidate()
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				f.usage.set(guardRows(), nil)
+				return
+			default:
+			}
+			if i%2 == 0 {
+				f.usage.set(nil, errors.New("db is down"))
+			} else {
+				f.usage.set(guardRows(), nil)
+			}
+		}
+	}()
+	// One good read first: from then on gk1 is known to be over, and a failed
+	// read keeps that.
+	f.usage.set(guardRows(), nil)
+	var callers sync.WaitGroup
+	for i := 0; i < 200; i++ {
+		callers.Add(1)
+		go func(i int) {
+			defer callers.Done()
+			for j := 0; j < 25; j++ {
+				f.g.Blocked(ctx, "gk1", "m")
 				if _, blocked := f.g.Blocked(ctx, "gk3", "burrow-simple"); blocked {
 					t.Error("gk3 blocked")
 				}
+				if _, blocked := f.g.Blocked(ctx, "", ""); blocked {
+					t.Error("no key and no model blocked")
+				}
 			}
-		}()
+		}(i)
 	}
+	callers.Wait()
+	close(stop)
 	wg.Wait()
+	f.g.Invalidate()
+	if _, blocked := f.g.Blocked(ctx, "gk1", "m"); !blocked {
+		t.Error("gk1 not blocked once reads work again")
+	}
 }
 
 // The whole path on a real database: the usage sink writes a row, the engine

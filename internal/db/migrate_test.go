@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpenAndMigrateIdempotent(t *testing.T) {
@@ -235,12 +237,12 @@ func TestMigrateDriverFilter(t *testing.T) {
 		}
 	}
 
-	// Expect exactly 22 SQLite files and 22 Postgres files.
-	if len(sqliteFiles) != 22 {
-		t.Errorf("want 22 sqlite migration files, got %d: %v", len(sqliteFiles), sqliteFiles)
+	// Expect exactly 23 SQLite files and 23 Postgres files.
+	if len(sqliteFiles) != 23 {
+		t.Errorf("want 23 sqlite migration files, got %d: %v", len(sqliteFiles), sqliteFiles)
 	}
-	if len(postgresFiles) != 22 {
-		t.Errorf("want 22 postgres migration files, got %d: %v", len(postgresFiles), postgresFiles)
+	if len(postgresFiles) != 23 {
+		t.Errorf("want 23 postgres migration files, got %d: %v", len(postgresFiles), postgresFiles)
 	}
 
 	// Each SQLite file must have a matching postgres twin.
@@ -347,7 +349,7 @@ func TestMigrationParitySQLiteAndPostgres(t *testing.T) {
 			}
 		}
 	}
-	for _, idx := range migration0023Indexes {
+	for _, idx := range append(append([]string{}, migration0023Indexes...), migration0024Indexes...) {
 		var n string
 		if err := pgDB.QueryRow(
 			`SELECT indexname FROM pg_indexes WHERE schemaname='public' AND indexname=$1`, idx,
@@ -371,6 +373,55 @@ var (
 	}
 	migration0023Indexes = []string{"idx_ai_model_targets_provider", "idx_ai_gateway_keys_user", "idx_usage_attempts_ts", "idx_usage_events_gateway_key"}
 )
+
+// Migration 0024 adds the two indexes the per-request usage reads go by.
+var migration0024Indexes = []string{"idx_usage_events_requested_model", "idx_usage_events_ts"}
+
+func TestMigrate0024Schema(t *testing.T) {
+	x := testDB(t)
+	for _, idx := range migration0024Indexes {
+		var n string
+		if err := x.DB().QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`, idx).Scan(&n); err != nil {
+			t.Errorf("index %s missing: %v", idx, err)
+		}
+	}
+	// The planner uses them for the two reads they were added for.
+	for idx, q := range usageIndexQueries() {
+		rows, err := x.DB().Query(`EXPLAIN QUERY PLAN `+q.sql, q.args...)
+		if err != nil {
+			t.Fatalf("%s: %v", idx, err)
+		}
+		plan := ""
+		for rows.Next() {
+			var id, parent, notUsed int
+			var detail string
+			if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+				t.Fatal(err)
+			}
+			plan += detail + "\n"
+		}
+		rows.Close()
+		if !strings.Contains(plan, idx) {
+			t.Errorf("the plan does not use %s:\n%s", idx, plan)
+		}
+	}
+}
+
+// usageIndexQueries are the reads migration 0024 indexes, by index name: the
+// day sum of a requested model and the window aggregation of the cost engine.
+func usageIndexQueries() map[string]struct {
+	sql  string
+	args []any
+} {
+	since := time.Now().UTC().Add(-time.Hour)
+	return map[string]struct {
+		sql  string
+		args []any
+	}{
+		"idx_usage_events_requested_model": {sumDailyUsageSQL("requested_model"), []any{"burrow-smart", since}},
+		"idx_usage_events_ts":              {listUsageForWindowSQL, []any{since}},
+	}
+}
 
 func TestMigrate0023Schema(t *testing.T) {
 	x := testDB(t)

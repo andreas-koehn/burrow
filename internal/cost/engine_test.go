@@ -1,10 +1,13 @@
 package cost_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -442,7 +445,7 @@ func TestSummary_UsesReportedCostAndPricesTheRest(t *testing.T) {
 
 // A kind without a price entry used to count as 0 USD; the reported cost
 // makes it count, for every budget scope.
-func TestCurrentUsdFor_CountsReportedCost(t *testing.T) {
+func TestBudgetUsages_CountsReportedCost(t *testing.T) {
 	usage := &fakeUsageReader{rows: []db.UsageRow{
 		{ServiceID: "svc-A", APIKeyID: "kA", Kind: "unknown", TokensIn: 10, TokensOut: 10, ReportedUSD: 1.5},
 		{ServiceID: "svc-B", APIKeyID: "kB", Kind: "openai", TokensIn: 2_000_000, TokensOut: 0,
@@ -457,11 +460,11 @@ func TestCurrentUsdFor_CountsReportedCost(t *testing.T) {
 		{db.Budget{Scope: "service", SubjectID: "svc-B"}, 1.5},
 		{db.Budget{Scope: "global"}, 3.0},
 	} {
-		got, err := e.CurrentUsdFor(context.Background(), c.b)
+		u, err := e.BudgetUsages(context.Background(), []db.Budget{c.b})
 		if err != nil {
 			t.Fatalf("%s: %v", c.b.Scope, err)
 		}
-		if math.Abs(got-c.want) > 1e-9 {
+		if got := u[0].USD; math.Abs(got-c.want) > 1e-9 {
 			t.Errorf("%s: current = %v, want %v", c.b.Scope, got, c.want)
 		}
 	}
@@ -501,29 +504,60 @@ func TestRowUSD_PricesByTargetModel(t *testing.T) {
 			t.Errorf("%s: total %v (%v), want %v", name, s.TotalUSD, err, c.want)
 		}
 		// The global budget prices rows the same way.
-		got, err := e.CurrentUsdFor(context.Background(), db.Budget{Scope: "global"})
-		if err != nil || math.Abs(got-c.want) > 1e-9 {
-			t.Errorf("%s: global current %v (%v), want %v", name, got, err, c.want)
+		u, err := e.BudgetUsages(context.Background(), []db.Budget{{Scope: "global"}})
+		if err != nil || math.Abs(u[0].USD-c.want) > 1e-9 {
+			t.Errorf("%s: global current %+v (%v), want %v", name, u, err, c.want)
 		}
 	}
 }
 
-// rawUsageReader returns its rows as they are and counts the reads.
+// rawUsageReader returns its rows as they are and counts the reads. Like a
+// database it gives up when its context ends. A test can hold a read at the
+// gate (it announces itself on entered first) to see what others do meanwhile.
 type rawUsageReader struct {
-	mu    sync.Mutex
-	rows  []db.UsageRow
-	err   error
-	calls int
+	mu      sync.Mutex
+	rows    []db.UsageRow
+	err     error
+	calls   int
+	gate    chan struct{}
+	entered chan struct{}
 }
 
-func (f *rawUsageReader) ListUsageForWindow(_ context.Context, _ string) ([]db.UsageRow, error) {
+func (f *rawUsageReader) ListUsageForWindow(ctx context.Context, _ string) ([]db.UsageRow, error) {
+	f.mu.Lock()
+	f.calls++
+	gate, entered := f.gate, f.entered
+	rows, err := append([]db.UsageRow(nil), f.rows...), f.err
+	f.mu.Unlock()
+	if entered != nil {
+		entered <- struct{}{}
+	}
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+		}
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (f *rawUsageReader) hold() (entered chan struct{}, release func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls++
-	if f.err != nil {
-		return nil, f.err
+	f.gate, f.entered = make(chan struct{}), make(chan struct{}, 16)
+	gate := f.gate
+	return f.entered, func() {
+		f.mu.Lock()
+		f.gate, f.entered = nil, nil
+		f.mu.Unlock()
+		close(gate)
 	}
-	return append([]db.UsageRow(nil), f.rows...), nil
 }
 
 func (f *rawUsageReader) set(rows []db.UsageRow, err error) {
@@ -675,39 +709,52 @@ func TestCheckBudgets_GatewayKeyAndModelScopes(t *testing.T) {
 		{db.Budget{Scope: "global"}, 11.25, 2_500_064},
 		{db.Budget{Scope: "user", SubjectID: "u"}, 0, 0},
 	} {
-		usd, err := e.CurrentUsdFor(ctx, c.b)
-		tokens, err2 := e.CurrentTokensFor(ctx, c.b)
-		if err != nil || err2 != nil || math.Abs(usd-c.usd) > 1e-9 || tokens != c.tokens {
-			t.Errorf("%s/%s: usd %v tokens %d (%v %v), want %v / %d", c.b.Scope, c.b.SubjectID, usd, tokens, err, err2, c.usd, c.tokens)
+		u, err := e.BudgetUsages(ctx, []db.Budget{c.b})
+		if err != nil || math.Abs(u[0].USD-c.usd) > 1e-9 || u[0].Tokens != c.tokens {
+			t.Errorf("%s/%s: %+v (%v), want %v / %d", c.b.Scope, c.b.SubjectID, u, err, c.usd, c.tokens)
 		}
 	}
 }
 
-// A model budget on a direct address counts the requests that named the
-// model on the provider's own path, where the client sends the bare id.
-func TestModelBudget_CountsProviderPathRequests(t *testing.T) {
+// A model budget goes by the name the client asked for, exactly. On a
+// provider's own path the gateway records that name as "<provider>/<id>", the
+// model's direct address, so both doors count for one budget. Nothing else
+// does: not a synthetic model that happens to share the id or to target the
+// model, and not another provider's model whose id looks like the address.
+func TestModelBudget_MatchesTheRequestedNameExactly(t *testing.T) {
 	rows := []db.UsageRow{
-		// dialect endpoint, direct address
-		{GatewayKeyID: "gk1", RequestedModel: "ollama/mistral", ProviderSlug: "ollama", TargetModel: "mistral", TokensIn: 100, TokensOut: 1},
-		// provider path
-		{GatewayKeyID: "gk1", RequestedModel: "mistral", ProviderSlug: "ollama", TargetModel: "mistral", TokensIn: 10, TokensOut: 1},
-		// a synthetic model that happens to end the same way is another model
-		{GatewayKeyID: "gk1", RequestedModel: "mistral", ProviderSlug: "zai", TargetModel: "glm", TokensIn: 5000, TokensOut: 1},
-		{GatewayKeyID: "gk1", RequestedModel: "other", ProviderSlug: "ollama", TargetModel: "mistral", TokensIn: 7000, TokensOut: 1},
+		// gateway endpoint with the direct address, and the provider path
+		{GatewayKeyID: "gk1", RequestedModel: "openai/gpt-4o", ProviderSlug: "openai", TargetModel: "gpt-4o", TokensIn: 100, TokensOut: 1},
+		{GatewayKeyID: "gk2", RequestedModel: "openai/gpt-4o", ProviderSlug: "openai", TargetModel: "gpt-4o", TokensIn: 10, TokensOut: 1},
+		// openrouter's native id "openai/gpt-4o": another model
+		{GatewayKeyID: "gk1", RequestedModel: "openrouter/openai/gpt-4o", ProviderSlug: "openrouter", TargetModel: "openai/gpt-4o", TokensIn: 5000, TokensOut: 1},
+		// a synthetic model "gpt-4o" that targets openai/gpt-4o
+		{GatewayKeyID: "gk1", RequestedModel: "gpt-4o", ProviderSlug: "openai", TargetModel: "gpt-4o", TokensIn: 7000, TokensOut: 1},
+		// a request that named no model
+		{GatewayKeyID: "gk1", ProviderSlug: "openai", TokensIn: 90000, TokensOut: 1},
 	}
 	e := cost.NewWithDeps(routePricing(), nil, &rawUsageReader{rows: rows}, fakeDailyReader{}, nil, nil, nil, nil)
-	got, err := e.CurrentTokensFor(context.Background(), db.Budget{Scope: "model", SubjectID: "ollama/mistral"})
-	if err != nil || got != 112 {
-		t.Fatalf("tokens = %d (%v), want 112", got, err)
+	for subject, want := range map[string]int64{
+		"openai/gpt-4o":            112,
+		"openrouter/openai/gpt-4o": 5001,
+		"gpt-4o":                   7001,
+		"openai/gpt":               0,
+	} {
+		got, err := e.BudgetUsages(context.Background(), []db.Budget{{Scope: "model", SubjectID: subject}})
+		if err != nil || got[0].Tokens != want {
+			t.Errorf("%s: tokens = %+v (%v), want %d", subject, got, err, want)
+		}
 	}
-	// And the sample of such a request reaches the budget.
-	disp := &fakeDispatcher{}
-	e = cost.NewWithDeps(routePricing(), &fakeBudgetStore{budgets: []db.Budget{
-		{ID: "b", Scope: "model", SubjectID: "ollama/mistral", DailyTokens: 100, ActionOnExceed: "alert_webhook"},
-	}}, &rawUsageReader{rows: rows}, fakeDailyReader{}, nil, nil, disp, nil)
-	e.CheckBudgetsForSample(context.Background(), "svc", "", "gk1", "mistral")
-	if disp.count() != 1 {
-		t.Fatalf("events = %d, want 1", disp.count())
+	// Only a request that asked for the model reaches its budget.
+	for model, fires := range map[string]bool{"openai/gpt-4o": true, "gpt-4o": false, "openrouter/openai/gpt-4o": false, "": false} {
+		disp := &fakeDispatcher{}
+		e = cost.NewWithDeps(routePricing(), &fakeBudgetStore{budgets: []db.Budget{
+			{ID: "b", Scope: "model", SubjectID: "openai/gpt-4o", DailyTokens: 100, ActionOnExceed: "alert_webhook"},
+		}}, &rawUsageReader{rows: rows}, fakeDailyReader{}, nil, nil, disp, nil)
+		e.CheckBudgetsForSample(context.Background(), "svc", "", "gk1", model)
+		if (disp.count() == 1) != fires {
+			t.Errorf("sample for %q: %d events, want fired=%v", model, disp.count(), fires)
+		}
 	}
 }
 
@@ -744,10 +791,9 @@ func TestCheckBudgets_TokenCap(t *testing.T) {
 		if err != nil || (action == "alert_webhook") != c.want {
 			t.Errorf("%s: action %q (%v), want fired=%v", c.name, action, err, c.want)
 		}
-		usd, _ := e.CurrentUsdFor(ctx, b)
-		tokens, _ := e.CurrentTokensFor(ctx, b)
-		if got := cost.BudgetExceeded(b, usd, tokens); got != c.want {
-			t.Errorf("%s: BudgetExceeded = %v, want %v", c.name, got, c.want)
+		u, err := e.BudgetUsages(ctx, []db.Budget{b})
+		if err != nil || u[0].Exceeded != c.want || cost.BudgetExceeded(b, u[0].USD, u[0].Tokens) != c.want {
+			t.Errorf("%s: usage %+v (%v), want exceeded=%v", c.name, u, err, c.want)
 		}
 		if c.want && disp.count() == 1 {
 			p := disp.events[0].payload.(map[string]any)
@@ -764,10 +810,10 @@ type fakeGatewayRevoker struct {
 	err error
 }
 
-func (f *fakeGatewayRevoker) RevokeGatewayKeyByID(_ context.Context, id string) error {
+func (f *fakeGatewayRevoker) RevokeGatewayKeyByID(_ context.Context, id, budgetID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.ids = append(f.ids, id)
+	f.ids = append(f.ids, id+" by "+budgetID)
 	return f.err
 }
 
@@ -778,12 +824,18 @@ func TestDisableKey_GatewayKey(t *testing.T) {
 	}}
 	rev := &fakeGatewayRevoker{}
 	disp := &fakeDispatcher{}
-	e := cost.NewWithDeps(routePricing(), budgets, &rawUsageReader{rows: routeRows()}, fakeDailyReader{}, nil, nil, disp, nil)
+	var logs bytes.Buffer
+	e := cost.NewWithDeps(routePricing(), budgets, &rawUsageReader{rows: routeRows()}, fakeDailyReader{}, nil, nil, disp,
+		slog.New(slog.NewTextHandler(&logs, nil)))
 	e.SetGatewayKeyRevoker(rev)
 	e.CheckBudgetsForSample(ctx, "svc", "", "gk1", "burrow-smart")
 	e.CheckBudgetsForSample(ctx, "svc", "", "gk1", "burrow-smart")
-	if len(rev.ids) != 1 || rev.ids[0] != "gk1" {
-		t.Fatalf("revoked = %v, want [gk1] once", rev.ids)
+	if len(rev.ids) != 1 || rev.ids[0] != "gk1 by b" {
+		t.Fatalf("revoked = %v, want gk1 once, with the budget's id", rev.ids)
+	}
+	// The revoke leaves a line in the log, at Info.
+	if l := logs.String(); !strings.Contains(l, "level=INFO") || !strings.Contains(l, "gateway_key_id=gk1") || !strings.Contains(l, "budget_id=b") {
+		t.Fatalf("log = %q", l)
 	}
 	if disp.count() != 1 {
 		t.Fatalf("events = %d, want 1", disp.count())

@@ -154,9 +154,9 @@ func (c *Cache) SetOnMiss(fn func(ctx context.Context, key string, body []byte))
 
 // Lookup checks for a cached entry under the given fully-prefixed key. On
 // hit, last_hit_at is best-effort touched (errors logged, not returned —
-// the caller already has its entry). TTL is checked via
-// created_at + ttl_seconds > now, in SQLite-side arithmetic so the index
-// scan and filter are one round-trip.
+// the caller already has its entry). The row is read by its unique key and
+// its age is checked here against its own ttl_seconds: created_at +
+// ttl_seconds > now.
 //
 // Returns (entry, true, nil) on hit; (zero, false, nil) on miss or expiry;
 // non-nil error only on real I/O failure.
@@ -165,34 +165,36 @@ func (c *Cache) Lookup(ctx context.Context, key string) (Entry, bool, error) {
 		return Entry{}, false, errors.New("exact.Cache: not initialised")
 	}
 	var (
-		id           string
-		status       int
-		headersStr   string
-		body         []byte
-		createdAtStr string
-		ttl          int
+		id         string
+		status     int
+		headersStr string
+		body       []byte
+		createdRaw any
+		ttl        int
 	)
-	// The TTL filter uses julianday() arithmetic — robust against the
-	// fractional-seconds precision issue that breaks datetime() on values
-	// the modernc driver writes with >3 fractional digits. We pre-format
-	// created_at to 3 digits in Store; for safety in case older rows
-	// exist with the legacy format we ALSO scan created_at as a string
-	// rather than time.Time (which would fail-parse on the legacy
-	// 7-fractional-digit values).
+	// key_hash is unique: at most one row. Whether it is still within its
+	// own ttl is decided here, from the row, and not in SQL: SQLite and
+	// Postgres share no expression for the age of a timestamp. created_at is
+	// read as the driver returns it (text on SQLite, a timestamp on
+	// Postgres); a row whose created_at cannot be read counts as expired.
 	row := c.d.DB().QueryRowContext(ctx, `
 		SELECT id, status, headers, body, created_at, ttl_seconds
 		  FROM cache_entries
-		 WHERE key_hash = ?
-		   AND (julianday('now') - julianday(created_at)) * 86400.0 < ttl_seconds`,
+		 WHERE key_hash = ?`,
 		key,
 	)
-	err := row.Scan(&id, &status, &headersStr, &body, &createdAtStr, &ttl)
+	err := row.Scan(&id, &status, &headersStr, &body, &createdRaw, &ttl)
 	if errors.Is(err, sql.ErrNoRows) {
 		c.misses.Add(1)
 		return Entry{}, false, nil
 	}
 	if err != nil {
 		return Entry{}, false, fmt.Errorf("cache lookup: %w", err)
+	}
+	createdAt, ok := entryTime(createdRaw)
+	if !ok || time.Since(createdAt).Seconds() >= float64(ttl) {
+		c.misses.Add(1)
+		return Entry{}, false, nil
 	}
 	headers := map[string]string{}
 	if headersStr != "" {
@@ -211,16 +213,6 @@ func (c *Cache) Lookup(ctx context.Context, key string) (Entry, bool, error) {
 			slog.String("entry_id", id), slog.String("err", terr.Error()))
 	}
 	c.hits.Add(1)
-	// Parse created_at back into a time.Time best-effort; the consumer (proxy
-	// hot path) uses it for max-age headers and observability only — if
-	// parsing fails because a legacy row has a different format, we return
-	// the zero time rather than failing the cache hit.
-	var createdAt time.Time
-	if t, perr := time.Parse(sqliteTimeFormat, createdAtStr); perr == nil {
-		createdAt = t.UTC()
-	} else if t, perr := time.Parse(time.RFC3339Nano, createdAtStr); perr == nil {
-		createdAt = t.UTC()
-	}
 	return Entry{
 		Body:       body,
 		Status:     status,
@@ -228,6 +220,29 @@ func (c *Cache) Lookup(ctx context.Context, key string) (Entry, bool, error) {
 		CreatedAt:  createdAt,
 		TTLSeconds: ttl,
 	}, true, nil
+}
+
+// entryTime reads a cache_entries.created_at value as the driver returns it:
+// a time.Time, or text in the format Store writes, the one SQLite's
+// CURRENT_TIMESTAMP default writes, or RFC 3339. Text without a zone is UTC.
+func entryTime(raw any) (time.Time, bool) {
+	var text string
+	switch v := raw.(type) {
+	case time.Time:
+		return v.UTC(), true
+	case string:
+		text = v
+	case []byte:
+		text = string(v)
+	default:
+		return time.Time{}, false
+	}
+	for _, layout := range []string{sqliteTimeFormat, time.RFC3339Nano, "2006-01-02 15:04:05"} {
+		if t, err := time.Parse(layout, text); err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
 }
 
 // Store inserts a new cache entry under the given fully-prefixed key. The

@@ -40,11 +40,42 @@ func OpenPostgres(url string) (*PostgresBackend, error) {
 		return nil, fmt.Errorf("OpenPostgres ping: %w", err)
 	}
 	d.SetMaxOpenConns(10)
-	if err := MigrateForDriver(d, "postgres"); err != nil {
+	if err := migratePostgresLocked(d); err != nil {
 		_ = d.Close()
 		return nil, fmt.Errorf("OpenPostgres migrate: %w", err)
 	}
 	return &PostgresBackend{db: d}, nil
+}
+
+// pgMigrationLockKey is the advisory-lock key every Burrow process takes
+// while it migrates a Postgres database. The value is arbitrary and fixed
+// ("burrow" read as a number); it must never change between versions.
+const pgMigrationLockKey int64 = 0x627572726f77
+
+// migratePostgresLocked runs the migration ladder under a session-level
+// advisory lock, so that two processes starting against the same database
+// (two relays, or two test binaries) migrate one after the other: the second
+// waits, then finds everything applied. The lock lives on one dedicated
+// connection and is released explicitly; closing that connection would
+// release it too, so a crash cannot leave it held.
+func migratePostgresLocked(d *sql.DB) error {
+	ctx := context.Background()
+	conn, err := d.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("migration lock connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, pgMigrationLockKey); err != nil {
+		return fmt.Errorf("take migration lock: %w", err)
+	}
+	// A failed unlock is not fatal for this process, but the connection must
+	// not go back to the pool still holding the lock: discard it.
+	defer func() {
+		if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, pgMigrationLockKey); err != nil {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+	}()
+	return MigrateForDriver(d, "postgres")
 }
 
 // DB implements Backend.

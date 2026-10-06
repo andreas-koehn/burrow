@@ -311,8 +311,10 @@ func (c *Chain) allow(w http.ResponseWriter, r *http.Request, svc Service) (*htt
 		ServiceID: svc.ID,
 		APIKeyID:  keySubject(r, svc),
 	}
-	// A request the gateway routed names its gateway key and the model the
-	// client asked for: gateway_key and model limits go by them.
+	// A request the gateway routed names its gateway key and the requested
+	// model, under the one name it has on every door ("<provider>/<id>" on
+	// a provider path): gateway_key and model limits go by them, as budgets
+	// and the usage row do.
 	if ri, ok := RouteFrom(r.Context()); ok {
 		who.GatewayKeyID, who.Model = ri.GatewayKeyID, ri.RequestedModel
 	}

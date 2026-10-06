@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/db"
 )
@@ -146,15 +147,33 @@ func (s *Store) RevokeGatewayKey(ctx context.Context, callerID, callerRole, id s
 }
 
 // RevokeGatewayKeyByID revokes the key at once, for the system itself: the
-// cost engine calls it when a gateway_key budget with action disable_key is
-// exceeded. There is no caller to check; it must not be reachable from a
-// request. Revoking a revoked key is not an error.
-func (s *Store) RevokeGatewayKeyByID(ctx context.Context, id string) error {
+// cost engine calls it when the gateway_key budget budgetID with action
+// disable_key is exceeded. There is no caller to check; it must not be
+// reachable from a request. Revoking a revoked key is not an error.
+//
+// The revoke is audited as ai_gateway_key.revoke with actor "system" and the
+// budget that caused it. The event names the key by id and name only.
+func (s *Store) RevokeGatewayKeyByID(ctx context.Context, id, budgetID string) error {
+	k, err := s.q.GetAIGatewayKey(ctx, id)
+	if errors.Is(err, db.ErrNotFound) {
+		return ErrKeyNotFound
+	}
+	if err != nil {
+		return err
+	}
 	if err := s.q.RevokeAIGatewayKey(ctx, id); errors.Is(err, db.ErrNotFound) {
 		return ErrKeyNotFound
 	} else if err != nil {
 		return err
 	}
+	if k.RevokedAt != nil {
+		return nil // it was revoked before; nothing happened now
+	}
+	s.emitAudit(ctx, audit.ActionAIGatewayKeyRevoke, func(e *audit.Event) {
+		e.ActorID, e.ActorEmail = "system", ""
+		e.SubjectID, e.SubjectLabel = k.ID, k.Name
+		e.Payload = audit.MustJSON(map[string]string{"reason": "budget_exceeded", "budget_id": budgetID})
+	})
 	return nil
 }
 

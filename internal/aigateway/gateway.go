@@ -57,8 +57,9 @@ type BudgetGuard interface {
 
 // overBudget answers 429 "budget_exceeded" when the gateway key or the model
 // is over a hard budget, and reports whether it did. model is the name the
-// budget goes by: what the client asked for on a dialect endpoint,
-// "<provider>/<model>" on a provider path, "" when the request names none.
+// budget goes by, the requested model as the usage row records it: what the
+// client asked for on a dialect endpoint, "<provider>/<model>" on a provider
+// path, "" when the request names none.
 // Budgets are per UTC day, so Retry-After is the time until UTC midnight.
 func (g *Gateway) overBudget(w http.ResponseWriter, r *http.Request, gatewayKeyID, model string) bool {
 	if g.Budgets == nil {
@@ -343,19 +344,21 @@ func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, p db.AIPr
 	case !full:
 		return deny()
 	}
-	// A key or model over its budget reaches no upstream. The model list
-	// stays open: it is answered from the catalog or costs nothing. The
-	// model's budget goes by its direct address.
-	if !isModelList(r) {
-		budgetModel := ""
-		if model != "" {
-			budgetModel = p.Slug + "/" + model
-		}
-		if g.overBudget(w, r, key.ID, budgetModel) {
-			return r, "", false
-		}
+	// The model the client asked for, under the name it has on the gateway
+	// endpoints: "<provider>/<native id>". The usage row, model budgets and
+	// model rate limits go by this one name, whichever door a request came
+	// through; the body the upstream gets is untouched. "" when the request
+	// names no model.
+	requested := ""
+	if model != "" {
+		requested = p.Slug + "/" + model
 	}
-	route := aigw.NewRoute(key.ID, p.APIFormat, model, w.Header().Get(headerRequestID))
+	// A key or model over its budget reaches no upstream. The model list
+	// stays open: it is answered from the catalog or costs nothing.
+	if !isModelList(r) && g.overBudget(w, r, key.ID, requested) {
+		return r, "", false
+	}
+	route := aigw.NewRoute(key.ID, p.APIFormat, requested, w.Header().Get(headerRequestID))
 	route.SetTarget(p.Slug, model)
 	ctx := aigw.WithRoute(r.Context(), route)
 	return r.WithContext(context.WithValue(ctx, allowListKey{}, key.AllowedModels)), "", true

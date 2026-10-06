@@ -9,7 +9,13 @@ package db
 import (
 	"context"
 	"fmt"
+	"time"
 )
+
+// Every time boundary below is computed in Go, in UTC, and bound, and no
+// date function of either database is used: the statements run on SQLite and
+// Postgres alike. cache_hit is INTEGER 0/1 on SQLite and BOOLEAN on Postgres;
+// "CASE WHEN cache_hit THEN 1 ELSE 0 END" counts it on both.
 
 // AIEndpointCount is the per-service trailing-24h request + cache-hit summary
 // used by the AI-endpoints list.
@@ -50,11 +56,11 @@ type AIEndpointAgg struct {
 func (x *DB) AIEndpointCounts24h(ctx context.Context) (map[string]AIEndpointCount, error) {
 	rows, err := x.sqlDB.QueryContext(ctx, `
 		SELECT service_id,
-		       COUNT(*)                    AS requests,
-		       COALESCE(SUM(cache_hit), 0) AS cache_hits
+		       COUNT(*) AS requests,
+		       CAST(COALESCE(SUM(CASE WHEN cache_hit THEN 1 ELSE 0 END), 0) AS BIGINT) AS cache_hits
 		  FROM usage_events
-		 WHERE ts >= datetime('now', '-1 day')
-		 GROUP BY service_id`)
+		 WHERE ts >= ?
+		 GROUP BY service_id`, time.Now().UTC().Add(-24*time.Hour))
 	if err != nil {
 		return nil, fmt.Errorf("ai endpoint counts 24h: %w", err)
 	}
@@ -75,14 +81,18 @@ func (x *DB) AIEndpointCounts24h(ctx context.Context) (map[string]AIEndpointCoun
 // 60-bucket requests-per-minute series over the trailing hour.
 func (x *DB) AIEndpointMetrics24h(ctx context.Context, serviceID string) (AIEndpointAgg, error) {
 	var agg AIEndpointAgg
+	// One clock reading for the three queries. Whole seconds, as the minute
+	// buckets are counted in.
+	now := time.Now().UTC().Truncate(time.Second)
+	dayAgo := now.Add(-24 * time.Hour)
 
 	row := x.sqlDB.QueryRowContext(ctx, `
 		SELECT COUNT(*),
-		       COALESCE(SUM(tokens_in), 0),
-		       COALESCE(SUM(tokens_out), 0),
-		       COALESCE(SUM(cache_hit), 0)
+		       CAST(COALESCE(SUM(tokens_in), 0) AS BIGINT),
+		       CAST(COALESCE(SUM(tokens_out), 0) AS BIGINT),
+		       CAST(COALESCE(SUM(CASE WHEN cache_hit THEN 1 ELSE 0 END), 0) AS BIGINT)
 		  FROM usage_events
-		 WHERE service_id = ? AND ts >= datetime('now', '-1 day')`, serviceID)
+		 WHERE service_id = ? AND ts >= ?`, serviceID, dayAgo)
 	if err := row.Scan(&agg.Requests, &agg.TokensIn, &agg.TokensOut, &agg.CacheHits); err != nil {
 		return agg, fmt.Errorf("ai endpoint metrics 24h: %w", err)
 	}
@@ -90,14 +100,14 @@ func (x *DB) AIEndpointMetrics24h(ctx context.Context, serviceID string) (AIEndp
 	// Per-kind token subtotals (kind = pricing-lookup key for cost derivation).
 	krows, err := x.sqlDB.QueryContext(ctx, `
 		SELECT kind,
-		       COALESCE(SUM(tokens_in), 0),
-		       COALESCE(SUM(tokens_out), 0),
+		       CAST(COALESCE(SUM(tokens_in), 0) AS BIGINT),
+		       CAST(COALESCE(SUM(tokens_out), 0) AS BIGINT),
 		       COALESCE(SUM(cost_usd), 0),
-		       COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_in  ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_out ELSE 0 END), 0)
+		       CAST(COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_in  ELSE 0 END), 0) AS BIGINT),
+		       CAST(COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_out ELSE 0 END), 0) AS BIGINT)
 		  FROM usage_events
-		 WHERE service_id = ? AND ts >= datetime('now', '-1 day')
-		 GROUP BY kind`, serviceID)
+		 WHERE service_id = ? AND ts >= ?
+		 GROUP BY kind`, serviceID, dayAgo)
 	if err != nil {
 		return agg, fmt.Errorf("ai endpoint kind tokens: %w", err)
 	}
@@ -114,32 +124,59 @@ func (x *DB) AIEndpointMetrics24h(ctx context.Context, serviceID string) (AIEndp
 		return agg, err
 	}
 
-	// Requests-per-minute over the trailing hour. mins_ago: 0 = current minute
-	// … 59 = 59 minutes ago. Newest goes at PerMinute[59].
-	//
-	// ts is stored in Go's time.Time string form (e.g.
-	// "2026-05-29 10:44:34.127276661 +0000 UTC") which strftime cannot parse —
-	// so we feed it only the leading "YYYY-MM-DD HH:MM:SS" via substr(ts,1,19).
-	// (The window filter uses a plain lexical >= comparison, which the existing
-	// usage queries also rely on, so it needs no normalization.)
+	// Requests-per-minute over the trailing hour. minsAgo: 0 = the last
+	// minute … 59 = 59 minutes ago. Newest goes at PerMinute[59]. The rows of
+	// the hour are bucketed here rather than in SQL: the two databases share
+	// no expression for "minutes since a timestamp".
 	mrows, err := x.sqlDB.QueryContext(ctx, `
-		SELECT CAST((strftime('%s','now') - strftime('%s', substr(ts, 1, 19))) / 60 AS INTEGER) AS mins_ago,
-		       COUNT(*)
+		SELECT ts
 		  FROM usage_events
-		 WHERE service_id = ? AND ts >= datetime('now', '-60 minutes')
-		 GROUP BY mins_ago`, serviceID)
+		 WHERE service_id = ? AND ts >= ?`, serviceID, now.Add(-60*time.Minute))
 	if err != nil {
 		return agg, fmt.Errorf("ai endpoint per-minute: %w", err)
 	}
 	defer mrows.Close()
 	for mrows.Next() {
-		var minsAgo, n int
-		if err := mrows.Scan(&minsAgo, &n); err != nil {
+		var raw any
+		if err := mrows.Scan(&raw); err != nil {
 			return agg, fmt.Errorf("scan per-minute: %w", err)
 		}
+		ts, ok := usageTime(raw)
+		if !ok {
+			continue
+		}
+		// Whole seconds on both sides, then whole minutes.
+		minsAgo := (now.Unix() - ts.Unix()) / 60
 		if minsAgo >= 0 && minsAgo < 60 {
-			agg.PerMinute[59-minsAgo] = n
+			agg.PerMinute[59-minsAgo]++
 		}
 	}
 	return agg, mrows.Err()
+}
+
+// usageTime reads a usage_events.ts value as the driver returns it: a
+// time.Time (Postgres, and SQLite when the driver recognises the text), or
+// the text the SQLite driver stored for a time.Time, of which the leading
+// "YYYY-MM-DD HH:MM:SS" is read as UTC (the sink writes UTC).
+func usageTime(raw any) (time.Time, bool) {
+	var text string
+	switch v := raw.(type) {
+	case time.Time:
+		return v, true
+	case string:
+		text = v
+	case []byte:
+		text = string(v)
+	default:
+		return time.Time{}, false
+	}
+	if len(text) < 19 {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02T15:04:05"} {
+		if t, err := time.Parse(layout, text[:19]); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
