@@ -106,8 +106,10 @@ func TestCreateModel_Validation(t *testing.T) {
 		"long target model":    func(m *db.AIModel) { m.Targets[0].TargetModel = strings.Repeat("x", 201) },
 		"control in target":    func(m *db.AIModel) { m.Targets[0].TargetModel = "a\nb" },
 		"too many targets": func(m *db.AIModel) {
-			for len(m.Targets) < 9 {
-				m.Targets = append(m.Targets, m.Targets[0])
+			for len(m.Targets) < 9 { // distinct, so that it is the count that is refused
+				next := m.Targets[0]
+				next.TargetModel = fmt.Sprintf("m-%d", len(m.Targets))
+				m.Targets = append(m.Targets, next)
 			}
 		},
 		"attempt timeout high": func(m *db.AIModel) { m.AttemptTimeoutS, m.TotalTimeoutS = 601, 601 },
@@ -129,7 +131,9 @@ func TestCreateModel_Validation(t *testing.T) {
 	m := simpleModel()
 	m.Name = "burrow-eight"
 	for len(m.Targets) < 8 {
-		m.Targets = append(m.Targets, m.Targets[0])
+		next := m.Targets[0]
+		next.TargetModel = fmt.Sprintf("m-%d", len(m.Targets))
+		m.Targets = append(m.Targets, next)
 	}
 	if _, err := s.CreateModel(ctx, m); err != nil {
 		t.Fatalf("eight targets: %v", err)
@@ -281,6 +285,65 @@ func TestUpdateProviderUpstream_FormatLockedByModels(t *testing.T) {
 	}
 }
 
+// The same provider and model twice in one format would be tried twice in a
+// row; with and without a dialect it is the same target once the dialect is
+// filled in.
+func TestCreateModel_DuplicateTargets(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	modelFixture(t, s)
+	for name, targets := range map[string][]db.AIModelTarget{
+		"identical": {
+			{Dialect: "openai", ProviderSlug: "zai", TargetModel: "glm"},
+			{Dialect: "openai", ProviderSlug: "zai", TargetModel: "glm"},
+		},
+		"one without a dialect": {
+			{ProviderSlug: "zai", TargetModel: "glm"},
+			{Dialect: "openai", ProviderSlug: "ollama", TargetModel: "mistral"},
+			{Dialect: "openai", ProviderSlug: "zai", TargetModel: "glm"},
+		},
+		"after trimming": {
+			{ProviderSlug: "zai", TargetModel: "glm"},
+			{ProviderSlug: "zai", TargetModel: " glm "},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := simpleModel()
+			m.Targets = targets
+			_, err := s.CreateModel(ctx, m)
+			if !errors.Is(err, ErrInvalidModel) || !strings.Contains(err.Error(), "a target is listed twice") {
+				t.Fatalf("create err = %v", err)
+			}
+		})
+	}
+	// The same model on two providers, and two models on one, are fine.
+	m := simpleModel()
+	m.Targets = []db.AIModelTarget{
+		{ProviderSlug: "zai", TargetModel: "glm"},
+		{ProviderSlug: "ollama", TargetModel: "glm"},
+		{ProviderSlug: "zai", TargetModel: "glm-2"},
+	}
+	created, err := s.CreateModel(ctx, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An update is checked the same way.
+	created.Targets = append(created.Targets, created.Targets[0])
+	if _, err := s.UpdateModel(ctx, created.Name, created); !errors.Is(err, ErrInvalidModel) {
+		t.Fatalf("update err = %v", err)
+	}
+}
+
+// insertAlias writes a model_aliases row as an earlier version left it: the
+// alias API is gone, the import still reads the table.
+func insertAlias(t *testing.T, s *Store, a db.ModelAlias) {
+	t.Helper()
+	if _, err := s.q.DB().Exec(`INSERT INTO model_aliases(alias, concrete_model, service_id, provider, priority) VALUES(?,?,?,?,?)`,
+		a.Alias, a.ConcreteModel, a.ServiceID, a.Provider, a.Priority); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // backfilled runs the provider backfill, which the alias import waits for.
 func backfilled(t *testing.T, s *Store) {
 	t.Helper()
@@ -302,9 +365,7 @@ func TestImportModelAliases(t *testing.T) {
 		{Alias: "zai", ConcreteModel: "z", ServiceID: svcOllama}, // a provider's slug
 		{Alias: "too-long", ConcreteModel: strings.Repeat("m", 201), ServiceID: svcOllama},
 	} {
-		if err := s.q.CreateModelAlias(ctx, a); err != nil {
-			t.Fatal(err)
-		}
+		insertAlias(t, s, a)
 	}
 
 	// Not before the provider backfill: without providers every alias would
@@ -349,9 +410,7 @@ func TestImportModelAliases_KeepsExistingModel(t *testing.T) {
 	if _, err := s.CreateModel(ctx, m); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.q.CreateModelAlias(ctx, db.ModelAlias{Alias: "fast", ConcreteModel: "other", ServiceID: svcOllama}); err != nil {
-		t.Fatal(err)
-	}
+	insertAlias(t, s, db.ModelAlias{Alias: "fast", ConcreteModel: "other", ServiceID: svcOllama})
 	if n, skipped, err := s.ImportModelAliases(ctx); err != nil || n != 0 || fmt.Sprint(skipped) != "[fast]" {
 		t.Fatalf("import: n=%d skipped=%q err=%v", n, skipped, err)
 	}

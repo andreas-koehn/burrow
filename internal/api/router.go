@@ -321,17 +321,20 @@ func NewRouter(d Deps) http.Handler {
 			r.Get("/guardrails/settings", d.GetGuardrailSettings)
 			r.With(d.requireAdminOrAIConfigureAny).Put("/guardrails/settings", d.PutGuardrailSettings)
 			r.Get("/guardrails/patterns", d.GetGuardrailPatterns)
-			// Synthetic models and gateway keys. Any session may read the
-			// models and the gateway's endpoints; model writes are admin OR
-			// ai:configure:any, the gate the model-alias routes had. A
-			// gateway key belongs to the user who creates it: the store
-			// shows and revokes own keys, and every key for an admin.
+			// Synthetic models and gateway keys. Any signed-in caller may
+			// read the models and the gateway's endpoints. Model writes:
+			// a session of an admin or of a role with ai:configure:any, or
+			// an automation token that declares ai:configure:any
+			// (requireAIModelWrite). A gateway key belongs to the user who
+			// creates it, which takes a dashboard session; own keys are
+			// listed and revoked, every key by an admin's session. The
+			// handlers enforce the key rules.
 			r.Get("/ai/gateway", d.GetAIGatewayInfo)
 			r.Get("/ai/models", d.GetAIModels)
 			r.Get("/ai/models/{name}", d.GetAIModel)
-			r.With(d.requireAdminOrAIConfigureAny).Post("/ai/models", d.PostAIModel)
-			r.With(d.requireAdminOrAIConfigureAny).Put("/ai/models/{name}", d.PutAIModel)
-			r.With(d.requireAdminOrAIConfigureAny).Delete("/ai/models/{name}", d.DeleteAIModel)
+			r.With(d.requireAIModelWrite).Post("/ai/models", d.PostAIModel)
+			r.With(d.requireAIModelWrite).Put("/ai/models/{name}", d.PutAIModel)
+			r.With(d.requireAIModelWrite).Delete("/ai/models/{name}", d.DeleteAIModel)
 			r.Get("/ai/keys", d.GetAIKeys)
 			r.Post("/ai/keys", d.PostAIKey)
 			r.Delete("/ai/keys/{id}", d.DeleteAIKey)

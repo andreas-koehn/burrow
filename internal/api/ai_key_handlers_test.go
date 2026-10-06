@@ -315,29 +315,79 @@ func TestDeleteKey(t *testing.T) {
 	})
 }
 
-// An automation bearer token is accepted on the key routes as it is on
-// /tokens and the service API keys; the key belongs to the token's user.
-func TestKeyRoutes_BearerToken(t *testing.T) {
-	f := newKeyFixture("user")
+// A gateway key outlives whatever created it, so an automation token cannot
+// create one, whatever it declares and whoever owns it.
+func TestPostKey_NeedsDashboardSession(t *testing.T) {
+	for _, role := range []string{"user", "admin"} {
+		t.Run(role, func(t *testing.T) {
+			f := newKeyFixture(role)
+			auto := newFakeAutomationStore()
+			f.d.Automation, f.d.Bearer = auto, auto
+			_, token, err := auto.MintAutomationToken(context.Background(), "u-self", role, "ci", nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := httptest.NewServer(NewRouter(f.d))
+			defer srv.Close()
+
+			resp := bearerDo(t, srv, token, http.MethodPost, "/api/v1/ai/keys", map[string]any{"name": "ci"})
+			if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+				t.Errorf("Cache-Control = %q", cc)
+			}
+			if body := wantStatus(t, resp, http.StatusForbidden); !strings.Contains(body, "a dashboard session is required") {
+				t.Errorf("body = %s", body)
+			}
+			if f.ks.creates != 0 || len(f.aud.events) != 0 {
+				t.Errorf("the store was called or the refusal audited")
+			}
+		})
+	}
+}
+
+// An admin's automation token is not an admin on the key routes: it lists
+// and revokes the keys of its user, like any other caller's token.
+func TestKeyRoutes_BearerTokenActsForOwnKeysOnly(t *testing.T) {
+	f := newKeyFixture("admin")
+	f.ks.rows = []store.GatewayKey{
+		{ID: "k-mine", Name: "mine", KeyPrefix: "bgw_AAAA", UserID: "u-self"},
+		{ID: "k-other", Name: "theirs", KeyPrefix: "bgw_BBBB", UserID: "u-other"},
+	}
 	auto := newFakeAutomationStore()
 	f.d.Automation, f.d.Bearer = auto, auto
-	_, bearer, err := auto.MintAutomationToken(context.Background(), "u-self", "user", "ci", nil, nil)
+	_, token, err := auto.MintAutomationToken(context.Background(), "u-self", "admin", "ci", []string{"tunnels:read:any"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(NewRouter(f.d))
 	defer srv.Close()
 
-	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/ai/keys", strings.NewReader(`{"name":"ci"}`))
-	req.Header.Set("Authorization", "Bearer "+bearer)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
+	list := wantStatus(t, bearerDo(t, srv, token, http.MethodGet, "/api/v1/ai/keys", nil), http.StatusOK)
+	if f.ks.listCaller != "u-self" || f.ks.listRole != "user" {
+		t.Errorf("list: store called with %q / %q, want u-self / user", f.ks.listCaller, f.ks.listRole)
 	}
-	wantStatus(t, resp, http.StatusCreated)
-	if f.ks.lastUser != "u-self" {
-		t.Errorf("key owner = %q", f.ks.lastUser)
+	if !strings.Contains(list, "k-mine") || strings.Contains(list, "k-other") {
+		t.Errorf("list = %s", list)
 	}
+
+	other := wantStatus(t, bearerDo(t, srv, token, http.MethodDelete, "/api/v1/ai/keys/k-other", nil), http.StatusNotFound)
+	missing := wantStatus(t, bearerDo(t, srv, token, http.MethodDelete, "/api/v1/ai/keys/k-nope", nil), http.StatusNotFound)
+	if other != missing {
+		t.Errorf("answers differ: %q vs %q", other, missing)
+	}
+	if f.ks.rows[1].RevokedAt != nil || len(f.aud.events) != 0 {
+		t.Errorf("another user's key was revoked or the refusal audited")
+	}
+	wantStatus(t, bearerDo(t, srv, token, http.MethodDelete, "/api/v1/ai/keys/k-mine", nil), http.StatusNoContent)
+	if f.ks.revokeRole != "user" || f.ks.rows[0].RevokedAt == nil {
+		t.Errorf("own key: role %q, revoked %v", f.ks.revokeRole, f.ks.rows[0].RevokedAt)
+	}
+
+	// The same admin in the dashboard still sees and revokes every key.
+	c := authedClient(t, srv)
+	if body := wantStatus(t, c.get(t, "/api/v1/ai/keys"), http.StatusOK); !strings.Contains(body, "k-other") {
+		t.Errorf("session list = %s", body)
+	}
+	wantStatus(t, c.delete(t, "/api/v1/ai/keys/k-other"), http.StatusNoContent)
 }
 
 func TestGetGatewayInfo(t *testing.T) {

@@ -8,9 +8,13 @@ package api
 // answer to its creation: the database keeps a hash, and no other response,
 // audit event or log line carries it.
 //
-// Like /tokens and the service API keys, these routes have no permission
-// gate of their own: every signed-in caller manages their own keys, and the
-// store lets an admin list and revoke every key.
+// There is no permission to hold: every signed-in user manages their own
+// keys, and an admin lists and revokes every key.  Automation tokens are
+// held to less than the session of their user:
+//   - a token cannot create a key.  A gateway key does not expire and would
+//     outlive the token, whatever the token was minted for;
+//   - a token lists and revokes the keys of its user only, also when that
+//     user is an admin.
 
 import (
 	"errors"
@@ -86,12 +90,27 @@ func mapKeyErr(w http.ResponseWriter, err error) bool {
 	return true
 }
 
+// msgDashboardSession is the 403 for a route that an automation token may
+// not call (the same words as the client sign-in approval).
+const msgDashboardSession = "a dashboard session is required"
+
+// keyCallerRole is the role the key store is asked with: the caller's own
+// for a dashboard session, "user" for an automation token, so that an
+// admin's token reaches the admin's own keys and no one else's.
+func (d Deps) keyCallerRole(r *http.Request) (string, error) {
+	if bearerTokenID(r.Context()) != "" {
+		return "user", nil
+	}
+	return d.callerRole(r)
+}
+
 // GetAIKeys handles GET /api/v1/ai/keys: the caller's gateway keys, newest
-// first; every user's for an admin.  Revoked keys are listed with revoked_at.
+// first; every user's for an admin's session.  Revoked keys are listed with
+// revoked_at.
 func (d Deps) GetAIKeys(w http.ResponseWriter, r *http.Request) {
 	out := []aiKeyResp{}
 	if d.AIGatewayKeys != nil {
-		role, err := d.callerRoleForAuth(r)
+		role, err := d.keyCallerRole(r)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal error")
 			return
@@ -108,13 +127,18 @@ func (d Deps) GetAIKeys(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// PostAIKey handles POST /api/v1/ai/keys.  The 201 carries the key; it cannot
-// be read again.  allowed_models restricts the key to synthetic model names,
+// PostAIKey handles POST /api/v1/ai/keys (dashboard session only; an
+// automation token gets 403).  The 201 carries the key; it cannot be read
+// again.  allowed_models restricts the key to synthetic model names,
 // "<provider>/<model>" and "<provider>/*" entries; empty or left out means
 // every model.  An entry need not name something that exists.
 func (d Deps) PostAIKey(w http.ResponseWriter, r *http.Request) {
 	// The answer holds a secret: no cache may keep it.
 	w.Header().Set("Cache-Control", "no-store")
+	if bearerTokenID(r.Context()) != "" {
+		writeErr(w, http.StatusForbidden, msgDashboardSession)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxKeyBody)
 	var in postAIKeyReq
 	if msg, _ := decodeStrictJSON(r.Body, &in); msg != "" {
@@ -158,15 +182,15 @@ func (d Deps) PostAIKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteAIKey handles DELETE /api/v1/ai/keys/{id}: revokes the key at once.
-// Its owner or an admin may; anyone else's key answers 404 like an id that
-// does not exist.  Revoking a revoked key is a 204 too.
+// Its owner or an admin's session may; anyone else's key answers 404 like an
+// id that does not exist.  Revoking a revoked key is a 204 too.
 func (d Deps) DeleteAIKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if d.AIGatewayKeys == nil || id == "" || len(id) > maxKeyID {
 		writeErr(w, http.StatusNotFound, msgKeyNotFound)
 		return
 	}
-	role, err := d.callerRoleForAuth(r)
+	role, err := d.keyCallerRole(r)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return

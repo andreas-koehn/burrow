@@ -4,8 +4,8 @@ package api
 // base URLs clients are given.
 //
 // A synthetic model is a name that resolves to an ordered list of provider
-// targets per dialect.  Any session may read them; writes are admin OR
-// ai:configure:any (router).  The store validates the data: its reasons are
+// targets per dialect.  Any signed-in caller may read them; writes go
+// through requireAIModelWrite.  The store validates the data: its reasons are
 // the 400 messages.
 
 import (
@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -170,6 +171,42 @@ func (d Deps) auditAI(r *http.Request, action, subjectID, subjectLabel string, p
 		Result:   "ok",
 		SourceIP: lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
 		Payload: audit.MustJSON(payload),
+	})
+}
+
+// requireAIModelWrite gates the three routes that change a synthetic model.
+// It must run after RequireSession.
+//
+// A dashboard session passes for an admin and for a role that holds
+// ai:configure:any. An automation token passes only when it declares
+// ai:configure:any AND its user's role still grants it: the role of the
+// token's user alone opens nothing, so an admin's token minted for something
+// else cannot create, repoint or delete a model.
+//
+// Whether the caller is a token is read from the token id, not from the
+// declared permissions: a token that declares none must not be taken for a
+// session.
+func (d Deps) requireAIModelWrite(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		role, err := d.callerRoleForAuth(r)
+		if err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				writeErr(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, "lookup failed")
+			return
+		}
+		allowed := role == "admin" || authz.Can(role, authz.PermAIConfigureAny)
+		if bearerTokenID(r.Context()) != "" {
+			allowed = slices.Contains(bearerPerms(r.Context()), string(authz.PermAIConfigureAny)) &&
+				authz.Can(role, authz.PermAIConfigureAny)
+		}
+		if !allowed {
+			writeErr(w, http.StatusForbidden, "ai:configure:any required")
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

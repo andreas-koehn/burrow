@@ -55,6 +55,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
@@ -328,6 +329,46 @@ func v050CheckSyntheticModel(t *testing.T, env *v050Env) {
 	}
 	if tg := model.Targets[0]; tg.Dialect != "openai" || tg.Provider != "e2e-direct" || tg.Model != "llama3.1:8b" {
 		t.Errorf("target = %+v, want the provider's format filled in", tg)
+	}
+
+	// The same target twice is refused, through the real store.
+	code, body = env.do(t, http.MethodPost, "/api/v1/ai/models", map[string]any{
+		"name": "twice",
+		"targets": []map[string]string{
+			{"provider": "e2e-direct", "model": "m"},
+			{"dialect": "openai", "provider": "e2e-direct", "model": "m"},
+		},
+	})
+	if code != http.StatusBadRequest || !strings.Contains(string(body), "a target is listed twice") {
+		t.Errorf("duplicate targets: status=%d body=%s", code, body)
+	}
+
+	// Two creates of one name at the same moment: one wins, the other is
+	// told the name is taken. Neither is a 500.
+	for round := 0; round < 5; round++ {
+		name := fmt.Sprintf("race-%d", round)
+		codes := make(chan int, 2)
+		start := make(chan struct{})
+		for i := 0; i < 2; i++ {
+			go func() {
+				<-start
+				c, _ := env.do(t, http.MethodPost, "/api/v1/ai/models", map[string]any{
+					"name":    name,
+					"targets": []map[string]string{{"provider": "e2e-direct", "model": "m"}},
+				})
+				codes <- c
+			}()
+		}
+		close(start)
+		a, b := <-codes, <-codes
+		if a > b {
+			a, b = b, a
+		}
+		if a != http.StatusCreated || b != http.StatusConflict {
+			t.Errorf("round %d: concurrent creates answered %d and %d, want 201 and 409", round, a, b)
+		}
+		// Gone again before the provider is deleted below.
+		env.do(t, http.MethodDelete, "/api/v1/ai/models/"+name, nil)
 	}
 
 	// A gateway key restricted to the model: the key comes back once.

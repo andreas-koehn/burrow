@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -309,48 +311,144 @@ func TestPostModel(t *testing.T) {
 	})
 }
 
-// modelWriteRoutes is every route that changes a synthetic model.
-var modelWriteRoutes = []struct {
+// aiRoute is one of the routes this file and ai_key_handlers_test.go cover.
+type aiRoute struct {
 	method, path string
 	body         any
-}{
-	{http.MethodPost, "/api/v1/ai/models", map[string]any{"name": "new-one", "targets": []map[string]string{{"provider": "ollama", "model": "m"}}}},
-	{http.MethodPut, "/api/v1/ai/models/burrow-simple", map[string]any{"targets": []map[string]string{{"provider": "ollama", "model": "m"}}}},
-	{http.MethodDelete, "/api/v1/ai/models/burrow-simple", nil},
 }
 
-func TestPostModel_RequiresAdmin(t *testing.T) {
-	f := newModelFixture(simpleModel())
-	f.d.Users = &fakeUserStore{role: "user"}
-	c := f.serve(t)
-	for _, rt := range modelWriteRoutes {
-		t.Run(rt.method+" "+rt.path, func(t *testing.T) {
-			wantStatus(t, c.do(t, rt.method, rt.path, rt.body), http.StatusForbidden)
-		})
+func (r aiRoute) key() string { return r.method + " " + r.path }
+
+var (
+	rtGateway   = aiRoute{http.MethodGet, "/api/v1/ai/gateway", nil}
+	rtModelList = aiRoute{http.MethodGet, "/api/v1/ai/models", nil}
+	rtModelGet  = aiRoute{http.MethodGet, "/api/v1/ai/models/burrow-simple", nil}
+	rtModelPost = aiRoute{http.MethodPost, "/api/v1/ai/models", map[string]any{"name": "new-one", "targets": []map[string]string{{"provider": "ollama", "model": "m"}}}}
+	rtModelPut  = aiRoute{http.MethodPut, "/api/v1/ai/models/burrow-simple", map[string]any{"targets": []map[string]string{{"provider": "ollama", "model": "m"}}}}
+	rtModelDel  = aiRoute{http.MethodDelete, "/api/v1/ai/models/burrow-simple", nil}
+	rtKeyList   = aiRoute{http.MethodGet, "/api/v1/ai/keys", nil}
+	rtKeyPost   = aiRoute{http.MethodPost, "/api/v1/ai/keys", map[string]any{"name": "k"}}
+	rtKeyDel    = aiRoute{http.MethodDelete, "/api/v1/ai/keys/k-mine", nil} // the caller's own key
+)
+
+// aiRoutes is every route of the synthetic-model and gateway-key API.
+var aiRoutes = []aiRoute{rtGateway, rtModelList, rtModelGet, rtModelPost, rtModelPut, rtModelDel, rtKeyList, rtKeyPost, rtKeyDel}
+
+// TestAIModelAndKeyRoutes_Authorization is the whole matrix: every route for
+// every kind of caller. Each cell gets a fresh server and stores.
+//
+//   - Model writes need a session of an admin or of a role with
+//     ai:configure:any, or an automation token that DECLARES ai:configure:any
+//     (and whose user still holds it). The role of a token's user alone is
+//     not enough: an admin's narrow token cannot write models.
+//   - Creating a gateway key needs a dashboard session: no token may mint a
+//     credential that outlives it.
+//   - Listing and revoking keys: a token acts for its user's own keys only.
+func TestAIModelAndKeyRoutes_Authorization(t *testing.T) {
+	authz.SetRoles(map[string][]authz.Permission{"ai-operator": {authz.PermAIConfigureAny}})
+	defer authz.SetRoles(nil)
+
+	const configure = string(authz.PermAIConfigureAny)
+	ok := map[string]int{
+		rtGateway.key(): 200, rtModelList.key(): 200, rtModelGet.key(): 200,
+		rtModelPost.key(): 201, rtModelPut.key(): 200, rtModelDel.key(): 204,
+		rtKeyList.key(): 200, rtKeyPost.key(): 201, rtKeyDel.key(): 204,
 	}
-	if f.ms.writes != 0 || len(f.aud.events) != 0 {
-		t.Errorf("a forbidden request reached the store or the audit log: writes=%d events=%+v", f.ms.writes, f.aud.events)
+	// with returns the all-success row with some cells replaced.
+	with := func(status int, routes ...aiRoute) map[string]int {
+		m := map[string]int{}
+		for k, v := range ok {
+			m[k] = v
+		}
+		for _, r := range routes {
+			m[r.key()] = status
+		}
+		return m
+	}
+	all := func(status int) map[string]int { return with(status, aiRoutes...) }
+
+	callers := []struct {
+		name   string
+		role   string   // role of the user
+		anon   bool     // no credentials at all
+		bearer bool     // automation token instead of a session
+		perms  []string // what the token declares
+		want   map[string]int
+	}{
+		{name: "anonymous", anon: true, want: all(401)},
+		{name: "session of a plain user", role: "user", want: with(403, rtModelPost, rtModelPut, rtModelDel)},
+		{name: "session of a role with ai:configure:any", role: "ai-operator", want: ok},
+		{name: "session of an admin", role: "admin", want: ok},
+		{name: "admin's token without permissions", role: "admin", bearer: true,
+			want: with(403, rtModelPost, rtModelPut, rtModelDel, rtKeyPost)},
+		{name: "admin's token with another permission", role: "admin", bearer: true, perms: []string{"tunnels:read:any"},
+			want: with(403, rtModelPost, rtModelPut, rtModelDel, rtKeyPost)},
+		{name: "admin's token with ai:configure:any", role: "admin", bearer: true, perms: []string{configure},
+			want: with(403, rtKeyPost)},
+		{name: "operator's token with ai:configure:any", role: "ai-operator", bearer: true, perms: []string{configure},
+			want: with(403, rtKeyPost)},
+		{name: "plain user's token", role: "user", bearer: true,
+			want: with(403, rtModelPost, rtModelPut, rtModelDel, rtKeyPost)},
+	}
+
+	for _, c := range callers {
+		for _, rt := range aiRoutes {
+			t.Run(c.name+"/"+rt.key(), func(t *testing.T) {
+				f := newModelFixture(simpleModel())
+				ks := &fakeKeyStore{rows: []store.GatewayKey{{ID: "k-mine", Name: "mine", UserID: "u-self"}}}
+				auto := newFakeAutomationStore()
+				f.d.AIGatewayKeys, f.d.Automation, f.d.Bearer = ks, auto, auto
+				f.d.Users = &fakeUserStore{role: c.role}
+				srv := httptest.NewServer(NewRouter(f.d))
+				defer srv.Close()
+
+				var resp *http.Response
+				switch {
+				case c.anon:
+					resp = (&authClient{base: srv.URL, hc: &http.Client{}}).do(t, rt.method, rt.path, rt.body)
+				case c.bearer:
+					_, token, err := auto.MintAutomationToken(context.Background(), "u-self", c.role, "ci", c.perms, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					resp = bearerDo(t, srv, token, rt.method, rt.path, rt.body)
+				default:
+					resp = authedClient(t, srv).do(t, rt.method, rt.path, rt.body)
+				}
+				want := c.want[rt.key()]
+				wantStatus(t, resp, want)
+				if want >= 400 {
+					if f.ms.writes != 0 || ks.creates != 0 || ks.revokes != 0 || len(f.aud.events) != 0 {
+						t.Errorf("a refused request reached a store or the audit log: model writes=%d key creates=%d revokes=%d events=%+v",
+							f.ms.writes, ks.creates, ks.revokes, f.aud.events)
+					}
+				}
+			})
+		}
 	}
 }
 
-func TestModelAndKeyRoutes_Unauthenticated(t *testing.T) {
-	f := newModelFixture(simpleModel())
-	ks := &fakeKeyStore{}
-	f.d.AIGatewayKeys = ks
-	srv := httptest.NewServer(NewRouter(f.d))
-	defer srv.Close()
-	anon := &authClient{base: srv.URL, hc: &http.Client{}}
-	for _, rt := range modelWriteRoutes {
-		wantStatus(t, anon.do(t, rt.method, rt.path, rt.body), http.StatusUnauthorized)
+// bearerDo sends one request authenticated by an automation token: no cookie
+// and no CSRF header.
+func bearerDo(t *testing.T, srv *httptest.Server, token, method, path string, body any) *http.Response {
+	t.Helper()
+	var rdr io.Reader
+	if body != nil {
+		rdr = mustJSON(body)
 	}
-	for _, path := range []string{"/api/v1/ai/models", "/api/v1/ai/models/burrow-simple", "/api/v1/ai/keys", "/api/v1/ai/gateway"} {
-		wantStatus(t, anon.get(t, path), http.StatusUnauthorized)
+	req, err := http.NewRequest(method, srv.URL+path, rdr)
+	if err != nil {
+		t.Fatal(err)
 	}
-	wantStatus(t, anon.post(t, "/api/v1/ai/keys", map[string]string{"name": "k"}), http.StatusUnauthorized)
-	wantStatus(t, anon.delete(t, "/api/v1/ai/keys/k1"), http.StatusUnauthorized)
-	if f.ms.writes != 0 || ks.creates != 0 || ks.revokes != 0 {
-		t.Error("an anonymous request reached a store")
+	req.Header.Set("Authorization", "Bearer "+token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
 }
 
 func TestPutModel(t *testing.T) {

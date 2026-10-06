@@ -215,6 +215,9 @@ check "openai: synthetic model is created" \
   "$(acode POST /api/v1/ai/models "{\"name\":\"burrow-simple\",\"targets\":[{\"dialect\":\"openai\",\"provider\":\"$PROV\",\"model\":\"$MODEL\"}]}")" "201"
 GWKEY=$(amut POST /api/v1/ai/keys '{"name":"integration","allowed_models":["burrow-simple"]}' | jq -r .key)
 check "openai: gateway key is created"      "${GWKEY:0:4}" "bgw_"
+# A second key without an allow-list: the allow-list is checked before the
+# name is resolved, so only an unrestricted key can be told "not found".
+GWKEY_ALL=$(amut POST /api/v1/ai/keys '{"name":"integration-all"}' | jq -r .key)
 check "openai: key list never shows the key" "$(aget /api/v1/ai/keys | grep -c "$GWKEY" || true)" "0"
 check "ai: provider in use cannot be deleted" "$(acode DELETE "/api/v1/ai/providers/$PROV")" "409"
 check "openai: models without key -> 401"   "$(curl -s -o /dev/null -w '%{http_code}' "$B/openai/v1/models")" "401"
@@ -224,7 +227,8 @@ check "openai: errors carry Burrow-Error-Code" "$(curl -s -o /dev/null -D - "$B/
 check "openai: /openai/ is never the dashboard" "$(curl -s "$B/openai/" | jq -r '.error.code')" "invalid_api_key"
 check "openai: chat via synthetic model"   "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d "$(chat "global $RANDOM" 8 burrow-simple)" "$B/openai/v1/chat/completions")" "200"
 check "openai: Burrow-Provider header"     "$(curl -s -D - -o /dev/null -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d "$(chat "global-hdr $RANDOM" 8 burrow-simple)" "$B/openai/v1/chat/completions" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-provider"{print $2}')" "$PROV"
-check "openai: unknown model -> 404"       "$(curl -s -o /dev/null -D - -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d '{"model":"nope"}' "$B/openai/v1/chat/completions" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-error-code"{print $2}')" "model_not_found"
+check "openai: unknown model -> 404"       "$(curl -s -o /dev/null -D - -H "Authorization: Bearer $GWKEY_ALL" -H 'Content-Type: application/json' -d '{"model":"nope"}' "$B/openai/v1/chat/completions" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-error-code"{print $2}')" "model_not_found"
+check "openai: restricted key, other model -> 403" "$(curl -s -o /dev/null -D - -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d '{"model":"nope"}' "$B/openai/v1/chat/completions" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-error-code"{print $2}')" "model_not_allowed"
 
 # --- known defects (XFAIL) ---------------------------------------------------
 # 4. An automation token's declared permission set is not enforced on

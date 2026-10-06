@@ -306,8 +306,9 @@ components:
           minItems: 1
           maxItems: 16
           description: >
-            At most 8 per dialect. Within one dialect the order is the order
-            the targets are tried in.
+            At most 8 per dialect, and no target (dialect, provider and
+            model) twice. Within one dialect the order is the order the
+            targets are tried in.
           items: { $ref: '#/components/schemas/AIModelTarget' }
         dialects:
           type: array
@@ -3347,6 +3348,11 @@ paths:
       tags: [models]
       summary: Create a synthetic model (admin or ai:configure:any)
       description: |
+        Allowed for a dashboard session of an admin or of a role with
+        ai:configure:any, and for an automation token that declares
+        ai:configure:any (the role of the token's user alone is not
+        enough). The same holds for PUT and DELETE.
+
         The body is at most 16 KiB and may carry only the fields of the
         schema; dialects and the timestamps are not accepted. enabled left
         out means true; a timeout left out or 0 means its default. Every
@@ -3454,9 +3460,10 @@ paths:
       tags: [models]
       summary: List gateway keys
       description: |
-        The caller's gateway keys, newest first; an admin sees every user's.
-        Revoked keys are listed with revoked_at set. No entry carries the
-        key.
+        The caller's gateway keys, newest first; an admin's dashboard
+        session sees every user's. An automation token sees the keys of its
+        user only, also when that user is an admin. Revoked keys are listed
+        with revoked_at set. No entry carries the key.
       security:
         - CookieAuth: []
         - BearerAuth: []
@@ -3472,7 +3479,11 @@ paths:
     post:
       tags: [models]
       summary: Create a gateway key
+      security:
+        - CookieAuth: []
       description: |
+        Needs a dashboard session: an automation token is refused with 403,
+        because a gateway key does not expire and would outlive the token.
         Creates a key owned by the caller. The response carries the key
         ("bgw_" and 43 characters) and is the only one that ever does: the
         relay stores a hash. It is sent with Cache-Control: no-store. The
@@ -3523,14 +3534,23 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: >
+            The caller is an automation token ("a dashboard session is
+            required").
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/ai/keys/{id}:
     delete:
       tags: [models]
       summary: Revoke a gateway key
       description: |
-        The key stops working at once. Its owner or an admin may revoke it;
-        another user's key answers 404, like an id that does not exist.
+        The key stops working at once. Its owner or an admin's dashboard
+        session may revoke it; an automation token revokes the keys of its
+        user only. Another user's key answers 404, like an id that does not
+        exist.
         Revoking a revoked key is a 204 too.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:

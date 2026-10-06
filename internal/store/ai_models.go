@@ -47,6 +47,9 @@ const (
 // modelDialects are the API formats a target can have.
 var modelDialects = []string{"openai", "anthropic"}
 
+// modelTargetKey identifies a target within a model.
+type modelTargetKey struct{ dialect, provider, model string }
+
 func invalidModel(reason string) error { return fmt.Errorf("%w: %s", ErrInvalidModel, reason) }
 
 // normalizeModel validates m and fills defaults: a target's empty dialect
@@ -72,6 +75,7 @@ func (s *Store) normalizeModel(ctx context.Context, m db.AIModel) (db.AIModel, e
 	}
 	formats := map[string]string{} // provider slug -> api_format
 	next := map[string]int{}
+	seen := map[modelTargetKey]bool{}
 	targets := make([]db.AIModelTarget, 0, len(m.Targets))
 	for _, t := range m.Targets {
 		if !ValidProviderSlug(t.ProviderSlug) {
@@ -103,6 +107,13 @@ func (s *Store) normalizeModel(ctx context.Context, m db.AIModel) (db.AIModel, e
 		if t.TargetModel == "" || len(t.TargetModel) > maxTargetModel || hasControl(t.TargetModel) {
 			return m, invalidModel("a target's model must be 1-200 characters without control characters")
 		}
+		// The same provider and model twice in one format is one target
+		// tried twice; compared after the dialect was filled in.
+		key := modelTargetKey{t.Dialect, t.ProviderSlug, t.TargetModel}
+		if seen[key] {
+			return m, invalidModel("a target is listed twice")
+		}
+		seen[key] = true
 		t.Position = next[t.Dialect]
 		next[t.Dialect]++
 		if next[t.Dialect] > maxModelTargets {

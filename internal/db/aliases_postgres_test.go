@@ -7,14 +7,14 @@ import (
 	"testing"
 )
 
-// TestGetAliasesByPriority_LookupPostgres runs the alias lookup against a
-// live Postgres: the query must not lean on SQLite-only columns.
+// TestListModelAliases_Postgres runs the alias list, which the one-time
+// import into synthetic models reads, against a live Postgres.
 //
 // Requires a live Postgres URL in BURROW_TEST_POSTGRES_URL.
-func TestGetAliasesByPriority_LookupPostgres(t *testing.T) {
+func TestListModelAliases_Postgres(t *testing.T) {
 	pgURL := os.Getenv("BURROW_TEST_POSTGRES_URL")
 	if pgURL == "" {
-		t.Skip("BURROW_TEST_POSTGRES_URL not set; skipping postgres alias lookup")
+		t.Skip("BURROW_TEST_POSTGRES_URL not set; skipping postgres alias list")
 	}
 	b, err := OpenPostgres(pgURL)
 	if err != nil {
@@ -22,5 +22,5 @@ func TestGetAliasesByPriority_LookupPostgres(t *testing.T) {
 	}
 	x := Wrap(b.DB())
 	t.Cleanup(func() { _ = x.Close() })
-	checkAliasLookup(t, x, "u-alias-pg")
+	checkListModelAliases(t, x, "u-alias-pg")
 }
