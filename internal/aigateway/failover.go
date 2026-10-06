@@ -355,6 +355,10 @@ const (
 // seen it. Otherwise a full but healthy provider would collect timeouts and
 // be taken out of service by the breaker. The total time runs through both.
 //
+// The lookup before that (the target's policy and credential) has the same
+// allowance on a clock of its own; running out of it is a "timeout" that says
+// nothing about the provider, which was not called.
+//
 // It always returns: a panic of the upstream handler is
 // caught, the timer is stopped and the attempt's context released before the
 // next candidate is looked at.
@@ -437,6 +441,11 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 			status = http.StatusTooManyRequests
 		case gaveUp:
 			code, res.outcome = attemptTimeout, outcomeFailed
+			if !reached {
+				// Time ran out on the gateway's own lookup or in the queue:
+				// the provider was never called and is not to blame.
+				res.outcome = outcomeNeutral
+			}
 		case res.panicked && res.committed:
 			// The response started and broke off. The row says so; for the
 			// breaker the start was the answer (reported at the commit).
@@ -475,44 +484,81 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 	// route) with it.
 	req := r.Clone(ctx)
 	setBody(req, body)
-	// The target's policy first, its credential after; an error either
-	// writes is an attempt's answer like any other.
-	if upstream, _, ok := f.g.targetUpstream(cw, req, c.provider); ok {
-		// A place at the provider, for as long as its handler runs: that is
-		// the whole response, a streamed body included. The wait has its own
-		// limit and ends when the client leaves; no attempt timer runs yet.
-		release, admitted := f.g.admit(ctx, c.provider, f.slotWait(deadline))
-		if !admitted {
-			busy = true
-			return res
+	// expire ends the attempt for lack of time, unless it is decided already.
+	expire := func() {
+		if state.CompareAndSwap(attemptPending, attemptTimedOut) {
+			cancel()
 		}
-		// Admitted: from here the upstream's time runs, within what is left
-		// of the request's.
-		timeout := f.attemptTimeout
+	}
+	// left is the time the attempt may still take: its own timeout within
+	// what remains of the request's. ok is false when the request's time is
+	// up; 0 with ok means no limit (a direct address).
+	left := func() (d time.Duration, ok bool) {
+		d = f.attemptTimeout
 		if !deadline.IsZero() {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
-				// The request's time ended in the queue.
-				release()
-				busy = true
-				return res
+				return 0, false
 			}
-			timeout = min(timeout, remaining)
+			d = min(d, remaining)
+		}
+		return d, true
+	}
+
+	// The target's policy first, its credential after; an error either
+	// writes is an attempt's answer like any other. The lookup has the
+	// attempt's time like the upstream call after it, on a clock of its own
+	// that is stopped before the wait for a place begins.
+	lookup, inTime := left()
+	if !inTime {
+		expire()
+		return res
+	}
+	if lookup > 0 {
+		timer = time.AfterFunc(lookup, expire)
+	}
+	upstream, _, ok := f.g.targetUpstream(cw, req, c.provider)
+	if timer != nil && !timer.Stop() {
+		// The lookup's time ran out as it returned: that stands, whichever
+		// of the two got there first.
+		expire()
+	}
+	timer = nil
+	if ok {
+		// The request's time may have ended during the lookup: then it is
+		// out of time, whatever the provider's queue looks like.
+		if _, inTime := left(); !inTime {
+			expire()
+		}
+		if state.Load() == attemptTimedOut {
+			return res
+		}
+		// A place at the provider, for as long as its handler runs: that is
+		// the whole response, a streamed body included. The wait has its own
+		// limit and ends when the client leaves; no attempt timer runs.
+		release, admitted := f.g.admit(ctx, c.provider, f.slotWait(deadline))
+		if !admitted {
+			// Only a provider with a limit refuses.
+			busy = true
+			return res
+		}
+		// Given back when the attempt returns or its handler panics, before
+		// the next candidate is looked at. Nothing stands between obtaining
+		// the place and this line.
+		defer release()
+		// Admitted: from here the upstream's time runs, within what is left
+		// of the request's.
+		timeout, inTime := left()
+		if !inTime {
+			// The request's time ended in the queue.
+			expire()
+			return res
 		}
 		if timeout > 0 {
-			timer = time.AfterFunc(timeout, func() {
-				if state.CompareAndSwap(attemptPending, attemptTimedOut) {
-					cancel()
-				}
-			})
+			timer = time.AfterFunc(timeout, expire)
 		}
 		reached = true
-		func() {
-			// Given back when the handler returns or panics, before anything
-			// else is decided about the attempt.
-			defer release()
-			upstream.ServeHTTP(cw, req)
-		}()
+		upstream.ServeHTTP(cw, req)
 		if !cw.committed && !cw.discarded {
 			// A handler that returns without writing has answered 200 with
 			// an empty body, as under net/http; unless its time was up.

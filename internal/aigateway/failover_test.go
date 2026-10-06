@@ -2629,3 +2629,87 @@ type providerFunc func(ctx context.Context, slug string) (db.AIProvider, error)
 func (f providerFunc) ProviderBySlug(ctx context.Context, slug string) (db.AIProvider, error) {
 	return f(ctx, slug)
 }
+
+// --- before admission: the target's policy and credential lookup ----------------
+
+// The lookup that precedes an attempt's upstream call has the attempt's time,
+// too: one that hangs is cut, the next target answers, and the provider,
+// which was never called, is not blamed.
+func TestFailover_BlockingLookupMovesOn(t *testing.T) {
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": status(200, `{"from":"zai"}`), "openrouter#OR": status(200, `{"from":"or"}`)})
+	g, att := failoverGateway(s, "ZAI", func(m *db.AIModel) { m.AttemptTimeoutS, m.TotalTimeoutS = 30, 60000 })
+	limit(g, "zai", 1)
+	// A request reads the first target's policy twice: once before the chain
+	// (for the cache; that read is not the failover's) and once in the
+	// attempt. The second one hangs.
+	var zaiLookups atomic.Int32
+	g.ServicePolicy = func(ctx context.Context, serviceID string) (*proxy.Resolved, error) {
+		if serviceID == "prov-zai" && zaiLookups.Add(1)%2 == 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(1500 * time.Millisecond):
+			}
+		}
+		return &proxy.Resolved{ServiceID: serviceID, AccessMode: "api_key"}, nil
+	}
+	for i := 0; i < 6; i++ {
+		start := time.Now()
+		rec := call(g, smartBody)
+		if el := time.Since(start); rec.Code != 200 || rec.Body.String() != `{"from":"or"}` || el < 25*time.Millisecond || el > time.Second {
+			t.Fatalf("request %d: status %d body %s after %s", i, rec.Code, rec.Body.String(), el)
+		}
+		wantHeaders(t, rec, "openrouter", "google/gemini-x", "2")
+	}
+	rows := att.all()
+	if len(rows) != 12 || rows[0].ErrorCode != "timeout" || rows[0].ProviderSlug != "zai" || rows[0].Status != 0 || rows[1].ErrorCode != "" {
+		t.Fatalf("attempts: %+v", rows)
+	}
+	if s.n("zai#ZAI") != 0 || s.credentialReads("zai#ZAI") != 0 {
+		t.Fatalf("zai: %d calls, %d credential reads", s.n("zai#ZAI"), s.credentialReads("zai#ZAI"))
+	}
+	if ok, failed := reports(g.Breaker, "zai"); ok != 0 || failed != 0 || g.Breaker.Open("zai") {
+		t.Fatalf("a provider that was never called was reported: %d ok, %d failed", ok, failed)
+	}
+	noPlaces(t, g)
+}
+
+// The request's total time ends during the lookup, which then says yes: the
+// request is out of time, not turned away by a full provider. No upstream is
+// called and nothing is reported.
+func TestFailover_TotalTimeoutDuringTheLookupIsATimeout(t *testing.T) {
+	for name, setup := range map[string]func(g *Gateway){
+		"no limit":     func(g *Gateway) { limit(g, "zai", 0) },
+		"no limiter":   func(g *Gateway) { g.Limiter = nil },
+		"a free place": func(g *Gateway) { limit(g, "zai", 1) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := script(map[string]http.HandlerFunc{"zai#ZAI": status(200, `{"from":"zai"}`)})
+			g, att := failoverGateway(s, "ZAI", func(m *db.AIModel) {
+				m.Targets = m.Targets[:1]
+				m.AttemptTimeoutS, m.TotalTimeoutS = 60000, 30
+			})
+			setup(g)
+			g.ServicePolicy = func(_ context.Context, serviceID string) (*proxy.Resolved, error) {
+				time.Sleep(60 * time.Millisecond) // past the total timeout, whatever the context says
+				return &proxy.Resolved{ServiceID: serviceID, AccessMode: "api_key"}, nil
+			}
+			rec := call(g, smartBody)
+			if rec.Code != 504 || errCode(t, rec) != "gateway_timeout" || rec.Header().Get("Retry-After") != "" {
+				t.Fatalf("status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
+			}
+			if rows := att.all(); len(rows) != 1 || rows[0].ErrorCode != "timeout" || rows[0].Status != 0 {
+				t.Fatalf("attempts: %+v", rows)
+			}
+			if s.n("zai#ZAI") != 0 {
+				t.Fatal("the upstream was called after the request's time was up")
+			}
+			if ok, failed := reports(g.Breaker, "zai"); ok != 0 || failed != 0 {
+				t.Fatalf("reported: %d ok, %d failed", ok, failed)
+			}
+			if g.Limiter != nil {
+				noPlaces(t, g)
+			}
+		})
+	}
+}
