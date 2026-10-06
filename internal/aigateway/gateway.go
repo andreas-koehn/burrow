@@ -133,6 +133,12 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 	// Only inference calls are metered. A model listing or a health probe
 	// must not show up as usage.
 	if r.Method == http.MethodPost {
+		// A call the provider's dialect does not meter (counting tokens)
+		// runs the chain like any other but leaves no usage row, and its
+		// answer stays out of the cache of inference answers.
+		if d, ok := DialectByName(p.APIFormat); ok && !d.metered(r.URL.Path) {
+			r = r.WithContext(aigw.WithoutUsage(r.Context()))
+		}
 		// Only an upstream the relay calls itself is believed about what a
 		// request cost. A tunnelled model is run by whoever holds the tunnel.
 		g.Chain.DispatchMetered(w, r, p.ServiceID, host, "Authorization", keyID, p.Kind == "direct", upstream)

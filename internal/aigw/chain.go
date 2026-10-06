@@ -535,19 +535,38 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
 				return
 			case guardrails.ActionRefuseSafe:
-				// No upstream answer to imitate for a kind the chain does not
-				// recognise: an entry point with its own error shape gets a
-				// plain refusal instead of the generic envelope below. So
-				// does an entry point that states the kind itself (a dialect
-				// endpoint): the imitation carries no usage and is no event
-				// stream, which is no valid answer to a client that asked
-				// for one.
-				if ew := ErrorWriterFrom(r.Context()); ew != nil && (kindForced || (kind != KindAnthropic && kind != KindOpenAI)) {
+				ew := ErrorWriterFrom(r.Context())
+				streamed := false
+				var refusalBody []byte
+				var hdr http.Header
+				switch {
+				case kindForced:
+					// A dialect endpoint states the kind itself and gets a
+					// well-formed refusal in its own format: with usage, the
+					// model the client asked for, and as an event stream when
+					// it asked for one. Where the format has no such answer
+					// (counting tokens, embeddings, …) the refusal is the
+					// endpoint's own error.
+					var ok bool
+					refusalBody, hdr, streamed, ok = dialectRefusal(kind, r, body)
+					if !ok && ew != nil {
+						ew(w, http.StatusForbidden, "forbidden", "the request was refused by a guardrail")
+						c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
+						return
+					}
+					if !ok {
+						refusalBody, hdr = safeRefusalBody(kind)
+					}
+				case ew != nil && kind != KindAnthropic && kind != KindOpenAI:
+					// No upstream answer to imitate for a kind the chain does
+					// not recognise: an entry point with its own error shape
+					// gets a plain refusal instead of the generic envelope.
 					ew(w, http.StatusForbidden, "forbidden", "the request was refused by a guardrail")
 					c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
 					return
+				default:
+					refusalBody, hdr = safeRefusalBody(kind)
 				}
-				refusalBody, hdr := safeRefusalBody(kind)
 				for k, vs := range hdr {
 					for _, v := range vs {
 						w.Header().Add(k, v)
@@ -558,7 +577,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				// Pass the ORIGINAL + redacted request bodies so operators
 				// investigating refusals can see what was sent.
 				// TruncateRequest will cap whatever we pass.
-				c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusOK, refusalBody, hdr, 0, false, "MISS", fromReplay)
+				c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusOK, refusalBody, hdr, 0, streamed, "MISS", fromReplay)
 				return
 			case guardrails.ActionLogOnly:
 				// Fall through; just record the hit in logs.
@@ -1235,8 +1254,10 @@ func cacheableHeaders(h http.Header) map[string]string {
 }
 
 // safeRefusalBody returns the upstream-shaped safe-refusal body the
-// guardrails ActionRefuseSafe path emits. The body shape mirrors the
+// guardrails ActionRefuseSafe path emits where the request's kind is only
+// detected (host routes, /ai/<provider>/). The body shape mirrors the
 // upstream API family; for unknown we fall back to a generic JSON envelope.
+// A dialect endpoint answers with dialectRefusal instead.
 func safeRefusalBody(kind Kind) ([]byte, http.Header) {
 	hdr := http.Header{"Content-Type": []string{"application/json; charset=utf-8"}}
 	switch kind {
@@ -1250,6 +1271,62 @@ func safeRefusalBody(kind Kind) ([]byte, http.Header) {
 		body := `{"error":"guardrail.refuse_safe"}`
 		return []byte(body), hdr
 	}
+}
+
+// refusalText is what a safe refusal says.
+const refusalText = "I can't help with that."
+
+// dialectRefusal returns the safe refusal for a request on a dialect
+// endpoint: a complete answer of that format to the call that was made. ok
+// is false when the path has no answer a refusal could take the shape of.
+// The model named in it is the one the client asked for (the body may
+// already carry the target's), and a client that asked for a stream gets
+// the format's event sequence.
+func dialectRefusal(kind Kind, r *http.Request, body []byte) (out []byte, hdr http.Header, streamed, ok bool) {
+	var req struct {
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
+	}
+	_ = json.Unmarshal(body, &req) // a body that is no JSON object asks for no stream
+	if ri, found := RouteFrom(r.Context()); found && ri.RequestedModel != "" {
+		req.Model = ri.RequestedModel
+	}
+	model, _ := json.Marshal(req.Model)
+	text, _ := json.Marshal(refusalText)
+	m, t := string(model), string(text)
+
+	var b strings.Builder
+	path := strings.TrimRight(r.URL.Path, "/")
+	switch {
+	case kind == KindAnthropic && path == "/v1/messages" && !req.Stream:
+		b.WriteString(`{"id":"msg_burrow_refusal","type":"message","role":"assistant","model":` + m +
+			`,"content":[{"type":"text","text":` + t + `}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
+	case kind == KindAnthropic && path == "/v1/messages":
+		event := func(name, data string) { b.WriteString("event: " + name + "\ndata: " + data + "\n\n") }
+		event("message_start", `{"type":"message_start","message":{"id":"msg_burrow_refusal","type":"message","role":"assistant","model":`+m+
+			`,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`)
+		event("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+		event("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":`+t+`}}`)
+		event("content_block_stop", `{"type":"content_block_stop","index":0}`)
+		event("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":0}}`)
+		event("message_stop", `{"type":"message_stop"}`)
+	case kind == KindOpenAI && path == "/v1/chat/completions" && !req.Stream:
+		b.WriteString(`{"id":"chatcmpl-burrow-refusal","object":"chat.completion","created":` + strconv.FormatInt(time.Now().Unix(), 10) + `,"model":` + m +
+			`,"choices":[{"index":0,"message":{"role":"assistant","content":` + t + `},"finish_reason":"stop"}],` +
+			`"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`)
+	case kind == KindOpenAI && path == "/v1/chat/completions":
+		head := `{"id":"chatcmpl-burrow-refusal","object":"chat.completion.chunk","created":` + strconv.FormatInt(time.Now().Unix(), 10) + `,"model":` + m + `,"choices":[{"index":0,`
+		b.WriteString("data: " + head + `"delta":{"role":"assistant","content":` + t + `},"finish_reason":null}]}` + "\n\n")
+		b.WriteString("data: " + head + `"delta":{},"finish_reason":"stop"}]}` + "\n\n")
+		b.WriteString("data: [DONE]\n\n")
+	default:
+		return nil, nil, false, false
+	}
+	contentType := "application/json"
+	if req.Stream {
+		contentType = "text/event-stream"
+	}
+	return []byte(b.String()), http.Header{"Content-Type": []string{contentType}}, req.Stream, true
 }
 
 // writeJSONError writes a JSON error envelope with the given status code.

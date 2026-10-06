@@ -17,7 +17,11 @@ type Dialect struct {
 	WriteError aigw.ErrorWriter
 
 	inferencePaths map[string]bool // POST paths routed by the body's "model"
-	unmeteredPaths map[string]bool // inference paths that produce no usage row (and nothing else is skipped)
+	// unmeteredPaths are inference paths that produce no usage row. Such a
+	// request is refused once a day-window quota is exhausted but does not
+	// consume one (day windows are computed from usage rows); minute-window
+	// buckets do count it.
+	unmeteredPaths map[string]bool
 	writeModels    func(w http.ResponseWriter, items []modelItem)
 }
 

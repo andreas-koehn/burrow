@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -22,6 +23,8 @@ import (
 	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/aimeter"
 	"github.com/ankoehn/burrow/internal/aiprovider"
+	"github.com/ankoehn/burrow/internal/cache/exact"
+	"github.com/ankoehn/burrow/internal/cache/semantic"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/proxy"
@@ -1523,9 +1526,10 @@ func TestServeDialect_ClientDisconnectCancelsUpstream(t *testing.T) {
 	}
 }
 
-// Refusals of the real chain on /anthropic are Anthropic errors, with
-// burrow_code and the Burrow-Error-Code header, also for a client that asked
-// for a stream.
+// Refusals of the real chain on /anthropic are in the Anthropic format, also
+// for a client that asked for a stream: errors with burrow_code and the
+// Burrow-Error-Code header, and a refuse_safe guardrail as a 200 refusal
+// message naming the model the client asked for.
 func TestServeDialect_Anthropic_RealChainRefusalsUseDialectShape(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("a refused request reached the upstream") }))
 	defer srv.Close()
@@ -1538,11 +1542,57 @@ func TestServeDialect_Anthropic_RealChainRefusalsUseDialectShape(t *testing.T) {
 
 			rec := httptest.NewRecorder()
 			g.ServeDialect(rec, msg("/v1/messages", "bgw_all", body), DialectAnthropic)
-			if typ, code := anthropicErr(t, rec); rec.Code != 403 || typ != "permission_error" || code != "forbidden" {
-				t.Fatalf("%s: guardrail: status %d type %s code %s", name, rec.Code, typ, code)
+			switch {
+			case action == guardrails.ActionRefuse403:
+				if typ, code := anthropicErr(t, rec); rec.Code != 403 || typ != "permission_error" || code != "forbidden" {
+					t.Fatalf("%s: guardrail: status %d type %s code %s", name, rec.Code, typ, code)
+				}
+				if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+					t.Fatalf("%s: guardrail Content-Type %q", name, ct)
+				}
+			case stream == "false":
+				var m struct {
+					Type, Role, Model string
+					Content           []struct{ Type, Text string }
+					StopReason        string `json:"stop_reason"`
+					Usage             *struct {
+						In  *int `json:"input_tokens"`
+						Out *int `json:"output_tokens"`
+					}
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
+					t.Fatalf("%s: %v: %s", name, err, rec.Body.String())
+				}
+				if rec.Code != 200 || rec.Header().Get("Content-Type") != "application/json" || rec.Header().Get("Burrow-Error-Code") != "" ||
+					m.Type != "message" || m.Role != "assistant" || m.Model != "burrow-intelligence" || len(m.Content) != 1 || m.Content[0].Text == "" ||
+					m.StopReason != "end_turn" || m.Usage == nil || m.Usage.In == nil || m.Usage.Out == nil {
+					t.Fatalf("%s: safe refusal: status %d headers %v body %s", name, rec.Code, rec.Header(), rec.Body.String())
+				}
+			default:
+				if rec.Code != 200 || rec.Header().Get("Content-Type") != "text/event-stream" || !strings.HasSuffix(rec.Body.String(), "\n\n") {
+					t.Fatalf("%s: safe refusal: status %d headers %v body %q", name, rec.Code, rec.Header(), rec.Body.String())
+				}
+				var events []string
+				for _, block := range strings.Split(strings.TrimSuffix(rec.Body.String(), "\n\n"), "\n\n") {
+					ev, data, ok := strings.Cut(block, "\n")
+					var payload struct{ Type string }
+					if !ok || !strings.HasPrefix(ev, "event: ") || !strings.HasPrefix(data, "data: ") ||
+						json.Unmarshal([]byte(strings.TrimPrefix(data, "data: ")), &payload) != nil || payload.Type != strings.TrimPrefix(ev, "event: ") {
+						t.Fatalf("%s: not an Anthropic event: %q", name, block)
+					}
+					events = append(events, payload.Type)
+				}
+				want := []string{"message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"}
+				if !reflect.DeepEqual(events, want) || !strings.Contains(rec.Body.String(), `"model":"burrow-intelligence"`) {
+					t.Fatalf("%s: events %v in %q", name, events, rec.Body.String())
+				}
 			}
-			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-				t.Fatalf("%s: guardrail Content-Type %q", name, ct)
+
+			// Counting tokens has no answer to imitate: the dialect's refusal.
+			rec = httptest.NewRecorder()
+			g.ServeDialect(rec, msg("/v1/messages/count_tokens", "bgw_all", body), DialectAnthropic)
+			if typ, code := anthropicErr(t, rec); rec.Code != 403 || typ != "permission_error" || code != "forbidden" {
+				t.Fatalf("%s: guardrail on count_tokens: status %d type %s code %s", name, rec.Code, typ, code)
 			}
 
 			refuse = true
@@ -1555,5 +1605,126 @@ func TestServeDialect_Anthropic_RealChainRefusalsUseDialectShape(t *testing.T) {
 				t.Fatalf("%s: %d usage rows for refused requests", name, n)
 			}
 		}
+	}
+}
+
+// semStub is a semantic cache that says "similar" to everything once it has
+// been told an entry, and records what is promoted.
+type semStub struct {
+	mu       sync.Mutex
+	promoted []string // exact key hashes
+	lookups  int
+}
+
+func (s *semStub) Lookup(context.Context, string, []byte, semantic.Settings) (semantic.Candidate, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lookups++
+	if len(s.promoted) == 0 {
+		return semantic.Candidate{}, false, nil
+	}
+	return semantic.Candidate{ExactKeyHash: s.promoted[0], Similarity: 0.99}, true, nil
+}
+
+func (s *semStub) Promote(_ context.Context, _, key string, _ []byte, _ semantic.Settings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.promoted = append(s.promoted, key)
+	return nil
+}
+func (*semStub) ClearService(context.Context, string) error { return nil }
+func (*semStub) Stats(context.Context, string) (semantic.Stats, error) {
+	return semantic.Stats{}, nil
+}
+
+// The count_tokens ruling holds on the provider path as well: on
+// /ai/<anthropic provider>/ it writes no usage row and its answer is neither
+// stored in nor served from the cache of messages, while the limiter and the
+// rest of the chain still apply.
+func TestServe_ProviderPath_CountTokensWithoutUsageOrCache(t *testing.T) {
+	raw, err := db.Open(filepath.Join(t.TempDir(), "cache.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(raw); err != nil {
+		t.Fatal(err)
+	}
+	d := db.Wrap(raw)
+	t.Cleanup(func() { _ = d.Close() })
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	hits := map[string]int{}
+	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits[r.URL.Path]++
+		answer := `{"type":"message","content":[],"usage":{"input_tokens":3,"output_tokens":2}}`
+		if strings.Contains(r.URL.Path, "count_tokens") {
+			answer = `{"input_tokens":4}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(answer)))
+		_, _ = w.Write([]byte(answer))
+	})
+	sink, sem, refuse := &recSink{}, &semStub{}, false
+	chain := aigw.NewChain(exact.New(d, log), sem, nil, nil, nil, nil, nil, sink, log)
+	chain.Loader = cfgLoader{
+		Cache:    &exact.Settings{Enabled: true, AppliesPer: "global", TTLSeconds: 300, MaxEntries: 100, MaxPerEntryKB: 64},
+		Semantic: &semantic.Settings{Enabled: true, FallbackPolicy: "return_cached_marked", PromoteOnMiss: true},
+	}
+	chain.RateLimit = limiter(&refuse)
+	g := newGateway(up, chain)
+	g.Providers.(fakeProviders)["claude-local"] = db.AIProvider{Slug: "claude-local", Kind: "tunnel", ServiceID: "svc1", APIFormat: "anthropic"}
+	g.GatewayKeys = fakeGatewayKeys{"bgw_all": {ID: "gk-all"}}
+	do := func(key, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("x-api-key", key)
+		rec := httptest.NewRecorder()
+		g.Serve(rec, r, "claude-local")
+		return rec
+	}
+	const ct = "/v1/messages/count_tokens"
+	n := 0
+	for _, key := range []string{"sk-good", "bgw_all"} {
+		for _, path := range []string{ct, ct + "/"} {
+			for i := 0; i < 2; i++ { // the same bytes twice: a message would be a cache hit
+				n++
+				rec := do(key, path, `{"model":"claude-x","messages":[]}`)
+				if rec.Code != 200 || rec.Body.String() != `{"input_tokens":4}` || rec.Header().Get("Burrow-Cache") != "" || hits[ct]+hits[ct+"/"] != n {
+					t.Fatalf("%s %s #%d: status %d body %s headers %v upstream hits %v", key, path, i, rec.Code, rec.Body.String(), rec.Header(), hits)
+				}
+			}
+		}
+	}
+	if len(sink.all()) != 0 || len(sem.promoted) != 0 || sem.lookups != 0 {
+		t.Fatalf("count_tokens: %d usage rows, %d promotes, %d semantic lookups", len(sink.all()), len(sem.promoted), sem.lookups)
+	}
+
+	// Premise: a message is metered, cached and promoted on the same path.
+	for i, want := range []string{"", "HIT"} {
+		if rec := do("sk-good", "/v1/messages", `{"model":"claude-x","messages":[]}`); rec.Code != 200 || rec.Header().Get("Burrow-Cache") != want {
+			t.Fatalf("message #%d: status %d Burrow-Cache %q", i, rec.Code, rec.Header().Get("Burrow-Cache"))
+		}
+	}
+	if len(sink.all()) != 2 || len(sem.promoted) != 1 || hits["/v1/messages"] != 1 {
+		t.Fatalf("messages: %d usage rows, %d promotes, upstream hits %v", len(sink.all()), len(sem.promoted), hits)
+	}
+	// The semantic tier now says "similar" to anything; a counted prompt is
+	// still not answered with that message.
+	rec := do("sk-good", ct, `{"model":"claude-x","messages":[1]}`)
+	if rec.Body.String() != `{"input_tokens":4}` || rec.Header().Get("Burrow-Cache") != "" || hits[ct] != 5 {
+		t.Fatalf("count_tokens after a message was cached: body %s headers %v upstream hits %v", rec.Body.String(), rec.Header(), hits)
+	}
+	if rec := do("sk-good", "/v1/messages", `{"model":"claude-x","messages":[1]}`); rec.Header().Get("Burrow-Cache") != "similar" {
+		t.Fatalf("premise, semantic hit for a message: headers %v", rec.Header())
+	}
+
+	// The limiter still applies.
+	refuse = true
+	before := hits[ct]
+	if rec := do("sk-good", ct, `{"model":"claude-x","messages":[]}`); rec.Code != 429 || rec.Header().Get("Burrow-Error-Code") != "rate_limited" || hits[ct] != before {
+		t.Fatalf("limiter: status %d code %q upstream hits %v", rec.Code, rec.Header().Get("Burrow-Error-Code"), hits)
+	}
+	if len(sink.all()) != 3 || len(sem.promoted) != 1 {
+		t.Fatalf("at the end: %d usage rows, %d promotes", len(sink.all()), len(sem.promoted))
 	}
 }
