@@ -13,7 +13,7 @@ hero:
       link: /guide/introduction
     - theme: alt
       text: GitHub
-      link: https://github.com/ankoehn/burrow
+      link: https://github.com/andreas-koehn/burrow
 features:
   - title: Self-hosted — no SaaS, no accounts
     details: The relay runs on your server. No third party sees your traffic. No usage quotas you didn't configure. No account required to connect a client.
@@ -33,7 +33,7 @@ A minimal Docker Compose stack — ACME TLS included:
 # compose.yml
 services:
   burrowd:
-    image: ghcr.io/ankoehn/burrow:develop
+    image: ghcr.io/andreas-koehn/burrow:develop
     command: burrowd serve
     ports:
       - "80:80"
@@ -60,6 +60,8 @@ burrow login burrow.insingo.com
 burrow http 3000
 ```
 
+The status view of `burrow http` shows the URL of your service, `https://burrow.insingo.com/svc/<slug>/`.
+
 Your app is live at `https://burrow.insingo.com/svc/k7p2qx/`. The client prints the exact URL on `tunnel registered`.
 
 ::: tip No separate auth domain needed
@@ -67,7 +69,7 @@ When `BURROW_ACME_DOMAIN` is set, burrowd infers the base domain from it automat
 :::
 
 ::: info No stable release yet
-Burrow does not have a tagged release. Use the `develop` channel: image `ghcr.io/ankoehn/burrow:develop` or [pre-built binaries](https://github.com/andreas-koehn/burrow/releases/tag/develop). The GHCR package is private by default — make it public or `docker login ghcr.io` before pulling.
+Burrow does not have a tagged release. Use the `develop` channel: image `ghcr.io/andreas-koehn/burrow:develop` or [pre-built binaries](https://github.com/andreas-koehn/burrow/releases/tag/develop). The GHCR package is private by default — make it public or `docker login ghcr.io` before pulling.
 :::
 
 See the [Quickstart](/guide/quickstart) for the full step-by-step walkthrough, or [Deploy on a server](/guide/deploy) for a production setup with firewall rules and first-boot verification.

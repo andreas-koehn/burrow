@@ -242,8 +242,11 @@ it. Approving needs an admin account or `tokens:manage:own` / `tokens:manage:any
 | `--force` | | Replace a stored sign-in without asking |
 
 Without a browser sign-in on the relay, the command stops with exit code 2 and
-the `--token -` command. Exit codes: 0 signed in; 1 interrupted; 2 wrong usage
-(including that case); 5 relay unreachable or certificate not trusted.
+the `--token -` command. Exit codes: 0 signed in; 1 sign-in denied in the
+dashboard, code expired, too many pending sign-ins on the relay, sign-in not
+finished, sign-in could not be stored, or interrupted; 2 wrong usage (including
+that case); 5 relay unreachable or certificate not trusted; 6 the relay needs a
+newer client.
 
 ### logout
 

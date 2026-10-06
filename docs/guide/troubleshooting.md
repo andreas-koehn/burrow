@@ -7,19 +7,19 @@ Common issues, what causes them, and how to fix them.
 ## Image pull denied
 
 ```
-Error response from daemon: pull access denied for ghcr.io/ankoehn/burrow
+Error response from daemon: pull access denied for ghcr.io/andreas-koehn/burrow
 ```
 
 **Cause:** The GHCR package is published as private by default on the first push.
 
 **Fix — option A (recommended):** Make the package public at:
-`https://github.com/users/ankoehn/packages/container/burrow/settings`
+`https://github.com/users/andreas-koehn/packages/container/burrow/settings`
 
 **Fix — option B:** Authenticate before pulling:
 
 ```sh
 echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
-docker pull ghcr.io/ankoehn/burrow:develop
+docker pull ghcr.io/andreas-koehn/burrow:develop
 ```
 
 ::: tip
@@ -224,6 +224,10 @@ exit code 1 and says the relay did not apply it. The service entry it created is
 open. Open the dashboard and set the access mode there. `--access api-key` also
 never creates a key: add one in the dashboard before callers can use the
 service.
+
+### Every `burrow` command aborts at start on Windows
+
+In a strongly sandboxed Windows environment (AppContainer-like), the service library's start-up check can fail, and then every `burrow` command stops at start. Run the client outside the sandbox.
 
 ### `burrow service install` refuses on Windows
 

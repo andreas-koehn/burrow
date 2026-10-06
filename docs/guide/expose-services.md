@@ -62,6 +62,8 @@ so. The service entry it left on the relay is open: set its access mode in the
 dashboard. `--access open` works against any relay. See
 [Access control](/guide/access-control) for what each mode does.
 
+An open `/svc/` app shares the dashboard's origin, and its scripts can call the dashboard API as the signed-in user, so expose only apps you trust (see [Apps behind a path](/guide/expose-services#apps-behind-a-path)).
+
 The examples below use `burrow.yaml` with `burrow connect --config`, which
 still works unchanged. The same files work with `burrow up` (which can also read
 the stored sign-in, so `server` and `token` may be left out); see

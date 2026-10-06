@@ -64,8 +64,10 @@ docker run -d --name burrow \
   -e BURROW_ADMIN_PASSWORD=pick-a-strong-password \
   -e BURROW_DATABASE_PATH=/data/burrow.db \
   -v "$PWD/data:/data" -w /data \
-  ghcr.io/ankoehn/burrow:latest serve --dev-certs
+  ghcr.io/andreas-koehn/burrow:latest serve --dev-certs
 ```
+
+`:latest` exists only after the first version-tagged release; until then use `:develop`.
 
 Or use the provided [`docker-compose.yml`](docker-compose.yml).
 
@@ -74,7 +76,7 @@ Or use the provided [`docker-compose.yml`](docker-compose.yml).
 Build from source (Go 1.25+):
 
 ```bash
-git clone https://github.com/ankoehn/burrow && cd burrow
+git clone https://github.com/andreas-koehn/burrow && cd burrow
 make build            # or: task build   (Windows / no make)
 ./bin/burrowd version
 ./bin/burrow version

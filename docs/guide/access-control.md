@@ -190,7 +190,7 @@ The `develop` channel rebuilds on every push. Pull regularly to pick up
 security fixes:
 
 ```sh
-docker pull ghcr.io/ankoehn/burrow:develop
+docker pull ghcr.io/andreas-koehn/burrow:develop
 docker compose up -d
 ```
 

@@ -79,7 +79,7 @@ briefly and reconnect automatically.
 
 ::: info Image visibility
 The GHCR package starts **private** after the first push. Make it public once at
-https://github.com/users/ankoehn/packages/container/burrow/settings — or run
+https://github.com/users/andreas-koehn/packages/container/burrow/settings — or run
 `docker login ghcr.io` before pulling on hosts that cannot reach a public
 package.
 :::
@@ -89,7 +89,7 @@ package.
 # docker-compose.yml
 services:
   burrowd:
-    image: ghcr.io/ankoehn/burrow:develop@sha256:<digest>
+    image: ghcr.io/andreas-koehn/burrow:develop@sha256:<digest>
 ```
 :::
 

@@ -35,7 +35,7 @@ at `https://burrow.insingo.com/svc/<slug>/`.
 ```yaml
 services:
   burrowd:
-    image: ghcr.io/ankoehn/burrow:develop
+    image: ghcr.io/andreas-koehn/burrow:develop
     restart: unless-stopped
     ports:
       - "80:80"
@@ -121,6 +121,8 @@ A service created this way is open: anyone who has the URL can use it. Add
 `--access login` or `--access api-key` to the first `burrow http` command, or
 change the access mode in the dashboard. See
 [Expose services](/guide/expose-services#access).
+
+An open `/svc/` app shares the dashboard's origin, and its scripts can call the dashboard API as the signed-in user, so expose only apps you trust (see [Apps behind a path](/guide/expose-services#apps-behind-a-path)).
 :::
 
 Other ways to connect (a manual download, a token instead of the browser,

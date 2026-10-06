@@ -295,7 +295,7 @@ Example Docker Compose usage:
 ```yaml
 services:
   burrowd:
-    image: ghcr.io/ankoehn/burrow:develop
+    image: ghcr.io/andreas-koehn/burrow:develop
     secrets:
       - burrow_admin_password
     environment:
@@ -336,8 +336,8 @@ token_name: kohns-laptop
 | `token` | The client token (a secret; keep the file's mode) |
 | `token_name` | The token's name, shown by `burrow status` |
 
-Every `burrow` command accepts `--config <file>` to use another user config
-file. `burrow doctor` warns when the file can be read by other users.
+Every `burrow` command except `connect` accepts `--config <file>` to use another
+user config file (for `connect`, `--config` names a `burrow.yaml`). `burrow doctor` warns when the file can be read by other users.
 `burrow logout` deletes the stored token; revoke it in the dashboard
 (**Clients → Tokens**).
 
@@ -346,10 +346,12 @@ file. `burrow doctor` warns when the file can be read by other users.
 For `burrow http`, `burrow tcp`, `burrow up`, `burrow status` and `burrow doctor`,
 highest first:
 
-1. Command-line flags.
-2. Environment: `BURROW_SERVER`, `BURROW_TOKEN`, `BURROW_TOKEN_FILE`.
-3. `burrow.yaml` (`server`, `token`, `token_file`), for `burrow up` only.
-4. The user config file.
+1. Environment: `BURROW_SERVER`, `BURROW_TOKEN`, `BURROW_TOKEN_FILE`.
+2. `burrow.yaml` (`server`, `token`, `token_file`), for `burrow up` only.
+3. The user config file.
+
+These commands have no `--server` or `--token` flag. (`burrow login --token -`
+stores a token; `--control` sets the control endpoint at sign-in.)
 
 A stored token is sent only to the relay it was stored for. A token given
 explicitly (flag, environment or `burrow.yaml`) goes with whatever server you

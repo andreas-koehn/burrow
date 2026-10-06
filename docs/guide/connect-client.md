@@ -157,8 +157,9 @@ build, which has `linux/amd64`, `linux/arm64`, `darwin/arm64` and
 ```sh
 curl -fsSL -o burrow.tar.gz https://burrow.insingo.com/download/burrow/linux/amd64
 curl -fsSL -o checksums.txt https://burrow.insingo.com/download/burrow/checksums.txt
-sha256sum burrow.tar.gz        # macOS: shasum -a 256 burrow.tar.gz
 grep "$(sha256sum burrow.tar.gz | cut -d' ' -f1)" checksums.txt
+# macOS has no sha256sum:
+grep "$(shasum -a 256 burrow.tar.gz | cut -d' ' -f1)" checksums.txt
 ```
 
 The `grep` must print one line, naming the archive for your platform (for
@@ -198,8 +199,8 @@ To build from source:
 ```sh
 git clone https://github.com/andreas-koehn/burrow.git
 cd burrow
-go build ./cmd/client
-# produces ./burrow (or burrow.exe on Windows)
+go build -o burrow ./cmd/client
+# produces ./burrow (use -o burrow.exe on Windows)
 ```
 
 ### Sign in with a token (no browser)
@@ -208,8 +209,8 @@ On a machine without a browser, or against a relay without browser sign-in,
 create a token in the dashboard and store it with `--token -`:
 
 1. Log in to `https://burrow.insingo.com`.
-2. Open **Clients**, then the **Tokens** tab, and click **New token**. Give it a
-   name (for example `laptop`) and copy the value.
+2. Open **Clients**, then the **Tokens** tab. Enter a **Token name** (for
+   example `laptop`), click **Create**, and copy the value.
 
 ```sh
 burrow login burrow.insingo.com --token -

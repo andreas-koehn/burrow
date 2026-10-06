@@ -93,7 +93,7 @@ firewalled, startup will fail.
 The container image is published to GitHub Container Registry:
 
 ```
-ghcr.io/ankoehn/burrow:develop
+ghcr.io/andreas-koehn/burrow:develop
 ```
 
 The image is multi-arch (`linux/amd64` + `linux/arm64`) and is rebuilt on
@@ -104,7 +104,7 @@ The GHCR package is **private by default**. Before your server can pull it you
 must either:
 
 1. Make it public at
-   [github.com/users/ankoehn/packages/container/burrow/settings](https://github.com/users/ankoehn/packages/container/burrow/settings),
+   [github.com/users/andreas-koehn/packages/container/burrow/settings](https://github.com/users/andreas-koehn/packages/container/burrow/settings),
    **or**
 2. Run `docker login ghcr.io` on the server with a GitHub personal access token
    that has `read:packages` scope.
@@ -113,7 +113,7 @@ must either:
 Pull the image to confirm access:
 
 ```sh
-docker pull ghcr.io/ankoehn/burrow:develop
+docker pull ghcr.io/andreas-koehn/burrow:develop
 ```
 
 ---
@@ -131,7 +131,7 @@ mkdir -p /opt/burrow && cd /opt/burrow
 ```yaml
 services:
   burrow:
-    image: ghcr.io/ankoehn/burrow:develop
+    image: ghcr.io/andreas-koehn/burrow:develop
     restart: unless-stopped
     ports:
       - "80:80"
@@ -189,7 +189,7 @@ docker run -d \
   -e BURROW_ADMIN_PASSWORD=ChangeMe123! \
   -e BURROW_DATABASE_PATH=/data/burrow.db \
   -v burrow_data:/data \
-  ghcr.io/ankoehn/burrow:develop
+  ghcr.io/andreas-koehn/burrow:develop
 ```
 
 ::: warning Production secrets
@@ -284,7 +284,7 @@ currently holds. Cut a tagged release before you rely on it.
 
 The relay computes the file names from its own version. For a relay at version
 `0.7.0` (tag `v0.7.0`) it redirects to
-`<client_download_base>/v0.7.0/<archive>`. The release must hold exactly these
+`<client_download_base>/v0.7.0/<archive>`. The release must hold at least these
 files, as CI (`.goreleaser.yml`, on `v*` tags) produces them:
 
 | Platform | Archive |
@@ -302,7 +302,9 @@ files, as CI (`.goreleaser.yml`, on `v*` tags) produces them:
 That is eight platform pairs. The pattern is
 `burrow_<os>_<arch>_<version>.tar.gz` (`.zip` on Windows), with the version
 without the leading `v` and `arm` spelled `armv7`. Each archive holds the
-single `burrow` (or `burrow.exe`) binary. A file under another name, a missing
+`burrow` (or `burrow.exe`) binary at its root; other files, such as a LICENSE or
+README, do no harm, and the release also holds the `burrowd_*` server archives
+and signatures. A file under another name, a missing
 pair or a missing `checksums.txt` breaks the installer and `burrow update` on
 that platform: the relay does not check that the target exists.
 
@@ -321,7 +323,11 @@ publishes by itself):
 3. From a clean machine, run the installer and then `burrow login` and
    `burrow http 3000` against that relay.
 4. Check the relay settings (see below) if you changed them.
-5. Run the platform checks in the next list. They need real machines and have
+5. Before the first tag, point the image name in `.goreleaser.yml`
+   (`dockers_v2`) at the current account, `ghcr.io/andreas-koehn/burrow`: it still
+   names the old owner, `ghcr.io/ankoehn/burrow`. The `:latest` and versioned image tags exist
+   only after that release.
+6. Run the platform checks in the next list. They need real machines and have
    **not** been run on Windows, macOS or under real systemd.
 
 ### Relay settings involved
