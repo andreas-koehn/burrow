@@ -25,23 +25,22 @@ function copy(text: string) {
   toast.success("Copied.");
 }
 
-// Build the CLI command from real field values. The token comes from the
-// shell variable BURROW_TOKEN (the same spelling works in a POSIX shell and in
-// PowerShell); the page never puts a token into a command line.
-// tcp:  burrow connect --server <ep> --token "$BURROW_TOKEN" --local <local> [--remote <n>] --name <name>
-// http: burrow connect --server <ep> --token "$BURROW_TOKEN" --local <local> --type http --name <name>
+// Build the CLI command from real field values.
+// tcp:  burrow connect --server <ep> --token <tok> --local <local> [--remote <n>] --name <name>
+// http: burrow connect --server <ep> --token <tok> --local <local> --type http --name <name>
 function buildCmd(opts: {
   endpoint: string;
+  token: string;
   local: string;
   remote: string;
   protocol: string;
   name: string;
 }): string {
-  const { endpoint, local, remote, protocol, name } = opts;
+  const { endpoint, token, local, remote, protocol, name } = opts;
   const parts = [
     "burrow connect",
     `--server ${shellQuote(endpoint)}`,
-    `--token "$BURROW_TOKEN"`,
+    `--token ${token}`,
     `--local ${shellQuote(local)}`,
   ];
   if (protocol === "tcp" && remote.trim() !== "") {
@@ -56,9 +55,7 @@ function buildCmd(opts: {
 
 /**
  * The form this page used to be: choose what to expose, name the client, get
- * a freshly minted token and a `burrow connect` command. The command takes the
- * token from a shell variable, so no command line the page shows or copies
- * ever holds it.
+ * a freshly minted token and a `burrow connect` command with it.
  */
 function ConnectForm({ endpoint }: { endpoint: string }) {
   const [name, setName] = useState("");
@@ -116,8 +113,16 @@ function ConnectForm({ endpoint }: { endpoint: string }) {
     setError("");
   }
 
-  // P2.3 — command built from real fields. The token is not one of them.
-  const cmd = tok ? buildCmd({ endpoint, local, remote, protocol, name }) : "";
+  // P2.3 — command built from real fields; masked vs unmasked
+  const maskedToken = tok ? "bur_••••••••" : "";
+  const realToken = tok?.token ?? "";
+
+  const cmd = tok
+    ? buildCmd({ endpoint, token: reveal ? realToken : maskedToken, local, remote, protocol, name })
+    : "";
+  const cmdToCopy = tok
+    ? buildCmd({ endpoint, token: realToken, local, remote, protocol, name })
+    : "";
 
   // P2.5 — success-loop poller (admin only)
   const { data: clientsData } = useQuery({
@@ -264,12 +269,6 @@ function ConnectForm({ endpoint }: { endpoint: string }) {
 
           <section className="account-section" aria-labelledby="ob-3">
             <div className="section-head"><div className="left"><h3 id="ob-3">4. Run on the client</h3></div></div>
-            <p className="muted small">
-              The command takes the token from the shell variable <code>BURROW_TOKEN</code>, so the token
-              stays out of the command line you copy and out of the shell history. Set it first: run{" "}
-              <code>read -rs BURROW_TOKEN</code> (in PowerShell <code>$BURROW_TOKEN = Read-Host</code>),
-              paste the token and press Enter.
-            </p>
             {/* P2.4 — wrapped command + copy */}
             <div className="row gap-2">
               <pre id="connect-command" className="cmd-block wrap fill-rest"><code>{cmd}</code></pre>
@@ -277,7 +276,7 @@ function ConnectForm({ endpoint }: { endpoint: string }) {
                 type="button"
                 className="icon-btn"
                 aria-label="Copy connect command"
-                onClick={() => copy(cmd)}
+                onClick={() => copy(cmdToCopy)}
               >
                 <Copy size={13} aria-hidden="true" />
               </button>
@@ -465,6 +464,14 @@ export default function ConnectClient() {
                 ) : olderRelay ? (
                   <p className="muted small">
                     This relay does not hand out the client. Take the <code>burrow</code> archive from the same release as the relay.
+                  </p>
+                ) : discovery.isError ? (
+                  // 429, a relay error or no network: not an old relay, so asking again can help.
+                  <p className="muted small row row-center gap-2">
+                    <span>Could not ask the relay which builds it offers.</span>
+                    <Button variant="secondary" size="sm" disabled={discovery.isFetching} onClick={() => void discovery.refetch()}>
+                      Try again
+                    </Button>
                   </p>
                 ) : (
                   <p className="muted small">Asking the relay which builds it offers…</p>

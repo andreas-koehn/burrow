@@ -59,7 +59,7 @@ export function InstallLines({ relayOrigin, target, lines = ALL_LINES }: Install
       {!isHttpsOrigin(relayOrigin) && (
         <p className="muted small">
           This dashboard is not served over HTTPS. <code>burrow login</code> needs an https address,
-          and the installer accepts plain http from this machine only.
+          and the installer accepts plain http from localhost only.
         </p>
       )}
       {/* role stated outright: without list markers Safari drops the list semantics. */}
@@ -75,6 +75,7 @@ export function InstallLines({ relayOrigin, target, lines = ALL_LINES }: Install
                 <Copy size={13} aria-hidden="true" />
               </button>
             </div>
+            {/* C12: drop when browser sign-in lands (the hint goes with the --token - suffix). */}
             {id === "login" && (
               <p className="muted small">
                 It asks for a client token: create one under{" "}

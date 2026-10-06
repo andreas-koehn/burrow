@@ -35,6 +35,7 @@ export function installLines(os: ClientOs, relayOrigin: string, target = "3000")
   return {
     install: os === "windows" ? `irm ${origin}/install.ps1 | iex` : `curl -fsSL ${origin}/install.sh | sh`,
     // Browser sign-in is not there yet: the client asks for a token and reads it from standard input.
+    // C12: drop when browser sign-in lands (the `--token -` suffix).
     login: `burrow login ${relay} --token -`,
     run: `burrow http ${shellQuote(target)}`,
   };

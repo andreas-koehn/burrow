@@ -82,8 +82,8 @@ test("connect-client: fill fields, mint, check command and waiting indicator", a
   // ── 8. Relay endpoint explainer is visible ────────────────────────────────
   await expect(page.getByText(/reachable address/i)).toBeVisible();
 
-  // ── 9. Copy connect command button is present; the command holds no token ──
-  expect(cmdText).toContain('--token "$BURROW_TOKEN"');
+  // ── 9. The token is shown masked; Copy connect command button is present ──
+  expect(cmdText).toContain("--token bur_••••••••");
   await expect(
     page.getByRole("button", { name: /copy connect command/i }),
   ).toBeVisible();

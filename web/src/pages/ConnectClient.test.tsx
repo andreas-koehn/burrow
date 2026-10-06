@@ -213,7 +213,7 @@ describe("Connect a client — other ways to connect", () => {
     expect(minted).toBe(1);
   });
 
-  it("the connect command never holds the token, masked or not; the token has its own field", async () => {
+  it("the connect command shows the token masked, the real one after Reveal, and Copy takes the real one", async () => {
     server.use(http.post("/api/v1/tokens", () => HttpResponse.json({ name: "edge-01", token: "bur_test_0000" }, { status: 201 })));
     const user = userEvent.setup();
     mount();
@@ -221,16 +221,46 @@ describe("Connect a client — other ways to connect", () => {
     await user.type(screen.getByLabelText(/client name/i), "edge-01");
     await user.click(screen.getByRole("button", { name: /generate token/i }));
     const cmd = await waitForCommandSection();
-    expect(cmd.textContent).toContain('--token "$BURROW_TOKEN"');
-    await user.click(screen.getByRole("button", { name: "Reveal token" }));
-    expect(screen.getByText("bur_test_0000")).toBeInTheDocument();
-    expect(cmd.textContent).not.toContain("bur_");
+    expect(cmd.textContent).toContain("--token bur_•••••••• ");
+    expect(cmd.textContent).not.toContain("bur_test_0000");
+    // Copy takes the command that works, also while it is shown masked.
     await user.click(screen.getByRole("button", { name: "Copy connect command" }));
     const copied = await navigator.clipboard.readText();
-    expect(copied).toBe(cmd.textContent);
-    expect(copied).not.toContain("bur_");
+    expect(copied).toContain("--token bur_test_0000 ");
+    expect(copied).toBe(cmd.textContent!.replace("bur_••••••••", "bur_test_0000"));
+    await user.click(screen.getByRole("button", { name: "Reveal token" }));
+    expect(cmd.textContent).toBe(copied);
+    await user.click(screen.getByRole("button", { name: "Hide token" }));
+    expect(cmd.textContent).not.toContain("bur_test_0000");
     await user.click(screen.getByRole("button", { name: "Copy client token" }));
     expect(await navigator.clipboard.readText()).toBe("bur_test_0000");
+  });
+
+  it.each([
+    ["too many requests", 429],
+    ["a relay error", 500],
+  ])("when the relay cannot be asked for its builds (%s) says so and offers to try again", async (_label, status) => {
+    let fail = true;
+    server.use(http.get("/api/v1/client/discovery", () => fail
+      ? HttpResponse.json({ error: "boom" }, { status })
+      : HttpResponse.json(db.discovery)));
+    await mountOther();
+    const section = screen.getByRole("heading", { name: "Download by hand" }).closest("section")!;
+    expect(await within(section).findByText("Could not ask the relay which builds it offers.")).toBeInTheDocument();
+    expect(within(section).queryByText(/Asking the relay/)).toBeNull();
+    // Not an old relay: no notice, and the section was opened by hand only.
+    expect(screen.queryByText(/older than the client commands/)).toBeNull();
+    fail = false;
+    await userEvent.click(within(section).getByRole("button", { name: "Try again" }));
+    expect(await within(section).findByRole("link", { name: "Linux amd64" })).toHaveAttribute("href", "/download/burrow/linux/amd64");
+    expect(within(section).queryByText(/Could not ask the relay/)).toBeNull();
+  });
+
+  it("says the same when the relay cannot be reached at all", async () => {
+    server.use(http.get("/api/v1/client/discovery", () => HttpResponse.error()));
+    await mountOther();
+    expect(await screen.findByText("Could not ask the relay which builds it offers.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 
   it("on a relay without the discovery endpoint says so and opens the section", async () => {
