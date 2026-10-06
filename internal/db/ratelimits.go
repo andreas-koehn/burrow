@@ -116,33 +116,14 @@ func (x *DB) DeleteRateLimit(ctx context.Context, id string) error {
 	return nil
 }
 
-// SumDailyUsageEvents returns the sum of (bytes_in+bytes_out)/4 over the
-// usage_events rows for the given subject since the start of the current UTC
-// day. The byte-estimate currency is bytes/4 per spec Part D (rate-limit
-// currency = byte-estimate per minute, same shape applies to day windows).
+// Day-window quota queries. Each reads the usage_events rows of one subject
+// since the start of the current UTC day. The day boundary is computed in Go
+// and bound (see UsageWindowStart), so the statements run on SQLite and
+// Postgres alike. An empty subject is 0 without a query.
 //
-// Subjects of type api_key match api_key_id; service matches service_id;
-// other scopes (role, global) return 0 because usage_events does not record
-// a role label and a global aggregate is the caller's job. This is the path
-// used by the quota engine's window=day check.
-func (x *DB) SumDailyUsageEventsByAPIKey(ctx context.Context, apiKeyID string) (int64, error) {
-	column, id := usageKeyColumn(apiKeyID)
-	if id == "" {
-		return 0, nil
-	}
-	row := x.sqlDB.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(bytes_in)+SUM(bytes_out), 0)
-		   FROM usage_events
-		  WHERE `+column+` = ?
-		    AND ts >= datetime('now', 'start of day')`,
-		id,
-	)
-	var totalBytes int64
-	if err := row.Scan(&totalBytes); err != nil {
-		return 0, fmt.Errorf("sum daily usage by api_key: %w", err)
-	}
-	return totalBytes / 4, nil
-}
+// The Sum* queries return the byte estimate (bytes_in+bytes_out)/4, the
+// currency of rate limits (spec Part D); the Count* queries return the number
+// of requests.
 
 // GatewayKeySubjectPrefix marks a gateway key in a rate-limit subject:
 // "gw:<gateway key id>". Such a key's usage rows carry its id in
@@ -158,62 +139,85 @@ func usageKeyColumn(subject string) (column, id string) {
 	return "api_key_id", subject
 }
 
-// SumDailyUsageEventsByService is the service-scope variant. See
-// SumDailyUsageEventsByAPIKey.
-func (x *DB) SumDailyUsageEventsByService(ctx context.Context, serviceID string) (int64, error) {
-	if serviceID == "" {
+// sumDailyUsage returns today's byte estimate of the rows whose column equals
+// id. column is a constant of this file, never input.
+func (x *DB) sumDailyUsage(ctx context.Context, column, id string) (int64, error) {
+	if id == "" {
 		return 0, nil
 	}
 	row := x.sqlDB.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(bytes_in)+SUM(bytes_out), 0)
+		`SELECT CAST(COALESCE(SUM(bytes_in), 0) + COALESCE(SUM(bytes_out), 0) AS BIGINT)
 		   FROM usage_events
-		  WHERE service_id = ?
-		    AND ts >= datetime('now', 'start of day')`,
-		serviceID,
+		  WHERE `+column+` = ?
+		    AND ts >= ?`,
+		id, utcDayStart(),
 	)
 	var totalBytes int64
 	if err := row.Scan(&totalBytes); err != nil {
-		return 0, fmt.Errorf("sum daily usage by service: %w", err)
+		return 0, fmt.Errorf("sum daily usage by %s: %w", column, err)
 	}
 	return totalBytes / 4, nil
 }
 
-// CountDailyUsageEventsByAPIKey returns the number of usage_events rows for
-// the given api_key since UTC midnight. Used by quota window=day +
-// dimension=rpm (request-count daily cap).
-func (x *DB) CountDailyUsageEventsByAPIKey(ctx context.Context, apiKeyID string) (int64, error) {
-	column, id := usageKeyColumn(apiKeyID)
+// countDailyUsage returns today's number of rows whose column equals id.
+func (x *DB) countDailyUsage(ctx context.Context, column, id string) (int64, error) {
 	if id == "" {
 		return 0, nil
 	}
 	row := x.sqlDB.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM usage_events
 		  WHERE `+column+` = ?
-		    AND ts >= datetime('now', 'start of day')`,
-		id,
+		    AND ts >= ?`,
+		id, utcDayStart(),
 	)
 	var n int64
 	if err := row.Scan(&n); err != nil {
-		return 0, fmt.Errorf("count daily usage by api_key: %w", err)
+		return 0, fmt.Errorf("count daily usage by %s: %w", column, err)
 	}
 	return n, nil
 }
 
-// CountDailyUsageEventsByService is the service-scope variant of the daily
-// request-count query.
+// SumDailyUsageEventsByAPIKey is the byte estimate of a per-key subject: a
+// service key id, or "gw:<gateway key id>".
+func (x *DB) SumDailyUsageEventsByAPIKey(ctx context.Context, apiKeyID string) (int64, error) {
+	column, id := usageKeyColumn(apiKeyID)
+	return x.sumDailyUsage(ctx, column, id)
+}
+
+// CountDailyUsageEventsByAPIKey is the request count of a per-key subject.
+func (x *DB) CountDailyUsageEventsByAPIKey(ctx context.Context, apiKeyID string) (int64, error) {
+	column, id := usageKeyColumn(apiKeyID)
+	return x.countDailyUsage(ctx, column, id)
+}
+
+// SumDailyUsageEventsByService is the byte estimate of a service.
+func (x *DB) SumDailyUsageEventsByService(ctx context.Context, serviceID string) (int64, error) {
+	return x.sumDailyUsage(ctx, "service_id", serviceID)
+}
+
+// CountDailyUsageEventsByService is the request count of a service.
 func (x *DB) CountDailyUsageEventsByService(ctx context.Context, serviceID string) (int64, error) {
-	if serviceID == "" {
-		return 0, nil
-	}
-	row := x.sqlDB.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM usage_events
-		  WHERE service_id = ?
-		    AND ts >= datetime('now', 'start of day')`,
-		serviceID,
-	)
-	var n int64
-	if err := row.Scan(&n); err != nil {
-		return 0, fmt.Errorf("count daily usage by service: %w", err)
-	}
-	return n, nil
+	return x.countDailyUsage(ctx, "service_id", serviceID)
+}
+
+// SumDailyUsageEventsByGatewayKey is the byte estimate of a gateway key,
+// named by its bare id.
+func (x *DB) SumDailyUsageEventsByGatewayKey(ctx context.Context, gatewayKeyID string) (int64, error) {
+	return x.sumDailyUsage(ctx, "gateway_key_id", gatewayKeyID)
+}
+
+// CountDailyUsageEventsByGatewayKey is the request count of a gateway key.
+func (x *DB) CountDailyUsageEventsByGatewayKey(ctx context.Context, gatewayKeyID string) (int64, error) {
+	return x.countDailyUsage(ctx, "gateway_key_id", gatewayKeyID)
+}
+
+// SumDailyUsageEventsByModel is the byte estimate of the requests that asked
+// for the model name (usage_events.requested_model), whoever answered.
+func (x *DB) SumDailyUsageEventsByModel(ctx context.Context, model string) (int64, error) {
+	return x.sumDailyUsage(ctx, "requested_model", model)
+}
+
+// CountDailyUsageEventsByModel is the request count of a requested model.
+func (x *DB) CountDailyUsageEventsByModel(ctx context.Context, model string) (int64, error) {
+	return x.countDailyUsage(ctx, "requested_model", model)
 }

@@ -44,7 +44,7 @@ type QuotaEngine interface {
 // the spec Part D.2 Limit struct exactly so the JSON contract is stable.
 type rateLimitResp struct {
 	ID        string `json:"id"`
-	Scope     string `json:"scope"` // api_key|role|service|global
+	Scope     string `json:"scope"` // api_key|gateway_key|model|role|service|global
 	Subject   string `json:"subject"`
 	Dimension string `json:"dimension"` // rpm|bpm
 	Limit     int    `json:"limit"`
@@ -78,11 +78,15 @@ type rateLimitReq struct {
 // validScopes lists the closed set of allowed scope values. Validated on
 // every POST/PUT to keep stale wire enums from leaking into the engine.
 var validScopes = map[string]bool{
-	quota.ScopeAPIKey:  true,
-	quota.ScopeRole:    true,
-	quota.ScopeService: true,
-	quota.ScopeGlobal:  true,
+	quota.ScopeAPIKey:     true,
+	quota.ScopeRole:       true,
+	quota.ScopeService:    true,
+	quota.ScopeGlobal:     true,
+	quota.ScopeGatewayKey: true, // subject: the gateway key's id
+	quota.ScopeModel:      true, // subject: the model name clients ask for
 }
+
+const msgBadRateLimitScope = "scope must be one of api_key|gateway_key|model|role|service|global"
 
 var validDimensions = map[string]bool{
 	quota.DimensionRPM: true,
@@ -100,7 +104,7 @@ var validWindows = map[string]bool{
 // contract is unambiguous).
 func validateRateLimit(in rateLimitReq) string {
 	if !validScopes[in.Scope] {
-		return "scope must be one of api_key|role|service|global"
+		return msgBadRateLimitScope
 	}
 	if !validDimensions[in.Dimension] {
 		return "dimension must be one of rpm|bpm"
@@ -391,6 +395,22 @@ func (d Deps) GetRateLimitUsage(w http.ResponseWriter, r *http.Request) {
 
 	who := quota.Subjects{}
 	switch scope {
+	case quota.ScopeGatewayKey:
+		// A gateway key's usage is its owner's to see; anyone else needs
+		// quotas:read:any. The answer is the same for another user's key and
+		// for one that does not exist.
+		if !d.mayReadGatewayKeyUsage(r, subject) {
+			writeErr(w, http.StatusForbidden, "quotas:read:any required")
+			return
+		}
+		who.GatewayKeyID = subject
+	case quota.ScopeModel:
+		// A model's usage is that of every key that asked for it.
+		if !d.mayReadAnyQuota(r) {
+			writeErr(w, http.StatusForbidden, "quotas:read:any required")
+			return
+		}
+		who.Model = subject
 	case quota.ScopeAPIKey:
 		who.APIKeyID = subject
 	case quota.ScopeRole:
@@ -400,7 +420,7 @@ func (d Deps) GetRateLimitUsage(w http.ResponseWriter, r *http.Request) {
 	case quota.ScopeGlobal, "":
 		// no subject — engine matches global limits regardless.
 	default:
-		writeErr(w, http.StatusBadRequest, "scope must be one of api_key|role|service|global")
+		writeErr(w, http.StatusBadRequest, msgBadRateLimitScope)
 		return
 	}
 
@@ -425,4 +445,35 @@ func (d Deps) GetRateLimitUsage(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// mayReadAnyQuota reports whether the caller is an admin or holds
+// quotas:read:any. A caller whose role cannot be read may not.
+func (d Deps) mayReadAnyQuota(r *http.Request) bool {
+	role, err := d.callerRole(r)
+	return err == nil && (role == "admin" || authz.Can(role, authz.PermQuotasReadAny))
+}
+
+// mayReadGatewayKeyUsage reports whether the caller may see the usage of
+// gateway key id: anyone who may read any quota, and the key's owner.
+func (d Deps) mayReadGatewayKeyUsage(r *http.Request, id string) bool {
+	if d.mayReadAnyQuota(r) {
+		return true
+	}
+	uid := userID(r.Context())
+	if d.AIGatewayKeys == nil || uid == "" || id == "" {
+		return false
+	}
+	// As a non-admin: the store returns the caller's own keys only.
+	keys, err := d.AIGatewayKeys.ListGatewayKeys(r.Context(), uid, "")
+	if err != nil {
+		d.warn("gateway keys could not be read", "err", err)
+		return false
+	}
+	for _, k := range keys {
+		if k.ID == id && k.UserID == uid {
+			return true
+		}
+	}
+	return false
 }

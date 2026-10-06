@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +47,38 @@ type Chain interface {
 // ModelLister reads a provider's stored model list.
 type ModelLister interface {
 	ListProviderModels(ctx context.Context, slug string) ([]db.AIProviderModel, error)
+}
+
+// BudgetGuard says whether a gateway key or a model is over a budget that
+// stops requests. reason is shown to the caller. *cost.Guard satisfies it.
+type BudgetGuard interface {
+	Blocked(ctx context.Context, gatewayKeyID, model string) (reason string, blocked bool)
+}
+
+// overBudget answers 429 "budget_exceeded" when the gateway key or the model
+// is over a hard budget, and reports whether it did. model is the name the
+// budget goes by: what the client asked for on a dialect endpoint,
+// "<provider>/<model>" on a provider path, "" when the request names none.
+// Budgets are per UTC day, so Retry-After is the time until UTC midnight.
+func (g *Gateway) overBudget(w http.ResponseWriter, r *http.Request, gatewayKeyID, model string) bool {
+	if g.Budgets == nil {
+		return false
+	}
+	reason, blocked := g.Budgets.Blocked(r.Context(), gatewayKeyID, model)
+	if !blocked {
+		return false
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(secondsUntilUTCMidnight(time.Now())))
+	g.fail(w, r, http.StatusTooManyRequests, "budget_exceeded", reason)
+	return true
+}
+
+// secondsUntilUTCMidnight is the whole seconds from now to the next UTC
+// midnight, at least 1.
+func secondsUntilUTCMidnight(now time.Time) int {
+	now = now.UTC()
+	next := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+	return max(int(next.Sub(now)/time.Second), 1)
 }
 
 // Gateway serves requests under /ai/<provider>/ and the dialect endpoints
@@ -88,6 +121,10 @@ type Gateway struct {
 	// (db.AIProvider.MaxConcurrent). It is shared by all requests and all
 	// doors to a provider. nil = no provider is limited.
 	Limiter *Limiter
+
+	// Budgets refuses a gateway key or a model that is over a hard daily
+	// budget, before any upstream is called. nil = no enforcement.
+	Budgets BudgetGuard
 
 	// timeUnit is the unit of a model's timeouts. 0 = one second; tests use
 	// milliseconds.
@@ -261,6 +298,9 @@ func stripCredentials(r *http.Request) {
 // "source", "from", a batch file), so a body with an allowed model proves
 // nothing there. For the same reason such a key may not send a "model" query
 // parameter next to the body.
+//
+// After the allow-list, a gateway key or model over a hard budget is refused
+// 429 "budget_exceeded" (see overBudget).
 func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, p db.AIProvider) (*http.Request, string, bool) {
 	presented := presentedKey(r)
 	if !strings.HasPrefix(presented, gatewayKeyPrefix) {
@@ -302,6 +342,18 @@ func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, p db.AIPr
 		}
 	case !full:
 		return deny()
+	}
+	// A key or model over its budget reaches no upstream. The model list
+	// stays open: it is answered from the catalog or costs nothing. The
+	// model's budget goes by its direct address.
+	if !isModelList(r) {
+		budgetModel := ""
+		if model != "" {
+			budgetModel = p.Slug + "/" + model
+		}
+		if g.overBudget(w, r, key.ID, budgetModel) {
+			return r, "", false
+		}
 	}
 	route := aigw.NewRoute(key.ID, p.APIFormat, model, w.Header().Get(headerRequestID))
 	route.SetTarget(p.Slug, model)

@@ -634,9 +634,17 @@ func (*fullDepsStub) Summary(context.Context, string) (cost.Summary, error) {
 	stubPanic("Summary")
 	return cost.Summary{}, nil
 }
-func (*fullDepsStub) CurrentUsdFor(context.Context, db.Budget) (float64, error) {
-	stubPanic("CurrentUsdFor")
-	return 0, nil
+func (*fullDepsStub) BudgetUsages(context.Context, []db.Budget) ([]cost.BudgetUsage, error) {
+	stubPanic("BudgetUsages")
+	return nil, nil
+}
+func (*fullDepsStub) SummaryBy(context.Context, string, string) ([]cost.GroupRow, error) {
+	stubPanic("SummaryBy")
+	return nil, nil
+}
+func (*fullDepsStub) RowUSD(db.UsageRow) float64 {
+	stubPanic("RowUSD")
+	return 0
 }
 func (*fullDepsStub) UsdFor(string, int, int) float64 {
 	stubPanic("UsdFor")

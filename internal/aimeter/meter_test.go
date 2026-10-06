@@ -295,3 +295,50 @@ func TestSQLSinkRecord_RouteAndLatency(t *testing.T) {
 		t.Fatalf("plain row = %v latency=%d, want empty and 0", got, latency)
 	}
 }
+
+// Prompt-cache tokens are input tokens the client used: tokens read from the
+// cache and tokens written to it are counted with input_tokens.
+func TestParseAnthropicBody_CountsCacheTokens(t *testing.T) {
+	body := []byte(`{"id":"msg_1","usage":{"input_tokens":12,"cache_creation_input_tokens":300,"cache_read_input_tokens":4000,"output_tokens":7}}`)
+	got := aimeter.ParseAnthropicBody(body)
+	want := aimeter.Tokens{In: 4312, Out: 7, Total: 4319}
+	if got != want {
+		t.Fatalf("ParseAnthropicBody: got %+v want %+v", got, want)
+	}
+}
+
+func TestAnthropicStream_CountsCacheTokens(t *testing.T) {
+	for name, c := range map[string]struct {
+		stream  string
+		in, out int
+	}{
+		// message_start carries the input side, message_delta only the output.
+		"start only": {
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12,\"cache_creation_input_tokens\":300,\"cache_read_input_tokens\":4000,\"output_tokens\":1}}}\n\n" +
+				"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7}}\n\n", 4312, 7},
+		// message_delta repeats the cumulative input side.
+		"delta repeats": {
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12,\"cache_read_input_tokens\":4000,\"output_tokens\":1}}}\n\n" +
+				"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":12,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":4000,\"output_tokens\":9}}\n\n", 4012, 9},
+		// message_delta carries input_tokens but no cache fields: the cache
+		// tokens of message_start are kept.
+		"delta without cache fields": {
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12,\"cache_creation_input_tokens\":300,\"output_tokens\":1}}}\n\n" +
+				"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":12,\"output_tokens\":5}}\n\n", 312, 5},
+		// Only the delta has cache fields.
+		"delta only": {
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n" +
+				"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"cache_read_input_tokens\":50,\"output_tokens\":5}}\n\n", 53, 5},
+	} {
+		s := aimeter.WrapResponse(newRecordingWriter(), aimeter.KindAnthropic)
+		if _, err := io.WriteString(s, c.stream); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if got := s.Tokens(); got.In != c.in || got.Out != c.out || got.Total != c.in+c.out {
+			t.Errorf("%s: tokens %+v, want in %d out %d", name, got, c.in, c.out)
+		}
+	}
+}

@@ -145,6 +145,19 @@ func (s *Store) RevokeGatewayKey(ctx context.Context, callerID, callerRole, id s
 	return nil
 }
 
+// RevokeGatewayKeyByID revokes the key at once, for the system itself: the
+// cost engine calls it when a gateway_key budget with action disable_key is
+// exceeded. There is no caller to check; it must not be reachable from a
+// request. Revoking a revoked key is not an error.
+func (s *Store) RevokeGatewayKeyByID(ctx context.Context, id string) error {
+	if err := s.q.RevokeAIGatewayKey(ctx, id); errors.Is(err, db.ErrNotFound) {
+		return ErrKeyNotFound
+	} else if err != nil {
+		return err
+	}
+	return nil
+}
+
 // ValidateGatewayKey looks the presented key up by its hash. ok is false for
 // a key that is malformed, unknown or revoked. Nothing is cached: every call
 // reads the row, so a revoked key fails on the next request. The presented

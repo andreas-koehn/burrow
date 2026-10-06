@@ -224,7 +224,7 @@ type AIProviderModel struct {
 // RateLimit is a row of the rate_limits table.
 type RateLimit struct {
 	ID        string
-	Scope     string // api_key|role|service|global
+	Scope     string // api_key|gateway_key|model|role|service|global
 	Subject   string
 	Dimension string // rpm|bpm
 	Lim       int64
@@ -236,10 +236,10 @@ type RateLimit struct {
 // Budget is a row of the budgets table.
 type Budget struct {
 	ID             string
-	Scope          string // api_key|service|user|global
-	SubjectID      string
+	Scope          string // api_key|service|user|global|gateway_key|model
+	SubjectID      string // gateway_key: the key's id; model: the name clients ask for
 	DailyUSD       float64
-	DailyTokens    int64  // 0 = no token limit
+	DailyTokens    int64  // input + output tokens per UTC day; 0 = no token limit
 	ActionOnExceed string // alert_webhook|throttle_zero|disable_key
 	AlertWebhookID *string
 	CreatedAt      time.Time

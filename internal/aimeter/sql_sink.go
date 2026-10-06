@@ -19,8 +19,10 @@ import (
 type BudgetChecker interface {
 	// CheckBudgetsForSample inspects the just-recorded usage and triggers
 	// any exceeded budgets (alert_webhook / throttle_zero / disable_key)
-	// exactly once per UTC day. Errors are logged + swallowed.
-	CheckBudgetsForSample(ctx context.Context, serviceID, apiKeyID string)
+	// exactly once per UTC day. Errors are logged + swallowed. gatewayKeyID
+	// and requestedModel are "" for traffic that did not come through a
+	// gateway key.
+	CheckBudgetsForSample(ctx context.Context, serviceID, apiKeyID, gatewayKeyID, requestedModel string)
 }
 
 // SQLSink writes one usage_events row per recorded Sample. Errors are
@@ -86,6 +88,9 @@ func (s *SQLSink) Record(ctx context.Context, sm Sample) error {
 		row.CostUSD = &v
 		cost = sql.NullFloat64{Float64: v, Valid: true}
 	}
+	// streamed and cache_hit are bound as Go bools: the columns are BOOLEAN
+	// on Postgres, which refuses an integer for them, and INTEGER on SQLite,
+	// whose driver stores a bool as 0/1.
 	_, err := s.DB.DB().ExecContext(ctx, `
 		INSERT INTO usage_events
 		  (id, service_id, api_key_id, ts, kind,
@@ -96,7 +101,7 @@ func (s *SQLSink) Record(ctx context.Context, sm Sample) error {
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		row.ID, row.ServiceID, row.APIKeyID, row.Ts, row.Kind,
 		row.TokensIn, row.TokensOut, row.BytesIn, row.BytesOut,
-		boolToInt(row.Streamed), boolToInt(row.CacheHit), row.UpstreamStatus, cost,
+		row.Streamed, row.CacheHit, row.UpstreamStatus, cost,
 		row.GatewayKeyID, row.Dialect, row.ProviderSlug, row.RequestedModel, row.TargetModel,
 		row.RequestID, row.LatencyMs,
 	)
@@ -114,14 +119,7 @@ func (s *SQLSink) Record(ctx context.Context, sm Sample) error {
 	// budget. Implemented by *cost.Engine; nil-safe so existing call sites
 	// that don't set Budgets keep their original behaviour.
 	if s.Budgets != nil {
-		s.Budgets.CheckBudgetsForSample(ctx, sm.ServiceID, sm.APIKeyID)
+		s.Budgets.CheckBudgetsForSample(ctx, sm.ServiceID, sm.APIKeyID, sm.GatewayKeyID, sm.RequestedModel)
 	}
 	return nil
-}
-
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }

@@ -2040,3 +2040,151 @@ func TestServeDialect_Responses_RealStackStreamsAndMeters(t *testing.T) {
 		t.Fatalf("plain sample = %+v, want 11 in, 5 out", s)
 	}
 }
+
+// --- budgets ------------------------------------------------------------------
+
+// fakeGuard blocks one gateway key id and/or one model name, and records what
+// it was asked.
+type fakeGuard struct {
+	key, model string
+	asked      *[][2]string
+}
+
+func (f fakeGuard) Blocked(_ context.Context, key, model string) (string, bool) {
+	if f.asked != nil {
+		*f.asked = append(*f.asked, [2]string{key, model})
+	}
+	if f.key != "" && key == f.key {
+		return "the daily budget for this key is used up", true
+	}
+	if f.model != "" && model == f.model {
+		return "the daily budget for model " + model + " is used up", true
+	}
+	return "", false
+}
+
+func wantBudgetRetryAfter(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	ra, err := strconv.Atoi(rec.Header().Get("Retry-After"))
+	if err != nil || ra < 1 || ra > 86400 {
+		t.Fatalf("Retry-After = %q", rec.Header().Get("Retry-After"))
+	}
+}
+
+func TestServeDialect_BudgetBlocks(t *testing.T) {
+	hit := false
+	g := globalGateway(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hit = true }), nil)
+	g.Budgets = fakeGuard{key: "gk-all"}
+	rec := httptest.NewRecorder()
+	g.ServeDialect(rec, post("/v1/chat/completions", "bgw_all", `{"model":"burrow-intelligence"}`), DialectOpenAI)
+	if rec.Code != 429 || rec.Header().Get("Burrow-Error-Code") != "budget_exceeded" || errCode(t, rec) != "budget_exceeded" || hit {
+		t.Fatalf("status %d hit %v body %s", rec.Code, hit, rec.Body.String())
+	}
+	wantBudgetRetryAfter(t, rec)
+	if !strings.Contains(rec.Body.String(), "the daily budget for this key is used up") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+	// Nothing says who answered: no upstream was chosen.
+	if rec.Header().Get("Burrow-Provider") != "" || rec.Header().Get("Burrow-Model") != "" {
+		t.Fatalf("headers = %v", rec.Header())
+	}
+	// Another key is not held by it.
+	rec = httptest.NewRecorder()
+	g.ServeDialect(rec, post("/v1/chat/completions", "bgw_some", `{"model":"burrow-intelligence"}`), DialectOpenAI)
+	if rec.Code == 429 || !hit {
+		t.Fatalf("another key: status %d hit %v", rec.Code, hit)
+	}
+}
+
+// A model over its budget is refused for every key, by the name the client
+// asked for; other models stay open.
+func TestServeDialect_BudgetBlocksByModel(t *testing.T) {
+	hits := 0
+	var asked [][2]string
+	g := globalGateway(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits++ }), nil)
+	g.Budgets = fakeGuard{model: "burrow-intelligence", asked: &asked}
+	for _, key := range []string{"bgw_all", "bgw_some"} {
+		rec := httptest.NewRecorder()
+		g.ServeDialect(rec, post("/v1/chat/completions", key, `{"model":"burrow-intelligence"}`), DialectOpenAI)
+		if rec.Code != 429 || errCode(t, rec) != "budget_exceeded" || hits != 0 {
+			t.Fatalf("%s: status %d hits %d", key, rec.Code, hits)
+		}
+		wantBudgetRetryAfter(t, rec)
+	}
+	if len(asked) != 2 || asked[0] != [2]string{"gk-all", "burrow-intelligence"} || asked[1] != [2]string{"gk-some", "burrow-intelligence"} {
+		t.Fatalf("the guard was asked %v", asked)
+	}
+	rec := httptest.NewRecorder()
+	g.ServeDialect(rec, post("/v1/chat/completions", "bgw_all", `{"model":"ollama/mistral"}`), DialectOpenAI)
+	if rec.Code == 429 || hits != 1 {
+		t.Fatalf("another model: status %d hits %d", rec.Code, hits)
+	}
+}
+
+// What comes before the budget stays before it: a key that may not use the
+// model learns nothing about that model's budget, and a client can always
+// list its models.
+func TestServeDialect_BudgetOrderOfChecks(t *testing.T) {
+	var asked [][2]string
+	g := globalGateway(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil)
+	g.Budgets = fakeGuard{key: "gk-all", model: "zai/glm-5.1", asked: &asked}
+
+	rec := httptest.NewRecorder()
+	g.ServeDialect(rec, post("/v1/chat/completions", "bgw_some", `{"model":"zai/glm-5.1"}`), DialectOpenAI)
+	if rec.Code != 403 || errCode(t, rec) != "model_not_allowed" || len(asked) != 0 {
+		t.Fatalf("not allowed model: status %d, guard asked %v", rec.Code, asked)
+	}
+	rec = httptest.NewRecorder()
+	g.ServeDialect(rec, post("/v1/chat/completions", "bgw_bad", `{"model":"zai/glm-5.1"}`), DialectOpenAI)
+	if rec.Code != 401 || len(asked) != 0 {
+		t.Fatalf("bad key: status %d, guard asked %v", rec.Code, asked)
+	}
+	for _, d := range []*Dialect{DialectOpenAI, DialectAnthropic} {
+		r := httptest.NewRequest("GET", "/v1/models", nil)
+		r.Header.Set("Authorization", "Bearer bgw_all")
+		rec = httptest.NewRecorder()
+		g.ServeDialect(rec, r, d)
+		if rec.Code != 200 {
+			t.Fatalf("%s model list of a key over its budget: status %d", d.Name, rec.Code)
+		}
+	}
+	if len(asked) != 0 {
+		t.Fatalf("the model list asked the guard: %v", asked)
+	}
+}
+
+// On the Anthropic endpoint the refusal has Anthropic's shape, and an
+// unmetered call (counting tokens) is refused like any other: it would reach
+// the provider on the relay's credential.
+func TestServeDialect_Anthropic_BudgetBlocks(t *testing.T) {
+	hit := false
+	g := globalGateway(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hit = true }), &spyChain{})
+	g.Budgets = fakeGuard{key: "gk-all"}
+	for _, path := range []string{"/v1/messages", "/v1/messages/count_tokens"} {
+		rec := httptest.NewRecorder()
+		g.ServeDialect(rec, msg(path, "bgw_all", `{"model":"burrow-intelligence","messages":[]}`), DialectAnthropic)
+		typ, code := anthropicErr(t, rec)
+		if rec.Code != 429 || typ != "rate_limit_error" || code != "budget_exceeded" || rec.Header().Get("Burrow-Error-Code") != "budget_exceeded" || hit {
+			t.Fatalf("%s: status %d type %q code %q hit %v", path, rec.Code, typ, code, hit)
+		}
+		wantBudgetRetryAfter(t, rec)
+	}
+}
+
+func TestSecondsUntilUTCMidnight(t *testing.T) {
+	for _, c := range []struct {
+		now  time.Time
+		want int
+	}{
+		{time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC), 86400},
+		{time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC), 43200},
+		{time.Date(2026, 5, 19, 23, 59, 59, 0, time.UTC), 1},
+		{time.Date(2026, 5, 19, 23, 59, 59, 900_000_000, time.UTC), 1},
+		// 01:30 at UTC+2 is 23:30 UTC of the day before.
+		{time.Date(2026, 5, 20, 1, 30, 0, 0, time.FixedZone("x", 2*3600)), 1800},
+	} {
+		if got := secondsUntilUTCMidnight(c.now); got != c.want {
+			t.Errorf("%v: %d, want %d", c.now, got, c.want)
+		}
+	}
+}

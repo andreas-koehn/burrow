@@ -21,12 +21,20 @@ import (
 //   - message_delta.usage carries cumulative output_tokens (and the final
 //     input_tokens, which equals the message_start value in most cases).
 //
-// We record both: input_tokens from whichever event carried a non-zero
-// value last, and output_tokens from message_delta.usage.
+// We record both: each counter from whichever event carried a non-zero value
+// last, output_tokens from message_delta.usage.
+//
+// The input side has three counters: input_tokens (not cached),
+// cache_read_input_tokens (read from the prompt cache) and
+// cache_creation_input_tokens (written to it). All three are tokens the
+// client used and are counted as input tokens; the usage row has no separate
+// columns for them and the price table no separate prices.
 type anthropicParser struct {
 	s         *Stream
 	buf       bytes.Buffer
 	lastEvent string // most recent "event: NAME" value
+	// seen is the last non-zero value of each counter.
+	seen anthropicUsage
 }
 
 func newAnthropicParser(s *Stream) *anthropicParser { return &anthropicParser{s: s} }
@@ -111,30 +119,39 @@ func (p *anthropicParser) inspect(line []byte) {
 }
 
 // mergeUsage records token counts, preferring non-zero values from the
-// most-recent envelope. Anthropic's message_delta.usage is the
-// authoritative final count.
+// most-recent envelope: a counter an envelope does not carry (output-only
+// deltas, deltas without the cache counters) keeps its earlier value.
+// Anthropic's message_delta.usage is the authoritative final count.
 func (p *anthropicParser) mergeUsage(u *anthropicUsage) {
-	in := u.InputTokens
-	out := u.OutputTokens
-	// Preserve the previously-observed input_tokens if this envelope doesn't
-	// carry one (output-only deltas exist in some streams).
-	if in == 0 && p.s.gotUsage {
-		in = p.s.tokens.In
+	keep := func(seen *int, v int) {
+		if v != 0 {
+			*seen = v
+		}
 	}
-	if out == 0 && p.s.gotUsage {
-		out = p.s.tokens.Out
-	}
-	p.s.recordTokens(in, out, 0)
+	keep(&p.seen.InputTokens, u.InputTokens)
+	keep(&p.seen.CacheCreationInputTokens, u.CacheCreationInputTokens)
+	keep(&p.seen.CacheReadInputTokens, u.CacheReadInputTokens)
+	keep(&p.seen.OutputTokens, u.OutputTokens)
+	p.s.recordTokens(p.seen.input(), p.seen.OutputTokens, 0)
 }
 
 type anthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+}
+
+// input is every token of the request: not cached, read from the prompt
+// cache, and written to it. A negative counter is not counted.
+func (u anthropicUsage) input() int {
+	return max(u.InputTokens, 0) + max(u.CacheCreationInputTokens, 0) + max(u.CacheReadInputTokens, 0)
 }
 
 // ParseAnthropicBody parses a fully-buffered non-streaming Anthropic
-// /v1/messages response and returns its token counts. Returns the zero
-// Tokens if the body is not valid JSON or has no usage object.
+// /v1/messages response and returns its token counts; prompt-cache tokens
+// count as input tokens. Returns the zero Tokens if the body is not valid
+// JSON or has no usage object.
 func ParseAnthropicBody(body []byte) Tokens {
 	var env struct {
 		Usage *anthropicUsage `json:"usage"`
@@ -142,9 +159,10 @@ func ParseAnthropicBody(body []byte) Tokens {
 	if err := json.Unmarshal(body, &env); err != nil || env.Usage == nil {
 		return Tokens{}
 	}
+	in := env.Usage.input()
 	return Tokens{
-		In:    env.Usage.InputTokens,
+		In:    in,
 		Out:   env.Usage.OutputTokens,
-		Total: env.Usage.InputTokens + env.Usage.OutputTokens,
+		Total: in + env.Usage.OutputTokens,
 	}
 }

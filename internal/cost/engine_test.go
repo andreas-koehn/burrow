@@ -2,6 +2,8 @@ package cost_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"testing"
@@ -462,5 +464,356 @@ func TestCurrentUsdFor_CountsReportedCost(t *testing.T) {
 		if math.Abs(got-c.want) > 1e-9 {
 			t.Errorf("%s: current = %v, want %v", c.b.Scope, got, c.want)
 		}
+	}
+}
+
+// --- usage by key and model, token budgets ------------------------------------
+
+func routePricing() cost.Pricing {
+	return cost.Pricing{Version: "test", Entries: map[string]cost.Entry{
+		"zai/glm-5.1": {InputPerMillion: 1, OutputPerMillion: 2},
+		"gemini":      {InputPerMillion: 4, OutputPerMillion: 4},
+		"openai":      {InputPerMillion: 9, OutputPerMillion: 9},
+	}}
+}
+
+// A usage row is priced by "<provider>/<target model>", then the target
+// model, then the kind; a reported cost wins over all of them.
+func TestRowUSD_PricesByTargetModel(t *testing.T) {
+	for name, c := range map[string]struct {
+		row  db.UsageRow
+		want float64
+	}{
+		"provider/model wins over kind": {db.UsageRow{Kind: "openai", ProviderSlug: "zai", TargetModel: "glm-5.1",
+			TokensIn: 1_000_000, TokensOut: 500_000, PricedTokensIn: 1_000_000, PricedTokensOut: 500_000}, 2.0},
+		"bare target model": {db.UsageRow{Kind: "openai", ProviderSlug: "openrouter", TargetModel: "gemini",
+			TokensIn: 1_000_000, PricedTokensIn: 1_000_000}, 4.0},
+		"unknown model falls back to kind": {db.UsageRow{Kind: "openai", ProviderSlug: "zai", TargetModel: "unknown-model",
+			TokensIn: 1_000_000, PricedTokensIn: 1_000_000}, 9.0},
+		"reported cost only": {db.UsageRow{Kind: "openai", ProviderSlug: "zai", TargetModel: "glm-5.1",
+			TokensIn: 1_000_000, ReportedUSD: 0.25}, 0.25},
+		"nothing known": {db.UsageRow{Kind: "mcp", TokensIn: 1_000_000, PricedTokensIn: 1_000_000}, 0},
+	} {
+		usage := &rawUsageReader{rows: []db.UsageRow{c.row}}
+		e := cost.NewWithDeps(routePricing(), nil, usage, nil, nil, nil, nil, nil)
+		s, err := e.Summary(context.Background(), "today")
+		if err != nil || math.Abs(s.TotalUSD-c.want) > 1e-9 {
+			t.Errorf("%s: total %v (%v), want %v", name, s.TotalUSD, err, c.want)
+		}
+		// The global budget prices rows the same way.
+		got, err := e.CurrentUsdFor(context.Background(), db.Budget{Scope: "global"})
+		if err != nil || math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("%s: global current %v (%v), want %v", name, got, err, c.want)
+		}
+	}
+}
+
+// rawUsageReader returns its rows as they are and counts the reads.
+type rawUsageReader struct {
+	mu    sync.Mutex
+	rows  []db.UsageRow
+	err   error
+	calls int
+}
+
+func (f *rawUsageReader) ListUsageForWindow(_ context.Context, _ string) ([]db.UsageRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]db.UsageRow(nil), f.rows...), nil
+}
+
+func (f *rawUsageReader) set(rows []db.UsageRow, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rows, f.err = rows, err
+}
+
+func (f *rawUsageReader) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func routeRows() []db.UsageRow {
+	return []db.UsageRow{
+		{GatewayKeyID: "gk1", Dialect: "openai", RequestedModel: "burrow-smart", ProviderSlug: "zai", TargetModel: "glm-5.1",
+			Kind: "openai", Requests: 2, TokensIn: 1_000_000, TokensOut: 500_000, PricedTokensIn: 1_000_000, PricedTokensOut: 500_000}, // 2.0
+		{GatewayKeyID: "gk1", Dialect: "openai", RequestedModel: "burrow-smart", ProviderSlug: "openrouter", TargetModel: "gemini",
+			Kind: "openai", Requests: 1, TokensIn: 10, TokensOut: 10, ReportedUSD: 0.25},
+		{GatewayKeyID: "gk2", Dialect: "anthropic", RequestedModel: "burrow-simple", ProviderSlug: "ollama", TargetModel: "mistral",
+			Kind: "anthropic", Requests: 4, TokensIn: 40, TokensOut: 4, PricedTokensIn: 40, PricedTokensOut: 4}, // 0
+		{ServiceID: "svc", APIKeyID: "k1", Kind: "openai", Requests: 3, TokensIn: 1_000_000, PricedTokensIn: 1_000_000}, // 9.0
+	}
+}
+
+func TestSummaryBy(t *testing.T) {
+	e := cost.NewWithDeps(routePricing(), nil, &rawUsageReader{rows: routeRows()}, nil, nil, nil, nil, nil)
+	ctx := context.Background()
+	keys := func(rows []cost.GroupRow) []string {
+		out := []string{}
+		for _, r := range rows {
+			out = append(out, r.Key)
+		}
+		return out
+	}
+	eq := func(a, b []string) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i := range a {
+			if a[i] != b[i] {
+				return false
+			}
+		}
+		return true
+	}
+	byKey, err := e.SummaryBy(ctx, "today", "gateway_key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sorted by USD descending, then key; the rows without a gateway key
+	// (key "") come last although they cost the most.
+	if !eq(keys(byKey), []string{"gk1", "gk2", ""}) {
+		t.Fatalf("gateway_key groups = %+v", byKey)
+	}
+	if g := byKey[0]; g.Requests != 3 || g.TokensIn != 1_000_010 || g.TokensOut != 500_010 || math.Abs(g.USD-2.25) > 1e-9 {
+		t.Errorf("gk1 = %+v", g)
+	}
+	if g := byKey[1]; g.Requests != 4 || g.TokensIn != 40 || g.USD != 0 {
+		t.Errorf("gk2 = %+v", g)
+	}
+	if g := byKey[2]; g.Requests != 3 || math.Abs(g.USD-9) > 1e-9 {
+		t.Errorf("no key = %+v", g)
+	}
+	for dim, want := range map[string][]string{
+		"model":        {"burrow-smart", "burrow-simple", ""},
+		"provider":     {"zai", "openrouter", "ollama", ""},
+		"dialect":      {"openai", "anthropic", ""},
+		"target_model": {"zai/glm-5.1", "openrouter/gemini", "ollama/mistral", ""},
+	} {
+		got, err := e.SummaryBy(ctx, "today", dim)
+		if err != nil || !eq(keys(got), want) {
+			t.Errorf("%s: %v (%v), want %v", dim, keys(got), err, want)
+		}
+	}
+	for _, bad := range []string{"service; DROP TABLE", "", "api_key", "GATEWAY_KEY"} {
+		if _, err := e.SummaryBy(ctx, "today", bad); !errors.Is(err, cost.ErrBadDimension) {
+			t.Errorf("dimension %q: err = %v, want ErrBadDimension", bad, err)
+		}
+	}
+	// No usage: an empty list, not nil.
+	empty := cost.NewWithDeps(routePricing(), nil, &rawUsageReader{}, nil, nil, nil, nil, nil)
+	if got, err := empty.SummaryBy(ctx, "today", "model"); err != nil || got == nil || len(got) != 0 {
+		t.Errorf("empty: %#v %v", got, err)
+	}
+}
+
+// A client can send any model name on a provider path: the groups are capped,
+// and what is cut is added up under the empty key so the totals stay whole.
+func TestSummaryBy_CapsGroups(t *testing.T) {
+	var rows []db.UsageRow
+	for i := 0; i < cost.MaxGroups+50; i++ {
+		rows = append(rows, db.UsageRow{RequestedModel: fmt.Sprintf("m-%04d", i), Requests: 1, TokensIn: 1})
+	}
+	e := cost.NewWithDeps(routePricing(), nil, &rawUsageReader{rows: rows}, nil, nil, nil, nil, nil)
+	got, err := e.SummaryBy(context.Background(), "today", "model")
+	if err != nil || len(got) != cost.MaxGroups+1 {
+		t.Fatalf("len = %d (%v), want %d", len(got), err, cost.MaxGroups+1)
+	}
+	if last := got[len(got)-1]; last.Key != "" || last.Requests != 50 || last.TokensIn != 50 {
+		t.Fatalf("rest = %+v", last)
+	}
+}
+
+func TestCheckBudgets_GatewayKeyAndModelScopes(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name string
+		b    db.Budget
+		subj cost.Subjects
+		want bool
+	}{
+		{"gateway key", db.Budget{ID: "b", Scope: "gateway_key", SubjectID: "gk1", DailyUSD: 1, ActionOnExceed: "alert_webhook"},
+			cost.Subjects{GatewayKeyID: "gk1", Model: "burrow-smart"}, true},
+		{"model", db.Budget{ID: "b", Scope: "model", SubjectID: "burrow-smart", DailyUSD: 1, ActionOnExceed: "alert_webhook"},
+			cost.Subjects{GatewayKeyID: "gk1", Model: "burrow-smart"}, true},
+		{"other key's budget", db.Budget{ID: "b", Scope: "gateway_key", SubjectID: "gk2", DailyUSD: 1, ActionOnExceed: "alert_webhook"},
+			cost.Subjects{GatewayKeyID: "gk1", Model: "burrow-smart"}, false},
+		{"other model's budget", db.Budget{ID: "b", Scope: "model", SubjectID: "burrow-simple", DailyUSD: 1, ActionOnExceed: "alert_webhook"},
+			cost.Subjects{GatewayKeyID: "gk1", Model: "burrow-smart"}, false},
+		{"no gateway key", db.Budget{ID: "b", Scope: "gateway_key", SubjectID: "", DailyUSD: 0.01, ActionOnExceed: "alert_webhook"},
+			cost.Subjects{APIKeyID: "k1", ServiceID: "svc"}, false},
+	} {
+		disp := &fakeDispatcher{}
+		e := cost.NewWithDeps(routePricing(), &fakeBudgetStore{budgets: []db.Budget{c.b}},
+			&rawUsageReader{rows: routeRows()}, fakeDailyReader{}, nil, nil, disp, nil)
+		action, _, err := e.CheckBudgets(ctx, c.subj)
+		if err != nil || (action != "") != c.want || (disp.count() == 1) != c.want {
+			t.Errorf("%s: action %q, %d events (%v), want fired=%v", c.name, action, disp.count(), err, c.want)
+		}
+		if again, _, _ := e.CheckBudgets(ctx, c.subj); again != "" {
+			t.Errorf("%s: fired twice", c.name)
+		}
+	}
+	// What a budget has used does not depend on who asks.
+	e := cost.NewWithDeps(routePricing(), nil, &rawUsageReader{rows: routeRows()}, fakeDailyReader{}, nil, nil, nil, nil)
+	for _, c := range []struct {
+		b      db.Budget
+		usd    float64
+		tokens int64
+	}{
+		{db.Budget{Scope: "gateway_key", SubjectID: "gk1"}, 2.25, 1_500_020},
+		{db.Budget{Scope: "gateway_key", SubjectID: "gk2"}, 0, 44},
+		{db.Budget{Scope: "model", SubjectID: "burrow-smart"}, 2.25, 1_500_020},
+		{db.Budget{Scope: "model", SubjectID: "nothing"}, 0, 0},
+		{db.Budget{Scope: "api_key", SubjectID: "k1"}, 9, 1_000_000},
+		{db.Budget{Scope: "service", SubjectID: "svc"}, 9, 1_000_000},
+		{db.Budget{Scope: "global"}, 11.25, 2_500_064},
+		{db.Budget{Scope: "user", SubjectID: "u"}, 0, 0},
+	} {
+		usd, err := e.CurrentUsdFor(ctx, c.b)
+		tokens, err2 := e.CurrentTokensFor(ctx, c.b)
+		if err != nil || err2 != nil || math.Abs(usd-c.usd) > 1e-9 || tokens != c.tokens {
+			t.Errorf("%s/%s: usd %v tokens %d (%v %v), want %v / %d", c.b.Scope, c.b.SubjectID, usd, tokens, err, err2, c.usd, c.tokens)
+		}
+	}
+}
+
+// A model budget on a direct address counts the requests that named the
+// model on the provider's own path, where the client sends the bare id.
+func TestModelBudget_CountsProviderPathRequests(t *testing.T) {
+	rows := []db.UsageRow{
+		// dialect endpoint, direct address
+		{GatewayKeyID: "gk1", RequestedModel: "ollama/mistral", ProviderSlug: "ollama", TargetModel: "mistral", TokensIn: 100, TokensOut: 1},
+		// provider path
+		{GatewayKeyID: "gk1", RequestedModel: "mistral", ProviderSlug: "ollama", TargetModel: "mistral", TokensIn: 10, TokensOut: 1},
+		// a synthetic model that happens to end the same way is another model
+		{GatewayKeyID: "gk1", RequestedModel: "mistral", ProviderSlug: "zai", TargetModel: "glm", TokensIn: 5000, TokensOut: 1},
+		{GatewayKeyID: "gk1", RequestedModel: "other", ProviderSlug: "ollama", TargetModel: "mistral", TokensIn: 7000, TokensOut: 1},
+	}
+	e := cost.NewWithDeps(routePricing(), nil, &rawUsageReader{rows: rows}, fakeDailyReader{}, nil, nil, nil, nil)
+	got, err := e.CurrentTokensFor(context.Background(), db.Budget{Scope: "model", SubjectID: "ollama/mistral"})
+	if err != nil || got != 112 {
+		t.Fatalf("tokens = %d (%v), want 112", got, err)
+	}
+	// And the sample of such a request reaches the budget.
+	disp := &fakeDispatcher{}
+	e = cost.NewWithDeps(routePricing(), &fakeBudgetStore{budgets: []db.Budget{
+		{ID: "b", Scope: "model", SubjectID: "ollama/mistral", DailyTokens: 100, ActionOnExceed: "alert_webhook"},
+	}}, &rawUsageReader{rows: rows}, fakeDailyReader{}, nil, nil, disp, nil)
+	e.CheckBudgetsForSample(context.Background(), "svc", "", "gk1", "mistral")
+	if disp.count() != 1 {
+		t.Fatalf("events = %d, want 1", disp.count())
+	}
+}
+
+func TestCheckBudgets_TokenCap(t *testing.T) {
+	ctx := context.Background()
+	usage := func(in, out int64) *rawUsageReader {
+		return &rawUsageReader{rows: []db.UsageRow{{GatewayKeyID: "gk1", RequestedModel: "m", Kind: "openai",
+			ProviderSlug: "zai", TargetModel: "glm-5.1", TokensIn: in, TokensOut: out, PricedTokensIn: in, PricedTokensOut: out}}}
+	}
+	for _, c := range []struct {
+		name    string
+		b       db.Budget
+		in, out int64
+		want    bool
+	}{
+		{"tokens over", db.Budget{DailyTokens: 1000}, 600, 500, true},
+		{"tokens under", db.Budget{DailyTokens: 1000}, 400, 500, false},
+		{"tokens exactly at the cap", db.Budget{DailyTokens: 1000}, 500, 500, false},
+		// A token budget has no USD cap: spend alone does not exceed it.
+		{"token budget, expensive", db.Budget{DailyTokens: 10_000_000}, 2_000_000, 0, false},
+		{"both, usd over", db.Budget{DailyUSD: 1, DailyTokens: 10_000_000}, 2_000_000, 0, true},
+		{"both, tokens over", db.Budget{DailyUSD: 100, DailyTokens: 1000}, 2000, 0, true},
+		{"both, neither", db.Budget{DailyUSD: 100, DailyTokens: 10_000_000}, 2000, 0, false},
+		// Without a token cap the USD cap decides as it always did, zero included.
+		{"usd only, over", db.Budget{DailyUSD: 1}, 2_000_000, 0, true},
+		{"usd only, under", db.Budget{DailyUSD: 3}, 2_000_000, 0, false},
+		{"usd zero, any spend", db.Budget{}, 1000, 0, true},
+	} {
+		b := c.b
+		b.ID, b.Scope, b.SubjectID, b.ActionOnExceed = "b", "gateway_key", "gk1", "alert_webhook"
+		disp := &fakeDispatcher{}
+		e := cost.NewWithDeps(routePricing(), &fakeBudgetStore{budgets: []db.Budget{b}}, usage(c.in, c.out), fakeDailyReader{}, nil, nil, disp, nil)
+		action, _, err := e.CheckBudgets(ctx, cost.Subjects{GatewayKeyID: "gk1"})
+		if err != nil || (action == "alert_webhook") != c.want {
+			t.Errorf("%s: action %q (%v), want fired=%v", c.name, action, err, c.want)
+		}
+		usd, _ := e.CurrentUsdFor(ctx, b)
+		tokens, _ := e.CurrentTokensFor(ctx, b)
+		if got := cost.BudgetExceeded(b, usd, tokens); got != c.want {
+			t.Errorf("%s: BudgetExceeded = %v, want %v", c.name, got, c.want)
+		}
+		if c.want && disp.count() == 1 {
+			p := disp.events[0].payload.(map[string]any)
+			if p["current_tokens"] != c.in+c.out || p["daily_tokens"] != b.DailyTokens {
+				t.Errorf("%s: payload %+v", c.name, p)
+			}
+		}
+	}
+}
+
+type fakeGatewayRevoker struct {
+	mu  sync.Mutex
+	ids []string
+	err error
+}
+
+func (f *fakeGatewayRevoker) RevokeGatewayKeyByID(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ids = append(f.ids, id)
+	return f.err
+}
+
+func TestDisableKey_GatewayKey(t *testing.T) {
+	ctx := context.Background()
+	budgets := &fakeBudgetStore{budgets: []db.Budget{
+		{ID: "b", Scope: "gateway_key", SubjectID: "gk1", DailyUSD: 1, ActionOnExceed: "disable_key"},
+	}}
+	rev := &fakeGatewayRevoker{}
+	disp := &fakeDispatcher{}
+	e := cost.NewWithDeps(routePricing(), budgets, &rawUsageReader{rows: routeRows()}, fakeDailyReader{}, nil, nil, disp, nil)
+	e.SetGatewayKeyRevoker(rev)
+	e.CheckBudgetsForSample(ctx, "svc", "", "gk1", "burrow-smart")
+	e.CheckBudgetsForSample(ctx, "svc", "", "gk1", "burrow-smart")
+	if len(rev.ids) != 1 || rev.ids[0] != "gk1" {
+		t.Fatalf("revoked = %v, want [gk1] once", rev.ids)
+	}
+	if disp.count() != 1 {
+		t.Fatalf("events = %d, want 1", disp.count())
+	}
+	// Without a revoker nothing panics; a model budget revokes no key.
+	e = cost.NewWithDeps(routePricing(), budgets, &rawUsageReader{rows: routeRows()}, fakeDailyReader{}, nil, nil, nil, nil)
+	e.CheckBudgetsForSample(ctx, "svc", "", "gk1", "burrow-smart")
+	rev = &fakeGatewayRevoker{}
+	e = cost.NewWithDeps(routePricing(), &fakeBudgetStore{budgets: []db.Budget{
+		{ID: "m", Scope: "model", SubjectID: "burrow-smart", DailyUSD: 1, ActionOnExceed: "disable_key"},
+	}}, &rawUsageReader{rows: routeRows()}, fakeDailyReader{}, nil, nil, nil, nil)
+	e.SetGatewayKeyRevoker(rev)
+	e.CheckBudgetsForSample(ctx, "svc", "", "gk1", "burrow-smart")
+	if len(rev.ids) != 0 {
+		t.Fatalf("a model budget revoked %v", rev.ids)
+	}
+}
+
+// One check reads today's usage once, however many budgets match.
+func TestCheckBudgets_ReadsUsageOnce(t *testing.T) {
+	usage := &rawUsageReader{rows: routeRows()}
+	e := cost.NewWithDeps(routePricing(), &fakeBudgetStore{budgets: []db.Budget{
+		{ID: "a", Scope: "gateway_key", SubjectID: "gk1", DailyUSD: 100, ActionOnExceed: "alert_webhook"},
+		{ID: "b", Scope: "model", SubjectID: "burrow-smart", DailyUSD: 100, ActionOnExceed: "alert_webhook"},
+		{ID: "c", Scope: "global", DailyUSD: 100, ActionOnExceed: "alert_webhook"},
+	}}, usage, fakeDailyReader{}, nil, nil, nil, nil)
+	if _, _, err := e.CheckBudgets(context.Background(), cost.Subjects{GatewayKeyID: "gk1", Model: "burrow-smart"}); err != nil {
+		t.Fatal(err)
+	}
+	if usage.count() != 1 {
+		t.Fatalf("usage read %d times, want 1", usage.count())
 	}
 }

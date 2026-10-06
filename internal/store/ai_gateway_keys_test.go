@@ -130,3 +130,35 @@ func TestNewGatewayKey_Unique(t *testing.T) {
 		seen[k] = true
 	}
 }
+
+// The system revokes a key by its id alone (a gateway_key budget with action
+// disable_key): the key stops validating at once and stays listed as revoked.
+func TestRevokeGatewayKeyByID(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, s, "gk-sys@x", "user").ID
+	k, plain, err := s.CreateGatewayKey(ctx, owner, "ci", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeGatewayKeyByID(ctx, "missing"); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("missing key err = %v", err)
+	}
+	if err := s.RevokeGatewayKeyByID(ctx, k.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.ValidateGatewayKey(ctx, plain); ok || err != nil {
+		t.Fatalf("revoked key: ok=%v err=%v", ok, err)
+	}
+	mine, _ := s.ListGatewayKeys(ctx, owner, "user")
+	if len(mine) != 1 || mine[0].RevokedAt == nil {
+		t.Fatalf("list: %+v", mine)
+	}
+	first := *mine[0].RevokedAt
+	if err := s.RevokeGatewayKeyByID(ctx, k.ID); err != nil {
+		t.Fatalf("second revoke: %v", err)
+	}
+	if again, _ := s.ListGatewayKeys(ctx, owner, "user"); !again[0].RevokedAt.Equal(first) {
+		t.Fatalf("a second revoke moved revoked_at: %v -> %v", first, again[0].RevokedAt)
+	}
+}

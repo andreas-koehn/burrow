@@ -49,7 +49,7 @@ type Catalog interface {
 // nothing after it). Neither header reaches an upstream.
 //
 // Order of checks: gateway key, the key's allow-list on the name the client
-// asked for, model resolution, which targets offer the endpoint, the first
+// asked for, the daily budget of the key and of that name, model resolution, which targets offer the endpoint, the first
 // target's service policy (access mode, IP/geo), then the chain, and inside
 // it, per attempt, that target's policy and only then its upstream
 // credential (see failover). Nothing of the request but its key is looked at
@@ -106,6 +106,13 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 	// for every such name.
 	if !store.ModelAllowed(key.AllowedModels, requested) {
 		g.fail(w, r, http.StatusForbidden, "model_not_allowed", msgModelNotAllowed)
+		return
+	}
+	// A key or a model over its daily budget reaches no upstream, whether or
+	// not the call would be metered. After the allow-list, so a key learns
+	// nothing about the budget of a model it may not use; before resolution,
+	// so nothing is read for a request that will not be served.
+	if g.overBudget(w, r, key.ID, requested) {
 		return
 	}
 	res, ok := g.resolveOrFail(w, r, requested, d)

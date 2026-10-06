@@ -2,6 +2,7 @@ package quota
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +30,7 @@ type fakeDailyUsage struct {
 	bytesBySvc map[string]int64 // service_id → daily byte-estimate
 	countByKey map[string]int64
 	countBySvc map[string]int64
+	err        error // returned by the gateway key and model queries
 }
 
 func (f *fakeDailyUsage) SumDailyUsageEventsByAPIKey(_ context.Context, k string) (int64, error) {
@@ -42,6 +44,19 @@ func (f *fakeDailyUsage) CountDailyUsageEventsByAPIKey(_ context.Context, k stri
 }
 func (f *fakeDailyUsage) CountDailyUsageEventsByService(_ context.Context, s string) (int64, error) {
 	return f.countBySvc[s], nil
+}
+
+func (f *fakeDailyUsage) SumDailyUsageEventsByGatewayKey(_ context.Context, k string) (int64, error) {
+	return f.bytesByKey["gateway:"+k], f.err
+}
+func (f *fakeDailyUsage) CountDailyUsageEventsByGatewayKey(_ context.Context, k string) (int64, error) {
+	return f.countByKey["gateway:"+k], f.err
+}
+func (f *fakeDailyUsage) SumDailyUsageEventsByModel(_ context.Context, m string) (int64, error) {
+	return f.bytesByKey["model:"+m], f.err
+}
+func (f *fakeDailyUsage) CountDailyUsageEventsByModel(_ context.Context, m string) (int64, error) {
+	return f.countByKey["model:"+m], f.err
 }
 
 func newEngine(t *testing.T, rows []db.RateLimit) *Engine {
@@ -440,5 +455,102 @@ func TestDeniedRequestPaysNothing(t *testing.T) {
 	// subsequent denies (api_key empty) must leave the role counter alone.
 	if roleUsed != 1 {
 		t.Errorf("role bucket used = %d, want 1 (denied charges must not debit)", roleUsed)
+	}
+}
+
+// A gateway_key limit holds one gateway key and no other; a model limit holds
+// a model whichever key asks for it.
+func TestGatewayKeyAndModelScopes(t *testing.T) {
+	ctx := context.Background()
+	e := newEngine(t, []db.RateLimit{
+		{ID: "gk", Scope: ScopeGatewayKey, Subject: "gk1", Dimension: DimensionRPM, Lim: 2, Burst: 2, Window: WindowMinute},
+	})
+	who := Subjects{GatewayKeyID: "gk1", Model: "burrow-smart", ServiceID: "svc"}
+	for i := 0; i < 2; i++ {
+		if d := e.Charge(ctx, who, DimensionRPM, 1); !d.Allow {
+			t.Fatalf("charge %d denied: %+v", i, d)
+		}
+	}
+	d := e.Charge(ctx, who, DimensionRPM, 1)
+	if d.Allow || d.LimitingScope != ScopeGatewayKey || d.LimitingID != "gk" || d.Kind != "rate_limit" {
+		t.Fatalf("third charge: %+v", d)
+	}
+	if d := e.Charge(ctx, Subjects{GatewayKeyID: "gk2", Model: "burrow-smart"}, DimensionRPM, 1); !d.Allow {
+		t.Fatalf("another key was held by gk1's limit: %+v", d)
+	}
+	// A service key whose id equals the gateway key's is another subject.
+	if d := e.Charge(ctx, Subjects{APIKeyID: "gk1"}, DimensionRPM, 1); !d.Allow {
+		t.Fatalf("a service key was held by a gateway key's limit: %+v", d)
+	}
+	if d := e.Charge(ctx, Subjects{}, DimensionRPM, 1); !d.Allow {
+		t.Fatalf("a request without a key was held: %+v", d)
+	}
+
+	e = newEngine(t, []db.RateLimit{
+		{ID: "m", Scope: ScopeModel, Subject: "burrow-smart", Dimension: DimensionRPM, Lim: 2, Burst: 2, Window: WindowMinute},
+	})
+	for _, key := range []string{"gk1", "gk2"} {
+		if d := e.Charge(ctx, Subjects{GatewayKeyID: key, Model: "burrow-smart"}, DimensionRPM, 1); !d.Allow {
+			t.Fatalf("%s denied: %+v", key, d)
+		}
+	}
+	if d := e.Charge(ctx, Subjects{GatewayKeyID: "gk3", Model: "burrow-smart"}, DimensionRPM, 1); d.Allow || d.LimitingScope != ScopeModel {
+		t.Fatalf("the model limit does not hold across keys: %+v", d)
+	}
+	if d := e.Charge(ctx, Subjects{GatewayKeyID: "gk3", Model: "burrow-simple"}, DimensionRPM, 1); !d.Allow {
+		t.Fatalf("another model was held: %+v", d)
+	}
+}
+
+func TestScopeRankOrder(t *testing.T) {
+	order := []string{ScopeAPIKey, ScopeGatewayKey, ScopeModel, ScopeService, ScopeRole, ScopeGlobal, "nonsense"}
+	for i := 1; i < len(order); i++ {
+		if scopeRank(order[i-1]) <= scopeRank(order[i]) {
+			t.Errorf("%s must rank above %s", order[i-1], order[i])
+		}
+	}
+}
+
+func TestDayQuota_GatewayKeyAndModel(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeLimitStore{rows: []db.RateLimit{
+		{ID: "gk-rpm", Scope: ScopeGatewayKey, Subject: "gk1", Dimension: DimensionRPM, Lim: 3, Burst: 3, Window: WindowDay},
+		{ID: "m-bpm", Scope: ScopeModel, Subject: "burrow-smart", Dimension: DimensionBPM, Lim: 1000, Burst: 1000, Window: WindowDay},
+	}}
+	usage := &fakeDailyUsage{
+		bytesByKey: map[string]int64{"model:burrow-smart": 990},
+		countByKey: map[string]int64{"gateway:gk1": 2},
+	}
+	e := NewWithStores(store, usage)
+	if err := e.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	who := Subjects{GatewayKeyID: "gk1", Model: "burrow-smart"}
+	if d := e.Charge(ctx, who, DimensionRPM, 1); !d.Allow {
+		t.Fatalf("third request of the day denied: %+v", d)
+	}
+	usage.countByKey["gateway:gk1"] = 3
+	d := e.Charge(ctx, who, DimensionRPM, 1)
+	if d.Allow || d.Kind != "quota" || d.LimitingScope != ScopeGatewayKey || d.ResetAt.IsZero() {
+		t.Fatalf("fourth request of the day: %+v", d)
+	}
+	if d := e.Charge(ctx, who, DimensionBPM, 10); !d.Allow {
+		t.Fatalf("bpm within the day quota denied: %+v", d)
+	}
+	if d := e.Charge(ctx, who, DimensionBPM, 11); d.Allow || d.LimitingScope != ScopeModel {
+		t.Fatalf("bpm over the day quota: %+v", d)
+	}
+	var sawKey, sawModel bool
+	for _, u := range e.UsageFor(ctx, who) {
+		sawKey = sawKey || (u.ID == "gk-rpm" && u.Used == 3)
+		sawModel = sawModel || (u.ID == "m-bpm" && u.Used == 990)
+	}
+	if !sawKey || !sawModel {
+		t.Fatalf("UsageFor = %+v", e.UsageFor(ctx, who))
+	}
+	// A failed read lets the request through (as for every day quota).
+	usage.err = errors.New("db is down")
+	if d := e.Charge(ctx, who, DimensionRPM, 1); !d.Allow {
+		t.Fatalf("a failed usage read denied the request: %+v", d)
 	}
 }

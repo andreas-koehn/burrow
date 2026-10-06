@@ -1,7 +1,8 @@
 // Package quota implements Burrow's byte-estimate rate-limit + quota engine
 // (spec Part D). Currency is byte-estimate per minute (bytes/4), NOT
 // tokenization. Two dimensions are supported: rpm (requests/minute) and bpm
-// (estimated-bytes/minute). Scopes are api_key | role | service | global.
+// (estimated-bytes/minute). Scopes are api_key | gateway_key | model | role |
+// service | global.
 //
 // The engine holds lazy-refill token buckets in process memory keyed by
 // (scope, subject, dimension). On each Charge call the engine consults every
@@ -20,6 +21,7 @@ package quota
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -34,6 +36,10 @@ const (
 	ScopeRole    = "role"
 	ScopeService = "service"
 	ScopeGlobal  = "global"
+	// ScopeGatewayKey limits one gateway key, named by its bare id.
+	ScopeGatewayKey = "gateway_key"
+	// ScopeModel limits a model, by the name clients ask for, across keys.
+	ScopeModel = "model"
 )
 
 // Dimension constants. The strings MUST match the DB column values.
@@ -53,7 +59,7 @@ const (
 // keeps the API package decoupled from the storage shape.
 type Limit struct {
 	ID        string
-	Scope     string // api_key|role|service|global
+	Scope     string // api_key|gateway_key|model|role|service|global
 	Subject   string
 	Dimension string // rpm|bpm
 	Limit     int
@@ -67,16 +73,28 @@ type Limit struct {
 // the same rule: a global limit always applies (empty subject matches), a
 // role limit applies when RoleName matches Limit.Subject, etc.
 type Subjects struct {
+	// APIKeyID is the per-key subject: a service key id, or
+	// "gw:<gateway key id>" for a gateway key.
 	APIKeyID  string
 	RoleName  string
 	ServiceID string
+	// GatewayKeyID is the bare id of the gateway key that asked; "" for
+	// other traffic. gateway_key limits match it.
+	GatewayKeyID string
+	// Model is the model name the client asked for; "" when the request
+	// names none. model limits match it.
+	Model string
 }
 
 // DailyUsageStore is the narrow read surface the engine needs for window=day
 // quotas. *db.DB satisfies it; tests provide a fake. The bytes-* methods
 // return byte-estimates (bytes/4) per spec Part D; the count-* methods
-// return raw row counts. All four return 0 when the subject is empty.
+// return raw row counts. All return 0 when the subject is empty.
 type DailyUsageStore interface {
+	SumDailyUsageEventsByGatewayKey(ctx context.Context, gatewayKeyID string) (int64, error)
+	CountDailyUsageEventsByGatewayKey(ctx context.Context, gatewayKeyID string) (int64, error)
+	SumDailyUsageEventsByModel(ctx context.Context, model string) (int64, error)
+	CountDailyUsageEventsByModel(ctx context.Context, model string) (int64, error)
 	SumDailyUsageEventsByAPIKey(ctx context.Context, apiKeyID string) (int64, error)
 	SumDailyUsageEventsByService(ctx context.Context, serviceID string) (int64, error)
 	CountDailyUsageEventsByAPIKey(ctx context.Context, apiKeyID string) (int64, error)
@@ -287,6 +305,10 @@ func matchingSubject(scope string, who Subjects) (string, bool) {
 	switch scope {
 	case ScopeAPIKey:
 		return who.APIKeyID, true
+	case ScopeGatewayKey:
+		return who.GatewayKeyID, true
+	case ScopeModel:
+		return who.Model, true
 	case ScopeRole:
 		return who.RoleName, true
 	case ScopeService:
@@ -509,11 +531,16 @@ func refillLocked(b *bucket, now func() time.Time) {
 }
 
 // scopeRank returns the precedence used to break ties when two deny
-// decisions have equal RetryAfter. Higher = wins. api_key > service > role
-// > global keeps the most-specific scope visible in the wire body.
+// decisions have equal RetryAfter. Higher = wins. api_key > gateway_key >
+// model > service > role > global keeps the most-specific scope visible in
+// the wire body.
 func scopeRank(scope string) int {
 	switch scope {
 	case ScopeAPIKey:
+		return 6
+	case ScopeGatewayKey:
+		return 5
+	case ScopeModel:
 		return 4
 	case ScopeService:
 		return 3
@@ -536,22 +563,8 @@ func (e *Engine) checkDayQuota(ctx context.Context, l Limit, who Subjects, units
 	if e.dailyUsage == nil {
 		return Decision{Allow: true}
 	}
-	var used int64
-	var err error
-	switch l.Scope {
-	case ScopeAPIKey:
-		if l.Dimension == DimensionBPM {
-			used, err = e.dailyUsage.SumDailyUsageEventsByAPIKey(ctx, who.APIKeyID)
-		} else {
-			used, err = e.dailyUsage.CountDailyUsageEventsByAPIKey(ctx, who.APIKeyID)
-		}
-	case ScopeService:
-		if l.Dimension == DimensionBPM {
-			used, err = e.dailyUsage.SumDailyUsageEventsByService(ctx, who.ServiceID)
-		} else {
-			used, err = e.dailyUsage.CountDailyUsageEventsByService(ctx, who.ServiceID)
-		}
-	default:
+	used, ok, err := e.dailyUsed(ctx, l, who)
+	if !ok {
 		// role / global day-quotas are not computable from usage_events
 		// alone (no role label on usage_events; global = all rows is a
 		// future enhancement). Skip — allow.
@@ -559,7 +572,9 @@ func (e *Engine) checkDayQuota(ctx context.Context, l Limit, who Subjects, units
 	}
 	if err != nil {
 		// Fail-open on DB error so a transient read failure does not block
-		// every request. The slog logging is the chain's job.
+		// every request: the day quota is not enforced while the read fails.
+		slog.Default().Warn("quota: daily usage read failed; day quota not enforced",
+			slog.String("limit_id", l.ID), slog.String("scope", l.Scope), slog.String("err", err.Error()))
 		return Decision{Allow: true}
 	}
 	if used+int64(units) > int64(l.Limit) {
@@ -575,6 +590,42 @@ func (e *Engine) checkDayQuota(ctx context.Context, l Limit, who Subjects, units
 		}
 	}
 	return Decision{Allow: true}
+}
+
+// dailyUsed reads what the subject of a day-window limit has used since UTC
+// midnight, in the limit's dimension. ok is false for a scope usage_events
+// cannot answer (role, global).
+func (e *Engine) dailyUsed(ctx context.Context, l Limit, who Subjects) (used int64, ok bool, err error) {
+	bpm := l.Dimension == DimensionBPM
+	switch l.Scope {
+	case ScopeAPIKey:
+		if bpm {
+			used, err = e.dailyUsage.SumDailyUsageEventsByAPIKey(ctx, who.APIKeyID)
+		} else {
+			used, err = e.dailyUsage.CountDailyUsageEventsByAPIKey(ctx, who.APIKeyID)
+		}
+	case ScopeService:
+		if bpm {
+			used, err = e.dailyUsage.SumDailyUsageEventsByService(ctx, who.ServiceID)
+		} else {
+			used, err = e.dailyUsage.CountDailyUsageEventsByService(ctx, who.ServiceID)
+		}
+	case ScopeGatewayKey:
+		if bpm {
+			used, err = e.dailyUsage.SumDailyUsageEventsByGatewayKey(ctx, who.GatewayKeyID)
+		} else {
+			used, err = e.dailyUsage.CountDailyUsageEventsByGatewayKey(ctx, who.GatewayKeyID)
+		}
+	case ScopeModel:
+		if bpm {
+			used, err = e.dailyUsage.SumDailyUsageEventsByModel(ctx, who.Model)
+		} else {
+			used, err = e.dailyUsage.CountDailyUsageEventsByModel(ctx, who.Model)
+		}
+	default:
+		return 0, false, nil
+	}
+	return used, true, err
 }
 
 // nextUTCMidnight returns the next 00:00 UTC strictly after t.
@@ -638,20 +689,7 @@ func (e *Engine) UsageFor(ctx context.Context, who Subjects) []Usage {
 			b.mu.Unlock()
 		case WindowDay:
 			if e.dailyUsage != nil {
-				switch l.Scope {
-				case ScopeAPIKey:
-					if l.Dimension == DimensionBPM {
-						u.Used, _ = e.dailyUsage.SumDailyUsageEventsByAPIKey(ctx, who.APIKeyID)
-					} else {
-						u.Used, _ = e.dailyUsage.CountDailyUsageEventsByAPIKey(ctx, who.APIKeyID)
-					}
-				case ScopeService:
-					if l.Dimension == DimensionBPM {
-						u.Used, _ = e.dailyUsage.SumDailyUsageEventsByService(ctx, who.ServiceID)
-					} else {
-						u.Used, _ = e.dailyUsage.CountDailyUsageEventsByService(ctx, who.ServiceID)
-					}
-				}
+				u.Used, _, _ = e.dailyUsed(ctx, l, who)
 			}
 			nextMidnight := nextUTCMidnight(e.now())
 			u.ResetSeconds = int(math.Ceil(nextMidnight.Sub(e.now()).Seconds()))

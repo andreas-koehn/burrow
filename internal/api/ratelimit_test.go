@@ -12,6 +12,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/quota"
+	"github.com/ankoehn/burrow/internal/store"
 )
 
 // TestLoginRateLimitPerIP verifies that the per-IP rate limiter on
@@ -215,6 +216,7 @@ type fakeQuotaEngine struct {
 	reloadCount int
 	usage       []quota.Usage
 	limits      []quota.Limit
+	asked       []quota.Subjects
 }
 
 func (f *fakeQuotaEngine) Reload(_ context.Context) error {
@@ -224,9 +226,10 @@ func (f *fakeQuotaEngine) Reload(_ context.Context) error {
 	return nil
 }
 
-func (f *fakeQuotaEngine) UsageFor(_ context.Context, _ quota.Subjects) []quota.Usage {
+func (f *fakeQuotaEngine) UsageFor(_ context.Context, who quota.Subjects) []quota.Usage {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.asked = append(f.asked, who)
 	out := make([]quota.Usage, len(f.usage))
 	copy(out, f.usage)
 	return out
@@ -582,5 +585,101 @@ func TestRateLimitHandler_NilEngineDegrades(t *testing.T) {
 	})
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("POST with nil engine: status=%d body=%s", r.StatusCode, readBody(t, r))
+	}
+}
+
+// Rate limits can be set per gateway key and per model.
+func TestRateLimitHandler_GatewayKeyAndModelScopes(t *testing.T) {
+	st := newFakeRateLimitStore()
+	engine := &fakeQuotaEngine{}
+	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, RateLimitDB: st, RateLimits: engine}
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+	for scope, subject := range map[string]string{"gateway_key": "gk1", "model": "burrow-smart"} {
+		r := c.post(t, "/api/v1/rate-limits", map[string]any{
+			"scope": scope, "subject": subject, "dimension": "rpm", "limit": 5, "burst": 5, "window": "day"})
+		if r.StatusCode != http.StatusCreated {
+			t.Fatalf("POST %s: status=%d body=%s", scope, r.StatusCode, readBody(t, r))
+		}
+		var got rateLimitResp
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if got.Scope != scope || got.Subject != subject || got.Window != "day" {
+			t.Fatalf("%s: %+v", scope, got)
+		}
+		r = c.put(t, "/api/v1/rate-limits/"+got.ID, map[string]any{
+			"scope": scope, "subject": subject, "dimension": "bpm", "limit": 9, "burst": 9, "window": "minute"})
+		if r.StatusCode != http.StatusNoContent {
+			t.Fatalf("PUT %s: status=%d body=%s", scope, r.StatusCode, readBody(t, r))
+		}
+		if r := c.post(t, "/api/v1/rate-limits", map[string]any{
+			"scope": scope, "subject": "", "dimension": "rpm", "limit": 5, "burst": 5}); r.StatusCode != http.StatusBadRequest {
+			t.Fatalf("POST %s without a subject: status=%d", scope, r.StatusCode)
+		}
+	}
+	r := c.post(t, "/api/v1/rate-limits", map[string]any{"scope": "provider", "subject": "x", "dimension": "rpm", "limit": 5, "burst": 5})
+	if body := readBody(t, r); r.StatusCode != http.StatusBadRequest || !strings.Contains(body, "scope must be one of api_key|gateway_key|model|role|service|global") {
+		t.Fatalf("bad scope: status=%d body=%s", r.StatusCode, body)
+	}
+
+	// The usage endpoint asks the engine for the right subject.
+	for query, want := range map[string]quota.Subjects{
+		"scope=gateway_key&subject=gk1":    {GatewayKeyID: "gk1"},
+		"scope=model&subject=burrow-smart": {Model: "burrow-smart"},
+	} {
+		engine.asked = nil
+		if r := c.get(t, "/api/v1/rate-limits/usage?"+query); r.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s", query, r.StatusCode, readBody(t, r))
+		}
+		if len(engine.asked) != 1 || engine.asked[0] != want {
+			t.Fatalf("%s: asked %+v", query, engine.asked)
+		}
+	}
+	r = c.get(t, "/api/v1/rate-limits/usage?scope=provider&subject=x")
+	if body := readBody(t, r); r.StatusCode != http.StatusBadRequest || !strings.Contains(body, "scope must be one of api_key|gateway_key|model|role|service|global") {
+		t.Fatalf("bad usage scope: status=%d body=%s", r.StatusCode, body)
+	}
+}
+
+// A user who may read only their own quotas sees the usage of their own
+// gateway keys: another user's key and a model's usage across all keys are
+// refused, with one answer whether or not the key exists.
+func TestRateLimitHandler_UsageOfGatewayKeysIsOwnOnly(t *testing.T) {
+	engine := &fakeQuotaEngine{usage: []quota.Usage{{Limit: quota.Limit{ID: "rl1", Scope: "gateway_key", Subject: "x", Dimension: "rpm", Limit: 5, Burst: 5, Window: "day"}, Used: 4}}}
+	keys := &fakeKeyStore{rows: []store.GatewayKey{{ID: "gk-mine", UserID: "u-self"}, {ID: "gk-theirs", UserID: "u-other"}}}
+	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "user"}, RateLimitDB: newFakeRateLimitStore(), RateLimits: engine, AIGatewayKeys: keys}
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	r := c.get(t, "/api/v1/rate-limits/usage?scope=gateway_key&subject=gk-mine")
+	if r.StatusCode != http.StatusOK || len(engine.asked) != 1 {
+		t.Fatalf("own key: status=%d body=%s", r.StatusCode, readBody(t, r))
+	}
+	_ = readBody(t, r)
+	var answers []string
+	for _, q := range []string{"scope=gateway_key&subject=gk-theirs", "scope=gateway_key&subject=gk-none", "scope=model&subject=burrow-smart"} {
+		r := c.get(t, "/api/v1/rate-limits/usage?"+q)
+		body := readBody(t, r)
+		if r.StatusCode != http.StatusForbidden || strings.Contains(body, "rl1") {
+			t.Fatalf("%s: status=%d body=%s", q, r.StatusCode, body)
+		}
+		answers = append(answers, body)
+	}
+	if answers[0] != answers[1] {
+		t.Fatalf("an unknown key and another user's key are answered differently: %q vs %q", answers[0], answers[1])
+	}
+	if len(engine.asked) != 1 {
+		t.Fatalf("the engine was asked for a refused subject: %+v", engine.asked)
+	}
+	// Without a key store nothing can be shown to be the caller's.
+	d.AIGatewayKeys = nil
+	srv2 := httptest.NewServer(NewRouter(d))
+	defer srv2.Close()
+	if r := authedClient(t, srv2).get(t, "/api/v1/rate-limits/usage?scope=gateway_key&subject=gk-mine"); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("no key store: status=%d", r.StatusCode)
 	}
 }

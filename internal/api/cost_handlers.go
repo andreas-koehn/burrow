@@ -24,7 +24,15 @@ type CostEngine interface {
 	Pricing() cost.Pricing
 	ReplacePricing(p cost.Pricing)
 	Summary(ctx context.Context, window string) (cost.Summary, error)
-	CurrentUsdFor(ctx context.Context, b db.Budget) (float64, error)
+	// SummaryBy groups the window's usage by gateway_key, model, provider,
+	// target_model or dialect; cost.ErrBadDimension for anything else.
+	SummaryBy(ctx context.Context, window, dimension string) ([]cost.GroupRow, error)
+	// BudgetUsages returns today's spend, tokens and exceeded state of each
+	// budget, from one read of today's usage.
+	BudgetUsages(ctx context.Context, budgets []db.Budget) ([]cost.BudgetUsage, error)
+	// RowUSD prices one usage row as the summary does: the reported cost
+	// plus the price table, by the provider and model that answered.
+	RowUSD(r db.UsageRow) float64
 	// UsdFor prices (tokensIn, tokensOut) for a model/kind via the pricing
 	// table; unknown keys return 0. Used to derive per-endpoint cost.
 	UsdFor(model string, tokensIn, tokensOut int) float64
@@ -189,7 +197,27 @@ var validCostWindows = map[string]bool{
 	"today": true, "week": true, "month": true, "year": true,
 }
 
-// GetCostSummary handles GET /api/v1/cost/summary?window=today|week|month|year.
+// validCostGroupBy are the dimensions of GET /cost/summary?group_by=…. The
+// value never reaches a query: the engine groups in memory by a fixed set.
+var validCostGroupBy = map[string]bool{
+	"gateway_key": true, "model": true, "provider": true, "target_model": true, "dialect": true,
+}
+
+const msgBadGroupBy = "group_by must be one of gateway_key|model|provider|target_model|dialect"
+
+// groupedSummaryResp is the summary with the usage grouped by one dimension.
+// A group's key is a gateway key's id, a model name, a provider slug,
+// "<provider>/<model>" or a dialect: never a key's secret or its hash.
+type groupedSummaryResp struct {
+	cost.Summary
+	GroupBy string          `json:"group_by"`
+	Groups  []cost.GroupRow `json:"groups"`
+}
+
+// GetCostSummary handles GET /api/v1/cost/summary?window=today|week|month|year
+// and, with group_by=gateway_key|model|provider|target_model|dialect, adds
+// "group_by" and "groups" to the body. Both parameters are checked before
+// anything is read.
 func (d Deps) GetCostSummary(w http.ResponseWriter, r *http.Request) {
 	if d.CostEngine == nil {
 		writeJSON(w, http.StatusOK, cost.Summary{
@@ -206,12 +234,33 @@ func (d Deps) GetCostSummary(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "window must be one of today|week|month|year")
 		return
 	}
+	groupBy := r.URL.Query().Get("group_by")
+	if groupBy != "" && !validCostGroupBy[groupBy] {
+		writeErr(w, http.StatusBadRequest, msgBadGroupBy)
+		return
+	}
 	s, err := d.CostEngine.Summary(r.Context(), window)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "cost summary failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, s)
+	if groupBy == "" {
+		writeJSON(w, http.StatusOK, s)
+		return
+	}
+	groups, err := d.CostEngine.SummaryBy(r.Context(), window, groupBy)
+	if errors.Is(err, cost.ErrBadDimension) {
+		writeErr(w, http.StatusBadRequest, msgBadGroupBy)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "cost summary failed")
+		return
+	}
+	if groups == nil {
+		groups = []cost.GroupRow{}
+	}
+	writeJSON(w, http.StatusOK, groupedSummaryResp{Summary: s, GroupBy: groupBy, Groups: groups})
 }
 
 // --- GET /cost/export --------------------------------------------------------
@@ -247,19 +296,12 @@ func (d Deps) GetCostExport(w http.ResponseWriter, r *http.Request) {
 	}
 	filename := fmt.Sprintf("burrow-cost-%s.%s", window, format)
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
-	// Resolve the per-row USD cost using the live pricing table when
-	// available — operators want the export to mirror the dashboard math.
-	priceFor := func(kind string, tIn, tOut int64) float64 {
+	// The per-row USD cost is what the summary computes for the row.
+	usd := func(row db.UsageRow) float64 {
 		if d.CostEngine == nil {
-			return 0
+			return row.ReportedUSD
 		}
-		pr := d.CostEngine.Pricing()
-		e, ok := pr.Lookup(kind)
-		if !ok {
-			return 0
-		}
-		return float64(tIn)*e.InputPerMillion/1_000_000 +
-			float64(tOut)*e.OutputPerMillion/1_000_000
+		return d.CostEngine.RowUSD(row)
 	}
 	switch format {
 	case "ndjson":
@@ -268,14 +310,20 @@ func (d Deps) GetCostExport(w http.ResponseWriter, r *http.Request) {
 		enc := json.NewEncoder(w)
 		for _, r := range rows {
 			_ = enc.Encode(map[string]any{
-				"service_id": r.ServiceID,
-				"api_key_id": r.APIKeyID,
-				"kind":       r.Kind,
-				"tokens_in":  r.TokensIn,
-				"tokens_out": r.TokensOut,
-				"bytes_in":   r.BytesIn,
-				"bytes_out":  r.BytesOut,
-				"usd":        r.ReportedUSD + priceFor(r.Kind, r.PricedTokensIn, r.PricedTokensOut),
+				"service_id":      r.ServiceID,
+				"api_key_id":      r.APIKeyID,
+				"kind":            r.Kind,
+				"tokens_in":       r.TokensIn,
+				"tokens_out":      r.TokensOut,
+				"bytes_in":        r.BytesIn,
+				"bytes_out":       r.BytesOut,
+				"usd":             usd(r),
+				"gateway_key_id":  r.GatewayKeyID,
+				"dialect":         r.Dialect,
+				"provider":        r.ProviderSlug,
+				"requested_model": r.RequestedModel,
+				"target_model":    r.TargetModel,
+				"requests":        r.Requests,
 			})
 		}
 	case "csv":
@@ -283,45 +331,75 @@ func (d Deps) GetCostExport(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		cw := csv.NewWriter(w)
 		_ = cw.Write([]string{"service_id", "api_key_id", "kind",
-			"tokens_in", "tokens_out", "bytes_in", "bytes_out"})
+			"tokens_in", "tokens_out", "bytes_in", "bytes_out",
+			"gateway_key_id", "dialect", "provider", "requested_model", "target_model", "requests"})
 		for _, r := range rows {
 			_ = cw.Write([]string{r.ServiceID, r.APIKeyID, r.Kind,
 				fmt.Sprintf("%d", r.TokensIn),
 				fmt.Sprintf("%d", r.TokensOut),
 				fmt.Sprintf("%d", r.BytesIn),
 				fmt.Sprintf("%d", r.BytesOut),
+				csvCell(r.GatewayKeyID), r.Dialect, csvCell(r.ProviderSlug),
+				csvCell(r.RequestedModel), csvCell(r.TargetModel),
+				fmt.Sprintf("%d", r.Requests),
 			})
 		}
 		cw.Flush()
 	}
 }
 
+// csvCell keeps a value a client chose (a model name) from being read as a
+// formula by a spreadsheet: a leading =, +, - or @ is prefixed with a quote.
+func csvCell(v string) string {
+	if v != "" && strings.ContainsRune("=+-@\t\r", rune(v[0])) {
+		return "'" + v
+	}
+	return v
+}
+
 // --- Budgets CRUD -----------------------------------------------------------
 
-// budgetResp is the wire shape for one budget. current_usd + exceeded are
-// computed live by the cost engine (not stored on the row).
+// budgetResp is the wire shape for one budget. current_usd, current_tokens
+// and exceeded are computed live by the cost engine (not stored on the row).
 type budgetResp struct {
 	ID             string  `json:"id"`
 	Scope          string  `json:"scope"`
 	SubjectID      string  `json:"subject_id"`
 	DailyUSD       float64 `json:"daily_usd"`
+	DailyTokens    int64   `json:"daily_tokens"`
 	ActionOnExceed string  `json:"action_on_exceed"`
 	AlertWebhookID *string `json:"alert_webhook_id"`
 	CurrentUSD     float64 `json:"current_usd"`
+	CurrentTokens  int64   `json:"current_tokens"`
 	Exceeded       bool    `json:"exceeded"`
 }
 
-func toBudgetResp(b db.Budget, currentUSD float64) budgetResp {
+func toBudgetResp(b db.Budget, u cost.BudgetUsage) budgetResp {
 	return budgetResp{
 		ID:             b.ID,
 		Scope:          b.Scope,
 		SubjectID:      b.SubjectID,
 		DailyUSD:       b.DailyUSD,
+		DailyTokens:    b.DailyTokens,
 		ActionOnExceed: b.ActionOnExceed,
 		AlertWebhookID: b.AlertWebhookID,
-		CurrentUSD:     currentUSD,
-		Exceeded:       currentUSD > b.DailyUSD,
+		CurrentUSD:     u.USD,
+		CurrentTokens:  u.Tokens,
+		Exceeded:       cost.BudgetExceeded(b, u.USD, u.Tokens),
 	}
+}
+
+// budgetUsages returns today's usage of each budget; zero usage for all when
+// there is no engine or today's usage cannot be read (logged).
+func (d Deps) budgetUsages(ctx context.Context, budgets []db.Budget) []cost.BudgetUsage {
+	if d.CostEngine != nil {
+		usages, err := d.CostEngine.BudgetUsages(ctx, budgets)
+		if err == nil && len(usages) == len(budgets) {
+			return usages
+		}
+		d.warn("budget usage could not be read", "err", err)
+	}
+	return make([]cost.BudgetUsage, len(budgets))
 }
 
 // budgetReq is the wire shape for POST + PUT bodies.
@@ -329,32 +407,50 @@ type budgetReq struct {
 	Scope          string  `json:"scope"`
 	SubjectID      string  `json:"subject_id"`
 	DailyUSD       float64 `json:"daily_usd"`
+	DailyTokens    int64   `json:"daily_tokens"`
 	ActionOnExceed string  `json:"action_on_exceed"`
 	AlertWebhookID *string `json:"alert_webhook_id"`
 }
 
+// validBudgetScopes: a gateway_key budget's subject is the gateway key's id,
+// a model budget's the model name clients ask for (a synthetic model or a
+// direct address "<provider>/<model>").
 var validBudgetScopes = map[string]bool{
 	"api_key": true, "service": true, "user": true, "global": true,
+	"gateway_key": true, "model": true,
 }
 var validBudgetActions = map[string]bool{
 	"alert_webhook": true, "throttle_zero": true, "disable_key": true,
 }
 
+// validateBudget: a budget caps the day's spend (daily_usd), its tokens
+// (daily_tokens), or both; at least one cap is needed. A flat-rate provider
+// costs 0 USD, so a token cap alone is a complete budget.
 func validateBudget(in budgetReq) string {
 	if !validBudgetScopes[in.Scope] {
-		return "scope must be one of api_key|service|user|global"
+		return "scope must be one of api_key|service|user|global|gateway_key|model"
 	}
 	if !validBudgetActions[in.ActionOnExceed] {
 		return "action_on_exceed must be one of alert_webhook|throttle_zero|disable_key"
 	}
-	if in.DailyUSD <= 0 {
-		return "daily_usd must be greater than zero"
+	if in.DailyTokens < 0 {
+		return "daily_tokens must not be negative"
+	}
+	// NaN fails both comparisons below, so it is named here.
+	if in.DailyUSD < 0 || in.DailyUSD != in.DailyUSD {
+		return "daily_usd must not be negative"
+	}
+	if in.DailyUSD == 0 && in.DailyTokens == 0 {
+		return "daily_usd or daily_tokens must be greater than zero"
 	}
 	if in.Scope != "global" && strings.TrimSpace(in.SubjectID) == "" {
 		return "subject_id is required for non-global scopes"
 	}
 	if in.Scope == "global" && in.SubjectID != "" {
 		return "global scope must not specify a subject_id"
+	}
+	if len(in.SubjectID) > 256 {
+		return "subject_id too long (max 256 chars)"
 	}
 	return ""
 }
@@ -372,12 +468,9 @@ func (d Deps) GetBudgets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]budgetResp, len(rows))
+	usages := d.budgetUsages(r.Context(), rows)
 	for i, b := range rows {
-		var cur float64
-		if d.CostEngine != nil {
-			cur, _ = d.CostEngine.CurrentUsdFor(r.Context(), b)
-		}
-		out[i] = toBudgetResp(b, cur)
+		out[i] = toBudgetResp(b, usages[i])
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -411,6 +504,7 @@ func (d Deps) PostBudget(w http.ResponseWriter, r *http.Request) {
 		Scope:          in.Scope,
 		SubjectID:      in.SubjectID,
 		DailyUSD:       in.DailyUSD,
+		DailyTokens:    in.DailyTokens,
 		ActionOnExceed: in.ActionOnExceed,
 		AlertWebhookID: in.AlertWebhookID,
 	}
@@ -421,14 +515,10 @@ func (d Deps) PostBudget(w http.ResponseWriter, r *http.Request) {
 	// Read-back so created_at reflects the SQLite default.
 	created, err := d.Budgets.GetBudget(r.Context(), row.ID)
 	if err != nil {
-		writeJSON(w, http.StatusCreated, toBudgetResp(row, 0))
+		writeJSON(w, http.StatusCreated, toBudgetResp(row, cost.BudgetUsage{}))
 		return
 	}
-	var cur float64
-	if d.CostEngine != nil {
-		cur, _ = d.CostEngine.CurrentUsdFor(r.Context(), created)
-	}
-	writeJSON(w, http.StatusCreated, toBudgetResp(created, cur))
+	writeJSON(w, http.StatusCreated, toBudgetResp(created, d.budgetUsages(r.Context(), []db.Budget{created})[0]))
 }
 
 // PutBudget handles PUT /api/v1/budgets/{id} — admin-only.
@@ -465,6 +555,7 @@ func (d Deps) PutBudget(w http.ResponseWriter, r *http.Request) {
 		Scope:          in.Scope,
 		SubjectID:      in.SubjectID,
 		DailyUSD:       in.DailyUSD,
+		DailyTokens:    in.DailyTokens,
 		ActionOnExceed: in.ActionOnExceed,
 		AlertWebhookID: in.AlertWebhookID,
 	}

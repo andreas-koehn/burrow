@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,11 @@ type Subjects struct {
 	APIKeyID  string
 	ServiceID string
 	UserID    string // budgets with scope=user match by this
+	// GatewayKeyID is the gateway key that asked; "" for other traffic.
+	GatewayKeyID string
+	// Model is the model name the client asked for (a synthetic model, a
+	// direct address, or the bare id sent on a provider path).
+	Model string
 }
 
 // BudgetStore is the narrow read surface the engine needs for CheckBudgets.
@@ -53,6 +59,12 @@ type APIKeyRevoker interface {
 	DeleteServiceAPIKey(ctx context.Context, id, serviceID string) error
 }
 
+// GatewayKeyRevoker revokes a gateway key when a gateway_key budget with
+// action_on_exceed=disable_key is exceeded. *store.Store satisfies it.
+type GatewayKeyRevoker interface {
+	RevokeGatewayKeyByID(ctx context.Context, id string) error
+}
+
 // Dispatcher is the narrow surface the engine uses to publish the
 // budget.exceeded webhook event. Task 14 (webhook dispatcher) hasn't
 // shipped yet; production wiring (Task 25) supplies the real
@@ -75,7 +87,11 @@ type Engine struct {
 	daily      DailyTokenReader
 	keyLocator APIKeyLocator
 	revoker    APIKeyRevoker
+	gwRevoker  GatewayKeyRevoker
 	dispatcher Dispatcher
+	// onExceed is called (outside the lock) when a budget fires: the budget
+	// guard drops its cached verdict so the next request sees the new state.
+	onExceed []func()
 
 	log *slog.Logger
 
@@ -153,6 +169,22 @@ func (e *Engine) SetDispatcher(d Dispatcher) {
 	e.dispatcher = d
 }
 
+// SetGatewayKeyRevoker installs what disable_key calls for a gateway_key
+// budget. Without one such a budget still blocks at the gateway (see Guard)
+// but the key is not revoked.
+func (e *Engine) SetGatewayKeyRevoker(r GatewayKeyRevoker) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.gwRevoker = r
+}
+
+// addExceedListener registers fn to be called whenever a budget fires.
+func (e *Engine) addExceedListener(fn func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onExceed = append(e.onExceed, fn)
+}
+
 // Pricing returns the current pricing table. Safe for concurrent use; the
 // returned value is a copy of the Entries map header but shares the
 // underlying map — callers should treat it as read-only.
@@ -186,10 +218,69 @@ func (e *Engine) UsdFor(model string, tokensIn, tokensOut int) float64 {
 		float64(tokensOut)*entry.OutputPerMillion/1_000_000
 }
 
+// priceKey returns the price-table key a usage row is priced by: the first of
+// "<provider>/<target model>", the target model, and the kind that has an
+// entry. "" when none has.
+func (e *Engine) priceKey(r db.UsageRow) string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if r.TargetModel != "" {
+		if r.ProviderSlug != "" {
+			if _, ok := e.pricing.Lookup(r.ProviderSlug + "/" + r.TargetModel); ok {
+				return r.ProviderSlug + "/" + r.TargetModel
+			}
+		}
+		if _, ok := e.pricing.Lookup(r.TargetModel); ok {
+			return r.TargetModel
+		}
+	}
+	if _, ok := e.pricing.Lookup(r.Kind); ok {
+		return r.Kind
+	}
+	return ""
+}
+
 // rowUSD prices one usage row: what upstreams reported, plus the price table
-// for the tokens no upstream put a price on.
+// for the tokens no upstream put a price on (see priceKey).
 func (e *Engine) rowUSD(r db.UsageRow) float64 {
-	return r.ReportedUSD + e.UsdFor(r.Kind, int(r.PricedTokensIn), int(r.PricedTokensOut))
+	usd := r.ReportedUSD
+	if key := e.priceKey(r); key != "" {
+		usd += e.UsdFor(key, int(r.PricedTokensIn), int(r.PricedTokensOut))
+	}
+	return usd
+}
+
+// RowUSD prices one usage row as Summary does: what upstreams reported, plus
+// the price table for the rest, by the provider and model that answered.
+func (e *Engine) RowUSD(r db.UsageRow) float64 { return e.rowUSD(r) }
+
+// BudgetExceeded reports whether a budget with the given spend and token use
+// of the current UTC day is over. A budget with a token cap (DailyTokens > 0)
+// is over when the tokens exceed it, or when it also has a USD cap
+// (DailyUSD > 0) and the spend exceeds that. A budget without a token cap is
+// over when the spend exceeds DailyUSD, as it always was.
+func BudgetExceeded(b db.Budget, usd float64, tokens int64) bool {
+	if b.DailyTokens > 0 {
+		return tokens > b.DailyTokens || (b.DailyUSD > 0 && usd > b.DailyUSD)
+	}
+	return usd > b.DailyUSD
+}
+
+// todayUsage reads today's usage rows at most once for one check, however
+// many budgets look at them.
+type todayUsage struct {
+	e      *Engine
+	rows   []db.UsageRow
+	loaded bool
+	err    error
+}
+
+func (u *todayUsage) get(ctx context.Context) ([]db.UsageRow, error) {
+	if !u.loaded {
+		u.rows, u.err = u.e.usage.ListUsageForWindow(ctx, "today")
+		u.loaded = true
+	}
+	return u.rows, u.err
 }
 
 // CheckBudgets aggregates today's spend for every budget that matches the
@@ -205,11 +296,9 @@ func (e *Engine) rowUSD(r db.UsageRow) float64 {
 //
 // Side effects:
 //   - alert_webhook → dispatches a "budget.exceeded" event via Dispatcher
-//   - throttle_zero → records the trigger in-memory (a zero-bpm rate limit
-//     for today is wired by the caller; CheckBudgets itself does not write
-//     to rate_limits — that side effect belongs to the engine wiring layer)
-//   - disable_key   → calls APIKeyRevoker.DeleteServiceAPIKey for the
-//     api_key-scoped budget's subject id
+//   - throttle_zero → dispatches the event; a gateway_key or model budget
+//     is from then on refused at the gateway (see Guard)
+//   - disable_key   → revokes the key of an api_key or gateway_key budget
 //
 // CheckBudgets is safe to call from the SQLSink hot path: it does no
 // network IO of its own, and any dispatcher Publish is fire-and-forget
@@ -226,13 +315,14 @@ func (e *Engine) CheckBudgets(ctx context.Context, subj Subjects) (string, db.Bu
 		return "", db.Budget{}, err
 	}
 
+	today := &todayUsage{e: e}
 	for _, b := range budgets {
 		// Match this budget against the caller's Subjects.
 		if !budgetMatchesSubjects(b, subj) {
 			continue
 		}
-		// Compute today's spend for this budget.
-		current, err := e.currentUsdForBudget(ctx, b, subj)
+		// Compute today's spend and tokens for this budget.
+		usd, tokens, err := e.budgetUsage(ctx, b, today)
 		if err != nil {
 			// Don't trigger on a read error — the caller (SQLSink) treats
 			// CheckBudgets as best-effort.
@@ -240,7 +330,7 @@ func (e *Engine) CheckBudgets(ctx context.Context, subj Subjects) (string, db.Bu
 				slog.String("budget_id", b.ID), slog.String("err", err.Error()))
 			continue
 		}
-		if current <= b.DailyUSD {
+		if !BudgetExceeded(b, usd, tokens) {
 			continue
 		}
 		// Exceeded — already triggered this UTC day?
@@ -250,11 +340,15 @@ func (e *Engine) CheckBudgets(ctx context.Context, subj Subjects) (string, db.Bu
 			continue
 		}
 		e.triggered[b.ID] = true
+		listeners := append([]func(){}, e.onExceed...)
 		e.mu.Unlock()
 
 		// Fire the configured action. Errors are logged + swallowed so a
 		// single failed alert doesn't poison subsequent budgets.
-		e.fireAction(ctx, b, current, subj)
+		e.fireAction(ctx, b, usd, tokens)
+		for _, fn := range listeners {
+			fn()
+		}
 		return b.ActionOnExceed, b, nil
 	}
 	return "", db.Budget{}, nil
@@ -265,198 +359,272 @@ func (e *Engine) CheckBudgets(ctx context.Context, subj Subjects) (string, db.Bu
 // the wire response includes current_usd + exceeded without the caller
 // repeating the math.
 func (e *Engine) CurrentUsdFor(ctx context.Context, b db.Budget) (float64, error) {
-	subj := budgetToSubjects(b)
-	return e.currentUsdForBudget(ctx, b, subj)
+	usd, _, err := e.budgetUsage(ctx, b, &todayUsage{e: e})
+	return usd, err
+}
+
+// CurrentTokensFor returns today's tokens (input + output) for the given
+// budget, over the same usage rows CurrentUsdFor prices.
+func (e *Engine) CurrentTokensFor(ctx context.Context, b db.Budget) (int64, error) {
+	_, tokens, err := e.budgetUsage(ctx, b, &todayUsage{e: e})
+	return tokens, err
+}
+
+// BudgetUsage is what a budget has used in the current UTC day.
+type BudgetUsage struct {
+	USD      float64
+	Tokens   int64
+	Exceeded bool
+}
+
+// BudgetUsages returns the usage of every given budget from one read of
+// today's usage rows.
+func (e *Engine) BudgetUsages(ctx context.Context, budgets []db.Budget) ([]BudgetUsage, error) {
+	out := make([]BudgetUsage, len(budgets))
+	today := &todayUsage{e: e}
+	for i, b := range budgets {
+		usd, tokens, err := e.budgetUsage(ctx, b, today)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = BudgetUsage{USD: usd, Tokens: tokens, Exceeded: BudgetExceeded(b, usd, tokens)}
+	}
+	return out, nil
 }
 
 // CheckBudgetsForSample is the BudgetChecker hook used by aimeter.SQLSink.
-// It is called after each usage_events insert with the per-request
-// (service, api_key) identity; the global scope matches unconditionally.
-// All errors are logged + swallowed so a budget-check failure never breaks
-// the proxy hot path.
-func (e *Engine) CheckBudgetsForSample(ctx context.Context, serviceID, apiKeyID string) {
+// It is called after each usage_events insert with the identity of the
+// request: service, service key, gateway key and the model name the client
+// asked for; the global scope matches unconditionally. All errors are logged
+// + swallowed so a budget-check failure never breaks the proxy hot path.
+func (e *Engine) CheckBudgetsForSample(ctx context.Context, serviceID, apiKeyID, gatewayKeyID, requestedModel string) {
 	if e == nil || e.budgets == nil {
 		return
 	}
 	if _, _, err := e.CheckBudgets(ctx, Subjects{
-		APIKeyID:  apiKeyID,
-		ServiceID: serviceID,
+		APIKeyID:     apiKeyID,
+		ServiceID:    serviceID,
+		GatewayKeyID: gatewayKeyID,
+		Model:        requestedModel,
 	}); err != nil {
 		e.log.Warn("cost: CheckBudgets after insert failed",
 			slog.String("service_id", serviceID),
 			slog.String("api_key_id", apiKeyID),
+			slog.String("gateway_key_id", gatewayKeyID),
 			slog.String("err", err.Error()))
 	}
 }
 
-// currentUsdForBudget is the shared implementation behind CheckBudgets and
-// CurrentUsdFor. For scope=api_key|service it queries the per-subject daily
-// token aggregation; for scope=user it currently returns 0 (no user_id
-// column on usage_events — a follow-up task plumbs the user through the
-// proxy chain). For scope=global it sums across all subjects in today's
-// usage rows. The kind column is used as the model lookup key.
-func (e *Engine) currentUsdForBudget(ctx context.Context, b db.Budget, subj Subjects) (float64, error) {
+// budgetRowFilter returns which of today's usage rows count for budget b, or
+// nil when the scope has no rows to count (user: usage_events carries no
+// user; an empty subject; an unknown scope).
+func budgetRowFilter(b db.Budget) func(db.UsageRow) bool {
+	id := b.SubjectID
+	if b.Scope == "global" {
+		return func(db.UsageRow) bool { return true }
+	}
+	if id == "" {
+		return nil
+	}
 	switch b.Scope {
 	case "api_key":
-		key := subj.APIKeyID
-		if key == "" {
-			key = b.SubjectID
-		}
-		if e.daily == nil || key == "" {
-			return 0, nil
-		}
-		// Per-budget current_usd uses a single weighted average from
-		// today's usage rows for this api_key. We sum tokens by kind and
-		// look up each kind's price.
-		return e.usdForApiKey(ctx, key)
+		return func(r db.UsageRow) bool { return r.APIKeyID == id }
 	case "service":
-		sid := subj.ServiceID
-		if sid == "" {
-			sid = b.SubjectID
-		}
-		if e.daily == nil || sid == "" {
-			return 0, nil
-		}
-		return e.usdForService(ctx, sid)
-	case "user":
-		// usage_events has no user_id column yet — a future task plumbs the
-		// user through the proxy chain. Report 0 so the budget never
-		// triggers prematurely.
-		return 0, nil
-	case "global":
-		if e.usage == nil {
-			return 0, nil
-		}
-		rows, err := e.usage.ListUsageForWindow(ctx, "today")
-		if err != nil {
-			return 0, err
-		}
-		var total float64
-		for _, r := range rows {
-			total += e.rowUSD(r)
-		}
-		return total, nil
+		return func(r db.UsageRow) bool { return r.ServiceID == id }
+	case "gateway_key":
+		return func(r db.UsageRow) bool { return r.GatewayKeyID == id }
+	case "model":
+		return func(r db.UsageRow) bool { return rowAskedFor(r, id) }
 	}
-	return 0, nil
+	return nil
 }
 
-// usdForApiKey computes today's spend by walking the per-kind usage rows
-// for the given api_key and multiplying by the configured per-kind price.
-// We use the engine's UsageReader (group-by query) and filter in-process
-// because that keeps the DailyTokenReader surface minimal (it only returns
-// totals, not per-kind splits).
-func (e *Engine) usdForApiKey(ctx context.Context, apiKeyID string) (float64, error) {
-	if e.usage == nil {
-		// Fall back to the totals query when usage isn't wired (tests).
-		in, out, err := e.daily.SumDailyTokensByAPIKey(ctx, apiKeyID)
-		if err != nil {
-			return 0, err
-		}
-		// Without per-kind info we charge "unknown" — usually 0.
-		return e.UsdFor("unknown", int(in), int(out)), nil
+// rowAskedFor reports whether the requests of r asked for model: by that
+// name, or, for a direct address "<provider>/<id>", by the bare id on that
+// provider's own path (/ai/<provider>/…), where requested and target model
+// are the same string. A request answered by a fallback target counts for the
+// model the client asked for, not for the one that answered.
+func rowAskedFor(r db.UsageRow, model string) bool {
+	if r.RequestedModel == "" {
+		return false
 	}
-	rows, err := e.usage.ListUsageForWindow(ctx, "today")
-	if err != nil {
-		return 0, err
+	if r.RequestedModel == model {
+		return true
 	}
-	var total float64
-	for _, r := range rows {
-		if r.APIKeyID != apiKeyID {
-			continue
-		}
-		total += e.rowUSD(r)
-	}
-	return total, nil
+	return r.RequestedModel == r.TargetModel && r.ProviderSlug != "" &&
+		r.ProviderSlug+"/"+r.RequestedModel == model
 }
 
-// usdForService is the service-scope variant of usdForApiKey.
-func (e *Engine) usdForService(ctx context.Context, serviceID string) (float64, error) {
+// budgetUsage is the shared implementation behind CheckBudgets, the guard
+// and the GET /budgets figures: today's spend and tokens of the usage rows
+// that count for b. scope=user reports 0 (usage_events has no user column).
+func (e *Engine) budgetUsage(ctx context.Context, b db.Budget, today *todayUsage) (float64, int64, error) {
+	match := budgetRowFilter(b)
+	if match == nil {
+		return 0, 0, nil
+	}
 	if e.usage == nil {
-		in, out, err := e.daily.SumDailyTokensByService(ctx, serviceID)
-		if err != nil {
-			return 0, err
+		// Only the totals are wired (tests): without per-kind rows the
+		// tokens are priced as "unknown" — usually 0.
+		if e.daily == nil {
+			return 0, 0, nil
 		}
-		return e.UsdFor("unknown", int(in), int(out)), nil
+		var in, out int64
+		var err error
+		switch b.Scope {
+		case "api_key":
+			in, out, err = e.daily.SumDailyTokensByAPIKey(ctx, b.SubjectID)
+		case "service":
+			in, out, err = e.daily.SumDailyTokensByService(ctx, b.SubjectID)
+		}
+		if err != nil {
+			return 0, 0, err
+		}
+		return e.UsdFor("unknown", int(in), int(out)), in + out, nil
 	}
-	rows, err := e.usage.ListUsageForWindow(ctx, "today")
+	rows, err := today.get(ctx)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	var total float64
+	usd, tokens := e.usageOf(rows, match)
+	return usd, tokens, nil
+}
+
+// usageOf sums the spend and the tokens (input + output) of the rows match
+// accepts.
+func (e *Engine) usageOf(rows []db.UsageRow, match func(db.UsageRow) bool) (usd float64, tokens int64) {
 	for _, r := range rows {
-		if r.ServiceID != serviceID {
+		if !match(r) {
 			continue
 		}
-		total += e.rowUSD(r)
+		usd += e.rowUSD(r)
+		tokens += r.TokensIn + r.TokensOut
 	}
-	return total, nil
+	return usd, tokens
+}
+
+// hardExceeded returns the gateway keys and models that are over a budget
+// which stops requests (action throttle_zero or disable_key) in the current
+// UTC day. One read of the budgets and one of today's usage.
+func (e *Engine) hardExceeded(ctx context.Context) (keys, models map[string]bool, err error) {
+	keys, models = map[string]bool{}, map[string]bool{}
+	if e == nil || e.budgets == nil || e.usage == nil {
+		return keys, models, nil
+	}
+	budgets, err := e.budgets.ListBudgets(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	today := &todayUsage{e: e}
+	for _, b := range budgets {
+		if b.Scope != "gateway_key" && b.Scope != "model" {
+			continue
+		}
+		if b.ActionOnExceed != "throttle_zero" && b.ActionOnExceed != "disable_key" {
+			continue
+		}
+		usd, tokens, err := e.budgetUsage(ctx, b, today)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !BudgetExceeded(b, usd, tokens) {
+			continue
+		}
+		if b.Scope == "gateway_key" {
+			keys[b.SubjectID] = true
+		} else {
+			models[b.SubjectID] = true
+		}
+	}
+	return keys, models, nil
 }
 
 // fireAction dispatches the configured side-effect for an exceeded budget.
 // All errors are logged + swallowed — a single failure must not break the
 // caller's hot path.
-func (e *Engine) fireAction(ctx context.Context, b db.Budget, currentUSD float64, subj Subjects) {
+func (e *Engine) fireAction(ctx context.Context, b db.Budget, currentUSD float64, currentTokens int64) {
 	payload := map[string]any{
 		"budget_id":        b.ID,
 		"scope":            b.Scope,
 		"subject_id":       b.SubjectID,
 		"daily_usd":        b.DailyUSD,
 		"current_usd":      currentUSD,
+		"daily_tokens":     b.DailyTokens,
+		"current_tokens":   currentTokens,
 		"action_on_exceed": b.ActionOnExceed,
 	}
+	e.mu.RLock()
+	dispatcher, gwRevoker := e.dispatcher, e.gwRevoker
+	e.mu.RUnlock()
 	switch b.ActionOnExceed {
 	case "alert_webhook":
-		if e.dispatcher == nil {
+		if dispatcher == nil {
 			e.log.Warn("cost: budget exceeded but no dispatcher wired",
 				slog.String("budget_id", b.ID),
 				slog.Float64("current_usd", currentUSD))
 			return
 		}
-		e.dispatcher.Publish(ctx, "budget.exceeded", payload)
+		dispatcher.Publish(ctx, "budget.exceeded", payload)
 	case "throttle_zero":
-		// The actual rate-limit row insertion is the wiring layer's job
-		// (Task 25 — it owns both the cost engine AND the rate-limit
-		// store). We publish the exceeded event so listeners (incl. the
-		// throttle installer) can react.
-		if e.dispatcher != nil {
-			e.dispatcher.Publish(ctx, "budget.exceeded", payload)
+		// A gateway_key or model budget is refused at the gateway from now
+		// on (Guard). For the other scopes the event is all there is:
+		// listeners may react to it.
+		if dispatcher != nil {
+			dispatcher.Publish(ctx, "budget.exceeded", payload)
 		} else {
 			e.log.Warn("cost: throttle_zero requested but no dispatcher wired",
 				slog.String("budget_id", b.ID))
 		}
 	case "disable_key":
-		if e.revoker == nil || e.keyLocator == nil {
-			e.log.Warn("cost: disable_key requested but no revoker wired",
-				slog.String("budget_id", b.ID))
-			return
-		}
-		// For scope=api_key the subject_id is the api_key id directly;
-		// for other scopes there's nothing to disable.
-		apiKeyID := b.SubjectID
-		if subj.APIKeyID != "" {
-			apiKeyID = subj.APIKeyID
-		}
-		if b.Scope != "api_key" || apiKeyID == "" {
-			e.log.Warn("cost: disable_key needs scope=api_key with a subject_id",
-				slog.String("budget_id", b.ID), slog.String("scope", b.Scope))
-			return
-		}
-		_, serviceID, err := e.keyLocator.LookupServiceAPIKey(ctx, apiKeyID)
-		if err != nil {
-			e.log.Warn("cost: disable_key lookup failed",
-				slog.String("api_key_id", apiKeyID),
-				slog.String("err", err.Error()))
-			return
-		}
-		if err := e.revoker.DeleteServiceAPIKey(ctx, apiKeyID, serviceID); err != nil {
-			e.log.Warn("cost: disable_key revoke failed",
-				slog.String("api_key_id", apiKeyID),
-				slog.String("err", err.Error()))
-			return
+		switch b.Scope {
+		case "gateway_key":
+			if gwRevoker == nil || b.SubjectID == "" {
+				e.log.Warn("cost: disable_key requested but no gateway key revoker wired",
+					slog.String("budget_id", b.ID))
+				return
+			}
+			if err := gwRevoker.RevokeGatewayKeyByID(ctx, b.SubjectID); err != nil {
+				e.log.Warn("cost: disable_key revoke failed",
+					slog.String("gateway_key_id", b.SubjectID),
+					slog.String("err", err.Error()))
+				return
+			}
+		case "api_key":
+			if e.revoker == nil || e.keyLocator == nil {
+				e.log.Warn("cost: disable_key requested but no revoker wired",
+					slog.String("budget_id", b.ID))
+				return
+			}
+			apiKeyID := b.SubjectID
+			if apiKeyID == "" {
+				e.log.Warn("cost: disable_key needs a subject_id", slog.String("budget_id", b.ID))
+				return
+			}
+			_, serviceID, err := e.keyLocator.LookupServiceAPIKey(ctx, apiKeyID)
+			if err != nil {
+				e.log.Warn("cost: disable_key lookup failed",
+					slog.String("api_key_id", apiKeyID),
+					slog.String("err", err.Error()))
+				return
+			}
+			if err := e.revoker.DeleteServiceAPIKey(ctx, apiKeyID, serviceID); err != nil {
+				e.log.Warn("cost: disable_key revoke failed",
+					slog.String("api_key_id", apiKeyID),
+					slog.String("err", err.Error()))
+				return
+			}
+		default:
+			// A model budget has no key to disable; the gateway refuses the
+			// model (Guard). For the remaining scopes there is nothing to do.
+			if b.Scope != "model" {
+				e.log.Warn("cost: disable_key needs scope api_key or gateway_key",
+					slog.String("budget_id", b.ID), slog.String("scope", b.Scope))
+				return
+			}
 		}
 		// Also publish the exceeded event for audit / dashboard parity.
-		if e.dispatcher != nil {
-			e.dispatcher.Publish(ctx, "budget.exceeded", payload)
+		if dispatcher != nil {
+			dispatcher.Publish(ctx, "budget.exceeded", payload)
 		}
 	}
 }
@@ -548,11 +716,12 @@ func (e *Engine) Summary(ctx context.Context, window string) (Summary, error) {
 		if err == nil && len(budgets) > 0 {
 			var maxPct float64
 			any := false
+			today := &todayUsage{e: e, rows: rows, loaded: true}
 			for _, b := range budgets {
 				if b.DailyUSD <= 0 {
 					continue
 				}
-				cur, err := e.CurrentUsdFor(ctx, b)
+				cur, _, err := e.budgetUsage(ctx, b, today)
 				if err != nil {
 					continue
 				}
@@ -570,10 +739,109 @@ func (e *Engine) Summary(ctx context.Context, window string) (Summary, error) {
 	return out, nil
 }
 
+// --- usage by key and model --------------------------------------------------
+
+// GroupRow is one group of GET /cost/summary?group_by=…: the usage of one
+// gateway key, model, provider, target model or dialect in the window.
+type GroupRow struct {
+	Key       string  `json:"key"`
+	Requests  int64   `json:"requests"`
+	TokensIn  int64   `json:"tokens_in"`
+	TokensOut int64   `json:"tokens_out"`
+	USD       float64 `json:"usd"`
+}
+
+// ErrBadDimension is returned by SummaryBy for a dimension it does not know.
+var ErrBadDimension = errors.New("cost: unknown group-by dimension")
+
+// MaxGroups is the most named groups SummaryBy returns. A client can send any
+// model name on a provider path, so the number of groups is not bounded by
+// the configuration. What is cut is added to the group with the empty key.
+const MaxGroups = 200
+
+// groupKeys maps a dimension to the group key of a usage row. Only these
+// names are accepted; nothing of the dimension reaches a query.
+var groupKeys = map[string]func(db.UsageRow) string{
+	"gateway_key": func(r db.UsageRow) string { return r.GatewayKeyID },
+	"model":       func(r db.UsageRow) string { return r.RequestedModel },
+	"provider":    func(r db.UsageRow) string { return r.ProviderSlug },
+	"dialect":     func(r db.UsageRow) string { return r.Dialect },
+	"target_model": func(r db.UsageRow) string {
+		if r.ProviderSlug == "" && r.TargetModel == "" {
+			return ""
+		}
+		return r.ProviderSlug + "/" + r.TargetModel
+	},
+}
+
+// SummaryBy groups the usage of the window by one dimension: gateway_key
+// (the key's id), model (the name the client asked for), provider,
+// target_model ("<provider>/<model>" that answered) or dialect. Groups are
+// sorted by USD descending, then key; the group with the empty key (traffic
+// the dimension does not apply to, and whatever MaxGroups cut) comes last.
+// Never nil.
+func (e *Engine) SummaryBy(ctx context.Context, window, dimension string) ([]GroupRow, error) {
+	keyOf, ok := groupKeys[dimension]
+	if !ok {
+		return nil, ErrBadDimension
+	}
+	out := []GroupRow{}
+	if e.usage == nil {
+		return out, nil
+	}
+	rows, err := e.usage.ListUsageForWindow(ctx, window)
+	if err != nil {
+		return nil, err
+	}
+	groups := map[string]*GroupRow{}
+	for _, r := range rows {
+		k := keyOf(r)
+		g, ok := groups[k]
+		if !ok {
+			g = &GroupRow{Key: k}
+			groups[k] = g
+		}
+		g.Requests += r.Requests
+		g.TokensIn += r.TokensIn
+		g.TokensOut += r.TokensOut
+		g.USD += e.rowUSD(r)
+	}
+	rest, hasRest := GroupRow{}, false
+	for k, g := range groups {
+		if k == "" {
+			rest, hasRest = *g, true
+			continue
+		}
+		out = append(out, *g)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].USD != out[j].USD {
+			return out[i].USD > out[j].USD
+		}
+		return out[i].Key < out[j].Key
+	})
+	if len(out) > MaxGroups {
+		for _, g := range out[MaxGroups:] {
+			rest.Requests += g.Requests
+			rest.TokensIn += g.TokensIn
+			rest.TokensOut += g.TokensOut
+			rest.USD += g.USD
+		}
+		out, hasRest = out[:MaxGroups], true
+	}
+	if hasRest {
+		out = append(out, rest)
+	}
+	return out, nil
+}
+
 // --- helpers -----------------------------------------------------------------
 
-// budgetMatchesSubjects reports whether a budget's (scope, subject_id) pair
-// is satisfied by the given Subjects.
+// budgetMatchesSubjects reports whether the request described by s can have
+// added to budget b: only then is b looked at after the request's usage row.
+// For a model budget this is a pre-filter (the name asked for, or the bare id
+// of a direct address); what the budget has used is computed from the usage
+// rows either way.
 func budgetMatchesSubjects(b db.Budget, s Subjects) bool {
 	switch b.Scope {
 	case "api_key":
@@ -582,25 +850,14 @@ func budgetMatchesSubjects(b db.Budget, s Subjects) bool {
 		return s.ServiceID != "" && s.ServiceID == b.SubjectID
 	case "user":
 		return s.UserID != "" && s.UserID == b.SubjectID
+	case "gateway_key":
+		return s.GatewayKeyID != "" && s.GatewayKeyID == b.SubjectID
+	case "model":
+		return s.Model != "" && (s.Model == b.SubjectID || strings.HasSuffix(b.SubjectID, "/"+s.Model))
 	case "global":
 		return true
 	}
 	return false
-}
-
-// budgetToSubjects derives the Subjects that the engine's
-// per-budget aggregation expects, given only the configuration row. Used by
-// CurrentUsdFor (the GET /budgets handler doesn't carry a Subjects).
-func budgetToSubjects(b db.Budget) Subjects {
-	switch b.Scope {
-	case "api_key":
-		return Subjects{APIKeyID: b.SubjectID}
-	case "service":
-		return Subjects{ServiceID: b.SubjectID}
-	case "user":
-		return Subjects{UserID: b.SubjectID}
-	}
-	return Subjects{}
 }
 
 // ErrNotConfigured is a sentinel callers can check against when a method is

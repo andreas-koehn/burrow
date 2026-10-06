@@ -37,6 +37,18 @@ func (noDailyUsage) CountDailyUsageEventsByAPIKey(context.Context, string) (int6
 func (noDailyUsage) CountDailyUsageEventsByService(context.Context, string) (int64, error) {
 	return 0, nil
 }
+func (noDailyUsage) SumDailyUsageEventsByGatewayKey(context.Context, string) (int64, error) {
+	return 0, nil
+}
+func (noDailyUsage) CountDailyUsageEventsByGatewayKey(context.Context, string) (int64, error) {
+	return 0, nil
+}
+func (noDailyUsage) SumDailyUsageEventsByModel(context.Context, string) (int64, error) {
+	return 0, nil
+}
+func (noDailyUsage) CountDailyUsageEventsByModel(context.Context, string) (int64, error) {
+	return 0, nil
+}
 
 // The 429 keeps its shape on the host route and takes the /ai/ shape when the
 // request carries the gateway's error writer.

@@ -29,6 +29,7 @@ import (
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/inspector"
+	"github.com/ankoehn/burrow/internal/quota"
 	"github.com/ankoehn/burrow/internal/redact"
 )
 
@@ -1873,5 +1874,36 @@ func TestChain_RefuseSafe_DialectEndpoint(t *testing.T) {
 	// the old answer too: there is nothing better to say.
 	if rec := do(aigw.WithKind(context.Background(), aigw.KindAnthropic), "/v1/messages/count_tokens", ""); rec.Code != 200 || rec.Body.String() != oldAnthropic {
 		t.Fatalf("forced kind, no error writer: status %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+// The rate limiter sees who asked and for which model: the gateway key's bare
+// id and the requested model come from the request's route, next to the
+// per-key subject "gw:<id>". Without a route both are empty.
+func TestChain_RateLimitSubjectsFromRoute(t *testing.T) {
+	var seen []quota.Subjects
+	chain := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, newMemSink(), testLog())
+	chain.RateLimit = func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen = append(seen, quota.SubjectsFromCtx(r.Context()))
+			next.ServeHTTP(w, r)
+		})
+	}
+	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) })
+	do := func(ctx context.Context, apiKeyID string) {
+		r := httptest.NewRequest("POST", "https://abc.example.com/v1/chat/completions", strings.NewReader(`{"model":"glm-5.1"}`)).WithContext(ctx)
+		r.Header.Set("Content-Type", "application/json")
+		chain.DispatchMetered(httptest.NewRecorder(), r, "svc-rl", "127.0.0.1:1", "Authorization", apiKeyID, false, up)
+	}
+	route := aigw.NewRoute("gk1", "openai", "burrow-smart", "req-1")
+	route.SetTarget("zai", "glm-5.1")
+	do(aigw.WithRoute(context.Background(), route), "")
+	do(context.Background(), "k1")
+	want := []quota.Subjects{
+		{ServiceID: "svc-rl", APIKeyID: "gw:gk1", GatewayKeyID: "gk1", Model: "burrow-smart"},
+		{ServiceID: "svc-rl", APIKeyID: "k1"},
+	}
+	if len(seen) != 2 || seen[0] != want[0] || seen[1] != want[1] {
+		t.Fatalf("subjects = %+v, want %+v", seen, want)
 	}
 }

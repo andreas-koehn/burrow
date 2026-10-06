@@ -1872,3 +1872,66 @@ func TestServe_ConcurrencyLimit_PlaceIsReturned(t *testing.T) {
 		}
 	})
 }
+
+// A gateway key over its budget is refused on a provider path too, before the
+// upstream; the model is checked as "<provider>/<model>". Service keys and the
+// model list are not held by it.
+func TestServe_GatewayKeyOnProviderPath_Budget(t *testing.T) {
+	hits := 0
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits++; w.WriteHeader(200) })
+	var asked [][2]string
+	g := newGateway(ok, nil) // provider "ollama" on svc1
+	g.GatewayKeys = fakeGatewayKeys{
+		"bgw_all":   {ID: "gk-all"},
+		"bgw_other": {ID: "gk-2"},
+		"bgw_one":   {ID: "gk-1", AllowedModels: []string{"ollama/mistral"}},
+	}
+	g.Models = fakeModels{"ollama": {{ModelID: "mistral"}}}
+	do := func(key, method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+key)
+		r.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		g.Serve(rec, r, "ollama")
+		return rec
+	}
+	blocked := func(rec *httptest.ResponseRecorder, why string) {
+		t.Helper()
+		if rec.Code != 429 || errCode(t, rec) != "budget_exceeded" || rec.Header().Get("Burrow-Error-Code") != "budget_exceeded" || hits != 0 {
+			t.Fatalf("%s: status %d hits %d body %s", why, rec.Code, hits, rec.Body.String())
+		}
+		wantBudgetRetryAfter(t, rec)
+	}
+
+	g.Budgets = fakeGuard{key: "gk-all", asked: &asked}
+	blocked(do("bgw_all", "POST", "/v1/chat/completions", `{"model":"mistral"}`), "key over its budget")
+	blocked(do("bgw_all", "POST", "/v1/embeddings", `{"input":"x"}`), "no model in the body")
+	blocked(do("bgw_all", "DELETE", "/v1/files/f1", ``), "another method")
+	if asked[0] != [2]string{"gk-all", "ollama/mistral"} || asked[1] != [2]string{"gk-all", ""} {
+		t.Fatalf("the guard was asked %v", asked)
+	}
+	if rec := do("bgw_all", "GET", "/v1/models", ``); rec.Code != 200 {
+		t.Fatalf("model list of a key over its budget: status %d", rec.Code)
+	}
+	hits = 0
+	if rec := do("bgw_other", "POST", "/v1/chat/completions", `{"model":"mistral"}`); rec.Code != 200 || hits != 1 {
+		t.Fatalf("another key: status %d hits %d", rec.Code, hits)
+	}
+	if rec := do("sk-good", "POST", "/v1/chat/completions", `{"model":"mistral"}`); rec.Code != 200 || hits != 2 {
+		t.Fatalf("service key: status %d hits %d", rec.Code, hits)
+	}
+
+	// The model's budget holds every gateway key.
+	hits = 0
+	g.Budgets = fakeGuard{model: "ollama/mistral"}
+	blocked(do("bgw_other", "POST", "/v1/chat/completions", `{"model":"mistral"}`), "model over its budget")
+	blocked(do("bgw_one", "POST", "/v1/chat/completions", `{"model":"mistral"}`), "model over its budget, restricted key")
+	if rec := do("bgw_other", "POST", "/v1/chat/completions", `{"model":"llama3"}`); rec.Code != 200 || hits != 1 {
+		t.Fatalf("another model: status %d hits %d", rec.Code, hits)
+	}
+	// The allow-list is answered first: a key that may not use the model
+	// learns nothing about its budget.
+	if rec := do("bgw_one", "POST", "/v1/chat/completions", `{"model":"llama3"}`); rec.Code != 403 || errCode(t, rec) != "model_not_allowed" {
+		t.Fatalf("not allowed: status %d", rec.Code)
+	}
+}

@@ -307,10 +307,16 @@ func (c *Chain) allow(w http.ResponseWriter, r *http.Request, svc Service) (*htt
 	if c.RateLimit == nil {
 		return r, true
 	}
-	r = r.WithContext(quota.WithSubjects(r.Context(), quota.Subjects{
+	who := quota.Subjects{
 		ServiceID: svc.ID,
 		APIKeyID:  keySubject(r, svc),
-	}))
+	}
+	// A request the gateway routed names its gateway key and the model the
+	// client asked for: gateway_key and model limits go by them.
+	if ri, ok := RouteFrom(r.Context()); ok {
+		who.GatewayKeyID, who.Model = ri.GatewayKeyID, ri.RequestedModel
+	}
+	r = r.WithContext(quota.WithSubjects(r.Context(), who))
 	passed := false
 	c.RateLimit(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		passed = true

@@ -1510,6 +1510,14 @@ paths:
     get:
       tags: [rate-limits]
       summary: List configured rate-limit rules
+      description: >
+        Each rule is {id, scope, subject, dimension, limit, burst, window}.
+        scope is one of api_key, gateway_key, model, role, service, global.
+        The subject of a gateway_key rule is the gateway key's id; that of a
+        model rule is the model name clients ask for (a synthetic model, or
+        "<provider>/<model>"), and it holds across all keys. dimension is rpm
+        (requests) or bpm (estimated bytes / 4); window is minute or day (a
+        day runs from UTC midnight).
       responses:
         '200':
           description: List of rules.
@@ -1522,6 +1530,12 @@ paths:
     post:
       tags: [rate-limits]
       summary: Create a rate-limit rule
+      description: >
+        Body {scope, subject, dimension, limit, burst, window}. scope is one
+        of api_key, gateway_key, model, role, service, global; every scope
+        but global needs a subject (at most 256 characters). Anything else is
+        400, e.g. "scope must be one of
+        api_key|gateway_key|model|role|service|global".
       requestBody:
         required: true
         content:
@@ -1533,6 +1547,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Empty' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -1540,6 +1555,21 @@ paths:
     get:
       tags: [rate-limits]
       summary: Current rate-limit consumption per rule
+      description: >
+        The rules that apply to one subject, each with used and
+        reset_seconds. With scope=gateway_key the subject is a gateway key's
+        id: its owner may ask, anyone else needs quotas:read:any (403
+        otherwise, the same for a key that does not exist). With scope=model
+        the usage is that of every key, so quotas:read:any is required.
+      parameters:
+        - name: scope
+          in: query
+          schema:
+            type: string
+            enum: [api_key, gateway_key, model, role, service, global]
+        - name: subject
+          in: query
+          schema: { type: string }
       responses:
         '200':
           description: Usage rows.
@@ -1548,7 +1578,9 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Empty' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/rate-limits/{id}:
     put:
@@ -1604,18 +1636,61 @@ paths:
     get:
       tags: [cost]
       summary: Aggregated cost summary
+      description: >
+        Admin, or a role with quotas:read:any. The body is {window,
+        total_usd, tokens_in, tokens_out, top_consumers, pct_of_budget}. With
+        group_by it also carries group_by and groups: one {key, requests,
+        tokens_in, tokens_out, usd} per gateway key (key = the key's id),
+        model (the name clients asked for), provider (slug), target_model
+        ("<provider>/<model>" that answered) or dialect. Groups are sorted by
+        usd descending, then key; the group with the empty key comes last and
+        holds the traffic the dimension does not apply to, plus whatever lies
+        beyond the first 200 groups. A request answered by a fallback target
+        counts for the model the client asked for and the provider that
+        answered. A row is priced by the cost its upstream reported, else by
+        the price table entry "<provider>/<target model>", then the target
+        model, then the request kind. Prompt-cache tokens of an Anthropic
+        answer count as input tokens.
+      parameters:
+        - name: window
+          in: query
+          description: today is the current UTC day; week, month and year are the last 7, 30 and 365 days.
+          schema:
+            type: string
+            enum: [today, week, month, year]
+            default: today
+        - name: group_by
+          in: query
+          schema:
+            type: string
+            enum: [gateway_key, model, provider, target_model, dialect]
       responses:
         '200':
           description: Summary rows.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Empty' }
+        '400':
+          description: >
+            "window must be one of today|week|month|year" or "group_by must be
+            one of gateway_key|model|provider|target_model|dialect".
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/cost/export:
     get:
       tags: [cost]
       summary: CSV export of cost data
+      description: >
+        One row per (service, service key, kind, gateway key, dialect,
+        provider, requested model, target model) of the window, as ndjson
+        (format=ndjson, the default) or CSV (format=csv). The route columns
+        gateway_key_id, dialect, provider, requested_model, target_model and
+        requests follow the token and byte columns; they are empty for
+        traffic that did not come through a gateway key.
       responses:
         '200':
           description: CSV.
@@ -1628,6 +1703,21 @@ paths:
     get:
       tags: [cost]
       summary: List budgets (admin)
+      description: >
+        Each budget is {id, scope, subject_id, daily_usd, daily_tokens,
+        action_on_exceed, alert_webhook_id, current_usd, current_tokens,
+        exceeded}. scope is one of api_key, service, user, global,
+        gateway_key (subject_id = the gateway key's id) and model (subject_id
+        = the model name clients ask for). daily_tokens caps input plus
+        output tokens per UTC day; 0 means no token cap. A budget with a
+        token cap is exceeded when current_tokens is above it, or when it
+        also has a daily_usd above 0 and current_usd is above that; a budget
+        without one is exceeded when current_usd is above daily_usd. A
+        gateway_key or model budget whose action is throttle_zero or
+        disable_key stops requests at the gateway while it is exceeded: 429
+        budget_exceeded with Retry-After until UTC midnight, before any
+        provider is called (disable_key on a gateway_key budget also revokes
+        the key). A change takes up to 15 seconds to reach the gateway.
       responses:
         '200':
           description: List of budgets.
@@ -1641,6 +1731,12 @@ paths:
     post:
       tags: [cost]
       summary: Create a budget
+      description: >
+        Body {scope, subject_id, daily_usd, daily_tokens, action_on_exceed,
+        alert_webhook_id}. daily_usd and daily_tokens must not be negative
+        and at least one must be above 0: a token cap alone is a complete
+        budget (a flat-rate provider costs 0 USD). Every scope but global
+        needs a subject_id of at most 256 characters.
       requestBody:
         required: true
         content:
@@ -1652,6 +1748,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Empty' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -1659,6 +1756,7 @@ paths:
     put:
       tags: [cost]
       summary: Update a budget
+      description: Same body and rules as creating one; every field is replaced.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
         required: true
@@ -1667,6 +1765,7 @@ paths:
             schema: { $ref: '#/components/schemas/Empty' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     delete:

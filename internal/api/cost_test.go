@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -90,6 +91,11 @@ type fakeCostEngine struct {
 	mu      sync.Mutex
 	pricing cost.Pricing
 	summary cost.Summary
+
+	groups      []cost.GroupRow
+	groupCalls  []string
+	budgetUsage map[string]cost.BudgetUsage // by budget subject_id
+	usageErr    error
 }
 
 func (f *fakeCostEngine) Pricing() cost.Pricing {
@@ -112,8 +118,38 @@ func (f *fakeCostEngine) Summary(_ context.Context, window string) (cost.Summary
 	return s, nil
 }
 
-func (f *fakeCostEngine) CurrentUsdFor(_ context.Context, _ db.Budget) (float64, error) {
-	return 0, nil
+func (f *fakeCostEngine) BudgetUsages(_ context.Context, budgets []db.Budget) ([]cost.BudgetUsage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.usageErr != nil {
+		return nil, f.usageErr
+	}
+	out := make([]cost.BudgetUsage, len(budgets))
+	for i, b := range budgets {
+		u := f.budgetUsage[b.SubjectID]
+		u.Exceeded = cost.BudgetExceeded(b, u.USD, u.Tokens)
+		out[i] = u
+	}
+	return out, nil
+}
+
+func (f *fakeCostEngine) SummaryBy(_ context.Context, window, dimension string) ([]cost.GroupRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.groupCalls = append(f.groupCalls, window+"/"+dimension)
+	switch dimension {
+	case "gateway_key", "model", "provider", "target_model", "dialect":
+		return append([]cost.GroupRow{}, f.groups...), nil
+	}
+	return nil, cost.ErrBadDimension
+}
+
+func (f *fakeCostEngine) RowUSD(r db.UsageRow) float64 {
+	key := r.Kind
+	if _, ok := f.Pricing().Lookup(r.ProviderSlug + "/" + r.TargetModel); ok && r.TargetModel != "" {
+		key = r.ProviderSlug + "/" + r.TargetModel
+	}
+	return r.ReportedUSD + f.UsdFor(key, int(r.PricedTokensIn), int(r.PricedTokensOut))
 }
 
 func (f *fakeCostEngine) UsdFor(model string, in, out int) float64 {
@@ -709,3 +745,208 @@ var (
 	_ CostEngine  = (*cost.Engine)(nil)
 	_ BudgetStore = (*db.DB)(nil)
 )
+
+// --- usage by key and model, token budgets ------------------------------------
+
+func TestCostHandler_GetSummary_GroupBy(t *testing.T) {
+	eng := &fakeCostEngine{
+		summary: cost.Summary{TotalUSD: 2.5, TopConsumers: []cost.SummaryConsumer{}},
+		groups:  []cost.GroupRow{{Key: "gk1", Requests: 3, TokensIn: 10, TokensOut: 5, USD: 2.25}, {Key: "", Requests: 1, USD: 0.25}},
+	}
+	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, CostEngine: eng}
+	srv := newTestServer(d)
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	for _, dim := range []string{"gateway_key", "model", "provider", "target_model", "dialect"} {
+		r := c.get(t, "/api/v1/cost/summary?window=week&group_by="+dim)
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s", dim, r.StatusCode, readBody(t, r))
+		}
+		var got struct {
+			Window   string           `json:"window"`
+			TotalUSD float64          `json:"total_usd"`
+			GroupBy  string           `json:"group_by"`
+			Groups   []map[string]any `json:"groups"`
+		}
+		if err := json.Unmarshal([]byte(readBody(t, r)), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Window != "week" || got.TotalUSD != 2.5 || got.GroupBy != dim || len(got.Groups) != 2 {
+			t.Fatalf("%s: %+v", dim, got)
+		}
+		g := got.Groups[0]
+		if g["key"] != "gk1" || g["requests"] != 3.0 || g["tokens_in"] != 10.0 || g["tokens_out"] != 5.0 || g["usd"] != 2.25 || len(g) != 5 {
+			t.Fatalf("%s: group = %+v", dim, g)
+		}
+	}
+	if eng.groupCalls[0] != "week/gateway_key" {
+		t.Fatalf("calls = %v", eng.groupCalls)
+	}
+
+	// Without group_by the body is what it always was: no groups at all.
+	body := readBody(t, c.get(t, "/api/v1/cost/summary?window=today"))
+	if strings.Contains(body, "groups") || strings.Contains(body, "group_by") {
+		t.Fatalf("summary without group_by = %s", body)
+	}
+	// No groups in the window: an empty list.
+	eng.groups = nil
+	if body := readBody(t, c.get(t, "/api/v1/cost/summary?group_by=model")); !strings.Contains(body, `"groups":[]`) {
+		t.Fatalf("empty groups = %s", body)
+	}
+
+	for _, bad := range []string{"service", "api_key", "GATEWAY_KEY", "model%3BDROP%20TABLE", "gateway_key,model"} {
+		r := c.get(t, "/api/v1/cost/summary?window=today&group_by="+bad)
+		body := readBody(t, r)
+		if r.StatusCode != http.StatusBadRequest || !strings.Contains(body, "group_by must be one of gateway_key|model|provider|target_model|dialect") {
+			t.Fatalf("%s: status=%d body=%s", bad, r.StatusCode, body)
+		}
+	}
+	// A bad window is refused before anything is read.
+	n := len(eng.groupCalls)
+	if r := c.get(t, "/api/v1/cost/summary?window=eternity&group_by=model"); r.StatusCode != http.StatusBadRequest || len(eng.groupCalls) != n {
+		t.Fatalf("bad window with group_by: status=%d", r.StatusCode)
+	}
+}
+
+// Usage by key and model is the cost dashboard's: a user without
+// quotas:read:any does not get it, grouped or not.
+func TestCostHandler_GetSummary_GroupBy_NonAdmin403(t *testing.T) {
+	eng := &fakeCostEngine{groups: []cost.GroupRow{{Key: "gk1", USD: 1}}}
+	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "user"}, CostEngine: eng}
+	srv := newTestServer(d)
+	defer srv.Close()
+	c := authedClient(t, srv)
+	r := c.get(t, "/api/v1/cost/summary?window=today&group_by=gateway_key")
+	if body := readBody(t, r); r.StatusCode != http.StatusForbidden || strings.Contains(body, "gk1") || len(eng.groupCalls) != 0 {
+		t.Fatalf("status=%d body=%s calls=%v", r.StatusCode, body, eng.groupCalls)
+	}
+}
+
+func TestCostHandler_GetExport_RouteColumns(t *testing.T) {
+	st := newFakeBudgetStore()
+	st.usage = []db.UsageRow{{ServiceID: "svcA", Kind: "openai", GatewayKeyID: "gk1", Dialect: "openai", ProviderSlug: "zai",
+		RequestedModel: "burrow-smart", TargetModel: "glm-5.1", Requests: 2, TokensIn: 1_000_000, TokensOut: 0, PricedTokensIn: 1_000_000}}
+	eng := &fakeCostEngine{pricing: cost.Pricing{Entries: map[string]cost.Entry{
+		"zai/glm-5.1": {InputPerMillion: 3}, "openai": {InputPerMillion: 9},
+	}}}
+	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, Budgets: st, CostEngine: eng}
+	srv := newTestServer(d)
+	defer srv.Close()
+	c := authedClient(t, srv)
+	var row map[string]any
+	if err := json.Unmarshal([]byte(readBody(t, c.get(t, "/api/v1/cost/export?format=ndjson"))), &row); err != nil {
+		t.Fatal(err)
+	}
+	// Priced by the provider and model that answered, as the summary is.
+	if row["gateway_key_id"] != "gk1" || row["dialect"] != "openai" || row["provider"] != "zai" || row["requested_model"] != "burrow-smart" ||
+		row["target_model"] != "glm-5.1" || row["requests"] != 2.0 || row["usd"] != 3.0 {
+		t.Fatalf("ndjson row = %+v", row)
+	}
+	csvBody := readBody(t, c.get(t, "/api/v1/cost/export?format=csv"))
+	lines := strings.Split(strings.TrimSpace(csvBody), "\n")
+	if len(lines) != 2 ||
+		lines[0] != "service_id,api_key_id,kind,tokens_in,tokens_out,bytes_in,bytes_out,gateway_key_id,dialect,provider,requested_model,target_model,requests" ||
+		lines[1] != "svcA,,openai,1000000,0,0,0,gk1,openai,zai,burrow-smart,glm-5.1,2" {
+		t.Fatalf("csv = %q", csvBody)
+	}
+}
+
+func TestBudgetHandler_GatewayKeyModelAndTokens(t *testing.T) {
+	st := newFakeBudgetStore()
+	eng := &fakeCostEngine{budgetUsage: map[string]cost.BudgetUsage{
+		"gk1":          {USD: 0, Tokens: 1500},
+		"burrow-smart": {USD: 2.5, Tokens: 10},
+	}}
+	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, Budgets: st, CostEngine: eng}
+	srv := newTestServer(d)
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	// A token budget needs no USD cap: a flat-rate provider costs 0 USD.
+	r := c.post(t, "/api/v1/budgets", map[string]any{
+		"scope": "gateway_key", "subject_id": "gk1", "daily_tokens": 1000, "action_on_exceed": "throttle_zero"})
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("POST token budget: status=%d body=%s", r.StatusCode, readBody(t, r))
+	}
+	var created map[string]any
+	if err := json.Unmarshal([]byte(readBody(t, r)), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created["scope"] != "gateway_key" || created["daily_tokens"] != 1000.0 || created["daily_usd"] != 0.0 ||
+		created["current_tokens"] != 1500.0 || created["current_usd"] != 0.0 || created["exceeded"] != true {
+		t.Fatalf("created = %+v", created)
+	}
+	r = c.post(t, "/api/v1/budgets", map[string]any{
+		"scope": "model", "subject_id": "burrow-smart", "daily_usd": 5.0, "daily_tokens": 1_000_000, "action_on_exceed": "alert_webhook"})
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("POST model budget: status=%d body=%s", r.StatusCode, readBody(t, r))
+	}
+	_ = readBody(t, r)
+
+	var list []map[string]any
+	if err := json.Unmarshal([]byte(readBody(t, c.get(t, "/api/v1/budgets"))), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0]["scope"] != "gateway_key" || list[0]["exceeded"] != true || list[0]["current_tokens"] != 1500.0 ||
+		list[1]["scope"] != "model" || list[1]["exceeded"] != false || list[1]["current_usd"] != 2.5 || list[1]["daily_tokens"] != 1_000_000.0 {
+		t.Fatalf("list = %+v", list)
+	}
+
+	// PUT carries daily_tokens too.
+	id := created["id"].(string)
+	r = c.put(t, "/api/v1/budgets/"+id, map[string]any{
+		"scope": "gateway_key", "subject_id": "gk1", "daily_usd": 1.0, "daily_tokens": 2000, "action_on_exceed": "disable_key"})
+	if r.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT: status=%d body=%s", r.StatusCode, readBody(t, r))
+	}
+	if b := st.rows[id]; b.DailyTokens != 2000 || b.DailyUSD != 1 || b.ActionOnExceed != "disable_key" {
+		t.Fatalf("stored = %+v", b)
+	}
+
+	for name, c2 := range map[string]struct {
+		body map[string]any
+		msg  string
+	}{
+		"negative tokens": {map[string]any{"scope": "gateway_key", "subject_id": "gk1", "daily_usd": 1.0, "daily_tokens": -1, "action_on_exceed": "throttle_zero"},
+			"daily_tokens must not be negative"},
+		"neither cap": {map[string]any{"scope": "model", "subject_id": "m", "action_on_exceed": "throttle_zero"},
+			"daily_usd or daily_tokens must be greater than zero"},
+		"negative usd with tokens": {map[string]any{"scope": "model", "subject_id": "m", "daily_usd": -1.0, "daily_tokens": 5, "action_on_exceed": "throttle_zero"},
+			"daily_usd must not be negative"},
+		"no subject": {map[string]any{"scope": "gateway_key", "daily_tokens": 5, "action_on_exceed": "throttle_zero"},
+			"subject_id is required for non-global scopes"},
+		"long subject": {map[string]any{"scope": "model", "subject_id": strings.Repeat("m", 257), "daily_tokens": 5, "action_on_exceed": "throttle_zero"},
+			"subject_id too long (max 256 chars)"},
+		"bad scope": {map[string]any{"scope": "provider", "subject_id": "zai", "daily_tokens": 5, "action_on_exceed": "throttle_zero"},
+			"scope must be one of api_key|service|user|global|gateway_key|model"},
+	} {
+		for _, method := range []string{"POST", "PUT"} {
+			var r *http.Response
+			if method == "POST" {
+				r = c.post(t, "/api/v1/budgets", c2.body)
+			} else {
+				r = c.put(t, "/api/v1/budgets/"+id, c2.body)
+			}
+			if body := readBody(t, r); r.StatusCode != http.StatusBadRequest || !strings.Contains(body, c2.msg) {
+				t.Errorf("%s %s: status=%d body=%s", method, name, r.StatusCode, body)
+			}
+		}
+	}
+}
+
+// When today's usage cannot be read the budgets are still listed, with zero
+// usage: the list is configuration first.
+func TestBudgetHandler_GetWithoutUsage(t *testing.T) {
+	st := newFakeBudgetStore()
+	st.rows["b1"] = db.Budget{ID: "b1", Scope: "model", SubjectID: "m", DailyTokens: 5, ActionOnExceed: "throttle_zero"}
+	eng := &fakeCostEngine{usageErr: errors.New("db is down")}
+	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, Budgets: st, CostEngine: eng}
+	srv := newTestServer(d)
+	defer srv.Close()
+	r := authedClient(t, srv).get(t, "/api/v1/budgets")
+	body := readBody(t, r)
+	if r.StatusCode != http.StatusOK || !strings.Contains(body, `"id":"b1"`) || !strings.Contains(body, `"current_tokens":0`) {
+		t.Fatalf("status=%d body=%s", r.StatusCode, body)
+	}
+}

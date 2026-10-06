@@ -35,6 +35,7 @@ import (
 	"github.com/ankoehn/burrow/internal/api"
 	"github.com/ankoehn/burrow/internal/config"
 	"github.com/ankoehn/burrow/internal/connlog"
+	"github.com/ankoehn/burrow/internal/cost"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/devcert"
 	"github.com/ankoehn/burrow/internal/events"
@@ -808,6 +809,15 @@ func newRootCmd() *cobra.Command {
 			}
 			if v04.AIChain != nil {
 				aiGateway.Chain = v04.AIChain
+			}
+			if v04.CostEngine != nil {
+				// Hard budgets stop requests at the gateway: a gateway key or
+				// a model over a throttle_zero / disable_key budget gets 429
+				// before any upstream is called. A typed nil must not become
+				// a non-nil interface, hence the check. disable_key on a
+				// gateway_key budget also revokes the key.
+				v04.CostEngine.SetGatewayKeyRevoker(st)
+				aiGateway.Budgets = cost.NewGuard(v04.CostEngine, 15*time.Second)
 			}
 			if proxyTLSCfg != nil {
 				// Wire GetConfigForClient so mTLS services get a per-vhost
