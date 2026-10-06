@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -143,13 +144,38 @@ func checkAIModelsFollowProviderRename(t *testing.T, x *DB, userID string) {
 	if err != nil || len(got.Targets) != 1 || got.Targets[0].ProviderSlug != "zhipu" {
 		t.Fatalf("after rename: %v %+v", err, got)
 	}
-	// No ON DELETE on the target's provider: the store refuses first and names
-	// the models; the database is the backstop.
-	if err := x.DeleteAIProviderAndBacking(ctx, "zhipu"); err == nil {
-		t.Fatal("a provider with a model target was deleted")
+	// No ON DELETE on the target's provider: the provider, its service and the
+	// service's owner cannot go while the model is there, and the foreign-key
+	// failure comes back as ErrProviderInUse with the model's name.
+	p, err := x.GetAIProvider(ctx, "zhipu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for what, del := range map[string]func() error{
+		"provider": func() error { return x.DeleteAIProviderAndBacking(ctx, "zhipu") },
+		"service":  func() error { return x.DeleteService(ctx, p.ServiceID) },
+		"user":     func() error { return x.DeleteUser(ctx, userID) },
+	} {
+		err := del()
+		if !errors.Is(err, ErrProviderInUse) || !strings.Contains(err.Error(), ": m1") || strings.Contains(err.Error(), "FOREIGN KEY") {
+			t.Errorf("delete %s err = %v, want ErrProviderInUse naming m1", what, err)
+		}
 	}
 	if _, err := x.GetAIProvider(ctx, "zhipu"); err != nil {
-		t.Fatalf("provider after the refused delete: %v", err)
+		t.Fatalf("provider after the refused deletes: %v", err)
+	}
+	if _, err := x.GetUserByID(ctx, userID); err != nil {
+		t.Fatalf("user after the refused delete: %v", err)
+	}
+	// Other failures keep their own error.
+	if err := x.DeleteService(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("delete missing service err = %v", err)
+	}
+	if err := x.DeleteAIModel(ctx, "m1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.DeleteService(ctx, p.ServiceID); err != nil {
+		t.Fatalf("delete service without models: %v", err)
 	}
 }
 

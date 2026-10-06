@@ -130,11 +130,13 @@ func (x *DB) execAffectOne(ctx context.Context, what, query string, args ...any)
 
 // DeleteUser removes the user with the given ID.
 // ON DELETE CASCADE removes all associated sessions, tokens, and tunnels.
-// Returns ErrNotFound if no row matched.
+// Returns ErrNotFound if no row matched. A user who owns the service behind a
+// provider that a synthetic model targets stays: the error wraps
+// ErrProviderInUse and names the models.
 func (x *DB) DeleteUser(ctx context.Context, id string) error {
 	res, err := x.sqlDB.ExecContext(ctx, `DELETE FROM users WHERE id=?`, id)
 	if err != nil {
-		return fmt.Errorf("delete user: %w", err)
+		return x.providerInUseOr(ctx, fmt.Errorf("delete user: %w", err), `WHERE s.user_id=?`, id)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {

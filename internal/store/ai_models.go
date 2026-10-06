@@ -20,8 +20,10 @@ var (
 	// ErrModelNotFound: no model has that name.
 	ErrModelNotFound = errors.New("store: model not found")
 	// ErrProviderInUse is wrapped with the names of the models that target
-	// the provider.
-	ErrProviderInUse = errors.New("store: provider is used by a model")
+	// the provider. Deleting a provider, the service behind it or the user
+	// who owns that service all return it; it is the database layer's error,
+	// which finds the models when the delete fails on the foreign key.
+	ErrProviderInUse = db.ErrProviderInUse
 )
 
 var modelNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{1,62}$`)
@@ -199,73 +201,111 @@ func (s *Store) slugTakenByModel(ctx context.Context, slug string) (bool, error)
 // import has completed. It is not in the settings API's key whitelist.
 const modelAliasesImportedKey = "ai_models.aliases_imported"
 
+// ErrProvidersNotBackfilled is returned by ImportModelAliases while the
+// provider backfill has not completed on this database.
+var ErrProvidersNotBackfilled = errors.New("store: providers are not backfilled yet")
+
+// aliasModels groups alias rows into one model per alias name. A row becomes
+// a target when its service backs a provider; the target's dialect is that
+// provider's format. Targets are ordered by priority, then age, then service
+// id and model, so rows that tie on priority and time still come out in one
+// order. Models are returned sorted by name. skipped lists, sorted, the
+// aliases that give no model: a name that is not a valid model name, or no
+// row whose service backs a provider.
+func aliasModels(aliases []db.ModelAlias, providerOf func(serviceID string) (db.AIProvider, bool)) (models []db.AIModel, skipped []string) {
+	rows := append([]db.ModelAlias{}, aliases...)
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		switch {
+		case a.Alias != b.Alias:
+			return a.Alias < b.Alias
+		case a.Priority != b.Priority:
+			return a.Priority < b.Priority
+		case !a.CreatedAt.Equal(b.CreatedAt):
+			return a.CreatedAt.Before(b.CreatedAt)
+		case a.ServiceID != b.ServiceID:
+			return a.ServiceID < b.ServiceID
+		}
+		return a.ConcreteModel < b.ConcreteModel
+	})
+	for i := 0; i < len(rows); {
+		name := rows[i].Alias
+		var targets []db.AIModelTarget
+		for ; i < len(rows) && rows[i].Alias == name; i++ {
+			if p, ok := providerOf(rows[i].ServiceID); ok {
+				targets = append(targets, db.AIModelTarget{Dialect: p.APIFormat, ProviderSlug: p.Slug, TargetModel: rows[i].ConcreteModel})
+			}
+		}
+		if !ValidModelName(name) || len(targets) == 0 {
+			skipped = append(skipped, name)
+			continue
+		}
+		models = append(models, db.AIModel{Name: name, Enabled: true, Targets: targets})
+	}
+	return models, skipped
+}
+
 // ImportModelAliases turns the model aliases of earlier versions into
 // synthetic models: one model per alias name, with one target per alias row
-// whose service backs a provider, ordered by priority and then by age. An
-// alias is skipped when its name is not a valid model name, when a model or a
-// provider already has the name, or when none of its services backs a
-// provider. The alias rows themselves are left as they are.
+// whose service backs a provider (see aliasModels). It returns the number of
+// models created and the sorted names of the aliases that gave none: the
+// name is not a valid model name, a model or a provider already has it, none
+// of its services backs a provider, or the result is not a valid model (more
+// than 8 targets in one format, a target model that is too long). The alias
+// rows themselves are left as they are.
 //
 // Like BackfillAIProviders it does its work once per database and leaves a
 // marker: the alias rows stay, so without the marker a model an admin deleted
-// would come back at the next start. Safe to call at every start.
-func (s *Store) ImportModelAliases(ctx context.Context) (int, error) {
+// would come back at the next start. Because the run is final, it waits for
+// the provider backfill: before that has completed there are no providers to
+// target, every alias would be skipped for good, and the call returns
+// ErrProvidersNotBackfilled without leaving the marker. A later call on a
+// database that has the marker returns 0 and no names.
+func (s *Store) ImportModelAliases(ctx context.Context) (created int, skipped []string, err error) {
 	settings, err := s.GetSettings(ctx)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if settings[modelAliasesImportedKey] != "" {
-		return 0, nil
+		return 0, nil, nil
+	}
+	if settings[aiProvidersBackfilledKey] == "" {
+		return 0, nil, ErrProvidersNotBackfilled
 	}
 	aliases, err := s.q.ListModelAliases(ctx)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	sort.SliceStable(aliases, func(i, j int) bool {
-		a, b := aliases[i], aliases[j]
-		if a.Priority != b.Priority {
-			return a.Priority < b.Priority
-		}
-		return a.CreatedAt.Before(b.CreatedAt)
-	})
-	var names []string
-	targets := map[string][]db.AIModelTarget{}
-	providers := map[string]db.AIProvider{} // by service id; a zero value means none
+	providers := map[string]db.AIProvider{} // by service id
 	for _, a := range aliases {
-		if !ValidModelName(a.Alias) {
+		if _, seen := providers[a.ServiceID]; seen {
 			continue
 		}
-		p, seen := providers[a.ServiceID]
-		if !seen {
-			p, err = s.q.GetAIProviderByService(ctx, a.ServiceID)
-			if err != nil && !errors.Is(err, db.ErrNotFound) {
-				return 0, err
-			}
-			providers[a.ServiceID] = p
+		p, err := s.q.GetAIProviderByService(ctx, a.ServiceID)
+		if err != nil && !errors.Is(err, db.ErrNotFound) {
+			return 0, nil, err
 		}
-		if p.Slug == "" {
-			continue
-		}
-		if _, ok := targets[a.Alias]; !ok {
-			names = append(names, a.Alias)
-		}
-		targets[a.Alias] = append(targets[a.Alias], db.AIModelTarget{Dialect: p.APIFormat, ProviderSlug: p.Slug, TargetModel: a.ConcreteModel})
+		providers[a.ServiceID] = p // the zero value when there is none
 	}
-	sort.Strings(names)
-	created := 0
-	for _, name := range names {
-		_, err := s.CreateModel(ctx, db.AIModel{Name: name, Enabled: true, Targets: targets[name]})
+	models, skipped := aliasModels(aliases, func(serviceID string) (db.AIProvider, bool) {
+		p := providers[serviceID]
+		return p, p.Slug != ""
+	})
+	for _, m := range models {
+		_, err := s.CreateModel(ctx, m)
 		switch {
 		case err == nil:
 			created++
 		case errors.Is(err, ErrModelExists), errors.Is(err, ErrInvalidModel):
 			// Taken by a model or a provider, or not expressible as a model.
+			skipped = append(skipped, m.Name)
 		default:
-			return created, err
+			return created, skipped, err
 		}
 	}
+	sort.Strings(skipped)
 	if err := s.SaveSettings(ctx, map[string]string{modelAliasesImportedKey: "1"}); err != nil {
-		return created, err
+		return created, skipped, err
 	}
-	return created, nil
+	return created, skipped, nil
 }

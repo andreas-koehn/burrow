@@ -96,6 +96,12 @@ func (s *Store) BackfillAIProviders(ctx context.Context) (int, error) {
 			if !ValidProviderSlug(slug) {
 				continue
 			}
+			// A synthetic model's name is not free either: try the next one.
+			if taken, err := s.slugTakenByModel(ctx, slug); err != nil {
+				return created, err
+			} else if taken {
+				continue
+			}
 			err := s.q.CreateAIProvider(ctx, db.AIProvider{
 				Slug: slug, Name: svc.Name, Kind: "tunnel", ServiceID: svc.ID, APIFormat: "openai",
 			})
@@ -189,15 +195,10 @@ func (s *Store) UpdateProvider(ctx context.Context, slug, newSlug, name string) 
 // DeleteProvider removes the provider. A tunnel provider's service is kept; a
 // direct provider's backing service goes with it, and with that its API keys,
 // AI configuration and model list. A provider that a synthetic model still
-// targets is not deleted: the error wraps ErrProviderInUse and names the models.
+// targets is not deleted: the error wraps ErrProviderInUse and names the
+// models. There is no check before the delete that a new model could
+// overtake: the foreign key refuses, and the database layer names the models.
 func (s *Store) DeleteProvider(ctx context.Context, slug string) error {
-	names, err := s.q.ListAIModelNamesByProvider(ctx, slug)
-	if err != nil {
-		return err
-	}
-	if len(names) > 0 {
-		return fmt.Errorf("%w: %s", ErrProviderInUse, strings.Join(names, ", "))
-	}
 	if err := s.q.DeleteAIProviderAndBacking(ctx, slug); errors.Is(err, db.ErrNotFound) {
 		return ErrProviderNotFound
 	} else if err != nil {
@@ -360,7 +361,9 @@ func (s *Store) CreateDirectProvider(ctx context.Context, ownerID string, in Dir
 // A field left empty keeps its stored value, so an update that does not name
 // the credential slot keeps the slot; ExtraHeaders nil keeps the stored
 // headers and an empty map removes them. Slug and Name of in are ignored.
-// The API format cannot change while a synthetic model targets the provider.
+// The API format cannot change while a synthetic model targets the provider;
+// model resolution re-checks a target's dialect against its provider at
+// request time, so a change that races a new model is still not served.
 // The /ai/ data plane reads the row per request, so the change applies at once.
 func (s *Store) UpdateProviderUpstream(ctx context.Context, slug string, in DirectProviderInput) (db.AIProvider, error) {
 	// The merge with the stored values runs inside the database's
@@ -389,7 +392,10 @@ func (s *Store) UpdateProviderUpstream(ctx context.Context, slug string, in Dire
 			return p, err
 		}
 		if in.APIFormat != p.APIFormat {
-			// A target's dialect is its provider's format; the two must not drift apart.
+			// A target's dialect is its provider's format; the two must not
+			// drift apart. This is a check before the write, so a model created
+			// in between can slip past it; model resolution checks a target's
+			// dialect against its provider again on every request.
 			names, err := s.q.ListAIModelNamesByProvider(ctx, slug)
 			if err != nil {
 				return p, err

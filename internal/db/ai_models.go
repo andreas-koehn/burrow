@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -32,6 +33,10 @@ type AIModelTarget struct {
 
 // ErrDuplicateModel is returned when a model name is already in use.
 var ErrDuplicateModel = errors.New("db: model name already in use")
+
+// ErrProviderInUse is returned, wrapped with the model names, when a delete
+// would remove a provider that a synthetic model still targets.
+var ErrProviderInUse = errors.New("provider is used by a model")
 
 const aiModelCols = `name, description, enabled, fallback_on_rate_limit, attempt_timeout_s, total_timeout_s, created_at, updated_at`
 
@@ -203,11 +208,16 @@ func (x *DB) DeleteAIModel(ctx context.Context, name string) error {
 	return notFoundIfNoRows(res, "delete ai model")
 }
 
-// ListAIModelNamesByProvider returns the names of models with a target on the
-// provider, sorted (never nil).
-func (x *DB) ListAIModelNamesByProvider(ctx context.Context, slug string) ([]string, error) {
+// modelNamesUsing returns the sorted names of the models with a target on one
+// of the providers the filter selects (never nil). The filter is a constant
+// of this package; t is the target row, p its provider, s the provider's service.
+func (x *DB) modelNamesUsing(ctx context.Context, filter string, arg string) ([]string, error) {
 	rows, err := x.sqlDB.QueryContext(ctx,
-		`SELECT DISTINCT model_name FROM ai_model_targets WHERE provider_slug=? ORDER BY model_name`, slug)
+		`SELECT DISTINCT t.model_name
+		   FROM ai_model_targets t
+		   JOIN ai_providers p ON p.slug = t.provider_slug
+		   JOIN services s ON s.id = p.service_id `+filter+`
+		  ORDER BY t.model_name`, arg)
 	if err != nil {
 		return nil, fmt.Errorf("list model names by provider: %w", err)
 	}
@@ -221,4 +231,28 @@ func (x *DB) ListAIModelNamesByProvider(ctx context.Context, slug string) ([]str
 		out = append(out, n)
 	}
 	return out, rows.Err()
+}
+
+// ListAIModelNamesByProvider returns the names of models with a target on the
+// provider, sorted (never nil).
+func (x *DB) ListAIModelNamesByProvider(ctx context.Context, slug string) ([]string, error) {
+	return x.modelNamesUsing(ctx, `WHERE t.provider_slug=?`, slug)
+}
+
+// providerInUseOr explains a failed delete. ai_model_targets.provider_slug
+// has no ON DELETE, so deleting a provider, its service or the service's
+// owner fails on the foreign key while a model targets the provider. The
+// models are read after the failure, not before the delete: a check made
+// first could be overtaken by a model created in between. When the filter
+// finds models, the result wraps ErrProviderInUse with their names; any other
+// failure, and nil, come back as they are.
+func (x *DB) providerInUseOr(ctx context.Context, deleteErr error, filter, arg string) error {
+	if deleteErr == nil || errors.Is(deleteErr, ErrNotFound) {
+		return deleteErr
+	}
+	names, err := x.modelNamesUsing(ctx, filter, arg)
+	if err != nil || len(names) == 0 {
+		return deleteErr
+	}
+	return fmt.Errorf("%w: %s", ErrProviderInUse, strings.Join(names, ", "))
 }

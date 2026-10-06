@@ -853,6 +853,9 @@ func (s *Store) CreateUser(ctx context.Context, email, password, role string) (d
 
 // DeleteUser removes the user and all associated sessions/tokens/tunnels (ON DELETE CASCADE).
 // Returns db.ErrNotFound if no such user exists.
+//
+// A user who owns the service behind a provider that a synthetic model
+// targets is not deleted: the error wraps ErrProviderInUse and names the models.
 func (s *Store) DeleteUser(ctx context.Context, id string) error {
 	// Capture the email BEFORE the cascade so the audit row is still useful.
 	var email string

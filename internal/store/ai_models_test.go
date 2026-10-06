@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/db"
 )
@@ -200,7 +202,7 @@ func TestProviderGuards(t *testing.T) {
 	}
 
 	err := s.DeleteProvider(ctx, "ollama")
-	if !errors.Is(err, ErrProviderInUse) || !strings.Contains(err.Error(), "another-model, burrow-simple") {
+	if !errors.Is(err, ErrProviderInUse) || !strings.Contains(err.Error(), "another-model, burrow-simple") || strings.Contains(err.Error(), "FOREIGN KEY") {
 		t.Fatalf("delete in use err = %v", err)
 	}
 	if _, err := s.ProviderBySlug(ctx, "ollama"); err != nil {
@@ -279,6 +281,14 @@ func TestUpdateProviderUpstream_FormatLockedByModels(t *testing.T) {
 	}
 }
 
+// backfilled runs the provider backfill, which the alias import waits for.
+func backfilled(t *testing.T, s *Store) {
+	t.Helper()
+	if _, err := s.BackfillAIProviders(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestImportModelAliases(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
@@ -290,14 +300,23 @@ func TestImportModelAliases(t *testing.T) {
 		{Alias: "Bad Name", ConcreteModel: "x", ServiceID: svcOllama},
 		{Alias: "orphan", ConcreteModel: "y", ServiceID: orphan.ID},
 		{Alias: "zai", ConcreteModel: "z", ServiceID: svcOllama}, // a provider's slug
+		{Alias: "too-long", ConcreteModel: strings.Repeat("m", 201), ServiceID: svcOllama},
 	} {
 		if err := s.q.CreateModelAlias(ctx, a); err != nil {
 			t.Fatal(err)
 		}
 	}
-	n, err := s.ImportModelAliases(ctx)
-	if err != nil || n != 1 {
-		t.Fatalf("import: n=%d err=%v", n, err)
+
+	// Not before the provider backfill: without providers every alias would
+	// be skipped, and the marker would make that final.
+	if _, _, err := s.ImportModelAliases(ctx); !errors.Is(err, ErrProvidersNotBackfilled) {
+		t.Fatalf("import before backfill err = %v", err)
+	}
+	backfilled(t, s)
+
+	n, skipped, err := s.ImportModelAliases(ctx)
+	if err != nil || n != 1 || fmt.Sprint(skipped) != "[Bad Name orphan too-long zai]" {
+		t.Fatalf("import: n=%d skipped=%q err=%v", n, skipped, err)
 	}
 	m, err := s.ModelByName(ctx, "fast")
 	if err != nil || !m.Enabled || len(m.Targets) != 1 ||
@@ -307,23 +326,24 @@ func TestImportModelAliases(t *testing.T) {
 	if list, _ := s.ListModels(ctx); len(list) != 1 {
 		t.Fatalf("models: %+v", list)
 	}
-	if n, err := s.ImportModelAliases(ctx); err != nil || n != 0 {
-		t.Fatalf("second run: n=%d err=%v", n, err)
+	if n, skipped, err := s.ImportModelAliases(ctx); err != nil || n != 0 || len(skipped) != 0 {
+		t.Fatalf("second run: n=%d skipped=%q err=%v", n, skipped, err)
 	}
 	// A model an admin deleted does not come back at the next start.
 	if err := s.DeleteModel(ctx, "fast"); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := s.ImportModelAliases(ctx); err != nil || n != 0 {
+	if n, _, err := s.ImportModelAliases(ctx); err != nil || n != 0 {
 		t.Fatalf("run after delete: n=%d err=%v", n, err)
 	}
 }
 
-// An alias whose name a model already has is left alone.
+// An alias whose name a model already has is left alone, and reported.
 func TestImportModelAliases_KeepsExistingModel(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	svcOllama, _ := modelFixture(t, s)
+	backfilled(t, s)
 	m := simpleModel()
 	m.Name = "fast"
 	if _, err := s.CreateModel(ctx, m); err != nil {
@@ -332,10 +352,114 @@ func TestImportModelAliases_KeepsExistingModel(t *testing.T) {
 	if err := s.q.CreateModelAlias(ctx, db.ModelAlias{Alias: "fast", ConcreteModel: "other", ServiceID: svcOllama}); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := s.ImportModelAliases(ctx); err != nil || n != 0 {
-		t.Fatalf("import: n=%d err=%v", n, err)
+	if n, skipped, err := s.ImportModelAliases(ctx); err != nil || n != 0 || fmt.Sprint(skipped) != "[fast]" {
+		t.Fatalf("import: n=%d skipped=%q err=%v", n, skipped, err)
 	}
 	if got, _ := s.ModelByName(ctx, "fast"); len(got.Targets) != 1 || got.Targets[0].TargetModel != "mistral" {
 		t.Fatalf("existing model changed: %+v", got)
+	}
+}
+
+// model_aliases has the alias as its primary key, so one name has one row in
+// today's schema; the grouping is still defined for rows that share a name
+// and is checked here on rows that never touch the table.
+func TestAliasModels_GroupsAndOrders(t *testing.T) {
+	t0 := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	providers := map[string]db.AIProvider{
+		"svc-a": {Slug: "alpha", APIFormat: "openai"},
+		"svc-b": {Slug: "beta", APIFormat: "openai"},
+		"svc-c": {Slug: "claude", APIFormat: "anthropic"},
+	}
+	rows := []db.ModelAlias{
+		{Alias: "smart", ConcreteModel: "b-late", ServiceID: "svc-b", Priority: 10, CreatedAt: t0.Add(time.Hour)},
+		{Alias: "smart", ConcreteModel: "a-low", ServiceID: "svc-a", Priority: 50, CreatedAt: t0},
+		{Alias: "smart", ConcreteModel: "c-only", ServiceID: "svc-c", Priority: 99, CreatedAt: t0},
+		{Alias: "smart", ConcreteModel: "a-early", ServiceID: "svc-a", Priority: 10, CreatedAt: t0},
+		{Alias: "smart", ConcreteModel: "b-tie", ServiceID: "svc-b", Priority: 10, CreatedAt: t0}, // same priority and time as a-early
+		{Alias: "smart", ConcreteModel: "gone", ServiceID: "svc-none", Priority: 1, CreatedAt: t0},
+		{Alias: "Bad Name", ConcreteModel: "x", ServiceID: "svc-a"},
+		{Alias: "lonely", ConcreteModel: "y", ServiceID: "svc-none"},
+		{Alias: "other", ConcreteModel: "z", ServiceID: "svc-b", Priority: 100, CreatedAt: t0},
+	}
+	want := "[{other [{openai 0 beta z}]} {smart [{openai 0 alpha a-early} {openai 0 beta b-tie} {openai 0 beta b-late} {openai 0 alpha a-low} {anthropic 0 claude c-only}]}]"
+	wantSkipped := "[Bad Name lonely]"
+	lookup := func(id string) (db.AIProvider, bool) { p, ok := providers[id]; return p, ok }
+	// The result does not depend on the order the rows arrive in.
+	for shift := 0; shift < len(rows); shift++ {
+		in := append(append([]db.ModelAlias{}, rows[shift:]...), rows[:shift]...)
+		models, skipped := aliasModels(in, lookup)
+		type view struct {
+			Name    string
+			Targets []db.AIModelTarget
+		}
+		var got []view
+		for _, m := range models {
+			if !m.Enabled {
+				t.Fatalf("%s is not enabled", m.Name)
+			}
+			got = append(got, view{m.Name, m.Targets})
+		}
+		if fmt.Sprint(got) != want || fmt.Sprint(skipped) != wantSkipped {
+			t.Fatalf("shift %d:\n got %v, skipped %q\nwant %v, skipped %q", shift, got, skipped, want, wantSkipped)
+		}
+	}
+}
+
+func TestBackfillAIProviders_SkipsModelNames(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	svcA, _, _ := providerFixture(t, s)
+	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA); err != nil {
+		t.Fatal(err)
+	}
+	m := simpleModel()
+	m.Name = "second-llm"
+	if _, err := s.CreateModel(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	u := mustCreateUser(t, s, "bf-model@x", "user")
+	svc := mustGetOrCreateService(t, s, u.ID, "Second LLM", "http")
+	if err := s.q.SetServiceSubdomain(ctx, svc.ID, "k3m9qa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.q.SetServiceAccessMode(ctx, svc.ID, "api_key", "Authorization"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.BackfillAIProviders(ctx); err != nil || n != 1 {
+		t.Fatalf("backfill: n=%d err=%v", n, err)
+	}
+	// The name-derived slug is a model's name, so the service's own slug is used.
+	p, err := s.q.GetAIProviderByService(ctx, svc.ID)
+	if err != nil || p.Slug != "k3m9qa" {
+		t.Fatalf("provider: %v %+v", err, p)
+	}
+}
+
+// A user who owns the service behind a provider cannot be deleted while a
+// model targets that provider.
+func TestDeleteUser_RefusedWhileModelTargetsProvider(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	_, adminID := modelFixture(t, s)
+	m := simpleModel()
+	m.Targets = []db.AIModelTarget{{ProviderSlug: "zai", TargetModel: "glm"}}
+	if _, err := s.CreateModel(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	err := s.DeleteUser(ctx, adminID)
+	if !errors.Is(err, ErrProviderInUse) || !strings.Contains(err.Error(), "burrow-simple") || strings.Contains(err.Error(), "FOREIGN KEY") {
+		t.Fatalf("delete user err = %v", err)
+	}
+	if _, err := s.ProviderBySlug(ctx, "zai"); err != nil {
+		t.Fatalf("provider after the refused delete: %v", err)
+	}
+	if err := s.DeleteModel(ctx, "burrow-simple"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteUser(ctx, adminID); err != nil {
+		t.Fatalf("delete user without models: %v", err)
+	}
+	if _, err := s.ProviderBySlug(ctx, "zai"); !errors.Is(err, db.ErrNotFound) {
+		t.Fatalf("provider after its owner went: %v", err)
 	}
 }

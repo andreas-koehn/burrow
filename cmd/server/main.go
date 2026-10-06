@@ -410,15 +410,20 @@ func newRootCmd() *cobra.Command {
 			if err := st.SeedAdmin(context.Background(), cfg.AdminEmail, cfg.AdminPassword); err != nil {
 				return err
 			}
-			if n, err := st.BackfillAIProviders(context.Background()); err != nil {
-				log.Warn("ai providers backfill failed", "err", err)
+			n, backfillErr := st.BackfillAIProviders(context.Background())
+			if backfillErr != nil {
+				log.Warn("ai providers backfill failed", "err", backfillErr)
 			} else if n > 0 {
 				log.Info("ai providers created for existing api_key services", "count", n)
 			}
-			if n, err := st.ImportModelAliases(context.Background()); err != nil {
+			// The alias import runs once and targets providers: after a failed
+			// backfill it waits for the next start.
+			if backfillErr != nil {
+				log.Warn("model alias import postponed: the ai providers backfill failed")
+			} else if n, skipped, err := st.ImportModelAliases(context.Background()); err != nil {
 				log.Warn("model alias import failed", "err", err)
-			} else if n > 0 {
-				log.Info("models created from model aliases", "count", n)
+			} else if n > 0 || len(skipped) > 0 {
+				log.Info("model aliases imported as models", "imported", n, "skipped", len(skipped), "skipped_aliases", skipped)
 			}
 
 			bus := events.NewBus()

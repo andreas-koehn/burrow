@@ -241,11 +241,13 @@ func (x *DB) SetServiceSubdomain(ctx context.Context, id, sub string) error {
 
 // DeleteService removes the service with the given ID.
 // ON DELETE CASCADE removes associated api_keys and access_policy rows.
-// Returns ErrNotFound if no row matched.
+// Returns ErrNotFound if no row matched. A service behind a provider that a
+// synthetic model targets stays: the error wraps ErrProviderInUse and names
+// the models.
 func (x *DB) DeleteService(ctx context.Context, id string) error {
 	res, err := x.sqlDB.ExecContext(ctx, `DELETE FROM services WHERE id=?`, id)
 	if err != nil {
-		return fmt.Errorf("delete service: %w", err)
+		return x.providerInUseOr(ctx, fmt.Errorf("delete service: %w", err), `WHERE s.id=?`, id)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {

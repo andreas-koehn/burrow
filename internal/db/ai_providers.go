@@ -175,8 +175,13 @@ func (x *DB) ModifyAIProviderUpstream(ctx context.Context, slug string, modify f
 }
 
 // DeleteAIProviderAndBacking deletes the provider and, for kind "direct", its
-// backing service, in one transaction.
+// backing service, in one transaction. A provider that a synthetic model
+// targets stays: the error wraps ErrProviderInUse and names the models.
 func (x *DB) DeleteAIProviderAndBacking(ctx context.Context, slug string) error {
+	return x.providerInUseOr(ctx, x.deleteAIProviderAndBacking(ctx, slug), `WHERE t.provider_slug=?`, slug)
+}
+
+func (x *DB) deleteAIProviderAndBacking(ctx context.Context, slug string) error {
 	tx, err := x.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin delete provider tx: %w", err)
