@@ -14,52 +14,132 @@ func newTestBreaker() (*Breaker, *time.Time) {
 	return b, &now
 }
 
+// allowed asks for key and drops the trial token.
+func allowed(b *Breaker, key string) bool {
+	ok, _ := b.Allow(key)
+	return ok
+}
+
+// trial opens key's breaker, waits out the cool-down and takes the trial.
+func trial(t *testing.T, b *Breaker, now *time.Time, key string) uint64 {
+	t.Helper()
+	for i := 0; i < 5; i++ {
+		b.Report(key, false, 0)
+	}
+	*now = now.Add(31 * time.Second)
+	ok, token := b.Allow(key)
+	if !ok || token == 0 || b.State(key) != BreakerHalfOpen {
+		t.Fatalf("no trial after the cool-down: allowed %v token %d state %s", ok, token, b.State(key))
+	}
+	return token
+}
+
+// In half-open only the trial's own result decides. Results of requests that
+// were admitted before the breaker opened change nothing.
+func TestBreaker_OnlyTheTrialDecides(t *testing.T) {
+	// A stale success does not close; the trial's failure then reopens.
+	b, now := newTestBreaker()
+	token := trial(t, b, now, "zai")
+	b.Report("zai", true, 0)
+	if b.State("zai") != BreakerHalfOpen || allowed(b, "zai") {
+		t.Fatalf("a stale success decided the trial: state %s", b.State("zai"))
+	}
+	b.Report("zai", false, token)
+	if b.State("zai") != BreakerOpen {
+		t.Fatalf("the trial's failure did not reopen: %s", b.State("zai"))
+	}
+
+	// A stale failure does not reopen; the trial's success then closes.
+	b, now = newTestBreaker()
+	token = trial(t, b, now, "zai")
+	b.Report("zai", false, 0)
+	if b.State("zai") != BreakerHalfOpen {
+		t.Fatalf("a stale failure decided the trial: state %s", b.State("zai"))
+	}
+	b.Report("zai", true, token)
+	if b.State("zai") != BreakerClosed || !allowed(b, "zai") {
+		t.Fatalf("the trial's success did not close: %s", b.State("zai"))
+	}
+
+	// The other order: the trial decides first, a stale result afterwards is
+	// an ordinary sample of a closed breaker.
+	b, now = newTestBreaker()
+	token = trial(t, b, now, "zai")
+	b.Report("zai", true, token)
+	b.Report("zai", false, 0)
+	if b.State("zai") != BreakerClosed {
+		t.Fatalf("one failure after a successful trial: %s", b.State("zai"))
+	}
+
+	// The token of an abandoned trial does not decide the next one.
+	b, now = newTestBreaker()
+	old := trial(t, b, now, "zai")
+	*now = now.Add(31 * time.Second)
+	ok, token := b.Allow("zai")
+	if !ok || token == 0 || token == old {
+		t.Fatalf("abandoned trial not granted again: %v %d (old %d)", ok, token, old)
+	}
+	b.Report("zai", true, old)
+	if b.State("zai") != BreakerHalfOpen {
+		t.Fatalf("an abandoned trial's late result decided the new trial: %s", b.State("zai"))
+	}
+	b.Report("zai", true, token)
+	if b.State("zai") != BreakerClosed {
+		t.Fatalf("state %s", b.State("zai"))
+	}
+	// A closed breaker hands out no token.
+	if ok, token := b.Allow("zai"); !ok || token != 0 {
+		t.Fatalf("closed: allowed %v token %d", ok, token)
+	}
+}
+
 func TestBreaker_OpensOnFailureRateAndRecovers(t *testing.T) {
 	b, now := newTestBreaker()
-	if !b.Allow("zai") {
+	if !allowed(b, "zai") {
 		t.Fatal("a fresh key must be allowed")
 	}
 	for i := 0; i < 4; i++ {
-		b.Report("zai", false)
+		b.Report("zai", false, 0)
 	}
-	if !b.Allow("zai") {
+	if !allowed(b, "zai") {
 		t.Fatal("4 samples are below the minimum; must still be closed")
 	}
-	b.Report("zai", false)
-	if b.Allow("zai") || !b.Open("zai") || b.State("zai") != BreakerOpen {
+	b.Report("zai", false, 0)
+	if allowed(b, "zai") || !b.Open("zai") || b.State("zai") != BreakerOpen {
 		t.Fatal("5 failures of 5 must open the breaker")
 	}
-	if !b.Allow("openrouter") || b.State("openrouter") != BreakerClosed {
+	if !allowed(b, "openrouter") || b.State("openrouter") != BreakerClosed {
 		t.Fatal("breakers are per key")
 	}
 
 	*now = now.Add(29 * time.Second)
-	if b.Allow("zai") {
+	if allowed(b, "zai") {
 		t.Fatal("still inside the cool-down")
 	}
 	*now = now.Add(2 * time.Second)
 	if b.Open("zai") {
 		t.Fatal("Open must report a breaker past its cool-down as not refusing")
 	}
-	if !b.Allow("zai") || b.State("zai") != BreakerHalfOpen {
+	ok, token := b.Allow("zai")
+	if !ok || token == 0 || b.State("zai") != BreakerHalfOpen {
 		t.Fatal("after the cool-down one trial request must be allowed")
 	}
-	// Half-open: one failure reopens at once, without waiting for 5 samples.
-	b.Report("zai", false)
-	if b.Allow("zai") {
+	// Half-open: the trial's failure reopens at once, without waiting for 5 samples.
+	b.Report("zai", false, token)
+	if allowed(b, "zai") || b.State("zai") != BreakerOpen {
 		t.Fatal("a failed trial must reopen the breaker")
 	}
 	*now = now.Add(31 * time.Second)
-	_ = b.Allow("zai")
-	b.Report("zai", true)
-	if !b.Allow("zai") || b.Open("zai") || b.State("zai") != BreakerClosed {
+	_, token = b.Allow("zai")
+	b.Report("zai", true, token)
+	if !allowed(b, "zai") || b.Open("zai") || b.State("zai") != BreakerClosed {
 		t.Fatal("a successful trial must close the breaker")
 	}
 	// The failures from before the trial are forgotten: four more do not open it.
 	for i := 0; i < 3; i++ {
-		b.Report("zai", false)
+		b.Report("zai", false, 0)
 	}
-	if !b.Allow("zai") {
+	if !allowed(b, "zai") {
 		t.Fatal("old failures counted after a successful trial")
 	}
 }
@@ -67,16 +147,16 @@ func TestBreaker_OpensOnFailureRateAndRecovers(t *testing.T) {
 func TestBreaker_MixedTrafficBelowThresholdStaysClosed(t *testing.T) {
 	b, _ := newTestBreaker()
 	for i := 0; i < 10; i++ {
-		b.Report("zai", i%3 == 0) // 4 ok, 6 failed = 60 % → opens
+		b.Report("zai", i%3 == 0, 0) // 4 ok, 6 failed = 60 % → opens
 	}
-	if b.Allow("zai") {
+	if allowed(b, "zai") {
 		t.Fatal("60 % failures must open")
 	}
 	b2, _ := newTestBreaker()
 	for i := 0; i < 10; i++ {
-		b2.Report("zai", i%2 == 0 || i == 1) // 6 ok, 4 failed = 40 %
+		b2.Report("zai", i%2 == 0 || i == 1, 0) // 6 ok, 4 failed = 40 %
 	}
-	if !b2.Allow("zai") {
+	if !allowed(b2, "zai") {
 		t.Fatal("40 % failures must stay closed")
 	}
 }
@@ -84,11 +164,11 @@ func TestBreaker_MixedTrafficBelowThresholdStaysClosed(t *testing.T) {
 func TestBreaker_OldSamplesExpire(t *testing.T) {
 	b, now := newTestBreaker()
 	for i := 0; i < 4; i++ {
-		b.Report("zai", false)
+		b.Report("zai", false, 0)
 	}
 	*now = now.Add(61 * time.Second)
-	b.Report("zai", false) // the four old failures are outside the window
-	if !b.Allow("zai") {
+	b.Report("zai", false, 0) // the four old failures are outside the window
+	if !allowed(b, "zai") {
 		t.Fatal("expired samples must not count")
 	}
 }
@@ -98,16 +178,16 @@ func TestBreaker_OldSamplesExpire(t *testing.T) {
 func TestBreaker_ReportsWhileOpenDoNotMoveTheCoolDown(t *testing.T) {
 	b, now := newTestBreaker()
 	for i := 0; i < 5; i++ {
-		b.Report("zai", false)
+		b.Report("zai", false, 0)
 	}
 	*now = now.Add(20 * time.Second)
-	b.Report("zai", false)
-	b.Report("zai", true)
-	if b.Allow("zai") {
+	b.Report("zai", false, 0)
+	b.Report("zai", true, 0)
+	if allowed(b, "zai") {
 		t.Fatal("a result reported while open closed the breaker")
 	}
 	*now = now.Add(11 * time.Second) // 31 s after it opened
-	if !b.Allow("zai") {
+	if !allowed(b, "zai") {
 		t.Fatal("a failure reported while open pushed the cool-down out")
 	}
 }
@@ -119,10 +199,10 @@ func TestBreaker_ManySamplesStayBounded(t *testing.T) {
 		if i%1000 == 0 {
 			*now = now.Add(time.Second)
 		}
-		b.Report("zai", true)
+		b.Report("zai", true, 0)
 	}
-	b.Report("zai", false)
-	if !b.Allow("zai") {
+	b.Report("zai", false, 0)
+	if !allowed(b, "zai") {
 		t.Fatal("one failure among thousands of successes opened the breaker")
 	}
 }
@@ -134,8 +214,8 @@ func TestBreaker_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			b.Report("k", i%2 == 0)
-			_ = b.Allow("k")
+			b.Report("k", i%2 == 0, 0)
+			_ = allowed(b, "k")
 			_ = b.Open("k")
 			_ = b.State("k")
 		}(i)
@@ -147,7 +227,7 @@ func TestBreaker_Concurrent(t *testing.T) {
 func TestBreaker_HalfOpenAdmitsExactlyOne(t *testing.T) {
 	b, now := newTestBreaker()
 	for i := 0; i < 5; i++ {
-		b.Report("zai", false)
+		b.Report("zai", false, 0)
 	}
 	*now = now.Add(31 * time.Second)
 	var admitted atomic.Int32
@@ -156,7 +236,7 @@ func TestBreaker_HalfOpenAdmitsExactlyOne(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if b.Allow("zai") {
+			if allowed(b, "zai") {
 				admitted.Add(1)
 			}
 		}()
@@ -176,37 +256,38 @@ func TestBreaker_HalfOpenAdmitsExactlyOne(t *testing.T) {
 func TestBreaker_AbandonedTrialIsGrantedAgain(t *testing.T) {
 	b, now := newTestBreaker()
 	for i := 0; i < 5; i++ {
-		b.Report("zai", false)
+		b.Report("zai", false, 0)
 	}
 	*now = now.Add(31 * time.Second)
-	if !b.Allow("zai") {
+	if !allowed(b, "zai") {
 		t.Fatal("no trial after the cool-down")
 	}
 	*now = now.Add(29 * time.Second)
-	if b.Allow("zai") {
+	if allowed(b, "zai") {
 		t.Fatal("a second trial before the first one's cool-down was over")
 	}
 	*now = now.Add(2 * time.Second)
 	if b.Open("zai") || b.State("zai") != BreakerHalfOpen {
 		t.Fatalf("after the abandoned trial's cool-down: Open %v State %s", b.Open("zai"), b.State("zai"))
 	}
-	if !b.Allow("zai") || b.Allow("zai") {
+	ok, token := b.Allow("zai")
+	if !ok || token == 0 || allowed(b, "zai") {
 		t.Fatal("an abandoned trial must be granted again, once")
 	}
 	// The second trial succeeds: closed, for everyone.
-	b.Report("zai", true)
-	if !b.Allow("zai") || !b.Allow("zai") || b.State("zai") != BreakerClosed {
+	b.Report("zai", true, token)
+	if !allowed(b, "zai") || !allowed(b, "zai") || b.State("zai") != BreakerClosed {
 		t.Fatal("a successful trial did not close the breaker")
 	}
 	// And a failed trial reopens for a full cool-down.
 	for i := 0; i < 5; i++ {
-		b.Report("zai", false)
+		b.Report("zai", false, 0)
 	}
 	*now = now.Add(31 * time.Second)
-	_ = b.Allow("zai")
-	b.Report("zai", false)
+	_, token = b.Allow("zai")
+	b.Report("zai", false, token)
 	*now = now.Add(29 * time.Second)
-	if b.Allow("zai") || b.State("zai") != BreakerOpen {
+	if allowed(b, "zai") || b.State("zai") != BreakerOpen {
 		t.Fatal("a failed trial did not reopen the breaker")
 	}
 }

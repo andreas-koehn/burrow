@@ -19,6 +19,7 @@ type Breaker struct {
 	minSamples int
 	failurePct int
 	states     map[string]*breakerState
+	trials     uint64 // the last trial handed out; a trial's token is never 0
 }
 
 // BreakerState is what a breaker says about one key.
@@ -40,6 +41,7 @@ type breakerState struct {
 	// cool-down (the client left, the provider answered a 4xx), the next
 	// Allow is the trial of a new period.
 	trialAt time.Time
+	trial   uint64 // the token of that trial
 }
 
 // breakerBucket counts the results of one slice of the window.
@@ -59,30 +61,36 @@ func NewBreaker() *Breaker {
 }
 
 // Allow reports whether key may be tried now. After the cool-down it admits
-// one caller as the trial (half-open) and refuses the rest until a Report
-// decides; a trial nobody reports on is granted again after another cool-down.
-func (b *Breaker) Allow(key string) bool {
+// one caller as the trial (half-open) and refuses the rest until that
+// caller's Report decides; a trial nobody reports on is granted again after
+// another cool-down.
+//
+// trial is non-zero for the caller that was granted the trial. It hands the
+// value back in Report; in half-open no other report counts. Ask once per
+// request and key: a second question while the trial is under way is refused.
+func (b *Breaker) Allow(key string) (allowed bool, trial uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	s := b.states[key]
 	if s == nil {
-		return true
+		return true, 0
 	}
 	now := b.now()
 	switch {
 	case !s.trialAt.IsZero():
 		if now.Sub(s.trialAt) < b.coolDown {
-			return false
+			return false, 0
 		}
-		s.trialAt = now
-		return true
 	case s.openedAt.IsZero():
-		return true
+		return true, 0
 	case now.Sub(s.openedAt) < b.coolDown:
-		return false
+		return false, 0
+	default:
+		s.openedAt, s.buckets = time.Time{}, [breakerBuckets]breakerBucket{}
 	}
-	s.openedAt, s.trialAt, s.buckets = time.Time{}, now, [breakerBuckets]breakerBucket{}
-	return true
+	b.trials++
+	s.trialAt, s.trial = now, b.trials
+	return true, s.trial
 }
 
 // Open reports whether key is currently refused: it is open, or half-open
@@ -125,8 +133,13 @@ func (b *Breaker) refused(s *breakerState) bool {
 
 // Report records the outcome of one attempt against key. Only a failure of
 // the provider is reported as ok=false; a request the provider refused as the
-// client's fault is not reported at all.
-func (b *Breaker) Report(key string, ok bool) {
+// client's fault is not reported at all. trial is what Allow returned for
+// this request and key.
+//
+// In half-open only the trial's own report counts, and it decides. A result of
+// a request admitted before the breaker opened (a long stream ending, a late
+// timeout) says nothing about the provider now and changes nothing.
+func (b *Breaker) Report(key string, ok bool, trial uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	s := b.states[key]
@@ -136,7 +149,10 @@ func (b *Breaker) Report(key string, ok bool) {
 	}
 	now := b.now()
 	if !s.trialAt.IsZero() {
-		s.trialAt = time.Time{}
+		if trial == 0 || trial != s.trial {
+			return
+		}
+		s.trialAt, s.trial = time.Time{}, 0
 		if !ok {
 			s.openedAt = now
 			return

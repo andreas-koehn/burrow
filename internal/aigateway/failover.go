@@ -148,6 +148,7 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	sent := 0 // attempts that reached an upstream handler
 	outOfTime := false
+	admitted := map[string]admission{} // by provider slug
 	for i, c := range order {
 		if r.Context().Err() != nil {
 			return // the client is gone; nothing more to try
@@ -165,10 +166,22 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if i+1 < len(order) {
 			next = &order[i+1]
 		}
-		// Asked at the moment of the attempt: this is what lets a provider
-		// back in after its cool-down. A breaker that opened since the order
-		// was made skips the candidate, unless it is the last thing to try.
-		if f.g.Breaker != nil && !f.g.Breaker.Allow(c.provider.Slug) && !forced && next != nil {
+		// Asked at the moment of the first attempt on a provider: this is
+		// what lets it back in after its cool-down. The answer holds for the
+		// provider's further candidates in this request (its other keys, the
+		// same provider listed again), so a trial covers all of them and the
+		// one report per provider decides it. A breaker that opened since
+		// the order was made skips the candidate, unless it is the last
+		// thing to try.
+		adm, asked := admitted[c.provider.Slug]
+		if !asked && f.g.Breaker != nil {
+			adm.refused = true
+			if ok, trial := f.g.Breaker.Allow(c.provider.Slug); ok {
+				adm = admission{trial: trial}
+			}
+			admitted[c.provider.Slug] = adm
+		}
+		if adm.refused && !forced && next != nil {
 			rows = append(rows, f.skipped(c, attemptBreakerOpen))
 			continue
 		}
@@ -176,7 +189,7 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sent++
 		res := f.attempt(w, r, c, next, body.WithModel(c.model), timeout, sent)
 		rows = append(rows, res.row)
-		f.report(c, next, res.outcome)
+		f.report(c, next, res.outcome, adm.trial)
 		if res.panicked && res.committed {
 			// The response had started and broke off. The server must abort
 			// the connection so the client sees a truncated response, not a
@@ -416,19 +429,25 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 	return res
 }
 
+// admission is what the breaker said about a provider for this request.
+type admission struct {
+	refused bool
+	trial   uint64 // non-zero: this request is the provider's trial
+}
+
 // report tells the breaker what an attempt showed about its provider. A
 // provider with several credential slots is judged once per request: while
 // another of its keys is still to be tried, a failure is not yet the
 // provider's, so one dead key cannot take a working provider out of service.
-func (f *failover) report(c candidate, next *candidate, outcome int) {
+func (f *failover) report(c candidate, next *candidate, outcome int, trial uint64) {
 	if f.g.Breaker == nil {
 		return
 	}
 	switch {
 	case outcome == outcomeOK:
-		f.g.Breaker.Report(c.provider.Slug, true)
+		f.g.Breaker.Report(c.provider.Slug, true, trial)
 	case outcome == outcomeFailed && (next == nil || next.provider.Slug != c.provider.Slug):
-		f.g.Breaker.Report(c.provider.Slug, false)
+		f.g.Breaker.Report(c.provider.Slug, false, trial)
 	}
 }
 

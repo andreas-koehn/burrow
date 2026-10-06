@@ -910,7 +910,7 @@ func TestFailover_AllBreakersOpenStillTries(t *testing.T) {
 	s := script(map[string]http.HandlerFunc{"zai#ZAI": status(200, `{"ok":true}`)})
 	g, _ := failoverGateway(s, "ZAI", func(m *db.AIModel) { m.Targets = m.Targets[:1] })
 	for i := 0; i < 5; i++ {
-		g.Breaker.Report("zai", false)
+		g.Breaker.Report("zai", false, 0)
 	}
 	if !g.Breaker.Open("zai") {
 		t.Fatal("setup: breaker not open")
@@ -1596,4 +1596,56 @@ func (s *syncBuffer) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b.String()
+}
+
+// A provider with several keys takes its trial as one: when the first key
+// fails, the second is still tried, and its answer decides.
+func TestFailover_TrialCoversAllKeysOfAProvider(t *testing.T) {
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": status(500, "bad key"), "zai#ZAI2": status(200, `{"from":"zai"}`), "openrouter#OR": status(200, `{"from":"or"}`)})
+	g, att := failoverGateway(s, "ZAI,ZAI2", nil)
+	now := time.Now()
+	g.Breaker.now = func() time.Time { return now }
+	for i := 0; i < 5; i++ {
+		g.Breaker.Report("zai", false, 0)
+	}
+	now = now.Add(31 * time.Second)
+	rec := call(g, smartBody)
+	if rec.Body.String() != `{"from":"zai"}` {
+		t.Fatalf("body %s attempts %+v", rec.Body.String(), att.all())
+	}
+	wantHeaders(t, rec, "zai", "glm-5.1", "2")
+	if g.Breaker.State("zai") != BreakerClosed || s.n("openrouter#OR") != 0 {
+		t.Fatalf("state %s after the second key answered", g.Breaker.State("zai"))
+	}
+	if rows := att.all(); len(rows) != 2 || rows[0].ErrorCode != "http_500" || rows[1].ErrorCode != "" {
+		t.Fatalf("attempts: %+v", rows)
+	}
+
+	// The same for a model that lists one provider twice.
+	s = script(map[string]http.HandlerFunc{"openrouter#OR": status(200, "{}")})
+	calls := 0
+	s.handlers["zai#ZAI"] = func(w http.ResponseWriter, _ *http.Request) {
+		if calls++; calls == 1 {
+			w.WriteHeader(500)
+			return
+		}
+		_, _ = w.Write([]byte(`{"from":"zai"}`))
+	}
+	g, _ = failoverGateway(s, "ZAI", func(m *db.AIModel) {
+		m.Targets = []db.AIModelTarget{
+			{Dialect: "openai", Position: 0, ProviderSlug: "zai", TargetModel: "glm-5.1"},
+			{Dialect: "openai", Position: 1, ProviderSlug: "zai", TargetModel: "glm-4"},
+			{Dialect: "openai", Position: 2, ProviderSlug: "openrouter", TargetModel: "google/gemini-x"},
+		}
+	})
+	g.Breaker.now = func() time.Time { return now }
+	for i := 0; i < 5; i++ {
+		g.Breaker.Report("zai", false, 0)
+	}
+	now = now.Add(31 * time.Second)
+	rec = call(g, smartBody)
+	wantHeaders(t, rec, "zai", "glm-4", "2")
+	if g.Breaker.State("zai") != BreakerClosed {
+		t.Fatalf("state %s", g.Breaker.State("zai"))
+	}
 }
