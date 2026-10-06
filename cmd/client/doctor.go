@@ -251,6 +251,7 @@ func certProblem(err error) (string, bool) {
 	var ua x509.UnknownAuthorityError
 	var he x509.HostnameError
 	var ci x509.CertificateInvalidError
+	var cv *tls.CertificateVerificationError
 	switch {
 	case errors.As(err, &ua):
 		issuer := "an unknown issuer"
@@ -266,6 +267,9 @@ func certProblem(err error) (string, bool) {
 		return "the certificate is not valid for this name", true
 	case errors.As(err, &ci):
 		return "the certificate is not valid", true
+	case errors.As(err, &cv):
+		// Verification failed for a reason without a type of its own above.
+		return "the certificate could not be verified", true
 	}
 	return "", false
 }

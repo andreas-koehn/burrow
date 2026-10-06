@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -737,4 +738,26 @@ func TestDoctor_ExitWhenInterrupted(t *testing.T) {
 		t.Fatalf("stdout:\n%s", out)
 	}
 	h.noToken()
+}
+
+// A certificate that fails verification for a reason without an x509 type of
+// its own is a certificate problem too, not an unreachable relay.
+func TestCertProblem_VerificationError(t *testing.T) {
+	for name, err := range map[string]error{
+		"bare":    &tls.CertificateVerificationError{Err: errors.New("x509: certificate signed by an authority this build does not know")},
+		"wrapped": &url.Error{Op: "Post", URL: "https://burrow.example.com", Err: &tls.CertificateVerificationError{Err: errors.New("x509: something else")}},
+	} {
+		msg, ok := certProblem(err)
+		if !ok || !strings.Contains(msg, "certificate") {
+			t.Fatalf("%s: %q, %v", name, msg, ok)
+		}
+	}
+	// The three it knew keep their own wording.
+	wrapped := &tls.CertificateVerificationError{Err: x509.HostnameError{Certificate: &x509.Certificate{}, Host: "burrow.example.com"}}
+	if msg, ok := certProblem(wrapped); !ok || msg != "the certificate is not valid for this name" {
+		t.Fatalf("%q, %v", msg, ok)
+	}
+	if _, ok := certProblem(errors.New("connection refused")); ok {
+		t.Fatal("a refused connection is taken for a certificate problem")
+	}
 }

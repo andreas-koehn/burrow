@@ -179,23 +179,6 @@ func TestLogin_UsageErrors(t *testing.T) {
 	}
 }
 
-func TestLogin_WithoutTokenPointsAtTheTokenPath(t *testing.T) {
-	h := newHarness(t)
-	code := h.exec("login", "burrow.example.com")
-	if code != 2 || h.hasConfig() {
-		t.Fatalf("exit %d, config written: %v", code, h.hasConfig())
-	}
-	for _, w := range []string{"Browser sign-in", "newer version", "burrow login burrow.example.com --token -", "paste the token", "press Enter"} {
-		if !strings.Contains(h.stderr.String(), w) {
-			t.Fatalf("stderr %q does not contain %q", h.stderr.String(), w)
-		}
-	}
-	// A token on the command line ends up in the shell history and the process list.
-	if strings.Contains(h.stderr.String(), "--token <") {
-		t.Fatalf("the message suggests a token on the command line: %q", h.stderr.String())
-	}
-}
-
 func TestLogin_MessagesAndHelpSteerToStdin(t *testing.T) {
 	h := newHarness(t)
 	if code := h.exec("login", "burrow.example.com", "--token", ""); code != 2 {

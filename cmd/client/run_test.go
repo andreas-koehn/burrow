@@ -6,11 +6,14 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/client"
 	"github.com/ankoehn/burrow/internal/version"
@@ -53,6 +56,25 @@ type harness struct {
 	realDiscover bool
 	discovered   []string // the relay addresses discovery was asked at
 	onSecret     func()   // called when the hidden token prompt opens
+
+	// realHTTP lets `login` reach a test server's sign-in endpoints. Without
+	// it a request to them fails the test.
+	realHTTP   bool
+	stdoutTerm bool     // stdout is a terminal
+	opened     []string // what the browser was asked to open
+	openErr    error    // what opening the browser returns
+	// sleep replaces the wait between two polls; nil waits for a five
+	// hundredth of the time on a real timer.
+	sleep func(ctx context.Context, d time.Duration) error
+	mu    sync.Mutex
+	slept []time.Duration // the waits the sign-in asked for
+}
+
+// sleeps returns the waits the sign-in asked for so far.
+func (h *harness) sleeps() []time.Duration {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]time.Duration(nil), h.slept...)
 }
 
 func newHarness(t *testing.T) *harness {
@@ -100,6 +122,37 @@ func (h *harness) deps() deps {
 				return client.Discovery{}, err
 			}
 			return client.Discovery{Control: net.JoinHostPort(u.Hostname(), defaultControlPort), Version: version.Version, ProtocolVersion: 1}, nil
+		},
+		relayHTTP: func(g globalFlags) (*http.Client, error) {
+			if h.realHTTP {
+				return relayHTTPClient(g)
+			}
+			return &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				h.t.Error("the command sent a sign-in request; this test has no relay for it")
+				return nil, errors.New("no relay in this test")
+			})}, nil
+		},
+		openBrowser: func(target string) error {
+			h.opened = append(h.opened, target)
+			return h.openErr
+		},
+		stdoutTerminal: func() bool { return h.stdoutTerm },
+		sleep: func(ctx context.Context, d time.Duration) error {
+			h.mu.Lock()
+			h.slept = append(h.slept, d)
+			h.mu.Unlock()
+			if h.sleep != nil {
+				return h.sleep(ctx, d)
+			}
+			// A timer that blocks like the real one, only shorter.
+			t := time.NewTimer(d / 500)
+			defer t.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-t.C:
+				return nil
+			}
 		},
 		readSecret: func() (string, error) {
 			h.secretCalls++

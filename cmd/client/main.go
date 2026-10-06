@@ -10,12 +10,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -51,6 +53,17 @@ type deps struct {
 	// where its control endpoint is and which version it runs, with the TLS
 	// settings of g. It sends no token.
 	discover func(ctx context.Context, relay string, g globalFlags) (client.Discovery, error)
+	// relayHTTP builds the HTTP client for a relay's dashboard address with
+	// the TLS settings of g. `login` starts and polls the sign-in through it.
+	relayHTTP func(g globalFlags) (*http.Client, error)
+	// openBrowser opens an https address in the default browser and does not
+	// wait for it.
+	openBrowser func(target string) error
+	// stdoutTerminal reports whether stdout is a terminal: somebody is
+	// looking at what is printed.
+	stdoutTerminal func() bool
+	// sleep waits between two polls of a sign-in; nil waits on a timer.
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 func defaultDeps() deps {
@@ -66,6 +79,9 @@ func defaultDeps() deps {
 		readSecret:     readSecretFromTerminal,
 		viewTerminal:   func() bool { return stdoutShowsView() },
 		discover:       discoverRelay,
+		relayHTTP:      relayHTTPClient,
+		openBrowser:    openBrowser,
+		stdoutTerminal: func() bool { return term.IsTerminal(int(os.Stdout.Fd())) },
 	}
 }
 

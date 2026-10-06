@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/pem"
 	"errors"
@@ -51,6 +52,7 @@ func newRelayServer(t *testing.T, h http.HandlerFunc) *relayServer {
 		rs.mu.Lock()
 		rs.seen = append(rs.seen, sb.String())
 		rs.mu.Unlock()
+		r.Body = io.NopCloser(bytes.NewReader(body)) // the handler reads it again
 		h(w, r)
 	}))
 	t.Cleanup(rs.Close)
@@ -200,6 +202,37 @@ func TestLogin_NotARelay(t *testing.T) {
 	if h.hasConfig() || h.secretCalls != 0 || strings.Contains(h.stdout.String(), "Signed in") {
 		t.Fatalf("stored %v, token asked %d times, stdout %q", h.hasConfig(), h.secretCalls, h.stdout.String())
 	}
+}
+
+// The same with the token on a pipe: the pipe is not read, so the token stays
+// with whoever writes it.
+func TestLogin_NotARelay_Piped(t *testing.T) {
+	h := newHarness(t)
+	h.answers(client.Discovery{}, client.ErrNotARelay)
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	taken := make(chan struct{})
+	// The writer blocks until somebody reads, as a pipe's writer does.
+	go func() {
+		if _, err := io.WriteString(pw, testToken+"\n"); err == nil {
+			close(taken)
+		}
+	}()
+	h.stdinR = pr
+	code := h.execWithin("login", "burrow.example.com", "--token", "-")
+	errOut := h.stderr.String()
+	if code != exitUnreachable || !strings.Contains(errOut, "does not look like a Burrow relay") || !strings.Contains(errOut, "--control <host:port>") {
+		t.Fatalf("exit %d, stderr %q", code, errOut)
+	}
+	select {
+	case <-taken:
+		t.Fatal("the token was read from the pipe although nothing is stored")
+	default:
+	}
+	if h.hasConfig() || h.secretCalls != 0 || strings.Contains(h.stdout.String(), "Signed in") {
+		t.Fatalf("stored %v, token asked %d times, stdout %q", h.hasConfig(), h.secretCalls, h.stdout.String())
+	}
+	h.noToken()
 }
 
 // --control says where to connect, so the web address is asked only for the

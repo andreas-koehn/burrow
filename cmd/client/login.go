@@ -8,8 +8,12 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"os"
+	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"unicode"
 
 	"github.com/spf13/cobra"
@@ -134,8 +138,8 @@ func cleanToken(token, relayArg string) (string, error) {
 // discoverControl asks the relay for its discovery document and returns the
 // control endpoint to store: the one given with --control, else the one the
 // relay names, else fallback (<relay host>:7000) for a relay that answers 404
-// because it is older than discovery. Notes for the user go to errOut, one
-// line each.
+// because it is older than discovery; older reports that 404. Notes for the
+// user go to errOut, one line each.
 //
 // Without --control the relay's answer is needed: when it cannot be asked (not
 // reachable, an error status, a redirect) or what answers is not a relay, it
@@ -145,13 +149,23 @@ func cleanToken(token, relayArg string) (string, error) {
 //
 // Two things fail either way: a certificate that is not trusted (exit 5), and
 // a relay that did answer and needs a newer client (exit 6).
-func discoverControl(ctx context.Context, d deps, g globalFlags, errOut io.Writer, relay, fallback string, controlGiven bool) (string, error) {
+func discoverControl(ctx context.Context, d deps, g globalFlags, errOut io.Writer, relay, fallback string, controlGiven bool) (control string, older bool, err error) {
+	control, err = askDiscovery(ctx, d, g, errOut, relay, fallback, controlGiven)
+	if errors.Is(err, client.ErrNoDiscovery) {
+		return fallback, true, nil
+	}
+	return control, false, err
+}
+
+// askDiscovery is discoverControl with the 404 of an older relay left as
+// client.ErrNoDiscovery.
+func askDiscovery(ctx context.Context, d deps, g globalFlags, errOut io.Writer, relay, fallback string, controlGiven bool) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	disc, err := d.discover(ctx, relay, g)
 	if ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled) {
-		return "", &exitError{code: exitGeneral, msg: "Interrupted. Nothing was stored."}
+		return "", errLoginInterrupted
 	}
 	var se *client.DiscoveryStatusError
 	// Only an answer went through a handshake, and only then was a
@@ -192,10 +206,7 @@ func discoverControl(ctx context.Context, d deps, g globalFlags, errOut io.Write
 		}
 		return disc.Control, nil
 	case errors.Is(err, client.ErrNoDiscovery):
-		if !controlGiven {
-			fmt.Fprintf(errOut, "This relay is older and does not say where its control endpoint is; using %s. Pass --control if it is elsewhere.\n", fallback)
-		}
-		return fallback, nil
+		return "", client.ErrNoDiscovery
 	case errors.Is(err, client.ErrNotARelay):
 		// Some web page answered. No control endpoint is guessed from that.
 		return unasked(relay+" does not look like a Burrow relay",
@@ -218,16 +229,142 @@ func discoverControl(ctx context.Context, d deps, g globalFlags, errOut io.Write
 	return unasked("Cannot reach "+relay+": "+reason, "Check the address and your network connection. "+orControl)
 }
 
-// newLoginCmd builds `burrow login <relay>`. In this version it stores a token
-// created in the dashboard; signing in through the browser follows.
+// errLoginInterrupted is Ctrl-C while the relay is asked or the approval is
+// awaited.
+var errLoginInterrupted = &exitError{code: exitGeneral, msg: "Interrupted. Nothing was stored."}
+
+// interruptible returns a context that ends on Ctrl-C or SIGTERM, until stop
+// is called.
+func interruptible(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+}
+
+// errNoBrowserLogin is the answer to a relay without browser sign-in: the way
+// that works there. relayArg is the relay as it goes after `burrow login`.
+func errNoBrowserLogin(relayArg string) error {
+	return usageErrorf("This relay does not support browser sign-in. Create a token in the dashboard (Clients → Tokens) and run: burrow login %s --token -\n"+
+		"then paste the token and press Enter.", relayArg)
+}
+
+// browserSignIn is what `login` has settled before the sign-in starts.
+type browserSignIn struct {
+	relay, relayArg, control, path string
+	hostname                       string // as the machine reports it, "" when it does not
+	name                           string // the token's name when the relay reports none
+	nameGiven                      bool   // --name was given: it is suggested to the approval page
+	noBrowser                      bool
+}
+
+// browserLogin signs the machine in through the browser: it opens a sign-in
+// request on the relay, shows the page and the code, waits for the approval
+// and stores the token.
+//
+// The device code of the request is a secret like the token. It stays inside
+// client.DeviceLogin; only the user code and the page's address are shown.
+func browserLogin(ctx context.Context, d deps, g globalFlags, out, errOut io.Writer, p browserSignIn) error {
+	hc, err := d.relayHTTP(g)
+	if err != nil {
+		return err
+	}
+	dl := client.DeviceLogin{HTTP: hc, Relay: p.relay, Sleep: d.sleep}
+	dl.Meta.Hostname, dl.Meta.OS, dl.Meta.Arch, dl.Meta.ClientVersion = p.hostname, runtime.GOOS, runtime.GOARCH, version.Version
+	if p.nameGiven {
+		dl.Meta.TokenName = p.name
+	}
+	tokenHint := "If this goes on, create a token in the dashboard (Clients, tab Tokens) and run: burrow login " + p.relayArg + " --token -"
+
+	start, err := dl.Start(ctx)
+	var se *client.DeviceStatusError
+	switch {
+	case err == nil:
+	case ctx.Err() != nil:
+		return errLoginInterrupted
+	case errors.Is(err, client.ErrNoBrowserLogin):
+		return errNoBrowserLogin(p.relayArg)
+	case errors.Is(err, client.ErrLoginBusy):
+		return &exitError{code: exitGeneral, msg: "The relay has too many pending sign-ins. Try again in a minute."}
+	case errors.As(err, &se), errors.Is(err, client.ErrNotASignIn):
+		return &exitError{code: exitGeneral, msg: "The relay did not start a sign-in: " + err.Error() + ".\n" + tokenHint}
+	default:
+		if problem, ok := certProblem(err); ok {
+			return &exitError{code: exitUnreachable, msg: "Cannot trust " + p.relay + ": " + problem + ".\n" + fixCacert}
+		}
+		return &exitError{code: exitUnreachable, msg: "Cannot reach " + p.relay + ": " + waitReason(err) + ".\nCheck the address and your network connection."}
+	}
+
+	if start.OwnURL {
+		fmt.Fprintf(errOut, "Note: this relay named a sign-in page that is not on %s; the address below is the relay's own page.\n", p.relay)
+	}
+	fmt.Fprintf(out, "Open this page to sign this machine in:\n\n  %s\n\nCheck that the page shows the code %s.\n", start.VerificationURL, start.UserCode)
+	// The browser is opened where somebody will see it. When it does not
+	// open, the address is on the screen all the same.
+	if !p.noBrowser && d.stdoutTerminal != nil && d.stdoutTerminal() && d.openBrowser != nil && desktopSession(runtime.GOOS, d.getenv) {
+		_ = d.openBrowser(start.VerificationURL)
+	}
+	fmt.Fprint(out, "Waiting for approval…  ")
+
+	tok, err := dl.Wait(ctx, start)
+	if err != nil {
+		fmt.Fprintln(out) // the line that waited ends before the message
+		switch {
+		case ctx.Err() != nil:
+			return errLoginInterrupted
+		case errors.Is(err, client.ErrLoginDenied):
+			return &exitError{code: exitGeneral, msg: "The sign-in was denied in the dashboard."}
+		case errors.Is(err, client.ErrLoginExpired):
+			return &exitError{code: exitGeneral, msg: "The code expired. Run burrow login again."}
+		}
+		if problem, ok := certProblem(err); ok {
+			return &exitError{code: exitUnreachable, msg: "Cannot trust " + p.relay + ": " + problem + ".\n" + fixCacert}
+		}
+		return &exitError{code: exitGeneral, msg: "The sign-in did not finish: " + waitReason(err) + ".\nRun burrow login again. " + tokenHint}
+	}
+
+	name := tok.TokenName
+	if name == "" {
+		name = p.name
+	}
+	// The config is built field by field and handed to the one function that
+	// writes it; neither it nor the token is ever printed.
+	if err := client.SaveUserConfig(p.path, client.UserConfig{Relay: p.relay, Control: p.control, Token: tok.Token, TokenName: name}); err != nil {
+		fmt.Fprintln(out)
+		return err
+	}
+	if tok.Email != "" {
+		fmt.Fprintf(out, "signed in as %s (token %q)\n", tok.Email, name)
+	} else {
+		fmt.Fprintf(out, "signed in (token %q)\n", name)
+	}
+	fmt.Fprintf(out, "Token %s for control endpoint %s, stored in %s\n", tokenLabel(name, tok.Token), p.control, p.path)
+	return nil
+}
+
+// waitReason says why a sign-in request got no answer, without the Go error
+// chain around a timeout.
+func waitReason(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "no answer from the relay in time"
+	}
+	return err.Error()
+}
+
+// newLoginCmd builds `burrow login <relay>`: through the browser, or with a
+// token created in the dashboard.
 func newLoginCmd(d deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login <relay>",
 		Short: "Sign this machine in, once",
 		Long: "Sign this machine in, once.\n\n" +
 			"<relay> is the dashboard address: burrow.example.com or a full https:// URL.\n" +
-			"The relay is asked there where its control endpoint is; the token is not sent.\n" +
-			"A token created in the dashboard (Clients, tab Tokens) is stored with `--token -`:\n" +
+			"burrow shows a page of that dashboard and a short code. Open the page, check\n" +
+			"that it shows the same code and approve the sign-in; the token is then stored\n" +
+			"on this machine. On a desktop the page opens by itself unless --no-browser is\n" +
+			"given.\n\n" +
+			"On a machine without a browser, or with a relay that has no browser sign-in,\n" +
+			"a token created in the dashboard (Clients, tab Tokens) is stored with `--token -`:\n" +
 			"burrow asks for it, or reads it from standard input, which keeps it out of the\n" +
 			"shell history and the process list.",
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -273,10 +410,7 @@ func newLoginCmd(d deps) *cobra.Command {
 			}
 
 			relayArg := strings.TrimPrefix(relay, "https://")
-			if !flags.Changed("token") {
-				return usageErrorf("Browser sign-in arrives with a newer version of burrow.\n"+
-					"Create a token in the dashboard (Clients, tab Tokens), "+msgPasteToken, relayArg)
-			}
+			tokenGiven := flags.Changed("token")
 			token, _ := flags.GetString("token")
 			fromStdin := strings.TrimSpace(token) == "-"
 
@@ -286,11 +420,8 @@ func newLoginCmd(d deps) *cobra.Command {
 			}
 			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 
-			// The relay says where its control endpoint is, before anything is
-			// asked or stored. What it says is shown before the token is read.
-			if control, err = discoverControl(cmd.Context(), d, g, errOut, relay, control, controlGiven); err != nil {
-				return err
-			}
+			// The stored sign-in comes first: a machine that is signed in hears
+			// that, whatever the relay would have answered.
 			terminal := d.isTerminal()
 			force, _ := flags.GetBool("force")
 			// A stored file that cannot be read or holds no token is not a
@@ -316,6 +447,43 @@ func newLoginCmd(d deps) *cobra.Command {
 					fmt.Fprintln(out, "Kept the stored sign-in.")
 					return nil
 				}
+			}
+
+			// From here Ctrl-C ends the command with a line of its own: while
+			// the relay is asked, and while the approval is awaited. The
+			// questions before this and the token prompt after it read the
+			// terminal, where Ctrl-C ends the process as it always did.
+			ctx, stop := interruptible(cmd.Context())
+			defer stop()
+
+			// The relay says where its control endpoint is, before anything is
+			// stored. What it says is shown before the token is read.
+			control, older, err := discoverControl(ctx, d, g, errOut, relay, control, controlGiven)
+			if err != nil {
+				return err
+			}
+			if !tokenGiven {
+				if older {
+					// A relay from before discovery has no browser sign-in either.
+					return errNoBrowserLogin(relayArg)
+				}
+				hostname := ""
+				if hn, herr := d.hostname(); herr == nil {
+					hostname = strings.TrimSpace(hn)
+				}
+				noBrowser, _ := flags.GetBool("no-browser")
+				return browserLogin(ctx, d, g, out, errOut, browserSignIn{
+					relay: relay, relayArg: relayArg, control: control, path: path,
+					hostname: hostname, name: name, nameGiven: flags.Changed("name"), noBrowser: noBrowser,
+				})
+			}
+			if older && !controlGiven {
+				fmt.Fprintf(errOut, "This relay is older and does not say where its control endpoint is; using %s. Pass --control if it is elsewhere.\n", control)
+			}
+			interrupted := ctx.Err() != nil
+			stop()
+			if interrupted {
+				return errLoginInterrupted
 			}
 
 			switch {
@@ -352,7 +520,8 @@ func newLoginCmd(d deps) *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.String("token", "", "store a token created in the dashboard; give - and paste the token when asked, so that it stays out of the shell history")
-	f.String("name", "", "name to remember the token by (default: this machine's hostname)")
+	f.String("name", "", "name for the token (default: this machine's hostname)")
+	f.Bool("no-browser", false, "do not open the browser; show the address and the code only")
 	f.String("control", "", "control endpoint host:port (default: the one the relay names, else <relay host>:7000)")
 	f.Bool("force", false, "replace a stored sign-in without asking")
 	return cmd
