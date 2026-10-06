@@ -187,6 +187,67 @@ func TestRouter_MountsDialectEndpoints(t *testing.T) {
 	}
 }
 
+// Odd spellings of a path stay inside the dialect endpoint and are no
+// endpoint of it: they reach neither an upstream, nor the API, nor the SPA.
+func TestRouter_DialectOddPaths(t *testing.T) {
+	spa := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("the SPA was served")
+		_, _ = w.Write([]byte("<html>"))
+	})
+	g := &aigateway.Gateway{
+		Providers:   oneDirect{},
+		GatewayKeys: gwKeys{"bgw_k": {ID: "gk"}},
+		Direct: func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
+			t.Error("an upstream was built")
+			return http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("an upstream was called") }), nil
+		},
+		ServicePolicy: func(_ context.Context, id string) (*proxy.Resolved, error) {
+			return &proxy.Resolved{ServiceID: id, AccessMode: "api_key"}, nil
+		},
+		Log: discardLog(),
+	}
+	h := NewRouter(Deps{AIGateway: g, SPA: spa, Log: discardLog()})
+	for _, prefix := range []string{"/openai", "/ai"} {
+		for _, rest := range []string{
+			"/v1/../../api/v1/users", "/v1/../../api/v1/auth/me", "/v1/../ollama/v1/chat/completions",
+			"//v1/chat/completions", "/v1//chat/completions", "/v1/chat%2fcompletions", "/v1/chat%2Fcompletions",
+			"/v1/chat/completions.", "/v1/./chat/completions", "/v1/chat/completions/..", "/v1/%2e%2e/%2e%2e/api/v1/users",
+		} {
+			if prefix == "/ai" && strings.HasPrefix(rest, "//") {
+				continue // "/ai//v1/…" names no provider and is not this endpoint
+			}
+			for _, method := range []string{"GET", "POST"} {
+				for key, want := range map[string]string{"": "invalid_api_key", "bgw_k": "endpoint_not_found"} {
+					req := httptest.NewRequest(method, prefix+rest, strings.NewReader(`{"model":"zai/glm"}`))
+					if key != "" {
+						req.Header.Set("Authorization", "Bearer "+key)
+					}
+					rec := httptest.NewRecorder()
+					h.ServeHTTP(rec, req)
+					status := http.StatusNotFound
+					if key == "" {
+						status = http.StatusUnauthorized
+					}
+					if rec.Code != status || aiErrCode(t, rec) != want || rec.Header().Get("Burrow-Error-Code") != want {
+						t.Errorf("%s %s%s (key %q): status %d body %s", method, prefix, rest, key, rec.Code, rec.Body.String())
+					}
+					if rec.Header().Get("Burrow-Provider") != "" {
+						t.Errorf("%s %s%s: routed to %s", method, prefix, rest, rec.Header().Get("Burrow-Provider"))
+					}
+				}
+			}
+		}
+	}
+	// "/ai//v1/…" is a provider path without a provider: the JSON 404.
+	req := httptest.NewRequest("POST", "/ai//v1/chat/completions", strings.NewReader(`{"model":"zai/glm"}`))
+	req.Header.Set("Authorization", "Bearer bgw_k")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound || aiErrCode(t, rec) != "provider_not_found" {
+		t.Errorf("/ai//v1/chat/completions: status %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
 type oneDirect struct{}
 
 func (oneDirect) ProviderBySlug(_ context.Context, slug string) (db.AIProvider, error) {

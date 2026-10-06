@@ -165,6 +165,7 @@ func stripCredentials(r *http.Request) {
 	r.Header.Del("Authorization")
 	r.Header.Del("X-Api-Key")
 	r.Header.Del("Cookie")
+	r.Header.Del("Proxy-Authorization")
 }
 
 // authenticate checks the presented key. A service key is checked against the
@@ -172,6 +173,14 @@ func stripCredentials(r *http.Request) {
 // for this provider; it has no service key id, so the returned id is "" and
 // the gateway key travels in the request's route. It writes the error response
 // itself and reports ok=false.
+//
+// A gateway key that may use every model of the provider (empty allow-list,
+// or "<slug>/*") has the whole provider path. Any other gateway key gets two
+// things: POST on an inference path of the provider's dialect with an allowed
+// "model" in the body, and GET of the model list, answered from the filtered
+// catalog. Everything else is refused: a native API can name a model where
+// Burrow does not look (the URL, "source", "from", a batch file), so a body
+// with an allowed model proves nothing there.
 func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, p db.AIProvider) (*http.Request, string, bool) {
 	presented := presentedKey(r)
 	if !strings.HasPrefix(presented, gatewayKeyPrefix) {
@@ -182,21 +191,33 @@ func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, p db.AIPr
 	if !ok {
 		return r, "", false
 	}
-	// Every method that changes something is checked by the model its body
-	// names, not only POST: a key for one model must not act on another.
-	inference := r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions
+	deny := func() (*http.Request, string, bool) {
+		g.fail(w, r, http.StatusForbidden, "model_not_allowed", msgModelNotAllowed)
+		return r, "", false
+	}
+	full := store.ModelAllowed(key.AllowedModels, p.Slug+"/*")
 	model := ""
-	if inference {
+	switch {
+	case !full && isModelList(r):
+		// serveModels answers it, filtered; it is never forwarded.
+	case r.Method == http.MethodPost && (full || providerInference(p, r)):
 		body, ok := g.readBodyOrFail(w, r)
 		if !ok {
 			return r, "", false
 		}
 		setBody(r, body.Raw()) // byte for byte what the client sent
 		model = body.Model()
-	}
-	if !providerAllowed(key.AllowedModels, p.Slug, model, inference) {
-		g.fail(w, r, http.StatusForbidden, "model_not_allowed", "this key may not use this provider or model")
-		return r, "", false
+		if model == "" && body.HasModelKey() {
+			// "Model", or a model that is not a string: an upstream may
+			// still read it, and Burrow could neither check nor meter it.
+			g.fail(w, r, http.StatusBadRequest, "model_required", `the request needs a "model"`)
+			return r, "", false
+		}
+		if !full && !store.ModelAllowed(key.AllowedModels, p.Slug+"/"+model) {
+			return deny()
+		}
+	case !full:
+		return deny()
 	}
 	route := aigw.NewRoute(key.ID, p.APIFormat, model, w.Header().Get(headerRequestID))
 	route.SetTarget(p.Slug, model)
@@ -208,23 +229,39 @@ func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, p db.AIPr
 // provider path.
 type allowListKey struct{}
 
-// providerAllowed applies a gateway key's allow-list on a provider path.
-//   - a model is known: an entry must cover "<slug>/<model>".
-//   - an inference call whose model cannot be read: only "<slug>/*" covers it.
-//   - no inference call (listing models): any entry for this provider is enough.
-func providerAllowed(allowed []string, slug, model string, inference bool) bool {
-	if len(allowed) == 0 {
-		return true
+// isModelList reports whether r asks for the model list, written plainly.
+func isModelList(r *http.Request) bool {
+	path, plain := plainPath(r)
+	return plain && r.Method == http.MethodGet && strings.TrimSuffix(path, "/") == "/v1/models"
+}
+
+// providerInference reports whether r's path, written plainly, is an
+// inference path of the dialect p speaks.
+func providerInference(p db.AIProvider, r *http.Request) bool {
+	d, ok := DialectByName(p.APIFormat)
+	if !ok {
+		return false
 	}
-	if model != "" {
-		return store.ModelAllowed(allowed, slug+"/"+model)
+	path, plain := plainPath(r)
+	return plain && d.inference(strings.TrimSuffix(path, "/"))
+}
+
+// plainPath returns r's path and whether it is written plainly: nothing
+// percent-encoded that need not be, no empty segment, no "." or "..". Only a
+// plain path is compared with the paths Burrow knows; an upstream may read
+// any other spelling differently than Burrow does.
+func plainPath(r *http.Request) (string, bool) {
+	path := r.URL.Path
+	if r.URL.RawPath != "" || !strings.HasPrefix(path, "/") {
+		return path, false
 	}
-	for _, e := range allowed {
-		if e == slug+"/*" || (!inference && strings.HasPrefix(e, slug+"/")) {
-			return true
+	segments := strings.Split(strings.TrimSuffix(path[1:], "/"), "/")
+	for _, seg := range segments {
+		if (seg == "" && len(segments) > 1) || seg == "." || seg == ".." {
+			return path, false
 		}
 	}
-	return false
+	return path, true
 }
 
 // authenticateServiceKey checks the presented key against the provider's
@@ -258,7 +295,7 @@ func (g *Gateway) authenticateServiceKey(w http.ResponseWriter, r *http.Request,
 // catalog entries it may use and is never forwarded: the upstream's own list
 // would name the rest.
 func (g *Gateway) serveModels(w http.ResponseWriter, r *http.Request, p db.AIProvider) bool {
-	if r.Method != http.MethodGet || strings.TrimRight(r.URL.Path, "/") != "/v1/models" {
+	if !isModelList(r) {
 		return false
 	}
 	allowed, _ := r.Context().Value(allowListKey{}).([]string)

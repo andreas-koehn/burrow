@@ -278,7 +278,7 @@ func (c *Chain) allow(w http.ResponseWriter, r *http.Request, svc Service) (*htt
 	}
 	r = r.WithContext(quota.WithSubjects(r.Context(), quota.Subjects{
 		ServiceID: svc.ID,
-		APIKeyID:  svc.APIKeyID,
+		APIKeyID:  keySubject(r, svc),
 	}))
 	passed := false
 	c.RateLimit(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -1068,8 +1068,8 @@ func buildCacheKey(svc Service, r *http.Request, body []byte, s exact.Settings) 
 	case "per_endpoint":
 		scope = "endpoint:" + svc.ID + ":" + r.URL.Path
 	case "per_api_key":
-		if svc.APIKeyID != "" {
-			scope = "apikey:" + svc.APIKeyID
+		if subject := keySubject(r, svc); subject != "" {
+			scope = "apikey:" + subject
 		} else {
 			scope = "global"
 		}
@@ -1077,6 +1077,23 @@ func buildCacheKey(svc Service, r *http.Request, body []byte, s exact.Settings) 
 		scope = "global"
 	}
 	return scope + ":" + hash
+}
+
+// keySubject is the per-key identity of a request for everything that is
+// kept apart by key: the cache scope "per_api_key" and api_key rate limits
+// and quotas. It is the service key id when a service key authorised the
+// request. A gateway key has no service key id; its subject is
+// GatewayKeySubjectPrefix + its id, read from the request's Route. "" means
+// the request has no key. The usage row is not affected: it keeps
+// api_key_id empty and the gateway key id in its own column.
+func keySubject(r *http.Request, svc Service) string {
+	if svc.APIKeyID != "" {
+		return svc.APIKeyID
+	}
+	if ri, ok := RouteFrom(r.Context()); ok && ri.GatewayKeyID != "" {
+		return GatewayKeySubjectPrefix + ri.GatewayKeyID
+	}
+	return ""
 }
 
 // schemeOf returns the request's URL scheme, falling back to "https" when

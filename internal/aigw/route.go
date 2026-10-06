@@ -5,6 +5,11 @@ import (
 	"sync"
 )
 
+// GatewayKeySubjectPrefix marks a gateway key in a per-key subject (cache
+// scope, rate-limit and quota subject): "gw:<gateway key id>". A service key's
+// subject is its bare id. db.GatewayKeySubjectPrefix is the same string.
+const GatewayKeySubjectPrefix = "gw:"
+
 // Route describes how the gateway routed one request: which gateway key asked,
 // which model name it asked for, and which provider and model answered. The
 // gateway may still change the target while the request is being served (a

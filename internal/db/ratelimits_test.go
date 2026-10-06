@@ -170,6 +170,30 @@ func TestDailyUsageQueries(t *testing.T) {
 		t.Errorf("service daily request count = %d, want 3", countSvc)
 	}
 
+	// A gateway key is charged as "gw:<key id>"; its rows carry the id in
+	// gateway_key_id and no api_key_id.
+	for i, gk := range []string{"gk1", "gk1", "gk2"} {
+		if _, err := x.sqlDB.ExecContext(ctx,
+			`INSERT INTO usage_events(id, service_id, api_key_id, gateway_key_id, ts, kind, bytes_in, bytes_out)
+			 VALUES(?,?,?,?,?,?,?,?)`,
+			"u-gw-"+string(rune('a'+i)), svc, "", gk, now, "openai", 40, 40,
+		); err != nil {
+			t.Fatalf("insert gateway row: %v", err)
+		}
+	}
+	if n, err := x.CountDailyUsageEventsByAPIKey(ctx, "gw:gk1"); err != nil || n != 2 {
+		t.Errorf("gw:gk1 daily request count = %d (%v), want 2", n, err)
+	}
+	if n, err := x.SumDailyUsageEventsByAPIKey(ctx, "gw:gk1"); err != nil || n != 40 {
+		t.Errorf("gw:gk1 daily byte-estimate = %d (%v), want 40", n, err)
+	}
+	if n, _ := x.CountDailyUsageEventsByAPIKey(ctx, "gw:"); n != 0 {
+		t.Errorf("empty gateway key id → %d, want 0", n)
+	}
+	if n, _ := x.CountDailyUsageEventsByAPIKey(ctx, "k1"); n != 2 {
+		t.Errorf("k1 after gateway rows = %d, want 2", n)
+	}
+
 	// Empty subject short-circuits to 0 (engine calls these for unknown
 	// subjects on non-applicable scopes).
 	if n, _ := x.SumDailyUsageEventsByAPIKey(ctx, ""); n != 0 {

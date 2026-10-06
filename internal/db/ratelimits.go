@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // CRITICAL — the rate_limits table's window column is created via migration
@@ -125,21 +126,36 @@ func (x *DB) DeleteRateLimit(ctx context.Context, id string) error {
 // a role label and a global aggregate is the caller's job. This is the path
 // used by the quota engine's window=day check.
 func (x *DB) SumDailyUsageEventsByAPIKey(ctx context.Context, apiKeyID string) (int64, error) {
-	if apiKeyID == "" {
+	column, id := usageKeyColumn(apiKeyID)
+	if id == "" {
 		return 0, nil
 	}
 	row := x.sqlDB.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(bytes_in)+SUM(bytes_out), 0)
 		   FROM usage_events
-		  WHERE api_key_id = ?
+		  WHERE `+column+` = ?
 		    AND ts >= datetime('now', 'start of day')`,
-		apiKeyID,
+		id,
 	)
 	var totalBytes int64
 	if err := row.Scan(&totalBytes); err != nil {
 		return 0, fmt.Errorf("sum daily usage by api_key: %w", err)
 	}
 	return totalBytes / 4, nil
+}
+
+// GatewayKeySubjectPrefix marks a gateway key in a rate-limit subject:
+// "gw:<gateway key id>". Such a key's usage rows carry its id in
+// gateway_key_id and an empty api_key_id.
+const GatewayKeySubjectPrefix = "gw:"
+
+// usageKeyColumn maps a per-key subject to the usage_events column that
+// holds it and the id to compare with. The column is one of two constants.
+func usageKeyColumn(subject string) (column, id string) {
+	if rest, ok := strings.CutPrefix(subject, GatewayKeySubjectPrefix); ok {
+		return "gateway_key_id", rest
+	}
+	return "api_key_id", subject
 }
 
 // SumDailyUsageEventsByService is the service-scope variant. See
@@ -166,14 +182,15 @@ func (x *DB) SumDailyUsageEventsByService(ctx context.Context, serviceID string)
 // the given api_key since UTC midnight. Used by quota window=day +
 // dimension=rpm (request-count daily cap).
 func (x *DB) CountDailyUsageEventsByAPIKey(ctx context.Context, apiKeyID string) (int64, error) {
-	if apiKeyID == "" {
+	column, id := usageKeyColumn(apiKeyID)
+	if id == "" {
 		return 0, nil
 	}
 	row := x.sqlDB.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM usage_events
-		  WHERE api_key_id = ?
+		  WHERE `+column+` = ?
 		    AND ts >= datetime('now', 'start of day')`,
-		apiKeyID,
+		id,
 	)
 	var n int64
 	if err := row.Scan(&n); err != nil {

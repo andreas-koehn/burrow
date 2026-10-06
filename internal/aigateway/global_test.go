@@ -93,6 +93,7 @@ func TestServeDialect_SyntheticModel(t *testing.T) {
 	rec.Header().Set("Burrow-Request-Id", "req-1") // set by the router in production
 	req := post("/v1/chat/completions", "bgw_all", `{ "model" : "burrow-intelligence" ,"messages":[],"x_future_field":{"a":1,"model":"inner"}}`)
 	req.Header.Set("X-Api-Key", "bgw_all")
+	req.Header.Set("Proxy-Authorization", "Bearer bgw_all")
 	req.Header.Set("Cookie", "burrow_session=s")
 	g.ServeDialect(rec, req, DialectOpenAI)
 
@@ -104,7 +105,7 @@ func TestServeDialect_SyntheticModel(t *testing.T) {
 	if want := `{ "model" : "glm-5.1" ,"messages":[],"x_future_field":{"a":1,"model":"inner"}}`; gotBody != want {
 		t.Fatalf("upstream body = %s\nwant          %s", gotBody, want)
 	}
-	for _, h := range []string{"Authorization", "X-Api-Key", "Cookie"} {
+	for _, h := range []string{"Authorization", "X-Api-Key", "Cookie", "Proxy-Authorization"} {
 		if gotHeader.Get(h) != "" {
 			t.Fatalf("%s reached the upstream: %q", h, gotHeader.Get(h))
 		}
@@ -218,6 +219,18 @@ func TestServeDialect_Errors(t *testing.T) {
 		}(), status: 405, code: "method_not_allowed"},
 		{name: "body over the limit", req: post("/v1/chat/completions", "bgw_all", big), setup: func(g *Gateway) { g.MaxBody = 64; noDirect(g) },
 			status: 413, code: "request_too_large"},
+		{name: "chunked body over the limit", req: func() *http.Request {
+			r := post("/v1/chat/completions", "bgw_all", "")
+			r.Body = io.NopCloser(io.MultiReader(strings.NewReader(big[:40]), strings.NewReader(big[40:])))
+			r.ContentLength = -1 // no Content-Length: the size is only known by reading
+			r.Header.Del("Content-Length")
+			r.TransferEncoding = []string{"chunked"}
+			return r
+		}(), setup: func(g *Gateway) { g.MaxBody = 64; noDirect(g) }, status: 413, code: "request_too_large"},
+		{name: "path with an encoded slash", req: post("/v1/chat%2fcompletions", "bgw_all", `{"model":"burrow-intelligence"}`), status: 404, code: "endpoint_not_found"},
+		{name: "path with an encoded letter", req: post("/v1/chat/c%6fmpletions", "bgw_all", `{"model":"burrow-intelligence"}`), status: 404, code: "endpoint_not_found"},
+		{name: "path with an empty segment", req: post("/v1//chat/completions", "bgw_all", `{"model":"burrow-intelligence"}`), status: 404, code: "endpoint_not_found"},
+		{name: "path with a dot segment", req: post("/v1/./chat/completions", "bgw_all", `{"model":"burrow-intelligence"}`), status: 404, code: "endpoint_not_found"},
 		{name: "address denied by the target's service", req: post("/v1/chat/completions", "bgw_all", `{"model":"burrow-intelligence"}`),
 			setup: func(g *Gateway) {
 				g.IPGeoDeny = func(*proxy.Resolved, *http.Request) bool { return true }

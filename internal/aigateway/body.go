@@ -34,6 +34,9 @@ var errDuplicateModel = errors.New("aigateway: request body has more than one mo
 type requestBody struct {
 	raw   []byte
 	model string // "" = no model
+	// keys counts the top-level keys equal to "model" without regard to
+	// case: 0 or 1 (two are refused).
+	keys int
 	// raw[start:end] is the top-level model value, quotes included. Only
 	// meaningful when model != "".
 	start, end int
@@ -117,7 +120,7 @@ func (b *requestBody) locateModel() error {
 	if seen > 1 {
 		return errDuplicateModel
 	}
-	b.model, b.start, b.end = model, start, end
+	b.model, b.start, b.end, b.keys = model, start, end, seen
 	return nil
 }
 
@@ -142,6 +145,12 @@ func (b *requestBody) Raw() []byte { return b.raw }
 // model to route by (see requestBody); the endpoint answers that with a
 // coded 400.
 func (b *requestBody) Model() string { return b.model }
+
+// HasModelKey reports whether the body has a top-level key equal to "model"
+// without regard to case. With Model() == "" that is a field an upstream may
+// read as the model ("Model", or a "model" that is not a string) although
+// Burrow has none to check or meter: answer a coded 400.
+func (b *requestBody) HasModelKey() bool { return b.keys > 0 }
 
 // WithModel returns the body with the value of "model" replaced by model.
 // Only the bytes of that value change. A body without a model (Model() == "")

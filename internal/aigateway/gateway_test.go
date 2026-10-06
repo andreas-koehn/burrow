@@ -1401,18 +1401,22 @@ func TestServe_GatewayKeyOnProviderPath(t *testing.T) {
 		{"bgw_one", "POST", `{"model":"mistral"}`, 200, "", "exact model"},
 		{"bgw_one", "POST", `{"model":"llama3"}`, 403, "model_not_allowed", "other model with an exact-model key"},
 		{"bgw_one", "POST", `not json`, 403, "model_not_allowed", "unreadable model with an exact-model key"},
-		{"bgw_one", "POST", `{"Model":"llama3"}`, 403, "model_not_allowed", "model in another letter case with an exact-model key"},
+		{"bgw_one", "POST", `{"messages":[]}`, 403, "model_not_allowed", "no model with an exact-model key"},
 		{"bgw_one", "POST", `{"model":"mistral","Model":"llama3"}`, 400, "invalid_request", "two model fields"},
 		{"bgw_all", "POST", `{"model":"mistral","model":"llama3"}`, 400, "invalid_request", "two model fields, unrestricted key"},
-		{"bgw_one", "DELETE", `{"model":"llama3"}`, 403, "model_not_allowed", "another method naming another model"},
-		{"bgw_one", "DELETE", `{"model":"mistral"}`, 200, "", "another method naming the allowed model"},
+		// A Go upstream reads "Model" as the model; Burrow would meter none.
+		{"bgw_one", "POST", `{"Model":"llama3"}`, 400, "model_required", "model in another letter case, exact-model key"},
+		{"bgw_all", "POST", `{"Model":"llama3"}`, 400, "model_required", "model in another letter case, unrestricted key"},
+		{"bgw_ollama", "POST", `{"MODEL":"llama3"}`, 400, "model_required", "model in another letter case, provider wildcard"},
+		{"bgw_all", "POST", `{"model":7}`, 400, "model_required", "model that is not a string"},
 		{"bgw_ollama", "POST", `not json`, 200, "", "unreadable model with a provider wildcard"},
+		{"bgw_all", "POST", `{"input":"x"}`, 200, "", "no model field at all, unrestricted key"},
 		{"bgw_other", "POST", `{"model":"mistral"}`, 403, "model_not_allowed", "key for other providers"},
 		{"bgw_other", "GET", ``, 403, "model_not_allowed", "GET with a key that has no entry for this provider"},
-		{"bgw_one", "GET", ``, 200, "", "GET with a key that has an entry for this provider"},
 		{"bgw_unknown", "POST", `{"model":"mistral"}`, 401, "invalid_api_key", "unknown gateway key"},
 		{"sk-good", "POST", `{"model":"mistral"}`, 200, "", "service key still works"},
 		{"sk-good", "POST", `{"model":"mistral","model":"llama3"}`, 200, "", "a service key's body is not inspected"},
+		{"sk-good", "POST", `{"Model":"llama3"}`, 200, "", "a service key's body is not inspected (letter case)"},
 		{"sk-bad", "POST", `{"model":"mistral"}`, 401, "invalid_api_key", "unknown service key"},
 	}
 	for _, c := range cases {
@@ -1425,6 +1429,89 @@ func TestServe_GatewayKeyOnProviderPath(t *testing.T) {
 	g.MaxBody = 16
 	if rec := do("bgw_all", "POST", `{"model":"mistral","pad":"xxxxxxxxxxxxxxxx"}`); rec.Code != 413 || errCode(t, rec) != "request_too_large" {
 		t.Errorf("body over the limit: status %d", rec.Code)
+	}
+}
+
+// A gateway key restricted to some models of a provider gets two things on
+// its path: POST on an inference path of the provider's dialect with an
+// allowed model, and the filtered model list. Everything else could name or
+// act on another model in a place Burrow does not read (the URL, "source",
+// "from", a batch file) and is refused before it is forwarded.
+func TestServe_RestrictedGatewayKeyOnProviderPath_MethodsAndPaths(t *testing.T) {
+	hits := 0
+	g := newGateway(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits++; w.WriteHeader(200) }), nil)
+	g.Models = fakeModels{"ollama": {{ModelID: "mistral"}, {ModelID: "llama3"}}}
+	g.GatewayKeys = fakeGatewayKeys{
+		"bgw_all":    {ID: "gk-all"},
+		"bgw_ollama": {ID: "gk-o", AllowedModels: []string{"zai/x", "ollama/*"}},
+		"bgw_one":    {ID: "gk-1", AllowedModels: []string{"ollama/mistral"}},
+	}
+	do := func(key, method, path string) *httptest.ResponseRecorder {
+		// The decoy: an allowed model in the body, whatever the path means.
+		r := httptest.NewRequest(method, path, strings.NewReader(`{"model":"mistral","source":"llama3","from":"llama3"}`))
+		r.Header.Set("Authorization", "Bearer "+key)
+		rec := httptest.NewRecorder()
+		g.Serve(rec, r, "ollama")
+		return rec
+	}
+	inference := map[string]bool{
+		"/v1/chat/completions": true, "/v1/chat/completions/": true, "/v1/completions": true, "/v1/embeddings": true, "/v1/responses": true,
+	}
+	modelList := map[string]bool{"/v1/models": true, "/v1/models/": true}
+	paths := []string{
+		"/v1/chat/completions", "/v1/chat/completions/", "/v1/completions", "/v1/embeddings", "/v1/responses",
+		"/v1/models", "/v1/models/",
+		"/api/tags", "/api/ps", "/api/copy", "/api/create", "/api/delete", "/api/generate", "/api/chat",
+		"/v1/models/llama3", "/v1/files", "/v1/batches", "/v1/responses/resp_1",
+		"/v1//models", "/v1/./models", "/v1/models/../models", "//v1/models", "/v1/models%2f", "/v1/%6dodels",
+		"/v1//chat/completions", "/v1/chat/./completions", "/v1/chat%2fcompletions", "/v1/chat/completions%2f..%2f..%2fapi%2fcopy",
+		"/v1/chat/completions/x", "/v1/chat/completions.", "/", "",
+	}
+	var denial string
+	for _, method := range []string{"POST", "GET", "HEAD", "OPTIONS", "DELETE", "PUT", "PATCH"} {
+		for _, path := range paths {
+			if path == "" {
+				path = "/"
+			}
+			name := method + " " + path
+			hits = 0
+			rec := do("bgw_one", method, path)
+			switch {
+			case method == "POST" && inference[path]:
+				if rec.Code != 200 || hits != 1 {
+					t.Errorf("%s: status %d upstream hits %d, want it forwarded", name, rec.Code, hits)
+				}
+			case method == "GET" && modelList[path]:
+				want := `{"object":"list","data":[{"id":"mistral","object":"model","owned_by":"ollama"}]}`
+				if rec.Code != 200 || hits != 0 || strings.TrimSpace(rec.Body.String()) != want {
+					t.Errorf("%s: status %d upstream hits %d body %s", name, rec.Code, hits, rec.Body.String())
+				}
+			default:
+				if rec.Code != 403 || rec.Header().Get("Burrow-Error-Code") != "model_not_allowed" || hits != 0 {
+					t.Errorf("%s: status %d code %q upstream hits %d, want 403 and nothing forwarded",
+						name, rec.Code, rec.Header().Get("Burrow-Error-Code"), hits)
+					continue
+				}
+				if method != "HEAD" {
+					if denial == "" {
+						denial = rec.Body.String()
+					}
+					if rec.Body.String() != denial {
+						t.Errorf("%s: denial differs: %s vs %s", name, rec.Body.String(), denial)
+					}
+				}
+			}
+			// A key that may use every model of this provider has the whole
+			// provider path, like a service key.
+			for _, key := range []string{"bgw_all", "bgw_ollama", "sk-good"} {
+				hits = 0
+				rec := do(key, method, path)
+				served := method == "GET" && modelList[path] // from the catalog
+				if rec.Code != 200 || (hits != 1 && !served) {
+					t.Errorf("%s with %s: status %d upstream hits %d", name, key, rec.Code, hits)
+				}
+			}
+		}
 	}
 }
 
@@ -1470,33 +1557,6 @@ func (c *routeChain) Dispatch(w http.ResponseWriter, r *http.Request, serviceID,
 
 func (c *routeChain) DispatchMetered(w http.ResponseWriter, r *http.Request, serviceID, _, _, apiKeyID string, _ bool, up http.Handler) {
 	c.Dispatch(w, r, serviceID, "", "", apiKeyID, up)
-}
-
-func TestProviderAllowed(t *testing.T) {
-	cases := []struct {
-		allowed   []string
-		model     string
-		inference bool
-		want      bool
-		why       string
-	}{
-		{nil, "", true, true, "unrestricted key"},
-		{[]string{"ollama/mistral"}, "mistral", true, true, "known model, exact entry"},
-		{[]string{"ollama/*"}, "llama3", true, true, "known model, wildcard"},
-		{[]string{"ollama/mistral"}, "llama3", true, false, "known model, no entry"},
-		{[]string{"mistral", "zai/mistral"}, "mistral", true, false, "a synthetic name or another provider's model is not this provider's"},
-		{[]string{"ollama/mistral"}, "llama3", false, false, "a known model is checked whatever the method"},
-		{[]string{"ollama/*"}, "", true, true, "unreadable model, wildcard"},
-		{[]string{"ollama/mistral"}, "", true, false, "unreadable model, exact entry only"},
-		{[]string{"ollama/mistral"}, "", false, true, "no inference, an entry for this provider"},
-		{[]string{"ollama/*"}, "", false, true, "no inference, wildcard"},
-		{[]string{"ollama2/x", "zai/*", "burrow-simple"}, "", false, false, "no inference, no entry for this provider"},
-	}
-	for _, c := range cases {
-		if got := providerAllowed(c.allowed, "ollama", c.model, c.inference); got != c.want {
-			t.Errorf("%s: got %v", c.why, got)
-		}
-	}
 }
 
 // On a provider path a restricted gateway key is listed only the models it

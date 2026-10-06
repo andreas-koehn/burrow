@@ -18,6 +18,10 @@ const (
 	headerRequestID  = "Burrow-Request-Id"
 	headerProvider   = "Burrow-Provider"
 	headerModel      = "Burrow-Model"
+
+	// msgModelNotAllowed is the one text of every allow-list denial: it does
+	// not say what was asked for or whether it exists.
+	msgModelNotAllowed = "this key may not use this model"
 )
 
 // GatewayKeys validates a presented gateway key. It must not cache: a revoked
@@ -49,12 +53,15 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 	if !ok {
 		return
 	}
-	path := strings.TrimRight(r.URL.Path, "/")
-	if r.Method == http.MethodGet && path == "/v1/models" {
+	if isModelList(r) {
 		g.serveDialectModels(w, r, d, key)
 		return
 	}
-	if !d.inference(path) {
+	// Only a plainly written path is an endpoint: "/v1//x", "/v1/./x" or an
+	// encoded slash may mean something else to the upstream than to Burrow.
+	path, plain := plainPath(r)
+	path = strings.TrimSuffix(path, "/")
+	if !plain || !d.inference(path) {
 		g.fail(w, r, http.StatusNotFound, "endpoint_not_found", "this endpoint does not exist in the "+d.Name+" API of this gateway")
 		return
 	}
@@ -77,7 +84,7 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 	// outside its list, not even whether they exist. The answer is the same
 	// for every such name.
 	if !store.ModelAllowed(key.AllowedModels, requested) {
-		g.fail(w, r, http.StatusForbidden, "model_not_allowed", "this key may not use this model")
+		g.fail(w, r, http.StatusForbidden, "model_not_allowed", msgModelNotAllowed)
 		return
 	}
 	res, ok := g.resolveOrFail(w, r, requested, d)

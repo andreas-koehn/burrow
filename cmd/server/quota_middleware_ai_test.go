@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ankoehn/burrow/internal/aigateway"
@@ -83,5 +84,43 @@ func TestQuotaMiddleware_DenialShape(t *testing.T) {
 	}
 	if ct := deny(context.Background()).Header().Get("Content-Type"); ct != "application/json" {
 		t.Fatalf("host route Content-Type = %q", ct)
+	}
+}
+
+type limitFor string
+
+func (s limitFor) ListRateLimits(context.Context) ([]db.RateLimit, error) {
+	return []db.RateLimit{{
+		ID: "rl-gw", Scope: quota.ScopeAPIKey, Subject: string(s), Dimension: quota.DimensionRPM,
+		Lim: 1, Burst: 1, Window: quota.WindowMinute,
+	}}, nil
+}
+
+// A per-key limit counts each gateway key on its own: a gateway key reaches
+// the chain without a service key id and is charged as "gw:<key id>".
+func TestQuotaMiddleware_GatewayKeysAreCountedSeparately(t *testing.T) {
+	e := quota.NewWithStores(limitFor("gw:gk-a"), noDailyUsage{})
+	if err := e.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	c.RateLimit = buildQuotaMiddleware(e, nil)
+	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	do := func(keyID string) int {
+		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+		route := aigw.NewRoute(keyID, "openai", "m", "req")
+		r = r.WithContext(aigw.WithErrorWriter(aigw.WithRoute(r.Context(), route), aigateway.WriteError))
+		rec := httptest.NewRecorder()
+		c.DispatchMetered(rec, r, "prov-zai", "host", "Authorization", "", true, up)
+		return rec.Code
+	}
+	if got := do("gk-a"); got != http.StatusOK {
+		t.Fatalf("gk-a, first call: %d", got)
+	}
+	if got := do("gk-a"); got != http.StatusTooManyRequests {
+		t.Fatalf("gk-a, second call: %d, want 429", got)
+	}
+	if got := do("gk-b"); got != http.StatusOK {
+		t.Fatalf("gk-b is charged to gk-a's limit: %d", got)
 	}
 }

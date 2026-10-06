@@ -166,3 +166,25 @@ func TestSetBody(t *testing.T) {
 		t.Fatalf("body %q length %d header %q", got, r.ContentLength, r.Header.Get("Content-Length"))
 	}
 }
+
+func TestRequestBody_HasModelKey(t *testing.T) {
+	for body, want := range map[string]bool{
+		`{"model":"m"}`:            true,
+		`{"Model":"m"}`:            true,
+		`{"MODEL":7}`:              true,
+		`{"model":7}`:              true,
+		`{"x":{"model":"m"}}`:      false,
+		`{"messages":[]}`:          false,
+		`not json`:                 false,
+		`[{"model":"m"}]`:          false,
+		`{"\u006dodel":"m","x":1}`: true,
+	} {
+		b, err := readRequestBody(httptest.NewRequest("POST", "/", strings.NewReader(body)), 1<<20)
+		if err != nil {
+			t.Fatalf("%s: %v", body, err)
+		}
+		if b.HasModelKey() != want {
+			t.Errorf("%s: HasModelKey = %v, want %v", body, b.HasModelKey(), want)
+		}
+	}
+}
