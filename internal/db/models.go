@@ -73,6 +73,8 @@ type Service struct {
 	// the API rejects switching to mtls without one). Burrow does NOT sign
 	// client certs in v0.4.0.
 	MTLSCAPEM string
+	// GatewayOnly: reachable only through the AI gateway, not directly.
+	GatewayOnly bool
 }
 
 // ServiceAPIKey is a row of the service_api_keys table.
@@ -190,13 +192,15 @@ type AIProvider struct {
 	ServiceID string
 	APIFormat string // "openai" or "anthropic"
 
-	BaseURL        string            // direct only, e.g. "https://openrouter.ai/api/v1"
-	CredentialSlot string            // direct only, vault slot name (never the secret)
-	AuthHeader     string            // default "Authorization"
-	AuthFormat     string            // default "Bearer {key}"
-	ExtraHeaders   map[string]string // static headers sent upstream; never nil after a read
-	Billing        string            // "metered" or "flat"
-	CreatedAt      time.Time
+	BaseURL           string            // direct only, e.g. "https://openrouter.ai/api/v1"
+	CredentialSlot    string            // direct only, vault slot name (never the secret)
+	AuthHeader        string            // default "Authorization"
+	AuthFormat        string            // default "Bearer {key}"
+	ExtraHeaders      map[string]string // static headers sent upstream; never nil after a read
+	Billing           string            // "metered" or "flat"
+	SupportsResponses bool              // offers POST /responses
+	MaxConcurrent     int               // 0 = unlimited
+	CreatedAt         time.Time
 }
 
 // AIProviderModel is a row of the ai_provider_models catalog.
@@ -226,6 +230,7 @@ type Budget struct {
 	Scope          string // api_key|service|user|global
 	SubjectID      string
 	DailyUSD       float64
+	DailyTokens    int64  // 0 = no token limit
 	ActionOnExceed string // alert_webhook|throttle_zero|disable_key
 	AlertWebhookID *string
 	CreatedAt      time.Time

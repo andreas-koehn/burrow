@@ -425,3 +425,35 @@ func TestAIEndpointMetrics24h_ReportedCost(t *testing.T) {
 		t.Errorf("anthropic = %+v, want reported 0, priced 4/2", k)
 	}
 }
+
+func TestAIProviders_ResponsesAndConcurrency(t *testing.T) {
+	x, svcID := newDBWithService(t)
+	ctx := context.Background()
+	if err := x.CreateAIProvider(ctx, AIProvider{Slug: "old", Name: "Old", Kind: "tunnel", ServiceID: svcID, APIFormat: "openai"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := x.GetAIProvider(ctx, "old")
+	if got.SupportsResponses || got.MaxConcurrent != 0 {
+		t.Fatalf("defaults: %+v", got)
+	}
+	svc2 := seedSvc(t, x, "u1", "svc-b")
+	if err := x.CreateAIProvider(ctx, AIProvider{Slug: "new", Name: "New", Kind: "tunnel", ServiceID: svc2, APIFormat: "openai",
+		SupportsResponses: true, MaxConcurrent: 2}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = x.GetAIProvider(ctx, "new")
+	if !got.SupportsResponses || got.MaxConcurrent != 2 {
+		t.Fatalf("round trip: %+v", got)
+	}
+	err := x.ModifyAIProviderUpstream(ctx, "old", func(p AIProvider) (AIProvider, error) {
+		p.SupportsResponses, p.MaxConcurrent = true, 5
+		return p, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ = x.GetAIProvider(ctx, "old")
+	if !got.SupportsResponses || got.MaxConcurrent != 5 {
+		t.Fatalf("after modify: %+v", got)
+	}
+}

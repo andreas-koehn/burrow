@@ -17,7 +17,7 @@ var ErrDuplicateProvider = errors.New("db: provider slug or service already in u
 // changed the row under every one of its attempts.
 var ErrProviderBusy = errors.New("db: provider is being changed concurrently")
 
-const aiProviderCols = `slug, name, kind, service_id, api_format, base_url, credential_slot, auth_header, auth_format, extra_headers, billing, created_at`
+const aiProviderCols = `slug, name, kind, service_id, api_format, base_url, credential_slot, auth_header, auth_format, extra_headers, billing, supports_responses, max_concurrent, created_at`
 
 func scanAIProvider(row interface{ Scan(...any) error }) (AIProvider, error) {
 	p, _, err := scanAIProviderRaw(row)
@@ -29,7 +29,7 @@ func scanAIProviderRaw(row interface{ Scan(...any) error }) (AIProvider, string,
 	var p AIProvider
 	var headers string
 	err := row.Scan(&p.Slug, &p.Name, &p.Kind, &p.ServiceID, &p.APIFormat, &p.BaseURL, &p.CredentialSlot,
-		&p.AuthHeader, &p.AuthFormat, &headers, &p.Billing, &p.CreatedAt)
+		&p.AuthHeader, &p.AuthFormat, &headers, &p.Billing, &p.SupportsResponses, &p.MaxConcurrent, &p.CreatedAt)
 	if err != nil {
 		return p, headers, err
 	}
@@ -54,10 +54,10 @@ func insertAIProvider(ctx context.Context, q execer, p AIProvider) error {
 		return fmt.Errorf("create ai provider: extra_headers: %w", err)
 	}
 	_, err = q.ExecContext(ctx,
-		`INSERT INTO ai_providers(slug, name, kind, service_id, api_format, base_url, credential_slot, auth_header, auth_format, extra_headers, billing)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO ai_providers(slug, name, kind, service_id, api_format, base_url, credential_slot, auth_header, auth_format, extra_headers, billing, supports_responses, max_concurrent)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.Slug, p.Name, p.Kind, p.ServiceID, p.APIFormat, p.BaseURL, p.CredentialSlot,
-		orDefault(p.AuthHeader, "Authorization"), orDefault(p.AuthFormat, "Bearer {key}"), string(headers), orDefault(p.Billing, "metered"),
+		orDefault(p.AuthHeader, "Authorization"), orDefault(p.AuthFormat, "Bearer {key}"), string(headers), orDefault(p.Billing, "metered"), p.SupportsResponses, p.MaxConcurrent,
 	)
 	if err != nil {
 		if isDuplicateServiceErr(err) {
@@ -154,11 +154,11 @@ func (x *DB) ModifyAIProviderUpstream(ctx context.Context, slug string, modify f
 			return fmt.Errorf("modify ai provider upstream: extra_headers: %w", err)
 		}
 		res, err := x.sqlDB.ExecContext(ctx,
-			`UPDATE ai_providers SET base_url=?, credential_slot=?, auth_header=?, auth_format=?, extra_headers=?, billing=?, api_format=?
-			  WHERE slug=? AND base_url=? AND credential_slot=? AND auth_header=? AND auth_format=? AND extra_headers=? AND billing=? AND api_format=?`,
+			`UPDATE ai_providers SET base_url=?, credential_slot=?, auth_header=?, auth_format=?, extra_headers=?, billing=?, api_format=?, supports_responses=?, max_concurrent=?
+			  WHERE slug=? AND base_url=? AND credential_slot=? AND auth_header=? AND auth_format=? AND extra_headers=? AND billing=? AND api_format=? AND supports_responses=? AND max_concurrent=?`,
 			p.BaseURL, p.CredentialSlot, orDefault(p.AuthHeader, "Authorization"), orDefault(p.AuthFormat, "Bearer {key}"),
-			string(headers), orDefault(p.Billing, "metered"), p.APIFormat,
-			slug, old.BaseURL, old.CredentialSlot, old.AuthHeader, old.AuthFormat, oldHeaders, old.Billing, old.APIFormat)
+			string(headers), orDefault(p.Billing, "metered"), p.APIFormat, p.SupportsResponses, p.MaxConcurrent,
+			slug, old.BaseURL, old.CredentialSlot, old.AuthHeader, old.AuthFormat, oldHeaders, old.Billing, old.APIFormat, old.SupportsResponses, old.MaxConcurrent)
 		if err != nil {
 			return fmt.Errorf("modify ai provider upstream: %w", err)
 		}

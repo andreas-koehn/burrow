@@ -23,9 +23,9 @@ func (x *DB) CreateBudget(ctx context.Context, b Budget) error {
 		awid = *b.AlertWebhookID
 	}
 	_, err := x.sqlDB.ExecContext(ctx,
-		`INSERT INTO budgets(id, scope, subject_id, daily_usd, action_on_exceed, alert_webhook_id)
-		 VALUES(?,?,?,?,?,?)`,
-		b.ID, b.Scope, b.SubjectID, b.DailyUSD, b.ActionOnExceed, awid,
+		`INSERT INTO budgets(id, scope, subject_id, daily_usd, daily_tokens, action_on_exceed, alert_webhook_id)
+		 VALUES(?,?,?,?,?,?,?)`,
+		b.ID, b.Scope, b.SubjectID, b.DailyUSD, b.DailyTokens, b.ActionOnExceed, awid,
 	)
 	if err != nil {
 		return fmt.Errorf("create budget: %w", err)
@@ -38,10 +38,10 @@ func (x *DB) GetBudget(ctx context.Context, id string) (Budget, error) {
 	var b Budget
 	var awid sql.NullString
 	err := x.sqlDB.QueryRowContext(ctx,
-		`SELECT id, scope, subject_id, daily_usd, action_on_exceed, alert_webhook_id, created_at
+		`SELECT id, scope, subject_id, daily_usd, daily_tokens, action_on_exceed, alert_webhook_id, created_at
 		   FROM budgets WHERE id=?`,
 		id,
-	).Scan(&b.ID, &b.Scope, &b.SubjectID, &b.DailyUSD, &b.ActionOnExceed, &awid, &b.CreatedAt)
+	).Scan(&b.ID, &b.Scope, &b.SubjectID, &b.DailyUSD, &b.DailyTokens, &b.ActionOnExceed, &awid, &b.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Budget{}, ErrNotFound
 	}
@@ -59,7 +59,7 @@ func (x *DB) GetBudget(ctx context.Context, id string) (Budget, error) {
 // returned slice is always non-nil (possibly empty).
 func (x *DB) ListBudgets(ctx context.Context) ([]Budget, error) {
 	rows, err := x.sqlDB.QueryContext(ctx,
-		`SELECT id, scope, subject_id, daily_usd, action_on_exceed, alert_webhook_id, created_at
+		`SELECT id, scope, subject_id, daily_usd, daily_tokens, action_on_exceed, alert_webhook_id, created_at
 		   FROM budgets ORDER BY scope, subject_id`,
 	)
 	if err != nil {
@@ -70,7 +70,7 @@ func (x *DB) ListBudgets(ctx context.Context) ([]Budget, error) {
 	for rows.Next() {
 		var b Budget
 		var awid sql.NullString
-		if err := rows.Scan(&b.ID, &b.Scope, &b.SubjectID, &b.DailyUSD,
+		if err := rows.Scan(&b.ID, &b.Scope, &b.SubjectID, &b.DailyUSD, &b.DailyTokens,
 			&b.ActionOnExceed, &awid, &b.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan budget: %w", err)
 		}
@@ -95,9 +95,9 @@ func (x *DB) UpdateBudget(ctx context.Context, b Budget) error {
 	}
 	res, err := x.sqlDB.ExecContext(ctx,
 		`UPDATE budgets
-		    SET scope=?, subject_id=?, daily_usd=?, action_on_exceed=?, alert_webhook_id=?
+		    SET scope=?, subject_id=?, daily_usd=?, daily_tokens=?, action_on_exceed=?, alert_webhook_id=?
 		  WHERE id=?`,
-		b.Scope, b.SubjectID, b.DailyUSD, b.ActionOnExceed, awid, b.ID,
+		b.Scope, b.SubjectID, b.DailyUSD, b.DailyTokens, b.ActionOnExceed, awid, b.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update budget: %w", err)

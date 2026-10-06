@@ -267,3 +267,23 @@ func TestListUsageForWindow_ReportedCost(t *testing.T) {
 		t.Fatalf("sum = %+v, want reported 0.25, priced 10/5, tokens 117/58", sum)
 	}
 }
+
+func TestBudgetDailyTokens(t *testing.T) {
+	x := testDB(t)
+	ctx := context.Background()
+	if err := x.CreateBudget(ctx, Budget{ID: "bt", Scope: "global", DailyUSD: 1, DailyTokens: 500000, ActionOnExceed: "throttle_zero"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := x.GetBudget(ctx, "bt")
+	if err != nil || got.DailyTokens != 500000 {
+		t.Fatalf("get: %v %+v", err, got)
+	}
+	got.DailyTokens = 7
+	if err := x.UpdateBudget(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := x.ListBudgets(ctx)
+	if len(list) != 1 || list[0].DailyTokens != 7 {
+		t.Fatalf("list: %+v", list)
+	}
+}

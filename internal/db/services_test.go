@@ -331,3 +331,38 @@ func TestCreateServiceAdminPreProvisioning(t *testing.T) {
 		t.Fatalf("distinct-ID insert: %v", err)
 	}
 }
+
+func TestServiceGatewayOnly(t *testing.T) {
+	x := testDB(t)
+	ctx := context.Background()
+	mustUser(t, x, "u1")
+	s, err := x.GetOrCreateService(ctx, "u1", "svc", "http")
+	if err != nil || s.GatewayOnly {
+		t.Fatalf("default: %v %+v", err, s)
+	}
+	if err := x.SetServiceGatewayOnly(ctx, s.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	byID, _ := x.GetServiceByID(ctx, s.ID)
+	if !byID.GatewayOnly {
+		t.Fatal("GetServiceByID lost GatewayOnly")
+	}
+	list, _ := x.ListServicesByUser(ctx, "u1")
+	if len(list) != 1 || !list[0].GatewayOnly {
+		t.Fatalf("list by user: %+v", list)
+	}
+	all, _ := x.ListAllServices(ctx)
+	if len(all) != 1 || !all[0].GatewayOnly {
+		t.Fatalf("list all: %+v", all)
+	}
+	if err := x.SetServiceGatewayOnly(ctx, s.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	byID, _ = x.GetServiceByID(ctx, s.ID)
+	if byID.GatewayOnly {
+		t.Fatal("not cleared")
+	}
+	if err := x.SetServiceGatewayOnly(ctx, "missing", true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing err = %v", err)
+	}
+}

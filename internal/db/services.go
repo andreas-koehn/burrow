@@ -71,7 +71,7 @@ func (x *DB) CreateService(ctx context.Context, s Service) error {
 // mtls_ca_pem (migration 0009) is included so the proxy layer can populate
 // proxy.Resolved.MTLSCAPEM without a second round-trip; non-mtls services
 // store it as NULL, which COALESCE rewrites to ”.
-const selectServiceCols = `id, user_id, name, type, COALESCE(subdomain,''), access_mode, api_key_header, created_at, COALESCE(mtls_ca_pem,'')`
+const selectServiceCols = `id, user_id, name, type, COALESCE(subdomain,''), access_mode, api_key_header, created_at, COALESCE(mtls_ca_pem,''), gateway_only`
 
 // ErrServiceNameReserved is returned by GetOrCreateService when the name
 // belongs to the backing row of a direct AI provider.
@@ -100,7 +100,7 @@ func (x *DB) GetOrCreateService(ctx context.Context, userID, name, typ string) (
 	err = x.sqlDB.QueryRowContext(ctx,
 		`SELECT `+selectServiceCols+` FROM services WHERE user_id=? AND name=?`,
 		userID, name,
-	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM)
+	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, &s.GatewayOnly)
 	if err == sql.ErrNoRows {
 		return Service{}, ErrNotFound
 	}
@@ -118,7 +118,7 @@ func (x *DB) GetServiceByID(ctx context.Context, id string) (Service, error) {
 	var s Service
 	err := x.sqlDB.QueryRowContext(ctx,
 		`SELECT `+selectServiceCols+` FROM services WHERE id=?`, id,
-	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM)
+	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, &s.GatewayOnly)
 	if err == sql.ErrNoRows {
 		return Service{}, ErrNotFound
 	}
@@ -137,7 +137,7 @@ func (x *DB) GetServiceBySubdomain(ctx context.Context, sub string) (Service, er
 	var s Service
 	err := x.sqlDB.QueryRowContext(ctx,
 		`SELECT `+selectServiceCols+` FROM services WHERE subdomain=?`, sub,
-	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM)
+	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, &s.GatewayOnly)
 	if err == sql.ErrNoRows {
 		return Service{}, ErrNotFound
 	}
@@ -161,7 +161,7 @@ func (x *DB) ListServicesByUser(ctx context.Context, userID string) ([]Service, 
 	var out []Service
 	for rows.Next() {
 		var s Service
-		if err := rows.Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM); err != nil {
+		if err := rows.Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, &s.GatewayOnly); err != nil {
 			return nil, fmt.Errorf("scan service: %w", err)
 		}
 		out = append(out, s)
@@ -184,7 +184,7 @@ func (x *DB) ListAllServices(ctx context.Context) ([]Service, error) {
 	var out []Service
 	for rows.Next() {
 		var s Service
-		if err := rows.Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM); err != nil {
+		if err := rows.Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, &s.GatewayOnly); err != nil {
 			return nil, fmt.Errorf("scan service: %w", err)
 		}
 		out = append(out, s)
@@ -403,4 +403,14 @@ func (x *DB) SetAccessPolicy(ctx context.Context, serviceID string, roles []stri
 		return fmt.Errorf("commit access policy tx: %w", err)
 	}
 	return nil
+}
+
+// SetServiceGatewayOnly marks a service as reachable only through the AI
+// gateway. ErrNotFound when no service has the id.
+func (x *DB) SetServiceGatewayOnly(ctx context.Context, id string, on bool) error {
+	res, err := x.sqlDB.ExecContext(ctx, `UPDATE services SET gateway_only=? WHERE id=?`, on, id)
+	if err != nil {
+		return fmt.Errorf("set service gateway only: %w", err)
+	}
+	return notFoundIfNoRows(res, "set service gateway only")
 }
