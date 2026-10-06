@@ -58,7 +58,7 @@ describe("contract", () => {
     const ai: AiProvider = {
       slug: "web", name: "web", kind: "tunnel", api_format: "openai",
       service_id: "svc_web01", base_url: "https://b.example.com/ai/web/v1", model_alias: "fast",
-      upstream_base_url: "", credential_slot: "", credential_present: false, billing: "metered", supports_responses: false, max_concurrent: 0, in_use: 0, model_count: 0,
+      upstream_base_url: "", credential_slot: "", credential_present: false, credential_slots: [], breaker_open: false, billing: "metered", supports_responses: false, max_concurrent: 0, in_use: 0, model_count: 0,
       concrete_model: "llama3.1:8b", backend_type: "ollama",
       api_key_count: 2, requests_24h: 1024, cache_hits_24h: 200,
       latency_p95_ms: 1200, status: "Connected", client_session_id: "sess_abc",

@@ -2290,6 +2290,25 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   min-width: 0;
 }
 .target-group > legend { padding: 0 var(--space-xs); font-size: 13px; font-weight: 500; }
+.target-group > * + * { margin-top: var(--space-sm); }
+/* One target of a format's list; the buttons that move or remove it sit above its fields. */
+.target-row { border: 0; padding: 0; margin: 0; min-width: 0; }
+.target-row + .target-row { border-top: 1px solid var(--border); padding-top: var(--space-sm); }
+.target-row:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; border-radius: var(--radius-md); }
+.target-row-actions { display: flex; align-items: center; gap: var(--space-xs); margin-bottom: var(--space-xs); }
+.model-advanced { margin-top: var(--space-md); }
+.model-advanced-toggle { display: inline-flex; align-items: center; gap: var(--space-xs); }
+.model-advanced-body { margin-top: var(--space-sm); }
+/* Models page: a format's targets in the order they are tried. */
+.target-chain { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); min-width: 0; }
+.target-chain > li { display: inline-flex; align-items: center; gap: var(--space-xs); min-width: 0; overflow-wrap: anywhere; }
+.target-chain .target-unavailable { color: var(--muted-foreground); }
+.attempt-lookup { min-width: 0; margin-top: var(--space-lg); }
+.attempt-lookup form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-sm); }
+.attempt-lookup > * + * { margin-top: var(--space-md); }
+/* Provider page: several credential slots, each with its state. */
+.slot-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-xs); }
+.slot-list > li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); }
 .target-group + p,
 .key-models { margin-top: var(--space-md); }
 /* The provider pages carry two or three header controls; on a narrow screen

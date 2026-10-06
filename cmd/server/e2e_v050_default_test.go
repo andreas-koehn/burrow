@@ -347,20 +347,30 @@ func v050CheckSyntheticModel(t *testing.T, env *v050Env) {
 	// told the name is taken. Neither is a 500.
 	for round := 0; round < 5; round++ {
 		name := fmt.Sprintf("race-%d", round)
+		// env.tryDo, not env.do: t.Fatalf must not be called from a goroutine
+		// other than the test's own. A request that failed reports -1 and the
+		// test fails below, from the main goroutine.
 		codes := make(chan int, 2)
 		start := make(chan struct{})
 		for i := 0; i < 2; i++ {
 			go func() {
 				<-start
-				c, _ := env.do(t, http.MethodPost, "/api/v1/ai/models", map[string]any{
+				c, _, err := env.tryDo(http.MethodPost, "/api/v1/ai/models", map[string]any{
 					"name":    name,
 					"targets": []map[string]string{{"provider": "e2e-direct", "model": "m"}},
 				})
+				if err != nil {
+					t.Errorf("round %d: %v", round, err)
+					c = -1
+				}
 				codes <- c
 			}()
 		}
 		close(start)
 		a, b := <-codes, <-codes
+		if a < 0 || b < 0 {
+			t.Fatalf("round %d: a concurrent create did not get an answer", round)
+		}
 		if a > b {
 			a, b = b, a
 		}
@@ -402,20 +412,31 @@ func v050CheckSyntheticModel(t *testing.T, env *v050Env) {
 }
 
 // do executes an authenticated JSON request with the CSRF header on
-// mutating methods. Returns (status, body bytes).
+// mutating methods. Returns (status, body bytes). It fails the test when the
+// request cannot be made, so it is for the test's own goroutine; tryDo is the
+// same without the test.
 func (e *v050Env) do(t *testing.T, method, path string, body any) (int, []byte) {
 	t.Helper()
+	code, b, err := e.tryDo(method, path, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code, b
+}
+
+// tryDo is do with the failure returned: safe to call from any goroutine.
+func (e *v050Env) tryDo(method, path string, body any) (int, []byte, error) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			t.Fatalf("marshal: %v", err)
+			return 0, nil, fmt.Errorf("marshal: %w", err)
 		}
 		rdr = bytes.NewReader(b)
 	}
 	req, err := http.NewRequest(method, e.srv.URL+path, rdr)
 	if err != nil {
-		t.Fatalf("new request: %v", err)
+		return 0, nil, fmt.Errorf("new request: %w", err)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -425,11 +446,11 @@ func (e *v050Env) do(t *testing.T, method, path string, body any) (int, []byte) 
 	}
 	resp, err := e.hc.Do(req)
 	if err != nil {
-		t.Fatalf("%s %s: %v", method, path, err)
+		return 0, nil, fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, b
+	return resp.StatusCode, b, nil
 }
 
 // rawGet performs an authenticated GET and returns the *http.Response WITHOUT

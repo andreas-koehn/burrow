@@ -2041,3 +2041,142 @@ func TestProviderMaxConcurrent_RequiresAdmin(t *testing.T) {
 		t.Errorf("a non-admin changed the limit: %+v", ps.rows[0])
 	}
 }
+
+// multiSlotFixture adds the direct provider "zai" with two credential slots,
+// of which the vault holds only the first.
+func multiSlotFixture() (*directFixture, *fakeBreaker) {
+	f := newDirectFixture()
+	f.ps.rows = append(f.ps.rows, db.AIProvider{
+		Slug: "zai", Name: "z.ai", Kind: "direct", ServiceID: "prov-zai", APIFormat: "openai",
+		BaseURL: "https://api.z.ai/v4", CredentialSlot: "ZAI,ZAI2", AuthHeader: "Authorization", AuthFormat: "Bearer {key}",
+	})
+	f.d.CredentialVault = secretVault{"OPENROUTER": upstreamSecret, "ZAI": upstreamSecret, "EMPTY": ""}
+	br := &fakeBreaker{open: map[string]bool{"zai": true}}
+	f.d.AIBreaker = br
+	return f, br
+}
+
+func TestProviderView_BreakerAndSlots(t *testing.T) {
+	slots := func(t *testing.T, body string) string {
+		t.Helper()
+		var raw struct {
+			Slots   json.RawMessage `json:"credential_slots"`
+			Present *bool           `json:"credential_present"`
+			Open    *bool           `json:"breaker_open"`
+		}
+		if err := json.Unmarshal([]byte(body), &raw); err != nil || raw.Present == nil || raw.Open == nil {
+			t.Fatalf("decode %s: %v", body, err)
+		}
+		return fmt.Sprintf("%s present=%v open=%v", raw.Slots, *raw.Present, *raw.Open)
+	}
+
+	t.Run("one slot of two missing", func(t *testing.T) {
+		f, _ := multiSlotFixture()
+		f.d.Users = &fakeUserStore{role: "user"} // whoever sees the provider sees its status
+		body := wantStatus(t, f.serve(t).get(t, "/api/v1/ai/providers/zai"), http.StatusOK)
+		if got, want := slots(t, body), `[{"slot":"ZAI","present":true},{"slot":"ZAI2","present":false}] present=false open=true`; got != want {
+			t.Errorf("got  %s\nwant %s", got, want)
+		}
+		if decodeProvider(t, body).Status != "Offline" {
+			t.Errorf("status = %s, want Offline", decodeProvider(t, body).Status)
+		}
+		f.noSecrets(t, body)
+	})
+
+	t.Run("every slot set", func(t *testing.T) {
+		f, br := multiSlotFixture()
+		f.d.CredentialVault = secretVault{"ZAI": upstreamSecret, "ZAI2": upstreamSecret}
+		br.open = nil
+		body := wantStatus(t, f.serve(t).get(t, "/api/v1/ai/providers/zai"), http.StatusOK)
+		if got, want := slots(t, body), `[{"slot":"ZAI","present":true},{"slot":"ZAI2","present":true}] present=true open=false`; got != want {
+			t.Errorf("got  %s\nwant %s", got, want)
+		}
+		if decodeProvider(t, body).Status != "Connected" {
+			t.Errorf("status = %s, want Connected", decodeProvider(t, body).Status)
+		}
+		f.noSecrets(t, body)
+	})
+
+	t.Run("a tunnel provider has no slots, and no breaker means not open", func(t *testing.T) {
+		f, _ := multiSlotFixture()
+		f.d.AIBreaker = nil
+		body := wantStatus(t, f.serve(t).get(t, "/api/v1/ai/providers/ollama"), http.StatusOK)
+		if got, want := slots(t, body), `[] present=false open=false`; got != want {
+			t.Errorf("got  %s\nwant %s", got, want)
+		}
+	})
+}
+
+// A sync reads the list with the first slot that is set; with none set it
+// names the slots and makes no outbound call.
+func TestSyncProviderModels_SeveralSlots(t *testing.T) {
+	t.Run("uses the first slot that is set", func(t *testing.T) {
+		f, _ := multiSlotFixture()
+		f.d.CredentialVault = secretVault{"ZAI2": upstreamSecret}
+		var asked db.AIProvider
+		f.d.FetchProviderModels = func(_ context.Context, p db.AIProvider) ([]aiprovider.Model, error) {
+			asked = p
+			return []aiprovider.Model{{ID: "glm-5.1"}}, nil
+		}
+		wantStatus(t, f.serve(t).post(t, "/api/v1/ai/providers/zai/models/sync", nil), http.StatusOK)
+		if asked.CredentialSlot != "ZAI2" {
+			t.Errorf("fetched with slot %q, want ZAI2", asked.CredentialSlot)
+		}
+	})
+	t.Run("no slot set", func(t *testing.T) {
+		f, _ := multiSlotFixture()
+		f.d.CredentialVault = secretVault{"ZAI": ""}
+		calls := 0
+		f.d.FetchProviderModels = func(context.Context, db.AIProvider) ([]aiprovider.Model, error) {
+			calls++
+			return nil, nil
+		}
+		body := wantStatus(t, f.serve(t).post(t, "/api/v1/ai/providers/zai/models/sync", nil), http.StatusConflict)
+		if !strings.Contains(body, "none of the credential slots ZAI, ZAI2 is set") || calls != 0 {
+			t.Errorf("body = %s, fetcher calls = %d", body, calls)
+		}
+	})
+}
+
+// A deleted provider's breaker state goes with it, and a renamed provider
+// leaves none behind under its old slug.
+func TestProviderWrites_ForgetBreakerState(t *testing.T) {
+	newServer := func(t *testing.T) (*authClient, *fakeProviderStore, *fakeBreaker) {
+		ss, ps := oneProviderFixture()
+		d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
+		br := &fakeBreaker{}
+		d.AIBreaker = br
+		srv, c := newAIProviderServer(t, d)
+		t.Cleanup(srv.Close)
+		return c, ps, br
+	}
+	t.Run("delete", func(t *testing.T) {
+		c, _, br := newServer(t)
+		wantStatus(t, c.delete(t, "/api/v1/ai/providers/ollama"), http.StatusNoContent)
+		if fmt.Sprint(br.forgot) != "[ollama]" {
+			t.Errorf("forgot = %v", br.forgot)
+		}
+	})
+	t.Run("refused delete keeps the state", func(t *testing.T) {
+		c, ps, br := newServer(t)
+		ps.deleteErr = fmt.Errorf("%w: fast", store.ErrProviderInUse)
+		wantStatus(t, c.delete(t, "/api/v1/ai/providers/ollama"), http.StatusConflict)
+		if len(br.forgot) != 0 {
+			t.Errorf("forgot = %v", br.forgot)
+		}
+	})
+	t.Run("rename forgets the old slug", func(t *testing.T) {
+		c, _, br := newServer(t)
+		wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]string{"slug": "local", "name": "Local"}), http.StatusOK)
+		if fmt.Sprint(br.forgot) != "[ollama]" {
+			t.Errorf("forgot = %v", br.forgot)
+		}
+	})
+	t.Run("an update that keeps the slug keeps the state", func(t *testing.T) {
+		c, _, br := newServer(t)
+		wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]string{"slug": "ollama", "name": "Renamed"}), http.StatusOK)
+		if len(br.forgot) != 0 {
+			t.Errorf("forgot = %v", br.forgot)
+		}
+	})
+}

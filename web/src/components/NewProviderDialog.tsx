@@ -4,9 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
 import { SlugField } from "@/components/SlugField";
-import { ConcurrencyField, ResponsesCheckbox } from "@/components/ProviderUpstreamPanel";
+import { ConcurrencyField, ResponsesCheckbox, SlotsNotSet } from "@/components/ProviderUpstreamPanel";
 import { providerSlugError } from "@/lib/providerSlug";
-import { PROVIDER_PRESETS, credentialSlotError, envVarForSlot, parseConcurrency } from "@/lib/providerPresets";
+import { CREDENTIAL_SLOT_HELP, PROVIDER_PRESETS, credentialSlotsError, parseConcurrency, splitSlots } from "@/lib/providerPresets";
 import { providerBaseUrl } from "@/lib/serviceUrl";
 import type { AiProvider, Service } from "@/lib/contract";
 
@@ -109,7 +109,7 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
       apiFetch<AiProvider>("/ai/providers", {
         method: "POST",
         body: JSON.stringify(direct
-          ? { kind: "direct", slug: slug || undefined, name: name.trim(), base_url: baseUrl.trim(), credential_slot: slot, billing, supports_responses: responses, max_concurrent: limit ?? 0 }
+          ? { kind: "direct", slug: slug || undefined, name: name.trim(), base_url: baseUrl.trim(), credential_slot: splitSlots(slot).join(","), billing, supports_responses: responses, max_concurrent: limit ?? 0 }
           : { slug: slug || undefined, name: name.trim(), kind: "tunnel", service_id: chosen }),
       }),
     // Wait for the refetch so the list behind the dialog already shows the provider.
@@ -132,13 +132,15 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
   });
 
   const slugMessage = slugErr ?? providerSlugError(slug);
-  const slotMessage = slotErr ?? credentialSlotError(slot);
+  const slotMessage = slotErr ?? credentialSlotsError(slot);
   // The list names every slot that is set, also one set to an empty value, so
   // a listed slot is no proof of a usable key; an unlisted one is proof of none.
-  const slotMissing = direct && slot !== "" && slotMessage === null
-    && slots.data !== undefined && !slots.data.slots.includes(slot);
+  const known = slots.data?.slots;
+  // Only the slots that are not set are named.
+  const slotsMissing = !direct || slotMessage !== null || known === undefined
+    ? [] : splitSlots(slot).filter((x) => !known.includes(x));
   const filled = direct
-    ? baseUrl.trim() !== "" && slot !== "" && slotMessage === null && limit !== null
+    ? baseUrl.trim() !== "" && splitSlots(slot).length > 0 && slotMessage === null && limit !== null
     : chosen !== "";
   const canCreate = name.trim() !== "" && filled && slugMessage === null && !create.isPending;
   return (
@@ -236,13 +238,13 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
               htmlFor="np-slot"
               w="md"
               error={slotMessage ? <span id="np-slot-err">{slotMessage}</span> : undefined}
-              help={<span id="np-slot-help">The name of the slot, not the key. The key is set on the relay and must be set to a non-empty value.</span>}
+              help={<span id="np-slot-help">{CREDENTIAL_SLOT_HELP}</span>}
             >
               <Input
                 id="np-slot"
                 mono
                 value={slot}
-                maxLength={32}
+                maxLength={140}
                 required
                 invalid={!!slotMessage}
                 autoComplete="off"
@@ -282,10 +284,9 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
         )}
       </FormFieldGroup>
       <p className="muted small">Leave the slug empty to derive it from the name.</p>
-      {slotMissing && (
+      {slotsMissing.length > 0 && (
         <ErrorNotice variant="info" role="note">
-          Slot {slot} is not set on the relay. Set <code>{envVarForSlot(slot)}</code> to a non-empty value in
-          the relay's environment and restart it. You can create the provider now; it answers 503 until the
+          <SlotsNotSet slots={slotsMissing} /> You can create the provider now; it answers 503 until the
           key is set.
         </ErrorNotice>
       )}

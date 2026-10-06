@@ -291,3 +291,80 @@ func TestBreaker_AbandonedTrialIsGrantedAgain(t *testing.T) {
 		t.Fatal("a failed trial did not reopen the breaker")
 	}
 }
+
+// A deleted or renamed provider's state is dropped: the slug reads as closed
+// and a provider that takes the slug later starts clean.
+func TestBreaker_Forget(t *testing.T) {
+	b, now := newTestBreaker()
+	for i := 0; i < 5; i++ {
+		b.Report("gone", false, 0)
+	}
+	if !b.Open("gone") {
+		t.Fatal("breaker did not open")
+	}
+	b.Forget("gone")
+	b.Forget("never-seen")
+	if b.Open("gone") || b.State("gone") != BreakerClosed || !allowed(b, "gone") {
+		t.Fatalf("forgotten key is still refused: state %s", b.State("gone"))
+	}
+	if len(b.states) != 0 {
+		t.Fatalf("states kept: %d", len(b.states))
+	}
+
+	// A request that was under way reports after the provider is gone. Its
+	// one sample opens nothing, and the entry it left goes once it is stale.
+	b.Report("gone", false, 0)
+	if b.Open("gone") {
+		t.Fatal("one late report opened the breaker")
+	}
+	*now = now.Add(2 * time.Minute)
+	b.Report("other", true, 0)
+	if _, kept := b.states["gone"]; kept || len(b.states) != 1 {
+		t.Fatalf("stale entry of a forgotten key kept: %d states", len(b.states))
+	}
+}
+
+// An open breaker and one with fresh samples are never dropped as idle.
+func TestBreaker_IdleSweepKeepsLiveStates(t *testing.T) {
+	b, now := newTestBreaker()
+	for i := 0; i < 5; i++ {
+		b.Report("down", false, 0)
+	}
+	*now = now.Add(10 * time.Minute)
+	b.Report("fresh", false, 0)
+	b.Report("new", true, 0)
+	if b.State("down") != BreakerHalfOpen {
+		t.Errorf("open breaker was dropped: state %s", b.State("down"))
+	}
+	if _, kept := b.states["fresh"]; !kept {
+		t.Error("a key with a sample inside the window was dropped")
+	}
+}
+
+// Forget races with requests that ask and report (run with -race).
+func TestBreaker_ForgetConcurrent(t *testing.T) {
+	b := NewBreaker()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 500; j++ {
+				if i%4 == 0 {
+					b.Forget("p")
+					continue
+				}
+				ok, trial := b.Allow("p")
+				b.Open("p")
+				if ok {
+					b.Report("p", j%2 == 0, trial)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	b.Forget("p")
+	if b.Open("p") || len(b.states) != 0 {
+		t.Fatalf("state left after Forget: %d", len(b.states))
+	}
+}

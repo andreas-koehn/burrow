@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, X } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select, Switch } from "@/components/ds";
+import { Button, Checkbox, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select, Switch } from "@/components/ds";
 import { modelNameError } from "@/lib/modelNames";
 import type { AiModel, AiModelTarget, AiProvider, AiProviderModel, Dialect } from "@/lib/contract";
 
@@ -19,25 +20,40 @@ const FORMATS: { dialect: Dialect; legend: string }[] = [
   { dialect: "anthropic", legend: "Anthropic format" },
 ];
 
-/** Where one format is sent. provider "" is "not served". */
+/** As many targets as the relay takes per format. */
+const MAX_TARGETS = 8;
+
+// Keys of the list entries; only ever compared with each other.
+let lastKey = 0;
+const newKey = () => ++lastKey;
+
+/** One entry of a format's list. provider "" is unset: "Not served" when it is the only entry. */
 interface TargetChoice {
+  /** Stable across reorders, so a row keeps its fields and the focus. */
+  key: number;
   provider: string;
   model: string;
   /** The model id is typed, not picked from the provider's list. */
   manual: boolean;
 }
 
-interface TargetGroupProps {
+interface TargetRowProps {
   dialect: Dialect;
   legend: string;
-  /** undefined while the providers are still loading. */
-  providers: AiProvider[] | undefined;
+  /** 1-based place in the format's list. */
+  n: number;
+  count: number;
+  providers: AiProvider[];
   value: TargetChoice;
+  /** Receives the row's group element, so the list can move the focus with the row. */
+  groupRef: (el: HTMLFieldSetElement | null) => void;
   onChange: (next: TargetChoice) => void;
+  onMove: (by: -1 | 1) => void;
+  onRemove: () => void;
 }
 
-function TargetGroup({ dialect, legend, providers, value, onChange }: TargetGroupProps) {
-  const id = `model-target-${dialect}`;
+function TargetRow({ dialect, legend, n, count, providers, value, groupRef, onChange, onMove, onRemove }: TargetRowProps) {
+  const id = `model-target-${dialect}-${value.key}`;
   // Same key as ProviderModelsPanel: the provider's stored model list.
   const catalog = useQuery({
     queryKey: ["ai", "provider-models", value.provider],
@@ -46,77 +62,193 @@ function TargetGroup({ dialect, legend, providers, value, onChange }: TargetGrou
     enabled: value.provider !== "",
   });
   const ids = Array.isArray(catalog.data) ? catalog.data.map((m) => m.id) : [];
-  const speaking = (providers ?? []).filter((p) => p.api_format === dialect);
   // A model id the list does not have can only be shown in the text field.
   const typed = value.manual || ids.length === 0 || (value.model !== "" && !ids.includes(value.model));
 
   return (
+    // tabIndex -1: after a move the focus goes to the row, whose name says where it is now.
+    <fieldset className="target-row" aria-label={`${legend}, target ${n}`} tabIndex={-1} ref={groupRef}>
+      {count > 1 && (
+        <div className="target-row-actions">
+          <span className="muted small" aria-hidden="true">{n}.</span>
+          {n > 1 && (
+            <button type="button" className="icon-btn" aria-label={`Move target ${n} up`} onClick={() => onMove(-1)}>
+              <ArrowUp size={14} aria-hidden="true" />
+            </button>
+          )}
+          {n < count && (
+            <button type="button" className="icon-btn" aria-label={`Move target ${n} down`} onClick={() => onMove(1)}>
+              <ArrowDown size={14} aria-hidden="true" />
+            </button>
+          )}
+          <button type="button" className="icon-btn" aria-label={`Remove target ${n}`} onClick={onRemove}>
+            <X size={14} aria-hidden="true" />
+          </button>
+        </div>
+      )}
+      <FormFieldGroup>
+        <FormField label="Provider" htmlFor={`${id}-provider`} w="md">
+          <Select
+            id={`${id}-provider`}
+            value={value.provider}
+            onChange={(v) => onChange({ ...value, provider: v, model: "", manual: false })}
+            placeholder="Select a provider…"
+            options={[
+              // A format is switched off on its only entry; a further one is removed instead.
+              ...(count === 1 ? [{ value: "", label: "Not served" }] : []),
+              ...providers.map((p) => ({ value: p.slug, label: p.slug })),
+              // A target whose provider is not in the list any more stays visible.
+              ...(value.provider !== "" && !providers.some((p) => p.slug === value.provider)
+                ? [{ value: value.provider, label: value.provider }]
+                : []),
+            ]}
+          />
+        </FormField>
+        {value.provider !== "" && (catalog.isLoading ? (
+          <p className="muted small">Loading models…</p>
+        ) : typed ? (
+          <FormField
+            label="Target model id"
+            htmlFor={`${id}-model-id`}
+            w="md"
+            help={ids.length === 0 ? "This provider has no synced models. Type the model id." : "The provider's own id for the model."}
+          >
+            <Input
+              id={`${id}-model-id`}
+              mono
+              value={value.model}
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              maxLength={200}
+              onChange={(e) => onChange({ ...value, model: e.target.value })}
+            />
+            {ids.length > 0 && (
+              <button type="button" className="link small" onClick={() => onChange({ ...value, model: "", manual: false })}>
+                Choose from the list instead
+              </button>
+            )}
+          </FormField>
+        ) : (
+          <FormField label="Target model" htmlFor={`${id}-model`} w="md">
+            <Select
+              id={`${id}-model`}
+              value={value.model}
+              onChange={(v) => onChange({ ...value, model: v })}
+              options={ids.map((m) => ({ value: m, label: m }))}
+              placeholder="Select a model…"
+            />
+            <button type="button" className="link small" onClick={() => onChange({ ...value, model: "", manual: true })}>
+              Enter a model id instead
+            </button>
+          </FormField>
+        ))}
+      </FormFieldGroup>
+    </fieldset>
+  );
+}
+
+interface TargetListProps {
+  dialect: Dialect;
+  legend: string;
+  /** undefined while the providers are still loading. */
+  providers: AiProvider[] | undefined;
+  value: TargetChoice[];
+  onChange: (next: TargetChoice[]) => void;
+  /** Said to a screen reader after a move or a removal. */
+  announce: (message: string) => void;
+}
+
+/** What a target is called when it is announced. */
+function targetName(t: TargetChoice, n: number): string {
+  return t.provider !== "" && t.model.trim() !== "" ? `${t.provider}/${t.model.trim()}` : `Target ${n}`;
+}
+
+/** The ordered targets of one format: edit, add, remove, move up and down. */
+function TargetList({ dialect, legend, providers, value, onChange, announce }: TargetListProps) {
+  const rows = useRef(new Map<number, HTMLFieldSetElement>());
+  // The row to focus once the list has rendered in its new order.
+  const focusNext = useRef<number | null>(null);
+  useEffect(() => {
+    if (focusNext.current === null) return;
+    rows.current.get(focusNext.current)?.focus();
+    focusNext.current = null;
+  });
+  const setFocusKey = (key: number | null) => { focusNext.current = key; };
+
+  const speaking = (providers ?? []).filter((p) => p.api_format === dialect);
+  const served = value.some((t) => t.provider !== "");
+
+  function move(i: number, by: -1 | 1) {
+    const to = i + by;
+    const moved = value[i];
+    const other = value[to];
+    if (!moved || !other) return;
+    const next = [...value];
+    next[i] = other;
+    next[to] = moved;
+    onChange(next);
+    // The button that was pressed may be gone at the end of the list: the row takes the focus.
+    setFocusKey(moved.key);
+    announce(`${targetName(moved, i + 1)} is now target ${to + 1} of ${value.length} in the ${legend}.`);
+  }
+
+  function remove(i: number) {
+    const gone = value[i];
+    if (!gone || value.length < 2) return;
+    const next = value.filter((_, at) => at !== i);
+    onChange(next);
+    setFocusKey((next[i] ?? next[i - 1])?.key ?? null);
+    announce(`${targetName(gone, i + 1)} removed from the ${legend}.`);
+  }
+
+  return (
     <fieldset className="target-group">
       <legend>{legend}</legend>
-      {providers === undefined ? (
+      {providers === undefined && !served ? (
+        // A stored list is shown at once; the providers to choose from follow.
         <p className="muted small">Loading providers…</p>
-      ) : speaking.length === 0 && value.provider === "" ? (
+      ) : speaking.length === 0 && !served ? (
         <p className="muted small">
           <span>No provider speaks this format yet.</span>{" "}
           Add one under <Link className="link-inline" to="/gateway/providers">Providers</Link>.
         </p>
       ) : (
-        <FormFieldGroup>
-          <FormField label="Provider" htmlFor={`${id}-provider`} w="md">
-            <Select
-              id={`${id}-provider`}
-              value={value.provider}
-              onChange={(v) => onChange({ provider: v, model: "", manual: false })}
-              options={[
-                { value: "", label: "Not served" },
-                ...speaking.map((p) => ({ value: p.slug, label: p.slug })),
-                // A target whose provider is not in the list any more stays visible.
-                ...(value.provider !== "" && !speaking.some((p) => p.slug === value.provider)
-                  ? [{ value: value.provider, label: value.provider }]
-                  : []),
-              ]}
+        <>
+          {served && (
+            <p className="muted small">Tried in this order. Burrow moves on when a target fails before it has started answering.</p>
+          )}
+          {value.map((t, i) => (
+            <TargetRow
+              key={t.key}
+              dialect={dialect}
+              legend={legend}
+              n={i + 1}
+              count={value.length}
+              providers={speaking}
+              value={t}
+              groupRef={(el) => { if (el) rows.current.set(t.key, el); else rows.current.delete(t.key); }}
+              onChange={(next) => onChange(value.map((x) => (x.key === t.key ? next : x)))}
+              onMove={(by) => move(i, by)}
+              onRemove={() => remove(i)}
             />
-          </FormField>
-          {value.provider !== "" && (catalog.isLoading ? (
-            <p className="muted small">Loading models…</p>
-          ) : typed ? (
-            <FormField
-              label="Target model id"
-              htmlFor={`${id}-model-id`}
-              w="md"
-              help={ids.length === 0 ? "This provider has no synced models. Type the model id." : "The provider's own id for the model."}
-            >
-              <Input
-                id={`${id}-model-id`}
-                mono
-                value={value.model}
-                autoComplete="off"
-                autoCapitalize="none"
-                spellCheck={false}
-                maxLength={200}
-                onChange={(e) => onChange({ ...value, model: e.target.value })}
-              />
-              {ids.length > 0 && (
-                <button type="button" className="link small" onClick={() => onChange({ ...value, model: "", manual: false })}>
-                  Choose from the list instead
-                </button>
-              )}
-            </FormField>
-          ) : (
-            <FormField label="Target model" htmlFor={`${id}-model`} w="md">
-              <Select
-                id={`${id}-model`}
-                value={value.model}
-                onChange={(v) => onChange({ ...value, model: v })}
-                options={ids.map((m) => ({ value: m, label: m }))}
-                placeholder="Select a model…"
-              />
-              <button type="button" className="link small" onClick={() => onChange({ ...value, model: "", manual: true })}>
-                Enter a model id instead
-              </button>
-            </FormField>
           ))}
-        </FormFieldGroup>
+          {served && (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={value.length >= MAX_TARGETS}
+              onClick={() => {
+                const key = newKey();
+                onChange([...value, { key, provider: "", model: "", manual: false }]);
+                setFocusKey(key);
+              }}
+            >
+              Add fallback target
+            </Button>
+          )}
+          {value.length >= MAX_TARGETS && <p className="muted small">A format takes at most {MAX_TARGETS} targets.</p>}
+        </>
       )}
     </fieldset>
   );
@@ -127,38 +259,36 @@ function ofFormat(targets: AiModelTarget[], dialect: Dialect): [string, string][
   return targets.filter((t) => t.dialect === dialect).map((t) => [t.provider, t.model]);
 }
 
-function initialChoice(model: AiModel | undefined, dialect: Dialect): TargetChoice {
-  const first = model?.targets.find((t) => t.dialect === dialect);
-  return { provider: first?.provider ?? "", model: first?.model ?? "", manual: false };
+/** A timeout field's value in seconds, or null when it is not a whole number from 1 to 600 (the relay's rule). */
+function parseTimeout(text: string): number | null {
+  if (!/^\d{1,3}$/.test(text.trim())) return null;
+  const n = Number(text.trim());
+  return n >= 1 && n <= 600 ? n : null;
 }
 
-/**
- * The targets the form stands for, OpenAI first. The dialog edits the first
- * target of each format; further ones (set through the API) are kept behind it.
- */
-function targetsOf(choices: Record<Dialect, TargetChoice>, original: AiModel | undefined): AiModelTarget[] {
-  const out: AiModelTarget[] = [];
-  for (const { dialect } of FORMATS) {
-    const c = choices[dialect];
-    const id = c.model.trim();
-    if (c.provider === "" || id === "") continue;
-    out.push({ dialect, provider: c.provider, model: id });
-    const rest = (original?.targets ?? []).filter((t) => t.dialect === dialect).slice(1);
-    out.push(...rest.filter((t) => !(t.provider === c.provider && t.model === id)));
-  }
-  return out;
-}
+const TIMEOUT_RANGE = "Between 1 and 600 seconds.";
 
 function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
   const qc = useQueryClient();
   const editing = model !== undefined;
+  const advancedId = useId();
   const [name, setName] = useState(model?.name ?? "");
   const [description, setDescription] = useState(model?.description ?? "");
   const [enabled, setEnabled] = useState(model?.enabled ?? true);
-  const [choices, setChoices] = useState<Record<Dialect, TargetChoice>>({
-    openai: initialChoice(model, "openai"),
-    anthropic: initialChoice(model, "anthropic"),
+  const [choices, setChoices] = useState<Record<Dialect, TargetChoice[]>>(() => {
+    const initial = (dialect: Dialect): TargetChoice[] => {
+      const stored = (model?.targets ?? []).filter((t) => t.dialect === dialect);
+      // A format always shows one entry; unset, it reads "Not served".
+      const list = stored.length > 0 ? stored : [{ provider: "", model: "" }];
+      return list.map((t) => ({ key: newKey(), provider: t.provider, model: t.model, manual: false }));
+    };
+    return { openai: initial("openai"), anthropic: initial("anthropic") };
   });
+  const [onRateLimit, setOnRateLimit] = useState(model?.fallback_on_rate_limit ?? false);
+  const [attemptText, setAttemptText] = useState(String(model?.attempt_timeout_s ?? 60));
+  const [totalText, setTotalText] = useState(String(model?.total_timeout_s ?? 120));
+  const [advanced, setAdvanced] = useState(false);
+  const [announcement, setAnnouncement] = useState("");
   const [formErr, setFormErr] = useState<string | null>(null);
 
   // Same key and fetch as the Providers page.
@@ -169,28 +299,43 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
   });
   const providerList = Array.isArray(providers.data) ? providers.data : providers.isLoading ? undefined : [];
 
-  const targets = targetsOf(choices, model);
-  // A format with a provider but no model id is unfinished, not "not served".
-  const unfinished = FORMATS.some(({ dialect }) => choices[dialect].provider !== "" && choices[dialect].model.trim() === "");
+  // What is sent: OpenAI first, each format in the order arranged here. A
+  // lone unset entry is a format that is not served.
+  const targets: AiModelTarget[] = FORMATS.flatMap(({ dialect }) => choices[dialect]
+    .filter((t) => t.provider !== "" && t.model.trim() !== "")
+    .map((t) => ({ dialect, provider: t.provider, model: t.model.trim() })));
+  // An entry with a provider but no model id, or a fallback entry left empty, is unfinished.
+  const unfinished = FORMATS.some(({ dialect }) => choices[dialect]
+    .some((t, _, list) => (t.provider === "" ? list.length > 1 : t.model.trim() === "")));
+  // The relay refuses the same provider and model twice in one format.
+  const twice = targets.some((t, i) => targets.findIndex((x) => x.dialect === t.dialect && x.provider === t.provider && x.model === t.model) !== i);
   const nameErr = modelNameError(name)
     ?? ((providerList ?? []).some((p) => p.slug === name) ? "A provider already uses this name." : null);
+
+  const attempt = parseTimeout(attemptText);
+  const total = parseTimeout(totalText);
+  const attemptErr = attempt === null ? TIMEOUT_RANGE : null;
+  const totalErr = total === null ? TIMEOUT_RANGE
+    : attempt !== null && total < attempt ? "The total timeout must not be shorter than the attempt timeout."
+    : null;
+  const timeoutsOk = attemptErr === null && totalErr === null;
 
   const payload = {
     name,
     description: description.trim(),
     enabled,
-    // The dialog does not edit these; an existing model keeps what it has.
-    ...(model ? {
-      fallback_on_rate_limit: model.fallback_on_rate_limit,
-      attempt_timeout_s: model.attempt_timeout_s,
-      total_timeout_s: model.total_timeout_s,
-    } : {}),
+    fallback_on_rate_limit: onRateLimit,
+    attempt_timeout_s: attempt ?? 0,
+    total_timeout_s: total ?? 0,
     targets,
   };
   const dirty = !model
     || name !== model.name
     || payload.description !== model.description
     || enabled !== model.enabled
+    || onRateLimit !== model.fallback_on_rate_limit
+    || attempt !== model.attempt_timeout_s
+    || total !== model.total_timeout_s
     // Per format: the relay lists a model's targets by format, the form OpenAI first.
     || FORMATS.some(({ dialect }) => JSON.stringify(ofFormat(targets, dialect)) !== JSON.stringify(ofFormat(model.targets, dialect)));
 
@@ -214,8 +359,11 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
     },
   });
 
-  const ready = name !== "" && nameErr === null && targets.length > 0 && !unfinished && dirty && !save.isPending;
+  const ready = name !== "" && nameErr === null && targets.length > 0 && !unfinished && !twice && timeoutsOk
+    && dirty && !save.isPending;
   const change = <T,>(set: (v: T) => void) => (v: T) => { set(v); setFormErr(null); };
+  // A field with an error is never left hidden.
+  const advancedOpen = advanced || !timeoutsOk;
 
   return (
     <Dialog
@@ -270,28 +418,97 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
       </FormFieldGroup>
 
       {FORMATS.map(({ dialect, legend }) => (
-        <TargetGroup
+        <TargetList
           key={dialect}
           dialect={dialect}
           legend={legend}
           providers={providerList}
           value={choices[dialect]}
           onChange={(next) => { setChoices((c) => ({ ...c, [dialect]: next })); setFormErr(null); }}
+          announce={setAnnouncement}
         />
       ))}
-      {targets.length === 0 ? (
+      {/* Moves and removals, for a screen reader. */}
+      <p className="visually-hidden" role="status">{announcement}</p>
+      {twice ? (
+        <ErrorNotice>A target is listed twice. Each provider and model can be in a format once.</ErrorNotice>
+      ) : unfinished ? (
+        <p className="muted small">Every target needs a provider and a model. Remove the ones you do not need.</p>
+      ) : targets.length === 0 && (
         <p className="muted small">Choose a target for at least one format.</p>
-      ) : unfinished && (
-        <p className="muted small">A format with a provider needs a target model, or set its provider to "Not served".</p>
       )}
+
+      <div className="model-advanced">
+        <button
+          type="button"
+          className="link small model-advanced-toggle"
+          aria-expanded={advancedOpen}
+          aria-controls={advancedId}
+          onClick={() => setAdvanced(!advancedOpen)}
+        >
+          {advancedOpen ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+          Advanced
+        </button>
+        {advancedOpen && (
+          <div id={advancedId} className="model-advanced-body">
+            <FormFieldGroup>
+              <div className="row row-center gap-2">
+                <Checkbox id="model-on-rate-limit" checked={onRateLimit} onChange={change(setOnRateLimit)} describedBy="model-on-rate-limit-help" />
+                <label htmlFor="model-on-rate-limit">Also fall back when a provider rate-limits (429)</label>
+              </div>
+              <p id="model-on-rate-limit-help" className="muted small">
+                Off, a 429 goes back to the client as it is.
+              </p>
+              <FormField
+                label="Attempt timeout (seconds)"
+                htmlFor="model-attempt-timeout"
+                w="sm"
+                error={attemptErr ?? undefined}
+                help="How long one target may take to start answering before the next one is tried."
+              >
+                <Input
+                  id="model-attempt-timeout"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={600}
+                  step={1}
+                  value={attemptText}
+                  invalid={attemptErr !== null}
+                  onChange={(e) => change(setAttemptText)(e.target.value)}
+                />
+              </FormField>
+              <FormField
+                label="Total timeout (seconds)"
+                htmlFor="model-total-timeout"
+                w="sm"
+                error={totalErr ?? undefined}
+                help="How long all attempts together may take before the request fails."
+              >
+                <Input
+                  id="model-total-timeout"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={600}
+                  step={1}
+                  value={totalText}
+                  invalid={totalErr !== null}
+                  onChange={(e) => change(setTotalText)(e.target.value)}
+                />
+              </FormField>
+            </FormFieldGroup>
+          </div>
+        )}
+      </div>
       {formErr && <ErrorNotice>{formErr}</ErrorNotice>}
     </Dialog>
   );
 }
 
 /**
- * Create or edit a synthetic model. One target per API format here; the form
- * starts fresh every time it opens.
+ * Create or edit a synthetic model: its name, per API format the ordered list
+ * of targets, and how it falls back. The form starts fresh every time it opens.
  */
 export function ModelDialog({ open, onOpenChange, model }: ModelDialogProps) {
   if (!open) return null;

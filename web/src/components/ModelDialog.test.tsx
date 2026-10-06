@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
-import { db } from "@/mocks/db";
+import { addDirectProvider, db } from "@/mocks/db";
 import type { AiModel } from "@/lib/contract";
 import { ModelDialog } from "@/components/ModelDialog";
 
@@ -28,6 +28,20 @@ async function listOptions(label: string, container: HTMLElement) {
   return names;
 }
 const group = (name: string) => screen.findByRole("group", { name });
+
+// OpenRouter next to the seeded providers: an OpenAI-format provider with a synced model list.
+function withOpenRouter() {
+  addDirectProvider("openrouter");
+  db.aiProviderModels.openrouter = [{ id: "google/gemini-x", display_name: "", context_length: 0, synced_at: "2026-05-19T00:00:00Z" }];
+}
+
+/** burrow-simple with a second OpenAI target behind ollama/mistral. */
+function twoTargets(): AiModel {
+  withOpenRouter();
+  const m = fixtureModel("burrow-simple");
+  m.targets = [...m.targets, { dialect: "openai", provider: "openrouter", model: "google/gemini-x", available: true }];
+  return m;
+}
 
 describe("ModelDialog", () => {
   it("creates a model with a target in each format", async () => {
@@ -160,5 +174,167 @@ describe("ModelDialog", () => {
       attempt_timeout_s: 60, total_timeout_s: 120,
       targets: [{ dialect: "openai", provider: "ollama", model: "mistral" }],
     });
+  });
+
+  // The dialog has one target list per format ("OpenAI format", "Anthropic format").
+  // These tests work inside the OpenAI list.
+  it("orders several targets and saves them in that order", async () => {
+    withOpenRouter();
+    let put: Record<string, unknown> | null = null;
+    server.use(http.put("/api/v1/ai/models/burrow-simple", async ({ request }) => {
+      put = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ name: "burrow-simple" });
+    }));
+    renderDialog({ model: fixtureModel("burrow-simple") }); // one target: ollama/mistral
+    await userEvent.click(await screen.findByRole("button", { name: "Add fallback target" }));
+    const second = screen.getByRole("group", { name: "OpenAI format, target 2" });
+    await chooseOption("Provider", "openrouter", second);
+    await userEvent.click(await within(second).findByRole("button", { name: "Enter a model id instead" }));
+    await userEvent.type(within(second).getByLabelText("Target model id"), "google/gemini-x");
+    await userEvent.click(within(second).getByRole("button", { name: "Move target 2 up" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(put).toMatchObject({
+      targets: [{ dialect: "openai", provider: "openrouter", model: "google/gemini-x" }, { dialect: "openai", provider: "ollama", model: "mistral" }],
+    }));
+    // Only what the relay accepts in a target: the status fields stay out.
+    expect((put!.targets as object[]).map((t) => Object.keys(t).sort())).toEqual([
+      ["dialect", "model", "provider"], ["dialect", "model", "provider"],
+    ]);
+    expect(put).not.toHaveProperty("serving");
+  });
+
+  it("cannot remove the only target and caps the list at eight", async () => {
+    renderDialog({ model: fixtureModel("burrow-simple") });
+    expect(screen.queryByRole("button", { name: "Remove target 1" })).toBeNull();
+    for (let i = 0; i < 7; i++) await userEvent.click(screen.getByRole("button", { name: "Add fallback target" }));
+    expect(screen.getByRole("button", { name: "Add fallback target" })).toBeDisabled();
+    expect(screen.getAllByRole("group", { name: /^OpenAI format, target \d$/ })).toHaveLength(8);
+  });
+
+  it("says in what order the targets are tried", async () => {
+    renderDialog({ model: fixtureModel("burrow-simple") });
+    expect(within(await group("OpenAI format")).getByText(
+      "Tried in this order. Burrow moves on when a target fails before it has started answering.",
+    )).toBeInTheDocument();
+  });
+
+  it("moves a target with the keyboard, keeps the focus on it and announces the new place", async () => {
+    renderDialog({ model: twoTargets() });
+    const openai = await group("OpenAI format");
+    const first = within(openai).getByRole("group", { name: "OpenAI format, target 1" });
+    // The ends offer one direction only.
+    expect(within(first).queryByRole("button", { name: "Move target 1 up" })).toBeNull();
+    expect(within(openai).queryByRole("button", { name: "Move target 2 down" })).toBeNull();
+    within(first).getByRole("button", { name: "Move target 1 down" }).focus();
+    await userEvent.keyboard("{Enter}");
+    const moved = within(openai).getByRole("group", { name: "OpenAI format, target 2" });
+    expect(await within(moved).findByLabelText("Target model")).toHaveTextContent("mistral");
+    expect(moved).toHaveFocus();
+    expect(screen.getByRole("status")).toHaveTextContent("ollama/mistral is now target 2 of 2 in the OpenAI format.");
+  });
+
+  it("a reorder is a change; back in the stored order nothing has changed", async () => {
+    renderDialog({ model: twoTargets() });
+    const save = screen.getByRole("button", { name: "Save changes" });
+    expect(save).toBeDisabled();
+    await userEvent.click(await screen.findByRole("button", { name: "Move target 2 up" }));
+    expect(save).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Move target 2 up" }));
+    expect(save).toBeDisabled();
+  });
+
+  it("removes a target and announces it", async () => {
+    let put: Record<string, unknown> | null = null;
+    server.use(http.put("/api/v1/ai/models/burrow-simple", async ({ request }) => {
+      put = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ name: "burrow-simple" });
+    }));
+    renderDialog({ model: twoTargets() });
+    await userEvent.click(await screen.findByRole("button", { name: "Remove target 1" }));
+    expect(screen.getByRole("status")).toHaveTextContent("ollama/mistral removed from the OpenAI format.");
+    expect(screen.queryByRole("group", { name: "OpenAI format, target 2" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove target 1" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(put).toMatchObject({ targets: [{ dialect: "openai", provider: "openrouter", model: "google/gemini-x" }] }));
+    expect(put!.targets).toHaveLength(1);
+  });
+
+  it("refuses the same target twice in one format", async () => {
+    renderDialog({ model: fixtureModel("burrow-simple") });
+    await userEvent.click(await screen.findByRole("button", { name: "Add fallback target" }));
+    const second = screen.getByRole("group", { name: "OpenAI format, target 2" });
+    await chooseOption("Provider", "ollama", second);
+    await chooseOption("Target model", "mistral", second);
+    expect(screen.getByRole("alert")).toHaveTextContent("A target is listed twice.");
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+  });
+
+  it("an unfinished fallback target blocks Save", async () => {
+    renderDialog({ model: fixtureModel("burrow-simple") });
+    await userEvent.click(await screen.findByRole("button", { name: "Add fallback target" }));
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    expect(screen.getByText("Every target needs a provider and a model. Remove the ones you do not need.")).toBeInTheDocument();
+    // A fallback target is removed, not switched to "Not served".
+    expect(await listOptions("Provider", screen.getByRole("group", { name: "OpenAI format, target 2" }))).toEqual(["ollama", "zai"]);
+  });
+
+  it("offers the rate-limit option and the timeouts under Advanced", async () => {
+    renderDialog({ model: fixtureModel("burrow-simple") });
+    const advanced = screen.getByRole("button", { name: "Advanced" });
+    expect(advanced).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByLabelText("Attempt timeout (seconds)")).toBeNull();
+    await userEvent.click(advanced);
+    expect(advanced).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("checkbox", { name: "Also fall back when a provider rate-limits (429)" })).not.toBeChecked();
+    expect(screen.getByLabelText("Attempt timeout (seconds)")).toHaveValue(60);
+    expect(screen.getByLabelText("Total timeout (seconds)")).toHaveValue(120);
+  });
+
+  it("saves the rate-limit option and the timeouts", async () => {
+    let put: Record<string, unknown> | null = null;
+    server.use(http.put("/api/v1/ai/models/burrow-simple", async ({ request }) => {
+      put = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ name: "burrow-simple" });
+    }));
+    renderDialog({ model: fixtureModel("burrow-simple") });
+    const save = screen.getByRole("button", { name: "Save changes" });
+    await userEvent.click(screen.getByRole("button", { name: "Advanced" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Also fall back when a provider rate-limits (429)" }));
+    expect(save).toBeEnabled();
+    const attempt = screen.getByLabelText("Attempt timeout (seconds)");
+    await userEvent.clear(attempt);
+    expect(save).toBeDisabled();
+    await userEvent.type(attempt, "45");
+    await userEvent.click(save);
+    await waitFor(() => expect(put).toMatchObject({ fallback_on_rate_limit: true, attempt_timeout_s: 45, total_timeout_s: 120 }));
+  });
+
+  it("refuses a total timeout shorter than the attempt timeout", async () => {
+    renderDialog({ model: fixtureModel("burrow-simple") });
+    await userEvent.click(screen.getByRole("button", { name: "Advanced" }));
+    const total = screen.getByLabelText("Total timeout (seconds)");
+    await userEvent.clear(total);
+    await userEvent.type(total, "30");
+    expect(screen.getByRole("alert")).toHaveTextContent(/not be shorter/i);
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+  });
+
+  it("refuses a timeout outside 1-600 seconds", async () => {
+    renderDialog({ model: fixtureModel("burrow-simple") });
+    await userEvent.click(screen.getByRole("button", { name: "Advanced" }));
+    const total = screen.getByLabelText("Total timeout (seconds)");
+    await userEvent.clear(total);
+    await userEvent.type(total, "601");
+    expect(screen.getByRole("alert")).toHaveTextContent("Between 1 and 600 seconds.");
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+  });
+
+  it("shows the relay's reason when it refuses a timeout", async () => {
+    server.use(http.put("/api/v1/ai/models/burrow-simple", () =>
+      HttpResponse.json({ error: "timeouts must be between 1 and 600 seconds" }, { status: 400 })));
+    renderDialog({ model: fixtureModel("burrow-simple") });
+    await userEvent.click(screen.getByRole("switch", { name: "Enabled" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("timeouts must be between 1 and 600 seconds");
   });
 });

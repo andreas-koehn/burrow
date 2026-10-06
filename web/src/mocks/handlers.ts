@@ -1,7 +1,7 @@
 import { http, HttpResponse } from "msw";
 import { modelNameError } from "@/lib/modelNames";
 import { db, type MockDb, type CacheSettingsPayload, type AiProviderRow } from "@/mocks/db";
-import type { AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, ClientLoginRequest, CostSummary, Dialect, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
+import type { AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, CostSummary, Dialect, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
 
 const json = (body: unknown, status = 200) => HttpResponse.json(body as object, { status });
 const err = (status: number, message: string) => HttpResponse.json({ error: message }, { status });
@@ -172,7 +172,12 @@ function baseUrlError(raw: string): string | null {
 // Mirror of the store's normalizeDirect: validates the merged settings and
 // fills the defaults.
 function normalizeDirect(p: AiProviderRow): string | null {
-  if (!/^[A-Z0-9_]{1,32}$/.test(p.credential_slot ?? "")) return "credential slot must be 1-32 characters: A-Z, 0-9, _";
+  // One slot, or up to four separated by commas; stored joined without spaces.
+  const slots = splitSlots(p.credential_slot);
+  if (slots.length < 1 || slots.length > 4 || slots.some((slot, i) => !/^[A-Z0-9_]{1,32}$/.test(slot) || slots.indexOf(slot) !== i)) {
+    return "credential slots must be 1-4 distinct names of 1-32 characters: A-Z, 0-9, _";
+  }
+  p.credential_slot = slots.join(",");
   p.auth_header ||= "Authorization";
   if (!HEADER_NAME_RE.test(p.auth_header) || isRelayHeader(p.auth_header.toLowerCase())) {
     return "auth header is not a valid header name";
@@ -206,6 +211,14 @@ function normalizeDirect(p: AiProviderRow): string | null {
 const credentialPresent = (slot: string | undefined) =>
   !!slot && db.upstreamSlots.includes(slot) && !db.absentSlots.has(slot);
 
+// The store's SplitSlots: the slot names of a credential_slot value.
+const splitSlots = (value: string | undefined) =>
+  (value ?? "").split(",").map((s) => s.trim()).filter((s) => s !== "");
+
+// The slots a direct provider names, each with whether it is set; none for a tunnel provider.
+const credentialSlots = (p: AiProviderRow) =>
+  p.kind === "direct" ? splitSlots(p.credential_slot).map((slot) => ({ slot, present: credentialPresent(slot) })) : [];
+
 // Same rule as the server's ValidModelID.
 const modelIdOk = (id: unknown): id is string =>
   typeof id === "string" && id !== "" && byteLen(id) <= 200 && !hasControl(id) && id.trim() === id;
@@ -231,7 +244,9 @@ function providerView(p: AiProviderRow): AiProvider {
   const model = db.aiModels.find((m) => m.targets.some((t) => t.provider === p.slug));
   const target = model?.targets.find((t) => t.provider === p.slug);
   const direct = p.kind === "direct";
-  const present = direct && credentialPresent(p.credential_slot);
+  // Set means every slot the provider names is set.
+  const slots = credentialSlots(p);
+  const present = slots.length > 0 && slots.every((x) => x.present);
   return {
     slug: p.slug,
     name: p.name,
@@ -241,6 +256,8 @@ function providerView(p: AiProviderRow): AiProvider {
     upstream_base_url: p.upstream_base_url ?? "",
     credential_slot: p.credential_slot ?? "",
     credential_present: present,
+    credential_slots: slots,
+    breaker_open: db.aiBreakerOpen.has(p.slug),
     billing: p.billing ?? "metered",
     supports_responses: p.supports_responses ?? false,
     max_concurrent: p.max_concurrent ?? 0,
@@ -262,10 +279,33 @@ function providerView(p: AiProviderRow): AiProvider {
     requests_24h: meta?.requests_24h ?? 0,
     cache_hits_24h: meta?.cache_hits_24h ?? 0,
     latency_p95_ms: meta?.latency_p95_ms ?? 0,
-    // A direct provider has no tunnel: it is usable when its slot is set.
+    // A direct provider has no tunnel: it is usable when its slots are set.
     status: direct ? (present ? "Connected" : "Offline") : meta?.status ?? "Offline",
     client_session_id: meta?.client_session_id ?? "",
   };
+}
+
+// The relay's targetAvailable: the provider exists and speaks the format, the
+// gateway is not skipping it, and a direct provider has every slot set, a
+// tunnel provider a connected client.
+function targetAvailable(t: AiModelTarget): boolean {
+  const p = db.aiProviders.find((x) => x.slug === t.provider);
+  if (!p || p.api_format !== t.dialect || db.aiBreakerOpen.has(p.slug)) return false;
+  if (p.kind === "tunnel") return db.aiMeta[p.service_id]?.status === "Connected";
+  const slots = credentialSlots(p);
+  return slots.length > 0 && slots.every((x) => x.present);
+}
+
+// A model as the relay returns it: availability per target and, per format,
+// the first available target (null when there is none).
+function modelView(m: AiModel): AiModel {
+  const targets = m.targets.map((t) => ({ dialect: t.dialect, provider: t.provider, model: t.model, available: targetAvailable(t) }));
+  const serving: AiModel["serving"] = {};
+  for (const t of targets) {
+    if (serving[t.dialect]) continue;
+    serving[t.dialect] = t.available ? { provider: t.provider, model: t.model } : null;
+  }
+  return { ...m, targets, serving };
 }
 
 // ---- synthetic models (internal/store/ai_models.go) ----
@@ -278,6 +318,7 @@ interface ModelBody {
   total_timeout_s?: unknown;
   targets?: unknown;
 }
+const TARGET_FIELDS = ["dialect", "provider", "model"];
 const MODEL_FIELDS = ["name", "description", "enabled", "fallback_on_rate_limit", "attempt_timeout_s", "total_timeout_s", "targets"];
 
 const MSG_MODEL_NAME = "name must be 2-63 characters: lowercase letters, digits, dot, underscore, hyphen";
@@ -291,8 +332,11 @@ const MODEL_DIALECTS: Dialect[] = ["anthropic", "openai"];
  */
 function modelFromBody(b: ModelBody | null, old?: AiModel): Omit<AiModel, "created_at" | "updated_at"> | string {
   if (!b || typeof b !== "object") return "invalid JSON body";
-  // Strict decoding: "dialects" is derived and may not be sent.
-  const extra = Object.keys(b).find((k) => !MODEL_FIELDS.includes(k));
+  // Strict decoding: "dialects" and "serving" are derived and may not be
+  // sent, and neither may a target's "available".
+  const extra = Object.keys(b).find((k) => !MODEL_FIELDS.includes(k))
+    ?? (Array.isArray(b.targets) ? b.targets : []).flatMap((t) => (t && typeof t === "object" ? Object.keys(t as object) : []))
+      .find((k) => !TARGET_FIELDS.includes(k));
   if (extra) return `unknown field "${extra}"`;
   const name = (typeof b.name === "string" && b.name !== "" ? b.name : old?.name) ?? "";
   if (name === "" || modelNameError(name) !== null) return MSG_MODEL_NAME;
@@ -329,8 +373,10 @@ function modelFromBody(b: ModelBody | null, old?: AiModel): Omit<AiModel, "creat
     attempt_timeout_s: attempt,
     total_timeout_s: total,
     // As the relay returns them: by format, then in the order given.
-    targets: MODEL_DIALECTS.flatMap((d) => targets.filter((t) => t.dialect === d)),
+    // available and serving are worked out by modelView on every response.
+    targets: MODEL_DIALECTS.flatMap((d) => targets.filter((t) => t.dialect === d)).map((t) => ({ ...t, available: false })),
     dialects: MODEL_DIALECTS.filter((d) => targets.some((t) => t.dialect === d)),
+    serving: {},
   };
 }
 
@@ -829,7 +875,12 @@ export const handlers = [
     const p = db.aiProviders.find((x) => x.slug === params.slug);
     if (!p) return err(404, "provider not found");
     if (p.kind !== "direct") return err(409, "sync is available for direct providers");
-    if (!credentialPresent(p.credential_slot)) return err(409, `the credential slot ${p.credential_slot} is not set`);
+    // The list is read with the first slot that is set.
+    const slots = credentialSlots(p);
+    if (slots.length > 1 && !slots.some((x) => x.present)) {
+      return err(409, `none of the credential slots ${slots.map((x) => x.slot).join(", ")} is set`);
+    }
+    if (!slots.some((x) => x.present)) return err(409, `the credential slot ${p.credential_slot} is not set`);
     const synced_at = new Date().toISOString();
     // The answer replaces the stored list, hand-added ids included.
     db.aiProviderModels[p.slug] = [
@@ -1451,7 +1502,7 @@ export const handlers = [
       { dialect: "anthropic", base_url: "https://tunnels.example.com/anthropic" },
     ],
   })),
-  http.get("/api/v1/ai/models", ({ request }) => gate(request) ?? json(db.aiModels)),
+  http.get("/api/v1/ai/models", ({ request }) => gate(request) ?? json(db.aiModels.map(modelView))),
   http.post("/api/v1/ai/models", async ({ request }) => {
     const g = gate(request, { admin: true }); if (g) return g;
     const next = modelFromBody(await body<ModelBody>(request));
@@ -1460,12 +1511,12 @@ export const handlers = [
     const now = new Date().toISOString();
     const row: AiModel = { ...next, created_at: now, updated_at: now };
     db.aiModels.push(row);
-    return json(row, 201);
+    return json(modelView(row), 201);
   }),
   http.get("/api/v1/ai/models/:name", ({ request, params }) => {
     const g = gate(request); if (g) return g;
     const m = db.aiModels.find((x) => x.name === params.name);
-    return m ? json(m) : err(404, "model not found");
+    return m ? json(modelView(m)) : err(404, "model not found");
   }),
   http.put("/api/v1/ai/models/:name", async ({ request, params }) => {
     const g = gate(request, { admin: true }); if (g) return g;
@@ -1476,7 +1527,7 @@ export const handlers = [
     if (db.aiModels.some((m, at) => at !== i && m.name === next.name)) return err(409, "model name already in use");
     const row: AiModel = { ...next, created_at: db.aiModels[i]!.created_at, updated_at: new Date().toISOString() };
     db.aiModels[i] = row;
-    return json(row);
+    return json(modelView(row));
   }),
   http.delete("/api/v1/ai/models/:name", ({ request, params }) => {
     const g = gate(request, { admin: true }); if (g) return g;
@@ -1484,6 +1535,15 @@ export const handlers = [
     if (i < 0) return err(404, "model not found");
     db.aiModels.splice(i, 1);
     return noContent();
+  }),
+  // What one gateway request tried: an admin's dashboard session. An id
+  // without a log is an empty list.
+  http.get("/api/v1/ai/requests/:requestID/attempts", ({ request, params }) => {
+    const g = gate(request, { admin: true }); if (g) return g;
+    const id = decodeURIComponent(String(params.requestID));
+    if (id === "" || byteLen(id) > 128 || hasControl(id)) return err(400, "request id must be 1-128 characters without control characters");
+    const rows: AiRequestAttempt[] = db.aiAttempts[id] ?? [];
+    return json([...rows].sort((a, b) => a.position - b.position));
   }),
   // A caller sees their own keys; an admin sees all. Revoked keys stay listed.
   http.get("/api/v1/ai/keys", ({ request }) =>

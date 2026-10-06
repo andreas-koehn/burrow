@@ -6,9 +6,11 @@ package api
 // A synthetic model is a name that resolves to an ordered list of provider
 // targets per dialect.  Any signed-in caller may read them; writes go
 // through requireAIModelWrite.  The store validates the data: its reasons are
-// the 400 messages.
+// the 400 messages.  A response also says which targets can be tried right
+// now and which one is serving each dialect.
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"slices"
@@ -31,6 +33,19 @@ type aiModelTarget struct {
 	Model    string `json:"model"`
 }
 
+// aiModelTargetResp is a target in a response: what was stored, and whether
+// the target can be tried right now.
+type aiModelTargetResp struct {
+	aiModelTarget
+	Available bool `json:"available"`
+}
+
+// aiServingTarget names the target that answers a dialect right now.
+type aiServingTarget struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
 // aiModelResp is the JSON wire shape of one synthetic model.
 type aiModelResp struct {
 	Name                string `json:"name"`
@@ -40,30 +55,93 @@ type aiModelResp struct {
 	AttemptTimeoutS     int    `json:"attempt_timeout_s"`
 	TotalTimeoutS       int    `json:"total_timeout_s"`
 	// Within one dialect the order is the order the targets are tried in.
-	Targets []aiModelTarget `json:"targets"`
+	Targets []aiModelTargetResp `json:"targets"`
 	// The formats the model is served in, sorted; derived from the targets.
-	Dialects  []string  `json:"dialects"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Dialects []string `json:"dialects"`
+	// Per dialect the model has a target in: the first available target, or
+	// null when none is available.
+	Serving   map[string]*aiServingTarget `json:"serving"`
+	CreatedAt time.Time                   `json:"created_at"`
+	UpdatedAt time.Time                   `json:"updated_at"`
 }
 
-func toAIModelResp(m db.AIModel) aiModelResp {
+// providersBySlug loads every provider once for a model view. Without a
+// provider store the map is empty and every target reads as unavailable.
+func (d Deps) providersBySlug(ctx context.Context) (map[string]db.AIProvider, error) {
+	out := map[string]db.AIProvider{}
+	if d.AIProviders == nil {
+		return out, nil
+	}
+	providers, err := d.AIProviders.ListProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range providers {
+		out[p.Slug] = p
+	}
+	return out, nil
+}
+
+// targetAvailable reports whether a target of dialect can be tried on p right
+// now: the provider speaks the dialect, the breaker is not skipping it, and
+// for a direct provider every credential slot it names is set, for a
+// tunnelled one its client is connected. It only reads: the breaker is asked
+// with Open, which starts no trial.
+func (d Deps) targetAvailable(p db.AIProvider, dialect string) bool {
+	if p.APIFormat != dialect {
+		return false
+	}
+	if d.AIBreaker != nil && d.AIBreaker.Open(p.Slug) {
+		return false
+	}
+	if p.Kind == "tunnel" {
+		return d.composeLive(p.ServiceID).Connected
+	}
+	_, present := d.credentialSlots(p)
+	return present
+}
+
+// modelView is the response for m. providers is the result of
+// providersBySlug; a target whose provider is not in it is unavailable.
+func (d Deps) modelView(m db.AIModel, providers map[string]db.AIProvider) aiModelResp {
 	out := aiModelResp{
 		Name: m.Name, Description: m.Description, Enabled: m.Enabled,
 		FallbackOnRateLimit: m.FallbackOnRateLimit,
 		AttemptTimeoutS:     m.AttemptTimeoutS, TotalTimeoutS: m.TotalTimeoutS,
-		Targets:   make([]aiModelTarget, 0, len(m.Targets)),
+		Targets:   make([]aiModelTargetResp, 0, len(m.Targets)),
 		Dialects:  []string{},
+		Serving:   map[string]*aiServingTarget{},
 		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}
-	for _, t := range m.Targets {
-		out.Targets = append(out.Targets, aiModelTarget{Dialect: t.Dialect, Provider: t.ProviderSlug, Model: t.TargetModel})
+	for _, t := range m.Targets { // ordered by dialect, then position
+		p, known := providers[t.ProviderSlug]
+		available := known && d.targetAvailable(p, t.Dialect)
+		out.Targets = append(out.Targets, aiModelTargetResp{
+			aiModelTarget: aiModelTarget{Dialect: t.Dialect, Provider: t.ProviderSlug, Model: t.TargetModel},
+			Available:     available,
+		})
 		if !slices.Contains(out.Dialects, t.Dialect) {
 			out.Dialects = append(out.Dialects, t.Dialect)
+		}
+		if serving, seen := out.Serving[t.Dialect]; !seen || (serving == nil && available) {
+			out.Serving[t.Dialect] = nil
+			if available {
+				out.Serving[t.Dialect] = &aiServingTarget{Provider: t.ProviderSlug, Model: t.TargetModel}
+			}
 		}
 	}
 	slices.Sort(out.Dialects)
 	return out
+}
+
+// writeModelView answers with the view of m.
+func (d Deps) writeModelView(w http.ResponseWriter, r *http.Request, status int, m db.AIModel) {
+	providers, err := d.providersBySlug(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, status, d.modelView(m, providers))
 }
 
 // aiModelReq is the body of POST /ai/models and PUT /ai/models/{name}.
@@ -219,8 +297,13 @@ func (d Deps) GetAIModels(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
 			return
 		}
+		providers, err := d.providersBySlug(r.Context())
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 		for _, m := range models {
-			out = append(out, toAIModelResp(m))
+			out = append(out, d.modelView(m, providers))
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -247,7 +330,7 @@ func (d Deps) modelFromPath(w http.ResponseWriter, r *http.Request) (db.AIModel,
 // GetAIModel handles GET /api/v1/ai/models/{name}.
 func (d Deps) GetAIModel(w http.ResponseWriter, r *http.Request) {
 	if m, ok := d.modelFromPath(w, r); ok {
-		writeJSON(w, http.StatusOK, toAIModelResp(m))
+		d.writeModelView(w, r, http.StatusOK, m)
 	}
 }
 
@@ -274,7 +357,7 @@ func (d Deps) PostAIModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.auditAI(r, audit.ActionAIModelCreate, m.Name, "", modelAudit(m))
-	writeJSON(w, http.StatusCreated, toAIModelResp(m))
+	d.writeModelView(w, r, http.StatusCreated, m)
 }
 
 // PutAIModel handles PUT /api/v1/ai/models/{name} (admin or
@@ -311,7 +394,7 @@ func (d Deps) PutAIModel(w http.ResponseWriter, r *http.Request) {
 		payload["old_name"] = old.Name
 	}
 	d.auditAI(r, audit.ActionAIModelUpdate, m.Name, "", payload)
-	writeJSON(w, http.StatusOK, toAIModelResp(m))
+	d.writeModelView(w, r, http.StatusOK, m)
 }
 
 // DeleteAIModel handles DELETE /api/v1/ai/models/{name} (admin or

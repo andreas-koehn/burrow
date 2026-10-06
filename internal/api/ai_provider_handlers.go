@@ -58,15 +58,21 @@ type aiProviderResp struct {
 	// in_use is 0 while there is no limit.
 	MaxConcurrent int `json:"max_concurrent"`
 	InUse         int `json:"in_use"`
+	// Whether the gateway is skipping the provider right now because recent
+	// requests to it failed.
+	BreakerOpen bool `json:"breaker_open"`
 
 	// Direct providers. The credential itself is never part of a response:
 	// credential_slot is the name of a vault slot and credential_present
 	// tells whether that slot holds a value.
-	UpstreamBaseURL   string `json:"upstream_base_url"`
-	CredentialSlot    string `json:"credential_slot"`
-	CredentialPresent bool   `json:"credential_present"`
-	Billing           string `json:"billing"`
-	ModelCount        int    `json:"model_count"`
+	// A provider may name several slots ("A,B"): credential_slots lists each
+	// with whether it is set, and credential_present is true only when all are.
+	UpstreamBaseURL   string               `json:"upstream_base_url"`
+	CredentialSlot    string               `json:"credential_slot"`
+	CredentialPresent bool                 `json:"credential_present"`
+	CredentialSlots   []credentialSlotResp `json:"credential_slots"`
+	Billing           string               `json:"billing"`
+	ModelCount        int                  `json:"model_count"`
 
 	// How the relay presents the credential upstream, for callers who may
 	// change it (admins): PUT …/upstream keeps what a body leaves out, and
@@ -101,6 +107,43 @@ func (d Deps) credentialPresent(slot string) bool {
 	}
 	v, ok := d.CredentialVault.Get(slot)
 	return ok && v != ""
+}
+
+// credentialSlotResp is one credential slot of a direct provider: its name
+// and whether the vault holds a value for it. Never the value.
+type credentialSlotResp struct {
+	Slot    string `json:"slot"`
+	Present bool   `json:"present"`
+}
+
+// credentialSlots lists the slots p names, in the order they are tried, and
+// reports whether every one of them is set. A provider without a slot (every
+// tunnel provider) has an empty list and reads as not set.
+func (d Deps) credentialSlots(p db.AIProvider) (slots []credentialSlotResp, allPresent bool) {
+	slots = []credentialSlotResp{}
+	if p.Kind != "direct" {
+		return slots, false
+	}
+	allPresent = true
+	for _, name := range store.SplitSlots(p.CredentialSlot) {
+		present := d.credentialPresent(name)
+		slots = append(slots, credentialSlotResp{Slot: name, Present: present})
+		allPresent = allPresent && present
+	}
+	return slots, allPresent && len(slots) > 0
+}
+
+// breakerOpen reports whether the gateway is skipping the provider right
+// now. It starts no trial.
+func (d Deps) breakerOpen(slug string) bool {
+	return d.AIBreaker != nil && d.AIBreaker.Open(slug)
+}
+
+// forgetBreaker drops the breaker state of a slug no provider has any more.
+func (d Deps) forgetBreaker(slug string) {
+	if d.AIBreaker != nil {
+		d.AIBreaker.Forget(slug)
+	}
 }
 
 // modelCount is the size of the provider's stored model list; 0 on error.
@@ -224,12 +267,12 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 		// (returns zero-value snapshot).  client_session_id stays empty:
 		// LiveTunnelSnapshot has no SessionID field today and the dashboard
 		// handles "" gracefully.
-		// A direct provider has no tunnel: it is usable when its credential
-		// slot is set.
+		// A direct provider has no tunnel: it is usable when every credential
+		// slot it names is set.
 		status := "Offline"
-		present := false
+		slots, present := d.credentialSlots(p)
 		if p.Kind == "direct" {
-			if present = d.credentialPresent(p.CredentialSlot); present {
+			if present {
 				status = "Connected"
 			}
 		} else if d.composeLive(p.ServiceID).Connected {
@@ -258,10 +301,12 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 			SupportsResponses: p.SupportsResponses,
 			MaxConcurrent:     p.MaxConcurrent,
 			InUse:             d.providerInUse(p),
+			BreakerOpen:       d.breakerOpen(p.Slug),
 
 			UpstreamBaseURL:   p.BaseURL,
 			CredentialSlot:    p.CredentialSlot,
 			CredentialPresent: present,
+			CredentialSlots:   slots,
 			Billing:           p.Billing,
 			ModelCount:        d.modelCount(r.Context(), p.Slug),
 		}
@@ -308,13 +353,16 @@ func (d Deps) writeProviderView(w http.ResponseWriter, r *http.Request, status i
 	if !ok {
 		// The write went through but the live join has no row for it (the
 		// backing service vanished in between): answer with the stored fields.
+		slots, present := d.credentialSlots(p)
 		v = aiProviderResp{
 			Slug: p.Slug, Name: p.Name, Kind: p.Kind, APIFormat: p.APIFormat, ServiceID: p.ServiceID,
 			BaseURL:     composeProviderURL(p.Slug, d.AuthDomain),
 			BackendType: backendTypeOther, Status: "Offline",
 			UpstreamBaseURL: p.BaseURL, CredentialSlot: p.CredentialSlot, Billing: p.Billing,
+			CredentialPresent: present, CredentialSlots: slots,
 			SupportsResponses: p.SupportsResponses,
 			MaxConcurrent:     p.MaxConcurrent, InUse: d.providerInUse(p),
+			BreakerOpen: d.breakerOpen(p.Slug),
 		}
 		// Only the admin-only write handlers answer through here.
 		upstreamAuthView(&v, p)
@@ -817,6 +865,11 @@ func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
 		payload["max_concurrent"] = p.MaxConcurrent
 	}
 
+	// The breaker keys its state by slug: nothing answers under the old one.
+	if p.Slug != oldSlug {
+		d.forgetBreaker(oldSlug)
+	}
+
 	d.auditProvider(r, audit.ActionAIProviderUpdate, p, payload)
 	d.writeProviderView(w, r, http.StatusOK, p)
 }
@@ -838,6 +891,7 @@ func (d Deps) DeleteAIProvider(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	d.forgetBreaker(slug)
 	d.auditProvider(r, audit.ActionAIProviderDelete, p, map[string]any{"kind": p.Kind})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -968,11 +1022,29 @@ func (d Deps) PostAIProviderModelsSync(w http.ResponseWriter, r *http.Request) {
 	}
 	defer modelSyncs.Delete(p.Slug)
 
+	// The list is read with one credential: the first slot that is set. With
+	// several slots and none set, nothing leaves the relay.
+	source := p
+	if slots, _ := d.credentialSlots(p); len(slots) > 1 {
+		names := make([]string, 0, len(slots))
+		source.CredentialSlot = ""
+		for _, sl := range slots {
+			names = append(names, sl.Slot)
+			if sl.Present && source.CredentialSlot == "" {
+				source.CredentialSlot = sl.Slot
+			}
+		}
+		if source.CredentialSlot == "" {
+			writeErr(w, http.StatusConflict, "none of the credential slots "+strings.Join(names, ", ")+" is set")
+			return
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), modelSyncTimeout)
 	defer cancel()
-	fetched, err := d.FetchProviderModels(ctx, p)
+	fetched, err := d.FetchProviderModels(ctx, source)
 	if errors.Is(err, aiprovider.ErrNotConfigured) {
-		writeErr(w, http.StatusConflict, "the credential slot "+p.CredentialSlot+" is not set")
+		writeErr(w, http.StatusConflict, "the credential slot "+source.CredentialSlot+" is not set")
 		return
 	}
 	if err != nil {

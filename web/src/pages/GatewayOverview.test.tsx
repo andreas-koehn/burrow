@@ -12,7 +12,7 @@ function provider(over: Partial<AiProvider>): AiProvider {
   return {
     slug: "ollama", name: "ollama", kind: "tunnel", api_format: "openai", service_id: "svc_ai001",
     base_url: "https://tunnels.example.com/ai/ollama/v1", upstream_base_url: "", credential_slot: "",
-    credential_present: false, billing: "metered", supports_responses: false, max_concurrent: 0, in_use: 0, model_count: 0, model_alias: "fast", concrete_model: "llama3.1:8b",
+    credential_present: false, credential_slots: [], breaker_open: false, billing: "metered", supports_responses: false, max_concurrent: 0, in_use: 0, model_count: 0, model_alias: "fast", concrete_model: "llama3.1:8b",
     backend_type: "ollama", api_key_count: 1, requests_24h: 10, cache_hits_24h: 0, latency_p95_ms: 0, status: "Connected", client_session_id: "sess_1",
     ...over,
   };

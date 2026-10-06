@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
-import { db } from "@/mocks/db";
+import { addDirectProvider, db } from "@/mocks/db";
 import GatewayModels from "@/pages/GatewayModels";
 
 function mount() {
@@ -116,5 +116,68 @@ describe("Models page", () => {
     mount();
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load models: boom");
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("shows each format's chain and marks the target that is serving", async () => {
+    // zai's slot is not set on this relay; openrouter's is.
+    addDirectProvider("openrouter");
+    db.aiModels.push({
+      name: "burrow-smart", description: "", enabled: true, fallback_on_rate_limit: false,
+      attempt_timeout_s: 60, total_timeout_s: 120,
+      targets: [
+        { dialect: "openai", provider: "zai", model: "glm-5.1", available: false },
+        { dialect: "openai", provider: "openrouter", model: "google/gemini-x", available: false },
+      ],
+      dialects: ["openai"], serving: {}, created_at: "2026-05-21T00:00:00Z", updated_at: "2026-05-21T00:00:00Z",
+    });
+    mount();
+    const table = await screen.findByRole("table", { name: "Models" });
+    const row = within(table).getByRole("row", { name: /burrow-smart/ });
+    const chain = within(row).getByRole("list", { name: "OpenAI format targets of burrow-smart, in the order they are tried" });
+    const items = within(chain).getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(chain).toHaveTextContent(/zai\/glm-5\.1.*→.*openrouter\/google\/gemini-x/);
+    expect(within(items[0]!).getByText("zai/glm-5.1")).toBeInTheDocument();
+    expect(within(items[0]!).getByText("unavailable")).toHaveClass("visually-hidden");
+    expect(within(items[1]!).getByText("openrouter/google/gemini-x")).toBeInTheDocument();
+    expect(within(items[1]!).getByText("serving now")).toHaveClass("visually-hidden");
+    expect(within(items[1]!).queryByText("unavailable")).toBeNull();
+    expect(within(row).queryByText("no target available")).toBeNull();
+  });
+
+  it("says so when no target of a format is available", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: "Models" });
+    // Both targets of burrow-intelligence use slot ZAI, which is not set.
+    const smart = within(table).getByRole("row", { name: /burrow-intelligence/ });
+    expect(within(smart).getAllByText("no target available", { selector: "span.badge" })).toHaveLength(2);
+    // The local model's client is connected.
+    const simple = within(table).getByRole("row", { name: /burrow-simple/ });
+    expect(within(simple).queryByText("no target available")).toBeNull();
+    expect(within(simple).getByText("serving now")).toBeInTheDocument();
+  });
+
+  it("a provider the gateway is skipping does not serve", async () => {
+    db.aiBreakerOpen.add("ollama");
+    mount();
+    const table = await screen.findByRole("table", { name: "Models" });
+    const simple = within(table).getByRole("row", { name: /burrow-simple/ });
+    expect(within(simple).getByText("no target available")).toBeInTheDocument();
+    expect(within(simple).getByText("unavailable")).toBeInTheDocument();
+  });
+
+  it("offers the attempt lookup to admins only", async () => {
+    const { unmount } = mount();
+    const heading = await screen.findByRole("heading", { name: "Why did a request fall back?" });
+    expect(heading).toBeInTheDocument();
+    expect(screen.getByText("The id is in the Burrow-Request-Id response header.")).toBeInTheDocument();
+    // Below the connect card.
+    const connect = screen.getByRole("heading", { name: "Connect a client" });
+    expect(connect.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    unmount();
+    mountAs("user");
+    await screen.findByRole("table", { name: "Models" });
+    expect(screen.queryByRole("heading", { name: "Why did a request fall back?" })).toBeNull();
+    expect(screen.queryByLabelText("Request id")).toBeNull();
   });
 });

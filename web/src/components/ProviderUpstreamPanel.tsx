@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
+import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Checkbox, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
 import {
-  CONCURRENCY_FORMAT, CONCURRENCY_HELP, credentialSlotError, envVarForSlot, parseConcurrency,
+  CONCURRENCY_FORMAT, CONCURRENCY_HELP, CREDENTIAL_SLOT_HELP, credentialSlotsError, envVarForSlot, parseConcurrency, splitSlots,
 } from "@/lib/providerPresets";
 import type { AiProvider, AiProviderUpstreamInput } from "@/lib/contract";
 
@@ -230,13 +231,36 @@ export interface ProviderUpstreamPanelProps {
 }
 
 /**
+ * The first sentences of every "slot not set" note: which slots are missing
+ * and which variables to set. Only the missing slots are passed in.
+ */
+export function SlotsNotSet({ slots, orEmpty = false }: { slots: string[]; orEmpty?: boolean }) {
+  const many = slots.length > 1;
+  const list = (render: (slot: string) => ReactNode) => slots.map((slot, i) => (
+    <Fragment key={slot}>
+      {i === 0 ? "" : i === slots.length - 1 ? " and " : ", "}
+      {render(slot)}
+    </Fragment>
+  ));
+  return (
+    <>
+      {many ? "Slots " : "Slot "}{list((slot) => slot)} {many ? "are" : "is"} not set on the relay
+      {orEmpty ? (many ? ", or are set to an empty value" : ", or is set to an empty value") : ""}. Set{" "}
+      {list((slot) => <code>{envVarForSlot(slot)}</code>)} to {many ? "non-empty values" : "a non-empty value"} in
+      the relay's environment and restart it.
+    </>
+  );
+}
+
+/**
  * Where the relay sends a direct provider's requests and whether its
  * credential is configured. The credential is set on the relay: this panel
  * shows and edits the name of its slot, never a value.
  */
 export function ProviderUpstreamPanel({ provider, isAdmin }: ProviderUpstreamPanelProps) {
   const [editOpen, setEditOpen] = useState(false);
-  const slot = provider.credential_slot;
+  const slots = provider.credential_slots;
+  const missing = slots.filter((x) => !x.present).map((x) => x.slot);
   const extra = provider.extra_header_names;
   return (
     <section className="card" aria-label="Upstream">
@@ -251,18 +275,38 @@ export function ProviderUpstreamPanel({ provider, isAdmin }: ProviderUpstreamPan
           <dt className="def-key">Base URL</dt>
           <dd className="def-val" style={{ minWidth: 0, overflowWrap: "anywhere" }}>{provider.upstream_base_url}</dd>
         </div>
-        <div className="def-row">
-          <dt className="def-key">Credential slot</dt>
-          <dd className="def-val">{slot}</dd>
-        </div>
-        <div className="def-row">
-          <dt className="def-key">Credential</dt>
-          <dd className="def-val">
-            {provider.credential_present
-              ? <Badge kind="status-connected">configured</Badge>
-              : <Badge kind="status-idle">not configured</Badge>}
-          </dd>
-        </div>
+        {slots.length > 1 ? (
+          <div className="def-row">
+            <dt className="def-key">Credential slots</dt>
+            <dd className="def-val">
+              <ol className="slot-list" aria-label="Credential slots, in the order they are tried">
+                {slots.map((x) => (
+                  <li key={x.slot}>
+                    <span>{x.slot}</span>
+                    {x.present
+                      ? <Badge kind="status-connected">configured</Badge>
+                      : <Badge kind="status-idle">not configured</Badge>}
+                  </li>
+                ))}
+              </ol>
+            </dd>
+          </div>
+        ) : (
+          <>
+            <div className="def-row">
+              <dt className="def-key">Credential slot</dt>
+              <dd className="def-val">{provider.credential_slot}</dd>
+            </div>
+            <div className="def-row">
+              <dt className="def-key">Credential</dt>
+              <dd className="def-val">
+                {provider.credential_present
+                  ? <Badge kind="status-connected">configured</Badge>
+                  : <Badge kind="status-idle">not configured</Badge>}
+              </dd>
+            </div>
+          </>
+        )}
         <div className="def-row">
           <dt className="def-key">Billing</dt>
           <dd className="def-val">{BILLING_LABEL[provider.billing]}</dd>
@@ -302,9 +346,10 @@ export function ProviderUpstreamPanel({ provider, isAdmin }: ProviderUpstreamPan
         <p className="muted small">The credential itself is set on the relay and is never shown here.</p>
       ) : (
         <ErrorNotice variant="warn" role="note">
-          Slot {slot} is not set on the relay, or is set to an empty value. Set{" "}
-          <code>{envVarForSlot(slot)}</code> to a non-empty value in the relay's environment and restart it.
-          Until then this provider answers 503.
+          <SlotsNotSet slots={missing.length > 0 ? missing : [provider.credential_slot]} orEmpty />{" "}
+          {missing.length > 0 && missing.length < slots.length
+            ? "Until then requests that reach a missing slot fail."
+            : "Until then this provider answers 503."}
         </ErrorNotice>
       )}
       {isAdmin && <EditUpstreamDialog provider={provider} open={editOpen} onOpenChange={setEditOpen} />}
@@ -361,7 +406,9 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
   });
 
   const parsedExtra = clearExtra ? {} : extraText.trim() === "" ? undefined : parseExtraHeaders(extraText);
-  const slotMessage = credentialSlotError(slot);
+  const slotMessage = credentialSlotsError(slot);
+  // What is stored and compared: the names joined without spaces.
+  const slotValue = splitSlots(slot).join(",");
   const limit = parseConcurrency(concurrency);
   // Only these block Save.
   const invalid: Partial<Record<Field, string>> = {
@@ -375,7 +422,7 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
   // Only what changed is sent: a field that is left out keeps its stored value.
   const body: AiProviderUpstreamInput = {
     ...(baseUrl.trim() !== stored.baseUrl ? { base_url: baseUrl.trim() } : {}),
-    ...(slot !== stored.slot ? { credential_slot: slot } : {}),
+    ...(slotValue !== stored.slot ? { credential_slot: slotValue } : {}),
     ...(billing !== stored.billing ? { billing } : {}),
     ...(authHeader.trim() !== stored.authHeader ? { auth_header: authHeader.trim() } : {}),
     ...(authFormat !== stored.authFormat ? { auth_format: authFormat } : {}),
@@ -417,8 +464,10 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
     setFieldErr({});
   }
 
-  const slotMissing = slot !== "" && !errors.slot && slots.data !== undefined && !slots.data.slots.includes(slot);
-  const blocked = unchanged || baseUrl.trim() === "" || slot === "" || authHeader.trim() === ""
+  // Only the slots that are not set are named.
+  const known = slots.data?.slots;
+  const slotsMissing = errors.slot || known === undefined ? [] : splitSlots(slot).filter((x) => !known.includes(x));
+  const blocked = unchanged || baseUrl.trim() === "" || slotValue === "" || authHeader.trim() === ""
     || Object.keys(invalid).length > 0 || save.isPending;
   const extraHelp = names.length > 0
     ? `Set now: ${names.join(", ")}. Their values are never shown. Leave this empty to keep them; anything entered here replaces all of them. ${EXTRA_FORMAT}`
@@ -465,13 +514,13 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
           htmlFor="eu-slot"
           w="md"
           error={err("slot", "eu-slot")}
-          help={<span id="eu-slot-help">The name of the slot, not the key. The key is set on the relay and must be set to a non-empty value.</span>}
+          help={<span id="eu-slot-help">{CREDENTIAL_SLOT_HELP}</span>}
         >
           <Input
             id="eu-slot"
             mono
             value={slot}
-            maxLength={32}
+            maxLength={140}
             required
             invalid={!!errors.slot}
             autoComplete="off"
@@ -559,10 +608,9 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
           <ResponsesCheckbox id="eu-responses" checked={responses} onChange={(v) => { setResponses(v); edited(); }} />
         )}
       </FormFieldGroup>
-      {slotMissing && (
+      {slotsMissing.length > 0 && (
         <ErrorNotice variant="info" role="note">
-          Slot {slot} is not set on the relay. Set <code>{envVarForSlot(slot)}</code> to a non-empty value in
-          the relay's environment and restart it. The provider answers 503 until the key is set.
+          <SlotsNotSet slots={slotsMissing} /> The provider answers 503 until the key is set.
         </ErrorNotice>
       )}
       {formErr && <ErrorNotice>{formErr}</ErrorNotice>}

@@ -10,7 +10,9 @@ import (
 // never spends the operator's quota.
 //
 // One breaker serves every request of the relay; all state is behind mu. What
-// it keeps per key is a fixed number of counters, whatever the traffic.
+// it keeps per key is a fixed number of counters, whatever the traffic. Forget
+// drops a key; closed keys without recent samples are dropped as new keys
+// appear.
 type Breaker struct {
 	mu         sync.Mutex
 	now        func() time.Time
@@ -120,6 +122,41 @@ func (b *Breaker) State(key string) BreakerState {
 	return BreakerHalfOpen
 }
 
+// Forget drops what the breaker knows about key. It is called when a
+// provider is deleted or renamed, so that the slug reads as closed and a
+// provider that takes it later starts clean.
+//
+// A request that is under way may still report on key afterwards: that
+// starts a fresh, closed entry with one sample, which dropIdle removes again.
+func (b *Breaker) Forget(key string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.states, key)
+}
+
+// dropIdle removes every closed entry without a sample inside the window.
+// Such an entry says the same as no entry. It runs when a new key appears,
+// so the map holds no more keys than were seen within one window, plus the
+// open ones. The caller holds mu.
+func (b *Breaker) dropIdle(now time.Time) {
+	oldest := now.UnixNano()/(int64(b.window)/breakerBuckets) - breakerBuckets
+	for key, s := range b.states {
+		if !s.openedAt.IsZero() || !s.trialAt.IsZero() {
+			continue
+		}
+		idle := true
+		for _, c := range s.buckets {
+			if c.slice > oldest && c.ok+c.failed > 0 {
+				idle = false
+				break
+			}
+		}
+		if idle {
+			delete(b.states, key)
+		}
+	}
+}
+
 func (b *Breaker) refused(s *breakerState) bool {
 	if s == nil {
 		return false
@@ -142,12 +179,13 @@ func (b *Breaker) refused(s *breakerState) bool {
 func (b *Breaker) Report(key string, ok bool, trial uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	now := b.now()
 	s := b.states[key]
 	if s == nil {
+		b.dropIdle(now)
 		s = &breakerState{}
 		b.states[key] = s
 	}
-	now := b.now()
 	if !s.trialAt.IsZero() {
 		if trial == 0 || trial != s.trial {
 			return

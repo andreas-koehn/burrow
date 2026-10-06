@@ -5,7 +5,7 @@ import type {
   GuardrailPattern, GuardrailSettingsResponse, Budget, PricingTable, AuditEvent, Webhook,
   WebhookDelivery, ProvisioningKey, ProvisioningPending,
   AutomationToken, BackupRow, CacheStatsV5, SemanticCacheSettings,
-  UpstreamCredentialBinding, CustomDomain, AiModel, AiGatewayKey,
+  UpstreamCredentialBinding, CustomDomain, AiModel, AiGatewayKey, AiRequestAttempt,
   RetentionSettings, DatabaseStatus,
   ConnectionLog, ConnectionLogRollup,
 } from "@/lib/contract";
@@ -86,7 +86,13 @@ export interface MockDb {
   // Places taken right now at a provider with a concurrency limit, by slug.
   aiProviderInUse: Record<string, number>;
   // Synthetic models and gateway keys (GET /ai/models, /ai/keys).
+  // available and serving are placeholders here: the handlers work both out
+  // on every response, as the relay does.
   aiModels: AiModel[];
+  // Slugs of the providers the gateway is skipping right now.
+  aiBreakerOpen: Set<string>;
+  // Attempt logs by request id.
+  aiAttempts: Record<string, AiRequestAttempt[]>;
   aiGatewayKeys: AiGatewayKey[];
   costSummary: Record<"today" | "week" | "month" | "year", CostSummary>;
   aiConfigs: Record<string, ServiceAIConfig>;
@@ -224,20 +230,27 @@ function seed(): MockDb {
       {
         name: "burrow-simple", description: "Small and local.", enabled: true, fallback_on_rate_limit: false,
         attempt_timeout_s: 60, total_timeout_s: 120,
-        targets: [{ dialect: "openai", provider: "ollama", model: "mistral" }],
-        dialects: ["openai"], created_at: "2026-05-19T00:00:00Z", updated_at: "2026-05-19T00:00:00Z",
+        targets: [{ dialect: "openai", provider: "ollama", model: "mistral", available: true }],
+        dialects: ["openai"], serving: {}, created_at: "2026-05-19T00:00:00Z", updated_at: "2026-05-19T00:00:00Z",
       },
       {
         name: "burrow-intelligence", description: "", enabled: true, fallback_on_rate_limit: false,
         attempt_timeout_s: 60, total_timeout_s: 120,
         // As the relay returns them: by format, then by position.
         targets: [
-          { dialect: "anthropic", provider: "zai-anthropic", model: "glm-5.1" },
-          { dialect: "openai", provider: "zai", model: "glm-5.1" },
+          { dialect: "anthropic", provider: "zai-anthropic", model: "glm-5.1", available: false },
+          { dialect: "openai", provider: "zai", model: "glm-5.1", available: false },
         ],
-        dialects: ["anthropic", "openai"], created_at: "2026-05-20T00:00:00Z", updated_at: "2026-05-20T00:00:00Z",
+        dialects: ["anthropic", "openai"], serving: {}, created_at: "2026-05-20T00:00:00Z", updated_at: "2026-05-20T00:00:00Z",
       },
     ],
+    aiBreakerOpen: new Set<string>(),
+    aiAttempts: {
+      "req-1": [
+        { position: 0, provider: "zai", model: "glm-5.1", status: 500, error_code: "http_500", duration_ms: 812, ts: "2026-10-06T09:30:00Z" },
+        { position: 1, provider: "openrouter", model: "google/gemini-x", status: 200, error_code: "", duration_ms: 1403, ts: "2026-10-06T09:30:01Z" },
+      ],
+    },
     aiGatewayKeys: [
       {
         id: "gk_laptop1", name: "laptop", key_prefix: "bgw_Ab3d", user_id: meId, allowed_models: [],

@@ -173,8 +173,12 @@ export interface AiProvider {
   upstream_base_url: string;
   /** Direct providers only: name of the vault slot. The credential itself never passes the API. */
   credential_slot: string;
-  /** Whether the vault slot holds a value. */
+  /** Whether the vault slot holds a value; with several slots, whether every one does. */
   credential_present: boolean;
+  /** The slots credential_slot names, in the order they are tried; empty for a tunnel provider. Never a value. */
+  credential_slots: { slot: string; present: boolean }[];
+  /** The gateway is skipping the provider for now because recent requests to it failed. */
+  breaker_open: boolean;
   /** Direct providers, admin callers only. */
   auth_header?: string;
   /** Direct providers, admin callers only: header value with the literal {key} placeholder. */
@@ -472,8 +476,18 @@ export interface BackupRow {
 
 // Synthetic models and gateway keys (GET/POST/PUT/DELETE /ai/models, /ai/keys; GET /ai/gateway).
 export type Dialect = "openai" | "anthropic";
+/** A target as a request carries it. */
 export interface AiModelTarget {
   dialect: Dialect;
+  provider: string;
+  model: string;
+}
+/** A target in a response: also whether it can be tried right now. The relay refuses the field in a request. */
+export interface AiModelTargetStatus extends AiModelTarget {
+  available: boolean;
+}
+/** The target that answers a format right now. */
+export interface AiServingTarget {
   provider: string;
   model: string;
 }
@@ -484,11 +498,30 @@ export interface AiModel {
   fallback_on_rate_limit: boolean;
   attempt_timeout_s: number;
   total_timeout_s: number;
-  targets: AiModelTarget[];
+  /** By format, then in the order they are tried. */
+  targets: AiModelTargetStatus[];
   /** The formats the model is served in, sorted; derived from the targets. */
   dialects: Dialect[];
+  /**
+   * Per format the model has a target in: the first available target, or null
+   * when none is. A format without targets has no key.
+   */
+  serving: Partial<Record<Dialect, AiServingTarget | null>>;
   created_at: string;
   updated_at: string;
+}
+/** One attempt of a gateway request (GET /ai/requests/{id}/attempts, admins). */
+export interface AiRequestAttempt {
+  /** The order the attempts were made in, from 0; not a target's place in the model's list. */
+  position: number;
+  provider: string;
+  model: string;
+  /** Upstream HTTP status; 0 when none was received. */
+  status: number;
+  /** "" for the attempt that answered; else http_<status>, timeout, no_response, busy, breaker_open, … */
+  error_code: string;
+  duration_ms: number;
+  ts: string;
 }
 export interface AiGatewayKey {
   id: string;

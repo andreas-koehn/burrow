@@ -1,26 +1,54 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Layers, MoreHorizontal } from "lucide-react";
+import { Ban, Layers, MoreHorizontal } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Dialog, DropdownMenu, EmptyState, ErrorNotice, PageHeader, SkeletonRows } from "@/components/ds";
+import { AttemptLookup } from "@/components/AttemptLookup";
 import { ConnectCard } from "@/components/ConnectCard";
 import { GatewayAddresses } from "@/components/GatewayAddresses";
 import { ModelDialog } from "@/components/ModelDialog";
 import { useAuth } from "@/auth/useAuth";
 import type { AiModel, AiProvider, Dialect, GatewayInfo } from "@/lib/contract";
 
-/** Where a model goes in one format: its first target, and how many stand behind it. */
+const FORMAT_NAME: Record<Dialect, string> = { openai: "OpenAI format", anthropic: "Anthropic format" };
+
+/**
+ * Where a model goes in one format: its targets in the order they are tried,
+ * which one is answering right now and which cannot be tried. Every state is
+ * also said in words.
+ */
 function FormatCell({ model, dialect }: { model: AiModel; dialect: Dialect }) {
   const targets = model.targets.filter((t) => t.dialect === dialect);
-  const first = targets[0];
-  if (!first) return <span className="muted">not served</span>;
+  if (targets.length === 0) return <span className="muted">not served</span>;
+  const serving = model.serving?.[dialect];
+  const servingAt = serving
+    ? targets.findIndex((t) => t.available && t.provider === serving.provider && t.model === serving.model)
+    : -1;
   return (
     <>
-      <span className="mono">{`${first.provider}/${first.model}`}</span>
-      {targets.length > 1 && <span className="muted small">{` +${targets.length - 1} more`}</span>}
+      <ol className="target-chain" aria-label={`${FORMAT_NAME[dialect]} targets of ${model.name}, in the order they are tried`}>
+        {targets.map((t, i) => (
+          <li key={`${t.provider}/${t.model}`}>
+            {i > 0 && <span className="muted" aria-hidden="true">→</span>}
+            <span className={t.available ? "mono" : "mono target-unavailable"}>{`${t.provider}/${t.model}`}</span>
+            {i === servingAt ? (
+              <Badge kind="status-connected">
+                <span aria-hidden="true">serving</span>
+                <span className="visually-hidden">serving now</span>
+              </Badge>
+            ) : !t.available && (
+              <>
+                <Ban size={12} className="muted" aria-hidden="true" />
+                <span className="visually-hidden">unavailable</span>
+              </>
+            )}
+          </li>
+        ))}
+      </ol>
+      {servingAt < 0 && <Badge kind="status-offline">no target available</Badge>}
     </>
   );
 }
@@ -163,6 +191,8 @@ export default function GatewayModels() {
             endpoints={endpoints}
             models={list.filter((m) => m.enabled).map((m) => ({ name: m.name, dialects: m.dialects }))}
           />
+          {/* The relay gives the attempt log to admins only. */}
+          {canWrite && <AttemptLookup />}
         </>
       )}
 

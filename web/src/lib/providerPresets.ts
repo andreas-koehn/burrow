@@ -52,6 +52,31 @@ export function credentialSlotError(slot: string): string | null {
   return null;
 }
 
+/** A provider may name up to this many slots; the relay tries them in order. */
+export const MAX_CREDENTIAL_SLOTS = 4;
+
+/** The slot names in a "Credential slot" value: one, or several separated by commas. Same as the relay's SplitSlots. */
+export function splitSlots(value: string): string[] {
+  return value.split(",").map((s) => s.trim()).filter((s) => s !== "");
+}
+
+/** Local validation message for a "Credential slot" value, or null when it is fine or empty. */
+export function credentialSlotsError(value: string): string | null {
+  const slots = splitSlots(value);
+  for (const slot of slots) {
+    const message = credentialSlotError(slot);
+    if (message) return message;
+  }
+  if (slots.length > MAX_CREDENTIAL_SLOTS) return "At most four slots.";
+  const twice = slots.find((slot, i) => slots.indexOf(slot) !== i);
+  if (twice) return `Slot ${twice} is listed twice.`;
+  return null;
+}
+
+/** Help text of every "Credential slot" field. */
+export const CREDENTIAL_SLOT_HELP =
+  "One slot, or up to four separated by commas — tried in order. The name of the slot, not the key. The key is set on the relay and must be set to a non-empty value.";
+
 /** Environment variable the relay reads a credential slot from. */
 export function envVarForSlot(slot: string): string {
   return `BURROW_UPSTREAM_KEY_${slot}`;

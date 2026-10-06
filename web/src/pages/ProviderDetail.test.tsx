@@ -497,6 +497,64 @@ describe("Provider detail", () => {
       expect(within(panel).getByText("Flat rate")).toBeInTheDocument();
     });
 
+    it("says when the gateway is skipping the provider", async () => {
+      db.aiBreakerOpen.add("openrouter");
+      mountDirect();
+      const note = await screen.findByText(
+        "Burrow is skipping this provider for now because recent requests failed. It will be tried again automatically.",
+      );
+      expect(note.closest('[role="note"]')).toHaveAttribute("data-variant", "info");
+      // Above the tabs, whichever is open.
+      const tabs = screen.getByRole("tablist");
+      expect(note.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("says nothing about skipping while the provider is used", async () => {
+      mountDirect();
+      await screen.findByRole("tablist");
+      expect(screen.queryByText(/skipping this provider/)).toBeNull();
+    });
+
+    it("Upstream tab: lists every slot of a provider with several, each configured or not", async () => {
+      db.upstreamSlots.push("ZAI");
+      mountDirect("zai", { credential_slot: "ZAI,ZAI2" });
+      await openTab("Upstream");
+      const panel = screen.getByRole("tabpanel");
+      const slots = within(panel).getByRole("list", { name: "Credential slots, in the order they are tried" });
+      const items = within(slots).getAllByRole("listitem");
+      expect(items).toHaveLength(2);
+      expect(items[0]).toHaveTextContent("ZAI");
+      expect(within(items[0]!).getByText("configured", { selector: "span.badge" })).toBeInTheDocument();
+      expect(items[1]).toHaveTextContent("ZAI2");
+      expect(within(items[1]!).getByText("not configured", { selector: "span.badge" })).toBeInTheDocument();
+      // Only the slot that is missing is named in the note.
+      const note = within(panel).getByRole("note");
+      expect(note).toHaveTextContent("Slot ZAI2 is not set on the relay");
+      expect(note).toHaveTextContent("BURROW_UPSTREAM_KEY_ZAI2");
+      expect(note).not.toHaveTextContent(/BURROW_UPSTREAM_KEY_ZAI\b(?!2)/);
+    });
+
+    it("Upstream tab: the edit dialog takes several slots and sends them joined", async () => {
+      let put: Record<string, unknown> | null = null;
+      server.use(http.put("/api/v1/ai/providers/openrouter/upstream", async ({ request }) => {
+        put = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ error: "stop here" }, { status: 500 });
+      }));
+      mountDirect();
+      await openTab("Upstream");
+      await userEvent.click(within(screen.getByRole("tabpanel")).getByRole("button", { name: "Edit" }));
+      const dialog = await screen.findByRole("dialog");
+      const slot = within(dialog).getByLabelText("Credential slot");
+      expect(slot).toHaveAccessibleDescription(/One slot, or up to four separated by commas — tried in order\./);
+      await userEvent.type(slot, ", backup");
+      expect(slot).toHaveValue("OPENROUTER, BACKUP");
+      const note = within(dialog).getByRole("note");
+      expect(note).toHaveTextContent("Slot BACKUP is not set on the relay.");
+      expect(note).not.toHaveTextContent("BURROW_UPSTREAM_KEY_OPENROUTER");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(put).toEqual({ credential_slot: "OPENROUTER,BACKUP" }));
+    });
+
     it("Upstream tab: a non-admin reads it and gets no Edit", async () => {
       db.me = { ...db.me, role: "user" };
       mountDirect();

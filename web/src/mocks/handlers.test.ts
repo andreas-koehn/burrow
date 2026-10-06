@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { addDirectProvider, db, resetDb } from "@/mocks/db";
+import type { AiModel } from "@/lib/contract";
 import "@/mocks/server"; // installed via test setup; import asserts module loads
 
 const CSRF = "test-csrf-token";
@@ -184,7 +185,7 @@ describe("MSW provider handlers mirror the API", () => {
       [{ base_url: "https://u:p@openrouter.ai/v1" }, "base URL must be an https URL without credentials, query or fragment"],
       [{ base_url: "https://openrouter.ai/v1?x=1" }, "base URL must be an https URL without credentials, query or fragment"],
       [{ base_url: "https://10.0.0.5/v1" }, "base URL resolves to a private or loopback address"],
-      [{ credential_slot: "open-router" }, "credential slot must be 1-32 characters: A-Z, 0-9, _"],
+      [{ credential_slot: "open-router" }, "credential slots must be 1-4 distinct names of 1-32 characters: A-Z, 0-9, _"],
       [{ auth_format: "Bearer" }, 'auth format must contain "{key}" once, at most 128 characters, no control characters'],
       [{ auth_format: "{key}{key}" }, 'auth format must contain "{key}" once, at most 128 characters, no control characters'],
       [{ billing: "free" }, "billing must be 'metered' or 'flat'"],
@@ -372,12 +373,72 @@ describe("MSW gateway handlers mirror the API", () => {
     const r = await send("POST", "/ai/models", { name: "x2", targets: [
       { provider: "zai", model: "b" }, { provider: "zai-anthropic", model: "glm-5.1" }, { provider: "zai", model: "a" },
     ] });
-    expect((await r.json()).targets).toEqual([
-      { dialect: "anthropic", provider: "zai-anthropic", model: "glm-5.1" },
-      { dialect: "openai", provider: "zai", model: "b" },
-      { dialect: "openai", provider: "zai", model: "a" },
+    // Slot ZAI is not set on this relay: no target can be tried, nothing serves.
+    const created = await r.json();
+    expect(created.targets).toEqual([
+      { dialect: "anthropic", provider: "zai-anthropic", model: "glm-5.1", available: false },
+      { dialect: "openai", provider: "zai", model: "b", available: false },
+      { dialect: "openai", provider: "zai", model: "a", available: false },
     ]);
+    expect(created.serving).toEqual({ anthropic: null, openai: null });
     expect(db.aiModels.find((m) => m.name === "burrow-intelligence")!.targets.map((t) => t.dialect)).toEqual(["anthropic", "openai"]);
+  });
+
+  it("a model view says which targets can be tried and which one serves each format", async () => {
+    const view = async () => (await (await send("GET", "/ai/models/burrow-simple")).json()) as AiModel;
+    // The tunnel provider's client is connected; the model has no Anthropic target.
+    expect(await view()).toMatchObject({
+      targets: [{ provider: "ollama", model: "mistral", available: true }],
+      serving: { openai: { provider: "ollama", model: "mistral" } },
+    });
+    expect((await view()).serving).not.toHaveProperty("anthropic");
+    // Skipped by the breaker: unavailable, and the format has no serving target.
+    db.aiBreakerOpen.add("ollama");
+    expect(await view()).toMatchObject({ targets: [{ available: false }], serving: { openai: null } });
+    db.aiBreakerOpen.clear();
+    // The first available target serves; every slot of a provider must be set.
+    db.upstreamSlots.push("ZAI");
+    db.aiProviders.find((p) => p.slug === "zai")!.credential_slot = "ZAI,ZAI2";
+    const list = (await (await send("GET", "/ai/models")).json()) as AiModel[];
+    const smart = list.find((m) => m.name === "burrow-intelligence")!;
+    expect(smart.serving).toEqual({ anthropic: { provider: "zai-anthropic", model: "glm-5.1" }, openai: null });
+  });
+
+  it("refuses the status fields in a model body, like the relay's strict decoder", async () => {
+    expect(await refusal(await send("PUT", "/ai/models/burrow-simple", { serving: {}, targets: [target] }))).toEqual([400, 'unknown field "serving"']);
+    expect(await refusal(await send("PUT", "/ai/models/burrow-simple", { targets: [{ ...target, available: true }] })))
+      .toEqual([400, 'unknown field "available"']);
+  });
+
+  it("a provider view lists its slots and says whether the gateway is skipping it", async () => {
+    db.upstreamSlots.push("ZAI");
+    db.aiProviders.find((p) => p.slug === "zai")!.credential_slot = "ZAI,ZAI2";
+    db.aiBreakerOpen.add("zai");
+    expect(await (await send("GET", "/ai/providers/zai")).json()).toMatchObject({
+      credential_slots: [{ slot: "ZAI", present: true }, { slot: "ZAI2", present: false }],
+      credential_present: false, breaker_open: true, status: "Offline",
+    });
+    expect(await (await send("GET", "/ai/providers/ollama")).json()).toMatchObject({ credential_slots: [], breaker_open: false });
+  });
+
+  it("several credential slots: stored joined, at most four, none twice; a sync needs one that is set", async () => {
+    const put = (slot: string) => send("PUT", "/ai/providers/zai/upstream", { credential_slot: slot });
+    expect((await (await put("ZAI, ZAI2")).json()).credential_slot).toBe("ZAI,ZAI2");
+    const msg = "credential slots must be 1-4 distinct names of 1-32 characters: A-Z, 0-9, _";
+    expect(await refusal(await put("A,B,C,D,E"))).toEqual([400, msg]);
+    expect(await refusal(await put("A,A"))).toEqual([400, msg]);
+    expect(await refusal(await send("POST", "/ai/providers/zai/models/sync"))).toEqual([409, "none of the credential slots ZAI, ZAI2 is set"]);
+  });
+
+  it("GET /ai/requests/:id/attempts: an admin reads a log by position; an unknown id is an empty list", async () => {
+    const log = await (await send("GET", "/ai/requests/req-1/attempts")).json();
+    expect(log.map((a: { position: number; provider: string }) => [a.position, a.provider])).toEqual([[0, "zai"], [1, "openrouter"]]);
+    expect(Object.keys(log[0]).sort()).toEqual(["duration_ms", "error_code", "model", "position", "provider", "status", "ts"]);
+    expect(await (await send("GET", "/ai/requests/nope/attempts")).json()).toEqual([]);
+    expect(await refusal(await send("GET", `/ai/requests/${"x".repeat(129)}/attempts`)))
+      .toEqual([400, "request id must be 1-128 characters without control characters"]);
+    db.me = { ...db.me, role: "user" };
+    expect(await refusal(await send("GET", "/ai/requests/req-1/attempts"))).toEqual([403, "admin required"]);
   });
 
   it("PUT /ai/models/:name keeps the name and enabled when they are left out, and replaces the rest", async () => {

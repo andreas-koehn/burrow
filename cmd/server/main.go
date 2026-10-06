@@ -834,6 +834,8 @@ func newRootCmd() *cobra.Command {
 					Services:    st,
 					AIProviders: st,
 					AILimiter:   aiLimiter,
+					AIBreaker:   aiBreaker,
+					AIAttempts:  st,
 					// Direct providers: the save-time host check follows the
 					// same switch as the dial guard, and the model sync leaves
 					// through the guarded transport.

@@ -294,6 +294,12 @@ export default function ProviderDetail() {
         }
       />
 
+      {provider.data.breaker_open && (
+        <ErrorNotice variant="info" role="note">
+          Burrow is skipping this provider for now because recent requests failed. It will be tried again automatically.
+        </ErrorNotice>
+      )}
+
       <Tabs
         // "#upstream" on a tunnel provider names a tab it does not have.
         value={tab === "upstream" && !direct ? "connect" : tab}

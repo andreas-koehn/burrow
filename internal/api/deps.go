@@ -307,6 +307,19 @@ type Deps struct {
 	// AILimiter tells how many requests a provider with a concurrency limit
 	// is serving now (the gateway's limiter). nil = reported as 0.
 	AILimiter interface{ InUse(slug string) int }
+	// AIBreaker is the gateway's circuit breaker, keyed by provider slug.
+	// Open tells whether a provider is being skipped right now, without
+	// starting a trial; Forget drops the state of a provider that was deleted
+	// or renamed. nil = no provider is reported as skipped.
+	AIBreaker interface {
+		Open(key string) bool
+		Forget(key string)
+	}
+	// AIAttempts reads the attempt log of one gateway request. nil = every
+	// log reads as empty. *store.Store satisfies it.
+	AIAttempts interface {
+		AttemptsForRequest(ctx context.Context, requestID string) ([]db.UsageAttempt, error)
+	}
 	// HostCheck vets a direct provider's host when it is saved. nil skips
 	// the check. The provider API finds out which credential slots are set
 	// from CredentialVault; it never returns a slot's value.

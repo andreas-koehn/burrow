@@ -175,11 +175,11 @@ func TestListModels(t *testing.T) {
 			t.Fatalf("targets = %v", raw[0]["targets"])
 		}
 		tg, _ := targets[0].(map[string]any)
-		if tg["provider"] != "ollama" || tg["model"] != "mistral" || tg["dialect"] != "openai" || len(tg) != 3 {
+		if tg["provider"] != "ollama" || tg["model"] != "mistral" || tg["dialect"] != "openai" || tg["available"] != false || len(tg) != 4 {
 			t.Errorf("target = %v", tg)
 		}
 		for _, k := range []string{"name", "description", "enabled", "fallback_on_rate_limit", "attempt_timeout_s",
-			"total_timeout_s", "targets", "dialects", "created_at", "updated_at"} {
+			"total_timeout_s", "targets", "dialects", "serving", "created_at", "updated_at"} {
 			if _, ok := raw[0][k]; !ok {
 				t.Errorf("field %q missing in %s", k, body)
 			}
@@ -369,11 +369,13 @@ func TestAIModelAndKeyRoutes_Authorization(t *testing.T) {
 
 	callers := []struct {
 		name   string
-		role   string   // role of the user
-		anon   bool     // no credentials at all
-		bearer bool     // automation token instead of a session
-		perms  []string // what the token declares
-		want   map[string]int
+		role   string // role of the user
+		anon   bool   // no credentials at all
+		bearer bool   // automation token instead of a session
+		// The role the user had when the token was minted; "" = role.
+		mintedAs string
+		perms    []string // what the token declares
+		want     map[string]int
 	}{
 		{name: "anonymous", anon: true, want: all(401)},
 		{name: "session of a plain user", role: "user", want: with(403, rtModelPost, rtModelPut, rtModelDel)},
@@ -388,6 +390,14 @@ func TestAIModelAndKeyRoutes_Authorization(t *testing.T) {
 		{name: "operator's token with ai:configure:any", role: "ai-operator", bearer: true, perms: []string{configure},
 			want: with(403, rtKeyPost)},
 		{name: "plain user's token", role: "user", bearer: true,
+			want: with(403, rtModelPost, rtModelPut, rtModelDel, rtKeyPost)},
+		// What a token declares opens nothing its user's role does not hold:
+		// these tokens were minted while the user was an admin.
+		{name: "plain user's token declaring nothing", role: "user", bearer: true, mintedAs: "admin", perms: []string{},
+			want: with(403, rtModelPost, rtModelPut, rtModelDel, rtKeyPost)},
+		{name: "plain user's token declaring ai:configure:any", role: "user", bearer: true, mintedAs: "admin", perms: []string{configure},
+			want: with(403, rtModelPost, rtModelPut, rtModelDel, rtKeyPost)},
+		{name: "plain user's token declaring ai:configure:own", role: "user", bearer: true, mintedAs: "admin", perms: []string{string(authz.PermAIConfigureOwn)},
 			want: with(403, rtModelPost, rtModelPut, rtModelDel, rtKeyPost)},
 	}
 
@@ -407,7 +417,11 @@ func TestAIModelAndKeyRoutes_Authorization(t *testing.T) {
 				case c.anon:
 					resp = (&authClient{base: srv.URL, hc: &http.Client{}}).do(t, rt.method, rt.path, rt.body)
 				case c.bearer:
-					_, token, err := auto.MintAutomationToken(context.Background(), "u-self", c.role, "ci", c.perms, nil)
+					mintRole := c.role
+					if c.mintedAs != "" {
+						mintRole = c.mintedAs
+					}
+					_, token, err := auto.MintAutomationToken(context.Background(), "u-self", mintRole, "ci", c.perms, nil)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -601,4 +615,177 @@ func TestAIModelAuditActionsRegistered(t *testing.T) {
 			t.Errorf("audit action %q is not registered", a)
 		}
 	}
+}
+
+// fakeBreaker is the gateway's breaker as the API sees it.
+type fakeBreaker struct {
+	open   map[string]bool
+	forgot []string
+}
+
+func (f *fakeBreaker) Open(slug string) bool { return f.open[slug] }
+func (f *fakeBreaker) Forget(slug string)    { f.forgot = append(f.forgot, slug) }
+
+func directProvider(slug, format, slot string) db.AIProvider {
+	return db.AIProvider{Slug: slug, Name: slug, Kind: "direct", ServiceID: "prov-" + slug, APIFormat: format,
+		BaseURL: "https://" + slug + ".example/v1", CredentialSlot: slot}
+}
+
+// servingFixture is a model with three OpenAI targets (zai, openrouter and
+// the tunnelled ollama) and one Anthropic target.
+func servingFixture() (*modelFixture, *fakeBreaker) {
+	f := newModelFixture(db.AIModel{
+		Name: "burrow-smart", Enabled: true, AttemptTimeoutS: 60, TotalTimeoutS: 120,
+		Targets: []db.AIModelTarget{
+			{Dialect: "anthropic", ProviderSlug: "zai-anthropic", TargetModel: "glm-5.1"},
+			{Dialect: "openai", ProviderSlug: "zai", TargetModel: "glm-5.1"},
+			{Dialect: "openai", Position: 1, ProviderSlug: "openrouter", TargetModel: "google/gemini-x"},
+			{Dialect: "openai", Position: 2, ProviderSlug: "ollama", TargetModel: "mistral"},
+		},
+	})
+	br := &fakeBreaker{open: map[string]bool{"zai": true}}
+	f.d.AIProviders = &fakeProviderStore{rows: []db.AIProvider{
+		tunnelProvider("ollama", "Ollama", "svc1"),
+		directProvider("openrouter", "openai", "OPENROUTER"),
+		directProvider("zai", "openai", "ZAI"),
+		directProvider("zai-anthropic", "anthropic", "ZAI, ZAI2"),
+	}}
+	f.d.CredentialVault = secretVault{"OPENROUTER": upstreamSecret, "ZAI": upstreamSecret, "ZAI2": upstreamSecret}
+	f.d.LiveTunnels = fakeLiveTunnels{svcID: "svc1", exists: true, connected: true}
+	f.d.AIBreaker = br
+	return f, br
+}
+
+// servingOf reads one model view as raw JSON: the availability of the OpenAI
+// targets in order, and the serving object.
+func servingOf(t *testing.T, body string) (openai []bool, serving map[string]any) {
+	t.Helper()
+	var raw struct {
+		Targets []struct {
+			Dialect   string `json:"dialect"`
+			Available *bool  `json:"available"`
+		} `json:"targets"`
+		Serving map[string]any `json:"serving"`
+	}
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		t.Fatalf("decode %s: %v", body, err)
+	}
+	for _, tg := range raw.Targets {
+		if tg.Available == nil {
+			t.Fatalf("a target has no available field: %s", body)
+		}
+		if tg.Dialect == "openai" {
+			openai = append(openai, *tg.Available)
+		}
+	}
+	return openai, raw.Serving
+}
+
+func TestModelView_ServingAndAvailability(t *testing.T) {
+	const path = "/api/v1/ai/models/burrow-smart"
+	target := func(provider, model string) string {
+		return fmt.Sprint(map[string]any{"provider": provider, "model": model})
+	}
+
+	t.Run("first available target serves, per dialect", func(t *testing.T) {
+		f, _ := servingFixture()
+		f.d.Users = &fakeUserStore{role: "user"} // any session reads models
+		c := f.serve(t)
+		for _, body := range []string{
+			wantStatus(t, c.get(t, path), http.StatusOK),
+			strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(wantStatus(t, c.get(t, "/api/v1/ai/models"), http.StatusOK)), "["), "]"),
+		} {
+			openai, serving := servingOf(t, body)
+			if fmt.Sprint(openai) != "[false true true]" {
+				t.Errorf("openai availability = %v in %s", openai, body)
+			}
+			if fmt.Sprint(serving["openai"]) != target("openrouter", "google/gemini-x") {
+				t.Errorf("serving.openai = %v", serving["openai"])
+			}
+			if fmt.Sprint(serving["anthropic"]) != target("zai-anthropic", "glm-5.1") {
+				t.Errorf("serving.anthropic = %v", serving["anthropic"])
+			}
+			if strings.Contains(body, upstreamSecret) {
+				t.Errorf("model view leaks a credential: %s", body)
+			}
+		}
+	})
+
+	t.Run("a dialect without targets has no serving key", func(t *testing.T) {
+		f := newModelFixture(simpleModel())
+		f.d.AIProviders = &fakeProviderStore{rows: []db.AIProvider{tunnelProvider("ollama", "Ollama", "svc1")}}
+		f.d.LiveTunnels = fakeLiveTunnels{svcID: "svc1", exists: true, connected: true}
+		_, serving := servingOf(t, wantStatus(t, f.serve(t).get(t, "/api/v1/ai/models/burrow-simple"), http.StatusOK))
+		if _, has := serving["anthropic"]; has || serving["openai"] == nil {
+			t.Errorf("serving = %v", serving)
+		}
+	})
+
+	t.Run("offline tunnel client", func(t *testing.T) {
+		f, _ := servingFixture()
+		f.d.LiveTunnels = fakeLiveTunnels{svcID: "svc1", exists: true, connected: false}
+		openai, _ := servingOf(t, wantStatus(t, f.serve(t).get(t, path), http.StatusOK))
+		if fmt.Sprint(openai) != "[false true false]" {
+			t.Errorf("openai availability = %v", openai)
+		}
+	})
+
+	t.Run("one slot of several missing", func(t *testing.T) {
+		f, _ := servingFixture()
+		f.d.CredentialVault = secretVault{"OPENROUTER": upstreamSecret, "ZAI": upstreamSecret, "ZAI2": ""}
+		_, serving := servingOf(t, wantStatus(t, f.serve(t).get(t, path), http.StatusOK))
+		if v, has := serving["anthropic"]; !has || v != nil {
+			t.Errorf("serving.anthropic = %v (present %v), want null", v, has)
+		}
+	})
+
+	t.Run("nothing available", func(t *testing.T) {
+		f, br := servingFixture()
+		br.open["ollama"] = true
+		f.d.CredentialVault = secretVault{"ZAI": upstreamSecret, "ZAI2": upstreamSecret}
+		body := wantStatus(t, f.serve(t).get(t, path), http.StatusOK)
+		openai, serving := servingOf(t, body)
+		if fmt.Sprint(openai) != "[false false false]" {
+			t.Errorf("openai availability = %v", openai)
+		}
+		if v, has := serving["openai"]; !has || v != nil {
+			t.Errorf("serving.openai = %v (present %v), want null in %s", v, has, body)
+		}
+	})
+
+	t.Run("no breaker wired", func(t *testing.T) {
+		f, _ := servingFixture()
+		f.d.AIBreaker = nil
+		openai, serving := servingOf(t, wantStatus(t, f.serve(t).get(t, path), http.StatusOK))
+		if fmt.Sprint(openai) != "[true true true]" || fmt.Sprint(serving["openai"]) != target("zai", "glm-5.1") {
+			t.Errorf("availability = %v serving = %v", openai, serving)
+		}
+	})
+
+	t.Run("provider gone or of another format", func(t *testing.T) {
+		f, br := servingFixture()
+		br.open = nil
+		ps := f.d.AIProviders.(*fakeProviderStore)
+		ps.rows = ps.rows[:3]              // zai-anthropic is gone
+		ps.rows[1].APIFormat = "anthropic" // openrouter no longer speaks openai
+		openai, serving := servingOf(t, wantStatus(t, f.serve(t).get(t, path), http.StatusOK))
+		if fmt.Sprint(openai) != "[true false true]" || serving["anthropic"] != nil {
+			t.Errorf("availability = %v serving = %v", openai, serving)
+		}
+	})
+
+	t.Run("writes answer with the same view and refuse the read-only fields", func(t *testing.T) {
+		f, _ := servingFixture()
+		c := f.serve(t)
+		body := wantStatus(t, c.put(t, path, map[string]any{"targets": []map[string]any{
+			{"provider": "zai", "model": "glm-5.1"}, {"provider": "openrouter", "model": "google/gemini-x"}}}), http.StatusOK)
+		openai, serving := servingOf(t, body)
+		if fmt.Sprint(openai) != "[false true]" || fmt.Sprint(serving["openai"]) != target("openrouter", "google/gemini-x") {
+			t.Errorf("availability = %v serving = %v", openai, serving)
+		}
+		wantStatus(t, c.put(t, path, map[string]any{"targets": []map[string]any{
+			{"provider": "zai", "model": "glm-5.1", "available": true}}}), http.StatusBadRequest)
+		wantStatus(t, c.put(t, path, map[string]any{"serving": map[string]any{},
+			"targets": []map[string]any{{"provider": "zai", "model": "glm-5.1"}}}), http.StatusBadRequest)
+	})
 }

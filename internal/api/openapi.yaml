@@ -143,7 +143,30 @@ components:
           example: OPENROUTER
         credential_present:
           type: boolean
-          description: Whether the vault slot holds a value.
+          description: >
+            Whether the vault holds a value for the slot. For a provider
+            with several slots: whether it holds one for every slot.
+        credential_slots:
+          type: array
+          readOnly: true
+          description: >
+            The slots credential_slot names, in the order they are tried,
+            each with whether the vault holds a value for it. Never the
+            value. Empty for a tunnel provider.
+          items:
+            type: object
+            properties:
+              slot: { type: string, example: ZAI }
+              present: { type: boolean }
+        breaker_open:
+          type: boolean
+          readOnly: true
+          description: >
+            Whether the gateway is skipping the provider right now because
+            recent requests to it failed. It is tried again automatically
+            after a short pause; reading this field does not start that
+            trial. The state is kept in memory and starts closed after a
+            restart.
         auth_header:
           type: string
           description: >
@@ -305,6 +328,49 @@ components:
           minLength: 1
           maxLength: 200
           description: The provider's own model id. No control characters.
+        available:
+          type: boolean
+          readOnly: true
+          description: >
+            Whether the target can be tried right now: its provider exists
+            and speaks the target's dialect, the gateway is not skipping the
+            provider (see breaker_open of the provider), and for a direct
+            provider every credential slot is set, for a tunnel provider
+            its client is connected. Responses only; a request that carries
+            it is refused with 400.
+    AIServingTarget:
+      type: object
+      nullable: true
+      description: The target that answers right now; null when none is available.
+      properties:
+        provider: { type: string }
+        model: { type: string }
+    AIRequestAttempt:
+      type: object
+      description: >
+        One attempt of a gateway request, as the attempt log holds it. It
+        carries no credential, slot name, header or upstream body.
+      properties:
+        position:
+          type: integer
+          description: >
+            The order the attempts were made in, from 0. Not the position
+            of a target in the model's list: a provider with several
+            credential slots is tried once per slot, and targets the
+            endpoint does not fit are left out.
+        provider: { type: string, description: Provider slug. }
+        model: { type: string, description: The provider's own model id. }
+        status:
+          type: integer
+          description: Upstream HTTP status; 0 when none was received.
+        error_code:
+          type: string
+          description: >
+            Empty for the attempt that answered. Otherwise http_<status>,
+            timeout, no_response, busy, breaker_open, dialect_mismatch,
+            client_closed, stream_aborted or panic.
+        duration_ms: { type: integer, format: int64 }
+        ts: { type: string, format: date-time }
     AIModel:
       type: object
       description: >
@@ -352,6 +418,17 @@ components:
           readOnly: true
           description: The formats the model is served in, sorted; derived from the targets.
           items: { type: string, enum: [anthropic, openai] }
+        serving:
+          type: object
+          readOnly: true
+          description: >
+            Per dialect the model has a target in: the first target that is
+            available, in the order they are tried, or null when none is.
+            A dialect without targets has no key. A request that carries
+            this field is refused with 400.
+          properties:
+            openai: { $ref: '#/components/schemas/AIServingTarget' }
+            anthropic: { $ref: '#/components/schemas/AIServingTarget' }
         created_at: { type: string, format: date-time, readOnly: true }
         updated_at: { type: string, format: date-time, readOnly: true }
     AIGatewayKey:
@@ -3296,7 +3373,8 @@ paths:
         '409':
           description: >
             The provider is a tunnel provider, its credential slot is not
-            set, or a sync is already running.
+            set (of several slots the first that is set is used; none of
+            them is), or a sync is already running.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -3602,6 +3680,46 @@ paths:
         '204': { description: Key revoked. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/ai/requests/{requestID}/attempts:
+    get:
+      tags: [models]
+      summary: What a gateway request tried (admin, dashboard session)
+      description: |
+        The attempt log of one request to /openai/v1, /ai/v1 or /anthropic,
+        in the order the attempts were made. The id is the value of the
+        Burrow-Request-Id response header; it contains a "/", which is sent
+        as %2F.
+
+        A log is kept only for requests that needed more than one attempt,
+        skipped a target or did not succeed. Any other id, including one
+        that was never issued, answers an empty list.
+
+        The log covers the requests of every user and gateway key. It is
+        read by a dashboard session of an admin; an automation token is
+        refused with 403 whatever it declares.
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: requestID
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+          description: Percent-encoded request id, without control characters.
+      responses:
+        '200':
+          description: The attempts, by position. Not cached (Cache-Control no-store).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AIRequestAttempt' }
+              example:
+                - { position: 0, provider: zai, model: glm-5.1, status: 500, error_code: http_500, duration_ms: 812, ts: '2026-10-06T09:30:00Z' }
+                - { position: 1, provider: openrouter, model: google/gemini-x, status: 200, error_code: '', duration_ms: 1403, ts: '2026-10-06T09:30:01Z' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   # ────────────────────────────────────────────────────────────────────────
   # Database backend status (v0.5.0 Task 15)

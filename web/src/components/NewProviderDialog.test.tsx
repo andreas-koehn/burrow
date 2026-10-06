@@ -161,6 +161,51 @@ describe("New provider dialog", () => {
     expect(screen.getByRole("button", { name: "Create" })).toBeEnabled();
   });
 
+  it("takes several slots, posts them joined and names only the missing one", async () => {
+    db.upstreamSlots.push("ZAI");
+    let posted: Record<string, unknown> | null = null;
+    server.use(http.post("/api/v1/ai/providers", async ({ request }) => {
+      posted = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ slug: "z-ai" }, { status: 201 });
+    }));
+    renderDialog();
+    await hosted();
+    await choosePreset("z.ai — Coding Plan");
+    const slot = screen.getByLabelText("Credential slot");
+    expect(slot).toHaveAccessibleDescription(/One slot, or up to four separated by commas — tried in order\./);
+    await userEvent.clear(slot);
+    await userEvent.type(slot, "zai, zai2");
+    expect(slot).toHaveValue("ZAI, ZAI2");
+    const note = await screen.findByRole("note");
+    expect(note).toHaveTextContent("Slot ZAI2 is not set on the relay.");
+    expect(note).toHaveTextContent("BURROW_UPSTREAM_KEY_ZAI2");
+    expect(note).not.toHaveTextContent(/BURROW_UPSTREAM_KEY_ZAI\b(?!2)/);
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(posted).toMatchObject({ credential_slot: "ZAI,ZAI2" }));
+  });
+
+  it("names every missing slot of several", async () => {
+    renderDialog();
+    await hosted();
+    await choosePreset("z.ai — Coding Plan");
+    await userEvent.type(screen.getByLabelText("Credential slot"), ",zai2");
+    const note = await screen.findByRole("note");
+    expect(note).toHaveTextContent("Slots ZAI and ZAI2 are not set on the relay.");
+    expect(note).toHaveTextContent("BURROW_UPSTREAM_KEY_ZAI and BURROW_UPSTREAM_KEY_ZAI2");
+  });
+
+  it("refuses more than four slots and a slot listed twice", async () => {
+    renderDialog();
+    await hosted();
+    const slot = screen.getByLabelText("Credential slot");
+    await userEvent.type(slot, "A,B,C,D,E");
+    expect(slot).toHaveAccessibleDescription(/At most four slots\./);
+    await userEvent.clear(slot);
+    await userEvent.type(slot, "A,B,A");
+    expect(slot).toHaveAccessibleDescription(/Slot A is listed twice\./);
+    expect(slot).toHaveAttribute("aria-invalid", "true");
+  });
+
   it("never offers a field for the key itself", async () => {
     renderDialog();
     await hosted();
