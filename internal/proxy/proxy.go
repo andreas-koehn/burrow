@@ -129,8 +129,12 @@ type Proxy struct {
 // an http service, when the response is complete (or the connection was taken
 // over). The summary names the tunnel that was resolved for the request.
 //
-// RequestSummary is called on the goroutine of the request and must not block.
+// Both methods are called on the goroutine of the request and must not block.
 type SummarySink interface {
+	// SummaryWanted reports whether anybody reads the summaries of requests
+	// served by this tunnel. The proxy asks before it builds one, so a
+	// service whose client did not ask costs a request this one call.
+	SummaryWanted(tunnelID string) bool
 	RequestSummary(serviceID string, s proto.RequestSummary)
 }
 
@@ -455,6 +459,27 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 	ingressPort := p.ingressPort
 	capturedServiceID := serviceID
 
+	// The transport serves this one request. When the request is done, its
+	// connection — the tunnel stream — would wait in the transport's idle
+	// pool for a second request that never comes, and stay open until the
+	// local app closes it: a stream and two goroutines here, a goroutine and
+	// a connection to the app on the client, for every request answered.
+	// Closing the idle connections when the handler returns ends that. It
+	// closes nothing that is in use: the reverse proxy returns only after
+	// the response body was copied to the visitor, and a connection that was
+	// upgraded (a WebSocket) has left the pool and is closed by the reverse
+	// proxy when both ends are done. A connection that becomes idle a moment
+	// after this is closed too, because the transport remembers. Keep-alives
+	// stay on, so the request the app sees carries no "Connection: close".
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return p.dialer.DialTunnelStreamByServiceID(ctx, capturedServiceID)
+		},
+		DisableCompression: true,
+		ForceAttemptHTTP2:  false,
+	}
+	defer tr.CloseIdleConnections()
+
 	rp := &httputil.ReverseProxy{
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -475,13 +500,7 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 			}
 			pr.Out.Host = upstreamHost
 		},
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return p.dialer.DialTunnelStreamByServiceID(ctx, capturedServiceID)
-			},
-			DisableCompression: true,
-			ForceAttemptHTTP2:  false,
-		},
+		Transport: tr,
 		// v0.5.1 P2.3: status mapping in ErrorHandler.
 		//
 		// Precedence: closed_error > closed_idle > closed_clean.
@@ -610,6 +629,36 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 	authDomain := p.authDomain
 	ingressPort := p.ingressPort
 
+	// The transport serves this one request. When the request is done, its
+	// connection — the tunnel stream — would wait in the transport's idle
+	// pool for a second request that never comes, and stay open until the
+	// local app closes it: a stream and two goroutines here, a goroutine and
+	// a connection to the app on the client, for every request answered.
+	// Closing the idle connections when the handler returns ends that. It
+	// closes nothing that is in use: the reverse proxy returns only after
+	// the response body was copied to the visitor, and a connection that was
+	// upgraded (a WebSocket) has left the pool and is closed by the reverse
+	// proxy when both ends are done. A connection that becomes idle a moment
+	// after this is closed too, because the transport remembers. Keep-alives
+	// stay on, so the request the app sees carries no "Connection: close".
+	tr := &http.Transport{
+		// DialContext ignores the addr argument: we always connect to the
+		// tunnel stream of the resolved service. The Transport calls this for each
+		// new connection (i.e. each proxied request, since we do not pool).
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			conn, err := p.dialer.DialTunnelStreamByServiceID(ctx, res.ServiceID)
+			if err != nil {
+				return nil, err
+			}
+			return conn, nil
+		},
+		DisableCompression: true,
+		// HTTP/2 to upstream is not applicable: tunnels speak HTTP/1.1
+		// to the local server they wrap. Disable to avoid surprises.
+		ForceAttemptHTTP2: false,
+	}
+	defer tr.CloseIdleConnections()
+
 	// Step 3: build a per-request ReverseProxy.
 	//
 	// We use the Rewrite API (Go 1.20+) instead of Director. When Rewrite is
@@ -666,22 +715,7 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 			}
 		},
 
-		Transport: &http.Transport{
-			// DialContext ignores the addr argument: we always connect to the
-			// tunnel stream of the resolved service. The Transport calls this for each
-			// new connection (i.e. each proxied request, since we do not pool).
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				conn, err := p.dialer.DialTunnelStreamByServiceID(ctx, res.ServiceID)
-				if err != nil {
-					return nil, err
-				}
-				return conn, nil
-			},
-			DisableCompression: true,
-			// HTTP/2 to upstream is not applicable: tunnels speak HTTP/1.1
-			// to the local server they wrap. Disable to avoid surprises.
-			ForceAttemptHTTP2: false,
-		},
+		Transport: tr,
 
 		// v0.5.1 P2.3: status mapping in ErrorHandler.
 		//
@@ -991,7 +1025,7 @@ func (p *Proxy) recordOnClose(
 // Requests to the /ai/ gateway do not pass through the proxy and are not
 // summarised; tcp tunnels have no requests.
 func (p *Proxy) summarise(r *http.Request, res *Resolved, started time.Time, ww *countingResponseWriter) {
-	if p.summaries == nil || res == nil {
+	if p.summaries == nil || res == nil || !p.summaries.SummaryWanted(res.TunnelID) {
 		return
 	}
 	status := ww.statusCode

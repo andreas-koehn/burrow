@@ -89,30 +89,32 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 	return cs, nil
 }
 
+// SummaryWanted reports whether the client that owns the tunnel asked for
+// request summaries. The proxy asks before it builds one; the answer costs
+// one read of the tunnel index.
+func (s *Server) SummaryWanted(tunnelID string) bool {
+	if tunnelID == "" {
+		return false
+	}
+	cs, ok := s.reg.SessionByTunnelID(tunnelID)
+	return ok && cs.WantsRequestSummaries()
+}
+
 // RequestSummary hands the summary of a request to the client whose tunnel
 // served it, when that client asked for summaries. It never waits (see
 // ClientSession.offerSummary), so the proxy can call it on the goroutine of
-// the request: it is the proxy's SummarySink.
+// the request: with SummaryWanted it is the proxy's SummarySink.
 //
 // The summary goes to the session that owns the tunnel it names, and only when
 // that tunnel is an http tunnel of the service: never to another session, and
-// never for a tcp tunnel. A summary that names no tunnel is for the service's
-// live tunnel.
+// never for a tcp tunnel. The proxy always names the tunnel it resolved for
+// the request; a summary without one is for nobody.
 func (s *Server) RequestSummary(serviceID string, sum proto.RequestSummary) {
-	if serviceID == "" {
+	if serviceID == "" || sum.TunnelID == "" {
 		return
 	}
-	var cs *ClientSession
-	if sum.TunnelID == "" {
-		tn, ok := s.LookupHTTPTunnelByServiceID(serviceID)
-		if !ok {
-			return
-		}
-		cs, sum.TunnelID = tn.sess, tn.ID
-	} else if owner, ok := s.reg.SessionByTunnelID(sum.TunnelID); ok {
-		cs = owner
-	}
-	if cs == nil || !cs.WantsRequestSummaries() {
+	cs, ok := s.reg.SessionByTunnelID(sum.TunnelID)
+	if !ok || !cs.WantsRequestSummaries() {
 		return
 	}
 	if tn := s.reg.Tunnel(cs, sum.TunnelID); tn == nil || !tn.IsHTTP || tn.ServiceID != serviceID {

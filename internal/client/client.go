@@ -427,9 +427,9 @@ func (c *Client) requestSummary(env proto.Envelope) {
 // counts are gone.
 func (c *Client) countConnection(tunnelID string, d int) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	tn := c.live[tunnelID]
 	if tn == nil {
-		c.mu.Unlock()
 		return
 	}
 	if tn.open += d; tn.open < 0 {
@@ -438,7 +438,10 @@ func (c *Client) countConnection(tunnelID string, d int) {
 	if d > 0 {
 		tn.total++
 	}
-	open, total := tn.open, tn.total
-	c.mu.Unlock()
-	c.events.counts(tunnelID, open, total)
+	// Handed over under the lock the numbers were made under: otherwise two
+	// connections that end at the same moment could deliver theirs the other
+	// way round, and the older numbers would be the last the observer hears.
+	// The notifier takes its own lock for a few instructions and never calls
+	// out while it holds it, and nothing takes that lock before this one.
+	c.events.counts(tunnelID, tn.open, tn.total)
 }

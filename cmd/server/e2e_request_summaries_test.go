@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,11 @@ import (
 // after the proxy options are.
 type lateSink struct{ srv atomic.Pointer[server.Server] }
 
+func (l *lateSink) SummaryWanted(tunnelID string) bool {
+	srv := l.srv.Load()
+	return srv != nil && srv.SummaryWanted(tunnelID)
+}
+
 func (l *lateSink) RequestSummary(serviceID string, s proto.RequestSummary) {
 	if srv := l.srv.Load(); srv != nil {
 		srv.RequestSummary(serviceID, s)
@@ -36,6 +42,8 @@ type requestObserver struct {
 	rmu      sync.Mutex
 	requests []string
 	at       []time.Time
+	open     int
+	total    int
 }
 
 func (o *requestObserver) Request(id string, at time.Time, method, path string, status int) {
@@ -43,6 +51,19 @@ func (o *requestObserver) Request(id string, at time.Time, method, path string, 
 	defer o.rmu.Unlock()
 	o.requests = append(o.requests, fmt.Sprintf("%s %s %s %d", id, method, path, status))
 	o.at = append(o.at, at)
+}
+
+// Counts implements client.CountObserver.
+func (o *requestObserver) Counts(_ string, open, total int) {
+	o.rmu.Lock()
+	o.open, o.total = open, total
+	o.rmu.Unlock()
+}
+
+func (o *requestObserver) counts() (open, total int) {
+	o.rmu.Lock()
+	defer o.rmu.Unlock()
+	return o.open, o.total
 }
 
 func (o *requestObserver) seen() []string {
@@ -174,5 +195,95 @@ func TestE2ERequestSummaries(t *testing.T) {
 		if at.Before(before) || at.After(time.Now().Add(2*time.Second)) {
 			t.Errorf("time of a request: %v", at)
 		}
+	}
+}
+
+// After a burst of requests through a real tunnel nothing of them is left:
+// the client has no visitor connection open, and neither side keeps a
+// goroutine per request. The local app here never closes an idle connection,
+// so whatever the relay left open would stay open.
+func TestE2ERequestsLeaveNothingOpen(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip e2e in -short")
+	}
+	s := bootE2EStack(t)
+	s.setUpstreamHandler(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "ok") })
+	tok, err := s.store.IssueClientToken(context.Background(), s.userID, "e2e-open")
+	must(t, err, "mint token")
+	obs := &requestObserver{}
+	c := client.New(client.Options{
+		Server: s.server.Addr(), Token: tok, Insecure: true, ServerName: "localhost",
+		Tunnels:  []client.TunnelSpec{{Name: "open-count", Type: "http", LocalAddr: s.upstreamAddr}},
+		Observer: obs, Logger: s.log,
+	})
+	ctx, cancel := context.WithCancel(s.ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); _ = c.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	var public string
+	deadline := time.Now().Add(e2eClientReady)
+	for public == "" && time.Now().Before(deadline) {
+		obs.mu.Lock()
+		if obs.reg != nil {
+			public = obs.reg.URL
+		}
+		obs.mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+	}
+	if public == "" {
+		t.Fatal("the client never registered")
+	}
+
+	hc := s.pathClient(t)
+	burst := func(n int) {
+		var wg sync.WaitGroup
+		var next atomic.Int64
+		for g := 0; g < 16; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for next.Add(1) <= int64(n) {
+					resp, err := hc.Get(public + "x")
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					if _ = readAllString(t, resp); resp.StatusCode != 200 {
+						t.Errorf("status %d", resp.StatusCode)
+					}
+				}
+			}()
+		}
+		wg.Wait()
+	}
+	settle := func(total int) (open, seen int) {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if open, seen = obs.counts(); open == 0 && seen == total {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return
+	}
+	burst(32) // the visitor's connections and everything lazy exist after this
+	if open, total := settle(32); open != 0 || total != 32 {
+		t.Fatalf("after 32 requests the client counts %d open, %d total", open, total)
+	}
+	before := runtime.NumGoroutine()
+	const n = 400
+	burst(n)
+	open, total := settle(32 + n)
+	if open != 0 || total != 32+n {
+		t.Fatalf("after %d more requests the client counts %d open, %d total; goroutines %d before, %d now", n, open, total, before, runtime.NumGoroutine())
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for runtime.NumGoroutine() > before+4 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	after := runtime.NumGoroutine()
+	t.Logf("%d requests through the tunnel: client counts %d open; goroutines %d before, %d after", n, open, before, after)
+	if after > before+4 {
+		t.Fatalf("%d goroutines before %d requests, %d after", before, n, after)
 	}
 }

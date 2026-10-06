@@ -678,3 +678,45 @@ func TestObserver_CountsOfVisitorConnections(t *testing.T) {
 		t.Fatalf("last event %q of %v", last, ev)
 	}
 }
+
+// Many visitor connections of one tunnel open and close at the same moment.
+// Each change tells the observer the counts; were two changes able to hand
+// their numbers over in another order than they were made in, the older
+// numbers would be the last the view hears, and it would show connections as
+// open that have ended. The last counts told are the true ones, every time.
+func TestClient_CountsArriveInTheOrderTheyWereMade(t *testing.T) {
+	const conns = 200
+	for round := 0; round < 40; round++ {
+		obs := &recObserver{}
+		c := New(Options{Server: "127.0.0.1:1", Observer: obs, Logger: slog.New(slog.DiscardHandler)})
+		stop := c.events.start()
+		c.mu.Lock()
+		c.live = map[string]*liveTunnel{"t1": {http: true}}
+		c.mu.Unlock()
+		var wg sync.WaitGroup
+		for i := 0; i < conns; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				c.countConnection("t1", 1)
+				c.countConnection("t1", -1)
+			}()
+		}
+		wg.Wait()
+		// Everything that was queued has been delivered.
+		if !waitTrue(func() bool {
+			c.events.mu.Lock()
+			defer c.events.mu.Unlock()
+			return len(c.events.pending) == 0 && len(c.events.latest) == 0
+		}, 3*time.Second) {
+			t.Fatal("the queue did not drain")
+		}
+		want := fmt.Sprintf("counts:t1:0:%d", conns)
+		if !waitTrue(func() bool { ev := obs.snapshot(); return len(ev) > 0 && ev[len(ev)-1] == want }, time.Second) {
+			ev := obs.snapshot()
+			stop()
+			t.Fatalf("round %d: the last counts told are %q, want %q", round, ev[len(ev)-1], want)
+		}
+		stop()
+	}
+}

@@ -44,6 +44,9 @@ func (k *summarySink) RequestSummary(serviceID string, s proto.RequestSummary) {
 	k.mu.Unlock()
 }
 
+// SummaryWanted: this sink wants them all.
+func (k *summarySink) SummaryWanted(string) bool { return true }
+
 func (k *summarySink) all() []sentSummary {
 	k.mu.Lock()
 	defer k.mu.Unlock()

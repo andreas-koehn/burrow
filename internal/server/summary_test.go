@@ -74,10 +74,14 @@ func TestSummary_GoesToTheClientThatAnnouncedAndOwnsTheTunnel(t *testing.T) {
 	if got := readRaw(t, asked.ctrl, proto.MsgRequestSummary); got != want {
 		t.Fatalf("summary\n got %s\nwant %s", got, want)
 	}
-	// The proxy may not know the tunnel; the service's live tunnel is it then.
-	s.RequestSummary("svc-web", summaryOf(""))
-	if got := readRaw(t, asked.ctrl, proto.MsgRequestSummary); got != want {
-		t.Fatalf("summary by service\n got %s\nwant %s", got, want)
+	// Whether a summary is wanted is asked per tunnel, before one is built.
+	for id, wanted := range map[string]bool{
+		web.TunnelID: true, api.TunnelID: true, tcp.TunnelID: true, // the session asked; a tcp tunnel never gets one all the same
+		legacy.TunnelID: false, "no-such-tunnel": false, "": false,
+	} {
+		if got := s.SummaryWanted(id); got != wanted {
+			t.Errorf("SummaryWanted(%q) = %v, want %v", id, got, wanted)
+		}
 	}
 
 	// None of these reaches anyone:
@@ -87,6 +91,7 @@ func TestSummary_GoesToTheClientThatAnnouncedAndOwnsTheTunnel(t *testing.T) {
 	s.RequestSummary("svc-web", summaryOf(tcp.TunnelID)) // a tcp tunnel under an http service's name
 	s.RequestSummary("svc-api", summaryOf(web.TunnelID)) // a tunnel that does not serve that service
 	s.RequestSummary("svc-web", summaryOf("no-such-tunnel"))
+	s.RequestSummary("svc-web", summaryOf("")) // no tunnel named: for nobody, not for the service's tunnel
 	s.RequestSummary("svc-nobody", summaryOf(""))
 	s.RequestSummary("", summaryOf(""))
 	// and one for the other client's service reaches that client only.
