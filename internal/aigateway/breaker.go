@@ -21,7 +21,12 @@ type Breaker struct {
 	minSamples int
 	failurePct int
 	states     map[string]*breakerState
-	trials     uint64 // the last trial handed out; a trial's token is never 0
+	// forgotten holds, per key Forget was called for, when: a tombstone.
+	// While a key has one and no entry, reports on it are dropped, so results
+	// of requests that were under way cannot bring the entry back. The next
+	// Allow for the key clears it.
+	forgotten map[string]time.Time
+	trials    uint64 // the last trial handed out; a trial's token is never 0
 }
 
 // BreakerState is what a breaker says about one key.
@@ -59,6 +64,7 @@ func NewBreaker() *Breaker {
 	return &Breaker{
 		now: time.Now, window: 60 * time.Second, coolDown: 30 * time.Second,
 		minSamples: 5, failurePct: 50, states: map[string]*breakerState{},
+		forgotten: map[string]time.Time{},
 	}
 }
 
@@ -73,6 +79,9 @@ func NewBreaker() *Breaker {
 func (b *Breaker) Allow(key string) (allowed bool, trial uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// A request is being admitted for key: whoever owns the slug now is live,
+	// and its results count from here on.
+	delete(b.forgotten, key)
 	s := b.states[key]
 	if s == nil {
 		return true, 0
@@ -126,13 +135,29 @@ func (b *Breaker) State(key string) BreakerState {
 // provider is deleted or renamed, so that the slug reads as closed and a
 // provider that takes it later starts clean.
 //
-// Requests that are under way may still report on key afterwards. That starts
-// a fresh entry, which enough late failures can even open; dropIdle removes
-// it again once nobody asks for the key.
+// Requests that are under way may still report on key afterwards. Forget
+// leaves a tombstone, and Report drops a report on a key that has one and no
+// entry, so such results cannot open the slug again. The next Allow for the
+// key clears the tombstone.
 func (b *Breaker) Forget(key string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	now := b.now()
 	delete(b.states, key)
+	// Here too, so that tombstones cannot pile up while no new key appears.
+	b.dropTombstones(now)
+	b.forgotten[key] = now
+}
+
+// dropTombstones removes the tombstones older than the window: a request that
+// was under way at Forget has reported or timed out long before. The caller
+// holds mu.
+func (b *Breaker) dropTombstones(now time.Time) {
+	for key, at := range b.forgotten {
+		if now.Sub(at) > b.window {
+			delete(b.forgotten, key)
+		}
+	}
 }
 
 // dropIdle removes the entries that say the same as no entry, or that nobody
@@ -147,9 +172,10 @@ func (b *Breaker) Forget(key string) {
 //     provider that takes the slug later start closed.
 //
 // An entry with a trial under way is always kept: the trial's report must
-// find it. dropIdle runs when a new key appears, so the map holds no more
+// find it. Expired tombstones go too. dropIdle runs when a new key appears, so the map holds no more
 // keys than were seen within one cool-down plus window. The caller holds mu.
 func (b *Breaker) dropIdle(now time.Time) {
+	b.dropTombstones(now)
 	oldest := now.UnixNano()/(int64(b.window)/breakerBuckets) - breakerBuckets
 	for key, s := range b.states {
 		if !s.trialAt.IsZero() {
@@ -199,6 +225,11 @@ func (b *Breaker) Report(key string, ok bool, trial uint64) {
 	now := b.now()
 	s := b.states[key]
 	if s == nil {
+		if at, forgotten := b.forgotten[key]; forgotten && now.Sub(at) <= b.window {
+			// A result of a request admitted before Forget: it says nothing
+			// about whoever takes the slug next.
+			return
+		}
 		b.dropIdle(now)
 		s = &breakerState{}
 		b.states[key] = s

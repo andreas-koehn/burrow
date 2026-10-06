@@ -295,7 +295,7 @@ func TestBreaker_AbandonedTrialIsGrantedAgain(t *testing.T) {
 // A deleted or renamed provider's state is dropped: the slug reads as closed
 // and a provider that takes the slug later starts clean.
 func TestBreaker_Forget(t *testing.T) {
-	b, now := newTestBreaker()
+	b, _ := newTestBreaker()
 	for i := 0; i < 5; i++ {
 		b.Report("gone", false, 0)
 	}
@@ -304,50 +304,110 @@ func TestBreaker_Forget(t *testing.T) {
 	}
 	b.Forget("gone")
 	b.Forget("never-seen")
-	if b.Open("gone") || b.State("gone") != BreakerClosed || !allowed(b, "gone") {
+	if b.Open("gone") || b.State("gone") != BreakerClosed {
 		t.Fatalf("forgotten key is still refused: state %s", b.State("gone"))
 	}
 	if len(b.states) != 0 {
 		t.Fatalf("states kept: %d", len(b.states))
 	}
 
-	// A request that was under way reports after the provider is gone. Its
-	// one sample opens nothing, and the entry it left goes once it is stale.
+	// A request that was under way reports after the provider is gone: dropped.
 	b.Report("gone", false, 0)
-	if b.Open("gone") {
-		t.Fatal("one late report opened the breaker")
+	if b.Open("gone") || len(b.states) != 0 {
+		t.Fatalf("a late report recreated the entry: %d states", len(b.states))
 	}
+}
+
+// A closed entry without a sample inside the window goes when a new key appears.
+func TestBreaker_IdleSweepDropsStaleClosed(t *testing.T) {
+	b, now := newTestBreaker()
+	b.Report("quiet", false, 0)
 	*now = now.Add(2 * time.Minute)
 	b.Report("other", true, 0)
-	if _, kept := b.states["gone"]; kept || len(b.states) != 1 {
-		t.Fatalf("stale entry of a forgotten key kept: %d states", len(b.states))
+	if _, kept := b.states["quiet"]; kept || len(b.states) != 1 {
+		t.Fatalf("stale closed entry kept: %d states", len(b.states))
 	}
 }
 
 // Late failures of requests that were under way when a provider was deleted
-// can open its slug again after Forget. Nobody asks for that slug any more, so
-// the entry goes once the cool-down and a window have passed, and a provider
-// that takes the slug later starts closed.
+// do not bring its entry back: no other key has to appear first, and a
+// provider that takes the slug starts closed and is judged on its own results.
 func TestBreaker_ForgetThenLateFailures(t *testing.T) {
-	b, now := newTestBreaker()
+	b, _ := newTestBreaker()
 	for i := 0; i < 5; i++ {
 		b.Report("gone", false, 0)
+	}
+	if !b.Open("gone") {
+		t.Fatal("breaker did not open: the test proves nothing")
 	}
 	b.Forget("gone")
 	for i := 0; i < 5; i++ {
 		b.Report("gone", false, 0)
 	}
-	if !b.Open("gone") {
-		t.Fatal("five late failures did not open the slug: the test proves nothing")
+	if b.Open("gone") || b.State("gone") != BreakerClosed {
+		t.Fatalf("late failures after Forget opened the slug again: state %s", b.State("gone"))
 	}
-	*now = now.Add(b.coolDown + b.window + time.Second)
-	b.Report("other", true, 0)
-	if _, kept := b.states["gone"]; kept {
-		t.Fatal("stale open entry of a forgotten key was kept")
+	if len(b.states) != 0 {
+		t.Fatalf("late reports recreated an entry: %d states", len(b.states))
 	}
-	ok, trial := b.Allow("gone")
-	if !ok || trial != 0 || b.State("gone") != BreakerClosed || b.Open("gone") {
-		t.Fatalf("a new provider under the slug does not start closed: allowed %v trial %d state %s", ok, trial, b.State("gone"))
+
+	// The slug is in use again: admitted as closed, without a trial token.
+	ok, token := b.Allow("gone")
+	if !ok || token != 0 {
+		t.Fatalf("new provider under the slug: allowed %v token %d, want true 0", ok, token)
+	}
+	if _, kept := b.forgotten["gone"]; kept {
+		t.Fatal("Allow did not clear the tombstone")
+	}
+	for i := 0; i < 4; i++ {
+		b.Report("gone", false, 0)
+	}
+	if b.Open("gone") {
+		t.Fatal("opened below the sample minimum")
+	}
+	b.Report("gone", false, 0)
+	if !b.Open("gone") || b.State("gone") != BreakerOpen {
+		t.Fatalf("five fresh failures did not open the new provider's breaker: state %s", b.State("gone"))
+	}
+}
+
+// A late report that carries the token of a trial granted before Forget is
+// dropped like any other.
+func TestBreaker_ForgetDropsLateTrialReport(t *testing.T) {
+	b, now := newTestBreaker()
+	token := trial(t, b, now, "p")
+	b.Forget("p")
+	b.Report("p", false, token)
+	if b.Open("p") || b.State("p") != BreakerClosed || len(b.states) != 0 {
+		t.Fatalf("a forgotten trial's report left state behind: %s, %d states", b.State("p"), len(b.states))
+	}
+}
+
+// Tombstones do not pile up: one older than the window goes when Forget runs
+// again and when a new key appears, and no longer swallows reports.
+func TestBreaker_TombstonesExpire(t *testing.T) {
+	b, now := newTestBreaker()
+	b.Forget("a")
+	b.Forget("b")
+	*now = now.Add(b.window + time.Second)
+	b.Forget("c")
+	if len(b.forgotten) != 1 {
+		t.Fatalf("Forget kept expired tombstones: %v", b.forgotten)
+	}
+	*now = now.Add(b.window + time.Second)
+	b.Report("new", true, 0)
+	if len(b.forgotten) != 0 {
+		t.Fatalf("the sweep kept an expired tombstone: %v", b.forgotten)
+	}
+
+	// An expired tombstone that was not swept yet no longer drops reports.
+	b.Forget("d")
+	*now = now.Add(b.window + time.Second)
+	for i := 0; i < 5; i++ {
+		b.Report("d", false, 0)
+	}
+	if !b.Open("d") {
+		t.Fatal("reports long after Forget were still dropped")
 	}
 }
 
@@ -408,6 +468,7 @@ func TestBreaker_ForgetConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 	b.Forget("p")
+	b.Report("p", false, 0)
 	if b.Open("p") || len(b.states) != 0 {
 		t.Fatalf("state left after Forget: %d", len(b.states))
 	}
