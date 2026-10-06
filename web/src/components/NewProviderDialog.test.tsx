@@ -4,10 +4,12 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
-import { addDirectProvider, db } from "@/mocks/db";
+import { addDirectProvider, db, removeProvider } from "@/mocks/db";
 import { NewProviderDialog } from "@/components/NewProviderDialog";
 
 function renderDialog() {
+  // The presets for z.ai create the slug "zai": the seeded provider of that name is not there yet.
+  removeProvider("zai");
   const onOpenChange = vi.fn();
   renderApp(<NewProviderDialog open onOpenChange={onOpenChange} />, "/gateway/providers");
   return { onOpenChange };

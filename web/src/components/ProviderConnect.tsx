@@ -1,17 +1,10 @@
 import { useId } from "react";
-import { Copy } from "lucide-react";
-import { toast } from "sonner";
+import { CopyButton, CopyableCode } from "@/components/CopyableCode";
 
 export interface ProviderConnectProps {
   baseUrl: string;
   /** A model this provider serves, used in the example. */
   exampleModel?: string;
-}
-
-function copy(text: string) {
-  void navigator.clipboard?.writeText(text);
-  // Shown by the toaster of the page this is used on.
-  toast.success("Copied.");
 }
 
 /**
@@ -40,27 +33,10 @@ export function ProviderConnect({ baseUrl, exampleModel }: ProviderConnectProps)
       </p>
       <div className="row row-center gap-2 service-url">
         <code className="mono service-url-path">{baseUrl}</code>
-        <button
-          type="button"
-          className="icon-btn"
-          aria-label={`Copy base URL ${baseUrl}`}
-          onClick={() => copy(baseUrl)}
-        >
-          <Copy size={13} aria-hidden="true" />
-        </button>
+        <CopyButton text={baseUrl} label={`Copy base URL ${baseUrl}`} />
       </div>
-      <div className="row gap-2">
-        <pre className="cmd-block wrap fill-rest"><code>{curl}</code></pre>
-        <button type="button" className="icon-btn" aria-label="Copy curl example" onClick={() => copy(curl)}>
-          <Copy size={13} aria-hidden="true" />
-        </button>
-      </div>
-      <div className="row gap-2">
-        <pre className="cmd-block wrap fill-rest"><code>{env}</code></pre>
-        <button type="button" className="icon-btn" aria-label="Copy environment variables" onClick={() => copy(env)}>
-          <Copy size={13} aria-hidden="true" />
-        </button>
-      </div>
+      <CopyableCode text={curl} label="Copy curl example" wrap />
+      <CopyableCode text={env} label="Copy environment variables" wrap />
     </section>
   );
 }

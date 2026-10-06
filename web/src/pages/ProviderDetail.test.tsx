@@ -61,7 +61,7 @@ describe("Provider detail", () => {
     expect(await screen.findByRole("heading", { name: /connect a client/i })).toBeInTheDocument();
     expect(screen.getByText("https://tunnels.example.com/ai/ollama/v1")).toBeInTheDocument();
     // The example uses a model this provider serves.
-    expect(screen.getByText(/"model": "llama3.1:8b"/)).toBeInTheDocument();
+    expect(await screen.findByText(/"model": "mistral"/)).toBeInTheDocument();
   });
 
   it("names the page after the provider and links back to the list", async () => {
@@ -140,7 +140,20 @@ describe("Provider detail", () => {
     expect(within(dialog).getByLabelText("Provider slug")).not.toHaveAttribute("aria-invalid");
   });
 
+  it("delete: a provider a model still targets is refused, and the dialog names the models", async () => {
+    mount();
+    await screen.findByRole("heading", { name: /connect a client/i });
+    await userEvent.click(screen.getByRole("button", { name: /more actions/i }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Delete provider" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete provider · ollama" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete provider" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("provider is used by model(s): burrow-simple");
+    expect(db.aiProviders.map((p) => p.slug)).toContain("ollama");
+  });
+
   it("lets an admin delete the provider after confirming, and returns to the list", async () => {
+    // No model targets the provider any more.
+    db.aiModels = db.aiModels.filter((m) => m.name !== "burrow-simple");
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mount();
     await screen.findByRole("heading", { name: /connect a client/i });
@@ -153,7 +166,7 @@ describe("Provider detail", () => {
     fetchSpy.mockClear();
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete provider" }));
     expect(await screen.findByText("PROVIDERS_PAGE")).toBeInTheDocument();
-    expect(db.aiProviders).toHaveLength(0);
+    expect(db.aiProviders.map((p) => p.slug)).not.toContain("ollama");
     // Nothing asks for the deleted provider again: no GET follows the DELETE.
     const calls = fetchSpy.mock.calls.map(([url, init]) =>
       `${(init as RequestInit | undefined)?.method ?? "GET"} ${String(url)}`);
@@ -180,7 +193,7 @@ describe("Provider detail", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(more).toHaveFocus());
     expect(fetchSpy.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "DELETE")).toBe(false);
-    expect(db.aiProviders).toHaveLength(1);
+    expect(db.aiProviders.map((p) => p.slug)).toEqual(["ollama", "zai", "zai-anthropic"]);
   });
 
   it("delete: a failure shows in the dialog and keeps it open", async () => {
@@ -221,10 +234,10 @@ describe("Provider detail", () => {
     expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
   });
 
-  it("renders the meta strip with alias, client link, and last-seen", async () => {
+  it("renders the meta strip with the model that targets the provider, client link, and last-seen", async () => {
     mount();
-    // Model alias resolved to upstream.
-    expect(await screen.findByText("fast → llama3.1:8b")).toBeInTheDocument();
+    // The first synthetic model that targets this provider, and where it sends requests.
+    expect(await screen.findByText("burrow-simple → mistral")).toBeInTheDocument();
     // Client link uses session_id.
     const clientLink = screen.getByRole("link", { name: /sess_4f7a9c0b2e81/i });
     expect(clientLink).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
@@ -350,15 +363,21 @@ describe("Provider detail", () => {
     expect(text).toMatch(/and zero bytes have streamed\. See routing docs\./);
   });
 
-  it("Backends table shows Provider chip and Priority column", async () => {
+  it("Backends table lists service, model and weight; model aliases are gone", async () => {
+    const asked: string[] = [];
+    server.use(http.all("/api/v1/models/aliases*", ({ request }) => {
+      asked.push(request.url);
+      return HttpResponse.json({ error: "not found" }, { status: 404 });
+    }));
     mount();
     await screen.findByLabelText("requests per minute, last hour");
     await openTab("Routing");
-    const backendsSection = await screen.findByRole("heading", { name: /backends/i });
-    expect(backendsSection).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /backends/i })).toBeInTheDocument();
     const table = await screen.findByRole("table", { name: /backends/i });
-    expect(within(table).getByRole("columnheader", { name: /provider/i })).toBeInTheDocument();
-    expect(within(table).getByRole("columnheader", { name: /priority/i })).toBeInTheDocument();
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Service", "Concrete model", "Weight"]);
+    // Synthetic models replaced aliases: no alias control, and the removed routes are never called.
+    expect(screen.queryByRole("button", { name: /add alias/i })).toBeNull();
+    expect(asked).toEqual([]);
   });
 
   it("shows a centred empty row when no backend is configured (C6)", async () => {
@@ -367,76 +386,7 @@ describe("Provider detail", () => {
     const table = await screen.findByRole("table", { name: /backends/i });
     const cell = within(table).getByText("No backends configured.").closest("td")!;
     expect(cell).toHaveClass("table-empty");
-    expect(cell.getAttribute("colspan")).toBe("5");
-    expect(within(cell).getByText("Add an alias to get started.")).toBeInTheDocument();
-  });
-
-  it("Priority input is editable and PUT /models/aliases/:alias fires on blur", async () => {
-    // Seed a backend row so the Backends table has a row to interact with.
-    const origBackends = db.aiConfigs["svc_ai001"]!.routing.backends;
-    db.aiConfigs["svc_ai001"]!.routing.backends = [
-      { service_id: "svc_ai001", weight: 1, concrete_model: "llama3.1:8b" },
-    ];
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
-    mount();
-    await screen.findByLabelText("requests per minute, last hour");
-    await openTab("Routing");
-    // The alias "fast" maps to svc_ai001 with priority 100.
-    const priorityInput = await screen.findByLabelText(/priority for fast/i);
-    expect(priorityInput).not.toBeDisabled();
-    await userEvent.clear(priorityInput);
-    await userEvent.type(priorityInput, "50");
-    await userEvent.tab(); // blur triggers onBlur PUT
-    await waitFor(() => {
-      const putCalls = fetchSpy.mock.calls.filter(([url, init]) =>
-        String(url).endsWith("/api/v1/models/aliases/fast")
-        && (init as RequestInit | undefined)?.method === "PUT",
-      );
-      expect(putCalls.length).toBeGreaterThanOrEqual(1);
-      const b = JSON.parse(String((putCalls.at(-1)![1] as RequestInit).body));
-      expect(b.priority).toBe(50);
-    });
-    // Restore db state for other tests.
-    db.aiConfigs["svc_ai001"]!.routing.backends = origBackends;
-  });
-
-  it("Add alias button opens dialog and POST /models/aliases creates the alias", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
-    mount();
-    await screen.findByLabelText("requests per minute, last hour");
-    await openTab("Routing");
-    // Click "Add alias" button
-    await userEvent.click(await screen.findByRole("button", { name: /add alias/i }));
-    // Dialog should open
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toBeInTheDocument();
-    // Fill in alias field
-    const aliasInput = within(dialog).getByLabelText(/alias/i);
-    await userEvent.clear(aliasInput);
-    await userEvent.type(aliasInput, "smart");
-    // Fill in concrete_model
-    const modelInput = within(dialog).getByLabelText(/concrete model/i);
-    await userEvent.clear(modelInput);
-    await userEvent.type(modelInput, "llama3.1:70b");
-    // Set priority to 90
-    const priorityInput = within(dialog).getByLabelText(/priority/i);
-    await userEvent.clear(priorityInput);
-    await userEvent.type(priorityInput, "90");
-    // Submit
-    await userEvent.click(within(dialog).getByRole("button", { name: /create alias/i }));
-    await waitFor(() => {
-      const postCalls = fetchSpy.mock.calls.filter(([url, init]) =>
-        String(url).endsWith("/api/v1/models/aliases")
-        && (init as RequestInit | undefined)?.method === "POST",
-      );
-      expect(postCalls.length).toBeGreaterThanOrEqual(1);
-      const b = JSON.parse(String((postCalls.at(-1)![1] as RequestInit).body));
-      expect(b.alias).toBe("smart");
-      expect(b.concrete_model).toBe("llama3.1:70b");
-      expect(b.priority).toBe(90);
-      expect(b.service_id).toBe("svc_ai001");
-    });
-    expect((await screen.findAllByText(/alias created/i)).length).toBeGreaterThan(0);
+    expect(cell.getAttribute("colspan")).toBe("3");
   });
 
   it("a tunnel provider has the tabs Connect, API keys, Models and Routing, and no Upstream", async () => {
@@ -501,7 +451,7 @@ describe("Provider detail", () => {
       expect(screen.queryByRole("link", { name: /^sess_/ })).toBeNull();
       // No link to the hidden backing service.
       expect(document.querySelector('a[href^="/services"]')).toBeNull();
-      // Without a model alias there is no alias line, not a lone arrow.
+      // Without a model that targets it there is no such line, not a lone arrow.
       expect(document.querySelector(".meta-strip")).toBeNull();
     });
 
@@ -737,7 +687,7 @@ describe("Provider detail", () => {
       expect(within(dialog).getByRole("button", { name: "Save" })).toBeEnabled();
     });
 
-    it("Routing tab: the alias dialog presumes no local backend and the backing service is not shown by id", async () => {
+    it("Routing tab: the backing service is not shown by id", async () => {
       const p = addDirectProvider("openrouter", { name: "OpenRouter", credential_slot: "OPENROUTER" });
       db.aiConfigs[p.service_id] = {
         ...db.aiConfigs["svc_ai001"]!,
@@ -748,27 +698,6 @@ describe("Provider detail", () => {
       const table = await screen.findByRole("table", { name: /backends/i });
       expect(within(table).getByText("This provider")).toBeInTheDocument();
       expect(within(table).queryByText("prov-openrouter")).toBeNull();
-      await userEvent.click(screen.getByRole("button", { name: /add alias/i }));
-      const dialog = await screen.findByRole("dialog", { name: "Add alias" });
-      // Nothing is preselected, and the service is this provider, by name.
-      expect(within(dialog).getByLabelText("Provider")).toHaveTextContent("Select a backend type…");
-      expect(within(dialog).getByLabelText("Provider")).not.toHaveTextContent("Ollama");
-      expect(within(dialog).getByLabelText("Service")).toHaveTextContent("OpenRouter");
-      await userEvent.type(within(dialog).getByLabelText(/^alias$/i), "smart");
-      await userEvent.type(within(dialog).getByLabelText(/concrete model/i), "acme/large-1");
-      // The disabled button says what it is waiting for.
-      const create = within(dialog).getByRole("button", { name: /create alias/i });
-      expect(create).toBeDisabled();
-      expect(create).toHaveAccessibleDescription("Choose a backend type to create the alias.");
-      await userEvent.click(within(dialog).getByLabelText("Provider"));
-      await userEvent.click(await screen.findByRole("option", { name: "OpenAI-compat" }));
-      expect(create).toBeEnabled();
-      expect(create).not.toHaveAccessibleDescription();
-      expect(within(dialog).queryByText("Choose a backend type to create the alias.")).toBeNull();
-      await userEvent.click(within(dialog).getByRole("button", { name: /create alias/i }));
-      await waitFor(() => expect(db.modelAliases.at(-1)).toMatchObject({
-        alias: "smart", service_id: "prov-openrouter", provider: "openai-compat",
-      }));
     });
 
     it("delete says that the API keys and the model list go with it", async () => {

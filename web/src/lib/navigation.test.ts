@@ -23,11 +23,13 @@ describe("navigation description", () => {
   it("AI Gateway workspace", () => {
     expect(labels("gateway")).toEqual([
       ["", ["Overview"]],
-      ["Route", ["Providers"]],
+      ["Route", ["Providers", "Models", "Gateway keys"]],
       ["Control", ["Guardrails", "Prompt cache"]],
       ["Observe", ["Requests", "Cost & budgets"]],
     ]);
     expect(NAVIGATIONS.gateway.namespace).toBe("/ai/…");
+    const route = NAVIGATIONS.gateway.groups.find((g) => g.title === "Route")!;
+    expect(route.entries.map((e) => e.to)).toEqual(["/gateway/providers", "/gateway/models", "/gateway/keys"]);
   });
   it("Settings navigation for an admin", () => {
     expect(labels("settings")).toEqual([
@@ -92,6 +94,8 @@ describe("breadcrumbFor", () => {
     expect(breadcrumbFor("/services", admin)).toEqual([{ label: "Services", to: "/" }, { label: "Services" }]);
     expect(breadcrumbFor("/", admin)).toEqual([{ label: "Services", to: "/" }, { label: "Overview" }]);
     expect(breadcrumbFor("/settings/email", admin)).toEqual([{ label: "Settings", to: "/settings" }, { label: "Email" }]);
+    expect(breadcrumbFor("/gateway/models", admin)).toEqual([{ label: "AI Gateway", to: "/gateway" }, { label: "Models" }]);
+    expect(breadcrumbFor("/gateway/keys", admin)).toEqual([{ label: "AI Gateway", to: "/gateway" }, { label: "Gateway keys" }]);
   });
   it("names a page under an entry that is not an object", () => {
     expect(breadcrumbFor("/clients/connect", admin)).toEqual([
@@ -128,6 +132,17 @@ describe("reachability", () => {
   it("reads the route list from App.tsx", () => {
     expect(routes).toContain("/gateway/requests/:serviceId/:requestId?");
     expect(routes.length).toBeGreaterThan(25);
+  });
+
+  it("routes the Models and Gateway keys pages", () => {
+    expect(routes).toContain("/gateway/models");
+    expect(routes).toContain("/gateway/keys");
+  });
+
+  // /openai/ and /anthropic/ are the gateway's endpoints, /ai/ and /svc/ the relay's other
+  // doors: the relay answers them itself, so a dashboard route there could never be opened.
+  it("no dashboard route starts with a prefix of the relay's data plane", () => {
+    for (const r of routes) expect(r, r).not.toMatch(/^\/(ai|svc|openai|anthropic|api)(\/|$)/);
   });
 
   it("every navigation entry has a route", () => {

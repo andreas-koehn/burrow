@@ -1,8 +1,8 @@
 import { http, HttpResponse } from "msw";
+import { allowEntryError, modelNameError } from "@/lib/modelNames";
 import { db, type MockDb, type CacheSettingsPayload, type AiProviderRow } from "@/mocks/db";
-import type { AccessMode, AiProvider, ClientLoginRequest, CostSummary, ModelAliasV5, Provider, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
+import type { AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, ClientLoginRequest, CostSummary, Dialect, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
 
-const VALID_PROVIDERS = new Set<string>(["ollama", "vllm", "openai-compat", "openai", "anthropic", "other"]);
 
 const json = (body: unknown, status = 200) => HttpResponse.json(body as object, { status });
 const err = (status: number, message: string) => HttpResponse.json({ error: message }, { status });
@@ -217,7 +217,9 @@ function providerVisible(p: AiProviderRow): boolean {
 
 function providerView(p: AiProviderRow): AiProvider {
   const meta = db.aiMeta[p.service_id];
-  const alias = db.modelAliases.find((a) => a.service_id === p.service_id);
+  // The first synthetic model that targets the provider, as the server reports it.
+  const model = db.aiModels.find((m) => m.targets.some((t) => t.provider === p.slug));
+  const target = model?.targets.find((t) => t.provider === p.slug);
   const direct = p.kind === "direct";
   const present = direct && credentialPresent(p.credential_slot);
   return {
@@ -241,8 +243,8 @@ function providerView(p: AiProviderRow): AiProvider {
         }
       : {}),
     base_url: `https://tunnels.example.com/ai/${p.slug}/v1`,
-    model_alias: alias?.alias ?? "",
-    concrete_model: alias?.concrete_model ?? "",
+    model_alias: model?.name ?? "",
+    concrete_model: target?.model ?? "",
     backend_type: meta?.backend_type ?? "other",
     api_key_count: (db.serviceApiKeys[p.service_id] ?? []).length,
     requests_24h: meta?.requests_24h ?? 0,
@@ -251,6 +253,52 @@ function providerView(p: AiProviderRow): AiProvider {
     // A direct provider has no tunnel: it is usable when its slot is set.
     status: direct ? (present ? "Connected" : "Offline") : meta?.status ?? "Offline",
     client_session_id: meta?.client_session_id ?? "",
+  };
+}
+
+// ---- synthetic models (internal/store/ai_models.go) ----
+interface ModelBody {
+  name?: unknown;
+  description?: unknown;
+  enabled?: unknown;
+  fallback_on_rate_limit?: unknown;
+  attempt_timeout_s?: unknown;
+  total_timeout_s?: unknown;
+  targets?: unknown;
+}
+const MODEL_FIELDS = ["name", "description", "enabled", "fallback_on_rate_limit", "attempt_timeout_s", "total_timeout_s", "targets"];
+
+// The stored model for a request body, or the reason the server refuses it.
+function modelFromBody(b: ModelBody | null): Omit<AiModel, "created_at" | "updated_at"> | string {
+  if (!b || typeof b !== "object") return "invalid JSON body";
+  // Strict decoding: "dialects" is derived and may not be sent.
+  const extra = Object.keys(b).find((k) => !MODEL_FIELDS.includes(k));
+  if (extra) return `unknown field "${extra}"`;
+  const name = typeof b.name === "string" ? b.name : "";
+  if (name === "") return "name is required";
+  const nameErr = modelNameError(name);
+  if (nameErr) return nameErr;
+  const raw = Array.isArray(b.targets) ? (b.targets as Partial<AiModelTarget>[]) : [];
+  if (raw.length === 0) return "a model needs at least one target";
+  const targets: AiModelTarget[] = [];
+  for (const t of raw) {
+    const p = db.aiProviders.find((x) => x.slug === t.provider);
+    if (!p) return `unknown provider ${String(t.provider)}`;
+    const dialect: Dialect = t.dialect ?? p.api_format;
+    if (p.api_format !== dialect) return `provider ${p.slug} speaks ${p.api_format}, not ${dialect}`;
+    if (!modelIdOk(t.model)) return MSG_MODEL_ID;
+    if (targets.some((x) => x.dialect === dialect && x.provider === p.slug && x.model === t.model)) return "a target is listed twice";
+    targets.push({ dialect, provider: p.slug, model: t.model });
+  }
+  return {
+    name,
+    description: typeof b.description === "string" ? b.description : "",
+    enabled: b.enabled !== false,
+    fallback_on_rate_limit: b.fallback_on_rate_limit === true,
+    attempt_timeout_s: typeof b.attempt_timeout_s === "number" ? b.attempt_timeout_s : 60,
+    total_timeout_s: typeof b.total_timeout_s === "number" ? b.total_timeout_s : 120,
+    targets,
+    dialects: [...new Set(targets.map((t) => t.dialect))].sort(),
   };
 }
 
@@ -636,7 +684,7 @@ export const handlers = [
 
   // ---- AI providers ----
   // Identity comes from db.aiProviders; the mock joins seeded aiMeta +
-  // modelAliases + serviceApiKeys of the backing service.
+  // aiModels + serviceApiKeys of the backing service.
   http.get("/api/v1/ai/providers", ({ request }) => {
     const g = gate(request); if (g) return g;
     return json(db.aiProviders.filter(providerVisible).map(providerView));
@@ -818,6 +866,8 @@ export const handlers = [
       db.aiProviderModels[slug] = db.aiProviderModels[p.slug]!;
       delete db.aiProviderModels[p.slug];
     }
+    // Model targets follow a renamed provider.
+    for (const m of db.aiModels) for (const t of m.targets) if (t.provider === p.slug) t.provider = slug;
     p.slug = slug;
     p.name = name;
     if (b?.supports_responses !== undefined) p.supports_responses = b.supports_responses;
@@ -827,6 +877,9 @@ export const handlers = [
     const g = gate(request, { admin: true }); if (g) return g;
     const i = db.aiProviders.findIndex((x) => x.slug === params.slug);
     if (i < 0) return err(404, "provider not found");
+    // A provider a synthetic model targets cannot go: the models are named.
+    const users = db.aiModels.filter((m) => m.targets.some((t) => t.provider === params.slug)).map((m) => m.name);
+    if (users.length > 0) return err(409, `provider is used by model(s): ${users.join(", ")}`);
     const [gone] = db.aiProviders.splice(i, 1);
     delete db.aiProviderModels[gone!.slug];
     // A direct provider takes its backing service, API keys and AI
@@ -1338,48 +1391,83 @@ export const handlers = [
     return json({ restore_id: `rs_${Math.random().toString(36).slice(2, 8)}`, started_at: new Date().toISOString() }, 202);
   }),
 
-  // ---- v0.5.0 model aliases (spec Part C) ----
-  http.get("/api/v1/models/aliases", ({ request }) => {
+  // ---- AI gateway: endpoints, synthetic models, gateway keys ----
+  http.get("/api/v1/ai/gateway", ({ request }) => gate(request) ?? json({
+    endpoints: [
+      { dialect: "openai", base_url: "https://tunnels.example.com/openai/v1" },
+      { dialect: "anthropic", base_url: "https://tunnels.example.com/anthropic" },
+    ],
+  })),
+  http.get("/api/v1/ai/models", ({ request }) => gate(request) ?? json(db.aiModels)),
+  http.post("/api/v1/ai/models", async ({ request }) => {
     const g = gate(request, { admin: true }); if (g) return g;
-    return json(db.modelAliases);
+    const next = modelFromBody(await body<ModelBody>(request));
+    if (typeof next === "string") return err(400, next);
+    if (db.aiModels.some((m) => m.name === next.name)) return err(409, "model name already in use");
+    const now = new Date().toISOString();
+    const row: AiModel = { ...next, created_at: now, updated_at: now };
+    db.aiModels.push(row);
+    return json(row, 201);
   }),
-  http.post("/api/v1/models/aliases", async ({ request }) => {
+  http.get("/api/v1/ai/models/:name", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const m = db.aiModels.find((x) => x.name === params.name);
+    return m ? json(m) : err(404, "model not found");
+  }),
+  http.put("/api/v1/ai/models/:name", async ({ request, params }) => {
     const g = gate(request, { admin: true }); if (g) return g;
-    const b = await body<{
-      alias?: string;
-      concrete_model?: string;
-      service_id?: string;
-      provider?: string;
-      priority?: number;
-    }>(request);
-    if (!b?.alias) return err(400, "alias is required");
-    if (!b?.concrete_model) return err(400, "concrete_model is required");
-    if (!b?.service_id) return err(400, "service_id is required");
-    const svc = db.services.find((s) => s.id === b.service_id);
-    if (!svc) return err(400, "service_id does not exist");
-    if (b.provider && !VALID_PROVIDERS.has(b.provider))
-      return err(400, "provider must be one of: ollama, vllm, openai-compat, openai, anthropic, other");
-    const alias: ModelAliasV5 = {
-      alias: b.alias,
-      concrete_model: b.concrete_model,
-      service_id: b.service_id,
-      provider: (b.provider as Provider) ?? "other",
-      priority: b.priority ?? 100,
+    const i = db.aiModels.findIndex((x) => x.name === params.name);
+    if (i < 0) return err(404, "model not found");
+    const next = modelFromBody(await body<ModelBody>(request));
+    if (typeof next === "string") return err(400, next);
+    if (db.aiModels.some((m, at) => at !== i && m.name === next.name)) return err(409, "model name already in use");
+    const row: AiModel = { ...next, created_at: db.aiModels[i]!.created_at, updated_at: new Date().toISOString() };
+    db.aiModels[i] = row;
+    return json(row);
+  }),
+  http.delete("/api/v1/ai/models/:name", ({ request, params }) => {
+    const g = gate(request, { admin: true }); if (g) return g;
+    const i = db.aiModels.findIndex((x) => x.name === params.name);
+    if (i < 0) return err(404, "model not found");
+    db.aiModels.splice(i, 1);
+    return noContent();
+  }),
+  // A caller sees their own keys; an admin sees all. Revoked keys stay listed.
+  http.get("/api/v1/ai/keys", ({ request }) =>
+    gate(request) ?? json(db.aiGatewayKeys.filter((k) => db.me.role === "admin" || k.user_id === db.me.id))),
+  http.post("/api/v1/ai/keys", async ({ request }) => {
+    const g = gate(request); if (g) return g;
+    const b = await body<{ name?: unknown; allowed_models?: unknown }>(request);
+    if (!b || typeof b !== "object") return err(400, "invalid JSON body");
+    const extra = Object.keys(b).find((k) => k !== "name" && k !== "allowed_models");
+    if (extra) return err(400, `unknown field "${extra}"`);
+    const name = typeof b.name === "string" ? b.name.trim() : "";
+    if (name === "" || name.length > 120 || hasControl(name)) return err(400, "name must be 1–120 characters without control characters");
+    const allowed = b.allowed_models ?? [];
+    if (!Array.isArray(allowed) || allowed.some((e) => typeof e !== "string")) return err(400, "allowed_models must be a list of strings");
+    if (allowed.length > 64) return err(400, "allowed_models has more than 64 entries");
+    const bad = (allowed as string[]).find((e) => allowEntryError(e) !== null);
+    if (bad !== undefined) return err(400, "allowed_models has a malformed entry");
+    const row: AiGatewayKey = {
+      id: `gk_${Math.random().toString(36).slice(2, 10)}`,
+      name,
+      key_prefix: "bgw_xxxx",
+      user_id: db.me.id,
+      allowed_models: allowed as string[],
+      last_used: null,
       created_at: new Date().toISOString(),
+      revoked_at: null,
     };
-    db.modelAliases.push(alias);
-    return json(alias, 201);
+    db.aiGatewayKeys.push(row);
+    // The plaintext leaves the server this once and must not be stored on the way.
+    return HttpResponse.json({ ...row, key: "bgw_" + "x".repeat(43) }, { status: 201, headers: { "Cache-Control": "no-store" } });
   }),
-  http.put("/api/v1/models/aliases/:alias", async ({ request, params }) => {
-    const g = gate(request, { admin: true }); if (g) return g;
-    const entries = db.modelAliases.filter((a) => a.alias === params.alias);
-    if (entries.length === 0) return err(404, "alias not found");
-    const b = await body<{ provider?: string; priority?: number }>(request);
-    if (!b) return err(400, "invalid body");
-    for (const entry of entries) {
-      if (b.provider != null && VALID_PROVIDERS.has(b.provider)) entry.provider = b.provider as Provider;
-      if (b.priority != null) entry.priority = b.priority;
-    }
+  http.delete("/api/v1/ai/keys/:id", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const k = db.aiGatewayKeys.find((x) => x.id === params.id);
+    // Another user's key answers like a missing one.
+    if (!k || (db.me.role !== "admin" && k.user_id !== db.me.id)) return err(404, "key not found");
+    k.revoked_at ??= new Date().toISOString();
     return noContent();
   }),
 

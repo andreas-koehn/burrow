@@ -464,12 +464,44 @@ export interface BackupRow {
   path: string;
 }
 
-// Model aliases (spec Part C).
-export interface ModelAlias {
-  alias: string;
-  concrete_model: string;
-  service_id: string;
+// Synthetic models and gateway keys (GET/POST/PUT/DELETE /ai/models, /ai/keys; GET /ai/gateway).
+export type Dialect = "openai" | "anthropic";
+export interface AiModelTarget {
+  dialect: Dialect;
+  provider: string;
+  model: string;
+}
+export interface AiModel {
+  name: string;
+  description: string;
+  enabled: boolean;
+  fallback_on_rate_limit: boolean;
+  attempt_timeout_s: number;
+  total_timeout_s: number;
+  targets: AiModelTarget[];
+  /** The formats the model is served in, sorted; derived from the targets. */
+  dialects: Dialect[];
   created_at: string;
+  updated_at: string;
+}
+export interface AiGatewayKey {
+  id: string;
+  name: string;
+  key_prefix: string;
+  user_id: string;
+  /** Empty: every model. Else synthetic names, "<provider>/<model>" or "<provider>/*". */
+  allowed_models: string[];
+  last_used: string | null;
+  created_at: string;
+  revoked_at: string | null;
+}
+/** POST /ai/keys: the stored key plus its plaintext, returned this once. */
+export interface CreatedAiGatewayKey extends AiGatewayKey {
+  key: string;
+}
+export interface GatewayInfo {
+  /** base_url is "" when the relay has no auth domain. */
+  endpoints: { dialect: Dialect; base_url: string }[];
 }
 
 // Provisioning (§4.28; pulled forward from v0.3.1).
@@ -541,16 +573,6 @@ export interface UpstreamCredentialBinding {
   header_name: string;
   header_format: string;
   slot_present: boolean;
-}
-
-// ModelAliasV5 extends ModelAlias with provider + priority.
-export interface ModelAliasV5 {
-  alias: string;
-  concrete_model: string;
-  service_id: string;
-  created_at: string;
-  provider: Provider;
-  priority: number;
 }
 
 // RoutingPolicyV5 adds "multi_provider" to the strategy union.

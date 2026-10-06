@@ -42,12 +42,12 @@ describe("Providers page", () => {
     );
   });
 
-  it("renders one row per provider with name, mono alias, backend, key count, requests, cache, latency, status", async () => {
+  it("renders one row per provider with name, mono model line, backend, key count, requests, cache, latency, status", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /providers/i });
-    // Anchor by the unique mono alias text (the name "ollama" also appears in
+    // Anchor by the unique mono model line (the name "ollama" also appears in
     // the backend badge, so it isn't a safe anchor on its own).
-    const alias = within(table).getByText("fast → llama3.1:8b");
+    const alias = within(table).getByText("burrow-simple → mistral");
     expect(alias.className).toContain("mono");
     const ollama = alias.closest("tr")!;
     // Name cell value.
@@ -68,7 +68,7 @@ describe("Providers page", () => {
   it("⋯ menu offers Inspect / Keys / Access settings / Cost", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /providers/i });
-    const alias = within(table).getByText("fast → llama3.1:8b");
+    const alias = within(table).getByText("burrow-simple → mistral");
     const ollama = alias.closest("tr")!;
     const more = within(ollama).getByRole("button", { name: /more actions/i });
     await userEvent.click(more);

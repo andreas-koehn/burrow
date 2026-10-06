@@ -55,7 +55,7 @@ describe("Sidebar", () => {
 
   it("AI Gateway workspace: its entries, Providers current on a provider page", () => {
     mount("/gateway/providers/zai");
-    expect(entries("AI Gateway")).toEqual(["Overview", "Providers", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
+    expect(entries("AI Gateway")).toEqual(["Overview", "Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
     expect(screen.getByRole("link", { name: "Providers" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "Requests" })).toHaveAttribute("href", "/gateway/requests");
     expect(screen.getByRole("button", { name: "Workspace: AI Gateway" })).toBeInTheDocument();

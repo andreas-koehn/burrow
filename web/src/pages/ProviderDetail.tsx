@@ -5,7 +5,7 @@ import { MoreHorizontal } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Dialog, DropdownMenu, ErrorNotice, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, PageHeader, Select, SkeletonRows, Switch, TableEmptyRow, Tabs } from "@/components/ds";
+import { Button, Dialog, DropdownMenu, ErrorNotice, FormField, Input, MetricStrip, MetricTile, PageHeader, Select, SkeletonRows, Switch, TableEmptyRow, Tabs } from "@/components/ds";
 import { ProviderConnect } from "@/components/ProviderConnect";
 import { RenameProviderDialog } from "@/components/RenameProviderDialog";
 import { ApiKeysPanel } from "@/components/ApiKeysPanel";
@@ -14,7 +14,7 @@ import { ProviderResponsesSetting, ProviderUpstreamPanel } from "@/components/Pr
 import { useAuth } from "@/auth/useAuth";
 import { providerBaseUrl } from "@/lib/serviceUrl";
 import type {
-  AiProvider, AiProviderModel, ModelAliasV5, Provider, Service, ServiceAIConfig,
+  AiProvider, AiProviderModel, Service, ServiceAIConfig,
 } from "@/lib/contract";
 import { withAIConfigDefaults } from "@/lib/aiConfig";
 
@@ -67,25 +67,6 @@ const STRATEGY_OPTIONS = [
   { value: "sticky", label: "Sticky session" },
   { value: "multi_provider", label: "Multi-provider (cross-backend)" },
 ];
-
-const PROVIDER_OPTIONS: { value: Provider; label: string }[] = [
-  { value: "ollama", label: "Ollama" },
-  { value: "vllm", label: "vLLM" },
-  { value: "openai-compat", label: "OpenAI-compat" },
-  { value: "openai", label: "OpenAI" },
-  { value: "anthropic", label: "Anthropic" },
-  { value: "other", label: "Other" },
-];
-
-interface AliasFormState {
-  alias: string;
-  concrete_model: string;
-  service_id: string;
-  /** "" until chosen: a direct provider has no local backend to presume. */
-  provider: Provider | "";
-  priority: number;
-}
-
 
 const BACK = { to: "/gateway/providers", label: "Providers" } as const;
 const SUBTITLE = "Connection details, traffic, API keys, models and routing for this provider.";
@@ -148,16 +129,6 @@ export default function ProviderDetail() {
     retry: false,
     enabled: Boolean(slug),
   });
-  const aliases = useQuery({
-    queryKey: ["models", "aliases"],
-    queryFn: () => apiFetch<ModelAliasV5[]>("/models/aliases"),
-    retry: false,
-  });
-  const services = useQuery({
-    queryKey: ["services"],
-    queryFn: () => apiFetch<Service[]>("/services"),
-    retry: false,
-  });
   const recent = useQuery({
     queryKey: ["inspector", id],
     queryFn: () => apiFetch<InspectorRow[]>(`/services/${id}/inspector/requests?limit=10`),
@@ -170,16 +141,6 @@ export default function ProviderDetail() {
   useEffect(() => {
     if (cfg.data && !draft) setDraft(cfg.data);
   }, [cfg.data, draft]);
-
-  // Add alias dialog state
-  const [aliasDialogOpen, setAliasDialogOpen] = useState(false);
-  const [aliasForm, setAliasForm] = useState<AliasFormState>({
-    alias: "",
-    concrete_model: "",
-    service_id: id,
-    provider: "ollama",
-    priority: 100,
-  });
 
   const save = useMutation({
     mutationFn: (next: ServiceAIConfig) =>
@@ -223,47 +184,12 @@ export default function ProviderDetail() {
     },
   });
 
-  const createAlias = useMutation({
-    mutationFn: (data: AliasFormState) =>
-      apiFetch<ModelAliasV5>("/models/aliases", {
-        method: "POST",
-        body: JSON.stringify(data),
-      }),
-    onSuccess: () => {
-      toast.success("Alias created.");
-      qc.invalidateQueries({ queryKey: ["models", "aliases"] });
-      setAliasDialogOpen(false);
-      setAliasForm({ alias: "", concrete_model: "", service_id: id, provider: direct ? "" : "ollama", priority: 100 });
-    },
-    onError: (e: unknown) => {
-      toast.error(e instanceof ApiError ? e.message : "Couldn't create alias.");
-    },
-  });
-
-  const updatePriority = useMutation({
-    mutationFn: ({ alias, priority }: { alias: string; priority: number }) =>
-      apiFetch<void>(`/models/aliases/${alias}`, {
-        method: "PUT",
-        body: JSON.stringify({ priority }),
-      }),
-    onSuccess: () => {
-      toast.success("Priority updated.");
-      qc.invalidateQueries({ queryKey: ["models", "aliases"] });
-    },
-    onError: (e: unknown) => {
-      toast.error(e instanceof ApiError ? e.message : "Couldn't update priority.");
-    },
-  });
-
   const aiRow = provider.data;
-  const alias = (aliases.data ?? []).find((a) => a.service_id === id);
-  const resolvedAlias =
-    alias && draft?.routing.model_alias
-      ? `${draft.routing.model_alias} → ${alias.concrete_model}`
-      // A provider without an alias has no alias line; " → " alone says nothing.
-      : aiRow && (aiRow.model_alias || aiRow.concrete_model)
-        ? `${aiRow.model_alias} → ${aiRow.concrete_model}`
-        : null;
+  // The first model that targets this provider, as the relay reports it. A
+  // provider no model targets has no such line; " → " alone says nothing.
+  const resolvedAlias = aiRow && (aiRow.model_alias || aiRow.concrete_model)
+    ? `${aiRow.model_alias} → ${aiRow.concrete_model}`
+    : null;
 
   if (provider.error || svc.error || cfg.error || metrics.error) {
     const e = provider.error ?? svc.error ?? cfg.error ?? metrics.error;
@@ -322,18 +248,6 @@ export default function ProviderDetail() {
   };
 
   const sticky = routing.strategy === "sticky";
-
-  // Look up provider chip for a backend row
-  function getProviderForBackend(service_id: string): string {
-    const match = (aliases.data ?? []).find((a) => a.service_id === service_id);
-    return match?.provider ?? "—";
-  }
-
-  // Service options for the "Add alias" dialog
-  // A direct provider's backing service is not in the list of services.
-  const serviceOptions = direct
-    ? [{ value: id, label: provider.data.name }]
-    : (services.data ?? []).map((s) => ({ value: s.id, label: s.name }));
 
   return (
     <div className="ai-endpoint-detail-page">
@@ -547,19 +461,7 @@ export default function ProviderDetail() {
               </section>
 
               <section aria-labelledby={`${headingId}-backends`} className="card">
-                <div className="panel-head">
-                  <h2 id={`${headingId}-backends`}>Backends</h2>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={() => {
-                      setAliasForm({ alias: "", concrete_model: "", service_id: id, provider: direct ? "" : "ollama", priority: 100 });
-                      setAliasDialogOpen(true);
-                    }}
-                  >
-                    Add alias
-                  </Button>
-                </div>
+                <h2 id={`${headingId}-backends`}>Backends</h2>
                 <div className="table-wrap">
                   <table className="data" aria-label="Backends">
                     <thead>
@@ -567,8 +469,6 @@ export default function ProviderDetail() {
                         <th>Service</th>
                         <th>Concrete model</th>
                         <th>Weight</th>
-                        <th>Provider</th>
-                        <th>Priority</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -580,36 +480,10 @@ export default function ProviderDetail() {
                             : <td className="mono">{b.service_id}</td>}
                           <td className="mono">{b.concrete_model}</td>
                           <td className="mono">{b.weight}</td>
-                          <td>
-                            <span className="chip">
-                              {getProviderForBackend(b.service_id)}
-                            </span>
-                          </td>
-                          <td>
-                            {(() => {
-                              const matched = (aliases.data ?? []).find((a) => a.service_id === b.service_id);
-                              return (
-                                <Input
-                                  type="number"
-                                  min={0}
-                                  max={999}
-                                  className="mono"
-                                  aria-label={`Priority for ${matched?.alias ?? b.service_id}`}
-                                  defaultValue={String(matched?.priority ?? 100)}
-                                  disabled={!matched}
-                                  onBlur={(e) => {
-                                    if (matched) {
-                                      updatePriority.mutate({ alias: matched.alias, priority: Number(e.target.value) });
-                                    }
-                                  }}
-                                />
-                              );
-                            })()}
-                          </td>
                         </tr>
                       ))}
                       {(routing.backends ?? []).length === 0 && (
-                        <TableEmptyRow colSpan={5} title="No backends configured.">Add an alias to get started.</TableEmptyRow>
+                        <TableEmptyRow colSpan={3} title="No backends configured." />
                       )}
                     </tbody>
                   </table>
@@ -627,89 +501,6 @@ export default function ProviderDetail() {
             : []),
         ]}
       />
-
-      {/* Add alias dialog */}
-      <Dialog
-        open={aliasDialogOpen}
-        onOpenChange={setAliasDialogOpen}
-        title="Add alias"
-        description="Create a new model alias binding for this provider."
-        footer={
-          <>
-            <Button variant="secondary" size="sm" onClick={() => setAliasDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={createAlias.isPending || aliasForm.provider === ""}
-              aria-describedby={aliasForm.provider === "" ? "alias-field-provider-help" : undefined}
-              onClick={() => createAlias.mutate(aliasForm)}
-            >
-              {createAlias.isPending ? "Creating…" : "Create alias"}
-            </Button>
-          </>
-        }
-      >
-        <FormFieldGroup>
-          <FormField label="Alias" htmlFor="alias-field-alias" w="md">
-            <Input
-              id="alias-field-alias"
-              value={aliasForm.alias}
-              autoComplete="off"
-              autoCapitalize="none"
-              spellCheck={false}
-              onChange={(e) => setAliasForm((f) => ({ ...f, alias: e.target.value }))}
-              placeholder="e.g. fast"
-            />
-          </FormField>
-          <FormField label="Concrete model" htmlFor="alias-field-model" w="md">
-            <Input
-              id="alias-field-model"
-              value={aliasForm.concrete_model}
-              autoComplete="off"
-              autoCapitalize="none"
-              spellCheck={false}
-              onChange={(e) => setAliasForm((f) => ({ ...f, concrete_model: e.target.value }))}
-              placeholder="e.g. llama3.1:8b"
-            />
-          </FormField>
-          <FormField label="Service" htmlFor="alias-field-service" w="md">
-            <Select
-              id="alias-field-service"
-              value={aliasForm.service_id}
-              onChange={(v) => setAliasForm((f) => ({ ...f, service_id: v }))}
-              options={serviceOptions.length > 0 ? serviceOptions : [{ value: id, label: id }]}
-            />
-          </FormField>
-          <FormField
-            label="Provider"
-            htmlFor="alias-field-provider"
-            w="md"
-            help={aliasForm.provider === ""
-              ? <span id="alias-field-provider-help">Choose a backend type to create the alias.</span>
-              : undefined}
-          >
-            <Select
-              id="alias-field-provider"
-              value={aliasForm.provider}
-              onChange={(v) => setAliasForm((f) => ({ ...f, provider: v as Provider }))}
-              options={PROVIDER_OPTIONS}
-              placeholder="Select a backend type…"
-            />
-          </FormField>
-          <FormField label="Priority" htmlFor="alias-field-priority" w="sm">
-            <Input
-              id="alias-field-priority"
-              type="number"
-              min={0}
-              max={999}
-              value={String(aliasForm.priority)}
-              onChange={(e) => setAliasForm((f) => ({ ...f, priority: Number(e.target.value) }))}
-            />
-          </FormField>
-        </FormFieldGroup>
-      </Dialog>
 
       {isAdmin && (
         <Dialog

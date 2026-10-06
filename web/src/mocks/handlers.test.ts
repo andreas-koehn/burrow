@@ -160,7 +160,7 @@ describe("MSW provider handlers mirror the API", () => {
       expect(msg).toBe('unknown field "api_key"; the credential is set on the relay, credential_slot names its slot');
       expect(msg).not.toContain("sk-secret");
     }
-    expect(db.aiProviders).toHaveLength(1);
+    expect(db.aiProviders.map((p) => p.slug)).toEqual(["ollama", "zai", "zai-anthropic"]);
   });
 
   it("POST /ai/providers kind direct: creates the provider with a hidden backing service", async () => {
@@ -303,8 +303,92 @@ describe("MSW provider handlers mirror the API", () => {
     expect((await fetch("/api/v1/ai/providers/ollama", authed("DELETE"))).status).toBe(403);
     db.me = { ...db.me, role: "admin" };
     expect((await fetch("/api/v1/ai/providers/nope", authed("DELETE"))).status).toBe(404);
+    // A provider a model targets is refused, and the models are named.
+    const used = await fetch("/api/v1/ai/providers/ollama", authed("DELETE"));
+    expect([used.status, (await used.json()).error]).toEqual([409, "provider is used by model(s): burrow-simple"]);
+    db.aiModels = db.aiModels.filter((m) => m.name !== "burrow-simple");
     expect((await fetch("/api/v1/ai/providers/ollama", authed("DELETE"))).status).toBe(204);
-    expect(db.aiProviders).toHaveLength(0);
+    expect(db.aiProviders.map((p) => p.slug)).toEqual(["zai", "zai-anthropic"]);
     expect(db.services.some((x) => x.id === "svc_ai001")).toBe(true);
+  });
+});
+
+describe("MSW gateway handlers mirror the API", () => {
+  beforeEach(() => { resetDb(); document.cookie = `burrow_csrf=${CSRF}; path=/`; });
+
+  const send = (method: string, path: string, body?: unknown) =>
+    fetch(`/api/v1${path}`, { ...authed(method), ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const refusal = async (r: Response) => [r.status, (await r.json()).error];
+  const target = { provider: "zai", model: "glm-5.1" };
+
+  it("GET /ai/gateway names both endpoints, OpenAI first", async () => {
+    expect(await (await send("GET", "/ai/gateway")).json()).toEqual({
+      endpoints: [
+        { dialect: "openai", base_url: "https://tunnels.example.com/openai/v1" },
+        { dialect: "anthropic", base_url: "https://tunnels.example.com/anthropic" },
+      ],
+    });
+  });
+
+  it("POST /ai/models fills in the dialect, derives the formats and refuses what the store refuses", async () => {
+    const r = await send("POST", "/ai/models", { name: "burrow-medium", targets: [target, { provider: "zai-anthropic", model: "glm-5.1" }] });
+    expect(r.status).toBe(201);
+    expect(await r.json()).toMatchObject({
+      name: "burrow-medium", enabled: true, dialects: ["anthropic", "openai"],
+      targets: [{ dialect: "openai", ...target }, { dialect: "anthropic", provider: "zai-anthropic", model: "glm-5.1" }],
+    });
+    expect(await refusal(await send("POST", "/ai/models", { name: "x1", targets: [{ provider: "nope", model: "m" }] })))
+      .toEqual([400, "unknown provider nope"]);
+    expect(await refusal(await send("POST", "/ai/models", { name: "x1", targets: [{ dialect: "anthropic", ...target }] })))
+      .toEqual([400, "provider zai speaks openai, not anthropic"]);
+    expect(await refusal(await send("POST", "/ai/models", { name: "x1", targets: [target, target] })))
+      .toEqual([400, "a target is listed twice"]);
+    expect(await refusal(await send("POST", "/ai/models", { name: "x1", dialects: ["openai"], targets: [target] })))
+      .toEqual([400, 'unknown field "dialects"']);
+    expect((await send("POST", "/ai/models", { name: "a/b", targets: [target] })).status).toBe(400);
+    expect(await refusal(await send("POST", "/ai/models", { name: "burrow-simple", targets: [target] })))
+      .toEqual([409, "model name already in use"]);
+  });
+
+  it("GET, PUT and DELETE /ai/models/:name; writes are for admins", async () => {
+    expect((await send("GET", "/ai/models/burrow-simple")).status).toBe(200);
+    expect(await refusal(await send("GET", "/ai/models/nope"))).toEqual([404, "model not found"]);
+    const put = await send("PUT", "/ai/models/burrow-simple", { name: "burrow-small", enabled: false, targets: [target] });
+    expect(await put.json()).toMatchObject({ name: "burrow-small", enabled: false, dialects: ["openai"], created_at: "2026-05-19T00:00:00Z" });
+    expect(await refusal(await send("PUT", "/ai/models/burrow-small", { name: "burrow-intelligence", targets: [target] })))
+      .toEqual([409, "model name already in use"]);
+    db.me = { ...db.me, role: "user" };
+    expect((await send("GET", "/ai/models")).status).toBe(200);
+    for (const [method, path] of [["POST", "/ai/models"], ["PUT", "/ai/models/burrow-small"], ["DELETE", "/ai/models/burrow-small"]]) {
+      expect((await send(method!, path!, { name: "x1", targets: [target] })).status).toBe(403);
+    }
+    db.me = { ...db.me, role: "admin" };
+    expect((await send("DELETE", "/ai/models/burrow-small")).status).toBe(204);
+    expect(db.aiModels.map((m) => m.name)).toEqual(["burrow-intelligence"]);
+  });
+
+  it("POST /ai/keys returns the key once, uncached; the list never carries it", async () => {
+    const r = await send("POST", "/ai/keys", { name: "ci", allowed_models: ["burrow-simple", "ollama/*"] });
+    expect(r.status).toBe(201);
+    expect(r.headers.get("Cache-Control")).toBe("no-store");
+    const made = await r.json();
+    expect(made.key).toMatch(/^bgw_.{43}$/);
+    expect(made).toMatchObject({ name: "ci", allowed_models: ["burrow-simple", "ollama/*"], revoked_at: null, last_used: null });
+    const list = await (await send("GET", "/ai/keys")).json();
+    expect(list.map((k: { name: string }) => k.name)).toEqual(["laptop", "ci"]);
+    expect(JSON.stringify(list)).not.toContain(made.key);
+    expect((await send("POST", "/ai/keys", { name: "" })).status).toBe(400);
+    expect((await send("POST", "/ai/keys", { name: "x", allowed_models: ["zai/**"] })).status).toBe(400);
+    expect(await refusal(await send("POST", "/ai/keys", { name: "x", key: "bgw_mine" }))).toEqual([400, 'unknown field "key"']);
+  });
+
+  it("DELETE /ai/keys/:id revokes and keeps the row; another user's key answers like a missing one", async () => {
+    db.me = { ...db.me, id: "bur_usr_bob0002", role: "user" };
+    expect(await (await send("GET", "/ai/keys")).json()).toEqual([]);
+    expect(await refusal(await send("DELETE", "/ai/keys/gk_laptop1"))).toEqual([404, "key not found"]);
+    db.me = { ...db.me, id: "bur_usr_admin01", role: "admin" };
+    expect((await send("DELETE", "/ai/keys/gk_laptop1")).status).toBe(204);
+    expect(db.aiGatewayKeys[0]!.revoked_at).not.toBeNull();
+    expect(await refusal(await send("DELETE", "/ai/keys/nope"))).toEqual([404, "key not found"]);
   });
 });

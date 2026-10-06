@@ -34,6 +34,8 @@ import Retention from "@/pages/Retention";
 import DatabaseBackend from "@/pages/DatabaseBackend";
 import OpenApiViewer from "@/pages/OpenApiViewer";
 import GatewayOverview from "@/pages/GatewayOverview";
+import GatewayModels from "@/pages/GatewayModels";
+import GatewayKeys from "@/pages/GatewayKeys";
 import { RedirectTo } from "@/lib/redirects";
 import { OLD_ROUTES } from "@/lib/moved-routes";
 
@@ -64,6 +66,8 @@ export default function App() {
         <Route path="/gateway" element={<GatewayOverview />} />
         <Route path="/gateway/providers" element={<Providers />} />
         <Route path="/gateway/providers/:slug" element={<ProviderDetail />} />
+        <Route path="/gateway/models" element={<GatewayModels />} />
+        <Route path="/gateway/keys" element={<GatewayKeys />} />
         <Route path="/gateway/cache" element={<PromptCache />} />
         <Route path="/gateway/guardrails" element={<Guardrails />} />
         <Route path="/gateway/requests" element={<Requests />} />

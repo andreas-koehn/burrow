@@ -2,7 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard, Globe, Boxes, Activity, Sparkles, ShieldAlert, Database, Search, DollarSign,
   ServerCog, Mail, Archive, HardDrive, DatabaseBackup, Users, ShieldCheck, ScrollText, Webhook,
-  BookOpen, UserCircle, MonitorSmartphone, Bot, Network,
+  BookOpen, UserCircle, MonitorSmartphone, Bot, Network, Layers, KeyRound,
 } from "lucide-react";
 import { workspaceFor, type Workspace } from "./workspace";
 
@@ -68,7 +68,11 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
     workspace: "gateway", label: "AI Gateway", namespace: "/ai/…", icon: Sparkles, home: "/gateway",
     groups: [
       { entries: [{ id: "gateway-overview", label: "Overview", to: "/gateway", icon: LayoutDashboard }] },
-      { title: "Route", entries: [{ id: "providers", label: "Providers", to: "/gateway/providers", icon: Sparkles }] },
+      { title: "Route", entries: [
+        { id: "providers", label: "Providers", to: "/gateway/providers", icon: Sparkles },
+        { id: "models", label: "Models", to: "/gateway/models", icon: Layers },
+        { id: "gateway-keys", label: "Gateway keys", to: "/gateway/keys", icon: KeyRound },
+      ] },
       { title: "Control", entries: [
         { id: "guardrails", label: "Guardrails", to: "/gateway/guardrails", icon: ShieldAlert },
         { id: "cache", label: "Prompt cache", to: "/gateway/cache", icon: Database },

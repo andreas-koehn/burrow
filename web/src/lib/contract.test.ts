@@ -6,12 +6,12 @@ import type {
   AiProvider, ServiceAIConfig, UsageEvent, RateLimit, Budget, PricingTable,
   PricingEntry, InspectorEntry, AuditEvent, AuditFingerprint, Webhook,
   CreatedWebhook, WebhookDelivery, AutomationToken, CreatedAutomationToken,
-  ModelAlias, BackupRow, MtlsConfig, IpGeoConfig,
+  BackupRow, MtlsConfig, IpGeoConfig,
   CustomRoleInput, PermissionDef, CacheSettings, RedactionRule,
   RedactionSettings, GuardrailSettings, InspectorSettings, RoutingPolicy,
   ProvisioningKey, ProvisioningPending, CostSummary,
   SemanticCacheSettings, CacheStatsV5, UpstreamSlot, UpstreamCredentialBinding,
-  ModelAliasV5, RoutingPolicyV5, CustomDomain, CreateCustomDomainInput,
+  RoutingPolicyV5, CustomDomain, CreateCustomDomainInput,
   ConnectionLog, ConnectionLogRollup, RetentionSettings,
   WebhookV5, WebhookPreviewResponse, DatabaseStatus,
 } from "@/lib/contract";
@@ -98,13 +98,12 @@ describe("contract", () => {
     const cri: CustomRoleInput = { name: "analyst", description: "", permissions: ["tunnels:read:any"], default_for_new_users: false };
     const at: AutomationToken = { id: "at1", name: "ci", prefix: "bua_", user_id: "u1", role_at_mint: "admin", permissions: [], expires_at: null, last_used: null, created_at: "2026-05-19T00:00:00Z" };
     const cat: CreatedAutomationToken = { token: at, plaintext: "bua_mock_abc" };
-    const ma: ModelAlias = { alias: "fast", concrete_model: "llama3.1:8b", service_id: "svc_ai001", created_at: "2026-05-19T00:00:00Z" };
     const br: BackupRow = { id: "bk1", taken_at: "2026-05-19T00:00:00Z", version: "v0.4.0", size_bytes: 1024, db_sha256: "deadbeef", path: "/var/burrow/backups/bk1.tar.gz" };
     const rr: RedactionRule = { id: "rr1", name: "email", pattern: "[a-z]+@[a-z]+", action: "mask", scope: "both" };
     const pk: ProvisioningKey = { id: "pk1", name: "fleet", prefix: "bup_", scope: "multi", expires_at: null, default_role: "user", last_used: null, created_at: "2026-05-19T00:00:00Z" };
     const pp: ProvisioningPending = { id: "pp1", hostname: "node-1", os: "linux", arch: "amd64", remote_ip: "1.2.3.4", provisioning_key_id: "pk1", first_seen: "2026-05-19T00:00:00Z" };
 
-    expect([ai, cfg, usage, pt, cs, budget, rl, ie, audit, fp, wh, cwh, wd, pd, cri, at, cat, ma, br, rr, pk, pp]).toHaveLength(22);
+    expect([ai, cfg, usage, pt, cs, budget, rl, ie, audit, fp, wh, cwh, wd, pd, cri, at, cat, br, rr, pk, pp]).toHaveLength(21);
   });
 
   it("v0.5.0 shapes compile against representative wire objects", () => {
@@ -130,14 +129,6 @@ describe("contract", () => {
       header_name: "Authorization",
       header_format: "Bearer {key}",
       slot_present: true,
-    };
-    const alias5: ModelAliasV5 = {
-      alias: "fast",
-      concrete_model: "llama3.1:8b",
-      service_id: "svc_ai001",
-      provider: "ollama",
-      priority: 100,
-      created_at: "2026-05-19T00:00:00Z",
     };
     const routing5: RoutingPolicyV5 = {
       strategy: "multi_provider",
@@ -200,7 +191,7 @@ describe("contract", () => {
     // Type-level assertion: UpstreamSlot is string
     expectTypeOf(slot).toEqualTypeOf<string>();
 
-    expect([scs, stats, binding, alias5, routing5, domain, createDomain, log, rollup, retention, wh5, preview, dbStatus]).toHaveLength(13);
+    expect([scs, stats, binding, routing5, domain, createDomain, log, rollup, retention, wh5, preview, dbStatus]).toHaveLength(12);
 
     // Verify WEBHOOK_EVENT_FIELDS constant shape
     expect(WEBHOOK_EVENT_FIELDS["ai.upstream_error"]).toContain("service_id");

@@ -3,14 +3,14 @@ import { Link } from "react-router-dom";
 import { Sparkles } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { Badge, Button, EmptyState, ErrorNotice, MetricStrip, MetricTile, PageHeader, SkeletonRows } from "@/components/ds";
-import { ProviderConnect } from "@/components/ProviderConnect";
+import { ConnectCard } from "@/components/ConnectCard";
+import { GatewayAddresses } from "@/components/GatewayAddresses";
 import { SetupChecklist, type ChecklistStep } from "@/components/SetupChecklist";
 import { useAuth } from "@/auth/useAuth";
 import { apiFetch, ApiError } from "@/lib/api";
-import { providerBaseUrl } from "@/lib/serviceUrl";
 import { statusLabel } from "@/lib/status";
 import { useRelayNotices } from "@/lib/useRelayNotices";
-import type { AiProvider, Budget, CostSummary } from "@/lib/contract";
+import type { AiGatewayKey, AiModel, AiProvider, Budget, CostSummary, GatewayInfo } from "@/lib/contract";
 
 /** Share of its daily limit from which a budget is worth a notice. */
 const BUDGET_NEAR = 0.8;
@@ -65,6 +65,22 @@ export default function GatewayOverview() {
     retry: false,
     staleTime: 60_000,
   });
+  // Same keys and fetches as the Models and the Gateway keys pages.
+  const models = useQuery({
+    queryKey: ["ai", "models"],
+    queryFn: () => apiFetch<AiModel[]>("/ai/models"),
+    retry: false,
+  });
+  const keys = useQuery({
+    queryKey: ["ai", "keys"],
+    queryFn: () => apiFetch<AiGatewayKey[]>("/ai/keys"),
+    retry: false,
+  });
+  const gateway = useQuery({
+    queryKey: ["ai", "gateway"],
+    queryFn: () => apiFetch<GatewayInfo>("/ai/gateway"),
+    retry: false,
+  });
   const budgets = useQuery({
     queryKey: ["budgets"],
     queryFn: () => apiFetch<Budget[]>("/budgets"),
@@ -87,7 +103,9 @@ export default function GatewayOverview() {
   }
 
   const list = Array.isArray(providers.data) ? providers.data : [];
-  const first = list[0];
+  const modelList = Array.isArray(models.data) ? models.data : [];
+  const keyList = Array.isArray(keys.data) ? keys.data : [];
+  const endpoints = gateway.data?.endpoints ?? [];
   const totalRequests = list.reduce((a, p) => a + p.requests_24h, 0);
   const costAbsent = cost.error instanceof ApiError && cost.error.status === 404;
   const notices = budgetNotices(isAdmin && Array.isArray(budgets.data) ? budgets.data : []);
@@ -106,28 +124,40 @@ export default function GatewayOverview() {
       done: list.length > 0,
       action: { label: "Add a provider", to: "/gateway/providers" },
     }] : []),
+    // Only an admin can create a model.
+    ...(isAdmin ? [{
+      id: "model",
+      title: "Create a model",
+      description: "A model is a name clients ask for, and for each API format the provider it is sent to.",
+      done: modelList.length > 0,
+      action: { label: "Create a model", to: "/gateway/models" },
+    }] : []),
     {
       id: "key",
-      title: "Create an API key",
-      description: "Clients sign in to a provider with one of its API keys.",
-      done: list.some((p) => p.api_key_count > 0),
-      action: { label: "Create an API key", to: first ? `/gateway/providers/${first.slug}` : "/gateway/providers" },
+      title: "Create a gateway key",
+      description: "Programs sign in to the gateway with a gateway key.",
+      // A non-admin sees their own keys: the step is about a key they can use.
+      done: keyList.some((k) => !k.revoked_at),
+      action: { label: "Create a gateway key", to: "/gateway/keys" },
     },
     {
       id: "request",
       title: "Send the first request",
-      description: "Point any OpenAI-compatible client at the provider's base URL.",
+      description: "Point Claude Code, Codex or any OpenAI-compatible client at the gateway.",
       done: served,
-      // Without a provider there is nothing to connect to yet.
-      ...(first
-        ? { content: <ProviderConnect baseUrl={providerBaseUrl(first.slug, first.base_url)} exampleModel={first.concrete_model} /> }
-        : { action: { label: "Add a provider", to: "/gateway/providers" } }),
+      content: (
+        <ConnectCard
+          endpoints={endpoints}
+          models={modelList.filter((m) => m.enabled).map((m) => ({ name: m.name, dialects: m.dialects }))}
+        />
+      ),
     },
   ];
 
   return (
     <div className="gateway-overview-page">
       {header}
+      <GatewayAddresses endpoints={endpoints} />
 
       {providers.error ? (
         <ErrorNotice
@@ -200,8 +230,9 @@ export default function GatewayOverview() {
               An administrator can add one from a service in API-key mode, or add a hosted API.
             </EmptyState>
           ) : (
-            // The last step reads the cost summary, so the list waits for that answer.
-            !cost.isPending && <SetupChecklist title="Set up the AI Gateway" steps={steps} />
+            // The steps read the cost summary, the models and the keys, so the list waits for those answers.
+            !cost.isPending && !models.isPending && !keys.isPending
+              && <SetupChecklist title="Set up the AI Gateway" steps={steps} />
           )}
         </>
       )}

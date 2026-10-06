@@ -5,7 +5,7 @@ import type {
   GuardrailPattern, GuardrailSettingsResponse, Budget, PricingTable, AuditEvent, Webhook,
   WebhookDelivery, ProvisioningKey, ProvisioningPending,
   AutomationToken, BackupRow, CacheStatsV5, SemanticCacheSettings,
-  ModelAliasV5, UpstreamCredentialBinding, CustomDomain,
+  UpstreamCredentialBinding, CustomDomain, AiModel, AiGatewayKey,
   RetentionSettings, DatabaseStatus,
   ConnectionLog, ConnectionLogRollup,
 } from "@/lib/contract";
@@ -81,7 +81,9 @@ export interface MockDb {
   aiProviders: AiProviderRow[];
   // Stored model list per provider slug.
   aiProviderModels: Record<string, AiProviderModel[]>;
-  modelAliases: ModelAliasV5[];
+  // Synthetic models and gateway keys (GET /ai/models, /ai/keys).
+  aiModels: AiModel[];
+  aiGatewayKeys: AiGatewayKey[];
   costSummary: Record<"today" | "week" | "month" | "year", CostSummary>;
   aiConfigs: Record<string, ServiceAIConfig>;
   inspectorEntries: Record<string, InspectorEntry[]>;
@@ -171,6 +173,9 @@ function seed(): MockDb {
       { id: "svc_ai001", user_id: meId, name: "ollama", type: "http", slug: "ai4m2q", url: "https://tunnels.example.com/svc/ai4m2q/", access_mode: "api_key", api_key_header: "Authorization", gateway_only: false, connected: true, remote_port: 0, local_addr: "127.0.0.1:11434" },
       { id: "svc_graf01", user_id: meId, name: "grafana", type: "http", slug: "gf7x1p", url: "https://tunnels.example.com/svc/gf7x1p/", access_mode: "burrow_login", api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "127.0.0.1:3001" },
       { id: "svc_pg001", user_id: meId, name: "postgres", type: "tcp", slug: "", url: "", access_mode: "open", api_key_header: "Authorization", gateway_only: false, connected: true, remote_port: 9000, local_addr: "127.0.0.1:5432" },
+      // Backing rows of the direct providers zai and zai-anthropic.
+      { id: "prov-zai", user_id: meId, name: "zai", type: "direct", slug: "", url: "", access_mode: "api_key", api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "" },
+      { id: "prov-zai-anthropic", user_id: meId, name: "zai-anthropic", type: "direct", slug: "", url: "", access_mode: "api_key", api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "" },
     ],
     serviceApiKeys: {
       svc_ai001: [
@@ -193,10 +198,45 @@ function seed(): MockDb {
     },
     aiProviders: [
       { slug: "ollama", name: "ollama", kind: "tunnel", api_format: "openai", service_id: "svc_ai001" },
+      // One hosted API in both formats; the slots are not set on this relay.
+      {
+        slug: "zai", name: "zai", kind: "direct", api_format: "openai", service_id: "prov-zai",
+        upstream_base_url: "https://api.z.example.net/api/paas/v4", credential_slot: "ZAI",
+        auth_header: "Authorization", auth_format: "Bearer {key}", extra_headers: {}, billing: "metered",
+      },
+      {
+        slug: "zai-anthropic", name: "zai-anthropic", kind: "direct", api_format: "anthropic", service_id: "prov-zai-anthropic",
+        upstream_base_url: "https://api.z.example.net/api/anthropic", credential_slot: "ZAI",
+        auth_header: "x-api-key", auth_format: "{key}", extra_headers: {}, billing: "metered",
+      },
     ],
-    aiProviderModels: {},
-    modelAliases: [
-      { alias: "fast", concrete_model: "llama3.1:8b", service_id: "svc_ai001", provider: "ollama", priority: 100, created_at: "2026-05-19T00:00:00Z" },
+    aiProviderModels: {
+      ollama: [{ id: "mistral", display_name: "", context_length: 0, synced_at: "2026-05-19T00:00:00Z" }],
+      zai: [{ id: "glm-5.1", display_name: "GLM 5.1", context_length: 200000, synced_at: "2026-05-19T00:00:00Z" }],
+      "zai-anthropic": [{ id: "glm-5.1", display_name: "GLM 5.1", context_length: 200000, synced_at: "2026-05-19T00:00:00Z" }],
+    },
+    aiModels: [
+      {
+        name: "burrow-simple", description: "Small and local.", enabled: true, fallback_on_rate_limit: false,
+        attempt_timeout_s: 60, total_timeout_s: 120,
+        targets: [{ dialect: "openai", provider: "ollama", model: "mistral" }],
+        dialects: ["openai"], created_at: "2026-05-19T00:00:00Z", updated_at: "2026-05-19T00:00:00Z",
+      },
+      {
+        name: "burrow-intelligence", description: "", enabled: true, fallback_on_rate_limit: false,
+        attempt_timeout_s: 60, total_timeout_s: 120,
+        targets: [
+          { dialect: "openai", provider: "zai", model: "glm-5.1" },
+          { dialect: "anthropic", provider: "zai-anthropic", model: "glm-5.1" },
+        ],
+        dialects: ["anthropic", "openai"], created_at: "2026-05-20T00:00:00Z", updated_at: "2026-05-20T00:00:00Z",
+      },
+    ],
+    aiGatewayKeys: [
+      {
+        id: "gk_laptop1", name: "laptop", key_prefix: "bgw_Ab3d", user_id: meId, allowed_models: [],
+        last_used: "2026-05-18T09:00:00Z", created_at: "2026-05-10T08:00:00Z", revoked_at: null,
+      },
     ],
     costSummary: {
       today: { window: "today", total_usd: 1.23, tokens_in: 12000, tokens_out: 8000, top_consumers: [], pct_of_budget: 0.5 },
@@ -505,11 +545,23 @@ export function resetDb(): void {
   db = seed();
 }
 
+/** Test helper: takes a provider out, with its model list, the models that target it and a direct provider's backing service. */
+export function removeProvider(slug: string): void {
+  const gone = db.aiProviders.find((p) => p.slug === slug);
+  if (!gone) return;
+  db.aiProviders = db.aiProviders.filter((p) => p !== gone);
+  delete db.aiProviderModels[slug];
+  db.aiModels = db.aiModels.filter((m) => !m.targets.some((t) => t.provider === slug));
+  if (gone.kind === "direct") db.services = db.services.filter((s) => s.id !== gone.service_id);
+}
+
 /**
  * Test helper: a direct provider with its backing service, as POST
  * /ai/providers with kind "direct" would leave it.
  */
 export function addDirectProvider(slug: string, row: Partial<AiProviderRow> = {}): AiProviderRow {
+  // A seeded provider of the same slug gives way, with everything that hangs on it.
+  removeProvider(slug);
   const p: AiProviderRow = {
     slug,
     name: slug,

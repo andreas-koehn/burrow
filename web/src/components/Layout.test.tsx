@@ -142,7 +142,7 @@ describe("Layout workspace shell", () => {
   it("shows the AI Gateway sidebar on a gateway path", async () => {
     renderLayout("admin", { path: "/gateway" });
     expect(await screen.findByRole("button", { name: "Workspace: AI Gateway" })).toBeInTheDocument();
-    expect(sidebarLinks("AI Gateway")).toEqual(["Overview", "Providers", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
+    expect(sidebarLinks("AI Gateway")).toEqual(["Overview", "Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
     expect(screen.queryByRole("link", { name: /^Clients(,|$)/ })).toBeNull();
   });
 

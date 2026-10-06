@@ -1,3 +1,5 @@
+import type { Dialect } from "./contract";
+
 /** Path part of a service's public URL. */
 export function servicePath(slug: string): string {
   return `/svc/${slug}/`;
@@ -28,4 +30,11 @@ export function urlPath(url: string): string {
   } catch {
     return url;
   }
+}
+
+/** Base URL a client is given for one of the gateway's API formats. */
+export function dialectBaseUrl(dialect: Dialect, apiUrl?: string): string {
+  if (apiUrl) return apiUrl;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  return dialect === "anthropic" ? `${origin}/anthropic` : `${origin}/openai/v1`;
 }

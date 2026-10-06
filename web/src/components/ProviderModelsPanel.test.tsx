@@ -93,6 +93,7 @@ describe("Provider models panel", () => {
   });
 
   it("offers no sync for a tunnel provider, only adding by id", async () => {
+    db.aiProviderModels.ollama = [];
     renderApp(<ProviderModelsPanel slug="ollama" kind="tunnel" isAdmin />);
     await screen.findByText(/no models yet/i);
     expect(screen.getByLabelText("Model id")).toBeInTheDocument();
