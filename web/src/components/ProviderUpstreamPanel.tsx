@@ -2,7 +2,9 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Checkbox, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
-import { credentialSlotError, envVarForSlot } from "@/lib/providerPresets";
+import {
+  CONCURRENCY_FORMAT, CONCURRENCY_HELP, credentialSlotError, envVarForSlot, parseConcurrency,
+} from "@/lib/providerPresets";
 import type { AiProvider, AiProviderUpstreamInput } from "@/lib/contract";
 
 const BILLING_LABEL: Record<AiProvider["billing"], string> = { metered: "Metered", flat: "Flat rate" };
@@ -105,6 +107,122 @@ export function ProviderResponsesSetting({ provider, isAdmin }: ProviderResponse
   );
 }
 
+export interface ConcurrencyFieldProps {
+  id: string;
+  /** The field's text; empty means no limit. */
+  value: string;
+  onChange: (value: string) => void;
+  /** The server's refusal of the value, if any. A value that is not a whole number is reported here by itself. */
+  error?: string | null;
+}
+
+/**
+ * How many requests a provider serves at once. Further requests wait for a
+ * free place; when none comes free in time the next target of the model is
+ * tried, or the caller gets 429 provider_busy.
+ */
+export function ConcurrencyField({ id, value, onChange, error }: ConcurrencyFieldProps) {
+  const message = parseConcurrency(value) === null ? CONCURRENCY_FORMAT : error;
+  return (
+    <FormField
+      label="Requests at once"
+      htmlFor={id}
+      w="md"
+      error={message ? <span id={`${id}-err`}>{message}</span> : undefined}
+      help={<span id={`${id}-help`}>{CONCURRENCY_HELP}</span>}
+    >
+      <Input
+        id={id}
+        value={value}
+        inputMode="numeric"
+        maxLength={9}
+        placeholder="No limit"
+        invalid={!!message}
+        autoComplete="off"
+        spellCheck={false}
+        aria-describedby={message ? `${id}-err` : `${id}-help`}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </FormField>
+  );
+}
+
+/** The field's text for a stored limit: empty for none. */
+const concurrencyText = (max: number) => (max > 0 ? String(max) : "");
+
+/** "1 of 2 in use" for a provider with a limit. */
+const inUseText = (p: AiProvider) => `${p.in_use} of ${p.max_concurrent} in use`;
+
+export interface ProviderConcurrencySettingProps {
+  /** A provider without upstream settings (kind "tunnel"). */
+  provider: AiProvider;
+  isAdmin: boolean;
+}
+
+/**
+ * The concurrency limit of a tunnelled provider. It is saved through the
+ * provider's own update; slug and name are sent back unchanged.
+ */
+export function ProviderConcurrencySetting({ provider, isAdmin }: ProviderConcurrencySettingProps) {
+  const qc = useQueryClient();
+  const [text, setText] = useState(concurrencyText(provider.max_concurrent));
+  const [fieldErr, setFieldErr] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const parsed = parseConcurrency(text);
+  const save = useMutation({
+    mutationFn: (n: number) =>
+      apiFetch<AiProvider>(`/ai/providers/${provider.slug}`, {
+        method: "PUT",
+        body: JSON.stringify({ slug: provider.slug, name: provider.name, max_concurrent: n }),
+      }),
+    onMutate: () => { setFieldErr(null); setError(null); },
+    onSuccess: async (next) => {
+      qc.setQueryData(["ai", "provider", provider.slug], next);
+      await qc.invalidateQueries({ queryKey: ["ai", "providers"] });
+    },
+    onError: (e: unknown) => {
+      if (!(e instanceof ApiError)) setError("Couldn't save the limit.");
+      else if (e.status === 403) setError("You don't have permission to change this provider.");
+      // The server's reason for the value starts with its name.
+      else if (e.status === 400 && e.message.startsWith("max concurrent")) setFieldErr(e.message);
+      else setError(e.message);
+    },
+  });
+  const limited = provider.max_concurrent > 0;
+  return (
+    <section className="card col gap-2" aria-label="Concurrency limit">
+      {isAdmin ? (
+        <>
+          <ConcurrencyField
+            id="pr-concurrency"
+            value={text}
+            error={fieldErr}
+            onChange={(v) => { setText(v); setFieldErr(null); setError(null); }}
+          />
+          <div className="row row-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={parsed === null || parsed === provider.max_concurrent || save.isPending}
+              onClick={() => { if (parsed !== null) save.mutate(parsed); }}
+            >
+              {save.isPending ? "Saving…" : "Save limit"}
+            </Button>
+            {limited && <span className="muted small">{inUseText(provider)}</span>}
+          </div>
+        </>
+      ) : (
+        <p className="muted small">
+          {limited
+            ? `Serves at most ${provider.max_concurrent} ${provider.max_concurrent === 1 ? "request" : "requests"} at once; more wait for a free place.`
+            : "No limit on requests served at once."}
+        </p>
+      )}
+      {error && <ErrorNotice>{error}</ErrorNotice>}
+    </section>
+  );
+}
+
 export interface ProviderUpstreamPanelProps {
   /** A direct provider. Admins also get auth_header, auth_format and extra_header_names. */
   provider: AiProvider;
@@ -155,6 +273,10 @@ export function ProviderUpstreamPanel({ provider, isAdmin }: ProviderUpstreamPan
             <dd className="def-val">{provider.supports_responses ? "offered" : "not offered"}</dd>
           </div>
         )}
+        <div className="def-row">
+          <dt className="def-key">Requests at once</dt>
+          <dd className="def-val">{provider.max_concurrent > 0 ? inUseText(provider) : "no limit"}</dd>
+        </div>
         {isAdmin && provider.auth_header !== undefined && (
           <div className="def-row">
             <dt className="def-key">Auth header</dt>
@@ -201,7 +323,7 @@ function EditUpstreamDialog({ open, ...rest }: EditUpstreamDialogProps) {
   return open ? <EditUpstreamForm {...rest} /> : null;
 }
 
-type Field = "url" | "slot" | "authHeader" | "authFormat" | "extra";
+type Field = "url" | "slot" | "authHeader" | "authFormat" | "extra" | "concurrency";
 
 function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogProps, "open">) {
   const qc = useQueryClient();
@@ -223,6 +345,7 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
   const [extraText, setExtraText] = useState("");
   const [clearExtra, setClearExtra] = useState(false);
   const [responses, setResponses] = useState(provider.supports_responses);
+  const [concurrency, setConcurrency] = useState(concurrencyText(provider.max_concurrent));
   // What the server said about one field of the last attempt; formErr is
   // everything else. Shown until the next edit of any field (one setting can
   // be refused because of another) and never a reason to disable Save: a
@@ -239,11 +362,13 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
 
   const parsedExtra = clearExtra ? {} : extraText.trim() === "" ? undefined : parseExtraHeaders(extraText);
   const slotMessage = credentialSlotError(slot);
+  const limit = parseConcurrency(concurrency);
   // Only these block Save.
   const invalid: Partial<Record<Field, string>> = {
     ...(slotMessage ? { slot: slotMessage } : {}),
     ...(authFormat.split("{key}").length !== 2 ? { authFormat: "Must contain {key} exactly once." } : {}),
     ...(parsedExtra === null ? { extra: EXTRA_FORMAT } : {}),
+    ...(limit === null ? { concurrency: CONCURRENCY_FORMAT } : {}),
   };
   const errors: Partial<Record<Field, string>> = { ...fieldErr, ...invalid };
 
@@ -256,6 +381,7 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
     ...(authFormat !== stored.authFormat ? { auth_format: authFormat } : {}),
     ...(parsedExtra ? { extra_headers: parsedExtra } : {}),
     ...(responses !== provider.supports_responses ? { supports_responses: responses } : {}),
+    ...(limit !== null && limit !== provider.max_concurrent ? { max_concurrent: limit } : {}),
   };
   const unchanged = Object.keys(body).length === 0;
 
@@ -279,6 +405,7 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
         : e.message.startsWith("auth header") ? "authHeader"
         : e.message.startsWith("auth format") ? "authFormat"
         : /^(an |at most \d+ )?extra header/.test(e.message) ? "extra"
+        : e.message.startsWith("max concurrent") ? "concurrency"
         : null;
       if (field) setFieldErr({ [field]: e.message });
       else setFormErr(e.message);
@@ -422,6 +549,12 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
             <label htmlFor="eu-extra-clear">Remove all extra headers</label>
           </div>
         )}
+        <ConcurrencyField
+          id="eu-concurrency"
+          value={concurrency}
+          error={fieldErr.concurrency}
+          onChange={(v) => { setConcurrency(v); edited(); }}
+        />
         {provider.api_format === "openai" && (
           <ResponsesCheckbox id="eu-responses" checked={responses} onChange={(v) => { setResponses(v); edited(); }} />
         )}

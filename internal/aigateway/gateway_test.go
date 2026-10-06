@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1720,4 +1721,154 @@ func TestServe_GatewayOnlyServiceStaysReachable(t *testing.T) {
 	if n := g.Keys.(*fakeKeys).calls.Load(); n != 0 {
 		t.Fatalf("key validator called %d times for a blocked address", n)
 	}
+}
+
+// --- concurrency limit on a provider path -------------------------------------
+
+// A provider path shares the provider's places with the dialect endpoints. A
+// request that finds none waits; when the wait is over it is told so.
+func TestServe_ConcurrencyLimit(t *testing.T) {
+	for _, chain := range []Chain{nil, &spyChain{}} {
+		hold := make(chan struct{})
+		up := holdFirst(hold)
+		g := newGateway(up, chain)
+		g.Models = fakeModels{"ollama": {{ProviderSlug: "ollama", ModelID: "mistral"}}}
+		p := g.Providers.(fakeProviders)["ollama"]
+		p.MaxConcurrent = 1
+		g.Providers.(fakeProviders)["ollama"] = p
+		g.Limiter = NewLimiter()
+		g.timeUnit = time.Millisecond // the wait limit is 60 units
+
+		do := func(method, path, body string) *httptest.ResponseRecorder {
+			req := httptest.NewRequest(method, path, strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer sk-good")
+			rec := httptest.NewRecorder()
+			g.Serve(rec, req, "ollama")
+			return rec
+		}
+		first := make(chan *httptest.ResponseRecorder, 1)
+		go func() { first <- do("POST", "/v1/chat/completions", `{"model":"mistral"}`) }()
+		waitFor(t, "the first request holds the place", func() bool { return g.Limiter.InUse("ollama") == 1 })
+
+		start := time.Now()
+		rec := do("POST", "/v1/chat/completions", `{"model":"mistral"}`)
+		if rec.Code != 429 || errCode(t, rec) != "provider_busy" || rec.Header().Get("Burrow-Error-Code") != "provider_busy" {
+			t.Fatalf("status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
+		}
+		if n, err := strconv.Atoi(rec.Header().Get("Retry-After")); err != nil || n < 1 {
+			t.Fatalf("Retry-After = %q", rec.Header().Get("Retry-After"))
+		}
+		if el := time.Since(start); el < 50*time.Millisecond || el > 10*time.Second {
+			t.Fatalf("waited %s", el)
+		}
+		// The model list comes from the catalog and takes no place.
+		if rec := do("GET", "/v1/models", ""); rec.Code != 200 {
+			t.Fatalf("model list while the provider is full: status %d", rec.Code)
+		}
+		// A caller without a valid key does not get as far as the queue.
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer sk-wrong")
+		bad := httptest.NewRecorder()
+		g.Serve(bad, req, "ollama")
+		if bad.Code != 401 || g.Limiter.Waiting("ollama") != 0 {
+			t.Fatalf("status %d", bad.Code)
+		}
+		if g.Limiter.InUse("ollama") != 1 {
+			t.Fatalf("in use = %d", g.Limiter.InUse("ollama"))
+		}
+
+		// A request that waits is served when the place comes free.
+		waiter := make(chan *httptest.ResponseRecorder, 1)
+		g.timeUnit = time.Second
+		go func() { waiter <- do("POST", "/v1/chat/completions", `{"model":"mistral"}`) }()
+		waitFor(t, "a request waits", func() bool { return g.Limiter.Waiting("ollama") == 1 })
+		close(hold)
+		if rec := <-first; rec.Code != 200 {
+			t.Fatalf("first: status %d", rec.Code)
+		}
+		if rec := <-waiter; rec.Code != 200 {
+			t.Fatalf("waiter: status %d body %s", rec.Code, rec.Body.String())
+		}
+		if g.Limiter.InUse("ollama") != 0 || g.Limiter.Waiting("ollama") != 0 || g.Limiter.entries() != 0 {
+			t.Fatalf("in use %d, waiting %d, entries %d", g.Limiter.InUse("ollama"), g.Limiter.Waiting("ollama"), g.Limiter.entries())
+		}
+	}
+}
+
+// Review Focus 7 on a provider path: the place is back after a panic of the
+// upstream and after a client that left, waiting or being served.
+func TestServe_ConcurrencyLimit_PlaceIsReturned(t *testing.T) {
+	// A direct provider: its handler runs on the request's own goroutine and
+	// context, as the relay's upstream handler does.
+	limited := func(up http.HandlerFunc) *Gateway {
+		g := directGateway(t, func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) { return up, nil }, &spyChain{})
+		p := g.Providers.(fakeProviders)["openrouter"]
+		p.MaxConcurrent = 1
+		g.Providers.(fakeProviders)["openrouter"] = p
+		g.Limiter = NewLimiter()
+		return g
+	}
+	post := func(ctx context.Context) *http.Request {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"mistral"}`)).WithContext(ctx)
+		req.Header.Set("Authorization", "Bearer sk-good")
+		return req
+	}
+	empty := func(t *testing.T, g *Gateway) {
+		t.Helper()
+		if g.Limiter.InUse("openrouter") != 0 || g.Limiter.Waiting("openrouter") != 0 || g.Limiter.entries() != 0 {
+			t.Fatalf("in use %d, waiting %d, entries %d", g.Limiter.InUse("openrouter"), g.Limiter.Waiting("openrouter"), g.Limiter.entries())
+		}
+	}
+
+	t.Run("panic", func(t *testing.T) {
+		g := limited(func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) })
+		func() {
+			defer func() { _ = recover() }()
+			g.Serve(httptest.NewRecorder(), post(context.Background()), "openrouter")
+		}()
+		empty(t, g)
+	})
+	t.Run("client gone while served", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		g := limited(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("data: one\n\n"))
+			cancel()
+			<-r.Context().Done()
+		})
+		g.Serve(httptest.NewRecorder(), post(ctx), "openrouter")
+		empty(t, g)
+	})
+	t.Run("client gone while waiting", func(t *testing.T) {
+		hold := make(chan struct{})
+		var calls atomic.Int32
+		g := limited(func(w http.ResponseWriter, _ *http.Request) {
+			calls.Add(1)
+			<-hold
+		})
+		first := make(chan struct{})
+		go func() {
+			defer close(first)
+			g.Serve(httptest.NewRecorder(), post(context.Background()), "openrouter")
+		}()
+		waitFor(t, "first in", func() bool { return g.Limiter.InUse("openrouter") == 1 })
+		ctx, cancel := context.WithCancel(context.Background())
+		second := make(chan struct{})
+		go func() {
+			defer close(second)
+			g.Serve(httptest.NewRecorder(), post(ctx), "openrouter")
+		}()
+		waitFor(t, "second waits", func() bool { return g.Limiter.Waiting("openrouter") == 1 })
+		cancel()
+		<-second
+		if g.Limiter.Waiting("openrouter") != 0 || g.Limiter.InUse("openrouter") != 1 {
+			t.Fatalf("waiting %d, in use %d", g.Limiter.Waiting("openrouter"), g.Limiter.InUse("openrouter"))
+		}
+		close(hold)
+		<-first
+		empty(t, g)
+		if calls.Load() != 1 {
+			t.Fatalf("upstream calls = %d: the request that left took a place afterwards", calls.Load())
+		}
+	})
 }

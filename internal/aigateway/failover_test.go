@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1925,4 +1926,595 @@ func TestFailover_RefusedProviderIsNeverReported(t *testing.T) {
 			t.Fatalf("last resort %s: zai was reported: %d ok, %d failed", name, ok, failed)
 		}
 	}
+}
+
+// --- Review Focus 7: the concurrency limit of a provider -----------------------
+
+// limit gives provider slug a concurrency limit on g.
+func limit(g *Gateway, slug string, n int) {
+	p := g.Providers.(fakeProviders)
+	v := p[slug]
+	v.MaxConcurrent = n
+	p[slug] = v
+	if g.Limiter == nil {
+		g.Limiter = NewLimiter()
+	}
+}
+
+// holdFirst is an upstream whose first call waits for hold (or for its request
+// to be cancelled); every call answers 200.
+func holdFirst(hold <-chan struct{}) http.HandlerFunc {
+	var n atomic.Int32
+	return func(w http.ResponseWriter, r *http.Request) {
+		if n.Add(1) == 1 {
+			select {
+			case <-hold:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		_, _ = w.Write([]byte(`{"from":"first"}`))
+	}
+}
+
+// inFlight sends r and returns once it holds the one place of provider slug.
+func inFlight(t *testing.T, g *Gateway, slug string, r *http.Request, d *Dialect) <-chan *httptest.ResponseRecorder {
+	t.Helper()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- serve(g, r, d) }()
+	waitFor(t, "the first request holds the place", func() bool { return g.Limiter.InUse(slug) == 1 })
+	return done
+}
+
+// zaiDirect addresses zai directly: no fallback and no timer.
+const zaiDirect = `{"model":"zai/glm-5.1"}`
+
+// noPlaces fails unless the limiter is empty: nothing held, nobody waiting, no
+// entry left.
+func noPlaces(t *testing.T, g *Gateway) {
+	t.Helper()
+	for _, slug := range []string{"zai", "openrouter", "zai-anthropic", "ollama"} {
+		if in, wait := g.Limiter.InUse(slug), g.Limiter.Waiting(slug); in != 0 || wait != 0 {
+			t.Fatalf("%s: %d in use, %d waiting after the request ended", slug, in, wait)
+		}
+	}
+	if n := g.Limiter.entries(); n != 0 {
+		t.Fatalf("%d limiter entries left behind", n)
+	}
+}
+
+func TestFailover_BusyProviderFallsThrough(t *testing.T) {
+	hold := make(chan struct{})
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": holdFirst(hold), "openrouter#OR": status(200, `{"from":"or"}`)})
+	g, att := failoverGateway(s, "ZAI", func(m *db.AIModel) { m.AttemptTimeoutS, m.TotalTimeoutS = 30, 60000 })
+	limit(g, "zai", 1)
+	a := inFlight(t, g, "zai", post("/v1/chat/completions", "bgw_all", zaiDirect), DialectOpenAI)
+
+	start := time.Now()
+	rec := call(g, smartBody)
+	if rec.Code != 200 || rec.Body.String() != `{"from":"or"}` || time.Since(start) < 25*time.Millisecond {
+		t.Fatalf("status %d body %s after %s", rec.Code, rec.Body.String(), time.Since(start))
+	}
+	wantHeaders(t, rec, "openrouter", "google/gemini-x", "2")
+	rows := att.all()
+	if len(rows) != 2 || rows[0].ErrorCode != "busy" || rows[0].Status != 429 || rows[0].ProviderSlug != "zai" ||
+		rows[0].Position != 0 || rows[0].DurationMs < 25 || rows[1].ErrorCode != "" || rows[1].ProviderSlug != "openrouter" {
+		t.Fatalf("attempts: %+v", rows)
+	}
+	// A full provider is a healthy one: waiting in vain is never its failure.
+	for i := 0; i < 6; i++ {
+		if rec := call(g, smartBody); rec.Header().Get("Burrow-Provider") != "openrouter" {
+			t.Fatalf("request %d: %v", i, rec.Header())
+		}
+	}
+	if _, failed := reports(g.Breaker, "zai"); failed != 0 || g.Breaker.Open("zai") {
+		t.Fatalf("a busy provider was reported to the breaker: %d failures, open %v", failed, g.Breaker.Open("zai"))
+	}
+	if s.n("zai#ZAI") != 1 || g.Limiter.InUse("zai") != 1 {
+		t.Fatalf("zai calls %d, in use %d", s.n("zai#ZAI"), g.Limiter.InUse("zai"))
+	}
+	close(hold)
+	if ra := <-a; ra.Code != 200 {
+		t.Fatalf("the request that held the place: status %d", ra.Code)
+	}
+	noPlaces(t, g)
+}
+
+func TestFailover_BusyWithNoOtherTarget(t *testing.T) {
+	hold := make(chan struct{})
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": holdFirst(hold)})
+	g, att := failoverGateway(s, "ZAI", func(m *db.AIModel) {
+		m.Targets = m.Targets[:1]
+		m.AttemptTimeoutS, m.TotalTimeoutS = 30, 60000
+	})
+	limit(g, "zai", 1)
+	a := inFlight(t, g, "zai", post("/v1/chat/completions", "bgw_all", zaiDirect), DialectOpenAI)
+
+	busy := func(rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if rec.Code != 429 || errCode(t, rec) != "provider_busy" || rec.Header().Get("Burrow-Error-Code") != "provider_busy" {
+			t.Fatalf("status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
+		}
+		if n, err := strconv.Atoi(rec.Header().Get("Retry-After")); err != nil || n < 1 {
+			t.Fatalf("Retry-After = %q", rec.Header().Get("Retry-After"))
+		}
+		wantHeaders(t, rec, "", "", "1")
+		if strings.Contains(rec.Body.String(), "zai") {
+			t.Fatalf("the error names the provider: %s", rec.Body.String())
+		}
+	}
+	busy(call(g, smartBody))
+	if rows := att.all(); len(rows) != 1 || rows[0].ErrorCode != "busy" || rows[0].Status != 429 {
+		t.Fatalf("attempts: %+v", rows)
+	}
+	// A direct address has no timer of its own; its wait ends all the same
+	// (60 units, here milliseconds).
+	start := time.Now()
+	busy(call(g, zaiDirect))
+	if el := time.Since(start); el < 50*time.Millisecond || el > 10*time.Second {
+		t.Fatalf("a direct address waited %s for a place", el)
+	}
+	if s.n("zai#ZAI") != 1 {
+		t.Fatalf("zai was called %d times", s.n("zai#ZAI"))
+	}
+	if _, failed := reports(g.Breaker, "zai"); failed != 0 {
+		t.Fatalf("%d failures reported for a busy provider", failed)
+	}
+	close(hold)
+	<-a
+	noPlaces(t, g)
+}
+
+// The total timeout ends a wait like the attempt's does, and the answer says
+// what the request met: a provider with no place, not one that was silent.
+func TestFailover_BusyUntilTheTotalTimeout(t *testing.T) {
+	hold := make(chan struct{})
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": holdFirst(hold)})
+	g, att := failoverGateway(s, "ZAI", func(m *db.AIModel) {
+		m.Targets = m.Targets[:1]
+		m.AttemptTimeoutS, m.TotalTimeoutS = 60000, 30
+	})
+	limit(g, "zai", 1)
+	a := inFlight(t, g, "zai", post("/v1/chat/completions", "bgw_all", zaiDirect), DialectOpenAI)
+	rec := call(g, smartBody)
+	if rec.Code != 429 || errCode(t, rec) != "provider_busy" {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if rows := att.all(); len(rows) != 1 || rows[0].ErrorCode != "busy" {
+		t.Fatalf("attempts: %+v", rows)
+	}
+	close(hold)
+	<-a
+	noPlaces(t, g)
+}
+
+func TestFailover_BusyInTheAnthropicDialect(t *testing.T) {
+	hold := make(chan struct{})
+	s := script(map[string]http.HandlerFunc{"zai-anthropic#ZAIA": holdFirst(hold)})
+	g, _ := failoverGateway(s, "ZAI", func(m *db.AIModel) { m.AttemptTimeoutS, m.TotalTimeoutS = 30, 60000 })
+	limit(g, "zai-anthropic", 1)
+	a := inFlight(t, g, "zai-anthropic", msg("/v1/messages", "bgw_all", `{"model":"zai-anthropic/glm-5.1"}`), DialectAnthropic)
+	rec := serve(g, msg("/v1/messages", "bgw_all", smartBody), DialectAnthropic)
+	if typ, code := anthropicErr(t, rec); rec.Code != 429 || typ != "rate_limit_error" || code != "provider_busy" ||
+		rec.Header().Get("Burrow-Error-Code") != "provider_busy" || rec.Header().Get("Retry-After") != "1" {
+		t.Fatalf("status %d type %q code %q headers %v", rec.Code, typ, code, rec.Header())
+	}
+	close(hold)
+	<-a
+	noPlaces(t, g)
+}
+
+// Every credential slot of a provider shares the provider's places, and a
+// provider that had none for this request is not waited for a second time.
+func TestFailover_BusyCoversAllKeysOfAProvider(t *testing.T) {
+	hold := make(chan struct{})
+	s := script(map[string]http.HandlerFunc{
+		"zai#A": holdFirst(hold), "zai#B": status(200, `{"from":"zai-b"}`), "openrouter#OR": status(200, `{"from":"or"}`),
+	})
+	g, att := failoverGateway(s, "A,B", func(m *db.AIModel) { m.AttemptTimeoutS, m.TotalTimeoutS = 30, 60000 })
+	limit(g, "zai", 1)
+	a := inFlight(t, g, "zai", post("/v1/chat/completions", "bgw_all", zaiDirect), DialectOpenAI)
+
+	rec := call(g, smartBody)
+	if rec.Code != 200 || rec.Body.String() != `{"from":"or"}` {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	wantHeaders(t, rec, "openrouter", "google/gemini-x", "2")
+	rows := att.all()
+	if len(rows) != 3 || rows[0].ErrorCode != "busy" || rows[1].ErrorCode != "busy" || rows[1].ProviderSlug != "zai" ||
+		rows[1].Position != 1 || rows[1].DurationMs != 0 || rows[2].ErrorCode != "" {
+		t.Fatalf("attempts: %+v", rows)
+	}
+	if s.n("zai#B") != 0 || s.credentialReads("zai#B") != 0 {
+		t.Fatalf("the second key was used past the limit: %d calls, %d credential reads", s.n("zai#B"), s.credentialReads("zai#B"))
+	}
+	close(hold)
+	<-a
+	noPlaces(t, g)
+}
+
+func TestFailover_WaitsForAFreePlace(t *testing.T) {
+	hold := make(chan struct{})
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": holdFirst(hold), "openrouter#OR": status(200, `{"from":"or"}`)})
+	g, att := failoverGateway(s, "ZAI", nil) // attempt timeout 60 s
+	limit(g, "zai", 1)
+	a := inFlight(t, g, "zai", post("/v1/chat/completions", "bgw_all", zaiDirect), DialectOpenAI)
+
+	b := make(chan *httptest.ResponseRecorder, 1)
+	go func() { b <- call(g, smartBody) }()
+	waitFor(t, "the second request waits", func() bool { return g.Limiter.Waiting("zai") == 1 })
+	if s.n("zai#ZAI") != 1 {
+		t.Fatal("the waiting request reached the upstream")
+	}
+	close(hold)
+	rec := <-b
+	if rec.Code != 200 || rec.Body.String() != `{"from":"first"}` {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	wantHeaders(t, rec, "zai", "glm-5.1", "1")
+	if s.n("openrouter#OR") != 0 || s.n("zai#ZAI") != 2 || len(att.all()) != 0 {
+		t.Fatalf("openrouter calls %d, zai calls %d, attempts %+v", s.n("openrouter#OR"), s.n("zai#ZAI"), att.all())
+	}
+	<-a
+	noPlaces(t, g)
+}
+
+// Review Focus 7: a request cancelled while it waits leaves the queue, takes
+// no place later, and is nobody's failure.
+func TestFailover_CancelledWhileWaitingForAPlace(t *testing.T) {
+	hold := make(chan struct{})
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": holdFirst(hold), "openrouter#OR": status(200, `{"from":"or"}`)})
+	g, att := failoverGateway(s, "ZAI", nil)
+	limit(g, "zai", 1)
+	a := inFlight(t, g, "zai", post("/v1/chat/completions", "bgw_all", zaiDirect), DialectOpenAI)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		b <- serve(g, post("/v1/chat/completions", "bgw_all", smartBody).WithContext(ctx), DialectOpenAI)
+	}()
+	waitFor(t, "the second request waits", func() bool { return g.Limiter.Waiting("zai") == 1 })
+	cancel()
+	<-b
+	if g.Limiter.Waiting("zai") != 0 || g.Limiter.InUse("zai") != 1 {
+		t.Fatalf("after the waiter left: %d waiting, %d in use", g.Limiter.Waiting("zai"), g.Limiter.InUse("zai"))
+	}
+	if rows := att.all(); len(rows) != 1 || rows[0].ErrorCode != "client_closed" || rows[0].Status != 0 {
+		t.Fatalf("attempts: %+v", rows)
+	}
+	if s.n("openrouter#OR") != 0 {
+		t.Fatal("the chain went on for a client that was gone")
+	}
+	if _, failed := reports(g.Breaker, "zai"); failed != 0 {
+		t.Fatalf("%d failures reported", failed)
+	}
+	close(hold)
+	<-a
+	noPlaces(t, g)
+	if s.n("zai#ZAI") != 1 {
+		t.Fatalf("zai calls = %d: the cancelled request took a place afterwards", s.n("zai#ZAI"))
+	}
+}
+
+// Review Focus 7: whatever way an attempt ends, its place is back before the
+// next thing happens.
+func TestFailover_PlaceIsReturnedOnEveryExit(t *testing.T) {
+	// zaiFree, used as openrouter's handler, proves zai's place was returned
+	// before the next target was called.
+	setup := func(t *testing.T, zai http.HandlerFunc, mut func(*db.AIModel)) (*Gateway, *scripted, *atomic.Int32) {
+		t.Helper()
+		atNext := &atomic.Int32{}
+		atNext.Store(-1)
+		var g *Gateway
+		s := script(map[string]http.HandlerFunc{
+			"zai#ZAI": func(w http.ResponseWriter, r *http.Request) {
+				if n := g.Limiter.InUse("zai"); n != 1 {
+					t.Errorf("in use while zai is serving = %d", n)
+				}
+				zai(w, r)
+			},
+			"openrouter#OR": func(w http.ResponseWriter, _ *http.Request) {
+				atNext.Store(int32(g.Limiter.InUse("zai")))
+				_, _ = w.Write([]byte(`{"from":"or"}`))
+			},
+		})
+		g, _ = failoverGateway(s, "ZAI", mut)
+		limit(g, "zai", 1)
+		limit(g, "openrouter", 1)
+		return g, s, atNext
+	}
+	nextSawFree := func(t *testing.T, rec *httptest.ResponseRecorder, atNext *atomic.Int32) {
+		t.Helper()
+		if rec.Code != 200 || rec.Header().Get("Burrow-Provider") != "openrouter" {
+			t.Fatalf("status %d headers %v", rec.Code, rec.Header())
+		}
+		if n := atNext.Load(); n != 0 {
+			t.Fatalf("zai places in use when the next target was called = %d", n)
+		}
+	}
+
+	t.Run("success", func(t *testing.T) {
+		g, _, _ := setup(t, status(200, "{}"), nil)
+		if rec := call(g, smartBody); rec.Code != 200 {
+			t.Fatalf("status %d", rec.Code)
+		}
+		noPlaces(t, g)
+	})
+	t.Run("upstream error that is the answer", func(t *testing.T) {
+		g, _, _ := setup(t, status(400, "{}"), nil)
+		if rec := call(g, smartBody); rec.Code != 400 {
+			t.Fatalf("status %d", rec.Code)
+		}
+		noPlaces(t, g)
+	})
+	t.Run("attempt discarded for the next target", func(t *testing.T) {
+		g, _, atNext := setup(t, endless500, nil)
+		nextSawFree(t, call(g, smartBody), atNext)
+		noPlaces(t, g)
+	})
+	t.Run("panic before a response", func(t *testing.T) {
+		g, _, atNext := setup(t, func(http.ResponseWriter, *http.Request) { panic("boom") }, nil)
+		nextSawFree(t, call(g, smartBody), atNext)
+		noPlaces(t, g)
+	})
+	t.Run("panic after the response started", func(t *testing.T) {
+		g, _, _ := setup(t, func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("data: one\n\n"))
+			w.(http.Flusher).Flush()
+			panic(http.ErrAbortHandler)
+		}, nil)
+		rec := httptest.NewRecorder()
+		rec.Header().Set("Burrow-Request-Id", "req-1")
+		func() {
+			defer func() {
+				if p := recover(); p != http.ErrAbortHandler {
+					t.Fatalf("panic = %v, want http.ErrAbortHandler", p)
+				}
+			}()
+			g.ServeDialect(rec, post("/v1/chat/completions", "bgw_all", smartBody), DialectOpenAI)
+		}()
+		drained(g)
+		if rec.Body.String() != "data: one\n\n" {
+			t.Fatalf("body %q", rec.Body.String())
+		}
+		noPlaces(t, g)
+	})
+	t.Run("attempt timeout", func(t *testing.T) {
+		g, _, atNext := setup(t, untilCancelled, func(m *db.AIModel) { m.AttemptTimeoutS, m.TotalTimeoutS = 30, 60000 })
+		nextSawFree(t, call(g, smartBody), atNext)
+		noPlaces(t, g)
+	})
+	t.Run("total timeout", func(t *testing.T) {
+		g, s, _ := setup(t, untilCancelled, func(m *db.AIModel) { m.AttemptTimeoutS, m.TotalTimeoutS = 40, 50 })
+		s.handlers["openrouter#OR"] = untilCancelled
+		if rec := call(g, smartBody); rec.Code != 504 {
+			t.Fatalf("status %d", rec.Code)
+		}
+		noPlaces(t, g)
+	})
+	t.Run("client gone before a response", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		g, s, _ := setup(t, func(_ http.ResponseWriter, r *http.Request) {
+			cancel()
+			<-r.Context().Done()
+		}, nil)
+		_ = serve(g, post("/v1/chat/completions", "bgw_all", smartBody).WithContext(ctx), DialectOpenAI)
+		if s.n("openrouter#OR") != 0 {
+			t.Fatal("the chain went on")
+		}
+		noPlaces(t, g)
+	})
+	t.Run("client gone mid-stream", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		g, _, _ := setup(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("data: one\n\n"))
+			w.(http.Flusher).Flush()
+			cancel()
+			<-r.Context().Done()
+		}, nil)
+		rec := serve(g, post("/v1/chat/completions", "bgw_all", smartBody).WithContext(ctx), DialectOpenAI)
+		if rec.Body.String() != "data: one\n\n" {
+			t.Fatalf("body %q", rec.Body.String())
+		}
+		noPlaces(t, g)
+	})
+	t.Run("target refused by its policy takes no place", func(t *testing.T) {
+		g, s, atNext := setup(t, status(200, "{}"), nil)
+		g.ServicePolicy = policyBy(map[string]string{"prov-zai": "public"}, &[]string{})
+		_ = call(g, smartBody)
+		if s.n("zai#ZAI") != 0 || atNext.Load() > 0 {
+			t.Fatalf("zai calls %d, places in use at the next target %d", s.n("zai#ZAI"), atNext.Load())
+		}
+		noPlaces(t, g)
+	})
+}
+
+// Review Focus 7, over real connections: a stream holds its place until its
+// last byte, and a stream the client walks away from gives it back.
+func TestFailover_StreamHoldsItsPlaceUntilTheEnd(t *testing.T) {
+	for _, abandon := range []bool{false, true} {
+		name := "read to the end"
+		if abandon {
+			name = "abandoned by the client"
+		}
+		t.Run(name, func(t *testing.T) {
+			var rig *streamRig
+			var zaiCalls atomic.Int32
+			rig = newStreamRig(t,
+				func(w http.ResponseWriter, r *http.Request) {
+					if zaiCalls.Add(1) > 1 {
+						_, _ = w.Write([]byte("data: late\n\n"))
+						return
+					}
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte("data: one\n\n"))
+					w.(http.Flusher).Flush()
+					select {
+					case <-rig.release:
+						_, _ = w.Write([]byte("data: [DONE]\n\n"))
+					case <-r.Context().Done():
+					}
+				},
+				status(200, "data: from openrouter\n\n"))
+			limit(rig.g, "zai", 1)
+			rig.timeouts(40, 60000)
+
+			resp := rig.post(t)
+			br := bufio.NewReader(resp.Body)
+			if ev, err := readEvent(t, br); ev != "data: one\n\n" || err != nil {
+				t.Fatalf("first event %q, %v", ev, err)
+			}
+			// Well past the attempt timeout the stream still holds the place.
+			time.Sleep(60 * time.Millisecond)
+			if n := rig.g.Limiter.InUse("zai"); n != 1 {
+				t.Fatalf("in use while the stream is open = %d", n)
+			}
+			// A second request is not let in on zai.
+			second := rig.post(t)
+			body, _ := io.ReadAll(second.Body)
+			if second.Header.Get("Burrow-Provider") != "openrouter" || second.Header.Get("Burrow-Attempts") != "2" || string(body) != "data: from openrouter\n\n" {
+				t.Fatalf("second request: headers %v body %q", second.Header, body)
+			}
+			if n := rig.g.Limiter.InUse("zai"); n != 1 || rig.n("zai") != 1 {
+				t.Fatalf("in use = %d, zai calls = %d", n, rig.n("zai"))
+			}
+
+			if abandon {
+				_ = resp.Body.Close()
+			} else {
+				close(rig.release)
+				if rest, err := io.ReadAll(br); string(rest) != "data: [DONE]\n\n" || err != nil {
+					t.Fatalf("rest %q, %v", rest, err)
+				}
+			}
+			waitFor(t, "the stream's place is returned", func() bool { return rig.g.Limiter.InUse("zai") == 0 })
+			waitFor(t, "the limiter is empty", func() bool { return rig.g.Limiter.entries() == 0 })
+			// And the provider serves again.
+			third := rig.post(t)
+			body, _ = io.ReadAll(third.Body)
+			if third.Header.Get("Burrow-Provider") != "zai" || string(body) != "data: late\n\n" {
+				t.Fatalf("third request: headers %v body %q", third.Header, body)
+			}
+			waitFor(t, "the limiter is empty", func() bool { return rig.g.Limiter.entries() == 0 })
+		})
+	}
+}
+
+// Review Focus 7: a burst through the whole request path never has more than
+// the limit in flight at the provider, and every request is served.
+func TestFailover_BurstNeverExceedsTheLimit(t *testing.T) {
+	const n, k = 24, 3
+	var cur, peak atomic.Int32
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": func(w http.ResponseWriter, _ *http.Request) {
+		c := cur.Add(1)
+		for {
+			p := peak.Load()
+			if c <= p || peak.CompareAndSwap(p, c) {
+				break
+			}
+		}
+		time.Sleep(2 * time.Millisecond)
+		cur.Add(-1)
+		_, _ = w.Write([]byte("{}"))
+	}})
+	g, _ := failoverGateway(s, "ZAI", nil)
+	g.timeUnit = time.Second // nobody gives up waiting in this test
+	limit(g, "zai", k)
+	var wg sync.WaitGroup
+	codes := make([]int, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			body := smartBody
+			if i%2 == 0 {
+				body = zaiDirect
+			}
+			g.ServeDialect(rec, post("/v1/chat/completions", "bgw_all", body), DialectOpenAI)
+			codes[i] = rec.Code
+		}(i)
+	}
+	wg.Wait()
+	drained(g)
+	for i, c := range codes {
+		if c != 200 {
+			t.Fatalf("request %d: status %d", i, c)
+		}
+	}
+	if p := peak.Load(); p > k || p < 2 {
+		t.Fatalf("peak in flight = %d, limit %d", p, k)
+	}
+	noPlaces(t, g)
+}
+
+// The limit is read from the provider row of every request: raising it lets
+// more in at once, without a restart, while requests admitted earlier keep
+// their places.
+func TestFailover_LimitChangeAppliesToTheNextRequest(t *testing.T) {
+	hold := make(chan struct{})
+	var calls atomic.Int32
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		select {
+		case <-hold:
+		case <-r.Context().Done():
+		}
+		_, _ = w.Write([]byte("{}"))
+	}})
+	g, _ := failoverGateway(s, "ZAI", nil)
+	g.timeUnit = time.Second
+	// Each request reads the provider row afresh; the map is swapped whole so
+	// the readers race with nothing.
+	var providers atomic.Value
+	providers.Store(g.Providers)
+	setLimit := func(n int) {
+		next := fakeProviders{}
+		for k, v := range providers.Load().(fakeProviders) {
+			if k == "zai" {
+				v.MaxConcurrent = n
+			}
+			next[k] = v
+		}
+		providers.Store(next)
+	}
+	g.Providers = providerFunc(func(ctx context.Context, slug string) (db.AIProvider, error) {
+		return providers.Load().(fakeProviders).ProviderBySlug(ctx, slug)
+	})
+	g.Limiter = NewLimiter()
+	setLimit(1)
+
+	done := make(chan int, 3)
+	send := func() {
+		go func() { done <- call(g, zaiDirect).Code }()
+	}
+	send()
+	waitFor(t, "first in", func() bool { return calls.Load() == 1 })
+	send()
+	waitFor(t, "second waits", func() bool { return g.Limiter.Waiting("zai") == 1 })
+	setLimit(2)
+	send() // brings the new limit: the waiter goes in ahead of it, and it waits
+	waitFor(t, "the waiter is let in under the raised limit", func() bool { return calls.Load() == 2 })
+	if in, waiting := g.Limiter.InUse("zai"), g.Limiter.Waiting("zai"); in != 2 || waiting != 1 {
+		t.Fatalf("%d in use, %d waiting under a limit of 2", in, waiting)
+	}
+	setLimit(0)
+	send() // no limit any more: nobody is left waiting
+	waitFor(t, "everybody is in", func() bool { return calls.Load() == 4 })
+	close(hold)
+	for i := 0; i < 4; i++ {
+		if c := <-done; c != 200 {
+			t.Fatalf("status %d", c)
+		}
+	}
+	noPlaces(t, g)
+}
+
+type providerFunc func(ctx context.Context, slug string) (db.AIProvider, error)
+
+func (f providerFunc) ProviderBySlug(ctx context.Context, slug string) (db.AIProvider, error) {
+	return f(ctx, slug)
 }

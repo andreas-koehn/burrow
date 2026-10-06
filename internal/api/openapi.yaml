@@ -178,6 +178,26 @@ components:
             provider's own path, /ai/<provider>/v1/responses, is passed
             through whatever this says. Always false for a provider whose
             api_format is anthropic.
+        max_concurrent:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          description: >
+            How many requests the provider serves at once; 0 means no limit.
+            The limit covers every way to the provider: /ai/<provider>/…
+            (POST requests) and the dialect endpoints, where each credential
+            slot shares it. A request that finds no free place waits, for at
+            most 60 seconds or the model's attempt timeout, whichever is
+            shorter. When none comes free the next target of the model is
+            tried; with none left the answer is 429 provider_busy with a
+            Retry-After header. A change applies from the next request on;
+            requests already being served are not interrupted.
+        in_use:
+          type: integer
+          readOnly: true
+          description: >
+            How many of the max_concurrent places are taken at this moment.
+            Always 0 while max_concurrent is 0.
         model_count:
           type: integer
           description: Number of entries in the provider's stored model list.
@@ -257,6 +277,14 @@ components:
             its stored value on update. true is refused with 400 unless
             api_format is openai; a provider cannot change to another
             format while it is true.
+        max_concurrent:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          description: >
+            How many requests the provider serves at once; 0 means no limit.
+            Left out, it is 0 on create and keeps its stored value on
+            update. A value outside 0-1000 is refused with 400.
     AIModelTarget:
       type: object
       description: One provider and model a synthetic model can be sent to.
@@ -2970,9 +2998,9 @@ paths:
         upstream settings (api_format, base_url, credential_slot,
         auth_header, auth_format, extra_headers, billing) are for kind
         "direct"; on a tunnel create, or one without a kind, they are
-        refused with 400 instead of being dropped. So is supports_responses
-        on a tunnel create: a tunnel provider is flagged with
-        PUT /api/v1/ai/providers/{slug}.
+        refused with 400 instead of being dropped. So are supports_responses
+        and max_concurrent on a tunnel create: a tunnel provider gets them
+        with PUT /api/v1/ai/providers/{slug}.
       requestBody:
         required: true
         content:
@@ -3053,10 +3081,13 @@ paths:
         After a slug change the old base URL stops working immediately;
         there is no redirect. supports_responses is optional: it states
         whether the provider offers the OpenAI Responses API and is how a
-        tunnel provider is flagged. Left out, the stored value stays. Slug,
-        name and supports_responses are stored together or not at all: true
-        for a provider whose api_format is not openai is refused with 400
-        and slug and name stay as they were.
+        tunnel provider is flagged. max_concurrent is optional too: it sets
+        how many requests the provider serves at once (0 = no limit) and is
+        how a tunnel provider gets a limit. Left out, the stored values stay.
+        Slug, name, supports_responses and max_concurrent are stored together
+        or not at all: true for a provider whose api_format is not openai, or
+        a limit outside 0-1000, is refused with 400 and the rest stays as it
+        was.
       requestBody:
         required: true
         content:
@@ -3073,6 +3104,11 @@ paths:
                 supports_responses:
                   type: boolean
                   description: Optional. Whether the provider offers POST /responses.
+                max_concurrent:
+                  type: integer
+                  minimum: 0
+                  maximum: 1000
+                  description: Optional. How many requests the provider serves at once; 0 = no limit.
       responses:
         '200':
           description: Provider updated.

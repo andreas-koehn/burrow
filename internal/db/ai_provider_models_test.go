@@ -41,7 +41,7 @@ func TestAIProviderModels(t *testing.T) {
 	}
 
 	// Models follow a provider rename and disappear with the provider.
-	if err := x.UpdateAIProvider(ctx, "ollama", "local", "Local", nil); err != nil {
+	if err := x.UpdateAIProvider(ctx, "ollama", "local", "Local", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := x.ListAIProviderModels(ctx, "local"); len(got) != 1 {

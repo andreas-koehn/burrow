@@ -32,7 +32,10 @@ const (
 	attemptPanic         = "panic"            // the upstream handler panicked before a response
 	attemptBreakerOpen   = "breaker_open"     // skipped: the provider is failing; nothing was sent
 	attemptWrongDialect  = "dialect_mismatch" // skipped: the provider speaks another format; nothing was sent
+	attemptBusy          = "busy"             // the provider had no free place in time; nothing was sent
 )
+
+const msgProviderBusy = "the provider is serving as many requests as it is set to; try again shortly"
 
 // AttemptRecorder stores what a request tried, for requests that needed more
 // than one attempt or failed.
@@ -101,10 +104,7 @@ type failover struct {
 // newFailover builds the handler for a resolved request. candidates are the
 // ones usable for this request's endpoint.
 func (g *Gateway) newFailover(res Resolution, candidates []candidate, route *aigw.Route, requestID string) *failover {
-	unit := g.timeUnit
-	if unit <= 0 {
-		unit = time.Second
-	}
+	unit := g.unit()
 	// A direct address gets no clock from here (0 = none): it has one target
 	// and nothing to fall over to, no model row an operator could set a
 	// timeout on, and is bounded as it always was, by its transport. A model
@@ -146,8 +146,10 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if f.totalTimeout > 0 {
 		deadline = time.Now().Add(f.totalTimeout)
 	}
-	sent := 0 // attempts that reached an upstream handler
+	sent := 0 // attempts made: sent to an upstream, or waiting in vain for a place at one
 	outOfTime := false
+	busy := false                       // the last candidate looked at had no free place
+	full := map[string]bool{}           // providers that had no free place for this request
 	admitted := map[string]*admission{} // by provider slug
 	// A chain that ends without a response (the total timeout, the end of
 	// the list, a panic before one started) leaves the failures it saw with
@@ -197,6 +199,14 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			rows = append(rows, f.skipped(c, attemptBreakerOpen))
 			continue
 		}
+		// The provider's other keys share its places: a provider this request
+		// has waited for in vain is not waited for again.
+		if full[c.provider.Slug] {
+			row := f.skipped(c, attemptBusy)
+			row.Status = http.StatusTooManyRequests
+			rows = append(rows, row)
+			continue
+		}
 
 		// The breaker hears about the request the moment a response starts,
 		// not when its body ends: the first byte shows the answering provider
@@ -229,11 +239,21 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		outOfTime = res.timedOut
+		if busy = res.busy; busy {
+			full[c.provider.Slug] = true
+		}
 	}
 
 	// Nothing was delivered. The error is the gateway's own, in the request's
 	// dialect; it names no provider.
 	w.Header().Set(headerAttempts, strconv.Itoa(sent))
+	if busy {
+		// The last thing tried was full, not failing: the caller is told to
+		// come back, also when the request's time ran out in that queue.
+		w.Header().Set("Retry-After", "1")
+		f.g.fail(w, r, http.StatusTooManyRequests, "provider_busy", msgProviderBusy)
+		return
+	}
 	if outOfTime {
 		f.g.fail(w, r, http.StatusGatewayTimeout, "gateway_timeout", "no provider answered in time")
 		return
@@ -311,6 +331,7 @@ type attemptResult struct {
 	row        db.UsageAttempt
 	committed  bool // the response went to the client
 	timedOut   bool // the attempt's time ran out before a response started
+	busy       bool // the provider had no free place in time; nothing was sent
 	outcome    int
 	panicked   bool
 	panicValue any
@@ -345,6 +366,7 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 	}
 	reached := false // the target's policy and credential passed; its upstream handler was called
 	late := false    // the status came after the time was up: it is the cancellation's, not the upstream's
+	busy := false    // no place came free at the provider in time; its upstream handler was not called
 	cw := newCommitWriter(w,
 		func(status int) bool {
 			if state.Load() == attemptTimedOut {
@@ -400,7 +422,7 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 		// Out of time: the attempt's own clock, or the upstream handler's
 		// transport giving up on the response headers.
 		gaveUp := cw.upstreamTimeout || state.Load() == attemptTimedOut
-		res.timedOut = gaveUp && !cw.committed
+		res.timedOut = gaveUp && !cw.committed && !busy
 		clientGone := r.Context().Err() != nil
 		status := cw.status
 		if late || cw.upstreamTimeout {
@@ -410,6 +432,11 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 		switch {
 		case clientGone:
 			code, res.outcome = attemptClientClosed, outcomeNeutral
+		case busy:
+			// Waiting in vain, whichever clock ended the wait, says nothing
+			// against the provider: it is full, not failing.
+			code, res.outcome, res.busy = attemptBusy, outcomeNeutral, true
+			status = http.StatusTooManyRequests
 		case gaveUp:
 			code, res.outcome = attemptTimeout, outcomeFailed
 		case res.panicked && res.committed:
@@ -453,8 +480,21 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 	// The target's policy first, its credential after; an error either
 	// writes is an attempt's answer like any other.
 	if upstream, _, ok := f.g.targetUpstream(cw, req, c.provider); ok {
+		// A place at the provider, for as long as its handler runs: that is
+		// the whole response, a streamed body included. The wait ends with the
+		// attempt's context: its timer, the client leaving.
+		release, admitted := f.g.admit(ctx, c.provider)
+		if !admitted {
+			busy = true
+			return res
+		}
 		reached = true
-		upstream.ServeHTTP(cw, req)
+		func() {
+			// Given back when the handler returns or panics, before anything
+			// else is decided about the attempt.
+			defer release()
+			upstream.ServeHTTP(cw, req)
+		}()
 		if !cw.committed && !cw.discarded {
 			// A handler that returns without writing has answered 200 with
 			// an empty body, as under net/http; unless its time was up.

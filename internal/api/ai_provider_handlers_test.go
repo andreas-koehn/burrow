@@ -55,6 +55,9 @@ func (f *fakeProviderStore) CreateDirectProvider(_ context.Context, ownerID stri
 		ExtraHeaders: in.ExtraHeaders, Billing: "metered",
 		SupportsResponses: in.SupportsResponses != nil && *in.SupportsResponses,
 	}
+	if in.MaxConcurrent != nil {
+		p.MaxConcurrent = *in.MaxConcurrent
+	}
 	if in.Billing != "" {
 		p.Billing = in.Billing
 	}
@@ -84,6 +87,9 @@ func (f *fakeProviderStore) UpdateProviderUpstream(_ context.Context, slug strin
 			}
 			if in.SupportsResponses != nil {
 				f.rows[i].SupportsResponses = *in.SupportsResponses
+			}
+			if in.MaxConcurrent != nil {
+				f.rows[i].MaxConcurrent = *in.MaxConcurrent
 			}
 			return f.rows[i], nil
 		}
@@ -167,7 +173,7 @@ func (f *fakeProviderStore) CreateTunnelProvider(_ context.Context, slug, name, 
 
 // UpdateProvider writes slug, name and the flag together or, like the store,
 // none of them when the flag does not fit the provider's format.
-func (f *fakeProviderStore) UpdateProvider(_ context.Context, slug, newSlug, name string, responses *bool) (db.AIProvider, error) {
+func (f *fakeProviderStore) UpdateProvider(_ context.Context, slug, newSlug, name string, responses *bool, maxConcurrent *int) (db.AIProvider, error) {
 	f.writes++
 	if f.updateErr != nil {
 		return db.AIProvider{}, f.updateErr
@@ -180,6 +186,9 @@ func (f *fakeProviderStore) UpdateProvider(_ context.Context, slug, newSlug, nam
 			f.rows[i].Slug, f.rows[i].Name = newSlug, name
 			if responses != nil {
 				f.rows[i].SupportsResponses = *responses
+			}
+			if maxConcurrent != nil {
+				f.rows[i].MaxConcurrent = *maxConcurrent
 			}
 			return f.rows[i], nil
 		}
@@ -937,7 +946,7 @@ func TestPostDirectProvider(t *testing.T) {
 		}
 		var payload map[string]any
 		_ = json.Unmarshal(f.aud.events[0].Payload, &payload)
-		if payload["kind"] != "direct" || payload["base_url"] != "https://api.z.ai/v4" || payload["credential_slot"] != "OPENROUTER" || payload["billing"] != "flat" || payload["supports_responses"] != false || len(payload) != 5 {
+		if payload["kind"] != "direct" || payload["base_url"] != "https://api.z.ai/v4" || payload["credential_slot"] != "OPENROUTER" || payload["billing"] != "flat" || payload["supports_responses"] != false || payload["max_concurrent"] != float64(0) || len(payload) != 6 {
 			t.Errorf("audit payload: %s", f.aud.events[0].Payload)
 		}
 		f.noSecrets(t, body)
@@ -1892,4 +1901,143 @@ func TestPostProvider_TunnelGatewayOnly(t *testing.T) {
 			t.Fatalf("direct provider touched the flag: %+v (status %d)", ss.gatewayOnlyCalls, resp.StatusCode)
 		}
 	})
+}
+
+// --------------------------------------------------------------------------
+// max_concurrent: how many requests a provider serves at once
+// --------------------------------------------------------------------------
+
+type fakeLimiter map[string]int
+
+func (f fakeLimiter) InUse(slug string) int { return f[slug] }
+
+const maxConcurrentRule = "max concurrent requests must be between 0 and 1000"
+
+func TestDirectProvider_MaxConcurrent(t *testing.T) {
+	f := newDirectFixture()
+	f.d.AILimiter = fakeLimiter{"zai": 2}
+	c := f.serve(t)
+
+	// No limit unless one is set, in the list and in the single view.
+	for _, p := range decodeProviders(t, c.get(t, "/api/v1/ai/providers")) {
+		if p.MaxConcurrent != 0 || p.InUse != 0 {
+			t.Errorf("%s: max_concurrent %d in_use %d by default", p.Slug, p.MaxConcurrent, p.InUse)
+		}
+	}
+	if body := wantStatus(t, c.get(t, "/api/v1/ai/providers/openrouter"), http.StatusOK); !strings.Contains(body, `"max_concurrent":0`) || !strings.Contains(body, `"in_use":0`) {
+		t.Errorf("the fields are always present: %s", body)
+	}
+
+	create := map[string]any{"name": "z.ai", "slug": "zai", "kind": "direct", "base_url": "https://api.z.ai/v4", "credential_slot": "ZAI", "max_concurrent": 3}
+	p := decodeProvider(t, wantStatus(t, c.post(t, "/api/v1/ai/providers", create), http.StatusCreated))
+	if p.MaxConcurrent != 3 || p.InUse != 2 {
+		t.Errorf("create: %+v", p)
+	}
+	if f.ps.lastDirect.MaxConcurrent == nil || *f.ps.lastDirect.MaxConcurrent != 3 {
+		t.Errorf("store input: %+v", f.ps.lastDirect)
+	}
+	if got := auditPayload(t, f.aud.events[len(f.aud.events)-1])["max_concurrent"]; got != float64(3) {
+		t.Errorf("create audit payload: max_concurrent = %v", got)
+	}
+
+	// Left out of an upstream update, the limit stays.
+	p = decodeProvider(t, wantStatus(t, c.put(t, "/api/v1/ai/providers/zai/upstream", map[string]any{"billing": "flat"}), http.StatusOK))
+	if p.MaxConcurrent != 3 || f.ps.lastDirect.MaxConcurrent != nil {
+		t.Errorf("limit left out: %+v, store input %+v", p, f.ps.lastDirect)
+	}
+	p = decodeProvider(t, wantStatus(t, c.put(t, "/api/v1/ai/providers/zai/upstream", map[string]any{"max_concurrent": 0}), http.StatusOK))
+	if p.MaxConcurrent != 0 {
+		t.Errorf("no limit: %+v", p)
+	}
+	ev := f.aud.events[len(f.aud.events)-1]
+	if got := auditPayload(t, ev); ev.Action != audit.ActionAIProviderUpdate || got["max_concurrent"] != float64(0) || got["upstream"] != true {
+		t.Errorf("update audit: %s %s", ev.Action, ev.Payload)
+	}
+
+	// Out of range or not a whole number: 400 at the boundary, nothing stored.
+	writes := f.ps.writes
+	for _, bad := range []any{-1, 1001, 1.5, "2", true} {
+		body := wantStatus(t, c.put(t, "/api/v1/ai/providers/zai/upstream", map[string]any{"max_concurrent": bad}), http.StatusBadRequest)
+		if n, isNum := bad.(int); isNum && !strings.Contains(body, maxConcurrentRule) {
+			t.Errorf("max_concurrent %d: body = %s", n, body)
+		}
+		create["slug"], create["max_concurrent"] = "other", bad
+		wantStatus(t, c.post(t, "/api/v1/ai/providers", create), http.StatusBadRequest)
+	}
+	if f.ps.writes != writes || f.ps.has("other") {
+		t.Errorf("a refused limit reached the store: writes %d -> %d", writes, f.ps.writes)
+	}
+}
+
+func TestPutProvider_MaxConcurrent(t *testing.T) {
+	ss, ps := oneProviderFixture()
+	aud := &stubAuditAppender{}
+	d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
+	d.AuditAppender = aud
+	d.AILimiter = fakeLimiter{"ollama": 1}
+	srv, c := newAIProviderServer(t, d)
+	defer srv.Close()
+
+	// This is how a tunnel provider gets a limit.
+	body := wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "ollama", "name": "Ollama", "max_concurrent": 1}), http.StatusOK)
+	if p := decodeProvider(t, body); p.MaxConcurrent != 1 || p.InUse != 1 || p.Kind != "tunnel" {
+		t.Errorf("view: %+v", p)
+	}
+	if ps.rows[0].MaxConcurrent != 1 || ps.writes != 1 {
+		t.Errorf("store: %+v writes=%d", ps.rows[0], ps.writes)
+	}
+	if got := auditPayload(t, aud.events[0]); got["max_concurrent"] != float64(1) {
+		t.Errorf("audit payload: %v", got)
+	}
+	// Left out, it stays and the audit does not name it.
+	body = wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "ollama", "name": "Ollama"}), http.StatusOK)
+	if p := decodeProvider(t, body); p.MaxConcurrent != 1 {
+		t.Errorf("limit left out: %+v", p)
+	}
+	if _, named := auditPayload(t, aud.events[1])["max_concurrent"]; named {
+		t.Errorf("audit names a limit that was not sent: %s", aud.events[1].Payload)
+	}
+	// 0 lifts it.
+	body = wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "ollama", "name": "Ollama", "max_concurrent": 0}), http.StatusOK)
+	if p := decodeProvider(t, body); p.MaxConcurrent != 0 {
+		t.Errorf("no limit: %+v", p)
+	}
+	// Out of range: 400 with the reason, and the rename next to it did not happen.
+	writes := ps.writes
+	for _, bad := range []any{-1, 1001, 2.5, "3"} {
+		body := wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "renamed", "name": "Renamed", "max_concurrent": bad}), http.StatusBadRequest)
+		if _, isNum := bad.(int); isNum && !strings.Contains(body, maxConcurrentRule) {
+			t.Errorf("max_concurrent %v: body = %s", bad, body)
+		}
+	}
+	if ps.writes != writes || ps.has("renamed") {
+		t.Errorf("a refused limit reached the store")
+	}
+}
+
+// A tunnel provider gets its limit through PUT; a create that names it would
+// otherwise answer 201 and drop it.
+func TestPostProvider_TunnelWithMaxConcurrentRefused(t *testing.T) {
+	ss, ps := oneProviderFixture()
+	ps.rows = nil
+	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, &fakeModelStore{}, ps))
+	defer srv.Close()
+	body := wantStatus(t, c.post(t, "/api/v1/ai/providers", map[string]any{"name": "Ollama", "slug": "ollama", "service_id": "svc1", "max_concurrent": 1}), http.StatusBadRequest)
+	if !strings.Contains(body, "PUT /api/v1/ai/providers/{slug}") || ps.writes != 0 {
+		t.Errorf("body = %s writes = %d", body, ps.writes)
+	}
+}
+
+// Setting the limit is admin only, like every other provider write.
+func TestProviderMaxConcurrent_RequiresAdmin(t *testing.T) {
+	ss, ps := oneProviderFixture()
+	d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
+	d.Users = &fakeUserStore{role: "user"}
+	srv, c := newAIProviderServer(t, d)
+	defer srv.Close()
+	wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "ollama", "name": "Ollama", "max_concurrent": 1}), http.StatusForbidden)
+	wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama/upstream", map[string]any{"max_concurrent": 1}), http.StatusForbidden)
+	if ps.writes != 0 || ps.rows[0].MaxConcurrent != 0 {
+		t.Errorf("a non-admin changed the limit: %+v", ps.rows[0])
+	}
 }

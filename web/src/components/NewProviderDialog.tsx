@@ -4,9 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
 import { SlugField } from "@/components/SlugField";
-import { ResponsesCheckbox } from "@/components/ProviderUpstreamPanel";
+import { ConcurrencyField, ResponsesCheckbox } from "@/components/ProviderUpstreamPanel";
 import { providerSlugError } from "@/lib/providerSlug";
-import { PROVIDER_PRESETS, credentialSlotError, envVarForSlot } from "@/lib/providerPresets";
+import { PROVIDER_PRESETS, credentialSlotError, envVarForSlot, parseConcurrency } from "@/lib/providerPresets";
 import { providerBaseUrl } from "@/lib/serviceUrl";
 import type { AiProvider, Service } from "@/lib/contract";
 
@@ -47,6 +47,9 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
   const [billing, setBilling] = useState<"metered" | "flat">("metered");
   // The operator's statement that the API offers POST /responses.
   const [responses, setResponses] = useState(false);
+  // Requests served at once; empty = no limit.
+  const [concurrency, setConcurrency] = useState("");
+  const [concurrencyErr, setConcurrencyErr] = useState<string | null>(null);
   // slugErr, urlErr and slotErr belong to their fields; formErr is everything
   // else (name, service taken or not eligible, permission, network).
   const [slugErr, setSlugErr] = useState<string | null>(null);
@@ -97,15 +100,16 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
     clearErrors();
   }
   function clearErrors() {
-    setSlugErr(null); setUrlErr(null); setSlotErr(null); setFormErr(null);
+    setSlugErr(null); setUrlErr(null); setSlotErr(null); setConcurrencyErr(null); setFormErr(null);
   }
 
+  const limit = parseConcurrency(concurrency);
   const create = useMutation({
     mutationFn: () =>
       apiFetch<AiProvider>("/ai/providers", {
         method: "POST",
         body: JSON.stringify(direct
-          ? { kind: "direct", slug: slug || undefined, name: name.trim(), base_url: baseUrl.trim(), credential_slot: slot, billing, supports_responses: responses }
+          ? { kind: "direct", slug: slug || undefined, name: name.trim(), base_url: baseUrl.trim(), credential_slot: slot, billing, supports_responses: responses, max_concurrent: limit ?? 0 }
           : { slug: slug || undefined, name: name.trim(), kind: "tunnel", service_id: chosen }),
       }),
     // Wait for the refetch so the list behind the dialog already shows the provider.
@@ -121,6 +125,7 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
       else if (direct && e.status === 409) setSlugErr(e.message);
       else if (direct && e.status === 400 && e.message.startsWith("base URL")) setUrlErr(e.message);
       else if (direct && e.status === 400 && e.message.startsWith("credential slot")) setSlotErr(e.message);
+      else if (direct && e.status === 400 && e.message.startsWith("max concurrent")) setConcurrencyErr(e.message);
       else if (e.status === 403) setFormErr("You don't have permission to add providers.");
       else setFormErr(e.message);
     },
@@ -133,7 +138,7 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
   const slotMissing = direct && slot !== "" && slotMessage === null
     && slots.data !== undefined && !slots.data.slots.includes(slot);
   const filled = direct
-    ? baseUrl.trim() !== "" && slot !== "" && slotMessage === null
+    ? baseUrl.trim() !== "" && slot !== "" && slotMessage === null && limit !== null
     : chosen !== "";
   const canCreate = name.trim() !== "" && filled && slugMessage === null && !create.isPending;
   return (
@@ -255,6 +260,12 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
                 options={BILLING_OPTIONS}
               />
             </FormField>
+            <ConcurrencyField
+              id="np-concurrency"
+              value={concurrency}
+              error={concurrencyErr}
+              onChange={(v) => { setConcurrency(v); setConcurrencyErr(null); setFormErr(null); }}
+            />
             <ResponsesCheckbox id="np-responses" checked={responses} onChange={(v) => { setResponses(v); setFormErr(null); }} />
           </>
         )}

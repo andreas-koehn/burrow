@@ -137,7 +137,7 @@ func checkAIModelsFollowProviderRename(t *testing.T, x *DB, userID string) {
 		Targets: []AIModelTarget{{Dialect: "openai", ProviderSlug: "zai", TargetModel: "g"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := x.UpdateAIProvider(ctx, "zai", "zhipu", "Zhipu", nil); err != nil {
+	if err := x.UpdateAIProvider(ctx, "zai", "zhipu", "Zhipu", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := x.GetAIModel(ctx, "m1")

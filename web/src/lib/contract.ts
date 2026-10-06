@@ -187,6 +187,10 @@ export interface AiProvider {
    * its operator stated. While false, /openai/v1/responses refuses its models.
    */
   supports_responses: boolean;
+  /** How many requests the provider serves at once; more wait for a free place. 0 = no limit. */
+  max_concurrent: number;
+  /** How many of those places are taken right now; 0 while there is no limit. */
+  in_use: number;
   /** Number of entries in the provider's stored model list. */
   model_count: number;
   model_alias: string;
@@ -221,6 +225,8 @@ export interface AiProviderUpstreamInput {
   billing?: "metered" | "flat";
   /** Only for api_format "openai". */
   supports_responses?: boolean;
+  /** 0–1000; 0 = no limit. */
+  max_concurrent?: number;
 }
 
 // Service AI config (spec Part B.7) — one row per service, default-filled.

@@ -169,7 +169,7 @@ func TestReportedCostAndProviderRename_Postgres(t *testing.T) {
 		t.Fatalf("per-kind aggregate = %+v", k)
 	}
 
-	if err := x.UpdateAIProvider(ctx, "pg-cost", "pg-cost2", "PG Cost Two", nil); err != nil {
+	if err := x.UpdateAIProvider(ctx, "pg-cost", "pg-cost2", "PG Cost Two", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if backing, _ := x.GetServiceByID(ctx, svc.ID); backing.Name != "PG Cost Two" {
@@ -210,4 +210,20 @@ func TestUpdateAIProvider_Responses_Postgres(t *testing.T) {
 	t.Cleanup(func() { _ = x.Close() })
 	_ = x.CreateUser(context.Background(), User{ID: "u-resp-pg", Email: "u-resp-pg@test.invalid", PasswordHash: "h", Role: "user"})
 	checkUpdateAIProviderResponses(t, x, "u-resp-pg", "pg-resp")
+}
+
+// Requires a live Postgres URL in BURROW_TEST_POSTGRES_URL.
+func TestUpdateAIProvider_MaxConcurrent_Postgres(t *testing.T) {
+	pgURL := os.Getenv("BURROW_TEST_POSTGRES_URL")
+	if pgURL == "" {
+		t.Skip("BURROW_TEST_POSTGRES_URL not set; skipping postgres provider update test")
+	}
+	b, err := OpenPostgres(pgURL)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	x := Wrap(b.DB())
+	t.Cleanup(func() { _ = x.Close() })
+	_ = x.CreateUser(context.Background(), User{ID: "u-mc-pg", Email: "u-mc-pg@test.invalid", PasswordHash: "h", Role: "user"})
+	checkUpdateAIProviderMaxConcurrent(t, x, "u-mc-pg", "pg-mc")
 }

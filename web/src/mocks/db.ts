@@ -54,6 +54,8 @@ export interface AiProviderRow {
   billing?: "metered" | "flat";
   // Offers POST /responses; any kind of provider. Absent = false.
   supports_responses?: boolean;
+  // Requests served at once; any kind of provider. Absent or 0 = no limit.
+  max_concurrent?: number;
 }
 
 export interface MockDb {
@@ -81,6 +83,8 @@ export interface MockDb {
   aiProviders: AiProviderRow[];
   // Stored model list per provider slug.
   aiProviderModels: Record<string, AiProviderModel[]>;
+  // Places taken right now at a provider with a concurrency limit, by slug.
+  aiProviderInUse: Record<string, number>;
   // Synthetic models and gateway keys (GET /ai/models, /ai/keys).
   aiModels: AiModel[];
   aiGatewayKeys: AiGatewayKey[];
@@ -215,6 +219,7 @@ function seed(): MockDb {
       zai: [{ id: "glm-5.1", display_name: "GLM 5.1", context_length: 200000, synced_at: "2026-05-19T00:00:00Z" }],
       "zai-anthropic": [{ id: "glm-5.1", display_name: "GLM 5.1", context_length: 200000, synced_at: "2026-05-19T00:00:00Z" }],
     },
+    aiProviderInUse: {},
     aiModels: [
       {
         name: "burrow-simple", description: "Small and local.", enabled: true, fallback_on_rate_limit: false,

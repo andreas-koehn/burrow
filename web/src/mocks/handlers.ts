@@ -107,8 +107,18 @@ function providerNameError(name: string): string | null {
 const MSG_BASE_URL = "base URL must be an https URL without credentials, query or fragment";
 const MSG_BASE_URL_PRIVATE = "base URL resolves to a private or loopback address";
 const MSG_MODEL_ID = "id must be 1-200 characters without control characters";
-const UPSTREAM_FIELDS = ["api_format", "base_url", "credential_slot", "auth_header", "auth_format", "extra_headers", "billing", "supports_responses"];
+const UPSTREAM_FIELDS = ["api_format", "base_url", "credential_slot", "auth_header", "auth_format", "extra_headers", "billing", "supports_responses", "max_concurrent"];
 const RESPONSES_FORMAT = "the Responses API belongs to the OpenAI format";
+const MSG_MAX_CONCURRENT = "max concurrent requests must be between 0 and 1000";
+
+// Same checks as the server for max_concurrent: a value that is not a whole
+// number does not decode ("invalid JSON body"), one outside 0-1000 is refused
+// with the store's reason. null and a field left out are the same.
+function maxConcurrentError(v: unknown): string | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "number" || !Number.isInteger(v)) return "invalid JSON body";
+  return v < 0 || v > 1000 ? MSG_MAX_CONCURRENT : null;
+}
 const CREATE_FIELDS = ["slug", "name", "kind", "service_id", "gateway_only", ...UPSTREAM_FIELDS];
 const HEADER_NAME_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
 const RELAY_HEADERS = new Set([
@@ -129,6 +139,7 @@ interface UpstreamBody {
   extra_headers?: Record<string, string>;
   billing?: string;
   supports_responses?: boolean;
+  max_concurrent?: number | null;
 }
 
 // The server decodes these bodies strictly: a field it does not know, such as
@@ -232,6 +243,8 @@ function providerView(p: AiProviderRow): AiProvider {
     credential_present: present,
     billing: p.billing ?? "metered",
     supports_responses: p.supports_responses ?? false,
+    max_concurrent: p.max_concurrent ?? 0,
+    in_use: p.max_concurrent ? db.aiProviderInUse[p.slug] ?? 0 : 0,
     model_count: (db.aiProviderModels[p.slug] ?? []).length,
     // The upstream routes are admin only; header values are never returned.
     ...(direct && db.me.role === "admin"
@@ -728,6 +741,8 @@ export const handlers = [
     if (nameErr) return err(400, nameErr);
     const kind = b.kind || "tunnel";
     if (kind !== "tunnel" && kind !== "direct") return err(400, "kind must be 'tunnel' or 'direct'");
+    const limitErr = maxConcurrentError(b.max_concurrent);
+    if (limitErr) return err(400, limitErr);
     const slug = b.slug || providerSlugFromName(name);
     if (!providerSlugOk(slug)) return err(400, PROVIDER_SLUG_RULE);
     if (kind === "direct") {
@@ -743,6 +758,7 @@ export const handlers = [
         extra_headers: b.extra_headers ?? {},
         billing: b.billing as AiProviderRow["billing"],
         supports_responses: b.supports_responses ?? false,
+        max_concurrent: b.max_concurrent ?? 0,
       };
       const reason = normalizeDirect(row);
       if (reason) return err(400, reason);
@@ -757,6 +773,9 @@ export const handlers = [
     }
     if (b.supports_responses !== undefined) {
       return err(400, "supports_responses of a tunnel provider is set with PUT /api/v1/ai/providers/{slug}");
+    }
+    if (b.max_concurrent != null) {
+      return err(400, "max_concurrent of a tunnel provider is set with PUT /api/v1/ai/providers/{slug}");
     }
     // An unknown service is the same conflict as one in the wrong mode.
     const svc = db.services.find((s) => s.id === b.service_id);
@@ -778,6 +797,8 @@ export const handlers = [
     if (!b || typeof b !== "object") return err(400, "invalid JSON body");
     const unknown = unknownField(b, UPSTREAM_FIELDS);
     if (unknown) return err(400, unknown);
+    const limitErr = maxConcurrentError(b.max_concurrent);
+    if (limitErr) return err(400, limitErr);
     const p = db.aiProviders.find((x) => x.slug === params.slug);
     if (!p) return err(404, "provider not found");
     if (p.kind !== "direct") return err(409, "only direct providers have upstream settings");
@@ -796,6 +817,7 @@ export const handlers = [
       extra_headers: b.extra_headers ?? p.extra_headers,
       billing: (b.billing ?? p.billing) as AiProviderRow["billing"],
       supports_responses: b.supports_responses ?? p.supports_responses,
+      max_concurrent: b.max_concurrent ?? p.max_concurrent,
     };
     const reason = normalizeDirect(next);
     if (reason) return err(400, reason);
@@ -879,12 +901,14 @@ export const handlers = [
     const g = gate(request, { admin: true }); if (g) return g;
     const p = db.aiProviders.find((x) => x.slug === params.slug);
     if (!p) return err(404, "provider not found");
-    const b = await body<{ slug?: string; name?: string; supports_responses?: boolean }>(request);
+    const b = await body<{ slug?: string; name?: string; supports_responses?: boolean; max_concurrent?: number | null }>(request);
     const name = (b?.name ?? "").trim();
     const nameErr = providerNameError(name);
     if (nameErr) return err(400, nameErr);
     const slug = b?.slug ?? "";
     if (!providerSlugOk(slug)) return err(400, PROVIDER_SLUG_RULE);
+    const limitErr = maxConcurrentError(b?.max_concurrent);
+    if (limitErr) return err(400, limitErr);
     // Optional; left out, the stored value stays.
     if (b?.supports_responses && p.api_format !== "openai") return err(400, RESPONSES_FORMAT);
     if (db.aiProviders.some((x) => x !== p && x.slug === slug)) {
@@ -899,6 +923,7 @@ export const handlers = [
     p.slug = slug;
     p.name = name;
     if (b?.supports_responses !== undefined) p.supports_responses = b.supports_responses;
+    if (b?.max_concurrent != null) p.max_concurrent = b.max_concurrent;
     return json(providerView(p));
   }),
   http.delete("/api/v1/ai/providers/:slug", ({ request, params }) => {

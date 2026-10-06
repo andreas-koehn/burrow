@@ -62,7 +62,9 @@ describe("New provider dialog", () => {
       supports_responses: true,
     }));
     // Only what the API accepts; nothing that could carry a credential.
-    expect(Object.keys(posted!).sort()).toEqual(["base_url", "billing", "credential_slot", "kind", "name", "slug", "supports_responses"]);
+    expect(Object.keys(posted!).sort()).toEqual(["base_url", "billing", "credential_slot", "kind", "max_concurrent", "name", "slug", "supports_responses"]);
+    // No limit unless the operator sets one.
+    expect(posted!.max_concurrent).toBe(0);
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
   });
 
@@ -94,6 +96,41 @@ describe("New provider dialog", () => {
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
     expect(db.aiProviders.at(-1)).toMatchObject({ slug: "zai", supports_responses: true });
+  });
+
+  it("a hosted API can be given a concurrency limit; a local service gets it on its own page", async () => {
+    const { onOpenChange } = renderDialog();
+    expect(screen.queryByRole("textbox", { name: "Requests at once" })).toBeNull();
+    await hosted();
+    const field = screen.getByRole("textbox", { name: "Requests at once" });
+    expect(field).toHaveValue("");
+    expect(field).toHaveAccessibleDescription(
+      "How many requests this provider serves in parallel. More wait for a free place. Leave empty for no limit — set it for a local model on one GPU.",
+    );
+    await choosePreset("z.ai — Coding Plan");
+    await userEvent.type(field, "2");
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(db.aiProviders.at(-1)).toMatchObject({ slug: "zai", max_concurrent: 2 });
+  });
+
+  it("a concurrency limit of 1001 shows the server's reason on the field", async () => {
+    const { onOpenChange } = renderDialog();
+    await hosted();
+    await choosePreset("z.ai — Coding Plan");
+    const field = screen.getByRole("textbox", { name: "Requests at once" });
+    await userEvent.type(field, "1001");
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(await screen.findByText("max concurrent requests must be between 0 and 1000")).toBeInTheDocument();
+    expect(field).toBeInvalid();
+    expect(field).toHaveAccessibleDescription("max concurrent requests must be between 0 and 1000");
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(db.aiProviders.some((p) => p.slug === "zai")).toBe(false);
+    // Not a whole number: Create is blocked before anything is sent.
+    await userEvent.clear(field);
+    await userEvent.type(field, "-1");
+    expect(screen.getByText("Enter a whole number, or leave empty for no limit.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
   });
 
   it("creates through the mock API and choosing another preset overwrites the fields", async () => {

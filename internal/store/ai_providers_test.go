@@ -132,7 +132,7 @@ func TestUpdateAndDeleteProvider(t *testing.T) {
 	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA); err != nil {
 		t.Fatal(err)
 	}
-	p, err := s.UpdateProvider(ctx, "ollama", "local", "Local models", nil)
+	p, err := s.UpdateProvider(ctx, "ollama", "local", "Local models", nil, nil)
 	if err != nil || p.Slug != "local" || p.Name != "Local models" {
 		t.Fatalf("update: %v %+v", err, p)
 	}
@@ -140,10 +140,10 @@ func TestUpdateAndDeleteProvider(t *testing.T) {
 	if _, err := s.ProviderBySlug(ctx, "ollama"); !errors.Is(err, db.ErrNotFound) {
 		t.Fatalf("old slug err = %v", err)
 	}
-	if _, err := s.UpdateProvider(ctx, "local", "v1", "x", nil); !errors.Is(err, ErrInvalidProviderSlug) {
+	if _, err := s.UpdateProvider(ctx, "local", "v1", "x", nil, nil); !errors.Is(err, ErrInvalidProviderSlug) {
 		t.Fatalf("reserved err = %v", err)
 	}
-	if _, err := s.UpdateProvider(ctx, "gone", "abc", "x", nil); !errors.Is(err, ErrProviderNotFound) {
+	if _, err := s.UpdateProvider(ctx, "gone", "abc", "x", nil, nil); !errors.Is(err, ErrProviderNotFound) {
 		t.Fatalf("missing err = %v", err)
 	}
 	if err := s.DeleteProvider(ctx, "local"); err != nil {
@@ -498,7 +498,7 @@ func TestRenameDirectProvider_FreesSlugAndName(t *testing.T) {
 	if strings.Contains(first.ServiceID, "openrouter") {
 		t.Fatalf("service id %q is derived from the slug", first.ServiceID)
 	}
-	renamed, err := s.UpdateProvider(ctx, "openrouter", "router2", "Router Two", nil)
+	renamed, err := s.UpdateProvider(ctx, "openrouter", "router2", "Router Two", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,18 +588,18 @@ func TestUpdateProvider_Responses(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p, err := s.UpdateProvider(ctx, "ollama", "local", "Local", &on)
+	p, err := s.UpdateProvider(ctx, "ollama", "local", "Local", &on, nil)
 	if err != nil || p.Slug != "local" || p.Name != "Local" || !p.SupportsResponses {
 		t.Fatalf("update: %v %+v", err, p)
 	}
-	if p, err = s.UpdateProvider(ctx, "local", "local", "Local", nil); err != nil || !p.SupportsResponses {
+	if p, err = s.UpdateProvider(ctx, "local", "local", "Local", nil, nil); err != nil || !p.SupportsResponses {
 		t.Fatalf("flag left out: %v %+v", err, p)
 	}
-	if p, err = s.UpdateProvider(ctx, "local", "local", "Local", &off); err != nil || p.SupportsResponses {
+	if p, err = s.UpdateProvider(ctx, "local", "local", "Local", &off, nil); err != nil || p.SupportsResponses {
 		t.Fatalf("flag off: %v %+v", err, p)
 	}
 
-	_, err = s.UpdateProvider(ctx, "claude", "claude2", "Claude Two", &on)
+	_, err = s.UpdateProvider(ctx, "claude", "claude2", "Claude Two", &on, nil)
 	if !errors.Is(err, ErrInvalidProviderConfig) || !strings.Contains(err.Error(), "the Responses API belongs to the OpenAI format") {
 		t.Fatalf("anthropic provider: %v", err)
 	}
@@ -609,7 +609,7 @@ func TestUpdateProvider_Responses(t *testing.T) {
 	if _, err := s.ProviderBySlug(ctx, "claude2"); err == nil {
 		t.Fatal("the new slug exists after a refused update")
 	}
-	if _, err := s.UpdateProvider(ctx, "gone", "abc", "x", &on); !errors.Is(err, ErrProviderNotFound) {
+	if _, err := s.UpdateProvider(ctx, "gone", "abc", "x", &on, nil); !errors.Is(err, ErrProviderNotFound) {
 		t.Fatalf("unknown provider: %v", err)
 	}
 }
@@ -678,5 +678,70 @@ func TestRecordAttempts(t *testing.T) {
 	}
 	if other, err := s.AttemptsForRequest(ctx, "req-2"); err != nil || len(other) != 0 {
 		t.Fatalf("another request: %v %+v", err, other)
+	}
+}
+
+func TestProviderMaxConcurrent(t *testing.T) {
+	s := newStore(t)
+	ownerID := mustCreateUser(t, s, "admin@x", "admin").ID
+	svcA, _, _ := providerFixture(t, s)
+	ctx := context.Background()
+	const u = "https://x.example/v1"
+	n := func(v int) *int { return &v }
+	on := true
+
+	// No limit unless the operator sets one.
+	p, err := s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "zai", Name: "z.ai", BaseURL: u, CredentialSlot: "ZAI"})
+	if err != nil || p.MaxConcurrent != 0 {
+		t.Fatalf("default: %v %+v", err, p)
+	}
+	p, err = s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "local", Name: "Local", BaseURL: u, CredentialSlot: "L", MaxConcurrent: n(2)})
+	if err != nil || p.MaxConcurrent != 2 {
+		t.Fatalf("create with a limit: %v %+v", err, p)
+	}
+	for _, bad := range []int{-1, 1001} {
+		_, err := s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "bad", Name: "Bad", BaseURL: u, CredentialSlot: "B", MaxConcurrent: n(bad)})
+		if !errors.Is(err, ErrInvalidProviderConfig) || !strings.Contains(err.Error(), "max concurrent requests must be between 0 and 1000") {
+			t.Fatalf("create with %d: %v", bad, err)
+		}
+		if _, err := s.UpdateProviderUpstream(ctx, "local", DirectProviderInput{MaxConcurrent: n(bad)}); !errors.Is(err, ErrInvalidProviderConfig) {
+			t.Fatalf("upstream update with %d: %v", bad, err)
+		}
+		if _, err := s.UpdateProvider(ctx, "local", "renamed", "Renamed", nil, n(bad)); !errors.Is(err, ErrInvalidProviderConfig) {
+			t.Fatalf("update with %d: %v", bad, err)
+		}
+	}
+	if _, err := s.ProviderBySlug(ctx, "bad"); err == nil {
+		t.Fatal("a provider with an invalid limit was created")
+	}
+	// A refused limit renamed nothing and wrote nothing.
+	if got, err := s.ProviderBySlug(ctx, "local"); err != nil || got.MaxConcurrent != 2 || got.Name != "Local" {
+		t.Fatalf("after refused updates: %v %+v", err, got)
+	}
+
+	// An upstream update that does not name the limit keeps it.
+	if p, err = s.UpdateProviderUpstream(ctx, "local", DirectProviderInput{Billing: "flat"}); err != nil || p.MaxConcurrent != 2 || p.Billing != "flat" {
+		t.Fatalf("limit left out: %v %+v", err, p)
+	}
+	if p, err = s.UpdateProviderUpstream(ctx, "local", DirectProviderInput{MaxConcurrent: n(1000)}); err != nil || p.MaxConcurrent != 1000 || p.Billing != "flat" {
+		t.Fatalf("upper bound: %v %+v", err, p)
+	}
+	if p, err = s.UpdateProviderUpstream(ctx, "local", DirectProviderInput{MaxConcurrent: n(0)}); err != nil || p.MaxConcurrent != 0 {
+		t.Fatalf("no limit: %v %+v", err, p)
+	}
+
+	// A tunnel provider gets its limit through UpdateProvider, in one step
+	// with slug, name and the Responses flag.
+	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA); err != nil {
+		t.Fatal(err)
+	}
+	if p, err = s.UpdateProvider(ctx, "ollama", "gpu", "GPU box", &on, n(1)); err != nil || p.Slug != "gpu" || p.MaxConcurrent != 1 || !p.SupportsResponses {
+		t.Fatalf("tunnel provider: %v %+v", err, p)
+	}
+	if p, err = s.UpdateProvider(ctx, "gpu", "gpu", "GPU box", nil, nil); err != nil || p.MaxConcurrent != 1 || !p.SupportsResponses {
+		t.Fatalf("limit left out: %v %+v", err, p)
+	}
+	if p, err = s.UpdateProvider(ctx, "gpu", "gpu", "GPU box", nil, n(0)); err != nil || p.MaxConcurrent != 0 {
+		t.Fatalf("no limit: %v %+v", err, p)
 	}
 }

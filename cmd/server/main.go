@@ -779,6 +779,9 @@ func newRootCmd() *cobra.Command {
 			// IP/geo policy. A nil chain must stay a nil interface.
 			// One breaker for the relay; the status API reads its state.
 			aiBreaker := aigateway.NewBreaker()
+			// One limiter for the relay: every door to a provider shares its
+			// places, and the provider API reads how many are taken.
+			aiLimiter := aigateway.NewLimiter()
 			aiGateway := &aigateway.Gateway{
 				Providers:  st,
 				Keys:       st,
@@ -801,6 +804,7 @@ func newRootCmd() *cobra.Command {
 				// and what a request tried is logged.
 				Breaker:  aiBreaker,
 				Attempts: st,
+				Limiter:  aiLimiter,
 			}
 			if v04.AIChain != nil {
 				aiGateway.Chain = v04.AIChain
@@ -829,6 +833,7 @@ func newRootCmd() *cobra.Command {
 					// v0.3.0: service API + live tunnel lookup + auth domain.
 					Services:    st,
 					AIProviders: st,
+					AILimiter:   aiLimiter,
 					// Direct providers: the save-time host check follows the
 					// same switch as the dial guard, and the model sync leaves
 					// through the guarded transport.

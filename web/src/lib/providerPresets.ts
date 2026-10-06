@@ -56,3 +56,20 @@ export function credentialSlotError(slot: string): string | null {
 export function envVarForSlot(slot: string): string {
   return `BURROW_UPSTREAM_KEY_${slot}`;
 }
+
+/** Help text of the "Requests at once" field of a provider. */
+export const CONCURRENCY_HELP =
+  "How many requests this provider serves in parallel. More wait for a free place. Leave empty for no limit — set it for a local model on one GPU.";
+
+/** Shown while the "Requests at once" field holds something that is not a whole number. */
+export const CONCURRENCY_FORMAT = "Enter a whole number, or leave empty for no limit.";
+
+/**
+ * Reads the "Requests at once" field: empty and 0 mean no limit (0). null when
+ * the text is not a whole number. The range is the server's to check.
+ */
+export function parseConcurrency(text: string): number | null {
+  const t = text.trim();
+  if (t === "") return 0;
+  return /^\d{1,9}$/.test(t) ? Number(t) : null;
+}

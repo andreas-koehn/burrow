@@ -814,6 +814,163 @@ describe("Provider detail", () => {
     });
   });
 
+  describe("Requests at once", () => {
+    const FIELD = "Requests at once";
+    const HELP = "How many requests this provider serves in parallel. More wait for a free place. Leave empty for no limit — set it for a local model on one GPU.";
+    const RANGE = "max concurrent requests must be between 0 and 1000";
+
+    function providerPuts(spy: ReturnType<typeof vi.spyOn>, slug: string, suffix = "") {
+      return (spy.mock.calls as [unknown, RequestInit | undefined][])
+        .filter(([url, init]) => String(url).endsWith(`/api/v1/ai/providers/${slug}${suffix}`) && init?.method === "PUT")
+        .map(([, init]) => JSON.parse(String(init!.body)) as Record<string, unknown>);
+    }
+
+    it("tunnel provider: saving 2 sends max_concurrent 2, clearing the field sends 0", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      fetchSpy.mockClear();
+      db.aiProviderInUse.ollama = 1;
+      mount();
+      const field = await screen.findByRole("textbox", { name: FIELD });
+      expect(field).toHaveValue("");
+      expect(field).toHaveAccessibleDescription(HELP);
+      const save = screen.getByRole("button", { name: "Save limit" });
+      expect(save).toBeDisabled(); // nothing to save yet
+      expect(screen.queryByText(/in use$/)).toBeNull();
+
+      await userEvent.type(field, "2");
+      await userEvent.click(save);
+      await waitFor(() => expect(providerPuts(fetchSpy, "ollama")).toEqual([{ slug: "ollama", name: "ollama", max_concurrent: 2 }]));
+      await waitFor(() => expect(db.aiProviders[0]).toMatchObject({ slug: "ollama", max_concurrent: 2 }));
+      expect(await screen.findByText("1 of 2 in use")).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save limit" })).toBeDisabled());
+
+      await userEvent.clear(screen.getByRole("textbox", { name: FIELD }));
+      await userEvent.click(screen.getByRole("button", { name: "Save limit" }));
+      await waitFor(() => expect(providerPuts(fetchSpy, "ollama")).toHaveLength(2));
+      expect(providerPuts(fetchSpy, "ollama")[1]).toEqual({ slug: "ollama", name: "ollama", max_concurrent: 0 });
+      await waitFor(() => expect(db.aiProviders[0]).toMatchObject({ max_concurrent: 0 }));
+      await waitFor(() => expect(screen.queryByText(/in use$/)).toBeNull());
+    });
+
+    it("tunnel provider: a fresh page shows the stored limit", async () => {
+      db.aiProviders[0]!.max_concurrent = 3;
+      mount();
+      expect(await screen.findByRole("textbox", { name: FIELD })).toHaveValue("3");
+      expect(screen.getByText("0 of 3 in use")).toBeInTheDocument();
+    });
+
+    it("tunnel provider: a value of 1001 shows the server's reason on the field", async () => {
+      mount();
+      const field = await screen.findByRole("textbox", { name: FIELD });
+      await userEvent.type(field, "1001");
+      await userEvent.click(screen.getByRole("button", { name: "Save limit" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(RANGE);
+      expect(field).toBeInvalid();
+      expect(field).toHaveAccessibleDescription(RANGE);
+      expect(db.aiProviders[0]!.max_concurrent ?? 0).toBe(0);
+      // The next edit takes the refusal away.
+      await userEvent.type(field, "{backspace}");
+      expect(screen.queryByText(RANGE)).toBeNull();
+      expect(field).toBeValid();
+    });
+
+    it("tunnel provider: anything but a whole number is refused before sending", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      fetchSpy.mockClear();
+      mount();
+      const field = await screen.findByRole("textbox", { name: FIELD });
+      await userEvent.type(field, "1.5");
+      expect(await screen.findByRole("alert")).toHaveTextContent("Enter a whole number, or leave empty for no limit.");
+      expect(field).toBeInvalid();
+      expect(screen.getByRole("button", { name: "Save limit" })).toBeDisabled();
+      expect(providerPuts(fetchSpy, "ollama")).toEqual([]);
+    });
+
+    it("tunnel provider: a refusal that is not about the value shows below the field", async () => {
+      server.use(http.put("/api/v1/ai/providers/ollama", () =>
+        HttpResponse.json({ error: "the provider was changed by someone else at the same time; try again" }, { status: 409 })));
+      mount();
+      const field = await screen.findByRole("textbox", { name: FIELD });
+      await userEvent.type(field, "2");
+      await userEvent.click(screen.getByRole("button", { name: "Save limit" }));
+      expect(await screen.findByText("the provider was changed by someone else at the same time; try again")).toBeInTheDocument();
+      expect(field).toBeValid();
+      expect(field).toHaveValue("2"); // what was typed is kept for a second try
+    });
+
+    it("tunnel provider: a non-admin reads the limit and cannot change it", async () => {
+      db.me = { ...db.me, role: "user" };
+      db.aiProviders[0]!.max_concurrent = 2;
+      mount();
+      await screen.findByRole("heading", { name: /connect a client/i });
+      expect(screen.queryByRole("textbox", { name: FIELD })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Save limit" })).toBeNull();
+      expect(screen.getByText("Serves at most 2 requests at once; more wait for a free place.")).toBeInTheDocument();
+    });
+
+    it("tunnel provider: a non-admin is told when there is no limit", async () => {
+      db.me = { ...db.me, role: "user" };
+      mount();
+      await screen.findByRole("heading", { name: /connect a client/i });
+      expect(screen.getByText("No limit on requests served at once.")).toBeInTheDocument();
+    });
+
+    it("direct provider: the Upstream tab shows it and Edit sends only the limit", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      fetchSpy.mockClear();
+      db.aiProviderInUse.openrouter = 1;
+      mountDirect();
+      // The Connect tab's own control is for providers without upstream settings.
+      await screen.findByRole("heading", { name: /connect a client/i });
+      expect(screen.queryByRole("textbox", { name: FIELD })).toBeNull();
+      await openTab("Upstream");
+      const panel = screen.getByRole("tabpanel");
+      expect(within(panel).getByText(FIELD)).toBeInTheDocument();
+      expect(within(panel).getByText("no limit")).toBeInTheDocument();
+      await userEvent.click(within(panel).getByRole("button", { name: "Edit" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit upstream · OpenRouter" });
+      const field = within(dialog).getByRole("textbox", { name: FIELD });
+      expect(field).toHaveValue("");
+      expect(field).toHaveAccessibleDescription(HELP);
+      expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+      await userEvent.type(field, "4");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(providerPuts(fetchSpy, "openrouter", "/upstream")).toEqual([{ max_concurrent: 4 }]);
+      expect(db.aiProviders.at(-1)).toMatchObject({ slug: "openrouter", max_concurrent: 4 });
+      expect(await within(screen.getByRole("tabpanel")).findByText("1 of 4 in use")).toBeInTheDocument();
+
+      // Clearing the field lifts the limit.
+      await userEvent.click(within(screen.getByRole("tabpanel")).getByRole("button", { name: "Edit" }));
+      const again = await screen.findByRole("dialog", { name: "Edit upstream · OpenRouter" });
+      expect(within(again).getByRole("textbox", { name: FIELD })).toHaveValue("4");
+      await userEvent.clear(within(again).getByRole("textbox", { name: FIELD }));
+      await userEvent.click(within(again).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(providerPuts(fetchSpy, "openrouter", "/upstream")[1]).toEqual({ max_concurrent: 0 });
+      expect(await within(screen.getByRole("tabpanel")).findByText("no limit")).toBeInTheDocument();
+    });
+
+    it("direct provider: 1001 shows the server's reason on the field and keeps the dialog open", async () => {
+      mountDirect();
+      await openTab("Upstream");
+      await userEvent.click(within(screen.getByRole("tabpanel")).getByRole("button", { name: "Edit" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit upstream · OpenRouter" });
+      const field = within(dialog).getByRole("textbox", { name: FIELD });
+      await userEvent.type(field, "1001");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      expect(await within(dialog).findByText(RANGE)).toBeInTheDocument();
+      expect(field).toBeInvalid();
+      expect(field).toHaveAccessibleDescription(RANGE);
+      expect(db.aiProviders.at(-1)!.max_concurrent ?? 0).toBe(0);
+      // Not a whole number: Save is blocked before anything is sent.
+      await userEvent.clear(field);
+      await userEvent.type(field, "two");
+      expect(within(dialog).getByText("Enter a whole number, or leave empty for no limit.")).toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+    });
+  });
+
   it("mounts exactly one toaster, whichever tab is open", async () => {
     mount();
     await screen.findByRole("heading", { name: /connect a client/i });

@@ -10,7 +10,7 @@ import { ProviderConnect } from "@/components/ProviderConnect";
 import { RenameProviderDialog } from "@/components/RenameProviderDialog";
 import { ApiKeysPanel } from "@/components/ApiKeysPanel";
 import { ProviderModelsPanel } from "@/components/ProviderModelsPanel";
-import { ProviderResponsesSetting, ProviderUpstreamPanel } from "@/components/ProviderUpstreamPanel";
+import { ProviderConcurrencySetting, ProviderResponsesSetting, ProviderUpstreamPanel } from "@/components/ProviderUpstreamPanel";
 import { useAuth } from "@/auth/useAuth";
 import { providerBaseUrl } from "@/lib/serviceUrl";
 import type {
@@ -336,6 +336,15 @@ export default function ProviderDetail() {
               {/* A direct provider has this among its upstream settings. */}
               {!direct && provider.data.api_format === "openai" && (
                 <ProviderResponsesSetting provider={provider.data} isAdmin={isAdmin} />
+              )}
+              {!direct && (
+                // Keyed on the stored limit: a save or a refetch that brings
+                // another value starts the field from it.
+                <ProviderConcurrencySetting
+                  key={provider.data.max_concurrent}
+                  provider={provider.data}
+                  isAdmin={isAdmin}
+                />
               )}
 
               <MetricStrip ariaLabel="Provider metrics">

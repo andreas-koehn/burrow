@@ -84,6 +84,10 @@ type Gateway struct {
 	// Attempts stores the attempt log of requests on the dialect endpoints
 	// that needed more than one attempt or failed. nil = not recorded.
 	Attempts AttemptRecorder
+	// Limiter holds the places of providers with a concurrency limit
+	// (db.AIProvider.MaxConcurrent). It is shared by all requests and all
+	// doors to a provider. nil = no provider is limited.
+	Limiter *Limiter
 
 	// timeUnit is the unit of a model's timeouts. 0 = one second; tests use
 	// milliseconds.
@@ -134,6 +138,12 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 			return
 		}
 	}
+	if r.Method == http.MethodPost {
+		// Inference takes a place at the provider, the same places the
+		// dialect endpoints use. It is taken where the upstream is called, so
+		// an answer from the cache or a refusal by the chain takes none.
+		upstream = g.limited(upstream, p)
+	}
 	// Tell the caller which provider answered; set only once the caller is
 	// known to hold a valid key.
 	w.Header().Set(headerProvider, p.Slug)
@@ -160,6 +170,53 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 		return
 	}
 	g.Chain.Dispatch(w, r, p.ServiceID, host, "Authorization", keyID, upstream)
+}
+
+// slotWaitUnits is the longest a request waits for a place at a provider with
+// a concurrency limit, in units (seconds). An attempt's own timeout ends the
+// wait earlier.
+const slotWaitUnits = 60
+
+// unit is the unit of the gateway's timeouts.
+func (g *Gateway) unit() time.Duration {
+	if g.timeUnit <= 0 {
+		return time.Second
+	}
+	return g.timeUnit
+}
+
+// admit takes a place at the provider if it has a concurrency limit, waiting
+// for one until ctx ends or the wait limit passes. When ok, release must be
+// called once the provider's handler has returned.
+func (g *Gateway) admit(ctx context.Context, p db.AIProvider) (release func(), ok bool) {
+	if g.Limiter == nil {
+		return func() {}, true
+	}
+	if p.MaxConcurrent <= 0 {
+		return g.Limiter.Acquire(ctx, p.Slug, 0) // never waits
+	}
+	wait, cancel := context.WithTimeout(ctx, slotWaitUnits*g.unit())
+	defer cancel()
+	return g.Limiter.Acquire(wait, p.Slug, p.MaxConcurrent)
+}
+
+// limited wraps the upstream of a provider path so that each call holds a
+// place at the provider for as long as it runs. A call that finds none in
+// time is answered 429 "provider_busy" and never reaches the upstream.
+func (g *Gateway) limited(next http.Handler, p db.AIProvider) http.Handler {
+	if g.Limiter == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		release, ok := g.admit(r.Context(), p)
+		if !ok {
+			w.Header().Set("Retry-After", "1")
+			g.fail(w, r, http.StatusTooManyRequests, "provider_busy", msgProviderBusy)
+			return
+		}
+		defer release()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // fail writes an error the gateway originates, in the shape of the request's

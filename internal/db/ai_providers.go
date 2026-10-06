@@ -271,25 +271,31 @@ func (x *DB) ListAIProviders(ctx context.Context) ([]AIProvider, error) {
 var ErrResponsesFormat = errors.New("db: the Responses API belongs to the OpenAI format")
 
 // UpdateAIProvider changes a provider's slug and display name and, when
-// responses is not nil, whether it offers POST /responses. All of it is one
-// UPDATE: a flag the provider's format does not allow (ErrResponsesFormat)
-// leaves slug and name as they were.
-func (x *DB) UpdateAIProvider(ctx context.Context, slug, newSlug, name string, responses *bool) error {
+// responses is not nil, whether it offers POST /responses, and, when
+// maxConcurrent is not nil, how many requests it serves at once (0 = no
+// limit). All of it is one UPDATE: a flag the provider's format does not
+// allow (ErrResponsesFormat) leaves the rest as it was.
+func (x *DB) UpdateAIProvider(ctx context.Context, slug, newSlug, name string, responses *bool, maxConcurrent *int) error {
 	tx, err := x.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin update provider tx: %w", err)
 	}
+	set, args := `slug=?, name=?`, []any{newSlug, name}
+	if maxConcurrent != nil {
+		set += `, max_concurrent=?`
+		args = append(args, *maxConcurrent)
+	}
 	var res sql.Result
 	if responses == nil {
 		res, err = tx.ExecContext(ctx,
-			`UPDATE ai_providers SET slug=?, name=? WHERE slug=?`, newSlug, name, slug)
+			`UPDATE ai_providers SET `+set+` WHERE slug=?`, append(args, slug)...)
 	} else {
 		// The format condition is part of the statement, so no change of the
 		// format can get between a check and the write.
 		res, err = tx.ExecContext(ctx,
-			`UPDATE ai_providers SET slug=?, name=?, supports_responses=?
+			`UPDATE ai_providers SET `+set+`, supports_responses=?
 			  WHERE slug=? AND (?=0 OR api_format='openai')`,
-			newSlug, name, boolToInt(*responses), slug, boolToInt(*responses))
+			append(args, boolToInt(*responses), slug, boolToInt(*responses))...)
 		if err == nil {
 			var n int64
 			if n, err = res.RowsAffected(); err == nil && n == 0 && *responses {

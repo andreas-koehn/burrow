@@ -170,22 +170,31 @@ func (s *Store) CreateTunnelProvider(ctx context.Context, slug, name, serviceID 
 
 // UpdateProvider changes a provider's slug and display name and, when
 // responses is not nil, whether it offers POST /responses (the only way to
-// say so in the same step as a rename, and how a tunnel provider is flagged).
-// The three are written together or not at all: a flag that the provider's
-// format does not allow is ErrInvalidProviderConfig and changes nothing. The
+// say so in the same step as a rename, and how a tunnel provider is flagged),
+// and, when maxConcurrent is not nil, how many requests it serves at once
+// (0 = no limit; this is how a tunnel provider, which has no upstream
+// settings, gets a limit). They are written together or not at all: a flag
+// that the provider's format does not allow or a limit out of range is
+// ErrInvalidProviderConfig and changes nothing. The gateway reads the row per
+// request, so a new limit applies from the next request on. The
 // old base URL stops working at once. The backing service of a direct
 // provider is renamed with it, and model targets follow the new slug. A slug
 // that a synthetic model has as its name is refused with ErrProviderExists.
-func (s *Store) UpdateProvider(ctx context.Context, slug, newSlug, name string, responses *bool) (db.AIProvider, error) {
+func (s *Store) UpdateProvider(ctx context.Context, slug, newSlug, name string, responses *bool, maxConcurrent *int) (db.AIProvider, error) {
 	if !ValidProviderSlug(newSlug) {
 		return db.AIProvider{}, ErrInvalidProviderSlug
+	}
+	if maxConcurrent != nil {
+		if err := validMaxConcurrent(*maxConcurrent); err != nil {
+			return db.AIProvider{}, err
+		}
 	}
 	if taken, err := s.slugTakenByModel(ctx, newSlug); err != nil {
 		return db.AIProvider{}, err
 	} else if taken {
 		return db.AIProvider{}, ErrProviderExists
 	}
-	switch err := s.q.UpdateAIProvider(ctx, slug, newSlug, name, responses); {
+	switch err := s.q.UpdateAIProvider(ctx, slug, newSlug, name, responses, maxConcurrent); {
 	case errors.Is(err, db.ErrNotFound):
 		return db.AIProvider{}, ErrProviderNotFound
 	case errors.Is(err, db.ErrResponsesFormat):
@@ -228,6 +237,21 @@ type DirectProviderInput struct {
 	// is the operator's statement; nothing probes the upstream. nil means off
 	// on create and "keep the stored value" on update.
 	SupportsResponses *bool
+	// MaxConcurrent is how many requests the provider serves at once; more
+	// wait for a free place. 0 = no limit. nil means no limit on create and
+	// "keep the stored value" on update.
+	MaxConcurrent *int
+}
+
+// MaxProviderConcurrency is the largest concurrency limit a provider can have.
+const MaxProviderConcurrency = 1000
+
+// validMaxConcurrent checks a provider's concurrency limit (0 = none).
+func validMaxConcurrent(n int) error {
+	if n < 0 || n > MaxProviderConcurrency {
+		return invalidConfig("max concurrent requests must be between 0 and 1000")
+	}
+	return nil
 }
 
 // errResponsesFormat refuses the Responses flag on a provider of another format.
@@ -335,6 +359,11 @@ func normalizeDirect(in DirectProviderInput) (DirectProviderInput, error) {
 	if in.SupportsResponses != nil && *in.SupportsResponses && in.APIFormat != "openai" {
 		return in, errResponsesFormat()
 	}
+	if in.MaxConcurrent != nil {
+		if err := validMaxConcurrent(*in.MaxConcurrent); err != nil {
+			return in, err
+		}
+	}
 	if len(in.ExtraHeaders) > maxExtraHeaders {
 		return in, invalidConfig("at most 16 extra headers")
 	}
@@ -391,6 +420,9 @@ func (s *Store) CreateDirectProvider(ctx context.Context, ownerID string, in Dir
 		ExtraHeaders: in.ExtraHeaders, Billing: in.Billing,
 		SupportsResponses: in.SupportsResponses != nil && *in.SupportsResponses,
 	}
+	if in.MaxConcurrent != nil {
+		p.MaxConcurrent = *in.MaxConcurrent
+	}
 	if err := s.q.CreateDirectAIProvider(ctx, svc, p); err != nil {
 		if errors.Is(err, db.ErrDuplicateProvider) {
 			return db.AIProvider{}, ErrProviderExists
@@ -435,6 +467,9 @@ func (s *Store) UpdateProviderUpstream(ctx context.Context, slug string, in Dire
 			// a provider cannot leave the OpenAI format with the flag on.
 			in.SupportsResponses = &p.SupportsResponses
 		}
+		if in.MaxConcurrent == nil {
+			in.MaxConcurrent = &p.MaxConcurrent
+		}
 		in, err := normalizeDirect(in)
 		if err != nil {
 			return p, err
@@ -455,6 +490,7 @@ func (s *Store) UpdateProviderUpstream(ctx context.Context, slug string, in Dire
 		p.BaseURL, p.CredentialSlot, p.AuthHeader, p.AuthFormat = in.BaseURL, in.CredentialSlot, in.AuthHeader, in.AuthFormat
 		p.Billing, p.APIFormat, p.ExtraHeaders = in.Billing, in.APIFormat, in.ExtraHeaders
 		p.SupportsResponses = *in.SupportsResponses
+		p.MaxConcurrent = *in.MaxConcurrent
 		return p, nil
 	})
 	if errors.Is(err, db.ErrNotFound) {
