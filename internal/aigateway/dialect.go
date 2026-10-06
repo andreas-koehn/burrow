@@ -17,7 +17,7 @@ type Dialect struct {
 	WriteError aigw.ErrorWriter
 
 	inferencePaths map[string]bool // POST paths routed by the body's "model"
-	unmeteredPaths map[string]bool // inference paths that produce no usage row
+	unmeteredPaths map[string]bool // inference paths that produce no usage row (and nothing else is skipped)
 	writeModels    func(w http.ResponseWriter, items []modelItem)
 }
 
@@ -46,8 +46,8 @@ var DialectOpenAI = &Dialect{
 }
 
 // DialectAnthropic is the Anthropic Messages API. Counting tokens is routed
-// by "model" like a message, but it is no inference: it produces no usage row
-// and does not run through the chain.
+// by "model" and runs through the chain like a message; it is no inference,
+// so it alone produces no usage row.
 var DialectAnthropic = &Dialect{
 	Name:       "anthropic",
 	WriteError: WriteAnthropicError,

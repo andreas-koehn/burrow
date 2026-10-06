@@ -42,8 +42,10 @@ type Catalog interface {
 // r.URL.Path must start at "/v1".
 //
 // The key is read from "Authorization: Bearer" or, as Anthropic clients send
-// it, "x-api-key". When both are present the bearer token is the key and
-// x-api-key is ignored; neither reaches an upstream.
+// it, "x-api-key". A bearer token, when one is sent, is the key and x-api-key
+// is then not looked at; x-api-key is the key only when Authorization carries
+// no bearer token (it is absent, uses another scheme, or is "Bearer" with
+// nothing after it). Neither header reaches an upstream.
 //
 // Order of checks: gateway key, the key's allow-list on the name the client
 // asked for, model resolution, the target's service policy (access mode,
@@ -122,9 +124,14 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 
 	// The gateway key and the dashboard's cookies stop here.
 	stripCredentials(r)
-	if g.Chain == nil || !d.metered(path) {
+	if g.Chain == nil {
 		upstream.ServeHTTP(w, r)
 		return
+	}
+	if !d.metered(path) {
+		// No usage row, and nothing else is left out: limits, redaction and
+		// guardrails apply to a prompt that is only counted, too.
+		r = r.WithContext(aigw.WithoutUsage(r.Context()))
 	}
 	// Reported cost is believed only from an upstream the relay calls itself.
 	g.Chain.DispatchMetered(w, r, target.Provider.ServiceID, host, "Authorization", "", target.Provider.Kind == "direct", upstream)

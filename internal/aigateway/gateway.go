@@ -178,10 +178,11 @@ func stripCredentials(r *http.Request) {
 // or "<slug>/*") has the whole provider path. Any other gateway key gets two
 // things: POST on an inference path of the provider's dialect with an allowed
 // "model" in the body, and, when its list names this provider at all, GET of
-// the model list, answered from the filtered catalog. Everything else is refused: a native API can name a model where
-// Burrow does not look (the URL, "source", "from", a batch file), so a body
-// with an allowed model proves nothing there. For the same reason such a key
-// may not send a "model" query parameter next to the body.
+// the model list, answered from the filtered catalog. Everything else is
+// refused: a native API can name a model where Burrow does not look (the URL,
+// "source", "from", a batch file), so a body with an allowed model proves
+// nothing there. For the same reason such a key may not send a "model" query
+// parameter next to the body.
 func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, p db.AIProvider) (*http.Request, string, bool) {
 	presented := presentedKey(r)
 	if !strings.HasPrefix(presented, gatewayKeyPrefix) {

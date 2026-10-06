@@ -92,10 +92,25 @@ func WithKind(ctx context.Context, k Kind) context.Context {
 	return context.WithValue(ctx, kindKey{}, k)
 }
 
-// KindFrom returns the kind set by WithKind.
-func KindFrom(ctx context.Context) (Kind, bool) {
+// kindFrom returns the kind set by WithKind.
+func kindFrom(ctx context.Context) (Kind, bool) {
 	k, ok := ctx.Value(kindKey{}).(Kind)
 	return k, ok
+}
+
+type noUsageKey struct{}
+
+// WithoutUsage marks a request that is no inference (counting tokens): it
+// runs every step of the chain (limits, redaction, guardrails, inspector)
+// but writes no usage row, and the response cache neither stores nor serves
+// its answer.
+func WithoutUsage(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noUsageKey{}, true)
+}
+
+func withoutUsage(ctx context.Context) bool {
+	off, _ := ctx.Value(noUsageKey{}).(bool)
+	return off
 }
 
 // Service is the per-request input the Chain needs. proxy.Proxy constructs
@@ -456,8 +471,9 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// Step 1: detect — tag the request kind for metering + logging.
 	// ---------------------------------------------------------------
 	kind := DetectKind(r, body)
-	if k, ok := KindFrom(r.Context()); ok {
-		kind = k // the entry point knows; detection is a guess
+	forcedKind, kindForced := kindFrom(r.Context())
+	if kindForced {
+		kind = forcedKind // the entry point knows; detection is a guess
 	}
 
 	// ---------------------------------------------------------------
@@ -521,8 +537,12 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 			case guardrails.ActionRefuseSafe:
 				// No upstream answer to imitate for a kind the chain does not
 				// recognise: an entry point with its own error shape gets a
-				// plain refusal instead of the generic envelope below.
-				if ew := ErrorWriterFrom(r.Context()); ew != nil && kind != KindAnthropic && kind != KindOpenAI {
+				// plain refusal instead of the generic envelope below. So
+				// does an entry point that states the kind itself (a dialect
+				// endpoint): the imitation carries no usage and is no event
+				// stream, which is no valid answer to a client that asked
+				// for one.
+				if ew := ErrorWriterFrom(r.Context()); ew != nil && (kindForced || (kind != KindAnthropic && kind != KindOpenAI)) {
 					ew(w, http.StatusForbidden, "forbidden", "the request was refused by a guardrail")
 					c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
 					return
@@ -555,7 +575,10 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// Skipped when Burrow-Cache: bypass is set (Task 8 replay-compare).
 	// ---------------------------------------------------------------
 	cacheStatus := "SKIP"
-	bypass := strings.EqualFold(r.Header.Get("Burrow-Cache"), "bypass")
+	// A request without usage is no inference; its answer is never taken
+	// from or put into the cache of inference answers (the semantic tier
+	// keys on the body alone and could not tell the two apart).
+	bypass := strings.EqualFold(r.Header.Get("Burrow-Cache"), "bypass") || withoutUsage(r.Context())
 	if cfg.Cache != nil && cfg.Cache.Enabled && c.Cache != nil && !bypass {
 		key := buildCacheKey(svc, r, redactedBody, *cfg.Cache)
 		entry, hit, err := c.Cache.Lookup(r.Context(), key)
@@ -940,7 +963,7 @@ func (c *Chain) captureEntry(svc Service, r *http.Request,
 func (c *Chain) recordMeter(ctx context.Context, svc Service, kind Kind,
 	tokensIn, tokensOut int, bytesIn, bytesOut int64, streamed, cacheHit bool, status int, costUSD *float64,
 	latency time.Duration) {
-	if c.Meter == nil {
+	if c.Meter == nil || withoutUsage(ctx) {
 		return
 	}
 	ctx, cancel := detached(ctx)
