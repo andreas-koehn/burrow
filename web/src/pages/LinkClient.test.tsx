@@ -63,6 +63,8 @@ describe("Link page: a pending request", () => {
     expect(within(seen).getByText("1 minute ago")).toBeInTheDocument();
 
     expect(screen.getByLabelText("Token name")).toHaveValue("kohns-laptop");
+    // The prefilled name came from the machine that asks, and the page says so.
+    expect(screen.getByText(/^Suggested by the client; change it if you like\./)).toBeInTheDocument();
     expect(approve()).toBeEnabled();
     expect(deny()).toBeEnabled();
   });
@@ -272,6 +274,26 @@ describe("Link page: codes that lead nowhere", () => {
     expect(screen.queryByRole("button", { name: "Deny" })).toBeNull();
     expect(screen.queryByLabelText("Token name")).toBeNull();
     expect(screen.getByRole("link", { name: "Enter another code" })).toHaveAttribute("href", "/link");
+  });
+
+  // The relay's alphabet has no I, L, O, 0 or 1 (internal/store/client_login.go).
+  it.each(["BRRW-7Q0K", "BRR1-7Q4K", "brri7q4k", "BRRL-7Q4K", "ORRW-7Q4K"])(
+    "%s holds a character no code has: not sent, and answered like any wrong code",
+    async (code) => {
+      const calls = recordCalls();
+      renderAt(`/link?code=${code}`);
+      expect(await screen.findByRole("alert")).toHaveTextContent(INVALID);
+      expect(screen.getByRole("link", { name: "Enter another code" })).toHaveAttribute("href", "/link");
+      expect(calls).toEqual([]);
+      expect(db.clientLoginWrongCodes).toBe(0);
+    },
+  );
+
+  it("sends every character the alphabet has", async () => {
+    const calls = recordCalls();
+    renderAt("/link?code=HJKM-2389");
+    expect(await screen.findByRole("alert")).toHaveTextContent(INVALID);
+    expect(calls.map((c) => c.path)).toEqual(["/api/v1/client/login/requests/HJKM2389"]);
   });
 
   it("never sends a malformed code to the relay", async () => {

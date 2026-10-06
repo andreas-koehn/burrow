@@ -15,13 +15,18 @@ const TOKEN_NAME_MAX = 120;
 // The longest piece of text from the client that is shown; the rest is cut.
 const SHOWN_MAX = 128;
 
+// The relay's alphabet of user codes (userCodeAlphabet in internal/store/client_login.go):
+// no I, L, O, 0 or 1, nothing that reads as something else.
+const CODE_SHAPE = /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$/;
+
 /**
- * The code as the relay's path takes it: eight letters or digits, upper case,
- * without dash or blanks. Null for anything else, which is then never sent.
+ * The code as the relay's path takes it: eight characters of its alphabet,
+ * upper case, without dash or blanks. Null for anything else, which is then
+ * never sent: it cannot be a code, and a wrong one counts against the account.
  */
 function normalizeCode(raw: string): string | null {
   const code = raw.replace(/[-\s]/g, "").toUpperCase();
-  return /^[A-Z0-9]{8}$/.test(code) ? code : null;
+  return CODE_SHAPE.test(code) ? code : null;
 }
 
 function clip(text: string): string {
@@ -320,7 +325,7 @@ function Request({ code }: { code: string }) {
       <FormField
         label="Token name"
         htmlFor="link-token-name"
-        help="The client token this creates is listed under Clients, tab Tokens, by this name."
+        help="Suggested by the client; change it if you like. The client token this creates is listed under Clients, tab Tokens, by this name."
         error={fieldError || undefined}
       >
         <Input

@@ -496,21 +496,30 @@ func NewRouter(d Deps) http.Handler {
 	}
 
 	if d.SPA != nil {
-		// /link is where `burrow login` sends the browser to approve a
-		// sign-in. It is a reserved path and the one of them that is a
-		// dashboard page, so it is routed by name instead of being left to
-		// the catch-all: reading only, answered for a visitor without a
-		// session too (the page sends them through the login and back), and
-		// never inside a foreign frame, where a click could be steered onto
-		// Approve. The session cookie is SameSite=Lax and is not sent to a
-		// cross-site frame anyway; the headers are the second lock. The code
-		// in the address is not passed on as a referrer.
-		link := getOrHead(func(w http.ResponseWriter, r *http.Request) {
+		// No dashboard page is shown inside a foreign frame, where a click
+		// could be steered onto a button (Approve on /link above all). The
+		// headers sit on every answer of the SPA handler and not on /link
+		// alone: the dashboard's router matches paths without regard to
+		// case, so /LINK renders the same page through the catch-all. The
+		// session cookie is SameSite=Lax and is not sent to a cross-site
+		// frame anyway; this is the second lock. Nothing frames the shell
+		// itself (the OpenAPI viewer is an /api/v1 page framed by it), and
+		// tunnelled /svc/ and /ai/ answers never pass through here.
+		shell := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := w.Header()
 			h.Set("X-Frame-Options", "DENY")
 			h.Set("Content-Security-Policy", "frame-ancestors 'none'")
-			h.Set("Referrer-Policy", "no-referrer")
 			d.SPA.ServeHTTP(w, r)
+		})
+		// /link is where `burrow login` sends the browser to approve a
+		// sign-in. It is a reserved path and the one of them that is a
+		// dashboard page, so it is routed by name: reading only, answered
+		// for a visitor without a session too (the page sends them through
+		// the login and back), and the code in its address is not passed on
+		// as a referrer.
+		link := getOrHead(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Referrer-Policy", "no-referrer")
+			shell.ServeHTTP(w, r)
 		})
 		r.Handle("/link", link)
 		r.Handle("/link/", link)
@@ -519,7 +528,7 @@ func NewRouter(d Deps) http.Handler {
 		// own JSON 404/401 and never falls through here. (r.NotFound is NOT
 		// used: chi propagates the root NotFound into the /api/v1 subrouter,
 		// which would wrongly serve the SPA for /api/v1/nope.)
-		r.Handle("/*", d.SPA)
+		r.Handle("/*", shell)
 	}
 
 	return r

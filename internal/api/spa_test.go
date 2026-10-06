@@ -166,3 +166,58 @@ func TestLinkPageWithoutSPAIsNotFound(t *testing.T) {
 		t.Fatalf("with SPA nil, /link must be 404, got %d", r.StatusCode)
 	}
 }
+
+// React Router matches paths without regard to case, so /LINK renders the
+// approval page through the catch-all. Every dashboard shell therefore
+// refuses foreign frames, not the named /link route alone. Tunnelled and API
+// responses are somebody else's and gain nothing from this.
+func TestEveryDashboardShellRefusesFrames(t *testing.T) {
+	spa, _ := spaSpy()
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("upstream"))
+	})
+	u := &tokUsers{}
+	u.verify = func(_, _ string) (bool, error) { return true, nil }
+	ts := newTestServer(Deps{
+		Users: u, Log: discardLog(), SPA: spa,
+		TunnelProxy: upstream, AuthDomain: "tunnels.example.com",
+	})
+	defer ts.Close()
+
+	get := func(path string) *http.Response {
+		t.Helper()
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+
+	for _, path := range []string{"/", "/services", "/LINK?code=BRRW-7Q4K", "/Link/", "/link?code=BRRW-7Q4K", "/login"} {
+		resp := get(path)
+		if got := resp.Header.Values("X-Frame-Options"); len(got) != 1 || got[0] != "DENY" {
+			t.Errorf("GET %s: X-Frame-Options = %q, want one DENY", path, got)
+		}
+		if got := resp.Header.Values("Content-Security-Policy"); len(got) != 1 || got[0] != "frame-ancestors 'none'" {
+			t.Errorf("GET %s: Content-Security-Policy = %q, want one frame-ancestors 'none'", path, got)
+		}
+		// The referrer rule belongs to the page whose address holds a code.
+		wantReferrer := ""
+		if path == "/link?code=BRRW-7Q4K" {
+			wantReferrer = "no-referrer"
+		}
+		if got := resp.Header.Get("Referrer-Policy"); got != wantReferrer {
+			t.Errorf("GET %s: Referrer-Policy = %q, want %q", path, got, wantReferrer)
+		}
+	}
+
+	for _, path := range []string{"/svc/k7p2qx/", "/svc/k7p2qx/page", "/api/v1/me", "/api/v1/nope", "/healthz", "/install.sh"} {
+		resp := get(path)
+		for _, name := range []string{"X-Frame-Options", "Content-Security-Policy"} {
+			if got := resp.Header.Get(name); got != "" {
+				t.Errorf("GET %s: %s = %q, want none (not a dashboard shell)", path, name, got)
+			}
+		}
+	}
+}

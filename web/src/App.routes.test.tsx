@@ -1,5 +1,8 @@
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
+import { server } from "@/mocks/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { render } from "@testing-library/react";
@@ -208,5 +211,46 @@ describe("App routes", () => {
     await waitFor(() => {
       expect(screen.queryByRole("heading", { name: /provisioning keys/i })).toBeNull();
     });
+  });
+});
+
+// RequireAuth hands the address a signed-out visitor asked for to the login page.
+describe("return after signing in", () => {
+  afterEach(() => resetDb());
+
+  // GET /me answers 401 until somebody signs in, and again after a logout.
+  function session(signedIn: boolean) {
+    const s = { signedIn };
+    server.use(
+      http.get("/api/v1/me", () => (s.signedIn ? HttpResponse.json(db.me) : HttpResponse.json({ error: "unauthorized" }, { status: 401 }))),
+      http.post("/api/v1/auth/login", () => { s.signedIn = true; return HttpResponse.json({}); }),
+      http.post("/api/v1/auth/logout", () => { s.signedIn = false; return new HttpResponse(null, { status: 204 }); }),
+    );
+    return s;
+  }
+
+  async function signIn() {
+    expect(await screen.findByRole("heading", { name: "Sign in to Burrow" })).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Email"), "alice@acme.io");
+    await userEvent.type(screen.getByLabelText("Password"), "password123");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+  }
+
+  it("a signed-out deep link comes back with its query and hash", async () => {
+    session(false);
+    renderAt("/services?live=1#x");
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent("/login"));
+    await signIn();
+    await waitFor(() => expect(screen.getByTestId("path").textContent).toBe("/services?live=1#x"));
+    expect(await screen.findByRole("heading", { name: /^Services$/i })).toBeInTheDocument();
+  });
+
+  it("logging out from a deep page and signing in again starts on the overview", async () => {
+    session(true);
+    renderAt("/settings/sessions?x=1#y");
+    await userEvent.click(await screen.findByRole("button", { name: "Log out" }));
+    await waitFor(() => expect(screen.getByTestId("path").textContent).toBe("/login"));
+    await signIn();
+    await waitFor(() => expect(screen.getByTestId("path").textContent).toBe("/"));
   });
 });
