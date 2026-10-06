@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -610,5 +611,72 @@ func TestUpdateProvider_Responses(t *testing.T) {
 	}
 	if _, err := s.UpdateProvider(ctx, "gone", "abc", "x", &on); !errors.Is(err, ErrProviderNotFound) {
 		t.Fatalf("unknown provider: %v", err)
+	}
+}
+
+func TestSplitSlots(t *testing.T) {
+	for in, want := range map[string][]string{
+		"":             nil,
+		" ":            nil,
+		"ZAI":          {"ZAI"},
+		"A, B":         {"A", "B"},
+		" A ,B,, C ,":  {"A", "B", "C"},
+		"ZAI,ZAI2,ZAI": {"ZAI", "ZAI2", "ZAI"},
+	} {
+		if got := SplitSlots(in); !reflect.DeepEqual(got, want) {
+			t.Errorf("SplitSlots(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A direct provider may name up to four credential slots, tried in order.
+func TestDirectProvider_SeveralCredentialSlots(t *testing.T) {
+	s := newStore(t)
+	ownerID := mustCreateUser(t, s, "admin@x", "admin").ID
+	ctx := context.Background()
+	const u = "https://x.example/v1"
+
+	p, err := s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "zai", Name: "z.ai", BaseURL: u, CredentialSlot: "ZAI, ZAI2"})
+	if err != nil || p.CredentialSlot != "ZAI,ZAI2" {
+		t.Fatalf("two slots: %v, stored as %q", err, p.CredentialSlot)
+	}
+	if got, err := s.ProviderBySlug(ctx, "zai"); err != nil || got.CredentialSlot != "ZAI,ZAI2" {
+		t.Fatalf("read back: %v %q", err, got.CredentialSlot)
+	}
+	if p, err = s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "four", Name: "4", BaseURL: u, CredentialSlot: "A,B,C,D"}); err != nil || p.CredentialSlot != "A,B,C,D" {
+		t.Fatalf("four slots: %v %q", err, p.CredentialSlot)
+	}
+	for name, slots := range map[string]string{
+		"twice":       "A,A",
+		"five":        "A,B,C,D,E",
+		"lower case":  "A,,b",
+		"empty":       "",
+		"only commas": " , ",
+		"too long":    "A," + strings.Repeat("B", 33),
+		"separator":   "A;B",
+	} {
+		_, err := s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "bad", Name: "B", BaseURL: u, CredentialSlot: slots})
+		if !errors.Is(err, ErrInvalidProviderConfig) {
+			t.Errorf("%s (%q): err = %v, want ErrInvalidProviderConfig", name, slots, err)
+		}
+	}
+}
+
+func TestRecordAttempts(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	rows := []db.UsageAttempt{
+		{RequestID: "req-1", Position: 0, ProviderSlug: "zai", TargetModel: "glm-5.1", Status: 500, ErrorCode: "http_500", DurationMs: 12},
+		{RequestID: "req-1", Position: 1, ProviderSlug: "openrouter", TargetModel: "google/gemini-x", Status: 200, DurationMs: 30},
+	}
+	if err := s.RecordAttempts(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.AttemptsForRequest(ctx, "req-1")
+	if err != nil || len(got) != 2 || got[0].ProviderSlug != "zai" || got[0].ErrorCode != "http_500" || got[1].Position != 1 || got[1].Status != 200 {
+		t.Fatalf("attempts: %v %+v", err, got)
+	}
+	if other, err := s.AttemptsForRequest(ctx, "req-2"); err != nil || len(other) != 0 {
+		t.Fatalf("another request: %v %+v", err, other)
 	}
 }

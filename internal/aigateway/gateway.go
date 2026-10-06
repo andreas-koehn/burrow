@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/aiprovider"
@@ -76,6 +77,20 @@ type Gateway struct {
 	// provider's backing service; such a provider has no tunnel to read
 	// them from. Required for direct providers.
 	ServicePolicy func(ctx context.Context, serviceID string) (*proxy.Resolved, error)
+
+	// Breaker takes a failing provider out of a fallback chain for a while.
+	// It is shared by all requests. nil = every target is always tried.
+	Breaker *Breaker
+	// Attempts stores the attempt log of requests on the dialect endpoints
+	// that needed more than one attempt or failed. nil = not recorded.
+	Attempts AttemptRecorder
+
+	// timeUnit is the unit of a model's timeouts. 0 = one second; tests use
+	// milliseconds.
+	timeUnit time.Duration
+	// attempts writes the attempt log behind the response. It holds a lock:
+	// a Gateway is used through a pointer and never copied.
+	attempts attemptLog
 }
 
 // Serve handles one request for provider slug. r.URL.Path must already have
@@ -479,6 +494,12 @@ func (g *Gateway) directAllowed(w http.ResponseWriter, r *http.Request, p db.AIP
 }
 
 func (g *Gateway) directUpstream(w http.ResponseWriter, r *http.Request, p db.AIProvider) (http.Handler, bool) {
+	// A provider may name several credential slots; they are alternatives
+	// for a fallback chain, which hands in one at a time. A provider path
+	// uses the first. A list of slots is never the name of a slot.
+	if slots := store.SplitSlots(p.CredentialSlot); len(slots) > 0 {
+		p.CredentialSlot = slots[0]
+	}
 	h, err := g.Direct(p, requestErrorWriter(r))
 	switch {
 	case errors.Is(err, aiprovider.ErrNotConfigured):

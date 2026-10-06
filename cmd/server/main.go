@@ -777,6 +777,8 @@ func newRootCmd() *cobra.Command {
 			aiUpstreamTransport := aiprovider.NewTransport(cfg.AIAllowPrivateUpstreams)
 			// The /ai/ data plane shares the proxy's dialer, AI chain and
 			// IP/geo policy. A nil chain must stay a nil interface.
+			// One breaker for the relay; the status API reads its state.
+			aiBreaker := aigateway.NewBreaker()
 			aiGateway := &aigateway.Gateway{
 				Providers:  st,
 				Keys:       st,
@@ -795,6 +797,10 @@ func newRootCmd() *cobra.Command {
 				GatewayKeys: st,
 				Synthetic:   st,
 				Catalog:     st,
+				// Fallback chains: a failing provider is skipped for a while,
+				// and what a request tried is logged.
+				Breaker:  aiBreaker,
+				Attempts: st,
 			}
 			if v04.AIChain != nil {
 				aiGateway.Chain = v04.AIChain

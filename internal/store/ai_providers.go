@@ -218,8 +218,9 @@ func (s *Store) DeleteProvider(ctx context.Context, slug string) error {
 var ErrInvalidProviderConfig = errors.New("store: invalid provider configuration")
 
 // DirectProviderInput carries the operator-supplied settings of a direct
-// provider. CredentialSlot names a vault slot; the credential itself never
-// passes through the store.
+// provider. CredentialSlot names a vault slot, or up to four separated by
+// commas (see SplitSlots); the credential itself never passes through the
+// store.
 type DirectProviderInput struct {
 	Slug, Name, APIFormat, BaseURL, CredentialSlot, AuthHeader, AuthFormat, Billing string
 	ExtraHeaders                                                                    map[string]string
@@ -262,7 +263,20 @@ const (
 	maxExtraHeadersBytes = 4096 // all names and values together
 	maxAuthFormat        = 128
 	maxProviderName      = 120
+	maxCredentialSlots   = 4 // keys of one provider a fallback chain may try in turn
 )
+
+// SplitSlots parses a provider's credential_slot value: one slot, or up to
+// four separated by commas, tried in order.
+func SplitSlots(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
 
 func invalidConfig(reason string) error {
 	return fmt.Errorf("%w: %s", ErrInvalidProviderConfig, reason)
@@ -278,9 +292,19 @@ func normalizeDirect(in DirectProviderInput) (DirectProviderInput, error) {
 	if _, err := aiprovider.ValidateBaseURL(in.BaseURL); err != nil || len(in.BaseURL) > 2048 {
 		return in, invalidConfig("base URL must be an https URL without credentials, query or fragment")
 	}
-	if !slotRe.MatchString(in.CredentialSlot) {
-		return in, invalidConfig("credential slot must be 1-32 characters: A-Z, 0-9, _")
+	slots := SplitSlots(in.CredentialSlot)
+	seen := make(map[string]bool, len(slots))
+	for _, slot := range slots {
+		if !slotRe.MatchString(slot) || seen[slot] {
+			slots = nil
+			break
+		}
+		seen[slot] = true
 	}
+	if len(slots) < 1 || len(slots) > maxCredentialSlots {
+		return in, invalidConfig("credential slots must be 1-4 distinct names of 1-32 characters: A-Z, 0-9, _")
+	}
+	in.CredentialSlot = strings.Join(slots, ",")
 	if in.AuthHeader == "" {
 		in.AuthHeader = "Authorization"
 	}

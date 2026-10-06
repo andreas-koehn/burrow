@@ -122,7 +122,7 @@ func TestServeDialect_SyntheticModel(t *testing.T) {
 	if rec.Body.String() != `{"model":"glm-5.1","choices":[]}` {
 		t.Fatalf("response body rewritten: %s", rec.Body.String())
 	}
-	if rec.Header().Get("Burrow-Provider") != "zai" || rec.Header().Get("Burrow-Model") != "glm-5.1" {
+	if rec.Header().Get("Burrow-Provider") != "zai" || rec.Header().Get("Burrow-Model") != "glm-5.1" || rec.Header().Get("Burrow-Attempts") != "1" {
 		t.Fatalf("headers: %v", rec.Header())
 	}
 	want := aigw.RouteInfo{GatewayKeyID: "gk-all", Dialect: "openai", ProviderSlug: "zai", RequestedModel: "burrow-intelligence", TargetModel: "glm-5.1", RequestID: "req-1"}
@@ -196,6 +196,9 @@ func TestServeDialect_Errors(t *testing.T) {
 		status int
 		code   string
 		msg    string // substring of the message, "" = not checked
+		// chainRan: the request got as far as the chain. A credential is read
+		// last, by the attempt that needs it, so the chain runs before it.
+		chainRan bool
 	}
 	noDirect := func(g *Gateway) {
 		g.Direct = func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
@@ -257,7 +260,7 @@ func TestServeDialect_Errors(t *testing.T) {
 				g.Direct = func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
 					return nil, aiprovider.ErrNotConfigured
 				}
-			}, status: 503, code: "provider_not_configured"},
+			}, status: 503, code: "provider_not_configured", chainRan: true},
 		{name: "no gateway key store", req: post("/v1/chat/completions", "bgw_all", `{"model":"burrow-intelligence"}`),
 			setup: func(g *Gateway) { g.GatewayKeys = nil }, status: 401, code: "invalid_api_key"},
 	}
@@ -282,8 +285,8 @@ func TestServeDialect_Errors(t *testing.T) {
 			if hit {
 				t.Fatal("the upstream was called")
 			}
-			if g.Chain.(*spyChain).serviceID != "" {
-				t.Fatal("the chain ran")
+			if ran := g.Chain.(*spyChain).serviceID != ""; ran != c.chainRan {
+				t.Fatalf("the chain ran: %v, want %v", ran, c.chainRan)
 			}
 			// Which provider would have served is not told to a refused caller.
 			if rec.Header().Get("Burrow-Provider") != "" || rec.Header().Get("Burrow-Model") != "" {
@@ -626,7 +629,7 @@ func TestServeDialect_Anthropic_PassesUnknownFieldsAndBetaHeaders(t *testing.T) 
 	if gotPath != "/v1/messages" || gotQuery != "beta=true" {
 		t.Errorf("path = %s query = %s", gotPath, gotQuery)
 	}
-	if rec.Header().Get("Burrow-Provider") != "zai-anthropic" || rec.Header().Get("Burrow-Model") != "glm-5.1" {
+	if rec.Header().Get("Burrow-Provider") != "zai-anthropic" || rec.Header().Get("Burrow-Model") != "glm-5.1" || rec.Header().Get("Burrow-Attempts") != "1" {
 		t.Errorf("headers: %v", rec.Header())
 	}
 	if rec.Body.String() != `{"type":"message","model":"glm-5.1","content":[],"usage":{"input_tokens":3,"output_tokens":2}}` {
@@ -896,6 +899,8 @@ func TestServeDialect_Anthropic_ErrorsUseAnthropicShape(t *testing.T) {
 		code   string
 		typ    string
 		msg    string
+		// chainRan: the request got as far as the chain.
+		chainRan bool
 	}{
 		{name: "no key", req: msg("/v1/messages", "", `{"model":"burrow-intelligence"}`), status: 401, code: "invalid_api_key", typ: "authentication_error"},
 		{name: "unknown key", req: msg("/v1/messages", "bgw_nope", `{"model":"burrow-intelligence"}`), status: 401, code: "invalid_api_key", typ: "authentication_error"},
@@ -946,7 +951,7 @@ func TestServeDialect_Anthropic_ErrorsUseAnthropicShape(t *testing.T) {
 				g.Direct = func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
 					return nil, aiprovider.ErrNotConfigured
 				}
-			}, status: 503, code: "provider_not_configured", typ: "overloaded_error"},
+			}, status: 503, code: "provider_not_configured", typ: "overloaded_error", chainRan: true},
 		{name: "lookup fails", req: msg("/v1/messages", "bgw_all", `{"model":"burrow-intelligence"}`),
 			setup: func(g *Gateway) { g.Synthetic = errSynthetic{} }, status: 500, code: "internal_error", typ: "api_error"},
 	} {
@@ -968,8 +973,10 @@ func TestServeDialect_Anthropic_ErrorsUseAnthropicShape(t *testing.T) {
 			if c.msg != "" && !strings.Contains(rec.Body.String(), c.msg) {
 				t.Fatalf("body = %s, want it to name %s", rec.Body.String(), c.msg)
 			}
-			if hit || g.Chain.(*spyChain).serviceID != "" {
-				t.Fatal("the request was forwarded")
+			// A credential is read last, by the attempt that needs it: only
+			// that case gets as far as the chain.
+			if ran := g.Chain.(*spyChain).serviceID != ""; hit || ran != c.chainRan {
+				t.Fatalf("the request was forwarded: upstream %v, chain %v", hit, ran)
 			}
 			if rec.Header().Get("Burrow-Provider") != "" || rec.Header().Get("Burrow-Model") != "" {
 				t.Fatalf("routing headers on a refused request: %v", rec.Header())
@@ -1887,7 +1894,7 @@ func TestServeDialect_Responses_OnlyCreateIsAnEndpoint(t *testing.T) {
 	hits = 0
 	rec := httptest.NewRecorder()
 	g.ServeDialect(rec, post("/v1/responses", "bgw_some", `{"model":"ollama/mistral"}`), DialectOpenAI)
-	if rec.Code != 200 || hits != 1 || rec.Header().Get("Burrow-Provider") != "ollama" {
+	if rec.Code != 200 || hits != 1 || rec.Header().Get("Burrow-Provider") != "ollama" || rec.Header().Get("Burrow-Attempts") != "1" {
 		t.Errorf("restricted key, allowed model: status %d hits %d", rec.Code, hits)
 	}
 }

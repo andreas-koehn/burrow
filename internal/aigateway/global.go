@@ -48,10 +48,15 @@ type Catalog interface {
 // nothing after it). Neither header reaches an upstream.
 //
 // Order of checks: gateway key, the key's allow-list on the name the client
-// asked for, model resolution, whether the target's provider offers the
-// endpoint, the target's service policy (access mode, IP/geo), and only then
-// the upstream credential. Nothing of the request but
-// its key is looked at before the key is accepted.
+// asked for, model resolution, which targets offer the endpoint, the first
+// target's service policy (access mode, IP/geo), then the chain, and inside
+// it, per attempt, that target's policy and only then its upstream
+// credential (see failover). Nothing of the request but its key is looked at
+// before the key is accepted.
+//
+// A synthetic model's targets are tried in order; a direct address has one
+// target and so no fallback. Burrow-Provider, Burrow-Model and Burrow-Attempts
+// describe the attempt that answered.
 func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialect) {
 	// Everything the gateway and the chain write from here on is in d's shape.
 	// The URL prefix, not a header, says which format the request is in.
@@ -107,39 +112,54 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 		return
 	}
 
-	target := res.Targets[0]
-	// Before the target's policy and credential: a provider that does not
-	// offer the endpoint is not called, and nothing of it is read.
-	if !endpointSupported(path, target.Provider) {
+	// Only targets that offer the requested endpoint are candidates; a
+	// provider that does not offer it is not called and nothing of it is read.
+	var targets []Target
+	for _, t := range res.Targets {
+		if endpointSupported(path, t.Provider) {
+			targets = append(targets, t)
+		}
+	}
+	if len(targets) == 0 {
 		// A synthetic name does not tell what stands behind it, and a key
 		// may be allowed that name alone: the provider is named only to a
 		// client that named it itself.
 		msg := "model " + shownName(requested) + " is not available on the Responses API; use /v1/chat/completions"
 		if !res.Synthetic {
-			msg = "provider " + target.Provider.Slug + " does not offer the Responses API; use /v1/chat/completions for model " + shownName(requested)
+			msg = "provider " + res.Targets[0].Provider.Slug + " does not offer the Responses API; use /v1/chat/completions for model " + shownName(requested)
 		}
 		g.fail(w, r, http.StatusBadRequest, "endpoint_unsupported", msg)
 		return
 	}
-	upstream, host, ok := g.targetUpstream(w, r, target.Provider)
+	candidates := candidatesFor(targets)
+	first := targets[0]
+
+	requestID := w.Header().Get(headerRequestID)
+	route := aigw.NewRoute(key.ID, d.Name, requested, requestID)
+	// Until an attempt answers, the route names the first target: an answer
+	// that comes from the chain itself (a cached one) is accounted to it.
+	route.SetTarget(first.Provider.Slug, first.Model)
+	r = r.WithContext(aigw.WithRoute(r.Context(), route))
+
+	// The chain runs under the first target's service: its AI config, its
+	// limits, its cache. That service's policy is therefore checked before
+	// the chain, as it is for a single target; every target's own policy is
+	// checked again when its turn comes, before its credential is read.
+	host, ok := g.firstTargetPolicy(w, r, first.Provider)
 	if !ok {
 		return
 	}
+
 	// The forwarded body differs from the client's in the bytes of the
 	// "model" value only. It has exactly one top-level "model" key in any
-	// letter case, so the model the chain reads from it is the target's.
-	setBody(r, body.WithModel(target.Model))
-
-	route := aigw.NewRoute(key.ID, d.Name, requested, w.Header().Get(headerRequestID))
-	route.SetTarget(target.Provider.Slug, target.Model)
-	r = r.WithContext(aigw.WithRoute(r.Context(), route))
-	w.Header().Set(headerProvider, target.Provider.Slug)
-	w.Header().Set(headerModel, target.Model)
-
+	// letter case, so the model the chain reads from it is the first
+	// target's. The failover handler sets each attempt's own model.
+	setBody(r, body.WithModel(first.Model))
 	// The gateway key and the dashboard's cookies stop here.
 	stripCredentials(r)
+	fo := g.newFailover(res, candidates, route, requestID)
 	if g.Chain == nil {
-		upstream.ServeHTTP(w, r)
+		fo.ServeHTTP(w, r)
 		return
 	}
 	if !d.metered(path) {
@@ -147,8 +167,31 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 		// guardrails apply to a prompt that is only counted, too.
 		r = r.WithContext(aigw.WithoutUsage(r.Context()))
 	}
-	// Reported cost is believed only from an upstream the relay calls itself.
-	g.Chain.DispatchMetered(w, r, target.Provider.ServiceID, host, "Authorization", "", target.Provider.Kind == "direct", upstream)
+	// A reported cost is believed only when every candidate is an upstream
+	// the relay calls itself: the chain cannot tell which one answered.
+	g.Chain.DispatchMetered(w, r, first.Provider.ServiceID, host, "Authorization", "", allDirect(candidates), fo)
+}
+
+// firstTargetPolicy checks the policy (access mode, IP/geo) of the service a
+// fallback chain runs under, without reading a credential. A refusal is
+// written to the client and ends the request: ok is false. Anything else that
+// keeps the policy from being read (the tunnel is offline, a lookup failed)
+// is not a refusal, and the failover handler meets it again as a failed
+// attempt and moves on; but the caller was then not checked against this
+// service's policy, so the request must not be answered from its cache.
+func (g *Gateway) firstTargetPolicy(w http.ResponseWriter, r *http.Request, p db.AIProvider) (host string, ok bool) {
+	refused := false
+	cw := newCommitWriter(w,
+		func(status int) bool { return status != http.StatusForbidden },
+		func(int) { refused = true })
+	_, host, passed := g.upstreamFor(cw, r, p)
+	switch {
+	case refused:
+		return "", false
+	case !passed:
+		r.Header.Set("Burrow-Cache", "bypass")
+	}
+	return host, true
 }
 
 func (g *Gateway) maxBody() int64 {
