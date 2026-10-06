@@ -405,24 +405,6 @@ func (x *DB) SetAccessPolicy(ctx context.Context, serviceID string, roles []stri
 	return nil
 }
 
-// intBool scans an INTEGER 0/1 column into a bool on every driver (pgx will
-// not scan an int4 into a *bool).
-type intBool bool
-
-func (b *intBool) Scan(src any) error {
-	switch v := src.(type) {
-	case int64:
-		*b = v != 0
-	case bool:
-		*b = intBool(v)
-	case nil:
-		*b = false
-	default:
-		return fmt.Errorf("intBool: unsupported type %T", src)
-	}
-	return nil
-}
-
 // SetServiceGatewayOnly marks a service as reachable only through the AI
 // gateway. ErrNotFound when no service has the id.
 func (x *DB) SetServiceGatewayOnly(ctx context.Context, id string, on bool) error {

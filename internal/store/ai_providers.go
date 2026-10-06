@@ -147,6 +147,11 @@ func (s *Store) CreateTunnelProvider(ctx context.Context, slug, name, serviceID 
 	if svc.Type != "http" || svc.AccessMode != "api_key" {
 		return db.AIProvider{}, ErrProviderService
 	}
+	if taken, err := s.slugTakenByModel(ctx, slug); err != nil {
+		return db.AIProvider{}, err
+	} else if taken {
+		return db.AIProvider{}, ErrProviderExists
+	}
 	p := db.AIProvider{Slug: slug, Name: name, Kind: "tunnel", ServiceID: serviceID, APIFormat: "openai"}
 	if err := s.q.CreateAIProvider(ctx, p); err != nil {
 		if errors.Is(err, db.ErrDuplicateProvider) {
@@ -159,10 +164,16 @@ func (s *Store) CreateTunnelProvider(ctx context.Context, slug, name, serviceID 
 
 // UpdateProvider changes a provider's slug and display name. The old base URL
 // stops working at once. The backing service of a direct provider is renamed
-// with it.
+// with it, and model targets follow the new slug. A slug that a synthetic
+// model has as its name is refused with ErrProviderExists.
 func (s *Store) UpdateProvider(ctx context.Context, slug, newSlug, name string) (db.AIProvider, error) {
 	if !ValidProviderSlug(newSlug) {
 		return db.AIProvider{}, ErrInvalidProviderSlug
+	}
+	if taken, err := s.slugTakenByModel(ctx, newSlug); err != nil {
+		return db.AIProvider{}, err
+	} else if taken {
+		return db.AIProvider{}, ErrProviderExists
 	}
 	switch err := s.q.UpdateAIProvider(ctx, slug, newSlug, name); {
 	case errors.Is(err, db.ErrNotFound):
@@ -177,8 +188,16 @@ func (s *Store) UpdateProvider(ctx context.Context, slug, newSlug, name string) 
 
 // DeleteProvider removes the provider. A tunnel provider's service is kept; a
 // direct provider's backing service goes with it, and with that its API keys,
-// AI configuration and model list.
+// AI configuration and model list. A provider that a synthetic model still
+// targets is not deleted: the error wraps ErrProviderInUse and names the models.
 func (s *Store) DeleteProvider(ctx context.Context, slug string) error {
+	names, err := s.q.ListAIModelNamesByProvider(ctx, slug)
+	if err != nil {
+		return err
+	}
+	if len(names) > 0 {
+		return fmt.Errorf("%w: %s", ErrProviderInUse, strings.Join(names, ", "))
+	}
 	if err := s.q.DeleteAIProviderAndBacking(ctx, slug); errors.Is(err, db.ErrNotFound) {
 		return ErrProviderNotFound
 	} else if err != nil {
@@ -317,6 +336,11 @@ func (s *Store) CreateDirectProvider(ctx context.Context, ownerID string, in Dir
 	if err != nil {
 		return db.AIProvider{}, err
 	}
+	if taken, err := s.slugTakenByModel(ctx, in.Slug); err != nil {
+		return db.AIProvider{}, err
+	} else if taken {
+		return db.AIProvider{}, ErrProviderExists
+	}
 	svc := db.Service{ID: uuid.NewString(), UserID: ownerID, Name: in.Name, Type: "direct", AccessMode: "api_key", APIKeyHeader: "Authorization"}
 	p := db.AIProvider{
 		Slug: in.Slug, Name: in.Name, Kind: "direct", ServiceID: svc.ID, APIFormat: in.APIFormat,
@@ -336,6 +360,7 @@ func (s *Store) CreateDirectProvider(ctx context.Context, ownerID string, in Dir
 // A field left empty keeps its stored value, so an update that does not name
 // the credential slot keeps the slot; ExtraHeaders nil keeps the stored
 // headers and an empty map removes them. Slug and Name of in are ignored.
+// The API format cannot change while a synthetic model targets the provider.
 // The /ai/ data plane reads the row per request, so the change applies at once.
 func (s *Store) UpdateProviderUpstream(ctx context.Context, slug string, in DirectProviderInput) (db.AIProvider, error) {
 	// The merge with the stored values runs inside the database's
@@ -362,6 +387,16 @@ func (s *Store) UpdateProviderUpstream(ctx context.Context, slug string, in Dire
 		in, err := normalizeDirect(in)
 		if err != nil {
 			return p, err
+		}
+		if in.APIFormat != p.APIFormat {
+			// A target's dialect is its provider's format; the two must not drift apart.
+			names, err := s.q.ListAIModelNamesByProvider(ctx, slug)
+			if err != nil {
+				return p, err
+			}
+			if len(names) > 0 {
+				return p, invalidConfig("the API format cannot change while models use this provider: " + strings.Join(names, ", "))
+			}
 		}
 		p.BaseURL, p.CredentialSlot, p.AuthHeader, p.AuthFormat = in.BaseURL, in.CredentialSlot, in.AuthHeader, in.AuthFormat
 		p.Billing, p.APIFormat, p.ExtraHeaders = in.Billing, in.APIFormat, in.ExtraHeaders

@@ -6,12 +6,22 @@ import (
 	"testing"
 )
 
-func seedModelProviders(t *testing.T, x *DB) {
+// seedModelProviders creates userID with the providers "zai", "openrouter"
+// (openai) and "zai-anthropic". The model tables are emptied before and
+// after, and the user goes with its services and providers, so the checks
+// below also run against a Postgres that outlives the test run.
+func seedModelProviders(t *testing.T, x *DB, userID string) {
 	t.Helper()
 	ctx := context.Background()
-	mustUser(t, x, "u1")
+	reset := func() {
+		_, _ = x.sqlDB.ExecContext(ctx, `DELETE FROM ai_models`)
+		_ = x.DeleteUser(ctx, userID)
+	}
+	reset()
+	t.Cleanup(reset)
+	mustUser(t, x, userID)
 	for _, p := range []struct{ slug, format string }{{"zai", "openai"}, {"openrouter", "openai"}, {"zai-anthropic", "anthropic"}} {
-		svc := seedSvc(t, x, "u1", "svc-"+p.slug)
+		svc := seedSvc(t, x, userID, "svc-"+p.slug)
 		if err := x.CreateAIProvider(ctx, AIProvider{Slug: p.slug, Name: p.slug, Kind: "tunnel", ServiceID: svc, APIFormat: p.format}); err != nil {
 			t.Fatal(err)
 		}
@@ -27,10 +37,15 @@ func countTargets(t *testing.T, x *DB) int {
 	return n
 }
 
-func TestAIModels_CRUD(t *testing.T) {
-	x := testDB(t)
+func TestAIModels_CRUD(t *testing.T) { checkAIModels(t, testDB(t), "u1") }
+
+// checkAIModels exercises the ai_models and ai_model_targets statements. It
+// runs against SQLite here and against a live Postgres in the postgres-tagged
+// test.
+func checkAIModels(t *testing.T, x *DB, userID string) {
+	t.Helper()
 	ctx := context.Background()
-	seedModelProviders(t, x)
+	seedModelProviders(t, x, userID)
 	m := AIModel{
 		Name: "burrow-intelligence", Description: "best", Enabled: true,
 		AttemptTimeoutS: 60, TotalTimeoutS: 120,
@@ -108,9 +123,15 @@ func TestAIModels_CRUD(t *testing.T) {
 }
 
 func TestAIModels_FollowProviderRename(t *testing.T) {
-	x := testDB(t)
+	checkAIModelsFollowProviderRename(t, testDB(t), "u1")
+}
+
+// checkAIModelsFollowProviderRename: a provider's new slug reaches the target
+// rows (ON UPDATE CASCADE), and a provider with a target cannot be deleted.
+func checkAIModelsFollowProviderRename(t *testing.T, x *DB, userID string) {
+	t.Helper()
 	ctx := context.Background()
-	seedModelProviders(t, x)
+	seedModelProviders(t, x, userID)
 	if err := x.CreateAIModel(ctx, AIModel{Name: "m1", Enabled: true,
 		Targets: []AIModelTarget{{Dialect: "openai", ProviderSlug: "zai", TargetModel: "g"}}}); err != nil {
 		t.Fatal(err)
@@ -121,6 +142,14 @@ func TestAIModels_FollowProviderRename(t *testing.T) {
 	got, err := x.GetAIModel(ctx, "m1")
 	if err != nil || len(got.Targets) != 1 || got.Targets[0].ProviderSlug != "zhipu" {
 		t.Fatalf("after rename: %v %+v", err, got)
+	}
+	// No ON DELETE on the target's provider: the store refuses first and names
+	// the models; the database is the backstop.
+	if err := x.DeleteAIProviderAndBacking(ctx, "zhipu"); err == nil {
+		t.Fatal("a provider with a model target was deleted")
+	}
+	if _, err := x.GetAIProvider(ctx, "zhipu"); err != nil {
+		t.Fatalf("provider after the refused delete: %v", err)
 	}
 }
 

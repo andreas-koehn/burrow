@@ -415,6 +415,11 @@ func newRootCmd() *cobra.Command {
 			} else if n > 0 {
 				log.Info("ai providers created for existing api_key services", "count", n)
 			}
+			if n, err := st.ImportModelAliases(context.Background()); err != nil {
+				log.Warn("model alias import failed", "err", err)
+			} else if n > 0 {
+				log.Info("models created from model aliases", "count", n)
+			}
 
 			bus := events.NewBus()
 

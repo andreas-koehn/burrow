@@ -7,26 +7,37 @@ import (
 	"time"
 )
 
-func TestAIGatewayKeys(t *testing.T) {
-	x := testDB(t)
+func TestAIGatewayKeys(t *testing.T) { checkAIGatewayKeys(t, testDB(t), "u1", "u2") }
+
+// checkAIGatewayKeys exercises the ai_gateway_keys statements. It runs
+// against SQLite here and against a live Postgres in the postgres-tagged test.
+func checkAIGatewayKeys(t *testing.T, x *DB, u1, u2 string) {
+	t.Helper()
 	ctx := context.Background()
-	mustUser(t, x, "u1")
-	mustUser(t, x, "u2")
-	k := AIGatewayKey{ID: "gk1", Name: "laptop", KeyHash: "h1", KeyPrefix: "bgw_abcd", UserID: "u1",
+	reset := func() {
+		_, _ = x.sqlDB.ExecContext(ctx, `DELETE FROM ai_gateway_keys`)
+		_ = x.DeleteUser(ctx, u1)
+		_ = x.DeleteUser(ctx, u2)
+	}
+	reset()
+	t.Cleanup(reset)
+	mustUser(t, x, u1)
+	mustUser(t, x, u2)
+	k := AIGatewayKey{ID: "gk1", Name: "laptop", KeyHash: "h1", KeyPrefix: "bgw_abcd", UserID: u1,
 		AllowedModels: []string{"burrow-simple", "zai/*"}}
 	if err := x.CreateAIGatewayKey(ctx, k); err != nil {
 		t.Fatal(err)
 	}
 	got, err := x.GetAIGatewayKeyByHash(ctx, "h1")
-	if err != nil || got.ID != "gk1" || got.Name != "laptop" || got.KeyPrefix != "bgw_abcd" || got.UserID != "u1" ||
+	if err != nil || got.ID != "gk1" || got.Name != "laptop" || got.KeyPrefix != "bgw_abcd" || got.UserID != u1 ||
 		len(got.AllowedModels) != 2 || got.AllowedModels[1] != "zai/*" || got.RevokedAt != nil || got.LastUsed != nil || got.CreatedAt.IsZero() {
 		t.Fatalf("get: %v %+v", err, got)
 	}
-	if err := x.CreateAIGatewayKey(ctx, AIGatewayKey{ID: "gk-dup", Name: "x", KeyHash: "h1", KeyPrefix: "p", UserID: "u1"}); err == nil {
+	if err := x.CreateAIGatewayKey(ctx, AIGatewayKey{ID: "gk-dup", Name: "x", KeyHash: "h1", KeyPrefix: "p", UserID: u1}); err == nil {
 		t.Fatal("duplicate hash must fail")
 	}
 	time.Sleep(1100 * time.Millisecond) // created_at has second resolution
-	if err := x.CreateAIGatewayKey(ctx, AIGatewayKey{ID: "gk2", Name: "ci", KeyHash: "h2", KeyPrefix: "bgw_wxyz", UserID: "u2"}); err != nil {
+	if err := x.CreateAIGatewayKey(ctx, AIGatewayKey{ID: "gk2", Name: "ci", KeyHash: "h2", KeyPrefix: "bgw_wxyz", UserID: u2}); err != nil {
 		t.Fatal(err)
 	}
 	got2, err := x.GetAIGatewayKey(ctx, "gk2")
@@ -66,7 +77,7 @@ func TestAIGatewayKeys(t *testing.T) {
 		t.Fatalf("revoke missing err = %v", err)
 	}
 
-	mine, err := x.ListAIGatewayKeys(ctx, "u1")
+	mine, err := x.ListAIGatewayKeys(ctx, u1)
 	if err != nil || len(mine) != 1 || mine[0].ID != "gk1" {
 		t.Fatalf("list u1: %v %+v", err, mine)
 	}
@@ -75,7 +86,7 @@ func TestAIGatewayKeys(t *testing.T) {
 		t.Fatalf("list all (newest first): %v %+v", err, all)
 	}
 
-	if _, err := x.DB().Exec(`DELETE FROM users WHERE id=?`, "u1"); err != nil {
+	if _, err := x.sqlDB.ExecContext(ctx, `DELETE FROM users WHERE id=?`, u1); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := x.GetAIGatewayKey(ctx, "gk1"); !errors.Is(err, ErrNotFound) {

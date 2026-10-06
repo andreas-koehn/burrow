@@ -6,9 +6,18 @@ import (
 	"time"
 )
 
-func TestUsageAttempts(t *testing.T) {
-	x := testDB(t)
+func TestUsageAttempts(t *testing.T) { checkUsageAttempts(t, testDB(t)) }
+
+// checkUsageAttempts exercises the usage_attempts statements. It runs against
+// SQLite here and against a live Postgres in the postgres-tagged test.
+func checkUsageAttempts(t *testing.T, x *DB) {
+	t.Helper()
 	ctx := context.Background()
+	reset := func() {
+		_, _ = x.sqlDB.ExecContext(ctx, `DELETE FROM usage_attempts WHERE request_id IN ('req-1','req-2')`)
+	}
+	reset()
+	t.Cleanup(reset)
 	now := time.Now().UTC()
 	err := x.InsertUsageAttempts(ctx, []UsageAttempt{
 		{RequestID: "req-1", Position: 1, Ts: now, ProviderSlug: "b", TargetModel: "m2", Status: 200, DurationMs: 40},

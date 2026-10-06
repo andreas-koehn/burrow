@@ -332,13 +332,21 @@ func TestCreateServiceAdminPreProvisioning(t *testing.T) {
 	}
 }
 
-func TestServiceGatewayOnly(t *testing.T) {
-	x := testDB(t)
+func TestServiceGatewayOnly(t *testing.T) { checkServiceGatewayOnly(t, testDB(t), "u1") }
+
+// checkServiceGatewayOnly: the gateway_only flag is written and read back by
+// every service query. It runs against SQLite here and against a live
+// Postgres in the postgres-tagged test.
+func checkServiceGatewayOnly(t *testing.T, x *DB, userID string) {
+	t.Helper()
 	ctx := context.Background()
-	mustUser(t, x, "u1")
-	s, err := x.GetOrCreateService(ctx, "u1", "svc", "http")
+	_ = x.DeleteUser(ctx, userID)
+	mustUser(t, x, userID)
+	t.Cleanup(func() { _ = x.DeleteUser(ctx, userID) })
+	sub := "gw-" + userID
+	s, err := x.GetOrCreateService(ctx, userID, "svc", "http")
 	if err == nil {
-		err = x.SetServiceSubdomain(ctx, s.ID, "gwsub")
+		err = x.SetServiceSubdomain(ctx, s.ID, sub)
 	}
 	if err != nil || s.GatewayOnly {
 		t.Fatalf("default: %v %+v", err, s)
@@ -350,16 +358,22 @@ func TestServiceGatewayOnly(t *testing.T) {
 	if !byID.GatewayOnly {
 		t.Fatal("GetServiceByID lost GatewayOnly")
 	}
-	bySub, err := x.GetServiceBySubdomain(ctx, "gwsub")
+	bySub, err := x.GetServiceBySubdomain(ctx, sub)
 	if err != nil || !bySub.GatewayOnly {
 		t.Fatalf("GetServiceBySubdomain: %v %+v", err, bySub)
 	}
-	list, _ := x.ListServicesByUser(ctx, "u1")
+	list, _ := x.ListServicesByUser(ctx, userID)
 	if len(list) != 1 || !list[0].GatewayOnly {
 		t.Fatalf("list by user: %+v", list)
 	}
 	all, _ := x.ListAllServices(ctx)
-	if len(all) != 1 || !all[0].GatewayOnly {
+	found := false
+	for _, a := range all {
+		if a.ID == s.ID {
+			found = a.GatewayOnly
+		}
+	}
+	if !found {
 		t.Fatalf("list all: %+v", all)
 	}
 	if err := x.SetServiceGatewayOnly(ctx, s.ID, false); err != nil {

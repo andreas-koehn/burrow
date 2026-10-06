@@ -334,7 +334,43 @@ func TestMigrationParitySQLiteAndPostgres(t *testing.T) {
 			t.Errorf("postgres: table %s missing: %v", tbl, err)
 		}
 	}
+
+	// 0023: the columns and indexes TestMigrate0023Schema checks on SQLite.
+	for tbl, cols := range migration0023Columns {
+		for _, c := range cols {
+			var n int
+			if err := pgDB.QueryRow(
+				`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name=$2`,
+				tbl, c,
+			).Scan(&n); err != nil || n != 1 {
+				t.Errorf("postgres: column %s.%s missing (n=%d, err=%v)", tbl, c, n, err)
+			}
+		}
+	}
+	for _, idx := range migration0023Indexes {
+		var n string
+		if err := pgDB.QueryRow(
+			`SELECT indexname FROM pg_indexes WHERE schemaname='public' AND indexname=$1`, idx,
+		).Scan(&n); err != nil {
+			t.Errorf("postgres: index %s missing: %v", idx, err)
+		}
+	}
 }
+
+// What migration 0023 adds to existing and new tables, checked on both engines.
+var (
+	migration0023Columns = map[string][]string{
+		"usage_events":     {"gateway_key_id", "dialect", "provider_slug", "requested_model", "target_model", "request_id", "latency_ms"},
+		"services":         {"gateway_only"},
+		"budgets":          {"daily_tokens"},
+		"ai_providers":     {"supports_responses", "max_concurrent"},
+		"ai_models":        {"name", "description", "enabled", "fallback_on_rate_limit", "attempt_timeout_s", "total_timeout_s", "created_at", "updated_at"},
+		"ai_model_targets": {"model_name", "dialect", "position", "provider_slug", "target_model"},
+		"ai_gateway_keys":  {"id", "name", "key_hash", "key_prefix", "user_id", "allowed_models", "last_used", "created_at", "revoked_at"},
+		"usage_attempts":   {"request_id", "position", "ts", "provider_slug", "target_model", "status", "error_code", "duration_ms"},
+	}
+	migration0023Indexes = []string{"idx_ai_model_targets_provider", "idx_ai_gateway_keys_user", "idx_usage_attempts_ts", "idx_usage_events_gateway_key"}
+)
 
 func TestMigrate0023Schema(t *testing.T) {
 	x := testDB(t)
@@ -345,13 +381,7 @@ func TestMigrate0023Schema(t *testing.T) {
 			t.Errorf("table %s missing: %v", tbl, err)
 		}
 	}
-	cols := map[string][]string{
-		"usage_events": {"gateway_key_id", "dialect", "provider_slug", "requested_model", "target_model", "request_id", "latency_ms"},
-		"services":     {"gateway_only"},
-		"budgets":      {"daily_tokens"},
-		"ai_providers": {"supports_responses", "max_concurrent"},
-	}
-	for tbl, list := range cols {
+	for tbl, list := range migration0023Columns {
 		for _, c := range list {
 			var n int
 			if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, tbl, c).Scan(&n); err != nil || n != 1 {
@@ -359,7 +389,7 @@ func TestMigrate0023Schema(t *testing.T) {
 			}
 		}
 	}
-	for _, idx := range []string{"idx_ai_model_targets_provider", "idx_ai_gateway_keys_user", "idx_usage_attempts_ts", "idx_usage_events_gateway_key"} {
+	for _, idx := range migration0023Indexes {
 		var n string
 		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`, idx).Scan(&n); err != nil {
 			t.Errorf("index %s missing: %v", idx, err)

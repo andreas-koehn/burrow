@@ -297,11 +297,24 @@ func (x *DB) CountConsecutive4xxSince(ctx context.Context, webhookID string, sin
 	return n, nil
 }
 
-// boolToInt converts a Go bool into the 0/1 SQLite integer expected by the
-// "paused" column.
+// boolToInt converts a Go bool into the 0/1 integer of an INTEGER column
+// (pgx will not bind a Go bool to an int column).
 func boolToInt(b bool) int {
 	if b {
 		return 1
 	}
 	return 0
+}
+
+// intBool scans an INTEGER NOT NULL 0/1 column into a bool; both drivers hand
+// such a column over as int64 (pgx will not scan an int4 into a *bool).
+type intBool bool
+
+func (b *intBool) Scan(src any) error {
+	v, ok := src.(int64)
+	if !ok {
+		return fmt.Errorf("intBool: unsupported type %T", src)
+	}
+	*b = v != 0
+	return nil
 }
