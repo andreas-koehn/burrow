@@ -2184,7 +2184,8 @@ paths:
         minutes. The strings in the body are display text only: the relay
         strips control characters and caps their length. Rate-limited per
         source IP (10 requests per minute); at most 20 requests may be
-        pending at a time. Not cacheable.
+        pending at a time, and at most 5 from one source IP. Starting a
+        request is not audited. Not cacheable.
       security: []
       requestBody:
         required: true
@@ -2234,7 +2235,7 @@ paths:
                     example: 2
         '400': { $ref: '#/components/responses/BadRequest' }
         '429':
-          description: Rate-limited (per source IP), or too many pending sign-in requests.
+          description: Rate-limited (per source IP), or too many pending sign-in requests (in all, or from this source IP).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

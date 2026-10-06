@@ -54,19 +54,38 @@ func scanClientLogin(row *sql.Row) (ClientLoginRequest, error) {
 	return r, nil
 }
 
-// InsertClientLogin stores a new pending request unless maxPending live
-// pending requests exist already; inserted is false then. The count and the
-// insert are one statement, so the cap cannot be passed between a check and
-// a write. r.CreatedAt is the time the request starts at.
-func (x *DB) InsertClientLogin(ctx context.Context, r ClientLoginRequest, maxPending int) (inserted bool, err error) {
+// InsertClientLogin stores a new pending request. inserted is false when
+// maxPending live pending requests exist already, or maxPerIP of them came
+// from r.SourceIP: one address cannot use up the places of everybody else.
+//
+// Both counts and the insert are one statement, so on SQLite (one writer)
+// neither cap can be passed between a check and a write. Postgres evaluates
+// the counts against a snapshot, so two concurrent statements could both see
+// room; there the transaction first takes an advisory lock that makes starts
+// wait for each other (lockClientLoginStart). r.CreatedAt is the time the
+// request starts at.
+func (x *DB) InsertClientLogin(ctx context.Context, r ClientLoginRequest, maxPending, maxPerIP int) (inserted bool, err error) {
+	tx, err := x.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("insert client login request: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockClientLoginStart(ctx, x.sqlDB, tx); err != nil {
+		return false, fmt.Errorf("insert client login request: lock: %w", err)
+	}
 	created := r.CreatedAt.UTC()
-	res, err := x.sqlDB.ExecContext(ctx,
+	res, err := tx.ExecContext(ctx,
 		`INSERT INTO client_login_requests(device_code_hash, user_code, hostname, os, arch, client_version,
 		   source_ip, status, token_name, created_at, expires_at)
 		 SELECT ?,?,?,?,?,?,?,'pending',?,?,?
-		 WHERE (SELECT COUNT(*) FROM client_login_requests WHERE status='pending' AND expires_at > ?) < ?`,
+		 WHERE (SELECT COUNT(*) FROM client_login_requests
+		         WHERE status='pending' AND expires_at > ?) < ?
+		   AND (SELECT COUNT(*) FROM client_login_requests
+		         WHERE source_ip=? AND status='pending' AND expires_at > ?) < ?`,
 		r.DeviceCodeHash, r.UserCode, r.Hostname, r.OS, r.Arch, r.ClientVersion,
-		r.SourceIP, r.TokenName, created, r.ExpiresAt.UTC(), created, maxPending,
+		r.SourceIP, r.TokenName, created, r.ExpiresAt.UTC(),
+		created, maxPending,
+		r.SourceIP, created, maxPerIP,
 	)
 	if err != nil {
 		return false, fmt.Errorf("insert client login request: %w", err)
@@ -74,6 +93,9 @@ func (x *DB) InsertClientLogin(ctx context.Context, r ClientLoginRequest, maxPen
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("insert client login request rows affected: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("insert client login request: commit: %w", err)
 	}
 	return n == 1, nil
 }

@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"strings"
@@ -39,6 +38,10 @@ const (
 	// clientLoginMaxPending caps the pending requests, so that the
 	// unauthenticated start endpoint cannot fill the table.
 	clientLoginMaxPending = 20
+	// clientLoginMaxPendingPerIP caps the pending requests of one source
+	// address. Without it one address starting a request every thirty seconds
+	// would hold all twenty places and turn the sign-in off for everybody.
+	clientLoginMaxPendingPerIP = 5
 
 	// userCodeAlphabet has no I, L, O, 0 or 1: nothing that reads as
 	// something else. 31^8 codes (about 2^39.6) against at most twenty live
@@ -140,7 +143,7 @@ func (s *Store) StartClientLogin(ctx context.Context, m LoginMeta) (LoginStart, 
 		}
 		row.DeviceCodeHash = auth.HashToken(deviceCode)
 		row.UserCode = userCode
-		inserted, err := s.q.InsertClientLogin(ctx, row, clientLoginMaxPending)
+		inserted, err := s.q.InsertClientLogin(ctx, row, clientLoginMaxPending, clientLoginMaxPendingPerIP)
 		if db.IsClientLoginDuplicate(err) {
 			continue
 		}
@@ -150,10 +153,9 @@ func (s *Store) StartClientLogin(ctx context.Context, m LoginMeta) (LoginStart, 
 		if !inserted {
 			return LoginStart{}, ErrLoginTooMany
 		}
-		s.emitAudit(ctx, audit.ActionClientLoginStarted, func(e *audit.Event) {
-			e.SubjectLabel = row.Hostname
-			e.Payload = loginAuditPayload(row, "")
-		})
+		// Not audited: the caller is anonymous, and the audit log is a hash
+		// chain that is never compacted. Approval, denial and the token mint
+		// are the audited steps.
 		return LoginStart{
 			DeviceCode: deviceCode,
 			UserCode:   formatUserCode(userCode),
@@ -215,10 +217,11 @@ func (s *Store) decideClientLogin(ctx context.Context, userCode, status, actorID
 		return LoginRequestView{}, ErrLoginNotFound
 	}
 	now := s.loginNow()
-	decided, err := s.q.DecideClientLogin(ctx, code, status, approvedBy, tokenName, now)
-	if err != nil {
-		return LoginRequestView{}, err
-	}
+	// Read the request first: what the audit row and the answer say about it
+	// (hostname, source address, …) never changes, and once the decision is
+	// written a poll may remove the row at any moment — a denial is reported
+	// once, an approval is collected. Nothing below depends on reading it
+	// again after a decision that took effect.
 	row, err := s.q.GetClientLoginByUserCode(ctx, code, now)
 	if errors.Is(err, db.ErrNotFound) {
 		return LoginRequestView{}, ErrLoginNotFound
@@ -226,8 +229,27 @@ func (s *Store) decideClientLogin(ctx context.Context, userCode, status, actorID
 	if err != nil {
 		return LoginRequestView{}, err
 	}
+	// The statement carries the state check (pending, not expired), so of
+	// two decisions one wins whatever was read above.
+	decided, err := s.q.DecideClientLogin(ctx, code, status, approvedBy, tokenName, now)
+	if err != nil {
+		return LoginRequestView{}, err
+	}
 	if !decided {
+		// Decided by someone else, or gone since the read.
+		if _, err := s.q.GetClientLoginByUserCode(ctx, code, now); errors.Is(err, db.ErrNotFound) {
+			return LoginRequestView{}, ErrLoginNotFound
+		} else if err != nil {
+			return LoginRequestView{}, err
+		}
 		return LoginRequestView{}, ErrLoginConflict
+	}
+	if s.clientLoginAfterDecide != nil {
+		s.clientLoginAfterDecide()
+	}
+	row.Status = status
+	if tokenName != "" {
+		row.TokenName = tokenName
 	}
 	action := audit.ActionClientLoginApproved
 	if status == db.ClientLoginDenied {
@@ -267,9 +289,6 @@ func (s *Store) PollClientLogin(ctx context.Context, deviceCode string) (LoginRe
 	}
 	if err != nil {
 		return LoginResult{}, err
-	}
-	if subtle.ConstantTimeCompare([]byte(row.DeviceCodeHash), []byte(hash)) != 1 {
-		return LoginResult{}, ErrLoginNotFound
 	}
 	if !row.ExpiresAt.After(now) {
 		_ = s.q.DeleteClientLogin(ctx, hash)

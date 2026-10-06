@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -98,6 +99,13 @@ func mustStart(t *testing.T, s *Store) LoginStart {
 		t.Fatalf("StartClientLogin: %v", err)
 	}
 	return st
+}
+
+// startFrom starts a request from the given source address.
+func startFrom(s *Store, ip string) (LoginStart, error) {
+	m := loginMeta
+	m.SourceIP = ip
+	return s.StartClientLogin(context.Background(), m)
 }
 
 func tokenCount(t *testing.T, s *Store, userID string) int {
@@ -355,7 +363,10 @@ func TestClientLogin_UserCodes(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		st := mustStart(t, s)
+		st, err := startFrom(s, fmt.Sprintf("198.51.100.%d", i%20))
+		if err != nil {
+			t.Fatalf("start %d: %v", i, err)
+		}
 		if !re.MatchString(st.UserCode) {
 			t.Fatalf("user code %q has the wrong shape", st.UserCode)
 		}
@@ -458,11 +469,16 @@ func TestClientLogin_RowHoldsNoSecret(t *testing.T) {
 func TestClientLogin_PendingCap(t *testing.T) {
 	ctx := context.Background()
 	s, _, clk, u1 := loginFixture(t)
+	from := func(i int) string { return fmt.Sprintf("198.51.100.%d", i) }
 	var all []LoginStart
 	for i := 0; i < 20; i++ {
-		all = append(all, mustStart(t, s))
+		st, err := startFrom(s, from(i))
+		if err != nil {
+			t.Fatalf("start %d: %v", i, err)
+		}
+		all = append(all, st)
 	}
-	if _, err := s.StartClientLogin(ctx, loginMeta); !errors.Is(err, ErrLoginTooMany) {
+	if _, err := startFrom(s, from(20)); !errors.Is(err, ErrLoginTooMany) {
 		t.Fatalf("21st start: %v, want ErrLoginTooMany", err)
 	}
 
@@ -473,14 +489,127 @@ func TestClientLogin_PendingCap(t *testing.T) {
 	if _, err := s.PollClientLogin(ctx, all[0].DeviceCode); err != nil {
 		t.Fatal(err)
 	}
-	mustStart(t, s)
-	if _, err := s.StartClientLogin(ctx, loginMeta); !errors.Is(err, ErrLoginTooMany) {
+	if _, err := startFrom(s, from(21)); err != nil {
+		t.Fatalf("start after one was collected: %v", err)
+	}
+	if _, err := startFrom(s, from(22)); !errors.Is(err, ErrLoginTooMany) {
 		t.Fatalf("start at the cap again: %v, want ErrLoginTooMany", err)
 	}
 
 	// Expiry frees them all, without a sweep.
 	clk.add(10*time.Minute + time.Second)
-	mustStart(t, s)
+	if _, err := startFrom(s, from(23)); err != nil {
+		t.Fatalf("start after expiry: %v", err)
+	}
+}
+
+// One address holds at most five pending requests. Without this cap a single
+// address starting a request every thirty seconds would keep all twenty
+// places and turn the browser sign-in off for everybody.
+func TestClientLogin_PendingCapPerIP(t *testing.T) {
+	ctx := context.Background()
+	s, _, clk, u1 := loginFixture(t)
+	const a, b = "203.0.113.1", "203.0.113.2"
+	var first LoginStart
+	for i := 0; i < 5; i++ {
+		st, err := startFrom(s, a)
+		if err != nil {
+			t.Fatalf("start %d of A: %v", i+1, err)
+		}
+		if i == 0 {
+			first = st
+		}
+	}
+	if _, err := startFrom(s, a); !errors.Is(err, ErrLoginTooMany) {
+		t.Fatalf("sixth start of A: %v, want ErrLoginTooMany", err)
+	}
+	// B is not affected by A being at its cap.
+	for i := 0; i < 5; i++ {
+		if _, err := startFrom(s, b); err != nil {
+			t.Fatalf("start %d of B while A is at its cap: %v", i+1, err)
+		}
+	}
+	// A decision frees a place of A.
+	if _, err := s.DenyClientLogin(ctx, first.UserCode, u1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := startFrom(s, a); err != nil {
+		t.Fatalf("start of A after one of its requests was denied: %v", err)
+	}
+	if _, err := startFrom(s, a); !errors.Is(err, ErrLoginTooMany) {
+		t.Fatalf("A over its cap again: %v, want ErrLoginTooMany", err)
+	}
+	// Expired requests of A do not count.
+	clk.add(10*time.Minute + time.Second)
+	for i := 0; i < 5; i++ {
+		if _, err := startFrom(s, a); err != nil {
+			t.Fatalf("start %d of A after its requests expired: %v", i+1, err)
+		}
+	}
+}
+
+// A poll that lands right after the decision removes the row (a denial is
+// reported once; an approval is collected). The decision took effect, so the
+// approver gets the request back, not a 404, and the audit row is written.
+func TestClientLogin_DecisionSurvivesAnImmediatePoll(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name, action, status string
+		decide               func(s *Store, code, uid string) (LoginRequestView, error)
+		pollErr              error
+	}{
+		{"approve", "client.login.approved", "approved",
+			func(s *Store, code, uid string) (LoginRequestView, error) {
+				return s.ApproveClientLogin(ctx, code, uid, "laptop")
+			}, nil},
+		{"deny", "client.login.denied", "denied",
+			func(s *Store, code, uid string) (LoginRequestView, error) { return s.DenyClientLogin(ctx, code, uid) },
+			ErrLoginDenied},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, d, _, u1 := loginFixture(t)
+			sink := &auditSink{}
+			s.SetAuditLogger(sink)
+			st := mustStart(t, s)
+			var pollErr error
+			polled := false
+			s.clientLoginAfterDecide = func() {
+				polled = true
+				_, pollErr = s.PollClientLogin(ctx, st.DeviceCode)
+			}
+			v, err := tc.decide(s, st.UserCode, u1)
+			if !polled {
+				t.Fatal("the poll was not injected")
+			}
+			if !errors.Is(pollErr, tc.pollErr) {
+				t.Fatalf("injected poll: %v, want %v", pollErr, tc.pollErr)
+			}
+			if loginRows(t, d) != 0 {
+				t.Fatal("the injected poll did not remove the row; the test proves nothing")
+			}
+			if err != nil {
+				t.Fatalf("%s: %v, want success: the decision took effect", tc.name, err)
+			}
+			if v.Status != tc.status || v.UserCode != st.UserCode || v.Hostname != "laptop.local" || v.SourceIP != "203.0.113.7" {
+				t.Fatalf("view = %+v", v)
+			}
+			found := false
+			sink.mu.Lock()
+			for _, e := range sink.ev {
+				if e.Action == tc.action {
+					found = true
+					if e.ActorID != u1 || !strings.Contains(string(e.Payload), `"hostname":"laptop.local"`) ||
+						!strings.Contains(string(e.Payload), `"source_ip":"203.0.113.7"`) {
+						t.Fatalf("audit row %+v", e)
+					}
+				}
+			}
+			sink.mu.Unlock()
+			if !found {
+				t.Fatalf("no %s audit row: %v", tc.action, sink.actions())
+			}
+		})
+	}
 }
 
 func TestClientLogin_SlowDown(t *testing.T) {
@@ -651,7 +780,8 @@ func TestClientLogin_Audit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []string{"client.login.started", "client.login.approved", "token.mint", "client.login.started", "client.login.denied"}
+	// Starting a request is anonymous and writes nothing to the audit log.
+	want := []string{"client.login.approved", "token.mint", "client.login.denied"}
 	if got := sink.actions(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("audit actions %v, want %v", got, want)
 	}

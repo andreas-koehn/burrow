@@ -117,9 +117,9 @@ const (
 
 	// Browser-approved client sign-in. A row carries the hostname and the
 	// source IP of the request, never its device code, user code or token.
+	// Starting a request is not audited: that caller is anonymous.
 	// The token minted when an approved request is collected is a
 	// ActionTokenMint row of its own.
-	ActionClientLoginStarted  = "client.login.started"
 	ActionClientLoginApproved = "client.login.approved"
 	ActionClientLoginDenied   = "client.login.denied"
 )
@@ -155,7 +155,7 @@ var AllActions = []string{
 	ActionServiceCustomDomainStatusChanged,
 	ActionRetentionCompact,
 	ActionConnectionSessionSummary, ActionAICachePromoted, ActionAIUpstreamError,
-	ActionClientLoginStarted, ActionClientLoginApproved, ActionClientLoginDenied,
+	ActionClientLoginApproved, ActionClientLoginDenied,
 }
 
 // aggregatedActions is the set of actions that are sample-rated at 1/hour

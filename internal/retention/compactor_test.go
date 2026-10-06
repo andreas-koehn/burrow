@@ -241,7 +241,7 @@ func TestCompactorSweepsExpiredClientLogins(t *testing.T) {
 		ok, err := x.InsertClientLogin(ctx, db.ClientLoginRequest{
 			DeviceCodeHash: "hash" + string(rune('0'+i)), UserCode: "CODE000" + string(rune('0'+i)),
 			CreatedAt: expires.Add(-10 * time.Minute), ExpiresAt: expires,
-		}, 20)
+		}, 20, 5)
 		if err != nil || !ok {
 			t.Fatalf("seed %d: ok=%v err=%v", i, ok, err)
 		}

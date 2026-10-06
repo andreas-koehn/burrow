@@ -116,6 +116,10 @@ type Store struct {
 	// expiry and poll interval). Nil means time.Now; tests inject one with
 	// SetClientLoginClock.
 	clientLoginNow func() time.Time
+	// clientLoginAfterDecide, when set, runs right after a sign-in request
+	// was approved or denied in the database and before the decision is
+	// audited and answered. A test seam: it lets a poll land in that gap.
+	clientLoginAfterDecide func()
 }
 
 // New builds a Store over an open, migrated *sql.DB.

@@ -269,25 +269,81 @@ func TestClientLoginStart_BodyLimitsAndShape(t *testing.T) {
 	}
 }
 
-func TestClientLoginStart_PendingCapAndRateLimit(t *testing.T) {
-	// The cap: 20 pending requests, the 21st is refused.
-	h := newLoginHarness(t, func(d *Deps) { d.ClientLoginStartLimitOverride = 1000 })
+// startAs starts a request as the given source address: the harness trusts
+// the loopback peer as a proxy, so X-Forwarded-For names the client.
+func startAs(t *testing.T, h *loginHarness, ip string) (*http.Response, map[string]any) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, h.srv.URL+"/api/v1/client/login/start", mustJSON(startBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", ip)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp, decodeMap(t, resp)
+}
+
+func behindProxy(d *Deps) {
+	d.TrustedProxies = []string{"127.0.0.1/32"}
+	d.ClientLoginStartLimitOverride = 1000
+}
+
+const tooManyPending = "too many pending sign-in requests"
+
+func TestClientLoginStart_PendingCap(t *testing.T) {
+	// 20 pending requests in all, from as many addresses; the 21st is refused.
+	h := newLoginHarness(t, behindProxy)
 	for i := 0; i < 20; i++ {
+		if resp, body := startAs(t, h, fmt.Sprintf("198.51.100.%d", i)); resp.StatusCode != http.StatusOK {
+			t.Fatalf("start %d: %d %v", i, resp.StatusCode, body)
+		}
+	}
+	resp, body := startAs(t, h, "198.51.100.99")
+	if resp.StatusCode != http.StatusTooManyRequests || body["error"] != tooManyPending || body["device_code"] != nil {
+		t.Fatalf("21st pending start: status %d body %v, want 429 %q", resp.StatusCode, body, tooManyPending)
+	}
+}
+
+// One address cannot take the places of everybody else: it holds at most
+// five pending requests.
+func TestClientLoginStart_PendingCapPerIP(t *testing.T) {
+	h := newLoginHarness(t, behindProxy)
+	const a, b = "203.0.113.1", "203.0.113.2"
+	for i := 0; i < 5; i++ {
+		resp, body := startAs(t, h, a)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("start %d of A: %d %v", i+1, resp.StatusCode, body)
+		}
+		if v, err := h.st.GetClientLogin(context.Background(), body["user_code"].(string)); err != nil || v.SourceIP != a {
+			t.Fatalf("stored source %q (%v), want %s", v.SourceIP, err, a)
+		}
+	}
+	resp, body := startAs(t, h, a)
+	if resp.StatusCode != http.StatusTooManyRequests || body["error"] != tooManyPending || body["device_code"] != nil {
+		t.Fatalf("sixth start of A: status %d body %v, want 429 %q", resp.StatusCode, body, tooManyPending)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Fatal("the 429 has no Retry-After")
+	}
+	// B starts while A is at its cap.
+	if resp, body := startAs(t, h, b); resp.StatusCode != http.StatusOK {
+		t.Fatalf("start of B while A is at its cap: %d %v", resp.StatusCode, body)
+	}
+	// A's requests expire: A may start again, without any sweep.
+	h.clk.add(10*time.Minute + time.Second)
+	if resp, body := startAs(t, h, a); resp.StatusCode != http.StatusOK {
+		t.Fatalf("start of A after its requests expired: %d %v", resp.StatusCode, body)
+	}
+}
+
+func TestClientLoginStart_RateLimitPerIP(t *testing.T) {
+	h := newLoginHarness(t, func(d *Deps) { d.ClientLoginStartLimitOverride = 3 })
+	for i := 0; i < 3; i++ {
 		h.start(t)
 	}
 	resp, body := anonPost(t, h.srv.URL+"/api/v1/client/login/start", startBody)
-	if resp.StatusCode != http.StatusTooManyRequests || body["device_code"] != nil {
-		t.Fatalf("21st pending start: status %d body %v, want 429", resp.StatusCode, body)
-	}
-
-	// The per-IP limit: 10 a minute by default.
-	h = newLoginHarness(t, nil)
-	for i := 0; i < ClientLoginStartRateLimitPerIP; i++ {
-		h.start(t)
-	}
-	resp, body = anonPost(t, h.srv.URL+"/api/v1/client/login/start", startBody)
-	if resp.StatusCode != http.StatusTooManyRequests || body["device_code"] != nil {
-		t.Fatalf("start over the per-IP limit: status %d body %v, want 429", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusTooManyRequests || body["error"] != "too many requests" || body["device_code"] != nil {
+		t.Fatalf("start over the per-IP rate limit: status %d body %v, want 429", resp.StatusCode, body)
 	}
 	if ClientLoginStartRateLimitPerIP != 10 || ClientLoginPollRateLimitPerIP != 60 || ClientLoginGuessLimit != 20 {
 		t.Fatalf("limits %d/%d/%d, want 10, 60 and 20", ClientLoginStartRateLimitPerIP, ClientLoginPollRateLimitPerIP, ClientLoginGuessLimit)
@@ -443,9 +499,13 @@ func TestClientLogin_ApproveAndCollect(t *testing.T) {
 		t.Fatalf("get after collection: %d", resp.StatusCode)
 	}
 
-	// Audit: started, approved (by the approver, with the request's hostname
-	// and source IP), token minted; no code and no token anywhere.
-	for _, action := range []string{"client.login.started", "client.login.approved", "token.mint"} {
+	// Audit: approved (by the approver, with the request's hostname and
+	// source IP) and token minted; no code and no token anywhere. Starting a
+	// request is anonymous and leaves no audit row.
+	if evs := h.audit.byAction("client.login.started"); len(evs) != 0 {
+		t.Fatalf("%d audit rows for the anonymous start, want none", len(evs))
+	}
+	for _, action := range []string{"client.login.approved", "token.mint"} {
 		evs := h.audit.byAction(action)
 		if len(evs) != 1 {
 			t.Fatalf("%d %s events, want 1", len(evs), action)
@@ -454,7 +514,7 @@ func TestClientLogin_ApproveAndCollect(t *testing.T) {
 		if !strings.Contains(p, `"hostname":"laptop.local"`) || !strings.Contains(p, `"source_ip":"127.0.0.1"`) {
 			t.Fatalf("%s payload %s", action, p)
 		}
-		if action != "client.login.started" && (evs[0].ActorID != h.admin || evs[0].ActorEmail != "admin@x") {
+		if evs[0].ActorID != h.admin || evs[0].ActorEmail != "admin@x" {
 			t.Fatalf("%s actor %q %q, want the approver", action, evs[0].ActorID, evs[0].ActorEmail)
 		}
 	}

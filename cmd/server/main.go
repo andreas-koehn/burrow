@@ -333,6 +333,16 @@ func runSessionReaper(ctx context.Context, wg *sync.WaitGroup, reaper sessionRea
 }
 
 func main() {
+	if err := newRootCmd().Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+// newRootCmd builds the burrowd command tree. It is separate from main so
+// that a test can run `serve` with the real wiring and stop it through the
+// command's context.
+func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "burrowd",
 		Short:         "Burrow relay server",
@@ -408,7 +418,9 @@ func main() {
 
 			bus := events.NewBus()
 
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			// cmd.Context() is context.Background() when main runs the
+			// command; a test passes one it can cancel.
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
 			// Built-in ACME (v0.6.0): when ACMEDomain is set, burrowd obtains
@@ -1189,10 +1201,7 @@ func main() {
 		},
 	})
 
-	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
+	return root
 }
 
 // proxyConnLogAdapter bridges the proxy.ConnLogSink interface (which is

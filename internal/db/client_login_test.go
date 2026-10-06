@@ -13,6 +13,74 @@ func TestClientLogin_SQLite(t *testing.T) {
 	checkClientLogin(t, testDB(t), "u-login-sqlite")
 }
 
+func TestClientLogin_PerIPCap_SQLite(t *testing.T) {
+	checkClientLoginPerIPCap(t, testDB(t))
+}
+
+// checkClientLoginPerIPCap: one source address may hold only so many pending
+// requests, so that it cannot use up the places of everybody else. Runs on
+// SQLite here and on Postgres in the tagged test.
+func checkClientLoginPerIPCap(t *testing.T, x *DB) {
+	t.Helper()
+	ctx := context.Background()
+	clear := func() { _, _ = x.DB().ExecContext(context.Background(), `DELETE FROM client_login_requests`) }
+	clear()
+	t.Cleanup(clear)
+
+	t0 := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	n := 0
+	insert := func(ip string, at time.Time) bool {
+		t.Helper()
+		n++
+		ok, err := x.InsertClientLogin(ctx, ClientLoginRequest{
+			DeviceCodeHash: fmt.Sprintf("ip-hash-%d", n), UserCode: fmt.Sprintf("IPCD%04d", n),
+			SourceIP: ip, CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
+		}, 20, 5)
+		if err != nil {
+			t.Fatalf("insert %d from %s: %v", n, ip, err)
+		}
+		return ok
+	}
+	const a, b = "203.0.113.1", "203.0.113.2"
+	for i := 0; i < 5; i++ {
+		if !insert(a, t0) {
+			t.Fatalf("start %d of A was refused below its cap", i+1)
+		}
+	}
+	if insert(a, t0) {
+		t.Fatal("A started a sixth pending request")
+	}
+	// A at its cap does not stand in the way of B.
+	for i := 0; i < 5; i++ {
+		if !insert(b, t0) {
+			t.Fatalf("start %d of B was refused although only A is at its cap", i+1)
+		}
+	}
+	if insert(b, t0) {
+		t.Fatal("B started a sixth pending request")
+	}
+	// A decided request is not pending any more and frees a place.
+	if ok, err := x.DecideClientLogin(ctx, "IPCD0001", ClientLoginDenied, "", "", t0); err != nil || !ok {
+		t.Fatalf("deny: %v %v", ok, err)
+	}
+	if !insert(a, t0) {
+		t.Fatal("A was refused although one of its requests was decided")
+	}
+	if insert(a, t0) {
+		t.Fatal("A passed its cap after one request was decided")
+	}
+	// Expired rows of A do not count, swept or not.
+	late := t0.Add(10 * time.Minute)
+	for i := 0; i < 5; i++ {
+		if !insert(a, late) {
+			t.Fatalf("start %d of A after its old requests expired was refused", i+1)
+		}
+	}
+	if insert(a, late) {
+		t.Fatal("A started a sixth pending request in the new window")
+	}
+}
+
 // checkClientLogin exercises the client_login_requests queries. It runs
 // against SQLite here and against a live Postgres in the postgres-tagged
 // test, so every statement is proven on both engines.
@@ -32,14 +100,14 @@ func checkClientLogin(t *testing.T, x *DB, userID string) {
 			DeviceCodeHash: fmt.Sprintf("hash-%s-%d", userID, i),
 			UserCode:       fmt.Sprintf("CODE%04d", i),
 			Hostname:       "laptop", OS: "linux", Arch: "amd64", ClientVersion: "0.6.0",
-			SourceIP: "203.0.113.7", TokenName: "suggested",
+			SourceIP: fmt.Sprintf("203.0.113.%d", i), TokenName: "suggested",
 			CreatedAt: t0, ExpiresAt: t0.Add(10 * time.Minute),
 		}
 	}
 	insert := func(i int) ClientLoginRequest {
 		t.Helper()
 		r := mk(i)
-		ok, err := x.InsertClientLogin(ctx, r, 20)
+		ok, err := x.InsertClientLogin(ctx, r, 20, 5)
 		if err != nil || !ok {
 			t.Fatalf("insert %d: ok=%v err=%v", i, ok, err)
 		}
@@ -53,7 +121,7 @@ func checkClientLogin(t *testing.T, x *DB, userID string) {
 		t.Fatalf("get by user code: %v", err)
 	}
 	if got.DeviceCodeHash != r1.DeviceCodeHash || got.Status != ClientLoginPending || got.Hostname != "laptop" ||
-		got.OS != "linux" || got.Arch != "amd64" || got.ClientVersion != "0.6.0" || got.SourceIP != "203.0.113.7" ||
+		got.OS != "linux" || got.Arch != "amd64" || got.ClientVersion != "0.6.0" || got.SourceIP != "203.0.113.1" ||
 		got.ApprovedBy != "" || got.TokenName != "suggested" || got.LastPollAt != nil ||
 		!got.CreatedAt.Equal(t0) || !got.ExpiresAt.Equal(t0.Add(10*time.Minute)) {
 		t.Fatalf("row = %+v", got)
@@ -68,7 +136,7 @@ func checkClientLogin(t *testing.T, x *DB, userID string) {
 	// A taken user code is a duplicate, not a silent overwrite.
 	dup := mk(2)
 	dup.UserCode = r1.UserCode
-	if _, err := x.InsertClientLogin(ctx, dup, 20); !IsClientLoginDuplicate(err) {
+	if _, err := x.InsertClientLogin(ctx, dup, 20, 5); !IsClientLoginDuplicate(err) {
 		t.Fatalf("duplicate user code: %v", err)
 	}
 
@@ -199,12 +267,12 @@ func checkClientLogin(t *testing.T, x *DB, userID string) {
 	for i := 10; i < 29; i++ {
 		insert(i)
 	}
-	if ok, err := x.InsertClientLogin(ctx, mk(50), 20); err != nil || ok {
+	if ok, err := x.InsertClientLogin(ctx, mk(50), 20, 5); err != nil || ok {
 		t.Fatalf("insert over the cap: ok=%v err=%v", ok, err)
 	}
 	late := mk(51)
 	late.CreatedAt, late.ExpiresAt = t0.Add(10*time.Minute), t0.Add(20*time.Minute)
-	if ok, err := x.InsertClientLogin(ctx, late, 20); err != nil || !ok {
+	if ok, err := x.InsertClientLogin(ctx, late, 20, 5); err != nil || !ok {
 		t.Fatalf("insert once the others have expired: ok=%v err=%v", ok, err)
 	}
 
@@ -213,7 +281,7 @@ func checkClientLogin(t *testing.T, x *DB, userID string) {
 	mustUser(t, x, other)
 	r6 := mk(60)
 	r6.CreatedAt, r6.ExpiresAt = late.CreatedAt, late.ExpiresAt
-	if ok, err := x.InsertClientLogin(ctx, r6, 20); err != nil || !ok {
+	if ok, err := x.InsertClientLogin(ctx, r6, 20, 5); err != nil || !ok {
 		t.Fatal(err)
 	}
 	if ok, err := x.DecideClientLogin(ctx, r6.UserCode, ClientLoginApproved, other, "x", late.CreatedAt); err != nil || !ok {
