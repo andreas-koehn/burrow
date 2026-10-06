@@ -53,8 +53,9 @@ type deps struct {
 	// where its control endpoint is and which version it runs, with the TLS
 	// settings of g. It sends no token.
 	discover func(ctx context.Context, relay string, g globalFlags) (client.Discovery, error)
-	// relayHTTP builds the HTTP client for a relay's dashboard address with
-	// the TLS settings of g. `login` starts and polls the sign-in through it.
+	// relayHTTP builds the HTTP client of the browser sign-in for a relay's
+	// dashboard address, with the TLS settings of g. `login` starts and polls
+	// the sign-in through it.
 	relayHTTP func(g globalFlags) (*http.Client, error)
 	// openBrowser opens an https address in the default browser and does not
 	// wait for it.
@@ -79,7 +80,7 @@ func defaultDeps() deps {
 		readSecret:     readSecretFromTerminal,
 		viewTerminal:   func() bool { return stdoutShowsView() },
 		discover:       discoverRelay,
-		relayHTTP:      relayHTTPClient,
+		relayHTTP:      signInHTTPClient,
 		openBrowser:    openBrowser,
 		stdoutTerminal: func() bool { return term.IsTerminal(int(os.Stdout.Fd())) },
 	}

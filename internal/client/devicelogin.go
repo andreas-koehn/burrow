@@ -77,7 +77,8 @@ func (e *DeviceStatusError) Error() string {
 // on the relay, a person approves it in the dashboard, Wait collects the
 // token.
 type DeviceLogin struct {
-	// HTTP supplies the transport (and with it the TLS settings).
+	// HTTP supplies the transport (and with it the TLS settings). One that
+	// keeps connections alive saves a handshake per poll.
 	HTTP *http.Client
 	// Relay is the dashboard address, https://host[:port]. Nothing is sent to
 	// another origin or without TLS.
@@ -182,6 +183,9 @@ func (d DeviceLogin) post(ctx context.Context, target string, body []byte) (int,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// Only the status counts. What comes with it is read to its end, up to
+		// the bound, so that the next poll can use the same connection.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDeviceBody))
 		return resp.StatusCode, nil, nil
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxDeviceBody+1))
@@ -430,8 +434,8 @@ func deviceToken(raw []byte) (DeviceToken, error) {
 	if err := decodeOne(raw, &doc); err != nil {
 		return DeviceToken{}, err
 	}
-	// A token is printable ASCII without spaces, as `login --token` checks it.
-	if doc.Token == "" || printable(doc.Token, 512) != doc.Token {
+	// The rule `login --token` applies to a pasted token.
+	if !ValidToken(doc.Token) {
 		return DeviceToken{}, ErrNotASignIn
 	}
 	return DeviceToken{

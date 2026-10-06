@@ -1,7 +1,9 @@
 package main
 
 import (
+	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -113,5 +115,44 @@ func TestDesktopSession(t *testing.T) {
 		if got := desktopSession(tc.goos, tc.env); got != tc.want {
 			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// The program that opens the browser, and the browser it starts, get the
+// environment without burrow's own variables: a token exported as BURROW_TOKEN
+// is not handed on.
+func TestOpenerEnv(t *testing.T) {
+	in := []string{"PATH=/usr/bin", "BURROW_TOKEN=" + testToken, "DISPLAY=:0", "BURROW_TOKEN_FILE=/run/secrets/t",
+		"BURROW_SERVER=relay.example.com:7000", "burrow_token=" + testToken, "Burrow_Insecure=1", "BURROW_=x", "BURROW", "HOME=/home/k",
+		"NOT_BURROW_TOKEN=keep", "XBURROW_TOKEN=keep", "EMPTY=", "=C:=C:\\"}
+	want := []string{"PATH=/usr/bin", "DISPLAY=:0", "BURROW", "HOME=/home/k", "NOT_BURROW_TOKEN=keep", "XBURROW_TOKEN=keep", "EMPTY=", "=C:=C:\\"}
+	got := openerEnv(in)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("kept %d variables, want %d: the BURROW_ ones go, the rest stay in order", len(got), len(want))
+	}
+	if strings.Contains(strings.Join(got, "\n"), testToken) {
+		t.Fatal("the token is in the opener's environment")
+	}
+	// Never nil: a nil environment means "inherit everything" to os/exec.
+	if got := openerEnv(nil); got == nil || len(got) != 0 {
+		t.Fatalf("openerEnv(nil) = %#v, want an empty, non-nil list", got)
+	}
+	if got := openerEnv([]string{"BURROW_TOKEN=x"}); got == nil || len(got) != 0 {
+		t.Fatal("an environment of burrow variables only must come out empty, not nil")
+	}
+}
+
+func TestSignInClientKeepsConnections(t *testing.T) {
+	hc, err := signInHTTPClient(globalFlags{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr := hc.Transport.(*http.Transport); tr.DisableKeepAlives || tr.IdleConnTimeout <= 0 || tr.TLSClientConfig == nil {
+		t.Fatal("the sign-in client must keep its connection between polls, for a bounded time")
+	}
+	// The commands that ask one question keep nothing open.
+	one, err := relayHTTPClient(globalFlags{})
+	if err != nil || !one.Transport.(*http.Transport).DisableKeepAlives {
+		t.Fatalf("relayHTTPClient changed, err %v", err)
 	}
 }

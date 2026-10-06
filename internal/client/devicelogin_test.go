@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -32,6 +34,7 @@ type deviceRelay struct {
 	// polls are the answers of poll, in order; the last one repeats.
 	polls []func(w http.ResponseWriter)
 	nPoll int
+	conns atomic.Int32 // connections the server accepted
 }
 
 type deviceReq struct {
@@ -56,7 +59,7 @@ var (
 func newDeviceRelay(t *testing.T) *deviceRelay {
 	t.Helper()
 	dr := &deviceRelay{}
-	dr.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	dr.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		dr.mu.Lock()
 		dr.reqs = append(dr.reqs, deviceReq{r.Method, r.URL.String(), string(body), r.Header.Clone()})
@@ -80,6 +83,12 @@ func newDeviceRelay(t *testing.T) *deviceRelay {
 			http.NotFound(w, r)
 		}
 	}))
+	dr.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateNew {
+			dr.conns.Add(1)
+		}
+	}
+	dr.StartTLS()
 	t.Cleanup(dr.Close)
 	return dr
 }
@@ -652,6 +661,77 @@ func TestDeviceLogin_SecretsAreNotFormatted(t *testing.T) {
 	} {
 		if strings.Contains(out, fakeDeviceCode) || strings.Contains(out, fakeLoginToken) {
 			t.Fatal("a secret was formatted")
+		}
+	}
+}
+
+// The polls of one sign-in share a connection: whatever a poll answers, its
+// body is read to the end so that the next one needs no new handshake.
+func TestDeviceWait_KeepsTheConnection(t *testing.T) {
+	dr := newDeviceRelay(t)
+	dr.startAnswer("", 600, 2)
+	big := answer(http.StatusBadGateway, strings.Repeat("x", 8<<10))
+	dr.polls = []func(http.ResponseWriter){pending, slowDown, big, pending, approved}
+	d := dr.login(&sleeps{})
+	s, err := d.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Wait(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if n := dr.conns.Load(); n != 1 {
+		t.Fatalf("%d connections for one start and five polls, want 1", n)
+	}
+}
+
+// An answer that is not a 200 is drained up to a bound, not without end.
+func TestDeviceWait_DrainIsBounded(t *testing.T) {
+	dr := newDeviceRelay(t)
+	stop := make(chan struct{})
+	defer close(stop)
+	endless := func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusForbidden)
+		chunk := []byte(strings.Repeat("x", 32<<10))
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}
+	dr.polls = []func(http.ResponseWriter){endless}
+	done := make(chan error, 1)
+	go func() {
+		_, err := dr.login(&sleeps{}).Wait(context.Background(), dr.started(10*time.Minute, 2*time.Second))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrLoginDenied) {
+			t.Fatalf("err = %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the client reads an answer without end")
+	}
+}
+
+// One rule says what a token is, for the one a person pastes and the one a
+// relay hands out.
+func TestValidToken(t *testing.T) {
+	for _, ok := range []string{"bur_test_0000", "x", "!~"} {
+		if !ValidToken(ok) {
+			t.Errorf("a plain token is refused (length %d)", len(ok))
+		}
+	}
+	for name, bad := range map[string]string{"empty": "", "space": "bur a", "leading space": " bur", "tab": "bur\tx", "newline": "bur\n",
+		"esc": "bur\x1b[2J", "del": "bur\x7f", "not ascii": "bür", "nul": "bur\x00"} {
+		if ValidToken(bad) {
+			t.Errorf("%s: accepted", name)
 		}
 	}
 }

@@ -125,7 +125,7 @@ func (h *harness) deps() deps {
 		},
 		relayHTTP: func(g globalFlags) (*http.Client, error) {
 			if h.realHTTP {
-				return relayHTTPClient(g)
+				return signInHTTPClient(g)
 			}
 			return &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 				h.t.Error("the command sent a sign-in request; this test has no relay for it")

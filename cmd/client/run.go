@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -86,14 +87,14 @@ func loadRootCAs(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// relayHTTPClient is the HTTP client for a relay's dashboard address. It
-// honours --cacert, --server-name and --insecure like the control connection.
-func relayHTTPClient(g globalFlags) (*http.Client, error) {
+// relayTransport is the transport for a relay's dashboard address. It honours
+// --cacert, --server-name and --insecure like the control connection.
+func relayTransport(g globalFlags) (*http.Transport, error) {
 	pool, err := loadRootCAs(g.cacert)
 	if err != nil {
 		return nil, err
 	}
-	return &http.Client{Transport: &http.Transport{
+	return &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: g.insecure, //nolint:gosec // dev-only opt-in
@@ -102,9 +103,34 @@ func relayHTTPClient(g globalFlags) (*http.Client, error) {
 			MinVersion:         tls.VersionTLS12,
 		},
 		TLSHandshakeTimeout: client.DiscoveryTimeout,
-		// One request per command: nothing is kept open behind it.
-		DisableKeepAlives: true,
-	}}, nil
+	}, nil
+}
+
+// relayHTTPClient is the HTTP client of the commands that ask a relay's
+// dashboard address one question (discovery, doctor, update).
+func relayHTTPClient(g globalFlags) (*http.Client, error) {
+	tr, err := relayTransport(g)
+	if err != nil {
+		return nil, err
+	}
+	// One request per client: nothing is kept open behind it.
+	tr.DisableKeepAlives = true
+	return &http.Client{Transport: tr}, nil
+}
+
+// signInHTTPClient is the HTTP client of the browser sign-in, which asks the
+// relay every few seconds: one connection is kept between the polls instead of
+// a handshake for each. The caller closes the idle connection when it is done.
+// It is deps.relayHTTP outside tests.
+func signInHTTPClient(g globalFlags) (*http.Client, error) {
+	tr, err := relayTransport(g)
+	if err != nil {
+		return nil, err
+	}
+	tr.MaxIdleConns, tr.MaxIdleConnsPerHost = 1, 1
+	// Longer than the longest wait between two polls (a minute).
+	tr.IdleConnTimeout = 90 * time.Second
+	return &http.Client{Transport: tr}, nil
 }
 
 // discoverRelay asks the relay for its discovery document. It is deps.discover

@@ -63,6 +63,21 @@ func desktopSession(goos string, getenv func(string) string) bool {
 	return false
 }
 
+// openerEnv is the environment for the program that opens the browser: env
+// without burrow's own variables (BURROW_TOKEN, BURROW_TOKEN_FILE and the
+// rest), in any spelling of the prefix. The result is never nil, which os/exec
+// would read as "inherit everything".
+func openerEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if len(kv) >= 7 && strings.EqualFold(kv[:7], "BURROW_") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // openBrowser opens target in the default browser and does not wait for it.
 // It is deps.openBrowser outside tests. A failure is for the caller to ignore:
 // the address is on the screen either way.
@@ -78,10 +93,17 @@ func openBrowser(target string) error {
 		}
 	}
 	// No stdin, stdout or stderr: what the program prints does not land in
-	// the middle of the sign-in.
+	// the middle of the sign-in. No BURROW_ variable: a token in the
+	// environment stays with burrow. A session of its own: Ctrl-C at burrow's
+	// terminal does not reach the browser it started.
 	cmd := exec.Command(name, args...)
+	cmd.Env = openerEnv(os.Environ())
+	detachOpener(cmd)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	return cmd.Process.Release()
+	// Nobody waits for the browser, but the program is reaped when it ends,
+	// which may be at once or when the browser closes.
+	go func() { _ = cmd.Wait() }()
+	return nil
 }

@@ -127,10 +127,8 @@ func cleanToken(token, relayArg string) (string, error) {
 	}
 	// A token is printable ASCII without spaces. Anything else is a slip of
 	// the keyboard or the clipboard and would be stored as a token that fails.
-	for i := 0; i < len(token); i++ {
-		if c := token[i]; c <= ' ' || c > '~' {
-			return "", usageErrorf(msgNotAToken)
-		}
+	if !client.ValidToken(token) {
+		return "", usageErrorf(msgNotAToken)
 	}
 	return token, nil
 }
@@ -269,6 +267,8 @@ func browserLogin(ctx context.Context, d deps, g globalFlags, out, errOut io.Wri
 	if err != nil {
 		return err
 	}
+	// The polls share a connection; it is closed when the sign-in is over.
+	defer hc.CloseIdleConnections()
 	dl := client.DeviceLogin{HTTP: hc, Relay: p.relay, Sleep: d.sleep}
 	dl.Meta.Hostname, dl.Meta.OS, dl.Meta.Arch, dl.Meta.ClientVersion = p.hostname, runtime.GOOS, runtime.GOARCH, version.Version
 	if p.nameGiven {
@@ -331,7 +331,9 @@ func browserLogin(ctx context.Context, d deps, g globalFlags, out, errOut io.Wri
 	// writes it; neither it nor the token is ever printed.
 	if err := client.SaveUserConfig(p.path, client.UserConfig{Relay: p.relay, Control: p.control, Token: tok.Token, TokenName: name}); err != nil {
 		fmt.Fprintln(out)
-		return err
+		// The relay gave the token once; it cannot be asked for again.
+		return &exitError{code: exitGeneral, msg: "Could not store the sign-in: " + err.Error() + "\n" +
+			"The token was created but could not be stored; revoke it in the dashboard (Clients, tab Tokens) and run burrow login again."}
 	}
 	if tok.Email != "" {
 		fmt.Fprintf(out, "signed in as %s (token %q)\n", tok.Email, name)

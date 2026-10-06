@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ankoehn/burrow/internal/client"
@@ -36,14 +37,15 @@ func (h *harness) answers(d client.Discovery, err error) {
 // It records what it was asked, so that a test can see nothing secret arrived.
 type relayServer struct {
 	*httptest.Server
-	mu   sync.Mutex
-	seen []string // method, URL, headers and body of every request
+	mu    sync.Mutex
+	seen  []string     // method, URL, headers and body of every request
+	conns atomic.Int32 // connections the server accepted
 }
 
 func newRelayServer(t *testing.T, h http.HandlerFunc) *relayServer {
 	t.Helper()
 	rs := &relayServer{}
-	rs.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	rs.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var sb strings.Builder
 		sb.WriteString(r.Method + " " + r.URL.String() + "\n")
@@ -55,6 +57,12 @@ func newRelayServer(t *testing.T, h http.HandlerFunc) *relayServer {
 		r.Body = io.NopCloser(bytes.NewReader(body)) // the handler reads it again
 		h(w, r)
 	}))
+	rs.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateNew {
+			rs.conns.Add(1)
+		}
+	}
+	rs.StartTLS()
 	t.Cleanup(rs.Close)
 	return rs
 }

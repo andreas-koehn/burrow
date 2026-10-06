@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -204,6 +205,10 @@ func TestLoginBrowser_SignsIn(t *testing.T) {
 		if strings.HasPrefix(r, "POST "+client.DeviceLoginPollPath) != strings.Contains(body, testDeviceCode) {
 			t.Fatal("the device code is not exactly in the bodies of the polls")
 		}
+	}
+	// One connection carried the start and the three polls.
+	if n := relay.conns.Load(); n != 1 {
+		t.Fatalf("%d connections to the relay, want 1", n)
 	}
 	// And the sign-in works: the next command connects with it.
 	if code := h.exec("http", "3000"); code != 0 {
@@ -652,4 +657,28 @@ func TestLogin_HelpNamesTheBrowserFlags(t *testing.T) {
 			t.Fatalf("help does not mention %q: %s", w, h.stdout.String())
 		}
 	}
+}
+
+// The relay made the token when it was collected. When it cannot be written
+// down it is lost, and the user is told what is left to do. The token itself
+// is not shown.
+func TestLoginBrowser_TokenCannotBeStored(t *testing.T) {
+	relay := newSignInRelay(t, http.StatusOK)
+	h := browserHarness(t)
+	// A file where the config's directory would be.
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(blocker, "config.yaml")
+	code := h.execWithin("login", relay.URL, "--cacert", relay.caFile(t), "--config", cfg)
+	errOut := h.stderr.String()
+	if code != exitGeneral || !strings.HasSuffix(errOut, "The token was created but could not be stored; revoke it in the dashboard (Clients, tab Tokens) and run burrow login again.\n") ||
+		!strings.Contains(errOut, "not-a-directory") || strings.Count(errOut, "\n") != 2 {
+		t.Fatalf("exit %d, stderr %q", code, errOut)
+	}
+	if strings.Contains(h.stdout.String(), "signed in") || !strings.HasSuffix(h.stdout.String(), "Waiting for approval…  \n") {
+		t.Fatalf("stdout = %q", h.stdout.String())
+	}
+	h.noSecrets()
 }

@@ -196,3 +196,18 @@ func TokenTail(token string) string {
 	}
 	return string(r[len(r)-4:])
 }
+
+// ValidToken reports whether s can be a client token: printable ASCII without
+// spaces, and not empty. It is the one rule for a token a person pastes and
+// for one a relay hands out.
+func ValidToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c <= ' ' || c > '~' {
+			return false
+		}
+	}
+	return true
+}
