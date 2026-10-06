@@ -173,7 +173,9 @@ function NewKeyDialog({ onClose }: NewKeyDialogProps) {
               })}
               {chosen.length === 0 && <p className="muted small">Choose at least one.</p>}
               <p className="muted small">
-                "Everything from" a provider allows its models by their direct address, e.g. provider/model.
+                A model name allows that model on the gateway's endpoints (<code>/openai/v1</code>, <code>/anthropic</code>),
+                not on a provider's own address <code>/ai/&lt;provider&gt;/…</code>. "Everything from" a provider allows both:
+                its models by their direct address, e.g. provider/model, and the provider's own address.
               </p>
             </>
           )}

@@ -159,6 +159,7 @@ export default function GatewayModels() {
             </table>
           </div>
           <ConnectCard
+            canCreate={canWrite}
             endpoints={endpoints}
             models={list.filter((m) => m.enabled).map((m) => ({ name: m.name, dialects: m.dialects }))}
           />

@@ -90,6 +90,19 @@ describe("ConnectCard", () => {
     expect(screen.queryByRole("button", { name: "Copy settings for Claude Code" })).toBeNull();
   });
 
+  it("a snippet's scrolling box is a named group the keyboard can reach", () => {
+    mount();
+    const box = screen.getByRole("group", { name: "Settings for Claude Code" });
+    expect(box).toHaveAttribute("tabindex", "0");
+    expect(box).toHaveTextContent("ANTHROPIC_BASE_URL");
+  });
+
+  it("tells someone who cannot create a model whom to ask", () => {
+    renderApp(<ConnectCard endpoints={endpoints} models={[]} canCreate={false} />, "/gateway");
+    expect(screen.getByText(/ask an administrator to create a model/i)).toBeInTheDocument();
+    expect(screen.queryByText(/create a model first/i)).toBeNull();
+  });
+
   it("explains what to do when there are no models at all", () => {
     mount([]);
     expect(screen.getByText(/create a model first/i)).toBeInTheDocument();

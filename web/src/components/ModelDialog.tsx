@@ -122,6 +122,11 @@ function TargetGroup({ dialect, legend, providers, value, onChange }: TargetGrou
   );
 }
 
+/** The targets of one format, in their order, reduced to what is compared. */
+function ofFormat(targets: AiModelTarget[], dialect: Dialect): [string, string][] {
+  return targets.filter((t) => t.dialect === dialect).map((t) => [t.provider, t.model]);
+}
+
 function initialChoice(model: AiModel | undefined, dialect: Dialect): TargetChoice {
   const first = model?.targets.find((t) => t.dialect === dialect);
   return { provider: first?.provider ?? "", model: first?.model ?? "", manual: false };
@@ -186,7 +191,8 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
     || name !== model.name
     || payload.description !== model.description
     || enabled !== model.enabled
-    || JSON.stringify(targets) !== JSON.stringify(model.targets);
+    // Per format: the relay lists a model's targets by format, the form OpenAI first.
+    || FORMATS.some(({ dialect }) => JSON.stringify(ofFormat(targets, dialect)) !== JSON.stringify(ofFormat(model.targets, dialect)));
 
   const save = useMutation({
     mutationFn: () => model

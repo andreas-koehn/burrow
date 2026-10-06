@@ -12,6 +12,8 @@ export interface ConnectCardProps {
   endpoints: GatewayInfo["endpoints"];
   /** Enabled models only; the caller filters. */
   models: { name: string; dialects: Dialect[] }[];
+  /** Whether the reader may create a model; decides what the card says when there is none. Default true. */
+  canCreate?: boolean;
 }
 
 const FORMAT: Record<Dialect, string> = { openai: "OpenAI", anthropic: "Anthropic" };
@@ -30,7 +32,7 @@ function BaseUrl({ url }: { url: string }) {
  * carries a placeholder or an environment variable where the key goes: the
  * card never receives a key, so it cannot show one.
  */
-export function ConnectCard({ endpoints, models }: ConnectCardProps) {
+export function ConnectCard({ endpoints, models, canCreate = true }: ConnectCardProps) {
   const titleId = useId();
   const [tab, setTab] = useState("claude-code");
   const base = (d: Dialect) => dialectBaseUrl(d, endpoints.find((e) => e.dialect === d)?.base_url);
@@ -43,7 +45,8 @@ export function ConnectCard({ endpoints, models }: ConnectCardProps) {
   const forFormat = (d: Dialect, names: string[], content: () => ReactNode) =>
     names.length > 0 ? content() : (
       <p className="muted">
-        No model is served in the {FORMAT[d]} format yet. Give a model a target in this format on the{" "}
+        No model is served in the {FORMAT[d]} format yet.{" "}
+        {canCreate ? "Give a model a target in this format" : "An administrator can give a model a target in this format"} on the{" "}
         <Link className="link-inline" to="/gateway/models">Models</Link> page.
       </p>
     );
@@ -52,7 +55,11 @@ export function ConnectCard({ endpoints, models }: ConnectCardProps) {
     <section className="card provider-connect connect-card" aria-labelledby={titleId}>
       <h2 id={titleId}>Connect a client</h2>
       {models.length === 0 ? (
-        <p className="muted">Create a model first, then come back for a ready configuration.</p>
+        <p className="muted">
+          {canCreate
+            ? "Create a model first, then come back for a ready configuration."
+            : "There is no model to ask for yet. Ask an administrator to create a model, then come back for a ready configuration."}
+        </p>
       ) : (
         <Tabs
           value={tab}

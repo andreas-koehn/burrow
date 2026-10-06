@@ -225,9 +225,10 @@ function seed(): MockDb {
       {
         name: "burrow-intelligence", description: "", enabled: true, fallback_on_rate_limit: false,
         attempt_timeout_s: 60, total_timeout_s: 120,
+        // As the relay returns them: by format, then by position.
         targets: [
-          { dialect: "openai", provider: "zai", model: "glm-5.1" },
           { dialect: "anthropic", provider: "zai-anthropic", model: "glm-5.1" },
+          { dialect: "openai", provider: "zai", model: "glm-5.1" },
         ],
         dialects: ["anthropic", "openai"], created_at: "2026-05-20T00:00:00Z", updated_at: "2026-05-20T00:00:00Z",
       },

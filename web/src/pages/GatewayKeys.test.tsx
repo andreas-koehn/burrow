@@ -81,6 +81,10 @@ describe("Gateway keys page", () => {
     await userEvent.click(within(dialog).getByRole("radio", { name: "Only these models" }));
     // An empty list would mean every model: nothing chosen is not a restriction.
     expect(within(dialog).getByRole("button", { name: "Create key" })).toBeDisabled();
+    // What each kind of entry opens.
+    expect(await within(dialog).findByText(/A model name allows that model/)).toHaveTextContent(
+      "A model name allows that model on the gateway's endpoints (/openai/v1, /anthropic), not on a provider's own address /ai/<provider>/…. \"Everything from\" a provider allows both",
+    );
     await userEvent.click(await within(dialog).findByRole("checkbox", { name: "burrow-simple" }));
     await userEvent.click(within(dialog).getByRole("checkbox", { name: "Everything from ollama" }));
     await userEvent.click(within(dialog).getByRole("button", { name: "Create key" }));

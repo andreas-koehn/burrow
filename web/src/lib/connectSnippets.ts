@@ -15,7 +15,7 @@
 //   https://developers.openai.com/codex/config-reference
 
 /** What stands where the gateway key goes. */
-export const KEY_PLACEHOLDER = "<your gateway key>";
+const KEY_PLACEHOLDER = "<your gateway key>";
 /** Environment variable the Codex and SDK examples read the key from. */
 export const KEY_ENV = "BURROW_GATEWAY_KEY";
 

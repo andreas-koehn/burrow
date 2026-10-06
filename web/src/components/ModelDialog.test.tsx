@@ -123,6 +123,22 @@ describe("ModelDialog", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("You don't have permission to change models.");
   });
 
+  it("a model in both formats: Save stays disabled until something changes, whatever order the relay lists the targets in", async () => {
+    const model = fixtureModel("burrow-intelligence");
+    // As the relay returns them: by format, anthropic first.
+    expect(model.targets.map((t) => t.dialect)).toEqual(["anthropic", "openai"]);
+    renderDialog({ model });
+    const save = screen.getByRole("button", { name: "Save changes" });
+    // Both provider lists and both model lists are in.
+    expect(await within(await group("Anthropic format")).findByLabelText("Target model")).toHaveTextContent("glm-5.1");
+    expect(await within(await group("OpenAI format")).findByLabelText("Target model")).toHaveTextContent("glm-5.1");
+    expect(save).toBeDisabled();
+    await userEvent.type(screen.getByLabelText("Description (optional)"), "x");
+    expect(save).toBeEnabled();
+    await userEvent.clear(screen.getByLabelText("Description (optional)"));
+    expect(save).toBeDisabled();
+  });
+
   it("edits an existing model; Save is disabled until something changes", async () => {
     let put: { url: string; body: Record<string, unknown> } | null = null;
     server.use(http.put("/api/v1/ai/models/:name", async ({ request }) => {

@@ -179,6 +179,35 @@ describe("GatewayOverview", () => {
     expect(list.textContent).not.toMatch(/bgw_/);
   });
 
+  it("non-admin without an enabled model: the last step says whom to ask, not to create one", async () => {
+    db.me = { ...db.me, role: "user" };
+    withCost(0, 0);
+    withProviders([provider({ requests_24h: 0 })]);
+    withModels([]);
+    renderApp(<GatewayOverview />);
+    const list = await checklist();
+    // The seeded key is theirs, so the last step is the open one.
+    expect(stepStates(list)).toEqual([["Create a gateway key", "done", "false"], ["Send the first request", "to do", "true"]]);
+    expect(within(list).getByText(/ask an administrator to create a model/i)).toBeInTheDocument();
+    expect(within(list).queryByText(/create a model first/i)).toBeNull();
+  });
+
+  it.each([
+    ["models", "Couldn't load models: boom"],
+    ["keys", "Couldn't load gateway keys: boom"],
+  ])("%s failing: an error with a retry instead of a checklist that says none exist", async (what, message) => {
+    withCost(0, 0);
+    withProviders([provider({ requests_24h: 0 })]);
+    server.use(http.get(`/api/v1/ai/${what}`, () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    const { qc } = renderApp(<GatewayOverview />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    await waitFor(() => expect(qc.isFetching()).toBe(0));
+    expect(screen.queryByRole("list", { name: "Set up the AI Gateway" })).toBeNull();
+    // The rest of the page is still there.
+    expect(screen.getByRole("table", { name: "Providers" })).toBeInTheDocument();
+  });
+
   it("a budget above 80 % of its limit is a notice that leads to the budgets", async () => {
     withBudgets([{ daily_usd: 10, current_usd: 8.5 }, { daily_usd: 10, current_usd: 8 }]);
     renderApp(<GatewayOverview />);

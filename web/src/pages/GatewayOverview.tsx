@@ -106,6 +106,7 @@ export default function GatewayOverview() {
   const modelList = Array.isArray(models.data) ? models.data : [];
   const keyList = Array.isArray(keys.data) ? keys.data : [];
   const endpoints = gateway.data?.endpoints ?? [];
+  const setupFailed = models.error ?? keys.error;
   const totalRequests = list.reduce((a, p) => a + p.requests_24h, 0);
   const costAbsent = cost.error instanceof ApiError && cost.error.status === 404;
   const notices = budgetNotices(isAdmin && Array.isArray(budgets.data) ? budgets.data : []);
@@ -147,6 +148,7 @@ export default function GatewayOverview() {
       done: served,
       content: (
         <ConnectCard
+          canCreate={isAdmin}
           endpoints={endpoints}
           models={modelList.filter((m) => m.enabled).map((m) => ({ name: m.name, dialects: m.dialects }))}
         />
@@ -229,6 +231,14 @@ export default function GatewayOverview() {
             <EmptyState icon={<Sparkles size={18} />} title="No providers yet">
               An administrator can add one from a service in API-key mode, or add a hosted API.
             </EmptyState>
+          ) : setupFailed ? (
+            // Without the models or the keys the list would call existing ones missing.
+            <ErrorNotice
+              action={<Button variant="secondary" size="sm" onClick={() => { void models.refetch(); void keys.refetch(); }}>Retry</Button>}
+            >
+              {models.error ? "Couldn't load models: " : "Couldn't load gateway keys: "}
+              {setupFailed instanceof ApiError ? setupFailed.message : "Unknown error"}
+            </ErrorNotice>
           ) : (
             // The steps read the cost summary, the models and the keys, so the list waits for those answers.
             !cost.isPending && !models.isPending && !keys.isPending

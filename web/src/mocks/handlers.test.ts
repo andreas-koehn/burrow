@@ -335,7 +335,7 @@ describe("MSW gateway handlers mirror the API", () => {
     expect(r.status).toBe(201);
     expect(await r.json()).toMatchObject({
       name: "burrow-medium", enabled: true, dialects: ["anthropic", "openai"],
-      targets: [{ dialect: "openai", ...target }, { dialect: "anthropic", provider: "zai-anthropic", model: "glm-5.1" }],
+      targets: [{ dialect: "anthropic", provider: "zai-anthropic", model: "glm-5.1" }, { dialect: "openai", ...target }],
     });
     expect(await refusal(await send("POST", "/ai/models", { name: "x1", targets: [{ provider: "nope", model: "m" }] })))
       .toEqual([400, "unknown provider nope"]);
@@ -345,9 +345,45 @@ describe("MSW gateway handlers mirror the API", () => {
       .toEqual([400, "a target is listed twice"]);
     expect(await refusal(await send("POST", "/ai/models", { name: "x1", dialects: ["openai"], targets: [target] })))
       .toEqual([400, 'unknown field "dialects"']);
-    expect((await send("POST", "/ai/models", { name: "a/b", targets: [target] })).status).toBe(400);
     expect(await refusal(await send("POST", "/ai/models", { name: "burrow-simple", targets: [target] })))
       .toEqual([409, "model name already in use"]);
+  });
+
+  it("POST /ai/models answers with the relay's own reasons", async () => {
+    const post = async (b: Record<string, unknown>) => refusal(await send("POST", "/ai/models", { name: "x1", targets: [target], ...b }));
+    const NAME = "name must be 2-63 characters: lowercase letters, digits, dot, underscore, hyphen";
+    expect(await post({ name: "a/b" })).toEqual([400, NAME]);
+    expect(await post({ name: "" })).toEqual([400, NAME]);
+    expect(await post({ name: "zai" })).toEqual([400, "name is already a provider slug"]);
+    expect(await post({ description: "d".repeat(501) })).toEqual([400, "description must be at most 500 characters without control characters"]);
+    const COUNT = "a model needs at least one target and at most 8 per format";
+    expect(await post({ targets: [] })).toEqual([400, COUNT]);
+    expect(await post({ targets: Array.from({ length: 9 }, (_, i) => ({ provider: "zai", model: `m${i}` })) })).toEqual([400, COUNT]);
+    expect(await post({ targets: [{ provider: "zai", model: "" }] })).toEqual([400, "a target's model must be 1-200 characters without control characters"]);
+    expect(await post({ targets: [{ dialect: "gemini", provider: "zai", model: "m" }] })).toEqual([400, "a target's format must be 'openai' or 'anthropic'"]);
+    expect(await post({ attempt_timeout_s: 601 })).toEqual([400, "timeouts must be between 1 and 600 seconds"]);
+    expect(await post({ attempt_timeout_s: 90, total_timeout_s: 30 })).toEqual([400, "total timeout must not be shorter than the attempt timeout"]);
+    // Left out or 0, the timeouts are the defaults.
+    const made = await (await send("POST", "/ai/models", { name: "x1", attempt_timeout_s: 0, targets: [target] })).json();
+    expect([made.attempt_timeout_s, made.total_timeout_s]).toEqual([60, 120]);
+  });
+
+  it("targets come back by format, then in the order given, as the relay stores them", async () => {
+    const r = await send("POST", "/ai/models", { name: "x2", targets: [
+      { provider: "zai", model: "b" }, { provider: "zai-anthropic", model: "glm-5.1" }, { provider: "zai", model: "a" },
+    ] });
+    expect((await r.json()).targets).toEqual([
+      { dialect: "anthropic", provider: "zai-anthropic", model: "glm-5.1" },
+      { dialect: "openai", provider: "zai", model: "b" },
+      { dialect: "openai", provider: "zai", model: "a" },
+    ]);
+    expect(db.aiModels.find((m) => m.name === "burrow-intelligence")!.targets.map((t) => t.dialect)).toEqual(["anthropic", "openai"]);
+  });
+
+  it("PUT /ai/models/:name keeps the name and enabled when they are left out, and replaces the rest", async () => {
+    db.aiModels[0]!.enabled = false;
+    const put = await send("PUT", "/ai/models/burrow-simple", { targets: [target] });
+    expect(await put.json()).toMatchObject({ name: "burrow-simple", enabled: false, description: "", targets: [{ dialect: "openai", ...target }] });
   });
 
   it("GET, PUT and DELETE /ai/models/:name; writes are for admins", async () => {
@@ -377,8 +413,13 @@ describe("MSW gateway handlers mirror the API", () => {
     const list = await (await send("GET", "/ai/keys")).json();
     expect(list.map((k: { name: string }) => k.name)).toEqual(["laptop", "ci"]);
     expect(JSON.stringify(list)).not.toContain(made.key);
-    expect((await send("POST", "/ai/keys", { name: "" })).status).toBe(400);
-    expect((await send("POST", "/ai/keys", { name: "x", allowed_models: ["zai/**"] })).status).toBe(400);
+    expect(await refusal(await send("POST", "/ai/keys", { name: " " }))).toEqual([400, "name must be 1-120 characters without control characters"]);
+    expect(await refusal(await send("POST", "/ai/keys", { name: "x", allowed_models: Array.from({ length: 65 }, (_, i) => `m${i}`) })))
+      .toEqual([400, "at most 64 allowed models"]);
+    for (const entry of ["zai/**", "*", "Zai/*", "zai/", ""]) {
+      expect(await refusal(await send("POST", "/ai/keys", { name: "x", allowed_models: [entry] })))
+        .toEqual([400, 'an allowed model must be a model name, "<provider>/<model>" or "<provider>/*"']);
+    }
     expect(await refusal(await send("POST", "/ai/keys", { name: "x", key: "bgw_mine" }))).toEqual([400, 'unknown field "key"']);
   });
 

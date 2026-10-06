@@ -1,8 +1,7 @@
 import { http, HttpResponse } from "msw";
-import { allowEntryError, modelNameError } from "@/lib/modelNames";
+import { modelNameError } from "@/lib/modelNames";
 import { db, type MockDb, type CacheSettingsPayload, type AiProviderRow } from "@/mocks/db";
 import type { AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, ClientLoginRequest, CostSummary, Dialect, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
-
 
 const json = (body: unknown, status = 200) => HttpResponse.json(body as object, { status });
 const err = (status: number, message: string) => HttpResponse.json({ error: message }, { status });
@@ -268,38 +267,67 @@ interface ModelBody {
 }
 const MODEL_FIELDS = ["name", "description", "enabled", "fallback_on_rate_limit", "attempt_timeout_s", "total_timeout_s", "targets"];
 
-// The stored model for a request body, or the reason the server refuses it.
-function modelFromBody(b: ModelBody | null): Omit<AiModel, "created_at" | "updated_at"> | string {
+const MSG_MODEL_NAME = "name must be 2-63 characters: lowercase letters, digits, dot, underscore, hyphen";
+const MSG_MODEL_TARGETS = "a model needs at least one target and at most 8 per format";
+const MODEL_DIALECTS: Dialect[] = ["anthropic", "openai"];
+
+/**
+ * The stored model for a request body, or the reason the relay refuses it, in
+ * the relay's words (internal/store/ai_models.go normalizeModel). `old` is the
+ * model a PUT replaces: a name or enabled left out keeps its value.
+ */
+function modelFromBody(b: ModelBody | null, old?: AiModel): Omit<AiModel, "created_at" | "updated_at"> | string {
   if (!b || typeof b !== "object") return "invalid JSON body";
   // Strict decoding: "dialects" is derived and may not be sent.
   const extra = Object.keys(b).find((k) => !MODEL_FIELDS.includes(k));
   if (extra) return `unknown field "${extra}"`;
-  const name = typeof b.name === "string" ? b.name : "";
-  if (name === "") return "name is required";
-  const nameErr = modelNameError(name);
-  if (nameErr) return nameErr;
-  const raw = Array.isArray(b.targets) ? (b.targets as Partial<AiModelTarget>[]) : [];
-  if (raw.length === 0) return "a model needs at least one target";
+  const name = (typeof b.name === "string" && b.name !== "" ? b.name : old?.name) ?? "";
+  if (name === "" || modelNameError(name) !== null) return MSG_MODEL_NAME;
+  if (db.aiProviders.some((p) => p.slug === name)) return "name is already a provider slug";
+  const description = typeof b.description === "string" ? b.description.trim() : "";
+  if (byteLen(description) > 500 || hasControl(description)) return "description must be at most 500 characters without control characters";
+  const raw = Array.isArray(b.targets) ? (b.targets as Partial<Record<keyof AiModelTarget, unknown>>[]) : [];
+  if (raw.length === 0 || raw.length > 8 * MODEL_DIALECTS.length) return MSG_MODEL_TARGETS;
   const targets: AiModelTarget[] = [];
   for (const t of raw) {
-    const p = db.aiProviders.find((x) => x.slug === t.provider);
-    if (!p) return `unknown provider ${String(t.provider)}`;
-    const dialect: Dialect = t.dialect ?? p.api_format;
-    if (p.api_format !== dialect) return `provider ${p.slug} speaks ${p.api_format}, not ${dialect}`;
-    if (!modelIdOk(t.model)) return MSG_MODEL_ID;
-    if (targets.some((x) => x.dialect === dialect && x.provider === p.slug && x.model === t.model)) return "a target is listed twice";
-    targets.push({ dialect, provider: p.slug, model: t.model });
+    const slug = typeof t.provider === "string" ? t.provider : "";
+    if (!providerSlugOk(slug)) return "a target names an invalid provider slug";
+    const p = db.aiProviders.find((x) => x.slug === slug);
+    if (!p) return `unknown provider ${slug}`;
+    // Left out, the format is the provider's.
+    const dialect = t.dialect === undefined || t.dialect === "" ? p.api_format : t.dialect;
+    if (dialect !== "openai" && dialect !== "anthropic") return "a target's format must be 'openai' or 'anthropic'";
+    if (p.api_format !== dialect) return `provider ${slug} speaks ${p.api_format}, not ${dialect}`;
+    const model = typeof t.model === "string" ? t.model.trim() : "";
+    if (model === "" || byteLen(model) > 200 || hasControl(model)) return "a target's model must be 1-200 characters without control characters";
+    if (targets.some((x) => x.dialect === dialect && x.provider === slug && x.model === model)) return "a target is listed twice";
+    targets.push({ dialect, provider: slug, model });
+    if (targets.filter((x) => x.dialect === dialect).length > 8) return MSG_MODEL_TARGETS;
   }
+  const attempt = typeof b.attempt_timeout_s === "number" && b.attempt_timeout_s !== 0 ? b.attempt_timeout_s : 60;
+  const total = typeof b.total_timeout_s === "number" && b.total_timeout_s !== 0 ? b.total_timeout_s : 120;
+  if (attempt < 1 || attempt > 600 || total < 1 || total > 600) return "timeouts must be between 1 and 600 seconds";
+  if (total < attempt) return "total timeout must not be shorter than the attempt timeout";
   return {
     name,
-    description: typeof b.description === "string" ? b.description : "",
-    enabled: b.enabled !== false,
+    description,
+    enabled: typeof b.enabled === "boolean" ? b.enabled : old?.enabled ?? true,
     fallback_on_rate_limit: b.fallback_on_rate_limit === true,
-    attempt_timeout_s: typeof b.attempt_timeout_s === "number" ? b.attempt_timeout_s : 60,
-    total_timeout_s: typeof b.total_timeout_s === "number" ? b.total_timeout_s : 120,
-    targets,
-    dialects: [...new Set(targets.map((t) => t.dialect))].sort(),
+    attempt_timeout_s: attempt,
+    total_timeout_s: total,
+    // As the relay returns them: by format, then in the order given.
+    targets: MODEL_DIALECTS.flatMap((d) => targets.filter((t) => t.dialect === d)),
+    dialects: MODEL_DIALECTS.filter((d) => targets.some((t) => t.dialect === d)),
   };
+}
+
+// The store's ValidAllowEntry: a synthetic model name, "<provider>/<model>" or "<provider>/*".
+function allowEntryOk(entry: string): boolean {
+  const i = entry.indexOf("/");
+  if (i < 0) return entry !== "" && modelNameError(entry) === null;
+  const model = entry.slice(i + 1);
+  if (!providerSlugOk(entry.slice(0, i)) || model === "") return false;
+  return model === "*" || (!model.includes("*") && !/\s/.test(model) && !hasControl(model));
 }
 
 export const handlers = [
@@ -1418,7 +1446,7 @@ export const handlers = [
     const g = gate(request, { admin: true }); if (g) return g;
     const i = db.aiModels.findIndex((x) => x.name === params.name);
     if (i < 0) return err(404, "model not found");
-    const next = modelFromBody(await body<ModelBody>(request));
+    const next = modelFromBody(await body<ModelBody>(request), db.aiModels[i]);
     if (typeof next === "string") return err(400, next);
     if (db.aiModels.some((m, at) => at !== i && m.name === next.name)) return err(409, "model name already in use");
     const row: AiModel = { ...next, created_at: db.aiModels[i]!.created_at, updated_at: new Date().toISOString() };
@@ -1442,12 +1470,13 @@ export const handlers = [
     const extra = Object.keys(b).find((k) => k !== "name" && k !== "allowed_models");
     if (extra) return err(400, `unknown field "${extra}"`);
     const name = typeof b.name === "string" ? b.name.trim() : "";
-    if (name === "" || name.length > 120 || hasControl(name)) return err(400, "name must be 1–120 characters without control characters");
+    if (name === "" || byteLen(name) > 120 || hasControl(name)) return err(400, "name must be 1-120 characters without control characters");
     const allowed = b.allowed_models ?? [];
-    if (!Array.isArray(allowed) || allowed.some((e) => typeof e !== "string")) return err(400, "allowed_models must be a list of strings");
-    if (allowed.length > 64) return err(400, "allowed_models has more than 64 entries");
-    const bad = (allowed as string[]).find((e) => allowEntryError(e) !== null);
-    if (bad !== undefined) return err(400, "allowed_models has a malformed entry");
+    if (!Array.isArray(allowed)) return err(400, "invalid JSON body");
+    if (allowed.length > 64) return err(400, "at most 64 allowed models");
+    if (allowed.some((e) => typeof e !== "string" || !allowEntryOk(e))) {
+      return err(400, 'an allowed model must be a model name, "<provider>/<model>" or "<provider>/*"');
+    }
     const row: AiGatewayKey = {
       id: `gk_${Math.random().toString(36).slice(2, 10)}`,
       name,
