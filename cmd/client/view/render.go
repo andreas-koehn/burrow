@@ -230,7 +230,7 @@ func service(s Service, w int) []row {
 	if access := accessLabel(clean(s.Access)); access != "" {
 		access = "access: " + access
 		remark := ""
-		if s.Access == "open" {
+		if s.Access == "open" && s.Public != GatewayOnlyPublic {
 			remark = "(anyone with the URL)"
 		}
 		full := strings.TrimSpace(access + " " + remark)

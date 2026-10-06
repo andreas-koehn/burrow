@@ -4,6 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
 import { Route, Routes } from "react-router-dom";
 import ServiceDetail from "@/pages/ServiceDetail";
+import { http, HttpResponse } from "msw";
+import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
 
 function mount() {
@@ -206,5 +208,18 @@ describe("ServiceDetail page", () => {
     } finally {
       svc.gateway_only = false;
     }
+  });
+
+  it("ties the explanation to the switch and announces a failed change", async () => {
+    server.use(
+      http.put("/api/v1/services/:id/gateway-only", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })),
+    );
+    mountAt("/services/svc_ai001");
+    const toggle = await screen.findByRole("switch", { name: "Reachable through the AI gateway only" });
+    expect(toggle).toHaveAccessibleDescription(/Closes the direct address and custom domains/);
+    await userEvent.click(toggle);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("forbidden");
+    expect(toggle).toHaveAttribute("aria-checked", "false");
   });
 });

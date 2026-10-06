@@ -286,6 +286,20 @@ describe("Services page", () => {
     expect(within(dialog).getByRole("button", { name: "Create and continue" })).toBeInTheDocument();
   });
 
+  it("the New AI service dialog advertises no /svc/ address", async () => {
+    renderApp(<Services />, "/services?new=ai");
+    const dialog = await screen.findByRole("dialog", { name: "New AI service" });
+    expect(within(dialog).queryByLabelText(/url slug/i)).toBeNull();
+    expect(dialog.textContent).not.toMatch(/\/svc\//);
+  });
+
+  it("the plain New service dialog still shows the slug field and the /svc/ hint", async () => {
+    renderApp(<Services />, "/services?new=1");
+    const dialog = await screen.findByRole("dialog", { name: "New service" });
+    expect(within(dialog).getByLabelText(/url slug/i)).toBeInTheDocument();
+    expect(dialog.textContent).toMatch(/\/svc\//);
+  });
+
   it("?new=ai registers the new service as a provider and opens its page", async () => {
     renderApp(
       <Routes>

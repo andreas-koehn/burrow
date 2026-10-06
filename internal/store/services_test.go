@@ -503,7 +503,7 @@ func TestSetServiceSlug(t *testing.T) {
 	owner := mustCreateUser(t, s, "owner@x", "user")
 	svcID := mustGetOrCreateService(t, s, owner.ID, "web", "http").ID
 
-	old, err := s.SetServiceSlug(ctx, owner.ID, "user", svcID, "my-app")
+	old, _, err := s.SetServiceSlug(ctx, owner.ID, "user", svcID, "my-app")
 	if err != nil {
 		t.Fatalf("SetServiceSlug: %v", err)
 	}
@@ -514,14 +514,14 @@ func TestSetServiceSlug(t *testing.T) {
 	if err != nil || got.ID != svcID {
 		t.Fatalf("lookup by new slug: %v %+v", err, got)
 	}
-	if old, err = s.SetServiceSlug(ctx, owner.ID, "user", svcID, "my-app2"); err != nil || old != "my-app" {
+	if old, _, err = s.SetServiceSlug(ctx, owner.ID, "user", svcID, "my-app2"); err != nil || old != "my-app" {
 		t.Fatalf("second change: old=%q err=%v, want old=my-app", old, err)
 	}
 
-	if _, err := s.SetServiceSlug(ctx, owner.ID, "user", svcID, "Bad_Slug"); !errors.Is(err, ErrInvalidSlug) {
+	if _, _, err := s.SetServiceSlug(ctx, owner.ID, "user", svcID, "Bad_Slug"); !errors.Is(err, ErrInvalidSlug) {
 		t.Fatalf("invalid slug err = %v, want ErrInvalidSlug", err)
 	}
-	if _, err := s.SetServiceSlug(ctx, "someone-else", "user", svcID, "other"); err == nil {
+	if _, _, err := s.SetServiceSlug(ctx, "someone-else", "user", svcID, "other"); err == nil {
 		t.Fatal("a non-owner, non-admin caller changed the slug")
 	}
 }
@@ -532,10 +532,10 @@ func TestSetServiceSlug_Taken(t *testing.T) {
 	owner := mustCreateUser(t, s, "owner@x", "user")
 	a := mustGetOrCreateService(t, s, owner.ID, "web", "http").ID
 	b := mustGetOrCreateService(t, s, owner.ID, "api", "http").ID
-	if _, err := s.SetServiceSlug(ctx, owner.ID, "user", a, "shared"); err != nil {
+	if _, _, err := s.SetServiceSlug(ctx, owner.ID, "user", a, "shared"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SetServiceSlug(ctx, owner.ID, "user", b, "shared"); !errors.Is(err, ErrSlugTaken) {
+	if _, _, err := s.SetServiceSlug(ctx, owner.ID, "user", b, "shared"); !errors.Is(err, ErrSlugTaken) {
 		t.Fatalf("err = %v, want ErrSlugTaken", err)
 	}
 }
@@ -582,5 +582,46 @@ func TestSetServiceGatewayOnly(t *testing.T) {
 	tcp := mustGetOrCreateService(t, s, owner.ID, "raw", "tcp").ID
 	if err := s.SetServiceGatewayOnly(ctx, owner.ID, "user", tcp, true); !errors.Is(err, ErrServiceNotHTTP) {
 		t.Fatalf("tcp err = %v, want ErrServiceNotHTTP", err)
+	}
+}
+
+func TestSetServiceSlug_ReportsGatewayOnly(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, s, "owner@x", "user")
+	svcID := mustGetOrCreateService(t, s, owner.ID, "web", "http").ID
+	if _, gw, err := s.SetServiceSlug(ctx, owner.ID, "user", svcID, "my-app"); err != nil || gw {
+		t.Fatalf("plain: gw=%v err=%v", gw, err)
+	}
+	if err := s.SetServiceGatewayOnly(ctx, owner.ID, "user", svcID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, gw, err := s.SetServiceSlug(ctx, owner.ID, "user", svcID, "my-app2"); err != nil || !gw {
+		t.Fatalf("gateway-only: gw=%v err=%v", gw, err)
+	}
+	// An unchanged slug answers the flag too.
+	if _, gw, err := s.SetServiceSlug(ctx, owner.ID, "user", svcID, "my-app2"); err != nil || !gw {
+		t.Fatalf("unchanged: gw=%v err=%v", gw, err)
+	}
+}
+
+func TestSetServiceGatewayOnly_AdminAndDirect(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, s, "owner@x", "user")
+	admin := mustCreateUser(t, s, "admin@x", "admin")
+	svcID := mustGetOrCreateService(t, s, owner.ID, "web", "http").ID
+	if err := s.SetServiceGatewayOnly(ctx, admin.ID, "admin", svcID, true); err != nil {
+		t.Fatalf("admin on a foreign service: %v", err)
+	}
+	if det, err := s.GetService(ctx, owner.ID, "user", svcID); err != nil || !det.GatewayOnly {
+		t.Fatalf("flag not stored: %v %v", det.GatewayOnly, err)
+	}
+	dp, err := s.CreateDirectProvider(ctx, admin.ID, DirectProviderInput{Slug: "zai", Name: "z.ai", BaseURL: "https://api.z.ai/v4", CredentialSlot: "ZAI"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetServiceGatewayOnly(ctx, admin.ID, "admin", dp.ServiceID, true); !errors.Is(err, ErrDirectService) {
+		t.Fatalf("direct err = %v, want ErrDirectService", err)
 	}
 }

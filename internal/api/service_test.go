@@ -61,11 +61,12 @@ type fakeServiceStore struct {
 	gatewayOnlyCalls []gatewayOnlyCall
 
 	// SetServiceSlug / SuggestSlug
-	setSlugOld  string
-	setSlugErr  error
-	lastSlug    string
-	suggestSlug string
-	suggestErr  error
+	setSlugOld         string
+	setSlugGatewayOnly bool
+	setSlugErr         error
+	lastSlug           string
+	suggestSlug        string
+	suggestErr         error
 
 	// last args captured for inspection
 	lastMode   string
@@ -103,9 +104,9 @@ func (f *fakeServiceStore) SetAccessPolicy(_ context.Context, _, _, _ string, ro
 	return f.setPolicyErr
 }
 
-func (f *fakeServiceStore) SetServiceSlug(_ context.Context, _, _, _, slug string) (string, error) {
+func (f *fakeServiceStore) SetServiceSlug(_ context.Context, _, _, _, slug string) (string, bool, error) {
 	f.lastSlug = slug
-	return f.setSlugOld, f.setSlugErr
+	return f.setSlugOld, f.setSlugGatewayOnly, f.setSlugErr
 }
 
 type gatewayOnlyCall struct {
@@ -1591,5 +1592,35 @@ func TestServices_GatewayOnlyHasNoURL(t *testing.T) {
 	r.Body.Close()
 	if one["gateway_only"] != true || one["url"] != "" {
 		t.Fatalf("detail = %v", one)
+	}
+}
+
+// The slug answer must not advertise a /svc/ address for a gateway-only service.
+func TestPutServiceSlug_GatewayOnlyHasNoURL(t *testing.T) {
+	ss := &fakeServiceStore{setSlugOld: "p7baeh", setSlugGatewayOnly: true}
+	srv, c := newServiceServer(t, newServiceDeps(ss, fakeLiveTunnels{}, "burrow.example.com"))
+	defer srv.Close()
+	r := c.put(t, "/api/v1/services/s1/slug", map[string]string{"slug": "my-app"})
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", r.StatusCode)
+	}
+	var out map[string]string
+	if err := json.NewDecoder(r.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if out["slug"] != "my-app" || out["url"] != "" {
+		t.Fatalf("body = %v", out)
+	}
+}
+
+func TestPutServiceGatewayOnly_NotHTTPText(t *testing.T) {
+	ss := &fakeServiceStore{gatewayOnlyErr: store.ErrServiceNotHTTP}
+	srv, c := newServiceServer(t, newServiceDeps(ss, fakeLiveTunnels{}, "burrow.example.com"))
+	defer srv.Close()
+	r := c.put(t, "/api/v1/services/s1/gateway-only", map[string]bool{"gateway_only": true})
+	body := readBody(t, r)
+	if r.StatusCode != http.StatusConflict || !strings.Contains(body, "gateway-only requires an http service") || strings.Contains(body, "mtls") {
+		t.Fatalf("status %d body %s", r.StatusCode, body)
 	}
 }

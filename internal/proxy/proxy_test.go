@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -16,7 +17,9 @@ import (
 
 	"log/slog"
 
+	"github.com/ankoehn/burrow/internal/api"
 	"github.com/ankoehn/burrow/internal/proxy"
+	"github.com/go-chi/chi/v5"
 )
 
 // testLog returns a discard logger for tests.
@@ -969,25 +972,48 @@ func TestProxy_GatewayOnlyServiceIsNotFound(t *testing.T) {
 		p.ServeHTTP(rec, req)
 		return rec
 	}
-	missing := do("nope."+authDomain, nil)
-	if missing.Code != http.StatusNotFound {
-		t.Fatalf("missing: want 404, got %d", missing.Code)
+	// Path routing: the /svc/{slug} adapter in front of the proxy, as mounted.
+	pathRouter := chi.NewRouter()
+	pathHandler := api.ServicePathHandler(p, authDomain)
+	pathRouter.HandleFunc("/svc/{slug}", pathHandler)
+	pathRouter.HandleFunc("/svc/{slug}/*", pathHandler)
+	doPath := func(path string, hdr map[string]string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "https://"+authDomain+path, nil)
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		pathRouter.ServeHTTP(rec, req)
+		return rec
 	}
 	ws := map[string]string{"Connection": "Upgrade", "Upgrade": "websocket"}
-	for name, rec := range map[string]*httptest.ResponseRecorder{
-		"host":       do("gwonly."+authDomain, nil),
-		"websocket":  do("gwonly."+authDomain, ws),
-		"customhost": do("models.example.org", nil),
-		"customws":   do("models.example.org", ws),
+
+	// Each door is compared with the same door for a slug that does not exist:
+	// status, the full header set and the body must be identical.
+	type door struct {
+		name        string
+		hit, absent *httptest.ResponseRecorder
+	}
+	for _, d := range []door{
+		{"host", do("gwonly."+authDomain, nil), do("nope."+authDomain, nil)},
+		{"host websocket", do("gwonly."+authDomain, ws), do("nope."+authDomain, ws)},
+		{"custom domain", do("models.example.org", nil), do("unknown.example.org", nil)},
+		{"custom domain websocket", do("models.example.org", ws), do("unknown.example.org", ws)},
+		{"path", doPath("/svc/gwonly", nil), doPath("/svc/nope", nil)},
+		{"path with rest", doPath("/svc/gwonly/v1/models", nil), doPath("/svc/nope/v1/models", nil)},
+		{"path websocket", doPath("/svc/gwonly/ws", ws), doPath("/svc/nope/ws", ws)},
 	} {
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("%s: want 404, got %d", name, rec.Code)
+		if d.absent.Code != http.StatusNotFound {
+			t.Fatalf("%s: a missing service answers %d, not 404", d.name, d.absent.Code)
 		}
-		if rec.Body.String() != missing.Body.String() {
-			t.Errorf("%s: body %q differs from a missing service %q", name, rec.Body.String(), missing.Body.String())
+		if d.hit.Code != d.absent.Code {
+			t.Errorf("%s: status %d, a missing service answers %d", d.name, d.hit.Code, d.absent.Code)
 		}
-		if rec.Header().Get("Content-Type") != missing.Header().Get("Content-Type") {
-			t.Errorf("%s: content type differs from a missing service", name)
+		if !reflect.DeepEqual(d.hit.Header(), d.absent.Header()) {
+			t.Errorf("%s: headers %v differ from a missing service %v", d.name, d.hit.Header(), d.absent.Header())
+		}
+		if d.hit.Body.String() != d.absent.Body.String() {
+			t.Errorf("%s: body %q differs from a missing service %q", d.name, d.hit.Body.String(), d.absent.Body.String())
 		}
 	}
 	if upstreamCalls != 0 {

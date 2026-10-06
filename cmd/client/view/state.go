@@ -34,6 +34,10 @@ type Model struct {
 	Notice string // one line, e.g. a version notice
 }
 
+// GatewayOnlyPublic stands where the address of a gateway-only service would
+// be: such a service has no URL.
+const GatewayOnlyPublic = "AI gateway only"
+
 // Service is one exposed service.
 type Service struct {
 	Name, Type, Public, Local string
@@ -171,7 +175,7 @@ func (s *Store) Registered(t client.RegisteredTunnel) {
 		s.m.Services[i].Access = t.AccessMode
 		switch {
 		case t.GatewayOnly:
-			s.m.Services[i].Public = "AI gateway only"
+			s.m.Services[i].Public = GatewayOnlyPublic
 		case t.URL != "":
 			s.m.Services[i].Public = t.URL
 		case t.RemotePort > 0:

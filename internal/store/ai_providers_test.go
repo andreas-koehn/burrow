@@ -462,7 +462,7 @@ func TestDirectBackingService_Guards(t *testing.T) {
 			t.Errorf("access mode %s err = %v, want ErrDirectService", mode, err)
 		}
 	}
-	if _, err := s.SetServiceSlug(ctx, ownerID, "admin", p.ServiceID, "my-slug"); !errors.Is(err, ErrDirectService) {
+	if _, _, err := s.SetServiceSlug(ctx, ownerID, "admin", p.ServiceID, "my-slug"); !errors.Is(err, ErrDirectService) {
 		t.Errorf("slug err = %v, want ErrDirectService", err)
 	}
 	svc, _ := s.ServiceByID(ctx, p.ServiceID)

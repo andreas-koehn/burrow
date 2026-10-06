@@ -126,18 +126,19 @@ export default function ServiceDetail() {
           <label className="row row-center gap-2">
             <Switch
               aria-label="Reachable through the AI gateway only"
+              aria-describedby="gateway-only-help"
               checked={svc.gateway_only}
               disabled={setGatewayOnly.isPending}
               onChange={(on) => setGatewayOnly.mutate(on)}
             />
             <span>Reachable through the AI gateway only</span>
           </label>
-          <p className="muted small">
+          <p id="gateway-only-help" className="muted small">
             Closes the direct address and custom domains: they answer as if the
             service did not exist. Models stay available under <span className="mono">/ai/</span>, <span className="mono">/openai/v1</span> and{" "}
             <span className="mono">/anthropic</span>.
           </p>
-          {gatewayErr && <ErrorNotice>{gatewayErr}</ErrorNotice>}
+          {gatewayErr && <ErrorNotice role="alert">{gatewayErr}</ErrorNotice>}
         </div>
       )}
 

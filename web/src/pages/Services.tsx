@@ -501,7 +501,8 @@ export default function Services() {
           <FormField label="Title" htmlFor="ns-title" w="md">
             <Input id="ns-title" placeholder="optional display name" value={nsTitle} onChange={(e) => setNsTitle(e.target.value)} />
           </FormField>
-          <SlugField id="ns-slug" value={nsSlug} onChange={setNsSlug} />
+          {/* A model service has no /svc/ address: the AI flow shows no slug or URL. */}
+          {!aiFlow && <SlugField id="ns-slug" value={nsSlug} onChange={setNsSlug} />}
           {!aiFlow && (
             <FormField label="Access mode" htmlFor="ns-access-mode" w="md">
               <Select
@@ -513,7 +514,9 @@ export default function Services() {
             </FormField>
           )}
         </FormFieldGroup>
-        <p className="muted small">Apps that load assets from absolute paths (/assets/…) need base-path support to work under a /svc/ URL.</p>
+        {!aiFlow && (
+          <p className="muted small">Apps that load assets from absolute paths (/assets/…) need base-path support to work under a /svc/ URL.</p>
+        )}
         {nsErr && <p role="alert" className="notice-inline error">{nsErr}</p>}
       </Dialog>
       <Toaster />

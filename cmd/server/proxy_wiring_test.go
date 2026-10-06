@@ -200,8 +200,10 @@ func TestServiceResolverAdapter_CollisionRetry(t *testing.T) {
 // fakeServiceForSubdomain is the narrow interface test double for
 // proxyDialerAdapter.Lookup (the store side).
 type fakeStoreSubdomain struct {
-	svc db.Service
-	err error
+	svc      db.Service
+	err      error
+	geoErr   error // returned by GetServiceIPGeo
+	geoCalls int
 }
 
 // ServiceForSubdomain returns svc for its current slug only.
@@ -226,6 +228,10 @@ func (f *fakeStoreSubdomain) ServiceByID(_ context.Context, id string) (db.Servi
 }
 
 func (f *fakeStoreSubdomain) GetServiceIPGeo(_ context.Context, _ string) (db.ServiceIPGeoConfig, error) {
+	f.geoCalls++
+	if f.geoErr != nil {
+		return db.ServiceIPGeoConfig{}, f.geoErr
+	}
 	return db.ServiceIPGeoConfig{
 		AllowCIDRs:     []string{},
 		BlockCIDRs:     []string{},
@@ -1211,23 +1217,34 @@ func TestCreateOptions_ClientToDatabase(t *testing.T) {
 	}
 }
 
-// Both lookups carry the gateway-only flag so the proxy can hide the service.
-func TestProxyDialerAdapter_Lookups_CopyGatewayOnly(t *testing.T) {
+// A gateway-only service is not found by the subdomain lookup, and nothing further is
+// read once the flag is seen: no tunnel registry, no ip-geo query. That keeps
+// it indistinguishable from a missing service in status and timing, even when
+// a later query would have failed.
+func TestProxyDialerAdapter_Lookups_GatewayOnlyIsNotFoundAtOnce(t *testing.T) {
 	svc := db.Service{ID: "svc-1", Subdomain: "abc123", AccessMode: "open", GatewayOnly: true}
-	a := proxyDialerAdapter{
-		st:  &fakeStoreSubdomain{svc: svc},
-		srv: &fakeHTTPTunnelLookup{tn: &server.Tunnel{ServiceID: "svc-1", LocalAddr: "127.0.0.1:3000"}, ok: true},
+	st := &fakeStoreSubdomain{svc: svc, geoErr: errors.New("db down")}
+	srv := &fakeHTTPTunnelLookup{tn: &server.Tunnel{ServiceID: "svc-1", LocalAddr: "127.0.0.1:3000"}, ok: true}
+	a := proxyDialerAdapter{st: st, srv: srv}
+
+	if _, err := a.Lookup(context.Background(), "abc123"); !errors.Is(err, proxy.ErrNotFound) {
+		t.Fatalf("Lookup err = %v, want ErrNotFound", err)
 	}
-	res, err := a.Lookup(context.Background(), "abc123")
-	if err != nil || !res.GatewayOnly {
-		t.Fatalf("Lookup: GatewayOnly=%v err=%v", res != nil && res.GatewayOnly, err)
+	if st.geoCalls != 0 {
+		t.Errorf("GetServiceIPGeo called %d times after the flag was seen", st.geoCalls)
 	}
-	res, err = a.LookupByServiceID(context.Background(), "svc-1")
-	if err != nil || !res.GatewayOnly {
-		t.Fatalf("LookupByServiceID: GatewayOnly=%v err=%v", res != nil && res.GatewayOnly, err)
+	// The AI gateway shares LookupByServiceID: it must still resolve, flagged,
+	// and the proxy's custom-domain door refuses it by the flag.
+	st.geoErr = nil
+	if res, err := a.LookupByServiceID(context.Background(), "svc-1"); err != nil || !res.GatewayOnly {
+		t.Fatalf("LookupByServiceID: %+v %v", res, err)
 	}
-	a.st = &fakeStoreSubdomain{svc: db.Service{ID: "svc-1", Subdomain: "abc123"}}
-	if res, _ = a.Lookup(context.Background(), "abc123"); res == nil || res.GatewayOnly {
-		t.Fatal("flag set for a service that is not gateway-only")
+	st.geoErr = errors.New("db down")
+
+	// Without the flag the same service resolves.
+	st.svc.GatewayOnly = false
+	st.geoErr = nil
+	if res, err := a.Lookup(context.Background(), "abc123"); err != nil || res.GatewayOnly {
+		t.Fatalf("plain Lookup: %+v %v", res, err)
 	}
 }

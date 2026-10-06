@@ -582,7 +582,7 @@ export const handlers = [
     const svc = db.services.find((s) => s.id === params.id);
     if (!svc) return err(404, "service not found");
     if (!canConfigure(svc)) return err(403, "forbidden");
-    if (svc.type !== "http") return err(409, "api_key, burrow_login, and mtls require an http service");
+    if (svc.type !== "http") return err(409, "gateway-only requires an http service");
     const b = await body<{ gateway_only?: unknown }>(request);
     if (typeof b?.gateway_only !== "boolean") return err(400, "gateway_only (boolean) is required");
     svc.gateway_only = b.gateway_only;

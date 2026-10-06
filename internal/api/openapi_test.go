@@ -450,9 +450,9 @@ func (*fullDepsStub) CreateService(context.Context, db.Service) error {
 	stubPanic("CreateService")
 	return nil
 }
-func (*fullDepsStub) SetServiceSlug(context.Context, string, string, string, string) (string, error) {
+func (*fullDepsStub) SetServiceSlug(context.Context, string, string, string, string) (string, bool, error) {
 	stubPanic("SetServiceSlug")
-	return "", nil
+	return "", false, nil
 }
 func (*fullDepsStub) SetServiceGatewayOnly(context.Context, string, string, string, bool) error {
 	stubPanic("SetServiceGatewayOnly")

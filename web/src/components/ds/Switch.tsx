@@ -3,6 +3,7 @@ export interface SwitchProps {
   onChange?: (checked: boolean) => void;
   id?: string;
   "aria-label"?: string;
+  "aria-describedby"?: string;
   "aria-disabled"?: boolean | "true" | "false";
   disabled?: boolean;
   title?: string;
@@ -13,6 +14,7 @@ export function Switch({
   onChange,
   id,
   "aria-label": ariaLabel,
+  "aria-describedby": ariaDescribedBy,
   "aria-disabled": ariaDisabled,
   disabled,
   title,
@@ -25,6 +27,7 @@ export function Switch({
       role="switch"
       aria-checked={checked}
       aria-label={ariaLabel}
+      aria-describedby={ariaDescribedBy}
       aria-disabled={isDisabled || undefined}
       disabled={disabled}
       title={title}

@@ -84,7 +84,7 @@ func (c *compatResolver) ResolveWithOptions(_ context.Context, _, name, _ string
 		}
 		return r, nil
 	}
-	r := Resolved{ServiceID: "svc-" + name, Slug: "gen234", AccessMode: "open", Created: true}
+	r := Resolved{ServiceID: "svc-" + name, Slug: "gen234", AccessMode: "open", Created: true, GatewayOnly: name == "gwonly"}
 	if o.Slug != "" {
 		r.Slug = o.Slug
 	}
@@ -887,5 +887,20 @@ func TestCompat_Summaries_NewClientOldRelay(t *testing.T) {
 	}
 	if got := obs.seen(); len(got) != 0 {
 		t.Fatalf("summaries from a relay that has none: %q", got)
+	}
+}
+
+// A gateway-only service registers for a client from before the change: OK, no
+// URL, and the new field is one its struct simply does not have.
+func TestCompat_OldClientGatewayOnlyService(t *testing.T) {
+	s, pool := newRelay(t, "")
+	c, _ := dialOld(t, s, pool, "bur_test_0000", "0.6.0")
+	c.openControl()
+	raw, rr := c.register(`{"name":"gwonly","type":"http","remote_port":0,"local_addr":"127.0.0.1:3000"}`)
+	if rr != (oldTunnelRegisterResponse{OK: true, TunnelID: rr.TunnelID}) || rr.TunnelID == "" {
+		t.Fatalf("registration as the old client reads it: %+v (%s)", rr, raw)
+	}
+	if !strings.Contains(raw, `"gateway_only":true`) || strings.Contains(raw, "/svc/") {
+		t.Fatalf("raw answer = %s", raw)
 	}
 }

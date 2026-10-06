@@ -1683,3 +1683,41 @@ func TestServe_GatewayKeyOnProviderPath_ModelList(t *testing.T) {
 		t.Errorf("bgw_ollama, empty catalog: %s", got)
 	}
 }
+
+// A gateway-only service is reached through the gateway like any other: the
+// flag closes the direct doors only. The provider's key and address checks stay.
+func TestServe_GatewayOnlyServiceStaysReachable(t *testing.T) {
+	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	gw := func() *Gateway {
+		g := newGateway(up, &spyChain{})
+		g.Tunnels = fakeTunnels{res: &proxy.Resolved{ServiceID: "svc1", AccessMode: "api_key", LocalHost: "127.0.0.1:11434", GatewayOnly: true}, upstream: up}
+		return g
+	}
+	call := func(g *Gateway, key string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+		if key != "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
+		rec := httptest.NewRecorder()
+		g.Serve(rec, req, "ollama")
+		return rec
+	}
+	if rec := call(gw(), "sk-good"); rec.Code != http.StatusOK || rec.Body.String() != `{"ok":true}` {
+		t.Fatalf("good key: status %d body %s", rec.Code, rec.Body.String())
+	}
+	if rec := call(gw(), "sk-bad"); rec.Code != http.StatusUnauthorized || errCode(t, rec) != "invalid_api_key" {
+		t.Fatalf("wrong key: status %d", rec.Code)
+	}
+	g := gw()
+	g.IPGeoDeny = func(*proxy.Resolved, *http.Request) bool { return true }
+	rec := call(g, "sk-good")
+	if rec.Code != http.StatusForbidden || errCode(t, rec) != "forbidden" {
+		t.Fatalf("denied address: status %d", rec.Code)
+	}
+	if n := g.Keys.(*fakeKeys).calls.Load(); n != 0 {
+		t.Fatalf("key validator called %d times for a blocked address", n)
+	}
+}

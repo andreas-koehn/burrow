@@ -617,7 +617,7 @@ func (d Deps) PutServiceSlug(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	old, err := d.Services.SetServiceSlug(r.Context(), userID(r.Context()), role, serviceID, in.Slug)
+	old, gatewayOnly, err := d.Services.SetServiceSlug(r.Context(), userID(r.Context()), role, serviceID, in.Slug)
 	if err != nil {
 		if !mapServiceErr(w, err, "service not found") {
 			writeErr(w, http.StatusInternalServerError, "internal error")
@@ -637,7 +637,7 @@ func (d Deps) PutServiceSlug(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"slug": in.Slug,
-		"url":  composeServiceURL(in.Slug, d.AuthDomain),
+		"url":  serviceURL(in.Slug, d.AuthDomain, gatewayOnly),
 	})
 }
 
@@ -664,6 +664,10 @@ func (d Deps) PutServiceGatewayOnly(w http.ResponseWriter, r *http.Request) {
 	}
 	on := *in.GatewayOnly
 	if err := d.Services.SetServiceGatewayOnly(r.Context(), userID(r.Context()), role, serviceID, on); err != nil {
+		if errors.Is(err, store.ErrServiceNotHTTP) {
+			writeErr(w, http.StatusConflict, "gateway-only requires an http service")
+			return
+		}
 		if !mapServiceErr(w, err, "service not found") {
 			writeErr(w, http.StatusInternalServerError, "internal error")
 		}

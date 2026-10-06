@@ -210,33 +210,34 @@ func (s *Store) SetServiceAccessMode(ctx context.Context, callerID, callerRole, 
 
 // SetServiceSlug changes the URL segment of an http service. Same permission
 // rule as SetServiceAccessMode (owner or a role that may configure any
-// service). Returns the previous slug so the caller can audit the change.
-func (s *Store) SetServiceSlug(ctx context.Context, callerID, callerRole, serviceID, slug string) (string, error) {
+// service). Returns the previous slug so the caller can audit the change, and
+// whether the service is gateway-only (then it has no /svc/ address to report).
+func (s *Store) SetServiceSlug(ctx context.Context, callerID, callerRole, serviceID, slug string) (string, bool, error) {
 	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if svc.Type == "direct" {
-		return "", ErrDirectService
+		return "", false, ErrDirectService
 	}
 	if svc.Type != "http" {
-		return "", ErrServiceNotHTTP
+		return "", false, ErrServiceNotHTTP
 	}
 	if !auth.ValidSlug(slug) {
-		return "", ErrInvalidSlug
+		return "", false, ErrInvalidSlug
 	}
 	if svc.Subdomain == slug {
-		return slug, nil
+		return slug, svc.GatewayOnly, nil
 	}
 	if err := s.q.SetServiceSubdomain(ctx, serviceID, slug); err != nil {
 		// isUniqueViolation matches SQLite; Postgres reports
 		// "violates unique constraint".
 		if isUniqueViolation(err) || containsStr(err.Error(), "unique constraint") {
-			return "", ErrSlugTaken
+			return "", false, ErrSlugTaken
 		}
-		return "", err
+		return "", false, err
 	}
-	return svc.Subdomain, nil
+	return svc.Subdomain, svc.GatewayOnly, nil
 }
 
 // SetServiceGatewayOnly closes (or reopens) every direct door of an http

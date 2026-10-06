@@ -508,3 +508,17 @@ func TestFit_UnknownHeightIs24Rows(t *testing.T) {
 		t.Fatal("a small view was shortened")
 	}
 }
+
+// A gateway-only service has no URL, so "anyone with the URL" would be wrong.
+func TestRender_GatewayOnlyHasNoURLRemark(t *testing.T) {
+	s := httpService()
+	s.Access = "open"
+	s.Public = GatewayOnlyPublic
+	text := strings.Join(Render(connected(s), 100, false), "\n")
+	if !strings.Contains(text, "AI gateway only") || !strings.Contains(text, "access: open") {
+		t.Fatalf("missing parts:\n%s", text)
+	}
+	if strings.Contains(text, "anyone with the URL") {
+		t.Fatalf("remark about a URL that does not exist:\n%s", text)
+	}
+}

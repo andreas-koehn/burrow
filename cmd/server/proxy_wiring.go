@@ -335,6 +335,11 @@ func (a proxyDialerAdapter) Lookup(ctx context.Context, sub string) (*proxy.Reso
 		}
 		return nil, fmt.Errorf("proxy lookup: service for subdomain: %w", err)
 	}
+	// A gateway-only service does not exist here. Decide before anything else
+	// is read, so status and timing match a missing service.
+	if svc.GatewayOnly {
+		return nil, proxy.ErrNotFound
+	}
 	tn, ok := a.srv.LookupHTTPTunnelByServiceID(svc.ID)
 	if !ok {
 		// Service exists but no live tunnel — treat as not found for the proxy
@@ -384,6 +389,8 @@ func (a proxyDialerAdapter) DialTunnelStream(ctx context.Context, sub string) (n
 }
 
 // LookupByServiceID implements proxy.StreamDialer.LookupByServiceID.
+// The AI gateway shares it, so a gateway-only service resolves here with
+// GatewayOnly set; the proxy's custom-domain door tests the flag first thing.
 // Used by the custom-domain routing path (v0.5.0 Task 7) where the request
 // Host is not a subdomain of authDomain.
 func (a proxyDialerAdapter) LookupByServiceID(ctx context.Context, serviceID string) (*proxy.Resolved, error) {
