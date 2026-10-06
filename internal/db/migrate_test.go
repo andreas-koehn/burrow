@@ -235,7 +235,7 @@ func TestMigrateDriverFilter(t *testing.T) {
 		}
 	}
 
-	// Expect exactly 22 SQLite files and 21 Postgres files.
+	// Expect exactly 22 SQLite files and 22 Postgres files.
 	if len(sqliteFiles) != 22 {
 		t.Errorf("want 22 sqlite migration files, got %d: %v", len(sqliteFiles), sqliteFiles)
 	}
@@ -290,6 +290,7 @@ func TestMigrationParitySQLiteAndPostgres(t *testing.T) {
 		"roles", "settings", "services",
 		"audit_events", "webhooks", "automation_tokens",
 		"ai_providers", "ai_provider_models",
+		"ai_models", "ai_model_targets", "ai_gateway_keys", "usage_attempts",
 	}
 	for _, tbl := range coreTables {
 		var name string
@@ -331,6 +332,37 @@ func TestMigrationParitySQLiteAndPostgres(t *testing.T) {
 		).Scan(&name)
 		if err != nil {
 			t.Errorf("postgres: table %s missing: %v", tbl, err)
+		}
+	}
+}
+
+func TestMigrate0023Schema(t *testing.T) {
+	x := testDB(t)
+	db := x.DB()
+	for _, tbl := range []string{"ai_models", "ai_model_targets", "ai_gateway_keys", "usage_attempts"} {
+		var n string
+		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, tbl).Scan(&n); err != nil {
+			t.Errorf("table %s missing: %v", tbl, err)
+		}
+	}
+	cols := map[string][]string{
+		"usage_events": {"gateway_key_id", "dialect", "provider_slug", "requested_model", "target_model", "request_id", "latency_ms"},
+		"services":     {"gateway_only"},
+		"budgets":      {"daily_tokens"},
+		"ai_providers": {"supports_responses", "max_concurrent"},
+	}
+	for tbl, list := range cols {
+		for _, c := range list {
+			var n int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, tbl, c).Scan(&n); err != nil || n != 1 {
+				t.Errorf("column %s.%s missing (n=%d, err=%v)", tbl, c, n, err)
+			}
+		}
+	}
+	for _, idx := range []string{"idx_ai_model_targets_provider", "idx_ai_gateway_keys_user", "idx_usage_attempts_ts", "idx_usage_events_gateway_key"} {
+		var n string
+		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`, idx).Scan(&n); err != nil {
+			t.Errorf("index %s missing: %v", idx, err)
 		}
 	}
 }

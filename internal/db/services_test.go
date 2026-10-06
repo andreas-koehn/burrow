@@ -337,6 +337,9 @@ func TestServiceGatewayOnly(t *testing.T) {
 	ctx := context.Background()
 	mustUser(t, x, "u1")
 	s, err := x.GetOrCreateService(ctx, "u1", "svc", "http")
+	if err == nil {
+		err = x.SetServiceSubdomain(ctx, s.ID, "gwsub")
+	}
 	if err != nil || s.GatewayOnly {
 		t.Fatalf("default: %v %+v", err, s)
 	}
@@ -346,6 +349,10 @@ func TestServiceGatewayOnly(t *testing.T) {
 	byID, _ := x.GetServiceByID(ctx, s.ID)
 	if !byID.GatewayOnly {
 		t.Fatal("GetServiceByID lost GatewayOnly")
+	}
+	bySub, err := x.GetServiceBySubdomain(ctx, "gwsub")
+	if err != nil || !bySub.GatewayOnly {
+		t.Fatalf("GetServiceBySubdomain: %v %+v", err, bySub)
 	}
 	list, _ := x.ListServicesByUser(ctx, "u1")
 	if len(list) != 1 || !list[0].GatewayOnly {

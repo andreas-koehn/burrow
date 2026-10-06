@@ -100,7 +100,7 @@ func (x *DB) GetOrCreateService(ctx context.Context, userID, name, typ string) (
 	err = x.sqlDB.QueryRowContext(ctx,
 		`SELECT `+selectServiceCols+` FROM services WHERE user_id=? AND name=?`,
 		userID, name,
-	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, &s.GatewayOnly)
+	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, (*intBool)(&s.GatewayOnly))
 	if err == sql.ErrNoRows {
 		return Service{}, ErrNotFound
 	}
@@ -118,7 +118,7 @@ func (x *DB) GetServiceByID(ctx context.Context, id string) (Service, error) {
 	var s Service
 	err := x.sqlDB.QueryRowContext(ctx,
 		`SELECT `+selectServiceCols+` FROM services WHERE id=?`, id,
-	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, &s.GatewayOnly)
+	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, (*intBool)(&s.GatewayOnly))
 	if err == sql.ErrNoRows {
 		return Service{}, ErrNotFound
 	}
@@ -137,7 +137,7 @@ func (x *DB) GetServiceBySubdomain(ctx context.Context, sub string) (Service, er
 	var s Service
 	err := x.sqlDB.QueryRowContext(ctx,
 		`SELECT `+selectServiceCols+` FROM services WHERE subdomain=?`, sub,
-	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, &s.GatewayOnly)
+	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, (*intBool)(&s.GatewayOnly))
 	if err == sql.ErrNoRows {
 		return Service{}, ErrNotFound
 	}
@@ -161,7 +161,7 @@ func (x *DB) ListServicesByUser(ctx context.Context, userID string) ([]Service, 
 	var out []Service
 	for rows.Next() {
 		var s Service
-		if err := rows.Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, &s.GatewayOnly); err != nil {
+		if err := rows.Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, (*intBool)(&s.GatewayOnly)); err != nil {
 			return nil, fmt.Errorf("scan service: %w", err)
 		}
 		out = append(out, s)
@@ -184,7 +184,7 @@ func (x *DB) ListAllServices(ctx context.Context) ([]Service, error) {
 	var out []Service
 	for rows.Next() {
 		var s Service
-		if err := rows.Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, &s.GatewayOnly); err != nil {
+		if err := rows.Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, (*intBool)(&s.GatewayOnly)); err != nil {
 			return nil, fmt.Errorf("scan service: %w", err)
 		}
 		out = append(out, s)
@@ -405,10 +405,28 @@ func (x *DB) SetAccessPolicy(ctx context.Context, serviceID string, roles []stri
 	return nil
 }
 
+// intBool scans an INTEGER 0/1 column into a bool on every driver (pgx will
+// not scan an int4 into a *bool).
+type intBool bool
+
+func (b *intBool) Scan(src any) error {
+	switch v := src.(type) {
+	case int64:
+		*b = v != 0
+	case bool:
+		*b = intBool(v)
+	case nil:
+		*b = false
+	default:
+		return fmt.Errorf("intBool: unsupported type %T", src)
+	}
+	return nil
+}
+
 // SetServiceGatewayOnly marks a service as reachable only through the AI
 // gateway. ErrNotFound when no service has the id.
 func (x *DB) SetServiceGatewayOnly(ctx context.Context, id string, on bool) error {
-	res, err := x.sqlDB.ExecContext(ctx, `UPDATE services SET gateway_only=? WHERE id=?`, on, id)
+	res, err := x.sqlDB.ExecContext(ctx, `UPDATE services SET gateway_only=? WHERE id=?`, boolToInt(on), id)
 	if err != nil {
 		return fmt.Errorf("set service gateway only: %w", err)
 	}

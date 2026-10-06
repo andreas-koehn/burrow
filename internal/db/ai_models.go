@@ -37,13 +37,13 @@ const aiModelCols = `name, description, enabled, fallback_on_rate_limit, attempt
 
 func scanAIModel(row interface{ Scan(...any) error }) (AIModel, error) {
 	var m AIModel
-	err := row.Scan(&m.Name, &m.Description, &m.Enabled, &m.FallbackOnRateLimit,
+	err := row.Scan(&m.Name, &m.Description, (*intBool)(&m.Enabled), (*intBool)(&m.FallbackOnRateLimit),
 		&m.AttemptTimeoutS, &m.TotalTimeoutS, &m.CreatedAt, &m.UpdatedAt)
 	m.Targets = []AIModelTarget{}
 	return m, err
 }
 
-// insertTargets writes targets with positions renumbered 0..n-1 per dialect.
+// insertAIModelTargets writes targets with positions renumbered 0..n-1 per dialect.
 func insertAIModelTargets(ctx context.Context, tx *sql.Tx, name string, targets []AIModelTarget) error {
 	next := map[string]int{}
 	for _, t := range targets {
@@ -67,7 +67,7 @@ func (x *DB) CreateAIModel(ctx context.Context, m AIModel) error {
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO ai_models(name, description, enabled, fallback_on_rate_limit, attempt_timeout_s, total_timeout_s)
 		 VALUES(?,?,?,?,?,?)`,
-		m.Name, m.Description, m.Enabled, m.FallbackOnRateLimit, m.AttemptTimeoutS, m.TotalTimeoutS); err != nil {
+		m.Name, m.Description, boolToInt(m.Enabled), boolToInt(m.FallbackOnRateLimit), m.AttemptTimeoutS, m.TotalTimeoutS); err != nil {
 		_ = tx.Rollback()
 		if isDuplicateServiceErr(err) {
 			return ErrDuplicateModel
@@ -167,7 +167,7 @@ func (x *DB) UpdateAIModel(ctx context.Context, name string, m AIModel) error {
 	res, err := tx.ExecContext(ctx,
 		`UPDATE ai_models SET name=?, description=?, enabled=?, fallback_on_rate_limit=?, attempt_timeout_s=?, total_timeout_s=?, updated_at=CURRENT_TIMESTAMP
 		  WHERE name=?`,
-		m.Name, m.Description, m.Enabled, m.FallbackOnRateLimit, m.AttemptTimeoutS, m.TotalTimeoutS, name)
+		m.Name, m.Description, boolToInt(m.Enabled), boolToInt(m.FallbackOnRateLimit), m.AttemptTimeoutS, m.TotalTimeoutS, name)
 	if err != nil {
 		_ = tx.Rollback()
 		if isDuplicateServiceErr(err) {

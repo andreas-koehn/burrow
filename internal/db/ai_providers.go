@@ -29,7 +29,7 @@ func scanAIProviderRaw(row interface{ Scan(...any) error }) (AIProvider, string,
 	var p AIProvider
 	var headers string
 	err := row.Scan(&p.Slug, &p.Name, &p.Kind, &p.ServiceID, &p.APIFormat, &p.BaseURL, &p.CredentialSlot,
-		&p.AuthHeader, &p.AuthFormat, &headers, &p.Billing, &p.SupportsResponses, &p.MaxConcurrent, &p.CreatedAt)
+		&p.AuthHeader, &p.AuthFormat, &headers, &p.Billing, (*intBool)(&p.SupportsResponses), &p.MaxConcurrent, &p.CreatedAt)
 	if err != nil {
 		return p, headers, err
 	}
@@ -57,7 +57,7 @@ func insertAIProvider(ctx context.Context, q execer, p AIProvider) error {
 		`INSERT INTO ai_providers(slug, name, kind, service_id, api_format, base_url, credential_slot, auth_header, auth_format, extra_headers, billing, supports_responses, max_concurrent)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.Slug, p.Name, p.Kind, p.ServiceID, p.APIFormat, p.BaseURL, p.CredentialSlot,
-		orDefault(p.AuthHeader, "Authorization"), orDefault(p.AuthFormat, "Bearer {key}"), string(headers), orDefault(p.Billing, "metered"), p.SupportsResponses, p.MaxConcurrent,
+		orDefault(p.AuthHeader, "Authorization"), orDefault(p.AuthFormat, "Bearer {key}"), string(headers), orDefault(p.Billing, "metered"), boolToInt(p.SupportsResponses), p.MaxConcurrent,
 	)
 	if err != nil {
 		if isDuplicateServiceErr(err) {
@@ -157,8 +157,8 @@ func (x *DB) ModifyAIProviderUpstream(ctx context.Context, slug string, modify f
 			`UPDATE ai_providers SET base_url=?, credential_slot=?, auth_header=?, auth_format=?, extra_headers=?, billing=?, api_format=?, supports_responses=?, max_concurrent=?
 			  WHERE slug=? AND base_url=? AND credential_slot=? AND auth_header=? AND auth_format=? AND extra_headers=? AND billing=? AND api_format=? AND supports_responses=? AND max_concurrent=?`,
 			p.BaseURL, p.CredentialSlot, orDefault(p.AuthHeader, "Authorization"), orDefault(p.AuthFormat, "Bearer {key}"),
-			string(headers), orDefault(p.Billing, "metered"), p.APIFormat, p.SupportsResponses, p.MaxConcurrent,
-			slug, old.BaseURL, old.CredentialSlot, old.AuthHeader, old.AuthFormat, oldHeaders, old.Billing, old.APIFormat, old.SupportsResponses, old.MaxConcurrent)
+			string(headers), orDefault(p.Billing, "metered"), p.APIFormat, boolToInt(p.SupportsResponses), p.MaxConcurrent,
+			slug, old.BaseURL, old.CredentialSlot, old.AuthHeader, old.AuthFormat, oldHeaders, old.Billing, old.APIFormat, boolToInt(old.SupportsResponses), old.MaxConcurrent)
 		if err != nil {
 			return fmt.Errorf("modify ai provider upstream: %w", err)
 		}
