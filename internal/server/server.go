@@ -165,10 +165,6 @@ type Options struct {
 	// a leading v allowed). Empty lets every client in, and so does a client
 	// that names no version or one that cannot be compared.
 	MinClientVersion string
-	// UserEmail returns the address of a user, "" when it is not known. It is
-	// told to the client that authenticated with one of that user's tokens.
-	// nil = not told.
-	UserEmail func(ctx context.Context, userID string) string
 }
 
 // Server is the burrowd relay control server.
@@ -297,9 +293,7 @@ func yamuxConfig() *yamux.Config {
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	sid := uuid.NewString()
-	cs, err := HandleHandshakeWith(conn, s.opts.Auth, sid, HandshakeOptions{
-		MinClientVersion: s.opts.MinClientVersion, UserEmail: s.opts.UserEmail,
-	})
+	cs, err := HandleHandshakeWith(conn, s.opts.Auth, sid, HandshakeOptions{MinClientVersion: s.opts.MinClientVersion})
 	if err != nil {
 		s.log.Warn("handshake failed", "remote_addr", conn.RemoteAddr().String(), "err", err)
 		return

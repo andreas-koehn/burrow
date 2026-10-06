@@ -916,17 +916,22 @@ func TestResolveWithOptions_NeedsThePermissionToConfigure(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := serviceResolverAdapter{db: x, authDomain: "burrow.example.com"}
-	for _, o := range []server.ResolveOptions{{Slug: "my-app"}, {Access: "api_key"}, {Access: "open"}} {
+	for _, o := range []server.ResolveOptions{{Slug: "my-app"}, {Access: "api_key"}, {Access: "burrow_login"}, {Slug: "my-app", Access: "open"}} {
 		_, err := a.ResolveWithOptions(ctx, "u-limited", "web", "http", o)
 		refusal(t, err, "forbidden")
 	}
 	if got := servicesOf(t, x, "u-limited"); len(got) != 0 {
 		t.Fatalf("a refusal left a service behind: %+v", got)
 	}
-	// What that user could always do still works: a service with the defaults.
+	// What that user could always do still works: a service with the
+	// defaults, whether the default mode is named or not.
 	r, err := a.ResolveWithOptions(ctx, "u-limited", "web", "http", server.ResolveOptions{})
 	if err != nil || !r.Created || r.AccessMode != "open" {
 		t.Fatalf("%+v %v", r, err)
+	}
+	r, err = a.ResolveWithOptions(ctx, "u-limited", "named", "http", server.ResolveOptions{Access: "open"})
+	if err != nil || !r.Created || r.AccessMode != "open" || len(r.Slug) != 6 || len(r.Ignored) != 0 {
+		t.Fatalf("access open alone: %+v %v", r, err)
 	}
 }
 
@@ -938,10 +943,83 @@ func TestResolveWithOptions_DirectProviderNameStaysReserved(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := serviceResolverAdapter{db: x, authDomain: "burrow.example.com"}
+	// The text is the one Resolve has always given; the control loop puts
+	// "resolve service: " in front of it for the client.
+	const want = "resolve service: get-or-create: db: service name is used by a direct AI provider"
+	if _, _, err := a.Resolve(ctx, uid, "llm", "http"); err == nil || err.Error() != want {
+		t.Fatalf("Resolve: %v", err)
+	}
 	for _, o := range []server.ResolveOptions{{}, {Slug: "my-app", Access: "open"}} {
-		if _, err := a.ResolveWithOptions(ctx, uid, "llm", "http", o); !errors.Is(err, db.ErrServiceNameReserved) {
+		_, err := a.ResolveWithOptions(ctx, uid, "llm", "http", o)
+		if !errors.Is(err, db.ErrServiceNameReserved) || err.Error() != want {
 			t.Fatalf("options %+v: error = %v", o, err)
 		}
+	}
+}
+
+// Created is true for the one registration that made the service, also when
+// nothing is wished for, and the access mode is the one the service has.
+func TestResolveWithOptions_ConcurrentCreationWithoutOptions(t *testing.T) {
+	x, uid := optionsDB(t)
+	a := serviceResolverAdapter{db: x, authDomain: "burrow.example.com"}
+	type out struct {
+		r   server.Resolved
+		err error
+	}
+	for round := 0; round < 5; round++ {
+		name := "web" + string(rune('a'+round))
+		res := make(chan out, 8)
+		for i := 0; i < 8; i++ {
+			go func() {
+				r, err := a.ResolveWithOptions(context.Background(), uid, name, "http", server.ResolveOptions{})
+				res <- out{r, err}
+			}()
+		}
+		created, slug := 0, ""
+		for i := 0; i < 8; i++ {
+			o := <-res
+			if o.err != nil {
+				t.Fatalf("registration %d: %v", i, o.err)
+			}
+			if slug == "" {
+				slug = o.r.Slug
+			}
+			if o.r.Slug != slug || len(slug) != 6 || o.r.AccessMode != "open" {
+				t.Fatalf("registration %d: %+v, slug of the others %q", i, o.r, slug)
+			}
+			if o.r.Created {
+				created++
+			}
+		}
+		if created != 1 {
+			t.Fatalf("round %d: created %d times", round, created)
+		}
+	}
+	// A service whose mode was changed since reports that mode, wish or not.
+	if err := x.SetServiceAccessMode(context.Background(), servicesOf(t, x, uid)["weba"].ID, "api_key", "Authorization"); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range []server.ResolveOptions{{}, {Access: "open"}} {
+		r, err := a.ResolveWithOptions(context.Background(), uid, "weba", "http", o)
+		if err != nil || r.Created || r.AccessMode != "api_key" {
+			t.Fatalf("options %+v: %+v %v", o, r, err)
+		}
+	}
+}
+
+// A service that exists without a slug (made in the dashboard for a client
+// that connects later) gets one, and keeps its mode.
+func TestResolveWithOptions_ExistingServiceWithoutASlug(t *testing.T) {
+	x, uid := optionsDB(t)
+	ctx := context.Background()
+	if err := x.CreateService(ctx, db.Service{ID: "pre-1", UserID: uid, Name: "web", Type: "http", AccessMode: "burrow_login"}); err != nil {
+		t.Fatal(err)
+	}
+	a := serviceResolverAdapter{db: x, authDomain: "burrow.example.com"}
+	r, err := a.ResolveWithOptions(ctx, uid, "web", "http", server.ResolveOptions{Slug: "wanted"})
+	if err != nil || r.Created || r.ServiceID != "pre-1" || len(r.Slug) != 6 || r.AccessMode != "burrow_login" ||
+		len(r.Ignored) != 1 || r.Ignored[0] != "slug" {
+		t.Fatalf("%+v %v", r, err)
 	}
 }
 
@@ -1087,7 +1165,7 @@ func TestCreateOptions_ClientToDatabase(t *testing.T) {
 		t.Fatalf("row: %+v", row)
 	}
 	if reg.URL != "https://burrow.example.com/svc/my-app/" || reg.AccessMode != "api_key" || !reg.Created ||
-		reg.DashboardURL != "https://burrow.example.com/services/"+row.ID || reg.Ignored.Any() || reg.Unacknowledged.Any() {
+		reg.DashboardURL != "https://burrow.example.com/services/"+row.ID || reg.Ignored.Any() || reg.SlugUnacknowledged {
 		t.Fatalf("registration: %+v", reg)
 	}
 	// Creating a service with api-key access makes no key: none exists that

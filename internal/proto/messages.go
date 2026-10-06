@@ -49,10 +49,8 @@ type AuthResponse struct {
 	OK        bool   `json:"ok"`
 	SessionID string `json:"session_id,omitempty"`
 	Error     string `json:"error,omitempty"`
-	// RelayVersion and UserEmail (the token's owner) are sent on success by a
-	// relay that knows them. Optional.
+	// RelayVersion is sent on success. Optional: an older relay sends none.
 	RelayVersion string `json:"relay_version,omitempty"`
-	UserEmail    string `json:"user_email,omitempty"`
 	// Code names the reason of a refusal (see the Code constants). Optional:
 	// an older relay sends Error alone.
 	Code string `json:"code,omitempty"`
@@ -128,7 +126,6 @@ type Error struct {
 const (
 	CodeInvalidToken      = "invalid_token"
 	CodeClientTooOld      = "client_too_old"
-	CodeHTTPNotEnabled    = "http_not_enabled"
 	CodeSlugInvalid       = "slug_invalid"
 	CodeSlugTaken         = "slug_taken"
 	CodeAccessInvalid     = "access_invalid"

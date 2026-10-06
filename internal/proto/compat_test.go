@@ -100,7 +100,7 @@ func TestOlderPeerReadsNewMessages(t *testing.T) {
 		t.Errorf("auth request: %+v", ar)
 	}
 	var resp oldAuthResponse
-	decode(AuthResponse{OK: true, SessionID: "s", RelayVersion: "0.7.0", UserEmail: "a@b.example"}, &resp)
+	decode(AuthResponse{OK: true, SessionID: "s", RelayVersion: "0.7.0"}, &resp)
 	if resp != (oldAuthResponse{OK: true, SessionID: "s"}) {
 		t.Errorf("auth response: %+v", resp)
 	}

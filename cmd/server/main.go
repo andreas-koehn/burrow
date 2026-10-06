@@ -476,16 +476,8 @@ func newRootCmd() *cobra.Command {
 				// v0.3.0: HTTP tunnel service identity + subdomain resolver.
 				Services:   serviceResolverAdapter{db: db.Wrap(database), authDomain: proxyAuthDomain},
 				AuthDomain: proxyAuthDomain,
-				// The control handshake refuses clients older than the
-				// minimum and tells a client whose token it is.
+				// The control handshake refuses clients older than the minimum.
 				MinClientVersion: cfg.MinClientVersion,
-				UserEmail: func(ctx context.Context, userID string) string {
-					u, err := st.GetUserByID(ctx, userID)
-					if err != nil {
-						return ""
-					}
-					return u.Email
-				},
 				// v0.6.0: when ACME is enabled the control channel serves the
 				// ACME-managed certificate instead of TLSCert/TLSKey files.
 				// acmeGetCert returns nil when acmeMgr is nil, so the server

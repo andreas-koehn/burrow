@@ -117,7 +117,8 @@ func (a serviceResolverAdapter) findService(ctx context.Context, userID, name st
 			continue
 		}
 		if r.Type == "direct" {
-			return db.Service{}, false, db.ErrServiceNameReserved
+			// The text Resolve has always given for such a name.
+			return db.Service{}, false, fmt.Errorf("resolve service: get-or-create: %w", db.ErrServiceNameReserved)
 		}
 		return r, true, nil
 	}
@@ -128,14 +129,14 @@ func (a serviceResolverAdapter) findService(ctx context.Context, userID, name st
 // checked whatever the client checked, and they are applied only to a service
 // this call creates:
 //
-//   - the service exists: it is returned as it is, through Resolve; Ignored
-//     names the wishes that differ from what it has.
-//   - it does not exist and nothing is wished for: Resolve creates it as it
-//     always has (generated slug, mode open).
-//   - it does not exist and something is wished for: the owner must be
-//     allowed to configure services, as for the same change in the dashboard;
-//     the row is then inserted with slug and mode at once, so that a refused
-//     slug leaves nothing behind.
+//   - the service exists: it is returned as it is, with the access mode its
+//     row has; Ignored names the wishes that differ from what it has. A row
+//     without a slug gets a generated one, as in Resolve.
+//   - it does not exist: the row is inserted with slug and mode at once, so
+//     that a refused slug leaves nothing behind and exactly one of several
+//     registrations at the same moment is the one that created it. Choosing
+//     a slug or a mode other than open is configuring a service: the owner
+//     must be allowed to, as for the same change in the dashboard.
 func (a serviceResolverAdapter) ResolveWithOptions(ctx context.Context, userID, name, typ string, o server.ResolveOptions) (server.Resolved, error) {
 	if o.Slug != "" && !auth.ValidSlug(o.Slug) {
 		return server.Resolved{}, refuse(proto.CodeSlugInvalid, auth.SlugRule)
@@ -153,25 +154,24 @@ func (a serviceResolverAdapter) ResolveWithOptions(ctx context.Context, userID, 
 		if err != nil {
 			return server.Resolved{}, err
 		}
-		if found || (o.Slug == "" && o.Access == "") {
-			id, slug, err := a.Resolve(ctx, userID, name, typ)
-			if err != nil {
-				return server.Resolved{}, err
+		if found {
+			slug := svc.Subdomain
+			if slug == "" {
+				if _, slug, err = a.Resolve(ctx, userID, name, typ); err != nil {
+					return server.Resolved{}, err
+				}
 			}
-			res := server.Resolved{ServiceID: id, Slug: slug, AccessMode: "open", Created: !found}
-			if found {
-				res.AccessMode = svc.AccessMode
-				if o.Access != "" && o.Access != svc.AccessMode {
-					res.Ignored = append(res.Ignored, "access")
-				}
-				if o.Slug != "" && o.Slug != slug {
-					res.Ignored = append(res.Ignored, "slug")
-				}
+			res := server.Resolved{ServiceID: svc.ID, Slug: slug, AccessMode: svc.AccessMode}
+			if o.Access != "" && o.Access != svc.AccessMode {
+				res.Ignored = append(res.Ignored, "access")
+			}
+			if o.Slug != "" && o.Slug != slug {
+				res.Ignored = append(res.Ignored, "slug")
 			}
 			return res, nil
 		}
 
-		res, raced, err := a.createWithOptions(ctx, userID, name, typ, o)
+		res, raced, err := a.create(ctx, userID, name, typ, o)
 		if err != nil {
 			return server.Resolved{}, err
 		}
@@ -182,19 +182,24 @@ func (a serviceResolverAdapter) ResolveWithOptions(ctx context.Context, userID, 
 	return server.Resolved{}, fmt.Errorf("resolve service: %q was created and removed while registering", name)
 }
 
-// createWithOptions inserts the service with the wished slug and mode. raced
-// is true when the name was taken by another registration meanwhile.
-func (a serviceResolverAdapter) createWithOptions(ctx context.Context, userID, name, typ string, o server.ResolveOptions) (res server.Resolved, raced bool, err error) {
-	u, err := a.db.GetUserByID(ctx, userID)
-	if err != nil {
-		return res, false, fmt.Errorf("resolve service: owner: %w", err)
-	}
-	if !authz.Can(u.Role, authz.PermServicesConfigureOwn) && !authz.Can(u.Role, authz.PermServicesConfigureAny) {
-		return res, false, refuse(proto.CodeForbidden, "your role may not choose a slug or an access mode; leave them out and ask an administrator to set them")
-	}
+// create inserts the service with the wished slug and mode, or with a
+// generated slug and the mode open. raced is true when the name was taken by
+// another registration meanwhile.
+func (a serviceResolverAdapter) create(ctx context.Context, userID, name, typ string, o server.ResolveOptions) (res server.Resolved, raced bool, err error) {
 	mode := o.Access
 	if mode == "" {
 		mode = "open"
+	}
+	// A generated slug and the mode open are what every token's owner has
+	// always got; anything else needs the permission to configure.
+	if o.Slug != "" || mode != "open" {
+		u, err := a.db.GetUserByID(ctx, userID)
+		if err != nil {
+			return res, false, fmt.Errorf("resolve service: owner: %w", err)
+		}
+		if !authz.Can(u.Role, authz.PermServicesConfigureOwn) && !authz.Can(u.Role, authz.PermServicesConfigureAny) {
+			return res, false, refuse(proto.CodeForbidden, "your role may not choose a slug or an access mode; leave them out and ask an administrator to set them")
+		}
 	}
 	if mode == "burrow_login" && a.authDomain == "" {
 		return res, false, refuse(proto.CodeAccessInvalid, "burrow_login requires a configured auth_domain")

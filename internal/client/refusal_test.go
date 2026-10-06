@@ -185,7 +185,9 @@ const (
 func oldRegister(proto.TunnelRegister) string { return oldRegisteredOK }
 
 func TestClient_SendsSlugAndAccessOnlyWhenAsked(t *testing.T) {
-	r := startRawRelay(t, oldAuthOK, oldRegister)
+	r := startRawRelay(t, oldAuthOK, func(proto.TunnelRegister) string {
+		return `{"ok":true,"tunnel_id":"t1","url":"https://burrow.example.com/svc/abc234/","access_mode":"burrow_login"}`
+	})
 	plain := TunnelSpec{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000"}
 	wished := TunnelSpec{Name: "app", Type: "http", LocalAddr: "127.0.0.1:3001", Slug: "my-app", Access: "burrow_login"}
 	c := New(r.options(plain, wished))
@@ -254,26 +256,28 @@ func TestClient_ReportsWhatTheRelaySaysAboutTheService(t *testing.T) {
 		DashboardURL: "https://burrow.example.com/services/svc-2", Ignored: OptionSet{Slug: true, Access: true}}); obs.regs[1] != want {
 		t.Errorf("existing service:\n got %+v\nwant %+v", obs.regs[1], want)
 	}
-	if len(obs.sessions) != 1 || obs.sessions[0] != (SessionInfo{RelayVersion: "0.8.0", UserEmail: "owner@example.com"}) {
+	if len(obs.sessions) != 1 || obs.sessions[0] != (SessionInfo{RelayVersion: "0.8.0"}) {
 		t.Errorf("session info: %+v", obs.sessions)
 	}
 }
 
-// An older relay ignores slug and access and does not say so. The client
-// works, and it knows that nothing was said about its wishes.
+// An older relay ignores a wished slug and does not say so. The client works,
+// and it knows that nothing was said about the slug.
 func TestClient_OlderRelay(t *testing.T) {
 	r := startRawRelay(t, oldAuthOK, oldRegister)
 	obs := &sessionObserver{}
 	o := r.options(
-		TunnelSpec{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000", Slug: "my-app", Access: "api_key"},
+		TunnelSpec{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000", Slug: "my-app"},
 		TunnelSpec{Name: "plain", Type: "http", LocalAddr: "127.0.0.1:3001"},
-		TunnelSpec{Name: "half", Type: "http", LocalAddr: "127.0.0.1:3002", Access: "open"},
+		// The relay's default is open: a wish for it needs no answer.
+		TunnelSpec{Name: "open", Type: "http", LocalAddr: "127.0.0.1:3002", Access: "open"},
+		TunnelSpec{Name: "both", Type: "http", LocalAddr: "127.0.0.1:3003", Slug: "pub", Access: "open"},
 	)
 	o.Observer = obs
 	c := New(o)
 	runUntilDone(t, c)
-	if !waitTrue(func() bool { obs.mu.Lock(); defer obs.mu.Unlock(); return len(obs.regs) == 3 }, 3*time.Second) {
-		t.Fatal("three registrations were expected")
+	if !waitTrue(func() bool { obs.mu.Lock(); defer obs.mu.Unlock(); return len(obs.regs) == 4 }, 3*time.Second) {
+		t.Fatal("four registrations were expected")
 	}
 	if !c.Registered() {
 		t.Fatal("the client does not count as registered")
@@ -281,18 +285,60 @@ func TestClient_OlderRelay(t *testing.T) {
 	obs.mu.Lock()
 	defer obs.mu.Unlock()
 	if want := (RegisteredTunnel{TunnelID: "t1", Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000",
-		URL: "https://burrow.example.com/svc/abc234/", Unacknowledged: OptionSet{Slug: true, Access: true}}); obs.regs[0] != want {
-		t.Errorf("with wishes:\n got %+v\nwant %+v", obs.regs[0], want)
+		URL: "https://burrow.example.com/svc/abc234/", SlugUnacknowledged: true}); obs.regs[0] != want {
+		t.Errorf("with a slug:\n got %+v\nwant %+v", obs.regs[0], want)
 	}
-	if obs.regs[1].Unacknowledged.Any() || obs.regs[1].AccessMode != "" {
+	if obs.regs[1].SlugUnacknowledged || obs.regs[1].AccessMode != "" {
 		t.Errorf("without wishes: %+v", obs.regs[1])
 	}
-	if obs.regs[2].Unacknowledged != (OptionSet{Access: true}) {
-		t.Errorf("with one wish: %+v", obs.regs[2])
+	if obs.regs[2].SlugUnacknowledged {
+		t.Errorf("access open alone: %+v", obs.regs[2])
+	}
+	if !obs.regs[3].SlugUnacknowledged {
+		t.Errorf("slug and access open: %+v", obs.regs[3])
 	}
 	// An older relay says nothing of itself.
 	if len(obs.sessions) != 1 || obs.sessions[0] != (SessionInfo{}) {
 		t.Errorf("session info: %+v", obs.sessions)
+	}
+}
+
+// An older relay ignores a wished access mode and makes the service open. A
+// client that asked for login or an API key must not serve it like that: Run
+// ends, with or without StopOnRefusal, and the tunnel is never reported.
+func TestClient_OlderRelayCannotRestrictAccess(t *testing.T) {
+	for _, spec := range []TunnelSpec{
+		{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000", Access: "burrow_login"},
+		{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000", Access: "api_key"},
+		{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000", Slug: "my-app", Access: "burrow_login"},
+	} {
+		for _, stop := range []bool{true, false} {
+			r := startRawRelay(t, oldAuthOK, oldRegister)
+			obs := &sessionObserver{}
+			o := r.options(TunnelSpec{Name: "first", Type: "http", LocalAddr: "127.0.0.1:2999"}, spec)
+			o.Observer, o.StopOnRefusal = obs, stop
+			err, ended := runFor(t, o, 3*time.Second)
+			if !ended {
+				t.Fatalf("%+v: the client kept the tunnel", spec)
+			}
+			var ae *AccessNotAppliedError
+			if !errors.As(err, &ae) {
+				t.Fatalf("%+v: Run returned %v", spec, err)
+			}
+			if *ae != (AccessNotAppliedError{Name: "web", Access: spec.Access, URL: "https://burrow.example.com/svc/abc234/"}) {
+				t.Fatalf("%+v: error %+v", spec, *ae)
+			}
+			if auths, _ := r.sent(); len(auths) != 1 {
+				t.Fatalf("%d connection attempts, want 1", len(auths))
+			}
+			obs.mu.Lock()
+			for _, reg := range obs.regs {
+				if reg.Name == "web" {
+					t.Fatalf("the tunnel was reported as registered: %+v", reg)
+				}
+			}
+			obs.mu.Unlock()
+		}
 	}
 }
 
@@ -344,10 +390,6 @@ func TestRun_StopsOnARefusalThatWillNotChange(t *testing.T) {
 			proto.CodeAccessInvalid, "burrow_login requires a configured auth_domain", "register failed: burrow_login requires a configured auth_domain"},
 		{"forbidden", mk(registerRefusal(`{"ok":false,"error":"your role may not choose a slug","code":"forbidden"}`)),
 			proto.CodeForbidden, "your role may not choose a slug", "register failed: your role may not choose a slug"},
-		{"http not enabled", mk(registerRefusal(`{"ok":false,"error":"http tunnels not configured","code":"http_not_enabled"}`)),
-			proto.CodeHTTPNotEnabled, "http tunnels not configured", "register failed: http tunnels not configured"},
-		{"http not enabled, older relay", mk(registerRefusal(`{"ok":false,"error":"http tunnels not configured"}`)),
-			proto.CodeHTTPNotEnabled, "http tunnels not configured", "register failed: http tunnels not configured"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -402,6 +444,7 @@ func TestRun_WithoutStopOnRefusalKeepsReconnecting(t *testing.T) {
 func TestRun_OtherRefusalsAreTriedAgain(t *testing.T) {
 	for _, payload := range []string{
 		`{"ok":false,"error":"port 9000 in use"}`,
+		`{"ok":false,"error":"http tunnels not configured"}`,
 		`{"ok":false,"error":"port 9000 in use","code":"port_unavailable"}`,
 		`{"ok":false,"error":"resolve service: db down","code":"internal"}`,
 		`{"ok":false,"error":"something new","code":"a_code_of_the_future"}`,

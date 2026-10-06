@@ -95,7 +95,7 @@ func TestRegisterHTTP_RefusalsCarryACodeNextToTheText(t *testing.T) {
 func TestRegister_ExistingRefusalsKeepTheirTextAndGainACode(t *testing.T) {
 	_, _, _, cli := newTestServerWithHTTP(t, nil, "burrow.example.com")
 	rr := doRegister(t, cli, proto.TunnelRegister{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000"})
-	if rr.OK || rr.Error != "http tunnels not configured" || rr.Code != proto.CodeHTTPNotEnabled {
+	if rr.OK || rr.Error != "http tunnels not configured" || rr.Code != proto.CodeInternal {
 		t.Fatalf("http without a resolver: %+v", rr)
 	}
 	rr = doRegister(t, cli, proto.TunnelRegister{Name: "web", Type: "udp", LocalAddr: "127.0.0.1:3000"})
@@ -160,32 +160,20 @@ func handshake(t *testing.T, auth TokenAuthenticator, o HandshakeOptions, req pr
 	return ar, <-done
 }
 
-func TestHandshake_TellsTheRelayVersionAndTheOwner(t *testing.T) {
-	asked := ""
-	o := HandshakeOptions{UserEmail: func(_ context.Context, userID string) string { asked = userID; return "owner@example.com" }}
-	ar, cs := handshake(t, fakeAuth{uid: "u1"}, o, proto.AuthRequest{ProtocolVersion: 1, Token: "bur_test_0000"})
-	if !ar.OK || ar.SessionID != "sid-1" || ar.RelayVersion != version.Version || ar.UserEmail != "owner@example.com" || ar.Code != "" {
-		t.Fatalf("answer: ok %v session %q relay %q email %q code %q", ar.OK, ar.SessionID, ar.RelayVersion, ar.UserEmail, ar.Code)
-	}
-	if cs == nil || asked != "u1" {
-		t.Fatalf("session %v, email asked for %q", cs != nil, asked)
-	}
-	// Without a lookup there is no address, and the version is still sent.
-	ar, _ = handshake(t, fakeAuth{uid: "u1"}, HandshakeOptions{}, proto.AuthRequest{ProtocolVersion: 1, Token: "bur_test_0000"})
-	if !ar.OK || ar.UserEmail != "" || ar.RelayVersion != version.Version {
-		t.Fatalf("answer: %+v", ar.UserEmail)
+func TestHandshake_TellsTheRelayVersion(t *testing.T) {
+	ar, cs := handshake(t, fakeAuth{uid: "u1"}, HandshakeOptions{}, proto.AuthRequest{ProtocolVersion: 1, Token: "bur_test_0000"})
+	if !ar.OK || ar.SessionID != "sid-1" || ar.RelayVersion != version.Version || ar.Code != "" || cs == nil {
+		t.Fatalf("answer: ok %v session %q relay %q code %q", ar.OK, ar.SessionID, ar.RelayVersion, ar.Code)
 	}
 }
 
 func TestHandshake_BadTokenKeepsItsTextAndGainsACode(t *testing.T) {
-	called := false
-	o := HandshakeOptions{UserEmail: func(context.Context, string) string { called = true; return "x" }}
-	ar, cs := handshake(t, fakeAuth{err: errors.New("nope")}, o, proto.AuthRequest{ProtocolVersion: 1, Token: "bur_test_bad0"})
+	ar, cs := handshake(t, fakeAuth{err: errors.New("nope")}, HandshakeOptions{}, proto.AuthRequest{ProtocolVersion: 1, Token: "bur_test_bad0"})
 	if ar.OK || ar.Error != "invalid token" || ar.Code != proto.CodeInvalidToken || cs != nil {
 		t.Fatalf("answer: ok %v error %q code %q", ar.OK, ar.Error, ar.Code)
 	}
-	if ar.RelayVersion != "" || ar.UserEmail != "" || called {
-		t.Fatal("a refused token learns nothing about the relay or its users")
+	if ar.RelayVersion != "" {
+		t.Fatal("a refused token learns nothing about the relay")
 	}
 }
 

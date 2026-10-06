@@ -34,8 +34,26 @@ const (
 	msgClientTooOld     = "This relay needs burrow %s or newer. Run: burrow update"
 	// When the relay's text names no minimum.
 	msgClientTooOldNoMin = "This relay needs a newer burrow. Run: burrow update"
-	msgHTTPNotEnabled    = "HTTP services are not enabled on this relay. Its administrator enables them with the relay setting auth_domain."
 )
+
+// accessNotApplied is what is printed when an older relay took a registration
+// and ignored --access (client.AccessNotAppliedError). What the error holds
+// partly comes from the relay and from burrow.yaml.
+func accessNotApplied(e *client.AccessNotAppliedError) string {
+	access := "a restricted mode"
+	switch e.Access {
+	case "api_key", "burrow_login":
+		access = client.AccessName(e.Access)
+	}
+	where := ""
+	if u := dashboardURL(e.URL); u != "" {
+		where = " (" + u + ")"
+	}
+	return "This relay is older and cannot restrict access from the client: --access " + access +
+		" was not applied to service " + plainText(e.Name) + ". Nothing is served from this machine.\n" +
+		"The service exists on the relay" + where + " and is open to anyone with the URL unless its access mode was set in the dashboard. " +
+		"Set the access mode there or delete the service, or run again without --access."
+}
 
 // maxRelayText is how much of a text from the relay is printed.
 const maxRelayText = 300
@@ -82,8 +100,6 @@ func refusal(re *client.RefusedError) (msg string, code int, ok bool) {
 		return "The relay refused the access mode: " + plainText(re.Message), exitGeneral, true
 	case proto.CodeForbidden:
 		return "The relay refused: " + plainText(re.Message), exitGeneral, true
-	case proto.CodeHTTPNotEnabled:
-		return msgHTTPNotEnabled, exitGeneral, true
 	}
 	return "", 0, false
 }
@@ -164,6 +180,11 @@ func report(w io.Writer, err error) int {
 	var te *client.TargetError
 	var me *client.RelayMismatchError
 	var re *client.RefusedError
+	var na *client.AccessNotAppliedError
+	if errors.As(err, &na) && !errors.As(err, &ee) {
+		fmt.Fprintln(w, accessNotApplied(na))
+		return exitCode(err)
+	}
 	if errors.As(err, &re) && !errors.As(err, &ee) {
 		if msg, _, ok := refusal(re); ok {
 			fmt.Fprintln(w, msg)

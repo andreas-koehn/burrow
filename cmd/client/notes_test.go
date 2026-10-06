@@ -70,15 +70,11 @@ func TestRegistrationNotes(t *testing.T) {
 		}
 	}
 
-	older := client.RegisteredTunnel{Name: "my-app", Type: "http", Unacknowledged: client.OptionSet{Slug: true, Access: true}}
-	if got := unacknowledgedNote(older, true); got != "This relay does not support --slug and --access yet, so they were not applied. Change the service in the dashboard." {
+	older := client.RegisteredTunnel{Name: "my-app", Type: "http", SlugUnacknowledged: true}
+	if got := slugUnacknowledgedNote(older, true); got != "This relay does not support --slug yet, so it was not applied. Change the slug in the dashboard." {
 		t.Errorf("older relay: %s", got)
 	}
-	older.Unacknowledged = client.OptionSet{Access: true}
-	if got := unacknowledgedNote(older, true); got != "This relay does not support --access yet, so it was not applied. Change the service in the dashboard." {
-		t.Errorf("older relay, one flag: %s", got)
-	}
-	if got := unacknowledgedNote(older, false); !strings.HasPrefix(got, "Service my-app: this relay does not support --access yet") {
+	if got := slugUnacknowledgedNote(older, false); got != "Service my-app: this relay does not support --slug yet, so it was not applied. Change the slug in the dashboard." {
 		t.Errorf("older relay, several services: %s", got)
 	}
 }
@@ -142,13 +138,13 @@ func TestNotes_OlderRelayIsSaidOnce(t *testing.T) {
 	errOut := useStderr(t)
 	fgRun(t, false, globalFlags{logLevel: "info", logFormat: "json"}, oneTunnel, func(ob client.Observer) {
 		older := client.RegisteredTunnel{TunnelID: "t1", Name: "my-app", Type: "http", LocalAddr: "127.0.0.1:3000",
-			URL: "https://relay.example.com/svc/abc234/", Unacknowledged: client.OptionSet{Slug: true, Access: true}}
+			URL: "https://relay.example.com/svc/abc234/", SlugUnacknowledged: true}
 		ob.State(client.StateConnected, "", 0)
 		ob.Registered(older)
 		ob.Registered(older)
 	})
 	out := errOut.String()
-	if n := strings.Count(out, "This relay does not support --slug and --access yet, so they were not applied."); n != 1 {
+	if n := strings.Count(out, "This relay does not support --slug yet, so it was not applied."); n != 1 {
 		t.Fatalf("the note was printed %d times:\n%s", n, out)
 	}
 	if !strings.HasPrefix(strings.TrimSpace(out), "{") {
@@ -172,7 +168,7 @@ func TestNotes_APIKeyServiceNeedsAKey(t *testing.T) {
 		ob.Registered(created)
 	})
 	out := errOut.String()
-	if n := strings.Count(out, "This service was created with api-key access and has no API key yet. Create one in the dashboard: https://relay.example.com/services/svc-1"); n != 1 {
+	if n := strings.Count(out, "This service was created with api-key access and has no API key yet: every request is refused until one exists. Create one in the dashboard: https://relay.example.com/services/svc-1"); n != 1 {
 		t.Fatalf("said %d times:\n%s", n, out)
 	}
 	if strings.Contains(out, "buk_") {
@@ -356,7 +352,7 @@ func TestStatusView_AccessAndNotes(t *testing.T) {
 		ob := o.Observer
 		for i := 0; i < 2; i++ { // a reconnect repeats everything
 			ob.State(client.StateConnected, "", 0)
-			ob.(client.SessionObserver).Session(client.SessionInfo{RelayVersion: "0.8.0", UserEmail: "owner@example.com"})
+			ob.(client.SessionObserver).Session(client.SessionInfo{RelayVersion: "0.8.0"})
 			ob.Registered(existing)
 			ob.Registered(client.RegisteredTunnel{TunnelID: "t2", Name: "docs", Type: "http", LocalAddr: "127.0.0.1:3001",
 				URL: "https://relay.example.com/svc/docs/", AccessMode: "open", Created: true})
@@ -396,10 +392,9 @@ func TestStatusView_AccessAndNotes(t *testing.T) {
 	if !strings.Contains(lines[0], "v0.7.0") || strings.Contains(lines[0], "0.8.0") {
 		t.Errorf("header: %q", lines[0])
 	}
-	// The address of the token's owner is not shown, and nothing of this
-	// goes to stderr while the view is on.
-	if strings.Contains(all, "owner@example.com") || errOut.String() != "" {
-		t.Errorf("owner shown or stderr used: %q", errOut.String())
+	// Nothing of this goes to stderr while the view is on.
+	if errOut.String() != "" {
+		t.Errorf("stderr used: %q", errOut.String())
 	}
 }
 

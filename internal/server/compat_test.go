@@ -114,7 +114,6 @@ func newRelay(t *testing.T, minClient string) (*Server, *x509.CertPool) {
 		Logger:   slog.New(slog.DiscardHandler),
 		Services: &compatResolver{}, AuthDomain: "burrow.example.com",
 		MinClientVersion: minClient,
-		UserEmail:        func(context.Context, string) string { return "owner@example.com" },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -240,15 +239,15 @@ func TestCompat_NewClientNewRelay(t *testing.T) {
 
 	app := regs["app"]
 	if app.URL != "https://burrow.example.com/svc/my-app/" || app.AccessMode != "burrow_login" || !app.Created ||
-		app.DashboardURL != "https://burrow.example.com/services/svc-app" || app.Ignored.Any() || app.Unacknowledged.Any() {
+		app.DashboardURL != "https://burrow.example.com/services/svc-app" || app.Ignored.Any() || app.SlugUnacknowledged {
 		t.Errorf("service created with slug and access: %+v", app)
 	}
 	plain := regs["plain"]
-	if plain.URL != "https://burrow.example.com/svc/gen234/" || plain.AccessMode != "open" || !plain.Created || plain.Unacknowledged.Any() {
+	if plain.URL != "https://burrow.example.com/svc/gen234/" || plain.AccessMode != "open" || !plain.Created || plain.SlugUnacknowledged {
 		t.Errorf("service created without wishes: %+v", plain)
 	}
 	obs.mu.Lock()
-	if len(obs.sessions) != 1 || obs.sessions[0] != (client.SessionInfo{RelayVersion: version.Version, UserEmail: "owner@example.com"}) {
+	if len(obs.sessions) != 1 || obs.sessions[0] != (client.SessionInfo{RelayVersion: version.Version}) {
 		t.Errorf("session info: %+v", obs.sessions)
 	}
 	obs.mu.Unlock()
@@ -647,7 +646,7 @@ func TestCompat_NewClientOldRelay(t *testing.T) {
 	runNewClient(t, r.addr, r.pool, obs, client.TunnelSpec{Name: "web", Type: "http", LocalAddr: local})
 	got := obs.wait(t, 1)["web"]
 	if got.TunnelID != "old-tunnel" || got.URL != "https://old.example.com/svc/k7p2qx/" || got.AccessMode != "" ||
-		got.Created || got.DashboardURL != "" || got.Ignored.Any() || got.Unacknowledged.Any() {
+		got.Created || got.DashboardURL != "" || got.Ignored.Any() || got.SlugUnacknowledged {
 		t.Fatalf("registration: %+v", got)
 	}
 	r.throughTunnel(t)
@@ -665,17 +664,84 @@ func TestCompat_NewClientOldRelay(t *testing.T) {
 	}
 }
 
-// `burrow http 3000 --slug my-app --access login` against a relay of before
-// the change: the tunnel works, and the client knows the relay said nothing
-// about the two wishes, so that it can tell the person.
-func TestCompat_NewClientOldRelay_SlugAndAccessAreNotSilentlyLost(t *testing.T) {
-	r := startOldRelay(t)
-	local := echoOnce(t)
-	obs := &regObserver{}
-	runNewClient(t, r.addr, r.pool, obs, client.TunnelSpec{Name: "web", Type: "http", LocalAddr: local, Slug: "my-app", Access: "burrow_login"})
-	got := obs.wait(t, 1)["web"]
-	if got.URL != "https://old.example.com/svc/k7p2qx/" || got.Unacknowledged != (client.OptionSet{Slug: true, Access: true}) || got.Ignored.Any() {
-		t.Fatalf("registration: %+v", got)
+// `burrow http 3000 --access login` (or api-key) against a relay of before the
+// change. That relay ignores the wish and serves the service to everyone, so
+// the client must not keep the tunnel: it ends at once, no visitor is served,
+// and the error names the service and its address.
+func TestCompat_NewClientOldRelay_AccessThatWasNotAppliedEndsTheClient(t *testing.T) {
+	for _, spec := range []client.TunnelSpec{
+		{Name: "web", Type: "http", Access: "burrow_login"},
+		{Name: "web", Type: "http", Access: "api_key"},
+		{Name: "web", Type: "http", Slug: "my-app", Access: "burrow_login"},
+	} {
+		r := startOldRelay(t)
+		spec.LocalAddr = echoOnce(t)
+		obs := &regObserver{}
+		c := client.New(client.Options{
+			Server: r.addr, Token: "bur_test_0000", RootCAs: r.pool, ServerName: "localhost",
+			Tunnels: []client.TunnelSpec{spec}, Observer: obs, Logger: slog.New(slog.DiscardHandler), StopOnRefusal: true,
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := c.Run(ctx)
+		cancel()
+		var ae *client.AccessNotAppliedError
+		if !errors.As(err, &ae) {
+			t.Fatalf("%+v: Run returned %v", spec, err)
+		}
+		if *ae != (client.AccessNotAppliedError{Name: "web", Access: spec.Access, URL: "https://old.example.com/svc/k7p2qx/"}) {
+			t.Fatalf("%+v: %+v", spec, *ae)
+		}
+		obs.mu.Lock()
+		if len(obs.regs) != 0 {
+			t.Fatalf("%+v: the tunnel was reported: %+v", spec, obs.regs)
+		}
+		obs.mu.Unlock()
+		// The client has hung up. Until the relay has noticed, a visit it
+		// starts must fail; then it has no session left to send one to.
+		gone := false
+		for deadline := time.Now().Add(3 * time.Second); !gone && time.Now().Before(deadline); {
+			res := make(chan error, 1)
+			select {
+			case r.visit <- res:
+				if err := <-res; err == nil {
+					t.Fatalf("%+v: a visitor was served", spec)
+				}
+			case <-time.After(100 * time.Millisecond):
+				gone = true
+			}
+		}
+		if !gone {
+			t.Fatalf("%+v: the relay still has a session", spec)
+		}
+		r.mu.Lock()
+		n := len(r.registers)
+		r.mu.Unlock()
+		if n != 1 {
+			t.Fatalf("%+v: %d registrations, want one and no retry", spec, n)
+		}
 	}
-	r.throughTunnel(t)
+}
+
+// --slug alone, or with --access open, against a relay of before the change:
+// the tunnel works; the client knows the relay said nothing about the slug, so
+// that it can warn. The relay's default is open, so that wish needs no word.
+func TestCompat_NewClientOldRelay_SlugIsNotSilentlyLost(t *testing.T) {
+	for _, tc := range []struct {
+		spec client.TunnelSpec
+		slug bool
+	}{
+		{client.TunnelSpec{Name: "web", Type: "http", Slug: "my-app"}, true},
+		{client.TunnelSpec{Name: "web", Type: "http", Slug: "my-app", Access: "open"}, true},
+		{client.TunnelSpec{Name: "web", Type: "http", Access: "open"}, false},
+	} {
+		r := startOldRelay(t)
+		tc.spec.LocalAddr = echoOnce(t)
+		obs := &regObserver{}
+		runNewClient(t, r.addr, r.pool, obs, tc.spec)
+		got := obs.wait(t, 1)["web"]
+		if got.URL != "https://old.example.com/svc/k7p2qx/" || got.SlugUnacknowledged != tc.slug || got.Ignored.Any() {
+			t.Fatalf("%+v: registration %+v", tc.spec, got)
+		}
+		r.throughTunnel(t)
+	}
 }

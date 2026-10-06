@@ -176,11 +176,11 @@ func TestReport_Refusals(t *testing.T) {
 			"The relay refused the access mode: burrow_login requires a configured auth_domain\n", 1},
 		{"forbidden", &client.RefusedError{Code: "forbidden", Message: "your role may not choose a slug or an access mode"},
 			"The relay refused: your role may not choose a slug or an access mode\n", 1},
-		{"http not enabled", &client.RefusedError{Code: "http_not_enabled", Message: "http tunnels not configured"},
-			"HTTP services are not enabled on this relay. Its administrator enables them with the relay setting auth_domain.\n", 1},
 		// Anything else is printed as it always was.
 		{"another refusal", &client.RefusedError{Code: "port_unavailable", Message: "port 9000 in use"}, "error: register failed: port 9000 in use\n", 1},
 		{"no code", &client.RefusedError{Message: "nope", Auth: true}, "error: auth failed: nope\n", 1},
+		// The relay never sends this one; its text stays an ordinary error.
+		{"http tunnels not configured", &client.RefusedError{Message: "http tunnels not configured"}, "error: register failed: http tunnels not configured\n", 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -206,5 +206,37 @@ func TestReport_RefusalTextIsMadeSafe(t *testing.T) {
 	}
 	if len(out) > 400 {
 		t.Fatalf("%d bytes were printed", len(out))
+	}
+}
+
+// An older relay took the registration and ignored --access: the service is
+// open. The client has stopped; it says why, where the service is and what to do.
+func TestReport_AccessNotApplied(t *testing.T) {
+	cases := []struct {
+		err  *client.AccessNotAppliedError
+		want string
+	}{
+		{&client.AccessNotAppliedError{Name: "my-app", Access: "burrow_login", URL: "https://relay.example.com/svc/abc234/"},
+			"This relay is older and cannot restrict access from the client: --access login was not applied to service my-app. Nothing is served from this machine.\n" +
+				"The service exists on the relay (https://relay.example.com/svc/abc234/) and is open to anyone with the URL unless its access mode was set in the dashboard. " +
+				"Set the access mode there or delete the service, or run again without --access.\n"},
+		{&client.AccessNotAppliedError{Name: "my-app", Access: "api_key"},
+			"This relay is older and cannot restrict access from the client: --access api-key was not applied to service my-app. Nothing is served from this machine.\n" +
+				"The service exists on the relay and is open to anyone with the URL unless its access mode was set in the dashboard. " +
+				"Set the access mode there or delete the service, or run again without --access.\n"},
+	}
+	for _, tc := range cases {
+		for _, err := range []error{tc.err, fmt.Errorf("x: %w", tc.err)} {
+			var b bytes.Buffer
+			if code := report(&b, err); code != 1 || b.String() != tc.want {
+				t.Fatalf("report = %d\n got %q\nwant %q", code, b.String(), tc.want)
+			}
+		}
+	}
+	// Name and address come from outside.
+	var b bytes.Buffer
+	report(&b, &client.AccessNotAppliedError{Name: "a\x1b[2Jb", Access: "x\x1b[31m", URL: "https://relay.example.com/\r\nx"})
+	if out := b.String(); strings.ContainsAny(strings.ReplaceAll(out, "\n", ""), "\x1b\r") || strings.Contains(out, "relay.example.com") {
+		t.Fatalf("unsafe text was printed: %q", out)
 	}
 }

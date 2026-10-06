@@ -23,12 +23,9 @@ const authReadTimeout = 10 * time.Second
 type HandshakeOptions struct {
 	// MinClientVersion: see Options.MinClientVersion.
 	MinClientVersion string
-	// UserEmail: see Options.UserEmail.
-	UserEmail func(ctx context.Context, userID string) string
 }
 
-// HandleHandshake is HandleHandshakeWith without a minimum client version and
-// without the owner's address.
+// HandleHandshake is HandleHandshakeWith without a minimum client version.
 func HandleHandshake(conn net.Conn, auth TokenAuthenticator, sessionID string) (*ClientSession, error) {
 	return HandleHandshakeWith(conn, auth, sessionID, HandshakeOptions{})
 }
@@ -74,12 +71,8 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 		})
 		return nil, fmt.Errorf("client version %q is older than the minimum %s", ar.ClientVersion, min)
 	}
-	resp := proto.AuthResponse{OK: true, SessionID: sessionID, RelayVersion: version.Version}
-	if o.UserEmail != nil {
-		resp.UserEmail = o.UserEmail(context.Background(), userID)
-	}
 	_ = conn.SetReadDeadline(time.Time{}) // clear deadline
-	if err := proto.WriteMessage(conn, proto.MsgAuthResponse, resp); err != nil {
+	if err := proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{OK: true, SessionID: sessionID, RelayVersion: version.Version}); err != nil {
 		return nil, err
 	}
 	return &ClientSession{
@@ -173,7 +166,7 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 			switch tr.Type {
 			case "http":
 				if s.opts.Services == nil {
-					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: "http tunnels not configured", Code: proto.CodeHTTPNotEnabled})
+					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: "http tunnels not configured", Code: proto.CodeInternal})
 					continue
 				}
 				res, rerr := s.resolveHTTP(cs, tr)

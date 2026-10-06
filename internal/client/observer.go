@@ -37,9 +37,11 @@ type RegisteredTunnel struct {
 	// Ignored names the wishes (TunnelSpec.Slug, .Access) the relay did not
 	// apply because the service existed with other values.
 	Ignored OptionSet
-	// Unacknowledged names the wishes the relay said nothing about: it is
-	// older and never saw them, so they were not applied.
-	Unacknowledged OptionSet
+	// SlugUnacknowledged: a slug was wished for and the relay said nothing
+	// about it. It is older and never saw the wish, so the service has the
+	// slug the relay gave it. (An access mode the relay did not acknowledge
+	// ends the client instead: see AccessNotAppliedError.)
+	SlugUnacknowledged bool
 }
 
 // OptionSet names some of the two things a client can wish for a new service.
@@ -48,11 +50,10 @@ type OptionSet struct{ Slug, Access bool }
 // Any reports whether the set names anything.
 func (s OptionSet) Any() bool { return s.Slug || s.Access }
 
-// SessionInfo is what the relay says of itself and of the token after a
-// successful sign-in. An older relay says nothing: both are "".
+// SessionInfo is what the relay says of itself after a successful sign-in. An
+// older relay says nothing: RelayVersion is "".
 type SessionInfo struct {
 	RelayVersion string
-	UserEmail    string // the owner of the token
 }
 
 // SessionObserver is an Observer that also wants to know what the relay said

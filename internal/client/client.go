@@ -108,6 +108,13 @@ func (c *Client) Run(ctx context.Context) error {
 	for {
 		c.events.emit(func(o Observer) { o.State(StateConnecting, "", 0) })
 		err := c.connectOnce(ctx)
+		var notApplied *AccessNotAppliedError
+		if errors.As(err, &notApplied) && ctx.Err() == nil {
+			// Never tried again, whatever the caller asked for: every attempt
+			// would leave the service open.
+			c.registered.Store(false)
+			return err
+		}
 		if c.opts.StopOnRefusal && ctx.Err() == nil {
 			var re *RefusedError
 			if errors.As(err, &re) && re.Final() {
@@ -151,7 +158,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 	}
 	c.log.Info("connected", "session_id", ar.SessionID)
 	c.events.emit(func(o Observer) { o.State(StateConnected, "", 0) })
-	info := SessionInfo{RelayVersion: ar.RelayVersion, UserEmail: ar.UserEmail}
+	info := SessionInfo{RelayVersion: ar.RelayVersion}
 	c.events.emit(func(o Observer) {
 		if so, ok := o.(SessionObserver); ok {
 			so.Session(info)
@@ -201,10 +208,20 @@ func (c *Client) connectOnce(ctx context.Context) error {
 			}
 		}
 		// A relay that knows slug and access says what the access mode is,
-		// or that it ignored them. One that says neither is older and never
-		// saw the wishes.
+		// or that it ignored them. One that says neither is older: it never
+		// saw the wishes and made, or found, the service its own way.
 		if tn.Type == "http" && rr.AccessMode == "" && !reg.Ignored.Any() {
-			reg.Unacknowledged = OptionSet{Slug: tn.Slug != "", Access: tn.Access != ""}
+			if tn.Access != "" && tn.Access != "open" {
+				// Such a relay creates a service open to everyone. Serving it
+				// would give the person the opposite of what was asked for:
+				// returning closes the session before a visitor can be sent.
+				public := rr.URL
+				if public == "" {
+					public = rr.Hostname
+				}
+				return &AccessNotAppliedError{Name: tn.Name, Access: tn.Access, URL: public}
+			}
+			reg.SlugUnacknowledged = tn.Slug != ""
 		}
 		if tn.Type == "http" {
 			// Older relays report only the hostname; keep printing that.

@@ -53,7 +53,7 @@ func (noObserver) LocalTarget(string, bool)                      {}
 
 // runNotes stands between the client and its observer and says, once per run,
 // what a person has to know and no log line of the client says: that --slug
-// and --access were not applied, that an open http app shares the dashboard's
+// or --access was not applied, that an open http app shares the dashboard's
 // origin, that the relay is newer, that the relay cannot be reached.
 type runNotes struct {
 	client.Observer // what the calls are handed on to
@@ -120,8 +120,8 @@ func (n *runNotes) Registered(t client.RegisteredTunnel) {
 	if t.Ignored.Any() {
 		n.once(ignoredNote(t, n.single))
 	}
-	if t.Unacknowledged.Any() {
-		n.once(unacknowledgedNote(t, n.single))
+	if t.SlugUnacknowledged {
+		n.once(slugUnacknowledgedNote(t, n.single))
 	}
 	if t.Created && t.AccessMode == "api_key" {
 		n.once(apiKeyNote(t, n.single))
@@ -185,23 +185,16 @@ func ignoredNote(t client.RegisteredTunnel, single bool) string {
 // Keys are made in the dashboard, which shows each one once; none travels
 // over the control connection.
 func apiKeyNote(t client.RegisteredTunnel, single bool) string {
-	s := subject(t, single) + " was created with api-key access and has no API key yet. Create one in the dashboard"
+	s := subject(t, single) + " was created with api-key access and has no API key yet: every request is refused until one exists. Create one in the dashboard"
 	if u := dashboardURL(t.DashboardURL); u != "" {
 		return s + ": " + u
 	}
 	return s + "."
 }
 
-// unacknowledgedNote says that the relay is older and never saw the wishes.
-func unacknowledgedNote(t client.RegisteredTunnel, single bool) string {
-	flags, were := "--slug and --access", "they were"
-	switch {
-	case !t.Unacknowledged.Access:
-		flags, were = "--slug", "it was"
-	case !t.Unacknowledged.Slug:
-		flags, were = "--access", "it was"
-	}
-	s := "This relay does not support " + flags + " yet, so " + were + " not applied. Change the service in the dashboard."
+// slugUnacknowledgedNote says that the relay is older and never saw --slug.
+func slugUnacknowledgedNote(t client.RegisteredTunnel, single bool) string {
+	s := "This relay does not support --slug yet, so it was not applied. Change the slug in the dashboard."
 	if !single {
 		return subject(t, single) + ": this" + strings.TrimPrefix(s, "This")
 	}
