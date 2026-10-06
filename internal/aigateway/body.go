@@ -7,23 +7,26 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 var errBodyTooLarge = errors.New("aigateway: request body too large")
 
 // errDuplicateModel reports a JSON object with more than one top-level
-// "model" field. Which of them an upstream reads is not defined, so such a
+// "model" field, in any letter case ("model" next to "Model" counts). Which
+// of them an upstream reads is not defined, so such a
 // body must not be forwarded: the endpoint answers it with a coded 400.
 var errDuplicateModel = errors.New("aigateway: request body has more than one model field")
 
 // requestBody is a buffered request body and the place of its "model" field.
 //
 // What a caller must do with it:
-//   - readRequestBody refuses a body with two top-level "model" fields
-//     (errDuplicateModel) and returns no requestBody; answer 400, never
-//     forward.
+//   - readRequestBody refuses a body with two top-level "model" fields,
+//     compared without regard to case (errDuplicateModel), and returns no
+//     requestBody; answer 400, never forward.
 //   - Model() == "" means "no model": the body is not a JSON object, has no
-//     top-level "model", or it is not a non-empty string. There is nothing
+//     top-level key spelled exactly "model" ("Model" alone is not one), or
+//     its value is not a non-empty string. There is nothing
 //     to route by; answer a coded 400. WithModel leaves such a body as it is.
 //   - Otherwise the model Burrow checks is the one an upstream reads: it is
 //     the only top-level "model" field, and WithModel replaces exactly the
@@ -78,14 +81,21 @@ func (b *requestBody) locateModel() error {
 		if err != nil {
 			return nil
 		}
-		if key, _ := tok.(string); key != "model" { // keys compare decoded: "model" is "model"
+		key, _ := tok.(string) // decoded, so an escaped spelling of the key is seen as written out
+		// Every letter case counts towards the duplicate check: an upstream
+		// that matches keys without regard to case (Go's encoding/json, as
+		// in Ollama) reads the last of "model" and "Model", which need not
+		// be the one checked here.
+		if strings.EqualFold(key, "model") {
+			seen++
+		}
+		if key != "model" { // only the exact key is a model and is spliced
 			var skip skipValue
 			if dec.Decode(&skip) != nil {
 				return nil
 			}
 			continue
 		}
-		seen++
 		// The value starts after the key, a colon and optional whitespace.
 		at := skipSpace(b.raw, int(dec.InputOffset()))
 		if at >= len(b.raw) || b.raw[at] != ':' {

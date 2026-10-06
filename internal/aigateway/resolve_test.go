@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/ankoehn/burrow/internal/db"
@@ -144,6 +145,20 @@ func TestResolve_NotFound(t *testing.T) {
 			}
 		}
 	}
+	// Over-long names are refused before any lookup.
+	g.Synthetic = lookupCounter{t}
+	g.Providers = providerCounter{t}
+	for _, name := range []string{
+		strings.Repeat("a", 64),
+		strings.Repeat("a", 100_000),
+		"zai/" + strings.Repeat("a", 253),
+		"zai/" + strings.Repeat("a", 100_000),
+		strings.Repeat("a", 300) + "/m",
+	} {
+		if _, err := g.resolve(context.Background(), name, "openai"); !errors.Is(err, errModelNotFound) {
+			t.Errorf("resolve(%d bytes) err = %v, want errModelNotFound", len(name), err)
+		}
+	}
 	// Without a synthetic-model store a plain name is unknown, not a crash.
 	g.Synthetic = nil
 	if _, err := g.resolve(context.Background(), "burrow-simple", "openai"); !errors.Is(err, errModelNotFound) {
@@ -169,6 +184,37 @@ func TestResolve_FormatMismatch(t *testing.T) {
 		if len(res.Targets) != 0 {
 			t.Errorf("resolve(%q, %s) returned targets with an error", c.name, c.dialect)
 		}
+	}
+}
+
+// lookupCounter and providerCounter fail the test when they are asked.
+type lookupCounter struct{ t *testing.T }
+
+func (l lookupCounter) ModelByName(_ context.Context, name string) (db.AIModel, error) {
+	l.t.Errorf("model lookup for a name of %d bytes", len(name))
+	return db.AIModel{}, store.ErrModelNotFound
+}
+
+type providerCounter struct{ t *testing.T }
+
+func (p providerCounter) ProviderBySlug(_ context.Context, slug string) (db.AIProvider, error) {
+	p.t.Errorf("provider lookup for a slug of %d bytes", len(slug))
+	return db.AIProvider{}, db.ErrNotFound
+}
+
+// Names at the limit still resolve.
+func TestResolve_LongestNames(t *testing.T) {
+	g := resolveGateway()
+	long := strings.Repeat("a", 63)
+	g.Synthetic.(fakeSynthetic)[long] = db.AIModel{Name: long, Enabled: true, Targets: []db.AIModelTarget{
+		{Dialect: "openai", ProviderSlug: "zai", TargetModel: "glm"},
+	}}
+	if res, err := g.resolve(context.Background(), long, "openai"); err != nil || len(res.Targets) != 1 {
+		t.Fatalf("63-byte synthetic name: %v %+v", err, res)
+	}
+	direct := "zai/" + strings.Repeat("a", 252) // 256 bytes
+	if res, err := g.resolve(context.Background(), direct, "openai"); err != nil || res.Targets[0].Model != direct[4:] {
+		t.Fatalf("256-byte direct address: %v %+v", err, res)
 	}
 }
 

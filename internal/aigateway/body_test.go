@@ -103,6 +103,7 @@ func TestRequestBody_NoModel(t *testing.T) {
 		"model missing":        `{"messages":[]}`,
 		"model only nested":    `{"meta":{"model":"m"},"list":[{"model":"m"}]}`,
 		"other key case":       `{"Model":"m"}`,
+		"upper key case":       `{"MODEL":"m","x":1}`,
 		"trailing garbage":     `{"model":"m"} x`,
 		"second value":         `{"model":"m"}{"model":"n"}`,
 		"truncated":            `{"model":"m","a":`,
@@ -132,6 +133,13 @@ func TestReadRequestBody_DuplicateModel(t *testing.T) {
 		`{"model":null,"model":"b"}`,
 		`{"model":"a","mod\u0065l":"b"}`,
 		" {\n\"model\" : \"a\" ,\n\"model\" : \"b\" }\n",
+		// A sibling in another case counts: an upstream that matches keys
+		// without regard to case (Go's encoding/json) reads the last one.
+		`{"model":"a","Model":"b"}`,
+		`{"Model":"b","model":"a"}`,
+		`{"model":"a","MODEL":"b"}`,
+		`{"Model":"a","MODEL":"b"}`,
+		`{"model":"a","x":{"model":"n"},"mOdEl":7}`,
 	} {
 		b, err := readRequestBody(httptest.NewRequest("POST", "/", strings.NewReader(in)), 1<<20)
 		if !errors.Is(err, errDuplicateModel) || b != nil {

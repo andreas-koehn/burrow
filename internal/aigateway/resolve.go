@@ -31,6 +31,13 @@ type SyntheticModels interface {
 
 var errModelNotFound = errors.New("aigateway: model not found")
 
+// Bounds on a requested name, in bytes. The name comes from the client, is
+// used in lookups and is echoed in errors; a longer one cannot exist.
+const (
+	maxSyntheticNameLen = 63  // the synthetic-name rule: ^[a-z0-9][a-z0-9._-]{1,62}$
+	maxDirectAddressLen = 256 // "<provider-slug>/<native model id>"
+)
+
 // formatMismatchError reports a model that exists but is not served in the
 // request's dialect. ServedBy names the dialect that does serve it.
 type formatMismatchError struct {
@@ -53,10 +60,13 @@ func (e *formatMismatchError) Error() string {
 // Errors: errModelNotFound and *formatMismatchError describe the request; any
 // other error is a failed lookup.
 func (g *Gateway) resolve(ctx context.Context, name, dialect string) (Resolution, error) {
-	if name == "" {
+	if name == "" || len(name) > maxDirectAddressLen {
 		return Resolution{}, errModelNotFound
 	}
 	if !strings.Contains(name, "/") {
+		if len(name) > maxSyntheticNameLen {
+			return Resolution{}, errModelNotFound
+		}
 		return g.resolveSynthetic(ctx, name, dialect)
 	}
 	slug, native, _ := strings.Cut(name, "/")
