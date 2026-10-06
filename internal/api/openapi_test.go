@@ -174,7 +174,8 @@ func TestOpenAPIRouteCoverage_FullIntegrationMux(t *testing.T) {
 		// v0.4.0 surfaces.
 		CacheEngine:       stub,
 		CacheServices:     stub,
-		ModelAliases:      stub,
+		AIModels:          stub,
+		AIGatewayKeys:     stub,
 		InspectorRings:    stub,
 		InspectorServices: stub,
 		InspectorReplayer: stub,
@@ -504,29 +505,39 @@ func (*fullDepsStub) GetServiceByID(context.Context, string) (db.Service, error)
 	return db.Service{}, nil
 }
 
-// ModelAliasStore.
-func (*fullDepsStub) ListModelAliases(context.Context) ([]db.ModelAlias, error) {
-	stubPanic("ListModelAliases")
+// AIModelStore.
+func (*fullDepsStub) ListModels(context.Context) ([]db.AIModel, error) {
+	stubPanic("ListModels")
 	return nil, nil
 }
-func (*fullDepsStub) GetModelAlias(context.Context, string) (db.ModelAlias, error) {
-	stubPanic("GetModelAlias")
-	return db.ModelAlias{}, nil
+func (*fullDepsStub) ModelByName(context.Context, string) (db.AIModel, error) {
+	stubPanic("ModelByName")
+	return db.AIModel{}, nil
 }
-func (*fullDepsStub) CreateModelAlias(context.Context, db.ModelAlias) error {
-	stubPanic("CreateModelAlias")
+func (*fullDepsStub) CreateModel(context.Context, db.AIModel) (db.AIModel, error) {
+	stubPanic("CreateModel")
+	return db.AIModel{}, nil
+}
+func (*fullDepsStub) UpdateModel(context.Context, string, db.AIModel) (db.AIModel, error) {
+	stubPanic("UpdateModel")
+	return db.AIModel{}, nil
+}
+func (*fullDepsStub) DeleteModel(context.Context, string) error {
+	stubPanic("DeleteModel")
 	return nil
 }
-func (*fullDepsStub) UpdateModelAlias(context.Context, string, string, string) error {
-	stubPanic("UpdateModelAlias")
-	return nil
+
+// AIGatewayKeyStore.
+func (*fullDepsStub) CreateGatewayKey(context.Context, string, string, []string) (store.GatewayKey, string, error) {
+	stubPanic("CreateGatewayKey")
+	return store.GatewayKey{}, "", nil
 }
-func (*fullDepsStub) UpdateModelAliasFull(context.Context, string, string, string, string, int) error {
-	stubPanic("UpdateModelAliasFull")
-	return nil
+func (*fullDepsStub) ListGatewayKeys(context.Context, string, string) ([]store.GatewayKey, error) {
+	stubPanic("ListGatewayKeys")
+	return nil, nil
 }
-func (*fullDepsStub) DeleteModelAlias(context.Context, string) error {
-	stubPanic("DeleteModelAlias")
+func (*fullDepsStub) RevokeGatewayKey(context.Context, string, string, string) error {
+	stubPanic("RevokeGatewayKey")
 	return nil
 }
 

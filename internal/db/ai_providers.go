@@ -293,13 +293,16 @@ func (x *DB) UpdateAIProvider(ctx context.Context, slug, newSlug, name string, r
 		if err == nil {
 			var n int64
 			if n, err = res.RowsAffected(); err == nil && n == 0 && *responses {
-				// No row, or a row of another format: say which.
-				var one int
-				switch qerr := tx.QueryRowContext(ctx, `SELECT 1 FROM ai_providers WHERE slug=?`, slug).Scan(&one); {
-				case qerr == nil:
+				// No row, or a row of another format: say which. A row of
+				// the OpenAI format here was created after the UPDATE ran
+				// (possible under READ COMMITTED): the update did not find
+				// it, so it is reported as missing, not as a format error.
+				var format string
+				switch qerr := tx.QueryRowContext(ctx, `SELECT api_format FROM ai_providers WHERE slug=?`, slug).Scan(&format); {
+				case qerr == nil && format != "openai":
 					_ = tx.Rollback()
 					return ErrResponsesFormat
-				case !errors.Is(qerr, sql.ErrNoRows):
+				case qerr != nil && !errors.Is(qerr, sql.ErrNoRows):
 					err = qerr
 				}
 			}

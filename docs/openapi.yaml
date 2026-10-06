@@ -47,7 +47,7 @@ tags:
   - name: guardrails
     description: Prompt-injection guardrails settings.
   - name: models
-    description: Model alias registry.
+    description: AI providers, synthetic models and gateway keys.
   - name: rate-limits
     description: Quota + rate-limit CRUD and usage.
   - name: cost
@@ -109,10 +109,9 @@ components:
       type: object
       description: >
         One model provider: a slug under which a model backend is served at
-        base_url. Identity fields come from the providers table; model_alias,
-        concrete_model, backend_type, api_key_count, status and the 24h
-        counts are read live from the backing service. latency_p95_ms is
-        always 0.
+        base_url. Identity fields come from the providers table;
+        api_key_count, status and the 24h counts are read live from the
+        backing service. latency_p95_ms is always 0.
       properties:
         slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$' }
         name: { type: string }
@@ -182,9 +181,19 @@ components:
         model_count:
           type: integer
           description: Number of entries in the provider's stored model list.
-        model_alias: { type: string }
-        concrete_model: { type: string }
-        backend_type: { type: string, enum: [ollama, vllm, openai-compat, other] }
+        model_alias:
+          type: string
+          description: >
+            Name of the first synthetic model, by name, that targets this
+            provider; empty when none does. (The field named a model alias
+            before aliases became synthetic models.)
+        concrete_model:
+          type: string
+          description: The model that synthetic model sends to this provider.
+        backend_type:
+          type: string
+          enum: [other]
+          description: Always "other"; kept for clients that read it.
         api_key_count: { type: integer }
         requests_24h: { type: integer }
         cache_hits_24h: { type: integer }
@@ -248,6 +257,88 @@ components:
             its stored value on update. true is refused with 400 unless
             api_format is openai; a provider cannot change to another
             format while it is true.
+    AIModelTarget:
+      type: object
+      description: One provider and model a synthetic model can be sent to.
+      required: [provider, model]
+      properties:
+        dialect:
+          type: string
+          enum: [openai, anthropic]
+          description: >
+            The API format the target is used for. It must equal the
+            provider's api_format; left out of a request, it is filled in
+            from the provider.
+        provider:
+          type: string
+          description: Slug of an existing provider.
+        model:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: The provider's own model id. No control characters.
+    AIModel:
+      type: object
+      description: >
+        A synthetic model: a name that clients send as "model" on the
+        gateway's endpoints and that resolves to an ordered list of provider
+        targets per dialect. A request reaches only targets of its own
+        dialect.
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9._-]{1,62}$'
+          description: >
+            Never contains "/". "v1" is reserved, and a name cannot equal a
+            provider slug.
+        description: { type: string, maxLength: 500 }
+        enabled: { type: boolean }
+        fallback_on_rate_limit: { type: boolean }
+        attempt_timeout_s: { type: integer, minimum: 1, maximum: 600, default: 60 }
+        total_timeout_s:
+          type: integer
+          minimum: 1
+          maximum: 600
+          default: 120
+          description: Not shorter than attempt_timeout_s.
+        targets:
+          type: array
+          minItems: 1
+          maxItems: 16
+          description: >
+            At most 8 per dialect. Within one dialect the order is the order
+            the targets are tried in.
+          items: { $ref: '#/components/schemas/AIModelTarget' }
+        dialects:
+          type: array
+          readOnly: true
+          description: The formats the model is served in, sorted; derived from the targets.
+          items: { type: string, enum: [anthropic, openai] }
+        created_at: { type: string, format: date-time, readOnly: true }
+        updated_at: { type: string, format: date-time, readOnly: true }
+    AIGatewayKey:
+      type: object
+      description: >
+        A gateway key as every response but its creation shows it. The key
+        itself is stored as a hash and is never returned again.
+      properties:
+        id: { type: string }
+        name: { type: string, maxLength: 120 }
+        key_prefix:
+          type: string
+          description: The first 8 characters of the key, for display.
+          example: bgw_Ab3x
+        user_id: { type: string, description: The owner. }
+        allowed_models:
+          type: array
+          maxItems: 64
+          description: >
+            The models the key may use; empty means every model. An entry is
+            a synthetic model name, "<provider>/<model>" or "<provider>/*".
+          items: { type: string, maxLength: 264 }
+        last_used: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time, nullable: true }
     AIProviderModel:
       type: object
       description: One entry of a provider's stored model list.
@@ -1297,70 +1388,6 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ────────────────────────────────────────────────────────────────────────
-  # Model aliases
-  # ────────────────────────────────────────────────────────────────────────
-  /api/v1/models/aliases:
-    get:
-      tags: [models]
-      summary: List model aliases
-      responses:
-        '200':
-          description: List of aliases.
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/Empty' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-    post:
-      tags: [models]
-      summary: Create a model alias
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
-      responses:
-        '201':
-          description: Created.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-
-  /api/v1/models/aliases/{alias}:
-    put:
-      tags: [models]
-      summary: Replace a model alias
-      parameters:
-        - name: alias
-          in: path
-          required: true
-          schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
-      responses:
-        '204': { description: Updated. }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-    delete:
-      tags: [models]
-      summary: Delete a model alias
-      parameters:
-        - name: alias
-          in: path
-          required: true
-          schema: { type: string }
-      responses:
-        '204': { description: Deleted. }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-
-  # ────────────────────────────────────────────────────────────────────────
   # Rate limits
   # ────────────────────────────────────────────────────────────────────────
   /api/v1/rate-limits:
@@ -2045,6 +2072,14 @@ paths:
         '204': { description: Deleted. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: >
+            The user owns the service behind a provider that a synthetic
+            model targets; the message names the models. Nothing was
+            deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   # ────────────────────────────────────────────────────────────────────────
   # Settings (admin)
@@ -3040,7 +3075,10 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: Slug already in use. Nothing was changed.
+          description: >
+            The slug is already in use by another provider, the slug is the
+            name of a synthetic model, or (direct provider) the name is
+            taken by another service of the owner. Nothing was changed.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -3052,12 +3090,21 @@ paths:
         tunnel provider the backing service, its API keys and its tunnel are
         kept. For a direct provider the backing service is removed with it,
         and with that its API keys, AI configuration and model list; the
-        vault slot is configured on the relay and is not touched.
+        vault slot is configured on the relay and is not touched. A provider
+        that a synthetic model targets is not deleted: remove the targets
+        first.
       responses:
         '204': { description: Provider deleted. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            A synthetic model targets the provider. The message is
+            "provider is used by model(s): " followed by their names.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/ai/providers/{slug}/upstream:
     parameters:
@@ -3244,6 +3291,250 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EndpointMetrics'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/ai/gateway:
+    get:
+      tags: [models]
+      summary: The gateway's endpoints
+      description: |
+        The base URL a client is given per dialect. base_url is "" when the
+        relay has no auth domain; the dashboard then builds it from its own
+        origin.
+      security:
+        - CookieAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: One entry per dialect.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  endpoints:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        dialect: { type: string, enum: [openai, anthropic] }
+                        base_url: { type: string }
+              example:
+                endpoints:
+                  - { dialect: openai, base_url: 'https://tunnels.example.com/openai/v1' }
+                  - { dialect: anthropic, base_url: 'https://tunnels.example.com/anthropic' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/ai/models:
+    get:
+      tags: [models]
+      summary: List synthetic models
+      description: Every synthetic model, ordered by name. Any signed-in caller may read them.
+      security:
+        - CookieAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: The models.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AIModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [models]
+      summary: Create a synthetic model (admin or ai:configure:any)
+      description: |
+        The body is at most 16 KiB and may carry only the fields of the
+        schema; dialects and the timestamps are not accepted. enabled left
+        out means true; a timeout left out or 0 means its default. Every
+        target must name an existing provider, and its dialect, when given,
+        must equal that provider's api_format.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AIModel' }
+            example:
+              name: burrow-intelligence
+              targets:
+                - { dialect: openai, provider: zai, model: glm-5.1 }
+                - { dialect: anthropic, provider: zai-anthropic, model: glm-5.1 }
+      responses:
+        '201':
+          description: Model created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AIModel' }
+        '400':
+          description: >
+            The body is not valid; the message says why (name, an unknown
+            field, an unknown provider, a provider of another format, the
+            number of targets, a timeout).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Another model has the name.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/ai/models/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [models]
+      summary: Get one synthetic model
+      security:
+        - CookieAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: The model.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AIModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [models]
+      summary: Replace a synthetic model (admin or ai:configure:any)
+      description: |
+        The body replaces the model; targets is the new list. Two fields
+        keep their stored value when left out: name and enabled. A different
+        name renames the model. Gateway keys that name the old name in
+        allowed_models are not rewritten and no longer reach the model.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AIModel' }
+      responses:
+        '200':
+          description: Model updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AIModel' }
+        '400':
+          description: The body is not valid; the message says why.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Another model has the new name. Nothing was changed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [models]
+      summary: Delete a synthetic model (admin or ai:configure:any)
+      description: |
+        Requests for the name are refused from then on. Gateway keys keep
+        the name in allowed_models; it matches nothing until a model of that
+        name exists again.
+      responses:
+        '204': { description: Model deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/ai/keys:
+    get:
+      tags: [models]
+      summary: List gateway keys
+      description: |
+        The caller's gateway keys, newest first; an admin sees every user's.
+        Revoked keys are listed with revoked_at set. No entry carries the
+        key.
+      security:
+        - CookieAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: The keys.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AIGatewayKey' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [models]
+      summary: Create a gateway key
+      description: |
+        Creates a key owned by the caller. The response carries the key
+        ("bgw_" and 43 characters) and is the only one that ever does: the
+        relay stores a hash. It is sent with Cache-Control: no-store. The
+        body is at most 8 KiB and has no other fields than the two below.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 120
+                  description: No control characters.
+                allowed_models:
+                  type: array
+                  maxItems: 64
+                  description: >
+                    Left out or empty: every model. An entry is a synthetic
+                    model name, "<provider>/<model>" or "<provider>/*"; it
+                    need not name something that exists.
+                  items: { type: string, maxLength: 264 }
+            example:
+              name: laptop
+              allowed_models: [burrow-simple, 'zai/*']
+      responses:
+        '201':
+          description: Key created.
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AIGatewayKey'
+                  - type: object
+                    properties:
+                      key:
+                        type: string
+                        description: The key. Shown this once.
+        '400':
+          description: The body is not valid; the message says why.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/ai/keys/{id}:
+    delete:
+      tags: [models]
+      summary: Revoke a gateway key
+      description: |
+        The key stops working at once. Its owner or an admin may revoke it;
+        another user's key answers 404, like an id that does not exist.
+        Revoking a revoked key is a 204 too.
+      parameters: [ { $ref: '#/components/parameters/PathID' } ]
+      responses:
+        '204': { description: Key revoked. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 

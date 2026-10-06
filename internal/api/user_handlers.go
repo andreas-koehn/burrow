@@ -207,6 +207,12 @@ func (d Deps) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "user not found")
 		return
 	}
+	if errors.Is(err, store.ErrProviderInUse) {
+		// The user owns the service behind a provider that a synthetic model
+		// targets; deleting the user would take the provider with it.
+		writeErr(w, http.StatusConflict, "the user owns a provider that is used by model(s): "+providerInUseModels(err))
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "delete user failed")
 		return

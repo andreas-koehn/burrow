@@ -321,14 +321,20 @@ func NewRouter(d Deps) http.Handler {
 			r.Get("/guardrails/settings", d.GetGuardrailSettings)
 			r.With(d.requireAdminOrAIConfigureAny).Put("/guardrails/settings", d.PutGuardrailSettings)
 			r.Get("/guardrails/patterns", d.GetGuardrailPatterns)
-			// v0.4.0 Task 7: model alias registry (spec Part C.1).
-			// GET is session-authed (any user may read); POST/PUT/DELETE are
-			// admin OR ai:configure:any — same gating as cache/redaction/
-			// guardrails mutations.
-			r.Get("/models/aliases", d.GetModelAliases)
-			r.With(d.requireAdminOrAIConfigureAny).Post("/models/aliases", d.PostModelAlias)
-			r.With(d.requireAdminOrAIConfigureAny).Put("/models/aliases/{alias}", d.PutModelAlias)
-			r.With(d.requireAdminOrAIConfigureAny).Delete("/models/aliases/{alias}", d.DeleteModelAlias)
+			// Synthetic models and gateway keys. Any session may read the
+			// models and the gateway's endpoints; model writes are admin OR
+			// ai:configure:any, the gate the model-alias routes had. A
+			// gateway key belongs to the user who creates it: the store
+			// shows and revokes own keys, and every key for an admin.
+			r.Get("/ai/gateway", d.GetAIGatewayInfo)
+			r.Get("/ai/models", d.GetAIModels)
+			r.Get("/ai/models/{name}", d.GetAIModel)
+			r.With(d.requireAdminOrAIConfigureAny).Post("/ai/models", d.PostAIModel)
+			r.With(d.requireAdminOrAIConfigureAny).Put("/ai/models/{name}", d.PutAIModel)
+			r.With(d.requireAdminOrAIConfigureAny).Delete("/ai/models/{name}", d.DeleteAIModel)
+			r.Get("/ai/keys", d.GetAIKeys)
+			r.Post("/ai/keys", d.PostAIKey)
+			r.Delete("/ai/keys/{id}", d.DeleteAIKey)
 			// v0.4.0 Task 11: rate-limit + quota CRUD (spec Part D.2).
 			// Reads are gated by quotas:read:own/:any (admin always passes);
 			// mutations require admin OR quotas:manage:any. The /usage

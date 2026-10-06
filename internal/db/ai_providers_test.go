@@ -464,8 +464,10 @@ func TestAIProviders_ResponsesAndConcurrency(t *testing.T) {
 func checkUpdateAIProviderResponses(t *testing.T, x *DB, userID, tag string) {
 	t.Helper()
 	ctx := context.Background()
-	slugs := []string{tag + "-o", tag + "-o2", tag + "-a", tag + "-a2"}
+	slugs := []string{tag + "-o", tag + "-o2", tag + "-o3", tag + "-a", tag + "-a2"}
+	model := tag + "-model"
 	clean := func() {
+		_ = x.DeleteAIModel(ctx, model) // first: its target holds a provider
 		for _, s := range slugs {
 			_ = x.DeleteAIProviderAndBacking(ctx, s)
 		}
@@ -529,6 +531,50 @@ func checkUpdateAIProviderResponses(t *testing.T, x *DB, userID, tag string) {
 	}
 	if err := x.UpdateAIProvider(ctx, tag+"-gone", tag+"-o", "n", &on); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown provider err = %v", err)
+	}
+
+	// From here: tag-o2 (openai, "New <tag>", flag off) and tag-a2
+	// (anthropic, "Other <tag>"). The flag on together with a slug another
+	// provider has: refused, and the flag is not written.
+	unchanged := func(what string) {
+		t.Helper()
+		p, err := x.GetAIProvider(ctx, tag+"-o2")
+		if err != nil || p.Name != "New "+tag || p.SupportsResponses {
+			t.Fatalf("%s changed the row: %v %+v", what, err, p)
+		}
+		if svc, _ := x.GetServiceByID(ctx, p.ServiceID); svc.Name != "New "+tag {
+			t.Fatalf("%s renamed the backing service: %+v", what, svc)
+		}
+	}
+	if err := x.UpdateAIProvider(ctx, tag+"-o2", tag+"-a2", "New "+tag, &on); !errors.Is(err, ErrDuplicateProvider) {
+		t.Fatalf("taken slug err = %v, want ErrDuplicateProvider", err)
+	}
+	unchanged("a taken slug")
+	// ... and together with a name the owner's other backing service has:
+	// the service rename fails after the provider row was updated, and the
+	// transaction takes slug and flag back.
+	if err := x.UpdateAIProvider(ctx, tag+"-o2", tag+"-o3", "Other "+tag, &on); !errors.Is(err, ErrDuplicateProvider) {
+		t.Fatalf("taken backing-service name err = %v, want ErrDuplicateProvider", err)
+	}
+	unchanged("a taken backing-service name")
+	if _, err := x.GetAIProvider(ctx, tag+"-o3"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the new slug exists after a refused update: %v", err)
+	}
+	// ... and on a provider a synthetic model targets: the target follows
+	// the new slug by cascade, in the same statement that sets the flag.
+	if err := x.CreateAIModel(ctx, AIModel{Name: model, Enabled: true, AttemptTimeoutS: 60, TotalTimeoutS: 120,
+		Targets: []AIModelTarget{{Dialect: "openai", ProviderSlug: tag + "-o2", TargetModel: "m"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.UpdateAIProvider(ctx, tag+"-o2", tag+"-o3", "New "+tag, &on); err != nil {
+		t.Fatalf("rename of a targeted provider with the flag on: %v", err)
+	}
+	if p, err = x.GetAIProvider(ctx, tag+"-o3"); err != nil || !p.SupportsResponses {
+		t.Fatalf("after rename: %v %+v", err, p)
+	}
+	m, err := x.GetAIModel(ctx, model)
+	if err != nil || len(m.Targets) != 1 || m.Targets[0].ProviderSlug != tag+"-o3" {
+		t.Fatalf("the model's target did not follow the slug: %v %+v", err, m)
 	}
 }
 

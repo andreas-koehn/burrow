@@ -143,30 +143,8 @@ func TestV050PostgresBackendE2E(t *testing.T) {
 		}
 	})
 
-	// --- Part C — multi-provider model alias POST -------------------------
-	t.Run("C_model_alias_provider_priority", func(t *testing.T) {
-		code, body := env.do(t, http.MethodPost, "/api/v1/models/aliases",
-			map[string]any{
-				"alias":          "fast",
-				"concrete_model": "llama3.1:8b",
-				"service_id":     env.serviceID,
-				"provider":       "ollama",
-				"priority":       100,
-			})
-		if code != http.StatusCreated {
-			t.Fatalf("status=%d body=%s", code, body)
-		}
-		var obj map[string]any
-		if err := json.Unmarshal(body, &obj); err != nil {
-			t.Fatalf("decode: %v body=%s", err, body)
-		}
-		if obj["provider"] != "ollama" {
-			t.Errorf("provider=%v want ollama (body=%s)", obj["provider"], body)
-		}
-		if p, _ := obj["priority"].(float64); int(p) != 100 {
-			t.Errorf("priority=%v want 100 (body=%s)", obj["priority"], body)
-		}
-	})
+	// --- Part C — multi-provider: a synthetic model and a gateway key ----
+	t.Run("C_synthetic_model_and_gateway_key", func(t *testing.T) { v050CheckSyntheticModel(t, env) })
 
 	// --- Part D — custom domain POST --------------------------------------
 	t.Run("D_custom_domain_post", func(t *testing.T) {

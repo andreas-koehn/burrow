@@ -185,15 +185,6 @@ CODES=""; for i in 1 2 3 4; do CODES="$CODES$(px -o /dev/null -w '%{http_code}' 
 check "rate limit (api_key scope) is enforced" "$(echo "$CODES" | grep -c 429 || true)" "1"
 acode DELETE "/api/v1/rate-limits/$RL" >/dev/null
 
-# --- model aliases -----------------------------------------------------------
-# moved to the global endpoint, enabled in G09
-# /ai/<provider>/ forwards the body untouched: an alias is no longer rewritten
-# there. Aliases live on as synthetic models, addressed through /openai/v1.
-# The provider is the one registered in the api_key section above.
-amut POST /api/v1/models/aliases "{\"alias\":\"gpt-4o-mini\",\"concrete_model\":\"$MODEL\",\"service_id\":\"$SID\",\"provider\":\"ollama\",\"priority\":0}" >/dev/null
-xcheck "model alias gpt-4o-mini is rewritten to $MODEL" \
-  "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" -H 'Content-Type: application/json' -d "$(chat "alias $RANDOM" 4 gpt-4o-mini)" "$B/ai/$PROV/v1/chat/completions")" "200"
-
 # --- AI namespace --------------------------------------------------------------
 # The provider registered above, addressed as /ai/<provider>/v1 on the
 # dashboard's origin with the same API key.
@@ -217,17 +208,23 @@ check "ai: usage is recorded after a hangup mid-stream" "$OK" "yes"
 
 # --- global endpoint -----------------------------------------------------------
 # One base URL for every model: /openai/v1 (and /ai/v1), authenticated with a
-# gateway key. The synthetic model and the key are created through the API of
-# G09; until then the checks that need them are expected to fail.
-GWKEY="${GWKEY:-bgw_not-created-yet}" # enabled in G09: create burrow-simple -> $PROV/$MODEL and a gateway key
+# gateway key. A synthetic model is what a model alias was: /ai/<provider>/
+# forwards the body untouched, the name is resolved here. The provider is the
+# one registered in the api_key section above.
+check "openai: synthetic model is created" \
+  "$(acode POST /api/v1/ai/models "{\"name\":\"burrow-simple\",\"targets\":[{\"dialect\":\"openai\",\"provider\":\"$PROV\",\"model\":\"$MODEL\"}]}")" "201"
+GWKEY=$(amut POST /api/v1/ai/keys '{"name":"integration","allowed_models":["burrow-simple"]}' | jq -r .key)
+check "openai: gateway key is created"      "${GWKEY:0:4}" "bgw_"
+check "openai: key list never shows the key" "$(aget /api/v1/ai/keys | grep -c "$GWKEY" || true)" "0"
+check "ai: provider in use cannot be deleted" "$(acode DELETE "/api/v1/ai/providers/$PROV")" "409"
 check "openai: models without key -> 401"   "$(curl -s -o /dev/null -w '%{http_code}' "$B/openai/v1/models")" "401"
 check "openai: /ai/v1 is the same endpoint" "$(curl -s -o /dev/null -w '%{http_code}' "$B/ai/v1/models")" "401"
 check "openai: a service key is not a gateway key" "$(curl -s -H "$AUTH" "$B/openai/v1/models" | jq -r '.error.code')" "invalid_api_key"
 check "openai: errors carry Burrow-Error-Code" "$(curl -s -o /dev/null -D - "$B/openai/v1/models" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-error-code"{print $2}')" "invalid_api_key"
 check "openai: /openai/ is never the dashboard" "$(curl -s "$B/openai/" | jq -r '.error.code')" "invalid_api_key"
-xcheck "openai: chat via synthetic model"   "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d "$(chat "global $RANDOM" 8 burrow-simple)" "$B/openai/v1/chat/completions")" "200" # enabled in G09
-xcheck "openai: Burrow-Provider header"     "$(curl -s -D - -o /dev/null -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d "$(chat "global-hdr $RANDOM" 8 burrow-simple)" "$B/openai/v1/chat/completions" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-provider"{print $2}')" "$PROV" # enabled in G09
-xcheck "openai: unknown model -> 404"       "$(curl -s -o /dev/null -D - -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d '{"model":"nope"}' "$B/openai/v1/chat/completions" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-error-code"{print $2}')" "model_not_found" # enabled in G09
+check "openai: chat via synthetic model"   "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d "$(chat "global $RANDOM" 8 burrow-simple)" "$B/openai/v1/chat/completions")" "200"
+check "openai: Burrow-Provider header"     "$(curl -s -D - -o /dev/null -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d "$(chat "global-hdr $RANDOM" 8 burrow-simple)" "$B/openai/v1/chat/completions" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-provider"{print $2}')" "$PROV"
+check "openai: unknown model -> 404"       "$(curl -s -o /dev/null -D - -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d '{"model":"nope"}' "$B/openai/v1/chat/completions" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-error-code"{print $2}')" "model_not_found"
 
 # --- known defects (XFAIL) ---------------------------------------------------
 # 4. An automation token's declared permission set is not enforced on

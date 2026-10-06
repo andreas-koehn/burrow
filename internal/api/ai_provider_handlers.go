@@ -5,8 +5,9 @@ package api
 //
 // A provider is a row of the ai_providers table: a slug under which a model
 // backend is served at https://<auth_domain>/ai/<slug>/v1.  The read handlers
-// join that row with live data of its backing service (model alias, key
-// count, tunnel status, trailing-24h request counts).  latency_p95_ms is
+// join that row with live data of its backing service (key count, tunnel
+// status, trailing-24h request counts) and the first synthetic model that
+// targets it.  latency_p95_ms is
 // always 0: usage_events has no latency column.
 
 import (
@@ -118,26 +119,10 @@ type endpointMetricsResp struct {
 	RequestsPerMinute []int   `json:"requests_per_minute"`
 }
 
-// providerToBackendType converts a model-alias provider string to the
-// backend_type enum the UI expects.
-//
-//	"openai"       → "openai-compat"
-//	"openai-compat"→ "openai-compat"
-//	"ollama"       → "ollama"
-//	"vllm"         → "vllm"
-//	anything else  → "other"
-func providerToBackendType(provider string) string {
-	switch provider {
-	case "openai", "openai-compat":
-		return "openai-compat"
-	case "ollama":
-		return "ollama"
-	case "vllm":
-		return "vllm"
-	default:
-		return "other"
-	}
-}
+// backendTypeOther is the backend_type of every provider. The field named
+// the software behind a model alias; aliases became synthetic models, which
+// do not record it. It stays in the response for clients that read it.
+const backendTypeOther = "other"
 
 // composeProviderURL returns "https://<authDomain>/ai/<slug>/v1", or "" when
 // the relay has no auth domain.
@@ -148,11 +133,39 @@ func composeProviderURL(slug, authDomain string) string {
 	return "https://" + authDomain + "/ai/" + slug + "/v1"
 }
 
+// providerModel is the synthetic model a provider view names.
+type providerModel struct{ name, target string }
+
+// firstModelByProvider maps a provider slug to the first synthetic model, by
+// name, that targets it, and that target's model. The provider view shows the
+// pair in model_alias and concrete_model, the fields a model alias filled
+// before aliases became synthetic models. Empty when the model store is not
+// wired or the list fails: the providers still render.
+func (d Deps) firstModelByProvider(ctx context.Context) map[string]providerModel {
+	out := map[string]providerModel{}
+	if d.AIModels == nil {
+		return out
+	}
+	models, err := d.AIModels.ListModels(ctx)
+	if err != nil {
+		d.warn("ai provider view: model list failed", "err", err)
+		return out
+	}
+	for _, m := range models { // ordered by name
+		for _, t := range m.Targets { // ordered by dialect, then position
+			if _, seen := out[t.ProviderSlug]; !seen {
+				out[t.ProviderSlug] = providerModel{name: m.Name, target: t.TargetModel}
+			}
+		}
+	}
+	return out
+}
+
 // providerViews returns the response item for every provider whose backing
 // service the caller may see (same visibility as ListServices), ordered by
-// slug.  Identity fields come from the provider row; model_alias,
-// concrete_model, backend_type, api_key_count, status and the 24h counts are
-// read live from the backing service.
+// slug.  Identity fields come from the provider row; api_key_count, status
+// and the 24h counts are read live from the backing service; model_alias and
+// concrete_model name the first synthetic model that targets the provider.
 func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 	role, err := d.callerRole(r)
 	if err != nil {
@@ -174,26 +187,7 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 		return nil, err
 	}
 
-	// Build a service_id → first alias mapping from the model alias registry.
-	// We pick the alias with the highest priority (lowest priority number)
-	// for each service.  If ModelAliases is nil or the list fails, we proceed
-	// with an empty map — every provider will show empty alias fields.
-	aliasForService := map[string]modelAliasResp{}
-	if d.ModelAliases != nil {
-		if aliases, err := d.ModelAliases.ListModelAliases(r.Context()); err == nil {
-			for _, a := range aliases {
-				if a.ServiceID == "" {
-					continue
-				}
-				existing, seen := aliasForService[a.ServiceID]
-				// Lower priority number = higher priority.  Pick the first
-				// (lowest Priority) alias seen for each service.
-				if !seen || a.Priority < existing.Priority {
-					aliasForService[a.ServiceID] = toModelAliasResp(a)
-				}
-			}
-		}
-	}
+	firstModel := d.firstModelByProvider(r.Context())
 
 	// Trailing-24h request + cache-hit counts per service. Degrades to zeros
 	// when the metrics store isn't wired (early-wiring / handler tests) or
@@ -237,7 +231,7 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 			status = "Connected"
 		}
 
-		alias := aliasForService[p.ServiceID]
+		model := firstModel[p.Slug]
 
 		v := aiProviderResp{
 			Slug:            p.Slug,
@@ -246,9 +240,9 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 			APIFormat:       p.APIFormat,
 			ServiceID:       p.ServiceID,
 			BaseURL:         composeProviderURL(p.Slug, d.AuthDomain),
-			ModelAlias:      alias.Alias,
-			ConcreteModel:   alias.ConcreteModel,
-			BackendType:     providerToBackendType(alias.Provider),
+			ModelAlias:      model.name,
+			ConcreteModel:   model.target,
+			BackendType:     backendTypeOther,
 			APIKeyCount:     keyCount,
 			Requests24h:     counts[p.ServiceID].Requests,
 			CacheHits24h:    counts[p.ServiceID].CacheHits,
@@ -302,7 +296,7 @@ func (d Deps) writeProviderView(w http.ResponseWriter, r *http.Request, status i
 		v = aiProviderResp{
 			Slug: p.Slug, Name: p.Name, Kind: p.Kind, APIFormat: p.APIFormat, ServiceID: p.ServiceID,
 			BaseURL:     composeProviderURL(p.Slug, d.AuthDomain),
-			BackendType: providerToBackendType(""), Status: "Offline",
+			BackendType: backendTypeOther, Status: "Offline",
 			UpstreamBaseURL: p.BaseURL, CredentialSlot: p.CredentialSlot, Billing: p.Billing,
 			SupportsResponses: p.SupportsResponses,
 		}
@@ -513,6 +507,8 @@ func mapProviderErr(w http.ResponseWriter, err error) bool {
 		writeErr(w, http.StatusConflict, "the provider was changed by someone else at the same time; try again")
 	case errors.Is(err, store.ErrProviderService):
 		writeErr(w, http.StatusConflict, "a tunnel provider needs an http service in API-key mode")
+	case errors.Is(err, store.ErrProviderInUse):
+		writeErr(w, http.StatusConflict, "provider is used by model(s): "+providerInUseModels(err))
 	case errors.Is(err, store.ErrInvalidProviderConfig):
 		// The reason names the field; it never repeats a header value or the URL.
 		writeErr(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), store.ErrInvalidProviderConfig.Error()+": "))
@@ -520,6 +516,13 @@ func mapProviderErr(w http.ResponseWriter, err error) bool {
 		return false
 	}
 	return true
+}
+
+// providerInUseModels returns the model names an ErrProviderInUse error
+// carries, whatever a caller wrapped around it.
+func providerInUseModels(err error) string {
+	_, names, _ := strings.Cut(err.Error(), store.ErrProviderInUse.Error()+": ")
+	return names
 }
 
 // validProviderName trims name and writes the 400 when it is empty or too long.
@@ -773,7 +776,8 @@ func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
 // DeleteAIProvider handles DELETE /api/v1/ai/providers/{slug} (admin only).
 // A tunnel provider's service is kept.  A direct provider's backing service
 // is removed with it, and with that its API keys and model list; the vault
-// slot is configured on the relay and is not touched.
+// slot is configured on the relay and is not touched.  A provider that a
+// synthetic model targets is not deleted: 409 with the names of the models.
 func (d Deps) DeleteAIProvider(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
 	p, ok := d.providerForWrite(w, r)

@@ -44,6 +44,11 @@ const (
 	ActionAIProviderModelsSync      = "ai_provider.models_sync"
 	ActionAIProviderModelAdd        = "ai_provider.model_add"
 	ActionAIProviderModelRemove     = "ai_provider.model_remove"
+	ActionAIModelCreate             = "ai_model.create"
+	ActionAIModelUpdate             = "ai_model.update"
+	ActionAIModelDelete             = "ai_model.delete"
+	ActionAIGatewayKeyCreate        = "ai_gateway_key.create"
+	ActionAIGatewayKeyRevoke        = "ai_gateway_key.revoke"
 
 	ActionCacheClear          = "cache.clear"
 	ActionCacheSettingsUpdate = "cache.settings.update"
@@ -140,6 +145,8 @@ var AllActions = []string{
 	ActionServiceAIConfigUpdate,
 	ActionAIProviderCreate, ActionAIProviderUpdate, ActionAIProviderDelete,
 	ActionAIProviderModelsSync, ActionAIProviderModelAdd, ActionAIProviderModelRemove,
+	ActionAIModelCreate, ActionAIModelUpdate, ActionAIModelDelete,
+	ActionAIGatewayKeyCreate, ActionAIGatewayKeyRevoke,
 	ActionCacheClear, ActionCacheSettingsUpdate,
 	ActionRedactionRuleCreate, ActionRedactionRuleUpdate, ActionRedactionRuleDelete,
 	ActionRedactionApplied,

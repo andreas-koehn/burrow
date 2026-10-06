@@ -248,6 +248,25 @@ type AIProviderStore interface {
 	RemoveProviderModel(ctx context.Context, slug, modelID string) error
 }
 
+// AIModelStore is the synthetic-model surface of the management API.
+// *store.Store satisfies it.
+type AIModelStore interface {
+	ListModels(ctx context.Context) ([]db.AIModel, error)
+	ModelByName(ctx context.Context, name string) (db.AIModel, error)
+	CreateModel(ctx context.Context, m db.AIModel) (db.AIModel, error)
+	UpdateModel(ctx context.Context, name string, m db.AIModel) (db.AIModel, error)
+	DeleteModel(ctx context.Context, name string) error
+}
+
+// AIGatewayKeyStore is the gateway-key surface of the management API.
+// *store.Store satisfies it. The plaintext key is the second result of
+// CreateGatewayKey and comes from nowhere else.
+type AIGatewayKeyStore interface {
+	CreateGatewayKey(ctx context.Context, userID, name string, allowed []string) (store.GatewayKey, string, error)
+	ListGatewayKeys(ctx context.Context, callerID, callerRole string) ([]store.GatewayKey, error)
+	RevokeGatewayKey(ctx context.Context, callerID, callerRole, id string) error
+}
+
 type Deps struct {
 	Users         UserStore
 	Tunnels       TunnelLister
@@ -360,11 +379,12 @@ type Deps struct {
 	// GET /cache/settings per_service list). May be nil before Task 24 wires
 	// the typed ServiceAIConfig store.
 	CacheServices CacheServiceLookup
-	// ModelAliases is the CRUD surface for the model_aliases table (spec
-	// Part C.1: GET/POST/PUT/DELETE /api/v1/models/aliases). *db.DB satisfies
-	// it; nil disables the four routes (handlers return 500 with a clear
-	// "alias store unavailable" body).
-	ModelAliases ModelAliasStore
+	// AIModels is the synthetic-model store behind /ai/models. nil: the
+	// list is empty and writes answer 503.
+	AIModels AIModelStore
+	// AIGatewayKeys is the gateway-key store behind /ai/keys. nil: the list
+	// is empty and writes answer 503.
+	AIGatewayKeys AIGatewayKeyStore
 	// InspectorRings is the per-service in-memory ring-buffer manager
 	// (spec Part E). *inspector.Manager satisfies it. When nil, the
 	// list/get routes degrade to empty / 404 and the stream returns 500.

@@ -221,34 +221,35 @@ func TestV050Contract_ServiceCredentialPut_204(t *testing.T) {
 
 // --- Part C — Multi-provider passthrough ----------------------------------
 
-// TestV050Contract_ModelAliasPost_ProviderPriority_Shape pins
-// POST /api/v1/models/aliases as 201 with provider + priority round-tripping
-// in the response (spec C.3).
-func TestV050Contract_ModelAliasPost_ProviderPriority_Shape(t *testing.T) {
+// TestV050Contract_ModelPost_Shape pins POST /api/v1/ai/models as 201 with
+// the targets round-tripping in the response. Synthetic models replaced the
+// model aliases of spec C.3: a target's provider and its place in the list
+// are what provider and priority were.
+func TestV050Contract_ModelPost_Shape(t *testing.T) {
 	d := v050Deps()
-	d.ModelAliases = newFakeModelAliasStore()
+	d.AIModels = &fakeModelStore{}
 	srv := httptest.NewServer(NewRouter(d))
 	defer srv.Close()
 	c := authedClient(t, srv)
 
-	r := c.post(t, "/api/v1/models/aliases", map[string]any{
-		"alias":          "fast",
-		"concrete_model": "llama3.1:8b",
-		"service_id":     "svc_ai001",
-		"provider":       "ollama",
-		"priority":       50,
+	r := c.post(t, "/api/v1/ai/models", map[string]any{
+		"name": "fast",
+		"targets": []map[string]string{
+			{"dialect": "openai", "provider": "ollama", "model": "llama3.1:8b"},
+		},
 	})
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("status=%d body=%s", r.StatusCode, readBody(t, r))
 	}
 	obj := v050Decode(t, r)
-	v050AssertContainsKeys(t, "POST /models/aliases", obj,
-		[]string{"alias", "concrete_model", "service_id", "provider", "priority"})
-	if obj["provider"] != "ollama" {
-		t.Errorf("provider round-trip: got %v want ollama", obj["provider"])
+	v050AssertContainsKeys(t, "POST /ai/models", obj,
+		[]string{"name", "enabled", "targets", "dialects", "created_at", "updated_at"})
+	targets, _ := obj["targets"].([]any)
+	if len(targets) != 1 {
+		t.Fatalf("targets: got %v", obj["targets"])
 	}
-	if p, _ := obj["priority"].(float64); int(p) != 50 {
-		t.Errorf("priority round-trip: got %v want 50", obj["priority"])
+	if tg, _ := targets[0].(map[string]any); tg["provider"] != "ollama" || tg["model"] != "llama3.1:8b" {
+		t.Errorf("target round-trip: got %v", targets[0])
 	}
 }
 

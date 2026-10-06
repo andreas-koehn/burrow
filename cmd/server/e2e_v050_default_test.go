@@ -20,8 +20,9 @@ package main
 //	                           block present + enabled=false in default build
 //	B upstream credentials   — PUT /api/v1/services/{svc}/upstream-credential
 //	                           after seeding env BURROW_UPSTREAM_KEY_OPENAI
-//	C multi-provider         — POST /api/v1/models/aliases with provider +
-//	                           priority; assert round-trip
+//	C multi-provider         — a direct provider, POST /api/v1/ai/models with
+//	                           a target on it and POST /api/v1/ai/keys;
+//	                           assert round-trip (see v050CheckSyntheticModel)
 //	D custom domains         — POST /api/v1/services/{svc}/domains with a
 //	                           CA-signed leaf covering "foo.example.com"
 //	E connection logs        — see comment on TestV050DefaultBuildE2E/E
@@ -210,7 +211,9 @@ func buildV050EnvOnDB(t *testing.T, sqldb *sql.DB, driver, urlRedacted string) *
 		InspectorRings:      v04.InspectorMgr,
 		InspectorServices:   cacheServiceLookupAdapter{db: wrapped},
 		InspectorReplayer:   newInspectorReplayer(v04.AIChain, log),
-		ModelAliases:        wrapped,
+		AIProviders:         st,
+		AIModels:            st,
+		AIGatewayKeys:       st,
 		IPGeo:               wrapped,
 		IPGeoServices:       wrapped,
 		GeoLookup:           v04.GeoLookup,
@@ -281,6 +284,80 @@ func buildV050EnvOnDB(t *testing.T, sqldb *sql.DB, driver, urlRedacted string) *
 	testCAByEnv[env] = &testCAPair{cert: caCert, key: caKey}
 	t.Cleanup(func() { delete(testCAByEnv, env) })
 	return env
+}
+
+// v050CheckSyntheticModel is Part C, shared with the Postgres flavour.
+// Synthetic models replaced the model aliases of v0.5.0: a model is created
+// through the API with a target on a direct provider, a gateway key is
+// created for it, and the provider cannot be deleted while the model targets
+// it. Everything it creates is removed again.
+func v050CheckSyntheticModel(t *testing.T, env *v050Env) {
+	t.Helper()
+	code, body := env.do(t, http.MethodPost, "/api/v1/ai/providers", map[string]any{
+		"slug": "e2e-direct", "name": "E2E direct", "kind": "direct",
+		"base_url": "https://api.example.com/v1", "credential_slot": "OPENAI",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create provider: status=%d body=%s", code, body)
+	}
+	t.Cleanup(func() {
+		env.do(t, http.MethodDelete, "/api/v1/ai/models/fast", nil)
+		env.do(t, http.MethodDelete, "/api/v1/ai/providers/e2e-direct", nil)
+	})
+
+	code, body = env.do(t, http.MethodPost, "/api/v1/ai/models", map[string]any{
+		"name":    "fast",
+		"targets": []map[string]string{{"provider": "e2e-direct", "model": "llama3.1:8b"}},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create model: status=%d body=%s", code, body)
+	}
+	var model struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+		Targets []struct {
+			Dialect, Provider, Model string
+		} `json:"targets"`
+		Dialects []string `json:"dialects"`
+	}
+	if err := json.Unmarshal(body, &model); err != nil {
+		t.Fatalf("decode: %v body=%s", err, body)
+	}
+	if model.Name != "fast" || !model.Enabled || len(model.Targets) != 1 || len(model.Dialects) != 1 || model.Dialects[0] != "openai" {
+		t.Fatalf("model = %+v (body=%s)", model, body)
+	}
+	if tg := model.Targets[0]; tg.Dialect != "openai" || tg.Provider != "e2e-direct" || tg.Model != "llama3.1:8b" {
+		t.Errorf("target = %+v, want the provider's format filled in", tg)
+	}
+
+	// A gateway key restricted to the model: the key comes back once.
+	code, body = env.do(t, http.MethodPost, "/api/v1/ai/keys", map[string]any{"name": "e2e", "allowed_models": []string{"fast"}})
+	if code != http.StatusCreated {
+		t.Fatalf("create key: status=%d body=%s", code, body)
+	}
+	var key struct{ ID, Key string }
+	if err := json.Unmarshal(body, &key); err != nil || !strings.HasPrefix(key.Key, "bgw_") || len(key.Key) != 47 {
+		t.Fatalf("key response: %v body=%s", err, body)
+	}
+	code, body = env.do(t, http.MethodGet, "/api/v1/ai/keys", nil)
+	if code != http.StatusOK || !strings.Contains(string(body), key.ID) || strings.Contains(string(body), key.Key) {
+		t.Errorf("key list: status=%d body=%s", code, body)
+	}
+	if code, body = env.do(t, http.MethodDelete, "/api/v1/ai/keys/"+key.ID, nil); code != http.StatusNoContent {
+		t.Errorf("revoke key: status=%d body=%s", code, body)
+	}
+
+	// The provider is in use: 409 naming the model, and it stays.
+	code, body = env.do(t, http.MethodDelete, "/api/v1/ai/providers/e2e-direct", nil)
+	if code != http.StatusConflict || !strings.Contains(string(body), "provider is used by model(s): fast") {
+		t.Fatalf("delete provider in use: status=%d body=%s", code, body)
+	}
+	if code, body = env.do(t, http.MethodDelete, "/api/v1/ai/models/fast", nil); code != http.StatusNoContent {
+		t.Fatalf("delete model: status=%d body=%s", code, body)
+	}
+	if code, body = env.do(t, http.MethodDelete, "/api/v1/ai/providers/e2e-direct", nil); code != http.StatusNoContent {
+		t.Fatalf("delete provider: status=%d body=%s", code, body)
+	}
 }
 
 // do executes an authenticated JSON request with the CSRF header on
@@ -384,31 +461,8 @@ func TestV050DefaultBuildE2E(t *testing.T) {
 		}
 	})
 
-	// --- Part C — multi-provider model alias POST -------------------------
-	t.Run("C_model_alias_provider_priority", func(t *testing.T) {
-		code, body := env.do(t, http.MethodPost, "/api/v1/models/aliases",
-			map[string]any{
-				"alias":          "fast",
-				"concrete_model": "llama3.1:8b",
-				"service_id":     env.serviceID,
-				"provider":       "ollama",
-				"priority":       100,
-			})
-		if code != http.StatusCreated {
-			t.Fatalf("status=%d body=%s", code, body)
-		}
-		var obj map[string]any
-		if err := json.Unmarshal(body, &obj); err != nil {
-			t.Fatalf("decode: %v body=%s", err, body)
-		}
-		if obj["provider"] != "ollama" {
-			t.Errorf("provider=%v want ollama (body=%s)", obj["provider"], body)
-		}
-		// JSON unmarshals numbers as float64.
-		if p, _ := obj["priority"].(float64); int(p) != 100 {
-			t.Errorf("priority=%v want 100 (body=%s)", obj["priority"], body)
-		}
-	})
+	// --- Part C — multi-provider: a synthetic model and a gateway key ----
+	t.Run("C_synthetic_model_and_gateway_key", func(t *testing.T) { v050CheckSyntheticModel(t, env) })
 
 	// --- Part D — custom domain POST --------------------------------------
 	t.Run("D_custom_domain_post", func(t *testing.T) {

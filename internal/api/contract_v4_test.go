@@ -72,9 +72,9 @@ func v040Decode(t *testing.T, r *http.Response) map[string]any {
 // We use the SAME fakes the per-feature tests use so the sentinel exercises
 // the same handler code path the targeted tests already cover — the goal
 // here is to pin the *wire shape* across all endpoints, not to re-test
-// per-feature behavior. ModelAliases is intentionally left nil — the
-// handler degrades to an empty JSON array, which is the documented zero
-// state we want to pin.
+// per-feature behavior. AIModels is intentionally left nil — the handler
+// degrades to an empty JSON array, which is the documented zero state we
+// want to pin.
 func v040Deps() Deps {
 	auto := newFakeAutomationStore()
 	return Deps{
@@ -83,7 +83,7 @@ func v040Deps() Deps {
 		Settings:      &fakeCacheSettingsStore{},
 		CacheServices: &fakeCacheServiceLookup{},
 		// CacheEngine left nil — handler degrades to zero-stats response.
-		// ModelAliases left nil — handler emits [] (documented zero state).
+		// AIModels left nil — handler emits [] (documented zero state).
 		RateLimitDB: newFakeRateLimitStore(),
 		RateLimits:  &fakeQuotaEngine{},
 		CostEngine:  &fakeCostEngine{},
@@ -124,7 +124,6 @@ func TestV040Contract_CacheSettings_Shape(t *testing.T) {
 // spec Part B.4).
 func TestV040Contract_RedactionSettings_Shape(t *testing.T) {
 	d := v040Deps()
-	d.ModelAliases = nil
 	srv := httptest.NewServer(NewRouter(d))
 	defer srv.Close()
 	c := authedClient(t, srv)
@@ -146,7 +145,6 @@ func TestV040Contract_RedactionSettings_Shape(t *testing.T) {
 // spec Part B.5).
 func TestV040Contract_GuardrailSettings_Shape(t *testing.T) {
 	d := v040Deps()
-	d.ModelAliases = nil
 	srv := httptest.NewServer(NewRouter(d))
 	defer srv.Close()
 	c := authedClient(t, srv)
@@ -163,16 +161,16 @@ func TestV040Contract_GuardrailSettings_Shape(t *testing.T) {
 	}
 }
 
-// TestV040Contract_ModelAliases_Shape pins GET /api/v1/models/aliases to
-// a JSON array (spec Part C.1). With a nil ModelAliases dep the handler
+// TestV040Contract_Models_Shape pins GET /api/v1/ai/models, which replaced
+// the model-alias list, to a JSON array. With a nil AIModels dep the handler
 // degrades to `[]`, which is the documented zero state.
-func TestV040Contract_ModelAliases_Shape(t *testing.T) {
+func TestV040Contract_Models_Shape(t *testing.T) {
 	d := v040Deps()
 	srv := httptest.NewServer(NewRouter(d))
 	defer srv.Close()
 	c := authedClient(t, srv)
 
-	r := c.get(t, "/api/v1/models/aliases")
+	r := c.get(t, "/api/v1/ai/models")
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d body=%s", r.StatusCode, readBody(t, r))
 	}

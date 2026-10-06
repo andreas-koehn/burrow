@@ -206,14 +206,14 @@ func tunnelProvider(slug, name, serviceID string) db.AIProvider {
 }
 
 // newAIProviderDeps assembles Deps for AI provider handler tests.
-func newAIProviderDeps(ss *fakeServiceStore, aliases *fakeModelAliasStore, ps *fakeProviderStore) Deps {
+func newAIProviderDeps(ss *fakeServiceStore, models *fakeModelStore, ps *fakeProviderStore) Deps {
 	return Deps{
-		Users:        &fakeUserStore{role: "admin"},
-		Services:     ss,
-		AIProviders:  ps,
-		ModelAliases: aliases,
-		AuthDomain:   "burrow.example.com",
-		Log:          discardLog(),
+		Users:       &fakeUserStore{role: "admin"},
+		Services:    ss,
+		AIProviders: ps,
+		AIModels:    models,
+		AuthDomain:  "burrow.example.com",
+		Log:         discardLog(),
 	}
 }
 
@@ -283,19 +283,13 @@ func TestListProviders(t *testing.T) {
 	}
 	seedAPIKey(ss, "key-1")
 
-	aliases := newFakeModelAliasStore()
-	if err := aliases.CreateModelAlias(context.Background(), db.ModelAlias{
-		Alias:         "gpt4o",
-		ConcreteModel: "gpt-4o",
-		ServiceID:     "svc-ai",
-		Provider:      "openai",
-		Priority:      100,
-	}); err != nil {
-		t.Fatalf("seed alias: %v", err)
-	}
+	models := &fakeModelStore{rows: []db.AIModel{{
+		Name: "gpt4o", Enabled: true,
+		Targets: []db.AIModelTarget{{Dialect: "openai", ProviderSlug: "ollama", TargetModel: "gpt-4o"}},
+	}}}
 	ps := &fakeProviderStore{rows: []db.AIProvider{tunnelProvider("ollama", "Ollama", "svc-ai")}}
 
-	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, aliases, ps))
+	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, models, ps))
 	defer srv.Close()
 
 	out := decodeProviders(t, c.get(t, "/api/v1/ai/providers"))
@@ -319,8 +313,8 @@ func TestListProviders(t *testing.T) {
 	if p.ConcreteModel != "gpt-4o" {
 		t.Errorf("concrete_model: got %q want gpt-4o", p.ConcreteModel)
 	}
-	if p.BackendType != "openai-compat" {
-		t.Errorf("backend_type: got %q want openai-compat", p.BackendType)
+	if p.BackendType != "other" {
+		t.Errorf("backend_type: got %q want other", p.BackendType)
 	}
 	if p.APIKeyCount != 1 {
 		t.Errorf("api_key_count: got %d want 1", p.APIKeyCount)
@@ -337,7 +331,7 @@ func TestListProviders(t *testing.T) {
 
 func TestListProviders_NoAuthDomain_BaseURLEmpty(t *testing.T) {
 	ss, ps := oneProviderFixture()
-	d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+	d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
 	d.AuthDomain = ""
 	srv, c := newAIProviderServer(t, d)
 	defer srv.Close()
@@ -353,7 +347,7 @@ func TestListProviders_HidesProviderOfInvisibleService(t *testing.T) {
 	// belongs to someone else and must be omitted.
 	ss, ps := oneProviderFixture()
 	ps.rows = append(ps.rows, tunnelProvider("secret", "Secret", "svc-hidden"))
-	d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+	d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
 	d.Users = &fakeUserStore{role: "user"}
 	srv, c := newAIProviderServer(t, d)
 	defer srv.Close()
@@ -368,7 +362,7 @@ func TestListProviders_HidesProviderOfInvisibleService(t *testing.T) {
 
 func TestListProviders_SurfacesMetrics(t *testing.T) {
 	ss, ps := oneProviderFixture()
-	d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+	d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
 	d.AIMetrics = &fakeAIMetrics{counts: map[string]db.AIEndpointCount{"svc1": {Requests: 42, CacheHits: 7}}}
 
 	srv, c := newAIProviderServer(t, d)
@@ -392,7 +386,7 @@ func TestListProviders_SurfacesMetrics(t *testing.T) {
 
 func TestGetProvider(t *testing.T) {
 	ss, ps := oneProviderFixture()
-	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, &fakeModelStore{}, ps))
 	defer srv.Close()
 
 	resp := c.get(t, "/api/v1/ai/providers/ollama")
@@ -432,7 +426,7 @@ func (f *fakeAIMetrics) AIEndpointMetrics24h(_ context.Context, serviceID string
 
 func TestProviderMetrics(t *testing.T) {
 	ss, ps := oneProviderFixture()
-	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, &fakeModelStore{}, ps))
 	defer srv.Close()
 
 	resp := c.get(t, "/api/v1/ai/providers/ollama/metrics")
@@ -469,7 +463,7 @@ func TestProviderMetrics(t *testing.T) {
 func TestProviderMetrics_404WhenServiceNotVisible(t *testing.T) {
 	ss, ps := oneProviderFixture()
 	ss.getSvcErr = store.ErrForbidden
-	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, &fakeModelStore{}, ps))
 	defer srv.Close()
 
 	hidden := wantStatus(t, c.get(t, "/api/v1/ai/providers/ollama/metrics"), http.StatusNotFound)
@@ -483,7 +477,7 @@ func TestProviderMetrics_404WhenServiceNotVisible(t *testing.T) {
 func TestProviderMetrics_LogsQueryFailure(t *testing.T) {
 	ss, ps := oneProviderFixture()
 	var logs bytes.Buffer
-	d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+	d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
 	d.Log = slog.New(slog.NewTextHandler(&logs, nil))
 	d.AIMetrics = &fakeAIMetrics{err: errors.New("usage query broke")}
 	srv, c := newAIProviderServer(t, d)
@@ -512,7 +506,7 @@ func TestProviderMetrics_SurfacesAggregates(t *testing.T) {
 	ss, ps := oneProviderFixture()
 	agg := db.AIEndpointAgg{Requests: 10, TokensIn: 100, TokensOut: 200, CacheHits: 4}
 	agg.PerMinute[59] = 3
-	d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+	d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
 	m := &fakeAIMetrics{agg: agg}
 	d.AIMetrics = m
 
@@ -550,7 +544,7 @@ func TestPostProvider(t *testing.T) {
 	newServer := func(t *testing.T, ps *fakeProviderStore) (*authClient, *stubAuditAppender) {
 		ss, _ := oneProviderFixture()
 		aud := &stubAuditAppender{}
-		d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+		d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
 		d.AuditAppender = aud
 		srv, c := newAIProviderServer(t, d)
 		t.Cleanup(srv.Close)
@@ -643,7 +637,7 @@ func TestPutProvider(t *testing.T) {
 	newServer := func(t *testing.T) (*authClient, *fakeProviderStore, *stubAuditAppender) {
 		ss, ps := oneProviderFixture()
 		aud := &stubAuditAppender{}
-		d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+		d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
 		d.AuditAppender = aud
 		srv, c := newAIProviderServer(t, d)
 		t.Cleanup(srv.Close)
@@ -714,7 +708,7 @@ func TestPutProvider(t *testing.T) {
 func TestDeleteProvider(t *testing.T) {
 	ss, ps := oneProviderFixture()
 	aud := &stubAuditAppender{}
-	d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+	d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
 	d.AuditAppender = aud
 	srv, c := newAIProviderServer(t, d)
 	defer srv.Close()
@@ -761,7 +755,7 @@ var providerRoutes = []struct {
 
 func TestProviderRoutes_Unauthenticated(t *testing.T) {
 	ss, ps := oneProviderFixture()
-	srv := httptest.NewServer(NewRouter(newAIProviderDeps(ss, newFakeModelAliasStore(), ps)))
+	srv := httptest.NewServer(NewRouter(newAIProviderDeps(ss, &fakeModelStore{}, ps)))
 	defer srv.Close()
 
 	// No session cookie at all.
@@ -779,7 +773,7 @@ func TestProviderRoutes_Unauthenticated(t *testing.T) {
 func TestPostProvider_RequiresAdmin(t *testing.T) {
 	ss, ps := oneProviderFixture()
 	aud := &stubAuditAppender{}
-	d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+	d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
 	d.Users = &fakeUserStore{role: "user"}
 	d.AuditAppender = aud
 	srv, c := newAIProviderServer(t, d)
@@ -808,7 +802,7 @@ func TestPostProvider_RequiresAdmin(t *testing.T) {
 
 func TestAIEndpointsRouteRemoved(t *testing.T) {
 	ss, ps := oneProviderFixture()
-	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, &fakeModelStore{}, ps))
 	defer srv.Close()
 
 	for _, path := range []string{"/api/v1/ai/endpoints", "/api/v1/ai/endpoints/svc1/metrics"} {
@@ -820,7 +814,7 @@ func TestAIEndpointsRouteRemoved(t *testing.T) {
 func TestProviderResponse_CarriesNoKeyMaterial(t *testing.T) {
 	ss, ps := oneProviderFixture()
 	ss.listKeys = []db.ServiceAPIKey{{ID: "key-1", Name: "k1", KeyHash: "hash-secretvalue"}}
-	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, &fakeModelStore{}, ps))
 	defer srv.Close()
 
 	for _, path := range []string{"/api/v1/ai/providers", "/api/v1/ai/providers/ollama"} {
@@ -871,7 +865,7 @@ func newDirectFixture() *directFixture {
 		ExtraHeaders: map[string]string{"X-Title": "header-value-do-not-leak"}, Billing: "metered",
 	})
 	f := &directFixture{ps: ps, aud: &stubAuditAppender{}, logs: &bytes.Buffer{}}
-	f.d = newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+	f.d = newAIProviderDeps(ss, &fakeModelStore{}, ps)
 	f.d.AuditAppender = f.aud
 	f.d.Log = slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	f.d.CredentialVault = secretVault{"OPENROUTER": upstreamSecret, "EMPTY": ""}
@@ -1536,7 +1530,7 @@ func TestDirectProvider_UnknownFieldRefused(t *testing.T) {
 		ss, ps := oneProviderFixture()
 		ps.rows = nil
 		logs := &bytes.Buffer{}
-		d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+		d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
 		d.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 		srv, tc := newAIProviderServer(t, d)
 		body := wantStatus(t, tc.post(t, "/api/v1/ai/providers", in), http.StatusBadRequest)
@@ -1553,7 +1547,7 @@ func TestDirectProvider_UnknownFieldRefused(t *testing.T) {
 	} {
 		ss, ps := oneProviderFixture()
 		ps.rows = nil
-		srv, tc := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+		srv, tc := newAIProviderServer(t, newAIProviderDeps(ss, &fakeModelStore{}, ps))
 		wantStatus(t, tc.post(t, "/api/v1/ai/providers", in), http.StatusCreated)
 		srv.Close()
 	}
@@ -1575,7 +1569,7 @@ func TestPostProvider_UpstreamFieldsNeedKindDirect(t *testing.T) {
 			ss, ps := oneProviderFixture()
 			ps.rows = nil
 			aud := &stubAuditAppender{}
-			d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+			d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
 			d.AuditAppender = aud
 			srv, c := newAIProviderServer(t, d)
 			defer srv.Close()
@@ -1604,7 +1598,7 @@ func TestPostProvider_UnknownFieldHintOnlyForDirect(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ss, ps := oneProviderFixture()
 			ps.rows = nil
-			srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+			srv, c := newAIProviderServer(t, newAIProviderDeps(ss, &fakeModelStore{}, ps))
 			defer srv.Close()
 			body := wantStatus(t, c.post(t, "/api/v1/ai/providers", tc.in), http.StatusBadRequest)
 			if !strings.Contains(body, `unknown field \"api_key\"`) {
@@ -1636,7 +1630,7 @@ func TestPutProviderUpstream_BusyIs409(t *testing.T) {
 // price table for the tokens of rows without a reported cost.
 func TestProviderMetrics_CostUsesReportedCost(t *testing.T) {
 	ss, ps := oneProviderFixture()
-	d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+	d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
 	d.AIMetrics = &fakeAIMetrics{agg: db.AIEndpointAgg{Requests: 3, TokensIn: 3_000_000, ByKind: []db.AIEndpointKindTokens{
 		{Kind: "k", TokensIn: 3_000_000, ReportedUSD: 0.25, PricedTokensIn: 1_000_000},
 		{Kind: "no-price", TokensIn: 5, TokensOut: 5, ReportedUSD: 0.5},
@@ -1732,7 +1726,7 @@ func TestPutProvider_SupportsResponses(t *testing.T) {
 	newServer := func(t *testing.T) (*authClient, *fakeProviderStore, *stubAuditAppender) {
 		ss, ps := oneProviderFixture()
 		aud := &stubAuditAppender{}
-		d := newAIProviderDeps(ss, newFakeModelAliasStore(), ps)
+		d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
 		d.AuditAppender = aud
 		srv, c := newAIProviderServer(t, d)
 		t.Cleanup(srv.Close)
@@ -1834,7 +1828,7 @@ func TestPutProvider_SupportsResponses(t *testing.T) {
 func TestPostProvider_TunnelWithSupportsResponsesRefused(t *testing.T) {
 	ss, ps := oneProviderFixture()
 	ps.rows = nil
-	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+	srv, c := newAIProviderServer(t, newAIProviderDeps(ss, &fakeModelStore{}, ps))
 	defer srv.Close()
 	for _, on := range []bool{true, false} {
 		body := wantStatus(t, c.post(t, "/api/v1/ai/providers", map[string]any{"name": "Ollama", "slug": "ollama", "service_id": "svc1", "supports_responses": on}), http.StatusBadRequest)
@@ -1848,7 +1842,7 @@ func TestPostProvider_TunnelGatewayOnly(t *testing.T) {
 	post := func(t *testing.T, body map[string]any) (*fakeServiceStore, int) {
 		ss, ps := oneProviderFixture()
 		ps.rows = nil
-		srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+		srv, c := newAIProviderServer(t, newAIProviderDeps(ss, &fakeModelStore{}, ps))
 		defer srv.Close()
 		resp := c.post(t, "/api/v1/ai/providers", body)
 		resp.Body.Close()
@@ -1879,7 +1873,7 @@ func TestPostProvider_TunnelGatewayOnly(t *testing.T) {
 		ss, ps := oneProviderFixture()
 		ps.rows = nil
 		ss.gatewayOnlyErr = errors.New("boom")
-		srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+		srv, c := newAIProviderServer(t, newAIProviderDeps(ss, &fakeModelStore{}, ps))
 		defer srv.Close()
 		resp := c.post(t, "/api/v1/ai/providers", map[string]any{"name": "Ollama", "slug": "ollama", "service_id": "svc1", "gateway_only": true})
 		resp.Body.Close()
@@ -1890,7 +1884,7 @@ func TestPostProvider_TunnelGatewayOnly(t *testing.T) {
 	t.Run("ignored for kind direct", func(t *testing.T) {
 		ss, _ := oneProviderFixture()
 		ps := &fakeProviderStore{}
-		srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+		srv, c := newAIProviderServer(t, newAIProviderDeps(ss, &fakeModelStore{}, ps))
 		defer srv.Close()
 		resp := c.post(t, "/api/v1/ai/providers", map[string]any{"name": "OpenAI", "slug": "openai", "kind": "direct", "base_url": "https://api.openai.com/v1", "gateway_only": true})
 		resp.Body.Close()
