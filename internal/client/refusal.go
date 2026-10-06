@@ -1,6 +1,10 @@
 package client
 
-import "github.com/ankoehn/burrow/internal/proto"
+import (
+	"strconv"
+
+	"github.com/ankoehn/burrow/internal/proto"
+)
 
 // The two moments at which a relay can refuse.
 const (
@@ -69,8 +73,16 @@ type AccessNotAppliedError struct {
 	Name   string // the service
 	Access string // the relay access mode that was wished for
 	URL    string // the public address the relay reported; from outside, may be ""
+	// Services is how many services the run has when it has more than one
+	// (`burrow up`), and 0 otherwise. The session ends for all of them: with
+	// more than one, none of them is served.
+	Services int
 }
 
 func (e *AccessNotAppliedError) Error() string {
-	return "register failed: the relay did not apply access mode " + e.Access + " to service " + e.Name + "; the service is not served"
+	s := "register failed: the relay did not apply access mode " + e.Access + " to service " + e.Name
+	if e.Services > 1 {
+		return s + "; none of the " + strconv.Itoa(e.Services) + " services is served"
+	}
+	return s + "; the service is not served"
 }

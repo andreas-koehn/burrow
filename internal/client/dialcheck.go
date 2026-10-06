@@ -38,11 +38,14 @@ func dialControl(ctx context.Context, o Options) (net.Conn, error) {
 }
 
 // authenticate sends the auth request and reads the answer. A refusal is the
-// returned response with OK false, not an error.
-func authenticate(conn net.Conn, token string) (proto.AuthResponse, error) {
+// returned response with OK false, not an error. capabilities names the
+// optional messages the caller reads; without any the request is the one a
+// client has always sent.
+func authenticate(conn net.Conn, token string, capabilities []string) (proto.AuthResponse, error) {
 	if err := proto.WriteMessage(conn, proto.MsgAuthRequest, proto.AuthRequest{
 		ProtocolVersion: proto.ProtocolVersion, Token: token,
 		ClientVersion: version.Version, OS: runtime.GOOS, Arch: runtime.GOARCH,
+		Capabilities: capabilities,
 	}); err != nil {
 		return proto.AuthResponse{}, err
 	}
@@ -69,7 +72,7 @@ func CheckAuth(ctx context.Context, o Options) (AuthResult, error) {
 	// Reads on the connection do not see ctx; closing it ends them.
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
-	ar, err := authenticate(conn, o.Token)
+	ar, err := authenticate(conn, o.Token, nil)
 	if err != nil {
 		if ctx.Err() != nil {
 			return AuthResult{}, ctx.Err()

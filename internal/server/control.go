@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -75,11 +76,49 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 	if err := proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{OK: true, SessionID: sessionID, RelayVersion: version.Version}); err != nil {
 		return nil, err
 	}
-	return &ClientSession{
+	cs := &ClientSession{
 		SessionID: sessionID, UserID: userID, RemoteAddr: conn.RemoteAddr().String(),
 		OS: ar.OS, Arch: ar.Arch, ClientVersion: ar.ClientVersion, TokenName: tokenName,
 		Tunnels: map[string]*Tunnel{},
-	}, nil
+	}
+	// Only a client that says it reads request summaries is sent any. A name
+	// this relay does not know turns nothing on.
+	if slices.Contains(ar.Capabilities, proto.CapRequestSummaries) {
+		cs.summaries = make(chan proto.RequestSummary, summaryQueue)
+	}
+	return cs, nil
+}
+
+// RequestSummary hands the summary of a request to the client whose tunnel
+// served it, when that client asked for summaries. It never waits (see
+// ClientSession.offerSummary), so the proxy can call it on the goroutine of
+// the request: it is the proxy's SummarySink.
+//
+// The summary goes to the session that owns the tunnel it names, and only when
+// that tunnel is an http tunnel of the service: never to another session, and
+// never for a tcp tunnel. A summary that names no tunnel is for the service's
+// live tunnel.
+func (s *Server) RequestSummary(serviceID string, sum proto.RequestSummary) {
+	if serviceID == "" {
+		return
+	}
+	var cs *ClientSession
+	if sum.TunnelID == "" {
+		tn, ok := s.LookupHTTPTunnelByServiceID(serviceID)
+		if !ok {
+			return
+		}
+		cs, sum.TunnelID = tn.sess, tn.ID
+	} else if owner, ok := s.reg.SessionByTunnelID(sum.TunnelID); ok {
+		cs = owner
+	}
+	if cs == nil || !cs.WantsRequestSummaries() {
+		return
+	}
+	if tn := s.reg.Tunnel(cs, sum.TunnelID); tn == nil || !tn.IsHTTP || tn.ServiceID != serviceID {
+		return
+	}
+	cs.offerSummary(sum)
 }
 
 // olderThan reports whether the client version is older than min. Both are

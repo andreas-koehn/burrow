@@ -9,6 +9,9 @@ package server
 //	old     new     a client in this file that writes the JSON of before the change, as text
 //	new     old     a relay in this file that answers the JSON of before the change, as text
 //	old     old     the tests that existed before; they are unchanged and still pass
+//
+// Request summaries (the request_summary message and the capability a client
+// announces for it) have their rows of the matrix at the end of the file.
 
 import (
 	"context"
@@ -21,6 +24,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -171,6 +175,19 @@ type regObserver struct {
 	mu       sync.Mutex
 	regs     map[string]client.RegisteredTunnel
 	sessions []client.SessionInfo
+	requests []string
+}
+
+func (r *regObserver) Request(id string, at time.Time, method, path string, status int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.requests = append(r.requests, id+" "+at.UTC().Format(time.RFC3339)+" "+method+" "+path+" "+strconv.Itoa(status))
+}
+
+func (r *regObserver) seen() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.requests...)
 }
 
 func (r *regObserver) State(client.ConnState, string, time.Duration) {}
@@ -478,6 +495,7 @@ type oldRelay struct {
 
 	mu        sync.Mutex
 	registers []string
+	auths     []string // the auth requests, as the client wrote them
 }
 
 func startOldRelay(t *testing.T) *oldRelay {
@@ -530,6 +548,9 @@ func (r *oldRelay) serve(t *testing.T, conn net.Conn) {
 	if proto.ReadFrame(conn, &env) != nil || env.Type != proto.MsgAuthRequest {
 		return
 	}
+	r.mu.Lock()
+	r.auths = append(r.auths, string(env.Payload))
+	r.mu.Unlock()
 	if proto.WriteFrame(conn, proto.Envelope{Type: proto.MsgAuthResponse, Payload: json.RawMessage(`{"ok":true,"session_id":"old-session"}`)}) != nil {
 		return
 	}
@@ -743,5 +764,128 @@ func TestCompat_NewClientOldRelay_SlugIsNotSilentlyLost(t *testing.T) {
 			t.Fatalf("%+v: registration %+v", tc.spec, got)
 		}
 		r.throughTunnel(t)
+	}
+}
+
+// runSummaryClient runs the client of this code base as `burrow http` runs it
+// on a terminal: with an observer, asking for request summaries.
+func runSummaryClient(t *testing.T, addr string, pool *x509.CertPool, obs client.Observer, tunnels ...client.TunnelSpec) {
+	t.Helper()
+	c := client.New(client.Options{
+		Server: addr, Token: "bur_test_0000", RootCAs: pool, ServerName: "localhost",
+		Tunnels: tunnels, Observer: obs, Logger: slog.New(slog.DiscardHandler), StopOnRefusal: true,
+		RequestSummaries: true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = c.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+}
+
+// new client, new relay: the client announces the capability and is told of
+// the requests to its http service.
+func TestCompat_Summaries_NewClientNewRelay(t *testing.T) {
+	s, pool := newRelay(t, "")
+	local := echoOnce(t)
+	obs := &regObserver{}
+	runSummaryClient(t, s.Addr(), pool, obs,
+		client.TunnelSpec{Name: "web", Type: "http", LocalAddr: local},
+		client.TunnelSpec{Name: "echo", Type: "tcp", LocalAddr: local})
+	regs := obs.wait(t, 2)
+	s.RequestSummary("svc-web", proto.RequestSummary{TunnelID: regs["web"].TunnelID, Time: "2026-10-05T14:02:11Z", Method: "GET", Path: "/api/users", Status: 200})
+	want := regs["web"].TunnelID + " 2026-10-05T14:02:11Z GET /api/users 200"
+	deadline := time.Now().Add(3 * time.Second)
+	for len(obs.seen()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := obs.seen(); len(got) != 1 || got[0] != want {
+		t.Fatalf("the client was told %q, want %q", got, want)
+	}
+	// The tunnels work as before.
+	throughPort(t, regs["echo"].RemotePort)
+}
+
+// new client, new relay, but the client does not ask (`burrow connect`, or
+// any run that prints log lines): its auth request is the one of before and
+// it is sent nothing new.
+func TestCompat_Summaries_NewClientThatDoesNotAsk(t *testing.T) {
+	s, pool := newRelay(t, "")
+	obs := &regObserver{}
+	runNewClient(t, s.Addr(), pool, obs, client.TunnelSpec{Name: "web", Type: "http", LocalAddr: echoOnce(t)})
+	web := obs.wait(t, 1)["web"]
+	for _, cs := range s.reg.Sessions() {
+		if cs.WantsRequestSummaries() {
+			t.Fatal("the relay has summaries on for a client that did not ask")
+		}
+	}
+	s.RequestSummary("svc-web", proto.RequestSummary{TunnelID: web.TunnelID, Time: "2026-10-05T14:02:11Z", Method: "GET", Path: "/", Status: 200})
+	time.Sleep(100 * time.Millisecond)
+	if got := obs.seen(); len(got) != 0 {
+		t.Fatalf("the client was told %q", got)
+	}
+}
+
+// old client, new relay: the client's auth request names no capability. The
+// relay never sends it a request_summary, a message that client does not
+// know, however many requests its service answers. (A client of before the
+// change passes over a message type it does not know without a word; the
+// relay does not rely on that.)
+func TestCompat_Summaries_OldClientNewRelay(t *testing.T) {
+	s, pool := newRelay(t, "")
+	c, raw := dialOld(t, s, pool, "bur_test_0000", "0.6.0")
+	if !strings.HasPrefix(raw, `{"ok":true`) {
+		t.Fatalf("auth: %s", raw)
+	}
+	c.openControl()
+	_, web := c.register(`{"name":"web","type":"http","remote_port":0,"local_addr":"127.0.0.1:3000"}`)
+	if !web.OK {
+		t.Fatalf("registration: %+v", web)
+	}
+	for i := 0; i < 50; i++ {
+		s.RequestSummary("svc-web", proto.RequestSummary{TunnelID: web.TunnelID, Time: "2026-10-05T14:02:11Z", Method: "GET", Path: "/", Status: 200})
+	}
+	time.Sleep(50 * time.Millisecond)
+	// The next thing the old client reads is the answer to what it sent.
+	sendRaw(t, c.ctrl, proto.MsgPing, `{"nonce":"hb"}`)
+	if got := readRaw(t, c.ctrl, proto.MsgPong); got != `{"nonce":"hb"}` {
+		t.Fatalf("pong = %s", got)
+	}
+	if _, again := c.register(`{"name":"web","type":"http","remote_port":0,"local_addr":"127.0.0.1:3000"}`); !again.OK || again.URL != web.URL {
+		t.Fatalf("second registration: %+v", again)
+	}
+}
+
+// new client, old relay: the relay reads the auth request with the fields it
+// knows and does not mind the new one; it sends no summaries, and the client
+// works as before and shows its connections.
+func TestCompat_Summaries_NewClientOldRelay(t *testing.T) {
+	r := startOldRelay(t)
+	obs := &regObserver{}
+	runSummaryClient(t, r.addr, r.pool, obs, client.TunnelSpec{Name: "web", Type: "http", LocalAddr: echoOnce(t)})
+	if got := obs.wait(t, 1)["web"]; got.TunnelID != "old-tunnel" || got.URL != "https://old.example.com/svc/k7p2qx/" {
+		t.Fatalf("registration: %+v", got)
+	}
+	r.throughTunnel(t)
+	r.throughTunnel(t)
+	r.mu.Lock()
+	auth := r.auths[0]
+	r.mu.Unlock()
+	// What the client wrote: the request of before and one more field.
+	if want := `{"protocol_version":1,"token":"bur_test_0000","client_version":"` + version.Version + `","os":"` + runtime.GOOS + `","arch":"` + runtime.GOARCH + `","capabilities":["request_summaries"]}`; auth != want {
+		t.Fatalf("auth request\n got %s\nwant %s", strings.Replace(auth, "bur_test_0000", "…", 1), strings.Replace(want, "bur_test_0000", "…", 1))
+	}
+	// The relay of before reads it into the shape it knows.
+	var old struct {
+		ProtocolVersion int    `json:"protocol_version"`
+		Token           string `json:"token"`
+		ClientVersion   string `json:"client_version"`
+		OS              string `json:"os"`
+		Arch            string `json:"arch"`
+	}
+	if err := proto.DecodePayload(proto.Envelope{Payload: json.RawMessage(auth)}, &old); err != nil || old.ProtocolVersion != 1 || old.Token != "bur_test_0000" {
+		t.Fatalf("the old relay cannot read the auth request: %v", err)
+	}
+	if got := obs.seen(); len(got) != 0 {
+		t.Fatalf("summaries from a relay that has none: %q", got)
 	}
 }

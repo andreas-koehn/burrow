@@ -708,6 +708,10 @@ func newRootCmd() *cobra.Command {
 				// audit.ActionAIUpstreamError rows on upstream failures
 				// for AI-gateway services (spec 27 / audit log contract).
 				proxy.WithAuditLogger(v04.AuditLogger),
+				// Each answered request of an http service is told to the
+				// client that serves it, when that client asked (the status
+				// view of `burrow http`). The control server never waits.
+				proxy.WithSummarySink(srv),
 			}
 			if ingressPort != "" {
 				proxyOpts = append(proxyOpts, proxy.WithIngressPort(ingressPort))

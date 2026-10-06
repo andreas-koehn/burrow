@@ -204,24 +204,338 @@ func TestStatusView_OffMeansLogLinesAsBefore(t *testing.T) {
 	}
 }
 
-// `connect` never shows the view, terminal or not.
+// `connect` never shows the view, terminal or not, and never asks the relay
+// for request summaries: what it sends is what it always sent.
 func TestStatusView_ConnectNeverUsesIt(t *testing.T) {
 	cleanEnv(t)
 	noTerminal(t)
 	yaml := writeFile(t, "burrow.yaml", twoServices)
-	for _, args := range [][]string{
-		{"--server", "relay.example.com:7000", "--token", "tok"},
-		{"--server", "relay.example.com:7000", "--token", "tok", "--type", "http"},
-		{"--config", yaml},
-	} {
-		s := captureStart(t)
-		if err := runConnect(t, args...); err != nil {
+	prevShows := stdoutShowsView
+	t.Cleanup(func() { stdoutShowsView = prevShows })
+	for _, onTerminal := range []bool{false, true} {
+		stdoutShowsView = func() bool { return onTerminal }
+		for _, args := range [][]string{
+			{"--server", "relay.example.com:7000", "--token", "tok"},
+			{"--server", "relay.example.com:7000", "--token", "tok", "--type", "http"},
+			{"--config", yaml},
+		} {
+			s := captureStart(t)
+			if err := runConnect(t, args...); err != nil {
+				t.Fatal(err)
+			}
+			if s.calls != 1 || s.opts.Observer != nil || s.opts.RequestSummaries {
+				t.Fatalf("terminal %v, %v: calls %d, observer set: %v, summaries asked: %v",
+					onTerminal, args, s.calls, s.opts.Observer != nil, s.opts.RequestSummaries)
+			}
+			logShape(t, s.opts.Logger) // a text or json logger with info on, as before
+
+			// The same through the root command, whose other commands would
+			// show the view on this terminal.
+			h := newHarness(t)
+			h.viewTerm = onTerminal
+			if code := h.exec(append([]string{"connect"}, args...)...); code != 0 {
+				t.Fatalf("terminal %v, connect %v: exit %d: %s", onTerminal, args, code, h.stderr.String())
+			}
+			if s.calls != 2 || s.opts.Observer != nil || s.opts.RequestSummaries {
+				t.Fatalf("terminal %v, connect %v through the root: calls %d, observer set: %v, summaries asked: %v",
+					onTerminal, args, s.calls, s.opts.Observer != nil, s.opts.RequestSummaries)
+			}
+			if out := h.stdout.String() + h.stderr.String(); strings.ContainsRune(out, 0x1b) {
+				t.Fatalf("ESC in the output of connect: %q", out)
+			}
+		}
+	}
+}
+
+// Request summaries are for the view. A run that prints log lines does not ask
+// the relay for them, so its log has the lines it always had.
+func TestStatusView_SummariesAreAskedForOnlyWithTheView(t *testing.T) {
+	cleanEnv(t)
+	t.Run("log lines", func(t *testing.T) {
+		noTerminal(t)
+		for _, ctx := range []context.Context{
+			context.Background(),
+			foregroundContext(context.Background(), true),  // http --log json
+			foregroundContext(context.Background(), false), // http, stdout is a pipe
+		} {
+			s := captureStart(t)
+			if err := runClient(ctx, viewCreds, viewTunnels, globalFlags{logLevel: "info", logFormat: "json"}); err != nil {
+				t.Fatal(err)
+			}
+			if s.opts.RequestSummaries {
+				t.Fatal("a run without the view asks for request summaries")
+			}
+		}
+	})
+	t.Run("view", func(t *testing.T) {
+		useProbes(t)
+		useTerminal(t, nil, 100, 30, false)
+		asked := false
+		useClient(t, func(_ context.Context, o client.Options) error {
+			asked = o.RequestSummaries
+			return nil
+		})
+		if err := runClient(context.Background(), viewCreds, viewTunnels, viewFlags); err != nil {
 			t.Fatal(err)
 		}
-		if s.calls != 1 || s.opts.Observer != nil {
-			t.Fatalf("%v: calls %d, observer set: %v", args, s.calls, s.opts.Observer != nil)
+		if !asked {
+			t.Fatal("the view does not ask for request summaries")
 		}
-		logShape(t, s.opts.Logger) // a text or json logger with info on, as before
+	})
+	t.Run("the terminal cannot show the view", func(t *testing.T) {
+		prev := openTerminal
+		openTerminal = func() (terminal, bool) { return terminal{}, false }
+		t.Cleanup(func() { openTerminal = prev })
+		s := captureStart(t)
+		if err := runClient(context.Background(), viewCreds, viewTunnels, viewFlags); err != nil {
+			t.Fatal(err)
+		}
+		if s.opts.RequestSummaries {
+			t.Fatal("log lines, and request summaries were asked for")
+		}
+	})
+}
+
+func TestStatusView_ShowsRequests(t *testing.T) {
+	cleanEnv(t)
+	defer testutil.AssertNoGoroutineLeak(t)()
+	term := useTerminal(t, nil, 100, 40, true)
+	pr := useProbes(t)
+	day := func(s int) time.Time { return time.Date(2026, 10, 5, 14, 2, s, 0, time.UTC) }
+	useClient(t, func(_ context.Context, o client.Options) error {
+		ob := o.Observer
+		pr.wait(t, 2)
+		ob.State(client.StateConnected, "", 0)
+		ob.Registered(client.RegisteredTunnel{TunnelID: "t1", Name: "my-app", Type: "http", LocalAddr: "127.0.0.1:3000", URL: "https://relay.example.com/svc/p7baeh/"})
+		ob.Registered(client.RegisteredTunnel{TunnelID: "t2", Name: "pg", Type: "tcp", LocalAddr: "127.0.0.1:5432", RemotePort: 9000})
+		ob.Connection("t1", day(11), "203.0.113.7:4711")
+		ob.Request("t1", day(11), "GET", "/api/users", 200)
+		ob.Connection("t1", day(12), "203.0.113.7:4712")
+		ob.Request("t1", day(12), "POST", "/api/login", 401)
+		ob.Request("t1", day(13), "GET", "/a\x1b[2Jb", 502)
+		ob.Connection("t2", day(14), "203.0.113.9:1")
+		ob.ConnectionClosed("t1")
+		// The counts come from the client, whatever became of the single calls.
+		co, ok := ob.(client.CountObserver)
+		if !ok {
+			t.Error("the view's observer does not take counts")
+			return nil
+		}
+		co.Counts("t1", 0, 7)
+		return nil
+	})
+	if err := runClient(context.Background(), viewCreds, viewTunnels, viewFlags); err != nil {
+		t.Fatal(err)
+	}
+	final := strings.Join(term.out.lastView(), "\n")
+	for _, w := range []string{
+		"  14:02:11  GET   /api/users      200",
+		"  14:02:12  POST  /api/login      401",
+		"  14:02:13  GET   /a?[2Jb         502",
+		"0 open, 7 total",
+		"  14:02:14  connection from 203.0.113.9",
+	} {
+		if !strings.Contains(final, w) {
+			t.Errorf("%q is missing in the final view:\n%s", w, final)
+		}
+	}
+	if strings.Contains(final, "203.0.113.7") {
+		t.Errorf("a service with request lines shows its connections too:\n%s", final)
+	}
+	out := term.out.String()
+	if !strings.Contains(out, "\x1b[33m401\x1b[0m") || !strings.Contains(out, "\x1b[31m502\x1b[0m") || strings.Contains(out, "\x1b[33m200") {
+		t.Error("the statuses are not coloured as they should be")
+	}
+	if strings.Contains(out, "\x1b[2J") {
+		t.Error("an escape sequence of a visitor reached the terminal")
+	}
+}
+
+// timedTerminal is a terminal that notes when it was written to.
+type timedTerminal struct {
+	lockedBuffer
+	tmu    sync.Mutex
+	writes []time.Time
+	cols   int
+	rows   int
+}
+
+func (tt *timedTerminal) Write(p []byte) (int, error) {
+	tt.tmu.Lock()
+	tt.writes = append(tt.writes, time.Now())
+	tt.tmu.Unlock()
+	return tt.lockedBuffer.Write(p)
+}
+
+func (tt *timedTerminal) size() (int, int) {
+	tt.tmu.Lock()
+	defer tt.tmu.Unlock()
+	return tt.cols, tt.rows
+}
+
+func (tt *timedTerminal) resize(cols, rows int) {
+	tt.tmu.Lock()
+	tt.cols, tt.rows = cols, rows
+	tt.tmu.Unlock()
+}
+
+// A thousand requests a second for three seconds, and the terminal is resized
+// in the middle: the view is drawn at most four times a second, each drawing
+// fits the terminal as it is then, the client is never kept waiting, and the
+// last ten requests are what stays on the screen.
+func TestStatusView_BurstOfRequestSummaries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("three seconds of requests")
+	}
+	cleanEnv(t)
+	useProbes(t)
+	tt := &timedTerminal{cols: 100, rows: 30}
+	prev := openTerminal
+	openTerminal = func() (terminal, bool) {
+		return terminal{w: tt, size: tt.size, colour: true, restore: func() {}}, true
+	}
+	t.Cleanup(func() { openTerminal = prev })
+
+	const total = 3000
+	var slowest, took time.Duration
+	useClient(t, func(_ context.Context, o client.Options) error {
+		ob := o.Observer
+		ob.State(client.StateConnected, "", 0)
+		ob.Registered(client.RegisteredTunnel{TunnelID: "t1", Name: "my-app", Type: "http", LocalAddr: "127.0.0.1:3000", URL: "https://relay.example.com/svc/p7baeh/"})
+		start := time.Now()
+		for i := 0; i < total; i++ {
+			if i == total/2 {
+				tt.resize(50, 20)
+			}
+			call := time.Now()
+			ob.Connection("t1", call, "203.0.113.7:1")
+			ob.Request("t1", call, "GET", fmt.Sprintf("/n/%d/%s", i, strings.Repeat("x", i%90)), 200+i%400)
+			ob.ConnectionClosed("t1")
+			if d := time.Since(call); d > slowest {
+				slowest = d
+			}
+			// a thousand a second
+			if wait := time.Duration(i+1)*time.Millisecond - time.Since(start); wait > 0 {
+				time.Sleep(wait)
+			}
+		}
+		took = time.Since(start)
+		return nil
+	})
+	if err := runClient(context.Background(), viewCreds, viewTunnels, viewFlags); err != nil {
+		t.Fatal(err)
+	}
+	if slowest > 100*time.Millisecond {
+		t.Errorf("one report to the view took %v", slowest)
+	}
+	if took > 6*time.Second {
+		t.Errorf("3000 requests at 1000 a second took %v with the view on", took)
+	}
+	tt.tmu.Lock()
+	writes := append([]time.Time(nil), tt.writes...)
+	tt.tmu.Unlock()
+	// Four a second, and the last one when the command ends.
+	if most := int(took/(250*time.Millisecond)) + 3; len(writes) > most {
+		t.Errorf("%d drawings in %v, at most %d are allowed", len(writes), took, most)
+	}
+	for i := 1; i < len(writes)-1; i++ {
+		if gap := writes[i].Sub(writes[i-1]); gap < 200*time.Millisecond {
+			t.Errorf("drawings %d and %d are %v apart", i-1, i, gap)
+		}
+	}
+	lines := tt.lastView()
+	if len(lines) > 19 {
+		t.Errorf("%d lines on 20 rows after the resize", len(lines))
+	}
+	for _, l := range lines {
+		if n := utf8.RuneCountInString(l); n > 50 {
+			t.Errorf("line of %d characters on 50 columns: %q", n, l)
+		}
+	}
+	final := strings.Join(lines, "\n")
+	if !strings.Contains(final, fmt.Sprintf("/n/%d/", total-1)) || strings.Contains(final, "/n/100/") {
+		t.Errorf("the final view does not show the newest requests:\n%s", final)
+	}
+	if !strings.Contains(final, "0 open, 3000 total") {
+		t.Errorf("counts after the burst:\n%s", final)
+	}
+	// Every drawing is whole: it starts at the left edge and ends on a new
+	// line, and after the resize the old view is cleared first.
+	all := tt.String()
+	if strings.Count(all, "\x1b[?7l") != strings.Count(all, "\x1b[?7h") {
+		t.Error("line wrapping was not turned on again as often as it was turned off")
+	}
+}
+
+// When a visitor's connection finds the local service gone after its probe
+// has ended, the address is probed again: otherwise nothing but another
+// visitor would take the warning back.
+func TestStatusView_ProbesAgainWhenAVisitorFindsTheServiceGone(t *testing.T) {
+	cleanEnv(t)
+	defer testutil.AssertNoGoroutineLeak(t)()
+	term := useTerminal(t, nil, 100, 30, false)
+	pr := useProbes(t)
+	count := func(addr string) int {
+		pr.mu.Lock()
+		defer pr.mu.Unlock()
+		n := 0
+		for _, a := range pr.targets {
+			if a == addr {
+				n++
+			}
+		}
+		return n
+	}
+	var during string
+	useClient(t, func(_ context.Context, o client.Options) error {
+		ob := o.Observer
+		pr.wait(t, 2)
+		ob.State(client.StateConnected, "", 0)
+		ob.Registered(client.RegisteredTunnel{TunnelID: "t1", Name: "my-app", Type: "http", LocalAddr: "127.0.0.1:3000", URL: "https://relay.example.com/svc/p7baeh/"})
+		pr.report("127.0.0.1:3000", true)
+		ob.LocalTarget("127.0.0.1:3000", true) // a visitor got through: the probe ends
+		first := pr.ctx["127.0.0.1:3000"]
+		select {
+		case <-first.Done():
+		case <-time.After(2 * time.Second):
+			t.Error("the first probe was not stopped")
+		}
+		// The service goes away and a visitor finds out.
+		ob.LocalTarget("127.0.0.1:3000", false)
+		pr.wait(t, 3)
+		if n := count("127.0.0.1:3000"); n != 2 {
+			t.Errorf("the address was probed %d times, want a second probe", n)
+		}
+		pr.mu.Lock()
+		second := pr.ctx["127.0.0.1:3000"]
+		pr.mu.Unlock()
+		if second == first || second.Err() != nil {
+			t.Error("no running probe for the address")
+		}
+		// Another failed visitor does not start a third.
+		ob.LocalTarget("127.0.0.1:3000", false)
+		time.Sleep(600 * time.Millisecond) // the view draws the warning
+		during = strings.Join(term.out.lastView(), "\n")
+		if n := count("127.0.0.1:3000"); n != 2 {
+			t.Errorf("probed %d times", n)
+		}
+		// The service is back; the probe sees it before any visitor does.
+		pr.report("127.0.0.1:3000", true)
+		return nil
+	})
+	if err := runClient(context.Background(), viewCreds, viewTunnels, viewFlags); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(during, "nothing is listening on 127.0.0.1:3000") {
+		t.Errorf("the warning was not shown while the service was gone:\n%s", during)
+	}
+	if final := strings.Join(term.out.lastView(), "\n"); strings.Contains(final, "nothing is listening on 127.0.0.1:3000") {
+		t.Errorf("the warning stayed after the probe found the service again:\n%s", final)
+	}
+	for addr, ctx := range pr.ctx {
+		if ctx.Err() == nil {
+			t.Errorf("the probe of %s outlived the command", addr)
+		}
 	}
 }
 
@@ -389,6 +703,7 @@ func TestStatusView_BlockedTerminalAndABurstOfEvents(t *testing.T) {
 				defer wg.Done()
 				for i := 0; i < 5000; i++ {
 					ob.Connection("t1", time.Now(), "203.0.113.7")
+					ob.Request("t1", time.Now(), "GET", "/burst", 200)
 					ob.LocalTarget("127.0.0.1:3000", i%2 == 0)
 					ob.ConnectionClosed("t1")
 				}
@@ -410,7 +725,7 @@ func TestStatusView_BlockedTerminalAndABurstOfEvents(t *testing.T) {
 		t.Fatal("the command did not end behind a terminal that takes no output")
 	}
 	if burst > 5*time.Second {
-		t.Fatalf("120000 events took %v behind a blocked terminal", burst)
+		t.Fatalf("160000 events took %v behind a blocked terminal", burst)
 	}
 }
 

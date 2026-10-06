@@ -71,15 +71,25 @@ type probeGate struct {
 
 	mu    sync.Mutex
 	stops map[string]context.CancelFunc // local address → ends its probe
+	// start begins to probe an address and returns what ends the probe. nil
+	// once the run is ending: no probe is started any more.
+	start func(addr string) context.CancelFunc
 }
 
 // LocalTarget is what the client reports (client.Observer).
 func (g *probeGate) LocalTarget(addr string, reachable bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if stop, ok := g.stops[addr]; ok && reachable {
+	stop, probing := g.stops[addr]
+	switch {
+	case reachable && probing:
 		stop()
 		delete(g.stops, addr)
+	case !reachable && !probing && g.start != nil:
+		// The probe of this address ended when a visitor reached the service.
+		// Now a visitor did not. Without a probe the warning would stay until
+		// the next visitor comes, however long the service is back by then.
+		g.stops[addr] = g.start(addr)
 	}
 	g.Store.LocalTarget(addr, reachable)
 }
@@ -120,6 +130,9 @@ func runWithView(ctx context.Context, release func(), o client.Options, t termin
 	notes := newRunNotes(gate, o.Server, len(o.Tunnels))
 	notes.note, notes.notice, notes.inView = store.Note, store.SetNotice, true
 	o.Observer = notes
+	// The view shows the requests of http services, so the relay is asked to
+	// tell them. Only here: a run that prints log lines asks for nothing.
+	o.RequestSummaries = true
 	// The view shows what the log lines would say; an error that ends the
 	// command is printed after the view has closed.
 	o.Logger = slog.New(slog.DiscardHandler)
@@ -127,14 +140,17 @@ func runWithView(ctx context.Context, release func(), o client.Options, t termin
 	probeCtx, stopProbes := context.WithCancel(ctx)
 	var probing sync.WaitGroup
 	gate.mu.Lock()
+	gate.start = func(addr string) context.CancelFunc {
+		one, stop := context.WithCancel(probeCtx)
+		probing.Go(func() { startProbe(one, []string{addr}, probeInterval, gate.fromProbe) })
+		return stop
+	}
 	for _, tn := range o.Tunnels {
 		addr := tn.LocalAddr
 		if _, ok := gate.stops[addr]; ok || addr == "" {
 			continue
 		}
-		one, stop := context.WithCancel(probeCtx)
-		gate.stops[addr] = stop
-		probing.Go(func() { startProbe(one, []string{addr}, probeInterval, gate.fromProbe) })
+		gate.stops[addr] = gate.start(addr)
 	}
 	gate.mu.Unlock()
 
@@ -145,6 +161,11 @@ func runWithView(ctx context.Context, release func(), o client.Options, t termin
 	err := startClient(ctx, o)
 
 	release()
+	// An observer call that is still under way must not start a probe while
+	// the ones there are are waited for.
+	gate.mu.Lock()
+	gate.start = nil
+	gate.mu.Unlock()
 	stopProbes()
 	probing.Wait()
 	close(stopView)

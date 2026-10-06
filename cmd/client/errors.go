@@ -49,10 +49,19 @@ func accessNotApplied(e *client.AccessNotAppliedError) string {
 	if u := dashboardURL(e.URL); u != "" {
 		where = " (" + u + ")"
 	}
-	return "This relay is older and cannot restrict access from the client: --access " + access +
-		" was not applied to service " + plainText(e.Name) + ". Nothing is served from this machine.\n" +
+	// One service: `burrow http --access`. Several: `burrow up`, where the
+	// mode stands in the file and the session has ended for every service
+	// of it, not only for the one named here.
+	wish, served, again := "--access "+access, "Nothing is served from this machine.", "run again without --access."
+	if e.Services > 1 {
+		wish = "access " + access
+		served = fmt.Sprintf("None of the %d services of the file is served from this machine.", e.Services)
+		again = "remove access from the service in the file."
+	}
+	return "This relay is older and cannot restrict access from the client: " + wish +
+		" was not applied to service " + plainText(e.Name) + ". " + served + "\n" +
 		"The service exists on the relay" + where + " and is open to anyone with the URL unless its access mode was set in the dashboard. " +
-		"Set the access mode there or delete the service, or run again without --access."
+		"Set the access mode there or delete the service, or " + again
 }
 
 // maxRelayText is how much of a text from the relay is printed.

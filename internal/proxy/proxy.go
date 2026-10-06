@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/proto"
 	"github.com/ankoehn/burrow/pkg/clientip"
 )
 
@@ -118,6 +119,24 @@ type Proxy struct {
 	// a 5xx or fails entirely. Nil means audit emission is disabled (tests
 	// and pre-v0.4 builds). Wired via WithAuditLogger in cmd/server/main.go.
 	auditLogger *audit.Logger
+
+	// summaries is told of every request that was answered for an http
+	// service. nil = nobody is told. Wired via WithSummarySink.
+	summaries SummarySink
+}
+
+// SummarySink receives one summary for each request the proxy has answered for
+// an http service, when the response is complete (or the connection was taken
+// over). The summary names the tunnel that was resolved for the request.
+//
+// RequestSummary is called on the goroutine of the request and must not block.
+type SummarySink interface {
+	RequestSummary(serviceID string, s proto.RequestSummary)
+}
+
+// WithSummarySink registers the receiver of request summaries.
+func WithSummarySink(s SummarySink) Option {
+	return func(p *Proxy) { p.summaries = s }
 }
 
 // ConnLogSink is the interface the proxy uses to record a per-request
@@ -931,6 +950,7 @@ func (p *Proxy) recordOnClose(
 	ww *countingResponseWriter,
 	status *string,
 ) {
+	p.summarise(r, res, started, ww)
 	if p.connLogSink == nil {
 		return
 	}
@@ -956,6 +976,41 @@ func (p *Proxy) recordOnClose(
 	// so passing r.Context() is safe even if the handler has already
 	// returned. Errors are swallowed (the sink logs them).
 	_ = p.connLogSink.Record(r.Context(), entry)
+}
+
+// summarise reports the request to the summary sink. It runs where the
+// connection log is written, so once per request that reached a service and
+// after its response: also for one the access check or the IP policy refused,
+// one the AI chain answered itself, and one whose upstream failed.
+//
+// A summary carries the method, the path and the status, and nothing else of
+// the request or the response: no header, no cookie, no query string (it is
+// not part of URL.Path), no body. Method and path are the visitor's words and
+// are bounded and made printable here.
+//
+// Requests to the /ai/ gateway do not pass through the proxy and are not
+// summarised; tcp tunnels have no requests.
+func (p *Proxy) summarise(r *http.Request, res *Resolved, started time.Time, ww *countingResponseWriter) {
+	if p.summaries == nil || res == nil {
+		return
+	}
+	status := ww.statusCode
+	switch {
+	case ww.hijacked:
+		// The connection was handed over, which the reverse proxy does for an
+		// upgrade the upstream accepted; no status passed through WriteHeader.
+		status = http.StatusSwitchingProtocols
+	case status == 0:
+		status = http.StatusOK // a response without WriteHeader
+	}
+	p.summaries.RequestSummary(res.ServiceID, proto.RequestSummary{
+		TunnelID:   res.TunnelID,
+		Time:       started.UTC().Format(time.RFC3339),
+		Method:     proto.SummaryMethod(r.Method),
+		Path:       proto.SummaryPath(r.URL.Path),
+		Status:     status,
+		DurationMs: time.Since(started).Milliseconds(),
+	})
 }
 
 // countingBody wraps the inbound request body, counting bytes read into
@@ -1003,7 +1058,8 @@ func (b *countingBody) bytes() int64 { return b.n }
 type countingResponseWriter struct {
 	http.ResponseWriter
 	n          int64
-	statusCode int // set by WriteHeader; 0 = not yet called
+	statusCode int  // set by WriteHeader; 0 = not yet called
+	hijacked   bool // the connection was taken over through Hijack
 }
 
 func newCountingResponseWriter(w http.ResponseWriter) *countingResponseWriter {
@@ -1050,6 +1106,7 @@ func (w *countingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if err != nil {
 		return c, rw, err
 	}
+	w.hijacked = true
 	return &countingConn{Conn: c, n: &w.n}, rw, nil
 }
 

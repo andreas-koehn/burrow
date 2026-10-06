@@ -288,9 +288,6 @@ func TestFit(t *testing.T) {
 	m := connected(s, s, s)
 	full := Render(m, 100, false)
 
-	if got := Fit(m, 100, 0, false); !reflect.DeepEqual(got, full) {
-		t.Fatal("an unknown height must not shorten the view")
-	}
 	if got := Fit(m, 100, len(full)+1, false); !reflect.DeepEqual(got, full) {
 		t.Fatal("a view that fits was shortened")
 	}
@@ -389,5 +386,125 @@ func TestRender_Notes(t *testing.T) {
 		if strings.ContainsAny(l, "\x1b\r\n‮") {
 			t.Fatalf("control characters in %q", l)
 		}
+	}
+}
+
+func TestRender_RequestLines(t *testing.T) {
+	lines := Render(connected(httpService()), 100, false)
+	for _, want := range []string{
+		"  14:02:11  GET   /api/users      200",
+		"  14:02:12  POST  /api/login      401",
+	} {
+		if !hasLine(lines, want) {
+			t.Errorf("line %q missing in:\n%s", want, strings.Join(lines, "\n"))
+		}
+	}
+}
+
+// A status that says something went wrong is coloured, and only the status;
+// without colour nothing marks it.
+func TestRender_StatusColour(t *testing.T) {
+	s := httpService()
+	s.Recent = append(s.Recent,
+		Line{At: at(14, 2, 13), Method: "GET", Path: "/boom", Status: 502},
+		Line{At: at(14, 2, 14), Method: "GET", Path: "/moved", Status: 301},
+		Line{At: at(14, 2, 15), Method: "GET", Path: "/500/401", Status: 404})
+	m := connected(s)
+	plain := Render(m, 100, false)
+	if text := strings.Join(plain, "\n"); strings.ContainsRune(text, 0x1b) {
+		t.Fatalf("ESC without colour: %q", text)
+	}
+	col := Render(m, 100, true)
+	for _, want := range []string{
+		"  14:02:11  GET   /api/users      200",
+		"  14:02:12  POST  /api/login      \x1b[33m401\x1b[0m",
+		"  14:02:13  GET   /boom           \x1b[31m502\x1b[0m",
+		"  14:02:14  GET   /moved          301",
+		"  14:02:15  GET   /500/401        \x1b[33m404\x1b[0m",
+	} {
+		if !hasLine(col, want) {
+			t.Errorf("line %q missing in:\n%q", want, col)
+		}
+	}
+	if got := stripSGR(strings.Join(col, "\n")); got != strings.Join(plain, "\n") {
+		t.Fatalf("coloured lines differ in more than colour:\n%q\n%q", got, plain)
+	}
+	// Narrow: the status is still the last thing on the line, and coloured.
+	for _, l := range Render(m, 24, true) {
+		if strings.Contains(l, "/api/lo") && !strings.HasSuffix(l, " \x1b[33m401\x1b[0m") {
+			t.Errorf("narrow line %q", l)
+		}
+	}
+}
+
+// What slipped through every check before is replaced where it is drawn.
+func TestRender_RequestTextIsMadePrintable(t *testing.T) {
+	s := httpService()
+	s.Recent = []Line{{At: at(14, 2, 11), Method: "G\x1bT", Path: "/a\x1b[2Jb\r\nc\u202ed\u200be", Status: 200}}
+	lines := Render(connected(s), 100, false)
+	if want := "  14:02:11  G?T   /a?[2Jb??c?d?e  200"; !hasLine(lines, want) {
+		t.Fatalf("line %q missing in:\n%q", want, lines)
+	}
+}
+
+// One long path does not push the others out of their columns, and no line is
+// longer than the terminal is wide.
+func TestRender_LongPathIsCut(t *testing.T) {
+	s := httpService()
+	s.Recent = append(s.Recent, Line{At: at(14, 2, 13), Method: "DELETE", Path: "/" + strings.Repeat("x", 255), Status: 500})
+	for _, width := range []int{200, 100, 80, 60, 41, 40, 30, 20, 8, 1} {
+		lines := Render(connected(s), width, true)
+		for _, l := range lines {
+			if n := length(stripSGR(l)); n > width-1 && width > 1 {
+				t.Fatalf("width %d: line of %d characters: %q", width, n, l)
+			}
+		}
+		if width < 60 {
+			continue
+		}
+		var req []string
+		for _, l := range lines {
+			if p := stripSGR(l); strings.HasPrefix(p, "  14:02:1") {
+				req = append(req, p)
+			}
+		}
+		if len(req) != 3 {
+			t.Fatalf("width %d: request lines %q", width, req)
+		}
+		// All three end in their status, in the same column.
+		for _, l := range req {
+			if length(l) != length(req[0]) {
+				t.Fatalf("width %d: the lines are not aligned:\n%s", width, strings.Join(req, "\n"))
+			}
+		}
+		if !strings.HasPrefix(req[0], "  14:02:11  GET     /api/users ") || !strings.HasSuffix(req[0], "  200") {
+			t.Fatalf("width %d: %q", width, req[0])
+		}
+		if !strings.HasPrefix(req[2], "  14:02:13  DELETE  /xxxx") || !strings.HasSuffix(req[2], "x…  500") {
+			t.Fatalf("width %d: %q", width, req[2])
+		}
+	}
+}
+
+// A height that is not known counts as 24 rows: a taller view would scroll
+// the terminal with every redraw.
+func TestFit_UnknownHeightIs24Rows(t *testing.T) {
+	s := httpService()
+	s.Recent = nil
+	for i := 0; i < 10; i++ {
+		s.Recent = append(s.Recent, Line{At: at(14, 0, i), Method: "GET", Path: "/", Status: 200})
+	}
+	m := connected(s, s, s, s)
+	if n := len(Render(m, 100, false)); n <= 24 {
+		t.Fatalf("the model is only %d lines tall", n)
+	}
+	got := Fit(m, 100, 0, false)
+	if len(got) > 23 || !reflect.DeepEqual(got, Fit(m, 100, 24, false)) {
+		t.Fatalf("%d lines for an unknown height", len(got))
+	}
+	// A view that fits 24 rows is left alone.
+	small := connected(httpService())
+	if !reflect.DeepEqual(Fit(small, 100, 0, false), Render(small, 100, false)) {
+		t.Fatal("a small view was shortened")
 	}
 }

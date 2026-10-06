@@ -37,6 +37,33 @@ type rawRelay struct {
 	conns     []io.Closer
 	authReqs  []string // payloads of the auth requests, as sent
 	registers []string // payloads of the tunnel registrations, as sent
+	answered  int      // registrations that were answered
+	ctrls     []io.Writer
+
+	wmu sync.Mutex // one frame at a time on a control stream
+}
+
+// push writes one message, given as text, to the client that connected last,
+// once its tunnels are registered.
+func (r *rawRelay) push(t *testing.T, typ proto.MessageType, payload string) {
+	t.Helper()
+	var ctrl io.Writer
+	if !waitTrue(func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if len(r.ctrls) == 0 || r.answered == 0 {
+			return false
+		}
+		ctrl = r.ctrls[len(r.ctrls)-1]
+		return true
+	}, 3*time.Second) {
+		t.Fatal("no client to push to")
+	}
+	r.wmu.Lock()
+	defer r.wmu.Unlock()
+	if err := proto.WriteFrame(ctrl, proto.Envelope{Type: typ, Payload: json.RawMessage(payload)}); err != nil {
+		t.Fatalf("push: %v", err)
+	}
 }
 
 func startRawRelay(t *testing.T, auth string, register func(req proto.TunnelRegister) string) *rawRelay {
@@ -101,6 +128,14 @@ func startRawRelay(t *testing.T, auth string, register func(req proto.TunnelRegi
 					return
 				}
 				defer stream.Close()
+				r.mu.Lock()
+				r.ctrls = append(r.ctrls, stream)
+				r.mu.Unlock()
+				write := func(typ proto.MessageType, payload json.RawMessage) {
+					r.wmu.Lock()
+					defer r.wmu.Unlock()
+					_ = proto.WriteFrame(stream, proto.Envelope{Type: typ, Payload: payload})
+				}
 				for {
 					if proto.ReadFrame(stream, &env) != nil {
 						return
@@ -112,9 +147,12 @@ func startRawRelay(t *testing.T, auth string, register func(req proto.TunnelRegi
 						r.mu.Unlock()
 						var req proto.TunnelRegister
 						_ = proto.DecodePayload(env, &req)
-						_ = proto.WriteFrame(stream, proto.Envelope{Type: proto.MsgTunnelRegisterResp, Payload: json.RawMessage(r.register(req))})
+						write(proto.MsgTunnelRegisterResp, json.RawMessage(r.register(req)))
+						r.mu.Lock()
+						r.answered++
+						r.mu.Unlock()
 					case proto.MsgPing:
-						_ = proto.WriteFrame(stream, proto.Envelope{Type: proto.MsgPong, Payload: env.Payload})
+						write(proto.MsgPong, env.Payload)
 					}
 				}
 			}()
@@ -206,8 +244,8 @@ func TestClient_SendsSlugAndAccessOnlyWhenAsked(t *testing.T) {
 	if want := `{"name":"app","type":"http","remote_port":0,"local_addr":"127.0.0.1:3001","slug":"my-app","access":"burrow_login"}`; regs[1] != want {
 		t.Errorf("registration with wishes:\n got %s\nwant %s", regs[1], want)
 	}
-	// No capability exists yet, so none is announced: the request has the
-	// fields it has always had.
+	// This client was not asked for request summaries, so it announces no
+	// capability: the request has the fields it has always had.
 	var keys map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(auths[0]), &keys); err != nil {
 		t.Fatal(err)
@@ -325,7 +363,9 @@ func TestClient_OlderRelayCannotRestrictAccess(t *testing.T) {
 			if !errors.As(err, &ae) {
 				t.Fatalf("%+v: Run returned %v", spec, err)
 			}
-			if *ae != (AccessNotAppliedError{Name: "web", Access: spec.Access, URL: "https://burrow.example.com/svc/abc234/"}) {
+			// The run has two services; the error says so, because the other
+			// one is not served either.
+			if *ae != (AccessNotAppliedError{Name: "web", Access: spec.Access, URL: "https://burrow.example.com/svc/abc234/", Services: 2}) {
 				t.Fatalf("%+v: error %+v", spec, *ae)
 			}
 			if auths, _ := r.sent(); len(auths) != 1 {

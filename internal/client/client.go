@@ -45,6 +45,13 @@ type Options struct {
 	Logger     *slog.Logger
 	// Observer is told what the client does, for a status view. nil = none.
 	Observer Observer
+	// RequestSummaries asks the relay for a summary of each request to an http
+	// tunnel and hands them to Observer.Request. It is announced to the relay
+	// only together with an Observer; without one nobody would read them. A
+	// relay that does not know summaries sends none. `burrow connect` and
+	// every run that prints log lines leave it off: their auth request is the
+	// one it always was.
+	RequestSummaries bool
 	// StopOnRefusal makes Run return a *RefusedError when the relay refuses
 	// for a reason that trying again does not change (see RefusedError.Final).
 	// Without it Run keeps reconnecting whatever the relay says, as `burrow
@@ -63,10 +70,17 @@ type Client struct {
 	pingInterval time.Duration
 
 	mu             sync.Mutex
-	tunnelLocal    map[string]string // tunnelID → localAddr
+	tunnelLocal    map[string]string      // tunnelID → localAddr
+	live           map[string]*liveTunnel // the tunnels of the current session
 	lastRemotePort int
 	pingSent       time.Time       // when the ping that is still unanswered was sent
 	localReported  map[string]bool // localAddr → what the observer was last told
+}
+
+// liveTunnel is what the client knows of a tunnel of the current session.
+type liveTunnel struct {
+	http        bool
+	open, total int // visitor connections
 }
 
 // New builds a Client.
@@ -149,13 +163,21 @@ func (c *Client) connectOnce(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	ar, err := authenticate(conn, c.opts.Token)
+	var caps []string
+	if c.opts.RequestSummaries && c.events != nil {
+		caps = []string{proto.CapRequestSummaries}
+	}
+	ar, err := authenticate(conn, c.opts.Token, caps)
 	if err != nil {
 		return err
 	}
 	if !ar.OK {
 		return newRefused(stageAuth, ar.Code, ar.Error)
 	}
+	// The tunnels of the session before are gone, and their counts with them.
+	c.mu.Lock()
+	c.live = map[string]*liveTunnel{}
+	c.mu.Unlock()
 	c.log.Info("connected", "session_id", ar.SessionID)
 	c.events.emit(func(o Observer) { o.State(StateConnected, "", 0) })
 	info := SessionInfo{RelayVersion: ar.RelayVersion}
@@ -219,7 +241,12 @@ func (c *Client) connectOnce(ctx context.Context) error {
 				if public == "" {
 					public = rr.Hostname
 				}
-				return &AccessNotAppliedError{Name: tn.Name, Access: tn.Access, URL: public}
+				ae := &AccessNotAppliedError{Name: tn.Name, Access: tn.Access, URL: public}
+				if n := len(c.opts.Tunnels); n > 1 {
+					// The session ends for all of them, not for this one alone.
+					ae.Services = n
+				}
+				return ae
 			}
 			reg.SlugUnacknowledged = tn.Slug != ""
 		}
@@ -238,6 +265,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		c.events.emit(func(o Observer) { o.Registered(reg) })
 		c.mu.Lock()
 		c.tunnelLocal[rr.TunnelID] = tn.LocalAddr
+		c.live[rr.TunnelID] = &liveTunnel{http: tn.Type == "http"}
 		c.lastRemotePort = rr.RemotePort
 		c.mu.Unlock()
 	}
@@ -341,6 +369,8 @@ func (c *Client) controlReadLoop(sess *yamux.Session, ctrl io.Reader) error {
 				continue
 			}
 			go c.handleNewConnection(sess, nc, local)
+		case proto.MsgRequestSummary:
+			c.requestSummary(env)
 		case proto.MsgPong, proto.MsgError:
 			// Pong is informational only. Dead-peer detection is provided by
 			// yamux's built-in keepalive (EnableKeepAlive=true, KeepAliveInterval=30s
@@ -352,6 +382,63 @@ func (c *Client) controlReadLoop(sess *yamux.Session, ctrl io.Reader) error {
 			} else {
 				c.pongReceived()
 			}
+		default:
+			// A message of a relay newer than this client. It is passed over
+			// without a word: a relay may only send what a client can do
+			// without, and a line in the log for each would help nobody.
 		}
 	}
+}
+
+// requestSummary hands a request summary to the observer. Nothing here waits:
+// this is the goroutine that reads the control stream.
+//
+// A summary is shown only when this client asked for summaries, and only for
+// an http tunnel of the current session. One that cannot be read, or that
+// carries no time, no method or no status of an HTTP answer, is dropped.
+// Method and path are bounded and made printable again here, whatever the
+// relay did: they end up on a terminal.
+func (c *Client) requestSummary(env proto.Envelope) {
+	if c.events == nil || !c.opts.RequestSummaries {
+		return
+	}
+	var s proto.RequestSummary
+	if proto.DecodePayload(env, &s) != nil || s.Method == "" || s.Status < 100 || s.Status > 599 {
+		return
+	}
+	at, err := time.Parse(time.RFC3339, s.Time)
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	tn := c.live[s.TunnelID]
+	c.mu.Unlock()
+	if tn == nil || !tn.http {
+		return
+	}
+	id, method, path, status := s.TunnelID, proto.SummaryMethod(s.Method), proto.SummaryPath(s.Path), s.Status
+	at = at.Local()
+	c.events.emitLine(func(o Observer) { o.Request(id, at, method, path, status) })
+}
+
+// countConnection adds d (1 or -1) to the open visitor connections of a
+// tunnel of the current session and tells the observer the new counts. The
+// end of a connection of an earlier session changes nothing: that session's
+// counts are gone.
+func (c *Client) countConnection(tunnelID string, d int) {
+	c.mu.Lock()
+	tn := c.live[tunnelID]
+	if tn == nil {
+		c.mu.Unlock()
+		return
+	}
+	if tn.open += d; tn.open < 0 {
+		tn.open = 0
+	}
+	if d > 0 {
+		tn.total++
+	}
+	open, total := tn.open, tn.total
+	c.mu.Unlock()
+	c.events.counts(tunnelID, open, total)
 }

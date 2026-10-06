@@ -50,6 +50,8 @@ func (noObserver) Connection(string, time.Time, string)          {}
 func (noObserver) ConnectionClosed(string)                       {}
 func (noObserver) Latency(time.Duration)                         {}
 func (noObserver) LocalTarget(string, bool)                      {}
+func (noObserver) Request(string, time.Time, string, string, int) {
+}
 
 // runNotes stands between the client and its observer and says, once per run,
 // what a person has to know and no log line of the client says: that --slug
@@ -145,6 +147,13 @@ func (n *runNotes) Session(info client.SessionInfo) {
 		return
 	}
 	n.notice(fmt.Sprintf("The relay runs v%d.%d.%d. Run: burrow update", relay[0], relay[1], relay[2]))
+}
+
+// Counts implements client.CountObserver for the observer behind it.
+func (n *runNotes) Counts(tunnelID string, open, total int) {
+	if co, ok := n.Observer.(client.CountObserver); ok {
+		co.Counts(tunnelID, open, total)
+	}
 }
 
 // subject names the service a note is about.

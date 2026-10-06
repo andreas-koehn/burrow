@@ -1067,6 +1067,8 @@ func (l *lastRegistration) Connection(string, time.Time, string)          {}
 func (l *lastRegistration) ConnectionClosed(string)                       {}
 func (l *lastRegistration) Latency(time.Duration)                         {}
 func (l *lastRegistration) LocalTarget(string, bool)                      {}
+func (l *lastRegistration) Request(string, time.Time, string, string, int) {
+}
 func (l *lastRegistration) Registered(t client.RegisteredTunnel) {
 	l.mu.Lock()
 	l.reg = &t

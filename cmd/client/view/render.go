@@ -9,14 +9,20 @@ import (
 	"unicode/utf8"
 
 	"github.com/ankoehn/burrow/internal/client"
+	"github.com/ankoehn/burrow/internal/proto"
 )
 
 // defaultWidth is used when the width of the terminal is not known.
 const defaultWidth = 80
 
+// defaultRows is used when the height of the terminal is not known: a taller
+// view would scroll the terminal with every redraw.
+const defaultRows = 24
+
 const (
 	sgrGreen  = "\x1b[32m"
 	sgrYellow = "\x1b[33m"
+	sgrRed    = "\x1b[31m"
 	sgrReset  = "\x1b[0m"
 
 	dotOn  = "●"
@@ -27,6 +33,9 @@ const (
 type row struct {
 	text string
 	warn bool
+	// mark is the end of text that is coloured with markSGR: the status of a
+	// request that went wrong.
+	mark, markSGR string
 }
 
 // Render returns the lines of the view for a terminal of the given width; a
@@ -78,6 +87,8 @@ func Render(m Model, width int, color bool) []string {
 		case !color:
 		case r.warn:
 			text = sgrYellow + text + sgrReset
+		case r.mark != "" && strings.HasSuffix(text, r.mark):
+			text = strings.TrimSuffix(text, r.mark) + r.markSGR + r.mark + sgrReset
 		case i == 0 && m.State == client.StateConnected:
 			text = strings.Replace(text, dotOn, sgrGreen+dotOn+sgrReset, 1)
 		case i == 0:
@@ -91,11 +102,11 @@ func Render(m Model, width int, color bool) []string {
 // Fit is Render for a terminal that is rows high: the view has to leave the
 // line below it to the cursor, or redrawing in place would scroll. Recent
 // lines are shortened first, then the view is cut at the bottom. rows of 0 or
-// less means the height is not known and nothing is shortened.
+// less means the height is not known; the view is then fitted to 24 rows.
 func Fit(m Model, width, rows int, color bool) []string {
 	lines := Render(m, width, color)
 	if rows <= 0 {
-		return lines
+		rows = defaultRows
 	}
 	limit := rows - 1
 	if limit < 1 {
@@ -239,11 +250,29 @@ func service(s Service, w int) []row {
 		rows = append(rows, row{})
 		methodCol, pathCol := 4, 14
 		for _, l := range s.Recent {
-			methodCol = max(methodCol, length(clean(l.Method)))
-			pathCol = max(pathCol, length(clean(l.Path)))
+			if l.Method == "" && l.Path == "" {
+				continue
+			}
+			methodCol = max(methodCol, length(requestMethod(l)))
+			pathCol = max(pathCol, length(requestPath(l)))
+		}
+		// One long path must not push every line out of its columns: the
+		// column is no wider than the terminal leaves room for, and a path
+		// that is longer is cut.
+		if room := w - (2 + 8 + 2 + methodCol + 2) - (2 + 3); pathCol > room {
+			pathCol = max(room, 14)
 		}
 		for _, l := range s.Recent {
-			rows = append(rows, row{text: recent(l, methodCol, pathCol, w)})
+			r := row{text: recent(l, methodCol, pathCol, w)}
+			if l.Method != "" || l.Path != "" {
+				switch {
+				case l.Status >= 500:
+					r.mark, r.markSGR = fmt.Sprintf("%d", l.Status), sgrRed
+				case l.Status >= 400:
+					r.mark, r.markSGR = fmt.Sprintf("%d", l.Status), sgrYellow
+				}
+			}
+			rows = append(rows, r)
 		}
 	}
 	if s.LocalDown {
@@ -304,10 +333,20 @@ func wrap(text string, n int) []string {
 	return lines
 }
 
+// requestMethod and requestPath are the method and the path of a request line
+// as they are drawn. Both are words of a visitor that came through the relay:
+// whatever was done to them on the way, what a terminal would act on is
+// replaced by "?" here.
+func requestMethod(l Line) string { return clean(proto.SummaryMethod(l.Method)) }
+func requestPath(l Line) string   { return clean(proto.SummaryPath(l.Path)) }
+
 // recent renders one request or connection, in the widest form that fits.
 func recent(l Line, methodCol, pathCol, w int) string {
 	at := l.At.Format("15:04:05")
-	method, path, ip := clean(l.Method), clean(l.Path), clean(l.SourceIP)
+	method, path, ip := "", "", clean(l.SourceIP)
+	if l.Method != "" || l.Path != "" {
+		method, path = requestMethod(l), requestPath(l)
+	}
 	if method == "" && path == "" {
 		if ip == "" {
 			return "  " + at + "  connection"
@@ -327,7 +366,7 @@ func recent(l Line, methodCol, pathCol, w int) string {
 		if full := "  " + at + "  " + pad(method, methodCol) + "  " + path; length(full) <= w {
 			return full
 		}
-	} else if full := "  " + at + "  " + pad(method, methodCol) + "  " + pad(path, pathCol) + "  " + status; length(full) <= w {
+	} else if full := "  " + at + "  " + pad(method, methodCol) + "  " + pad(cut(path, pathCol), pathCol) + "  " + status; length(full) <= w {
 		return full
 	}
 	// Narrow: the path gives way, the status stays; below 8 characters of

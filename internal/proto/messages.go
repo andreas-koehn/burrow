@@ -21,7 +21,14 @@ const (
 	MsgPong               MessageType = "pong"
 	MsgError              MessageType = "error"
 	MsgStreamOpen         MessageType = "stream_open"
+	// MsgRequestSummary travels from the relay to a client that announced
+	// CapRequestSummaries, and to no other.
+	MsgRequestSummary MessageType = "request_summary"
 )
+
+// CapRequestSummaries is the capability (AuthRequest.Capabilities) of a client
+// that reads request_summary messages.
+const CapRequestSummaries = "request_summaries"
 
 // Envelope wraps every control message with its type and an optional correlation ID.
 type Envelope struct {
@@ -119,6 +126,19 @@ type Pong struct {
 type Error struct {
 	Message string `json:"message"`
 	Code    string `json:"code,omitempty"`
+}
+
+// RequestSummary says that one request to an http service has been answered.
+// It names the request and nothing of its content: no header, no query string,
+// no body. Method and Path come from the visitor; both ends pass them through
+// SummaryMethod and SummaryPath.
+type RequestSummary struct {
+	TunnelID   string `json:"tunnel_id"`
+	Time       string `json:"time"` // when the request arrived; RFC 3339, UTC
+	Method     string `json:"method"`
+	Path       string `json:"path"` // the path the app saw, without the query; at most MaxSummaryPath bytes
+	Status     int    `json:"status"`
+	DurationMs int64  `json:"duration_ms"` // 0 when the relay does not measure it
 }
 
 // Codes of control-plane refusals. They travel next to the text, which stays

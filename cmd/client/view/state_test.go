@@ -304,3 +304,145 @@ func drain(s *Store) <-chan struct{} {
 	close(c)
 	return c
 }
+
+var _ client.CountObserver = (*Store)(nil)
+
+func TestStore_RequestsReplaceTheConnectionLines(t *testing.T) {
+	s := NewStore("burrow.example.com", "v0.6.0", specs())
+	s.State(client.StateConnected, "", 0)
+	register(s, "1")
+	base := time.Date(2026, 10, 5, 14, 0, 0, 0, time.UTC)
+
+	// The connection of a request is told before its summary can be.
+	s.Connection("a1", base, "203.0.113.7:51234")
+	if r := s.Snapshot().Services[0].Recent; len(r) != 1 || r[0].SourceIP != "203.0.113.7" {
+		t.Fatalf("before the first summary: %+v", r)
+	}
+	s.Request("a1", base.Add(time.Second), "GET", "/api/users", 200)
+	s.Connection("a1", base.Add(2*time.Second), "203.0.113.7:51235")
+	s.Request("a1", base.Add(2*time.Second), "POST", "/api/login", 401)
+	a := s.Snapshot().Services[0]
+	want := []Line{
+		{At: base.Add(time.Second), Method: "GET", Path: "/api/users", Status: 200},
+		{At: base.Add(2 * time.Second), Method: "POST", Path: "/api/login", Status: 401},
+	}
+	if len(a.Recent) != 2 || a.Recent[0] != want[0] || a.Recent[1] != want[1] {
+		t.Fatalf("recent = %+v\nwant %+v", a.Recent, want)
+	}
+	// The connections are still counted.
+	if a.Open != 2 || a.Total != 2 {
+		t.Fatalf("open %d total %d", a.Open, a.Total)
+	}
+
+	// Ten are kept, the newest.
+	for i := 0; i < 25; i++ {
+		s.Request("a1", base.Add(time.Duration(10+i)*time.Second), "GET", fmt.Sprintf("/n/%d", i), 200)
+	}
+	if r := s.Snapshot().Services[0].Recent; len(r) != 10 || r[0].Path != "/n/15" || r[9].Path != "/n/24" {
+		t.Fatalf("recent = %+v", r)
+	}
+
+	// A summary for a tunnel that is not ours, or for a tcp service, is not shown.
+	s.Request("unknown", base, "GET", "/x", 200)
+	s.Request("b1", base, "GET", "/x", 200)
+	s.Connection("b1", base, "203.0.113.9:1")
+	m := s.Snapshot()
+	if r := m.Services[0].Recent; r[9].Path != "/n/24" {
+		t.Fatalf("recent = %+v", r)
+	}
+	if r := m.Services[1].Recent; len(r) != 1 || r[0].Method != "" || r[0].SourceIP != "203.0.113.9" {
+		t.Fatalf("the tcp service shows %+v", r)
+	}
+}
+
+// What the relay sent is cut and made printable where it is kept, too.
+func TestStore_RequestTextIsBounded(t *testing.T) {
+	s := NewStore("burrow.example.com", "v0.6.0", specs())
+	s.State(client.StateConnected, "", 0)
+	register(s, "1")
+	long := "/"
+	for len(long) < 5000 {
+		long += "abcdefghij"
+	}
+	s.Request("a1", time.Now(), "GE\x1bT-AND-MUCH-TOO-LONG-A-METHOD", long+"\x1b[2J", 200)
+	l := s.Snapshot().Services[0].Recent[0]
+	if l.Method != "GE?T-AND-MUCH-TO" || len(l.Path) != 256 || l.Path != long[:256] {
+		t.Fatalf("kept %q and %d bytes of path", l.Method, len(l.Path))
+	}
+}
+
+// After a reconnect the relay may be another one, without summaries: the
+// connection lines come back until a summary arrives.
+func TestStore_RequestsAfterAReconnect(t *testing.T) {
+	s := NewStore("burrow.example.com", "v0.6.0", specs())
+	s.State(client.StateConnected, "", 0)
+	register(s, "1")
+	now := time.Now()
+	s.Request("a1", now, "GET", "/one", 200)
+	s.State(client.StateReconnecting, "gone", time.Second)
+	s.State(client.StateConnected, "", 0)
+	register(s, "2")
+	s.Request("a1", now, "GET", "/stale", 200) // a tunnel of the session before
+	s.Connection("a2", now, "203.0.113.7:1")
+	r := s.Snapshot().Services[0].Recent
+	if len(r) != 2 || r[0].Path != "/one" || r[1].SourceIP != "203.0.113.7" {
+		t.Fatalf("recent = %+v", r)
+	}
+	s.Request("a2", now, "GET", "/two", 200)
+	r = s.Snapshot().Services[0].Recent
+	if len(r) != 2 || r[0].Path != "/one" || r[1].Path != "/two" {
+		t.Fatalf("recent = %+v", r)
+	}
+}
+
+// The client tells the counts of a tunnel apart from the single connections,
+// whose calls may be lost in a burst. Once it has, the counts are what it
+// says: a lost ConnectionClosed leaves nothing open.
+func TestStore_Counts(t *testing.T) {
+	s := NewStore("burrow.example.com", "v0.6.0", specs())
+	s.State(client.StateConnected, "", 0)
+	register(s, "1")
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		s.Connection("a1", now, "203.0.113.7:1")
+	}
+	// Two of the three ended; the calls for that were dropped.
+	s.Counts("a1", 1, 3)
+	if a := s.Snapshot().Services[0]; a.Open != 1 || a.Total != 3 {
+		t.Fatalf("open %d total %d", a.Open, a.Total)
+	}
+	// From here on the single calls add lines and do not count.
+	s.Connection("a1", now, "203.0.113.7:1")
+	s.ConnectionClosed("a1")
+	s.ConnectionClosed("a1")
+	if a := s.Snapshot().Services[0]; a.Open != 1 || a.Total != 3 || len(a.Recent) != 4 {
+		t.Fatalf("after single calls: open %d total %d recent %d", a.Open, a.Total, len(a.Recent))
+	}
+	s.Counts("a1", 0, 4)
+	s.Counts("unknown", 9, 9)
+	s.Counts("b1", -1, -5) // nonsense is not shown
+	m := s.Snapshot()
+	if a := m.Services[0]; a.Open != 0 || a.Total != 4 {
+		t.Fatalf("open %d total %d", a.Open, a.Total)
+	}
+	if b := m.Services[1]; b.Open != 0 || b.Total != 0 {
+		t.Fatalf("the other service: %+v", b)
+	}
+
+	// A new session counts from nothing; the total of the service goes on.
+	s.State(client.StateReconnecting, "gone", time.Second)
+	if a := s.Snapshot().Services[0]; a.Open != 0 || a.Total != 4 {
+		t.Fatalf("after the session ended: open %d total %d", a.Open, a.Total)
+	}
+	s.State(client.StateConnected, "", 0)
+	register(s, "2")
+	s.Counts("a1", 5, 9) // the session before
+	s.Connection("a2", now, "203.0.113.7:1")
+	if a := s.Snapshot().Services[0]; a.Open != 1 || a.Total != 5 {
+		t.Fatalf("first connection of the new session: open %d total %d", a.Open, a.Total)
+	}
+	s.Counts("a2", 2, 2)
+	if a := s.Snapshot().Services[0]; a.Open != 2 || a.Total != 6 {
+		t.Fatalf("new session: open %d total %d", a.Open, a.Total)
+	}
+}

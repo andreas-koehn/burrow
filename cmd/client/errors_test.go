@@ -233,6 +233,16 @@ func TestReport_AccessNotApplied(t *testing.T) {
 			}
 		}
 	}
+	// `burrow up` with several services: one of them ends the session for
+	// all, and the message says so.
+	var up bytes.Buffer
+	report(&up, &client.AccessNotAppliedError{Name: "my-app", Access: "burrow_login", URL: "https://relay.example.com/svc/abc234/", Services: 3})
+	if want := "This relay is older and cannot restrict access from the client: access login was not applied to service my-app. " +
+		"None of the 3 services of the file is served from this machine.\n" +
+		"The service exists on the relay (https://relay.example.com/svc/abc234/) and is open to anyone with the URL unless its access mode was set in the dashboard. " +
+		"Set the access mode there or delete the service, or remove access from the service in the file.\n"; up.String() != want {
+		t.Fatalf("several services:\n got %q\nwant %q", up.String(), want)
+	}
 	// Name and address come from outside.
 	var b bytes.Buffer
 	report(&b, &client.AccessNotAppliedError{Name: "a\x1b[2Jb", Access: "x\x1b[31m", URL: "https://relay.example.com/\r\nx"})

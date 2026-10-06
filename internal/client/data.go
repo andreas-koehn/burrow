@@ -15,8 +15,12 @@ import (
 func (c *Client) handleNewConnection(sess *yamux.Session, nc proto.NewConnection, localAddr string) {
 	if c.events != nil {
 		at := time.Now()
-		c.events.emit(func(o Observer) { o.Connection(nc.TunnelID, at, nc.SourceIP) })
-		defer c.events.emit(func(o Observer) { o.ConnectionClosed(nc.TunnelID) })
+		c.events.emitLine(func(o Observer) { o.Connection(nc.TunnelID, at, nc.SourceIP) })
+		c.countConnection(nc.TunnelID, 1)
+		defer func() {
+			c.events.emitLine(func(o Observer) { o.ConnectionClosed(nc.TunnelID) })
+			c.countConnection(nc.TunnelID, -1)
+		}()
 	}
 	st, err := sess.OpenStream()
 	if err != nil {

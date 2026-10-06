@@ -31,6 +31,7 @@ type recObserver struct {
 	rtts   []time.Duration
 	retry  []time.Duration
 	connAt []time.Time
+	reqAt  []time.Time
 }
 
 func (r *recObserver) add(e string, f func()) {
@@ -68,6 +69,12 @@ func (r *recObserver) Latency(d time.Duration) {
 }
 func (r *recObserver) LocalTarget(addr string, ok bool) {
 	r.add(fmt.Sprintf("local:%s:%v", addr, ok), nil)
+}
+func (r *recObserver) Request(id string, at time.Time, method, path string, status int) {
+	r.add(fmt.Sprintf("request:%s:%s:%s:%d", id, method, path, status), func() { r.reqAt = append(r.reqAt, at) })
+}
+func (r *recObserver) Counts(id string, open, total int) {
+	r.add(fmt.Sprintf("counts:%s:%d:%d", id, open, total), nil)
 }
 
 func (r *recObserver) snapshot() []string {
@@ -507,6 +514,8 @@ func (blockingObserver) Connection(string, time.Time, string)   {}
 func (blockingObserver) ConnectionClosed(string)                {}
 func (b blockingObserver) Latency(time.Duration)                { <-b.release }
 func (blockingObserver) LocalTarget(string, bool)               {}
+func (blockingObserver) Request(string, time.Time, string, string, int) {
+}
 
 func TestNotifier_StopEndsItsGoroutineAndAPanicDoesNotSpread(t *testing.T) {
 	n := newNotifier(blockingObserver{})
@@ -526,4 +535,146 @@ func TestNotifier_StopEndsItsGoroutineAndAPanicDoesNotSpread(t *testing.T) {
 
 	var none *notifier
 	none.emit(func(Observer) { t.Error("a client without an observer delivered an event") })
+}
+
+// Lines — one connection, one request — are what a burst consists of. When
+// the queue is full they give way, oldest first, and what the view cannot do
+// without stays: a state, a registration, the local target.
+func TestNotifier_LinesGiveWayToEverythingElse(t *testing.T) {
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var got []string
+	rec := func(s string) func(Observer) {
+		return func(Observer) { mu.Lock(); got = append(got, s); mu.Unlock() }
+	}
+	n := newNotifier(blockingObserver{release})
+	stop := n.start()
+	defer stop()
+	n.emit(func(o Observer) { o.Latency(0) }) // the observer hangs in this one
+	n.emit(rec("state"))
+	for i := 0; i < 5000; i++ {
+		n.emitLine(rec("line"))
+		if i == 2500 {
+			n.emit(rec("registered"))
+		}
+	}
+	n.emit(rec("local"))
+	n.mu.Lock()
+	waiting := len(n.pending)
+	n.mu.Unlock()
+	if waiting > maxPendingEvents {
+		t.Fatalf("%d calls wait, the queue holds %d", waiting, maxPendingEvents)
+	}
+	close(release)
+	if !waitTrue(func() bool { mu.Lock(); defer mu.Unlock(); return len(got) > 0 && got[len(got)-1] == "local" }, 3*time.Second) {
+		t.Fatal("the last call was not delivered")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var kept []string
+	lines := 0
+	for _, g := range got {
+		if g == "line" {
+			lines++
+		} else {
+			kept = append(kept, g)
+		}
+	}
+	if strings.Join(kept, ",") != "state,registered,local" {
+		t.Fatalf("delivered besides the lines: %v", kept)
+	}
+	if lines == 0 || lines > maxPendingEvents {
+		t.Fatalf("%d lines were delivered", lines)
+	}
+}
+
+// countingObserver hangs like blockingObserver and keeps the counts it is told.
+type countingObserver struct {
+	blockingObserver
+	mu     sync.Mutex
+	counts []string
+	opened int
+	closed int
+}
+
+func (c *countingObserver) Connection(string, time.Time, string) {
+	c.mu.Lock()
+	c.opened++
+	c.mu.Unlock()
+}
+func (c *countingObserver) ConnectionClosed(string) { c.mu.Lock(); c.closed++; c.mu.Unlock() }
+func (c *countingObserver) Counts(id string, open, total int) {
+	c.mu.Lock()
+	c.counts = append(c.counts, fmt.Sprintf("%s:%d:%d", id, open, total))
+	c.mu.Unlock()
+}
+
+// The calls for single connections may be dropped; how many are open and how
+// many there were is told apart from them, the newest numbers of each tunnel
+// only, and is never dropped. A view that counted the calls would show
+// connections as open that have ended.
+func TestNotifier_CountsSurviveABurst(t *testing.T) {
+	release := make(chan struct{})
+	obs := &countingObserver{blockingObserver: blockingObserver{release}}
+	n := newNotifier(obs)
+	stop := n.start()
+	defer stop()
+	n.emit(func(o Observer) { o.Latency(0) })
+	for i := 1; i <= 5000; i++ {
+		n.emitLine(func(o Observer) { o.Connection("t1", time.Time{}, "") })
+		n.counts("t1", 1, i)
+		if i%2 == 0 {
+			n.counts("t2", 0, i/2)
+		}
+		n.emitLine(func(o Observer) { o.ConnectionClosed("t1") })
+		n.counts("t1", 0, i)
+	}
+	n.mu.Lock()
+	waiting, latest := len(n.pending), len(n.latest)
+	n.mu.Unlock()
+	if waiting > maxPendingEvents || latest > 2 {
+		t.Fatalf("%d calls and the counts of %d tunnels wait", waiting, latest)
+	}
+	close(release)
+	last := func(id string) string {
+		obs.mu.Lock()
+		defer obs.mu.Unlock()
+		for i := len(obs.counts) - 1; i >= 0; i-- {
+			if strings.HasPrefix(obs.counts[i], id+":") {
+				return obs.counts[i]
+			}
+		}
+		return ""
+	}
+	if !waitTrue(func() bool { return last("t1") == "t1:0:5000" && last("t2") == "t2:0:2500" }, 3*time.Second) {
+		t.Fatalf("last counts: %q %q", last("t1"), last("t2"))
+	}
+	obs.mu.Lock()
+	defer obs.mu.Unlock()
+	if obs.opened >= 5000 || obs.closed >= 5000 {
+		t.Fatalf("nothing was dropped (%d, %d): the test did not fill the queue", obs.opened, obs.closed)
+	}
+	if len(obs.counts) > 20 {
+		t.Fatalf("the counts were told %d times", len(obs.counts))
+	}
+}
+
+// The client tells the counts of each tunnel after every visitor connection.
+func TestObserver_CountsOfVisitorConnections(t *testing.T) {
+	ls := echoListener(t)
+	obs := &recObserver{}
+	c := realRelayClient(t, obs, ls.Addr().String())
+	port := c.lastRemotePortForTest()
+	visit(t, port)
+	visit(t, port)
+	obs.mu.Lock()
+	id := obs.regs[0].TunnelID
+	obs.mu.Unlock()
+	if !waitTrue(func() bool { return obs.has("counts:" + id + ":0:2") }, 3*time.Second) {
+		t.Fatalf("events: %v", obs.snapshot())
+	}
+	ev := obs.snapshot()
+	if last := ev[len(ev)-1]; last != "counts:"+id+":0:2" && !strings.HasPrefix(last, "closed:") && !strings.HasPrefix(last, "latency") {
+		t.Fatalf("last event %q of %v", last, ev)
+	}
 }

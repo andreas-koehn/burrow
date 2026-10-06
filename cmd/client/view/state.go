@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ankoehn/burrow/internal/client"
+	"github.com/ankoehn/burrow/internal/proto"
 )
 
 // maxRecent is how many recent lines a service keeps.
@@ -61,6 +62,11 @@ type Store struct {
 	retryAt  time.Time
 	byTunnel map[string]int // tunnel id of this session → index in m.Services
 	claimed  map[int]bool   // services that have a tunnel in this session
+	// counted: tunnels of this session whose counts the client tells (Counts).
+	// For those the calls for single connections add lines and count nothing.
+	counted map[string]bool
+	base    map[int]int  // service → its total when this session's tunnel was registered
+	summed  map[int]bool // services that got a request summary in this session
 }
 
 // NewStore returns a Store for a client that is about to connect to relay (a
@@ -72,6 +78,9 @@ func NewStore(relay, version string, specs []client.TunnelSpec) *Store {
 		m:        Model{Relay: relay, Version: version, State: client.StateConnecting},
 		byTunnel: map[string]int{},
 		claimed:  map[int]bool{},
+		counted:  map[string]bool{},
+		base:     map[int]int{},
+		summed:   map[int]bool{},
 	}
 	for _, sp := range specs {
 		s.m.Services = append(s.m.Services, Service{Name: sp.Name, Type: sp.Type, Local: sp.LocalAddr})
@@ -130,6 +139,10 @@ func (s *Store) State(st client.ConnState, detail string, retryIn time.Duration)
 		// and its round-trip time.
 		clear(s.byTunnel)
 		clear(s.claimed)
+		clear(s.counted)
+		clear(s.base)
+		// Whether the relay sends summaries is known per session, too.
+		clear(s.summed)
 		s.m.RTT = 0
 		for i := range s.m.Services {
 			s.m.Services[i].Open = 0
@@ -153,6 +166,7 @@ func (s *Store) Registered(t client.RegisteredTunnel) {
 		}
 		s.claimed[i] = true
 		s.byTunnel[t.TunnelID] = i
+		s.base[i] = s.m.Services[i].Total
 		// What the relay says now; an older relay says nothing.
 		s.m.Services[i].Access = t.AccessMode
 		switch {
@@ -172,26 +186,86 @@ func (s *Store) Connection(tunnelID string, at time.Time, sourceIP string) {
 			return
 		}
 		sv := &s.m.Services[i]
-		sv.Open++
-		sv.Total++
+		if !s.counted[tunnelID] {
+			sv.Open++
+			sv.Total++
+		}
+		if s.summed[i] {
+			return // its requests are shown, each of which came over a connection
+		}
 		// The relay sends the visitor's address with its port; the view names
 		// the address.
 		if host, _, err := net.SplitHostPort(sourceIP); err == nil {
 			sourceIP = host
 		}
-		sv.Recent = append(sv.Recent, Line{At: at, SourceIP: sourceIP})
-		if n := len(sv.Recent) - maxRecent; n > 0 {
-			sv.Recent = append([]Line(nil), sv.Recent[n:]...)
-		}
+		sv.add(Line{At: at, SourceIP: sourceIP})
 	})
+}
+
+// add appends a recent line and keeps the newest maxRecent.
+func (sv *Service) add(l Line) {
+	sv.Recent = append(sv.Recent, l)
+	if n := len(sv.Recent) - maxRecent; n > 0 {
+		sv.Recent = append([]Line(nil), sv.Recent[n:]...)
+	}
 }
 
 // ConnectionClosed implements client.Observer.
 func (s *Store) ConnectionClosed(tunnelID string) {
 	s.update(func() {
-		if i, ok := s.byTunnel[tunnelID]; ok && s.m.Services[i].Open > 0 {
+		if i, ok := s.byTunnel[tunnelID]; ok && !s.counted[tunnelID] && s.m.Services[i].Open > 0 {
 			s.m.Services[i].Open--
 		}
+	})
+}
+
+// Counts implements client.CountObserver: the client says how many visitor
+// connections a tunnel has. From then on these numbers are shown for it, and
+// the calls for single connections, some of which are lost in a burst, no
+// longer count.
+func (s *Store) Counts(tunnelID string, open, total int) {
+	s.update(func() {
+		i, ok := s.byTunnel[tunnelID]
+		if !ok || open < 0 || total < open {
+			return
+		}
+		s.counted[tunnelID] = true
+		s.m.Services[i].Open = open
+		s.m.Services[i].Total = s.base[i] + total
+	})
+}
+
+// Request implements client.Observer: a request to an http service that the
+// relay has answered. From the first one on, the service shows its requests
+// and no longer a line for each connection.
+//
+// Method and path are words of the visitor that came through the relay: they
+// are cut and made printable here once more, so that what the store keeps is
+// small whatever it is handed.
+func (s *Store) Request(tunnelID string, at time.Time, method, path string, status int) {
+	s.update(func() {
+		i, ok := s.byTunnel[tunnelID]
+		if !ok || s.m.Services[i].Type != "http" || status < 100 || status > 599 {
+			return
+		}
+		method, path = proto.SummaryMethod(method), proto.SummaryPath(path)
+		if method == "" {
+			return
+		}
+		sv := &s.m.Services[i]
+		if !s.summed[i] {
+			s.summed[i] = true
+			// The connections shown so far are those of requests whose
+			// summaries follow, or of ones that came before this session.
+			kept := make([]Line, 0, maxRecent)
+			for _, l := range sv.Recent {
+				if l.Method != "" {
+					kept = append(kept, l)
+				}
+			}
+			sv.Recent = kept
+		}
+		sv.add(Line{At: at, Method: method, Path: path, Status: status})
 	})
 }
 

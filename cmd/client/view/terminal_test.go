@@ -310,3 +310,63 @@ func TestColourAllowed(t *testing.T) {
 		t.Fatal("NO_COLOR was not honoured")
 	}
 }
+
+// A height that is not known: the view is cut as on 24 rows, so that a tall
+// one does not scroll the terminal with every redraw.
+func TestScreen_UnknownHeightIs24Rows(t *testing.T) {
+	w := &writes{}
+	s := fastScreen(w, fixedSize(80, 0))
+	defer s.Close()
+	var lines []string
+	for i := 0; i < 40; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	s.Draw(lines)
+	first := w.waitFor(t, 1)[0]
+	if strings.Count(first, "\r\n") != 23 || !strings.Contains(first, "line 22") || strings.Contains(first, "line 23") {
+		t.Fatalf("40 lines on an unknown height: %d lines drawn", strings.Count(first, "\r\n"))
+	}
+	lines[0] = "changed"
+	s.Draw(lines)
+	if second := w.waitFor(t, 2)[1]; !strings.HasPrefix(second, "\r\x1b[23A") {
+		t.Fatalf("second draw: %q", second[:20])
+	}
+}
+
+// A draw that was put off is written by a timer, on a goroutine of its own. A
+// fault there (the size, the writer) must not end the process: the tunnels
+// are worth more than their display. The Screen stops drawing and hands the
+// fault to the next caller of Draw.
+func TestScreen_APanicInADeferredDrawStaysInTheScreen(t *testing.T) {
+	w := &writes{}
+	calls := 0
+	var mu sync.Mutex
+	s := fastScreen(w, func() (int, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		if calls++; calls > 1 {
+			panic("size failed")
+		}
+		return 80, 24
+	})
+	s.Draw([]string{"one"})
+	s.Draw([]string{"two"}) // put off: the timer draws it and the size panics
+	time.Sleep(100 * time.Millisecond)
+	if n := len(w.list()); n != 1 {
+		t.Fatalf("%d writes", n)
+	}
+	got := func() (r any) {
+		defer func() { r = recover() }()
+		s.Draw([]string{"three"})
+		return nil
+	}()
+	if got != "size failed" {
+		t.Fatalf("the next Draw panicked with %v, want the fault of the timer", got)
+	}
+	// Once told, the Screen is simply closed.
+	s.Draw([]string{"four"})
+	s.Close()
+	if n := len(w.list()); n != 1 {
+		t.Fatalf("%d writes after the fault", n)
+	}
+}

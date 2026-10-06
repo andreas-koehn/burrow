@@ -51,10 +51,11 @@ func colourAllowed(getenv func(string) string) bool { return getenv("NO_COLOR") 
 
 // Screen redraws a view in place on a terminal.
 //
-// It changes nothing about the terminal that outlasts one write: no alternate
-// screen, no hidden cursor, no changed input mode. Line wrapping is turned off
-// and on again around each line within the same write. So there is nothing to
-// restore when the process ends, however it ends.
+// It uses no alternate screen, hides no cursor and changes no input mode, so
+// there is nothing to restore when the process ends, however it ends. One
+// mode of the terminal it does set: line wrapping is turned off before each
+// line and on after it, within the same write. A terminal that had wrapping
+// turned off is therefore left with it on, which is what terminals start with.
 //
 // Draw and Close may block for as long as the terminal does not take the
 // output; call them from a goroutine nothing else waits for.
@@ -70,6 +71,7 @@ type Screen struct {
 	lastWrite time.Time
 	timer     *time.Timer
 	closed    bool
+	failed    any // what a write of the timer panicked with, until Draw passes it on
 }
 
 // NewScreen returns a Screen that writes to w. size reports the columns and
@@ -82,10 +84,19 @@ func NewScreen(w io.Writer, size func() (cols, rows int)) *Screen {
 // Draw replaces what was drawn before with lines. At most four draws a second
 // reach the terminal; of the ones in between only the last is drawn, a little
 // later. Lines that are already on the terminal are not written again.
+//
+// A write that was put off is made by a timer. Should it panic (the writer and
+// the size function are the caller's), the Screen closes itself and the next
+// Draw panics with the same value, on the goroutine of its caller, which is
+// where a caller can recover.
 func (s *Screen) Draw(lines []string) {
 	lines = append(make([]string, 0, len(lines)), lines...)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if r := s.failed; r != nil {
+		s.failed = nil
+		panic(r)
+	}
 	if s.closed {
 		return
 	}
@@ -103,6 +114,13 @@ func (s *Screen) Draw(lines []string) {
 func (s *Screen) tick() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// This is a goroutine of the timer: a panic here would end the process,
+	// and with it the tunnels.
+	defer func() {
+		if r := recover(); r != nil {
+			s.closed, s.failed = true, r
+		}
+	}()
 	s.timer = nil
 	if !s.closed {
 		s.flush(false)
@@ -137,6 +155,9 @@ func (s *Screen) flush(force bool) {
 		return
 	}
 	cols, rows := s.size()
+	if rows <= 0 {
+		rows = defaultRows // not known: see defaultRows
+	}
 	// The view must leave the last row to the cursor: going up beyond the top
 	// of the screen is not possible, and the view would scroll with each draw.
 	if rows > 0 && len(lines) > max(rows-1, 1) {

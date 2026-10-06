@@ -327,6 +327,10 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 	cs.SetControl(ctrl)
+	if cs.WantsRequestSummaries() {
+		// Ends with the session: closing it ends a write that waits, too.
+		go cs.runSummaries(ysess.CloseChan())
+	}
 	go func() {
 		for {
 			st, e := ysess.AcceptStream()
@@ -338,6 +342,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	}()
 	go s.heartbeat(ctx, ysess, cs)
 	s.RunControlLoop(ctrl, s.reg, cs)
+	if n := cs.SummariesDropped(); n > 0 {
+		s.log.Debug("request summaries dropped for a slow client", "session_id", cs.SessionID, "dropped", n)
+	}
 	s.log.Info("client disconnected", "session_id", cs.SessionID)
 }
 

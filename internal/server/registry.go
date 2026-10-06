@@ -67,6 +67,61 @@ type ClientSession struct {
 	ctrlMu        sync.Mutex
 	ctrl          io.Writer
 	ctrlDeadliner writeDeadliner // non-nil when ctrl also supports SetWriteDeadline
+
+	// summaries holds the request summaries that wait to be written to the
+	// client. nil: the client did not announce proto.CapRequestSummaries and
+	// is sent none. See offerSummary and runSummaries.
+	summaries        chan proto.RequestSummary
+	summariesDropped atomic.Uint64
+	summariesOff     atomic.Bool // the sender has ended
+}
+
+// summaryQueue is how many request summaries may wait for one client.
+const summaryQueue = 256
+
+// WantsRequestSummaries reports whether the client announced that it reads
+// request summaries.
+func (cs *ClientSession) WantsRequestSummaries() bool { return cs.summaries != nil }
+
+// SummariesDropped is how many request summaries were not sent to this client
+// because it did not take them fast enough.
+func (cs *ClientSession) SummariesDropped() uint64 { return cs.summariesDropped.Load() }
+
+// offerSummary queues a summary for the client and reports whether it was
+// taken. It never waits: the caller is the goroutine of a visitor's request.
+// When summaryQueue summaries wait already, this one is dropped and counted.
+func (cs *ClientSession) offerSummary(s proto.RequestSummary) bool {
+	if cs.summaries == nil {
+		return false
+	}
+	if !cs.summariesOff.Load() {
+		select {
+		case cs.summaries <- s:
+			return true
+		default:
+		}
+	}
+	cs.summariesDropped.Add(1)
+	return false
+}
+
+// runSummaries writes the queued summaries to the client, one at a time, until
+// done is closed or a write fails. It is the only place that waits for the
+// control stream on behalf of summaries. A failed write (the stream is closed,
+// or the client took nothing for controlWriteTimeout) ends it for the session:
+// writing on would hold the control stream for the same time again and again.
+func (cs *ClientSession) runSummaries(done <-chan struct{}) {
+	defer cs.summariesOff.Store(true)
+	for {
+		select {
+		case <-done:
+			return
+		case s := <-cs.summaries:
+			if cs.SendControl(proto.MsgRequestSummary, s) != nil {
+				return
+			}
+		}
+	}
 }
 
 // Registry tracks live sessions and their tunnels (in-memory, mutex-guarded).

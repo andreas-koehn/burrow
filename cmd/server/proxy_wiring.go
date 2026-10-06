@@ -295,6 +295,12 @@ type tunnelStreamOpener interface {
 	LookupSessionByTunnelID(tunnelID string) (sessionID, userID string, ok bool)
 }
 
+// The control server is the proxy's receiver of request summaries: main hands
+// it to proxy.WithSummarySink. It passes each summary to the client whose
+// tunnel served the request, when that client asked for summaries, and never
+// waits for a client.
+var _ proxy.SummarySink = (*server.Server)(nil)
+
 // proxyDialerAdapter adapts *server.Server + store to proxy.StreamDialer.
 type proxyDialerAdapter struct {
 	st  subdomainStore
