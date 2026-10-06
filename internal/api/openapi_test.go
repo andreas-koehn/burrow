@@ -454,6 +454,10 @@ func (*fullDepsStub) SetServiceSlug(context.Context, string, string, string, str
 	stubPanic("SetServiceSlug")
 	return "", nil
 }
+func (*fullDepsStub) SetServiceGatewayOnly(context.Context, string, string, string, bool) error {
+	stubPanic("SetServiceGatewayOnly")
+	return nil
+}
 func (*fullDepsStub) SuggestSlug(context.Context) (string, error) {
 	stubPanic("SuggestSlug")
 	return "", nil

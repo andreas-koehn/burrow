@@ -43,7 +43,7 @@ describe("contract", () => {
     const s: Service = {
       id: "s1", name: "web", type: "http", slug: "k7p2qx",
       url: "https://tunnels.example.com/svc/k7p2qx/", access_mode: "open",
-      api_key_header: "Authorization", connected: true,
+      api_key_header: "Authorization", gateway_only: false, connected: true,
       remote_port: 0, local_addr: "127.0.0.1:3000",
     };
     expectTypeOf(s.access_mode).toEqualTypeOf<"open" | "api_key" | "burrow_login" | "mtls">();

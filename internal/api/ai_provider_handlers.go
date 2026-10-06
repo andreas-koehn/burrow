@@ -481,6 +481,9 @@ type postProviderReq struct {
 	Name      string `json:"name"`
 	Kind      string `json:"kind"`
 	ServiceID string `json:"service_id"`
+	// GatewayOnly closes the direct doors of the backing service of a tunnel
+	// provider; ignored for kind "direct", which has none.
+	GatewayOnly bool `json:"gateway_only"`
 	upstreamReq
 }
 
@@ -674,7 +677,35 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 		"kind":       p.Kind,
 		"service_id": p.ServiceID,
 	})
+	if in.GatewayOnly {
+		d.closeDirectDoors(r, p)
+	}
 	d.writeProviderView(w, r, http.StatusCreated, p)
+}
+
+// closeDirectDoors sets gateway-only on the backing service of a provider that
+// was just created. A failure is logged and does not undo the provider: the
+// switch can be set from the service page.
+func (d Deps) closeDirectDoors(r *http.Request, p db.AIProvider) {
+	role, err := d.callerRole(r)
+	if err == nil {
+		err = d.Services.SetServiceGatewayOnly(r.Context(), userID(r.Context()), role, p.ServiceID, true)
+	}
+	if err != nil {
+		d.Log.Warn("provider created, gateway-only not set", "provider", p.Slug, "service_id", p.ServiceID, "err", err)
+		return
+	}
+	if d.AuditAppender != nil {
+		lc := audit.LogContextFrom(r.Context())
+		_ = d.AuditAppender.Append(r.Context(), audit.Event{
+			ActorID: lc.ActorID, ActorEmail: lc.ActorEmail,
+			Action:    audit.ActionServiceGatewayOnlyUpdate,
+			SubjectID: p.ServiceID,
+			Result:    "ok",
+			SourceIP:  lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
+			Payload: audit.MustJSON(map[string]any{"gateway_only": true}),
+		})
+	}
 }
 
 // postDirectProvider is the kind "direct" branch of PostAIProvider. The

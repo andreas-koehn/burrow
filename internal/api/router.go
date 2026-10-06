@@ -248,6 +248,7 @@ func NewRouter(d Deps) http.Handler {
 			r.With(d.RequireAdmin).Post("/ai/providers/{slug}/models", d.PostAIProviderModel)
 			r.With(d.RequireAdmin).Delete("/ai/providers/{slug}/models", d.DeleteAIProviderModel)
 			r.Put("/services/{serviceID}/access-mode", d.SetServiceAccessMode)
+			r.Put("/services/{serviceID}/gateway-only", d.PutServiceGatewayOnly)
 			r.Get("/services/{serviceID}/api-keys", d.ListAPIKeys)
 			r.Post("/services/{serviceID}/api-keys", d.CreateAPIKey)
 			r.Delete("/services/{serviceID}/api-keys/{id}", d.DeleteAPIKey)

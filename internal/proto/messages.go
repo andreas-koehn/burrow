@@ -92,6 +92,9 @@ type TunnelRegisterResponse struct {
 	Created bool `json:"created,omitempty"`
 	// DashboardURL is the page of the service in the dashboard.
 	DashboardURL string `json:"dashboard_url,omitempty"`
+	// GatewayOnly says that the service answers through the AI gateway only;
+	// URL is then empty.
+	GatewayOnly bool `json:"gateway_only,omitempty"`
 	// Ignored lists, sorted, which of "access" and "slug" the client asked
 	// for and the relay did not apply: the service existed with other values,
 	// or it is a tcp service, which has neither.

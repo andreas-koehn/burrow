@@ -167,10 +167,10 @@ function seed(): MockDb {
       { id: "tok_1", name: "office-box-1", last_used: "2026-05-18T09:00:00Z", created_at: "2026-05-01T08:00:00Z" },
     ],
     services: [
-      { id: "svc_web01", user_id: meId, name: "web", type: "http", slug: "k7p2qx", url: "https://tunnels.example.com/svc/k7p2qx/", access_mode: "open", api_key_header: "Authorization", connected: true, remote_port: 0, local_addr: "127.0.0.1:3000" },
-      { id: "svc_ai001", user_id: meId, name: "ollama", type: "http", slug: "ai4m2q", url: "https://tunnels.example.com/svc/ai4m2q/", access_mode: "api_key", api_key_header: "Authorization", connected: true, remote_port: 0, local_addr: "127.0.0.1:11434" },
-      { id: "svc_graf01", user_id: meId, name: "grafana", type: "http", slug: "gf7x1p", url: "https://tunnels.example.com/svc/gf7x1p/", access_mode: "burrow_login", api_key_header: "Authorization", connected: false, remote_port: 0, local_addr: "127.0.0.1:3001" },
-      { id: "svc_pg001", user_id: meId, name: "postgres", type: "tcp", slug: "", url: "", access_mode: "open", api_key_header: "Authorization", connected: true, remote_port: 9000, local_addr: "127.0.0.1:5432" },
+      { id: "svc_web01", user_id: meId, name: "web", type: "http", slug: "k7p2qx", url: "https://tunnels.example.com/svc/k7p2qx/", access_mode: "open", api_key_header: "Authorization", gateway_only: false, connected: true, remote_port: 0, local_addr: "127.0.0.1:3000" },
+      { id: "svc_ai001", user_id: meId, name: "ollama", type: "http", slug: "ai4m2q", url: "https://tunnels.example.com/svc/ai4m2q/", access_mode: "api_key", api_key_header: "Authorization", gateway_only: false, connected: true, remote_port: 0, local_addr: "127.0.0.1:11434" },
+      { id: "svc_graf01", user_id: meId, name: "grafana", type: "http", slug: "gf7x1p", url: "https://tunnels.example.com/svc/gf7x1p/", access_mode: "burrow_login", api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "127.0.0.1:3001" },
+      { id: "svc_pg001", user_id: meId, name: "postgres", type: "tcp", slug: "", url: "", access_mode: "open", api_key_header: "Authorization", gateway_only: false, connected: true, remote_port: 9000, local_addr: "127.0.0.1:5432" },
     ],
     serviceApiKeys: {
       svc_ai001: [
@@ -526,7 +526,7 @@ export function addDirectProvider(slug: string, row: Partial<AiProviderRow> = {}
   };
   db.services.push({
     id: p.service_id, user_id: db.me.id, name: p.name, type: "direct", slug: "", url: "",
-    access_mode: "api_key", api_key_header: "Authorization", connected: false, remote_port: 0, local_addr: "",
+    access_mode: "api_key", api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "",
   });
   db.aiProviders.push(p);
   return p;

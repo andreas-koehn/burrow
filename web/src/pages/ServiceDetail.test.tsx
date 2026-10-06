@@ -172,4 +172,39 @@ describe("ServiceDetail page", () => {
     mountAt("/services/svc_web01");
     expect(await screen.findByText(/can act as the signed-in dashboard user/)).toBeInTheDocument();
   });
+
+  it("lets the owner close a service to everything but the AI gateway", async () => {
+    mountAt("/services/svc_ai001");
+    const toggle = await screen.findByRole("switch", { name: "Reachable through the AI gateway only" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    await userEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    expect(screen.queryByRole("button", { name: /copy url/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit URL" })).toBeNull();
+    expect(screen.getByText("No public URL: this service answers through the AI gateway only.")).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\/svc\//);
+    db.services.find((x) => x.id === "svc_ai001")!.gateway_only = false;
+  });
+
+  it("does not offer the switch for a service that backs no provider", async () => {
+    mountAt("/services/svc_web01");
+    await screen.findByRole("tab", { name: "Access" });
+    expect(screen.queryByRole("switch", { name: /gateway only/i })).toBeNull();
+  });
+
+  it("keeps the switch for a gateway-only service whose provider is gone", async () => {
+    const svc = db.services.find((x) => x.id === "svc_web01")!;
+    svc.gateway_only = true;
+    try {
+      mountAt("/services/svc_web01");
+      const toggle = await screen.findByRole("switch", { name: "Reachable through the AI gateway only" });
+      expect(toggle).toHaveAttribute("aria-checked", "true");
+      await userEvent.click(toggle);
+      // Switched off, and with no provider behind it the switch goes away again.
+      await waitFor(() => expect(screen.queryByRole("switch", { name: /gateway only/i })).toBeNull());
+      expect(svc.gateway_only).toBe(false);
+    } finally {
+      svc.gateway_only = false;
+    }
+  });
 });

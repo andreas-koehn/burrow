@@ -814,3 +814,28 @@ func TestGateNext_RoundTripsAccessCheckerRedirect(t *testing.T) {
 		}
 	}
 }
+
+// The gate must not say a gateway-only service exists: a signed-in user whose
+// role is not allowed gets the same redirect as for an unknown service, not the
+// access-denied page that names it.
+func TestGateGetLogin_GatewayOnlyService_LooksUnknown(t *testing.T) {
+	st := newFakeGateStore()
+	st.user = db.User{ID: "user-2", Email: "bob@example.com", Role: "user", Status: "active"}
+	st.serviceMap["models"] = db.Service{ID: "svc-gw", Name: "SecretModels", Subdomain: "models", GatewayOnly: true}
+	st.policyMap["svc-gw"] = []string{"admin"}
+	st.sessionMap["sess-2"] = "user-2"
+	gate := newTestGate(st)
+
+	next := "https://" + gateAuthDomain + "/svc/models/"
+	req := httptest.NewRequest("GET", "/__burrow/login?next="+url.QueryEscape(next), nil)
+	req.AddCookie(&http.Cookie{Name: "burrow_session", Value: "sess-2"})
+	rec := httptest.NewRecorder()
+	gate.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("want 302 like an unknown service, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "SecretModels") {
+		t.Errorf("body names the service")
+	}
+}

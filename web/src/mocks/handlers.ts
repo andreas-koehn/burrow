@@ -110,7 +110,7 @@ const MSG_BASE_URL_PRIVATE = "base URL resolves to a private or loopback address
 const MSG_MODEL_ID = "id must be 1-200 characters without control characters";
 const UPSTREAM_FIELDS = ["api_format", "base_url", "credential_slot", "auth_header", "auth_format", "extra_headers", "billing", "supports_responses"];
 const RESPONSES_FORMAT = "the Responses API belongs to the OpenAI format";
-const CREATE_FIELDS = ["slug", "name", "kind", "service_id", ...UPSTREAM_FIELDS];
+const CREATE_FIELDS = ["slug", "name", "kind", "service_id", "gateway_only", ...UPSTREAM_FIELDS];
 const HEADER_NAME_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
 const RELAY_HEADERS = new Set([
   "host", "content-length", "transfer-encoding", "connection", "keep-alive", "te", "trailer", "upgrade", "cookie", "forwarded",
@@ -480,7 +480,7 @@ export const handlers = [
     const rows = (db.me.role === "admin"
       ? db.services
       : db.services.filter((s) => s.user_id === db.me.id)).filter((s) => s.type !== "direct");
-    return json(rows.map(({ user_id: _u, ...s }) => s));
+    return json(rows.map(({ user_id: _u, ...s }) => ({ ...s, url: s.gateway_only ? "" : s.url })));
   }),
   // Registered before /services/:id so the literal segment wins.
   http.get("/api/v1/services/slug-suggestion", ({ request }) =>
@@ -492,6 +492,7 @@ export const handlers = [
     const { user_id: _u, ...wire } = svc;
     return json({
       ...wire,
+      url: wire.gateway_only ? "" : wire.url,
       api_key_count: (db.serviceApiKeys[svc.id] ?? []).length,
       access_policy: db.serviceAccessPolicy[svc.id] ?? [],
     });
@@ -506,7 +507,7 @@ export const handlers = [
     if (stored === undefined) return err(400, `unknown access mode "${b?.access_mode}"`);
     if (db.services.some((s) => s.id === id)) return err(409, "service already exists");
     const slug = b?.slug ?? "";
-    db.services.push({ id, user_id: db.me.id, name: b?.title ?? "", type: "http", slug, url: slug ? `https://tunnels.example.com/svc/${slug}/` : "", access_mode: stored as AccessMode, api_key_header: "Authorization", connected: false, remote_port: 0, local_addr: "" });
+    db.services.push({ id, user_id: db.me.id, name: b?.title ?? "", type: "http", slug, url: slug ? `https://tunnels.example.com/svc/${slug}/` : "", access_mode: stored as AccessMode, api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "" });
     return json({ id, created_at: new Date().toISOString() }, 201);
   }),
 
@@ -575,6 +576,19 @@ export const handlers = [
     return json({ slug, url: svc.url });
   }),
 
+  // ---- gateway-only: no direct address, reachable through the AI gateway only ----
+  http.put("/api/v1/services/:id/gateway-only", async ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = db.services.find((s) => s.id === params.id);
+    if (!svc) return err(404, "service not found");
+    if (!canConfigure(svc)) return err(403, "forbidden");
+    if (svc.type !== "http") return err(409, "api_key, burrow_login, and mtls require an http service");
+    const b = await body<{ gateway_only?: unknown }>(request);
+    if (typeof b?.gateway_only !== "boolean") return err(400, "gateway_only (boolean) is required");
+    svc.gateway_only = b.gateway_only;
+    return json({ gateway_only: svc.gateway_only });
+  }),
+
   // ---- v0.3.0 per-service access policy (spec Part D; services:configure) ----
   http.get("/api/v1/services/:id/access-policy", ({ request, params }) => {
     const g = gate(request); if (g) return g;
@@ -629,7 +643,7 @@ export const handlers = [
   }),
   http.post("/api/v1/ai/providers", async ({ request }) => {
     const g = gate(request, { admin: true }); if (g) return g;
-    const b = await body<{ slug?: string; name?: string; kind?: string; service_id?: string } & UpstreamBody>(request);
+    const b = await body<{ slug?: string; name?: string; kind?: string; service_id?: string; gateway_only?: boolean } & UpstreamBody>(request);
     if (!b || typeof b !== "object") return err(400, "invalid JSON body");
     const unknown = unknownField(b, CREATE_FIELDS);
     if (unknown) return err(400, unknown);
@@ -660,7 +674,7 @@ export const handlers = [
       // The backing service is created with the provider and owned by the caller.
       db.services.push({
         id: row.service_id, user_id: db.me.id, name, type: "direct", slug: "", url: "",
-        access_mode: "api_key", api_key_header: "Authorization", connected: false, remote_port: 0, local_addr: "",
+        access_mode: "api_key", api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "",
       });
       db.aiProviders.push(row);
       return json(providerView(row), 201);
@@ -678,6 +692,7 @@ export const handlers = [
     }
     const row: AiProviderRow = { slug, name, kind: "tunnel", api_format: "openai", service_id: svc.id };
     db.aiProviders.push(row);
+    if (b.gateway_only === true) svc.gateway_only = true;
     return json(providerView(row), 201);
   }),
   // Registered before /ai/providers/:slug so the longer paths win.

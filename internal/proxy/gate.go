@@ -171,7 +171,8 @@ func (g *Gate) handleGetLogin(w http.ResponseWriter, r *http.Request) {
 				label := slugFromNext(nextURL)
 				if label != "" {
 					svc, err := g.st.ServiceForSubdomain(r.Context(), label)
-					if err == nil {
+					// A gateway-only service must look like one that does not exist.
+					if err == nil && !svc.GatewayOnly {
 						allowed, err := g.st.RoleAllowed(r.Context(), svc.ID, user.Role)
 						if err == nil {
 							if !allowed {

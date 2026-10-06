@@ -1210,3 +1210,24 @@ func TestCreateOptions_ClientToDatabase(t *testing.T) {
 		t.Fatalf("row %+v, registration %+v", plain, reg)
 	}
 }
+
+// Both lookups carry the gateway-only flag so the proxy can hide the service.
+func TestProxyDialerAdapter_Lookups_CopyGatewayOnly(t *testing.T) {
+	svc := db.Service{ID: "svc-1", Subdomain: "abc123", AccessMode: "open", GatewayOnly: true}
+	a := proxyDialerAdapter{
+		st:  &fakeStoreSubdomain{svc: svc},
+		srv: &fakeHTTPTunnelLookup{tn: &server.Tunnel{ServiceID: "svc-1", LocalAddr: "127.0.0.1:3000"}, ok: true},
+	}
+	res, err := a.Lookup(context.Background(), "abc123")
+	if err != nil || !res.GatewayOnly {
+		t.Fatalf("Lookup: GatewayOnly=%v err=%v", res != nil && res.GatewayOnly, err)
+	}
+	res, err = a.LookupByServiceID(context.Background(), "svc-1")
+	if err != nil || !res.GatewayOnly {
+		t.Fatalf("LookupByServiceID: GatewayOnly=%v err=%v", res != nil && res.GatewayOnly, err)
+	}
+	a.st = &fakeStoreSubdomain{svc: db.Service{ID: "svc-1", Subdomain: "abc123"}}
+	if res, _ = a.Lookup(context.Background(), "abc123"); res == nil || res.GatewayOnly {
+		t.Fatal("flag set for a service that is not gateway-only")
+	}
+}

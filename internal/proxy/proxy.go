@@ -395,6 +395,12 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 		return
 	}
 
+	// A gateway-only service is reachable through /ai/ only; here it does not exist.
+	if res.GatewayOnly {
+		p.notFound(w)
+		return
+	}
+
 	// v0.5.0 F-13 connection-log accounting. Wrap before any other work so
 	// the body/byte counters cover the full request. The recordOnClose
 	// deferral fires on every return below (including the access-deny
@@ -559,6 +565,12 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 // succeeded. Shared between the normal subdomain path and future extensions.
 func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resolved, label, suffix string) {
 	ctx := r.Context()
+
+	// A gateway-only service is reachable through /ai/ only; here it does not exist.
+	if res.GatewayOnly {
+		p.notFound(w)
+		return
+	}
 
 	// v0.5.0 F-13 connection-log accounting. Wrap before any other work so
 	// the body/byte counters see the full request even if downstream code
@@ -913,7 +925,9 @@ func (p *Proxy) GetConfigForClient(hello *tls.ClientHelloInfo) (*tls.Config, err
 		// 404 on the request itself.
 		return nil, nil
 	}
-	if res == nil || res.AccessMode != AccessModeMTLS || len(res.MTLSCAPEM) == 0 {
+	// A gateway-only service must not ask for a certificate: the handshake
+	// would show that it exists.
+	if res == nil || res.GatewayOnly || res.AccessMode != AccessModeMTLS || len(res.MTLSCAPEM) == 0 {
 		return nil, nil
 	}
 

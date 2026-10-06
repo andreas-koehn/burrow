@@ -241,3 +241,12 @@ func TestControlErrorsCarryACode(t *testing.T) {
 		t.Fatalf("error: %+v", e)
 	}
 }
+
+func TestRegisterHTTP_GatewayOnlyServiceGetsNoURL(t *testing.T) {
+	r := &optResolver{res: Resolved{ServiceID: "svc-1", Slug: "my-app", AccessMode: "open", GatewayOnly: true}}
+	_, _, _, cli := newTestServerWithHTTP(t, r, "burrow.example.com")
+	rr := doRegister(t, cli, proto.TunnelRegister{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000"})
+	if !rr.OK || rr.URL != "" || !rr.GatewayOnly || rr.DashboardURL != "https://burrow.example.com/services/svc-1" {
+		t.Fatalf("answer: %+v", rr)
+	}
+}

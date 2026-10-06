@@ -54,6 +54,7 @@ type ServiceView struct {
 	Subdomain    string // "" for tcp or unset http
 	AccessMode   string // "open" | "api_key" | "burrow_login"
 	APIKeyHeader string // effective header name (default "Authorization")
+	GatewayOnly  bool   // reachable through the AI gateway only
 	CreatedAt    time.Time
 }
 
@@ -236,6 +237,23 @@ func (s *Store) SetServiceSlug(ctx context.Context, callerID, callerRole, servic
 		return "", err
 	}
 	return svc.Subdomain, nil
+}
+
+// SetServiceGatewayOnly closes (or reopens) every direct door of an http
+// service: with it set the service is reachable through the AI gateway only.
+// Same permission rule as SetServiceAccessMode.
+func (s *Store) SetServiceGatewayOnly(ctx context.Context, callerID, callerRole, serviceID string, on bool) error {
+	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
+	if err != nil {
+		return err
+	}
+	if svc.Type == "direct" {
+		return ErrDirectService
+	}
+	if svc.Type != "http" {
+		return ErrServiceNotHTTP
+	}
+	return s.q.SetServiceGatewayOnly(ctx, serviceID, on)
 }
 
 // SuggestSlug returns a generated slug that no service uses right now. The
@@ -457,6 +475,7 @@ func serviceToView(s db.Service) ServiceView {
 		Subdomain:    s.Subdomain,
 		AccessMode:   s.AccessMode,
 		APIKeyHeader: s.APIKeyHeader,
+		GatewayOnly:  s.GatewayOnly,
 		CreatedAt:    s.CreatedAt,
 	}
 }

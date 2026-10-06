@@ -35,6 +35,9 @@ type ServiceStore interface {
 	// (mapped to HTTP 409). *db.DB satisfies this directly via CreateService.
 	CreateService(ctx context.Context, s db.Service) error
 	SetServiceSlug(ctx context.Context, callerID, callerRole, serviceID, slug string) (old string, err error)
+	// SetServiceGatewayOnly closes or reopens every direct door of an http
+	// service; it stays reachable through the AI gateway.
+	SetServiceGatewayOnly(ctx context.Context, callerID, callerRole, serviceID string, on bool) error
 	SuggestSlug(ctx context.Context) (string, error)
 }
 

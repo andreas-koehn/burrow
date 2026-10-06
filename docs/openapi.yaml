@@ -306,8 +306,11 @@ components:
           description: URL segment of an http service; empty for tcp or until one is assigned.
         url:
           type: string
-          description: Public address, `https://<auth_domain>/svc/<slug>/`; empty without a slug or auth domain.
+          description: Public address, `https://<auth_domain>/svc/<slug>/`; empty without a slug or auth domain, and empty while `gateway_only` is true.
         access_mode: { type: string }
+        gateway_only:
+          type: boolean
+          description: When true the service is reachable through the AI gateway only; its `/svc/<slug>/` address and custom domains answer 404.
         remote_port: { type: integer }
         local_addr: { type: string }
         connected: { type: boolean }
@@ -324,7 +327,7 @@ components:
         connected: { type: boolean }
         url:
           type: string
-          description: Public address of an http tunnel, `https://<auth_domain>/svc/<slug>/`; omitted for tcp.
+          description: Public address of an http tunnel, `https://<auth_domain>/svc/<slug>/`; omitted for tcp and for a gateway-only service.
     Session:
       type: object
       properties:
@@ -790,6 +793,42 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { description: Slug already in use. }
+
+  /api/v1/services/{serviceID}/gateway-only:
+    put:
+      tags: [services]
+      summary: Reach the service through the AI gateway only
+      description: |
+        With `gateway_only` true the service answers 404 at `/svc/<slug>/`, on
+        its custom domains and on every other direct address, exactly like a
+        service that does not exist. It stays reachable through the AI gateway
+        (`/ai/<provider>/`, `/openai/v1`, `/anthropic`), where the provider's
+        policy and key checks apply as before. Same permission as the other
+        service settings. Audited as `service.gateway_only.update`.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [gateway_only]
+              properties:
+                gateway_only: { type: boolean }
+      responses:
+        '200':
+          description: Setting stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  gateway_only: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not an http service, or backs a direct AI provider. }
 
   /api/v1/services/{serviceID}/api-keys:
     get:
@@ -2905,6 +2944,9 @@ paths:
                     name: { type: string, minLength: 1, maxLength: 120 }
                     kind: { type: string, enum: [tunnel, direct], default: tunnel }
                     service_id: { type: string, description: Kind "tunnel" only. }
+                    gateway_only:
+                      type: boolean
+                      description: Kind "tunnel" only (ignored for "direct"). Sets gateway-only on the backing service after the provider is created; if that fails the provider still exists (201) and the flag can be set from the service page.
                 - $ref: '#/components/schemas/AIProviderUpstream'
             examples:
               tunnel:

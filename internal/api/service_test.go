@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
@@ -54,6 +55,10 @@ type fakeServiceStore struct {
 	// CreateService (v0.5.2 P3.6)
 	createSvcErr error
 	createdSvcs  []db.Service
+
+	// SetServiceGatewayOnly
+	gatewayOnlyErr   error
+	gatewayOnlyCalls []gatewayOnlyCall
 
 	// SetServiceSlug / SuggestSlug
 	setSlugOld  string
@@ -101,6 +106,16 @@ func (f *fakeServiceStore) SetAccessPolicy(_ context.Context, _, _, _ string, ro
 func (f *fakeServiceStore) SetServiceSlug(_ context.Context, _, _, _, slug string) (string, error) {
 	f.lastSlug = slug
 	return f.setSlugOld, f.setSlugErr
+}
+
+type gatewayOnlyCall struct {
+	callerID, role, serviceID string
+	on                        bool
+}
+
+func (f *fakeServiceStore) SetServiceGatewayOnly(_ context.Context, callerID, role, serviceID string, on bool) error {
+	f.gatewayOnlyCalls = append(f.gatewayOnlyCalls, gatewayOnlyCall{callerID, role, serviceID, on})
+	return f.gatewayOnlyErr
 }
 func (f *fakeServiceStore) SuggestSlug(_ context.Context) (string, error) {
 	return f.suggestSlug, f.suggestErr
@@ -1478,5 +1493,103 @@ func TestServiceEndpoints_RefuseDirectBackingRow(t *testing.T) {
 		if body := wantStatus(t, resp, http.StatusConflict); !strings.Contains(body, "direct AI provider") {
 			t.Errorf("body = %s", body)
 		}
+	}
+}
+
+func TestPutServiceGatewayOnly(t *testing.T) {
+	ss := &fakeServiceStore{}
+	d := newServiceDeps(ss, fakeLiveTunnels{}, "burrow.example.com")
+	aud := &stubAuditAppender{}
+	d.AuditAppender = aud
+	srv, c := newServiceServer(t, d)
+	defer srv.Close()
+
+	r := c.put(t, "/api/v1/services/s1/gateway-only", map[string]bool{"gateway_only": true})
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", r.StatusCode, readBody(t, r))
+	}
+	var out map[string]bool
+	if err := json.NewDecoder(r.Body).Decode(&out); err != nil || !out["gateway_only"] {
+		t.Fatalf("body = %v err=%v", out, err)
+	}
+	r.Body.Close()
+	if len(ss.gatewayOnlyCalls) != 1 || ss.gatewayOnlyCalls[0].serviceID != "s1" || !ss.gatewayOnlyCalls[0].on || ss.gatewayOnlyCalls[0].role != "admin" {
+		t.Fatalf("store calls = %+v", ss.gatewayOnlyCalls)
+	}
+	if len(aud.events) != 1 || aud.events[0].Action != audit.ActionServiceGatewayOnlyUpdate || aud.events[0].SubjectID != "s1" ||
+		string(aud.events[0].Payload) != `{"gateway_only":true}` {
+		t.Fatalf("audit = %+v", aud.events)
+	}
+
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{
+		{db.ErrNotFound, http.StatusNotFound},
+		{store.ErrForbidden, http.StatusForbidden},
+		{store.ErrServiceNotHTTP, http.StatusConflict},
+		{store.ErrDirectService, http.StatusConflict},
+	} {
+		ss.gatewayOnlyErr = tc.err
+		n := len(aud.events)
+		r = c.put(t, "/api/v1/services/s1/gateway-only", map[string]bool{"gateway_only": false})
+		r.Body.Close()
+		if r.StatusCode != tc.want {
+			t.Errorf("%v: want %d, got %d", tc.err, tc.want, r.StatusCode)
+		}
+		if len(aud.events) != n {
+			t.Errorf("%v: a failed write was audited", tc.err)
+		}
+	}
+	// A body without the field must not silently clear the flag.
+	ss.gatewayOnlyErr = nil
+	r = c.put(t, "/api/v1/services/s1/gateway-only", map[string]string{})
+	r.Body.Close()
+	if r.StatusCode != http.StatusBadRequest {
+		t.Errorf("missing field: want 400, got %d", r.StatusCode)
+	}
+}
+
+func TestPutServiceGatewayOnly_RoleWithoutConfigurePermission(t *testing.T) {
+	ss := &fakeServiceStore{gatewayOnlyErr: store.ErrForbidden}
+	d := newServiceDeps(ss, fakeLiveTunnels{}, "burrow.example.com")
+	d.Users = &fakeUserStore{role: "user"}
+	srv, c := newServiceServer(t, d)
+	defer srv.Close()
+	r := c.put(t, "/api/v1/services/s1/gateway-only", map[string]bool{"gateway_only": true})
+	r.Body.Close()
+	if r.StatusCode != http.StatusForbidden {
+		t.Fatalf("want 403, got %d", r.StatusCode)
+	}
+	if ss.gatewayOnlyCalls[0].role != "user" {
+		t.Fatalf("role = %q", ss.gatewayOnlyCalls[0].role)
+	}
+}
+
+// A gateway-only service has no direct address: the list and the detail say
+// so and carry an empty url.
+func TestServices_GatewayOnlyHasNoURL(t *testing.T) {
+	view := store.ServiceView{ID: "s1", Name: "llm", Type: "http", Subdomain: "abc123", AccessMode: "open", GatewayOnly: true}
+	ss := &fakeServiceStore{listSvcs: []store.ServiceView{view}, getSvc: store.ServiceDetail{ServiceView: view}}
+	srv, c := newServiceServer(t, newServiceDeps(ss, fakeLiveTunnels{}, "burrow.example.com"))
+	defer srv.Close()
+
+	var list []map[string]any
+	r := c.get(t, "/api/v1/services")
+	if err := json.NewDecoder(r.Body).Decode(&list); err != nil || len(list) != 1 {
+		t.Fatalf("list: %v %v", list, err)
+	}
+	r.Body.Close()
+	if list[0]["gateway_only"] != true || list[0]["url"] != "" || list[0]["slug"] != "abc123" {
+		t.Fatalf("list item = %v", list[0])
+	}
+	var one map[string]any
+	r = c.get(t, "/api/v1/services/s1")
+	if err := json.NewDecoder(r.Body).Decode(&one); err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if one["gateway_only"] != true || one["url"] != "" {
+		t.Fatalf("detail = %v", one)
 	}
 }

@@ -210,3 +210,13 @@ func TestTunnelListerAdapterFallsBackWithoutServiceRow(t *testing.T) {
 		t.Fatalf("want legacy fallback burrow_login, got %+v", got)
 	}
 }
+
+// A gateway-only service has no direct address: nothing may advertise /svc/.
+func TestTunnelListerAdapterURLEmptyForGatewayOnly(t *testing.T) {
+	f := &fakeUserTunnelLister{views: []server.TunnelView{{ID: "tn-1", Type: "http", ServiceID: "svc-1"}}}
+	slugs := fakeServiceGetter{svcs: map[string]db.Service{"svc-1": {ID: "svc-1", Subdomain: "abc123", GatewayOnly: true}}}
+	got := tunnelListerAdapter{s: f, slugs: slugs, authDomain: "example.com"}.ListUserTunnels("u1")
+	if got[0].URL != "" {
+		t.Errorf("URL = %q, want empty", got[0].URL)
+	}
+}

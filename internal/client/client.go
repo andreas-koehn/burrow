@@ -219,7 +219,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		}
 		reg := RegisteredTunnel{
 			TunnelID: rr.TunnelID, Name: tn.Name, Type: tn.Type, LocalAddr: tn.LocalAddr,
-			AccessMode: rr.AccessMode, Created: rr.Created, DashboardURL: rr.DashboardURL,
+			AccessMode: rr.AccessMode, Created: rr.Created, DashboardURL: rr.DashboardURL, GatewayOnly: rr.GatewayOnly,
 		}
 		for _, name := range rr.Ignored {
 			switch name {

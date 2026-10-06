@@ -261,7 +261,7 @@ export default function Services() {
         try {
           const p = await apiFetch<{ slug: string }>("/ai/providers", {
             method: "POST",
-            body: JSON.stringify({ name: nsTitle || nsServiceId, kind: "tunnel", service_id: resp.id }),
+            body: JSON.stringify({ name: nsTitle || nsServiceId, kind: "tunnel", service_id: resp.id, gateway_only: true }),
           });
           qc.invalidateQueries({ queryKey: ["ai", "providers"] });
           closeNew();
@@ -386,7 +386,11 @@ export default function Services() {
                 </td>
                 <td><Badge kind={`type-${type}`} nodot>{type}</Badge></td>
                 <td>
-                  {type === "http" ? <ServiceUrl slug={s?.slug ?? ""} url={s?.url || t?.url} /> : <span className="muted">—</span>}
+                  {type !== "http"
+                    ? <span className="muted">—</span>
+                    : s?.gateway_only
+                      ? <Badge kind="status-idle" nodot>gateway only</Badge>
+                      : <ServiceUrl slug={s?.slug ?? ""} url={s?.url || t?.url} />}
                 </td>
                 <td><Badge kind={`access-${access}`} nodot>{ACCESS_LABEL[access]}</Badge></td>
                 {t && (
@@ -475,7 +479,7 @@ export default function Services() {
         onOpenChange={(o) => { if (!o) closeNew(); }}
         title={aiFlow ? "New AI service" : "New service"}
         description={aiFlow
-          ? "Creates a service with API-key access and registers it as a model provider."
+          ? "Creates a service with API-key access and registers it as a model provider, reachable through the AI gateway only."
           : "Pre-provision a service so a connecting client adopts the same id."}
         footer={
           <>

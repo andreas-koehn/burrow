@@ -26,9 +26,11 @@ type serviceResp struct {
 	URL          string `json:"url"`
 	AccessMode   string `json:"access_mode"`
 	APIKeyHeader string `json:"api_key_header"`
-	Connected    bool   `json:"connected"`
-	RemotePort   int    `json:"remote_port"`
-	LocalAddr    string `json:"local_addr"`
+	// GatewayOnly: reachable through the AI gateway only; url is then "".
+	GatewayOnly bool   `json:"gateway_only"`
+	Connected   bool   `json:"connected"`
+	RemotePort  int    `json:"remote_port"`
+	LocalAddr   string `json:"local_addr"`
 }
 
 // serviceDetailResp extends serviceResp with the single-service aggregate fields.
@@ -56,6 +58,15 @@ type createAPIKeyResp struct {
 // accessPolicyResp is the JSON shape for GET /access-policy.
 type accessPolicyResp struct {
 	Roles []string `json:"roles"`
+}
+
+// serviceURL is the direct address of a service: "" for a gateway-only one,
+// which has no /svc/ address that works.
+func serviceURL(slug, authDomain string, gatewayOnly bool) string {
+	if gatewayOnly {
+		return ""
+	}
+	return composeServiceURL(slug, authDomain)
 }
 
 // composeServiceURL returns "https://<authDomain>/svc/<slug>/" when both parts
@@ -114,7 +125,7 @@ func mapServiceErr(w http.ResponseWriter, err error, notFoundMsg string) bool {
 		writeErr(w, http.StatusBadRequest, auth.SlugRule)
 		return true
 	case errors.Is(err, store.ErrDirectService):
-		writeErr(w, http.StatusConflict, "this service backs a direct AI provider; its slug and access mode cannot be changed")
+		writeErr(w, http.StatusConflict, "this service backs a direct AI provider; its slug, access mode and gateway-only setting cannot be changed")
 		return true
 	case errors.Is(err, store.ErrSlugTaken):
 		writeErr(w, http.StatusConflict, "slug already in use")
@@ -155,7 +166,8 @@ func (d Deps) ListServices(w http.ResponseWriter, r *http.Request) {
 			Name:         sv.Name,
 			Type:         sv.Type,
 			Slug:         sv.Subdomain,
-			URL:          composeServiceURL(sv.Subdomain, d.AuthDomain),
+			URL:          serviceURL(sv.Subdomain, d.AuthDomain, sv.GatewayOnly),
+			GatewayOnly:  sv.GatewayOnly,
 			AccessMode:   sv.AccessMode,
 			APIKeyHeader: sv.APIKeyHeader,
 			Connected:    snap.Connected,
@@ -193,7 +205,8 @@ func (d Deps) GetService(w http.ResponseWriter, r *http.Request) {
 			Name:         det.Name,
 			Type:         det.Type,
 			Slug:         det.Subdomain,
-			URL:          composeServiceURL(det.Subdomain, d.AuthDomain),
+			URL:          serviceURL(det.Subdomain, d.AuthDomain, det.GatewayOnly),
+			GatewayOnly:  det.GatewayOnly,
 			AccessMode:   det.AccessMode,
 			APIKeyHeader: det.APIKeyHeader,
 			Connected:    snap.Connected,
@@ -626,6 +639,48 @@ func (d Deps) PutServiceSlug(w http.ResponseWriter, r *http.Request) {
 		"slug": in.Slug,
 		"url":  composeServiceURL(in.Slug, d.AuthDomain),
 	})
+}
+
+type setGatewayOnlyReq struct {
+	GatewayOnly *bool `json:"gateway_only"`
+}
+
+// PutServiceGatewayOnly handles PUT /api/v1/services/{serviceID}/gateway-only.
+// A gateway-only service answers 404 at /svc/<slug>/ and on custom domains and
+// stays reachable through the AI gateway. Same permission as the other service
+// settings (owner, or a role that may configure any service).
+func (d Deps) PutServiceGatewayOnly(w http.ResponseWriter, r *http.Request) {
+	serviceID := chi.URLParam(r, "serviceID")
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	var in setGatewayOnlyReq
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.GatewayOnly == nil {
+		writeErr(w, http.StatusBadRequest, "gateway_only (boolean) is required")
+		return
+	}
+	role, err := d.callerRole(r)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	on := *in.GatewayOnly
+	if err := d.Services.SetServiceGatewayOnly(r.Context(), userID(r.Context()), role, serviceID, on); err != nil {
+		if !mapServiceErr(w, err, "service not found") {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	if d.AuditAppender != nil {
+		lc := audit.LogContextFrom(r.Context())
+		_ = d.AuditAppender.Append(r.Context(), audit.Event{
+			ActorID: lc.ActorID, ActorEmail: lc.ActorEmail,
+			Action:    audit.ActionServiceGatewayOnlyUpdate,
+			SubjectID: serviceID,
+			Result:    "ok",
+			SourceIP:  lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
+			Payload: audit.MustJSON(map[string]any{"gateway_only": on}),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"gateway_only": on})
 }
 
 // GetSlugSuggestion handles GET /api/v1/services/slug-suggestion.

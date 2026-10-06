@@ -52,12 +52,15 @@ var ErrNotFound = errors.New("proxy: tunnel not found")
 //     CA. Burrow does NOT sign client certs — the operator brings their
 //     own PKI.
 type Resolved struct {
-	ServiceID       string
-	AccessMode      string
-	APIKeyHeader    string
-	LocalHost       string
-	MTLSCAPEM       []byte
-	TunnelID        string
+	ServiceID    string
+	AccessMode   string
+	APIKeyHeader string
+	LocalHost    string
+	MTLSCAPEM    []byte
+	TunnelID     string
+	// GatewayOnly: the service is reachable through the AI gateway only; the
+	// proxy answers for it like for a service that does not exist.
+	GatewayOnly     bool
 	UserID          string
 	ClientSessionID string
 	// APIKeyID is the id of the service API key that authorised this request.

@@ -550,3 +550,37 @@ func TestSuggestSlug_IsValidAndFree(t *testing.T) {
 		t.Fatalf("suggested slug is already in use: %v", err)
 	}
 }
+
+func TestSetServiceGatewayOnly(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, s, "owner@x", "user")
+	svcID := mustGetOrCreateService(t, s, owner.ID, "web", "http").ID
+
+	if err := s.SetServiceGatewayOnly(ctx, owner.ID, "user", svcID, true); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	det, err := s.GetService(ctx, owner.ID, "user", svcID)
+	if err != nil || !det.GatewayOnly {
+		t.Fatalf("after set: gateway_only=%v err=%v", det.GatewayOnly, err)
+	}
+	if err := s.SetServiceGatewayOnly(ctx, owner.ID, "user", svcID, false); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if det, _ = s.GetService(ctx, owner.ID, "user", svcID); det.GatewayOnly {
+		t.Fatal("flag still set after clear")
+	}
+	if err := s.SetServiceGatewayOnly(ctx, "someone-else", "user", svcID, true); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("stranger err = %v, want ErrForbidden", err)
+	}
+	if det, _ = s.GetService(ctx, owner.ID, "user", svcID); det.GatewayOnly {
+		t.Fatal("a stranger changed the flag")
+	}
+	if err := s.SetServiceGatewayOnly(ctx, owner.ID, "user", "missing", true); !errors.Is(err, db.ErrNotFound) {
+		t.Fatalf("missing err = %v, want ErrNotFound", err)
+	}
+	tcp := mustGetOrCreateService(t, s, owner.ID, "raw", "tcp").ID
+	if err := s.SetServiceGatewayOnly(ctx, owner.ID, "user", tcp, true); !errors.Is(err, ErrServiceNotHTTP) {
+		t.Fatalf("tcp err = %v, want ErrServiceNotHTTP", err)
+	}
+}

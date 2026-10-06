@@ -161,7 +161,7 @@ func (a serviceResolverAdapter) ResolveWithOptions(ctx context.Context, userID, 
 					return server.Resolved{}, err
 				}
 			}
-			res := server.Resolved{ServiceID: svc.ID, Slug: slug, AccessMode: svc.AccessMode}
+			res := server.Resolved{ServiceID: svc.ID, Slug: slug, AccessMode: svc.AccessMode, GatewayOnly: svc.GatewayOnly}
 			if o.Access != "" && o.Access != svc.AccessMode {
 				res.Ignored = append(res.Ignored, "access")
 			}
@@ -354,6 +354,7 @@ func (a proxyDialerAdapter) Lookup(ctx context.Context, sub string) (*proxy.Reso
 		TunnelID:        tn.ID,
 		UserID:          userID,
 		ClientSessionID: sessionID,
+		GatewayOnly:     svc.GatewayOnly,
 	}
 	if ipgeo.Enabled {
 		r.IPAllowCIDRs = ipgeo.AllowCIDRs
@@ -412,6 +413,7 @@ func (a proxyDialerAdapter) LookupByServiceID(ctx context.Context, serviceID str
 		TunnelID:        tn.ID,
 		UserID:          userID,
 		ClientSessionID: sessionID,
+		GatewayOnly:     svc.GatewayOnly,
 	}
 	if ipgeo.Enabled {
 		r.IPAllowCIDRs = ipgeo.AllowCIDRs

@@ -1843,3 +1843,59 @@ func TestPostProvider_TunnelWithSupportsResponsesRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestPostProvider_TunnelGatewayOnly(t *testing.T) {
+	post := func(t *testing.T, body map[string]any) (*fakeServiceStore, int) {
+		ss, ps := oneProviderFixture()
+		ps.rows = nil
+		srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+		defer srv.Close()
+		resp := c.post(t, "/api/v1/ai/providers", body)
+		resp.Body.Close()
+		return ss, resp.StatusCode
+	}
+	t.Run("set", func(t *testing.T) {
+		ss, code := post(t, map[string]any{"name": "Ollama", "slug": "ollama", "service_id": "svc1", "gateway_only": true})
+		if code != http.StatusCreated {
+			t.Fatalf("want 201, got %d", code)
+		}
+		if len(ss.gatewayOnlyCalls) != 1 || ss.gatewayOnlyCalls[0].serviceID != "svc1" || !ss.gatewayOnlyCalls[0].on {
+			t.Fatalf("calls = %+v", ss.gatewayOnlyCalls)
+		}
+	})
+	t.Run("left out", func(t *testing.T) {
+		ss, code := post(t, map[string]any{"name": "Ollama", "slug": "ollama", "service_id": "svc1"})
+		if code != http.StatusCreated || len(ss.gatewayOnlyCalls) != 0 {
+			t.Fatalf("code %d calls = %+v", code, ss.gatewayOnlyCalls)
+		}
+	})
+	t.Run("explicit false", func(t *testing.T) {
+		ss, code := post(t, map[string]any{"name": "Ollama", "slug": "ollama", "service_id": "svc1", "gateway_only": false})
+		if code != http.StatusCreated || len(ss.gatewayOnlyCalls) != 0 {
+			t.Fatalf("code %d calls = %+v", code, ss.gatewayOnlyCalls)
+		}
+	})
+	t.Run("setter failure still creates the provider", func(t *testing.T) {
+		ss, ps := oneProviderFixture()
+		ps.rows = nil
+		ss.gatewayOnlyErr = errors.New("boom")
+		srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+		defer srv.Close()
+		resp := c.post(t, "/api/v1/ai/providers", map[string]any{"name": "Ollama", "slug": "ollama", "service_id": "svc1", "gateway_only": true})
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated || !ps.has("ollama") {
+			t.Fatalf("code %d has=%v", resp.StatusCode, ps.has("ollama"))
+		}
+	})
+	t.Run("ignored for kind direct", func(t *testing.T) {
+		ss, _ := oneProviderFixture()
+		ps := &fakeProviderStore{}
+		srv, c := newAIProviderServer(t, newAIProviderDeps(ss, newFakeModelAliasStore(), ps))
+		defer srv.Close()
+		resp := c.post(t, "/api/v1/ai/providers", map[string]any{"name": "OpenAI", "slug": "openai", "kind": "direct", "base_url": "https://api.openai.com/v1", "gateway_only": true})
+		resp.Body.Close()
+		if len(ss.gatewayOnlyCalls) != 0 {
+			t.Fatalf("direct provider touched the flag: %+v (status %d)", ss.gatewayOnlyCalls, resp.StatusCode)
+		}
+	})
+}

@@ -38,6 +38,9 @@ type Resolved struct {
 	ServiceID, Slug, AccessMode string
 	// Created says that this call created the service.
 	Created bool
+	// GatewayOnly says that the service has no direct address: it answers
+	// through the AI gateway only, so no URL is reported for it.
+	GatewayOnly bool
 	// Ignored lists, sorted, which of "access" and "slug" were asked for and
 	// not applied because the service existed with other values.
 	Ignored []string

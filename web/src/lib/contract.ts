@@ -125,6 +125,8 @@ export interface Service {
   url: string;
   access_mode: AccessMode;
   api_key_header: string;
+  /** Reachable through the AI gateway only; `url` is then empty. */
+  gateway_only: boolean;
   connected: boolean;
   remote_port: number;
   local_addr: string;

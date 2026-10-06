@@ -234,13 +234,16 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 				s.opts.Events.PublishTunnelsChanged(cs.UserID)
 				var tunnelURL, dashboardURL string
 				if s.opts.AuthDomain != "" {
-					tunnelURL = "https://" + s.opts.AuthDomain + "/svc/" + subdomain + "/"
+					if !res.GatewayOnly {
+						tunnelURL = "https://" + s.opts.AuthDomain + "/svc/" + subdomain + "/"
+					}
 					dashboardURL = "https://" + s.opts.AuthDomain + "/services/" + serviceID
 				}
 				s.log.Info("http tunnel registered", "tunnel_id", tn.ID, "slug", subdomain, "url", tunnelURL, "session_id", cs.SessionID)
 				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{
 					OK: true, TunnelID: tn.ID, RemotePort: 0, URL: tunnelURL,
 					AccessMode: res.AccessMode, Created: res.Created, DashboardURL: dashboardURL, Ignored: res.Ignored,
+					GatewayOnly: res.GatewayOnly,
 				})
 			case "", "tcp":
 				port, perr := s.ports.Allocate(tr.RemotePort)

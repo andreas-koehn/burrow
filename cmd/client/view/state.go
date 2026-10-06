@@ -170,6 +170,8 @@ func (s *Store) Registered(t client.RegisteredTunnel) {
 		// What the relay says now; an older relay says nothing.
 		s.m.Services[i].Access = t.AccessMode
 		switch {
+		case t.GatewayOnly:
+			s.m.Services[i].Public = "AI gateway only"
 		case t.URL != "":
 			s.m.Services[i].Public = t.URL
 		case t.RemotePort > 0:

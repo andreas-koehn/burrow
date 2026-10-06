@@ -446,3 +446,14 @@ func TestStore_Counts(t *testing.T) {
 		t.Fatalf("new session: open %d total %d", a.Open, a.Total)
 	}
 }
+
+// A gateway-only service has no /svc/ address; the view says so instead of
+// waiting for one.
+func TestStore_GatewayOnlyServiceShowsNoAddress(t *testing.T) {
+	s := NewStore("burrow.example.com", "v0.8.0", specs()[:1])
+	s.Registered(client.RegisteredTunnel{TunnelID: "a", Name: "my-app", Type: "http", LocalAddr: "127.0.0.1:3000", GatewayOnly: true})
+	got := s.Snapshot().Services[0].Public
+	if got != "AI gateway only" {
+		t.Fatalf("Public = %q", got)
+	}
+}

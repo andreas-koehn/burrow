@@ -44,6 +44,21 @@ describe("Services page", () => {
     }
   });
 
+  it("shows a gateway-only service as a badge instead of a path", async () => {
+    const svc = db.services.find((x) => x.id === "svc_ai001")!;
+    svc.gateway_only = true;
+    try {
+      mount();
+      const table = await screen.findByRole("table", { name: "Services" });
+      const row = within(table).getByRole("link", { name: "ollama" }).closest("tr")!;
+      expect(within(row).getByText("gateway only")).toBeInTheDocument();
+      expect(within(row).queryByText(/\/svc\//)).toBeNull();
+      expect(within(row).queryByRole("button", { name: /copy url/i })).toBeNull();
+    } finally {
+      svc.gateway_only = false;
+    }
+  });
+
   it("shows each http service's path and copies the full URL", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
@@ -265,7 +280,7 @@ describe("Services page", () => {
   it("explains the AI flow when opened via ?new=ai (F8)", async () => {
     renderApp(<Services />, "/services?new=ai");
     const dialog = await screen.findByRole("dialog", { name: "New AI service" });
-    expect(within(dialog).getByText("Creates a service with API-key access and registers it as a model provider.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Creates a service with API-key access and registers it as a model provider, reachable through the AI gateway only.")).toBeInTheDocument();
     // Access mode is fixed for AI services, so the picker is not offered.
     expect(within(dialog).queryByLabelText("Access mode")).toBeNull();
     expect(within(dialog).getByRole("button", { name: "Create and continue" })).toBeInTheDocument();
@@ -287,6 +302,8 @@ describe("Services page", () => {
     // The mock derives the slug from the name, as the server does.
     expect(await screen.findByTestId("path")).toHaveTextContent(/^\/gateway\/providers\/local-llm$/);
     expect(db.aiProviders.at(-1)).toMatchObject({ slug: "local-llm", name: "Local LLM", service_id: "local-llm" });
+    // The AI flow closes the direct address.
+    expect(db.services.find((x) => x.id === "local-llm")?.gateway_only).toBe(true);
   });
 
   it("?new=ai falls back to the services list and says why when the provider cannot be created", async () => {

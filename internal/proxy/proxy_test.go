@@ -3,6 +3,7 @@ package proxy_test
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -935,5 +936,73 @@ func TestProxyPathRoute_RewritesLocationAndSendsPrefix(t *testing.T) {
 	}
 	if gotPrefix != "/svc/real" {
 		t.Errorf("upstream X-Burrow-Path-Prefix = %q, want /svc/real", gotPrefix)
+	}
+}
+
+// TestProxy_GatewayOnlyServiceIsNotFound: a gateway-only service is reachable
+// through the AI gateway only. Every direct door (host routing, custom domain,
+// WebSocket upgrade) answers exactly like a service that does not exist, and
+// the access checker is not consulted (a deny checker would reveal it by 403).
+func TestProxy_GatewayOnlyServiceIsNotFound(t *testing.T) {
+	var upstreamCalls int
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		_, _ = w.Write([]byte("upstream"))
+	})
+	d := newFakeDialer(upstream)
+	d.register("gwonly", &proxy.Resolved{ServiceID: "svc-gw", AccessMode: "mtls", LocalHost: "127.0.0.1:1", GatewayOnly: true})
+	lookup := func(_ context.Context, host string) (string, bool, error) {
+		if host == "models.example.org" {
+			return "svc-gw", true, nil
+		}
+		return "", false, nil
+	}
+	p := proxy.New(d, denyChecker{}, authDomain, testLog(), proxy.WithCustomDomainLookup(lookup))
+
+	do := func(host string, hdr map[string]string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "http://"+host+"/v1/models", nil)
+		req.Host = host
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		p.ServeHTTP(rec, req)
+		return rec
+	}
+	missing := do("nope."+authDomain, nil)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing: want 404, got %d", missing.Code)
+	}
+	ws := map[string]string{"Connection": "Upgrade", "Upgrade": "websocket"}
+	for name, rec := range map[string]*httptest.ResponseRecorder{
+		"host":       do("gwonly."+authDomain, nil),
+		"websocket":  do("gwonly."+authDomain, ws),
+		"customhost": do("models.example.org", nil),
+		"customws":   do("models.example.org", ws),
+	} {
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: want 404, got %d", name, rec.Code)
+		}
+		if rec.Body.String() != missing.Body.String() {
+			t.Errorf("%s: body %q differs from a missing service %q", name, rec.Body.String(), missing.Body.String())
+		}
+		if rec.Header().Get("Content-Type") != missing.Header().Get("Content-Type") {
+			t.Errorf("%s: content type differs from a missing service", name)
+		}
+	}
+	if upstreamCalls != 0 {
+		t.Errorf("upstream called %d times", upstreamCalls)
+	}
+}
+
+// A gateway-only mTLS service must not demand a client certificate at the TLS
+// handshake: that would show the service exists.
+func TestProxy_GatewayOnlyMTLSDoesNotAskForCertificate(t *testing.T) {
+	d := newFakeDialer(http.NotFoundHandler())
+	d.register("gwonly", &proxy.Resolved{ServiceID: "svc-gw", AccessMode: proxy.AccessModeMTLS, MTLSCAPEM: []byte("x"), GatewayOnly: true})
+	p := proxy.New(d, openChecker{}, authDomain, testLog())
+	cfg, err := p.GetConfigForClient(&tls.ClientHelloInfo{ServerName: "gwonly." + authDomain})
+	if err != nil || cfg != nil {
+		t.Fatalf("want (nil, nil), got (%v, %v)", cfg, err)
 	}
 }

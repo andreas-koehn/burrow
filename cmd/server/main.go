@@ -135,7 +135,7 @@ func (a tunnelListerAdapter) tunnelURL(serviceID string) string {
 		return ""
 	}
 	svc, err := a.slugs.ServiceByID(context.Background(), serviceID)
-	if err != nil || svc.Subdomain == "" {
+	if err != nil || svc.Subdomain == "" || svc.GatewayOnly {
 		return ""
 	}
 	return "https://" + a.authDomain + "/svc/" + svc.Subdomain + "/"

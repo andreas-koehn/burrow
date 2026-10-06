@@ -34,6 +34,9 @@ type RegisteredTunnel struct {
 	Created bool
 	// DashboardURL is the page of the service in the dashboard.
 	DashboardURL string
+	// GatewayOnly: the service has no direct address and is reachable
+	// through the relay's AI gateway only; URL is empty.
+	GatewayOnly bool
 	// Ignored names the wishes (TunnelSpec.Slug, .Access) the relay did not
 	// apply because the service existed with other values.
 	Ignored OptionSet
