@@ -51,6 +51,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"slices"
+	"strings"
 )
 
 // Kind names a supported upstream response shape.
@@ -96,6 +98,12 @@ type Sample struct {
 	RequestID string
 	// LatencyMs is the time from the request's arrival to the end of the response.
 	LatencyMs int64
+	// Translated is the id of the pair that translated the request (for
+	// example "messages-chat"); "" when it was served in its own format.
+	Translated string
+	// Dropped is what the translation left out: names joined by JoinDropped,
+	// never values. "" when nothing was dropped or nothing was translated.
+	Dropped string
 }
 
 // Accumulator is the read-side of a Stream: it exposes the running token
@@ -274,4 +282,64 @@ func (p *passthroughParser) close() error { return nil }
 // Sink is the interface implemented by SQLSink and test fakes.
 type Sink interface {
 	Record(ctx context.Context, s Sample) error
+}
+
+// Bounds of what a usage row stores about a translation. The names of what
+// was dropped start as field names of a request, which a client chooses.
+const (
+	maxTranslationName = 64  // bytes of the pair id and of one dropped name
+	maxDroppedEntries  = 32  // names in one list
+	maxDroppedBytes    = 512 // bytes of the joined list
+)
+
+// cleanTranslationName keeps the letters, digits and "_.:-" of s, at most
+// maxTranslationName bytes of them. A comma, a space, a control character or
+// a non-ASCII character is left out.
+func cleanTranslationName(s string) string {
+	b := make([]byte, 0, min(len(s), maxTranslationName))
+	for i := 0; i < len(s) && len(b) < maxTranslationName; i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '_', c == '.', c == ':', c == '-':
+			b = append(b, c)
+		}
+	}
+	return string(b)
+}
+
+// CleanPair returns a translation pair id as a usage row stores it: letters,
+// digits and "_.:-" only, at most 64 bytes. The ids are constants of the
+// gateway ("messages-chat"); this keeps the column bounded whoever sets it.
+func CleanPair(pair string) string { return cleanTranslationName(pair) }
+
+// JoinDropped turns the names of what a translation left out into the string
+// a usage row stores and the Burrow-Dropped header carries: each name reduced
+// to letters, digits and "_.:-" and cut to 64 bytes, empty names left out,
+// sorted, without duplicates, joined by ",". The result holds at most 32
+// names and 512 bytes and never ends in a cut name. Pass names only, never
+// values. Joining the names of a joined list again gives the same list.
+func JoinDropped(names []string) string {
+	clean := make([]string, 0, len(names))
+	for _, n := range names {
+		if n = cleanTranslationName(n); n != "" {
+			clean = append(clean, n)
+		}
+	}
+	slices.Sort(clean)
+	clean = slices.Compact(clean)
+	if len(clean) > maxDroppedEntries {
+		clean = clean[:maxDroppedEntries]
+	}
+	var b strings.Builder
+	for _, n := range clean {
+		if b.Len()+len(n)+1 > maxDroppedBytes && b.Len() > 0 {
+			break
+		}
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(n)
+	}
+	return b.String()
 }

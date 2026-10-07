@@ -16,11 +16,14 @@ type AIModel struct {
 	Description         string
 	Enabled             bool
 	FallbackOnRateLimit bool
-	AttemptTimeoutS     int             // seconds until the first response byte of one attempt
-	TotalTimeoutS       int             // seconds across all attempts until a response starts
-	Targets             []AIModelTarget // ordered by Dialect, then Position; never nil after a read
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	// Translate lets a request in a format the model has no target for be
+	// translated to a target of another format. Off unless switched on.
+	Translate       bool
+	AttemptTimeoutS int             // seconds until the first response byte of one attempt
+	TotalTimeoutS   int             // seconds across all attempts until a response starts
+	Targets         []AIModelTarget // ordered by Dialect, then Position; never nil after a read
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // AIModelTarget is one provider/model a synthetic model can be sent to.
@@ -38,12 +41,12 @@ var ErrDuplicateModel = errors.New("db: model name already in use")
 // would remove a provider that a synthetic model still targets.
 var ErrProviderInUse = errors.New("provider is used by a model")
 
-const aiModelCols = `name, description, enabled, fallback_on_rate_limit, attempt_timeout_s, total_timeout_s, created_at, updated_at`
+const aiModelCols = `name, description, enabled, fallback_on_rate_limit, translate, attempt_timeout_s, total_timeout_s, created_at, updated_at`
 
 func scanAIModel(row interface{ Scan(...any) error }) (AIModel, error) {
 	var m AIModel
 	err := row.Scan(&m.Name, &m.Description, (*intBool)(&m.Enabled), (*intBool)(&m.FallbackOnRateLimit),
-		&m.AttemptTimeoutS, &m.TotalTimeoutS, &m.CreatedAt, &m.UpdatedAt)
+		(*intBool)(&m.Translate), &m.AttemptTimeoutS, &m.TotalTimeoutS, &m.CreatedAt, &m.UpdatedAt)
 	m.Targets = []AIModelTarget{}
 	return m, err
 }
@@ -70,9 +73,10 @@ func (x *DB) CreateAIModel(ctx context.Context, m AIModel) error {
 		return fmt.Errorf("begin create model tx: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO ai_models(name, description, enabled, fallback_on_rate_limit, attempt_timeout_s, total_timeout_s)
-		 VALUES(?,?,?,?,?,?)`,
-		m.Name, m.Description, boolToInt(m.Enabled), boolToInt(m.FallbackOnRateLimit), m.AttemptTimeoutS, m.TotalTimeoutS); err != nil {
+		`INSERT INTO ai_models(name, description, enabled, fallback_on_rate_limit, translate, attempt_timeout_s, total_timeout_s)
+		 VALUES(?,?,?,?,?,?,?)`,
+		m.Name, m.Description, boolToInt(m.Enabled), boolToInt(m.FallbackOnRateLimit), boolToInt(m.Translate),
+		m.AttemptTimeoutS, m.TotalTimeoutS); err != nil {
 		_ = tx.Rollback()
 		if isDuplicateServiceErr(err) {
 			return ErrDuplicateModel
@@ -170,9 +174,10 @@ func (x *DB) UpdateAIModel(ctx context.Context, name string, m AIModel) error {
 		return fmt.Errorf("begin update model tx: %w", err)
 	}
 	res, err := tx.ExecContext(ctx,
-		`UPDATE ai_models SET name=?, description=?, enabled=?, fallback_on_rate_limit=?, attempt_timeout_s=?, total_timeout_s=?, updated_at=CURRENT_TIMESTAMP
+		`UPDATE ai_models SET name=?, description=?, enabled=?, fallback_on_rate_limit=?, translate=?, attempt_timeout_s=?, total_timeout_s=?, updated_at=CURRENT_TIMESTAMP
 		  WHERE name=?`,
-		m.Name, m.Description, boolToInt(m.Enabled), boolToInt(m.FallbackOnRateLimit), m.AttemptTimeoutS, m.TotalTimeoutS, name)
+		m.Name, m.Description, boolToInt(m.Enabled), boolToInt(m.FallbackOnRateLimit), boolToInt(m.Translate),
+		m.AttemptTimeoutS, m.TotalTimeoutS, name)
 	if err != nil {
 		_ = tx.Rollback()
 		if isDuplicateServiceErr(err) {

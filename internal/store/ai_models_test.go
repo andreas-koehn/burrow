@@ -144,6 +144,40 @@ func TestCreateModel_Validation(t *testing.T) {
 	}
 }
 
+// The translate flag needs no validation: the store hands it to the database
+// and back, off unless the caller set it.
+func TestModelTranslateFlag(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	modelFixture(t, s)
+
+	got, err := s.CreateModel(ctx, simpleModel())
+	if err != nil || got.Translate {
+		t.Fatalf("create without the flag: %v %+v", err, got)
+	}
+	on := simpleModel()
+	on.Name, on.Translate = "burrow-translating", true
+	if got, err = s.CreateModel(ctx, on); err != nil || !got.Translate {
+		t.Fatalf("create with the flag: %v %+v", err, got)
+	}
+	if got, err = s.ModelByName(ctx, "burrow-translating"); err != nil || !got.Translate {
+		t.Fatalf("read back: %v %+v", err, got)
+	}
+
+	m := simpleModel()
+	m.Translate = true
+	if got, err = s.UpdateModel(ctx, "burrow-simple", m); err != nil || !got.Translate {
+		t.Fatalf("update on: %v %+v", err, got)
+	}
+	m.Translate = false
+	if got, err = s.UpdateModel(ctx, "burrow-simple", m); err != nil || got.Translate {
+		t.Fatalf("update off: %v %+v", err, got)
+	}
+	if got, err = s.ModelByName(ctx, "burrow-translating"); err != nil || !got.Translate {
+		t.Fatalf("the other model changed: %v %+v", err, got)
+	}
+}
+
 func TestUpdateAndDeleteModel(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()

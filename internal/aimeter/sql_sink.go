@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -78,6 +79,11 @@ func (s *SQLSink) Record(ctx context.Context, sm Sample) error {
 		RequestID:      sm.RequestID,
 		LatencyMs:      sm.LatencyMs,
 	}
+	// Cleaned and bounded here as well, whoever built the Sample: the names
+	// of what a translation dropped start as field names of a request.
+	if row.Translated = CleanPair(sm.Translated); row.Translated != "" && sm.Dropped != "" {
+		row.Dropped = JoinDropped(strings.Split(sm.Dropped, ","))
+	}
 	// The parsers only hand over a validated cost; checking again here keeps
 	// NaN, an infinity, a negative or an absurd amount out of the table and
 	// out of the budget check whoever built the Sample. Such a row is stored
@@ -97,13 +103,13 @@ func (s *SQLSink) Record(ctx context.Context, sm Sample) error {
 		   tokens_in, tokens_out, bytes_in, bytes_out,
 		   streamed, cache_hit, upstream_status, cost_usd,
 		   gateway_key_id, dialect, provider_slug, requested_model, target_model,
-		   request_id, latency_ms)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   request_id, latency_ms, translated, dropped)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		row.ID, row.ServiceID, row.APIKeyID, row.Ts, row.Kind,
 		row.TokensIn, row.TokensOut, row.BytesIn, row.BytesOut,
 		row.Streamed, row.CacheHit, row.UpstreamStatus, cost,
 		row.GatewayKeyID, row.Dialect, row.ProviderSlug, row.RequestedModel, row.TargetModel,
-		row.RequestID, row.LatencyMs,
+		row.RequestID, row.LatencyMs, row.Translated, row.Dropped,
 	)
 	if err != nil {
 		log.Warn("aimeter: usage_events insert failed",

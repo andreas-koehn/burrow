@@ -1447,6 +1447,42 @@ func TestChain_UsageRowCarriesRouteAndLatency(t *testing.T) {
 	}
 }
 
+// A translated request says so on its usage row: which pair translated it and
+// which fields were dropped. The route is read when the row is written, so
+// the translation of the attempt that answered is the one recorded.
+func TestChain_UsageRowCarriesTranslation(t *testing.T) {
+	serve := func(route *aigw.Route, during func()) aimeter.Sample {
+		sink := &ctxSink{}
+		c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, nil)
+		up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			during()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+		})
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"burrow-medium"}`))
+		req = req.WithContext(aigw.WithRoute(req.Context(), route))
+		c.DispatchMetered(httptest.NewRecorder(), req, "svc1", "host", "Authorization", "", false, up)
+		if !sink.got {
+			t.Fatal("no usage sample recorded")
+		}
+		return sink.sample
+	}
+
+	route := aigw.NewRoute("gk1", "anthropic", "burrow-medium", "req-9")
+	s := serve(route, func() { route.SetTranslation("messages-chat", []string{"top_k", "cache_control"}) })
+	if s.Translated != "messages-chat" || s.Dropped != "cache_control,top_k" {
+		t.Fatalf("translated sample: translated=%q dropped=%q", s.Translated, s.Dropped)
+	}
+
+	// A first attempt was translated, the one that answered was native.
+	route = aigw.NewRoute("gk1", "anthropic", "burrow-medium", "req-10")
+	route.SetTranslation("messages-chat", []string{"top_k"})
+	s = serve(route, func() { route.SetTranslation("", nil) })
+	if s.Translated != "" || s.Dropped != "" {
+		t.Fatalf("native sample: translated=%q dropped=%q", s.Translated, s.Dropped)
+	}
+}
+
 // Without a route in the context the row is written as before, with empty
 // route fields.
 func TestChain_UsageRowWithoutRoute(t *testing.T) {
@@ -1463,7 +1499,8 @@ func TestChain_UsageRowWithoutRoute(t *testing.T) {
 	if !sink.got {
 		t.Fatal("no usage sample recorded")
 	}
-	if s.GatewayKeyID != "" || s.Dialect != "" || s.ProviderSlug != "" || s.RequestedModel != "" || s.TargetModel != "" || s.RequestID != "" {
+	if s.GatewayKeyID != "" || s.Dialect != "" || s.ProviderSlug != "" || s.RequestedModel != "" || s.TargetModel != "" || s.RequestID != "" ||
+		s.Translated != "" || s.Dropped != "" {
 		t.Fatalf("route fields must be empty: %+v", s)
 	}
 	if s.LatencyMs < 0 {

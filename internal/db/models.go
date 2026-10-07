@@ -115,6 +115,12 @@ type UsageEvent struct {
 	TargetModel    string
 	RequestID      string
 	LatencyMs      int64
+	// Translated is the id of the pair that translated the request (for
+	// example "messages-chat"); "" for a request served in its own format.
+	// Dropped names, comma-separated and sorted, what the translation left
+	// out; names only, never values.
+	Translated string
+	Dropped    string
 }
 
 // CacheEntry is a row of the cache_entries table (AI response cache).

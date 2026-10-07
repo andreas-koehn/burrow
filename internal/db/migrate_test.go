@@ -237,12 +237,12 @@ func TestMigrateDriverFilter(t *testing.T) {
 		}
 	}
 
-	// Expect exactly 23 SQLite files and 23 Postgres files.
-	if len(sqliteFiles) != 23 {
-		t.Errorf("want 23 sqlite migration files, got %d: %v", len(sqliteFiles), sqliteFiles)
+	// Expect exactly 24 SQLite files and 24 Postgres files.
+	if len(sqliteFiles) != 24 {
+		t.Errorf("want 24 sqlite migration files, got %d: %v", len(sqliteFiles), sqliteFiles)
 	}
-	if len(postgresFiles) != 23 {
-		t.Errorf("want 23 postgres migration files, got %d: %v", len(postgresFiles), postgresFiles)
+	if len(postgresFiles) != 24 {
+		t.Errorf("want 24 postgres migration files, got %d: %v", len(postgresFiles), postgresFiles)
 	}
 
 	// Each SQLite file must have a matching postgres twin.
@@ -349,6 +349,18 @@ func TestMigrationParitySQLiteAndPostgres(t *testing.T) {
 			}
 		}
 	}
+	// 0025: the columns TestMigrate0025Schema checks on SQLite.
+	for tbl, cols := range migration0025Columns {
+		for _, c := range cols {
+			var n int
+			if err := pgDB.QueryRow(
+				`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name=$2`,
+				tbl, c,
+			).Scan(&n); err != nil || n != 1 {
+				t.Errorf("postgres: column %s.%s missing (n=%d, err=%v)", tbl, c, n, err)
+			}
+		}
+	}
 	for _, idx := range append(append([]string{}, migration0023Indexes...), migration0024Indexes...) {
 		var n string
 		if err := pgDB.QueryRow(
@@ -445,5 +457,93 @@ func TestMigrate0023Schema(t *testing.T) {
 		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`, idx).Scan(&n); err != nil {
 			t.Errorf("index %s missing: %v", idx, err)
 		}
+	}
+}
+
+// What migration 0025 adds, checked on both engines.
+var migration0025Columns = map[string][]string{
+	"ai_models":    {"translate"},
+	"usage_events": {"translated", "dropped"},
+}
+
+func TestMigrate0025Schema(t *testing.T) {
+	x := testDB(t)
+	for tbl, list := range migration0025Columns {
+		for _, c := range list {
+			var n int
+			if err := x.DB().QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, tbl, c).Scan(&n); err != nil || n != 1 {
+				t.Errorf("column %s.%s missing (n=%d, err=%v)", tbl, c, n, err)
+			}
+		}
+	}
+}
+
+// The SQLite and the Postgres file of migration 0025 hold the same
+// statements; only the path in the first comment line differs.
+func TestMigration0025_PairIsIdentical(t *testing.T) {
+	body := func(name string) string {
+		raw, err := migrationFS.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, rest, _ := strings.Cut(string(raw), "\n")
+		return rest
+	}
+	if a, b := body("0025_v0.9.0_translation.sql"), body("0025_v0.9.0_translation.postgres.sql"); a != b || !strings.Contains(a, "-- +goose Down") {
+		t.Fatalf("the pair differs or has no Down block:\n%s\n---\n%s", a, b)
+	}
+}
+
+func TestMigration0025_DownAndUp(t *testing.T) {
+	checkMigration0025DownAndUp(t, testDB(t), "0025_v0.9.0_translation.sql", "u-mig25")
+}
+
+// checkMigration0025DownAndUp runs the Down block, writes a model and a usage
+// row the way the schema before the migration allowed, and runs the Up block
+// again: Up only succeeds when Down removed every column Up adds, and the
+// rows that were there before read as "not translated". Everything happens
+// in one transaction that is rolled back, so a database shared with other
+// tests never shows the schema without the columns.
+func checkMigration0025DownAndUp(t *testing.T, x *DB, file, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	raw, err := migrationFS.ReadFile("migrations/" + file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, down, found := strings.Cut(string(raw), "-- +goose Down")
+	if !found || strings.TrimSpace(down) == "" {
+		t.Fatalf("%s has no Down block", file)
+	}
+	_ = x.DeleteUser(ctx, userID)
+	mustUser(t, x, userID)
+	t.Cleanup(func() { _ = x.DeleteUser(ctx, userID) })
+	svc := seedSvc(t, x, userID, "svc-mig25")
+
+	tx, err := x.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, down); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO ai_models(name) VALUES(?)`, "mig25-old-model"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO usage_events(id, service_id, ts, kind) VALUES(?,?,?,?)`,
+		"mig25-old-row", svc, time.Now().UTC(), "openai"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, upBlock(string(raw))); err != nil {
+		t.Fatalf("up after down (a column the Down block left behind fails here): %v", err)
+	}
+	var translate int
+	if err := tx.QueryRowContext(ctx, `SELECT translate FROM ai_models WHERE name=?`, "mig25-old-model").Scan(&translate); err != nil || translate != 0 {
+		t.Fatalf("old model: translate=%d err=%v, want 0", translate, err)
+	}
+	var translated, dropped string
+	if err := tx.QueryRowContext(ctx, `SELECT translated, dropped FROM usage_events WHERE id=?`, "mig25-old-row").Scan(&translated, &dropped); err != nil || translated != "" || dropped != "" {
+		t.Fatalf("old usage row: translated=%q dropped=%q err=%v, want both empty", translated, dropped, err)
 	}
 }

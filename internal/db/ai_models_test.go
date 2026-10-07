@@ -246,3 +246,53 @@ func TestAIModels_ListEmptyIsNonNil(t *testing.T) {
 		t.Fatalf("list: %v %#v", err, list)
 	}
 }
+
+func TestAIModels_Translate(t *testing.T) { checkAIModelTranslate(t, testDB(t), "u1") }
+
+// checkAIModelTranslate: the translate flag is off unless a model is written
+// with it, is read back by Get and List, and follows an update both ways.
+func checkAIModelTranslate(t *testing.T, x *DB, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	seedModelProviders(t, x, userID)
+	targets := []AIModelTarget{{Dialect: "openai", ProviderSlug: "zai", TargetModel: "glm-5.1"}}
+	if err := x.CreateAIModel(ctx, AIModel{Name: "native-only", Enabled: true, Targets: targets}); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.CreateAIModel(ctx, AIModel{Name: "translating", Enabled: true, Translate: true, Targets: targets}); err != nil {
+		t.Fatal(err)
+	}
+	// A row written without the column (as every row before migration 0025
+	// was) reads as off.
+	if _, err := x.sqlDB.ExecContext(ctx, `INSERT INTO ai_models(name) VALUES(?)`, "legacy-row"); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"legacy-row": false, "native-only": false, "translating": true}
+	for name, on := range want {
+		got, err := x.GetAIModel(ctx, name)
+		if err != nil || got.Translate != on {
+			t.Fatalf("get %s: translate=%v err=%v, want %v", name, got.Translate, err, on)
+		}
+	}
+	list, err := x.ListAIModels(ctx)
+	if err != nil || len(list) != len(want) {
+		t.Fatalf("list: %v %+v", err, list)
+	}
+	for _, m := range list {
+		if m.Translate != want[m.Name] {
+			t.Fatalf("list %s: translate=%v", m.Name, m.Translate)
+		}
+	}
+	for _, c := range []struct {
+		name string
+		on   bool
+	}{{"native-only", true}, {"translating", false}} {
+		if err := x.UpdateAIModel(ctx, c.name, AIModel{Name: c.name, Enabled: true, Translate: c.on, Targets: targets}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := x.GetAIModel(ctx, c.name)
+		if err != nil || got.Translate != c.on || !got.Enabled || len(got.Targets) != 1 {
+			t.Fatalf("after update %s: %v %+v", c.name, err, got)
+		}
+	}
+}

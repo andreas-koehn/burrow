@@ -25,6 +25,10 @@ func TestGatewayModels_Postgres(t *testing.T) {
 	x := Wrap(b.DB())
 	t.Cleanup(func() { _ = x.Close() })
 	t.Run("models", func(t *testing.T) { checkAIModels(t, x, "u-models-pg") })
+	t.Run("translate flag", func(t *testing.T) { checkAIModelTranslate(t, x, "u-models-pg") })
+	t.Run("migration 0025 down and up", func(t *testing.T) {
+		checkMigration0025DownAndUp(t, x, "0025_v0.9.0_translation.postgres.sql", "u-mig25-pg")
+	})
 	t.Run("provider rename", func(t *testing.T) { checkAIModelsFollowProviderRename(t, x, "u-models-pg") })
 	t.Run("gateway keys", func(t *testing.T) { checkAIGatewayKeys(t, x, "u-gwkey-pg-1", "u-gwkey-pg-2") })
 	t.Run("delete keeps other errors", func(t *testing.T) {

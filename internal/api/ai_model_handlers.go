@@ -52,8 +52,10 @@ type aiModelResp struct {
 	Description         string `json:"description"`
 	Enabled             bool   `json:"enabled"`
 	FallbackOnRateLimit bool   `json:"fallback_on_rate_limit"`
-	AttemptTimeoutS     int    `json:"attempt_timeout_s"`
-	TotalTimeoutS       int    `json:"total_timeout_s"`
+	// A request in a format the model has no target for may be translated.
+	Translate       bool `json:"translate"`
+	AttemptTimeoutS int  `json:"attempt_timeout_s"`
+	TotalTimeoutS   int  `json:"total_timeout_s"`
 	// Within one dialect the order is the order the targets are tried in.
 	Targets []aiModelTargetResp `json:"targets"`
 	// The formats the model is served in, sorted; derived from the targets.
@@ -106,8 +108,8 @@ func (d Deps) targetAvailable(p db.AIProvider, dialect string) bool {
 func (d Deps) modelView(m db.AIModel, providers map[string]db.AIProvider) aiModelResp {
 	out := aiModelResp{
 		Name: m.Name, Description: m.Description, Enabled: m.Enabled,
-		FallbackOnRateLimit: m.FallbackOnRateLimit,
-		AttemptTimeoutS:     m.AttemptTimeoutS, TotalTimeoutS: m.TotalTimeoutS,
+		FallbackOnRateLimit: m.FallbackOnRateLimit, Translate: m.Translate,
+		AttemptTimeoutS: m.AttemptTimeoutS, TotalTimeoutS: m.TotalTimeoutS,
 		Targets:   make([]aiModelTargetResp, 0, len(m.Targets)),
 		Dialects:  []string{},
 		Serving:   map[string]*aiServingTarget{},
@@ -160,11 +162,13 @@ type aiModelReq struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	// Left out: on on create, unchanged on update.
-	Enabled             *bool           `json:"enabled"`
-	FallbackOnRateLimit bool            `json:"fallback_on_rate_limit"`
-	AttemptTimeoutS     int             `json:"attempt_timeout_s"`
-	TotalTimeoutS       int             `json:"total_timeout_s"`
-	Targets             []aiModelTarget `json:"targets"`
+	Enabled             *bool `json:"enabled"`
+	FallbackOnRateLimit bool  `json:"fallback_on_rate_limit"`
+	// Left out: off on create, unchanged on update.
+	Translate       *bool           `json:"translate"`
+	AttemptTimeoutS int             `json:"attempt_timeout_s"`
+	TotalTimeoutS   int             `json:"total_timeout_s"`
+	Targets         []aiModelTarget `json:"targets"`
 }
 
 const (
@@ -181,16 +185,19 @@ const (
 	msgModelsOff     = "synthetic models are not available on this relay"
 )
 
-// model turns the body into the store's type. enabled is the value used when
-// the body leaves the field out.
-func (in aiModelReq) model(enabled bool) db.AIModel {
+// model turns the body into the store's type. enabled and translate are the
+// values used when the body leaves the field out.
+func (in aiModelReq) model(enabled, translate bool) db.AIModel {
 	if in.Enabled != nil {
 		enabled = *in.Enabled
 	}
+	if in.Translate != nil {
+		translate = *in.Translate
+	}
 	m := db.AIModel{
 		Name: in.Name, Description: in.Description, Enabled: enabled,
-		FallbackOnRateLimit: in.FallbackOnRateLimit,
-		AttemptTimeoutS:     in.AttemptTimeoutS, TotalTimeoutS: in.TotalTimeoutS,
+		FallbackOnRateLimit: in.FallbackOnRateLimit, Translate: translate,
+		AttemptTimeoutS: in.AttemptTimeoutS, TotalTimeoutS: in.TotalTimeoutS,
 		Targets: make([]db.AIModelTarget, 0, len(in.Targets)),
 	}
 	for _, t := range in.Targets {
@@ -241,6 +248,7 @@ func modelAudit(m db.AIModel) map[string]any {
 	return map[string]any{
 		"enabled":                m.Enabled,
 		"fallback_on_rate_limit": m.FallbackOnRateLimit,
+		"translate":              m.Translate,
 		"targets":                targets,
 	}
 }
@@ -358,7 +366,7 @@ func (d Deps) PostAIModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, msgModelsOff)
 		return
 	}
-	m, err := d.AIModels.CreateModel(r.Context(), in.model(true))
+	m, err := d.AIModels.CreateModel(r.Context(), in.model(true, false))
 	if err != nil {
 		if !mapModelErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
@@ -371,7 +379,8 @@ func (d Deps) PostAIModel(w http.ResponseWriter, r *http.Request) {
 
 // PutAIModel handles PUT /api/v1/ai/models/{name} (admin or
 // ai:configure:any).  The body replaces the model: its targets are the new
-// list.  Two fields keep their stored value when left out: name and enabled.
+// list.  Three fields keep their stored value when left out: name, enabled
+// and translate.
 // A different name renames the model; gateway keys that name the old one in
 // their allow-list are not rewritten and no longer reach it.
 func (d Deps) PutAIModel(w http.ResponseWriter, r *http.Request) {
@@ -391,7 +400,7 @@ func (d Deps) PutAIModel(w http.ResponseWriter, r *http.Request) {
 	if !validModelReq(w, in) {
 		return
 	}
-	m, err := d.AIModels.UpdateModel(r.Context(), old.Name, in.model(old.Enabled))
+	m, err := d.AIModels.UpdateModel(r.Context(), old.Name, in.model(old.Enabled, old.Translate))
 	if err != nil {
 		if !mapModelErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")

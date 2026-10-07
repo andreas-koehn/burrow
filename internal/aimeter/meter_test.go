@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -293,6 +294,82 @@ func TestSQLSinkRecord_RouteAndLatency(t *testing.T) {
 	}
 	if got, latency := read("k-plain"); got != [6]string{} || latency != 0 {
 		t.Fatalf("plain row = %v latency=%d, want empty and 0", got, latency)
+	}
+}
+
+func TestSQLSinkRecord_Translation(t *testing.T) { checkSinkTranslation(t, testDB(t), "u-sink-tr") }
+
+// checkSinkTranslation: the pair that translated a request and the names of
+// what it dropped are stored on the usage row; a native request leaves both
+// empty; whatever built the Sample, the row holds cleaned, bounded names. It
+// runs against SQLite here and against a live Postgres in the
+// postgres-tagged test.
+func checkSinkTranslation(t *testing.T, x *db.DB, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	_ = x.DeleteUser(ctx, userID)
+	if err := x.CreateUser(ctx, db.User{ID: userID, Email: userID + "@test.invalid", PasswordHash: "h", Role: "admin"}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	t.Cleanup(func() { _ = x.DeleteUser(ctx, userID) })
+	svc, err := x.GetOrCreateService(ctx, userID, "svc-"+userID, "http")
+	if err != nil {
+		t.Fatalf("seed service: %v", err)
+	}
+	sink := aimeter.NewSQLSink(x)
+	record := func(apiKeyID, translated, dropped string) {
+		t.Helper()
+		if err := sink.Record(ctx, aimeter.Sample{
+			ServiceID: svc.ID, APIKeyID: apiKeyID, Kind: aimeter.KindAnthropic, UpstreamStatus: 200, Streamed: true,
+			Translated: translated, Dropped: dropped,
+		}); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	read := func(apiKeyID string) (translated, dropped string) {
+		t.Helper()
+		if err := x.DB().QueryRowContext(ctx,
+			`SELECT translated, dropped FROM usage_events WHERE service_id = ? AND api_key_id = ?`, svc.ID, apiKeyID).
+			Scan(&translated, &dropped); err != nil {
+			t.Fatalf("select %s: %v", apiKeyID, err)
+		}
+		return translated, dropped
+	}
+
+	record("k-translated", "messages-chat", "cache_control,top_k")
+	if tr, dr := read("k-translated"); tr != "messages-chat" || dr != "cache_control,top_k" {
+		t.Fatalf("translated row = %q %q", tr, dr)
+	}
+	record("k-native", "", "")
+	if tr, dr := read("k-native"); tr != "" || dr != "" {
+		t.Fatalf("native row = %q %q, want both empty", tr, dr)
+	}
+	// Names without a pair are not a translation.
+	record("k-no-pair", "", "top_k")
+	if tr, dr := read("k-no-pair"); tr != "" || dr != "" {
+		t.Fatalf("row without a pair = %q %q, want both empty", tr, dr)
+	}
+	// A Sample that did not come from the route is cleaned and cut all the same.
+	record("k-hostile", "messages-chat\n"+strings.Repeat("z", 300), strings.Repeat("unknown:a\x00b \"c,", 400))
+	tr, dr := read("k-hostile")
+	if len(tr) != 64 || strings.ContainsAny(tr, "\n ") {
+		t.Fatalf("pair stored as %q", tr)
+	}
+	if dr != "unknown:abc" {
+		t.Fatalf("dropped stored as %q, want the one cleaned name", dr)
+	}
+	record("k-long", "messages-chat", strings.Repeat("n", 5000)+","+strings.Repeat("m", 5000))
+	if _, dr := read("k-long"); len(dr) > 512 || dr != strings.Repeat("m", 64)+","+strings.Repeat("n", 64) {
+		t.Fatalf("long names stored as %d bytes: %q", len(dr), dr)
+	}
+}
+
+func TestJoinDropped(t *testing.T) {
+	if got := aimeter.JoinDropped(nil); got != "" {
+		t.Fatalf("nil = %q", got)
+	}
+	if got := aimeter.JoinDropped([]string{"top_k", "", "cache_control", "top_k", "thinking.signature", "anthropic-beta"}); got != "anthropic-beta,cache_control,thinking.signature,top_k" {
+		t.Fatalf("got %q", got)
 	}
 }
 

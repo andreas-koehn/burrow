@@ -181,7 +181,10 @@ func TestListModels(t *testing.T) {
 		if tg["provider"] != "ollama" || tg["model"] != "mistral" || tg["dialect"] != "openai" || tg["available"] != false || len(tg) != 4 {
 			t.Errorf("target = %v", tg)
 		}
-		for _, k := range []string{"name", "description", "enabled", "fallback_on_rate_limit", "attempt_timeout_s",
+		if raw[0]["translate"] != false {
+			t.Errorf("translate = %v, want false for a model without the flag", raw[0]["translate"])
+		}
+		for _, k := range []string{"name", "description", "enabled", "fallback_on_rate_limit", "translate", "attempt_timeout_s",
 			"total_timeout_s", "targets", "dialects", "serving", "created_at", "updated_at"} {
 			if _, ok := raw[0][k]; !ok {
 				t.Errorf("field %q missing in %s", k, body)
@@ -242,6 +245,41 @@ func TestPostModel(t *testing.T) {
 		payload := auditPayload(t, f.aud.events[0])
 		if fmt.Sprint(payload["targets"]) != "[openai:zai/glm-5.1 anthropic:zai-anthropic/glm-5.1 openai:ollama/mistral]" {
 			t.Errorf("audit targets = %v", payload["targets"])
+		}
+	})
+
+	t.Run("translate is off unless asked for", func(t *testing.T) {
+		f := newModelFixture()
+		c := f.serve(t)
+		m := decodeModel(t, wantStatus(t, c.post(t, "/api/v1/ai/models", valid), http.StatusCreated))
+		if f.ms.last.Translate || m.Translate {
+			t.Errorf("a body without translate switched it on: store %v, response %v", f.ms.last.Translate, m.Translate)
+		}
+		if got := auditPayload(t, f.aud.events[0])["translate"]; got != false {
+			t.Errorf("audit translate = %v, want false", got)
+		}
+
+		body := map[string]any{"name": "translating", "translate": true, "targets": valid["targets"]}
+		m = decodeModel(t, wantStatus(t, c.post(t, "/api/v1/ai/models", body), http.StatusCreated))
+		if !f.ms.last.Translate || !m.Translate {
+			t.Errorf("translate:true was dropped: store %v, response %v", f.ms.last.Translate, m.Translate)
+		}
+		if got := auditPayload(t, f.aud.events[1])["translate"]; got != true {
+			t.Errorf("audit translate = %v, want true", got)
+		}
+		m = decodeModel(t, wantStatus(t, c.get(t, "/api/v1/ai/models/translating"), http.StatusOK))
+		if !m.Translate {
+			t.Error("GET does not return the flag")
+		}
+
+		// The flag is a boolean; anything else is a malformed body.
+		before := f.ms.writes
+		for _, v := range []any{"yes", 1, []bool{true}} {
+			bad := map[string]any{"name": "bad-flag", "translate": v, "targets": valid["targets"]}
+			wantStatus(t, c.post(t, "/api/v1/ai/models", bad), http.StatusBadRequest)
+		}
+		if f.ms.writes != before {
+			t.Errorf("a malformed flag reached the store")
 		}
 	})
 
@@ -492,6 +530,41 @@ func TestPutModel(t *testing.T) {
 		}
 		if len(f.aud.events) != 1 || f.aud.events[0].Action != "ai_model.update" || f.aud.events[0].SubjectID != "burrow-simple" {
 			t.Fatalf("audit = %+v", f.aud.events)
+		}
+	})
+
+	t.Run("translate", func(t *testing.T) {
+		on := simpleModel()
+		on.Translate = true
+		f := newModelFixture(on)
+		c := f.serve(t)
+		const path = "/api/v1/ai/models/burrow-simple"
+		// Left out: the stored value stays, as for enabled.
+		m := decodeModel(t, wantStatus(t, c.put(t, path, map[string]any{"targets": targets}), http.StatusOK))
+		if !f.ms.last.Translate || !m.Translate {
+			t.Errorf("a body without translate switched it off: store %v, response %v", f.ms.last.Translate, m.Translate)
+		}
+		m = decodeModel(t, wantStatus(t, c.put(t, path, map[string]any{"translate": false, "targets": targets}), http.StatusOK))
+		if f.ms.last.Translate || m.Translate {
+			t.Errorf("translate:false was dropped: store %v, response %v", f.ms.last.Translate, m.Translate)
+		}
+		// Off stays off when left out, and is switched on only when asked for.
+		wantStatus(t, c.put(t, path, map[string]any{"targets": targets}), http.StatusOK)
+		if f.ms.last.Translate {
+			t.Error("a body without translate switched it on")
+		}
+		wantStatus(t, c.put(t, path, map[string]any{"translate": true, "targets": targets}), http.StatusOK)
+		if !f.ms.last.Translate {
+			t.Error("translate:true was dropped")
+		}
+		want := []any{true, false, false, true}
+		if len(f.aud.events) != len(want) {
+			t.Fatalf("audit = %+v", f.aud.events)
+		}
+		for i, ev := range f.aud.events {
+			if got := auditPayload(t, ev)["translate"]; got != want[i] {
+				t.Errorf("audit %d translate = %v, want %v", i, got, want[i])
+			}
 		}
 	})
 

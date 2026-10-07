@@ -1088,6 +1088,7 @@ func (c *Chain) recordMeter(ctx context.Context, svc Service, kind Kind,
 	if ri, ok := RouteFrom(ctx); ok {
 		sample.GatewayKeyID, sample.Dialect, sample.ProviderSlug = ri.GatewayKeyID, ri.Dialect, ri.ProviderSlug
 		sample.RequestedModel, sample.TargetModel, sample.RequestID = ri.RequestedModel, ri.TargetModel, ri.RequestID
+		sample.Translated, sample.Dropped = ri.Translated, ri.Dropped
 	}
 	_ = c.Meter.Record(ctx, sample)
 }

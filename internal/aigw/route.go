@@ -3,6 +3,8 @@ package aigw
 import (
 	"context"
 	"sync"
+
+	"github.com/ankoehn/burrow/internal/aimeter"
 )
 
 // GatewayKeySubjectPrefix marks a gateway key in a per-key subject (cache
@@ -25,6 +27,8 @@ type Route struct {
 	targetModel    string
 	requestID      string
 	fallback       bool
+	translated     string
+	dropped        string
 }
 
 // RouteInfo is an immutable copy of a Route.
@@ -33,6 +37,10 @@ type RouteInfo struct {
 	// Fallback: the answer came from another target than the first one, the
 	// one whose service the chain (and its cache) ran under.
 	Fallback bool
+	// Translated is the id of the pair that translated the request, "" when
+	// it is served in its own format. Dropped names what the translation
+	// left out: sorted, comma-separated, cleaned and bounded names.
+	Translated, Dropped string
 }
 
 // NewRoute starts a route for a request; the target is set once it is known.
@@ -57,6 +65,23 @@ func (r *Route) MarkFallback() {
 	r.mu.Unlock()
 }
 
+// SetTranslation records that the attempt being served is translated by pair
+// (for example "messages-chat") and what the translation left out. dropped
+// holds names only, never values; they come from the request, so they are
+// stored cleaned and bounded (aimeter.JoinDropped). An attempt in the
+// caller's own format calls SetTranslation("", nil), which clears both: the
+// usage row describes the attempt that answered.
+func (r *Route) SetTranslation(pair string, dropped []string) {
+	pair = aimeter.CleanPair(pair)
+	list := ""
+	if pair != "" {
+		list = aimeter.JoinDropped(dropped)
+	}
+	r.mu.Lock()
+	r.translated, r.dropped = pair, list
+	r.mu.Unlock()
+}
+
 // Snapshot returns the route as it is now.
 func (r *Route) Snapshot() RouteInfo {
 	r.mu.Lock()
@@ -69,6 +94,8 @@ func (r *Route) Snapshot() RouteInfo {
 		TargetModel:    r.targetModel,
 		RequestID:      r.requestID,
 		Fallback:       r.fallback,
+		Translated:     r.translated,
+		Dropped:        r.dropped,
 	}
 }
 

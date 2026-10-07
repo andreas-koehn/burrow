@@ -388,6 +388,16 @@ components:
         description: { type: string, maxLength: 500 }
         enabled: { type: boolean }
         fallback_on_rate_limit: { type: boolean }
+        translate:
+          type: boolean
+          default: false
+          description: >
+            Lets a request in a format the model has no target for be
+            translated to a target of another format. Off unless switched
+            on: without it such a request is refused with 400. A request
+            the model can serve in its own format is never translated.
+            Left out, it is false on create and keeps its stored value on
+            update.
         attempt_timeout_s:
           type: integer
           minimum: 1
@@ -3590,9 +3600,9 @@ paths:
 
         The body is at most 16 KiB and may carry only the fields of the
         schema; dialects and the timestamps are not accepted. enabled left
-        out means true; a timeout left out or 0 means its default. Every
-        target must name an existing provider, and its dialect, when given,
-        must equal that provider's api_format.
+        out means true, translate left out means false; a timeout left out
+        or 0 means its default. Every target must name an existing provider,
+        and its dialect, when given, must equal that provider's api_format.
       requestBody:
         required: true
         content:
@@ -3649,9 +3659,9 @@ paths:
       tags: [models]
       summary: Replace a synthetic model (admin or ai:configure:any)
       description: |
-        The body replaces the model; targets is the new list. Two fields
-        keep their stored value when left out: name and enabled. A different
-        name renames the model. Gateway keys that name the old name in
+        The body replaces the model; targets is the new list. Three fields
+        keep their stored value when left out: name, enabled and translate.
+        A different name renames the model. Gateway keys that name the old name in
         allowed_models are not rewritten and no longer reach the model.
       requestBody:
         required: true
