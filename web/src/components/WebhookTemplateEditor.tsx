@@ -73,6 +73,10 @@ const SAMPLE_FIELDS: Record<string, Record<string, unknown>> = {
     daily_tokens: 0,
     current_tokens: 184200,
     action_on_exceed: "alert_webhook",
+    // Set for the scopes gateway_key and model only; shown here so a
+    // template that uses them previews with a value.
+    gateway_key_id: "gwk_ci01",
+    model: "burrow-smart",
   },
   "redaction.applied": {
     service_id: "svc_ai001",

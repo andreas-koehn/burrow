@@ -24,14 +24,19 @@ import (
 // in the chain (spec Part G.1).
 const genesisPrevHash = "0000000000000000000000000000000000000000000000000000000000000000"
 
-// AggregationWindow is the per-(subject_id, action) deduplication window
-// applied to ActionRedactionApplied and ActionGuardrailRefused.
+// AggregationWindow is the deduplication window applied to the aggregated
+// actions (see aggregatedActions). The sample key is (subject_id, action),
+// or (action, Event.AggregationKey) for an event that carries one.
 //
-// Spec Part G.4 mandates 1/hour aggregation: a high-traffic redaction or
-// guardrail-refusal storm therefore cannot inflate the chain. The first
-// event in a window is appended; later events within the window are
-// dropped (silently — Append returns nil so call sites can stay hot).
+// Spec Part G.4 mandates 1/hour aggregation: a high-traffic redaction,
+// guardrail-refusal or rate-limit storm therefore cannot inflate the chain.
+// The first event in a window is appended; later events within the window
+// are dropped (silently — Append returns nil so call sites can stay hot).
 var AggregationWindow = time.Hour
+
+// aggregationPruneAt is the size from which the sample map drops entries
+// whose window is over before it takes a new one.
+const aggregationPruneAt = 4096
 
 // Event is one row destined for the audit_events table. Logger.Append
 // fills in ID, TS, PrevHash and Hash; callers populate the rest.
@@ -48,6 +53,12 @@ type Event struct {
 	RequestID    string
 	Payload      json.RawMessage
 	TS           time.Time
+
+	// AggregationKey refines the sample key of an aggregated action: with
+	// it, one row is written per (action, AggregationKey) per
+	// AggregationWindow instead of one per (subject_id, action). It is not
+	// stored and not part of the hash; other actions ignore it.
+	AggregationKey string
 }
 
 // AuditDB is the narrow slice of *db.DB the Logger needs. The package
@@ -111,11 +122,57 @@ func (l *Logger) FingerprintHex() string {
 // and Hash are computed here; the caller's e.ID/e.TS/e.Payload are honored
 // when set (deterministic-test seam).
 //
-// For aggregated actions (redaction.applied, guardrail.refused) the call is
-// silently dropped when another row for the same (subject_id, action) was
-// appended within AggregationWindow — spec Part G.4. Return value is nil
-// in that case (call sites should not treat a sample-rate skip as a bug).
+// For aggregated actions (redaction.applied, guardrail.refused,
+// ratelimit.enforced) the call is silently dropped when another row for the
+// same sample key was appended within AggregationWindow — spec Part G.4.
+// Return value is nil in that case (call sites should not treat a
+// sample-rate skip as a bug).
+//
+// The window belongs to a row that was written: an append that fails gives
+// its claim back, so the next event of that key is written. While one append
+// of a key is under way, others of the same key are dropped, so concurrent
+// first events insert one row between them.
 func (l *Logger) Append(ctx context.Context, e Event) error {
+	if l == nil {
+		return nil // nil-logger = audit disabled (tests / Task 13 wiring stub)
+	}
+	if !IsAggregated(e.Action) {
+		return l.appendRow(ctx, e)
+	}
+	// Two namespaces, so a caller's key can never collide with a subject.
+	key := "s\x00" + e.SubjectID + "|" + e.Action
+	if e.AggregationKey != "" {
+		key = "k\x00" + e.Action + "\x00" + e.AggregationKey
+	}
+	l.mu.Lock()
+	claimed := l.now()
+	if last, ok := l.lastAgg[key]; ok && claimed.Sub(last) < AggregationWindow {
+		l.mu.Unlock()
+		return nil // dropped: still inside the dedup window
+	}
+	if len(l.lastAgg) >= aggregationPruneAt {
+		for k, at := range l.lastAgg {
+			if claimed.Sub(at) >= AggregationWindow {
+				delete(l.lastAgg, k)
+			}
+		}
+	}
+	l.lastAgg[key] = claimed
+	l.mu.Unlock()
+
+	err := l.appendRow(ctx, e)
+	if err != nil {
+		l.mu.Lock()
+		if l.lastAgg[key].Equal(claimed) {
+			delete(l.lastAgg, key)
+		}
+		l.mu.Unlock()
+	}
+	return err
+}
+
+// appendRow writes one row under the hash chain.
+func (l *Logger) appendRow(ctx context.Context, e Event) error {
 	if l == nil {
 		return nil // nil-logger = audit disabled (tests / Task 13 wiring stub)
 	}
@@ -127,18 +184,6 @@ func (l *Logger) Append(ctx context.Context, e Event) error {
 	}
 	if len(e.Payload) == 0 {
 		e.Payload = json.RawMessage(`{}`)
-	}
-
-	if IsAggregated(e.Action) {
-		l.mu.Lock()
-		key := e.SubjectID + "|" + e.Action
-		now := l.now()
-		if last, ok := l.lastAgg[key]; ok && now.Sub(last) < AggregationWindow {
-			l.mu.Unlock()
-			return nil // dropped: still inside the dedup window
-		}
-		l.lastAgg[key] = now
-		l.mu.Unlock()
 	}
 
 	if e.ID == "" {

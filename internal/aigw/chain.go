@@ -227,8 +227,9 @@ type Chain struct {
 	// OnGuardrailRefuse is called once per refused request with the service,
 	// the id of the pattern that matched (never the matched text) and the
 	// action taken ("refuse_403" or "refuse_safe"). It runs on the request's
-	// goroutine before the refusal is written, so it must not block; the
-	// context is the request's. nil = not reported.
+	// goroutine before the refusal is written, so it must not block (hand
+	// the work to something else); a panic in it is recovered. The context
+	// is the request's. nil = not reported.
 	OnGuardrailRefuse func(ctx context.Context, serviceID, pattern, action string)
 
 	// MaxRequestBodyBytes bounds how much of an inbound request body the
@@ -927,11 +928,20 @@ func serveUpstream(h http.Handler, w http.ResponseWriter, r *http.Request) (pani
 	return false, nil
 }
 
-// guardrailRefused reports a refusal to OnGuardrailRefuse, if one is set.
+// guardrailRefused reports a refusal to OnGuardrailRefuse, if one is set. A
+// hook that panics is logged and otherwise ignored: reporting a refusal must
+// not get in the way of answering it.
 func (c *Chain) guardrailRefused(r *http.Request, svc Service, pattern, action string) {
-	if c.OnGuardrailRefuse != nil {
-		c.OnGuardrailRefuse(r.Context(), svc.ID, pattern, action)
+	if c.OnGuardrailRefuse == nil {
+		return
 	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			c.Log.Error("aigw: guardrail refusal hook panicked",
+				slog.String("service_id", svc.ID), slog.Any("panic", rec))
+		}
+	}()
+	c.OnGuardrailRefuse(r.Context(), svc.ID, pattern, action)
 }
 
 // postResponseTimeout bounds bookkeeping that runs after the response has

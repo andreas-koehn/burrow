@@ -1155,6 +1155,9 @@ func newRootCmd() *cobra.Command {
 			if err := aiGateway.FlushAttempts(shutCtx); err != nil {
 				log.Warn("ai gateway: attempt log not fully written", "err", err)
 			}
+			if err := v04.GuardrailAudit.Flush(shutCtx); err != nil {
+				log.Warn("guardrail audit: entries not fully written", "err", err)
+			}
 			if challengeSrv != nil {
 				_ = challengeSrv.Shutdown(shutCtx)
 			}

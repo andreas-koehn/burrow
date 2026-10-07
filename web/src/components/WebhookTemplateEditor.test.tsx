@@ -97,6 +97,38 @@ describe("WebhookTemplateEditor", () => {
     });
   });
 
+  // The sample a preview sends mirrors the payload the relay publishes
+  // (cmd/server/quota_events.go, internal/cost/engine.go fireAction).
+  it.each([
+    ["quota.exceeded", ["dimension", "limit", "scope", "service_id", "subject", "window"]],
+    ["budget.exceeded", [
+      "action_on_exceed", "budget_id", "current_tokens", "current_usd", "daily_tokens", "daily_usd",
+      "gateway_key_id", "model", "scope", "subject_id",
+    ]],
+  ])("Preview of %s sends the fields the relay publishes", async (event, fields) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockClear(); // an earlier test's spy may still hold its calls
+    mountEditor("wh_ops", event, "{{.scope}}");
+    await userEvent.click(await screen.findByRole("button", { name: /preview/i }));
+    let sent: Record<string, unknown> | undefined;
+    await waitFor(() => {
+      const call = fetchSpy.mock.calls.find(([u, init]) =>
+        String(u).includes("/api/v1/webhooks/wh_ops/preview") &&
+        (init as RequestInit | undefined)?.method === "POST",
+      );
+      expect(call).toBeDefined();
+      sent = JSON.parse(String((call![1] as RequestInit).body));
+    });
+    expect(sent!.event).toBe(event);
+    const sample = sent!.fields as Record<string, unknown>;
+    expect(Object.keys(sample).sort()).toEqual(fields);
+    for (const [name, value] of Object.entries(sample)) {
+      expect(value, name).not.toBe("");
+      expect(value, name).not.toBeUndefined();
+    }
+    fetchSpy.mockRestore();
+  });
+
   it("Server template error shows as inline alert with verbatim text", async () => {
     // Use a template that triggers the forbidden-template check in the mock
     mountEditor("wh_ops", "ai.upstream_error", '{{template "x"}}forbidden');

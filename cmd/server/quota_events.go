@@ -6,9 +6,12 @@ package main
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/quota"
 )
@@ -74,8 +77,8 @@ func (t *eventThrottle) size() int {
 }
 
 // quotaEvents publishes "quota.exceeded" for denied requests: one event per
-// (scope, subject, dimension) per minute, however many requests the limit
-// refuses in that minute.
+// (scope, subject, dimension, window) per minute, however many requests the
+// limit refuses in that minute.
 type quotaEvents struct {
 	pub      eventPublisher
 	throttle *eventThrottle
@@ -96,7 +99,7 @@ func (q *quotaEvents) denied(ctx context.Context, who quota.Subjects, dec quota.
 	if q == nil || q.pub == nil || dec.Allow {
 		return
 	}
-	if !q.throttle.allow(dec.LimitingScope + "\x00" + dec.LimitingSubject + "\x00" + dec.Dimension) {
+	if !q.throttle.allow(dec.LimitingScope + "\x00" + dec.LimitingSubject + "\x00" + dec.Dimension + "\x00" + dec.Window) {
 		return
 	}
 	q.pub.Publish(ctx, "quota.exceeded", map[string]any{
@@ -109,30 +112,141 @@ func (q *quotaEvents) denied(ctx context.Context, who quota.Subjects, dec quota.
 	})
 }
 
-// auditAppender is *audit.Logger as the guardrail hook needs it.
+// auditAppender is *audit.Logger as the guardrail auditor needs it.
 type auditAppender interface {
 	Append(ctx context.Context, e audit.Event) error
 }
 
-// guardrailAuditTimeout bounds the audit write of a refusal.
+// guardrailAuditTimeout bounds the audit write of one refusal.
 const guardrailAuditTimeout = 5 * time.Second
 
-// guardrailRefusalAudit returns the chain's OnGuardrailRefuse hook: it
-// appends a guardrail.refused audit entry for the service, with the id of the
-// pattern that matched (never the matched text) and the action taken. The
-// actor is empty: the system refused. The write is best-effort and runs
-// detached from the request, so a client that hangs up does not lose it.
-// audit.Logger keeps this action to one row per service per hour.
-func guardrailRefusalAudit(l auditAppender) func(ctx context.Context, serviceID, pattern, action string) {
-	return func(ctx context.Context, serviceID, pattern, action string) {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), guardrailAuditTimeout)
-		defer cancel()
-		_ = l.Append(ctx, audit.Event{
-			Action:       audit.ActionGuardrailRefused,
-			SubjectID:    serviceID,
-			SubjectLabel: pattern,
-			Result:       "denied",
-			Payload:      audit.MustJSON(map[string]string{"pattern": pattern, "action": action}),
-		})
+// guardrailAuditQueue is how many refusals may wait for the audit writer.
+const guardrailAuditQueue = 256
+
+// guardrailRefusal is one refusal waiting to be audited. A value with ack
+// set is a marker from Flush instead: the worker closes ack when it gets
+// there.
+type guardrailRefusal struct {
+	service, pattern, action, gatewayKey string
+	ack                                  chan struct{}
+}
+
+// guardrailAuditor writes the guardrail.refused audit entries. The chain
+// calls refused on the request's goroutine; the audit write (a transaction
+// on the hash chain) runs on the auditor's single worker, so a slow or stuck
+// database cannot hold a refusal back. The queue is bounded: when it is full
+// the entry is dropped and a warning is logged, at most once a minute.
+type guardrailAuditor struct {
+	audit auditAppender
+	log   *slog.Logger
+	queue chan guardrailRefusal
+	quit  chan struct{}
+	once  sync.Once
+	full  *eventThrottle
+}
+
+// newGuardrailAuditor starts the one worker. log may be nil.
+func newGuardrailAuditor(a auditAppender, log *slog.Logger) *guardrailAuditor {
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	g := &guardrailAuditor{
+		audit: a,
+		log:   log,
+		queue: make(chan guardrailRefusal, guardrailAuditQueue),
+		quit:  make(chan struct{}),
+		full:  &eventThrottle{now: time.Now, every: time.Minute},
+	}
+	go g.work()
+	return g
+}
+
+// refused is the chain's OnGuardrailRefuse hook. It never blocks: it reads
+// the gateway key from the request's route and hands the refusal over.
+func (g *guardrailAuditor) refused(ctx context.Context, serviceID, pattern, action string) {
+	job := guardrailRefusal{service: serviceID, pattern: pattern, action: action}
+	if ri, ok := aigw.RouteFrom(ctx); ok {
+		job.gatewayKey = ri.GatewayKeyID
+	}
+	select {
+	case g.queue <- job:
+	default:
+		if g.full.allow("full") {
+			g.log.Warn("guardrail audit: queue full, dropping entries", "capacity", guardrailAuditQueue)
+		}
 	}
 }
+
+func (g *guardrailAuditor) work() {
+	for {
+		select {
+		case <-g.quit:
+			return
+		case job := <-g.queue:
+			if job.ack != nil {
+				close(job.ack)
+				continue
+			}
+			g.write(job)
+		}
+	}
+}
+
+// write appends the entry for one refusal: guardrail.refused for the
+// service, with the id of the pattern that matched (never the matched text),
+// the action taken and the gateway key that asked, if one did. The actor is
+// empty: the system refused. The audit logger keeps one row per service,
+// pattern, action and gateway key per hour, so a client that keeps tripping
+// a guardrail cannot grow the hash chain at will. Best-effort: an error or a
+// panic is logged and the worker goes on.
+func (g *guardrailAuditor) write(job guardrailRefusal) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			g.log.Error("guardrail audit: write panicked", "service_id", job.service, "panic", rec)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), guardrailAuditTimeout)
+	defer cancel()
+	payload := map[string]string{"pattern": job.pattern, "action": job.action}
+	if job.gatewayKey != "" {
+		payload["gateway_key_id"] = job.gatewayKey
+	}
+	err := g.audit.Append(ctx, audit.Event{
+		Action:         audit.ActionGuardrailRefused,
+		SubjectID:      job.service,
+		SubjectLabel:   job.pattern,
+		Result:         "denied",
+		Payload:        audit.MustJSON(payload),
+		AggregationKey: job.service + "\x00" + job.pattern + "\x00" + job.action + "\x00" + job.gatewayKey,
+	})
+	if err != nil {
+		g.log.Warn("guardrail audit: write failed", "service_id", job.service, "err", err)
+	}
+}
+
+// Flush waits until the refusals queued so far are written, or ctx is done.
+// Called at shutdown, before the database closes.
+func (g *guardrailAuditor) Flush(ctx context.Context) error {
+	if g == nil {
+		return nil
+	}
+	ack := make(chan struct{})
+	select {
+	case g.queue <- guardrailRefusal{ack: ack}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-g.quit:
+		return nil
+	}
+	select {
+	case <-ack:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-g.quit:
+		return nil
+	}
+}
+
+// stop ends the worker without draining (tests).
+func (g *guardrailAuditor) stop() { g.once.Do(func() { close(g.quit) }) }

@@ -167,11 +167,14 @@ var AllActions = []string{
 }
 
 // aggregatedActions is the set of actions that are sample-rated at 1/hour
-// per (subject_id, action) by Logger.Append. A high-traffic redaction or
+// per (subject_id, action), or per Event.AggregationKey, by Logger.Append. A high-traffic redaction or
 // guardrail storm therefore cannot saturate the chain.
 var aggregatedActions = map[string]bool{
 	ActionRedactionApplied: true,
 	ActionGuardrailRefused: true,
+	// One row per limit per hour: the caller keys it by scope, subject and
+	// dimension (Event.AggregationKey).
+	ActionRateLimitEnforced: true,
 }
 
 // IsAggregated reports whether the given action is sample-rated.

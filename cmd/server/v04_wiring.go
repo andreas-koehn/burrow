@@ -65,6 +65,8 @@ type v04Stack struct {
 	GeoLookup         proxy.GeoLookup
 	MCPServer         *mcpserv.Server
 	AIChain           *aigw.Chain
+	// GuardrailAudit writes the guardrail.refused entries; flushed at shutdown.
+	GuardrailAudit *guardrailAuditor
 }
 
 // buildV04Stack wires every v0.4.0 engine in dependency order. The order
@@ -174,12 +176,14 @@ func buildV04Stack(
 	// spec Part D). The previously-stubbed Chain.RateLimit field is assigned
 	// here so every AI-proxied request is charged one RPM unit before steps
 	// 4-9 run. On denial Charge returns Allow=false; the middleware writes 429
-	// and emits a ratelimit.enforced audit row without calling next.
+	// and emits a ratelimit.enforced audit row (sampled: one per limit per
+	// hour) without calling next.
 	aiChain.RateLimit = buildQuotaMiddleware(quotaEngine, auditLogger, newQuotaEvents(dispatcher, nil))
 
-	// A guardrail refusal leaves an audit entry (guardrail.refused, which the
-	// audit logger keeps to one row per service per hour).
-	aiChain.OnGuardrailRefuse = guardrailRefusalAudit(auditLogger)
+	// A guardrail refusal leaves an audit entry (guardrail.refused, sampled
+	// by the audit logger), written off the request path.
+	guardrailAudit := newGuardrailAuditor(auditLogger, log)
+	aiChain.OnGuardrailRefuse = guardrailAudit.refused
 
 	// --- metrics recorder --------------------------------------------------
 	metricsRec := metrics.New()
@@ -220,6 +224,7 @@ func buildV04Stack(
 		GeoLookup:         geoLookup,
 		MCPServer:         mcpServer,
 		AIChain:           aiChain,
+		GuardrailAudit:    guardrailAudit,
 	}, nil
 }
 

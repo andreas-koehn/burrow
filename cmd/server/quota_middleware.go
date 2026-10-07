@@ -19,7 +19,7 @@ import (
 //     step 3 before this middleware is called).
 //  2. Calls engine.Charge(ctx, subjects, "rpm", 1).
 //  3. On denial: writes 429 with a JSON body and emits a ratelimit.enforced
-//     audit event; does NOT call next.
+//     audit event (sampled: one row per limit per hour); does NOT call next.
 //  4. On allow: calls next.ServeHTTP(w, r).
 //
 // The auditLogger parameter may be nil; in that case the audit emission is
@@ -44,7 +44,12 @@ func buildQuotaMiddleware(e *quota.Engine, auditLogger *audit.Logger, events *qu
 				return
 			}
 
-			// Denied — emit audit event (best-effort; nil-safe).
+			// Denied — emit audit event (best-effort; nil-safe). The action is
+			// sampled by the audit logger, keyed by the limit that denied:
+			// one row per scope, subject and dimension per hour, so a caller
+			// held at its limit costs one hash-chain write, not one per
+			// request. Every later denial in the hour returns from Append
+			// without touching the database.
 			if auditLogger != nil {
 				ip, _, _ := net.SplitHostPort(r.RemoteAddr)
 				_ = auditLogger.Append(ctx, audit.Event{
@@ -56,9 +61,12 @@ func buildQuotaMiddleware(e *quota.Engine, auditLogger *audit.Logger, events *qu
 					UserAgent:    r.UserAgent(),
 					Payload: audit.MustJSON(map[string]any{
 						"scope":       dec.LimitingScope,
+						"subject":     dec.LimitingSubject,
+						"dimension":   dec.Dimension,
 						"limit_id":    dec.LimitingID,
 						"retry_after": dec.RetryAfter,
 					}),
+					AggregationKey: dec.LimitingScope + "\x00" + dec.LimitingSubject + "\x00" + dec.Dimension,
 				})
 			}
 

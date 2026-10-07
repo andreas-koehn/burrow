@@ -6,10 +6,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -311,4 +313,136 @@ func (f *fakeSettings) SaveSettings(_ context.Context, kv map[string]string) err
 		f.m[k] = v
 	}
 	return nil
+}
+
+func countRows(t *testing.T, x *db.DB, action string) int {
+	t.Helper()
+	rows, err := x.ListAuditEvents(context.Background(), db.AuditQuery{Action: action, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(rows)
+}
+
+// An event with an AggregationKey is sampled by that key instead of by its
+// subject: one row per key per window. Events without one keep the subject.
+func TestSampleRateAggregationKey(t *testing.T) {
+	x := newTestDB(t)
+	l := newTestLogger(t, x)
+	for _, key := range []string{"svc-1|pattern-a", "svc-1|pattern-a", "svc-1|pattern-b", "svc-1|pattern-a"} {
+		if err := l.Append(context.Background(), Event{
+			Action: ActionGuardrailRefused, SubjectID: "svc-1", Result: "denied", AggregationKey: key,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := countRows(t, x, ActionGuardrailRefused); n != 2 {
+		t.Fatalf("%d rows, want 2 (one per key)", n)
+	}
+	// A keyed event and an unkeyed one never share a slot, whatever the key says.
+	for _, e := range []Event{
+		{Action: ActionRedactionApplied, SubjectID: "svc-1"},
+		{Action: ActionRedactionApplied, SubjectID: "other", AggregationKey: "svc-1"},
+		{Action: ActionRedactionApplied, SubjectID: "svc-1"},
+	} {
+		if err := l.Append(context.Background(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := countRows(t, x, ActionRedactionApplied); n != 2 {
+		t.Fatalf("%d redaction rows, want 2", n)
+	}
+	// After the window the key is written again.
+	l.now = func() time.Time { return time.Now().UTC().Add(AggregationWindow + time.Second) }
+	if err := l.Append(context.Background(), Event{
+		Action: ActionGuardrailRefused, SubjectID: "svc-1", AggregationKey: "svc-1|pattern-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, x, ActionGuardrailRefused); n != 3 {
+		t.Fatalf("%d rows after the window, want 3", n)
+	}
+}
+
+// ratelimit.enforced is sampled: a limit that keeps refusing writes one row.
+func TestSampleRateRateLimitEnforced(t *testing.T) {
+	if !IsAggregated(ActionRateLimitEnforced) {
+		t.Fatal("ratelimit.enforced is not a sampled action")
+	}
+	x := newTestDB(t)
+	l := newTestLogger(t, x)
+	for range 10 {
+		if err := l.Append(context.Background(), Event{
+			Action: ActionRateLimitEnforced, SubjectID: "svc-1", Result: "denied", AggregationKey: "gateway_key|gk1|rpm",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := countRows(t, x, ActionRateLimitEnforced); n != 1 {
+		t.Fatalf("%d rows, want 1", n)
+	}
+}
+
+// A write that fails does not use up the window: the next event is written.
+func TestSampleRateFailedWriteKeepsTheWindowOpen(t *testing.T) {
+	x := newTestDB(t)
+	l := newTestLogger(t, x)
+	e := Event{Action: ActionGuardrailRefused, SubjectID: "svc-1", Result: "denied"}
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := l.Append(gone, e); err == nil {
+		t.Fatal("append on a cancelled context succeeded")
+	}
+	if n := countRows(t, x, ActionGuardrailRefused); n != 0 {
+		t.Fatalf("%d rows after the failed write", n)
+	}
+	if err := l.Append(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Append(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, x, ActionGuardrailRefused); n != 1 {
+		t.Fatalf("%d rows, want 1: the retry after a failed write must be written, once", n)
+	}
+	// An invalid payload fails before the insert; the window stays open too.
+	bad := e
+	bad.SubjectID, bad.Payload = "svc-2", json.RawMessage(`{not json`)
+	if err := l.Append(context.Background(), bad); err == nil {
+		t.Fatal("append with an invalid payload succeeded")
+	}
+	bad.Payload = nil
+	if err := l.Append(context.Background(), bad); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, x, ActionGuardrailRefused); n != 2 {
+		t.Fatalf("%d rows, want 2", n)
+	}
+}
+
+// Concurrent first events of one key insert one row between them.
+func TestSampleRateConcurrentFirstEvents(t *testing.T) {
+	x := newTestDB(t)
+	l := newTestLogger(t, x)
+	var wg sync.WaitGroup
+	errs := make(chan error, 32)
+	for range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- l.Append(context.Background(), Event{
+				Action: ActionGuardrailRefused, SubjectID: "svc-1", Result: "denied", AggregationKey: "k",
+			})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	}
+	if n := countRows(t, x, ActionGuardrailRefused); n != 1 {
+		t.Fatalf("%d rows from 32 concurrent first events, want 1", n)
+	}
 }
