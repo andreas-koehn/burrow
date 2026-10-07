@@ -2,7 +2,7 @@ import type {
   UserAdmin, RoleSummary, Session, ClientDetail, ClientDiscovery, ClientLoginRequest, SettingsMap, AiProviderModel,
   Service, ServiceApiKey, CostSummary, ServiceAIConfig,
   InspectorEntry, CacheSettings, RedactionRule, RedactionSettings,
-  GuardrailPattern, GuardrailSettingsResponse, Budget, PricingTable, AuditEvent, Webhook,
+  GuardrailPattern, GuardrailSettingsResponse, Budget, CostGroupBy, CostGroupRow, PricingTable, AuditEvent, Webhook,
   WebhookDelivery, ProvisioningKey, ProvisioningPending,
   AutomationToken, BackupRow, CacheStatsV5, SemanticCacheSettings,
   UpstreamCredentialBinding, CustomDomain, AiModel, AiGatewayKey, AiRequestAttempt,
@@ -104,6 +104,8 @@ export interface MockDb {
   guardrailSettings: GuardrailSettingsResponse;
   guardrailPatterns: GuardrailPattern[];
   budgets: Budget[];
+  /** GET /cost/summary?group_by=… rows, as the relay returns them (sorted by usd, "" last). */
+  costGroups: Record<CostGroupBy, CostGroupRow[]>;
   pricing: PricingTable;
   audit: AuditEvent[];
   webhooks: Webhook[];
@@ -307,8 +309,27 @@ function seed(): MockDb {
       { id: "dev_mode", description: "developer mode" },
     ],
     budgets: [
-      { id: "bdg_ci", scope: "api_key", subject_id: "sak_ci01", daily_usd: 10, action_on_exceed: "alert_webhook", alert_webhook_id: null, current_usd: 5, exceeded: false },
+      { id: "bdg_ci", scope: "api_key", subject_id: "sak_ci01", daily_usd: 10, daily_tokens: 0, action_on_exceed: "alert_webhook", alert_webhook_id: null, current_usd: 5, current_tokens: 0, exceeded: false },
+      { id: "bdg_model", scope: "model", subject_id: "burrow-simple", daily_usd: 0, daily_tokens: 1000000, action_on_exceed: "throttle_zero", alert_webhook_id: null, current_usd: 0, current_tokens: 250000, exceeded: false },
     ],
+    costGroups: {
+      model: [
+        { key: "burrow-simple", requests: 40, tokens_in: 9000, tokens_out: 6000, usd: 0.9 },
+        { key: "ollama/mistral", requests: 5, tokens_in: 1200, tokens_out: 800, usd: 0.1 },
+        { key: "", requests: 3, tokens_in: 1800, tokens_out: 1200, usd: 0.23 },
+      ],
+      gateway_key: [
+        { key: "gk_laptop1", requests: 30, tokens_in: 8000, tokens_out: 5000, usd: 1 },
+        { key: "gk_gone0001xyz", requests: 10, tokens_in: 2000, tokens_out: 1500, usd: 0.2 },
+        { key: "", requests: 8, tokens_in: 2000, tokens_out: 1500, usd: 0.03 },
+      ],
+      provider: [
+        { key: "zai", requests: 20, tokens_in: 5000, tokens_out: 4000, usd: 0 },
+        { key: "ollama", requests: 28, tokens_in: 7000, tokens_out: 4000, usd: 1.23 },
+      ],
+      target_model: [{ key: "ollama/mistral", requests: 28, tokens_in: 7000, tokens_out: 4000, usd: 1.23 }],
+      dialect: [{ key: "openai", requests: 48, tokens_in: 12000, tokens_out: 8000, usd: 1.23 }],
+    },
     pricing: {
       version: "v0.4.0",
       entries: [

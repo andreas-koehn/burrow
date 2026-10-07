@@ -336,15 +336,30 @@ export interface CostSummary {
   tokens_out: number;
   top_consumers: { api_key_id: string; service_id: string; tokens_in: number; tokens_out: number; usd: number }[];
   pct_of_budget: number | null;
+  /** Present with ?group_by=…; sorted by usd, the "" group last. */
+  group_by?: CostGroupBy;
+  groups?: CostGroupRow[];
 }
+export type CostGroupBy = "gateway_key" | "model" | "provider" | "target_model" | "dialect";
+export interface CostGroupRow {
+  /** gateway_key: the key id; model/provider/target_model/dialect: the name. "" is the remainder or "not attributed". */
+  key: string;
+  requests: number;
+  tokens_in: number;
+  tokens_out: number;
+  usd: number;
+}
+export type BudgetScope = "api_key" | "service" | "user" | "global" | "gateway_key" | "model";
 export interface Budget {
   id: string;
-  scope: "api_key" | "service" | "user" | "global";
+  scope: BudgetScope;
   subject_id: string;
   daily_usd: number;
+  daily_tokens: number;
   action_on_exceed: "alert_webhook" | "throttle_zero" | "disable_key";
   alert_webhook_id: string | null;
   current_usd: number;
+  current_tokens: number;
   exceeded: boolean;
 }
 

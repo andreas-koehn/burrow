@@ -3,8 +3,10 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Dialog, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, PageHeader, Select, SkeletonRows, TableEmptyRow } from "@/components/ds";
-import type { Budget, CostSummary, Service } from "@/lib/contract";
+import { Badge, Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, NotAuthorized, PageHeader, Segmented, Select, SkeletonRows, TableEmptyRow } from "@/components/ds";
+import UsageBreakdown from "@/components/UsageBreakdown";
+import { fmtCount, fmtUsd } from "@/lib/costFormat";
+import type { AiGatewayKey, AiModel, Budget, BudgetScope, CostSummary, Service } from "@/lib/contract";
 
 type Window = CostSummary["window"];
 
@@ -18,16 +20,43 @@ const SCOPE_OPTIONS = [
   { value: "service", label: "Service" },
   { value: "user", label: "User" },
   { value: "global", label: "Global" },
+  { value: "gateway_key", label: "Gateway key" },
+  { value: "model", label: "Model" },
 ];
+const SCOPE_LABEL: Record<BudgetScope, string> = {
+  api_key: "API key", service: "Service", user: "User", global: "Global", gateway_key: "Gateway key", model: "Model",
+};
+const ACTION_LABEL: Record<string, string> = {
+  alert_webhook: "Alert webhook", throttle_zero: "Throttle to zero", disable_key: "Disable key",
+};
 const ACTION_OPTIONS = [
   { value: "alert_webhook", label: "Alert webhook" },
   { value: "throttle_zero", label: "Throttle to zero" },
   { value: "disable_key", label: "Disable key" },
 ];
 
-function fmtUsd(n: number): string {
-  return `$${n.toFixed(2)}`;
+// What each action does, in words. disable_key revokes for good.
+function actionHelp(action: Budget["action_on_exceed"], scope: BudgetScope): string {
+  switch (action) {
+    case "alert_webhook":
+      return "Sends a budget.exceeded webhook event. Requests keep working.";
+    case "throttle_zero":
+      return scope === "gateway_key" || scope === "model"
+        ? "Requests are refused until midnight UTC, when the day's budget starts over."
+        : "Throttles the subject to zero requests for the rest of the day.";
+    case "disable_key":
+      return scope === "model"
+        ? "Requests for the model are refused until midnight UTC. A model budget revokes no key."
+        : "Revokes the key permanently. It does not come back at midnight; you would have to create a new key.";
+  }
 }
+
+/** First 8 characters of an id: tells keys apart when the name is not known. */
+function shortId(id: string): string {
+  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
+}
+
+const OTHER_MODEL = "__other__";
 
 function pctClass(pct: number | null): string {
   if (pct == null) return "ok";
@@ -74,10 +103,13 @@ export default function CostBudgets() {
   // budgets).
   const featureAbsent = budgets.error instanceof ApiError && budgets.error.status === 404;
 
+  const [usageWindow, setUsageWindow] = useState<Window>("today");
   const [addOpen, setAddOpen] = useState(false);
   const [scope, setScope] = useState<Budget["scope"]>("api_key");
   const [subjectId, setSubjectId] = useState("");
   const [dailyUsd, setDailyUsd] = useState("");
+  const [dailyTokens, setDailyTokens] = useState("");
+  const [modelAddr, setModelAddr] = useState("");
   const [action, setAction] = useState<Budget["action_on_exceed"]>("alert_webhook");
   const [err, setErr] = useState<string | null>(null);
 
@@ -90,14 +122,52 @@ export default function CostBudgets() {
   const serviceOptions = (Array.isArray(services.data) ? services.data : [])
     .map((s) => ({ value: s.id, label: s.name }));
 
+  const keys = useQuery({
+    queryKey: ["ai", "keys"],
+    queryFn: () => apiFetch<AiGatewayKey[]>("/ai/keys"),
+    retry: false,
+  });
+  const models = useQuery({
+    queryKey: ["ai", "models"],
+    queryFn: () => apiFetch<AiModel[]>("/ai/models"),
+    retry: false,
+    enabled: addOpen && scope === "model",
+  });
+  const keyList = Array.isArray(keys.data) ? keys.data : [];
+  const keyName = new Map(keyList.map((k) => [k.id, k.name]));
+  const keyOptions = keyList.map((k) => {
+    const dup = keyList.filter((o) => o.name === k.name).length > 1;
+    return { value: k.id, label: `${k.name}${dup ? ` (${k.key_prefix})` : ""}${k.revoked_at ? " (revoked)" : ""}` };
+  });
+  const modelOptions = [
+    ...(Array.isArray(models.data) ? models.data : []).map((m) => ({ value: m.name, label: m.name })),
+    { value: OTHER_MODEL, label: "Other address…" },
+  ];
+  const subjectOf = scope === "model" && subjectId === OTHER_MODEL ? modelAddr : subjectId;
+
+  // Client-side checks mirror validateBudget in internal/api/cost_handlers.go.
+  const usdNum = dailyUsd.trim() === "" ? 0 : Number(dailyUsd);
+  const tokNum = dailyTokens.trim() === "" ? 0 : Number(dailyTokens);
+  const usdErr = usdNum < 0 || Number.isNaN(usdNum) ? "daily_usd must not be negative" : undefined;
+  const tokErr = tokNum < 0 ? "daily_tokens must not be negative"
+    : Number.isNaN(tokNum) || !Number.isInteger(tokNum) ? "daily_tokens must be a whole number" : undefined;
+  const noLimit = !usdErr && !tokErr && usdNum === 0 && tokNum === 0;
+  const addrErr = scope === "model" && subjectId === OTHER_MODEL && modelAddr !== ""
+    && (modelAddr !== modelAddr.trim() || /^\/|\/$|^[^/]*$/.test(modelAddr))
+    ? "Use the form <provider>/<model>, without spaces around it."
+    : undefined;
+  const subjectMissing = scope !== "global" && !subjectOf.trim();
+  const canSubmit = !usdErr && !tokErr && !noLimit && !addrErr && !subjectMissing;
+
   const create = useMutation({
     mutationFn: () =>
       apiFetch<Budget>("/budgets", {
         method: "POST",
         body: JSON.stringify({
           scope,
-          subject_id: subjectId,
-          daily_usd: Number(dailyUsd),
+          subject_id: subjectOf,
+          daily_usd: usdNum,
+          daily_tokens: tokNum,
           action_on_exceed: action,
         }),
       }),
@@ -106,7 +176,9 @@ export default function CostBudgets() {
       qc.invalidateQueries({ queryKey: ["budgets"] });
       setAddOpen(false);
       setSubjectId("");
+      setModelAddr("");
       setDailyUsd("");
+      setDailyTokens("");
       setErr(null);
     },
     onError: (e: unknown) =>
@@ -114,18 +186,22 @@ export default function CostBudgets() {
   });
 
   function submit() {
-    if (Number(dailyUsd) <= 0) {
-      setErr("daily_usd must be greater than zero");
-      return;
-    }
+    if (!canSubmit) return;
     create.mutate();
   }
 
   if (!budgets.data && !featureAbsent) {
+    const forbidden = budgets.error instanceof ApiError && budgets.error.status === 403;
     return (
       <div className="cost-page">
         <PageHeader title="Cost & budgets" />
-        <SkeletonRows n={4} />
+        {forbidden ? (
+          <NotAuthorized title="You can't view budgets">Budgets and cost are visible to admins.</NotAuthorized>
+        ) : budgets.isError ? (
+          <ErrorNotice>{budgets.error instanceof Error ? budgets.error.message : "Couldn't load budgets."}</ErrorNotice>
+        ) : (
+          <SkeletonRows n={4} />
+        )}
       </div>
     );
   }
@@ -144,6 +220,11 @@ export default function CostBudgets() {
         ))}
       </MetricStrip>
 
+      <div className="toolbar-row">
+        <Segmented aria-label="Usage period" options={WINDOWS.map((w) => ({ value: w, label: WINDOW_LABEL[w] }))} value={usageWindow} onChange={setUsageWindow} />
+      </div>
+      <UsageBreakdown window={usageWindow} />
+
       <section className="card">
         <h2>Budgets</h2>
         <div className="toolbar-row">
@@ -159,19 +240,26 @@ export default function CostBudgets() {
         </div>
         <div className="table-wrap">
           <table className="data" aria-label="Budgets">
-            <thead><tr><th>Scope</th><th>Subject</th><th className="col-num">Daily $</th><th>On exceed</th><th className="col-num">Spend</th></tr></thead>
+            <thead><tr><th>Scope</th><th>Subject</th><th className="col-num">Limit</th><th>On exceed</th><th className="col-num">Spend today</th><th>Status</th></tr></thead>
             <tbody>
               {featureAbsent
-                ? <TableEmptyRow colSpan={5} title="Budgets aren't available on this relay." />
+                ? <TableEmptyRow colSpan={6} title="Budgets aren't available on this relay." />
                 : (budgets.data ?? []).length === 0
-                  ? <TableEmptyRow colSpan={5} title="No budgets yet.">Add a budget to cap daily spend per key, service or user.</TableEmptyRow>
+                  ? <TableEmptyRow colSpan={6} title="No budgets yet.">Add a budget to cap daily spend or tokens per key, model, service or user.</TableEmptyRow>
                   : (budgets.data ?? []).map((b) => (
                       <tr key={b.id}>
-                        <td>{b.scope}</td>
-                        <td className="mono">{b.subject_id}</td>
-                        <td className="mono col-num">{fmtUsd(b.daily_usd)}</td>
-                        <td>{b.action_on_exceed}</td>
-                        <td className="mono col-num">{fmtUsd(b.current_usd)}</td>
+                        <td>{SCOPE_LABEL[b.scope] ?? b.scope}</td>
+                        <td className="mono">{b.scope === "gateway_key" ? (keyName.get(b.subject_id) ?? `deleted key (${shortId(b.subject_id)})`) : b.subject_id}</td>
+                        <td className="mono col-num">
+                          {b.daily_usd > 0 && <div>{fmtUsd(b.daily_usd)}</div>}
+                          {b.daily_tokens > 0 && <div>{fmtCount(b.daily_tokens)} tokens</div>}
+                        </td>
+                        <td>{ACTION_LABEL[b.action_on_exceed] ?? b.action_on_exceed}</td>
+                        <td className="mono col-num">
+                          {b.daily_usd > 0 && <div>{fmtUsd(b.current_usd)} / {fmtUsd(b.daily_usd)}</div>}
+                          {b.daily_tokens > 0 && <div>{fmtCount(b.current_tokens)} / {fmtCount(b.daily_tokens)} tokens</div>}
+                        </td>
+                        <td>{b.exceeded ? <Badge kind="danger">Exceeded</Badge> : <span className="muted">Within limit</span>}</td>
                       </tr>
                     ))}
             </tbody>
@@ -186,7 +274,7 @@ export default function CostBudgets() {
         footer={
           <>
             <Button variant="secondary" onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button variant="primary" disabled={create.isPending || (scope !== "global" && !subjectId.trim())} onClick={submit}>
+            <Button variant="primary" disabled={create.isPending || !canSubmit} onClick={submit}>
               Create
             </Button>
           </>
@@ -206,6 +294,39 @@ export default function CostBudgets() {
             >
               <Select id="budget-subject" value={subjectId} onChange={setSubjectId} options={serviceOptions} placeholder="Select a service…" />
             </FormField>
+          ) : scope === "gateway_key" ? (
+            <FormField
+              label="Gateway key"
+              htmlFor="budget-subject"
+              w="md"
+              help="Picked by name; the budget follows the key's id."
+              error={keys.isError && !keys.data ? "Couldn't load gateway keys." : undefined}
+            >
+              <Select id="budget-subject" value={subjectId} onChange={setSubjectId} options={keyOptions} placeholder="Select a key…" />
+            </FormField>
+          ) : scope === "model" ? (
+            <>
+              <FormField
+                label="Model"
+                htmlFor="budget-subject"
+                w="md"
+                help="A model name from this relay, or another address."
+                error={models.isError && !models.data ? "Couldn't load models." : undefined}
+              >
+                <Select id="budget-subject" value={subjectId} onChange={setSubjectId} options={modelOptions} placeholder="Select a model…" />
+              </FormField>
+              {subjectId === OTHER_MODEL && (
+                <FormField
+                  label="Model address"
+                  htmlFor="budget-model-addr"
+                  w="md"
+                  help="<provider>/<model>, for example zai/glm-5.1. Covers the gateway endpoints and /ai/<provider>/."
+                  error={addrErr}
+                >
+                  <Input id="budget-model-addr" className="mono" value={modelAddr} aria-invalid={addrErr ? true : undefined} onChange={(e) => setModelAddr(e.target.value)} />
+                </FormField>
+              )}
+            </>
           ) : scope !== "global" ? (
             <FormField
               label="Subject"
@@ -216,12 +337,19 @@ export default function CostBudgets() {
               <Input id="budget-subject" className="mono" value={subjectId} onChange={(e) => setSubjectId(e.target.value)} />
             </FormField>
           ) : null}
-          <FormField label="Daily USD" htmlFor="budget-daily" w="sm">
-            <Input id="budget-daily" type="number" className="mono" value={dailyUsd} onChange={(e) => setDailyUsd(e.target.value)} />
+          <FormField label="Daily USD" htmlFor="budget-daily" w="sm" error={usdErr}>
+            <Input id="budget-daily" type="number" min="0" step="any" className="mono" value={dailyUsd} aria-invalid={usdErr ? true : undefined} aria-describedby="budget-limit-hint" onChange={(e) => setDailyUsd(e.target.value)} />
           </FormField>
+          <FormField label="Daily tokens" htmlFor="budget-tokens" w="sm" error={tokErr}>
+            <Input id="budget-tokens" type="number" min="0" step="1" className="mono" value={dailyTokens} aria-invalid={tokErr ? true : undefined} aria-describedby="budget-limit-hint" onChange={(e) => setDailyTokens(e.target.value)} />
+          </FormField>
+          <p id="budget-limit-hint" className="muted small">
+            {noLimit ? "Set a daily amount in USD, in tokens, or both." : "Either limit alone is enough. Budgets reset at midnight UTC."}
+          </p>
           <FormField label="Action on exceed" htmlFor="budget-action" w="md">
             <Select id="budget-action" value={action} onChange={(v) => setAction(v as Budget["action_on_exceed"])} options={ACTION_OPTIONS} />
           </FormField>
+          <p id="budget-action-help" className="muted small">{actionHelp(action, scope)}</p>
         </FormFieldGroup>
         {err && <p role="alert" className="notice-inline error">{err}</p>}
       </Dialog>

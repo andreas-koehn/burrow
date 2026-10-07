@@ -80,7 +80,7 @@ describe("contract", () => {
     const pe: PricingEntry = { provider: "openai", model: "gpt-4o", input_per_million: 5, output_per_million: 15 };
     const pt: PricingTable = { version: "v0.4.0", entries: [pe] };
     const cs: CostSummary = { window: "today", total_usd: 1.23, tokens_in: 1000, tokens_out: 500, top_consumers: [], pct_of_budget: 0.5 };
-    const budget: Budget = { id: "b1", scope: "api_key", subject_id: "sak_ci01", daily_usd: 10, action_on_exceed: "alert_webhook", alert_webhook_id: null, current_usd: 5, exceeded: false };
+    const budget: Budget = { id: "b1", scope: "api_key", subject_id: "sak_ci01", daily_usd: 10, daily_tokens: 0, action_on_exceed: "alert_webhook", alert_webhook_id: null, current_usd: 5, current_tokens: 0, exceeded: false };
     const rl: RateLimit = { id: "rl1", scope: "api_key", subject: "sak_ci01", dimension: "rpm", limit: 60, burst: 10, created_at: "2026-05-19T00:00:00Z" };
     const ie: InspectorEntry = {
       id: "ie1", service_id: "svc_ai001", api_key_id: "sak_ci01", ts: "2026-05-19T00:00:00Z",

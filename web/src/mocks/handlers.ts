@@ -1,7 +1,7 @@
 import { http, HttpResponse } from "msw";
 import { modelNameError } from "@/lib/modelNames";
 import { db, type MockDb, type CacheSettingsPayload, type AiProviderRow } from "@/mocks/db";
-import type { AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, CostSummary, Dialect, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
+import type { AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, CostGroupBy, CostSummary, Dialect, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
 
 const json = (body: unknown, status = 200) => HttpResponse.json(body as object, { status });
 const err = (status: number, message: string) => HttpResponse.json({ error: message }, { status });
@@ -1003,7 +1003,10 @@ export const handlers = [
     const url = new URL(request.url);
     const w = (url.searchParams.get("window") ?? "today") as CostSummary["window"];
     const summary = db.costSummary[w] ?? db.costSummary.today;
-    return json(summary);
+    const groupBy = url.searchParams.get("group_by");
+    if (groupBy === null || groupBy === "") return json(summary);
+    if (!(groupBy in db.costGroups)) return err(400, "group_by must be one of gateway_key|model|provider|target_model|dialect");
+    return json({ ...summary, group_by: groupBy, groups: db.costGroups[groupBy as CostGroupBy] });
   }),
 
   // ---- v0.4.0 service AI config (spec Part B.7) ----
@@ -1199,16 +1202,35 @@ export const handlers = [
   http.post("/api/v1/budgets", async ({ request }) => {
     const g = gate(request, { admin: true }); if (g) return g;
     const b = await body<Partial<MockDb["budgets"][number]>>(request);
-    if (!b || typeof b.daily_usd !== "number" || b.daily_usd <= 0)
-      return err(400, "daily_usd must be greater than zero");
+    if (!b) return err(400, "invalid json");
+    // Mirrors validateBudget and the unknown-gateway-key check in internal/api/cost_handlers.go.
+    const scopes = ["api_key", "service", "user", "global", "gateway_key", "model"];
+    const actions = ["alert_webhook", "throttle_zero", "disable_key"];
+    const usd = b.daily_usd ?? 0, tokens = b.daily_tokens ?? 0, subject = b.subject_id ?? "", scope = b.scope ?? "api_key";
+    const action = b.action_on_exceed ?? "alert_webhook";
+    if (!scopes.includes(scope)) return err(400, "scope must be one of api_key|service|user|global|gateway_key|model");
+    if (!actions.includes(action)) return err(400, "action_on_exceed must be one of alert_webhook|throttle_zero|disable_key");
+    if (typeof tokens !== "number" || !Number.isInteger(tokens)) return err(400, "invalid json");
+    if (tokens < 0) return err(400, "daily_tokens must not be negative");
+    if (typeof usd !== "number" || usd < 0 || Number.isNaN(usd)) return err(400, "daily_usd must not be negative");
+    if (usd === 0 && tokens === 0) return err(400, "daily_usd or daily_tokens must be greater than zero");
+    if (scope !== "global" && subject.trim() === "") return err(400, "subject_id is required for non-global scopes");
+    if (scope === "global" && subject !== "") return err(400, "global scope must not specify a subject_id");
+    if (subject !== subject.trim()) return err(400, "subject_id must not have leading or trailing whitespace");
+    // eslint-disable-next-line no-control-regex
+    if (/[\u0000-\u001f\u007f-\u009f]/.test(subject)) return err(400, "subject_id must not contain control characters");
+    if (new TextEncoder().encode(subject).length > 256) return err(400, "subject_id too long (max 256 chars)");
+    if (scope === "gateway_key" && !db.aiGatewayKeys.some((k) => k.id === subject)) return err(400, "unknown gateway key");
     const rec: MockDb["budgets"][number] = {
       id: `bdg_${Math.random().toString(36).slice(2, 8)}`,
-      scope: b.scope ?? "api_key",
-      subject_id: b.subject_id ?? "",
-      daily_usd: b.daily_usd,
-      action_on_exceed: b.action_on_exceed ?? "alert_webhook",
+      scope,
+      subject_id: subject,
+      daily_usd: usd,
+      daily_tokens: tokens,
+      action_on_exceed: action,
       alert_webhook_id: b.alert_webhook_id ?? null,
       current_usd: 0,
+      current_tokens: 0,
       exceeded: false,
     };
     db.budgets.push(rec);
