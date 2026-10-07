@@ -61,6 +61,32 @@ func (x *DB) LatestAuditHash(ctx context.Context, tx *sql.Tx) (string, bool, err
 	return h, true, nil
 }
 
+// LatestAuditRow returns the id and the hash of the most recent
+// audit_events row in id order: the row a new one chains to, and the id a
+// new one has to sort after. ok is false when the table is empty.
+func (x *DB) LatestAuditRow(ctx context.Context, tx *sql.Tx) (id, hash string, ok bool, err error) {
+	q := `SELECT id, hash FROM audit_events ORDER BY id DESC LIMIT 1`
+	if tx != nil {
+		err = tx.QueryRowContext(ctx, q).Scan(&id, &hash)
+	} else {
+		err = x.sqlDB.QueryRowContext(ctx, q).Scan(&id, &hash)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, fmt.Errorf("latest audit row: %w", err)
+	}
+	return id, hash, true, nil
+}
+
+// LockAuditChain makes the appends to the audit chain wait for each other
+// until tx ends, across every process that shares the database. It must be
+// the first statement of tx. See lockAuditChain.
+func (x *DB) LockAuditChain(ctx context.Context, tx *sql.Tx) error {
+	return lockAuditChain(ctx, x.sqlDB, tx)
+}
+
 // AuditQuery is the filter shape consumed by ListAuditEvents.
 //
 // Limit defaults to 100 (caller-applied); a zero Limit is treated as "no

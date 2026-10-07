@@ -183,6 +183,7 @@ func buildV050EnvOnDB(t *testing.T, sqldb *sql.DB, driver, urlRedacted string) *
 	if err != nil {
 		t.Fatalf("buildV04Stack: %v", err)
 	}
+	t.Cleanup(v04.GuardrailAudit.stop)
 	t.Cleanup(func() { v04.WebhookDispatcher.Close() })
 	v04.AIChain.Semantic = v05.SemanticCache
 	v04.AIChain.CredInjector = v05.CredInjector

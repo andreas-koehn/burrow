@@ -66,7 +66,8 @@ type Event struct {
 type AuditDB interface {
 	DB() *sql.DB
 	InsertAuditEvent(ctx context.Context, tx *sql.Tx, e db.AuditEventInsert) error
-	LatestAuditHash(ctx context.Context, tx *sql.Tx) (string, bool, error)
+	LatestAuditRow(ctx context.Context, tx *sql.Tx) (id, hash string, ok bool, err error)
+	LockAuditChain(ctx context.Context, tx *sql.Tx) error
 	IterAuditEventsAsc(ctx context.Context, fromID, toID string, visit func(db.AuditEvent) error) error
 	ListAuditEvents(ctx context.Context, q db.AuditQuery) ([]db.AuditEvent, error)
 }
@@ -78,8 +79,11 @@ type Logger struct {
 	priv    ed25519.PrivateKey
 	log     *slog.Logger
 	mu      sync.Mutex
-	lastAgg map[string]time.Time // (subject_id|action) -> first-seen-at
-	now     func() time.Time     // injectable for tests
+	lastAgg map[string]time.Time // sample key -> when its row was claimed
+	// appending holds one token: the appends of this process run one at a
+	// time (see appendRow). A channel, so a wait ends with its context.
+	appending chan struct{}
+	now       func() time.Time // injectable for tests
 }
 
 // NewLogger returns a ready-to-use Logger. The signing key is loaded (or
@@ -90,11 +94,12 @@ func NewLogger(d AuditDB, signingKey ed25519.PrivateKey, log *slog.Logger) *Logg
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Logger{
-		d:       d,
-		priv:    signingKey,
-		log:     log,
-		lastAgg: map[string]time.Time{},
-		now:     func() time.Time { return time.Now().UTC() },
+		d:         d,
+		priv:      signingKey,
+		log:       log,
+		lastAgg:   map[string]time.Time{},
+		appending: make(chan struct{}, 1),
+		now:       func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -128,8 +133,8 @@ func (l *Logger) FingerprintHex() string {
 // Return value is nil in that case (call sites should not treat a
 // sample-rate skip as a bug).
 //
-// The window belongs to a row that was written: an append that fails gives
-// its claim back, so the next event of that key is written. While one append
+// The window belongs to a row that was written: an append that fails or
+// panics gives its claim back, so the next event of that key is written. While one append
 // of a key is under way, others of the same key are dropped, so concurrent
 // first events insert one row between them.
 func (l *Logger) Append(ctx context.Context, e Event) error {
@@ -160,18 +165,31 @@ func (l *Logger) Append(ctx context.Context, e Event) error {
 	l.lastAgg[key] = claimed
 	l.mu.Unlock()
 
-	err := l.appendRow(ctx, e)
-	if err != nil {
+	written := false
+	defer func() {
+		// Also on a panic: without a row the key must not stay muted.
+		if written {
+			return
+		}
 		l.mu.Lock()
 		if l.lastAgg[key].Equal(claimed) {
 			delete(l.lastAgg, key)
 		}
 		l.mu.Unlock()
-	}
+	}()
+	err := l.appendRow(ctx, e)
+	written = err == nil
 	return err
 }
 
 // appendRow writes one row under the hash chain.
+//
+// Verify walks the chain in id order, so a row's id has to sort after the
+// row it chains to. Both are settled in one section no other append can
+// enter: within this process by l.appending, across the processes that share
+// a Postgres database by an advisory lock held until the transaction ends
+// (SQLite has one writer). Inside it the last row is read, the id is drawn
+// so that it sorts after that row's, and the row is inserted.
 func (l *Logger) appendRow(ctx context.Context, e Event) error {
 	if l == nil {
 		return nil // nil-logger = audit disabled (tests / Task 13 wiring stub)
@@ -186,8 +204,34 @@ func (l *Logger) appendRow(ctx context.Context, e Event) error {
 		e.Payload = json.RawMessage(`{}`)
 	}
 
+	select {
+	case l.appending <- struct{}{}:
+	case <-ctx.Done():
+		return fmt.Errorf("audit: begin tx: %w", ctx.Err())
+	}
+	defer func() { <-l.appending }()
+
+	// Hash chain in a tx: read head, draw the id, compute hash, insert.
+	tx, err := l.d.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("audit: begin tx: %w", err)
+	}
+	// Whatever happens below, a panic included, the transaction ends: with
+	// a single connection a leaked one would stall every later append. A
+	// rollback after the commit does nothing.
+	defer func() { _ = tx.Rollback() }()
+	if err := l.d.LockAuditChain(ctx, tx); err != nil {
+		return fmt.Errorf("audit: lock chain: %w", err)
+	}
+	prevID, prev, ok, err := l.d.LatestAuditRow(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		prev = genesisPrevHash
+	}
 	if e.ID == "" {
-		id, err := NewULID()
+		id, err := nextULID(prevID)
 		if err != nil {
 			return fmt.Errorf("audit: new id: %w", err)
 		}
@@ -196,30 +240,16 @@ func (l *Logger) appendRow(ctx context.Context, e Event) error {
 	if e.TS.IsZero() {
 		e.TS = l.now()
 	}
-
-	// Hash chain in a tx: read head, compute hash, insert. The tx + the
-	// sql.DB-level single-connection cap (SetMaxOpenConns(1) in db.Open)
-	// guarantee no concurrent append observes the same prev_hash.
-	tx, err := l.d.DB().BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("audit: begin tx: %w", err)
-	}
-	prev, ok, err := l.d.LatestAuditHash(ctx, tx)
-	if err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	if !ok {
-		prev = genesisPrevHash
-	}
+	// The hash covers the timestamp as Verify will read it back: Postgres
+	// keeps microseconds, so anything finer would be hashed and then lost,
+	// and the row could never verify.
+	e.TS = e.TS.UTC().Truncate(time.Microsecond)
 	canon, err := Canonical(e)
 	if err != nil {
-		_ = tx.Rollback()
 		return err
 	}
 	prevBytes, err := hex.DecodeString(prev)
 	if err != nil {
-		_ = tx.Rollback()
 		return fmt.Errorf("audit: decode prev_hash: %w", err)
 	}
 	h := sha256.New()
@@ -233,7 +263,6 @@ func (l *Logger) appendRow(ctx context.Context, e Event) error {
 		SourceIP: e.SourceIP, UserAgent: e.UserAgent, RequestID: e.RequestID,
 		Payload: string(e.Payload), PrevHash: prev, Hash: hashHex,
 	}); err != nil {
-		_ = tx.Rollback()
 		return err
 	}
 	if err := tx.Commit(); err != nil {

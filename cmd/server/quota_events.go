@@ -248,5 +248,10 @@ func (g *guardrailAuditor) Flush(ctx context.Context) error {
 	}
 }
 
-// stop ends the worker without draining (tests).
-func (g *guardrailAuditor) stop() { g.once.Do(func() { close(g.quit) }) }
+// stop ends the worker without draining: after Flush at shutdown, and in the
+// cleanup of a test that built one.
+func (g *guardrailAuditor) stop() {
+	if g != nil {
+		g.once.Do(func() { close(g.quit) })
+	}
+}

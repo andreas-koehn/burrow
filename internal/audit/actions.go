@@ -61,7 +61,9 @@ const (
 	ActionRedactionApplied = "redaction.applied"
 
 	ActionGuardrailSettingsUpdate = "guardrail.settings.update"
-	// ActionGuardrailRefused is aggregated 1/hour per (subject_id, action).
+	// ActionGuardrailRefused is aggregated 1/hour per (subject_id, action),
+	// or per Event.AggregationKey when the caller sets one (the gateway
+	// does: service, pattern, action and gateway key).
 	ActionGuardrailRefused = "guardrail.refused"
 
 	ActionBudgetCreate   = "budget.create"

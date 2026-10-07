@@ -97,6 +97,7 @@ func bootSmokeServer(t *testing.T) *smokeStack {
 	if err != nil {
 		t.Fatalf("buildV04Stack: %v", err)
 	}
+	t.Cleanup(v04.GuardrailAudit.stop)
 	t.Cleanup(func() { v04.WebhookDispatcher.Close() })
 	// Patch semantic + credinject into the chain (same as main.go does).
 	v04.AIChain.Semantic = v05.SemanticCache

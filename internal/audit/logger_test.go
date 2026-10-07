@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -444,5 +446,168 @@ func TestSampleRateConcurrentFirstEvents(t *testing.T) {
 	}
 	if n := countRows(t, x, ActionGuardrailRefused); n != 1 {
 		t.Fatalf("%d rows from 32 concurrent first events, want 1", n)
+	}
+}
+
+// appendConcurrently appends per*workers user.create events through the
+// given loggers (round-robin) and fails the test on any error.
+func appendConcurrently(t *testing.T, loggers []*Logger, workers, per int) {
+	t.Helper()
+	var wg sync.WaitGroup
+	errs := make(chan error, workers*per)
+	for w := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			l := loggers[w%len(loggers)]
+			for i := range per {
+				errs <- l.Append(context.Background(), Event{
+					ActorID: "u-actor", Action: ActionUserCreate, SubjectID: "u-sub", Result: "ok",
+					Payload: json.RawMessage(`{"w":` + strconv.Itoa(w) + `,"i":` + strconv.Itoa(i) + `}`),
+				})
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+}
+
+// The chain verifies after concurrent appends: id order is chain order.
+func TestVerifyAfterConcurrentAppends(t *testing.T) {
+	x := newTestDB(t)
+	l := newTestLogger(t, x)
+	appendConcurrently(t, []*Logger{l}, 16, 60)
+	ok, bad, err := l.Verify(context.Background(), "", "")
+	if err != nil || !ok {
+		t.Fatalf("verify after concurrent appends: ok=%v mismatched=%q err=%v", ok, bad, err)
+	}
+	if n := countRows(t, x, ActionUserCreate); n != 100 { // the list is capped at 100
+		t.Fatalf("%d rows listed", n)
+	}
+}
+
+// A new row always sorts after the row it chains to, also when that row's id
+// is ahead of this process's clock (another instance, or a clock set back).
+func TestAppendSortsAfterTheChainHead(t *testing.T) {
+	x := newTestDB(t)
+	l := newTestLogger(t, x)
+	ahead := "7ZZZZZZZZZ0000000000000ZZZ" // a ULID far in the future, tail about to carry
+	if err := l.Append(context.Background(), Event{ID: ahead, Action: ActionUserCreate, SubjectID: "seed"}); err != nil {
+		t.Fatal(err)
+	}
+	appendN(t, l, 40, "admin@x")
+	ok, bad, err := l.Verify(context.Background(), "", "")
+	if err != nil || !ok {
+		t.Fatalf("verify: ok=%v mismatched=%q err=%v", ok, bad, err)
+	}
+}
+
+func TestULIDAfter(t *testing.T) {
+	for prev, want := range map[string]string{
+		"01ARZ3NDEKTSV4RRFFQ69G5FAV": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+		"01ARZ3NDEKTSV4RRFFQ69G5FAZ": "01ARZ3NDEKTSV4RRFFQ69G5FB0",
+		"01ARZ3NDEKZZZZZZZZZZZZZZZZ": "01ARZ3NDEM0000000000000000",
+	} {
+		got, ok := ulidAfter(prev)
+		if !ok || got != want || got <= prev {
+			t.Errorf("ulidAfter(%s) = %s, %v; want %s", prev, got, ok, want)
+		}
+	}
+	for _, bad := range []string{"", "evt-1", "7ZZZZZZZZZZZZZZZZZZZZZZZZZ", "01ARZ3NDEKTSV4RRFFQ69G5FAU"} {
+		if got, ok := ulidAfter(bad); ok {
+			t.Errorf("ulidAfter(%q) = %s, want not ok", bad, got)
+		}
+	}
+}
+
+// panicOnInsert is an audit store whose next insert panics.
+type panicOnInsert struct {
+	AuditDB
+	armed bool
+}
+
+func (p *panicOnInsert) InsertAuditEvent(ctx context.Context, tx *sql.Tx, e db.AuditEventInsert) error {
+	if p.armed {
+		p.armed = false
+		panic("insert blew up")
+	}
+	return p.AuditDB.InsertAuditEvent(ctx, tx, e)
+}
+
+func appendRecovering(l *Logger, e Event) (panicked any) {
+	defer func() { panicked = recover() }()
+	_ = l.Append(context.Background(), e)
+	return nil
+}
+
+// A panic in the middle of the transaction does not leak it: with one
+// database connection the next append would otherwise wait for ever.
+func TestAppendPanicMidTransactionReleasesTheConnection(t *testing.T) {
+	x := newTestDB(t)
+	store := &panicOnInsert{AuditDB: x, armed: true}
+	l := newTestLogger(t, x)
+	l.d = store
+	if appendRecovering(l, Event{Action: ActionUserCreate, SubjectID: "u1"}) == nil {
+		t.Fatal("the store did not panic")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := l.Append(ctx, Event{Action: ActionUserCreate, SubjectID: "u2"}); err != nil {
+		t.Fatalf("append after a panicked append: %v", err)
+	}
+	if ok, bad, err := l.Verify(ctx, "", ""); err != nil || !ok {
+		t.Fatalf("verify: ok=%v mismatched=%q err=%v", ok, bad, err)
+	}
+	if n := countRows(t, x, ActionUserCreate); n != 1 {
+		t.Fatalf("%d rows, want 1", n)
+	}
+}
+
+// A panic while writing a sampled event gives the window back: the key is
+// not muted for an hour with no row to show for it.
+func TestSampleRatePanicReleasesTheClaim(t *testing.T) {
+	x := newTestDB(t)
+	store := &panicOnInsert{AuditDB: x, armed: true}
+	l := newTestLogger(t, x)
+	l.d = store
+	e := Event{Action: ActionGuardrailRefused, SubjectID: "svc-1", Result: "denied", AggregationKey: "k"}
+	if appendRecovering(l, e) == nil {
+		t.Fatal("the store did not panic")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for range 2 {
+		if err := l.Append(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := countRows(t, x, ActionGuardrailRefused); n != 1 {
+		t.Fatalf("%d rows, want 1: the event after the panic must be written, once", n)
+	}
+}
+
+// A row's timestamp is stored, and hashed, at the precision every backend
+// keeps (microseconds): what Verify reads back is what was hashed.
+func TestAppendTimestampHasStoredPrecision(t *testing.T) {
+	x := newTestDB(t)
+	l := newTestLogger(t, x)
+	l.now = func() time.Time { return time.Date(2026, 10, 7, 12, 0, 0, 123456789, time.UTC) }
+	if err := l.Append(context.Background(), Event{Action: ActionUserCreate, SubjectID: "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := x.ListAuditEvents(context.Background(), db.AuditQuery{Action: ActionUserCreate, Limit: 10})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows %d, err %v", len(rows), err)
+	}
+	if got := rows[0].Ts.UTC().Nanosecond(); got != 123456000 {
+		t.Fatalf("stored nanoseconds = %d, want 123456000", got)
+	}
+	if ok, bad, err := l.Verify(context.Background(), "", ""); err != nil || !ok {
+		t.Fatalf("verify: ok=%v mismatched=%q err=%v", ok, bad, err)
 	}
 }

@@ -1158,6 +1158,7 @@ func newRootCmd() *cobra.Command {
 			if err := v04.GuardrailAudit.Flush(shutCtx); err != nil {
 				log.Warn("guardrail audit: entries not fully written", "err", err)
 			}
+			v04.GuardrailAudit.stop()
 			if challengeSrv != nil {
 				_ = challengeSrv.Shutdown(shutCtx)
 			}

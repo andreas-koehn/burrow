@@ -240,7 +240,8 @@ func LogRedactionApplied(ctx context.Context, l *Logger, c LogContext, serviceID
 	})
 }
 
-// LogGuardrailRefused logs ActionGuardrailRefused (sample-rated 1/hr).
+// LogGuardrailRefused logs ActionGuardrailRefused (sample-rated 1/hr per
+// service: this helper sets no Event.AggregationKey).
 func LogGuardrailRefused(ctx context.Context, l *Logger, c LogContext, serviceID, patternID string) {
 	if l == nil {
 		return

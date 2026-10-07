@@ -3,6 +3,7 @@ package audit
 import (
 	"crypto/rand"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -116,4 +117,51 @@ func encodeCrockford(raw [16]byte) string {
 	out[24] = crockford[((raw[14]&0x03)<<3)|((raw[15]&0xE0)>>5)]
 	out[25] = crockford[raw[15]&0x1F]
 	return string(out)
+}
+
+// ulidAfter returns the ULID that follows prev: prev plus one, read as a
+// number. ok is false when prev is not a ULID or is the last one there is.
+func ulidAfter(prev string) (next string, ok bool) {
+	if len(prev) != 26 || prev[0] > '7' {
+		return "", false
+	}
+	out := []byte(prev)
+	carry := true
+	for i := len(out) - 1; i >= 0; i-- {
+		d := strings.IndexByte(crockford, out[i])
+		if d < 0 {
+			return "", false
+		}
+		if carry {
+			d++
+			if carry = d == len(crockford); carry {
+				d = 0
+			}
+			out[i] = crockford[d]
+		}
+	}
+	if carry || out[0] > '7' {
+		return "", false
+	}
+	return string(out), true
+}
+
+// nextULID returns a new id that sorts after prev, the id of the row the new
+// one chains to. NewULID alone is ahead of prev whenever this process wrote
+// it and the clock did not go back; when prev came from another instance
+// whose clock is ahead, or from the same millisecond there, the new id is
+// the one right after prev. A prev that is not a ULID (ids are only ever set
+// by hand in tests) is not taken into account.
+func nextULID(prev string) (string, error) {
+	id, err := NewULID()
+	if err != nil {
+		return "", err
+	}
+	if prev == "" || id > prev {
+		return id, nil
+	}
+	if next, ok := ulidAfter(prev); ok {
+		return next, nil
+	}
+	return id, nil
 }
