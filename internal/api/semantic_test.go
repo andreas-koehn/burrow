@@ -3,9 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/ankoehn/burrow/internal/audit"
 )
 
 // fakeSemanticEngine is the SemanticEngine stand-in for handler tests.
@@ -442,4 +446,90 @@ func jsonKeys(m map[string]json.RawMessage) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// A successful PUT /services/{id}/ai-config writes one audit event that names
+// the sections enabled after the change and nothing of their content. A
+// refused or failed write leaves none.
+func TestPutServiceAIConfigAudits(t *testing.T) {
+	const svcID = "svc-audit"
+	deps := func(role string, saveErr error) (Deps, *stubAuditAppender) {
+		aud := &stubAuditAppender{}
+		return Deps{
+			Log:              discardLog(),
+			Users:            &fakeUserStore{role: role},
+			Settings:         &fakeCacheSettingsStore{},
+			ServiceAIConfigs: &fakeServiceAIConfigStore{configs: map[string][]byte{}, saveErr: saveErr},
+			CacheServices:    &fakeCacheServiceLookup{owners: map[string]string{svcID: "u-self"}},
+			AuditAppender:    aud,
+		}, aud
+	}
+	put := func(d Deps, body any) int {
+		srv := httptest.NewServer(NewRouter(d))
+		defer srv.Close()
+		r := authedClient(t, srv).put(t, "/api/v1/services/"+svcID+"/ai-config", body)
+		r.Body.Close()
+		return r.StatusCode
+	}
+
+	d, aud := deps("admin", nil)
+	code := put(d, map[string]any{
+		"cache": map[string]any{
+			"enabled":  true,
+			"semantic": map[string]any{"enabled": false, "embedding_url": "http://embed.internal/v1"},
+		},
+		"redaction":  map[string]any{"enabled": false},
+		"guardrails": map[string]any{"enabled": true, "action": "refuse_403", "patterns": []string{"SECRET-PATTERN-BODY"}},
+		"inspector":  nil,
+		"anthropic":  map[string]any{"enabled": true},
+		"prompt":     "SECRET-PROMPT-TEXT",
+	})
+	if code != http.StatusNoContent {
+		t.Fatalf("status %d, want 204", code)
+	}
+	if len(aud.events) != 1 {
+		t.Fatalf("%d audit events, want 1", len(aud.events))
+	}
+	e := aud.events[0]
+	if e.Action != audit.ActionServiceAIConfigUpdate || e.SubjectID != svcID || e.Result != "ok" || e.ActorID != "u-self" {
+		t.Fatalf("event = %+v", e)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(e.Payload, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"cache": true, "semantic": false, "redaction": false, "guardrails": true, "inspector": false, "anthropic": true}
+	if len(got) != len(want) {
+		t.Fatalf("payload = %s", e.Payload)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("payload[%q] = %v, want %v (%s)", k, got[k], v, e.Payload)
+		}
+	}
+	for _, leak := range []string{"SECRET", "embed.internal", "refuse_403"} {
+		if strings.Contains(string(e.Payload), leak) {
+			t.Fatalf("payload carries configuration content %q: %s", leak, e.Payload)
+		}
+	}
+
+	// An empty body is a valid write: everything off.
+	d, aud = deps("admin", nil)
+	if code := put(d, map[string]any{}); code != http.StatusNoContent || len(aud.events) != 1 {
+		t.Fatalf("empty body: status %d, %d events", code, len(aud.events))
+	}
+
+	// Refused (400), forbidden (403) and failed (500) writes are not audited.
+	d, aud = deps("admin", nil)
+	if code := put(d, map[string]any{"cache": map[string]any{"semantic": map[string]any{"min_similarity": 1.5}}}); code != http.StatusBadRequest || len(aud.events) != 0 {
+		t.Fatalf("invalid config: status %d, %d events", code, len(aud.events))
+	}
+	d, aud = deps("no-ai-perms", nil)
+	if code := put(d, map[string]any{}); code != http.StatusForbidden || len(aud.events) != 0 {
+		t.Fatalf("forbidden: status %d, %d events", code, len(aud.events))
+	}
+	d, aud = deps("admin", errors.New("disk full"))
+	if code := put(d, map[string]any{}); code != http.StatusInternalServerError || len(aud.events) != 0 {
+		t.Fatalf("failed save: status %d, %d events", code, len(aud.events))
+	}
 }

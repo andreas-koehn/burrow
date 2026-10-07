@@ -528,6 +528,13 @@ func (e *Engine) fireAction(ctx context.Context, b db.Budget, currentUSD float64
 		"current_tokens":   currentTokens,
 		"action_on_exceed": b.ActionOnExceed,
 	}
+	// The gateway scopes also name their subject under its own field.
+	switch b.Scope {
+	case "gateway_key":
+		payload["gateway_key_id"] = b.SubjectID
+	case "model":
+		payload["model"] = b.SubjectID
+	}
 	e.mu.RLock()
 	dispatcher, gwRevoker := e.dispatcher, e.gwRevoker
 	e.mu.RUnlock()

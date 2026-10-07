@@ -224,6 +224,13 @@ type Chain struct {
 	IPGeo     func(http.Handler) http.Handler
 	RateLimit func(http.Handler) http.Handler
 
+	// OnGuardrailRefuse is called once per refused request with the service,
+	// the id of the pattern that matched (never the matched text) and the
+	// action taken ("refuse_403" or "refuse_safe"). It runs on the request's
+	// goroutine before the refusal is written, so it must not block; the
+	// context is the request's. nil = not reported.
+	OnGuardrailRefuse func(ctx context.Context, serviceID, pattern, action string)
+
 	// MaxRequestBodyBytes bounds how much of an inbound request body the
 	// chain will buffer before short-circuiting with 413. 0 selects
 	// DefaultMaxRequestBodyBytes. Tests override this to small values.
@@ -535,6 +542,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		if hit {
 			switch cfg.Guardrails.Action {
 			case guardrails.ActionRefuse403, "":
+				c.guardrailRefused(r, svc, pattern, guardrails.ActionRefuse403)
 				writeError(w, r, http.StatusForbidden, "guardrail.refuse", "forbidden", "the request was refused by a guardrail")
 				c.Log.Info("aigw: guardrail refuse",
 					slog.String("service_id", svc.ID),
@@ -543,6 +551,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
 				return
 			case guardrails.ActionRefuseSafe:
+				c.guardrailRefused(r, svc, pattern, guardrails.ActionRefuseSafe)
 				ew := ErrorWriterFrom(r.Context())
 				streamed := false
 				var refusalBody []byte
@@ -916,6 +925,13 @@ func serveUpstream(h http.Handler, w http.ResponseWriter, r *http.Request) (pani
 	h.ServeHTTP(w, r)
 	panicked = false
 	return false, nil
+}
+
+// guardrailRefused reports a refusal to OnGuardrailRefuse, if one is set.
+func (c *Chain) guardrailRefused(r *http.Request, svc Service, pattern, action string) {
+	if c.OnGuardrailRefuse != nil {
+		c.OnGuardrailRefuse(r.Context(), svc.ID, pattern, action)
+	}
 }
 
 // postResponseTimeout bounds bookkeeping that runs after the response has

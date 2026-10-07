@@ -24,7 +24,11 @@ import (
 //
 // The auditLogger parameter may be nil; in that case the audit emission is
 // skipped (nil-safe, consistent with the rest of the codebase).
-func buildQuotaMiddleware(e *quota.Engine, auditLogger *audit.Logger) func(http.Handler) http.Handler {
+//
+// events announces a denial as a "quota.exceeded" webhook event, at most once
+// per limit per minute (see quotaEvents); nil announces nothing. Neither the
+// audit row nor the event has a say in who is refused.
+func buildQuotaMiddleware(e *quota.Engine, auditLogger *audit.Logger, events *quotaEvents) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if e == nil {
@@ -57,6 +61,8 @@ func buildQuotaMiddleware(e *quota.Engine, auditLogger *audit.Logger) func(http.
 					}),
 				})
 			}
+
+			events.denied(ctx, who, dec)
 
 			// Write 429.
 			if dec.RetryAfter > 0 {

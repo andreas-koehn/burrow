@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -878,5 +879,62 @@ func TestCheckBudgets_ReadsUsageOnce(t *testing.T) {
 	}
 	if usage.count() != 1 {
 		t.Fatalf("usage read %d times, want 1", usage.count())
+	}
+}
+
+// The budget.exceeded payload names the subject under its own field for the
+// gateway scopes and carries the token figures for every scope.
+func TestBudgetExceededPayload(t *testing.T) {
+	ctx := context.Background()
+	fire := func(b db.Budget, subj cost.Subjects, row db.UsageRow) map[string]any {
+		t.Helper()
+		row.PricedTokensIn, row.PricedTokensOut = row.TokensIn, row.TokensOut
+		disp := &fakeDispatcher{}
+		e := cost.NewWithDeps(routePricing(), &fakeBudgetStore{budgets: []db.Budget{b}},
+			&rawUsageReader{rows: []db.UsageRow{row}}, fakeDailyReader{}, nil, nil, disp, nil)
+		if _, _, err := e.CheckBudgets(ctx, subj); err != nil {
+			t.Fatal(err)
+		}
+		if disp.count() != 1 || disp.events[0].event != "budget.exceeded" {
+			t.Fatalf("budget %s: events = %+v", b.ID, disp.events)
+		}
+		return disp.events[0].payload.(map[string]any)
+	}
+	keys := func(p map[string]any) string {
+		ks := make([]string, 0, len(p))
+		for k := range p {
+			ks = append(ks, k)
+		}
+		sort.Strings(ks)
+		return strings.Join(ks, ",")
+	}
+	row := db.UsageRow{ServiceID: "svc-A", GatewayKeyID: "gk1", RequestedModel: "burrow-smart", Kind: "openai",
+		ProviderSlug: "zai", TargetModel: "glm-5.1", TokensIn: 700, TokensOut: 500}
+
+	p := fire(db.Budget{ID: "b-key", Scope: "gateway_key", SubjectID: "gk1", DailyTokens: 1000, ActionOnExceed: "alert_webhook"},
+		cost.Subjects{GatewayKeyID: "gk1"}, row)
+	if p["gateway_key_id"] != "gk1" || p["daily_tokens"] != int64(1000) || p["current_tokens"] != int64(1200) || p["subject_id"] != "gk1" {
+		t.Errorf("gateway_key payload = %+v", p)
+	}
+	if _, ok := p["model"]; ok {
+		t.Errorf("gateway_key payload names a model: %+v", p)
+	}
+
+	p = fire(db.Budget{ID: "b-model", Scope: "model", SubjectID: "burrow-smart", DailyTokens: 1000, ActionOnExceed: "throttle_zero"},
+		cost.Subjects{Model: "burrow-smart"}, row)
+	if p["model"] != "burrow-smart" || p["current_tokens"] != int64(1200) {
+		t.Errorf("model payload = %+v", p)
+	}
+	if _, ok := p["gateway_key_id"]; ok {
+		t.Errorf("model payload names a gateway key: %+v", p)
+	}
+
+	p = fire(db.Budget{ID: "b-svc", Scope: "service", SubjectID: "svc-A", DailyUSD: 0.000001, ActionOnExceed: "alert_webhook"},
+		cost.Subjects{ServiceID: "svc-A"}, row)
+	if got, want := keys(p), "action_on_exceed,budget_id,current_tokens,current_usd,daily_tokens,daily_usd,scope,subject_id"; got != want {
+		t.Errorf("service payload keys = %s, want %s", got, want)
+	}
+	if p["daily_tokens"] != int64(0) || p["current_tokens"] != int64(1200) || p["scope"] != "service" {
+		t.Errorf("service payload = %+v", p)
 	}
 }

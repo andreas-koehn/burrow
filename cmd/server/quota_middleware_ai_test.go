@@ -58,7 +58,7 @@ func TestQuotaMiddleware_DenialShape(t *testing.T) {
 		if err := e.Reload(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		h := buildQuotaMiddleware(e, nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		h := buildQuotaMiddleware(e, nil, nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 		ctx = quota.WithSubjects(ctx, quota.Subjects{ServiceID: "svc1", APIKeyID: "key-1"})
 		var rec *httptest.ResponseRecorder
 		for range 2 { // the first call uses up the burst
@@ -116,7 +116,7 @@ func TestQuotaMiddleware_GatewayKeysAreCountedSeparately(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	c.RateLimit = buildQuotaMiddleware(e, nil)
+	c.RateLimit = buildQuotaMiddleware(e, nil, nil)
 	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	do := func(keyID string) int {
 		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))

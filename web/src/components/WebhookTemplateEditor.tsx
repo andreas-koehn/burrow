@@ -57,9 +57,12 @@ const SAMPLE_FIELDS: Record<string, Record<string, unknown>> = {
     token_name: "office-box-1",
   },
   "quota.exceeded": {
-    service_id: "svc_ai001",
+    scope: "service",
+    subject: "svc_ai001",
     dimension: "rpm",
     limit: 100,
+    window: "minute",
+    service_id: "svc_ai001",
   },
   "budget.exceeded": {
     budget_id: "bdg_ci",
@@ -67,6 +70,9 @@ const SAMPLE_FIELDS: Record<string, Record<string, unknown>> = {
     subject_id: "sak_ci01",
     daily_usd: 10,
     current_usd: 10.5,
+    daily_tokens: 0,
+    current_tokens: 184200,
+    action_on_exceed: "alert_webhook",
   },
   "redaction.applied": {
     service_id: "svc_ai001",

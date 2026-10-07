@@ -490,7 +490,7 @@ func bootE2EStack(t *testing.T, opts ...bootE2EStackOption) *e2eStack {
 		// making requests.
 		qe := quota.New(db.Wrap(d))
 		s.quotaEngine = qe
-		aiChain.RateLimit = buildQuotaMiddleware(qe, nil)
+		aiChain.RateLimit = buildQuotaMiddleware(qe, nil, nil)
 	}
 	proxyOpts := []proxy.Option{
 		proxy.WithGate(gate),

@@ -554,3 +554,32 @@ func TestDayQuota_GatewayKeyAndModel(t *testing.T) {
 		t.Fatalf("a failed usage read denied the request: %+v", d)
 	}
 }
+
+// A denial names the limit that refused it: subject, dimension, cap and window.
+func TestDenialDescribesTheLimit(t *testing.T) {
+	e := newEngine(t, []db.RateLimit{
+		{ID: "rm", Scope: ScopeGatewayKey, Subject: "gk1", Dimension: DimensionRPM, Lim: 7, Burst: 1, Window: WindowMinute},
+	})
+	who := Subjects{GatewayKeyID: "gk1", ServiceID: "svc"}
+	if d := e.Charge(context.Background(), who, DimensionRPM, 1); !d.Allow {
+		t.Fatal("first charge denied")
+	}
+	d := e.Charge(context.Background(), who, DimensionRPM, 1)
+	if d.Allow || d.LimitingSubject != "gk1" || d.Dimension != DimensionRPM || d.Limit != 7 || d.Window != WindowMinute {
+		t.Fatalf("minute denial = %+v", d)
+	}
+
+	store := &fakeLimitStore{rows: []db.RateLimit{{
+		ID: "rd", Scope: ScopeAPIKey, Subject: "k1", Dimension: DimensionBPM, Lim: 1000, Burst: 1000, Window: WindowDay,
+	}}}
+	usage := &fakeDailyUsage{bytesByKey: map[string]int64{"k1": 1000}, bytesBySvc: map[string]int64{},
+		countByKey: map[string]int64{}, countBySvc: map[string]int64{}}
+	e = NewWithStores(store, usage)
+	if err := e.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	d = e.Charge(context.Background(), Subjects{APIKeyID: "k1"}, DimensionBPM, 1)
+	if d.Allow || d.LimitingSubject != "k1" || d.Dimension != DimensionBPM || d.Limit != 1000 || d.Window != WindowDay {
+		t.Fatalf("day denial = %+v", d)
+	}
+}

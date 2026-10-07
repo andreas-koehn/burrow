@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 )
@@ -179,7 +180,43 @@ func (d Deps) PutServiceAIConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "save ai config failed")
 		return
 	}
+	if d.AuditAppender != nil {
+		lc := audit.LogContextFrom(r.Context())
+		_ = d.AuditAppender.Append(r.Context(), audit.Event{
+			ActorID: lc.ActorID, ActorEmail: lc.ActorEmail,
+			Action:    audit.ActionServiceAIConfigUpdate,
+			SubjectID: serviceID,
+			Result:    "ok",
+			SourceIP:  lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
+			Payload: audit.MustJSON(aiConfigSections(outer)),
+		})
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// aiConfigSections says which sections of a service's AI configuration are
+// switched on, for the audit entry of a write. It carries the flags only:
+// what a section holds (patterns, addresses, limits) stays out of the log.
+// A section that is missing, null or not an object counts as off, as it does
+// for the chain.
+func aiConfigSections(outer map[string]json.RawMessage) map[string]bool {
+	enabled := func(raw json.RawMessage) bool {
+		var s struct {
+			Enabled bool `json:"enabled"`
+		}
+		return json.Unmarshal(raw, &s) == nil && s.Enabled
+	}
+	out := map[string]bool{"semantic": false}
+	for _, name := range []string{"cache", "redaction", "guardrails", "inspector", "anthropic"} {
+		out[name] = enabled(outer[name])
+	}
+	var cache struct {
+		Semantic json.RawMessage `json:"semantic"`
+	}
+	if json.Unmarshal(outer["cache"], &cache) == nil {
+		out["semantic"] = enabled(cache.Semantic)
+	}
+	return out
 }
 
 // GetServiceAIConfig handles GET /api/v1/services/{serviceID}/ai-config.

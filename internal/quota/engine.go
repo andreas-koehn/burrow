@@ -118,6 +118,12 @@ type Decision struct {
 	RetryAfter    int    // seconds until the bucket admits another request
 	LimitingScope string // scope of the most-restrictive rule that denied
 	LimitingID    string // the rate_limits.id of the deciding rule (debugging/audit)
+	// LimitingSubject, Dimension, Limit and Window describe the deciding
+	// rule for whoever announces the denial; they are empty on allow.
+	LimitingSubject string
+	Dimension       string
+	Limit           int
+	Window          string
 	// Kind is "rate_limit" for window=minute denials and "quota" for window=day
 	// denials. Callers use this to pick the right JSON body shape (the spec
 	// uses different bodies for the two — see 429BodyRateLimit /
@@ -126,6 +132,12 @@ type Decision struct {
 	// ResetAt is populated only for window=day (quota) denials, giving the
 	// next UTC midnight. Zero for rate_limit denials.
 	ResetAt time.Time
+}
+
+// describe records the rule that denied.
+func (d *Decision) describe(l Limit, window string) {
+	d.LimitingScope, d.LimitingID = l.Scope, l.ID
+	d.LimitingSubject, d.Dimension, d.Limit, d.Window = l.Subject, l.Dimension, l.Limit, window
 }
 
 // bucketKey is the internal sync.Map key for one live bucket.
@@ -389,8 +401,7 @@ func (e *Engine) Charge(ctx context.Context, who Subjects, dim string, units int
 	var denied *Decision
 	for _, m := range minuteMatches {
 		if d := preCheckMinute(m.b, int64(units), e.now); !d.Allow {
-			d.LimitingScope = m.lim.Scope
-			d.LimitingID = m.lim.ID
+			d.describe(m.lim, WindowMinute)
 			d.Kind = "rate_limit"
 			// Most restrictive = longest RetryAfter wins; ties broken by
 			// scope precedence (api_key > service > role > global) to keep
@@ -411,8 +422,7 @@ func (e *Engine) Charge(ctx context.Context, who Subjects, dim string, units int
 	for _, l := range dayMatches {
 		d := e.checkDayQuota(ctx, l, who, units)
 		if !d.Allow {
-			d.LimitingScope = l.Scope
-			d.LimitingID = l.ID
+			d.describe(l, WindowDay)
 			d.Kind = "quota"
 			if denied == nil || d.RetryAfter > denied.RetryAfter {
 				dc := d
