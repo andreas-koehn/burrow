@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/ankoehn/burrow/internal/httpduplex"
 	"log/slog"
 	"net"
 	"net/http"
@@ -250,6 +251,13 @@ func NewUpstream(cfg Config, v Vault, rt http.RoundTripper, writeErr ErrorWriter
 			writeErr(w, http.StatusBadRequest, "invalid_path", "the path must not contain . or .. segments")
 			return
 		}
-		proxy.ServeHTTP(w, r)
+		// A caller may hand over the server's own, unbuffered request body.
+		// Go's HTTP/1 server consumes what is left of it when the response
+		// headers are written; a provider that answers before it has read
+		// the body would then get a short one, lose its connection, and the
+		// client a truncated response. Full duplex keeps the body readable;
+		// httpduplex also keeps the transport's reads of the body from
+		// outliving this handler.
+		httpduplex.Serve(w, r, proxy)
 	}), nil
 }

@@ -281,6 +281,22 @@ describe("Cost & budgets (§4.24)", () => {
     expect(screen.queryByRole("button", { name: "New budget" })).toBeNull();
   });
 
+  it("says why the spend tiles are empty when /cost/summary is refused", async () => {
+    server.use(http.get("/api/v1/cost/summary", () => HttpResponse.json({ error: "quotas:read:any required" }, { status: 403 })));
+    mount();
+    const note = await screen.findByRole("note");
+    expect(note).toHaveTextContent("You can't view cost data: the spend totals need the quotas:read:any permission.");
+    // The tiles stay, with a dash each.
+    const strip = screen.getByRole("list", { name: /spend by window/i });
+    expect(within(strip).getAllByText("—").length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("shows no such note while cost data loads fine", async () => {
+    mount();
+    expect(await screen.findByRole("table", { name: "Usage by model" })).toBeInTheDocument();
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
   it("shows a non-admin the cost view without budgets or write controls", async () => {
     db.me = { ...db.me, role: "user" };
     mount();

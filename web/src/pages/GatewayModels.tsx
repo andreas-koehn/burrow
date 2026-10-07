@@ -141,11 +141,11 @@ export default function GatewayModels() {
             <table className="data" aria-label="Models">
               <thead>
                 <tr>
-                  <th>Name</th>
-                  <th>OpenAI format</th>
-                  <th>Anthropic format</th>
-                  <th>Status</th>
-                  {canWrite && <th className="col-actions" aria-label="Actions"></th>}
+                  <th scope="col">Name</th>
+                  <th scope="col">OpenAI format</th>
+                  <th scope="col">Anthropic format</th>
+                  <th scope="col">Status</th>
+                  {canWrite && <th scope="col" className="col-actions" aria-label="Actions"></th>}
                 </tr>
               </thead>
               <tbody>

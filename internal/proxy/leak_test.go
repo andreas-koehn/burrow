@@ -161,7 +161,10 @@ func TestProxy_ClosesTheStreamOfEachAnsweredRequest(t *testing.T) {
 			if opened != n+16 || closed != opened {
 				t.Fatalf("%d streams were opened and %d closed", opened, closed)
 			}
-			deadline := time.Now().Add(5 * time.Second)
+			// The goroutines of the last requests end a moment after their
+			// streams are closed; on a busy machine that moment can be long.
+			// The wait ends as soon as they are gone.
+			deadline := time.Now().Add(30 * time.Second)
 			for runtime.NumGoroutine() > before+2 && time.Now().Before(deadline) {
 				time.Sleep(10 * time.Millisecond)
 			}

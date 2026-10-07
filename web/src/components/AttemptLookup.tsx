@@ -78,6 +78,8 @@ export function AttemptLookup() {
         <Button type="submit" variant="secondary" disabled={text.trim() === "" || attempts.isFetching}>Look up</Button>
       </form>
 
+      {/* What a lookup found is said to a screen reader when it arrives. */}
+      <div aria-live="polite">
       {id === "" ? null : attempts.isFetching ? (
         <div className="table-wrap skel-pad" aria-busy="true">
           <SkeletonRows n={2} />
@@ -101,10 +103,10 @@ export function AttemptLookup() {
           <table className="data" aria-label={`Attempts of request ${id}`}>
             <thead>
               <tr>
-                <th>Order</th>
-                <th>Target</th>
-                <th>Result</th>
-                <th>Duration</th>
+                <th scope="col">Order</th>
+                <th scope="col">Target</th>
+                <th scope="col">Result</th>
+                <th scope="col">Duration</th>
               </tr>
             </thead>
             <tbody>
@@ -120,6 +122,7 @@ export function AttemptLookup() {
           </table>
         </div>
       )}
+      </div>
     </section>
   );
 }

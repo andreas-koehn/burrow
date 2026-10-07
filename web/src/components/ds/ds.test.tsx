@@ -137,6 +137,45 @@ describe("ds primitives", () => {
     expect(fn).toHaveBeenCalledWith("b");
     expect(screen.queryByRole("listbox")).toBeNull();
   });
+  it("Select is operated with the keyboard alone", async () => {
+    const fn = vi.fn();
+    const user = userEvent.setup();
+    const three = [...SCOPES, { value: "c", label: "Gamma" }];
+    render(<Select options={three} value="a" onChange={fn} />);
+    const trigger = screen.getByRole("button");
+    trigger.focus();
+    // Arrow down opens the list on the chosen option; focus stays on the trigger.
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    const active = () => document.getElementById(trigger.getAttribute("aria-activedescendant") ?? "");
+    expect(active()).toHaveTextContent("Alpha");
+    await user.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}");
+    expect(active()).toHaveTextContent("Gamma"); // stops at the end
+    await user.keyboard("{Home}");
+    expect(active()).toHaveTextContent("Alpha");
+    await user.keyboard("{End}{ArrowUp}");
+    expect(active()).toHaveTextContent("Beta");
+    expect(active()?.className).toContain("is-focus");
+    await user.keyboard("{Enter}");
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledWith("b");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(trigger).toHaveFocus();
+    expect(trigger).not.toHaveAttribute("aria-activedescendant");
+    // Enter opens it, Space chooses, Escape closes without choosing.
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+    await user.keyboard("{ArrowDown}{ArrowDown} ");
+    expect(fn).toHaveBeenLastCalledWith("c");
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(trigger).toHaveFocus();
+  });
+
   // The list lives on <body>: without this, focus would drop to <body> and
   // the next Tab would leave the dialog the Select sits in.
   it("Select keeps focus on its trigger when an option is chosen", () => {

@@ -25,7 +25,11 @@ import (
 type recObserver struct {
 	delay time.Duration
 
-	mu     sync.Mutex
+	mu sync.Mutex
+	// gate, when set, holds every call until it is closed: an observer that
+	// is stuck, for as long as the test says and not for as long as a sleep
+	// happens to last on a busy machine.
+	gate   chan struct{}
 	events []string
 	regs   []RegisteredTunnel
 	rtts   []time.Duration
@@ -34,7 +38,23 @@ type recObserver struct {
 	reqAt  []time.Time
 }
 
+// hold makes every following call wait until the returned function is called.
+func (r *recObserver) hold() (release func()) {
+	gate := make(chan struct{})
+	r.mu.Lock()
+	r.gate = gate
+	r.mu.Unlock()
+	var once sync.Once
+	return func() { once.Do(func() { close(gate) }) }
+}
+
 func (r *recObserver) add(e string, f func()) {
+	r.mu.Lock()
+	gate := r.gate
+	r.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
 	if r.delay > 0 {
 		time.Sleep(r.delay)
 	}
@@ -491,13 +511,16 @@ func TestNotifier_NeverBlocksAndKeepsTheNewest(t *testing.T) {
 			n.emit(func(Observer) { mu.Lock(); got = append(got, i); mu.Unlock() })
 		}
 	}()
+	// The observer hangs on a channel, so a blocked emit never returns: the
+	// limits here only tell "never" from "slowly", and a busy machine under
+	// the race detector is slow.
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(time.Minute):
 		t.Fatal("emit blocked behind an observer that does not return")
 	}
 	close(release)
-	if !waitTrue(func() bool { mu.Lock(); defer mu.Unlock(); return len(got) > 0 && got[len(got)-1] == 4999 }, 3*time.Second) {
+	if !waitTrue(func() bool { mu.Lock(); defer mu.Unlock(); return len(got) > 0 && got[len(got)-1] == 4999 }, time.Minute) {
 		t.Fatal("the newest event was not delivered")
 	}
 	mu.Lock()

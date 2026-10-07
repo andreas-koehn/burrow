@@ -3,6 +3,7 @@ package redact
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -220,15 +221,25 @@ func TestDeterministicRuleOrder(t *testing.T) {
 	}
 }
 
-// TestPresidioTimeoutShortCircuits stands up an httptest server that sleeps
-// 300ms before responding. The PresidioClient must time out at its 250ms hard
+// TestPresidioTimeoutShortCircuits stands up an httptest server that takes
+// five seconds to respond. The PresidioClient must time out at its 250ms hard
 // cap and return a context-deadline error (the caller maps this to 503
 // redaction.presidio_unavailable; this test only validates the engine-side
 // timeout — the JSON 503 mapping is the caller's responsibility, exercised
 // in Task 10).
 func TestPresidioTimeoutShortCircuits(t *testing.T) {
+	const serverDelay = 5 * time.Second
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(300 * time.Millisecond)
+		// Far longer than the client's cap, so that "gave up at the cap" and
+		// "waited for the answer" stay apart on a busy machine. The handler
+		// ends as soon as the client has hung up (the server notices that
+		// once the request body has been read).
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(serverDelay):
+		}
 		_, _ = w.Write([]byte(`{"results":[]}`))
 	}))
 	defer srv.Close()
@@ -244,9 +255,9 @@ func TestPresidioTimeoutShortCircuits(t *testing.T) {
 		!strings.Contains(err.Error(), "context deadline") {
 		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
 	}
-	// Some scheduling slack; we just want to confirm we did NOT wait for the
-	// full 300ms server delay.
-	if elapsed >= 290*time.Millisecond {
+	// Wide scheduling slack; we just want to confirm we did NOT wait for the
+	// server's answer.
+	if elapsed >= serverDelay-time.Second {
 		t.Fatalf("Analyze did not short-circuit at 250ms: elapsed=%v", elapsed)
 	}
 }

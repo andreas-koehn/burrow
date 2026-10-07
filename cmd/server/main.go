@@ -31,6 +31,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/acme"
 	"github.com/ankoehn/burrow/internal/aigateway"
+	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/api"
 	"github.com/ankoehn/burrow/internal/config"
@@ -766,8 +767,10 @@ func newRootCmd() *cobra.Command {
 				}
 				proxyOpts = append(proxyOpts, proxy.WithTLSBase(proxyTLSCfg))
 			}
+			// The proxy's doors do not know a gateway-only service, by slug
+			// or by service id; the AI gateway below keeps the plain adapter.
 			proxyHandler := proxy.New(
-				proxyDialerAdapter{st: st, srv: srv},
+				ingressDialerAdapter{proxyDialerAdapter{st: st, srv: srv}},
 				accessChecker,
 				proxyAuthDomain,
 				log,
@@ -776,49 +779,27 @@ func newRootCmd() *cobra.Command {
 			// One transport for all direct AI providers: it carries the
 			// address guard and the connection pool, never a credential.
 			aiUpstreamTransport := aiprovider.NewTransport(cfg.AIAllowPrivateUpstreams)
-			// The /ai/ data plane shares the proxy's dialer, AI chain and
-			// IP/geo policy. A nil chain must stay a nil interface.
 			// One breaker for the relay; the status API reads its state.
 			aiBreaker := aigateway.NewBreaker()
 			// One limiter for the relay: every door to a provider shares its
 			// places, and the provider API reads how many are taken.
 			aiLimiter := aigateway.NewLimiter()
-			aiGateway := &aigateway.Gateway{
-				Providers:  st,
-				Keys:       st,
+			// The /ai/ data plane shares the proxy's dialer, AI chain and
+			// IP/geo policy.
+			aiGateway := newAIGateway(aiGatewayParts{
+				Store:      st,
 				Tunnels:    proxyDialerAdapter{st: st, srv: srv},
+				Chain:      v04.AIChain,
+				Vault:      v05.CredVault,
+				Upstream:   aiUpstreamTransport,
+				CostEngine: v04.CostEngine,
+				BudgetTTL:  15 * time.Second,
+				Breaker:    aiBreaker,
+				Limiter:    aiLimiter,
 				IPGeoDeny:  proxyHandler.IPGeoDenied,
 				PublicHost: proxyAuthDomain,
 				Log:        log,
-				// Direct providers: the upstream credential comes from the
-				// env vault, the policy from the backing service's rows.
-				// GET /v1/models answers from the stored catalog when it has entries.
-				Models:        st,
-				Direct:        aigateway.DirectUpstreams(v05.CredVault, aiUpstreamTransport),
-				ServicePolicy: directServicePolicy(st),
-				// The dialect endpoints (/openai/v1, /ai/v1): gateway keys,
-				// synthetic models and the model list.
-				GatewayKeys: st,
-				Synthetic:   st,
-				Catalog:     st,
-				// Fallback chains: a failing provider is skipped for a while,
-				// and what a request tried is logged.
-				Breaker:  aiBreaker,
-				Attempts: st,
-				Limiter:  aiLimiter,
-			}
-			if v04.AIChain != nil {
-				aiGateway.Chain = v04.AIChain
-			}
-			if v04.CostEngine != nil {
-				// Hard budgets stop requests at the gateway: a gateway key or
-				// a model over a throttle_zero / disable_key budget gets 429
-				// before any upstream is called. A typed nil must not become
-				// a non-nil interface, hence the check. disable_key on a
-				// gateway_key budget also revokes the key.
-				v04.CostEngine.SetGatewayKeyRevoker(st)
-				aiGateway.Budgets = cost.NewGuard(v04.CostEngine, 15*time.Second)
-			}
+			})
 			if proxyTLSCfg != nil {
 				// Wire GetConfigForClient so mTLS services get a per-vhost
 				// TLS config with ClientCAs + RequireAndVerifyClientCert at
@@ -1254,6 +1235,75 @@ func newRootCmd() *cobra.Command {
 	})
 
 	return root
+}
+
+// aiGatewayParts is what the /ai/ data plane is assembled from.
+type aiGatewayParts struct {
+	Store *store.Store
+	// Tunnels reaches the tunnels of tunnel providers. It must resolve a
+	// gateway-only service: the plain proxyDialerAdapter, not the proxy's
+	// ingressDialerAdapter.
+	Tunnels aigateway.TunnelDialer
+	// Chain is the AI chain; nil = requests go to the upstream directly.
+	Chain *aigw.Chain
+	// Vault holds the upstream credentials of direct providers.
+	Vault aiprovider.Vault
+	// Upstream is the transport used for direct providers: it carries the
+	// address guard and the connection pool, never a credential. Tests inject
+	// one that reaches local test servers.
+	Upstream http.RoundTripper
+	// CostEngine enforces hard budgets; nil = no enforcement. BudgetTTL is
+	// how long a budget verdict is reused.
+	CostEngine *cost.Engine
+	BudgetTTL  time.Duration
+	Breaker    *aigateway.Breaker
+	Limiter    *aigateway.Limiter
+	IPGeoDeny  func(*proxy.Resolved, *http.Request) bool
+	PublicHost string
+	Log        *slog.Logger
+}
+
+// newAIGateway assembles the /ai/ data plane: /ai/<provider>/ and the dialect
+// endpoints (/openai/v1, /ai/v1, /anthropic).
+func newAIGateway(p aiGatewayParts) *aigateway.Gateway {
+	g := &aigateway.Gateway{
+		Providers:  p.Store,
+		Keys:       p.Store,
+		Tunnels:    p.Tunnels,
+		IPGeoDeny:  p.IPGeoDeny,
+		PublicHost: p.PublicHost,
+		Log:        p.Log,
+		// Direct providers: the upstream credential comes from the
+		// env vault, the policy from the backing service's rows.
+		// GET /v1/models answers from the stored catalog when it has entries.
+		Models:        p.Store,
+		Direct:        aigateway.DirectUpstreams(p.Vault, p.Upstream),
+		ServicePolicy: directServicePolicy(p.Store),
+		// The dialect endpoints (/openai/v1, /ai/v1, /anthropic): gateway
+		// keys, synthetic models and the model list.
+		GatewayKeys: p.Store,
+		Synthetic:   p.Store,
+		Catalog:     p.Store,
+		// Fallback chains: a failing provider is skipped for a while,
+		// and what a request tried is logged.
+		Breaker:  p.Breaker,
+		Attempts: p.Store,
+		Limiter:  p.Limiter,
+	}
+	// A nil chain must stay a nil interface.
+	if p.Chain != nil {
+		g.Chain = p.Chain
+	}
+	if p.CostEngine != nil {
+		// Hard budgets stop requests at the gateway: a gateway key or
+		// a model over a throttle_zero / disable_key budget gets 429
+		// before any upstream is called. A typed nil must not become
+		// a non-nil interface, hence the check. disable_key on a
+		// gateway_key budget also revokes the key.
+		p.CostEngine.SetGatewayKeyRevoker(p.Store)
+		g.Budgets = cost.NewGuard(p.CostEngine, p.BudgetTTL)
+	}
+	return g
 }
 
 // proxyConnLogAdapter bridges the proxy.ConnLogSink interface (which is

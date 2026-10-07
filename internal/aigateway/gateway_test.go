@@ -346,17 +346,8 @@ func TestServe_StreamsWithoutBuffering(t *testing.T) {
 		addr: up.Listener.Addr().String(),
 	}
 	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Hand the gateway a buffered body. With the server's own body the
-		// forward to the upstream races the server: once response headers
-		// are written it closes the request body, the transport's last read
-		// of it then fails ("invalid Read on closed Body") and the upstream
-		// connection is dropped mid-stream. That race is about the request
-		// body and is not what this test is about.
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request body: %v", err)
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
+		// The server's own, unbuffered request body: the gateway keeps it
+		// readable while the response streams (full duplex).
 		g.Serve(w, r, "ollama")
 	}))
 	defer front.Close()

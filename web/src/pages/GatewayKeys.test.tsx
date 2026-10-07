@@ -52,6 +52,24 @@ describe("Gateway keys page", () => {
     setItem.mockRestore();
   });
 
+  it("says so when the key could not be copied, instead of claiming it was", async () => {
+    mount();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "New key" }));
+    const dialog = await screen.findByRole("dialog", { name: "New gateway key" });
+    await user.type(within(dialog).getByLabelText("Name"), "laptop-4");
+    await user.click(within(dialog).getByRole("button", { name: "Create key" }));
+    await screen.findByLabelText("Your new key");
+    // The browser refuses the write (no permission, or a page without TLS).
+    const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    await user.click(screen.getByRole("button", { name: "Copy key" }));
+    expect(await screen.findByText("Couldn't copy. Select the text and copy it yourself.")).toBeInTheDocument();
+    expect(screen.queryByText("Copied.")).toBeNull();
+    // The key is still there to be copied by hand.
+    expect((screen.getByLabelText("Your new key") as HTMLInputElement).value).toMatch(/^bgw_/);
+  });
+
   it("drops the key when the dialog is closed any other way", async () => {
     mount();
     await userEvent.click(await screen.findByRole("button", { name: "New key" }));
@@ -130,7 +148,9 @@ describe("Gateway keys page", () => {
     expect(within(mine).getByText("active")).toBeInTheDocument();
     expect(within(mine).getByText("you")).toBeInTheDocument();
     const bobs = within(table).getByRole("row", { name: /bobs-ci/ });
-    expect(within(bobs).getByText("2 entries")).toHaveAttribute("title", "burrow-simple, ollama/*");
+    // The names are a tooltip for a pointer and text for a screen reader.
+    const entries = within(bobs).getByTitle("burrow-simple, ollama/*");
+    expect(entries).toHaveTextContent("2 entries: burrow-simple, ollama/*");
     expect(within(bobs).getByText("bur_usr_bob0002")).toBeInTheDocument();
   });
 

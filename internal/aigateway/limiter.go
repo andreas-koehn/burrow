@@ -105,6 +105,31 @@ func (l *Limiter) Acquire(ctx context.Context, key string, max int) (release fun
 	}
 }
 
+// TryAcquire takes a place at key when one is free and nobody waits for it,
+// without waiting and whatever any deadline says. max <= 0 means unlimited,
+// as for Acquire. When ok, release must be called when the request is over.
+func (l *Limiter) TryAcquire(key string, max int) (release func(), ok bool) {
+	if max <= 0 {
+		return l.Acquire(context.Background(), key, max)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := l.state[key]
+	if s == nil {
+		s = &limitState{}
+		l.state[key] = s
+	}
+	// A raised limit lets waiters in before this request, which came later.
+	s.max = max
+	s.grant()
+	if len(s.waiters) == 0 && s.inUse < max {
+		s.inUse++
+		return l.releaser(key), true
+	}
+	l.drop(key, s)
+	return nil, false
+}
+
 // grant hands free places to waiters, in order. Called with Limiter.mu held.
 func (s *limitState) grant() {
 	for len(s.waiters) > 0 && (s.max <= 0 || s.inUse < s.max) {

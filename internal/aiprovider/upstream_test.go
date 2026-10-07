@@ -516,14 +516,15 @@ func TestUpstream_TransportFailures(t *testing.T) {
 	}
 }
 
-// within fails the test if fn has not returned after five seconds.
+// within fails the test if fn has not returned after thirty seconds: a guard
+// against "never", wide enough for a loaded machine.
 func within(t *testing.T, what string, fn func()) {
 	t.Helper()
 	done := make(chan struct{})
 	go func() { defer close(done); fn() }()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatalf("timed out: %s", what)
 	}
 }
@@ -532,10 +533,32 @@ func within(t *testing.T, what string, fn func()) {
 // the response open, and a stream that runs past the response-header timeout
 // must not be cut.
 func TestUpstream_FlushesAndOutlivesHeaderTimeout(t *testing.T) {
-	// Long enough that a loaded machine still gets the headers in time; the
-	// test then waits past it once.
-	const headerTimeout = time.Second
+	// The response headers must arrive within the header timeout, and the
+	// stream must then run past it. One second is plenty on an idle machine;
+	// on a loaded one the headers themselves can take longer, which says
+	// nothing about the stream. Such a run is repeated with more time. A run
+	// counts only when the headers arrived and the stream outlived the
+	// timeout it ran under.
+	for _, headerTimeout := range []time.Duration{time.Second, 5 * time.Second, 20 * time.Second} {
+		if streamOutlivesHeaderTimeout(t, headerTimeout) {
+			return
+		}
+		t.Logf("the response headers did not arrive within %v on this machine; trying with more time", headerTimeout)
+	}
+	t.Fatal("the response headers never arrived in time")
+}
+
+// streamOutlivesHeaderTimeout runs one streamed call through a transport with
+// the given response-header timeout. It reports false when the headers did
+// not arrive within that time (nothing was shown); it fails the test when
+// they did and the first chunk was held back or the stream was cut.
+func streamOutlivesHeaderTimeout(t *testing.T, headerTimeout time.Duration) bool {
+	t.Helper()
+	logged := captureLog(t)
 	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
 	h := realPair(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: one\n\n"))
@@ -548,25 +571,85 @@ func TestUpstream_FlushesAndOutlivesHeaderTimeout(t *testing.T) {
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}, true, func(tr *http.Transport) { tr.ResponseHeaderTimeout = headerTimeout })
 	front := httptest.NewServer(h)
-	t.Cleanup(front.Close)
+	defer front.Close()
 
 	resp, err := front.Client().Post(front.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusBadGateway && strings.Contains(logged.String(), "reason=timeout") {
+		return false // the header timeout fired before the headers came
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, log = %q", resp.StatusCode, logged.String())
+	}
+	// From here the header timeout's clock has certainly started.
+	headersAt := time.Now()
 	br := bufio.NewReader(resp.Body)
 	var first string
 	within(t, "first chunk before the upstream finished", func() { first, _ = br.ReadString('\n') })
 	if first != "data: one\n" {
 		t.Fatalf("first chunk = %q", first)
 	}
-	time.Sleep(headerTimeout + 250*time.Millisecond)
-	close(release)
+	// Hold the stream open until the header timeout has certainly passed.
+	time.Sleep(time.Until(headersAt.Add(headerTimeout + 250*time.Millisecond)))
+	unblock()
 	var rest []byte
 	within(t, "rest of the stream", func() { rest, err = io.ReadAll(br) })
 	if err != nil || !strings.Contains(string(rest), "[DONE]") {
 		t.Fatalf("rest = %q, err = %v", rest, err)
+	}
+	return true
+}
+
+// A provider that answers before it has read the request body still gets all
+// of it, and the client the whole answer, when the handler is given the
+// server's own unbuffered body. Without full duplex Go's HTTP/1 server takes
+// the rest of the body away when the response headers go out: the provider's
+// connection is dropped and the response is cut off after its first chunk
+// (which is how TestUpstream_FlushesAndOutlivesHeaderTimeout used to fail on
+// a loaded machine: rest = "\n", unexpected EOF).
+func TestUpstream_ProviderAnswersBeforeTheBodyIsRead(t *testing.T) {
+	h := realPair(t, func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		_ = rc.EnableFullDuplex()
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "early\n")
+		_ = rc.Flush()
+		n, _ := io.Copy(io.Discard, r.Body)
+		_, _ = fmt.Fprintf(w, "got=%d\n", n)
+	}, true, nil)
+	front := httptest.NewServer(h)
+	t.Cleanup(front.Close)
+
+	half := strings.Repeat("x", 4096)
+	pr, pw := io.Pipe()
+	sawEarly := make(chan struct{})
+	go func() {
+		_, _ = io.WriteString(pw, half)
+		select {
+		case <-sawEarly:
+			_, _ = io.WriteString(pw, half)
+			_ = pw.Close()
+		case <-time.After(20 * time.Second):
+			_ = pw.CloseWithError(errors.New("the response never started"))
+		}
+	}()
+	req, _ := http.NewRequest("POST", front.URL+"/v1/chat/completions", pr)
+	resp, err := front.Client().Do(req)
+	if err != nil {
+		t.Fatalf("the response did not start while the request body was still being sent: %v", err)
+	}
+	defer resp.Body.Close()
+	br := bufio.NewReader(resp.Body)
+	if line, err := br.ReadString('\n'); line != "early\n" {
+		t.Fatalf("first line = %q err = %v (status %d)", line, err, resp.StatusCode)
+	}
+	close(sawEarly)
+	rest, err := io.ReadAll(br)
+	if want := fmt.Sprintf("got=%d\n", 2*len(half)); err != nil || string(rest) != want {
+		t.Fatalf("rest = %q err = %v, want %q", rest, err, want)
 	}
 }
 

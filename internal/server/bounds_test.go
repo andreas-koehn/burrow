@@ -62,7 +62,7 @@ func TestSendControlTimesOutOnStalledPeer(t *testing.T) {
 	var ctrlStream *yamux.Stream
 	select {
 	case ctrlStream = <-streamCh:
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("server never accepted stream")
 	}
 
@@ -73,33 +73,46 @@ func TestSendControlTimesOutOnStalledPeer(t *testing.T) {
 	// The client peer never reads. Send messages in a loop until the yamux
 	// window / net.Pipe buffer is full and the write blocks; at that point
 	// SendControl must return with an error (the per-write deadline fires).
-	done := make(chan error, 1)
-	start := time.Now()
+	//
+	// Only the call that fails is timed. Filling the window takes thousands
+	// of small writes, and how long those take says nothing about the
+	// deadline (under the race detector on a busy machine: seconds).
+	type result struct {
+		err     error
+		elapsed time.Duration // of the failing call alone
+		sent    int           // calls that succeeded before it
+	}
+	done := make(chan result, 1)
 	go func() {
-		for {
+		for sent := 0; ; sent++ {
+			start := time.Now()
 			err := cs.SendControl(proto.MsgPing, proto.Ping{Nonce: "x"})
 			if err != nil {
-				done <- err
+				done <- result{err: err, elapsed: time.Since(start), sent: sent}
 				return
 			}
 		}
 	}()
 
-	// The write must time out within testTimeout + 2s slop.
-	deadline := testTimeout + 2*time.Second
+	// The blocked write must end within the deadline plus slop for a busy
+	// machine. The slop is generous; what it guards against is "never".
+	const slop = 10 * time.Second
 	select {
-	case err := <-done:
-		elapsed := time.Since(start)
-		if err == nil {
-			t.Fatal("expected SendControl to return error when peer is stalled")
+	case res := <-done:
+		t.Logf("SendControl returned %v after %v, %d writes before it (deadline was %v)",
+			res.err, res.elapsed.Round(time.Millisecond), res.sent, controlWriteTimeout)
+		if res.sent == 0 {
+			t.Fatalf("the first write failed (%v): the peer was never written to", res.err)
 		}
-		t.Logf("SendControl returned %v after %v (deadline was %v)", err, elapsed.Round(time.Millisecond), controlWriteTimeout)
-		// Must not have taken outrageously longer than the deadline.
-		if elapsed > deadline {
-			t.Fatalf("SendControl took %v, expected ≤ %v", elapsed, deadline)
+		// The call ended because of its deadline, not earlier for another reason.
+		if res.elapsed < testTimeout/2 {
+			t.Fatalf("SendControl failed after %v (%v), before its deadline of %v", res.elapsed, res.err, testTimeout)
 		}
-	case <-time.After(deadline + 5*time.Second):
-		t.Fatalf("SendControl did not return within %v — stalled client pinned the caller", deadline+5*time.Second)
+		if res.elapsed > testTimeout+slop {
+			t.Fatalf("the blocked SendControl took %v, expected ≤ %v", res.elapsed, testTimeout+slop)
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatal("SendControl did not return within 2m0s — stalled client pinned the caller")
 	}
 }
 

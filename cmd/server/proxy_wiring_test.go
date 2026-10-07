@@ -1233,8 +1233,17 @@ func TestProxyDialerAdapter_Lookups_GatewayOnlyIsNotFoundAtOnce(t *testing.T) {
 	if st.geoCalls != 0 {
 		t.Errorf("GetServiceIPGeo called %d times after the flag was seen", st.geoCalls)
 	}
-	// The AI gateway shares LookupByServiceID: it must still resolve, flagged,
-	// and the proxy's custom-domain door refuses it by the flag.
+	// The proxy's custom-domain door: the same, by service id. A connected
+	// gateway-only service is not found, and the ip-geo query that would have
+	// failed (and answered 502) is never made.
+	if _, err := (ingressDialerAdapter{a}).LookupByServiceID(context.Background(), "svc-1"); !errors.Is(err, proxy.ErrNotFound) {
+		t.Fatalf("ingress LookupByServiceID err = %v, want ErrNotFound", err)
+	}
+	if st.geoCalls != 0 {
+		t.Errorf("GetServiceIPGeo called %d times by the ingress lookup after the flag was seen", st.geoCalls)
+	}
+	// The AI gateway keeps the plain adapter: there the service must still
+	// resolve, flagged.
 	st.geoErr = nil
 	if res, err := a.LookupByServiceID(context.Background(), "svc-1"); err != nil || !res.GatewayOnly {
 		t.Fatalf("LookupByServiceID: %+v %v", res, err)
@@ -1246,5 +1255,8 @@ func TestProxyDialerAdapter_Lookups_GatewayOnlyIsNotFoundAtOnce(t *testing.T) {
 	st.geoErr = nil
 	if res, err := a.Lookup(context.Background(), "abc123"); err != nil || res.GatewayOnly {
 		t.Fatalf("plain Lookup: %+v %v", res, err)
+	}
+	if res, err := (ingressDialerAdapter{a}).LookupByServiceID(context.Background(), "svc-1"); err != nil || res.GatewayOnly || res.ServiceID != "svc-1" {
+		t.Fatalf("plain ingress LookupByServiceID: %+v %v", res, err)
 	}
 }

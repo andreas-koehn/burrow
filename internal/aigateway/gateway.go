@@ -3,6 +3,7 @@ package aigateway
 import (
 	"context"
 	"errors"
+	"github.com/ankoehn/burrow/internal/httpduplex"
 	"log/slog"
 	"net"
 	"net/http"
@@ -190,7 +191,14 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 	stripCredentials(r)
 
 	if g.Chain == nil {
-		upstream.ServeHTTP(w, r)
+		// Without a chain nothing buffers the body: it goes to the upstream
+		// as it arrives. Go's HTTP/1 server consumes what is left of a
+		// request body when the response headers are written, so an upstream
+		// that answers before it has read the body would get a short one,
+		// lose its connection, and the client a truncated response. Full
+		// duplex keeps the body readable; httpduplex also keeps the
+		// transport's reads of the body from outliving this handler.
+		httpduplex.Serve(w, r, upstream)
 		return
 	}
 	// Only inference calls are metered. A model listing or a health probe
@@ -232,6 +240,15 @@ func (g *Gateway) admit(ctx context.Context, p db.AIProvider, wait time.Duration
 	}
 	if p.MaxConcurrent <= 0 {
 		return g.Limiter.Acquire(ctx, p.Slug, 0) // never waits
+	}
+	if ctx.Err() != nil {
+		return nil, false // the client has left
+	}
+	// A free place is taken whatever is left of wait: wait limits the time in
+	// the queue, and a request that did not queue is not "busy". (A caller
+	// whose own time is up finds that out next and answers as timed out.)
+	if release, ok := g.Limiter.TryAcquire(p.Slug, p.MaxConcurrent); ok {
+		return release, true
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()

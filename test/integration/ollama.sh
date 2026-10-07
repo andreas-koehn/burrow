@@ -229,6 +229,16 @@ check "openai: chat via synthetic model"   "$(curl -s -o /dev/null -w '%{http_co
 check "openai: Burrow-Provider header"     "$(curl -s -D - -o /dev/null -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d "$(chat "global-hdr $RANDOM" 8 burrow-simple)" "$B/openai/v1/chat/completions" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-provider"{print $2}')" "$PROV"
 check "openai: unknown model -> 404"       "$(curl -s -o /dev/null -D - -H "Authorization: Bearer $GWKEY_ALL" -H 'Content-Type: application/json' -d '{"model":"nope"}' "$B/openai/v1/chat/completions" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-error-code"{print $2}')" "model_not_found"
 check "openai: restricted key, other model -> 403" "$(curl -s -o /dev/null -D - -H "Authorization: Bearer $GWKEY" -H 'Content-Type: application/json' -d '{"model":"nope"}' "$B/openai/v1/chat/completions" | tr -d '\r' | awk -F': ' 'tolower($1)=="burrow-error-code"{print $2}')" "model_not_allowed"
+# A gateway key also opens a provider's own path, when it may use the provider.
+# A key held to a synthetic model name is not let in there: allowing the name
+# allows the model on the gateway's endpoints, not the provider's native API.
+check "global: gateway key on provider path"  "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GWKEY_ALL" "$B/ai/$PROV/v1/models")" "200"
+check "global: restricted key on provider path -> 403" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GWKEY" "$B/ai/$PROV/v1/models")" "403"
+check "anthropic: models without key -> 401"  "$(curl -s -o /dev/null -w '%{http_code}' "$B/anthropic/v1/models")" "401"
+check "anthropic: error shape"                "$(curl -s "$B/anthropic/v1/models" | jq -r .type)" "error"
+# The usage row is written behind the response.
+GROUPS_N=""; for _ in $(seq 1 20); do GROUPS_N="$(aget "/api/v1/cost/summary?window=today&group_by=model" | jq -r '[.groups[] | select(.key=="burrow-simple")] | length')"; [ "$GROUPS_N" = "1" ] && break; sleep 1; done
+check "global: usage grouped by model"        "$GROUPS_N" "1"
 
 # --- known defects (XFAIL) ---------------------------------------------------
 # 4. An automation token's declared permission set is not enforced on

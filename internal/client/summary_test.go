@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -225,22 +226,39 @@ func TestClient_UnknownMessageTypeIsIgnoredQuietly(t *testing.T) {
 	}
 }
 
-// 5000 summaries at once, behind an observer that needs a moment for each:
-// the reader of the control stream is not held up (the pong that follows them
-// is read), what waits for the observer stays bounded, and what the view
-// cannot do without — the state and the registrations — is not pushed out by
-// the lines.
+// 5000 summaries at once, behind an observer that is stuck in a call for the
+// whole burst: the reader of the control stream is not held up (the relay can
+// write all of them), what waits for the observer stays bounded, and what the
+// view cannot do without — the state and the registrations — is not pushed out
+// by the lines.
+//
+// The observer is held by a gate, not by a sleep, and nothing is measured
+// against the clock: on a loaded machine the burst may take as long as it
+// takes, the observer is stuck for exactly that long.
 func TestSummaries_BurstBehindASlowObserver(t *testing.T) {
 	r := startRawRelay(t, oldAuthOK, newRegister)
-	obs := &recObserver{delay: 2 * time.Millisecond}
+	obs := &recObserver{}
 	o := r.options(TunnelSpec{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000"})
 	o.Observer, o.RequestSummaries = obs, true
+	logged := &recordingHandler{}
+	o.Logger = slog.New(logged)
 	c := New(o)
 	runUntilDone(t, c)
-	if !waitTrue(func() bool { return c.Registered() && obs.has("latency") }, 3*time.Second) {
+	if !waitTrue(func() bool { return c.Registered() && obs.has("latency") }, 30*time.Second) {
 		t.Fatalf("not ready: %v", obs.snapshot())
 	}
-	start := time.Now()
+	// From here on the observer does not return from a call.
+	release := obs.hold()
+	defer release()
+	// Were the reader waiting for its observer, the relay's writes would
+	// block once the connection's buffers are full, and so would this test.
+	// The watchdog frees the observer then, and the test fails below.
+	var stalled atomic.Bool
+	watchdog := time.AfterFunc(2*time.Minute, func() {
+		stalled.Store(true)
+		release()
+	})
+	defer watchdog.Stop()
 	for i := 0; i < 5000; i++ {
 		r.push(t, proto.MsgRequestSummary, summaryJSON("t-web", "2026-10-05T14:02:11Z", "GET", fmt.Sprintf("/n/%d", i), 200))
 		c.events.mu.Lock()
@@ -250,17 +268,35 @@ func TestSummaries_BurstBehindASlowObserver(t *testing.T) {
 			t.Fatalf("%d calls wait for the observer, the queue holds %d", waiting, maxPendingEvents)
 		}
 	}
-	// The relay could write all of them: the client read them without waiting
-	// for its observer, which needs ten seconds for 5000 calls.
-	if d := time.Since(start); d > 3*time.Second {
-		t.Fatalf("the relay needed %v to hand 5000 summaries to the client", d)
+	// The relay could write all of them while the observer was stuck: the
+	// client read them without waiting for it.
+	watchdog.Stop()
+	if stalled.Load() {
+		t.Fatal("the relay could not hand 5000 summaries to the client while its observer was stuck")
 	}
-	if !waitTrue(func() bool { return obs.has("request:t-web:GET:/n/4999:200") }, 5*time.Second) {
+	// Wait until the client has read the last of them, still without its
+	// observer: an error message sent behind the summaries leaves a warning
+	// in the client's log when the reader gets to it.
+	r.push(t, proto.MsgError, `{}`)
+	if !waitTrue(func() bool {
+		logged.mu.Lock()
+		defer logged.mu.Unlock()
+		return len(logged.warn) > 0
+	}, 2*time.Minute) {
+		t.Fatal("the client did not read to the end of the burst while its observer was stuck")
+	}
+	if n := obs.count("request:"); n != 0 {
+		t.Fatalf("%d summaries reached an observer that is stuck in a call", n)
+	}
+	// Free the observer. Nothing more arrives: what it gets now is the call
+	// it was stuck in and what the queue held.
+	release()
+	if !waitTrue(func() bool { return obs.has("request:t-web:GET:/n/4999:200") }, 60*time.Second) {
 		t.Fatal("the newest summary was not delivered")
 	}
-	// The observer takes 500 a second; most of the 5000 gave way.
-	if n := obs.count("request:"); n > 3000 {
-		t.Fatalf("%d of 5000 summaries were delivered", n)
+	// Only what the queue held was delivered; the rest of the 5000 gave way.
+	if n := obs.count("request:"); n > maxPendingEvents+1 {
+		t.Fatalf("%d of 5000 summaries were delivered, the queue holds %d", n, maxPendingEvents)
 	}
 	if !obs.has("state:connected") || !obs.has("registered:web") {
 		t.Fatalf("events: %v", obs.snapshot()[:5])

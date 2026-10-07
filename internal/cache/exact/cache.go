@@ -335,13 +335,19 @@ func (c *Cache) Store(ctx context.Context, key string, e Entry) error {
 // that has outlived its ttl does not keep its key: it is deleted in the same
 // transaction, so the new answer is cached. Whether it has expired is decided
 // here, as in Lookup. When two writers meet, the first wins (ON CONFLICT DO
-// NOTHING).
+// NOTHING), under every isolation level the database may default to.
 func (c *Cache) insert(ctx context.Context, key, scope string, e Entry, headersJSON string, createdAt time.Time) error {
 	tx, err := c.d.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("cache store: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Two writers of one key may meet here, and the statements below are
+	// written for that. Under REPEATABLE READ or SERIALIZABLE Postgres would
+	// end the later one with SQLSTATE 40001 instead: pin READ COMMITTED.
+	if err := db.ReadCommitted(ctx, c.d.DB(), tx); err != nil {
+		return fmt.Errorf("cache store: %w", err)
+	}
 	var (
 		oldID  string
 		oldRaw any

@@ -22,6 +22,8 @@ var (
 	ulidMu     sync.Mutex
 	ulidLastMs int64
 	ulidLastB  [10]byte // random tail of the previous id
+	// ulidNow is the clock; tests replace it.
+	ulidNow = time.Now
 )
 
 // NewULID returns a 26-character ULID for use as audit_events.id. Encoding
@@ -34,13 +36,17 @@ var (
 // previous random tail or sort backwards). This matches the canonical ULID
 // "monotonic random" behaviour.
 func NewULID() (string, error) {
-	ms := time.Now().UTC().UnixMilli()
+	ulidMu.Lock()
+	defer ulidMu.Unlock()
+
+	// The clock is read under the lock: read before it, a caller that was
+	// overtaken on the way to the lock would mint an id with an older
+	// millisecond than the previous one. A clock that steps back is held at
+	// the last millisecond used, so ids never go backwards.
+	ms := max(ulidNow().UTC().UnixMilli(), ulidLastMs)
 	if ms < 0 {
 		return "", fmt.Errorf("ulid: negative timestamp")
 	}
-
-	ulidMu.Lock()
-	defer ulidMu.Unlock()
 
 	var tail [10]byte
 	if ms == ulidLastMs {

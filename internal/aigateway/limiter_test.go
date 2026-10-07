@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ankoehn/burrow/internal/db"
 )
 
 // entries is the number of keys the limiter holds state for.
@@ -390,5 +392,72 @@ func TestLimiter_ConcurrentWithCancellation(t *testing.T) {
 	}
 	if l.InUse("k") != 0 || l.Waiting("k") != 0 || l.entries() != 0 {
 		t.Fatalf("in use %d waiting %d entries %d", l.InUse("k"), l.Waiting("k"), l.entries())
+	}
+}
+
+// TryAcquire takes a free place and never waits; it does not jump a queue.
+func TestLimiter_TryAcquire(t *testing.T) {
+	l := NewLimiter()
+	rel, ok := l.TryAcquire("p", 1)
+	if !ok || l.InUse("p") != 1 {
+		t.Fatalf("free place: ok=%v in use %d", ok, l.InUse("p"))
+	}
+	if _, ok := l.TryAcquire("p", 1); ok {
+		t.Fatal("a second place was taken at a limit of 1")
+	}
+	// A waiter is ahead of whoever tries next.
+	got := make(chan func(), 1)
+	go func() {
+		r, _ := l.Acquire(context.Background(), "p", 1)
+		got <- r
+	}()
+	waitFor(t, "the waiter queues", func() bool { return l.Waiting("p") == 1 })
+	rel()
+	relWaiter := <-got
+	if _, ok := l.TryAcquire("p", 1); ok {
+		t.Fatal("TryAcquire took the place the waiter was handed")
+	}
+	relWaiter()
+	if l.InUse("p") != 0 {
+		t.Fatalf("in use = %d after all releases", l.InUse("p"))
+	}
+	// No limit: always admitted, not counted.
+	if rel, ok := l.TryAcquire("p", 0); !ok || l.InUse("p") != 0 {
+		t.Fatalf("unlimited: ok=%v in use %d", ok, l.InUse("p"))
+	} else {
+		rel()
+	}
+}
+
+// A request whose time to wait is already over still gets a place that is
+// free: it never queued, so it is not "busy". (The failover handler then finds
+// its own time is up and answers 504, not 429.) A full provider refuses it.
+func TestAdmit_TakesAFreePlaceWhenTheWaitIsOver(t *testing.T) {
+	g := &Gateway{Limiter: NewLimiter()}
+	p := db.AIProvider{Slug: "p", MaxConcurrent: 1}
+	for _, wait := range []time.Duration{0, -time.Second} {
+		release, ok := g.admit(context.Background(), p, wait)
+		if !ok {
+			t.Fatalf("wait %v: a free place was refused", wait)
+		}
+		if g.Limiter.InUse("p") != 1 {
+			t.Fatalf("wait %v: in use = %d", wait, g.Limiter.InUse("p"))
+		}
+		if _, ok := g.admit(context.Background(), p, wait); ok {
+			t.Fatalf("wait %v: admitted beyond the limit", wait)
+		}
+		release()
+		if g.Limiter.InUse("p") != 0 {
+			t.Fatalf("wait %v: the place was not given back", wait)
+		}
+	}
+	// A client that has left gets no place, free or not.
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, ok := g.admit(gone, p, time.Minute); ok {
+		t.Fatal("a request whose client has left was admitted")
+	}
+	if g.Limiter.InUse("p") != 0 {
+		t.Fatalf("in use = %d", g.Limiter.InUse("p"))
 	}
 }

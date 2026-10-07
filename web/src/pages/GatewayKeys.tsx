@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Checkbox, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows } from "@/components/ds";
+import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/auth/useAuth";
 import { formatRelativeTime } from "@/lib/format";
 import type { AiGatewayKey, AiModel, AiProvider, CreatedAiGatewayKey } from "@/lib/contract";
@@ -91,7 +92,7 @@ function NewKeyDialog({ onClose }: NewKeyDialogProps) {
               type="button"
               className="icon-btn"
               aria-label="Copy key"
-              onClick={() => { void navigator.clipboard?.writeText(secret); toast.success("Copied."); }}
+              onClick={() => void copyText(secret)}
             >
               <Copy size={13} aria-hidden="true" />
             </button>
@@ -245,13 +246,13 @@ export default function GatewayKeys() {
           <table className="data" aria-label="Gateway keys">
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Key</th>
-                <th>Models</th>
-                <th>Last used</th>
-                <th>Status</th>
-                {isAdmin && <th>Owner</th>}
-                <th className="col-actions" aria-label="Actions"></th>
+                <th scope="col">Name</th>
+                <th scope="col">Key</th>
+                <th scope="col">Models</th>
+                <th scope="col">Last used</th>
+                <th scope="col">Status</th>
+                {isAdmin && <th scope="col">Owner</th>}
+                <th scope="col" className="col-actions" aria-label="Actions"></th>
               </tr>
             </thead>
             <tbody>
@@ -263,8 +264,11 @@ export default function GatewayKeys() {
                     {k.allowed_models.length === 0
                       ? "all"
                       : (
+                        // The names are in the tooltip for a pointer and in hidden text
+                        // for a screen reader: a title alone reaches neither keyboard nor touch.
                         <span title={k.allowed_models.join(", ")}>
                           {k.allowed_models.length === 1 ? "1 entry" : `${k.allowed_models.length} entries`}
+                          <span className="visually-hidden">: {k.allowed_models.join(", ")}</span>
                         </span>
                       )}
                   </td>

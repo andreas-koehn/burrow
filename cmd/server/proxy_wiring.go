@@ -389,11 +389,18 @@ func (a proxyDialerAdapter) DialTunnelStream(ctx context.Context, sub string) (n
 }
 
 // LookupByServiceID implements proxy.StreamDialer.LookupByServiceID.
-// The AI gateway shares it, so a gateway-only service resolves here with
-// GatewayOnly set; the proxy's custom-domain door tests the flag first thing.
-// Used by the custom-domain routing path (v0.5.0 Task 7) where the request
-// Host is not a subdomain of authDomain.
+// This is the AI gateway's lookup: a gateway-only service resolves here with
+// GatewayOnly set. The proxy's own doors use ingressDialerAdapter, for which
+// such a service does not exist.
 func (a proxyDialerAdapter) LookupByServiceID(ctx context.Context, serviceID string) (*proxy.Resolved, error) {
+	return a.lookupByServiceID(ctx, serviceID, false)
+}
+
+// lookupByServiceID resolves a service by id. With hideGatewayOnly a
+// gateway-only service answers proxy.ErrNotFound as soon as its row is read,
+// before anything else is: status and timing match a missing service even
+// when a later query would have failed.
+func (a proxyDialerAdapter) lookupByServiceID(ctx context.Context, serviceID string, hideGatewayOnly bool) (*proxy.Resolved, error) {
 	tn, ok := a.srv.LookupHTTPTunnelByServiceID(serviceID)
 	if !ok {
 		return nil, proxy.ErrNotFound
@@ -406,6 +413,9 @@ func (a proxyDialerAdapter) LookupByServiceID(ctx context.Context, serviceID str
 			return nil, proxy.ErrNotFound
 		}
 		return nil, fmt.Errorf("proxy lookup by service id: service by id: %w", err)
+	}
+	if hideGatewayOnly && svc.GatewayOnly {
+		return nil, proxy.ErrNotFound
 	}
 	userID, sessionID := a.lookupSessionFields(tn.ID)
 	ipgeo, err := a.st.GetServiceIPGeo(ctx, svc.ID)
@@ -432,6 +442,20 @@ func (a proxyDialerAdapter) LookupByServiceID(ctx context.Context, serviceID str
 		r.MTLSCAPEM = []byte(svc.MTLSCAPEM)
 	}
 	return r, nil
+}
+
+// ingressDialerAdapter is the dialer of the proxy's own doors (subdomain,
+// /svc/<slug>, custom domain, mTLS handshake). It differs from
+// proxyDialerAdapter in one thing: a gateway-only service is not found by
+// service id either, so a custom domain pointing at one answers like a domain
+// pointing at nothing, whatever a later query would have returned.
+type ingressDialerAdapter struct{ proxyDialerAdapter }
+
+// LookupByServiceID implements proxy.StreamDialer.LookupByServiceID.
+// Used by the custom-domain routing path (v0.5.0 Task 7) where the request
+// Host is not a subdomain of authDomain.
+func (a ingressDialerAdapter) LookupByServiceID(ctx context.Context, serviceID string) (*proxy.Resolved, error) {
+	return a.lookupByServiceID(ctx, serviceID, true)
 }
 
 // directServicePolicy returns the lookup the /ai/ gateway uses for a direct

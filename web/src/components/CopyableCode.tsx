@@ -1,11 +1,5 @@
 import { Copy } from "lucide-react";
-import { toast } from "sonner";
-
-/** Copies to the clipboard and says so; the toast is shown by the toaster of the page. */
-function copyText(text: string) {
-  void navigator.clipboard?.writeText(text);
-  toast.success("Copied.");
-}
+import { copyText } from "@/lib/clipboard";
 
 export interface CopyButtonProps {
   text: string;
@@ -15,7 +9,7 @@ export interface CopyButtonProps {
 
 export function CopyButton({ text, label }: CopyButtonProps) {
   return (
-    <button type="button" className="icon-btn" aria-label={label} onClick={() => copyText(text)}>
+    <button type="button" className="icon-btn" aria-label={label} onClick={() => void copyText(text)}>
       <Copy size={13} aria-hidden="true" />
     </button>
   );

@@ -52,6 +52,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ankoehn/burrow/internal/httpduplex"
 	"io"
 	"log/slog"
 	"net"
@@ -303,7 +304,15 @@ func (c *Chain) ServeHTTP(w http.ResponseWriter, r *http.Request, svc Service, p
 	}
 
 	if IsAIPassThrough(svc.AIConfig) {
-		proxyHandler.ServeHTTP(w, r)
+		// The body goes to the upstream as it arrives, unbuffered. Go's
+		// HTTP/1 server consumes what is left of a request body when the
+		// response headers are written; an upstream that answers before it
+		// has read the body would then get a short one, lose its connection,
+		// and the client a truncated response. Full duplex keeps the body
+		// readable; httpduplex also keeps the transport's reads of the body
+		// from outliving this handler. (run buffers the body and needs none
+		// of this.)
+		httpduplex.Serve(w, r, proxyHandler)
 		return
 	}
 	c.run(w, r, svc, proxyHandler, false)

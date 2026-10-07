@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"github.com/ankoehn/burrow/internal/httpduplex"
 	"io"
 	"log/slog"
 	"net"
@@ -540,8 +541,13 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 
 	p.log.Debug("proxy custom domain request", "host", host, "service_id", serviceID, "method", r.Method, "path", r.URL.Path)
 
+	// The request body is forwarded as it arrives, so an upstream may answer
+	// before it has been read to the end: full duplex, and no read of the
+	// body outlives the forward (see httpduplex).
+	forward := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { httpduplex.Serve(w, r, rp) })
+
 	if p.aiChain != nil {
-		p.aiChain.Dispatch(w, r, res.ServiceID, res.LocalHost, res.APIKeyHeader, res.APIKeyID, rp)
+		p.aiChain.Dispatch(w, r, res.ServiceID, res.LocalHost, res.APIKeyHeader, res.APIKeyID, forward)
 		// Post-dispatch 5xx promotion: if the upstream responded with ≥500 and
 		// the ErrorHandler was NOT called, promote closed_clean → closed_error.
 		// closed_error and closed_idle are never downgraded (precedence rule).
@@ -552,7 +558,7 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 		}
 		return
 	}
-	rp.ServeHTTP(w, r)
+	forward.ServeHTTP(w, r)
 	// Post-ServeHTTP 5xx promotion (same rule as above).
 	if logStatus == StatusClosedClean && ww.statusCode >= 500 {
 		logStatus = StatusClosedError
@@ -771,6 +777,11 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 
 	p.log.Debug("proxy request", "subdomain", label, "method", r.Method, "path", r.URL.Path)
 
+	// The request body is forwarded as it arrives, so an upstream may answer
+	// before it has been read to the end: full duplex, and no read of the
+	// body outlives the forward (see httpduplex).
+	forward := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { httpduplex.Serve(w, r, rp) })
+
 	// v0.4.0: if an AI chain is wired, dispatch through it. The chain itself
 	// short-circuits to the v0.3.0 pass-through path (i.e. calls
 	// rp.ServeHTTP unchanged) when no AI config exists for this service —
@@ -778,7 +789,7 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 	// v0.3.0.
 	if p.aiChain != nil {
 		p.aiChain.Dispatch(w, r,
-			res.ServiceID, res.LocalHost, res.APIKeyHeader, res.APIKeyID, rp)
+			res.ServiceID, res.LocalHost, res.APIKeyHeader, res.APIKeyID, forward)
 		// Post-dispatch 5xx promotion: if the upstream responded with ≥500 and
 		// the ErrorHandler was NOT called, promote closed_clean → closed_error.
 		// closed_error and closed_idle are never downgraded (precedence rule).
@@ -790,7 +801,7 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 		return
 	}
 
-	rp.ServeHTTP(w, r)
+	forward.ServeHTTP(w, r)
 	// Post-ServeHTTP 5xx promotion (same rule as above).
 	if logStatus == StatusClosedClean && ww.statusCode >= 500 {
 		logStatus = StatusClosedError
@@ -1135,6 +1146,10 @@ func (w *countingResponseWriter) Write(p []byte) (int, error) {
 }
 
 func (w *countingResponseWriter) bytes() int64 { return w.n }
+
+// Unwrap lets http.ResponseController reach the server's own writer for what
+// this wrapper does not do itself (full duplex, deadlines).
+func (w *countingResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // Flush delegates to the underlying ResponseWriter when it implements
 // http.Flusher. SSE / chunked streaming relies on this — ReverseProxy

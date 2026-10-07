@@ -131,6 +131,34 @@ describe("Layout workspace shell", () => {
   beforeEach(resetEnvironment);
   afterEach(() => vi.restoreAllMocks());
 
+  it("starts with the sidebar collapsed on a narrow screen, unless the reader chose otherwise", async () => {
+    const width = window.innerWidth;
+    const setWidth = (w: number) => Object.defineProperty(window, "innerWidth", { value: w, configurable: true, writable: true });
+    try {
+      localStorage.removeItem("burrow.sidebarCollapsed");
+      setWidth(390);
+      const narrow = renderLayout("admin", { path: "/gateway/models" });
+      await chip();
+      expect(document.querySelector(".sidebar")).toHaveClass("is-collapsed");
+      narrow.unmount();
+      // A stored choice wins over the width.
+      localStorage.setItem("burrow.sidebarCollapsed", "0");
+      const chosen = renderLayout("admin", { path: "/gateway/models" });
+      await chip();
+      expect(document.querySelector(".sidebar")).not.toHaveClass("is-collapsed");
+      chosen.unmount();
+      // A wide screen starts open.
+      localStorage.removeItem("burrow.sidebarCollapsed");
+      setWidth(1440);
+      renderLayout("admin", { path: "/gateway/models" });
+      await chip();
+      expect(document.querySelector(".sidebar")).not.toHaveClass("is-collapsed");
+    } finally {
+      setWidth(width);
+      localStorage.removeItem("burrow.sidebarCollapsed");
+    }
+  });
+
   it("shows the Services sidebar on a services path", async () => {
     renderLayout("admin", { path: "/" });
     await chip();

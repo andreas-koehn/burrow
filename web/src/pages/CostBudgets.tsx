@@ -215,6 +215,8 @@ export default function CostBudgets() {
   }
 
   const forbidden = !isAdmin || (budgets.error instanceof ApiError && budgets.error.status === 403);
+  // A refused /cost/summary leaves the tiles at "—"; say why.
+  const costForbidden = cost.some((q) => q.error instanceof ApiError && q.error.status === 403);
   const budgetRows = budgets.data ?? [];
 
   return (
@@ -230,6 +232,11 @@ export default function CostBudgets() {
           <SpendTile key={w} w={w} summary={cost[i]!.data} />
         ))}
       </MetricStrip>
+      {costForbidden && (
+        <p className="muted small" role="note">
+          You can&apos;t view cost data: the spend totals need the quotas:read:any permission.
+        </p>
+      )}
 
       <div className="toolbar-row">
         <Segmented aria-label="Usage period" options={WINDOWS.map((w) => ({ value: w, label: WINDOW_LABEL[w] }))} value={usageWindow} onChange={setUsageWindow} />

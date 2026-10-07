@@ -18,12 +18,12 @@ const WHITELIST = [
   "connection_logs.rollup_include_top_ips",
 ];
 
-// Gate: replicate 401 -> 403(csrf) -> 403(admin) ordering.
 // As the relay sorts them: usd descending, the "" group (remainder / not attributed) last.
 function sortGroups<T extends { key: string; usd: number }>(rows: T[]): T[] {
   return [...rows].sort((x, y) => (x.key === "" ? 1 : 0) - (y.key === "" ? 1 : 0) || y.usd - x.usd);
 }
 
+// Gate: replicate 401 -> 403(csrf) -> 403(admin) ordering.
 function gate(req: Request, opts: { admin?: boolean } = {}): Response | null {
   if (req.headers.get("x-mock-unauth") === "1") return err(401, "unauthorized");
   const method = req.method.toUpperCase();

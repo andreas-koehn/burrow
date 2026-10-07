@@ -14,8 +14,18 @@ import { useRelayNotices } from "@/lib/useRelayNotices";
 
 const COLLAPSED_KEY = "burrow.sidebarCollapsed";
 
+/** Below this width the open sidebar leaves the page too little room to read. */
+const NARROW_PX = 640;
+
+/**
+ * Whether the sidebar starts collapsed: as the reader last left it; without
+ * such a choice, collapsed on a narrow screen (a phone), open otherwise.
+ */
 function storedCollapsed(): boolean {
-  try { return localStorage.getItem(COLLAPSED_KEY) === "1"; } catch { return false; }
+  let stored: string | null = null;
+  try { stored = localStorage.getItem(COLLAPSED_KEY); } catch { /* storage unavailable */ }
+  if (stored === "1" || stored === "0") return stored === "1";
+  return typeof window !== "undefined" && window.innerWidth > 0 && window.innerWidth < NARROW_PX;
 }
 
 export function Layout() {

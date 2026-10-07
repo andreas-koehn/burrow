@@ -1,4 +1,5 @@
-import { useState, useEffect, useLayoutEffect, useRef } from "react";
+import { useState, useEffect, useId, useLayoutEffect, useRef } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
 import { ChevronDown, Check } from "lucide-react";
@@ -20,6 +21,11 @@ export interface SelectProps {
 
 export function Select({ options, value, onChange, placeholder = "Select…", id, "aria-describedby": describedBy }: SelectProps) {
   const [open, setOpen] = useState(false);
+  // The option the keyboard is on while the list is open. Focus stays on the
+  // trigger (aria-activedescendant names the option), so a surrounding
+  // dialog's focus trap and focus return are not disturbed.
+  const [active, setActive] = useState(-1);
+  const listId = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
@@ -79,6 +85,56 @@ export function Select({ options, value, onChange, placeholder = "Select…", id
   }, [open]);
 
   const selected = options.find((o) => o.value === value);
+  const optionId = (i: number) => `${listId}-opt-${i}`;
+
+  const openList = () => {
+    // Start on the chosen option, or the first.
+    setActive(Math.max(0, options.findIndex((o) => o.value === value)));
+    setOpen(true);
+  };
+  const choose = (i: number) => {
+    const o = options[i];
+    if (!o) return;
+    triggerRef.current?.focus();
+    onChange?.(o.value);
+    setOpen(false);
+  };
+
+  // The option under the keyboard is kept in view in a long list.
+  useEffect(() => {
+    if (!open || active < 0) return;
+    document.getElementById(optionId(active))?.scrollIntoView?.({ block: "nearest" });
+    // optionId only depends on listId, which never changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, active]);
+
+  // Arrow keys, Home and End move through the options; Enter or Space takes
+  // the one the keyboard is on; Tab closes the list and moves on.
+  const onTriggerKey = (e: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (!open) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        openList();
+      }
+      return;
+    }
+    const last = options.length - 1;
+    switch (e.key) {
+      case "ArrowDown": e.preventDefault(); setActive((a) => Math.min(last, a + 1)); break;
+      case "ArrowUp": e.preventDefault(); setActive((a) => Math.max(0, a - 1)); break;
+      case "Home": e.preventDefault(); setActive(0); break;
+      case "End": e.preventDefault(); setActive(last); break;
+      case "Enter":
+      case " ":
+        // Not the button's own click, which would only close the list.
+        e.preventDefault();
+        if (active >= 0) choose(active);
+        else setOpen(false);
+        break;
+      case "Tab": setOpen(false); break;
+    }
+  };
+
   return (
     <div style={{ position: "relative" }}>
       <button
@@ -88,8 +144,11 @@ export function Select({ options, value, onChange, placeholder = "Select…", id
         className="select-trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        aria-activedescendant={open && active >= 0 ? optionId(active) : undefined}
         aria-describedby={describedBy}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => { if (open) setOpen(false); else openList(); }}
+        onKeyDown={onTriggerKey}
       >
         <span className={selected ? "" : "placeholder"}>
           {selected ? selected.label : placeholder}
@@ -99,6 +158,7 @@ export function Select({ options, value, onChange, placeholder = "Select…", id
       {open && createPortal(
         <div
           ref={listRef}
+          id={listId}
           className="menu menu-enter select-list"
           role="listbox"
           // The list is not a DOM descendant of the trigger's container:
@@ -114,17 +174,18 @@ export function Select({ options, value, onChange, placeholder = "Select…", id
             zIndex: 40,
           }}
         >
-          {options.map((o) => (
+          {options.map((o, i) => (
             <div
               key={o.value}
+              id={optionId(i)}
               role="option"
               aria-selected={o.value === value}
-              className="menu-item"
-              onClick={() => {
-                triggerRef.current?.focus();
-                onChange?.(o.value);
-                setOpen(false);
-              }}
+              className={i === active ? "menu-item is-focus" : "menu-item"}
+              // A moving pointer takes the highlight along. Not mouseenter: a
+              // pointer that merely lies where the list opens must not move
+              // the keyboard's place.
+              onMouseMove={() => { if (active !== i) setActive(i); }}
+              onClick={() => choose(i)}
             >
               {o.label}
               {o.value === value && <Check size={14} style={{ marginLeft: "auto" }} />}

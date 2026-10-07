@@ -773,7 +773,11 @@ func TestFailover_LateAnswerAfterTheTimeoutIsDiscarded(t *testing.T) {
 		_, _ = w.Write([]byte("too late"))
 	}
 	s := script(map[string]http.HandlerFunc{"zai#ZAI": late, "openrouter#OR": late})
-	g, att := failoverGateway(s, "ZAI", func(m *db.AIModel) { m.AttemptTimeoutS, m.TotalTimeoutS = 30, 45 })
+	// Each attempt ends by its own timer and answers only after it: nothing
+	// here depends on how fast the machine is. The request's total time is
+	// far away, so the second attempt is certainly started (that the total
+	// time ends a request is TestFailover_TotalTimeout's subject).
+	g, att := failoverGateway(s, "ZAI", func(m *db.AIModel) { m.AttemptTimeoutS, m.TotalTimeoutS = 30, 120000 })
 	rec := call(g, smartBody)
 	if rec.Code != 504 || strings.Contains(rec.Body.String(), "too late") {
 		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
@@ -2471,7 +2475,12 @@ func TestFailover_StreamHoldsItsPlaceUntilTheEnd(t *testing.T) {
 				},
 				status(200, "data: from openrouter\n\n"))
 			limit(rig.g, "zai", 1)
-			rig.timeouts(40, 60000)
+			// Long enough that a loaded machine still gets the first event
+			// (and the third request its answer) within the attempt's time;
+			// the test then waits past it once, and the second request
+			// waits it out in the queue.
+			const attemptMs = 1000
+			rig.timeouts(attemptMs, 120000)
 
 			resp := rig.post(t)
 			br := bufio.NewReader(resp.Body)
@@ -2479,7 +2488,7 @@ func TestFailover_StreamHoldsItsPlaceUntilTheEnd(t *testing.T) {
 				t.Fatalf("first event %q, %v", ev, err)
 			}
 			// Well past the attempt timeout the stream still holds the place.
-			time.Sleep(60 * time.Millisecond)
+			time.Sleep(attemptMs * time.Millisecond * 3 / 2)
 			if n := rig.g.Limiter.InUse("zai"); n != 1 {
 				t.Fatalf("in use while the stream is open = %d", n)
 			}
