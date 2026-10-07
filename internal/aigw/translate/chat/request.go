@@ -17,15 +17,15 @@ import (
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
 )
 
-// MaxStop is the number of stop sequences Chat Completions accepts. A
-// request with more keeps the first MaxStop and reports "stop.extra".
-const MaxStop = 4
+// maxStop is the number of stop sequences Chat Completions accepts. A
+// request with more keeps the first maxStop and reports "stop.extra".
+const maxStop = 4
 
 // Names EncodeRequest adds to the dropped list (all fixed, none chosen by a
 // client).
 const (
 	droppedThinking   = ir.DroppedThinking // thinking parts of the history are not sent back
-	droppedStopExtra  = "stop.extra"       // stop sequences beyond MaxStop
+	droppedStopExtra  = "stop.extra"       // stop sequences beyond maxStop
 	droppedToolChoice = "tool_choice"      // a choice that needs a tool the request does not carry
 )
 
@@ -53,8 +53,9 @@ func tooMany(field string, limit int) error {
 // are none).
 //
 // What is not carried, and how it is reported:
-//   - Thinking parts of assistant messages are left out: "thinking".
-//   - Stop sequences beyond MaxStop are left out: "stop.extra".
+//   - Thinking parts of assistant messages are left out: "thinking". An
+//     assistant message that holds nothing else is left out as a whole.
+//   - Stop sequences beyond maxStop are left out: "stop.extra".
 //   - A tool choice that demands a tool ("required", or a named tool) when
 //     the request carries no such tool is left out: "tool_choice". ("auto"
 //     and "none" without tools are left out without a report: they mean the
@@ -87,6 +88,7 @@ type encoder struct {
 	b        []byte
 	dropped  []string
 	messages int // messages written so far
+	turns    int // those of them that are not the system message
 }
 
 func (e *encoder) raw(s string)     { e.b = append(e.b, s...) }
@@ -99,6 +101,9 @@ func (e *encoder) message(role string) {
 		e.raw(",")
 	}
 	e.messages++
+	if role != "system" {
+		e.turns++
+	}
 	e.raw(`{"role":"` + role + `"`)
 }
 
@@ -139,6 +144,9 @@ func (e *encoder) request(req ir.Request, model string) error {
 			return err
 		}
 	}
+	if e.turns == 0 {
+		return unsupported("messages") // every message was an assistant turn with nothing to send
+	}
 	e.raw(`]`)
 	if err := e.tools(req.Tools); err != nil {
 		return err
@@ -160,8 +168,8 @@ func (e *encoder) request(req ir.Request, model string) error {
 		return err
 	}
 	if stop := req.Stop; len(stop) > 0 {
-		if len(stop) > MaxStop {
-			stop = stop[:MaxStop]
+		if len(stop) > maxStop {
+			stop = stop[:maxStop]
 			e.drop(droppedStopExtra)
 		}
 		e.raw(`,"stop":[`)
@@ -322,15 +330,18 @@ func (e *encoder) assistant(m ir.Message, at func(string) string) error {
 			return unsupported(at("part"))
 		}
 	}
+	if len(texts) == 0 && len(calls) == 0 {
+		// Only thinking (reported above), or nothing at all: "content":""
+		// without tool calls is refused by some servers, so the turn is not
+		// written. Two user messages in a row are fine for Chat Completions.
+		return nil
+	}
 	e.message("assistant")
 	e.raw(`,"content":`)
-	switch {
-	case len(texts) > 0:
+	if len(texts) > 0 {
 		e.str(strings.Join(texts, "\n\n"))
-	case len(calls) > 0:
+	} else {
 		e.raw(`null`)
-	default:
-		e.raw(`""`)
 	}
 	if len(calls) > 0 {
 		e.raw(`,"tool_calls":[`)

@@ -132,8 +132,10 @@ func TestCollect_Errors(t *testing.T) {
 		}
 	}
 	_, err := Collect(cases["error event"])
-	if !errors.Is(err, ErrStream) || !strings.Contains(err.Error(), "overloaded") {
-		t.Fatalf("error event: %v", err)
+	// The provider's message is in the typed error's field, for the caller; the error's text is fixed.
+	var se *StreamError
+	if !errors.Is(err, ErrStream) || !errors.As(err, &se) || se.Message != "overloaded" || strings.Contains(err.Error(), "overloaded") || err.Error() != ErrStream.Error() {
+		t.Fatalf("error event: %v (%+v)", err, se)
 	}
 }
 
@@ -166,6 +168,30 @@ func TestCollect_Limits(t *testing.T) {
 	evs = append(evs, Event{Kind: Finish})
 	if _, err := Collect(evs); !errors.Is(err, ErrLimit) {
 		t.Fatalf("%d parts: %v", MaxParts+1, err)
+	}
+}
+
+func TestCollect_TotalArgumentsLimit(t *testing.T) {
+	evs := []Event{{Kind: Start}}
+	piece := `{"a":"` + strings.Repeat("x", MaxToolArgsBytes-16) + `"}`
+	for i := 0; i*len(piece) <= MaxTotalToolArgsBytes; i++ {
+		evs = append(evs,
+			Event{Kind: PartStart, Index: i, Part: Part{Kind: ToolUse, ToolID: string(rune('a' + i)), ToolName: "f"}},
+			Event{Kind: ToolArgsDelta, Index: i, ArgsJSON: piece},
+			Event{Kind: PartStop, Index: i})
+	}
+	evs = append(evs, Event{Kind: Finish, Stop: StopToolUse})
+	if _, err := Collect(evs); !errors.Is(err, ErrLimit) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := Collect(append(evs[:10:10], Event{Kind: Finish, Stop: StopToolUse})); err != nil {
+		t.Fatalf("three calls: %v", err)
+	}
+}
+
+func TestFixedDroppedNames(t *testing.T) {
+	if DroppedSystemPosition != "system.position" || MaxTotalToolArgsBytes != 4<<20 {
+		t.Fatal("changed")
 	}
 }
 

@@ -414,7 +414,7 @@ func genRequest(rng *rand.Rand) ir.Request {
 		v := rng.Float64()
 		req.TopP = &v
 	}
-	for n := rng.Intn(MaxStop + 1); n > 0; n-- {
+	for n := rng.Intn(maxStop + 1); n > 0; n-- {
 		req.Stop = append(req.Stop, genText(rng))
 	}
 
@@ -564,6 +564,7 @@ func TestProperty_ResponseRoundTrip(t *testing.T) {
 func checkEvents(events []ir.Event) error {
 	const closed = ir.PartKind("closed")
 	var parts []ir.PartKind
+	var args [][]byte // per part: the argument pieces so far
 	ids := map[string]bool{}
 	started, ended := false, false
 	for i, ev := range events {
@@ -574,6 +575,11 @@ func checkEvents(events []ir.Event) error {
 		if ev.Kind == ir.Error {
 			if ev.Err == "" || len(ev.Err) > 300 || !utf8.ValidString(ev.Err) {
 				return fail("message")
+			}
+			for _, k := range parts {
+				if k != closed {
+					return fail("a part was not stopped before the error")
+				}
 			}
 			ended = true
 			continue
@@ -613,18 +619,20 @@ func checkEvents(events []ir.Event) error {
 				return fail("kind")
 			}
 			parts = append(parts, ev.Part.Kind)
+			args = append(args, nil)
 		case ir.TextDelta:
-			if !openPart(ir.Text) || ev.Text == "" {
+			if !openPart(ir.Text) || ev.Text == "" || !utf8.ValidString(ev.Text) {
 				return fail("delta")
 			}
 		case ir.ThinkingDelta:
-			if !openPart(ir.Thinking) || ev.Text == "" {
+			if !openPart(ir.Thinking) || ev.Text == "" || !utf8.ValidString(ev.Text) {
 				return fail("delta")
 			}
 		case ir.ToolArgsDelta:
 			if !openPart(ir.ToolUse) || ev.ArgsJSON == "" {
 				return fail("delta")
 			}
+			args[ev.Index] = append(args[ev.Index], ev.ArgsJSON...)
 		case ir.PartStop:
 			if ev.Index < 0 || ev.Index >= len(parts) || parts[ev.Index] == closed {
 				return fail("not open")
@@ -638,6 +646,20 @@ func checkEvents(events []ir.Event) error {
 			}
 			if ev.Usage.InputTokens < 0 || ev.Usage.OutputTokens < 0 {
 				return fail("usage")
+			}
+			// The pieces of a tool call's arguments are one JSON object, or there are none.
+			total := 0
+			for n, a := range args {
+				total += len(a)
+				if len(a) > 0 && (ir.CheckObject(a) != nil || a[0] != '{' || len(a) > ir.MaxToolArgsBytes) {
+					return fail(fmt.Sprintf("the arguments of part %d are no JSON object", n))
+				}
+			}
+			if total > ir.MaxTotalToolArgsBytes {
+				return fail("arguments over the total limit")
+			}
+			if ev.Stop == ir.StopToolUse && len(ids) == 0 {
+				return fail("tool_use without a tool call")
 			}
 			ended = true
 		default:
@@ -658,7 +680,7 @@ func FuzzDecodeResponse(f *testing.F) {
 	f.Fuzz(func(t *testing.T, body []byte) {
 		got, err := DecodeResponse(body)
 		if err != nil {
-			if !errors.Is(err, ErrMalformed) && !errors.Is(err, ir.ErrLimit) {
+			if !errors.Is(err, ErrMalformed) && !errors.Is(err, ir.ErrLimit) && !errors.Is(err, ir.ErrStream) {
 				t.Fatalf("an error of no known kind: %v", err)
 			}
 			if !reflect.DeepEqual(got, ir.Response{}) {
@@ -682,6 +704,9 @@ func FuzzDecodeResponse(f *testing.F) {
 				t.Fatalf("part kind %q", p.Kind)
 			}
 		}
+		if got.Stop == ir.StopToolUse && len(ids) == 0 {
+			t.Fatal("tool_use without a tool call")
+		}
 		if len(ids) > ir.MaxToolCalls || len(got.Parts) > ir.MaxParts || got.Usage.InputTokens < 0 || got.Usage.OutputTokens < 0 {
 			t.Fatalf("over a limit: %d calls, %d parts, usage %+v", len(ids), len(got.Parts), got.Usage)
 		}
@@ -699,6 +724,9 @@ func FuzzStreamDecoder(f *testing.F) {
 	f.Add(bytes.ReplaceAll(fixture(f, "stream_tools.sse"), []byte("\n"), []byte("\r\n")), 3)
 	f.Add([]byte("data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1e9,\"function\":{\"arguments\":\"{\"}}]}}]}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"a\",\"function\":{\"name\":\"f\"}}]},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"), 5)
 	f.Add([]byte("data: {\"choices\":[{\"delta\":{\"reasoning\":\"r\",\"content\":\"c\",\"refusal\":\"no\"}}]}\n\ndata: {\"error\":{\"message\":\"overloaded\"}}\n\n"), 1)
+	f.Add([]byte("data: "+`{"id":"c","choices":[{"delta":{"content":"x`+"\xf0\x9f"+`"}}]}`+"\n\n"+
+		"data: "+`{"choices":[{"delta":{"content":"`+"\x98\x80"+`","tool_calls":[{"function":{"name":"f","arguments":" {\"a\":\"`+"\xc3"+`"}}]}}]}`+"\n\n"+
+		"data: "+`{"choices":[{"delta":{"tool_calls":[{"id":"a","function":{"arguments":"`+"\xa9"+`\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\ndata: [DONE]\n\n"), 4)
 	f.Add([]byte(": ping\n\nnot a field\ndata: null\n\ndata: {\"usage\":{\"prompt_tokens\":\"3\"},\"choices\":[]}\n\ndata:[DONE]"), 2)
 	f.Fuzz(func(t *testing.T, raw []byte, piece int) {
 		if piece < 1 {
@@ -718,9 +746,11 @@ func FuzzStreamDecoder(f *testing.F) {
 					if !errors.Is(err, ErrMalformed) && !errors.Is(err, ir.ErrLimit) {
 						t.Fatalf("an error of no known kind: %v", err)
 					}
-					if evs != nil {
-						t.Fatal("events came with the error")
+					// The decoder ends the answer itself: its events close with the one Error.
+					if n := len(evs); n == 0 || evs[n-1].Kind != ir.Error {
+						t.Fatalf("no Error event came with the error %v: %+v", err, evs)
 					}
+					events = append(events, evs...)
 					failed = true
 					continue
 				}
@@ -749,15 +779,31 @@ func FuzzStreamDecoder(f *testing.F) {
 		if err := checkEvents(events); err != nil {
 			t.Fatalf("%v\n%+v", err, events)
 		}
-		if !failed {
-			// A decoder that was closed without an error has ended the answer one way or the other.
-			if n := len(events); n == 0 || (events[n-1].Kind != ir.Finish && events[n-1].Kind != ir.Error) {
-				t.Fatalf("the stream was not ended: %+v", events)
+		// The answer was ended one way or the other, exactly once (checkEvents: nothing follows an
+		// Error, every part that started was stopped, a Finish comes with sound arguments).
+		n := len(events)
+		if n == 0 || (events[n-1].Kind != ir.Finish && events[n-1].Kind != ir.Error) {
+			t.Fatalf("the stream was not ended: %+v", events)
+		}
+		if failed && events[n-1].Kind != ir.Error {
+			t.Fatalf("a Finish after an error: %+v", events)
+		}
+		starts, stops := 0, 0
+		for _, ev := range events {
+			switch ev.Kind {
+			case ir.PartStart:
+				starts++
+			case ir.PartStop:
+				stops++
 			}
-			// What it emitted folds into an answer, unless the tool arguments were no JSON.
-			if _, err := ir.Collect(events); err != nil && !errors.Is(err, ir.ErrStream) && !errors.Is(err, ir.ErrBadJSON) && !errors.Is(err, ir.ErrLimit) {
-				t.Fatalf("Collect: %v\n%+v", err, events)
-			}
+		}
+		if starts != stops {
+			t.Fatalf("%d parts started, %d stopped: %+v", starts, stops, events)
+		}
+		// What ended in a Finish folds into an answer; what ended in an Error says so.
+		_, err := ir.Collect(events)
+		if finished := events[n-1].Kind == ir.Finish; finished && err != nil || !finished && !errors.Is(err, ir.ErrStream) {
+			t.Fatalf("Collect: %v: %+v", err, events)
 		}
 	})
 }

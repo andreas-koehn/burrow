@@ -12,18 +12,14 @@ package sse
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"io"
 	"strings"
 )
 
-// DefaultMaxFrame is the limit NewParser uses when it is given none: 1 MiB
+// defaultMaxFrame is the limit NewParser uses when it is given none: 1 MiB
 // for one frame.
-const DefaultMaxFrame = 1 << 20
-
-// readChunk is the size of the buffer Read reads the stream with.
-const readChunk = 32 << 10
+const defaultMaxFrame = 1 << 20
 
 var (
 	// ErrTooLarge reports a frame (or a single line) over the parser's limit.
@@ -63,10 +59,10 @@ type Parser struct {
 }
 
 // NewParser returns a parser whose frames may hold up to maxFrame bytes
-// (line being read + event name + data). maxFrame <= 0 means DefaultMaxFrame.
+// (line being read + event name + data). maxFrame <= 0 means defaultMaxFrame.
 func NewParser(maxFrame int) *Parser {
 	if maxFrame <= 0 {
-		maxFrame = DefaultMaxFrame
+		maxFrame = defaultMaxFrame
 	}
 	return &Parser{max: maxFrame}
 }
@@ -209,52 +205,4 @@ func Write(w io.Writer, event string, data []byte) error {
 	buf = append(buf, '\n')
 	_, err := w.Write(buf)
 	return err
-}
-
-// Read drives a parser over r and calls fn for each frame, in order, on the
-// caller's goroutine: the next bytes are read only after fn returned, so fn
-// (which usually writes to the client) sets the pace. It returns nil at the
-// end of the stream, after delivering a final frame that lacks its blank
-// line; fn's error when fn fails; ctx's error when ctx ended; ErrTooLarge;
-// or the read error.
-//
-// ctx is looked at between reads and between frames. A read that blocks is
-// ended by closing r, which is what an HTTP transport does when the request's
-// context ends. Read starts no goroutine and holds nothing after it returns.
-func Read(ctx context.Context, r io.Reader, maxFrame int, fn func(Frame) error) error {
-	p := NewParser(maxFrame)
-	buf := make([]byte, readChunk)
-	deliver := func(frames []Frame) error {
-		for _, f := range frames {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if err := fn(f); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		n, rerr := r.Read(buf)
-		frames, perr := p.Feed(buf[:n])
-		if err := deliver(frames); err != nil {
-			return err
-		}
-		if perr != nil {
-			return perr
-		}
-		if rerr == io.EOF {
-			return deliver(p.Flush())
-		}
-		if rerr != nil {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			return rerr
-		}
-	}
 }

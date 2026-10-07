@@ -66,6 +66,11 @@ const (
 	// MaxToolArgsBytes is the largest JSON text of one tool call's input,
 	// whole or added up over the chunks of a stream.
 	MaxToolArgsBytes = 1 << 20
+	// MaxTotalToolArgsBytes is the largest sum of the inputs of all tool
+	// calls in one answer. A stream decoder keeps the arguments of the calls
+	// that are open (to check them when they stop), so this is also what one
+	// streamed answer may hold in memory.
+	MaxTotalToolArgsBytes = 4 << 20
 	// MaxDepth is the deepest nesting of objects and arrays a codec accepts
 	// in a body, a stream frame, a tool's schema or a tool call's input.
 	MaxDepth = 128
@@ -76,11 +81,23 @@ var (
 	ErrLimit = errors.New("ir: limit exceeded")
 	// ErrBadJSON reports pass-through JSON that is not one valid JSON object.
 	ErrBadJSON = errors.New("ir: not a JSON object")
-	// ErrStream reports a streamed answer that ended with an Error event.
-	ErrStream = errors.New("ir: the stream ended with an error")
+	// ErrStream reports an answer that is the provider's error: a stream
+	// that ended with an Error event, or a body that holds an error object.
+	// The error value is a *StreamError.
+	ErrStream = errors.New("ir: the provider's answer is an error")
 	// ErrSequence reports an event sequence that is not well formed.
 	ErrSequence = errors.New("ir: malformed event sequence")
 )
+
+// StreamError is the provider's own error in place of an answer. Message is
+// what the provider said, cut to a safe length: it is meant for the caller,
+// in the caller's error shape, and for nothing else. Error() does not
+// contain it: the text of a Go error ends up in logs, and what an upstream
+// or a client wrote must not. errors.Is(err, ErrStream) holds.
+type StreamError struct{ Message string }
+
+func (e *StreamError) Error() string        { return ErrStream.Error() }
+func (e *StreamError) Is(target error) bool { return target == ErrStream }
 
 // Fixed names for the dropped list (see the package comment for the rule).
 const (
@@ -91,6 +108,7 @@ const (
 	DroppedTopK               = "top_k"
 	DroppedPreviousResponseID = "previous_response_id"
 	DroppedStore              = "store"
+	DroppedSystemPosition     = "system.position" // see Request.System
 )
 
 // Unknown names a field no codec knows: "unknown:<field>". The field is a
@@ -114,7 +132,10 @@ type Request struct {
 	// System is the system prompt: Text parts only, in order. Messages fills
 	// it from "system", Responses from "instructions" and system/developer
 	// items, Chat from system/developer messages. Empty means no system
-	// prompt.
+	// prompt. All of them are gathered here, in order, so one that stood
+	// later in the conversation loses its place: a decoder that hoists a
+	// system message which came after the first message that is not one
+	// reports DroppedSystemPosition.
 	System []Part
 	// Messages is the conversation, oldest first. A request has at least one.
 	Messages []Message
@@ -261,25 +282,45 @@ const (
 // reported. InputTokens includes cached input.
 type Usage struct{ InputTokens, OutputTokens int }
 
-// Event is one step of a streamed answer. A well-formed sequence is: Start;
-// then parts, each as PartStart, its deltas, PartStop; then Finish — or an
-// Error at any point, after which nothing follows. Parts are numbered from 0
-// in the order they open. A Text or Thinking part is closed before the next
-// part opens; ToolUse parts may stay open side by side, their argument
-// deltas interleaved. Finish comes only when every part is closed.
+// Event is one step of a streamed answer. What a stream decoder emits, and
+// what a caller-side stream encoder must be written for:
+//
+//   - A good answer is Start; then parts, each as PartStart, its deltas,
+//     PartStop; then Finish. Parts are numbered from 0 in the order they
+//     open, and every part that started is stopped exactly once.
+//   - A Text or Thinking part is stopped before the next part of any kind
+//     opens. ToolUse parts are different: they may be open side by side
+//     until the finish, their argument deltas interleaved, and a Text or
+//     Thinking part can open (and stop) while ToolUse parts are open. An
+//     encoder for a format whose blocks are strictly one after the other
+//     has to hold such parts back itself.
+//   - Finish comes only when every part is stopped. Its stop reason is
+//     StopToolUse only when a ToolUse part was opened.
+//   - The ArgsJSON pieces of one ToolUse part add up to one JSON object, or
+//     there are none: a decoder checks this when the part stops, before
+//     the Finish, and fails the stream when it does not hold. The pieces of
+//     one part add up to at most MaxToolArgsBytes, all parts together to at
+//     most MaxTotalToolArgsBytes.
+//   - Text and ArgsJSON are valid UTF-8; a character is never cut in two
+//     between deltas.
+//   - Failure, whatever the cause (the provider's error, a malformed or
+//     oversized frame, an upstream that went away): a PartStop for every
+//     part that is open, in part order, then exactly one Error, and nothing
+//     after it. There is no Finish. An Error can be the only event, before
+//     any Start.
 type Event struct {
 	Kind EventKind
 
 	Index    int    // the part's number, for PartStart, the deltas and PartStop
 	Part     Part   // PartStart: the part being opened (Text or Thinking with no text, ToolUse with id and name and no Input)
 	Text     string // TextDelta, ThinkingDelta: the next piece of text
-	ArgsJSON string // ToolArgsDelta: the next piece of the tool input's JSON text; the pieces of one part add up to one JSON object, or to nothing
+	ArgsJSON string // ToolArgsDelta: the next piece of the tool input's JSON text, never empty
 
 	ID    string     // Start
 	Model string     // Start
 	Stop  StopReason // Finish
 	Usage Usage      // Start (input tokens, when the format tells them early) and Finish (both; a 0 input count leaves Start's standing)
-	Err   string     // Error: a message that is safe to show the caller
+	Err   string     // Error: a message for the caller (the provider's, cut short, or a fixed text); never logged
 }
 
 // EventKind names what an Event is.
@@ -430,8 +471,8 @@ func AppendString(dst []byte, s string) []byte {
 }
 
 // Collect folds a well-formed event sequence into a Response (used by tests
-// and by buffered fallbacks). It returns an error wrapping ErrStream for a
-// sequence that holds an Error event (the message is the event's), ErrSequence
+// and by buffered fallbacks). It returns a *StreamError for a sequence that
+// holds an Error event (the event's message is in its field), ErrSequence
 // for one that is not well formed or has no Finish, ErrLimit for one over the
 // limits, and ErrBadJSON for a tool call whose arguments do not add up to a
 // JSON object.
@@ -446,6 +487,7 @@ func Collect(events []Event) (Response, error) {
 		states   []state
 		ids      = map[string]bool{}
 		calls    int
+		argBytes int
 		started  bool
 		finished bool
 	)
@@ -467,7 +509,7 @@ func Collect(events []Event) (Response, error) {
 			return bad("an event after the finish")
 		}
 		if ev.Kind == Error {
-			return Response{}, fmt.Errorf("%w: %s", ErrStream, ev.Err)
+			return Response{}, &StreamError{Message: ev.Err}
 		}
 		if started == (ev.Kind == Start) {
 			return bad("the sequence must begin with exactly one start")
@@ -518,6 +560,9 @@ func Collect(events []Event) (Response, error) {
 			if len(st.buf)+len(ev.ArgsJSON) > MaxToolArgsBytes {
 				return Response{}, fmt.Errorf("%w: tool arguments over %d bytes", ErrLimit, MaxToolArgsBytes)
 			}
+			if argBytes += len(ev.ArgsJSON); argBytes > MaxTotalToolArgsBytes {
+				return Response{}, fmt.Errorf("%w: tool arguments over %d bytes in all", ErrLimit, MaxTotalToolArgsBytes)
+			}
 			st.buf = append(st.buf, ev.ArgsJSON...)
 		case PartStop:
 			st, ok := at(ev, "")
@@ -525,20 +570,24 @@ func Collect(events []Event) (Response, error) {
 				return bad("a stop for a part that is not open")
 			}
 			st.open = false
-			if parts[ev.Index].Kind == ToolUse {
-				input, err := ToolInput(st.buf)
-				if err != nil {
-					return Response{}, err
-				}
-				parts[ev.Index].Input = input
-			} else {
+			if parts[ev.Index].Kind != ToolUse {
 				parts[ev.Index].Text = string(st.buf)
+				st.buf = nil
 			}
-			st.buf = nil
 		case Finish:
 			for i := range states {
 				if states[i].open {
 					return bad("the finish came while a part was open")
+				}
+				// Arguments are judged here, not at the part's stop: a stream
+				// that fails stops its parts first, and is then an error of
+				// the stream, whatever the arguments looked like by then.
+				if parts[i].Kind == ToolUse {
+					input, err := ToolInput(states[i].buf)
+					if err != nil {
+						return Response{}, err
+					}
+					parts[i].Input = input
 				}
 			}
 			finished = true

@@ -159,7 +159,8 @@ type wireMessage struct {
 	Content          json.RawMessage `json:"content"`           // a string; in a complete answer also a list of text parts
 	ReasoningContent json.RawMessage `json:"reasoning_content"` // a string where the provider sends its reasoning
 	Reasoning        json.RawMessage `json:"reasoning"`         // the same under another name; an object elsewhere
-	Refusal          string          `json:"refusal"`
+	Refusal          json.RawMessage `json:"refusal"`           // a string
+	FunctionCall     json.RawMessage `json:"function_call"`     // the legacy form of a tool call: refused, see DecodeResponse
 	ToolCalls        toolCallList    `json:"tool_calls"`
 }
 
@@ -245,11 +246,16 @@ func stopReason(finish string) ir.StopReason {
 	return ir.StopUnknown
 }
 
-// settleStop corrects a stop reason by what the answer holds. A refusal
-// text makes it a refusal. A tool call makes it tool_use: several providers
-// say "stop" while they ask for tools, and a caller acts on the stop reason.
-// An answer that was cut off (max_tokens) or withheld stays what it is.
+// settleStop corrects a stop reason by what the answer holds. tool_use
+// without a tool call becomes end: a caller would wait for a call that is
+// not there. A refusal text makes it a refusal. A tool call makes it
+// tool_use: several providers say "stop" while they ask for tools, and a
+// caller acts on the stop reason. An answer that was cut off (max_tokens)
+// or withheld stays what it is.
 func settleStop(stop ir.StopReason, refused, toolCalls bool) ir.StopReason {
+	if stop == ir.StopToolUse && !toolCalls {
+		stop = ir.StopEnd
+	}
 	if stop != ir.StopEnd && stop != ir.StopUnknown {
 		return stop
 	}
@@ -288,9 +294,18 @@ func firstChoice(choices []wireChoice) (*wireChoice, error) {
 // needs a name and an id of its own for the same reason. Token counts that
 // are missing or unreadable are 0.
 //
-// Errors wrap ErrMalformed, or ir.ErrLimit for an answer over
-// MaxResponseBytes, ir.MaxDepth, ir.MaxParts, ir.MaxToolCalls or
-// ir.MaxToolArgsBytes; the value returned with an error is empty.
+// The legacy "function_call" of a message is not read as a tool call: it has
+// no id, and the "function" message that would have to answer it is not
+// something EncodeRequest writes. An answer that holds one is an error. A
+// stop reason that announces tools ("tool_calls", "function_call") on an
+// answer without a tool call is read as the end of the answer.
+//
+// A body that holds an "error" object (some providers send one with status
+// 200) gives a *ir.StreamError with the provider's message in its field.
+// Other errors wrap ErrMalformed, or ir.ErrLimit for an answer over
+// MaxResponseBytes, ir.MaxDepth, ir.MaxParts, ir.MaxToolCalls,
+// ir.MaxToolArgsBytes or ir.MaxTotalToolArgsBytes. No error's text holds
+// content of the answer; the value returned with an error is empty.
 func DecodeResponse(body []byte) (ir.Response, error) {
 	if len(body) > MaxResponseBytes {
 		return ir.Response{}, overLimit("answer bytes", MaxResponseBytes)
@@ -302,6 +317,9 @@ func DecodeResponse(body []byte) (ir.Response, error) {
 	if err := json.Unmarshal(body, &a); err != nil {
 		return ir.Response{}, jsonError(err)
 	}
+	if !isNull(a.Error) {
+		return ir.Response{}, &ir.StreamError{Message: errorMessage(a.Error)}
+	}
 	choice, err := firstChoice(a.Choices)
 	if err != nil {
 		return ir.Response{}, err
@@ -310,6 +328,13 @@ func DecodeResponse(body []byte) (ir.Response, error) {
 		return ir.Response{}, malformed("no first choice with a message")
 	}
 	msg := choice.Message
+	if !isNull(msg.FunctionCall) {
+		return ir.Response{}, malformed("a legacy function_call")
+	}
+	refusal, ok := rawString(msg.Refusal)
+	if !ok {
+		return ir.Response{}, malformed("refusal is not a string")
+	}
 	resp := ir.Response{ID: a.ID, Model: a.Model}
 	if a.Usage != nil {
 		resp.Usage = a.Usage.usage()
@@ -321,10 +346,11 @@ func DecodeResponse(body []byte) (ir.Response, error) {
 	if err != nil {
 		return ir.Response{}, err
 	}
-	if s := content + msg.Refusal; s != "" {
+	if s := content + refusal; s != "" {
 		resp.Parts = append(resp.Parts, ir.Part{Kind: ir.Text, Text: s})
 	}
 	ids := make(map[string]bool, len(msg.ToolCalls))
+	argBytes := 0
 	for _, tc := range msg.ToolCalls {
 		if tc.Function == nil || tc.Function.Name == "" {
 			return ir.Response{}, malformed("a tool call without a name")
@@ -341,9 +367,12 @@ func DecodeResponse(body []byte) (ir.Response, error) {
 		if err != nil {
 			return ir.Response{}, err
 		}
+		if argBytes += len(input); argBytes > ir.MaxTotalToolArgsBytes {
+			return ir.Response{}, overLimit("tool call argument bytes in all", ir.MaxTotalToolArgsBytes)
+		}
 		resp.Parts = append(resp.Parts, ir.Part{Kind: ir.ToolUse, ToolID: tc.ID, ToolName: tc.Function.Name, Input: input})
 	}
-	resp.Stop = settleStop(stopReason(choice.FinishReason), msg.Refusal != "", len(msg.ToolCalls) > 0)
+	resp.Stop = settleStop(stopReason(choice.FinishReason), refusal != "", len(msg.ToolCalls) > 0)
 	return resp, nil
 }
 

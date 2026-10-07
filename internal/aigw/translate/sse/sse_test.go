@@ -2,14 +2,11 @@ package sse
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"io"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 const sample = "event: message_start\ndata: {\"a\":1}\n\n" +
@@ -222,91 +219,6 @@ func TestWrite_OneWritePerFrameAndBadInput(t *testing.T) {
 		if err := Write(io.Discard, bad.ev, []byte(bad.data)); !errors.Is(err, ErrBadFrame) {
 			t.Fatalf("%q/%q: err = %v", bad.ev, bad.data, err)
 		}
-	}
-}
-
-func TestRead_CallbackOrderAndFinalFrame(t *testing.T) {
-	var got []Frame
-	err := Read(context.Background(), strings.NewReader("data: a\n\ndata: b"), 1024, func(f Frame) error {
-		got = append(got, f)
-		return nil
-	})
-	if err != nil || !reflect.DeepEqual(got, []Frame{{Data: []byte("a")}, {Data: []byte("b")}}) {
-		t.Fatalf("frames = %q, err = %v", got, err)
-	}
-}
-
-func TestRead_StopsOnCallbackErrorAndTooLarge(t *testing.T) {
-	stop := errors.New("stop")
-	n := 0
-	err := Read(context.Background(), strings.NewReader(strings.Repeat("data: a\n\n", 50)), 1024, func(Frame) error {
-		n++
-		return stop
-	})
-	if !errors.Is(err, stop) || n != 1 {
-		t.Fatalf("err = %v after %d frames", err, n)
-	}
-	err = Read(context.Background(), strings.NewReader(strings.Repeat("x", 1<<20)), 4096, func(Frame) error { return nil })
-	if !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-// endless never ends and never sends a line ending or a frame end.
-type endless struct{ chunk []byte }
-
-func (e endless) Read(p []byte) (int, error) { return copy(p, e.chunk), nil }
-
-func TestRead_EndlessStreams(t *testing.T) {
-	// A single endless line is refused at the limit instead of being buffered.
-	err := Read(context.Background(), endless{[]byte("xxxxxxxx")}, 1<<16, func(Frame) error { return nil })
-	if !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("err = %v", err)
-	}
-	// An endless run of keep-alives (a stream that never finishes) ends with the context.
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	err = Read(ctx, endless{[]byte(": ping\n\n")}, 1<<16, func(Frame) error { return nil })
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestRead_NoGoroutineLeftBehind(t *testing.T) {
-	before := runtime.NumGoroutine()
-	for i := 0; i < 20; i++ {
-		pr, pw := io.Pipe()
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan error, 1)
-		go func() {
-			done <- Read(ctx, pr, 1024, func(Frame) error { return nil })
-		}()
-		if _, err := pw.Write([]byte("data: a\n\ndata: half")); err != nil {
-			t.Fatal(err)
-		}
-		switch i % 3 {
-		case 0: // the upstream body is closed early
-			pr.CloseWithError(errors.New("closed early"))
-		case 1: // the upstream ends
-			pw.Close()
-		default: // the request ends; the transport then closes the body
-			cancel()
-			pr.CloseWithError(context.Canceled)
-		}
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatal("Read did not return")
-		}
-		cancel()
-		pw.Close()
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for runtime.NumGoroutine() > before && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if after := runtime.NumGoroutine(); after > before {
-		t.Fatalf("goroutines: %d before, %d after", before, after)
 	}
 }
 
