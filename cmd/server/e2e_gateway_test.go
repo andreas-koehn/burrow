@@ -192,9 +192,19 @@ type gwEnv struct {
 	csrf  string
 	sqldb *sql.DB
 	up    *gwUpstream
+
+	adminEmail string
 }
 
 func bootGatewayE2E(t *testing.T) *gwEnv {
+	t.Helper()
+	// No tunnel is connected: every provider is direct.
+	return bootGatewayE2EWith(t, &fakeHTTPTunnelLookup{})
+}
+
+// bootGatewayE2EWith boots the relay with tunnels standing in for the
+// control server's tunnel registry.
+func bootGatewayE2EWith(t *testing.T, tunnels tunnelStreamOpener) *gwEnv {
 	t.Helper()
 	// The vault reads the environment once, when it is built.
 	t.Setenv("BURROW_UPSTREAM_KEY_ALPHA", gwAlphaSecret)
@@ -236,11 +246,11 @@ func bootGatewayE2E(t *testing.T) *gwEnv {
 	up := newGWUpstream(t)
 	breaker, limiter := aigateway.NewBreaker(), aigateway.NewLimiter()
 	gateway := newAIGateway(aiGatewayParts{
-		Store: st,
-		// No tunnel is connected in this test: every provider is direct.
-		Tunnels:    proxyDialerAdapter{st: st, srv: &fakeHTTPTunnelLookup{}},
+		Store:      st,
+		Tunnels:    proxyDialerAdapter{st: st, srv: tunnels},
 		Chain:      v04.AIChain,
 		Vault:      v05.CredVault,
+		Injector:   v05.CredInjector,
 		Upstream:   up.srv.Client().Transport, // trusts the stand-in's certificate
 		CostEngine: v04.CostEngine,
 		BudgetTTL:  0, // a budget is seen by the very next request
@@ -287,7 +297,7 @@ func bootGatewayE2E(t *testing.T) *gwEnv {
 	if csrf == "" {
 		t.Fatal("no CSRF cookie after login")
 	}
-	return &gwEnv{srv: srv, hc: hc, plain: &http.Client{Timeout: 60 * time.Second}, csrf: csrf, sqldb: sqldb, up: up}
+	return &gwEnv{srv: srv, hc: hc, plain: &http.Client{Timeout: 60 * time.Second}, csrf: csrf, sqldb: sqldb, up: up, adminEmail: adminEmail}
 }
 
 // admin sends a management request as the admin session.

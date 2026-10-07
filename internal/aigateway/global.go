@@ -153,10 +153,20 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 	// limits, its cache. That service's policy is therefore checked before
 	// the chain, as it is for a single target; every target's own policy is
 	// checked again when its turn comes, before its credential is read.
-	host, ok := g.firstTargetPolicy(w, r, first.Provider)
+	host, checked, ok := g.firstTargetPolicy(w, r, first.Provider)
 	if !ok {
 		return
 	}
+	if !checked {
+		// In the context, not in a header: the request's headers go on to
+		// the upstream.
+		r = r.WithContext(aigw.WithoutCache(r.Context()))
+	}
+	// Each attempt applies the upstream credential of its own target (see
+	// (*failover).attempt). The chain, which runs under the first target's
+	// service, must not put that service's credential on a request that may
+	// go to another target.
+	r = r.WithContext(aigw.WithOwnCredential(r.Context()))
 
 	// The forwarded body differs from the client's in the bytes of the
 	// "model" value only. It has exactly one top-level "model" key in any
@@ -186,9 +196,9 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 // ok is false. When the policy cannot be read (the tunnel is offline, a
 // lookup failed) that is not a refusal, and the failover handler meets it
 // again as a failed attempt and moves on; but the caller was then not checked
-// against this service's policy, so the request must not be answered from
-// its cache.
-func (g *Gateway) firstTargetPolicy(w http.ResponseWriter, r *http.Request, p db.AIProvider) (host string, ok bool) {
+// against this service's policy (checked is false), so the request must not
+// be answered from its cache.
+func (g *Gateway) firstTargetPolicy(w http.ResponseWriter, r *http.Request, p db.AIProvider) (host string, checked, ok bool) {
 	var res *proxy.Resolved
 	switch p.Kind {
 	case "tunnel":
@@ -204,10 +214,9 @@ func (g *Gateway) firstTargetPolicy(w http.ResponseWriter, r *http.Request, p db
 		}
 	}
 	if res == nil {
-		r.Header.Set("Burrow-Cache", "bypass")
-		return host, true
+		return host, false, true
 	}
-	return host, g.policyAllows(w, r, p, res)
+	return host, true, g.policyAllows(w, r, p, res)
 }
 
 func (g *Gateway) maxBody() int64 {

@@ -114,6 +114,38 @@ func withoutUsage(ctx context.Context) bool {
 	return off
 }
 
+type noCacheKey struct{}
+
+// WithoutCache marks a request that must not be answered from the response
+// cache, and whose answer is not stored there. It is the in-relay form of the
+// "Burrow-Cache: bypass" request header: a caller inside the relay uses it so
+// that nothing of the decision travels on to an upstream.
+func WithoutCache(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noCacheKey{}, true)
+}
+
+// CacheBypassed reports whether WithoutCache was set.
+func CacheBypassed(ctx context.Context) bool {
+	off, _ := ctx.Value(noCacheKey{}).(bool)
+	return off
+}
+
+type ownCredentialKey struct{}
+
+// WithOwnCredential marks a request whose upstream handler applies the
+// upstream credential itself. The chain then injects none: a handler that may
+// send the request to more than one target (a fallback chain) must give each
+// target its own credential, and the one bound to the chain's service belongs
+// to the first target only.
+func WithOwnCredential(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ownCredentialKey{}, true)
+}
+
+func ownCredential(ctx context.Context) bool {
+	own, _ := ctx.Value(ownCredentialKey{}).(bool)
+	return own
+}
+
 // Service is the per-request input the Chain needs. proxy.Proxy constructs
 // one of these from its own *proxy.Resolved + the AI config blob, then
 // calls Chain.ServeHTTP. Defining it here (rather than re-exporting
@@ -624,7 +656,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// A request without usage is no inference; its answer is never taken
 	// from or put into the cache of inference answers (the semantic tier
 	// keys on the body alone and could not tell the two apart).
-	bypass := strings.EqualFold(r.Header.Get("Burrow-Cache"), "bypass") || withoutUsage(r.Context())
+	bypass := strings.EqualFold(r.Header.Get("Burrow-Cache"), "bypass") || withoutUsage(r.Context()) || CacheBypassed(r.Context())
 	if cfg.Cache != nil && cfg.Cache.Enabled && c.Cache != nil && !bypass {
 		key := buildCacheKey(svc, r, redactedBody, *cfg.Cache)
 		entry, hit, err := c.Cache.Lookup(r.Context(), key)
@@ -737,9 +769,10 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// Step 8b: credinject — strips the visitor's credential header and
 	// injects the upstream's real credential (spec B.3). Runs AFTER
 	// route so the injected header format matches the chosen upstream.
-	// Skipped when c.CredInjector is nil (nil-safe).
+	// Skipped when c.CredInjector is nil (nil-safe), and when the upstream
+	// handler applies the credential itself (WithOwnCredential).
 	// ---------------------------------------------------------------
-	if c.CredInjector != nil {
+	if c.CredInjector != nil && !ownCredential(r.Context()) {
 		if _, err := c.CredInjector.Apply(r.Context(), svc.ID, r); err != nil {
 			c.Log.Warn("aigw: credential injection failed",
 				slog.String("service_id", svc.ID),

@@ -31,11 +31,14 @@
 package httpduplex
 
 import (
+	"bufio"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -62,6 +65,9 @@ const maxLeftForServer = 256 << 10
 //
 // A request without a body, an HTTP/2 request, and a writer that is not a
 // server connection's (a test recorder) are passed to h as they are.
+//
+// A handler that hijacks the connection owns it from then on, also after it
+// has returned: Serve then leaves the connection alone.
 func Serve(w http.ResponseWriter, r *http.Request, h http.Handler) {
 	if r.ProtoMajor != 1 || r.Body == nil || r.Body == http.NoBody {
 		h.ServeHTTP(w, r)
@@ -84,8 +90,15 @@ func Serve(w http.ResponseWriter, r *http.Request, h http.Handler) {
 	r2 := new(http.Request)
 	*r2 = *r
 	r2.Body = g
+	hw := &hijackNoter{ResponseWriter: w}
 	returned := false
 	defer func() {
+		if hw.hijacked.Load() {
+			// The connection is the handler's now, and may be in use by a
+			// goroutine it left behind: a read deadline or a read of ours
+			// would break it. The server is done with it as well.
+			return
+		}
 		if !returned {
 			// h panicked (http.ErrAbortHandler ends a broken stream that
 			// way) and the server drops the connection. A read under way is
@@ -96,8 +109,45 @@ func Serve(w http.ResponseWriter, r *http.Request, h http.Handler) {
 		}
 		settle(w, rc, r, g)
 	}()
-	h.ServeHTTP(w, r2)
+	h.ServeHTTP(hw, r2)
 	returned = true
+}
+
+// hijackNoter is the writer the handler gets: the caller's, with a note of
+// whether the connection was hijacked. Everything else reaches the writer
+// underneath: Unwrap serves http.ResponseController (deadlines, full duplex),
+// Flush and Hijack are passed on, and so is NoteUpstreamTimeout, which a
+// provider's upstream handler looks for with a type assertion
+// (aiprovider.TimeoutNoter) that would not see through Unwrap.
+type hijackNoter struct {
+	http.ResponseWriter
+	hijacked atomic.Bool
+}
+
+func (h *hijackNoter) Unwrap() http.ResponseWriter { return h.ResponseWriter }
+
+// Flush implements http.Flusher.
+func (h *hijackNoter) Flush() { _ = h.FlushError() }
+
+// FlushError is the form of Flush http.ResponseController asks for.
+func (h *hijackNoter) FlushError() error {
+	return http.NewResponseController(h.ResponseWriter).Flush()
+}
+
+// Hijack implements http.Hijacker.
+func (h *hijackNoter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, brw, err := http.NewResponseController(h.ResponseWriter).Hijack()
+	if err == nil {
+		h.hijacked.Store(true)
+	}
+	return conn, brw, err
+}
+
+// NoteUpstreamTimeout passes the note on to a writer that wants it.
+func (h *hijackNoter) NoteUpstreamTimeout() {
+	if tn, ok := h.ResponseWriter.(interface{ NoteUpstreamTimeout() }); ok {
+		tn.NoteUpstreamTimeout()
+	}
 }
 
 // settle leaves the connection, after the handler has returned, either at
@@ -107,7 +157,9 @@ func settle(w http.ResponseWriter, rc *http.ResponseController, r *http.Request,
 		// The client waits for "100 Continue" before it sends the body, and
 		// the handler answered without asking for it. Reading now would ask
 		// for it. The connection cannot be used again: the client may or may
-		// not send the body.
+		// not send the body. No read is under way; the deadline is for one
+		// that starts just now and would otherwise hold up stop.
+		_ = rc.SetReadDeadline(time.Now())
 		g.stop()
 		giveUp(w, rc)
 		return
@@ -143,6 +195,12 @@ func expectsContinue(r *http.Request) bool {
 // limit of an http.MaxBytesReader: a one-byte reader with a limit of zero
 // does that. The reader is given the server's own writer, found under the
 // wrappers that have Unwrap.
+//
+// This leans on a detail of net/http, not on a documented promise. If the
+// hook ever stopped working the connection would be kept, and the part of the
+// request body that was never read would be parsed as the next request on
+// it. The stall tests (stall_test.go, and TestProxy_UploadAnsweredEarly in
+// internal/proxy) require the connection to be closed and turn red then.
 func giveUp(w http.ResponseWriter, rc *http.ResponseController) {
 	for {
 		u, ok := w.(interface{ Unwrap() http.ResponseWriter })

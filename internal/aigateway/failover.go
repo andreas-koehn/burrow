@@ -480,8 +480,11 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 	}()
 
 	// A fresh request per attempt: its own context, its own reader over its
-	// own body, and the chain's context values (kind, usage, error writer,
-	// route) with it.
+	// own body, its own copy of the headers, and the chain's context values
+	// (kind, usage, error writer, route) with it. r carries no upstream
+	// credential (the chain injects none on a dialect endpoint, see
+	// aigw.WithOwnCredential), so nothing an attempt puts on its copy, its
+	// target's credential least of all, is seen by another attempt.
 	req := r.Clone(ctx)
 	setBody(req, body)
 	// expire ends the attempt for lack of time, unless it is decided already.
@@ -518,6 +521,11 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 		timer = time.AfterFunc(lookup, expire)
 	}
 	upstream, _, ok := f.g.targetUpstream(cw, req, c.provider)
+	if ok {
+		// Last, after this target's policy passed, and on this attempt's
+		// headers only.
+		f.g.applyCredential(req, c.provider)
+	}
 	if timer != nil && !timer.Stop() {
 		// The lookup's time ran out as it returned: that stands, whichever
 		// of the two got there first.
@@ -566,6 +574,23 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 		}
 	}
 	return res
+}
+
+// applyCredential puts the upstream credential of a tunnel provider on r: the
+// one bound to the provider's backing service, as the chain does for a
+// provider path. A direct provider needs nothing here: its handler sets the
+// credential of its own slot on the outgoing request (see targetUpstream).
+//
+// A binding that cannot be read does not stop the request: it goes out without
+// a credential and the upstream refuses it, as on a provider path. The log
+// names the provider and the service, never a value.
+func (g *Gateway) applyCredential(r *http.Request, p db.AIProvider) {
+	if g.Credentials == nil || p.Kind != "tunnel" {
+		return
+	}
+	if _, err := g.Credentials.Apply(r.Context(), p.ServiceID, r); err != nil {
+		g.Log.Warn("aigateway: credential injection failed", "provider", p.Slug, "service_id", p.ServiceID, "err", err)
+	}
 }
 
 // slotWait is the longest an attempt waits for a place at its provider: the

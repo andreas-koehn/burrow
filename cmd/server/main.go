@@ -37,6 +37,7 @@ import (
 	"github.com/ankoehn/burrow/internal/config"
 	"github.com/ankoehn/burrow/internal/connlog"
 	"github.com/ankoehn/burrow/internal/cost"
+	"github.com/ankoehn/burrow/internal/credinject"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/devcert"
 	"github.com/ankoehn/burrow/internal/events"
@@ -791,6 +792,7 @@ func newRootCmd() *cobra.Command {
 				Tunnels:    proxyDialerAdapter{st: st, srv: srv},
 				Chain:      v04.AIChain,
 				Vault:      v05.CredVault,
+				Injector:   v05.CredInjector,
 				Upstream:   aiUpstreamTransport,
 				CostEngine: v04.CostEngine,
 				BudgetTTL:  15 * time.Second,
@@ -1248,6 +1250,11 @@ type aiGatewayParts struct {
 	Chain *aigw.Chain
 	// Vault holds the upstream credentials of direct providers.
 	Vault aiprovider.Vault
+	// Injector applies the upstream credential bound to a tunnel provider's
+	// service. It is the chain's own injector: the chain uses it on a
+	// provider path, the gateway per attempt on a dialect endpoint, where a
+	// request can go to more than one target. nil = no bound credentials.
+	Injector *credinject.Injector
 	// Upstream is the transport used for direct providers: it carries the
 	// address guard and the connection pool, never a credential. Tests inject
 	// one that reaches local test servers.
@@ -1293,6 +1300,10 @@ func newAIGateway(p aiGatewayParts) *aigateway.Gateway {
 	// A nil chain must stay a nil interface.
 	if p.Chain != nil {
 		g.Chain = p.Chain
+	}
+	// The same goes for the injector.
+	if p.Injector != nil {
+		g.Credentials = p.Injector
 	}
 	if p.CostEngine != nil {
 		// Hard budgets stop requests at the gateway: a gateway key or

@@ -45,6 +45,14 @@ type Chain interface {
 	DispatchMetered(w http.ResponseWriter, r *http.Request, serviceID, localHost, apiKeyHeader, apiKeyID string, trustReportedCost bool, upstream http.Handler)
 }
 
+// UpstreamCredentials applies the upstream credential bound to a service to a
+// request that is about to leave the relay: it sets the binding's header on r
+// and reports whether it did. A service without a binding leaves r untouched.
+// *credinject.Injector satisfies it.
+type UpstreamCredentials interface {
+	Apply(ctx context.Context, serviceID string, r *http.Request) (bool, error)
+}
+
 // ModelLister reads a provider's stored model list.
 type ModelLister interface {
 	ListProviderModels(ctx context.Context, slug string) ([]db.AIProviderModel, error)
@@ -112,6 +120,13 @@ type Gateway struct {
 	// provider's backing service; such a provider has no tunnel to read
 	// them from. Required for direct providers.
 	ServicePolicy func(ctx context.Context, serviceID string) (*proxy.Resolved, error)
+
+	// Credentials applies the upstream credential bound to a tunnel
+	// provider's backing service, on the dialect endpoints, where each
+	// attempt gets its own target's credential (see (*failover).attempt). It
+	// must be the injector the chain uses, which does this for a provider
+	// path. nil = no bound credential is applied on a dialect endpoint.
+	Credentials UpstreamCredentials
 
 	// Breaker takes a failing provider out of a fallback chain for a while.
 	// It is shared by all requests. nil = every target is always tried.

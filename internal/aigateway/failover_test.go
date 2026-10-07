@@ -1090,6 +1090,7 @@ func policyBy(modes map[string]string, calls *[]string) func(context.Context, st
 type cacheSpy struct {
 	dispatched  int
 	cacheHeader string
+	cacheOff    bool
 }
 
 func (c *cacheSpy) Dispatch(http.ResponseWriter, *http.Request, string, string, string, string, http.Handler) {
@@ -1098,6 +1099,7 @@ func (c *cacheSpy) Dispatch(http.ResponseWriter, *http.Request, string, string, 
 func (c *cacheSpy) DispatchMetered(w http.ResponseWriter, r *http.Request, _, _, _, _ string, _ bool, up http.Handler) {
 	c.dispatched++
 	c.cacheHeader = r.Header.Get("Burrow-Cache")
+	c.cacheOff = aigw.CacheBypassed(r.Context())
 	up.ServeHTTP(w, r)
 }
 
@@ -1157,8 +1159,8 @@ func TestFailover_PolicyBeforeCredential_PerTarget(t *testing.T) {
 	chain = &cacheSpy{}
 	g.Chain = chain
 	rec = call(g, smartBody)
-	if rec.Code != 200 || rec.Body.String() != `{"ok":true}` || chain.dispatched != 1 || chain.cacheHeader != "bypass" {
-		t.Fatalf("policy unreadable: status %d body %s cache header %q", rec.Code, rec.Body.String(), chain.cacheHeader)
+	if rec.Code != 200 || rec.Body.String() != `{"ok":true}` || chain.dispatched != 1 || !chain.cacheOff || chain.cacheHeader != "" {
+		t.Fatalf("policy unreadable: status %d body %s cache off %v cache header %q", rec.Code, rec.Body.String(), chain.cacheOff, chain.cacheHeader)
 	}
 	if strings.Contains(rec.Body.String(), "secret-detail") || s.credentialReads("zai#ZAI") != 0 {
 		t.Fatal("a target whose policy could not be read was used")
@@ -1169,8 +1171,8 @@ func TestFailover_PolicyBeforeCredential_PerTarget(t *testing.T) {
 	g, _ = failoverGateway(s, "ZAI", nil)
 	chain = &cacheSpy{}
 	g.Chain = chain
-	if rec = call(g, smartBody); rec.Code != 200 || chain.cacheHeader != "" {
-		t.Fatalf("status %d cache header %q", rec.Code, chain.cacheHeader)
+	if rec = call(g, smartBody); rec.Code != 200 || chain.cacheOff || chain.cacheHeader != "" {
+		t.Fatalf("status %d cache off %v cache header %q", rec.Code, chain.cacheOff, chain.cacheHeader)
 	}
 }
 
@@ -1566,8 +1568,9 @@ func TestFailover_TunnelFirstTargetPolicyBeforeTheChain(t *testing.T) {
 	// Offline: no refusal, no cache, on to the next target.
 	g.Tunnels = fakeTunnels{}
 	rec = call(g, smartBody)
-	if rec.Code != 200 || chain.dispatched != 1 || chain.cacheHeader != "bypass" {
-		t.Fatalf("offline tunnel: status %d dispatched %d cache header %q", rec.Code, chain.dispatched, chain.cacheHeader)
+	// The bypass travels in the context: a header would go on to the upstream.
+	if rec.Code != 200 || chain.dispatched != 1 || !chain.cacheOff || chain.cacheHeader != "" {
+		t.Fatalf("offline tunnel: status %d dispatched %d cache off %v cache header %q", rec.Code, chain.dispatched, chain.cacheOff, chain.cacheHeader)
 	}
 }
 

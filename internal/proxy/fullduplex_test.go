@@ -153,11 +153,22 @@ func TestProxy_UploadAnsweredEarly(t *testing.T) {
 	}
 	for _, rt := range routes {
 		t.Run(rt.name, func(t *testing.T) {
-			t.Run("the visitor sends the rest at once: answered, connection reused", func(t *testing.T) {
+			t.Run("the visitor sends the rest after the answer began: answered, connection reused", func(t *testing.T) {
 				d, ts := leakStack(t, earlyOK, "", rt.opts...)
 				conn, br := rawUpload(t, ts, rt.host, "POST /upload HTTP/1.1\r\nHost: {host}\r\nContent-Length: 10\r\n\r\n01234")
+				// The second half goes out only once the answer's headers
+				// are here: the app has answered with half the body unread,
+				// and the relay has to take in the rest itself to keep the
+				// connection.
+				resp, err := http.ReadResponse(br, nil)
+				if err != nil {
+					t.Fatalf("no answer while half the body was outstanding: %v", err)
+				}
 				_, _ = io.WriteString(conn, "56789")
-				completeOK(t, br, 200, "ok")
+				got, err := io.ReadAll(resp.Body)
+				if err != nil || resp.StatusCode != 200 || string(got) != "ok" {
+					t.Fatalf("the response is not complete: status %d body %q err %v", resp.StatusCode, got, err)
+				}
 				// The next request on the same connection is served.
 				_, _ = io.WriteString(conn, "GET /again HTTP/1.1\r\nHost: "+rt.host+"\r\n\r\n")
 				completeOK(t, br, 200, "ok")
