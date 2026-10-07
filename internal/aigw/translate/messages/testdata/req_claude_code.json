@@ -1,0 +1,21 @@
+{"model":"burrow-medium","max_tokens":4096,"stream":true,"temperature":1,"top_k":40,
+ "metadata":{"user_id":"u"},
+ "thinking":{"type":"enabled","budget_tokens":2048},
+ "system":[{"type":"text","text":"You are a coding assistant.","cache_control":{"type":"ephemeral"}}],
+ "tools":[
+   {"name":"Read","description":"Read a file","input_schema":{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}},
+   {"type":"web_search_20250305","name":"web_search","max_uses":3}
+ ],
+ "tool_choice":{"type":"auto"},
+ "messages":[
+   {"role":"user","content":"Open README.md"},
+   {"role":"assistant","content":[
+     {"type":"thinking","thinking":"I need the file.","signature":"sig123"},
+     {"type":"text","text":"I'll read it."},
+     {"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"README.md"}}
+   ]},
+   {"role":"user","content":[
+     {"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"# Title"},{"type":"text","text":"body"}]},
+     {"type":"text","text":"Summarise it.","cache_control":{"type":"ephemeral"}}
+   ]}
+ ]}

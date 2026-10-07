@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
 )
@@ -145,7 +146,7 @@ type wireAnswer struct {
 	Model   string          `json:"model"`
 	Choices choiceList      `json:"choices"`
 	Usage   *wireUsage      `json:"usage"`
-	Error   json.RawMessage `json:"error"` // streams only
+	Error   json.RawMessage `json:"error"`
 }
 
 type wireChoice struct {
@@ -211,16 +212,25 @@ func (m *wireMessage) reasoningText() string {
 	return s
 }
 
-// argumentsText returns the JSON text of a tool call's arguments: the
-// string's content, or the bytes of an object a provider sent in its place.
+// argumentsText returns the JSON text of a complete tool call's arguments:
+// the string's content, or the bytes of an object a provider sent in its
+// place. Arguments are passed on or refused, never repaired: bytes that are
+// not UTF-8 (a lone continuation byte, a surrogate escape without its
+// partner) are an error here, where encoding/json would put U+FFFD in their
+// place. The text "null" is refused as it is in a stream; JSON null, an empty
+// string and white space are "no arguments".
 func argumentsText(raw json.RawMessage) (string, error) {
-	if s, ok := rawString(raw); ok {
-		return s, nil
+	b, err := argumentsBytes(raw)
+	if err != nil {
+		return "", err
 	}
-	if trimmed := bytes.TrimSpace(raw); trimmed[0] == '{' {
-		return string(trimmed), nil
+	if !utf8.Valid(b) {
+		return "", malformed("tool call arguments are not valid UTF-8")
 	}
-	return "", malformed("tool call arguments are neither a string nor an object")
+	if string(bytes.TrimSpace(b)) == "null" {
+		return "", malformed("tool call arguments are not a JSON object")
+	}
+	return string(b), nil
 }
 
 // toolInput is ir.ToolInput with this package's error for broken JSON.

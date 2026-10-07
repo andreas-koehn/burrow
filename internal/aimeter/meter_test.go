@@ -512,6 +512,12 @@ func TestAnthropicStream_CountsCacheTokens(t *testing.T) {
 		"delta without cache fields": {
 			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12,\"cache_creation_input_tokens\":300,\"output_tokens\":1}}}\n\n" +
 				"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":12,\"output_tokens\":5}}\n\n", 312, 5},
+		// A translated stream (a Chat Completions target behind /v1/messages): the target
+		// reports usage at the end only, so message_start says 0 and message_delta carries
+		// both figures.
+		"input only in the delta": {
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n" +
+				"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":50,\"output_tokens\":21}}\n\n", 50, 21},
 		// Only the delta has cache fields.
 		"delta only": {
 			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n" +

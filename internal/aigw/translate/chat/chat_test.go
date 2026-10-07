@@ -1374,7 +1374,7 @@ func TestStreamDecoder_ArgumentsAreOneObjectOrNothing(t *testing.T) {
 		if !errors.Is(err, ErrMalformed) || !strings.HasSuffix(kinds(got), "part_stop error") || strings.Contains(kinds(got), "finish") {
 			t.Errorf("%q: %v: %s", bad, err, kinds(got))
 		}
-		if _, berr := DecodeResponse(answer(`{"tool_calls":[{"id":"a","function":{"name":"f","arguments":`+string(mustJSON(bad))+`}}]}`, `"tool_calls"`)); berr == nil && bad != "null" {
+		if _, berr := DecodeResponse(answer(`{"tool_calls":[{"id":"a","function":{"name":"f","arguments":`+string(mustJSON(bad))+`}}]}`, `"tool_calls"`)); berr == nil {
 			t.Errorf("%q: the buffered path accepts it", bad)
 		}
 	}
@@ -1508,5 +1508,150 @@ func TestStreamDecoder_IDAfterTheArgumentsWithoutAnIndex(t *testing.T) {
 	}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("%v\n%+v", err, got)
+	}
+}
+
+// ---------------------------------------------------------------- parked for X03
+
+func toolAnswer(arguments string) []byte {
+	return answer(`{"tool_calls":[{"id":"a","function":{"name":"f","arguments":`+arguments+`}}]}`, `"tool_calls"`)
+}
+
+func toolStream(arguments string) [][]byte {
+	return [][]byte{
+		chunk(`{"tool_calls":[{"index":0,"id":"a","function":{"name":"f","arguments":` + arguments + `}}]}`),
+		finishChunk("tool_calls"), []byte("[DONE]"),
+	}
+}
+
+func TestToolArguments_TheTextNullIsRefusedOnBothPaths(t *testing.T) {
+	for _, arguments := range []string{`"null"`, `" null "`} {
+		if resp, err := DecodeResponse(toolAnswer(arguments)); !errors.Is(err, ErrMalformed) || len(resp.Parts) != 0 {
+			t.Errorf("buffered %s: err = %v, parts %+v", arguments, err, resp.Parts)
+		}
+		evs, err := feedAll(NewStreamDecoder(), toolStream(arguments)...)
+		if !errors.Is(err, ErrMalformed) || evs[len(evs)-1].Kind != ir.Error {
+			t.Errorf("stream %s: err = %v, events %s", arguments, err, kinds(evs))
+		}
+	}
+	// "Nothing" stays nothing on both paths.
+	for _, arguments := range []string{`null`, `""`, `" \n\t "`} {
+		resp, err := DecodeResponse(toolAnswer(arguments))
+		if err != nil || len(resp.Parts) != 1 || string(resp.Parts[0].Input) != "{}" {
+			t.Errorf("buffered %s: err = %v, parts %+v", arguments, err, resp.Parts)
+		}
+		evs, err := feedAll(NewStreamDecoder(), toolStream(arguments)...)
+		if err != nil || kinds(evs) != "start part_start part_stop finish" {
+			t.Errorf("stream %s: err = %v, events %s", arguments, err, kinds(evs))
+		}
+		streamed, err := ir.Collect(evs)
+		if err != nil || !reflect.DeepEqual(streamed.Parts, resp.Parts) {
+			t.Errorf("stream %s: %v: %+v, buffered %+v", arguments, err, streamed.Parts, resp.Parts)
+		}
+	}
+}
+
+func TestToolArguments_AreNeverRepaired(t *testing.T) {
+	for name, arguments := range map[string]string{
+		"a lone continuation byte":     "\"{\\\"a\\\":\\\"\x80\\\"}\"",
+		"a lead byte without its rest": "\"{\\\"a\\\":\\\"\xc3\\\"}\"",
+		"a lone high surrogate escape": `"{\"a\":\"\ud83d\"}"`,
+		"a lone low surrogate escape":  `"{\"a\":\"\ude00\"}"`,
+	} {
+		if resp, err := DecodeResponse(toolAnswer(arguments)); !errors.Is(err, ErrMalformed) || len(resp.Parts) != 0 {
+			t.Errorf("buffered, %s: err = %v, parts %+v", name, err, resp.Parts)
+		}
+		evs, err := feedAll(NewStreamDecoder(), toolStream(arguments)...)
+		if !errors.Is(err, ErrMalformed) || len(evs) == 0 || evs[len(evs)-1].Kind != ir.Error {
+			t.Errorf("stream, %s: err = %v, events %s", name, err, kinds(evs))
+		}
+		for _, ev := range evs {
+			if strings.Contains(ev.ArgsJSON, "�") {
+				t.Errorf("stream, %s: repaired arguments were sent on: %q", name, ev.ArgsJSON)
+			}
+		}
+	}
+	// What is valid passes byte for byte: a real U+FFFD, a surrogate pair written as escapes, and
+	// an escape that belongs to the arguments' own JSON text.
+	for _, want := range []string{"{\"a\":\"�\"}", "{\"a\":\"\U0001F600\"}", `{"a":"\ud83d"}`} {
+		arguments := string(mustJSON(want))
+		if want == "{\"a\":\"\U0001F600\"}" {
+			arguments = `"{\"a\":\"😀\"}"`
+		}
+		resp, err := DecodeResponse(toolAnswer(arguments))
+		if err != nil || string(resp.Parts[0].Input) != want {
+			t.Errorf("buffered %s: %v, %+v", arguments, err, resp.Parts)
+		}
+		evs, err := feedAll(NewStreamDecoder(), toolStream(arguments)...)
+		streamed, cerr := ir.Collect(evs)
+		if err != nil || cerr != nil || string(streamed.Parts[0].Input) != want {
+			t.Errorf("stream %s: %v, %v, %+v", arguments, err, cerr, streamed.Parts)
+		}
+	}
+	// Text may keep U+FFFD.
+	resp, err := DecodeResponse(answer("{\"content\":\"a\x80b\"}", `"stop"`))
+	if err != nil || resp.Parts[0].Text != "a�b" {
+		t.Errorf("text: %v, %+v", err, resp.Parts)
+	}
+}
+
+func TestEncodeRequest_ThinkingAndEmptyTextIsNoTurn(t *testing.T) {
+	thinking := ir.Part{Kind: ir.Thinking, Text: "hm"}
+	body, dropped, err := EncodeRequest(ir.Request{Messages: []ir.Message{
+		user(text("a")), assistant(thinking, text("")), user(text("b")), assistant(text("")), user(text("c")),
+	}}, "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != `{"model":"m","messages":[{"role":"user","content":"a"},{"role":"user","content":"b"},{"role":"user","content":"c"}]}` {
+		t.Fatalf("body = %s", body)
+	}
+	if !reflect.DeepEqual(dropped, []string{"thinking"}) {
+		t.Fatalf("dropped = %v", dropped)
+	}
+	// With a tool call the turn stays.
+	top, _ := encode(t, ir.Request{Messages: []ir.Message{user(text("a")), assistant(text(""), toolUse("t", "f", `{}`)), user(toolResult("t", "r"))}})
+	if !strings.Contains(string(top["messages"]), `"tool_calls"`) {
+		t.Fatalf("messages = %s", top["messages"])
+	}
+}
+
+func TestStreamDecoder_CloseTellsTooLargeFromUnreadable(t *testing.T) {
+	// A call that begins after the finish_reason is judged by Close when "[DONE]" never comes.
+	late := func(arguments string) []ir.Event {
+		d := NewStreamDecoder()
+		evs, err := feedAll(d, chunk(`{"content":"x"}`), finishChunk("stop"),
+			chunk(`{"tool_calls":[{"index":7,"id":"late","function":{"name":"f","arguments":`+string(mustJSON(arguments))+`}}]}`))
+		if err != nil {
+			t.Fatalf("feed: %v", err)
+		}
+		return append(evs, d.Close()...)
+	}
+	deep := late(`{"a":` + strings.Repeat("[", ir.MaxDepth+1) + strings.Repeat("]", ir.MaxDepth+1) + `}`)
+	if last := deep[len(deep)-1]; last.Kind != ir.Error || last.Err != errTooLarge {
+		t.Fatalf("too deep: %+v", last)
+	}
+	broken := late(`{"a":`)
+	if last := broken[len(broken)-1]; last.Kind != ir.Error || last.Err != errUnreadable {
+		t.Fatalf("broken: %+v", last)
+	}
+}
+
+func TestDecodeError(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"error":{"message":"rate limited","type":"x"}}`: "rate limited",
+		`{"error":"plain"}`:       "plain",
+		`{"message":"top level"}`: "top level",
+		`{"type":"error","error":{"type":"api_error","message":"anthropic shape"}}`: "anthropic shape",
+		`{"error":{"code":7}}`: "",
+		`<html>502</html>`:     "",
+		``:                     "",
+		`[1]`:                  "",
+		`{"error":{"message":"` + strings.Repeat("é", 400) + `"}}`: strings.Repeat("é", 150),
+		strings.Repeat("[", 200) + strings.Repeat("]", 200):        "",
+	} {
+		if got := DecodeError([]byte(body)); got != want {
+			t.Errorf("DecodeError(%.40q) = %q, want %q", body, got, want)
+		}
 	}
 }

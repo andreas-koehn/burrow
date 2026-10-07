@@ -111,8 +111,9 @@ func NewStreamDecoder() *StreamDecoder {
 //     said it was done): "the provider ended the stream early";
 //   - the frame or the answer is malformed (not JSON, a field of the wrong
 //     type, a tool call without name or id or with arguments that are no
-//     JSON object, a character whose second half never came, the legacy
-//     "function_call") or over a limit (MaxFrameBytes, ir.MaxDepth,
+//     JSON object or hold bytes that are not UTF-8 (text is repaired with
+//     U+FFFD, arguments never are), a character whose second half never
+//     came, the legacy "function_call") or over a limit (MaxFrameBytes, ir.MaxDepth,
 //     ir.MaxParts, ir.MaxToolCalls, ir.MaxToolArgsBytes,
 //     ir.MaxTotalToolArgsBytes): the Error carries a fixed text.
 //
@@ -127,11 +128,7 @@ func (d *StreamDecoder) Feed(data []byte) ([]ir.Event, error) {
 	}
 	err := d.feed(data)
 	if err != nil {
-		msg := errUnreadable
-		if errors.Is(err, ir.ErrLimit) {
-			msg = errTooLarge
-		}
-		d.fail(msg)
+		d.fail(failureText(err))
 	}
 	out := d.out
 	d.out = nil
@@ -147,17 +144,26 @@ func (d *StreamDecoder) Close() []ir.Event {
 	if d.done {
 		return nil
 	}
-	switch {
-	case !d.sawFinish:
+	if !d.sawFinish {
 		d.fail(errEarlyEnd)
-	case d.closeParts() != nil: // text that came after the finish_reason and is cut inside a character
-		d.fail(errUnreadable)
-	default:
+	} else if err := d.closeParts(); err != nil {
+		// What came after the finish_reason is broken: text cut inside a
+		// character, or a late tool call that does not hold.
+		d.fail(failureText(err))
+	} else {
 		d.finish()
 	}
 	out := d.out
 	d.out = nil
 	return out
+}
+
+// failureText picks the Error event's text for an answer that failed with err.
+func failureText(err error) string {
+	if errors.Is(err, ir.ErrLimit) {
+		return errTooLarge
+	}
+	return errUnreadable
 }
 
 func (d *StreamDecoder) emit(ev ir.Event) { d.out = append(d.out, ev) }
@@ -404,7 +410,12 @@ func (d *StreamDecoder) toolCall(tc *wireToolCall) error {
 		if err != nil {
 			return err
 		}
-		fragment = whole(&c.carry, raw)
+		// Arguments are passed on or refused, never repaired (text is).
+		b := complete(&c.carry, raw)
+		if !utf8.Valid(b) {
+			return malformed("tool call arguments are not valid UTF-8")
+		}
+		fragment = string(b)
 	}
 	if len(c.args) == 0 {
 		fragment = strings.TrimLeft(fragment, " \t\r\n")
@@ -487,10 +498,19 @@ func (d *StreamDecoder) closeParts() error {
 	return nil
 }
 
-// errorMessage returns what a provider's error object says: its "message",
-// or the error itself when it is a string, cut to maxErrorBytes at a
-// character boundary; a fixed text when it says nothing.
+// errorMessage returns what a provider's error object says (see errorText),
+// or a fixed text when it says nothing.
 func errorMessage(raw json.RawMessage) string {
+	if s := errorText(raw); s != "" {
+		return s
+	}
+	return errProvider
+}
+
+// errorText returns the "message" of an error object, or the error itself
+// when it is a string, cut to maxErrorBytes at a character boundary; "" when
+// it says nothing.
+func errorText(raw json.RawMessage) string {
 	s, ok := rawString(raw)
 	if !ok {
 		var obj struct {
@@ -500,15 +520,16 @@ func errorMessage(raw json.RawMessage) string {
 			s, _ = rawString(obj.Message)
 		}
 	}
+	return cutMessage(s)
+}
+
+func cutMessage(s string) string {
 	if len(s) > maxErrorBytes {
 		n := maxErrorBytes
 		for n > 0 && !utf8.RuneStart(s[n]) {
 			n--
 		}
 		s = s[:n]
-	}
-	if s == "" {
-		return errProvider
 	}
 	return s
 }
@@ -632,13 +653,23 @@ func surrogate(b []byte) (r rune, high, ok bool) {
 	return r, r < 0xDC00, true
 }
 
-// whole joins the bytes of a delta with what the previous delta of the same
-// part left over, and returns the text that is complete. The first bytes of
-// a character at the very end — a UTF-8 sequence that is not finished, or
-// the first half of a surrogate pair — are kept in *carry for the next
-// delta. Bytes that are no UTF-8 anywhere else become U+FFFD, as they do in
-// a complete answer.
+// whole joins the bytes of a text delta with what the previous delta of the
+// same part left over (see complete) and returns the text that is complete.
+// Bytes that are no UTF-8 become U+FFFD, as they do in a complete answer.
 func whole(carry *[]byte, b []byte) string {
+	b = complete(carry, b)
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	return strings.ToValidUTF8(string(b), "\ufffd")
+}
+
+// complete joins the bytes of a delta with what the previous delta of the
+// same part left over, and returns the bytes that are complete, as they are.
+// The first bytes of a character at the very end — a UTF-8 sequence that is
+// not finished, or the first half of a surrogate pair — are kept in *carry
+// for the next delta.
+func complete(carry *[]byte, b []byte) []byte {
 	if len(*carry) > 0 {
 		joined := make([]byte, 0, len(*carry)+len(b))
 		joined = append(append(joined, *carry...), b...)
@@ -654,11 +685,7 @@ func whole(carry *[]byte, b []byte) string {
 	if n == 0 {
 		*carry = nil
 	}
-	b = b[:len(b)-n]
-	if utf8.Valid(b) {
-		return string(b)
-	}
-	return strings.ToValidUTF8(string(b), "\ufffd")
+	return b[:len(b)-n]
 }
 
 // unfinished returns how many bytes at the end of b are the beginning of a
@@ -687,4 +714,27 @@ func unfinished(b []byte) int {
 		return 0
 	}
 	return 0
+}
+
+// DecodeError returns what the body of an error answer (a status that is no
+// success) says: the "message" of its "error" object, the error itself when
+// it is a string, or a top-level "message"; cut to 300 bytes at a character
+// boundary. It returns "" when the body is not JSON or says nothing. The
+// text is the provider's own: it is meant for the caller and for nothing
+// else, like StreamError.Message.
+func DecodeError(body []byte) string {
+	var obj struct {
+		Error   json.RawMessage `json:"error"`
+		Message json.RawMessage `json:"message"`
+	}
+	if ir.Depth(body) > ir.MaxDepth || json.Unmarshal(body, &obj) != nil {
+		return ""
+	}
+	if !isNull(obj.Error) {
+		if s := errorText(obj.Error); s != "" {
+			return s
+		}
+	}
+	s, _ := rawString(obj.Message)
+	return cutMessage(s)
 }

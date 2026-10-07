@@ -1,0 +1,11 @@
+{"model":"gpt-x",
+ "messages":[
+   {"role":"system","content":"You are a coding assistant."},
+   {"role":"user","content":"Open README.md"},
+   {"role":"assistant","content":"I'll read it.","tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"Read","arguments":"{\"file_path\":\"README.md\"}"}}]},
+   {"role":"tool","tool_call_id":"toolu_1","content":"# Title\nbody"},
+   {"role":"user","content":"Summarise it."}
+ ],
+ "tools":[{"type":"function","function":{"name":"Read","description":"Read a file","parameters":{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}}}],
+ "tool_choice":"auto","max_tokens":4096,"temperature":1,
+ "stream":true,"stream_options":{"include_usage":true}}

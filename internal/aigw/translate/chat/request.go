@@ -54,7 +54,8 @@ func tooMany(field string, limit int) error {
 //
 // What is not carried, and how it is reported:
 //   - Thinking parts of assistant messages are left out: "thinking". An
-//     assistant message that holds nothing else is left out as a whole.
+//     assistant message that holds nothing else, or nothing but empty text,
+//     is left out as a whole.
 //   - Stop sequences beyond maxStop are left out: "stop.extra".
 //   - A tool choice that demands a tool ("required", or a named tool) when
 //     the request carries no such tool is left out: "tool_choice". ("auto"
@@ -330,16 +331,18 @@ func (e *encoder) assistant(m ir.Message, at func(string) string) error {
 			return unsupported(at("part"))
 		}
 	}
-	if len(texts) == 0 && len(calls) == 0 {
-		// Only thinking (reported above), or nothing at all: "content":""
-		// without tool calls is refused by some servers, so the turn is not
-		// written. Two user messages in a row are fine for Chat Completions.
+	content := strings.Join(texts, "\n\n")
+	if content == "" && len(calls) == 0 {
+		// Only thinking (reported above), only empty text, or nothing at all:
+		// "content":"" without tool calls is refused by some servers, so the
+		// turn is not written. Two user messages in a row are fine for Chat
+		// Completions.
 		return nil
 	}
 	e.message("assistant")
 	e.raw(`,"content":`)
 	if len(texts) > 0 {
-		e.str(strings.Join(texts, "\n\n"))
+		e.str(content)
 	} else {
 		e.raw(`null`)
 	}
