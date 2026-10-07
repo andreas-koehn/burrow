@@ -83,7 +83,9 @@ func tooMany(field string, limit int) error {
 //   - any other key: ir.Unknown, at the four depths package ir describes,
 //     and "tool_choice.<key>".
 //
-// Refused with a *BadRequestError: a body that is not a JSON object; a
+// A turn all of whose blocks were left out is left out as a whole.
+//
+// Refused with a *BadRequestError: a request in which no turn is left; a body that is not a JSON object; a
 // missing or mistyped required field; a role other than user and assistant;
 // a block in a turn that cannot hold it; a tool_use without id or name or
 // with an input that is not a JSON object; an image that cannot be carried
@@ -396,48 +398,60 @@ func (d *decoder) messages(raw []byte) ([]ir.Message, error) {
 		if !ok {
 			return nil, bad(at+".content", "is required")
 		}
+		leftOut := 0
 		if s, ok := asString(content); ok {
 			m.Parts = []ir.Part{{Kind: ir.Text, Text: s}}
-		} else if m.Parts, err = d.content(content, m.Role, at+".content"); err != nil {
+		} else if m.Parts, leftOut, err = d.content(content, m.Role, at+".content"); err != nil {
 			return nil, err
 		}
 		d.unknown("messages.", o)
+		if len(m.Parts) == 0 && leftOut > 0 {
+			// Every block of the turn was left out (and reported): there is
+			// no turn to send. An empty one would reach the target as a
+			// message that says nothing.
+			continue
+		}
 		out = append(out, m)
+	}
+	if len(out) == 0 {
+		return nil, bad("messages", "holds nothing that can be translated")
 	}
 	return out, nil
 }
 
-func (d *decoder) content(raw []byte, role ir.Role, at string) ([]ir.Part, error) {
+// content reads the blocks of a message. leftOut counts the blocks that
+// were left out (and reported).
+func (d *decoder) content(raw []byte, role ir.Role, at string) (parts []ir.Part, leftOut int, err error) {
 	items, err := list(raw, ir.MaxParts, at)
 	if err != nil {
 		if e := err.(*BadRequestError); !e.limit {
 			e.Reason = "is neither a string nor a list of blocks"
 		}
-		return nil, err
+		return nil, 0, err
 	}
-	var parts []ir.Part
 	calls := 0
 	for i, item := range items {
 		here := fmt.Sprintf("%s[%d]", at, i)
 		o, ok := asObject(item)
 		if !ok {
-			return nil, bad(here, "is not an object")
+			return nil, 0, bad(here, "is not an object")
 		}
 		p, keep, err := d.block(o, role, here)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if !keep {
+			leftOut++
 			continue
 		}
 		if p.Kind == ir.ToolUse {
 			if calls++; calls > ir.MaxToolCalls {
-				return nil, &BadRequestError{Field: at, Reason: fmt.Sprintf("has more than %d tool calls", ir.MaxToolCalls), limit: true}
+				return nil, 0, &BadRequestError{Field: at, Reason: fmt.Sprintf("has more than %d tool calls", ir.MaxToolCalls), limit: true}
 			}
 		}
 		parts = append(parts, p)
 	}
-	return parts, nil
+	return parts, leftOut, nil
 }
 
 // providerToolBlock reports whether a block type belongs to a tool the

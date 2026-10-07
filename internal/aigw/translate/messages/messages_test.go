@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/aigw/translate/chat"
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
@@ -407,6 +408,36 @@ func TestDecodeRequest_BlocksThatAreRefused(t *testing.T) {
 	}
 }
 
+func TestDecodeRequest_TurnEmptiedByDroppingIsLeftOut(t *testing.T) {
+	// A turn whose only blocks were left out is no turn: it must not reach the target as
+	// {"role":"user","content":""}. The drop is reported.
+	req := decode(t, `{"model":"m","max_tokens":9,"messages":[
+		{"role":"user","content":"go"},
+		{"role":"assistant","content":[{"type":"mcp_tool_use","id":"m1","name":"x","server_name":"s","input":{}}]},
+		{"role":"user","content":[{"type":"mcp_tool_result","tool_use_id":"m1","content":"r"}]},
+		{"role":"assistant","content":[{"type":"redacted_thinking","data":"AAAA"}]},
+		{"role":"user","content":"on"}]}`)
+	want := []ir.Message{{Role: ir.User, Parts: []ir.Part{text("go")}}, {Role: ir.User, Parts: []ir.Part{text("on")}}}
+	if !reflect.DeepEqual(req.Messages, want) {
+		t.Fatalf("messages = %+v", req.Messages)
+	}
+	if got := ir.Dropped(req.Dropped); !reflect.DeepEqual(got, []string{"input:mcp_tool_result", "input:mcp_tool_use", "thinking"}) {
+		t.Fatalf("dropped = %v", got)
+	}
+	body, _, err := chat.EncodeRequest(req, "gpt-x")
+	if err != nil || string(body) != `{"model":"gpt-x","messages":[{"role":"user","content":"go"},{"role":"user","content":"on"}],"max_tokens":9}` {
+		t.Fatalf("%v: %s", err, body)
+	}
+	// A turn that was empty to begin with is the caller's own and stays.
+	req = decode(t, `{"model":"m","max_tokens":9,"messages":[{"role":"user","content":[]},{"role":"user","content":""}]}`)
+	if len(req.Messages) != 2 {
+		t.Fatalf("messages = %+v", req.Messages)
+	}
+	// Nothing left to send is a request without messages.
+	refused(t, withContent("user", `{"type":"mcp_tool_result","tool_use_id":"m1","content":"r"}`), "messages")
+	refused(t, `{"model":"m","max_tokens":9,"system":"s","messages":[{"role":"assistant","content":[{"type":"server_tool_use","id":"s","name":"web_search","input":{}}]},{"role":"user","content":[{"type":"web_search_tool_result","tool_use_id":"s","content":[]}]}]}`, "messages")
+}
+
 func TestDecodeRequest_Limits(t *testing.T) {
 	list := func(element string, n int) string { return strings.TrimSuffix(strings.Repeat(element+",", n), ",") }
 	msg := `{"role":"user","content":"x"}`
@@ -552,8 +583,8 @@ func TestEncodeError(t *testing.T) {
 			t.Errorf("ErrorType(%d) = %q, want %q", status, got, want)
 		}
 	}
-	got := EncodeError(429, "slow \"down\"\n<now>")
-	if string(got) != `{"type":"error","error":{"type":"rate_limit_error","message":"slow \"down\"\n<now>"}}` {
+	got := EncodeError(429, "upstream_error", "slow \"down\"\n<now>")
+	if string(got) != `{"type":"error","error":{"type":"rate_limit_error","message":"slow \"down\"\n<now>"},"burrow_code":"upstream_error"}` {
 		t.Fatalf("body = %s", got)
 	}
 }
@@ -576,10 +607,14 @@ func finishEv(stop ir.StopReason, in, out int) ir.Event {
 	return ir.Event{Kind: ir.Finish, Stop: stop, Usage: ir.Usage{InputTokens: in, OutputTokens: out}}
 }
 
+// frozen is a clock that stands still.
+func frozen() time.Time { return time.Unix(1_700_000_000, 0) }
+
 // encodeEvents writes events through an encoder and returns the bytes and the first error.
 func encodeEvents(events []ir.Event, closeIt bool) ([]byte, error) {
 	var buf bytes.Buffer
 	e := NewStreamEncoder(&buf, "asked-for")
+	e.now = frozen // no pings: the tests that want them move the clock themselves
 	var first error
 	for _, ev := range events {
 		if err := e.Write(ev); err != nil && first == nil {
@@ -726,6 +761,7 @@ func TestStreamEncoder_LiveBlockIsNotHeldBack(t *testing.T) {
 	// The block that is open on the wire gets its deltas at once: nothing waits for the finish.
 	var buf bytes.Buffer
 	e := NewStreamEncoder(&buf, "m")
+	e.now = frozen
 	step := func(ev ir.Event, wantNames string) {
 		t.Helper()
 		before := buf.Len()
@@ -962,6 +998,55 @@ func TestStreamEncoder_HoldBackIsBounded(t *testing.T) {
 	st, _ := mustStream(t, events, true)
 	if st.Blocks[1].PartialJSON != want.String() || len(st.Blocks[1].Deltas) > 1000 {
 		t.Fatalf("held pieces: %d deltas, bytes equal %v", len(st.Blocks[1].Deltas), st.Blocks[1].PartialJSON == want.String())
+	}
+}
+
+func TestStreamEncoder_PingsWhilePartsAreHeldBack(t *testing.T) {
+	// A part that waits for the wire gives the caller nothing; a ping at most once per second
+	// on which events arrive shows the stream is alive.
+	var buf bytes.Buffer
+	clock := frozen()
+	e := NewStreamEncoder(&buf, "m")
+	e.now = func() time.Time { return clock }
+	write := func(ev ir.Event, advance time.Duration, wantNames string) {
+		t.Helper()
+		clock = clock.Add(advance)
+		before := buf.Len()
+		if err := e.Write(ev); err != nil {
+			t.Fatal(err)
+		}
+		if got := eventNames(buf.Bytes()[before:]); got != wantNames {
+			t.Fatalf("after %s[%d] at +%v: wrote %q, want %q", ev.Kind, ev.Index, advance, got, wantNames)
+		}
+	}
+	write(startEv(), 0, "message_start")
+	write(toolStart(0, "a", "f"), 5*time.Second, "content_block_start") // nothing held: no ping, however long it took
+	write(argsDelta(0, `{}`), 5*time.Second, "content_block_delta")
+	write(toolStart(1, "b", "g"), 0, "")
+	write(argsDelta(1, `{"k":"`), 999*time.Millisecond, "")
+	write(argsDelta(1, `v`), time.Millisecond, "ping") // a second without a byte
+	write(argsDelta(1, `v`), 500*time.Millisecond, "")
+	write(argsDelta(1, `v`), 400*time.Millisecond, "")
+	write(argsDelta(1, `v`), 100*time.Millisecond, "ping")
+	write(argsDelta(0, ` `), 900*time.Millisecond, "content_block_delta") // a live delta is a sign of life
+	write(argsDelta(1, `v`), 900*time.Millisecond, "")
+	write(argsDelta(1, `"}`), 3*time.Second, "ping") // one, not three
+	write(ev(ir.PartStop, 1), 2*time.Second, "ping")
+	write(ev(ir.PartStop, 0), 5*time.Second, "content_block_stop content_block_start content_block_delta content_block_delta content_block_delta content_block_delta content_block_delta content_block_delta content_block_delta content_block_stop")
+	write(finishEv(ir.StopToolUse, 1, 1), 5*time.Second, "message_delta message_stop")
+	if !strings.Contains(buf.String(), "event: ping\ndata: {\"type\":\"ping\"}\n\n") {
+		t.Fatalf("no ping frame:\n%s", buf.String())
+	}
+	s, err := CheckStream(buf.Bytes())
+	if err != nil || s.Blocks[1].PartialJSON != `{"k":"vvvvv"}` || s.Blocks[0].PartialJSON != `{} ` {
+		t.Fatalf("%v, %+v", err, s.Blocks)
+	}
+	// Nothing after the end, and no ping before the start.
+	clock = clock.Add(time.Hour)
+	before := buf.Len()
+	_ = e.Write(textDelta(0, "x"))
+	if buf.Len() != before {
+		t.Fatal("bytes after the end")
 	}
 }
 

@@ -126,6 +126,7 @@ func EncodeResponse(resp ir.Response, fallbackModel string) ([]byte, error) {
 }
 
 // ErrorType is the Anthropic error type that goes with an HTTP status.
+// (The same mapping as anthropicErrorType in internal/aigateway/errors_anthropic.go.)
 func ErrorType(status int) string {
 	switch status {
 	case 401:
@@ -147,14 +148,23 @@ func ErrorType(status int) string {
 	return "api_error"
 }
 
-// EncodeError writes the body of an error response in the Messages shape,
-// with the error type that goes with status:
+// EncodeError writes the body of an HTTP error response in the Messages
+// shape, with the error type that goes with status. code is Burrow's own
+// code: it travels in "burrow_code", an extra field Anthropic clients
+// ignore, exactly as in the gateway's own Anthropic errors:
 //
-//	{"type":"error","error":{"type":"rate_limit_error","message":"…"}}
-func EncodeError(status int, message string) []byte {
-	return appendError(nil, ErrorType(status), message)
+//	{"type":"error","error":{"type":"rate_limit_error","message":"…"},"burrow_code":"upstream_error"}
+//
+// The error event that ends a stream does not come from here: it has the
+// plain Anthropic shape (see StreamEncoder).
+func EncodeError(status int, code, message string) []byte {
+	b := appendError(nil, ErrorType(status), message)
+	b = append(b[:len(b)-1], `,"burrow_code":`...)
+	b = ir.AppendString(b, code)
+	return append(b, '}')
 }
 
+// appendError appends {"type":"error","error":{"type":kind,"message":message}}.
 func appendError(b []byte, kind, message string) []byte {
 	b = append(b, `{"type":"error","error":{"type":"`...)
 	b = append(b, kind...)

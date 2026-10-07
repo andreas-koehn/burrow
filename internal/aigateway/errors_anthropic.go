@@ -7,6 +7,7 @@ import (
 
 // anthropicErrorType maps an HTTP status to the error type Anthropic clients
 // switch on. Burrow's own code travels next to it.
+// (The same mapping as ErrorType in internal/aigw/translate/messages/response.go.)
 func anthropicErrorType(status int) string {
 	switch status {
 	case http.StatusUnauthorized:

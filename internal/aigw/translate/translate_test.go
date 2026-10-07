@@ -90,10 +90,15 @@ func (c *call) anthropicError(t *testing.T) (kind, message string) {
 			Type    string `json:"type"`
 			Message string `json:"message"`
 		} `json:"error"`
+		BurrowCode string `json:"burrow_code"`
 	}
 	body := c.rec.Body.Bytes()
 	if err := json.Unmarshal(body, &e); err != nil || e.Type != "error" || e.Error.Type == "" {
 		t.Fatalf("not an Anthropic error body (%v): %s", err, body)
+	}
+	// The gateway's own Anthropic errors carry burrow_code; the writer's do too.
+	if code, _ := c.w.Failure(); e.BurrowCode == "" || e.BurrowCode != code {
+		t.Fatalf("burrow_code = %q, Failure = %q: %s", e.BurrowCode, code, body)
 	}
 	if ct := c.rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Fatalf("Content-Type = %q", ct)
@@ -131,6 +136,9 @@ func parseFrames(t *testing.T, raw []byte) []sseFrame {
 	for _, block := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n\n") {
 		eventLine, dataLine, _ := strings.Cut(block, "\n")
 		f := sseFrame{event: strings.TrimPrefix(eventLine, "event: ")}
+		if f.event == "ping" { // a sign of life on a slow machine, not content
+			continue
+		}
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(dataLine, "data: ")), &f.data); err != nil {
 			t.Fatalf("frame %q: %v", block, err)
 		}
@@ -532,7 +540,7 @@ func TestResponse_Streamed_BadEndings(t *testing.T) {
 		if strings.Contains(string(raw), "message_delta") || strings.Contains(string(raw), "message_stop") || strings.Contains(string(raw), "more") {
 			t.Errorf("%s: the stream pretends to go on\n%.600s", name, raw)
 		}
-		if !bytes.HasSuffix(raw, []byte("event: error\ndata: "+string(messages.EncodeError(500, c.message))+"\n\n")) {
+		if !bytes.HasSuffix(raw, []byte("event: error\ndata: "+`{"type":"error","error":{"type":"api_error","message":"`+c.message+`"}}`+"\n\n")) {
 			t.Errorf("%s: the error event is not the last thing written\n%.600s", name, raw[max(0, len(raw)-300):])
 		}
 		if code, mid := call.w.Failure(); code != c.code || !mid {
@@ -683,6 +691,140 @@ func TestResponse_AnswersThatAreNoAnswer(t *testing.T) {
 	}
 }
 
+func TestResponse_OnlyAllowedUpstreamHeadersPass(t *testing.T) {
+	blocked := map[string]string{
+		"Etag": `"abc"`, "Content-Range": "bytes 0-1/2", "Content-Md5": "Q2hlY2s=", "Trailer": "X-Sum", "Set-Cookie": "sid=SECRET",
+		"Connection": "keep-alive", "Keep-Alive": "timeout=5", "Location": "https://elsewhere.test/", "Content-Length": "5",
+		"Content-Encoding": "identity", "Content-Language": "de", "Transfer-Encoding": "chunked", "Server": "nginx", "Via": "1.1 x",
+		"Openai-Organization": "org-SECRET", "X-Custom": "1", "Cache-Control": "public, max-age=60", "Last-Modified": "now", "Vary": "Origin",
+	}
+	allowed := map[string]string{
+		"Retry-After": "7", "X-Request-Id": "req-1", "Request-Id": "req-2", "Openai-Request-Id": "req-3", "X-Amzn-Requestid": "req-4",
+		"X-Ratelimit-Remaining-Requests": "9", "x-ratelimit-reset-tokens": "1s", "Anthropic-Ratelimit-Requests-Remaining": "8",
+	}
+	play := map[string]func() *call{
+		"a buffered answer": func() *call { return newCall(t, false) },
+		"a stream":          func() *call { return newCall(t, true) },
+		"an error":          func() *call { return newCall(t, false) },
+		"a redirect":        func() *call { return newCall(t, false) },
+	}
+	for name, make := range play {
+		c := make()
+		for k, v := range blocked {
+			c.w.Header().Set(k, v)
+		}
+		for k, v := range allowed {
+			c.w.Header()[k] = []string{v} // as written, also in lower case
+		}
+		switch name {
+		case "a buffered answer":
+			c.upstream(200, "application/json", readFile(t, "chat/testdata/resp_text.json"), 0)
+		case "a stream":
+			c.upstream(200, "text/event-stream", readFile(t, "chat/testdata/stream_text.sse"), 0)
+		case "an error":
+			c.upstream(429, "application/json", []byte(`{"error":{"message":"slow"}}`), 0)
+		case "a redirect":
+			c.upstream(302, "text/html", nil, 0)
+		}
+		got := c.rec.Header()
+		for k, v := range allowed {
+			if vs := got[k]; len(vs) != 1 || vs[0] != v {
+				t.Errorf("%s: %s was not passed on: %v", name, k, got)
+			}
+		}
+		for k := range blocked {
+			switch k {
+			case "Content-Length":
+				if name != "a stream" && got.Get(k) == strconv.Itoa(c.rec.Body.Len()) {
+					continue // the writer's own
+				}
+			case "Cache-Control":
+				if name == "a stream" && got.Get(k) == "no-cache" {
+					continue // the writer's own
+				}
+			}
+			if _, has := got[k]; has {
+				t.Errorf("%s: the upstream's %s reached the caller: %q", name, k, got[k])
+			}
+		}
+		if len(got) != len(allowed)+2 { // + Content-Type and Content-Length or Cache-Control
+			t.Errorf("%s: header = %v", name, got)
+		}
+	}
+}
+
+// flushCounter is a caller's writer that tells a flush with nothing new apart.
+type flushCounter struct {
+	*httptest.ResponseRecorder
+	flushes, empty, lastLen int
+}
+
+func (f *flushCounter) Flush() {
+	f.flushes++
+	if f.Body.Len() == f.lastLen {
+		f.empty++
+	}
+	f.lastLen = f.Body.Len()
+}
+
+func TestResponse_Streamed_NoFlushWithoutBytes(t *testing.T) {
+	// A second tool call is held back while the first is open: the upstream writes that add
+	// nothing to the caller's stream must not flush it.
+	under := &flushCounter{ResponseRecorder: httptest.NewRecorder()}
+	w := messagesChat(t).Response(under, ResponseOptions{Stream: true})
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(200)
+	w.(http.Flusher).Flush() // the proxy's own flush before anything was written
+	frames := []string{
+		chunk(`{"tool_calls":[{"index":0,"id":"a","function":{"name":"f","arguments":"{}"}}]}`),
+		chunk(`{"tool_calls":[{"index":1,"id":"b","function":{"name":"g","arguments":"{\"k\":\""}}]}`),
+	}
+	for i := 0; i < 50; i++ {
+		frames = append(frames, chunk(`{"tool_calls":[{"index":1,"function":{"arguments":"`+strings.Repeat("v", 1000)+`"}}]}`))
+	}
+	frames = append(frames, chunk(`{"tool_calls":[{"index":1,"function":{"arguments":"\"}"}}]}`), finishChunk("tool_calls"), "[DONE]")
+	for _, f := range frames {
+		if _, err := w.Write(sseOf(f)); err != nil {
+			t.Fatal(err)
+		}
+		w.(http.Flusher).Flush()
+	}
+	w.Finish()
+	if under.empty != 0 || under.flushes == 0 || under.flushes > 12 {
+		t.Fatalf("%d flushes, %d of them with nothing new", under.flushes, under.empty)
+	}
+	s, err := messages.CheckStream(under.Body.Bytes())
+	if err != nil || len(s.Blocks) != 2 || len(s.Blocks[1].PartialJSON) != 50_000+8 || !s.Stopped {
+		t.Fatalf("%v, %d blocks", err, len(s.Blocks))
+	}
+}
+
+func TestResponse_Streamed_OverLimitFrameAfterTheFinishReason(t *testing.T) {
+	// The model said it was done, but the answer did not end: what follows is over the frame
+	// limit. That is the limit error, not a clean finish with usage 0/0.
+	body := append(sseOf(chunk(`{"content":"par"}`), `{"id":"c1","model":"m-up","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`),
+		[]byte("data: "+strings.Repeat("y", chat.MaxFrameBytes+10)+"\n\ndata: [DONE]\n\n")...)
+	c := newCall(t, true).upstream(200, "text/event-stream", body, 8192)
+	raw := c.rec.Body.Bytes()
+	s, err := messages.CheckStream(raw)
+	if err != nil || s.Stopped || s.StopReason != "" || s.ErrMessage != "the provider's answer is too large" {
+		t.Fatalf("%v, %+v\n%s", err, s, raw)
+	}
+	if code, mid := c.w.Failure(); code != CodeUpstreamInvalid || !mid || !reflect.DeepEqual(c.onError, []string{"200 " + CodeUpstreamInvalid}) {
+		t.Fatalf("Failure = %q, %v; OnError %v", code, mid, c.onError)
+	}
+	if !bytes.HasSuffix(raw, []byte(`"message":"the provider's answer is too large"}}`+"\n\n")) {
+		t.Fatalf("something follows the error event: %s", raw)
+	}
+	// Once the finish has reached the caller, a late over-limit frame changes nothing.
+	body = append(sseOf(chunk(`{"content":"par"}`), finishChunk("stop"), "[DONE]"), []byte("data: "+strings.Repeat("y", chat.MaxFrameBytes+10)+"\n\n")...)
+	c = newCall(t, true).upstream(200, "text/event-stream", body, 8192)
+	s, err = messages.CheckStream(c.rec.Body.Bytes())
+	if code, _ := c.w.Failure(); err != nil || !s.Stopped || s.OutputTokens != 4 || code != "" {
+		t.Fatalf("%v, %+v, %q", err, s, code)
+	}
+}
+
 func TestResponse_BufferedBodyOverTheLimit(t *testing.T) {
 	call := newCall(t, false)
 	call.w.Header().Set("Content-Type", "application/json")
@@ -793,13 +935,17 @@ func TestResponse_ForwardsWhatTheGatewayNeeds(t *testing.T) {
 	}
 	// A writer that takes no note does not break it.
 	messagesChat(t).Response(httptest.NewRecorder(), ResponseOptions{}).(interface{ NoteUpstreamTimeout() }).NoteUpstreamTimeout()
-	// http.ResponseController reaches Flush through the wrapper.
+	// A write that reached the caller flushes it; http.ResponseController finds the wrapper's
+	// own Flush (and gets no "not supported"), which has nothing new to flush then.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(200)
 	_, _ = w.Write(sseOf(chunk(`{"content":"x"}`)))
+	if !under.Flushed {
+		t.Fatal("a write that reached the caller was not flushed")
+	}
 	under.Flushed = false
-	if err := http.NewResponseController(w).Flush(); err != nil || !under.Flushed {
-		t.Fatalf("Flush through the controller: %v, flushed %v", err, under.Flushed)
+	if err := http.NewResponseController(w).Flush(); err != nil || under.Flushed {
+		t.Fatalf("Flush through the controller: %v, flushed again %v", err, under.Flushed)
 	}
 }
 

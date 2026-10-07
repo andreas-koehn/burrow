@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
 	"github.com/ankoehn/burrow/internal/aigw/translate/sse"
@@ -27,6 +28,10 @@ const streamErrorType = "api_error"
 // delta: a part held back in one-byte pieces must not cost a slice header
 // for every byte.
 const maxHeldPieces = 256
+
+// pingAfter is how long the wire may stay silent, while events arrive and
+// are held back, before a ping is written.
+const pingAfter = time.Second
 
 // StreamEncoder writes neutral events as an Anthropic Messages stream:
 //
@@ -55,6 +60,20 @@ const maxHeldPieces = 256
 // ir.MaxTotalToolArgsBytes of text and arguments together, and at most
 // maxHeldPieces separate deltas per part. An answer over a limit ends with
 // an error event.
+//
+// # Signs of life
+//
+// A held part gives the caller nothing until the open block stops, and with
+// a Chat Completions target that is late: such a stream closes its tool
+// calls only at the finish_reason, so the first call is delivered live and
+// the arguments of a second, parallel call are delivered when the answer
+// finishes, not as they arrive. (They cannot be written earlier: the first
+// call's block is still open, and nothing in the stream says it is
+// complete.) So that the client and what stands between see the stream is
+// alive, the encoder writes a ping event — "event: ping", data
+// {"type":"ping"}, valid between any two events — when an event arrived,
+// parts are held back, and nothing was written for a second: at most one
+// ping per second, and none when no event arrives.
 //
 // # Tool calls
 //
@@ -110,6 +129,9 @@ type StreamEncoder struct {
 	heldBytes int
 
 	buf []byte // the frame being built
+
+	now     func() time.Time // the clock; a test's own in tests
+	lastOut time.Time        // when the last frame was written
 }
 
 type part struct {
@@ -130,7 +152,7 @@ type heldPart struct {
 // NewStreamEncoder returns an encoder that writes one answer to w.
 // fallbackModel is named in message_start when the upstream names none.
 func NewStreamEncoder(w io.Writer, fallbackModel string) *StreamEncoder {
-	return &StreamEncoder{w: w, model: fallbackModel, cur: -1, ids: map[string]bool{}}
+	return &StreamEncoder{w: w, model: fallbackModel, cur: -1, ids: map[string]bool{}, now: time.Now}
 }
 
 // Write takes the next event. It returns nil for an event that was written,
@@ -146,6 +168,26 @@ func (e *StreamEncoder) Write(ev ir.Event) error {
 	if e.done {
 		return nil
 	}
+	err := e.write(ev)
+	e.keepAlive()
+	if err == nil {
+		err = e.werr
+	}
+	return err
+}
+
+// keepAlive writes a ping when parts are held back and nothing was written
+// for pingAfter (see Signs of life at StreamEncoder). It runs after every
+// event, so a ping is written only when upstream data arrived.
+func (e *StreamEncoder) keepAlive() {
+	if !e.started || e.done || len(e.held) == 0 || e.now().Sub(e.lastOut) < pingAfter {
+		return
+	}
+	e.buf = append(e.buf[:0], `{"type":"ping"}`...)
+	e.frame("ping")
+}
+
+func (e *StreamEncoder) write(ev ir.Event) error {
 	if ev.Kind == ir.Error {
 		msg := ev.Err
 		if msg == "" {
@@ -423,4 +465,5 @@ func (e *StreamEncoder) frame(event string) {
 		return
 	}
 	e.werr = sse.Write(e.w, event, e.buf)
+	e.lastOut = e.now()
 }

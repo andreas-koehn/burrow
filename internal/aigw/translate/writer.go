@@ -49,7 +49,7 @@ type targetCodec struct {
 // callerCodec writes answers for a caller of one format.
 type callerCodec struct {
 	encodeResponse   func(resp ir.Response, fallbackModel string) ([]byte, error)
-	encodeError      func(status int, message string) []byte
+	encodeError      func(status int, code, message string) []byte
 	newStreamEncoder func(w io.Writer, fallbackModel string) streamEncoder
 }
 
@@ -97,10 +97,12 @@ type writer struct {
 	buf  []byte // modeBody, modeError: the upstream's body so far
 	over bool   // modeBody: the body went over the limit and was let go
 
-	parser *sse.Parser
-	dec    streamDecoder
-	enc    streamEncoder
-	ended  bool // modeStream: the answer ended (well or badly); the rest is discarded
+	parser  *sse.Parser
+	dec     streamDecoder
+	enc     streamEncoder
+	ended   bool            // modeStream: the answer ended (well or badly); the rest is discarded
+	out     *countingWriter // modeStream, committed: what the encoder writes to
+	flushed int64           // out.n at the last flush
 
 	committed bool  // the caller's header was written
 	finished  bool  // Finish ran
@@ -132,16 +134,19 @@ func (t *writer) NoteUpstreamTimeout() {
 	}
 }
 
-// Flush flushes the caller's writer once a stream is committed. Before
-// that, and on the buffered paths, there is nothing to flush and the
-// caller's header must not go out yet.
+// Flush flushes the caller's writer once a stream is committed and
+// something was written since the last flush. Before that, and on the
+// buffered paths, there is nothing to flush and the caller's header must not
+// go out yet; an upstream write that added nothing to the caller's stream
+// (a part that is held back) costs the caller no empty flush.
 func (t *writer) Flush() { _ = t.FlushError() }
 
 // FlushError is Flush for http.ResponseController.
 func (t *writer) FlushError() error {
-	if t.mode != modeStream || !t.committed || t.clientErr != nil {
+	if t.mode != modeStream || !t.committed || t.clientErr != nil || t.out.n == t.flushed {
 		return nil
 	}
+	t.flushed = t.out.n
 	return http.NewResponseController(t.w).Flush()
 }
 
@@ -185,7 +190,7 @@ func (t *writer) WriteHeader(status int) {
 // upstream still sends is discarded.
 func (t *writer) fail(status int, code, message string) {
 	t.mode = modeFailed
-	t.buf, t.parser, t.dec, t.enc = nil, nil, nil, nil
+	t.buf, t.parser, t.dec, t.enc, t.out = nil, nil, nil, nil, nil
 	t.failStatus, t.failCode, t.failMessage = status, code, message
 }
 
@@ -244,12 +249,16 @@ func (t *writer) feed(p []byte) {
 		t.events(events, code)
 	}
 	if perr != nil && !t.ended {
-		// A frame over the limit. The decoder ends the answer; its Error
-		// event says "ended early", which is not what happened.
+		// A frame over the limit: the answer is the limit error, whatever
+		// the decoder makes of its end. Its Error event says "ended early",
+		// which is not what happened; and when a finish_reason had come it
+		// ends the answer with a Finish (every part is stopped by then),
+		// which would be a clean success, with whatever usage had arrived,
+		// for an answer that was not read to its end.
 		events := t.dec.Close()
 		for i := range events {
-			if events[i].Kind == ir.Error {
-				events[i].Err = msgTooLarge
+			if events[i].Kind == ir.Error || events[i].Kind == ir.Finish {
+				events[i] = ir.Event{Kind: ir.Error, Err: msgTooLarge}
 			}
 		}
 		t.events(events, CodeUpstreamInvalid)
@@ -304,17 +313,41 @@ func (t *writer) endedBadly(code string) {
 	}
 }
 
-// passHeaders copies the upstream's header to the caller's, without the
-// fields that describe the upstream's body.
+// passHeader reports whether an upstream response header goes on to the
+// caller of a translated answer. The body the caller gets is not the
+// upstream's, so nothing that describes that body, the upstream's
+// connection, its caching or its cookies may pass, and a redirect's
+// Location must not either. What passes is an allow-list: Retry-After,
+// request ids (a name that contains "request-id" or "requestid") and the
+// rate-limit headers of both vendors.
+func passHeader(name string) bool {
+	name = strings.ToLower(name)
+	return name == "retry-after" ||
+		strings.Contains(name, "request-id") || strings.Contains(name, "requestid") ||
+		strings.HasPrefix(name, "x-ratelimit-") || strings.HasPrefix(name, "anthropic-ratelimit-")
+}
+
+// passHeaders copies the allowed upstream headers to the caller's.
 func (t *writer) passHeaders() {
 	dst := t.w.Header()
 	for k, v := range t.header {
-		switch http.CanonicalHeaderKey(k) {
-		case "Content-Length", "Content-Type", "Content-Encoding", "Transfer-Encoding":
-			continue
+		if passHeader(k) {
+			dst[k] = append([]string(nil), v...)
 		}
-		dst[k] = append([]string(nil), v...)
 	}
+}
+
+// countingWriter counts what reaches the caller, so that a flush with
+// nothing new can be told.
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
 }
 
 func (t *writer) commitStream() {
@@ -324,7 +357,8 @@ func (t *writer) commitStream() {
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
 	t.w.WriteHeader(t.status)
-	t.enc = t.c.newStreamEncoder(t.w, t.o.RequestedModel)
+	t.out = &countingWriter{w: t.w}
+	t.enc = t.c.newStreamEncoder(t.out, t.o.RequestedModel)
 }
 
 // respond writes a whole response to the caller.
@@ -338,13 +372,14 @@ func (t *writer) respond(status int, body []byte) {
 	_, _ = t.w.Write(body)
 }
 
-// respondError writes an error response in the caller's shape.
+// respondError writes an error response in the caller's shape, with the
+// code in its body where that shape has a place for it.
 func (t *writer) respondError(status int, code, message string) {
 	t.failCode = code
 	if t.o.OnError != nil {
 		t.o.OnError(status, code)
 	}
-	t.respond(status, t.c.encodeError(status, message))
+	t.respond(status, t.c.encodeError(status, code, message))
 }
 
 func (t *writer) Finish() {

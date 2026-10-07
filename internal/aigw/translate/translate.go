@@ -88,8 +88,12 @@ type ResponseOptions struct {
 	// was an error, else 502), or when a stream that had begun is ended
 	// with an error event (status is the one already sent). code is
 	// CodeUpstreamError or CodeUpstreamInvalid. Neither holds anything the
-	// provider said, so both may be logged and stored; the gateway can set
-	// headers on its writer here.
+	// provider said, so both may be logged and stored. An error response
+	// carries the code in its body (burrow_code in the Messages shape), as
+	// the gateway's own errors do; the Burrow-Error-Code header that goes
+	// with it is the gateway's to set, here, on its own writer — the
+	// response writer sets no Burrow header. An error event that ends a
+	// stream has the plain shape of the caller's format and no header.
 	OnError func(status int, code string)
 }
 
