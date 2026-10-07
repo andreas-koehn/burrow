@@ -68,10 +68,18 @@ func stopStatus(stop ir.StopReason) (status, reason string) {
 // appendResponse writes a response object:
 //
 //	{"id":…,"object":"response","created_at":N,"status":…,"error":…,
-//	 "incomplete_details":…,"model":…,"output":[…],"usage":…}
+//	 "incomplete_details":…,"model":…,"output":[…],
+//	 "parallel_tool_calls":true,"tool_choice":"auto","tools":[],"usage":…}
 //
 // output is the items, comma-joined, without the brackets. usage nil writes
 // null; so do an empty failure message and an empty reason.
+//
+// "parallel_tool_calls", "tool_choice" and "tools" are there because the
+// SDKs' Response type requires them; they are the API's defaults, not an
+// echo of the request, which the encoders do not see. The usage has the
+// upstream's two figures and their sum; "input_tokens_details" and
+// "output_tokens_details" are required by the SDKs' ResponseUsage as well
+// and say 0: no target tells cached or reasoning tokens apart here.
 func appendResponse(b []byte, h head, status string, output []byte, usage *ir.Usage, failure, reason string) []byte {
 	b = append(b, `{"id":`...)
 	b = ir.AppendString(b, h.id)
@@ -99,16 +107,16 @@ func appendResponse(b []byte, h head, status string, output []byte, usage *ir.Us
 	b = ir.AppendString(b, h.model)
 	b = append(b, `,"output":[`...)
 	b = append(b, output...)
-	b = append(b, `],"usage":`...)
+	b = append(b, `],"parallel_tool_calls":true,"tool_choice":"auto","tools":[],"usage":`...)
 	if usage == nil {
 		return append(b, `null}`...)
 	}
 	in, out := int64(max(usage.InputTokens, 0)), int64(max(usage.OutputTokens, 0))
 	b = append(b, `{"input_tokens":`...)
 	b = strconv.AppendInt(b, in, 10)
-	b = append(b, `,"output_tokens":`...)
+	b = append(b, `,"input_tokens_details":{"cached_tokens":0},"output_tokens":`...)
 	b = strconv.AppendInt(b, out, 10)
-	b = append(b, `,"total_tokens":`...)
+	b = append(b, `,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":`...)
 	b = strconv.AppendInt(b, in+out, 10)
 	return append(b, `}}`...)
 }
@@ -180,7 +188,9 @@ func appendReasoningItem(b []byte, n int, text string) []byte {
 //
 //	{"id":"resp_…","object":"response","created_at":N,"status":"completed","error":null,
 //	 "incomplete_details":null,"model":…,"output":[…],
-//	 "usage":{"input_tokens":N,"output_tokens":M,"total_tokens":N+M}}
+//	 "parallel_tool_calls":true,"tool_choice":"auto","tools":[],
+//	 "usage":{"input_tokens":N,"input_tokens_details":{"cached_tokens":0},
+//	          "output_tokens":M,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":N+M}}
 //
 // The output items stand in part order and are numbered from 0 in their
 // ids. Text becomes a message item with an output_text part (consecutive

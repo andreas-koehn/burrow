@@ -44,6 +44,14 @@ const (
 	droppedImageDetail       = "input_image.detail"
 	droppedAnnotations       = "content.annotations"
 	droppedLogprobs          = "content.logprobs"
+	droppedPhase             = "input.phase"     // an assistant message's "phase"
+	droppedNamespace         = "input.namespace" // a function_call's "namespace"
+
+	// What is repaired in the history of calls and outputs.
+	droppedCallArguments = "input:function_call.arguments"     // arguments that are no JSON object: the call has none
+	droppedUnanswered    = "input:function_call.unanswered"    // a call without an output got one
+	droppedDuplicateCall = "input:function_call.duplicate"     // a call whose id waits already: left out
+	droppedOrphanOutput  = "input:function_call_output.orphan" // an output for no waiting call: left out
 )
 
 // droppedWhenAsked are the top-level fields that are left out and reported
@@ -51,7 +59,7 @@ const (
 var droppedWhenAsked = []string{
 	ir.DroppedPreviousResponseID, ir.DroppedStore, droppedReasoning, droppedInclude, droppedBackground,
 	"metadata", "user", "prompt_cache_key", "prompt_cache_retention", "safety_identifier", "conversation",
-	"prompt", "max_tool_calls", "top_logprobs", "stream_options", "context_management",
+	"prompt", "max_tool_calls", "top_logprobs", "stream_options", "context_management", "client_metadata",
 }
 
 func bad(field, reason string) error {
@@ -81,15 +89,41 @@ func tooMany(field string, limit int) error {
 //     base64 data URL is split into media type and data, any other URL is
 //     kept as a URL), in a user turn only;
 //   - function_call: a tool call ("call_id", "name", "arguments" as the
-//     text of one JSON object, kept byte for byte). Consecutive calls, and a
-//     call that follows an assistant message, are ONE assistant turn;
+//     text of one JSON object, kept byte for byte);
 //   - function_call_output: a tool result ("call_id", "output" as a string
-//     or as text parts, joined by "\n"). Consecutive outputs are one user
-//     turn. Chat Completions servers want every call answered right after
-//     the turn that made it, so the pairing is checked here: see below;
+//     or as parts: text, joined by "\n", and input_image);
 //   - every other item type (reasoning, item_reference, web_search_call,
 //     local_shell_call, custom_tool_call and their outputs, …) is left out:
 //     ir.DroppedInput(type).
+//
+// # Calls and their outputs
+//
+// A Chat Completions server wants an assistant message with tool calls to
+// be followed by one tool message for each call, and by nothing else
+// first. A Responses history is looser — the items of one answer are
+// message, call, message in any order, a client adds the outputs when all
+// of them are there, and what a client recorded of a stream that was cut is
+// not always whole — and Codex sends its history again with every request,
+// so a request that is refused for its history ends the session. The
+// decoder therefore builds a conversation the target takes, and reports
+// what it had to repair:
+//   - the assistant's items — messages and calls — that follow each other
+//     are ONE assistant turn, up to the first output that answers one of its
+//     calls or the next user message;
+//   - an output belongs to the call with its "call_id", wherever it stands:
+//     the results of a turn follow it directly, in the order of the calls;
+//   - the images a tool returned follow the results of that turn in the
+//     same user message, each tool's after a text that names its call
+//     (ir.ToolImageNote); the result itself keeps its text, or says
+//     ir.ToolImageText. Nothing is lost, so nothing is reported;
+//   - a call without an output gets the result ir.ToolNoOutput:
+//     "input:function_call.unanswered";
+//   - an output for which no call waits (there is none, or it has one) is
+//     left out: "input:function_call_output.orphan";
+//   - a call whose id waits for its output already is left out:
+//     "input:function_call.duplicate";
+//   - "arguments" that are not the text of one JSON object become {}:
+//     "input:function_call.arguments".
 //
 // Left out and reported:
 //   - "previous_response_id", "conversation", "store": true (no Responses
@@ -116,7 +150,9 @@ func tooMany(field string, limit int) error {
 //     "content.annotations", "content.logprobs";
 //   - any other key: ir.Unknown — at the top level, in an item
 //     ("input.<key>"), a content part ("content.<key>"), a tool
-//     ("tools.<key>"), and "text.<key>", "tool_choice.<key>".
+//     ("tools.<key>"), and "text.<key>", "tool_choice.<key>";
+//   - an assistant message's "phase" and a call's "namespace":
+//     "input.phase", "input.namespace"; "client_metadata".
 //
 // Read and neither carried nor reported: an item's "id" and "status". They
 // name the item in the response it came from; without stored responses they
@@ -126,16 +162,13 @@ func tooMany(field string, limit int) error {
 // body that is not a JSON object; a missing "input"; a mistyped field; an
 // item without a type and without a role; a role nobody knows; a content
 // part that cannot be carried and must not vanish (input_file, input_audio,
-// an image given by "file_id", an image outside a user turn, any unknown
-// part type); a function_call without "call_id" or "name", or whose
-// "arguments" are not one JSON object; a function_call_output that answers
-// no call waiting for its output (no such call, or answered already); a
-// function_call whose output does not follow before the next message or
-// the end of the input; a call id used twice among unanswered calls; an
-// input in which no turn is left; anything over the ir limits. The request
+// an image given by "file_id", an image in an assistant, system or
+// developer message, any unknown part type); a function_call without
+// "call_id" or "name"; a function_call_output without "call_id"; an input
+// in which no turn is left; anything over the ir limits. The request
 // returned with an error is empty.
 func DecodeRequest(body []byte) (ir.Request, error) {
-	d := decoder{pending: map[string]int{}, results: -1}
+	d := decoder{pending: map[string]*turn{}}
 	if err := d.request(body); err != nil {
 		return ir.Request{}, err
 	}
@@ -147,10 +180,9 @@ type decoder struct {
 	req     ir.Request
 	dropped []string
 
-	system   []ir.Part      // from system and developer messages
-	pending  map[string]int // the calls that wait for their output: call id → item number
-	results  int            // the message that collects tool results, or -1
-	seenTurn bool           // a turn of the conversation was read
+	system  []ir.Part        // from system and developer messages
+	turns   []*turn          // the conversation so far
+	pending map[string]*turn // the calls that wait for their output: call id → the turn that made it
 }
 
 func (d *decoder) drop(name string) { d.dropped = append(d.dropped, name) }
@@ -417,6 +449,22 @@ func (d *decoder) text(raw []byte) error {
 	return nil
 }
 
+// turn is one message of the conversation while the input is read: a user
+// message, or an assistant turn — the assistant's text and calls, and the
+// outputs that answer those calls, wherever in the input they stood.
+type turn struct {
+	msg     ir.Message
+	calls   []string               // an assistant turn: its call ids, in order
+	outputs map[string]*toolOutput // by call id
+	closed  bool                   // an output of its own came: what the assistant says next is a new turn
+}
+
+// toolOutput is what a function_call_output item holds.
+type toolOutput struct {
+	text   string
+	images []ir.Part
+}
+
 // input reads "input": a string, or the list of items.
 func (d *decoder) input(raw []byte) error {
 	if s, ok := asString(raw); ok {
@@ -449,7 +497,7 @@ func (d *decoder) input(raw []byte) error {
 		case kind == "":
 			err = bad(at, "has neither a type nor a role")
 		case kind == "function_call":
-			err = d.call(o, at, i)
+			err = d.call(o, at)
 		case kind == "function_call_output":
 			err = d.output(o, at)
 		default:
@@ -461,36 +509,65 @@ func (d *decoder) input(raw []byte) error {
 			return err
 		}
 	}
-	if err := d.answered(); err != nil {
-		return err
+	return d.conversation()
+}
+
+// conversation writes the turns as messages. After an assistant turn with
+// calls stands ONE user message: a tool result for every call, in the order
+// of the calls, and after them the images those tools returned (see
+// ir.ToolImageNote). A call the input has no output for gets the result
+// ir.ToolNoOutput, so that the conversation is one a Chat Completions
+// server takes.
+func (d *decoder) conversation() error {
+	for _, t := range d.turns {
+		d.req.Messages = append(d.req.Messages, t.msg)
+		if len(t.calls) == 0 {
+			continue
+		}
+		results := ir.Message{Role: ir.User}
+		var images []ir.Part
+		for _, id := range t.calls {
+			out := t.outputs[id]
+			if out == nil {
+				d.drop(droppedUnanswered)
+				out = &toolOutput{text: ir.ToolNoOutput}
+			}
+			if len(out.images) > 0 {
+				if out.text == "" {
+					out.text = ir.ToolImageText
+				}
+				images = append(images, ir.Part{Kind: ir.Text, Text: ir.ToolImageNote(id)})
+				images = append(images, out.images...)
+			}
+			results.Parts = append(results.Parts, ir.Part{Kind: ir.ToolResult, ToolID: id, Text: out.text})
+		}
+		if results.Parts = append(results.Parts, images...); len(results.Parts) > ir.MaxParts {
+			return tooMany("input", ir.MaxParts)
+		}
+		d.req.Messages = append(d.req.Messages, results)
 	}
+	d.turns, d.pending = nil, nil
 	if len(d.req.Messages) == 0 {
 		return bad("input", "holds nothing that can be translated")
+	}
+	if len(d.req.Messages) > ir.MaxMessages {
+		return tooMany("input", ir.MaxMessages)
 	}
 	return nil
 }
 
-// answered refuses to go on while a call waits for its output: the turn
-// after an assistant turn with tool calls must answer every one of them.
-func (d *decoder) answered() error {
-	first := -1
-	for _, i := range d.pending {
-		if first < 0 || i < first {
-			first = i
-		}
+// assistant returns the assistant turn that what the assistant says or
+// calls next belongs to: the newest turn while it is the assistant's and
+// none of its calls has been answered, else a new one. So the items of one
+// answer — message, call, message, call, in any order — are one assistant
+// message, as a Chat Completions server wants them.
+func (d *decoder) assistant() *turn {
+	if n := len(d.turns); n > 0 && d.turns[n-1].msg.Role == ir.Assistant && !d.turns[n-1].closed {
+		return d.turns[n-1]
 	}
-	if first < 0 {
-		return nil
-	}
-	return bad(fmt.Sprintf("input[%d]", first), "is a function_call whose function_call_output does not follow before the next message")
-}
-
-// last returns the newest message, nil when there is none.
-func (d *decoder) last() *ir.Message {
-	if len(d.req.Messages) == 0 {
-		return nil
-	}
-	return &d.req.Messages[len(d.req.Messages)-1]
+	t := &turn{msg: ir.Message{Role: ir.Assistant}}
+	d.turns = append(d.turns, t)
+	return t
 }
 
 func (d *decoder) message(o object, at string) error {
@@ -506,7 +583,7 @@ func (d *decoder) message(o object, at string) error {
 			if err != nil {
 				return err
 			}
-			if len(parts) > 0 && d.seenTurn {
+			if len(parts) > 0 && len(d.turns) > 0 {
 				d.drop(ir.DroppedSystemPosition)
 			}
 			if len(d.system)+len(parts) > ir.MaxParts {
@@ -518,15 +595,22 @@ func (d *decoder) message(o object, at string) error {
 		if !hasContent {
 			return bad(at+".content", "is required")
 		}
-		if err := d.answered(); err != nil {
-			return err
-		}
 		parts, err := d.content(content, ir.Role(role), at+".content")
 		if err != nil {
 			return err
 		}
-		d.req.Messages = append(d.req.Messages, ir.Message{Role: ir.Role(role), Parts: parts})
-		d.results, d.seenTurn = -1, true
+		if role == string(ir.User) {
+			d.turns = append(d.turns, &turn{msg: ir.Message{Role: ir.User, Parts: parts}})
+			break
+		}
+		t := d.assistant()
+		if len(t.msg.Parts)+len(parts) > ir.MaxParts {
+			return tooMany(at+".content", ir.MaxParts)
+		}
+		t.msg.Parts = append(t.msg.Parts, parts...)
+		if raw, ok := o.take("phase"); ok && asked(raw) {
+			d.drop(droppedPhase)
+		}
 	default:
 		return bad(at+".role", "is not user, assistant, system or developer")
 	}
@@ -555,7 +639,7 @@ func (d *decoder) content(raw []byte, role ir.Role, at string) ([]ir.Part, error
 		if !ok {
 			return nil, bad(here, "is not an object")
 		}
-		p, err := d.part(o, role, here)
+		p, err := d.part(o, role == ir.User, here)
 		if err != nil {
 			return nil, err
 		}
@@ -564,8 +648,9 @@ func (d *decoder) content(raw []byte, role ir.Role, at string) ([]ir.Part, error
 	return parts, nil
 }
 
-// part reads one content part of a message.
-func (d *decoder) part(o object, role ir.Role, at string) (ir.Part, error) {
+// part reads one content part. images says whether an image may stand
+// where the part stands: in a user message and in a tool's output.
+func (d *decoder) part(o object, images bool, at string) (ir.Part, error) {
 	kind, _ := asString(o["type"])
 	delete(o, "type")
 	var p ir.Part
@@ -591,7 +676,7 @@ func (d *decoder) part(o object, role ir.Role, at string) (ir.Part, error) {
 		}
 		p = ir.Part{Kind: ir.Text, Text: s}
 	case "input_image":
-		if role != ir.User {
+		if !images {
 			return ir.Part{}, bad(at, "an image cannot stand in a message of this role")
 		}
 		url, _ := asString(o["image_url"])
@@ -628,10 +713,10 @@ func (d *decoder) part(o object, role ir.Role, at string) (ir.Part, error) {
 }
 
 // call reads a function_call item: a tool call of an assistant turn.
-func (d *decoder) call(o object, at string, index int) error {
+func (d *decoder) call(o object, at string) error {
 	delete(o, "id")
 	delete(o, "status")
-	p := ir.Part{Kind: ir.ToolUse}
+	p := ir.Part{Kind: ir.ToolUse, Input: json.RawMessage("{}")}
 	var err error
 	if p.ToolID, err = o.required("call_id", at+".call_id"); err != nil {
 		return err
@@ -639,104 +724,111 @@ func (d *decoder) call(o object, at string, index int) error {
 	if p.ToolName, err = o.required("name", at+".name"); err != nil {
 		return err
 	}
-	args, err := o.string("arguments", at+".arguments")
-	if err != nil {
-		return err
-	}
-	if p.Input, err = ir.ToolInput([]byte(args)); err != nil {
-		reason, limit := "is not the text of a JSON object", false
-		if errors.Is(err, ir.ErrLimit) {
-			reason, limit = "is too large", true
-		}
-		return &ir.BadRequestError{Format: format, Field: at + ".arguments", Reason: reason, Limit: limit}
-	}
-	if _, twice := d.pending[p.ToolID]; twice {
-		return bad(at+".call_id", "is the id of another call that has no output yet")
-	}
-	m := d.last()
-	if m == nil || m.Role != ir.Assistant {
-		// Calls of a new turn: the turn before them must be answered in full.
-		if err := d.answered(); err != nil {
-			return err
-		}
-		d.req.Messages = append(d.req.Messages, ir.Message{Role: ir.Assistant})
-		m = d.last()
-	}
-	calls := 0
-	for _, q := range m.Parts {
-		if q.Kind == ir.ToolUse {
-			calls++
+	// The history is the client's record of an answer, and a client records
+	// what it was sent: arguments that are not the text of one JSON object
+	// (a call whose stream was cut) must not cost the session. The call
+	// stays, with no arguments, and that is reported.
+	if raw, ok := o.take("arguments"); ok {
+		args, isString := asString(raw)
+		input, err := ir.ToolInput([]byte(args))
+		switch {
+		case isString && err == nil:
+			p.Input = input
+		case isString && errors.Is(err, ir.ErrLimit):
+			return &ir.BadRequestError{Format: format, Field: at + ".arguments", Reason: "is too large", Limit: true}
+		default:
+			d.drop(droppedCallArguments)
 		}
 	}
-	if calls >= ir.MaxToolCalls || len(m.Parts) >= ir.MaxParts {
+	if raw, ok := o.take("namespace"); ok && asked(raw) {
+		d.drop(droppedNamespace)
+	}
+	d.unknown("input.", o)
+	if d.pending[p.ToolID] != nil {
+		// The id waits for its output already: one output cannot answer two
+		// calls. The first call stays.
+		d.drop(droppedDuplicateCall)
+		return nil
+	}
+	t := d.assistant()
+	if len(t.calls) >= ir.MaxToolCalls || len(t.msg.Parts) >= ir.MaxParts {
 		return &ir.BadRequestError{Format: format, Field: at, Reason: fmt.Sprintf("is more than %d tool calls in one turn", ir.MaxToolCalls), Limit: true}
 	}
-	m.Parts = append(m.Parts, p)
-	d.pending[p.ToolID] = index
-	d.results, d.seenTurn = -1, true
-	d.unknown("input.", o)
+	t.msg.Parts = append(t.msg.Parts, p)
+	t.calls = append(t.calls, p.ToolID)
+	d.pending[p.ToolID] = t
 	return nil
 }
 
-// output reads a function_call_output item: a tool result of a user turn.
+// output reads a function_call_output item and gives it to the turn whose
+// call it answers: by "call_id", wherever the item stands.
 func (d *decoder) output(o object, at string) error {
 	delete(o, "id")
 	delete(o, "status")
-	p := ir.Part{Kind: ir.ToolResult}
-	var err error
-	if p.ToolID, err = o.required("call_id", at+".call_id"); err != nil {
+	id, err := o.required("call_id", at+".call_id")
+	if err != nil {
 		return err
 	}
-	if _, waiting := d.pending[p.ToolID]; !waiting {
-		return bad(at+".call_id", "answers no function_call that waits for its output")
-	}
+	var out toolOutput
 	if raw, ok := o.take("output"); ok {
-		if p.Text, err = d.outputText(raw, at+".output"); err != nil {
+		if out, err = d.outputParts(raw, at+".output"); err != nil {
 			return err
 		}
 	}
-	delete(d.pending, p.ToolID)
-	if d.results < 0 {
-		d.req.Messages = append(d.req.Messages, ir.Message{Role: ir.User})
-		d.results = len(d.req.Messages) - 1
-	}
-	m := &d.req.Messages[d.results]
-	m.Parts = append(m.Parts, p) // at most ir.MaxToolCalls: one per call of the turn before
-	d.seenTurn = true
 	d.unknown("input.", o)
+	t := d.pending[id]
+	if t == nil {
+		// No call waits for it: there is none, or it has its output. A tool
+		// message without its call is refused by the target.
+		d.drop(droppedOrphanOutput)
+		return nil
+	}
+	delete(d.pending, id)
+	if t.outputs == nil {
+		t.outputs = map[string]*toolOutput{}
+	}
+	t.outputs[id] = &out
+	if t == d.turns[len(d.turns)-1] {
+		t.closed = true
+	}
 	return nil
 }
 
-// outputText reads a tool's output: a string, or text parts joined by "\n".
-func (d *decoder) outputText(raw []byte, at string) (string, error) {
+// outputParts reads a tool's output: a string, or parts — text, joined by
+// "\n", and images.
+func (d *decoder) outputParts(raw []byte, at string) (toolOutput, error) {
 	if s, ok := asString(raw); ok {
-		return s, nil
+		return toolOutput{text: s}, nil
 	}
-	items, err := stringOrList(raw, ir.MaxParts, at, "text parts")
+	items, err := stringOrList(raw, ir.MaxParts, at, "parts")
 	if err != nil {
-		return "", err
+		return toolOutput{}, err
 	}
+	var out toolOutput
 	texts := make([]string, 0, len(items))
 	for i, item := range items {
 		here := fmt.Sprintf("%s[%d]", at, i)
 		o, ok := asObject(item)
 		if !ok {
-			return "", bad(here, "is not an object")
+			return toolOutput{}, bad(here, "is not an object")
 		}
 		switch kind, _ := asString(o["type"]); kind {
-		case "input_text", "output_text", "text":
-			p, err := d.part(o, "", here)
+		case "input_text", "output_text", "text", "input_image":
+			p, err := d.part(o, true, here)
 			if err != nil {
-				return "", err
+				return toolOutput{}, err
 			}
-			texts = append(texts, p.Text)
-		case "input_image":
-			return "", bad(here, "images in tool results cannot be translated")
+			if p.Kind == ir.Image {
+				out.images = append(out.images, p)
+			} else {
+				texts = append(texts, p.Text)
+			}
 		default:
-			return "", bad(here, "only text in tool results can be translated")
+			return toolOutput{}, bad(here, "only text and images in tool results can be translated")
 		}
 	}
-	return strings.Join(texts, "\n"), nil
+	out.text = strings.Join(texts, "\n")
+	return out, nil
 }
 
 func (d *decoder) tools(raw []byte) ([]ir.Tool, error) {

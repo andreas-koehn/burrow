@@ -29,7 +29,7 @@ type Stream struct {
 type StreamItem struct {
 	Type   string // "message", "function_call" or "reasoning"
 	ID     string
-	Status string // of the done item: "completed" or "incomplete"; "" for reasoning
+	Status string // of the done item: "completed" or (a message only) "incomplete"; "" for reasoning
 	// Text is a message's text (the joined deltas, which the done events
 	// repeat) or a reasoning item's summary text.
 	Text string
@@ -40,6 +40,11 @@ type StreamItem struct {
 	Arguments string
 
 	Deltas []string // every delta, as it came
+
+	// Done says response.output_item.done was read for the item. Only a
+	// function_call of a stream that failed may be left without it: the
+	// call was cut, and a client drops it.
+	Done bool
 }
 
 // CheckStream reads the bytes of a Responses stream the way the OpenAI SDKs
@@ -53,7 +58,9 @@ type StreamItem struct {
 //     from 0 without a gap, and a blank line. A frame that is one SSE
 //     comment line is skipped;
 //   - the first event is response.created with a response that has an id,
-//     object "response", status "in_progress", a model and an empty output;
+//     object "response", status "in_progress", a model and an empty output
+//     (every response object also has "parallel_tool_calls", "tool_choice"
+//     and "tools", which the SDKs' types require);
 //     response.in_progress, when it comes, follows it at once;
 //   - output items come one after the other, "output_index" 0, 1, 2…
 //     without a gap, and no two are open at once:
@@ -70,15 +77,20 @@ type StreamItem struct {
 //     a reasoning item is response.output_item.added followed at once by
 //     response.output_item.done with the same item.
 //     Every event of an item names its id ("item_id") and its output_index;
+//   - a function_call that is done is "completed" and its arguments are one
+//     JSON object, however the stream ends: a client records and runs every
+//     call that is done. A function_call that got no done event at all — it
+//     was cut — may be left behind, by the next item or by the end, but only
+//     in a stream that ends with response.failed;
 //   - the stream ends, while no item is open, with exactly one of
 //     response.completed (status "completed"), response.incomplete (status
 //     "incomplete" and a known "incomplete_details.reason") and
 //     response.failed (status "failed" and an error with a code and a
 //     message). Its response has the id and model of the first event, and
 //     its output is the items that were done, each as it was done. A
-//     response that is not failed has a usage whose total is the sum, every
-//     item of it is "completed", and the arguments of every function_call
-//     are one JSON object;
+//     response that is not failed has a usage with its two details objects
+//     and a total that is the sum, and
+//     every item of it is "completed";
 //   - nothing follows the end.
 func CheckStream(raw []byte) (Stream, error) {
 	var (
@@ -86,7 +98,9 @@ func CheckStream(raw []byte) (Stream, error) {
 		started bool
 		ended   bool
 		open    *StreamItem // the item that is open
-		itemRaw []string    // per item: the done item, compacted
+		itemRaw []string    // per item: the item as it was added, compacted
+		doneRaw []string    // the done items, in order
+		dropped bool        // a call was left without its done events
 		joined  strings.Builder
 		step    int // within the open item: what must come next
 		seq     int
@@ -135,7 +149,7 @@ func CheckStream(raw []byte) (Stream, error) {
 		switch event {
 		case "response.created", "response.in_progress":
 			r := f.Response
-			if r == nil || r.ID == "" || r.Object != "response" || r.Status != statusInProgress || r.Model == "" || len(r.Output) != 0 || r.Output == nil {
+			if r == nil || r.ID == "" || r.Object != "response" || r.Status != statusInProgress || r.Model == "" || len(r.Output) != 0 || r.Output == nil || !r.whole() {
 				return fail("%s without a response that is in progress and empty", event)
 			}
 			if event == "response.in_progress" && (seq != 2 || r.ID != s.ID || r.Model != s.Model) {
@@ -146,7 +160,11 @@ func CheckStream(raw []byte) (Stream, error) {
 		case "response.output_item.added":
 			it := f.Item
 			if open != nil {
-				return fail("item %d is still open", len(s.Items)-1)
+				// Only a call that got no done event at all may be left behind.
+				if open.Type != "function_call" || step != 0 {
+					return fail("item %d is still open", len(s.Items)-1)
+				}
+				open, dropped = nil, true
 			}
 			if it == nil || it.ID == "" || f.OutputIndex == nil || *f.OutputIndex != len(s.Items) {
 				return fail("an item that is not number %d", len(s.Items))
@@ -237,27 +255,40 @@ func CheckStream(raw []byte) (Stream, error) {
 					open.Text += *part.Text
 				}
 			}
-			if open.Type != "reasoning" {
+			switch open.Type {
+			case "message":
 				if it.Status != statusCompleted && it.Status != statusIncomplete {
-					return fail("a done item with status %q", it.Status)
+					return fail("a done message with status %q", it.Status)
 				}
-				open.Status = it.Status
+			case "function_call":
+				// A client acts on every call that is done, whatever follows.
+				if it.Status != statusCompleted || ir.CheckObject([]byte(open.Arguments)) != nil {
+					return fail("a done function_call that is not completed with arguments that are one JSON object")
+				}
 			}
-			itemRaw[len(itemRaw)-1] = compact(f.ItemRaw)
+			open.Status = it.Status
+			doneRaw = append(doneRaw, compact(f.ItemRaw))
+			open.Done = true
 			open = nil
 		case "response.completed", "response.incomplete", "response.failed":
 			r := f.Response
 			if open != nil {
-				return fail("%s while item %d is open", event, len(s.Items)-1)
+				if event != "response.failed" || open.Type != "function_call" || step != 0 {
+					return fail("%s while item %d is open", event, len(s.Items)-1)
+				}
+				open, dropped = nil, true
 			}
-			if r == nil || "response."+r.Status != event || r.Object != "response" || r.ID != s.ID || r.Model != s.Model {
+			if dropped && event != "response.failed" {
+				return fail("%s after an item that was never done", event)
+			}
+			if r == nil || "response."+r.Status != event || r.Object != "response" || r.ID != s.ID || r.Model != s.Model || !r.whole() {
 				return fail("%s without the response it ends", event)
 			}
-			if len(r.Output) != len(itemRaw) {
-				return fail("%d items in the final output, %d were done", len(r.Output), len(itemRaw))
+			if len(r.Output) != len(doneRaw) {
+				return fail("%d items in the final output, %d were done", len(r.Output), len(doneRaw))
 			}
 			for i, o := range r.Output {
-				if compact(o) != itemRaw[i] {
+				if compact(o) != doneRaw[i] {
 					return fail("item %d of the final output is not the item that was done", i)
 				}
 			}
@@ -274,8 +305,9 @@ func CheckStream(raw []byte) (Stream, error) {
 				return fail("an error in a response that did not fail")
 			}
 			u := r.Usage
-			if u == nil || u.Input == nil || u.Output == nil || u.Total == nil || *u.Input < 0 || *u.Output < 0 || *u.Total != *u.Input+*u.Output {
-				return fail("a response without a usage whose total is the sum")
+			if u == nil || u.Input == nil || u.Output == nil || u.Total == nil || *u.Input < 0 || *u.Output < 0 || *u.Total != *u.Input+*u.Output ||
+				u.InputDetails == nil || u.InputDetails.Cached == nil || u.OutputDetails == nil || u.OutputDetails.Reasoning == nil {
+				return fail("a response without a usage that has its details and a total that is the sum")
 			}
 			s.InputTokens, s.OutputTokens, s.TotalTokens = *u.Input, *u.Output, *u.Total
 			if r.Status == statusIncomplete {
@@ -287,9 +319,6 @@ func CheckStream(raw []byte) (Stream, error) {
 			for i, it := range s.Items {
 				if it.Type != "reasoning" && it.Status != statusCompleted {
 					return fail("item %d is %s in a response that did not fail", i, it.Status)
-				}
-				if it.Type == "function_call" && ir.CheckObject([]byte(it.Arguments)) != nil {
-					return fail("item %d: the arguments are not one JSON object", i)
 				}
 			}
 			s.Completed = r.Status == statusCompleted
@@ -378,10 +407,25 @@ type checkResponse struct {
 		Reason string `json:"reason"`
 	} `json:"incomplete_details"`
 	Usage *struct {
-		Input  *int `json:"input_tokens"`
-		Output *int `json:"output_tokens"`
-		Total  *int `json:"total_tokens"`
+		Input        *int `json:"input_tokens"`
+		Output       *int `json:"output_tokens"`
+		Total        *int `json:"total_tokens"`
+		InputDetails *struct {
+			Cached *int `json:"cached_tokens"`
+		} `json:"input_tokens_details"`
+		OutputDetails *struct {
+			Reasoning *int `json:"reasoning_tokens"`
+		} `json:"output_tokens_details"`
 	} `json:"usage"`
+	Parallel   *bool           `json:"parallel_tool_calls"`
+	ToolChoice json.RawMessage `json:"tool_choice"`
+	Tools      json.RawMessage `json:"tools"`
+}
+
+// whole reports whether the response has the fields the SDKs' Response type
+// requires besides those CheckStream reads.
+func (r *checkResponse) whole() bool {
+	return r.Parallel != nil && !isNull(r.ToolChoice) && bytes.HasPrefix(bytes.TrimSpace(r.Tools), []byte("["))
 }
 
 func (r *checkResponse) UnmarshalJSON(data []byte) error {

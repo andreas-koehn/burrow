@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/ankoehn/burrow/internal/aigw/translate/chat"
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
 	"github.com/ankoehn/burrow/internal/aigw/translate/messages"
 	"github.com/ankoehn/burrow/internal/aigw/translate/responses"
@@ -268,16 +269,55 @@ func checkResponsesChat(p *pair) error {
 			return errors.New("stream: the arguments do not add up to the upstream's bytes")
 		}
 	}
-	// A stream that is cut inside the calls does not end as a success, and its calls are not
-	// handed over as completed ones.
+	// A stream that is cut inside the calls does not end as a success, and no call of it is
+	// handed over: a client would run it and send it back with every later request.
 	rec = answer(p, true, "text/event-stream", checkChatStream(true), 13)
 	s, err := responses.CheckStream(rec.body.Bytes())
 	if err != nil {
 		return fmt.Errorf("cut stream: %w", err)
 	}
-	if s.Completed || s.Status != "failed" || s.ErrMessage == "" || len(s.Items) != 3 ||
-		s.Items[1].Status != "incomplete" || s.Items[2].Status != "incomplete" {
+	if s.Completed || s.Status != "failed" || s.ErrMessage == "" || len(s.Items) == 0 || s.Items[0].Text != "Checking." {
 		return errors.New("cut stream: the answer does not end as a failure")
+	}
+	for _, it := range s.Items {
+		if it.Type == "function_call" && it.Done {
+			return errors.New("cut stream: a call that was cut is handed over")
+		}
+	}
+	// A history as a client holds it after such answers — the items of an answer in the order
+	// they were written, a call that was cut, a call without an output, an output without a call,
+	// outputs after all items — is taken and becomes a conversation a strict server accepts.
+	out, _, dropped, err = p.Request([]byte(checkResponsesHistory), nil, "target-model")
+	if err != nil {
+		return fmt.Errorf("history: %w", err)
+	}
+	if chat.CheckRequest(out) != nil || !jsonEqual(out, []byte(checkChatHistory)) ||
+		!reflect.DeepEqual(dropped, []string{"input:function_call.arguments", "input:function_call.unanswered", "input:function_call_output.orphan"}) {
+		return errors.New("history: calls and outputs are not paired as a Chat Completions server wants them")
 	}
 	return nil
 }
+
+const (
+	checkResponsesHistory = `{"model":"asked-for","input":[
+ {"role":"user","content":"Weather in Oslo and Rome?"},
+ {"type":"message","role":"assistant","content":[{"type":"output_text","text":"Checking."}]},
+ {"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Oslo\"}"},
+ {"type":"message","role":"assistant","content":[{"type":"output_text","text":"And Rome."}]},
+ {"type":"function_call","call_id":"call_2","name":"get_weather","arguments":"{\"city\":"},
+ {"type":"function_call","call_id":"call_3","name":"get_weather","arguments":"{}"},
+ {"type":"function_call_output","call_id":"call_2","output":"19°C"},
+ {"type":"function_call_output","call_id":"call_1","output":"4°C"},
+ {"type":"function_call_output","call_id":"call_9","output":"?"},
+ {"role":"user","content":"Thanks."}]}`
+	checkChatHistory = `{"model":"target-model","messages":[
+ {"role":"user","content":"Weather in Oslo and Rome?"},
+ {"role":"assistant","content":"Checking.\n\nAnd Rome.","tool_calls":[
+  {"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Oslo\"}"}},
+  {"id":"call_2","type":"function","function":{"name":"get_weather","arguments":"{}"}},
+  {"id":"call_3","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},
+ {"role":"tool","tool_call_id":"call_1","content":"4°C"},
+ {"role":"tool","tool_call_id":"call_2","content":"19°C"},
+ {"role":"tool","tool_call_id":"call_3","content":"[no output]"},
+ {"role":"user","content":"Thanks."}]}`
+)

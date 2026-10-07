@@ -128,6 +128,24 @@ const (
 	DroppedSystemPosition     = "system.position" // see Request.System
 )
 
+// The fixed texts a request decoder writes into a conversation when a tool
+// result cannot stand as the caller sent it. A tool result carries text only
+// (see Part), and every tool call wants a result:
+//   - a result that holds images keeps its text (ToolImageText when it has
+//     none), and the images follow as Image parts of the same user message,
+//     after all its ToolResult parts and after a Text part ToolImageNote(id).
+//     Nothing is lost, so nothing is reported;
+//   - a tool call the caller sent no result for gets a result with the text
+//     ToolNoOutput (and the decoder reports it).
+const (
+	ToolImageText = "[image]"
+	ToolNoOutput  = "[no output]"
+)
+
+// ToolImageNote is the text that stands before the images a tool call
+// returned: "Image returned by tool call <id>:".
+func ToolImageNote(toolID string) string { return "Image returned by tool call " + toolID + ":" }
+
 // Unknown names a field no codec knows: "unknown:<field>". The field is a
 // top-level key, or "messages.<key>", "content.<key>", "tools.<key>".
 func Unknown(field string) string { return "unknown:" + field }

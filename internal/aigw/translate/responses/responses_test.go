@@ -102,7 +102,7 @@ func TestDecodeRequest_CodexTurn(t *testing.T) {
 		System: []ir.Part{text("You are a coding agent."), text("Be careful.")},
 		Messages: []ir.Message{
 			{Role: ir.User, Parts: []ir.Part{text("List the files")}},
-			{Role: ir.Assistant, Parts: []ir.Part{use("call_1", "shell", `{"command":["ls"]}`)}},
+			{Role: ir.Assistant, Parts: []ir.Part{text("I'll list them."), use("call_1", "shell", `{"command":["ls"]}`)}},
 			{Role: ir.User, Parts: []ir.Part{result("call_1", "a.txt\nb.txt")}},
 			{Role: ir.User, Parts: []ir.Part{text("Now read a.txt")}},
 		},
@@ -117,8 +117,8 @@ func TestDecodeRequest_CodexTurn(t *testing.T) {
 		t.Fatalf("request\n got: %+v\nwant: %+v", got, want)
 	}
 	// Exactly these: "store": false and "strict": false ask for nothing.
-	wantDropped := []string{"include", "input:reasoning", "parallel_tool_calls", "prompt_cache_key", "reasoning",
-		"text.verbosity", "tool:custom", "tool:local_shell", "tool:web_search"}
+	wantDropped := []string{"client_metadata", "include", "input.namespace", "input.phase", "input:reasoning", "parallel_tool_calls",
+		"prompt_cache_key", "reasoning", "stream_options", "text.verbosity", "tool:custom", "tool:local_shell", "tool:web_search"}
 	if d := ir.Dropped(req.Dropped); !reflect.DeepEqual(d, wantDropped) {
 		t.Fatalf("dropped\n got: %v\nwant: %v", d, wantDropped)
 	}
@@ -190,70 +190,146 @@ func TestDecodeRequest_CallsAndOutputsAreGrouped(t *testing.T) {
 	out := func(id, output string) string {
 		return fmt.Sprintf(`{"type":"function_call_output","call_id":%q,"output":%s}`, id, output)
 	}
-	// Several calls, then their outputs: ONE assistant turn, ONE user turn, in order.
-	req := decode(t, withInput(strings.Join([]string{userItem,
-		`{"role":"assistant","content":"Checking."}`,
-		`{"type":"reasoning","id":"rs_1","summary":[]}`,
-		call("a", `{"x": 1}`), call("b", ``),
-		out("b", `"B"`), out("a", `[{"type":"input_text","text":"A1"},{"type":"output_text","text":"A2"}]`),
-		call("c", `{}`), out("c", `""`),
-		`{"role":"user","content":"thanks"}`}, ",")))
-	want := []ir.Message{
-		{Role: ir.User, Parts: []ir.Part{text("hi")}},
-		{Role: ir.Assistant, Parts: []ir.Part{text("Checking."), use("a", "f", `{"x": 1}`), use("b", "f", `{}`)}},
-		{Role: ir.User, Parts: []ir.Part{result("b", "B"), result("a", "A1\nA2")}},
-		{Role: ir.Assistant, Parts: []ir.Part{use("c", "f", `{}`)}},
-		{Role: ir.User, Parts: []ir.Part{result("c", "")}},
-		{Role: ir.User, Parts: []ir.Part{text("thanks")}},
+	said := func(s string) string {
+		return fmt.Sprintf(`{"type":"message","role":"assistant","content":[{"type":"output_text","text":%q}]}`, s)
 	}
-	if !reflect.DeepEqual(req.Messages, want) {
-		t.Fatalf("messages\n got: %+v\nwant: %+v", req.Messages, want)
+	asst := func(parts ...ir.Part) ir.Message { return ir.Message{Role: ir.Assistant, Parts: parts} }
+	user := func(parts ...ir.Part) ir.Message { return ir.Message{Role: ir.User, Parts: parts} }
+	hi := user(text("hi"))
+	image := func(data string) ir.Part { return ir.Part{Kind: ir.Image, Data: data} }
+	const png = `{"type":"input_image","image_url":"data:image/png;base64,QUJD"}`
+	cases := map[string]struct {
+		items   []string
+		want    []ir.Message
+		dropped []string
+		shape   string // the Chat messages: role and ids
+	}{
+		"several calls, then their outputs: one assistant turn, tool results in the order of the calls": {
+			items: []string{said("Checking."), `{"type":"reasoning","id":"rs_1","summary":[]}`, call("a", `{"x": 1}`), call("b", ``),
+				out("b", `"B"`), out("a", `[{"type":"input_text","text":"A1"},{"type":"output_text","text":"A2"}]`),
+				call("c", `{}`), out("c", `""`), `{"role":"user","content":"thanks"}`},
+			want: []ir.Message{hi, asst(text("Checking."), use("a", "f", `{"x": 1}`), use("b", "f", `{}`)), user(result("a", "A1\nA2"), result("b", "B")),
+				asst(use("c", "f", `{}`)), user(result("c", "")), user(text("thanks"))},
+			dropped: []string{"input:reasoning"},
+			shape:   "user | assistant a b | tool a | tool b | assistant c | tool c | user",
+		},
+		"what the stream encoder itself writes: message, call, message, call, and the outputs after all of them": {
+			items: []string{said("A"), call("a", `{}`), said("B"), call("b", `{}`), out("a", `"1"`), out("b", `"2"`)},
+			want:  []ir.Message{hi, asst(text("A"), use("a", "f", `{}`), text("B"), use("b", "f", `{}`)), user(result("a", "1"), result("b", "2"))},
+			shape: "user | assistant a b | tool a | tool b",
+		},
+		"a message between a call and its output": {
+			items: []string{call("a", `{}`), said("x"), out("a", `"1"`), said("y")},
+			want:  []ir.Message{hi, asst(use("a", "f", `{}`), text("x")), user(result("a", "1")), asst(text("y"))},
+			shape: "user | assistant a | tool a | assistant",
+		},
+		"an output that comes after the next user message is moved up to its call": {
+			items: []string{call("a", `{}`), `{"role":"user","content":"wait"}`, said("ok"), out("a", `"late"`), said("then")},
+			want:  []ir.Message{hi, asst(use("a", "f", `{}`)), user(result("a", "late")), user(text("wait")), asst(text("ok"), text("then"))},
+			shape: "user | assistant a | tool a | user | assistant",
+		},
+		"calls of two turns": {
+			items: []string{call("a", `{}`), out("a", `"1"`), call("a", `{"again":true}`), out("a", `"2"`)},
+			want:  []ir.Message{hi, asst(use("a", "f", `{}`)), user(result("a", "1")), asst(use("a", "f", `{"again":true}`)), user(result("a", "2"))},
+			shape: "user | assistant a | tool a | assistant a | tool a",
+		},
+		"a call without an output gets one": {
+			items:   []string{call("a", `{}`), call("b", `{}`), out("a", `"1"`), `{"role":"user","content":"go on"}`},
+			want:    []ir.Message{hi, asst(use("a", "f", `{}`), use("b", "f", `{}`)), user(result("a", "1"), result("b", "[no output]")), user(text("go on"))},
+			dropped: []string{"input:function_call.unanswered"},
+			shape:   "user | assistant a b | tool a | tool b | user",
+		},
+		"a call without an output at the end": {
+			items:   []string{call("a", `{}`)},
+			want:    []ir.Message{hi, asst(use("a", "f", `{}`)), user(result("a", "[no output]"))},
+			dropped: []string{"input:function_call.unanswered"},
+			shape:   "user | assistant a | tool a",
+		},
+		"an output for no call, and a second output for one call, are left out": {
+			items:   []string{out("zz", `"x"`), call("a", `{}`), out("a", `"1"`), out("a", `"2"`)},
+			want:    []ir.Message{hi, asst(use("a", "f", `{}`)), user(result("a", "1"))},
+			dropped: []string{"input:function_call_output.orphan"},
+			shape:   "user | assistant a | tool a",
+		},
+		"a call id that is waiting already: the first call stays": {
+			items:   []string{call("a", `{"first":1}`), call("a", `{"second":2}`), out("a", `"1"`)},
+			want:    []ir.Message{hi, asst(use("a", "f", `{"first":1}`)), user(result("a", "1"))},
+			dropped: []string{"input:function_call.duplicate"},
+			shape:   "user | assistant a | tool a",
+		},
+		"arguments that are no JSON object (a call that was cut) are an empty object": {
+			items: []string{call("a", `{"a":`), call("b", `[1]`), `{"type":"function_call","call_id":"c","name":"f","arguments":{"k":1}}`, call("d", `nul`),
+				out("a", `"1"`), out("b", `"2"`), out("c", `"3"`), out("d", `"4"`)},
+			want: []ir.Message{hi, asst(use("a", "f", `{}`), use("b", "f", `{}`), use("c", "f", `{}`), use("d", "f", `{}`)),
+				user(result("a", "1"), result("b", "2"), result("c", "3"), result("d", "4"))},
+			dropped: []string{"input:function_call.arguments"},
+			shape:   "user | assistant a b c d | tool a | tool b | tool c | tool d",
+		},
+		"images in tool outputs follow the tool results as a user message": {
+			items: []string{call("a", `{}`), call("b", `{}`), call("c", `{}`),
+				out("b", `[{"type":"input_image","image_url":"https://example.org/b.png","detail":"auto"}]`),
+				out("a", `[{"type":"input_text","text":"see"},`+png+`,`+png+`]`), out("c", `"plain"`), `{"role":"user","content":"and?"}`},
+			want: []ir.Message{hi, asst(use("a", "f", `{}`), use("b", "f", `{}`), use("c", "f", `{}`)),
+				user(result("a", "see"), result("b", "[image]"), result("c", "plain"),
+					text("Image returned by tool call a:"), ir.Part{Kind: ir.Image, MediaType: "image/png", Data: "QUJD"}, ir.Part{Kind: ir.Image, MediaType: "image/png", Data: "QUJD"},
+					text("Image returned by tool call b:"), image("https://example.org/b.png")),
+				user(text("and?"))},
+			shape: "user | assistant a b c | tool a | tool b | tool c | user | user",
+		},
 	}
-	if d := ir.Dropped(req.Dropped); !reflect.DeepEqual(d, []string{"input:reasoning"}) {
-		t.Fatalf("dropped %v", d)
+	for name, c := range cases {
+		req, err := DecodeRequest([]byte(withInput(userItem + "," + strings.Join(c.items, ","))))
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if !reflect.DeepEqual(req.Messages, c.want) {
+			t.Errorf("%s: messages\n got: %+v\nwant: %+v", name, req.Messages, c.want)
+		}
+		if d := ir.Dropped(req.Dropped); !reflect.DeepEqual(d, c.dropped) {
+			t.Errorf("%s: dropped %v, want %v", name, d, c.dropped)
+		}
+		// What a strict Chat Completions server wants.
+		body, _, err := chat.EncodeRequest(req, "m")
+		if err != nil {
+			t.Errorf("%s: EncodeRequest: %v", name, err)
+			continue
+		}
+		if err := chat.CheckRequest(body); err != nil {
+			t.Errorf("%s: %v\n%s", name, err, body)
+		}
+		var sent struct {
+			Messages []struct {
+				Role      string
+				ToolCalls []struct{ ID string } `json:"tool_calls"`
+				CallID    string                `json:"tool_call_id"`
+			}
+		}
+		if err := json.Unmarshal(body, &sent); err != nil {
+			t.Fatal(err)
+		}
+		var shape []string
+		for _, m := range sent.Messages {
+			s := m.Role
+			for _, c := range m.ToolCalls {
+				s += " " + c.ID
+			}
+			shape = append(shape, strings.TrimSpace(s+" "+m.CallID))
+		}
+		if got := strings.Join(shape, " | "); got != c.shape {
+			t.Errorf("%s: chat messages: %s\nwant: %s", name, got, c.shape)
+		}
 	}
-	// What a strict Chat Completions server wants: one assistant message with both calls, then
-	// the tool messages.
+	// The image of a tool reaches the target as an image, after the tool messages.
+	req := decode(t, withInput(userItem+","+call("a", `{}`)+","+out("a", `[`+png+`]`)))
 	body, _, err := chat.EncodeRequest(req, "m")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sent struct {
-		Messages []struct {
-			Role      string
-			ToolCalls []struct{ ID string } `json:"tool_calls"`
-			CallID    string                `json:"tool_call_id"`
-		}
-	}
-	if err := json.Unmarshal(body, &sent); err != nil {
-		t.Fatal(err)
-	}
-	var shape []string
-	for _, m := range sent.Messages {
-		s := m.Role
-		for _, c := range m.ToolCalls {
-			s += " " + c.ID
-		}
-		shape = append(shape, strings.TrimSpace(s+" "+m.CallID))
-	}
-	if got := strings.Join(shape, " | "); got != "user | assistant a b | tool b | tool a | assistant c | tool c | user" {
-		t.Fatalf("chat messages: %s", got)
-	}
-
-	// Pairings no Chat Completions server takes are refused here, with the item's name.
-	u := userItem
-	refused(t, withInput(u+","+out("zz", `"x"`)), "input[1].call_id")                                        // no such call
-	refused(t, withInput(u+","+call("a", "{}")+","+out("a", `"x"`)+","+out("a", `"y"`)), "input[3].call_id") // answered already
-	refused(t, withInput(u+","+call("a", "{}")+","+u+","+out("a", `"x"`)), "input[1]")                       // a message before the output
-	refused(t, withInput(u+","+call("a", "{}")+`,{"role":"assistant","content":"x"}`), "input[1]")
-	refused(t, withInput(u+","+call("a", "{}")), "input[1]")                                         // no output at the end
-	refused(t, withInput(u+","+call("a", "{}")+","+call("b", "{}")+","+out("a", `"x"`)), "input[2]") // one of two unanswered
-	refused(t, withInput(u+","+call("a", "{}")+","+call("b", "{}")+","+out("a", `"x"`)+","+call("c", "{}")), "input[2]")
-	refused(t, withInput(u+","+call("a", "{}")+","+call("a", "{}")), "input[2].call_id") // one id twice
-	// An id may come back once its call is answered.
-	decode(t, withInput(u+","+call("a", "{}")+","+out("a", `"x"`)+","+call("a", "{}")+","+out("a", `"y"`)))
-	// A dropped item or a system message between a call and its output changes nothing.
-	decode(t, withInput(u+","+call("a", "{}")+`,{"type":"reasoning"},{"role":"developer","content":"d"},`+out("a", `"x"`)))
+	assertJSONEqual(t, body, `{"model":"m","messages":[{"role":"user","content":"hi"},
+	 {"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]},
+	 {"role":"tool","tool_call_id":"a","content":"[image]"},
+	 {"role":"user","content":[{"type":"text","text":"Image returned by tool call a:"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}}]}]}`)
 }
 
 func TestDecodeRequest_ItemsThatAreLeftOut(t *testing.T) {
@@ -300,6 +376,7 @@ func TestDecodeRequest_EveryTopLevelField(t *testing.T) {
 		`"text":{"format":{"type":"json_object"}}`:                        "text.format",
 		`"text":{"verbosity":"low"}`:                                      "text.verbosity",
 		`"text":{"new":1}`:                                                "unknown:text.new",
+		`"client_metadata":{"k":"v"}`:                                     "client_metadata",
 		`"frobnicate":1`:                                                  "unknown:frobnicate",
 		`"more":1`:                                                        "unknown:more",
 		`"":1`:                                                            "unknown:",
@@ -329,7 +406,7 @@ func TestDecodeRequest_EveryTopLevelField(t *testing.T) {
 	 {"type":"function_call_output","call_id":"c","output":"o","extra":1}],
 	 "tools":[{"type":"function","name":"f","parameters":{},"strict":true,"defer_loading":true}],
 	 "tool_choice":{"type":"function","name":"f","mode":"x"}}`)
-	want := []string{"tools.strict", "unknown:content.zz", "unknown:input.extra", "unknown:input.namespace", "unknown:input.yy",
+	want := []string{"input.namespace", "tools.strict", "unknown:content.zz", "unknown:input.extra", "unknown:input.yy",
 		"unknown:tool_choice.mode", "unknown:tools.defer_loading"}
 	if d := ir.Dropped(req.Dropped); !reflect.DeepEqual(d, want) {
 		t.Fatalf("dropped %v\nwant %v", d, want)
@@ -406,13 +483,9 @@ func TestDecodeRequest_ClientErrors(t *testing.T) {
 		asst(`{"type":"input_image","image_url":"https://x/y.png"}`):                                                       "input[1].content[0]",
 		item(`{"type":"function_call","name":"f","arguments":"{}"}`):                                                       "input[1].call_id",
 		item(`{"type":"function_call","call_id":"c","arguments":"{}"}`):                                                    "input[1].name",
-		item(`{"type":"function_call","call_id":"c","name":"f","arguments":"[1]"}`):                                        "input[1].arguments",
-		item(`{"type":"function_call","call_id":"c","name":"f","arguments":"{\"a\""}`):                                     "input[1].arguments",
-		item(`{"type":"function_call","call_id":"c","name":"f","arguments":{"a":1}}`):                                      "input[1].arguments",
 		item(`{"type":"function_call_output","output":"x"}`):                                                               "input[1].call_id",
 		item(`{"type":"function_call","call_id":"c","name":"f"},{"type":"function_call_output","call_id":"c","output":7}`): "input[2].output",
-		item(`{"type":"function_call","call_id":"c","name":"f"},{"type":"function_call_output","call_id":"c","output":[{"type":"input_image","image_url":"https://x"}]}`): "input[2].output[0]",
-		item(`{"type":"function_call","call_id":"c","name":"f"},{"type":"function_call_output","call_id":"c","output":[{"type":"input_file","file_id":"f"}]}`):            "input[2].output[0]",
+		item(`{"type":"function_call","call_id":"c","name":"f"},{"type":"function_call_output","call_id":"c","output":[{"type":"input_file","file_id":"f"}]}`): "input[2].output[0]",
 		withInput(userItem, `"tools":{}`):                                               "tools",
 		withInput(userItem, `"tools":[7]`):                                              "tools[0]",
 		withInput(userItem, `"tools":[{"name":"f"}]`):                                   "tools[0].type",
@@ -443,8 +516,8 @@ func TestDecodeRequest_ErrorsHoldNothingOfTheRequest(t *testing.T) {
 	for _, body := range []string{
 		withInput(`{"role":"` + secret + `","content":"x"}`),
 		withInput(`{"role":"user","content":[{"type":"` + secret + `"}]}`),
-		withInput(userItem + `,{"type":"function_call","call_id":"` + secret + `","name":"f","arguments":"` + secret + `"}`),
-		withInput(userItem + `,{"type":"function_call_output","call_id":"` + secret + `"}`),
+		withInput(userItem + `,{"type":"function_call","call_id":"` + secret + `","arguments":"` + secret + `"}`),
+		withInput(userItem + `,{"type":"function_call","call_id":"c","name":"f"},{"type":"function_call_output","call_id":"c","output":[{"type":"` + secret + `"}]}`),
 		withInput(userItem, `"tool_choice":"`+secret+`"`),
 	} {
 		_, err := DecodeRequest([]byte(body))
@@ -516,7 +589,8 @@ func TestEncodeResponse(t *testing.T) {
 	assertJSONEqual(t, body, `{"id":"resp_chatcmpl-1","object":"response","created_at":1700000000,"status":"completed","error":null,
 	 "incomplete_details":null,"model":"m-up","output":[{"id":"msg_0","type":"message","role":"assistant","status":"completed",
 	 "content":[{"type":"output_text","text":"Hello <b>&\n","annotations":[]}]}],
-	 "usage":{"input_tokens":12,"output_tokens":2,"total_tokens":14}}`)
+	 "parallel_tool_calls":true,"tool_choice":"auto","tools":[],
+	 "usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":0},"output_tokens":2,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":14}}`)
 	// "output_text" is the SDKs' own convenience, not a field of the wire object.
 	if bytes.Contains(body, []byte(`"output_text":`)) {
 		t.Fatalf("output_text is on the wire: %s", body)
@@ -542,7 +616,8 @@ func TestEncodeResponse(t *testing.T) {
 	  {"id":"fc_2","type":"function_call","call_id":"call_a","name":"read_file","arguments":"{ \"path\": \"a.txt\", \"n\": 10000000000000000000001 }","status":"completed"},
 	  {"id":"fc_3","type":"function_call","call_id":"call_b","name":"list_dir","arguments":"{}","status":"completed"},
 	  {"id":"msg_4","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"After.","annotations":[]}]}],
-	 "usage":{"input_tokens":40,"output_tokens":18,"total_tokens":58}}`)
+	 "parallel_tool_calls":true,"tool_choice":"auto","tools":[],
+	 "usage":{"input_tokens":40,"input_tokens_details":{"cached_tokens":0},"output_tokens":18,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":58}}`)
 	var got struct {
 		Output []struct{ Arguments string }
 	}
@@ -706,10 +781,10 @@ func argumentViews(t testing.TB, raw []byte) (joined, done, item, final []string
 func TestStreamEncoder_Text(t *testing.T) {
 	s, raw := mustStream(t, []ir.Event{startEv(), textStart(0), textDelta(0, "Hel"), textDelta(0, "lo."), ev(ir.PartStop, 0), finishEv(ir.StopEnd, 12, 2)}, true)
 	want := `event: response.created
-data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_chatcmpl-9","object":"response","created_at":1700000000,"status":"in_progress","error":null,"incomplete_details":null,"model":"m-up","output":[],"usage":null}}
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_chatcmpl-9","object":"response","created_at":1700000000,"status":"in_progress","error":null,"incomplete_details":null,"model":"m-up","output":[],"parallel_tool_calls":true,"tool_choice":"auto","tools":[],"usage":null}}
 
 event: response.in_progress
-data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_chatcmpl-9","object":"response","created_at":1700000000,"status":"in_progress","error":null,"incomplete_details":null,"model":"m-up","output":[],"usage":null}}
+data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_chatcmpl-9","object":"response","created_at":1700000000,"status":"in_progress","error":null,"incomplete_details":null,"model":"m-up","output":[],"parallel_tool_calls":true,"tool_choice":"auto","tools":[],"usage":null}}
 
 event: response.output_item.added
 data: {"type":"response.output_item.added","sequence_number":2,"output_index":0,"item":{"id":"msg_0","type":"message","role":"assistant","status":"in_progress","content":[]}}
@@ -733,7 +808,7 @@ event: response.output_item.done
 data: {"type":"response.output_item.done","sequence_number":8,"output_index":0,"item":{"id":"msg_0","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hello.","annotations":[]}]}}
 
 event: response.completed
-data: {"type":"response.completed","sequence_number":9,"response":{"id":"resp_chatcmpl-9","object":"response","created_at":1700000000,"status":"completed","error":null,"incomplete_details":null,"model":"m-up","output":[{"id":"msg_0","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hello.","annotations":[]}]}],"usage":{"input_tokens":12,"output_tokens":2,"total_tokens":14}}}
+data: {"type":"response.completed","sequence_number":9,"response":{"id":"resp_chatcmpl-9","object":"response","created_at":1700000000,"status":"completed","error":null,"incomplete_details":null,"model":"m-up","output":[{"id":"msg_0","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hello.","annotations":[]}]}],"parallel_tool_calls":true,"tool_choice":"auto","tools":[],"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":0},"output_tokens":2,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":14}}}
 
 `
 	if string(raw) != want {
@@ -980,17 +1055,26 @@ func TestStreamEncoder_BadEndings(t *testing.T) {
 			events: []ir.Event{startEv(), textStart(0), textDelta(0, "par")}, close: true,
 			names:   "created in_progress output_item.added content_part.added output_text.delta output_text.done content_part.done output_item.done failed",
 			message: errEarlyEnd, status: []string{"incomplete"}},
-		"the upstream went away inside two calls": {
+		"the upstream went away inside two calls: the cut one is never done, the whole one is": {
 			events: []ir.Event{startEv(), toolStart(0, "a", "f"), argsDelta(0, `{"x`), toolStart(1, "b", "g"), argsDelta(1, `{"y":1}`)}, close: true,
-			names: "created in_progress output_item.added function_call_arguments.delta function_call_arguments.done output_item.done " +
+			names: "created in_progress output_item.added function_call_arguments.delta " +
 				"output_item.added function_call_arguments.delta function_call_arguments.done output_item.done failed",
-			message: errEarlyEnd, status: []string{"incomplete", "incomplete"}},
-		"calls stopped by a failing decoder: cut arguments are not a completed call": {
+			message: errEarlyEnd, status: []string{"", "completed"}},
+		"calls stopped by a failing decoder: cut arguments are not a done call": {
 			events: []ir.Event{startEv(), toolStart(0, "a", "f"), argsDelta(0, `{"x":1}`), toolStart(1, "b", "g"), argsDelta(1, `{"y":`),
 				ev(ir.PartStop, 0), ev(ir.PartStop, 1), {Kind: ir.Error, Err: errEarlyEnd}},
 			names: "created in_progress output_item.added function_call_arguments.delta function_call_arguments.done output_item.done " +
+				"output_item.added function_call_arguments.delta failed",
+			message: errEarlyEnd, status: []string{"completed", ""}},
+		"a held call that was cut is not written at all": {
+			events: []ir.Event{startEv(), toolStart(0, "a", "f"), argsDelta(0, `{}`), toolStart(1, "b", "g"), argsDelta(1, `{"y":`), toolStart(2, "c", "h"),
+				ev(ir.PartStop, 1), ev(ir.PartStop, 2), ev(ir.PartStop, 0), {Kind: ir.Error, Err: errEarlyEnd}},
+			names: "created in_progress output_item.added function_call_arguments.delta function_call_arguments.done output_item.done " +
 				"output_item.added function_call_arguments.delta function_call_arguments.done output_item.done failed",
-			message: errEarlyEnd, status: []string{"completed", "incomplete"}},
+			message: errEarlyEnd, status: []string{"completed", "completed"}},
+		"a call without arguments that never stopped is not a call": {
+			events: []ir.Event{startEv(), toolStart(0, "a", "f")}, close: true,
+			names: "created in_progress output_item.added failed", message: errEarlyEnd, status: []string{""}},
 		"no finish at all": {
 			events: []ir.Event{startEv()}, close: true, names: "created in_progress failed", message: errEarlyEnd},
 		"nothing at all": {close: true, names: "created failed", message: errEarlyEnd},
@@ -1021,20 +1105,37 @@ func TestStreamEncoder_BadEndings(t *testing.T) {
 		if bytes.Contains(raw, []byte("response.completed")) || bytes.Contains(raw, []byte(`"status":"completed","error"`)) {
 			t.Errorf("%s: a completed response in a failed stream\n%s", name, raw)
 		}
+		// Read without the checker: every done function_call, and every one in the final output, has
+		// arguments that are one JSON object. Codex records and runs each of them.
+		_, done, item, final := argumentViews(t, raw)
+		for _, args := range append(append([]string{}, item...), final...) {
+			if args != "<none>" && ir.CheckObject([]byte(args)) != nil {
+				t.Errorf("%s: a call with arguments %q is handed over (done events %q)", name, args, done)
+			}
+		}
 	}
 }
 
-func TestStreamEncoder_ArgumentsThatAreNoObjectNeverComplete(t *testing.T) {
+func TestStreamEncoder_ArgumentsThatAreNoObjectAreNeverDone(t *testing.T) {
 	// The decoder judges arguments before its Finish. The encoder does not rely on it: a call whose
-	// pieces are not one JSON object is closed as incomplete, and a Finish after it fails the answer.
+	// pieces are not one JSON object gets no done event, is not in the final output, and a Finish
+	// after it fails the answer.
 	for _, args := range []string{`{"a":`, `[1]`, `{"a":1}{`, `nul`, "{\"a\":\"\xff\"}"} {
-		raw, err := encodeEvents([]ir.Event{startEv(), toolStart(0, "a", "f"), argsDelta(0, args), ev(ir.PartStop, 0), finishEv(ir.StopToolUse, 1, 1)}, true)
+		raw, err := encodeEvents([]ir.Event{startEv(), toolStart(0, "a", "f"), argsDelta(0, args), ev(ir.PartStop, 0),
+			toolStart(1, "b", "g"), ev(ir.PartStop, 1), finishEv(ir.StopToolUse, 1, 1)}, true)
 		if !errors.Is(err, ir.ErrSequence) {
 			t.Fatalf("%q: err = %v", args, err)
 		}
 		s, err := CheckStream(raw)
-		if err != nil || s.Completed || s.Status != "failed" || s.Items[0].Status != "incomplete" || s.ErrMessage != errUnreadable {
+		if err != nil || s.Completed || s.Status != "failed" || s.Items[0].Done || !s.Items[1].Done || s.Items[1].ID != "fc_1" || s.ErrMessage != errUnreadable {
 			t.Fatalf("%q: %v, %+v\n%s", args, err, s, raw)
+		}
+		names, data := frames(t, raw)
+		if got := eventNames(t, raw); got != "created in_progress output_item.added function_call_arguments.delta output_item.added function_call_arguments.delta function_call_arguments.done output_item.done failed" {
+			t.Fatalf("%q: events %s", args, got)
+		}
+		if final := data[len(data)-1]["response"].(map[string]any)["output"].([]any); len(final) != 1 || final[0].(map[string]any)["call_id"] != "b" || names[len(names)-1] != "response.failed" {
+			t.Fatalf("%q: final output %v", args, final)
 		}
 	}
 }
@@ -1148,7 +1249,8 @@ func TestStreamEncoder_Limits(t *testing.T) {
 	for i := 0; i <= ir.MaxToolCalls; i++ {
 		events = append(events, toolStart(i, fmt.Sprint("c", i), "f"))
 	}
-	if n := tooLarge("too many calls", events); n != ir.MaxToolCalls {
+	// None of those calls stopped: none of them is handed over.
+	if n := tooLarge("too many calls", events); n != 0 {
 		t.Fatalf("%d items", n)
 	}
 	events = []ir.Event{startEv()}
@@ -1421,6 +1523,46 @@ func genEvents(rng *rand.Rand) ([]ir.Event, []genPart) {
 	return append(events, finishEv(stop, 5, 9)), parts
 }
 
+// replay sends what a client holds after a stream back as the history of its next request, the
+// way Codex does: every done item of the response, then a function_call_output for every done
+// call. Whatever the stream was, the request must go through and be one a strict Chat Completions
+// server takes: a session must survive every answer the encoder can write.
+func replay(t testing.TB, raw []byte) {
+	t.Helper()
+	names, data := frames(t, raw)
+	items := []string{userItem}
+	var outputs []string
+	for i, d := range data {
+		if names[i] != "response.output_item.done" {
+			continue
+		}
+		it := d["item"].(map[string]any)
+		b, _ := json.Marshal(it)
+		items = append(items, string(b))
+		if it["type"] == "function_call" {
+			id, _ := json.Marshal(it["call_id"])
+			outputs = append(outputs, `{"type":"function_call_output","call_id":`+string(id)+`,"output":"ok"}`)
+		}
+	}
+	body := withInput(strings.Join(append(items, outputs...), ","))
+	req, err := DecodeRequest([]byte(body))
+	if err != nil {
+		t.Fatalf("the history is refused: %v\n%s", err, body)
+	}
+	for _, name := range req.Dropped {
+		if name != "input:reasoning" {
+			t.Fatalf("the history loses %s\n%s", name, body)
+		}
+	}
+	out, _, err := chat.EncodeRequest(req, "m")
+	if err != nil {
+		t.Fatalf("the history cannot be sent: %v\n%s", err, body)
+	}
+	if err := chat.CheckRequest(out); err != nil {
+		t.Fatalf("the history is no valid Chat conversation: %v\n%s\n%s", err, out, body)
+	}
+}
+
 func TestProperty_ItemsAreSequentialAndBytesAreKept(t *testing.T) {
 	rng := rand.New(rand.NewSource(20261007))
 	itemType := map[ir.PartKind]string{ir.Text: "message", ir.Thinking: "reasoning", ir.ToolUse: "function_call"}
@@ -1445,7 +1587,8 @@ func TestProperty_ItemsAreSequentialAndBytesAreKept(t *testing.T) {
 		if whole != s.Completed || whole == (s.Status == "failed") {
 			t.Fatalf("round %d: whole %v, stream %+v", round, whole, s)
 		}
-		// Every part that was started is on the wire, in part order, with exactly the bytes it had got.
+		replay(t, raw)
+		// What each part had got when the events stopped.
 		got := map[int]string{}
 		stopped := map[int]bool{}
 		started := 0
@@ -1461,44 +1604,64 @@ func TestProperty_ItemsAreSequentialAndBytesAreKept(t *testing.T) {
 				stopped[ev.Index] = true
 			}
 		}
-		if len(s.Items) != started {
-			t.Fatalf("round %d: %d items for %d parts\n%s", round, len(s.Items), started, raw)
-		}
-		// The same, read without the checker.
+		// The final output, read without the checker: the done items, in order.
 		names, data := frames(t, raw)
 		final := data[len(data)-1]["response"].(map[string]any)["output"].([]any)
-		if len(final) != started || (names[len(names)-1] == "response.completed") != whole {
-			t.Fatalf("round %d: the last event is %s with %d items for %d parts", round, names[len(names)-1], len(final), started)
+		if (names[len(names)-1] == "response.completed") != whole {
+			t.Fatalf("round %d: the last event is %s", round, names[len(names)-1])
 		}
-		for i, it := range s.Items {
+		// Every part is on the wire in part order with exactly the bytes it had got — but for a call
+		// that was cut: it is not done (and not written at all when it was still held back).
+		at, doneAt := 0, 0
+		for i := 0; i < started; i++ {
 			want := got[i]
-			inFinal := final[i].(map[string]any)
-			if it.Type != itemType[parts[i].kind] || inFinal["type"] != it.Type {
-				t.Fatalf("round %d item %d: %+v for a %s part", round, i, it, parts[i].kind)
+			call := parts[i].kind == ir.ToolUse
+			if call && want == "" && stopped[i] {
+				want = "{}"
 			}
-			if wantStatus := map[bool]string{true: "completed", false: "incomplete"}[stopped[i]]; it.Type != "reasoning" && it.Status != wantStatus {
-				t.Fatalf("round %d item %d: status %q, want %q", round, i, it.Status, wantStatus)
+			whole := !call || ir.CheckObject([]byte(want)) == nil
+			if at == len(s.Items) || (call && s.Items[at].CallID != fmt.Sprint("call_", i)) {
+				if whole {
+					t.Fatalf("round %d: part %d is missing\n%s", round, i, raw)
+				}
+				continue
+			}
+			it := s.Items[at]
+			at++
+			if it.Type != itemType[parts[i].kind] || it.Done != whole {
+				t.Fatalf("round %d part %d: %+v for a %s part, whole %v", round, i, it, parts[i].kind, whole)
+			}
+			if !it.Done {
+				if strings.Join(it.Deltas, "") != want {
+					t.Fatalf("round %d part %d: deltas %q, want %q", round, i, it.Deltas, want)
+				}
+				continue
+			}
+			inFinal := final[doneAt].(map[string]any)
+			doneAt++
+			if inFinal["id"] != it.ID {
+				t.Fatalf("round %d part %d: item %s is %v in the final output", round, i, it.ID, inFinal["id"])
 			}
 			switch parts[i].kind {
 			case ir.ToolUse:
-				if want == "" && stopped[i] {
-					want = "{}"
-				}
-				if it.CallID != fmt.Sprint("call_", i) || it.Name != fmt.Sprint("fn", i) || strings.Join(it.Deltas, "") != want || it.Arguments != want || inFinal["arguments"] != want {
-					t.Fatalf("round %d item %d: %+v, want arguments %q", round, i, it, want)
-				}
-				if whole && !json.Valid([]byte(it.Arguments)) {
-					t.Fatalf("round %d item %d: arguments %q", round, i, it.Arguments)
+				if it.Name != fmt.Sprint("fn", i) || strings.Join(it.Deltas, "") != want || it.Arguments != want || inFinal["arguments"] != want || it.Status != "completed" {
+					t.Fatalf("round %d part %d: %+v, want arguments %q", round, i, it, want)
 				}
 			case ir.Text:
+				if wantStatus := map[bool]string{true: "completed", false: "incomplete"}[stopped[i]]; it.Status != wantStatus {
+					t.Fatalf("round %d part %d: status %q, want %q", round, i, it.Status, wantStatus)
+				}
 				if it.Text != want || inFinal["content"].([]any)[0].(map[string]any)["text"] != want {
-					t.Fatalf("round %d item %d: %+v, want text %q", round, i, it, want)
+					t.Fatalf("round %d part %d: %+v, want text %q", round, i, it, want)
 				}
 			default:
 				if it.Text != want {
-					t.Fatalf("round %d item %d: %+v, want text %q", round, i, it, want)
+					t.Fatalf("round %d part %d: %+v, want text %q", round, i, it, want)
 				}
 			}
+		}
+		if at != len(s.Items) || doneAt != len(final) {
+			t.Fatalf("round %d: %d items and %d done ones on the wire, %d and %d accounted for", round, len(s.Items), len(final), at, doneAt)
 		}
 	}
 }
@@ -1540,7 +1703,9 @@ func TestCheckStream_RefusesWhatAClientWould(t *testing.T) {
 		"a call_id that changes":                           {`"call_id":"call_b","name":"fb","arguments":"{\"b\":[1,2]}","status":"completed"}}`, `"call_id":"call_x","name":"fb","arguments":"{\"b\":[1,2]}","status":"completed"}}`},
 		"the text differs in the done event":               {`"text":"meanwhile","logprobs"`, `"text":"meanwhil","logprobs"`},
 		"a total that is not the sum":                      {`"total_tokens":16`, `"total_tokens":17`},
-		"a completed response without usage":               {`"usage":{"input_tokens":7,"output_tokens":9,"total_tokens":16}`, `"usage":null`},
+		"a completed response without usage":               {`"usage":{"input_tokens":7,"input_tokens_details":{"cached_tokens":0},"output_tokens":9,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":16}`, `"usage":null`},
+		"a usage without the details the SDKs require":     {`"input_tokens_details":{"cached_tokens":0},`, ``},
+		"a response without the fields the SDKs require":   {`"parallel_tool_calls":true,"tool_choice":"auto","tools":[],`, ``},
 		"a type that is not the event":                     {`data: {"type":"response.in_progress"`, `data: {"type":"response.created"`},
 		"an event nobody knows":                            {"event: response.in_progress\ndata: {\"type\":\"response.in_progress\"", "event: response.wat\ndata: {\"type\":\"response.wat\""},
 		"an item that starts with arguments":               {`"name":"fa","arguments":"","status":"in_progress"`, `"name":"fa","arguments":"{","status":"in_progress"`},
@@ -1570,7 +1735,7 @@ func TestCheckStream_RefusesWhatAClientWould(t *testing.T) {
 	bad, _ := encodeEvents([]ir.Event{startEv(), toolStart(0, "a", "f"), argsDelta(0, `{"x":1}`), ev(ir.PartStop, 0), finishEv(ir.StopToolUse, 1, 1)}, true)
 	for name, c := range map[string][2]string{
 		"completed with arguments that are no object": {`{\"x\":1}`, `{\"x\":1`},
-		"completed with an incomplete item":           {`"status":"completed"}`, `"status":"incomplete"}`},
+		"a done call that is not completed":           {`"status":"completed"}`, `"status":"incomplete"}`},
 	} {
 		if _, err := CheckStream(bytes.ReplaceAll(bad, []byte(c[0]), []byte(c[1]))); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -1596,6 +1761,7 @@ func FuzzDecodeRequest(f *testing.F) {
 		`"tools":[{"type":"function","name":"f","parameters":{},"strict":true},{"type":"custom","name":"p"}]`, `"tool_choice":{"type":"function","name":"f"}`)))
 	f.Add([]byte(withInput(`{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,QQ==","detail":"low"},{"type":"input_file","file_id":"f"}]}`)))
 	f.Add([]byte(withInput(`{"type":"item_reference","id":"x"},{"role":"developer","content":"d"},{"type":"more"}`)))
+	f.Add([]byte(withInput(userItem + `,{"type":"function_call","call_id":"a","name":"f","arguments":"{\"cut\":"},{"role":"assistant","content":"x"},{"type":"function_call","call_id":"a","name":"f"},{"type":"function_call","call_id":"b","name":"f"},{"role":"user","content":"u"},{"type":"function_call_output","call_id":"b","output":[{"type":"input_image","image_url":"https://x/y.png"}]},{"type":"function_call_output","call_id":"zz","output":"o"}`)))
 	f.Add([]byte(`null`))
 	f.Fuzz(func(t *testing.T, body []byte) {
 		req, err := DecodeRequest(body)
@@ -1625,7 +1791,7 @@ func FuzzDecodeRequest(f *testing.F) {
 				t.Fatalf("message %q with %d parts", m.Role, len(m.Parts))
 			}
 			results := 0
-			for _, p := range m.Parts {
+			for seen, p := range m.Parts {
 				switch p.Kind {
 				case ir.Text:
 				case ir.Image:
@@ -1633,8 +1799,8 @@ func FuzzDecodeRequest(f *testing.F) {
 						t.Fatalf("image %+v in a %s turn", p, m.Role)
 					}
 				case ir.ToolResult:
-					if m.Role != ir.User || !waiting[p.ToolID] || p.Data != "" || p.MediaType != "" {
-						t.Fatalf("message %d: tool result %+v in a %s turn, waiting %v", i, p, m.Role, waiting)
+					if m.Role != ir.User || !waiting[p.ToolID] || p.Data != "" || p.MediaType != "" || results != seen {
+						t.Fatalf("message %d: tool result %+v in a %s turn after %d other parts, waiting %v", i, p, m.Role, seen-results, waiting)
 					}
 					delete(waiting, p.ToolID)
 					results++
@@ -1646,8 +1812,8 @@ func FuzzDecodeRequest(f *testing.F) {
 					t.Fatalf("part of kind %q", p.Kind)
 				}
 			}
-			if len(waiting) > 0 || (results > 0 && results != len(m.Parts)) {
-				t.Fatalf("message %d: calls left unanswered %v, %d results among %d parts", i, waiting, results, len(m.Parts))
+			if len(waiting) > 0 {
+				t.Fatalf("message %d: calls left unanswered %v", i, waiting)
 			}
 			waiting = map[string]bool{}
 			calls := 0
@@ -1678,9 +1844,16 @@ func FuzzDecodeRequest(f *testing.F) {
 				t.Fatalf("dropped name %q", name)
 			}
 		}
-		// The target's encoder takes it or refuses it with a client error; it never panics.
-		if _, _, err := chat.EncodeRequest(req, "m"); err != nil && !errors.Is(err, chat.ErrUnsupported) {
+		// The target's encoder takes it or refuses it with a client error; it never panics. What it
+		// takes has every tool call answered where a strict server wants the answers.
+		out, _, err := chat.EncodeRequest(req, "m")
+		if err != nil && !errors.Is(err, chat.ErrUnsupported) {
 			t.Fatalf("EncodeRequest: %v", err)
+		}
+		if err == nil {
+			if err := checkToolPairing(out); err != nil {
+				t.Fatalf("%v\n%s", err, out)
+			}
 		}
 	})
 }
@@ -1710,6 +1883,7 @@ func FuzzStreamEncoder(f *testing.F) {
 		if err != nil {
 			t.Fatalf("not a well-formed Responses stream: %v\n%s\n%+v", err, out, events)
 		}
+		replay(t, out)
 		finished := len(events) > 0 && events[len(events)-1].Kind == ir.Finish
 		if finished == (s.Status == "failed") || (s.Status == "failed") != (s.ErrMessage != "") {
 			t.Fatalf("finished %v, stream status %q, error %q\n%+v", finished, s.Status, s.ErrMessage, events)
@@ -1815,6 +1989,7 @@ func FuzzStreamEncoderAnyEvents(f *testing.F) {
 		if err != nil {
 			t.Fatalf("not a well-formed Responses stream: %v\n%s\n%+v", err, buf.Bytes(), events)
 		}
+		replay(t, buf.Bytes())
 		if s.Status != "failed" {
 			// An answer is reported only for a prefix that is a well-formed answer up to its Finish.
 			n := 0
@@ -1829,4 +2004,47 @@ func FuzzStreamEncoderAnyEvents(f *testing.F) {
 			}
 		}
 	})
+}
+
+// checkToolPairing is the part of chat.CheckRequest that the grouping of calls and outputs is
+// answerable for: every tool message follows the assistant message that holds its call, every
+// call is answered there, and no two assistant messages follow each other. (What a client wrote
+// into a message — an empty text — is the client's.)
+func checkToolPairing(body []byte) error {
+	var req struct {
+		Messages []struct {
+			Role      string
+			CallID    string                `json:"tool_call_id"`
+			ToolCalls []struct{ ID string } `json:"tool_calls"`
+		}
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return err
+	}
+	var waiting map[string]bool
+	last := ""
+	for i, m := range req.Messages {
+		switch {
+		case m.Role == "tool":
+			if !waiting[m.CallID] {
+				return fmt.Errorf("messages[%d]: a tool message for no waiting call", i)
+			}
+			delete(waiting, m.CallID)
+		case len(waiting) > 0:
+			return fmt.Errorf("messages[%d]: %s before every call was answered", i, m.Role)
+		case m.Role == "assistant":
+			if last == "assistant" {
+				return fmt.Errorf("messages[%d]: two assistant messages in a row", i)
+			}
+			waiting = map[string]bool{}
+			for _, c := range m.ToolCalls {
+				waiting[c.ID] = true
+			}
+		}
+		last = m.Role
+	}
+	if len(waiting) > 0 {
+		return errors.New("calls without an answer at the end")
+	}
+	return nil
 }

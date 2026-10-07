@@ -296,6 +296,79 @@ func TestRequest_ClaudeCodeTurn(t *testing.T) {
 	}
 }
 
+func TestRequest_ImagesInToolResultsDoNotEndASession(t *testing.T) {
+	// Claude Code's Read tool returns images inside tool_result blocks, and the history is sent
+	// again with every request: the images follow the tool messages as one user message.
+	const png = `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUFB"}}`
+	out, _, dropped, err := messagesChat(t).Request([]byte(`{"model":"m","max_tokens":5,"messages":[
+	 {"role":"user","content":"compare a.png and b.png"},
+	 {"role":"assistant","content":[{"type":"tool_use","id":"a","name":"Read","input":{"file_path":"a.png"}},{"type":"tool_use","id":"b","name":"Read","input":{"file_path":"b.png"}}]},
+	 {"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":[`+png+`]},
+	  {"type":"tool_result","tool_use_id":"b","content":[{"type":"text","text":"b.png"},{"type":"image","source":{"type":"url","url":"https://example.org/b.png"}}]}]}]}`), nil, "gpt-x")
+	if err != nil || dropped != nil {
+		t.Fatalf("%v, dropped %v", err, dropped)
+	}
+	assertJSONEqual(t, out, `{"model":"gpt-x","max_tokens":5,"messages":[
+	 {"role":"user","content":"compare a.png and b.png"},
+	 {"role":"assistant","content":null,"tool_calls":[
+	  {"id":"a","type":"function","function":{"name":"Read","arguments":"{\"file_path\":\"a.png\"}"}},
+	  {"id":"b","type":"function","function":{"name":"Read","arguments":"{\"file_path\":\"b.png\"}"}}]},
+	 {"role":"tool","tool_call_id":"a","content":"[image]"},
+	 {"role":"tool","tool_call_id":"b","content":"b.png"},
+	 {"role":"user","content":[
+	  {"type":"text","text":"Image returned by tool call a:"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QUFB"}},
+	  {"type":"text","text":"Image returned by tool call b:"},{"type":"image_url","image_url":{"url":"https://example.org/b.png"}}]}]}`)
+	if err := chat.CheckRequest(out); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResponse_TheHistoryOfAnyAnswerIsTaken(t *testing.T) {
+	// Random Chat streams — text, then interleaved calls — whole and cut at a random byte: what the
+	// caller got goes back as an assistant turn with a tool_result for every tool_use, and is a
+	// conversation a strict Chat Completions server takes.
+	rng := rand.New(rand.NewSource(11))
+	args := []string{`{"path":"a.txt"}`, `{ "b":1.0, "a":[1, "<&>"] }`, `{}`, `{"s":"` + strings.Repeat("xy", 40) + `"}`}
+	quote := func(v string) string { b, _ := json.Marshal(v); return string(b) }
+	for round := 0; round < 400; round++ {
+		n := 1 + rng.Intn(len(args))
+		upstream := append(sseOf(chunk(`{"role":"assistant","content":"Let me look."}`)), chatToolStream(rng, args[:n])...)
+		if round%4 != 0 {
+			upstream = upstream[:rng.Intn(len(upstream))]
+		}
+		c := newCall(t, true).upstream(200, "text/event-stream", upstream, 1+rng.Intn(60))
+		if !strings.HasPrefix(c.rec.Header().Get("Content-Type"), "text/event-stream") {
+			continue // cut before the first event: an HTTP error, and nothing to send back
+		}
+		s, err := messages.CheckStream(c.rec.Body.Bytes())
+		if err != nil {
+			t.Fatalf("round %d: %v\n%s", round, err, c.rec.Body)
+		}
+		var blocks, results []string
+		for _, b := range s.Blocks {
+			if b.Type != "tool_use" {
+				blocks = append(blocks, `{"type":"text","text":`+quote(b.Text)+`}`)
+				continue
+			}
+			input := b.Input // a client that cannot parse the partial JSON of a cut call has no input
+			if ir.CheckObject([]byte(input)) != nil {
+				input = "{}"
+			}
+			blocks = append(blocks, `{"type":"tool_use","id":`+quote(b.ToolID)+`,"name":`+quote(b.ToolName)+`,"input":`+input+`}`)
+			results = append(results, `{"type":"tool_result","tool_use_id":`+quote(b.ToolID)+`,"content":"ok"}`)
+		}
+		body := `{"model":"m","max_tokens":5,"messages":[{"role":"user","content":"go"},{"role":"assistant","content":[` + strings.Join(blocks, ",") +
+			`]},{"role":"user","content":[` + strings.Join(append(results, `{"type":"text","text":"go on"}`), ",") + `]}]}`
+		out, _, dropped, err := messagesChat(t).Request([]byte(body), nil, "gpt-x")
+		if err != nil || dropped != nil {
+			t.Fatalf("round %d: %v, dropped %v\n%s", round, err, dropped, body)
+		}
+		if err := chat.CheckRequest(out); err != nil {
+			t.Fatalf("round %d: %v\n%s", round, err, out)
+		}
+	}
+}
+
 func TestRequest_ClientErrors(t *testing.T) {
 	for body, field := range map[string]string{
 		`{"model":"m","max_tokens":5,"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","data":"SECRET"}}]}]}`: "messages[0].content[0].type",

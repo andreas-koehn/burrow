@@ -1655,3 +1655,45 @@ func TestDecodeError(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckRequest(t *testing.T) {
+	msgs := func(m string) []byte { return []byte(`{"model":"m","messages":[` + m + `]}`) }
+	const (
+		user  = `{"role":"user","content":"hi"}`
+		calls = `{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"b","type":"function","function":{"name":"f","arguments":"{\"k\":1}"}}]}`
+		toolA = `{"role":"tool","tool_call_id":"a","content":"x"}`
+		toolB = `{"role":"tool","tool_call_id":"b","content":""}`
+		said  = `{"role":"assistant","content":"ok"}`
+	)
+	for _, good := range []string{
+		user,
+		`{"role":"system","content":"s"},` + user + "," + said + "," + user,
+		user + "," + calls + "," + toolB + "," + toolA + "," + said,
+		user + "," + calls + "," + toolA + "," + toolB + `,{"role":"user","content":[{"type":"text","text":"x"}]}`,
+	} {
+		if err := CheckRequest(msgs(good)); err != nil {
+			t.Errorf("%v\n%s", err, good)
+		}
+	}
+	for name, bad := range map[string]string{
+		"no messages":                    ``,
+		"a call without an answer":       user + "," + calls + "," + toolA,
+		"a message before the answers":   user + "," + calls + "," + toolA + "," + user + "," + toolB,
+		"a tool message for no call":     user + "," + toolA,
+		"an id answered twice":           user + "," + calls + "," + toolA + "," + toolA + "," + toolB,
+		"a tool message for another id":  user + "," + calls + "," + toolA + `,{"role":"tool","tool_call_id":"z","content":"x"}`,
+		"two assistant messages":         user + "," + said + "," + said,
+		"an assistant that says nothing": user + `,{"role":"assistant","content":""}`,
+		"a user that says nothing":       `{"role":"user","content":""}`,
+		"arguments that are no object":   user + `,{"role":"assistant","content":null,"tool_calls":[{"id":"a","function":{"name":"f","arguments":"{"}}]},` + toolA,
+		"one call id twice":              user + `,{"role":"assistant","tool_calls":[{"id":"a","function":{"name":"f","arguments":"{}"}},{"id":"a","function":{"name":"f","arguments":"{}"}}]},` + toolA,
+		"a role nobody knows":            `{"role":"function","content":"x"}`,
+	} {
+		if err := CheckRequest(msgs(bad)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if CheckRequest([]byte(`[]`)) == nil {
+		t.Error("a body that is no object: accepted")
+	}
+}

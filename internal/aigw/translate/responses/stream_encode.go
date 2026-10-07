@@ -103,9 +103,16 @@ const keepAliveFrame = ": keep-alive\n\n"
 // and the SDKs add the deltas to the "" of the added item, so every one of
 // them reads the empty object, as with OpenAI itself.
 //
-// When a call stops, its arguments are checked: if they are not one JSON
-// object the item is done with status "incomplete" and the answer cannot
-// complete any more — a Finish after it fails the stream. A stream decoder
+// A call is done only with arguments that are one JSON object. Codex has no
+// status on a function call: it records and runs every call that is done,
+// and sends it back as history with every later request. So when a call
+// ends — it stopped, or the stream is being ended badly — its arguments are
+// checked, and a call that fails the check gets no
+// response.function_call_arguments.done and no response.output_item.done
+// and is left out of the final "output": the item was added and never
+// done, and clients drop it (its output_index is not used again). A held
+// call that fails the check is not written at all. After that the answer
+// cannot complete any more — a Finish fails the stream. A stream decoder
 // checks the same before it finishes; the encoder does not rely on it.
 //
 // # Thinking
@@ -141,12 +148,21 @@ const keepAliveFrame = ": keep-alive\n\n"
 // ("max_output_tokens") or withheld ("content_filter"). Its usage is the
 // Finish event's; input tokens fall back to the Start event's.
 //
+// What Codex does with response.incomplete: it takes both reasons for a
+// stream error it may retry, up to its own retry count. An answer that the
+// upstream ended with finish_reason "length" can therefore be requested —
+// and billed — several times before Codex gives up. That is what the
+// protocol says about such an answer, and it is kept: calling a cut answer
+// completed would hide the cut from every client.
+//
 // # Failure
 //
 // An Error event, Close before the Finish, a sequence that breaks the rules
-// of ir.Event, a limit: the open item is done with status "incomplete",
-// held parts are written and done (those that had not stopped as
-// "incomplete"), and then one event ends the stream:
+// of ir.Event, a limit: the open item is ended, held parts are written and
+// ended, and then one event ends the stream. A text that had not stopped is
+// done with status "incomplete"; a call is done, as "completed", when its
+// arguments are one JSON object, and otherwise not done at all (see Tool
+// calls):
 //
 //	event: response.failed
 //	data: {"type":"response.failed","sequence_number":N,"response":{…,"status":"failed",
@@ -166,7 +182,7 @@ type StreamEncoder struct {
 	started bool
 	done    bool  // the stream was ended, well or badly
 	werr    error // the writer failed: nothing more is written
-	broken  bool  // an item was done as incomplete: the answer cannot complete
+	broken  bool  // a call was left without its done events: the answer cannot complete
 
 	seq         int // the next sequence_number
 	inputTokens int // what the Start told
@@ -430,13 +446,22 @@ func (e *StreamEncoder) delta(index int, s string) error {
 
 // drain writes the held parts, in order, up to and including the first one
 // that has not stopped: that one becomes the live item. When the stream is
-// being aborted all of them are written, and those that had not stopped are
-// done as incomplete.
+// being aborted all of them are written and ended. A held call that ends
+// here with arguments that are not one JSON object is not written at all.
 func (e *StreamEncoder) drain(aborting bool) {
 	for len(e.held) > 0 && e.werr == nil {
 		h := e.held[0]
 		e.held[0] = nil
 		e.held = e.held[1:]
+		ends := h.stopped || aborting
+		if ends && e.parts[h.index].kind == ir.ToolUse && !h.object(h.stopped) {
+			for _, s := range h.pieces {
+				e.heldBytes -= len(s)
+			}
+			e.heldBytes -= len(h.tail)
+			e.broken = true
+			continue
+		}
 		e.startItem(h.index)
 		for _, s := range h.pieces {
 			e.heldBytes -= len(s)
@@ -446,11 +471,30 @@ func (e *StreamEncoder) drain(aborting bool) {
 			e.heldBytes -= len(h.tail)
 			e.writeDelta(string(h.tail))
 		}
-		if !h.stopped && !aborting {
+		if !ends {
 			return
 		}
 		e.stopItem(!h.stopped)
 	}
+}
+
+// object reports whether the arguments a held call got are one JSON object;
+// none at all count as one when the call stopped by itself ("{}" is written
+// for it then).
+func (h *heldPart) object(stopped bool) bool {
+	n := len(h.tail)
+	for _, s := range h.pieces {
+		n += len(s)
+	}
+	args := make([]byte, 0, n)
+	for _, s := range h.pieces {
+		args = append(args, s...)
+	}
+	args = append(args, h.tail...)
+	if stopped && len(bytes.TrimSpace(args)) == 0 {
+		return true
+	}
+	return ir.CheckObject(args) == nil
 }
 
 // open begins a frame: {"type":"<event>","sequence_number":N
@@ -544,25 +588,29 @@ func (e *StreamEncoder) writeDelta(s string) {
 	}
 }
 
-// stopItem writes the done events of the item that is open on the wire and
-// adds the item to the final output. incomplete says the part did not stop
-// by itself: the stream is being aborted.
-func (e *StreamEncoder) stopItem(incomplete bool) {
+// stopItem ends the item that is open on the wire: it writes its done
+// events and adds it to the final output. aborted says the part did not
+// stop by itself: the stream is being ended badly. A call whose arguments
+// are not one JSON object gets no done event and stays out of the output
+// (see Tool calls at StreamEncoder); its output_index is spent.
+func (e *StreamEncoder) stopItem(aborted bool) {
 	p := &e.parts[e.cur]
-	if p.kind == ir.ToolUse && !incomplete {
-		if len(bytes.TrimSpace(e.acc)) == 0 {
-			e.writeDelta("{}") // see Tool calls at StreamEncoder
+	status := statusCompleted
+	switch {
+	case p.kind == ir.ToolUse:
+		if !aborted && len(bytes.TrimSpace(e.acc)) == 0 {
+			e.writeDelta("{}")
 		}
 		if ir.CheckObject(e.acc) != nil {
-			incomplete = true
+			e.broken = true
+			e.wire++
+			e.cur = -1
+			return
 		}
-	}
-	status := statusCompleted
-	if incomplete {
+	case aborted:
 		status = statusIncomplete
-		e.broken = true
 	}
-	if e.wire > 0 {
+	if len(e.output) > 0 {
 		e.output = append(e.output, ',')
 	}
 	from := len(e.output) // where this item begins in the output

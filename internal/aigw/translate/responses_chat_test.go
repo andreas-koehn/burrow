@@ -110,8 +110,8 @@ func TestResponsesChat_Request_CodexTurn(t *testing.T) {
 		if !stream {
 			t.Fatal("stream = false")
 		}
-		want := []string{"include", "input:reasoning", "parallel_tool_calls", "prompt_cache_key", "reasoning",
-			"text.verbosity", "tool:custom", "tool:local_shell", "tool:web_search"}
+		want := []string{"client_metadata", "include", "input.namespace", "input.phase", "input:reasoning", "parallel_tool_calls",
+			"prompt_cache_key", "reasoning", "stream_options", "text.verbosity", "tool:custom", "tool:local_shell", "tool:web_search"}
 		if !reflect.DeepEqual(dropped, want) {
 			t.Fatalf("dropped = %v, want %v", dropped, want)
 		}
@@ -138,17 +138,120 @@ func TestResponsesChat_Request_ClientErrors(t *testing.T) {
 		`{"model":"m","input":[{"role":"user","content":[{"type":"input_file","file_data":"SECRET"}]}]}`: "input[0].content[0]",
 		`{"model":"m"}`:   "input",
 		`not json SECRET`: "body",
-		`{"model":"m","input":[{"role":"user","content":"SECRET"},{"type":"function_call_output","call_id":"SECRET","output":"x"}]}`:              "input[1].call_id",
-		`{"model":"m","input":[{"role":"user","content":"SECRET"},{"type":"function_call","call_id":"c","name":"f","arguments":"{}"}]}`:           "input[1]",
-		`{"model":"m","input":[{"role":"user","content":"SECRET"},{"type":"function_call","call_id":"c","name":"f","arguments":"{\"SECRET\":"}]}`: "input[1].arguments",
-		// Refused by the target's encoder: an image where Chat Completions has no place for one
-		// cannot happen from Responses; a request without a model for the target can.
+		`{"model":"m","input":[{"role":"user","content":"SECRET"},{"type":"function_call","call_id":"SECRET","arguments":"{}"}]}`: "input[1].name",
 	} {
 		out, _, _, err := responsesChat(t).Request([]byte(body), nil, "gpt-x")
 		msg, ok := BadRequest(err)
 		if err == nil || out != nil || !ok || !strings.Contains(msg, "responses: "+field+": ") || strings.Contains(msg, "SECRET") || strings.Contains(err.Error(), "SECRET") {
 			t.Errorf("%.60s: out %s, err %v, BadRequest = %q, %v", body, out, err, msg, ok)
 		}
+	}
+}
+
+func TestResponsesChat_Request_AHistoryNeverEndsASession(t *testing.T) {
+	// Codex sends its whole history with every request: a request that is refused for what an
+	// earlier answer left in it is refused for ever. What a client can have recorded is repaired
+	// and reported instead.
+	const user = `{"role":"user","content":"go"}`
+	for name, c := range map[string]struct {
+		items   string
+		dropped []string
+		want    string // the Chat messages
+	}{
+		"a call whose arguments were cut": {
+			`{"type":"function_call","call_id":"c","name":"f","arguments":"{\"a\":"},{"type":"function_call_output","call_id":"c","output":"failed to parse"}`,
+			[]string{"input:function_call.arguments"},
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c","content":"failed to parse"}`},
+		"a message between a call and its output": {
+			`{"type":"function_call","call_id":"c","name":"f","arguments":"{}"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Running."}]},{"type":"function_call_output","call_id":"c","output":"done"}`,
+			nil,
+			`{"role":"assistant","content":"Running.","tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c","content":"done"}`},
+		"a call without an output": {
+			`{"type":"function_call","call_id":"c","name":"f","arguments":"{}"},{"role":"user","content":"and?"}`,
+			[]string{"input:function_call.unanswered"},
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c","content":"[no output]"},{"role":"user","content":"and?"}`},
+		"an output without a call": {
+			`{"type":"function_call_output","call_id":"gone","output":"x"},{"role":"user","content":"and?"}`,
+			[]string{"input:function_call_output.orphan"},
+			`{"role":"user","content":"and?"}`},
+		"one call id twice": {
+			`{"type":"function_call","call_id":"c","name":"f","arguments":"{}"},{"type":"function_call","call_id":"c","name":"f","arguments":"{}"},{"type":"function_call_output","call_id":"c","output":"x"}`,
+			[]string{"input:function_call.duplicate"},
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c","content":"x"}`},
+		"two tools that return images (Codex's view_image)": {
+			`{"type":"function_call","call_id":"a","name":"view_image","arguments":"{\"path\":\"a.png\"}"},{"type":"function_call","call_id":"b","name":"view_image","arguments":"{\"path\":\"b.png\"}"},` +
+				`{"type":"function_call_output","call_id":"a","output":[{"type":"input_image","image_url":"data:image/png;base64,QUFB"}]},` +
+				`{"type":"function_call_output","call_id":"b","output":[{"type":"input_text","text":"b.png"},{"type":"input_image","image_url":"data:image/png;base64,QkJC"}]}`,
+			nil,
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"view_image","arguments":"{\"path\":\"a.png\"}"}},{"id":"b","type":"function","function":{"name":"view_image","arguments":"{\"path\":\"b.png\"}"}}]},` +
+				`{"role":"tool","tool_call_id":"a","content":"[image]"},{"role":"tool","tool_call_id":"b","content":"b.png"},` +
+				`{"role":"user","content":[{"type":"text","text":"Image returned by tool call a:"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QUFB"}},` +
+				`{"type":"text","text":"Image returned by tool call b:"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QkJC"}}]}`},
+	} {
+		out, _, dropped, err := responsesChat(t).Request([]byte(`{"model":"m","input":[`+user+`,`+c.items+`]}`), nil, "gpt-x")
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if !reflect.DeepEqual(dropped, c.dropped) {
+			t.Errorf("%s: dropped %v, want %v", name, dropped, c.dropped)
+		}
+		if !jsonEqual(out, []byte(`{"model":"gpt-x","messages":[`+user+`,`+c.want+`]}`)) {
+			t.Errorf("%s:\n got %s\nwant %s", name, out, c.want)
+		}
+		if err := chat.CheckRequest(out); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// replayResponses builds the next request of a client that read a Responses stream — every done
+// item, then an output for every done call — and sends it through the pair.
+func replayResponses(t *testing.T, raw []byte) {
+	t.Helper()
+	items := []string{`{"role":"user","content":"go"}`}
+	var outputs []string
+	for _, f := range responseFrames(t, raw) {
+		if f.event != "response.output_item.done" {
+			continue
+		}
+		it := f.data.(map[string]any)["item"].(map[string]any)
+		b, _ := json.Marshal(it)
+		items = append(items, string(b))
+		if it["type"] == "function_call" {
+			id, _ := json.Marshal(it["call_id"])
+			outputs = append(outputs, `{"type":"function_call_output","call_id":`+string(id)+`,"output":"ok"}`)
+		}
+	}
+	body := `{"model":"m","input":[` + strings.Join(append(items, outputs...), ",") + `]}`
+	out, _, dropped, err := responsesChat(t).Request([]byte(body), nil, "gpt-x")
+	if err != nil || dropped != nil {
+		t.Fatalf("the history of an answer is refused or repaired: %v, dropped %v\n%s", err, dropped, body)
+	}
+	if err := chat.CheckRequest(out); err != nil {
+		t.Fatalf("the history of an answer is no valid Chat conversation: %v\n%s", err, out)
+	}
+}
+
+func TestResponsesChat_TheHistoryOfAnyAnswerIsTaken(t *testing.T) {
+	// Random Chat streams — text, then interleaved calls — whole and cut at a random byte, in
+	// random pieces: whatever the caller got, it can send it back.
+	rng := rand.New(rand.NewSource(11))
+	args := []string{`{"path":"a.txt"}`, `{ "b":1.0, "a":[1, "<&>"] }`, `{}`, `{"s":"` + strings.Repeat("xy", 40) + `"}`}
+	for round := 0; round < 400; round++ {
+		n := 1 + rng.Intn(len(args))
+		upstream := append(sseOf(chunk(`{"role":"assistant","content":"Let me look."}`)), chatToolStream(rng, args[:n])...)
+		if round%4 != 0 {
+			upstream = upstream[:rng.Intn(len(upstream))]
+		}
+		c := newResponsesCall(t, true).upstream(200, "text/event-stream", upstream, 1+rng.Intn(60))
+		if !strings.HasPrefix(c.rec.Header().Get("Content-Type"), "text/event-stream") {
+			continue // cut before the first event: an HTTP error, and nothing to send back
+		}
+		if _, err := responses.CheckStream(c.rec.Body.Bytes()); err != nil {
+			t.Fatalf("round %d: %v\n%s", round, err, c.rec.Body)
+		}
+		replayResponses(t, c.rec.Body.Bytes())
 	}
 }
 
@@ -171,10 +274,15 @@ type responseBody struct {
 	} `json:"output"`
 	OutputText *string `json:"output_text"`
 	Usage      struct {
-		Input  int `json:"input_tokens"`
-		Output int `json:"output_tokens"`
-		Total  int `json:"total_tokens"`
+		Input         int                       `json:"input_tokens"`
+		Output        int                       `json:"output_tokens"`
+		Total         int                       `json:"total_tokens"`
+		InputDetails  *struct{ Cached *int }    `json:"input_tokens_details"`
+		OutputDetails *struct{ Reasoning *int } `json:"output_tokens_details"`
 	} `json:"usage"`
+	Parallel   *bool                    `json:"parallel_tool_calls"`
+	ToolChoice any                      `json:"tool_choice"`
+	Tools      []any                    `json:"tools"`
 	Incomplete *struct{ Reason string } `json:"incomplete_details"`
 }
 
@@ -193,6 +301,11 @@ func TestResponsesChat_Buffered(t *testing.T) {
 		got.CreatedAt < before || got.CreatedAt > time.Now().Unix() || got.Usage.Input != 40 || got.Usage.Output != 18 || got.Usage.Total != 58 ||
 		got.OutputText != nil || len(got.Output) != 2 {
 		t.Fatalf("status %d: %s", c.rec.Code, c.rec.Body)
+	}
+	// What the SDKs' Response and ResponseUsage types require.
+	if u := got.Usage; u.InputDetails == nil || u.OutputDetails == nil || got.Parallel == nil || !*got.Parallel || got.ToolChoice != "auto" || got.Tools == nil ||
+		!bytes.Contains(c.rec.Body.Bytes(), []byte(`"input_tokens_details":{"cached_tokens":0}`)) || !bytes.Contains(c.rec.Body.Bytes(), []byte(`"output_tokens_details":{"reasoning_tokens":0}`)) {
+		t.Fatalf("required fields are missing: %s", c.rec.Body)
 	}
 	for i, want := range []string{`{"path":"a.txt"}`, `{"path":"b.txt"}`} {
 		o := got.Output[i]
@@ -403,12 +516,16 @@ func TestResponsesChat_Streamed_BadEndings(t *testing.T) {
 		if len(s.Items) == 0 || s.Items[0].Text != "par" || s.Items[0].Status != "completed" {
 			t.Errorf("%s: what had arrived is gone: %+v", name, s.Items)
 		}
-		// A call that was cut is never handed over as a completed call.
+		// A call that was cut is never handed over: Codex would run it and send it back for ever.
 		for _, it := range s.Items[1:] {
-			if it.Type == "function_call" && it.Status != "incomplete" {
-				t.Errorf("%s: a cut call with status %q and arguments %.40q", name, it.Status, it.Arguments)
+			if it.Type == "function_call" && it.Done {
+				t.Errorf("%s: a cut call is done, with arguments %.40q", name, it.Arguments)
 			}
 		}
+		if bytes.Contains(raw, []byte("function_call_arguments.done")) {
+			t.Errorf("%s: a done event for a cut call\n%.600s", name, raw)
+		}
+		replayResponses(t, raw)
 	}
 }
 
@@ -565,6 +682,19 @@ func TestResponsesChat_ReleasedIsDecidedByTheToolCallChecks(t *testing.T) {
 				return nil, false, nil, errors.New("no")
 			}
 		},
+		"the request refuses a history with a call that was cut": func(p *pair) {
+			p.request = func(body []byte, h http.Header, model string) ([]byte, bool, []string, error) {
+				if bytes.Contains(body, []byte(`"arguments":"{\"city\":"}`)) {
+					return nil, false, nil, &ir.BadRequestError{Format: "responses", Field: "input[4].arguments", Reason: "is not the text of a JSON object"}
+				}
+				return responsesToChat(body, h, model)
+			}
+		},
+		"the stream encoder hands over a call that was cut": func(p *pair) {
+			p.codec.newStreamEncoder = func(w io.Writer, model string) streamEncoder {
+				return closesCalls{responses.NewStreamEncoder(w, model, now)}
+			}
+		},
 	}
 	for name, breakIt := range broken {
 		p := newResponsesChat()
@@ -579,6 +709,16 @@ func TestResponsesChat_ReleasedIsDecidedByTheToolCallChecks(t *testing.T) {
 	if fresh := newResponsesChat(); !fresh.Released() || !fresh.Released() {
 		t.Fatal("a sound pair is not released")
 	}
+}
+
+// closesCalls completes the arguments of every call that stops, whatever had arrived.
+type closesCalls struct{ streamEncoder }
+
+func (c closesCalls) Write(ev ir.Event) error {
+	if ev.Kind == ir.PartStop {
+		_ = c.streamEncoder.Write(ir.Event{Kind: ir.ToolArgsDelta, Index: ev.Index, ArgsJSON: `"x"}`})
+	}
+	return c.streamEncoder.Write(ev)
 }
 
 // FuzzResponsesChatWriter plays an arbitrary upstream answer through the pair. Oracle: the caller
@@ -606,6 +746,7 @@ func FuzzResponsesChatWriter(f *testing.F) {
 			if err != nil || s.Status != "failed" || s.ErrMessage == "" || code == "" || c.rec.Code != status {
 				t.Fatalf("a failed stream: %v, %+v, code %q, status %d\n%s", err, s, code, c.rec.Code, out)
 			}
+			replayResponses(t, out)
 		case code != "":
 			var e struct {
 				Error struct{ Message, Type, Code string }
@@ -621,6 +762,7 @@ func FuzzResponsesChatWriter(f *testing.F) {
 			if err != nil || s.Status == "failed" || !stream || c.rec.Code != status {
 				t.Fatalf("a stream: %v, %+v\n%s", err, s, out)
 			}
+			replayResponses(t, out)
 		default:
 			var r responseBody
 			if err := json.Unmarshal(out, &r); err != nil || r.Object != "response" || r.ID == "" || (r.Status != "completed" && r.Status != "incomplete") ||

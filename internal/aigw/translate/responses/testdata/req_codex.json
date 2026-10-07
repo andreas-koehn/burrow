@@ -1,6 +1,7 @@
 {"model":"burrow-medium","instructions":"You are a coding agent.","stream":true,"store":false,
  "parallel_tool_calls":false,"reasoning":{"effort":"medium","summary":"auto"},"include":["reasoning.encrypted_content"],
  "prompt_cache_key":"019a0000-aaaa-7bbb-8ccc-000000000001","text":{"verbosity":"medium"},
+ "client_metadata":{"x-codex-installation-id":"7f3c0000-0000-4000-8000-000000000001"},"stream_options":{"include_obfuscation":false},
  "tools":[
    {"type":"function","name":"shell","description":"Run a command","strict":false,"parameters":{"type":"object","properties":{"command":{"type":"array","items":{"type":"string"}}},"required":["command"]}},
    {"type":"local_shell"},
@@ -12,7 +13,8 @@
    {"type":"message","role":"developer","content":[{"type":"input_text","text":"Be careful."}]},
    {"type":"message","role":"user","content":[{"type":"input_text","text":"List the files"}]},
    {"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"xyz"},
-   {"type":"function_call","call_id":"call_1","name":"shell","arguments":"{\"command\":[\"ls\"]}"},
+   {"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll list them."}],"phase":"commentary"},
+   {"type":"function_call","call_id":"call_1","name":"shell","namespace":"functions","arguments":"{\"command\":[\"ls\"]}"},
    {"type":"function_call_output","call_id":"call_1","output":"a.txt\nb.txt"},
    {"type":"message","role":"user","content":[{"type":"input_text","text":"Now read a.txt"}]}
  ]}

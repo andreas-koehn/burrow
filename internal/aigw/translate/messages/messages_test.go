@@ -363,8 +363,7 @@ func TestDecodeRequest_BlocksThatAreRefused(t *testing.T) {
 	secret := "SECRET-user-content"
 	cases := map[string]string{
 		// An image is carried or the request fails.
-		withContent("user", `{"type":"tool_result","tool_use_id":"t","content":[{"type":"text","text":"a"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUJD"}}]}`): "messages[0].content[0].content[1]",
-		withContent("user", `{"type":"image","source":{"type":"file","file_id":"f"}}`):                                                                                                            "messages[0].content[0].source.type",
+		withContent("user", `{"type":"image","source":{"type":"file","file_id":"f"}}`):                "messages[0].content[0].source.type",
 		withContent("user", `{"type":"image"}`):                                                       "messages[0].content[0].source",
 		withContent("user", `{"type":"image","source":{"type":"base64","media_type":"image/png"}}`):   "messages[0].content[0].source.data",
 		withContent("user", `{"type":"image","source":{"type":"base64","data":"QUJD"}}`):              "messages[0].content[0].source.media_type",
@@ -398,8 +397,10 @@ func TestDecodeRequest_BlocksThatAreRefused(t *testing.T) {
 		}
 	}
 	// The reason says what is wrong in fixed words.
-	bad := refused(t, withContent("user", `{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":{}}]}`), "messages[0].content[0].content[0]")
-	if bad.Reason != "images in tool results cannot be translated" {
+	// An image in a tool result is carried (see the test below); one that cannot be read is refused
+	// like any other image.
+	bad := refused(t, withContent("user", `{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":{}}]}`), "messages[0].content[0].content[0].source.type")
+	if !strings.Contains(bad.Reason, "image source") {
 		t.Fatalf("Reason = %q", bad.Reason)
 	}
 	bad = refused(t, withContent("user", `{"type":"document"}`), "messages[0].content[0].type")
@@ -484,6 +485,62 @@ func TestDecodeRequest_NeverPanics(t *testing.T) {
 	req := decode(t, `{"model":"m","max_tokens":1,"messages":[{"role":"user","content":"`+big+`"}]}`)
 	if req.Messages[0].Parts[0].Text != big {
 		t.Fatal("a 1 MiB string was not carried")
+	}
+}
+
+func TestDecodeRequest_ImagesInToolResultsFollowAsUserContent(t *testing.T) {
+	// Claude Code's Read tool returns an image inside a tool_result. A tool result of the neutral
+	// form holds text only, and refusing the request would end the session (the history is sent
+	// again with every request): the result keeps its text, the images follow in the same user
+	// message after a text that names the call. Nothing is lost, so nothing is reported.
+	const png = `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUJD"},"cache_control":{"type":"ephemeral"}}`
+	req := decode(t, `{"model":"m","max_tokens":64,"messages":[
+		{"role":"user","content":"look at both"},
+		{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"Read","input":{"file_path":"a.png"}},{"type":"tool_use","id":"b","name":"Read","input":{"file_path":"b.png"}},{"type":"tool_use","id":"c","name":"Read","input":{}}]},
+		{"role":"user","content":[
+			{"type":"tool_result","tool_use_id":"a","content":[`+png+`]},
+			{"type":"tool_result","tool_use_id":"b","content":[{"type":"text","text":"b.png, 2 images"},{"type":"image","source":{"type":"url","url":"https://example.org/b.png"}},`+png+`],"is_error":true},
+			{"type":"tool_result","tool_use_id":"c","content":"plain"},
+			{"type":"text","text":"what do you see?"}]}]}`)
+	want := []ir.Part{
+		{Kind: ir.ToolResult, ToolID: "a", Text: "[image]"},
+		{Kind: ir.ToolResult, ToolID: "b", Text: "b.png, 2 images", IsError: true},
+		{Kind: ir.ToolResult, ToolID: "c", Text: "plain"},
+		text("Image returned by tool call a:"), {Kind: ir.Image, MediaType: "image/png", Data: "QUJD"},
+		text("Image returned by tool call b:"), {Kind: ir.Image, Data: "https://example.org/b.png"}, {Kind: ir.Image, MediaType: "image/png", Data: "QUJD"},
+		text("what do you see?"),
+	}
+	if !reflect.DeepEqual(req.Messages[2].Parts, want) {
+		t.Fatalf("parts\n got: %+v\nwant: %+v", req.Messages[2].Parts, want)
+	}
+	if d := ir.Dropped(req.Dropped); !reflect.DeepEqual(d, []string{"cache_control"}) {
+		t.Fatalf("dropped %v", d)
+	}
+	body, _, err := chat.EncodeRequest(req, "gpt-x")
+	if err != nil {
+		t.Fatalf("EncodeRequest: %v", err)
+	}
+	if err := chat.CheckRequest(body); err != nil {
+		t.Fatalf("%v\n%s", err, body)
+	}
+	// The tool messages first, then ONE user message with the images in order.
+	assertJSONEqual(t, body, `{"model":"gpt-x","max_tokens":64,"messages":[
+		{"role":"user","content":"look at both"},
+		{"role":"assistant","content":null,"tool_calls":[
+			{"id":"a","type":"function","function":{"name":"Read","arguments":"{\"file_path\":\"a.png\"}"}},
+			{"id":"b","type":"function","function":{"name":"Read","arguments":"{\"file_path\":\"b.png\"}"}},
+			{"id":"c","type":"function","function":{"name":"Read","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"a","content":"[image]"},
+		{"role":"tool","tool_call_id":"b","content":"Error: b.png, 2 images"},
+		{"role":"tool","tool_call_id":"c","content":"plain"},
+		{"role":"user","content":[
+			{"type":"text","text":"Image returned by tool call a:"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}},
+			{"type":"text","text":"Image returned by tool call b:"},{"type":"image_url","image_url":{"url":"https://example.org/b.png"}},{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}},
+			{"type":"text","text":"what do you see?"}]}]}`)
+	// Over the limit of parts in one message it is a limit error, not a longer message.
+	many := strings.TrimSuffix(strings.Repeat(png+",", ir.MaxParts), ",")
+	if bad := refused(t, withContent("user", `{"type":"tool_result","tool_use_id":"a","content":[`+many+`]}`), "messages[0].content"); !bad.Limit {
+		t.Fatalf("%+v", bad)
 	}
 }
 
@@ -1157,6 +1214,47 @@ func genEvents(rng *rand.Rand) ([]ir.Event, []genPart) {
 	return append(events, finishEv(stop, 5, 9)), parts
 }
 
+// replay sends what a client holds after a stream back as the history of its next request: the
+// content blocks of the answer as an assistant turn (a tool_use whose partial JSON no client could
+// parse with an empty input), then a tool_result for every tool_use. Whatever the stream was, the
+// request must go through and be one a strict Chat Completions server takes.
+func replay(t testing.TB, s Stream) {
+	t.Helper()
+	quote := func(v string) string { b, _ := json.Marshal(v); return string(b) }
+	var blocks, results []string
+	for _, b := range s.Blocks {
+		switch b.Type {
+		case "tool_use":
+			input := b.Input
+			if ir.CheckObject([]byte(input)) != nil {
+				input = "{}"
+			}
+			blocks = append(blocks, `{"type":"tool_use","id":`+quote(b.ToolID)+`,"name":`+quote(b.ToolName)+`,"input":`+input+`}`)
+			results = append(results, `{"type":"tool_result","tool_use_id":`+quote(b.ToolID)+`,"content":[{"type":"text","text":"ok"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUJD"}}]}`)
+		case "thinking":
+			blocks = append(blocks, `{"type":"thinking","thinking":`+quote(b.Text)+`,"signature":""}`)
+		default:
+			blocks = append(blocks, `{"type":"text","text":`+quote(b.Text)+`}`)
+		}
+	}
+	body := `{"model":"m","max_tokens":9,"messages":[{"role":"user","content":"hi"}`
+	if len(blocks) > 0 {
+		body += `,{"role":"assistant","content":[` + strings.Join(blocks, ",") + `]}`
+	}
+	body += `,{"role":"user","content":[` + strings.Join(append(results, `{"type":"text","text":"go on"}`), ",") + `]}]}`
+	req, err := DecodeRequest([]byte(body))
+	if err != nil {
+		t.Fatalf("the history is refused: %v\n%s", err, body)
+	}
+	out, _, err := chat.EncodeRequest(req, "m")
+	if err != nil {
+		t.Fatalf("the history cannot be sent: %v\n%s", err, body)
+	}
+	if err := chat.CheckRequest(out); err != nil {
+		t.Fatalf("the history is no valid Chat conversation: %v\n%s\n%s", err, out, body)
+	}
+}
+
 func TestProperty_BlocksAreSequentialAndBytesAreKept(t *testing.T) {
 	rng := rand.New(rand.NewSource(20261007))
 	for round := 0; round < 3000; round++ {
@@ -1178,6 +1276,7 @@ func TestProperty_BlocksAreSequentialAndBytesAreKept(t *testing.T) {
 		if whole != s.Stopped || whole == (s.ErrType != "") {
 			t.Fatalf("round %d: whole %v, stream %+v", round, whole, s)
 		}
+		replay(t, s)
 		// Every part that was started is on the wire, in part order, with exactly the bytes it had got.
 		got := map[int]string{}
 		started := 0
@@ -1409,6 +1508,7 @@ func FuzzStreamEncoder(f *testing.F) {
 		if err != nil {
 			t.Fatalf("not a well-formed Messages stream: %v\n%s\n%+v", err, out, events)
 		}
+		replay(t, s)
 		finished := len(events) > 0 && events[len(events)-1].Kind == ir.Finish
 		if finished != s.Stopped || finished == (s.ErrType != "") {
 			t.Fatalf("finished %v, stream stopped %v, error %q\n%+v", finished, s.Stopped, s.ErrType, events)

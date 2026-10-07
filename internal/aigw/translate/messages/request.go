@@ -52,7 +52,7 @@ func tooMany(field string, limit int) error {
 // Carried: "model", "max_tokens" (required, as Anthropic requires it),
 // "system" (a string or text blocks), "messages" (content as a string or as
 // blocks: text, image with a base64 or url source, tool_use, tool_result
-// with a string or text blocks and "is_error", thinking), "tools" (those
+// with a string, or text and image blocks, and "is_error", thinking), "tools" (those
 // without a "type" or of type "custom", the schema's bytes unchanged),
 // "tool_choice" (auto, any, tool, none), "temperature", "top_p",
 // "stop_sequences", "stream".
@@ -76,11 +76,21 @@ func tooMany(field string, limit int) error {
 //
 // A turn all of whose blocks were left out is left out as a whole.
 //
+// An image inside a tool_result (Claude Code's Read tool returns one) is
+// carried, but not there: a tool result of the neutral form holds text. The
+// result keeps its text (ir.ToolImageText when it has none), and the images
+// of all tool results of the message stand after its last tool result, each
+// tool's after a text part ir.ToolImageNote(id). Nothing is lost, so nothing
+// is reported.
+//
+// Whether every tool_use has its tool_result is not looked at: the request
+// is passed on as the caller built it.
+//
 // Refused with a *BadRequestError: a request in which no turn is left; a body that is not a JSON object; a
 // missing or mistyped required field; a role other than user and assistant;
 // a block in a turn that cannot hold it; a tool_use without id or name or
 // with an input that is not a JSON object; an image that cannot be carried
-// (inside a tool_result, or with a source that is neither base64 nor url); a
+// (with a source that is neither base64 nor url); a
 // block of any other type (document, search_result, …), because content
 // must not vanish; anything over the ir limits. The request returned with
 // an error is empty.
@@ -94,7 +104,12 @@ func DecodeRequest(body []byte) (ir.Request, error) {
 	return req, nil
 }
 
-type decoder struct{ dropped []string }
+type decoder struct {
+	dropped []string
+	// images holds what the tool results of the message being read returned
+	// as images, each tool's after a text that names its call: see content.
+	images []ir.Part
+}
 
 func (d *decoder) drop(name string) { d.dropped = append(d.dropped, name) }
 
@@ -420,7 +435,7 @@ func (d *decoder) content(raw []byte, role ir.Role, at string) (parts []ir.Part,
 		}
 		return nil, 0, err
 	}
-	calls := 0
+	calls, lastResult := 0, 0
 	for i, item := range items {
 		here := fmt.Sprintf("%s[%d]", at, i)
 		o, ok := asObject(item)
@@ -441,6 +456,20 @@ func (d *decoder) content(raw []byte, role ir.Role, at string) (parts []ir.Part,
 			}
 		}
 		parts = append(parts, p)
+		if p.Kind == ir.ToolResult {
+			lastResult = len(parts)
+		}
+	}
+	if len(d.images) > 0 {
+		// The images tools returned stand after the last tool result: a
+		// tool result holds text only (see ir.ToolImageNote), and both
+		// targets want the results of a turn before anything else.
+		if len(parts)+len(d.images) > ir.MaxParts {
+			return nil, 0, tooMany(at, ir.MaxParts)
+		}
+		rest := append([]ir.Part(nil), parts[lastResult:]...)
+		parts = append(append(parts[:lastResult], d.images...), rest...)
+		d.images = nil
 	}
 	return parts, leftOut, nil
 }
@@ -606,6 +635,7 @@ func (d *decoder) toolResultBlock(o object, at string) (ir.Part, error) {
 		return ir.Part{}, err
 	}
 	texts := make([]string, 0, len(items))
+	var images []ir.Part
 	for i, item := range items {
 		here := fmt.Sprintf("%s[%d]", at, i)
 		inner, ok := asObject(item)
@@ -620,12 +650,25 @@ func (d *decoder) toolResultBlock(o object, at string) (ir.Part, error) {
 			}
 			texts = append(texts, t.Text)
 		case "image":
-			return ir.Part{}, bad(here, "images in tool results cannot be translated")
+			delete(inner, "type")
+			img, err := imageBlock(inner, here)
+			if err != nil {
+				return ir.Part{}, err
+			}
+			d.cacheControl(inner)
+			d.unknown("content.", inner)
+			images = append(images, img)
 		default:
-			return ir.Part{}, bad(here, "only text in tool results can be translated")
+			return ir.Part{}, bad(here, "only text and images in tool results can be translated")
 		}
 	}
 	p.Text = strings.Join(texts, "\n")
+	if len(images) > 0 {
+		if p.Text == "" {
+			p.Text = ir.ToolImageText
+		}
+		d.images = append(append(d.images, ir.Part{Kind: ir.Text, Text: ir.ToolImageNote(p.ToolID)}), images...)
+	}
 	return p, nil
 }
 
