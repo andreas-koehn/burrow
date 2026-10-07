@@ -312,26 +312,29 @@ func TestDecodeRequest_Blocks(t *testing.T) {
 		{Kind: ir.ToolUse, ToolID: "t2", ToolName: "g", Input: json.RawMessage(`{}`)},
 		{Kind: ir.ToolUse, ToolID: "t3", ToolName: "h", Input: json.RawMessage(`{}`)},
 	}
-	if !reflect.DeepEqual(req.Messages[0].Parts, want) || !reflect.DeepEqual(req.Dropped, []string{"unknown:content.caller"}) {
+	// (The calls have no results here: each gets one, and that is reported.)
+	if !reflect.DeepEqual(req.Messages[0].Parts, want) || !reflect.DeepEqual(ir.Dropped(req.Dropped), []string{"input:tool_use.unanswered", "unknown:content.caller"}) {
 		t.Fatalf("parts = %+v, dropped %v", req.Messages[0].Parts, req.Dropped)
 	}
-	// Tool results: a string, text blocks, nothing, an error; order and the text next to them are kept.
-	req = decode(t, withContent("user", `{"type":"text","text":"before"},
+	// Tool results: a string, text blocks, nothing, an error. They stand first, in the order of the
+	// calls they answer; the text next to them is kept.
+	calls := `{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"f"},{"type":"tool_use","id":"t2","name":"f"},{"type":"tool_use","id":"t3","name":"f"},{"type":"tool_use","id":"t4","name":"f"}]},`
+	req = decode(t, strings.Replace(withContent("user", `{"type":"text","text":"before"},
 		{"type":"tool_result","tool_use_id":"t1","content":"plain"},
 		{"type":"tool_result","tool_use_id":"t2","content":[{"type":"text","text":"a"},{"type":"text","text":"b","cache_control":{"type":"ephemeral"}}],"is_error":true},
 		{"type":"tool_result","tool_use_id":"t3"},
 		{"type":"tool_result","tool_use_id":"t4","content":[],"is_error":false},
-		{"type":"text","text":"after"}`))
+		{"type":"text","text":"after"}`), `"messages":[`, `"messages":[`+calls, 1))
 	want = []ir.Part{
-		text("before"),
 		{Kind: ir.ToolResult, ToolID: "t1", Text: "plain"},
 		{Kind: ir.ToolResult, ToolID: "t2", Text: "a\nb", IsError: true},
 		{Kind: ir.ToolResult, ToolID: "t3"},
 		{Kind: ir.ToolResult, ToolID: "t4"},
+		text("before"),
 		text("after"),
 	}
-	if !reflect.DeepEqual(req.Messages[0].Parts, want) || !reflect.DeepEqual(req.Dropped, []string{"cache_control"}) {
-		t.Fatalf("parts = %+v, dropped %v", req.Messages[0].Parts, req.Dropped)
+	if !reflect.DeepEqual(req.Messages[1].Parts, want) || !reflect.DeepEqual(req.Dropped, []string{"cache_control"}) {
+		t.Fatalf("parts = %+v, dropped %v", req.Messages[1].Parts, req.Dropped)
 	}
 	// Thinking: the text is carried (the target's encoder decides), a signature is reported;
 	// redacted thinking is left out and reported.
@@ -541,6 +544,123 @@ func TestDecodeRequest_ImagesInToolResultsFollowAsUserContent(t *testing.T) {
 	many := strings.TrimSuffix(strings.Repeat(png+",", ir.MaxParts), ",")
 	if bad := refused(t, withContent("user", `{"type":"tool_result","tool_use_id":"a","content":[`+many+`]}`), "messages[0].content"); !bad.Limit {
 		t.Fatalf("%+v", bad)
+	}
+}
+
+func TestDecodeRequest_ToolUseAndToolResultArePaired(t *testing.T) {
+	// Claude Code sends its history again with every request, and a strict Chat Completions
+	// server answers 400 to a tool call without its result or a result without its call: such a
+	// history is repaired and what was repaired is reported.
+	use := func(ids ...string) string {
+		var b []string
+		for _, id := range ids {
+			b = append(b, `{"type":"tool_use","id":"`+id+`","name":"f","input":{}}`)
+		}
+		return `{"role":"assistant","content":[` + strings.Join(b, ",") + `]}`
+	}
+	res := func(ids ...string) string {
+		var b []string
+		for _, id := range ids {
+			b = append(b, `{"type":"tool_result","tool_use_id":"`+id+`","content":"r-`+id+`"}`)
+		}
+		return `{"role":"user","content":[` + strings.Join(b, ",") + `]}`
+	}
+	const hi, said = `{"role":"user","content":"hi"}`, `{"role":"assistant","content":"ok"}`
+	for name, c := range map[string]struct {
+		messages []string
+		dropped  []string
+		shape    string // the Chat messages: role, call ids, and for a tool message its content
+	}{
+		"paired, results in another order than the calls": {
+			[]string{hi, use("a", "b"), res("b", "a"), said}, nil,
+			"user | assistant a b | tool a r-a | tool b r-b | assistant"},
+		"an unanswered tool_use": {
+			[]string{hi, use("a"), `{"role":"user","content":"never mind"}`, said}, []string{"input:tool_use.unanswered"},
+			"user | assistant a | tool a [no output] | user | assistant"},
+		"a turn that is answered in part": {
+			[]string{hi, use("a", "b", "c"), `{"role":"user","content":[{"type":"tool_result","tool_use_id":"b","content":"r-b"},{"type":"text","text":"go on"}]}`}, []string{"input:tool_use.unanswered"},
+			"user | assistant a b c | tool a [no output] | tool b r-b | tool c [no output] | user"},
+		"a trailing tool_use: the conversation ends with the assistant's call": {
+			[]string{hi, use("a")}, []string{"input:tool_use.unanswered"},
+			"user | assistant a | tool a [no output]"},
+		"an unanswered tool_use followed by the assistant": {
+			[]string{hi, use("a"), said}, []string{"input:tool_use.unanswered"},
+			"user | assistant a | tool a [no output] | assistant"},
+		"an orphan tool_result in the first message": {
+			[]string{`{"role":"user","content":[{"type":"tool_result","tool_use_id":"gone","content":"x"},{"type":"text","text":"hi"}]}`, said}, []string{"input:tool_result.orphan"},
+			"user | assistant"},
+		"an orphan tool_result between two assistant messages": {
+			[]string{hi, said, res("gone"), said, hi}, []string{"input:tool_result.orphan"},
+			"user | assistant | user"},
+		"a result answered twice": {
+			[]string{hi, use("a"), res("a"), said, res("a"), hi}, []string{"input:tool_result.orphan"},
+			"user | assistant a | tool a r-a | assistant | user"},
+		"a result that comes a turn late is moved up to its call": {
+			[]string{hi, use("a"), `{"role":"user","content":"wait"}`, said, res("a"), said}, nil,
+			"user | assistant a | tool a r-a | user | assistant"},
+		"a result that stands before its call": {
+			[]string{hi, said, res("a"), use("a"), hi}, nil,
+			"user | assistant a | tool a r-a | user"},
+		"a tool_use id that waits already": {
+			[]string{hi, use("a", "a"), `{"role":"user","content":"x"}`, use("a", "b"), res("a", "b")}, []string{"input:tool_use.duplicate"},
+			"user | assistant a | tool a r-a | user | assistant b | tool b r-b"},
+	} {
+		req, err := DecodeRequest([]byte(`{"model":"m","max_tokens":5,"messages":[` + strings.Join(c.messages, ",") + `]}`))
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if d := ir.Dropped(req.Dropped); !reflect.DeepEqual(d, c.dropped) {
+			t.Errorf("%s: dropped %v, want %v", name, d, c.dropped)
+		}
+		body, _, err := chat.EncodeRequest(req, "m")
+		if err != nil {
+			t.Errorf("%s: EncodeRequest: %v", name, err)
+			continue
+		}
+		if err := chat.CheckRequest(body); err != nil {
+			t.Errorf("%s: %v\n%s", name, err, body)
+		}
+		var sent struct {
+			Messages []struct {
+				Role      string
+				Content   any
+				ToolCalls []struct{ ID string } `json:"tool_calls"`
+				CallID    string                `json:"tool_call_id"`
+			}
+		}
+		if err := json.Unmarshal(body, &sent); err != nil {
+			t.Fatal(err)
+		}
+		var shape []string
+		for _, m := range sent.Messages {
+			s := m.Role
+			for _, c := range m.ToolCalls {
+				s += " " + c.ID
+			}
+			if m.Role == "tool" {
+				s += " " + m.CallID + " " + fmt.Sprint(m.Content)
+			}
+			shape = append(shape, s)
+		}
+		if got := strings.Join(shape, " | "); got != c.shape {
+			t.Errorf("%s: chat messages: %s\nwant: %s", name, got, c.shape)
+		}
+	}
+	// Nothing is left to send.
+	refused(t, `{"model":"m","max_tokens":5,"messages":[`+res("gone")+`]}`, "messages")
+}
+
+func TestStreamEncoder_ToolUseWithoutArgumentsBeforeAFailure(t *testing.T) {
+	// A tool call that was cut before its first argument byte: the block is closed (with the "{}"
+	// every block gets) and the error event follows. That is right for Anthropic: no message_stop
+	// came, and a client discards the turn of a stream that ended with an error.
+	s, raw := mustStream(t, []ir.Event{startEv(), toolStart(0, "toolu_1", "f"), ev(ir.PartStop, 0), {Kind: ir.Error, Err: errEarlyEnd}}, true)
+	if got := eventNames(raw); got != "message_start content_block_start content_block_delta content_block_stop error" {
+		t.Fatalf("events: %s", got)
+	}
+	if s.Stopped || s.StopReason != "" || s.ErrType != "api_error" || s.ErrMessage != errEarlyEnd {
+		t.Fatalf("%+v", s)
 	}
 }
 
@@ -1216,8 +1336,10 @@ func genEvents(rng *rand.Rand) ([]ir.Event, []genPart) {
 
 // replay sends what a client holds after a stream back as the history of its next request: the
 // content blocks of the answer as an assistant turn (a tool_use whose partial JSON no client could
-// parse with an empty input), then a tool_result for every tool_use. Whatever the stream was, the
-// request must go through and be one a strict Chat Completions server takes.
+// parse with an empty input), then a tool_result for every tool_use. It also sends the histories
+// a client that lost its place sends: results missing, the conversation ending with the
+// assistant's calls, results for calls that do not exist or that come first. Whatever the stream
+// was, every one of them must go through and be one a strict Chat Completions server takes.
 func replay(t testing.TB, s Stream) {
 	t.Helper()
 	quote := func(v string) string { b, _ := json.Marshal(v); return string(b) }
@@ -1237,22 +1359,46 @@ func replay(t testing.TB, s Stream) {
 			blocks = append(blocks, `{"type":"text","text":`+quote(b.Text)+`}`)
 		}
 	}
-	body := `{"model":"m","max_tokens":9,"messages":[{"role":"user","content":"hi"}`
+	const hi, goOn, orphan = `{"role":"user","content":"hi"}`, `{"type":"text","text":"go on"}`, `{"type":"tool_result","tool_use_id":"never-called","content":"x"}`
+	user := func(blocks ...string) string { return `{"role":"user","content":[` + strings.Join(blocks, ",") + `]}` }
+	assistant := `{"role":"assistant","content":[` + strings.Join(blocks, ",") + `]}`
+	histories := map[string][]string{"no answer yet": {hi, user(goOn)}}
 	if len(blocks) > 0 {
-		body += `,{"role":"assistant","content":[` + strings.Join(blocks, ",") + `]}`
+		histories = map[string][]string{
+			"every result":                  {hi, assistant, user(append(append([]string{}, results...), goOn)...)},
+			"no result":                     {hi, assistant, user(goOn)},
+			"every other result":            {hi, assistant, user(append(everyOther(results), goOn)...)},
+			"the assistant's turn last":     {hi, assistant},
+			"the assistant twice":           {hi, assistant, assistant, user(append(append([]string{}, results...), goOn)...)},
+			"results for calls nobody made": {user(orphan, goOn), assistant, user(append(append([]string{orphan}, results...), orphan, goOn)...)},
+			"the results first":             {user(append(append([]string{}, results...), goOn)...), assistant, user(goOn)},
+		}
 	}
-	body += `,{"role":"user","content":[` + strings.Join(append(results, `{"type":"text","text":"go on"}`), ",") + `]}]}`
-	req, err := DecodeRequest([]byte(body))
-	if err != nil {
-		t.Fatalf("the history is refused: %v\n%s", err, body)
+	for name, messages := range histories {
+		body := `{"model":"m","max_tokens":9,"messages":[` + strings.Join(messages, ",") + `]}`
+		req, err := DecodeRequest([]byte(body))
+		if err != nil {
+			t.Fatalf("%s: the history is refused: %v\n%s", name, err, body)
+		}
+		if name == "every result" && ir.Dropped(req.Dropped) != nil {
+			t.Fatalf("%s: the history is repaired: %v\n%s", name, req.Dropped, body)
+		}
+		out, _, err := chat.EncodeRequest(req, "m")
+		if err != nil {
+			t.Fatalf("%s: the history cannot be sent: %v\n%s", name, err, body)
+		}
+		if err := chat.CheckRequest(out); err != nil {
+			t.Fatalf("%s: the history is no valid Chat conversation: %v\n%s\n%s", name, err, out, body)
+		}
 	}
-	out, _, err := chat.EncodeRequest(req, "m")
-	if err != nil {
-		t.Fatalf("the history cannot be sent: %v\n%s", err, body)
+}
+
+func everyOther(in []string) []string {
+	out := []string{}
+	for i := 1; i < len(in); i += 2 {
+		out = append(out, in[i])
 	}
-	if err := chat.CheckRequest(out); err != nil {
-		t.Fatalf("the history is no valid Chat conversation: %v\n%s\n%s", err, out, body)
-	}
+	return out
 }
 
 func TestProperty_BlocksAreSequentialAndBytesAreKept(t *testing.T) {
@@ -1381,6 +1527,7 @@ func FuzzDecodeRequest(f *testing.F) {
 	f.Add([]byte(withContent("user", `{"type":"tool_result","tool_use_id":"t","content":[{"type":"text","text":"a"}],"is_error":true},{"type":"image","source":{"type":"url","url":"u"}}`)))
 	f.Add([]byte(withContent("assistant", `{"type":"redacted_thinking","data":"x"},{"type":"server_tool_use","id":"s"},{"type":"tool_use","id":"t","name":"f","input":{"a":[1,{"b":null}]}}`)))
 	f.Add([]byte(`{"messages":[{"role":"user","content":[{"type":"tool_use"}]}]}`))
+	f.Add([]byte(`{"model":"m","max_tokens":9,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"b","content":"early"},{"type":"tool_result","tool_use_id":"z"}]},{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f"},{"type":"tool_use","id":"a","name":"f"},{"type":"tool_use","id":"b","name":"f"}]},{"role":"assistant","content":"x"},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":[{"type":"image","source":{"type":"url","url":"u"}}]}]},{"role":"assistant","content":[{"type":"tool_use","id":"c","name":"f"}]}]}`))
 	f.Add([]byte(`null`))
 	f.Fuzz(func(t *testing.T, body []byte) {
 		req, err := DecodeRequest(body)
@@ -1442,9 +1589,16 @@ func FuzzDecodeRequest(f *testing.F) {
 				t.Fatalf("dropped name %q", name)
 			}
 		}
-		// The target's encoder takes it or refuses it with a client error; it never panics.
-		if _, _, err := chat.EncodeRequest(req, "m"); err != nil && !errors.Is(err, chat.ErrUnsupported) {
+		// The target's encoder takes it or refuses it with a client error; it never panics. What it
+		// takes has every tool call answered where a strict server wants the answers.
+		out, _, err := chat.EncodeRequest(req, "m")
+		if err != nil && !errors.Is(err, chat.ErrUnsupported) {
 			t.Fatalf("EncodeRequest: %v", err)
+		}
+		if err == nil {
+			if err := chat.CheckPairing(out); err != nil {
+				t.Fatalf("%v\n%s", err, out)
+			}
 		}
 	})
 }

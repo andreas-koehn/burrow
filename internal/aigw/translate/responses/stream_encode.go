@@ -103,6 +103,14 @@ const keepAliveFrame = ": keep-alive\n\n"
 // and the SDKs add the deltas to the "" of the added item, so every one of
 // them reads the empty object, as with OpenAI itself.
 //
+// A call that stops without a byte of arguments is not done at once. A
+// stream decoder stops every open part before it reports a failure, so
+// such a call may be one that was cut before its first byte, and "{}" would
+// be an invention a client then runs. Its "{}" and its done events are held
+// until the next event shows that the stream goes on — a part that starts,
+// a delta, the Finish; the stop of another part does not show it — and
+// when the stream fails instead, the call is dropped like any cut call.
+//
 // A call is done only with arguments that are one JSON object. Codex has no
 // status on a function call: it records and runs every call that is done,
 // and sends it back as history with every later request. So when a call
@@ -183,6 +191,7 @@ type StreamEncoder struct {
 	done    bool  // the stream was ended, well or badly
 	werr    error // the writer failed: nothing more is written
 	broken  bool  // a call was left without its done events: the answer cannot complete
+	waiting bool  // the open item is a call that stopped without arguments: its end is held back
 
 	seq         int // the next sequence_number
 	inputTokens int // what the Start told
@@ -277,6 +286,14 @@ func (e *StreamEncoder) write(ev ir.Event) error {
 	if e.started == (ev.Kind == ir.Start) {
 		return e.sequence("the stream must begin with exactly one start")
 	}
+	// The stream goes on: a call that stopped without arguments was a call
+	// without arguments, not one that was cut. (The stop of another part
+	// does not say so: a failing decoder stops every part first.)
+	for e.waiting && ev.Kind != ir.PartStop {
+		e.waiting = false
+		e.stopItem(false)
+		e.drain(false)
+	}
 	switch ev.Kind {
 	case ir.Start:
 		e.start(ev.ID, ev.Model)
@@ -311,6 +328,10 @@ func (e *StreamEncoder) write(ev ir.Event) error {
 		}
 		e.parts[ev.Index].open = false
 		if ev.Index == e.cur {
+			if e.parts[e.cur].kind == ir.ToolUse && len(bytes.TrimSpace(e.acc)) == 0 {
+				e.waiting = true // see Tool calls at StreamEncoder
+				break
+			}
 			e.stopItem(false)
 			e.drain(false)
 		} else if h := e.heldAt(ev.Index); h != nil {
@@ -318,7 +339,7 @@ func (e *StreamEncoder) write(ev ir.Event) error {
 		}
 	case ir.Finish:
 		// Nothing is held when nothing is open: the last stop drained it.
-		if e.cur >= 0 || len(e.held) > 0 {
+		if e.cur >= 0 || len(e.held) > 0 || e.waiting {
 			return e.sequence("the finish came while a part was open")
 		}
 		if e.broken {
@@ -454,7 +475,15 @@ func (e *StreamEncoder) drain(aborting bool) {
 		e.held[0] = nil
 		e.held = e.held[1:]
 		ends := h.stopped || aborting
-		if ends && e.parts[h.index].kind == ir.ToolUse && !h.object(h.stopped) {
+		call := e.parts[h.index].kind == ir.ToolUse
+		empty, object := false, false
+		if call && ends {
+			empty, object = h.arguments()
+		}
+		// A call that ends here and is not whole — its arguments are not one
+		// JSON object, or it has none and the stream is failing — is not
+		// written.
+		if call && ends && ((empty && aborting) || (!empty && !object)) {
 			for _, s := range h.pieces {
 				e.heldBytes -= len(s)
 			}
@@ -474,14 +503,17 @@ func (e *StreamEncoder) drain(aborting bool) {
 		if !ends {
 			return
 		}
+		if call && empty {
+			e.waiting = true // stopped without arguments: what follows decides
+			return
+		}
 		e.stopItem(!h.stopped)
 	}
 }
 
-// object reports whether the arguments a held call got are one JSON object;
-// none at all count as one when the call stopped by itself ("{}" is written
-// for it then).
-func (h *heldPart) object(stopped bool) bool {
+// arguments reports what a held call got: nothing but white space, or one
+// JSON object.
+func (h *heldPart) arguments() (empty, object bool) {
 	n := len(h.tail)
 	for _, s := range h.pieces {
 		n += len(s)
@@ -491,10 +523,7 @@ func (h *heldPart) object(stopped bool) bool {
 		args = append(args, s...)
 	}
 	args = append(args, h.tail...)
-	if stopped && len(bytes.TrimSpace(args)) == 0 {
-		return true
-	}
-	return ir.CheckObject(args) == nil
+	return len(bytes.TrimSpace(args)) == 0, ir.CheckObject(args) == nil
 }
 
 // open begins a frame: {"type":"<event>","sequence_number":N
@@ -665,8 +694,9 @@ func (e *StreamEncoder) abort(message string) {
 	if !e.started {
 		e.start("", "")
 	}
+	e.waiting = false
 	if e.cur >= 0 {
-		e.stopItem(true)
+		e.stopItem(true) // a call that waited has no arguments: it gets no done event
 	}
 	e.drain(true)
 	e.response("response.failed", statusFailed, nil, message, "")

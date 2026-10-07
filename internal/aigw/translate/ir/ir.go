@@ -143,8 +143,22 @@ const (
 )
 
 // ToolImageNote is the text that stands before the images a tool call
-// returned: "Image returned by tool call <id>:".
-func ToolImageNote(toolID string) string { return "Image returned by tool call " + toolID + ":" }
+// returned: "Image returned by tool call <id>:". The id is the caller's and
+// the text is read by the model as the user's: only the characters
+// [A-Za-z0-9_.:-] of the id are written, and at most 128 of them, so that
+// an id cannot add lines or sentences to the conversation.
+func ToolImageNote(toolID string) string {
+	b := make([]byte, 0, len("Image returned by tool call :")+min(len(toolID), 128))
+	b = append(b, "Image returned by tool call "...)
+	for i, n := 0, 0; i < len(toolID) && n < 128; i++ {
+		c := toolID[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '.' || c == ':' || c == '-' {
+			b = append(b, c)
+			n++
+		}
+	}
+	return string(append(b, ':'))
+}
 
 // Unknown names a field no codec knows: "unknown:<field>". The field is a
 // top-level key, or "messages.<key>", "content.<key>", "tools.<key>".

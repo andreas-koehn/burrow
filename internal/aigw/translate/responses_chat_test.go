@@ -529,6 +529,57 @@ func TestResponsesChat_Streamed_BadEndings(t *testing.T) {
 	}
 }
 
+func TestResponsesChat_Streamed_ACallCutBeforeItsFirstArgumentByte(t *testing.T) {
+	// The Chat decoder stops every open call before it reports the failure. A call that had its
+	// name and not one byte of arguments yet must not be handed over as a call with "{}": Codex
+	// would run it.
+	nameOnly := func(index int) string {
+		return chunk(fmt.Sprintf(`{"tool_calls":[{"index":%d,"id":"cut","type":"function","function":{"name":"f","arguments":""}}]}`, index))
+	}
+	whole := func(index int) string {
+		return chunk(fmt.Sprintf(`{"tool_calls":[{"index":%d,"id":"whole","type":"function","function":{"name":"g","arguments":"{\"k\":1}"}}]}`, index))
+	}
+	for name, c := range map[string]struct {
+		upstream  []byte
+		wholeDone bool
+	}{
+		"then the upstream closes":               {sseOf(nameOnly(0)), false},
+		"then an error frame":                    {sseOf(nameOnly(0), `{"error":{"message":"overloaded"}}`), false},
+		"then [DONE] without a finish_reason":    {sseOf(nameOnly(0), "[DONE]"), false},
+		"beside a complete call that came later": {sseOf(nameOnly(0), whole(1)), true},
+		"beside a complete call that came first": {sseOf(whole(0), nameOnly(1), `{"error":{"message":"overloaded"}}`), true},
+	} {
+		for _, piece := range []int{1, 4096} {
+			call := newResponsesCall(t, true).upstream(200, "text/event-stream", c.upstream, piece)
+			raw := call.rec.Body.Bytes()
+			s, err := responses.CheckStream(raw)
+			if err != nil || s.Status != "failed" {
+				t.Fatalf("%s: %v, %+v\n%s", name, err, s, raw)
+			}
+			wholeDone := false
+			for _, it := range s.Items {
+				if it.CallID == "cut" && (it.Done || len(it.Deltas) > 0) {
+					t.Errorf("%s: the cut call is handed over: %+v", name, it)
+				}
+				wholeDone = wholeDone || (it.CallID == "whole" && it.Done && it.Arguments == `{"k":1}`)
+			}
+			if wholeDone != c.wholeDone || bytes.Contains(raw, []byte(`"arguments":"{}"`)) {
+				t.Errorf("%s: the whole call is done: %v\n%s", name, wholeDone, raw)
+			}
+			if code, mid := call.w.Failure(); code == "" || !mid {
+				t.Errorf("%s: Failure = %q, %v", name, code, mid)
+			}
+			replayResponses(t, raw)
+		}
+	}
+	// The same call in a stream that ends well is a call without arguments.
+	call := newResponsesCall(t, true).upstream(200, "text/event-stream", sseOf(nameOnly(0), whole(1), finishChunk("tool_calls"), "[DONE]"), 7)
+	s, err := responses.CheckStream(call.rec.Body.Bytes())
+	if err != nil || !s.Completed || len(s.Items) != 2 || s.Items[0].CallID != "cut" || s.Items[0].Arguments != "{}" || s.Items[1].Arguments != `{"k":1}` {
+		t.Fatalf("%v, %+v", err, s)
+	}
+}
+
 func TestResponsesChat_Streamed_FailureBeforeTheFirstByteIsAnHTTPError(t *testing.T) {
 	// Nothing was sent yet, so the caller gets an error RESPONSE in the OpenAI shape (and the
 	// gateway a status it can act on) instead of a stream that begins with a failure.

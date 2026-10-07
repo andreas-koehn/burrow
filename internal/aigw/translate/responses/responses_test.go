@@ -251,6 +251,12 @@ func TestDecodeRequest_CallsAndOutputsAreGrouped(t *testing.T) {
 			dropped: []string{"input:function_call_output.orphan"},
 			shape:   "user | assistant a | tool a",
 		},
+		"an output that stands before its call is that call's output": {
+			items:   []string{out("a", `"early"`), out("zz", `"never called"`), call("a", `{}`), call("b", `{}`), out("b", `"2"`), out("a", `"a second one"`)},
+			want:    []ir.Message{hi, asst(use("a", "f", `{}`), use("b", "f", `{}`)), user(result("a", "early"), result("b", "2"))},
+			dropped: []string{"input:function_call_output.orphan"},
+			shape:   "user | assistant a b | tool a | tool b",
+		},
 		"a call id that is waiting already: the first call stays": {
 			items:   []string{call("a", `{"first":1}`), call("a", `{"second":2}`), out("a", `"1"`)},
 			want:    []ir.Message{hi, asst(use("a", "f", `{"first":1}`)), user(result("a", "1"))},
@@ -978,6 +984,48 @@ func TestStreamEncoder_ToolCallWithoutArguments(t *testing.T) {
 	}
 }
 
+func TestStreamEncoder_ACallWithoutArgumentsWaitsForWhatFollows(t *testing.T) {
+	// A decoder stops every open part before it reports a failure, so a call that stopped without
+	// a byte of arguments may be a call that was cut before its first byte. Its "{}" and its done
+	// events are held until an event shows the stream goes on; the stop of another part does not.
+	var buf bytes.Buffer
+	e := NewStreamEncoder(&buf, "m", created)
+	e.now = frozen
+	step := func(ev ir.Event) string {
+		t.Helper()
+		before := buf.Len()
+		if err := e.Write(ev); err != nil {
+			t.Fatal(err)
+		}
+		return eventNames(t, buf.Bytes()[before:])
+	}
+	const done = "function_call_arguments.delta function_call_arguments.done output_item.done"
+	for _, c := range []struct {
+		ev   ir.Event
+		want string
+	}{
+		{startEv(), "created in_progress"},
+		{toolStart(0, "a", "f"), "output_item.added"},
+		{toolStart(1, "b", "g"), ""},
+		{toolStart(2, "c", "h"), ""},
+		{ev(ir.PartStop, 0), ""}, // no arguments: wait
+		{ev(ir.PartStop, 1), ""}, // another stop says nothing
+		{argsDelta(2, `{"k":1}`), done + " output_item.added " + done + " output_item.added function_call_arguments.delta"},
+		{ev(ir.PartStop, 2), "function_call_arguments.done output_item.done"},
+		{toolStart(3, "d", "i"), "output_item.added"},
+		{ev(ir.PartStop, 3), ""},
+		{finishEv(ir.StopToolUse, 1, 1), done + " completed"},
+	} {
+		if got := step(c.ev); got != c.want {
+			t.Fatalf("%+v wrote %q, want %q", c.ev, got, c.want)
+		}
+	}
+	s, err := CheckStream(buf.Bytes())
+	if err != nil || !s.Completed || len(s.Items) != 4 || s.Items[0].Arguments != "{}" || s.Items[1].Arguments != "{}" || s.Items[2].Arguments != `{"k":1}` || s.Items[3].Arguments != "{}" {
+		t.Fatalf("%v, %+v", err, s)
+	}
+}
+
 func TestStreamEncoder_Thinking(t *testing.T) {
 	// Nothing while it streams; the whole reasoning item when it stops.
 	var buf bytes.Buffer
@@ -1066,12 +1114,22 @@ func TestStreamEncoder_BadEndings(t *testing.T) {
 			names: "created in_progress output_item.added function_call_arguments.delta function_call_arguments.done output_item.done " +
 				"output_item.added function_call_arguments.delta failed",
 			message: errEarlyEnd, status: []string{"completed", ""}},
-		"a held call that was cut is not written at all": {
+		"a held call that was cut is not written at all, and one without arguments is not done": {
 			events: []ir.Event{startEv(), toolStart(0, "a", "f"), argsDelta(0, `{}`), toolStart(1, "b", "g"), argsDelta(1, `{"y":`), toolStart(2, "c", "h"),
 				ev(ir.PartStop, 1), ev(ir.PartStop, 2), ev(ir.PartStop, 0), {Kind: ir.Error, Err: errEarlyEnd}},
-			names: "created in_progress output_item.added function_call_arguments.delta function_call_arguments.done output_item.done " +
-				"output_item.added function_call_arguments.delta function_call_arguments.done output_item.done failed",
-			message: errEarlyEnd, status: []string{"completed", "completed"}},
+			names:   "created in_progress output_item.added function_call_arguments.delta function_call_arguments.done output_item.done output_item.added failed",
+			message: errEarlyEnd, status: []string{"completed", ""}},
+		"a call that stopped without arguments, then the failure: it was cut before its first byte": {
+			events: []ir.Event{startEv(), toolStart(0, "a", "f"), ev(ir.PartStop, 0), {Kind: ir.Error, Err: errEarlyEnd}},
+			names:  "created in_progress output_item.added failed", message: errEarlyEnd, status: []string{""}},
+		"the same, ended by Close": {
+			events: []ir.Event{startEv(), toolStart(0, "a", "f"), ev(ir.PartStop, 0)}, close: true,
+			names: "created in_progress output_item.added failed", message: errEarlyEnd, status: []string{""}},
+		"two calls without arguments, stopped in a row, then the failure: only the whole call is done": {
+			events: []ir.Event{startEv(), toolStart(0, "a", "f"), toolStart(1, "b", "g"), toolStart(2, "c", "h"), argsDelta(2, `{"k":1}`),
+				ev(ir.PartStop, 0), ev(ir.PartStop, 1), ev(ir.PartStop, 2), {Kind: ir.Error, Err: errEarlyEnd}},
+			names:   "created in_progress output_item.added output_item.added function_call_arguments.delta function_call_arguments.done output_item.done failed",
+			message: errEarlyEnd, status: []string{"", "completed"}},
 		"a call without arguments that never stopped is not a call": {
 			events: []ir.Event{startEv(), toolStart(0, "a", "f")}, close: true,
 			names: "created in_progress output_item.added failed", message: errEarlyEnd, status: []string{""}},
@@ -1620,18 +1678,24 @@ func TestProperty_ItemsAreSequentialAndBytesAreKept(t *testing.T) {
 				want = "{}"
 			}
 			whole := !call || ir.CheckObject([]byte(want)) == nil
+			// A call that stopped without arguments in a stream that failed: done only when an
+			// event after its stop showed that the stream went on.
+			unsure := call && got[i] == "" && stopped[i] && n < len(events)
 			if at == len(s.Items) || (call && s.Items[at].CallID != fmt.Sprint("call_", i)) {
-				if whole {
+				if whole && !unsure {
 					t.Fatalf("round %d: part %d is missing\n%s", round, i, raw)
 				}
 				continue
 			}
 			it := s.Items[at]
 			at++
-			if it.Type != itemType[parts[i].kind] || it.Done != whole {
+			if it.Type != itemType[parts[i].kind] || (it.Done != whole && !unsure) {
 				t.Fatalf("round %d part %d: %+v for a %s part, whole %v", round, i, it, parts[i].kind, whole)
 			}
 			if !it.Done {
+				if unsure {
+					want = ""
+				}
 				if strings.Join(it.Deltas, "") != want {
 					t.Fatalf("round %d part %d: deltas %q, want %q", round, i, it.Deltas, want)
 				}
@@ -1851,7 +1915,7 @@ func FuzzDecodeRequest(f *testing.F) {
 			t.Fatalf("EncodeRequest: %v", err)
 		}
 		if err == nil {
-			if err := checkToolPairing(out); err != nil {
+			if err := chat.CheckPairing(out); err != nil {
 				t.Fatalf("%v\n%s", err, out)
 			}
 		}
@@ -2004,47 +2068,4 @@ func FuzzStreamEncoderAnyEvents(f *testing.F) {
 			}
 		}
 	})
-}
-
-// checkToolPairing is the part of chat.CheckRequest that the grouping of calls and outputs is
-// answerable for: every tool message follows the assistant message that holds its call, every
-// call is answered there, and no two assistant messages follow each other. (What a client wrote
-// into a message — an empty text — is the client's.)
-func checkToolPairing(body []byte) error {
-	var req struct {
-		Messages []struct {
-			Role      string
-			CallID    string                `json:"tool_call_id"`
-			ToolCalls []struct{ ID string } `json:"tool_calls"`
-		}
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return err
-	}
-	var waiting map[string]bool
-	last := ""
-	for i, m := range req.Messages {
-		switch {
-		case m.Role == "tool":
-			if !waiting[m.CallID] {
-				return fmt.Errorf("messages[%d]: a tool message for no waiting call", i)
-			}
-			delete(waiting, m.CallID)
-		case len(waiting) > 0:
-			return fmt.Errorf("messages[%d]: %s before every call was answered", i, m.Role)
-		case m.Role == "assistant":
-			if last == "assistant" {
-				return fmt.Errorf("messages[%d]: two assistant messages in a row", i)
-			}
-			waiting = map[string]bool{}
-			for _, c := range m.ToolCalls {
-				waiting[c.ID] = true
-			}
-		}
-		last = m.Role
-	}
-	if len(waiting) > 0 {
-		return errors.New("calls without an answer at the end")
-	}
-	return nil
 }

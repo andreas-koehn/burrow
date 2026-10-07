@@ -374,8 +374,6 @@ func TestRequest_ClientErrors(t *testing.T) {
 		`{"model":"m","max_tokens":5,"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","data":"SECRET"}}]}]}`: "messages[0].content[0].type",
 		`{"model":"m","max_tokens":5,"messages":[]}`: "messages",
 		`not json SECRET`: "body",
-		// Refused by the target's encoder: two tool calls with one id.
-		`{"model":"m","max_tokens":5,"messages":[{"role":"user","content":"SECRET"},{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"f"},{"type":"tool_use","id":"t","name":"f"}]}]}`: "messages[1].tool_use.id",
 	} {
 		out, _, _, err := messagesChat(t).Request([]byte(body), nil, "gpt-x")
 		msg, ok := BadRequest(err)

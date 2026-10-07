@@ -110,16 +110,17 @@ func tooMany(field string, limit int) error {
 //   - the assistant's items — messages and calls — that follow each other
 //     are ONE assistant turn, up to the first output that answers one of its
 //     calls or the next user message;
-//   - an output belongs to the call with its "call_id", wherever it stands:
-//     the results of a turn follow it directly, in the order of the calls;
+//   - an output belongs to the call with its "call_id", wherever it stands
+//     — after a later message, or before its call: the results of a turn
+//     follow it directly, in the order of the calls;
 //   - the images a tool returned follow the results of that turn in the
 //     same user message, each tool's after a text that names its call
 //     (ir.ToolImageNote); the result itself keeps its text, or says
 //     ir.ToolImageText. Nothing is lost, so nothing is reported;
 //   - a call without an output gets the result ir.ToolNoOutput:
 //     "input:function_call.unanswered";
-//   - an output for which no call waits (there is none, or it has one) is
-//     left out: "input:function_call_output.orphan";
+//   - an output whose call never comes, and a second output for one call,
+//     are left out: "input:function_call_output.orphan";
 //   - a call whose id waits for its output already is left out:
 //     "input:function_call.duplicate";
 //   - "arguments" that are not the text of one JSON object become {}:
@@ -154,6 +155,9 @@ func tooMany(field string, limit int) error {
 //   - an assistant message's "phase" and a call's "namespace":
 //     "input.phase", "input.namespace"; "client_metadata".
 //
+// Images are bounded by nothing but the gateway's limit on the request
+// body: there is no separate limit on the size of a base64 payload.
+//
 // Read and neither carried nor reported: an item's "id" and "status". They
 // name the item in the response it came from; without stored responses they
 // say nothing, and a model never saw them.
@@ -168,7 +172,7 @@ func tooMany(field string, limit int) error {
 // in which no turn is left; anything over the ir limits. The request
 // returned with an error is empty.
 func DecodeRequest(body []byte) (ir.Request, error) {
-	d := decoder{pending: map[string]*turn{}}
+	d := decoder{pending: map[string]*turn{}, early: map[string]*toolOutput{}}
 	if err := d.request(body); err != nil {
 		return ir.Request{}, err
 	}
@@ -180,9 +184,10 @@ type decoder struct {
 	req     ir.Request
 	dropped []string
 
-	system  []ir.Part        // from system and developer messages
-	turns   []*turn          // the conversation so far
-	pending map[string]*turn // the calls that wait for their output: call id → the turn that made it
+	system  []ir.Part              // from system and developer messages
+	turns   []*turn                // the conversation so far
+	pending map[string]*turn       // the calls that wait for their output: call id → the turn that made it
+	early   map[string]*toolOutput // the outputs that wait for their call
 }
 
 func (d *decoder) drop(name string) { d.dropped = append(d.dropped, name) }
@@ -546,7 +551,12 @@ func (d *decoder) conversation() error {
 		}
 		d.req.Messages = append(d.req.Messages, results)
 	}
-	d.turns, d.pending = nil, nil
+	if len(d.early) > 0 {
+		// Outputs whose call never came: a tool message without its call is
+		// refused by the target.
+		d.drop(droppedOrphanOutput)
+	}
+	d.turns, d.pending, d.early = nil, nil, nil
 	if len(d.req.Messages) == 0 {
 		return bad("input", "holds nothing that can be translated")
 	}
@@ -756,6 +766,15 @@ func (d *decoder) call(o object, at string) error {
 	}
 	t.msg.Parts = append(t.msg.Parts, p)
 	t.calls = append(t.calls, p.ToolID)
+	if t.outputs == nil {
+		t.outputs = map[string]*toolOutput{}
+	}
+	if out := d.early[p.ToolID]; out != nil {
+		// Its output stood before it.
+		t.outputs[p.ToolID] = out
+		delete(d.early, p.ToolID)
+		return nil
+	}
 	d.pending[p.ToolID] = t
 	return nil
 }
@@ -778,15 +797,17 @@ func (d *decoder) output(o object, at string) error {
 	d.unknown("input.", o)
 	t := d.pending[id]
 	if t == nil {
-		// No call waits for it: there is none, or it has its output. A tool
-		// message without its call is refused by the target.
-		d.drop(droppedOrphanOutput)
+		// No call waits for it. Its call may still come (an output that
+		// stands before its call is that call's): it is kept for it. A second
+		// one for the same id answers nothing.
+		if d.early[id] != nil {
+			d.drop(droppedOrphanOutput)
+			return nil
+		}
+		d.early[id] = &out
 		return nil
 	}
 	delete(d.pending, id)
-	if t.outputs == nil {
-		t.outputs = map[string]*toolOutput{}
-	}
 	t.outputs[id] = &out
 	if t == d.turns[len(d.turns)-1] {
 		t.closed = true

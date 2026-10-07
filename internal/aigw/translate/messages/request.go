@@ -31,6 +31,11 @@ const (
 	droppedMCPServers        = "mcp_servers"
 	droppedOutputConfig      = "output_config"
 	droppedParallelToolUse   = "tool_choice.disable_parallel_tool_use"
+
+	// What is repaired in the history of tool calls and their results.
+	droppedUnansweredUse = "input:tool_use.unanswered" // a tool_use without a tool_result got one
+	droppedDuplicateUse  = "input:tool_use.duplicate"  // a tool_use whose id waits already: left out
+	droppedOrphanResult  = "input:tool_result.orphan"  // a tool_result for no tool_use: left out
 )
 
 // BadRequestError is a client error: the request is not a Messages request,
@@ -83,8 +88,30 @@ func tooMany(field string, limit int) error {
 // tool's after a text part ir.ToolImageNote(id). Nothing is lost, so nothing
 // is reported.
 //
-// Whether every tool_use has its tool_result is not looked at: the request
-// is passed on as the caller built it.
+// Images are bounded by nothing but the gateway's limit on the request
+// body: there is no separate limit on the size of a base64 payload.
+//
+// # Pairing
+//
+// A Chat Completions server wants an assistant message with tool calls to
+// be followed by one tool message for each call, and by nothing else first;
+// it answers 400 to anything else, and a client that sends its history with
+// every request (Claude Code) would get that 400 for ever. So the
+// conversation is made one the target takes, and what was repaired is
+// reported:
+//   - a tool_result belongs to the tool_use with its id, wherever it stands
+//     (in a later user message, or before its call): the results of a turn
+//     stand first in the user message that follows it, in the order of the
+//     calls, and such a message is made when there is none;
+//   - a tool_use without a tool_result — in the middle of the conversation
+//     or at its end — gets the result ir.ToolNoOutput:
+//     "input:tool_use.unanswered";
+//   - a tool_result whose tool_use never comes, and a second one for one
+//     call, are left out: "input:tool_result.orphan"; a user message that
+//     held nothing else is left out with it;
+//   - a tool_use whose id waits for its result already is left out:
+//     "input:tool_use.duplicate";
+//   - two assistant messages with nothing between them are one turn.
 //
 // Refused with a *BadRequestError: a request in which no turn is left; a body that is not a JSON object; a
 // missing or mistyped required field; a role other than user and assistant;
@@ -274,6 +301,9 @@ func (d *decoder) request(body []byte) (ir.Request, error) {
 	if req.Messages, err = d.messages(raw); err != nil {
 		return req, err
 	}
+	if req.Messages, err = d.pair(req.Messages); err != nil {
+		return req, err
+	}
 	if raw, ok := top.take("system"); ok {
 		if req.System, err = d.system(raw); err != nil {
 			return req, err
@@ -328,6 +358,128 @@ func (d *decoder) request(body []byte) (ir.Request, error) {
 	}
 	d.unknown("", top)
 	return req, nil
+}
+
+// callTurn is an assistant message with tool calls while they are paired
+// with their results.
+type callTurn struct {
+	calls   []string           // the ids, in order
+	results map[string]ir.Part // by id
+}
+
+// pair makes the conversation one in which every tool call has its result
+// where a Chat Completions server wants it — see Pairing at DecodeRequest.
+func (d *decoder) pair(in []ir.Message) ([]ir.Message, error) {
+	var (
+		turns      = make([]*callTurn, len(in)) // per assistant message with calls
+		hadResults = make([]bool, len(in))      // per user message
+		pending    = map[string]*callTurn{}     // the calls that wait for their result
+		early      = map[string]ir.Part{}       // the results that wait for their call
+	)
+	// What belongs together, by id.
+	for i := range in {
+		m := &in[i]
+		kept := m.Parts[:0]
+		if m.Role == ir.Assistant {
+			t := &callTurn{results: map[string]ir.Part{}}
+			seen := map[string]bool{}
+			for _, p := range m.Parts {
+				if p.Kind != ir.ToolUse {
+					kept = append(kept, p)
+					continue
+				}
+				if seen[p.ToolID] || pending[p.ToolID] != nil {
+					// One result cannot answer two calls: the first stays.
+					d.drop(droppedDuplicateUse)
+					continue
+				}
+				seen[p.ToolID] = true
+				kept = append(kept, p)
+				t.calls = append(t.calls, p.ToolID)
+				if r, ok := early[p.ToolID]; ok {
+					t.results[p.ToolID] = r
+					delete(early, p.ToolID)
+				} else {
+					pending[p.ToolID] = t
+				}
+			}
+			if len(t.calls) > 0 {
+				turns[i] = t
+			}
+		} else {
+			for _, p := range m.Parts {
+				if p.Kind != ir.ToolResult {
+					kept = append(kept, p)
+					continue
+				}
+				hadResults[i] = true
+				if t := pending[p.ToolID]; t != nil {
+					t.results[p.ToolID] = p
+					delete(pending, p.ToolID)
+				} else if _, twice := early[p.ToolID]; twice {
+					d.drop(droppedOrphanResult)
+				} else {
+					early[p.ToolID] = p
+				}
+			}
+		}
+		m.Parts = kept
+	}
+	if len(early) > 0 {
+		d.drop(droppedOrphanResult) // results whose call never came
+	}
+	// The conversation: after a turn with calls, their results.
+	out := make([]ir.Message, 0, len(in)+1)
+	var results []ir.Part // of the assistant turn just written; nil when it made no calls
+	for i, m := range in {
+		if m.Role != ir.Assistant {
+			switch {
+			case results != nil:
+				if len(results)+len(m.Parts) > ir.MaxParts {
+					return nil, tooMany(fmt.Sprintf("messages[%d].content", i), ir.MaxParts)
+				}
+				m.Parts, results = append(results, m.Parts...), nil
+			case hadResults[i] && len(m.Parts) == 0:
+				continue // its results went to their calls, or answered none
+			}
+			out = append(out, m)
+			continue
+		}
+		if results != nil {
+			out, results = append(out, ir.Message{Role: ir.User, Parts: results}), nil
+		}
+		if n := len(out); n > 0 && out[n-1].Role == ir.Assistant {
+			// Two assistant messages with nothing between them (any more)
+			// are one turn.
+			if len(out[n-1].Parts)+len(m.Parts) > ir.MaxParts {
+				return nil, tooMany(fmt.Sprintf("messages[%d].content", i), ir.MaxParts)
+			}
+			out[n-1].Parts = append(out[n-1].Parts[:len(out[n-1].Parts):len(out[n-1].Parts)], m.Parts...)
+		} else {
+			out = append(out, m)
+		}
+		if t := turns[i]; t != nil {
+			results = make([]ir.Part, 0, len(t.calls))
+			for _, id := range t.calls {
+				r, ok := t.results[id]
+				if !ok {
+					d.drop(droppedUnansweredUse)
+					r = ir.Part{Kind: ir.ToolResult, ToolID: id, Text: ir.ToolNoOutput}
+				}
+				results = append(results, r)
+			}
+		}
+	}
+	if results != nil {
+		out = append(out, ir.Message{Role: ir.User, Parts: results})
+	}
+	switch {
+	case len(out) == 0:
+		return nil, bad("messages", "holds nothing that can be translated")
+	case len(out) > ir.MaxMessages:
+		return nil, tooMany("messages", ir.MaxMessages)
+	}
+	return out, nil
 }
 
 func (d *decoder) system(raw []byte) ([]ir.Part, error) {
