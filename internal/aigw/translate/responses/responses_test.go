@@ -257,6 +257,12 @@ func TestDecodeRequest_CallsAndOutputsAreGrouped(t *testing.T) {
 			dropped: []string{"input:function_call_output.orphan"},
 			shape:   "user | assistant a b | tool a | tool b",
 		},
+		"a call id that got its early output already: the first call stays": {
+			items:   []string{out("a", `"early"`), `{"role":"user","content":"u"}`, call("a", `{"first":1}`), call("a", `{"second":2}`), call("b", `{}`), out("b", `"2"`)},
+			want:    []ir.Message{hi, user(text("u")), asst(use("a", "f", `{"first":1}`), use("b", "f", `{}`)), user(result("a", "early"), result("b", "2"))},
+			dropped: []string{"input:function_call.duplicate"},
+			shape:   "user | user | assistant a b | tool a | tool b",
+		},
 		"a call id that is waiting already: the first call stays": {
 			items:   []string{call("a", `{"first":1}`), call("a", `{"second":2}`), out("a", `"1"`)},
 			want:    []ir.Message{hi, asst(use("a", "f", `{"first":1}`)), user(result("a", "1"))},
@@ -1826,6 +1832,7 @@ func FuzzDecodeRequest(f *testing.F) {
 	f.Add([]byte(withInput(`{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,QQ==","detail":"low"},{"type":"input_file","file_id":"f"}]}`)))
 	f.Add([]byte(withInput(`{"type":"item_reference","id":"x"},{"role":"developer","content":"d"},{"type":"more"}`)))
 	f.Add([]byte(withInput(userItem + `,{"type":"function_call","call_id":"a","name":"f","arguments":"{\"cut\":"},{"role":"assistant","content":"x"},{"type":"function_call","call_id":"a","name":"f"},{"type":"function_call","call_id":"b","name":"f"},{"role":"user","content":"u"},{"type":"function_call_output","call_id":"b","output":[{"type":"input_image","image_url":"https://x/y.png"}]},{"type":"function_call_output","call_id":"zz","output":"o"}`)))
+	f.Add([]byte(withInput(`{"type":"function_call_output","call_id":"a","output":"early"},` + userItem + `,{"type":"function_call","call_id":"a","name":"f"},{"type":"function_call","call_id":"a","name":"f"}`)))
 	f.Add([]byte(`null`))
 	f.Fuzz(func(t *testing.T, body []byte) {
 		req, err := DecodeRequest(body)

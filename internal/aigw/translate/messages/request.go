@@ -84,9 +84,10 @@ func tooMany(field string, limit int) error {
 // An image inside a tool_result (Claude Code's Read tool returns one) is
 // carried, but not there: a tool result of the neutral form holds text. The
 // result keeps its text (ir.ToolImageText when it has none), and the images
-// of all tool results of the message stand after its last tool result, each
-// tool's after a text part ir.ToolImageNote(id). Nothing is lost, so nothing
-// is reported.
+// go where the result goes (see Pairing): they stand after all tool results
+// of the turn their call belongs to, each tool's after a text part
+// ir.ToolImageNote(id). Nothing is lost, so nothing is reported — unless the
+// result is left out as an orphan: then its images are left out with it.
 //
 // Images are bounded by nothing but the gateway's limit on the request
 // body: there is no separate limit on the size of a base64 payload.
@@ -133,9 +134,10 @@ func DecodeRequest(body []byte) (ir.Request, error) {
 
 type decoder struct {
 	dropped []string
-	// images holds what the tool results of the message being read returned
-	// as images, each tool's after a text that names its call: see content.
-	images []ir.Part
+	// resultImages holds, for every ToolResult part in the order they were
+	// read, the images that result returned (nil for most): a tool result
+	// holds text only, and pair puts the images where the result goes.
+	resultImages [][]ir.Part
 }
 
 func (d *decoder) drop(name string) { d.dropped = append(d.dropped, name) }
@@ -363,8 +365,14 @@ func (d *decoder) request(body []byte) (ir.Request, error) {
 // callTurn is an assistant message with tool calls while they are paired
 // with their results.
 type callTurn struct {
-	calls   []string           // the ids, in order
-	results map[string]ir.Part // by id
+	calls   []string              // the ids, in order
+	results map[string]toolResult // by id
+}
+
+// toolResult is a ToolResult part and the images the tool returned with it.
+type toolResult struct {
+	part   ir.Part
+	images []ir.Part
 }
 
 // pair makes the conversation one in which every tool call has its result
@@ -374,14 +382,15 @@ func (d *decoder) pair(in []ir.Message) ([]ir.Message, error) {
 		turns      = make([]*callTurn, len(in)) // per assistant message with calls
 		hadResults = make([]bool, len(in))      // per user message
 		pending    = map[string]*callTurn{}     // the calls that wait for their result
-		early      = map[string]ir.Part{}       // the results that wait for their call
+		early      = map[string]toolResult{}    // the results that wait for their call
+		read       = 0                          // ToolResult parts so far: see resultImages
 	)
 	// What belongs together, by id.
 	for i := range in {
 		m := &in[i]
 		kept := m.Parts[:0]
 		if m.Role == ir.Assistant {
-			t := &callTurn{results: map[string]ir.Part{}}
+			t := &callTurn{results: map[string]toolResult{}}
 			seen := map[string]bool{}
 			for _, p := range m.Parts {
 				if p.Kind != ir.ToolUse {
@@ -413,13 +422,18 @@ func (d *decoder) pair(in []ir.Message) ([]ir.Message, error) {
 					continue
 				}
 				hadResults[i] = true
+				r := toolResult{part: p}
+				if read < len(d.resultImages) {
+					r.images = d.resultImages[read]
+				}
+				read++
 				if t := pending[p.ToolID]; t != nil {
-					t.results[p.ToolID] = p
+					t.results[p.ToolID] = r
 					delete(pending, p.ToolID)
 				} else if _, twice := early[p.ToolID]; twice {
 					d.drop(droppedOrphanResult)
 				} else {
-					early[p.ToolID] = p
+					early[p.ToolID] = r
 				}
 			}
 		}
@@ -460,19 +474,31 @@ func (d *decoder) pair(in []ir.Message) ([]ir.Message, error) {
 		}
 		if t := turns[i]; t != nil {
 			results = make([]ir.Part, 0, len(t.calls))
+			var images []ir.Part
 			for _, id := range t.calls {
 				r, ok := t.results[id]
 				if !ok {
 					d.drop(droppedUnansweredUse)
-					r = ir.Part{Kind: ir.ToolResult, ToolID: id, Text: ir.ToolNoOutput}
+					r.part = ir.Part{Kind: ir.ToolResult, ToolID: id, Text: ir.ToolNoOutput}
 				}
-				results = append(results, r)
+				results = append(results, r.part)
+				if len(r.images) > 0 {
+					images = append(append(images, ir.Part{Kind: ir.Text, Text: ir.ToolImageNote(id)}), r.images...)
+				}
 			}
+			// The images the tools returned, after all results of the turn.
+			results = append(results, images...)
 		}
 	}
 	if results != nil {
 		out = append(out, ir.Message{Role: ir.User, Parts: results})
 	}
+	for i, m := range out {
+		if len(m.Parts) > ir.MaxParts {
+			return nil, tooMany(fmt.Sprintf("messages[%d].content", i), ir.MaxParts)
+		}
+	}
+	d.resultImages = nil
 	switch {
 	case len(out) == 0:
 		return nil, bad("messages", "holds nothing that can be translated")
@@ -587,7 +613,7 @@ func (d *decoder) content(raw []byte, role ir.Role, at string) (parts []ir.Part,
 		}
 		return nil, 0, err
 	}
-	calls, lastResult := 0, 0
+	calls := 0
 	for i, item := range items {
 		here := fmt.Sprintf("%s[%d]", at, i)
 		o, ok := asObject(item)
@@ -608,20 +634,6 @@ func (d *decoder) content(raw []byte, role ir.Role, at string) (parts []ir.Part,
 			}
 		}
 		parts = append(parts, p)
-		if p.Kind == ir.ToolResult {
-			lastResult = len(parts)
-		}
-	}
-	if len(d.images) > 0 {
-		// The images tools returned stand after the last tool result: a
-		// tool result holds text only (see ir.ToolImageNote), and both
-		// targets want the results of a turn before anything else.
-		if len(parts)+len(d.images) > ir.MaxParts {
-			return nil, 0, tooMany(at, ir.MaxParts)
-		}
-		rest := append([]ir.Part(nil), parts[lastResult:]...)
-		parts = append(append(parts[:lastResult], d.images...), rest...)
-		d.images = nil
 	}
 	return parts, leftOut, nil
 }
@@ -772,10 +784,12 @@ func (d *decoder) toolResultBlock(o object, at string) (ir.Part, error) {
 	}
 	raw, ok := o.take("content")
 	if !ok {
+		d.resultImages = append(d.resultImages, nil)
 		return p, nil
 	}
 	if s, ok := asString(raw); ok {
 		p.Text = s
+		d.resultImages = append(d.resultImages, nil)
 		return p, nil
 	}
 	at += ".content"
@@ -815,12 +829,10 @@ func (d *decoder) toolResultBlock(o object, at string) (ir.Part, error) {
 		}
 	}
 	p.Text = strings.Join(texts, "\n")
-	if len(images) > 0 {
-		if p.Text == "" {
-			p.Text = ir.ToolImageText
-		}
-		d.images = append(append(d.images, ir.Part{Kind: ir.Text, Text: ir.ToolImageNote(p.ToolID)}), images...)
+	if len(images) > 0 && p.Text == "" {
+		p.Text = ir.ToolImageText
 	}
+	d.resultImages = append(d.resultImages, images)
 	return p, nil
 }
 

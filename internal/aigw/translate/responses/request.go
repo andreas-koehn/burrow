@@ -580,6 +580,21 @@ func (d *decoder) assistant() *turn {
 	return t
 }
 
+// inOpenTurn reports whether the assistant turn a call would join now holds
+// a call with that id.
+func (d *decoder) inOpenTurn(id string) bool {
+	n := len(d.turns)
+	if n == 0 || d.turns[n-1].msg.Role != ir.Assistant || d.turns[n-1].closed {
+		return false
+	}
+	for _, have := range d.turns[n-1].calls {
+		if have == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *decoder) message(o object, at string) error {
 	role, _ := asString(o["role"])
 	delete(o, "role")
@@ -754,9 +769,11 @@ func (d *decoder) call(o object, at string) error {
 		d.drop(droppedNamespace)
 	}
 	d.unknown("input.", o)
-	if d.pending[p.ToolID] != nil {
-		// The id waits for its output already: one output cannot answer two
-		// calls. The first call stays.
+	if d.pending[p.ToolID] != nil || d.inOpenTurn(p.ToolID) {
+		// The id waits for its output already, or the turn this call would
+		// join holds a call with it (one that took an output which stood
+		// before it): one output cannot answer two calls, and one turn
+		// cannot hold an id twice. The first call stays.
 		d.drop(droppedDuplicateCall)
 		return nil
 	}

@@ -542,7 +542,8 @@ func TestDecodeRequest_ImagesInToolResultsFollowAsUserContent(t *testing.T) {
 			{"type":"text","text":"what do you see?"}]}]}`)
 	// Over the limit of parts in one message it is a limit error, not a longer message.
 	many := strings.TrimSuffix(strings.Repeat(png+",", ir.MaxParts), ",")
-	if bad := refused(t, withContent("user", `{"type":"tool_result","tool_use_id":"a","content":[`+many+`]}`), "messages[0].content"); !bad.Limit {
+	over := `{"model":"m","max_tokens":5,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f"}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":[` + many + `]}]}]}`
+	if bad := refused(t, over, "messages[1].content"); !bad.Limit {
 		t.Fatalf("%+v", bad)
 	}
 }
@@ -601,6 +602,9 @@ func TestDecodeRequest_ToolUseAndToolResultArePaired(t *testing.T) {
 		"a result that stands before its call": {
 			[]string{hi, said, res("a"), use("a"), hi}, nil,
 			"user | assistant a | tool a r-a | user"},
+		"a tool_use id that got its early result already": {
+			[]string{res("a"), hi, use("a", "a"), `{"role":"user","content":"x"}`, use("a"), res("a")}, []string{"input:tool_use.duplicate"},
+			"user | assistant a | tool a r-a | user | assistant a | tool a r-a"},
 		"a tool_use id that waits already": {
 			[]string{hi, use("a", "a"), `{"role":"user","content":"x"}`, use("a", "b"), res("a", "b")}, []string{"input:tool_use.duplicate"},
 			"user | assistant a | tool a r-a | user | assistant b | tool b r-b"},
@@ -649,6 +653,39 @@ func TestDecodeRequest_ToolUseAndToolResultArePaired(t *testing.T) {
 	}
 	// Nothing is left to send.
 	refused(t, `{"model":"m","max_tokens":5,"messages":[`+res("gone")+`]}`, "messages")
+
+	// The images of a tool result go where the result goes. An orphan is left out with its image:
+	// the report says so, and nothing of it is sent.
+	const png = `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUJD"}}`
+	imageResult := func(id string) string {
+		return `{"type":"tool_result","tool_use_id":"` + id + `","content":[{"type":"text","text":"r-` + id + `"},` + png + `]}`
+	}
+	req, err := DecodeRequest([]byte(`{"model":"m","max_tokens":5,"messages":[{"role":"user","content":[` + imageResult("gone") + `,{"type":"text","text":"hi"}]},` + said + `]}`))
+	if err != nil || !reflect.DeepEqual(ir.Dropped(req.Dropped), []string{"input:tool_result.orphan"}) {
+		t.Fatalf("%v, dropped %v", err, req.Dropped)
+	}
+	body, _, err := chat.EncodeRequest(req, "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONEqual(t, body, `{"model":"m","max_tokens":5,"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"ok"}]}`)
+	// A result that stands before its call moves to its call, and its image with it.
+	req, err = DecodeRequest([]byte(`{"model":"m","max_tokens":5,"messages":[` + hi + `,` + said + `,{"role":"user","content":[` + imageResult("a") + `,{"type":"text","text":"early"}]},` + use("a", "b") + `,{"role":"user","content":[` + imageResult("b") + `,{"type":"text","text":"next"}]}]}`))
+	if err != nil || req.Dropped != nil {
+		t.Fatalf("%v, dropped %v", err, req.Dropped)
+	}
+	body, _, err = chat.EncodeRequest(req, "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chat.CheckRequest(body); err != nil {
+		t.Fatalf("%v\n%s", err, body)
+	}
+	assertJSONEqual(t, body, `{"model":"m","max_tokens":5,"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"ok"},{"role":"user","content":"early"},
+	 {"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"b","type":"function","function":{"name":"f","arguments":"{}"}}]},
+	 {"role":"tool","tool_call_id":"a","content":"r-a"},{"role":"tool","tool_call_id":"b","content":"r-b"},
+	 {"role":"user","content":[{"type":"text","text":"Image returned by tool call a:"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}},
+	  {"type":"text","text":"Image returned by tool call b:"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}},{"type":"text","text":"next"}]}]}`)
 }
 
 func TestStreamEncoder_ToolUseWithoutArgumentsBeforeAFailure(t *testing.T) {
@@ -1527,6 +1564,7 @@ func FuzzDecodeRequest(f *testing.F) {
 	f.Add([]byte(withContent("user", `{"type":"tool_result","tool_use_id":"t","content":[{"type":"text","text":"a"}],"is_error":true},{"type":"image","source":{"type":"url","url":"u"}}`)))
 	f.Add([]byte(withContent("assistant", `{"type":"redacted_thinking","data":"x"},{"type":"server_tool_use","id":"s"},{"type":"tool_use","id":"t","name":"f","input":{"a":[1,{"b":null}]}}`)))
 	f.Add([]byte(`{"messages":[{"role":"user","content":[{"type":"tool_use"}]}]}`))
+	f.Add([]byte(`{"model":"m","max_tokens":9,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":[{"type":"image","source":{"type":"url","url":"u"}}]}]},{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f"},{"type":"tool_use","id":"a","name":"f"}]},{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f"}]}]}`))
 	f.Add([]byte(`{"model":"m","max_tokens":9,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"b","content":"early"},{"type":"tool_result","tool_use_id":"z"}]},{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f"},{"type":"tool_use","id":"a","name":"f"},{"type":"tool_use","id":"b","name":"f"}]},{"role":"assistant","content":"x"},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":[{"type":"image","source":{"type":"url","url":"u"}}]}]},{"role":"assistant","content":[{"type":"tool_use","id":"c","name":"f"}]}]}`))
 	f.Add([]byte(`null`))
 	f.Fuzz(func(t *testing.T, body []byte) {
