@@ -63,7 +63,8 @@ type APIKeyRevoker interface {
 // action_on_exceed=disable_key is exceeded. *store.Store satisfies it.
 type GatewayKeyRevoker interface {
 	// budgetID is the budget that was exceeded; the revoker records it.
-	RevokeGatewayKeyByID(ctx context.Context, id, budgetID string) error
+	// revoked is false when the key was revoked already and nothing changed.
+	RevokeGatewayKeyByID(ctx context.Context, id, budgetID string) (revoked bool, err error)
 }
 
 // Dispatcher is the narrow surface the engine uses to publish the
@@ -557,18 +558,23 @@ func (e *Engine) fireAction(ctx context.Context, b db.Budget, currentUSD float64
 					slog.String("budget_id", b.ID))
 				return
 			}
-			if err := gwRevoker.RevokeGatewayKeyByID(ctx, b.SubjectID, b.ID); err != nil {
+			revoked, err := gwRevoker.RevokeGatewayKeyByID(ctx, b.SubjectID, b.ID)
+			if err != nil {
 				e.log.Warn("cost: disable_key revoke failed",
 					slog.String("gateway_key_id", b.SubjectID),
 					slog.String("budget_id", b.ID),
 					slog.String("err", err.Error()))
 				return
 			}
-			e.log.Info("cost: gateway key revoked, its budget is exceeded",
-				slog.String("gateway_key_id", b.SubjectID),
-				slog.String("budget_id", b.ID),
-				slog.Float64("current_usd", currentUSD),
-				slog.Int64("current_tokens", currentTokens))
+			// Only a revoke that changed something is one: the key may have
+			// been revoked by hand, or by another budget, a moment ago.
+			if revoked {
+				e.log.Info("cost: gateway key revoked, its budget is exceeded",
+					slog.String("gateway_key_id", b.SubjectID),
+					slog.String("budget_id", b.ID),
+					slog.Float64("current_usd", currentUSD),
+					slog.Int64("current_tokens", currentTokens))
+			}
 		case "api_key":
 			if e.revoker == nil || e.keyLocator == nil {
 				e.log.Warn("cost: disable_key requested but no revoker wired",

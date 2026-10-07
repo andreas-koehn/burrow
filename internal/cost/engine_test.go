@@ -805,16 +805,17 @@ func TestCheckBudgets_TokenCap(t *testing.T) {
 }
 
 type fakeGatewayRevoker struct {
-	mu  sync.Mutex
-	ids []string
-	err error
+	mu      sync.Mutex
+	ids     []string
+	err     error
+	already bool // the key was revoked before: the call changes nothing
 }
 
-func (f *fakeGatewayRevoker) RevokeGatewayKeyByID(_ context.Context, id, budgetID string) error {
+func (f *fakeGatewayRevoker) RevokeGatewayKeyByID(_ context.Context, id, budgetID string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ids = append(f.ids, id+" by "+budgetID)
-	return f.err
+	return !f.already && f.err == nil, f.err
 }
 
 func TestDisableKey_GatewayKey(t *testing.T) {
@@ -839,6 +840,16 @@ func TestDisableKey_GatewayKey(t *testing.T) {
 	}
 	if disp.count() != 1 {
 		t.Fatalf("events = %d, want 1", disp.count())
+	}
+	// A key that was revoked already: asked, but nothing is logged as revoked.
+	logs.Reset()
+	rev = &fakeGatewayRevoker{already: true}
+	e = cost.NewWithDeps(routePricing(), budgets, &rawUsageReader{rows: routeRows()}, fakeDailyReader{}, nil, nil, disp,
+		slog.New(slog.NewTextHandler(&logs, nil)))
+	e.SetGatewayKeyRevoker(rev)
+	e.CheckBudgetsForSample(ctx, "svc", "", "gk1", "burrow-smart")
+	if len(rev.ids) != 1 || strings.Contains(logs.String(), "gateway key revoked") {
+		t.Fatalf("revoker calls %v, log %q", rev.ids, logs.String())
 	}
 	// Without a revoker nothing panics; a model budget revokes no key.
 	e = cost.NewWithDeps(routePricing(), budgets, &rawUsageReader{rows: routeRows()}, fakeDailyReader{}, nil, nil, nil, nil)

@@ -28,6 +28,7 @@ func TestClientLogin_Postgres(t *testing.T) {
 	}
 	x := Wrap(b.DB())
 	t.Cleanup(func() { _ = x.Close() })
+	holdClientLoginTestLock(t, x)
 	checkClientLogin(t, x, "u-login-pg")
 	checkClientLoginPerIPCap(t, x)
 	checkClientLoginPerNetworkCap(t, x)
@@ -57,8 +58,33 @@ func TestClientLogin_Postgres_CapUnderRepeatableReadDefault(t *testing.T) {
 	if err := x.DB().QueryRow(`SHOW default_transaction_isolation`).Scan(&level); err != nil || level != "repeatable read" {
 		t.Fatalf("default_transaction_isolation = %q (%v), want repeatable read", level, err)
 	}
+	holdClientLoginTestLock(t, x)
 	checkClientLoginCapUnderConcurrency(t, x)
 	t.Cleanup(func() { _, _ = x.DB().ExecContext(context.Background(), `DELETE FROM client_login_requests`) })
+}
+
+// clientLoginTestLockKey serialises the client sign-in tests of every test
+// binary that shares one database (this package's and internal/store's): they
+// empty client_login_requests and count its rows against global caps, so two
+// of them at once fail each other. internal/store's test takes the same key.
+const clientLoginTestLockKey int64 = 0x627572726f777463
+
+// holdClientLoginTestLock takes that lock on a connection of its own until
+// the test ends.
+func holdClientLoginTestLock(t *testing.T, x *DB) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := x.DB().Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, clientLoginTestLockKey); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = conn.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, clientLoginTestLockKey)
+		_ = conn.Close()
+	})
 }
 
 // checkClientLoginCapUnderConcurrency: sixty clients start at the same moment

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"github.com/ankoehn/burrow/internal/audit"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ankoehn/burrow/internal/auth"
@@ -144,14 +146,14 @@ func TestRevokeGatewayKeyByID(t *testing.T) {
 	}
 	sink := &auditSink{}
 	s.SetAuditLogger(sink)
-	if err := s.RevokeGatewayKeyByID(ctx, "missing", "bud-1"); !errors.Is(err, ErrKeyNotFound) {
+	if err := func() error { _, err := s.RevokeGatewayKeyByID(ctx, "missing", "bud-1"); return err }(); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("missing key err = %v", err)
 	}
 	if len(sink.ev) != 0 {
 		t.Fatalf("a revoke that did nothing was audited: %+v", sink.ev)
 	}
-	if err := s.RevokeGatewayKeyByID(ctx, k.ID, "bud-1"); err != nil {
-		t.Fatal(err)
+	if revoked, err := s.RevokeGatewayKeyByID(ctx, k.ID, "bud-1"); err != nil || !revoked {
+		t.Fatalf("revoke: revoked=%v err=%v", revoked, err)
 	}
 	// Audited as the system's doing, with the budget that caused it and
 	// nothing of the key but its id and name.
@@ -174,13 +176,80 @@ func TestRevokeGatewayKeyByID(t *testing.T) {
 		t.Fatalf("list: %+v", mine)
 	}
 	first := *mine[0].RevokedAt
-	if err := s.RevokeGatewayKeyByID(ctx, k.ID, "bud-1"); err != nil {
-		t.Fatalf("second revoke: %v", err)
+	if revoked, err := s.RevokeGatewayKeyByID(ctx, k.ID, "bud-1"); err != nil || revoked {
+		t.Fatalf("second revoke: revoked=%v err=%v, want nothing changed", revoked, err)
 	}
 	if len(sink.ev) != 1 {
 		t.Fatalf("revoking a revoked key was audited again: %+v", sink.ev)
 	}
 	if again, _ := s.ListGatewayKeys(ctx, owner, "user"); !again[0].RevokedAt.Equal(first) {
 		t.Fatalf("a second revoke moved revoked_at: %v -> %v", first, again[0].RevokedAt)
+	}
+}
+
+// Two budgets on one key cross at the same moment, or a budget crosses while
+// its owner revokes the key by hand: the key is revoked once, and the revoke
+// is audited once, by whoever changed the row.
+func TestRevokeGatewayKeyByID_Concurrent(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, s, "gk-race@x", "user").ID
+	sink := &auditSink{}
+	s.SetAuditLogger(sink)
+	for round := 0; round < 5; round++ {
+		k, _, err := s.CreateGatewayKey(ctx, owner, "ci", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sink.mu.Lock()
+		sink.ev = nil
+		sink.mu.Unlock()
+		const n = 8
+		var wg sync.WaitGroup
+		var revoked atomic.Int32
+		start := make(chan struct{})
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				ok, err := s.RevokeGatewayKeyByID(ctx, k.ID, fmt.Sprintf("bud-%d", i))
+				if err != nil {
+					t.Error(err)
+				}
+				if ok {
+					revoked.Add(1)
+				}
+			}(i)
+		}
+		// In every other round the owner revokes by hand in the same instant.
+		byHand := round%2 == 1
+		if byHand {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				if err := s.RevokeGatewayKey(ctx, owner, "user", k.ID); err != nil {
+					t.Error(err)
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		sink.mu.Lock()
+		events := len(sink.ev)
+		sink.mu.Unlock()
+		// The manual revoke is audited by its handler, not by the store: the
+		// store's events are the system's, and there is one per revoke that
+		// changed the row (none when the owner was first).
+		got := int(revoked.Load())
+		if got > 1 || events != got || (!byHand && got != 1) {
+			t.Fatalf("round %d (by hand: %v): %d system revokes reported, %d audit events; want exactly one of each among the system's revokes, none when the owner was first",
+				round, byHand, got, events)
+		}
+		key, err := s.q.GetAIGatewayKey(ctx, k.ID)
+		if err != nil || key.RevokedAt == nil {
+			t.Fatalf("round %d: the key is not revoked (%v)", round, err)
+		}
 	}
 }

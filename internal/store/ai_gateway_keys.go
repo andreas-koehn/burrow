@@ -149,32 +149,34 @@ func (s *Store) RevokeGatewayKey(ctx context.Context, callerID, callerRole, id s
 // RevokeGatewayKeyByID revokes the key at once, for the system itself: the
 // cost engine calls it when the gateway_key budget budgetID with action
 // disable_key is exceeded. There is no caller to check; it must not be
-// reachable from a request. Revoking a revoked key is not an error.
+// reachable from a request.
 //
-// The revoke is audited as ai_gateway_key.revoke with actor "system" and the
-// budget that caused it. The event names the key by id and name only.
-func (s *Store) RevokeGatewayKeyByID(ctx context.Context, id, budgetID string) error {
+// revoked says whether this call changed the key. A key that was revoked
+// before, by a person or by another budget an instant earlier, is left as it
+// is and nothing is recorded: the update is conditional on the key being
+// active, so of several revokes at once exactly one changes it. That one is
+// audited as ai_gateway_key.revoke with actor "system" and the budget that
+// caused it; the event names the key by id and name only.
+func (s *Store) RevokeGatewayKeyByID(ctx context.Context, id, budgetID string) (revoked bool, err error) {
+	changed, err := s.q.RevokeAIGatewayKeyIfActive(ctx, id)
+	if err != nil {
+		return false, err
+	}
 	k, err := s.q.GetAIGatewayKey(ctx, id)
 	if errors.Is(err, db.ErrNotFound) {
-		return ErrKeyNotFound
+		return false, ErrKeyNotFound
 	}
-	if err != nil {
-		return err
+	if !changed {
+		return false, err
 	}
-	if err := s.q.RevokeAIGatewayKey(ctx, id); errors.Is(err, db.ErrNotFound) {
-		return ErrKeyNotFound
-	} else if err != nil {
-		return err
-	}
-	if k.RevokedAt != nil {
-		return nil // it was revoked before; nothing happened now
-	}
+	// The key is revoked whether or not its row could be read again; only
+	// its name for the audit event depends on that.
 	s.emitAudit(ctx, audit.ActionAIGatewayKeyRevoke, func(e *audit.Event) {
 		e.ActorID, e.ActorEmail = "system", ""
-		e.SubjectID, e.SubjectLabel = k.ID, k.Name
+		e.SubjectID, e.SubjectLabel = id, k.Name
 		e.Payload = audit.MustJSON(map[string]string{"reason": "budget_exceeded", "budget_id": budgetID})
 	})
-	return nil
+	return true, nil
 }
 
 // ValidateGatewayKey looks the presented key up by its hash. ok is false for

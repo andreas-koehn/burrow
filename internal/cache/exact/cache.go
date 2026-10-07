@@ -60,11 +60,9 @@ type Entry struct {
 	TTLSeconds int
 }
 
-// sqliteTimeFormat is the explicit string format used to persist created_at
-// in the cache_entries table. modernc.org/sqlite's default time.Time binding
-// uses RFC3339Nano which writes 7 fractional digits — SQLite's datetime()
-// and julianday() functions only accept up to 3 fractional digits and return
-// NULL otherwise, breaking TTL filtering. So we format the value ourselves.
+// sqliteTimeFormat is the zone-less text earlier versions stored created_at
+// as (always UTC). Store now binds a UTC time.Time; rows in this format are
+// still read.
 const sqliteTimeFormat = "2006-01-02 15:04:05.000"
 
 // Cache is the exact-match prompt cache engine. Lookup/Store hit a single
@@ -164,26 +162,19 @@ func (c *Cache) Lookup(ctx context.Context, key string) (Entry, bool, error) {
 	if c == nil || c.d == nil {
 		return Entry{}, false, errors.New("exact.Cache: not initialised")
 	}
+	// Two reads. The first takes only what says whether the entry is still
+	// within its own ttl, so an expired entry's body is never fetched; that
+	// is decided here and not in SQL, because SQLite and Postgres share no
+	// expression for the age of a timestamp. key_hash is unique: one row at
+	// most. An entry whose created_at cannot be read counts as expired.
 	var (
 		id         string
-		status     int
-		headersStr string
-		body       []byte
 		createdRaw any
 		ttl        int
 	)
-	// key_hash is unique: at most one row. Whether it is still within its
-	// own ttl is decided here, from the row, and not in SQL: SQLite and
-	// Postgres share no expression for the age of a timestamp. created_at is
-	// read as the driver returns it (text on SQLite, a timestamp on
-	// Postgres); a row whose created_at cannot be read counts as expired.
-	row := c.d.DB().QueryRowContext(ctx, `
-		SELECT id, status, headers, body, created_at, ttl_seconds
-		  FROM cache_entries
-		 WHERE key_hash = ?`,
-		key,
-	)
-	err := row.Scan(&id, &status, &headersStr, &body, &createdRaw, &ttl)
+	err := c.d.DB().QueryRowContext(ctx,
+		`SELECT id, created_at, ttl_seconds FROM cache_entries WHERE key_hash = ?`, key,
+	).Scan(&id, &createdRaw, &ttl)
 	if errors.Is(err, sql.ErrNoRows) {
 		c.misses.Add(1)
 		return Entry{}, false, nil
@@ -191,10 +182,26 @@ func (c *Cache) Lookup(ctx context.Context, key string) (Entry, bool, error) {
 	if err != nil {
 		return Entry{}, false, fmt.Errorf("cache lookup: %w", err)
 	}
-	createdAt, ok := entryTime(createdRaw)
-	if !ok || time.Since(createdAt).Seconds() >= float64(ttl) {
+	createdAt, live := entryLive(createdRaw, ttl, time.Now())
+	if !live {
 		c.misses.Add(1)
 		return Entry{}, false, nil
+	}
+	var (
+		status     int
+		headersStr string
+		body       []byte
+	)
+	err = c.d.DB().QueryRowContext(ctx,
+		`SELECT status, headers, body FROM cache_entries WHERE id = ?`, id,
+	).Scan(&status, &headersStr, &body)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Cleared or evicted between the two reads.
+		c.misses.Add(1)
+		return Entry{}, false, nil
+	}
+	if err != nil {
+		return Entry{}, false, fmt.Errorf("cache lookup: %w", err)
 	}
 	headers := map[string]string{}
 	if headersStr != "" {
@@ -222,9 +229,25 @@ func (c *Cache) Lookup(ctx context.Context, key string) (Entry, bool, error) {
 	}, true, nil
 }
 
+// entryLive reports whether an entry created at raw (as the driver returned
+// created_at) is still within its ttl at now, and when it was created.
+func entryLive(raw any, ttlSeconds int, now time.Time) (time.Time, bool) {
+	createdAt, ok := entryTime(raw)
+	if !ok || now.Sub(createdAt).Seconds() >= float64(ttlSeconds) {
+		return createdAt, false
+	}
+	return createdAt, true
+}
+
+// goTimeText is how the SQLite driver stores a bound time.Time.
+const goTimeText = "2006-01-02 15:04:05.999999999 -0700 MST"
+
 // entryTime reads a cache_entries.created_at value as the driver returns it:
-// a time.Time, or text in the format Store writes, the one SQLite's
-// CURRENT_TIMESTAMP default writes, or RFC 3339. Text without a zone is UTC.
+// a time.Time (always on Postgres, where the column is a timestamp with time
+// zone and so an instant whatever the session's time zone is), or text: what
+// the SQLite driver stores for a time.Time, RFC 3339, the zone-less format
+// earlier versions wrote, or SQLite's CURRENT_TIMESTAMP. Zone-less text is
+// UTC.
 func entryTime(raw any) (time.Time, bool) {
 	var text string
 	switch v := raw.(type) {
@@ -237,7 +260,7 @@ func entryTime(raw any) (time.Time, bool) {
 	default:
 		return time.Time{}, false
 	}
-	for _, layout := range []string{sqliteTimeFormat, time.RFC3339Nano, "2006-01-02 15:04:05"} {
+	for _, layout := range []string{goTimeText, time.RFC3339Nano, sqliteTimeFormat, "2006-01-02 15:04:05"} {
 		if t, err := time.Parse(layout, text); err == nil {
 			return t.UTC(), true
 		}
@@ -259,9 +282,9 @@ func entryTime(raw any) (time.Time, bool) {
 // entries are evicted first). Store returns as soon as the INSERT commits —
 // eviction never blocks the caller path.
 //
-// On a UNIQUE(key_hash) race with a concurrent Store, the duplicate is
-// swallowed (the first writer wins; the second's payload is the same value
-// for the same canonical request anyway).
+// While a live entry holds the key, a second Store is swallowed (the first
+// writer wins; the second's payload is the same value for the same canonical
+// request anyway). An entry that has outlived its ttl is replaced.
 func (c *Cache) Store(ctx context.Context, key string, e Entry) error {
 	if c == nil || c.d == nil {
 		return errors.New("exact.Cache: not initialised")
@@ -279,16 +302,12 @@ func (c *Cache) Store(ctx context.Context, key string, e Entry) error {
 	// "apikey:<id>"). Clear scope uses this column to bulk-delete a slice
 	// without re-hashing every body.
 	scope := scopeFromKey(key)
-	_, err = c.d.DB().ExecContext(ctx, `
-		INSERT INTO cache_entries
-		  (id, scope_key, key_hash, status, headers, body, created_at, ttl_seconds)
-		VALUES (?,?,?,?,?,?,?,?)
-		ON CONFLICT(key_hash) DO NOTHING`,
-		uuid.NewString(), scope, key, e.Status, string(headersJSON), e.Body,
-		createdAt.UTC().Format(sqliteTimeFormat), e.TTLSeconds,
-	)
-	if err != nil {
-		return fmt.Errorf("cache store: %w", err)
+	// created_at is bound as a UTC time.Time, never as text: Postgres would
+	// read zone-less text in the session's time zone, and the entry's age
+	// would be off by that zone's offset. Milliseconds are enough.
+	createdAt = createdAt.UTC().Truncate(time.Millisecond)
+	if err := c.insert(ctx, key, scope, e, string(headersJSON), createdAt); err != nil {
+		return err
 	}
 
 	// Fire the OnMiss callback in a detached goroutine so the semantic tier
@@ -308,6 +327,52 @@ func (c *Cache) Store(ctx context.Context, key string, e Entry) error {
 	// blocks the caller path.
 	if limit := c.maxEntries.Load(); limit > 0 {
 		c.EvictIfOverflow(int(limit))
+	}
+	return nil
+}
+
+// insert writes the entry unless a live one already holds the key. An entry
+// that has outlived its ttl does not keep its key: it is deleted in the same
+// transaction, so the new answer is cached. Whether it has expired is decided
+// here, as in Lookup. When two writers meet, the first wins (ON CONFLICT DO
+// NOTHING).
+func (c *Cache) insert(ctx context.Context, key, scope string, e Entry, headersJSON string, createdAt time.Time) error {
+	tx, err := c.d.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("cache store: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var (
+		oldID  string
+		oldRaw any
+		oldTTL int
+	)
+	err = tx.QueryRowContext(ctx,
+		`SELECT id, created_at, ttl_seconds FROM cache_entries WHERE key_hash = ?`, key,
+	).Scan(&oldID, &oldRaw, &oldTTL)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return fmt.Errorf("cache store: %w", err)
+	default:
+		if _, live := entryLive(oldRaw, oldTTL, time.Now()); live {
+			return nil // first writer wins
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM cache_entries WHERE id = ?`, oldID); err != nil {
+			return fmt.Errorf("cache store: drop expired entry: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO cache_entries
+		  (id, scope_key, key_hash, status, headers, body, created_at, ttl_seconds)
+		VALUES (?,?,?,?,?,?,?,?)
+		ON CONFLICT(key_hash) DO NOTHING`,
+		uuid.NewString(), scope, key, e.Status, headersJSON, e.Body, createdAt, e.TTLSeconds,
+	); err != nil {
+		return fmt.Errorf("cache store: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("cache store: %w", err)
 	}
 	return nil
 }

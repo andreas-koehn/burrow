@@ -30,6 +30,20 @@ func TestClientLogin_Postgres(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = b.DB().Close() })
 	ctx := context.Background()
+	// The client sign-in tests of internal/db empty the same table and count
+	// its rows; against one database they and this test take turns. The key
+	// is internal/db's clientLoginTestLockKey.
+	lock, err := b.DB().Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lock.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, int64(0x627572726f777463)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = lock.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1)`, int64(0x627572726f777463))
+		_ = lock.Close()
+	})
 	s := New(b.DB())
 	clk := newLoginClock()
 	s.SetClientLoginClock(clk.now)

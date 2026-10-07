@@ -534,6 +534,32 @@ func checkCacheLifecycle(t *testing.T, c *Cache, prefix string) {
 	if got, hit, _ := c.Lookup(ctx, key("fresh")); !hit || string(got.Body) != `{"id":"fresh"}` {
 		t.Errorf("second Store replaced the entry: %+v", got)
 	}
+	// An expired entry does not keep its key: the next answer is stored
+	// over it and served.
+	for _, name := range []string{"long-gone", "zero-ttl"} {
+		fresh := Entry{Body: []byte(`{"id":"again"}`), Status: 200, Headers: map[string]string{"X": "y"}, CreatedAt: time.Now().UTC(), TTLSeconds: 3600}
+		if err := c.Store(ctx, key(name), fresh); err != nil {
+			t.Fatalf("Store over expired %s: %v", name, err)
+		}
+		got, hit, err := c.Lookup(ctx, key(name))
+		if err != nil || !hit || string(got.Body) != `{"id":"again"}` || got.Status != 200 || got.Headers["X"] != "y" || got.TTLSeconds != 3600 {
+			t.Errorf("%s after a new Store: hit=%v err=%v entry=%+v", name, hit, err, got)
+		}
+	}
+	// A live entry is not replaced by that rule.
+	if err := c.Store(ctx, key("long-lived"), Entry{Body: []byte(`other`), Status: 200, CreatedAt: time.Now().UTC(), TTLSeconds: 60}); err != nil {
+		t.Fatal(err)
+	}
+	if got, hit, _ := c.Lookup(ctx, key("long-lived")); !hit || string(got.Body) != `{"id":"long-lived"}` {
+		t.Errorf("a live entry was replaced: %+v", got)
+	}
+	// An entry without a CreatedAt is stored as of now.
+	if err := c.Store(ctx, key("no-time"), Entry{Body: []byte(`x`), Status: 200, TTLSeconds: 60}); err != nil {
+		t.Fatal(err)
+	}
+	if got, hit, _ := c.Lookup(ctx, key("no-time")); !hit || time.Since(got.CreatedAt) > time.Minute || time.Since(got.CreatedAt) < -time.Minute {
+		t.Errorf("no-time: hit=%v created_at=%v", hit, got.CreatedAt)
+	}
 	if n, bytes, _, err := c.Stats(ctx); err != nil || n < 6 || bytes <= 0 {
 		t.Errorf("Stats: %d entries, %d bytes (%v)", n, bytes, err)
 	}

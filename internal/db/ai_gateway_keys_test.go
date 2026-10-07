@@ -93,3 +93,61 @@ func checkAIGatewayKeys(t *testing.T, x *DB, u1, u2 string) {
 		t.Fatalf("key should cascade with user, got %v", err)
 	}
 }
+
+// TestRevokeAIGatewayKeyIfActive runs the check the Postgres test runs too.
+func TestRevokeAIGatewayKeyIfActive(t *testing.T) {
+	checkRevokeAIGatewayKeyIfActive(t, testDB(t), "u-revoke")
+}
+
+// checkRevokeAIGatewayKeyIfActive: the conditional revoke changes a key that
+// is active and nothing else, and of several at the same moment exactly one
+// does it.
+func checkRevokeAIGatewayKeyIfActive(t *testing.T, x *DB, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	_ = x.DeleteUser(ctx, userID) // takes the user's keys along
+	mustUser(t, x, userID)
+	t.Cleanup(func() { _ = x.DeleteUser(ctx, userID) })
+	id := "gk-rev-" + userID
+	if err := x.CreateAIGatewayKey(ctx, AIGatewayKey{ID: id, Name: "ci", KeyHash: "h-" + id, KeyPrefix: "bgw_abcd", UserID: userID}); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := x.RevokeAIGatewayKeyIfActive(ctx, "missing-"+userID); err != nil || changed {
+		t.Fatalf("missing key: changed=%v err=%v", changed, err)
+	}
+	const n = 8
+	results := make(chan bool, n)
+	errs := make(chan error, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		go func() {
+			<-start
+			changed, err := x.RevokeAIGatewayKeyIfActive(ctx, id)
+			results <- changed
+			errs <- err
+		}()
+	}
+	close(start)
+	changed := 0
+	for i := 0; i < n; i++ {
+		if <-results {
+			changed++
+		}
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if changed != 1 {
+		t.Fatalf("%d of %d concurrent revokes changed the key, want 1", changed, n)
+	}
+	k, err := x.GetAIGatewayKey(ctx, id)
+	if err != nil || k.RevokedAt == nil {
+		t.Fatalf("after revoke: %v %+v", err, k)
+	}
+	if again, err := x.RevokeAIGatewayKeyIfActive(ctx, id); err != nil || again {
+		t.Fatalf("revoked key: changed=%v err=%v", again, err)
+	}
+	if k2, _ := x.GetAIGatewayKey(ctx, id); !k2.RevokedAt.Equal(*k.RevokedAt) {
+		t.Fatalf("revoked_at moved: %v -> %v", k.RevokedAt, k2.RevokedAt)
+	}
+}

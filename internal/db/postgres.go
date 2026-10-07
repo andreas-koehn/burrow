@@ -7,7 +7,9 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5/stdlib"
 )
@@ -31,6 +33,12 @@ type PostgresBackend struct{ db *sql.DB }
 // running unmodified under Postgres. The corpus + state-machine details
 // live in postgres_rewriter.go / postgres_rewriter_test.go.
 func OpenPostgres(url string) (*PostgresBackend, error) {
+	return openPostgres(url, pgMigrationLockWait, slog.Default())
+}
+
+// openPostgres is OpenPostgres with the time it may wait for the migration
+// lock and the logger that says when it waits.
+func openPostgres(url string, lockWait time.Duration, log *slog.Logger) (*PostgresBackend, error) {
 	d, err := sql.Open("pgx-rewrite", url)
 	if err != nil {
 		return nil, fmt.Errorf("OpenPostgres open: %w", err)
@@ -40,7 +48,7 @@ func OpenPostgres(url string) (*PostgresBackend, error) {
 		return nil, fmt.Errorf("OpenPostgres ping: %w", err)
 	}
 	d.SetMaxOpenConns(10)
-	if err := migratePostgresLocked(d); err != nil {
+	if err := migratePostgresLocked(d, lockWait, log); err != nil {
 		_ = d.Close()
 		return nil, fmt.Errorf("OpenPostgres migrate: %w", err)
 	}
@@ -52,21 +60,56 @@ func OpenPostgres(url string) (*PostgresBackend, error) {
 // ("burrow" read as a number); it must never change between versions.
 const pgMigrationLockKey int64 = 0x627572726f77
 
+const (
+	// pgMigrationLockWait is how long a start waits for another instance to
+	// finish migrating before it gives up.
+	pgMigrationLockWait = 60 * time.Second
+	// pgMigrationLockPoll is how often it asks again.
+	pgMigrationLockPoll = 200 * time.Millisecond
+)
+
 // migratePostgresLocked runs the migration ladder under a session-level
 // advisory lock, so that two processes starting against the same database
 // (two relays, or two test binaries) migrate one after the other: the second
 // waits, then finds everything applied. The lock lives on one dedicated
 // connection and is released explicitly; closing that connection would
 // release it too, so a crash cannot leave it held.
-func migratePostgresLocked(d *sql.DB) error {
+//
+// The lock is asked for with pg_try_advisory_lock until wait has passed, so
+// an instance that holds it and hangs does not make every later start hang
+// with it: the start fails with an error that names the lock. The first time
+// it has to wait it says so in the log.
+func migratePostgresLocked(d *sql.DB, wait time.Duration, log *slog.Logger) error {
 	ctx := context.Background()
 	conn, err := d.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("migration lock connection: %w", err)
 	}
 	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, pgMigrationLockKey); err != nil {
-		return fmt.Errorf("take migration lock: %w", err)
+	deadline := time.Now().Add(wait)
+	for waited := false; ; {
+		var got bool
+		qctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := conn.QueryRowContext(qctx, `SELECT pg_try_advisory_lock($1)`, pgMigrationLockKey).Scan(&got)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("take migration lock (advisory lock %d): %w", pgMigrationLockKey, err)
+		}
+		if got {
+			break
+		}
+		if !waited {
+			waited = true
+			log.Info("postgres: waiting for the migration lock; another Burrow instance is migrating this database",
+				slog.Int64("advisory_lock", pgMigrationLockKey), slog.Duration("wait_at_most", wait))
+		}
+		left := time.Until(deadline)
+		if left <= 0 {
+			return fmt.Errorf("the migration lock (advisory lock %d) is still held by another session after %s: "+
+				"another Burrow instance is migrating this database or hangs; see pg_locks (locktype 'advisory') for its pid",
+				pgMigrationLockKey, wait)
+		}
+		time.Sleep(min(left, pgMigrationLockPoll))
 	}
 	// A failed unlock is not fatal for this process, but the connection must
 	// not go back to the pool still holding the lock: discard it.

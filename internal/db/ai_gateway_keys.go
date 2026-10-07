@@ -122,6 +122,23 @@ func (x *DB) RevokeAIGatewayKey(ctx context.Context, id string) error {
 	return notFoundIfNoRows(res, "revoke ai gateway key")
 }
 
+// RevokeAIGatewayKeyIfActive revokes the key only if it is not revoked yet
+// and reports whether it changed anything: false for a key that was revoked
+// before, by anyone, and for one that does not exist. Of several callers at
+// the same moment exactly one gets true.
+func (x *DB) RevokeAIGatewayKeyIfActive(ctx context.Context, id string) (bool, error) {
+	res, err := x.sqlDB.ExecContext(ctx,
+		`UPDATE ai_gateway_keys SET revoked_at = CURRENT_TIMESTAMP WHERE id=? AND revoked_at IS NULL`, id)
+	if err != nil {
+		return false, fmt.Errorf("revoke ai gateway key: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("revoke ai gateway key: %w", err)
+	}
+	return n > 0, nil
+}
+
 // TouchAIGatewayKey records a use of the key.
 func (x *DB) TouchAIGatewayKey(ctx context.Context, id string) error {
 	if _, err := x.sqlDB.ExecContext(ctx,

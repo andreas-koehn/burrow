@@ -7,11 +7,12 @@ import (
 	"time"
 )
 
-// CreateSession inserts a new session row.
+// CreateSession inserts a new session row. The expiry is written in UTC:
+// SQLite stores it as text, and DeleteExpiredSessions compares that text.
 func (x *DB) CreateSession(ctx context.Context, s Session) error {
 	_, err := x.sqlDB.ExecContext(ctx,
 		`INSERT INTO sessions(id, user_id, expires_at, user_agent, ip) VALUES(?,?,?,?,?)`,
-		s.ID, s.UserID, s.ExpiresAt, s.UserAgent, s.IP,
+		s.ID, s.UserID, s.ExpiresAt.UTC(), s.UserAgent, s.IP,
 	)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -123,7 +124,7 @@ func (x *DB) DeleteSessionsByUser(ctx context.Context, userID string) (int64, er
 // On Postgres expires_at is a timestamp and the comparison is one of
 // instants. On SQLite both sides are the text modernc/sqlite writes for a
 // time.Time ("YYYY-MM-DD HH:MM:SS.fffffffff +0000 UTC"), which sorts by time
-// as long as both are UTC; sessions are created with a UTC expiry.
+// as long as both are UTC; CreateSession writes the expiry in UTC.
 func (x *DB) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 	res, err := x.sqlDB.ExecContext(ctx,
 		`DELETE FROM sessions WHERE expires_at <= ?`, time.Now().UTC(),
