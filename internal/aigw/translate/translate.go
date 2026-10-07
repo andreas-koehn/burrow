@@ -11,12 +11,15 @@ package translate
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/aigw/translate/chat"
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
 	"github.com/ankoehn/burrow/internal/aigw/translate/messages"
+	"github.com/ankoehn/burrow/internal/aigw/translate/responses"
 )
 
 // Format is a wire format a caller or a target speaks.
@@ -150,7 +153,7 @@ func Lookup(from, to Format) (Pair, bool) {
 // error, and returns a message for the caller: it names the field and the
 // reason and holds nothing of the request.
 func BadRequest(err error) (message string, ok bool) {
-	var bad *messages.BadRequestError
+	var bad *ir.BadRequestError
 	if errors.As(err, &bad) || errors.Is(err, chat.ErrUnsupported) {
 		return err.Error(), true
 	}
@@ -159,7 +162,8 @@ func BadRequest(err error) (message string, ok bool) {
 
 // pairs is the registry, filled once below and only read afterwards.
 var pairs = map[[2]Format]*pair{
-	{Messages, Chat}: newMessagesChat(),
+	{Messages, Chat}:  newMessagesChat(),
+	{Responses, Chat}: newResponsesChat(),
 }
 
 // pair is a Pair made of a request function and the two halves of a codec.
@@ -222,4 +226,45 @@ func messagesToChat(body []byte, header http.Header, model string) ([]byte, bool
 		return nil, false, nil, err
 	}
 	return out, req.Stream, dropped, nil
+}
+
+// newResponsesChat makes the pair "responses-chat": OpenAI Responses callers
+// (Codex, which speaks nothing else) on Chat Completions targets. Only the
+// call itself is translated: no response is stored, so the endpoints below
+// /v1/responses/ that work on a stored one have no pair (see CallerFormat).
+func newResponsesChat() *pair {
+	return &pair{
+		id:      "responses-chat",
+		path:    "/v1/chat/completions",
+		request: responsesToChat,
+		check:   checkResponsesChat,
+		codec:   codec{chatTarget, responsesCaller},
+	}
+}
+
+// responsesToChat rewrites a Responses request. Nothing is read from the
+// caller's header: what Codex sends there (OpenAI-Beta, its session and
+// conversation ids) asks the model for nothing.
+func responsesToChat(body []byte, _ http.Header, model string) ([]byte, bool, []string, error) {
+	req, err := responses.DecodeRequest(body)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	out, dropped, err := chat.EncodeRequest(req, model)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	return out, req.Stream, dropped, nil
+}
+
+// responsesCaller writes answers for a Responses caller. A response's
+// "created_at" is the moment the gateway begins to write it.
+var responsesCaller = callerCodec{
+	encodeResponse: func(resp ir.Response, model string) ([]byte, error) {
+		return responses.EncodeResponse(resp, model, time.Now())
+	},
+	encodeError: responses.EncodeError,
+	newStreamEncoder: func(w io.Writer, model string) streamEncoder {
+		return responses.NewStreamEncoder(w, model, time.Now())
+	},
 }

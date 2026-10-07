@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
 	"github.com/ankoehn/burrow/internal/aigw/translate/messages"
+	"github.com/ankoehn/burrow/internal/aigw/translate/responses"
 )
 
 // This file holds the tool-call checks a pair is released by (Global
@@ -190,6 +192,92 @@ func checkMessagesChat(p *pair) error {
 	}
 	if s.Stopped || s.ErrType == "" || len(s.Blocks) != 3 {
 		return errors.New("cut stream: the answer does not end as an error")
+	}
+	return nil
+}
+
+// The vector of responses-chat: the turn of checkMessagesRequest as a
+// Responses caller sends it — the assistant's text and its two calls as
+// three items, then the two outputs, one of them as parts. It must become
+// checkChatRequest: one assistant message with both calls, then the tool
+// messages. The answers are those of messages-chat.
+const checkResponsesRequest = `{"model":"asked-for","max_output_tokens":64,
+"tools":[{"type":"function","name":"get_weather","description":"Weather for a city","strict":false,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}],
+"tool_choice":"auto",
+"input":[
+ {"role":"user","content":"Weather in Oslo and Rome?"},
+ {"type":"message","role":"assistant","content":[{"type":"output_text","text":"Checking.","annotations":[]}]},
+ {"type":"function_call","call_id":"toolu_1","name":"get_weather","arguments":"{\"city\":\"Oslo\"}"},
+ {"type":"function_call","call_id":"toolu_2","name":"get_weather","arguments":"{\"city\":\"Rome\"}"},
+ {"type":"function_call_output","call_id":"toolu_1","output":"4°C"},
+ {"type":"function_call_output","call_id":"toolu_2","output":[{"type":"input_text","text":"19°C"}]}]}`
+
+// checkResponsesChat is the tool-call check of the pair responses-chat.
+func checkResponsesChat(p *pair) error {
+	// Tool definitions, several calls in one turn and their results reach the target.
+	out, stream, dropped, err := p.Request([]byte(checkResponsesRequest), nil, "target-model")
+	if err != nil {
+		return fmt.Errorf("request: %w", err)
+	}
+	if stream || dropped != nil || !jsonEqual(out, []byte(checkChatRequest)) {
+		return errors.New("request: tools, tool calls or tool results are not carried as they must be")
+	}
+	// A whole answer with several calls: "arguments" is a string that holds the upstream's bytes.
+	rec := answer(p, false, "application/json", []byte(checkChatAnswer), 1<<20)
+	var body struct {
+		ID, Object, Status, Model string
+		Output                    []struct {
+			Type, Status string
+			CallID       string `json:"call_id"`
+			Name         string
+			Arguments    string
+			Content      []struct{ Type, Text string }
+		}
+		Usage struct {
+			Input  int `json:"input_tokens"`
+			Output int `json:"output_tokens"`
+			Total  int `json:"total_tokens"`
+		}
+	}
+	if rec.status != http.StatusOK || json.Unmarshal(rec.body.Bytes(), &body) != nil || body.Object != "response" || body.Status != "completed" ||
+		body.ID == "" || body.Model != "m-up" || body.Usage.Input != 31 || body.Usage.Output != 17 || body.Usage.Total != 48 || len(body.Output) != 3 {
+		return errors.New("answer: the response is not carried as it must be")
+	}
+	text, one, two := body.Output[0], body.Output[1], body.Output[2]
+	if text.Type != "message" || len(text.Content) != 1 || text.Content[0].Type != "output_text" || text.Content[0].Text != "Checking." ||
+		one.Type != "function_call" || one.CallID != "call_1" || one.Name != "get_weather" || one.Arguments != checkArgs1 ||
+		two.Type != "function_call" || two.CallID != "call_2" || two.Name != "get_weather" || two.Arguments != checkArgs2 {
+		return errors.New("answer: tool calls are not carried as they must be")
+	}
+	// A streamed answer: the pieces of each call's arguments add up to the upstream's bytes, and
+	// the done events and the final response repeat them, however the upstream's bytes arrive.
+	upstream := checkChatStream(false)
+	for _, piece := range []int{1, 13, len(upstream)} {
+		rec := answer(p, true, "text/event-stream", upstream, piece)
+		s, err := responses.CheckStream(rec.body.Bytes())
+		if err != nil {
+			return fmt.Errorf("stream: %w", err)
+		}
+		if rec.status != http.StatusOK || !s.Completed || s.InputTokens != 31 || s.OutputTokens != 17 || s.TotalTokens != 48 || len(s.Items) != 3 {
+			return errors.New("stream: the answer does not end as a tool call must")
+		}
+		text, one, two := s.Items[0], s.Items[1], s.Items[2]
+		if text.Type != "message" || text.Text != "Checking." ||
+			one.Type != "function_call" || one.CallID != "call_1" || one.Name != "get_weather" || one.Arguments != checkArgs1 || strings.Join(one.Deltas, "") != checkArgs1 ||
+			two.Type != "function_call" || two.CallID != "call_2" || two.Name != "get_weather" || two.Arguments != checkArgs2 || strings.Join(two.Deltas, "") != checkArgs2 {
+			return errors.New("stream: the arguments do not add up to the upstream's bytes")
+		}
+	}
+	// A stream that is cut inside the calls does not end as a success, and its calls are not
+	// handed over as completed ones.
+	rec = answer(p, true, "text/event-stream", checkChatStream(true), 13)
+	s, err := responses.CheckStream(rec.body.Bytes())
+	if err != nil {
+		return fmt.Errorf("cut stream: %w", err)
+	}
+	if s.Completed || s.Status != "failed" || s.ErrMessage == "" || len(s.Items) != 3 ||
+		s.Items[1].Status != "incomplete" || s.Items[2].Status != "incomplete" {
+		return errors.New("cut stream: the answer does not end as a failure")
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package ir
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -318,4 +319,16 @@ func FuzzToolInput(f *testing.F) {
 			t.Fatalf("accepted a non-object: %q", got)
 		}
 	})
+}
+
+func TestBadRequestError(t *testing.T) {
+	var err error = &BadRequestError{Format: "responses", Field: "input[3].call_id", Reason: "is required"}
+	if err.Error() != "responses: input[3].call_id: is required" || errors.Is(err, ErrLimit) {
+		t.Fatalf("%v, limit %v", err, errors.Is(err, ErrLimit))
+	}
+	err = fmt.Errorf("wrapped: %w", &BadRequestError{Format: "messages", Field: "messages", Reason: "has more than 8192 elements", Limit: true})
+	var bad *BadRequestError
+	if !errors.Is(err, ErrLimit) || !errors.As(err, &bad) || bad.Field != "messages" {
+		t.Fatalf("%v", err)
+	}
 }

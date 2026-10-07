@@ -35,24 +35,15 @@ const (
 
 // BadRequestError is a client error: the request is not a Messages request,
 // or holds something that cannot be translated and must not be left out.
-// Field is the JSON path of what the caller sent ("messages[2].content[0]"),
-// Reason says what is wrong with it in fixed words. Neither holds content of
-// the request. For a request over one of the ir limits
-// errors.Is(err, ir.ErrLimit) holds.
-type BadRequestError struct {
-	Field, Reason string
-	limit         bool
+// It is ir.BadRequestError with the format "messages".
+type BadRequestError = ir.BadRequestError
+
+func bad(field, reason string) error {
+	return &BadRequestError{Format: "messages", Field: field, Reason: reason}
 }
 
-func (e *BadRequestError) Error() string { return "messages: " + e.Field + ": " + e.Reason }
-
-// Is reports ir.ErrLimit for a request over a limit.
-func (e *BadRequestError) Is(target error) bool { return e.limit && target == ir.ErrLimit }
-
-func bad(field, reason string) error { return &BadRequestError{Field: field, Reason: reason} }
-
 func tooMany(field string, limit int) error {
-	return &BadRequestError{Field: field, Reason: fmt.Sprintf("has more than %d elements", limit), limit: true}
+	return &BadRequestError{Format: "messages", Field: field, Reason: fmt.Sprintf("has more than %d elements", limit), Limit: true}
 }
 
 // DecodeRequest reads an Anthropic Messages request into the neutral form.
@@ -239,7 +230,7 @@ func (d *decoder) cacheControl(o object) {
 
 func (d *decoder) request(body []byte) (ir.Request, error) {
 	if ir.Depth(body) > ir.MaxDepth {
-		return ir.Request{}, &BadRequestError{Field: "body", Reason: fmt.Sprintf("is nested deeper than %d", ir.MaxDepth), limit: true}
+		return ir.Request{}, &BadRequestError{Format: "messages", Field: "body", Reason: fmt.Sprintf("is nested deeper than %d", ir.MaxDepth), Limit: true}
 	}
 	top, ok := asObject(body)
 	if !ok {
@@ -333,7 +324,7 @@ func (d *decoder) system(raw []byte) ([]ir.Part, error) {
 	}
 	items, err := list(raw, ir.MaxParts, "system")
 	if err != nil {
-		if e := err.(*BadRequestError); !e.limit {
+		if e := err.(*BadRequestError); !e.Limit {
 			e.Reason = "is neither a string nor a list of text blocks"
 		}
 		return nil, err
@@ -424,7 +415,7 @@ func (d *decoder) messages(raw []byte) ([]ir.Message, error) {
 func (d *decoder) content(raw []byte, role ir.Role, at string) (parts []ir.Part, leftOut int, err error) {
 	items, err := list(raw, ir.MaxParts, at)
 	if err != nil {
-		if e := err.(*BadRequestError); !e.limit {
+		if e := err.(*BadRequestError); !e.Limit {
 			e.Reason = "is neither a string nor a list of blocks"
 		}
 		return nil, 0, err
@@ -446,7 +437,7 @@ func (d *decoder) content(raw []byte, role ir.Role, at string) (parts []ir.Part,
 		}
 		if p.Kind == ir.ToolUse {
 			if calls++; calls > ir.MaxToolCalls {
-				return nil, 0, &BadRequestError{Field: at, Reason: fmt.Sprintf("has more than %d tool calls", ir.MaxToolCalls), limit: true}
+				return nil, 0, &BadRequestError{Format: "messages", Field: at, Reason: fmt.Sprintf("has more than %d tool calls", ir.MaxToolCalls), Limit: true}
 			}
 		}
 		parts = append(parts, p)
@@ -580,7 +571,7 @@ func toolUseBlock(o object, at string) (ir.Part, error) {
 		if errors.Is(err, ir.ErrLimit) {
 			reason, limit = "is too large", true
 		}
-		return ir.Part{}, &BadRequestError{Field: at + ".input", Reason: reason, limit: limit}
+		return ir.Part{}, &BadRequestError{Format: "messages", Field: at + ".input", Reason: reason, Limit: limit}
 	}
 	p.Input = input
 	return p, nil
@@ -609,7 +600,7 @@ func (d *decoder) toolResultBlock(o object, at string) (ir.Part, error) {
 	at += ".content"
 	items, err := list(raw, ir.MaxParts, at)
 	if err != nil {
-		if e := err.(*BadRequestError); !e.limit {
+		if e := err.(*BadRequestError); !e.Limit {
 			e.Reason = "is neither a string nor a list of text blocks"
 		}
 		return ir.Part{}, err
