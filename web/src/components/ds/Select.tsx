@@ -16,10 +16,12 @@ export interface SelectProps {
   onChange?: (value: string) => void;
   placeholder?: string;
   id?: string;
+  /** The control's name where no label points at its id. */
+  "aria-label"?: string;
   "aria-describedby"?: string;
 }
 
-export function Select({ options, value, onChange, placeholder = "Select…", id, "aria-describedby": describedBy }: SelectProps) {
+export function Select({ options, value, onChange, placeholder = "Select…", id, "aria-label": ariaLabel, "aria-describedby": describedBy }: SelectProps) {
   const [open, setOpen] = useState(false);
   // The option the keyboard is on while the list is open. Focus stays on the
   // trigger (aria-activedescendant names the option), so a surrounding
@@ -132,6 +134,17 @@ export function Select({ options, value, onChange, placeholder = "Select…", id
         else setOpen(false);
         break;
       case "Tab": setOpen(false); break;
+      default:
+        // A letter or digit goes to the next option that starts with it.
+        if (e.key.length === 1 && e.key !== " " && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          const starts = (i: number) => {
+            const label = options[i]?.label;
+            return typeof label === "string" && label.toLowerCase().startsWith(e.key.toLowerCase());
+          };
+          const order = options.map((_, i) => (active + 1 + i) % options.length);
+          const hit = order.find(starts);
+          if (hit !== undefined) setActive(hit);
+        }
     }
   };
 
@@ -141,11 +154,16 @@ export function Select({ options, value, onChange, placeholder = "Select…", id
         ref={triggerRef}
         id={id}
         type="button"
+        // The select-only combobox pattern: the trigger keeps the focus and
+        // names the option the keyboard is on (aria-activedescendant is not
+        // supported on a plain button).
+        role="combobox"
         className="select-trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
         aria-activedescendant={open && active >= 0 ? optionId(active) : undefined}
+        aria-label={ariaLabel}
         aria-describedby={describedBy}
         onClick={() => { if (open) setOpen(false); else openList(); }}
         onKeyDown={onTriggerKey}

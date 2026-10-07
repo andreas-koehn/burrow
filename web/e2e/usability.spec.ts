@@ -129,7 +129,7 @@ test.describe("Cross-feature wiring", () => {
     await expect(dialog.getByRole("heading", { name: "New AI service" })).toBeVisible();
 
     // Access mode is fixed to API key for AI services: no picker is offered
-    await expect(dialog.getByRole("button", { name: /access mode/i })).toHaveCount(0);
+    await expect(dialog.getByRole("combobox", { name: /access mode/i })).toHaveCount(0);
   });
 
   test("Overview: the email notice's 'Set up email' link navigates to /settings/email", async ({ page }) => {

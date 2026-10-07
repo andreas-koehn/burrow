@@ -130,7 +130,7 @@ describe("ds primitives", () => {
   it("Select selects an option on click and closes", () => {
     const fn = vi.fn();
     render(<Select options={SCOPES} value="a" onChange={fn} />);
-    fireEvent.click(screen.getByRole("button"));
+    fireEvent.click(screen.getByRole("combobox"));
     const option = screen.getByRole("option", { name: "Beta" });
     fireEvent.mouseDown(option);
     fireEvent.click(option);
@@ -142,18 +142,30 @@ describe("ds primitives", () => {
     const user = userEvent.setup();
     const three = [...SCOPES, { value: "c", label: "Gamma" }];
     render(<Select options={three} value="a" onChange={fn} />);
-    const trigger = screen.getByRole("button");
+    // The select-only combobox pattern: aria-activedescendant needs the role.
+    const trigger = screen.getByRole("combobox");
+    expect(trigger).toHaveAttribute("aria-haspopup", "listbox");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
     trigger.focus();
     // Arrow down opens the list on the chosen option; focus stays on the trigger.
     await user.keyboard("{ArrowDown}");
     expect(screen.getByRole("listbox")).toBeInTheDocument();
     expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(trigger).toHaveAttribute("aria-controls", screen.getByRole("listbox").id);
     const active = () => document.getElementById(trigger.getAttribute("aria-activedescendant") ?? "");
     expect(active()).toHaveTextContent("Alpha");
     await user.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}");
     expect(active()).toHaveTextContent("Gamma"); // stops at the end
     await user.keyboard("{Home}");
     expect(active()).toHaveTextContent("Alpha");
+    // A letter goes to the next option that starts with it, and round again.
+    await user.keyboard("g");
+    expect(active()).toHaveTextContent("Gamma");
+    await user.keyboard("b");
+    expect(active()).toHaveTextContent("Beta");
+    await user.keyboard("x");
+    expect(active()).toHaveTextContent("Beta");
     await user.keyboard("{End}{ArrowUp}");
     expect(active()).toHaveTextContent("Beta");
     expect(active()?.className).toContain("is-focus");
@@ -180,7 +192,7 @@ describe("ds primitives", () => {
   // the next Tab would leave the dialog the Select sits in.
   it("Select keeps focus on its trigger when an option is chosen", () => {
     render(<Select options={SCOPES} value="a" />);
-    const trigger = screen.getByRole("button");
+    const trigger = screen.getByRole("combobox");
     fireEvent.click(trigger);
     const list = screen.getByRole("listbox");
     expect(list.className).toContain("select-list");
@@ -192,7 +204,7 @@ describe("ds primitives", () => {
   });
   it("Select closes on outside mousedown but not on mousedown inside the list", () => {
     render(<Select options={SCOPES} value="a" />);
-    fireEvent.click(screen.getByRole("button"));
+    fireEvent.click(screen.getByRole("combobox"));
     fireEvent.mouseDown(screen.getByRole("listbox"));
     expect(screen.queryByRole("listbox")).not.toBeNull();
     fireEvent.mouseDown(document.body);

@@ -79,7 +79,7 @@ describe("Request inspector (§4.23)", () => {
       { id: "svc-b", name: "beta", type: "http", access_mode: "api_key", connected: false },
     ])));
     mount();
-    const picker = await screen.findByRole("button", { name: /service/i });
+    const picker = await screen.findByRole("combobox", { name: /service/i });
     expect(picker).toHaveAttribute("id", "inspector-service");
     await userEvent.click(picker);
     await userEvent.click(await screen.findByRole("option", { name: "beta" }));

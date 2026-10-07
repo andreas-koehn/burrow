@@ -231,8 +231,8 @@ describe("Services page", () => {
     await userEvent.click(screen.getByRole("button", { name: /^new service$/i }));
     await screen.findByRole("dialog");
 
-    // The Access mode combobox is present (Select renders a button with aria-haspopup="listbox")
-    const accessModeBtn = screen.getByRole("button", { name: /access mode/i });
+    // The Access mode combobox is present (Select renders a combobox with aria-haspopup="listbox")
+    const accessModeBtn = screen.getByRole("combobox", { name: /access mode/i });
     expect(accessModeBtn).toBeInTheDocument();
 
     // Open and select "API key"
@@ -258,7 +258,7 @@ describe("Services page", () => {
     expect(dialog).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /new ai service/i })).toBeInTheDocument();
     // Access mode is fixed to API key for AI services: no picker is offered.
-    expect(screen.queryByRole("button", { name: /access mode/i })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /access mode/i })).toBeNull();
   });
 
   it("P5.2: ?new=ai still POSTs access_mode api_key", async () => {

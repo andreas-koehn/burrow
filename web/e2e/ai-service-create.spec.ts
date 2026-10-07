@@ -26,7 +26,7 @@ test("P5: ?new=ai auto-opens the New AI service dialog without an access-mode pi
   await expect(dialog.getByRole("heading", { name: "New AI service" })).toBeVisible();
 
   // Access mode is fixed to API key for AI services: no picker is offered
-  await expect(dialog.getByRole("button", { name: /access mode/i })).toHaveCount(0);
+  await expect(dialog.getByRole("combobox", { name: /access mode/i })).toHaveCount(0);
 
   // URL param is cleared (dialog is open but the ?new=ai is gone)
   await expect(page).not.toHaveURL(/new=ai/);

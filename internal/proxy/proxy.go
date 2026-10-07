@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"github.com/ankoehn/burrow/internal/httpduplex"
 	"io"
 	"log/slog"
 	"net"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/httpduplex"
 	"github.com/ankoehn/burrow/internal/proto"
 	"github.com/ankoehn/burrow/pkg/clientip"
 )

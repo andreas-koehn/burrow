@@ -3,7 +3,6 @@ package aigateway
 import (
 	"context"
 	"errors"
-	"github.com/ankoehn/burrow/internal/httpduplex"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/httpduplex"
 	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/ankoehn/burrow/internal/store"
 )

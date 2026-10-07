@@ -80,6 +80,7 @@ export default function Users() {
           onChange={(e) => { setQ(e.target.value); setOffset(0); }}
         />
         <Select
+          aria-label="Filter by role"
           options={[
             { value: "", label: "Role · All" },
             { value: "admin", label: "Role · Admin" },

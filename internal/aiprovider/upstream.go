@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/ankoehn/burrow/internal/httpduplex"
 	"log/slog"
 	"net"
 	"net/http"
@@ -13,6 +12,8 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+
+	"github.com/ankoehn/burrow/internal/httpduplex"
 )
 
 // ErrNotConfigured is returned when the provider's credential slot is empty.

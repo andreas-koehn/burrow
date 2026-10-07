@@ -179,6 +179,45 @@ func TestProxy_ClosesTheStreamOfEachAnsweredRequest(t *testing.T) {
 	}
 }
 
+// An upload the app answers early, after which the visitor stops sending:
+// when the answer is out, the tunnel stream is closed and no goroutine of the
+// request is left, on the relay or behind it.
+func TestProxy_EarlyAnswerToAnUploadLeavesNothingOpen(t *testing.T) {
+	d, ts := leakStack(t, earlyOK, "")
+	host := "abc123." + authDomain
+	// One ordinary request first: what stays for good exists before the count.
+	req, _ := http.NewRequest("GET", ts.URL+"/x", nil)
+	req.Host = host
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
+	d.settled()
+	time.Sleep(100 * time.Millisecond)
+	before := runtime.NumGoroutine()
+
+	conn, br := rawUpload(t, ts, host, "POST /upload HTTP/1.1\r\nHost: {host}\r\nTransfer-Encoding: chunked\r\n\r\n5\r\n01234\r\n")
+	_ = conn.SetReadDeadline(time.Now().Add(20 * time.Second))
+	completeOK(t, br, 200, "ok")
+	connClosed(t, conn, br, 10*time.Second)
+	_ = conn.Close()
+
+	if opened, closed := d.settled(); opened != 2 || closed != opened {
+		t.Fatalf("%d streams were opened and %d closed", opened, closed)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for runtime.NumGoroutine() > before+2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if after := runtime.NumGoroutine(); after > before+2 {
+		buf := make([]byte, 1<<16)
+		t.Fatalf("%d goroutines before the upload, %d after:\n%s", before, after, buf[:runtime.Stack(buf, true)])
+	}
+}
+
 // A response that is still being sent is not cut: the stream is closed when
 // the proxy is done with it, not before.
 func TestProxy_StreamedResponseArrivesWhole(t *testing.T) {

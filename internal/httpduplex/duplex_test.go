@@ -142,6 +142,9 @@ func lateTail(t *testing.T, addr string) (string, error) {
 var answersAtOnce = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 	// Itself a Go server: without this it would wait for the body's end
 	// before it sends the answer.
+	// A stand-in that leaves the body unread under plain full duplex must not
+	// keep its connection (see the package comment of httpduplex).
+	w.Header().Set("Connection", "close")
 	_ = http.NewResponseController(w).EnableFullDuplex()
 	w.Header().Set("Content-Length", "2")
 	_, _ = io.WriteString(w, "ok")

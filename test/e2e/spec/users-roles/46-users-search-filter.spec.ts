@@ -48,9 +48,11 @@ test("46-users-search-filter: email search + Role filter select; pagination cont
     await expect(page.locator("tr").filter({ hasText: userEmail })).toBeVisible({ timeout: 5_000 });
 
     // --- ROLE FILTER -------------------------------------------------------
-    // The Role filter is a DS Select (custom listbox): its trigger shows the
-    // current label "Role · All". Open it and pick "Role · Admin".
-    await page.getByRole("button", { name: "Role · All" }).click();
+    // The Role filter is a DS Select (a combobox named "Filter by role"): its
+    // trigger shows the current label "Role · All". Open it and pick "Role · Admin".
+    const roleFilter = page.getByRole("combobox", { name: "Filter by role" });
+    await expect(roleFilter).toHaveText("Role · All");
+    await roleFilter.click();
     await page.getByRole("option", { name: "Role · Admin", exact: true }).click();
 
     // Admin throwaway + the seeded admin@e2e.local show; the "user" throwaway
@@ -60,7 +62,8 @@ test("46-users-search-filter: email search + Role filter select; pagination cont
     await expect(page.locator("tr").filter({ hasText: userEmail })).toHaveCount(0);
 
     // Reset filter back to All.
-    await page.getByRole("button", { name: "Role · Admin" }).click();
+    await expect(roleFilter).toHaveText("Role · Admin");
+    await roleFilter.click();
     await page.getByRole("option", { name: "Role · All", exact: true }).click();
     await expect(page.locator("tr").filter({ hasText: userEmail })).toBeVisible({ timeout: 5_000 });
 

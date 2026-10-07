@@ -28,14 +28,18 @@
 # Usage:
 #   bash test/integration/client-cli.sh           # up / assert / down
 #   bash test/integration/client-cli.sh --keep    # leave the two containers running
-#   OLD_REF=refs/heads/develop   the commit the old client is built from
+#   OLD_REF=4483855   the commit the old client is built from. The default is
+#                     the last commit before the client CLI plan: a client that
+#                     logs the URL of its tunnel the way the old-client lines
+#                     read it. (refs/heads/develop is older here and logs no
+#                     URL, which fails two of those lines.)
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1
-OLD_REF="${OLD_REF:-refs/heads/develop}"
+OLD_REF="${OLD_REF:-4483855}"
 NET="burrow-client-cli-it"
 RELAY="$NET-relay"
 MACHINE="$NET-machine"
