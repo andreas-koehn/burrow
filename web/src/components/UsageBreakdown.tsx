@@ -1,8 +1,8 @@
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Badge, EmptyState, ErrorNotice, NotAuthorized, Segmented, SkeletonRows } from "@/components/ds";
-import { fmtCount, fmtUsd } from "@/lib/costFormat";
+import { Badge, Button, EmptyState, ErrorNotice, NotAuthorized, Segmented, SkeletonRows } from "@/components/ds";
+import { fmtCount, fmtUsd, shortId } from "@/lib/costFormat";
 import type { AiGatewayKey, AiProvider, CostGroupBy, CostSummary } from "@/lib/contract";
 
 const GROUPINGS: { value: CostGroupBy; label: string; noun: string; unattributed: string }[] = [
@@ -12,11 +12,6 @@ const GROUPINGS: { value: CostGroupBy; label: string; noun: string; unattributed
   { value: "target_model", label: "Target", noun: "target", unattributed: "no target" },
   { value: "dialect", label: "Format", noun: "format", unattributed: "no format" },
 ];
-
-/** The id's first 8 characters, so a key nobody can name is still told apart. */
-function shortId(id: string): string {
-  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
-}
 
 export default function UsageBreakdown({ window }: { window: CostSummary["window"] }) {
   const [groupBy, setGroupBy] = useState<CostGroupBy>("model");
@@ -47,7 +42,7 @@ export default function UsageBreakdown({ window }: { window: CostSummary["window
 
   function nameOf(key: string): string {
     if (key === "") return grouping.unattributed;
-    if (groupBy === "gateway_key") return keyName.get(key) ?? `deleted key (${shortId(key)})`;
+    if (groupBy === "gateway_key") return keyName.get(key) ?? `key ${shortId(key)}`;
     return key;
   }
   function isFlat(key: string): boolean {
@@ -67,13 +62,18 @@ export default function UsageBreakdown({ window }: { window: CostSummary["window
       </NotAuthorized>
     );
   } else if (summary.isError) {
-    body = <ErrorNotice>{summary.error instanceof Error ? summary.error.message : "Couldn't load usage."}</ErrorNotice>;
-  } else if (summary.isLoading || !summary.data) {
+    body = (
+      <ErrorNotice action={<Button variant="secondary" size="sm" onClick={() => void summary.refetch()}>Retry</Button>}>
+        {summary.error instanceof Error ? summary.error.message : "Couldn't load usage."}
+      </ErrorNotice>
+    );
+  } else if (summary.isLoading || !summary.data || (groupBy === "gateway_key" && keys.isLoading)) {
     body = <SkeletonRows n={3} />;
   } else if (rows.length === 0) {
     body = <EmptyState title="No usage in this period">Requests through the AI gateway show up here as they are metered.</EmptyState>;
   } else {
     body = (
+      <>
       <div className="table-wrap">
         <table className="data" aria-label={`Usage by ${grouping.noun}`} aria-describedby={captionId}>
           <thead>
@@ -98,6 +98,10 @@ export default function UsageBreakdown({ window }: { window: CostSummary["window
           </tbody>
         </table>
       </div>
+      <p id={captionId} className="muted small">
+        Largest first. The row for requests with no {grouping.noun} also holds the remainder beyond the 200 largest groups.
+      </p>
+      </>
     );
   }
 
@@ -107,9 +111,6 @@ export default function UsageBreakdown({ window }: { window: CostSummary["window
       <div className="toolbar-row">
         <Segmented aria-label="Group usage by" options={GROUPINGS} value={groupBy} onChange={setGroupBy} />
       </div>
-      <p id={captionId} className="muted small">
-        Largest first. The row for requests with no {grouping.noun} also holds the remainder beyond the 200 largest groups.
-      </p>
       {body}
     </section>
   );

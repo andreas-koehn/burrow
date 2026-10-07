@@ -8,6 +8,8 @@ export interface FormFieldProps {
   htmlFor: string;
   help?: ReactNode;
   error?: ReactNode;
+  /** id of the help or error text, for aria-describedby on the control. */
+  descId?: string;
   w?: FormFieldWidth;
   children: ReactNode;
   className?: string;
@@ -18,6 +20,7 @@ export function FormField({
   htmlFor,
   help,
   error,
+  descId,
   w = "full",
   children,
   className,
@@ -30,9 +33,9 @@ export function FormField({
       <label htmlFor={htmlFor}>{label}</label>
       {children}
       {error != null ? (
-        <span className="error" role="alert">{error}</span>
+        <span id={descId} className="error" role="alert">{error}</span>
       ) : help != null ? (
-        <span className="help">{help}</span>
+        <span id={descId} className="help">{help}</span>
       ) : null}
     </div>
   );

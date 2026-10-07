@@ -15,9 +15,10 @@ export interface SelectProps {
   onChange?: (value: string) => void;
   placeholder?: string;
   id?: string;
+  "aria-describedby"?: string;
 }
 
-export function Select({ options, value, onChange, placeholder = "Select…", id }: SelectProps) {
+export function Select({ options, value, onChange, placeholder = "Select…", id, "aria-describedby": describedBy }: SelectProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -87,6 +88,7 @@ export function Select({ options, value, onChange, placeholder = "Select…", id
         className="select-trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-describedby={describedBy}
         onClick={() => setOpen((o) => !o)}
       >
         <span className={selected ? "" : "placeholder"}>

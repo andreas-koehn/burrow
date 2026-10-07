@@ -21,7 +21,7 @@ describe("UsageBreakdown", () => {
     expect(await within(byKey).findByText("laptop")).toBeInTheDocument();
     expect(within(byKey).queryByText("gk_laptop1")).toBeNull();
     // A key the caller cannot see or that was deleted: shortened id, never blank.
-    expect(within(byKey).getByText("deleted key (gk_gone0…)")).toBeInTheDocument();
+    expect(within(byKey).getByText("key gk_gone0…")).toBeInTheDocument();
     expect(within(byKey).getByText("no gateway key")).toBeInTheDocument();
   });
 
@@ -75,5 +75,40 @@ describe("UsageBreakdown", () => {
     server.use(http.get("/api/v1/cost/summary", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
     renderBreakdown();
     expect(await screen.findByRole("alert")).toHaveTextContent("boom");
+  });
+
+  it("shows tiny costs as <$0.01 and zero as $0.00", async () => {
+    server.use(http.get("/api/v1/cost/summary", () => HttpResponse.json({
+      window: "today", total_usd: 0, tokens_in: 0, tokens_out: 0, top_consumers: [], group_by: "model",
+      groups: [
+        { key: "tiny", requests: 1, tokens_in: 1, tokens_out: 1, usd: 0.004 },
+        { key: "none", requests: 1, tokens_in: 1, tokens_out: 1, usd: 0 },
+      ],
+    })));
+    renderBreakdown();
+    expect(within(await screen.findByRole("row", { name: /tiny/ })).getByText("<$0.01")).toBeInTheDocument();
+    expect(within(screen.getByRole("row", { name: /none/ })).getByText("$0.00")).toBeInTheDocument();
+  });
+
+  it("keeps the by-key table with short ids when /ai/keys fails", async () => {
+    server.use(http.get("/api/v1/ai/keys", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    renderBreakdown();
+    await userEvent.click(await screen.findByRole("radio", { name: "Key" }));
+    const table = await screen.findByRole("table", { name: "Usage by key" });
+    expect(within(table).getByText("key gk_lapto…")).toBeInTheDocument();
+  });
+
+  it("offers Retry on an error and shows the remainder note only with the table", async () => {
+    let fail = true;
+    server.use(http.get("/api/v1/cost/summary", () => fail
+      ? HttpResponse.json({ error: "boom" }, { status: 500 })
+      : HttpResponse.json({ window: "today", total_usd: 0, tokens_in: 0, tokens_out: 0, top_consumers: [], group_by: "model", groups: [{ key: "m", requests: 1, tokens_in: 1, tokens_out: 1, usd: 1 }] })));
+    renderBreakdown();
+    expect(await screen.findByRole("alert")).toHaveTextContent("boom");
+    expect(screen.queryByText(/remainder beyond the 200/)).toBeNull();
+    fail = false;
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("table", { name: "Usage by model" })).toBeInTheDocument();
+    expect(screen.getByText(/remainder beyond the 200/)).toBeInTheDocument();
   });
 });

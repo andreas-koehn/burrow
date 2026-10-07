@@ -66,6 +66,9 @@ describe("Cost & budgets (§4.24)", () => {
     expect(create).toBeDisabled();
     await userEvent.type(within(dialog).getByLabelText("Subject"), "   ");
     expect(create).toBeDisabled();
+    // Surrounding spaces are refused, not trimmed (the server does the same).
+    expect(create).toBeDisabled();
+    await userEvent.clear(within(dialog).getByLabelText("Subject"));
     await userEvent.type(within(dialog).getByLabelText("Subject"), "ak_1");
     expect(create).toBeEnabled();
     // Global has no subject, so nothing is missing.
@@ -269,9 +272,112 @@ describe("Cost & budgets (§4.24)", () => {
     expect(within(over).getByText("Exceeded")).toBeInTheDocument();
   });
 
-  it("says not permitted when the budgets list is refused", async () => {
+  it("keeps tiles and usage when the budgets list is refused, and offers no write controls", async () => {
     server.use(http.get("/api/v1/budgets", () => HttpResponse.json({ error: "admin required" }, { status: 403 })));
     mount();
     expect(await screen.findByText("You can't view budgets")).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: /spend by window/i })).toBeInTheDocument();
+    expect(await screen.findByRole("table", { name: "Usage by model" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New budget" })).toBeNull();
+  });
+
+  it("shows a non-admin the cost view without budgets or write controls", async () => {
+    db.me = { ...db.me, role: "user" };
+    mount();
+    expect(await screen.findByText("You can't view budgets")).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: /spend by window/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New budget" })).toBeNull();
+  });
+
+  it("retries a failed budgets load", async () => {
+    let fail = true;
+    server.use(http.get("/api/v1/budgets", () => fail ? HttpResponse.json({ error: "boom" }, { status: 500 }) : HttpResponse.json([])));
+    mount();
+    expect(await screen.findByText("boom")).toBeInTheDocument();
+    fail = false;
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("table", { name: "Budgets" })).toBeInTheDocument();
+  });
+
+  it("labels keys in the picker: revoked, and same names told apart by prefix", async () => {
+    db.aiGatewayKeys.push(
+      { id: "gk_old", name: "old", key_prefix: "bgw_Old1", user_id: db.me.id, allowed_models: [], last_used: null, created_at: "2026-05-10T08:00:00Z", revoked_at: "2026-05-11T08:00:00Z" },
+      { id: "gk_l2", name: "laptop", key_prefix: "bgw_Lap2", user_id: db.me.id, allowed_models: [], last_used: null, created_at: "2026-05-10T08:00:00Z", revoked_at: null },
+    );
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
+    const dialog = await screen.findByRole("dialog", { name: "New budget" });
+    await userEvent.click(within(dialog).getByLabelText("Scope"));
+    await userEvent.click(await screen.findByRole("option", { name: "Gateway key" }));
+    await userEvent.click(within(dialog).getByLabelText("Gateway key"));
+    expect(await screen.findByRole("option", { name: "old (revoked)" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "laptop (bgw_Ab3d)" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "laptop (bgw_Lap2)" })).toBeInTheDocument();
+  });
+
+  it("labels a budget on an unknown key by its short id", async () => {
+    db.budgets.push({ id: "bdg_x", scope: "gateway_key", subject_id: "gk_other_user_key", daily_usd: 1, daily_tokens: 0, action_on_exceed: "throttle_zero", alert_webhook_id: null, current_usd: 0, current_tokens: 0, exceeded: false });
+    mount();
+    const table = await screen.findByRole("table", { name: "Budgets" });
+    expect(await within(table).findByText("key gk_other…")).toBeInTheDocument();
+  });
+
+  async function openModelAddress() {
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
+    const dialog = await screen.findByRole("dialog", { name: "New budget" });
+    await userEvent.click(within(dialog).getByLabelText("Scope"));
+    await userEvent.click(await screen.findByRole("option", { name: "Model" }));
+    await userEvent.click(within(dialog).getByLabelText("Model"));
+    await userEvent.click(await screen.findByRole("option", { name: "Other address…" }));
+    await waitFor(() => expect(within(dialog).getByLabelText("Model address")).toHaveFocus());
+    await userEvent.type(within(dialog).getByLabelText("Daily USD"), "3");
+    return dialog;
+  }
+
+  it.each(["zai", "/x", "x/", " zai/x"])("refuses the model address %j and says why", async (addr) => {
+    const dialog = await openModelAddress();
+    const field = within(dialog).getByLabelText("Model address");
+    await userEvent.type(field, addr);
+    expect(within(dialog).getByText(/Use the form <provider>\/<model>/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Create" })).toBeDisabled();
+    expect(field).toHaveAttribute("aria-describedby", "budget-model-addr-desc");
+  });
+
+  it("refuses a fractional token count", async () => {
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
+    const dialog = await screen.findByRole("dialog", { name: "New budget" });
+    await userEvent.type(within(dialog).getByLabelText("Subject"), "ak_1");
+    await userEvent.type(within(dialog).getByLabelText("Daily tokens"), "1.5");
+    expect(within(dialog).getByText("daily_tokens must be a whole number")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Create" })).toBeDisabled();
+  });
+
+  it("refuses a subject with surrounding spaces instead of trimming it", async () => {
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
+    const dialog = await screen.findByRole("dialog", { name: "New budget" });
+    await userEvent.type(within(dialog).getByLabelText("Subject"), "ak_1 ");
+    await userEvent.type(within(dialog).getByLabelText("Daily USD"), "5");
+    expect(within(dialog).getByText("Remove the spaces before or after the ID.")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Create" })).toBeDisabled();
+  });
+
+  it("words disable_key by scope and wires the help to the control", async () => {
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
+    const dialog = await screen.findByRole("dialog", { name: "New budget" });
+    await chooseOption(dialog, "Action on exceed", "Disable key");
+    expect(within(dialog).getByLabelText("Action on exceed")).toHaveAttribute("aria-describedby", "budget-action-help");
+    // default scope is API key
+    expect(within(dialog).getByText(/revokes the key permanently/i)).toBeInTheDocument();
+    await chooseOption(dialog, "Scope", "Model");
+    expect(within(dialog).getByText(/only blocks; no key is revoked/i)).toBeInTheDocument();
+    await chooseOption(dialog, "Scope", "Global");
+    expect(within(dialog).getByText(/no key is revoked/i)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/revokes the key permanently/i)).toBeNull();
+    await chooseOption(dialog, "Scope", "Gateway key");
+    expect(within(dialog).getByText(/revokes the key permanently/i)).toBeInTheDocument();
   });
 });

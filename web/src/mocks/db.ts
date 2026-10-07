@@ -324,8 +324,8 @@ function seed(): MockDb {
         { key: "", requests: 8, tokens_in: 2000, tokens_out: 1500, usd: 0.03 },
       ],
       provider: [
-        { key: "zai", requests: 20, tokens_in: 5000, tokens_out: 4000, usd: 0 },
         { key: "ollama", requests: 28, tokens_in: 7000, tokens_out: 4000, usd: 1.23 },
+        { key: "zai", requests: 20, tokens_in: 5000, tokens_out: 4000, usd: 0 },
       ],
       target_model: [{ key: "ollama/mistral", requests: 28, tokens_in: 7000, tokens_out: 4000, usd: 1.23 }],
       dialect: [{ key: "openai", requests: 48, tokens_in: 12000, tokens_out: 8000, usd: 1.23 }],

@@ -19,6 +19,11 @@ const WHITELIST = [
 ];
 
 // Gate: replicate 401 -> 403(csrf) -> 403(admin) ordering.
+// As the relay sorts them: usd descending, the "" group (remainder / not attributed) last.
+function sortGroups<T extends { key: string; usd: number }>(rows: T[]): T[] {
+  return [...rows].sort((x, y) => (x.key === "" ? 1 : 0) - (y.key === "" ? 1 : 0) || y.usd - x.usd);
+}
+
 function gate(req: Request, opts: { admin?: boolean } = {}): Response | null {
   if (req.headers.get("x-mock-unauth") === "1") return err(401, "unauthorized");
   const method = req.method.toUpperCase();
@@ -1006,7 +1011,7 @@ export const handlers = [
     const groupBy = url.searchParams.get("group_by");
     if (groupBy === null || groupBy === "") return json(summary);
     if (!(groupBy in db.costGroups)) return err(400, "group_by must be one of gateway_key|model|provider|target_model|dialect");
-    return json({ ...summary, group_by: groupBy, groups: db.costGroups[groupBy as CostGroupBy] });
+    return json({ ...summary, group_by: groupBy, groups: sortGroups(db.costGroups[groupBy as CostGroupBy]) });
   }),
 
   // ---- v0.4.0 service AI config (spec Part B.7) ----
