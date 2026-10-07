@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"messAges\":[{\"role\":\"user\",\"Content\":[{\"tYpe\":\"image_url\",\"imAge_url\":{\"url\":\"00\"}}]},{\"role\":\"tool\",\"tool_CAll_id\":\"0\",\"Content\":\"\"},{\"role\":\"user\",\"Content\":[{\"tYpe\":\"text\"}]}]}")

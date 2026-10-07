@@ -335,7 +335,8 @@ func CleanPair(pair string) string {
 // (DroppedMore), after the sorted names: dropping is never silent, even when
 // names a client chose crowd out the others. A name "more" in the input is
 // read as that mark, not as a name, so joining the names of a joined list
-// again gives the same list.
+// again gives the same list; a name that cleans to "more" is read as the
+// mark as well.
 //
 // Two names that differ only in characters that are left out become one
 // entry, without a mark; that is accepted. A name whose field part cleans to
