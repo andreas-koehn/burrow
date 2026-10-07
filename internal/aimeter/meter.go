@@ -288,58 +288,95 @@ type Sink interface {
 // was dropped start as field names of a request, which a client chooses.
 const (
 	maxTranslationName = 64  // bytes of the pair id and of one dropped name
-	maxDroppedEntries  = 32  // names in one list
-	maxDroppedBytes    = 512 // bytes of the joined list
+	maxDroppedEntries  = 32  // entries of one list, the mark included
+	maxDroppedBytes    = 512 // bytes of the joined list, the mark included
 )
+
+// DroppedMore is the last entry of a dropped list that does not name
+// everything: names were left out or cut to fit the bounds.
+const DroppedMore = "more"
 
 // cleanTranslationName keeps the letters, digits and "_.:-" of s, at most
 // maxTranslationName bytes of them. A comma, a space, a control character or
-// a non-ASCII character is left out.
-func cleanTranslationName(s string) string {
+// a non-ASCII character is left out. cut reports that characters it would
+// have kept did not fit.
+func cleanTranslationName(s string) (name string, cut bool) {
 	b := make([]byte, 0, min(len(s), maxTranslationName))
-	for i := 0; i < len(s) && len(b) < maxTranslationName; i++ {
+	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
 			c == '_', c == '.', c == ':', c == '-':
+			if len(b) == maxTranslationName {
+				return string(b), true
+			}
 			b = append(b, c)
 		}
 	}
-	return string(b)
+	return string(b), false
 }
 
 // CleanPair returns a translation pair id as a usage row stores it: letters,
 // digits and "_.:-" only, at most 64 bytes. The ids are constants of the
 // gateway ("messages-chat"); this keeps the column bounded whoever sets it.
-func CleanPair(pair string) string { return cleanTranslationName(pair) }
+func CleanPair(pair string) string {
+	pair, _ = cleanTranslationName(pair)
+	return pair
+}
 
 // JoinDropped turns the names of what a translation left out into the string
 // a usage row stores and the Burrow-Dropped header carries: each name reduced
 // to letters, digits and "_.:-" and cut to 64 bytes, empty names left out,
-// sorted, without duplicates, joined by ",". The result holds at most 32
-// names and 512 bytes and never ends in a cut name. Pass names only, never
-// values. Joining the names of a joined list again gives the same list.
+// sorted, without duplicates, joined by ",". Pass names only, never values.
+//
+// The result holds at most 32 entries and 512 bytes and never ends in a cut
+// name. When it does not name everything (a name was cut to 64 bytes, or
+// names did not fit the 31 names or the bytes), its last entry is "more"
+// (DroppedMore), after the sorted names: dropping is never silent, even when
+// names a client chose crowd out the others. A name "more" in the input is
+// read as that mark, not as a name, so joining the names of a joined list
+// again gives the same list.
+//
+// Two names that differ only in characters that are left out become one
+// entry, without a mark; that is accepted. A name whose field part cleans to
+// nothing stays as its bare prefix ("unknown:").
 func JoinDropped(names []string) string {
 	clean := make([]string, 0, len(names))
+	more := false
 	for _, n := range names {
-		if n = cleanTranslationName(n); n != "" {
+		n, cut := cleanTranslationName(n)
+		switch {
+		case n == DroppedMore:
+			more = true
+		case n != "":
 			clean = append(clean, n)
+			more = more || cut
 		}
 	}
 	slices.Sort(clean)
 	clean = slices.Compact(clean)
-	if len(clean) > maxDroppedEntries {
-		clean = clean[:maxDroppedEntries]
+	if len(clean) > maxDroppedEntries-1 {
+		clean, more = clean[:maxDroppedEntries-1], true
 	}
+	// The names leave room for the mark, whether it is needed or not: a
+	// list is cut at the same place when it is joined again.
+	const room = maxDroppedBytes - len(","+DroppedMore)
 	var b strings.Builder
 	for _, n := range clean {
-		if b.Len()+len(n)+1 > maxDroppedBytes && b.Len() > 0 {
+		if b.Len() > 0 && b.Len()+1+len(n) > room {
+			more = true
 			break
 		}
 		if b.Len() > 0 {
 			b.WriteByte(',')
 		}
 		b.WriteString(n)
+	}
+	if more {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(DroppedMore)
 	}
 	return b.String()
 }

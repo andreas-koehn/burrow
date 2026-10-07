@@ -72,13 +72,14 @@ func TestRoute_TranslationIsBounded(t *testing.T) {
 		t.Fatalf("cleaned names = %q", got)
 	}
 
-	// One name is cut to 64 bytes.
+	// One name is cut to 64 bytes, and the list says that something was cut.
 	r.SetTranslation("messages-chat", []string{strings.Repeat("n", 500)})
-	if got := r.Snapshot().Dropped; got != strings.Repeat("n", 64) {
-		t.Fatalf("long name stored as %d bytes", len(got))
+	if got := r.Snapshot().Dropped; got != strings.Repeat("n", 64)+",more" {
+		t.Fatalf("long name stored as %d bytes: %q", len(got), got)
 	}
 
-	// Many names: at most 512 bytes, cut at a comma, at most 32 entries.
+	// Many names: at most 512 bytes, cut at a comma, at most 32 entries, the
+	// last of them "more" when names were left out.
 	var many []string
 	for i := 0; i < 500; i++ {
 		many = append(many, fmt.Sprintf("unknown:field_%03d_%s", i, strings.Repeat("x", 30)))
@@ -86,10 +87,10 @@ func TestRoute_TranslationIsBounded(t *testing.T) {
 	r.SetTranslation("messages-chat", many)
 	got := r.Snapshot().Dropped
 	parts := strings.Split(got, ",")
-	if len(got) > 512 || len(parts) > 32 || len(parts) < 5 {
-		t.Fatalf("dropped is %d bytes in %d entries", len(got), len(parts))
+	if len(got) > 512 || len(parts) > 32 || len(parts) < 5 || parts[len(parts)-1] != "more" {
+		t.Fatalf("dropped is %d bytes in %d entries: %q", len(got), len(parts), got)
 	}
-	for i, p := range parts {
+	for i, p := range parts[:len(parts)-1] {
 		if p != many[i] {
 			t.Fatalf("entry %d = %q, want the whole name %q", i, p, many[i])
 		}
@@ -99,8 +100,8 @@ func TestRoute_TranslationIsBounded(t *testing.T) {
 		short[i] = fmt.Sprintf("f%03d", i)
 	}
 	r.SetTranslation("messages-chat", short)
-	if n := len(strings.Split(r.Snapshot().Dropped, ",")); n != 32 {
-		t.Fatalf("%d entries stored, want 32", n)
+	if parts := strings.Split(r.Snapshot().Dropped, ","); len(parts) != 32 || parts[30] != "f030" || parts[31] != "more" {
+		t.Fatalf("%d entries stored, want 31 names and \"more\": %v", len(parts), parts)
 	}
 
 	// The pair id is one of a few constants; a wrong caller still cannot

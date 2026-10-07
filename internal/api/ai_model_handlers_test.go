@@ -272,6 +272,13 @@ func TestPostModel(t *testing.T) {
 			t.Error("GET does not return the flag")
 		}
 
+		// null is the same as leaving the field out.
+		body = map[string]any{"name": "null-flag", "translate": nil, "targets": valid["targets"]}
+		m = decodeModel(t, wantStatus(t, c.post(t, "/api/v1/ai/models", body), http.StatusCreated))
+		if f.ms.last.Name != "null-flag" || f.ms.last.Translate || m.Translate {
+			t.Errorf("translate:null switched it on: store %+v, response %v", f.ms.last, m.Translate)
+		}
+
 		// The flag is a boolean; anything else is a malformed body.
 		before := f.ms.writes
 		for _, v := range []any{"yes", 1, []bool{true}} {
@@ -544,6 +551,11 @@ func TestPutModel(t *testing.T) {
 		if !f.ms.last.Translate || !m.Translate {
 			t.Errorf("a body without translate switched it off: store %v, response %v", f.ms.last.Translate, m.Translate)
 		}
+		// null is the same as leaving it out.
+		m = decodeModel(t, wantStatus(t, c.put(t, path, map[string]any{"translate": nil, "targets": targets}), http.StatusOK))
+		if !f.ms.last.Translate || !m.Translate {
+			t.Errorf("translate:null switched it off: store %v, response %v", f.ms.last.Translate, m.Translate)
+		}
 		m = decodeModel(t, wantStatus(t, c.put(t, path, map[string]any{"translate": false, "targets": targets}), http.StatusOK))
 		if f.ms.last.Translate || m.Translate {
 			t.Errorf("translate:false was dropped: store %v, response %v", f.ms.last.Translate, m.Translate)
@@ -557,7 +569,7 @@ func TestPutModel(t *testing.T) {
 		if !f.ms.last.Translate {
 			t.Error("translate:true was dropped")
 		}
-		want := []any{true, false, false, true}
+		want := []any{true, true, false, false, true}
 		if len(f.aud.events) != len(want) {
 			t.Fatalf("audit = %+v", f.aud.events)
 		}

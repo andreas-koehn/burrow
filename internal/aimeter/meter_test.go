@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -359,7 +360,7 @@ func checkSinkTranslation(t *testing.T, x *db.DB, userID string) {
 		t.Fatalf("dropped stored as %q, want the one cleaned name", dr)
 	}
 	record("k-long", "messages-chat", strings.Repeat("n", 5000)+","+strings.Repeat("m", 5000))
-	if _, dr := read("k-long"); len(dr) > 512 || dr != strings.Repeat("m", 64)+","+strings.Repeat("n", 64) {
+	if _, dr := read("k-long"); len(dr) > 512 || dr != strings.Repeat("m", 64)+","+strings.Repeat("n", 64)+",more" {
 		t.Fatalf("long names stored as %d bytes: %q", len(dr), dr)
 	}
 }
@@ -371,6 +372,115 @@ func TestJoinDropped(t *testing.T) {
 	if got := aimeter.JoinDropped([]string{"top_k", "", "cache_control", "top_k", "thinking.signature", "anthropic-beta"}); got != "anthropic-beta,cache_control,thinking.signature,top_k" {
 		t.Fatalf("got %q", got)
 	}
+}
+
+// A list that was cut says so: its last entry is "more". Names a client
+// chooses ("input:<type>", "tool:<type>") sort before the gateway's own and
+// could otherwise push them off the row without a trace.
+func TestJoinDropped_CutIsMarked(t *testing.T) {
+	names := func(n int, format string) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf(format, i)
+		}
+		return out
+	}
+	// 31 names fit; nothing was cut.
+	if got := aimeter.JoinDropped(names(31, "f%03d")); strings.Contains(got, "more") || strings.Count(got, ",") != 30 {
+		t.Fatalf("31 names: %q", got)
+	}
+	// 33 names: the first 31 and the marker.
+	got := aimeter.JoinDropped(append(names(33, "input:%03d"), "top_k"))
+	parts := strings.Split(got, ",")
+	if len(parts) != 32 || parts[0] != "input:000" || parts[30] != "input:030" || parts[31] != "more" {
+		t.Fatalf("33 names: %v", parts)
+	}
+	// The byte cut: whole names only, the marker inside the 512 bytes.
+	long := names(20, "unknown:field_%03d_"+strings.Repeat("x", 40))
+	got = aimeter.JoinDropped(long)
+	parts = strings.Split(got, ",")
+	if len(got) > 512 || len(parts) < 5 || len(parts) > 20 || parts[len(parts)-1] != "more" {
+		t.Fatalf("byte cut: %d bytes, %v", len(got), parts)
+	}
+	for i, p := range parts[:len(parts)-1] {
+		if p != long[i] {
+			t.Fatalf("entry %d = %q, want the whole name", i, p)
+		}
+	}
+	// Joining a cut list again changes nothing (the sink does that).
+	for _, cut := range []string{got, aimeter.JoinDropped(names(33, "input:%03d")), aimeter.JoinDropped([]string{strings.Repeat("n", 65)})} {
+		if again := aimeter.JoinDropped(strings.Split(cut, ",")); again != cut {
+			t.Fatalf("re-join changed the list:\n%q\n%q", cut, again)
+		}
+	}
+	// "more" in the input is the mark, not a name: it comes last, once.
+	if got := aimeter.JoinDropped([]string{"top_k", "more", "zzz", "more"}); got != "top_k,zzz,more" {
+		t.Fatalf("input with more: %q", got)
+	}
+	if got := aimeter.JoinDropped([]string{"more"}); got != "more" {
+		t.Fatalf("only more: %q", got)
+	}
+}
+
+// A name cut at 64 bytes may fall together with another one; the list then
+// says that something is missing.
+func TestJoinDropped_CutNameIsMarked(t *testing.T) {
+	base := strings.Repeat("a", 64)
+	if got := aimeter.JoinDropped([]string{base}); got != base {
+		t.Fatalf("a name of exactly 64 bytes was marked: %q", got)
+	}
+	if got := aimeter.JoinDropped([]string{base + "1", base + "2"}); got != base+",more" {
+		t.Fatalf("two long names: %q", got)
+	}
+	// Characters that are stripped anyway are not a cut.
+	if got := aimeter.JoinDropped([]string{base + " \x00,"}); got != base {
+		t.Fatalf("stripped tail was marked: %q", got)
+	}
+}
+
+// The properties every caller relies on, whatever the names are.
+func FuzzJoinDropped(f *testing.F) {
+	f.Add("top_k,cache_control,top_k")
+	f.Add("more,unknown:a b,\x00,é")
+	f.Add(strings.Repeat("unknown:"+strings.Repeat("y", 70)+",", 5))
+	f.Add(strings.Repeat("a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z,0,1,2,3,4,5,6,7,", 2))
+	seeds := ""
+	for i := 0; i < 60; i++ {
+		seeds += fmt.Sprintf("input:%02d_%s|", i, strings.Repeat("z", i))
+	}
+	f.Add(seeds)
+	f.Fuzz(func(t *testing.T, in string) {
+		names := strings.FieldsFunc(in, func(r rune) bool { return r == '|' })
+		got := aimeter.JoinDropped(names)
+		if len(got) > 512 {
+			t.Fatalf("%d bytes", len(got))
+		}
+		if got != "" {
+			parts := strings.Split(got, ",")
+			if len(parts) > 32 {
+				t.Fatalf("%d entries", len(parts))
+			}
+			if parts[len(parts)-1] == "more" {
+				parts = parts[:len(parts)-1]
+			}
+			for i, p := range parts {
+				if p == "" || p == "more" || len(p) > 64 || strings.Trim(p, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-") != "" {
+					t.Fatalf("entry %q in %q", p, got)
+				}
+				if i > 0 && parts[i-1] >= p {
+					t.Fatalf("not sorted or duplicated: %q", got)
+				}
+			}
+		}
+		if again := aimeter.JoinDropped(strings.Split(got, ",")); again != got {
+			t.Fatalf("not idempotent: %q then %q", got, again)
+		}
+		reversed := append([]string{}, names...)
+		slices.Reverse(reversed)
+		if other := aimeter.JoinDropped(reversed); other != got {
+			t.Fatalf("order matters: %q and %q", got, other)
+		}
+	})
 }
 
 // Prompt-cache tokens are input tokens the client used: tokens read from the
