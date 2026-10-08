@@ -144,6 +144,12 @@ type ResponseWriter interface {
 	// Code… constants. midStream is true when the error ended a stream
 	// whose header (the upstream's success status) had already been sent.
 	Failure() (code string, midStream bool)
+	// Discarding reports, at any time, that nothing more of the upstream's
+	// body will be used: the answer has failed, or it outgrew its limit.
+	// What the upstream still sends is thrown away, so whoever reads the
+	// upstream should stop reading. It is false for an answer that is going
+	// well, also after its last event (a usage figure may still follow).
+	Discarding() bool
 }
 
 // Lookup returns the pair that serves a caller of format from with a target

@@ -1785,3 +1785,220 @@ func TestServedModes(t *testing.T) {
 		}
 	})
 }
+
+// --- verification (X08) ------------------------------------------------------
+
+// An error status that is the caller's answer is ruled on before its status
+// line is written (commitWriter.Decide). A handler that then breaks, with
+// nothing written, is an attempt that ended in a fault: the row and the
+// breaker say so, not "the provider answered 400".
+func TestTranslate_PanicAfterTheStatusWasDecided(t *testing.T) {
+	broken := func(p any) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(400)
+			panic(p)
+		}
+	}
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": broken("boom"), "openrouter#OR": jsonBody(chatAnswer)})
+	g, att := translateGateway(s, true, tZai, tOR)
+	var logs syncBuffer
+	g.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	rec := serve(g, anthropicPost("/v1/messages", messagesHi), DialectAnthropic)
+	rows := att.all()
+	if len(rows) != 2 || rows[0].ProviderSlug != "zai" || rows[0].ErrorCode != "panic" || rows[0].Status != 400 || rows[1].ErrorCode != "" {
+		t.Fatalf("attempts: %+v", rows)
+	}
+	if ok, failed := reports(g.Breaker, "zai"); ok != 0 || failed != 1 {
+		t.Fatalf("breaker: zai %d ok, %d failed, want one failure", ok, failed)
+	}
+	if rec.Code != 200 || rec.Header().Get("Burrow-Error-Code") != "" {
+		t.Fatalf("status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	wantHeaders(t, rec, "openrouter", "google/gemini-x", "2")
+	if !strings.Contains(logs.String(), "upstream handler panicked") {
+		t.Fatalf("the fault was not logged: %s", logs.String())
+	}
+
+	// An upstream that breaks off after its error status (what a provider
+	// handler reports as http.ErrAbortHandler) has still answered it: the
+	// status is the caller's answer and says nothing against the provider.
+	s = script(map[string]http.HandlerFunc{"zai#ZAI": broken(http.ErrAbortHandler), "openrouter#OR": jsonBody(chatAnswer)})
+	g, att = translateGateway(s, true, tZai, tOR)
+	rec = serve(g, anthropicPost("/v1/messages", messagesHi), DialectAnthropic)
+	if rows := att.all(); len(rows) != 1 || rows[0].ErrorCode != "http_400" || rows[0].Status != 400 {
+		t.Fatalf("cut after the status, attempts: %+v", rows)
+	}
+	if ok, failed := reports(g.Breaker, "zai"); ok != 0 || failed != 0 {
+		t.Fatalf("cut after the status, breaker: %d ok, %d failed", ok, failed)
+	}
+	if rec.Code != 400 || rec.Header().Get("Burrow-Error-Code") != "upstream_error" {
+		t.Fatalf("cut after the status: status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
+	}
+}
+
+// A token count is answered whenever a message to the model would be: a first
+// target whose policy cannot be read is left for the next one, as the
+// failover leaves it. Only when no target's policy can be read is there
+// nothing to answer with.
+func TestTranslate_EstimateSkipsATargetWhosePolicyCannotBeRead(t *testing.T) {
+	const body = `{"model":"smart","messages":[{"role":"user","content":"12345678"}]}`
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": jsonBody(chatAnswer), "openrouter#OR": jsonBody(chatAnswer)})
+	g, _ := translateGateway(s, true, tZai, tOR)
+	g.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	chain := &countingChain{}
+	g.Chain = chain
+	var asked []string
+	g.ServicePolicy = policyBy(map[string]string{"prov-zai": "error"}, &asked)
+
+	// Premise: a message is served by the second target.
+	rec := serve(g, anthropicPost("/v1/messages", messagesHi), DialectAnthropic)
+	if rec.Code != 200 || rec.Header().Get("Burrow-Provider") != "openrouter" {
+		t.Fatalf("premise, a message: status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	chain.n, asked = 0, nil
+
+	rec = serve(g, anthropicPost("/v1/messages/count_tokens", body), DialectAnthropic)
+	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"input_tokens":2}` || rec.Header().Get("Burrow-Estimated") != "1" {
+		t.Fatalf("status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	// It ran once, under the target whose policy was read; no provider was called for it.
+	if chain.n != 1 || chain.serviceID != "prov-or" || strings.Join(asked, ",") != "prov-zai,prov-or" || s.n("zai#ZAI") != 0 {
+		t.Fatalf("chain ran %d times under %q; policies asked %v; zai calls %d", chain.n, chain.serviceID, asked, s.n("zai#ZAI"))
+	}
+
+	// The second target's policy is read and refuses: that is the answer.
+	chain.n, asked = 0, nil
+	g.ServicePolicy = policyBy(map[string]string{"prov-zai": "error", "prov-or": "public"}, &asked)
+	rec = serve(g, anthropicPost("/v1/messages/count_tokens", body), DialectAnthropic)
+	if rec.Code != 403 || rec.Header().Get("Burrow-Error-Code") != "provider_unavailable" || rec.Header().Get("Burrow-Estimated") != "" || chain.n != 0 {
+		t.Fatalf("refused: status %d headers %v body %s (chain ran %d times)", rec.Code, rec.Header(), rec.Body.String(), chain.n)
+	}
+
+	// No policy can be read: 503, and nothing ran.
+	g.ServicePolicy = policyBy(map[string]string{"prov-zai": "error", "prov-or": "error"}, &asked)
+	rec = serve(g, anthropicPost("/v1/messages/count_tokens", body), DialectAnthropic)
+	if rec.Code != 503 || rec.Header().Get("Burrow-Error-Code") != "provider_unavailable" || rec.Header().Get("Burrow-Estimated") != "" || chain.n != 0 {
+		t.Fatalf("none readable: status %d headers %v body %s (chain ran %d times)", rec.Code, rec.Header(), rec.Body.String(), chain.n)
+	}
+	if strings.Contains(rec.Body.String(), "secret-detail") {
+		t.Fatalf("the lookup's error reached the caller: %s", rec.Body.String())
+	}
+}
+
+// An upstream whose answer has failed, or has outgrown what the pair reads,
+// is not read any further: nothing of the rest would be used, a committed
+// stream has no attempt timer left to end it, and the usage meter keeps a
+// line until its newline comes. The gateway ends the upstream call itself.
+func TestTranslate_FailedAnswerIsNotReadToItsEnd(t *testing.T) {
+	const giveUp = 256 << 20 // an upstream nobody stops writes this much
+	// endless writes head, then a line that never ends, until its call is
+	// cancelled. It reports how much it wrote.
+	endless := func(contentType, head string, wrote *int) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", contentType)
+			_, _ = io.WriteString(w, head)
+			piece := bytes.Repeat([]byte("x"), 64<<10)
+			for *wrote = 0; *wrote < giveUp && r.Context().Err() == nil; *wrote += len(piece) {
+				_, _ = w.Write(piece)
+			}
+		}
+	}
+	text := string(fixture(t, "chat/testdata/stream_text.sse"))
+	firstFrame := text[:strings.Index(text, "\n\n")+2]
+
+	t.Run("a stream, after the caller's first event", func(t *testing.T) {
+		wrote := 0
+		s := script(map[string]http.HandlerFunc{"zai#ZAI": endless("text/event-stream", firstFrame+`data: {"id":"`, &wrote)})
+		g, att := translateGateway(s, true, tZai)
+		body := `{"model":"smart","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`
+		rec := serve(g, anthropicPost("/v1/messages", body), DialectAnthropic)
+		fr := frames(rec.Body.Bytes())
+		if rec.Code != 200 || len(fr) < 2 || !strings.HasPrefix(fr[0], "event: message_start") || !strings.HasPrefix(fr[len(fr)-1], "event: error") {
+			t.Fatalf("status %d\n%s", rec.Code, rec.Body.String())
+		}
+		// The pair gives a frame up at 4 MiB; the call must end there.
+		if wrote >= 8<<20 {
+			t.Fatalf("the upstream was read for %d MiB after its answer had failed", wrote>>20)
+		}
+		if rows := att.all(); len(rows) != 1 || rows[0].ErrorCode != "stream_aborted" {
+			t.Fatalf("attempts: %+v", rows)
+		}
+	})
+
+	t.Run("a stream, before the caller's first event", func(t *testing.T) {
+		wrote := 0
+		s := script(map[string]http.HandlerFunc{"zai#ZAI": endless("text/event-stream", `data: {"id":"`, &wrote), "openrouter#OR": jsonBody(chatAnswer)})
+		g, att := translateGateway(s, true, tZai, tOR)
+		rec := serve(g, anthropicPost("/v1/messages", messagesHi), DialectAnthropic)
+		// messagesHi asks for no stream: the event stream is the wrong form, at once.
+		if wrote >= 1<<20 {
+			t.Fatalf("the upstream was read for %d KiB after its answer had failed", wrote>>10)
+		}
+		if rows := att.all(); rec.Code != 200 || len(rows) != 2 || rows[0].ErrorCode != "upstream_invalid" || rows[1].ErrorCode != "" {
+			t.Fatalf("status %d attempts %+v", rec.Code, rows)
+		}
+		wantHeaders(t, rec, "openrouter", "google/gemini-x", "2")
+	})
+
+	t.Run("a body over the limit", func(t *testing.T) {
+		wrote := 0
+		s := script(map[string]http.HandlerFunc{"zai#ZAI": endless("application/json", `{"id":"`, &wrote)})
+		g, att := translateGateway(s, true, tZai)
+		rec := serve(g, anthropicPost("/v1/messages", messagesHi), DialectAnthropic)
+		if rec.Code != 502 || rec.Header().Get("Burrow-Error-Code") != "upstream_invalid" {
+			t.Fatalf("status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
+		}
+		// The pair lets a body go at 16 MiB; the call must end there.
+		if wrote >= 20<<20 {
+			t.Fatalf("the upstream was read for %d MiB after its answer had outgrown the limit", wrote>>20)
+		}
+		if rows := att.all(); len(rows) != 1 || rows[0].ErrorCode != "upstream_invalid" {
+			t.Fatalf("attempts: %+v", rows)
+		}
+	})
+
+	// An answer that goes well is read to its end: the usage chunk of a
+	// Chat Completions stream comes after its finish.
+	t.Run("a good stream is read to its end", func(t *testing.T) {
+		s := script(map[string]http.HandlerFunc{"zai#ZAI": sse(fixture(t, "chat/testdata/stream_text.sse"))})
+		g, _ := translateGateway(s, true, tZai)
+		sink := chained(t, g)
+		body := `{"model":"smart","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`
+		rec := serve(g, anthropicPost("/v1/messages", body), DialectAnthropic)
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), "event: message_stop") {
+			t.Fatalf("status %d\n%s", rec.Code, rec.Body.String())
+		}
+		if u := oneRow(t, sink); u.TokensIn != 12 || u.TokensOut != 2 {
+			t.Fatalf("usage row: %+v", u)
+		}
+	})
+}
+
+// A translated request is the gateway's own body of a known length: how the
+// caller framed its request, and the trailer fields it announced, stay
+// behind like its headers. (A native attempt is passed on as it came.)
+func TestTranslate_CallersFramingAndTrailersStayBehind(t *testing.T) {
+	var got []*http.Request
+	record := func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r)
+		jsonBody(chatAnswer)(w, r)
+	}
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": record})
+	g, _ := translateGateway(s, true, tZai)
+	r := anthropicPost("/v1/messages", messagesHi)
+	r.TransferEncoding = []string{"chunked"}
+	r.ContentLength = -1
+	r.Trailer = http.Header{"X-Callers-Trailer": {"secret"}, "Authorization": {"Bearer from-the-trailer"}}
+	rec := serve(g, r, DialectAnthropic)
+	if rec.Code != 200 || rec.Header().Get("Burrow-Translated") != "messages-chat" || len(got) != 1 {
+		t.Fatalf("status %d headers %v, %d upstream calls", rec.Code, rec.Header(), len(got))
+	}
+	up := got[0]
+	if len(up.TransferEncoding) != 0 || len(up.Trailer) != 0 {
+		t.Fatalf("the upstream request kept the caller's framing: Transfer-Encoding %v, Trailer %v", up.TransferEncoding, up.Trailer)
+	}
+	if up.ContentLength <= 0 || up.Header.Get("Content-Length") != strconv.FormatInt(up.ContentLength, 10) {
+		t.Fatalf("Content-Length %d, header %q", up.ContentLength, up.Header.Get("Content-Length"))
+	}
+}

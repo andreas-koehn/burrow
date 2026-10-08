@@ -2100,3 +2100,141 @@ func TestChain_InspectorEntryCarriesTranslation(t *testing.T) {
 		t.Fatalf("entry without a route: translated=%q dropped=%#v", e.Translated, e.Dropped)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The two request marks a dialect endpoint sets (verification, X08). Both are
+// covered from internal/aigateway; these pin them at the chain itself.
+// ---------------------------------------------------------------------------
+
+// WithoutCache: the answer is neither taken from the response cache nor put
+// into it, in either tier, and the request is still an inference: it is
+// metered like any other.
+func TestChain_WithoutCache_NeitherReadNorWritten(t *testing.T) {
+	var hits atomic.Int32
+	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		body := `{"id":"c-1","choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = w.Write([]byte(body))
+	})
+	sink := newMemSink()
+	sem := &stubSemanticCache{}
+	chain := aigw.NewChain(freshCache(t), sem, nil, nil, nil, nil, nil, sink, testLog())
+	svc := aigw.Service{ID: "svc-nc", APIKeyHeader: "Authorization", AIConfig: aigw.ServiceAIConfig{
+		Cache:    &exact.Settings{Enabled: true, AppliesPer: "global", TTLSeconds: 300, MaxEntries: 100, MaxPerEntryKB: 64},
+		Semantic: &semantic.Settings{Enabled: true, FallbackPolicy: "return_cached_marked", PromoteOnMiss: true},
+	}}
+	do := func(ctx context.Context, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "https://abc.example.com/v1/chat/completions", strings.NewReader(body)).WithContext(ctx)
+		r.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		chain.ServeHTTP(rec, r, svc, up)
+		return rec
+	}
+	const body = `{"model":"m","messages":[{"role":"user","content":"hi"}]}`
+	off := aigw.WithoutCache(context.Background())
+	if !aigw.CacheBypassed(off) || aigw.CacheBypassed(context.Background()) {
+		t.Fatal("CacheBypassed does not report the mark")
+	}
+
+	// Not written: two marked requests both reach the upstream ...
+	for i := 1; i <= 2; i++ {
+		rec := do(off, body)
+		if rec.Code != 200 || int(hits.Load()) != i || rec.Header().Get("Burrow-Cache") == "HIT" {
+			t.Fatalf("marked call %d: status %d upstream hits %d headers %v", i, rec.Code, hits.Load(), rec.Header())
+		}
+	}
+	if len(sem.promotes) != 0 {
+		t.Fatalf("a marked request was promoted into the semantic index: %+v", sem.promotes)
+	}
+	// ... and an ordinary one for the same bytes is still a miss.
+	if rec := do(context.Background(), body); rec.Code != 200 || hits.Load() != 3 || rec.Header().Get("Burrow-Cache") == "HIT" {
+		t.Fatalf("ordinary request after marked ones: upstream hits %d headers %v", hits.Load(), rec.Header())
+	}
+	// Premise: the ordinary request was stored.
+	if rec := do(context.Background(), body); rec.Header().Get("Burrow-Cache") != "HIT" || hits.Load() != 3 {
+		t.Fatalf("premise, cache hit: upstream hits %d headers %v", hits.Load(), rec.Header())
+	}
+	// Not read: the marked request is not served the stored answer.
+	if rec := do(off, body); rec.Header().Get("Burrow-Cache") == "HIT" || hits.Load() != 4 {
+		t.Fatalf("marked request served from the cache: upstream hits %d headers %v", hits.Load(), rec.Header())
+	}
+	// The semantic tier: not read either.
+	if len(sem.promotes) != 1 {
+		t.Fatalf("promotes after the ordinary request: %d", len(sem.promotes))
+	}
+	sem.hitCandidate = &semantic.Candidate{ExactKeyHash: sem.promotes[0].exactKeyHash, Similarity: 0.99}
+	const other = `{"model":"m","messages":[{"role":"user","content":"hello"}]}`
+	if rec := do(context.Background(), other); rec.Header().Get("Burrow-Cache") != "similar" || hits.Load() != 4 {
+		t.Fatalf("premise, semantic hit: upstream hits %d headers %v", hits.Load(), rec.Header())
+	}
+	rec := do(off, other)
+	if rec.Header().Get("Burrow-Cache") != "" && rec.Header().Get("Burrow-Cache") != "SKIP" && rec.Header().Get("Burrow-Cache") != "MISS" {
+		t.Fatalf("marked request served from the semantic cache: headers %v", rec.Header())
+	}
+	if rec.Header().Get("Burrow-Cache-Similarity") != "" || hits.Load() != 5 || len(sem.promotes) != 1 {
+		t.Fatalf("marked request and the semantic tier: upstream hits %d promotes %d headers %v", hits.Load(), len(sem.promotes), rec.Header())
+	}
+
+	// Unlike WithoutUsage, the mark leaves metering alone: every request
+	// above has its row, and the marked ones hold the upstream's figures.
+	rows := sink.all()
+	if len(rows) != 7 {
+		t.Fatalf("%d usage rows, want one per request (7)", len(rows))
+	}
+	for _, i := range []int{0, 1, 4, 6} { // the marked requests
+		if rows[i].CacheHit || rows[i].TokensIn != 3 || rows[i].TokensOut != 5 {
+			t.Fatalf("row %d of a marked request: %+v", i, rows[i])
+		}
+	}
+}
+
+// WithOwnCredential: the chain leaves the credential to the upstream handler.
+// It neither injects the service's bound credential nor strips the header;
+// what the handler sees is what the request carried.
+func TestChain_WithOwnCredential_ChainInjectsNothing(t *testing.T) {
+	var got []string
+	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	injected := 0
+	injector := credinject.New(
+		stubVaultMap{m: map[string]string{"OPENAI": "sk-real-key"}},
+		&stubCredStore{bind: credinject.Binding{ServiceID: "svc-own", Slot: "OPENAI", HeaderName: "Authorization", HeaderFormat: "Bearer {key}"}, bound: true},
+		testLog())
+	injector.OnInject = func(string, string) { injected++ }
+	chain := aigw.NewChain(nil, nil, injector, nil, nil, nil, nil, nil, testLog())
+	svc := aigw.Service{ID: "svc-own", APIKeyHeader: "Authorization", AIConfig: aigw.ServiceAIConfig{
+		Inspector: &aigw.InspectorConfig{Enabled: false}, // one section, so the chain runs
+	}}
+	do := func(ctx context.Context, auth string) {
+		r := httptest.NewRequest("POST", "https://abc.example.com/v1/chat/completions", strings.NewReader(`{"model":"m","prompt":"hello"}`)).WithContext(ctx)
+		r.Header.Set("Content-Type", "application/json")
+		if auth != "" {
+			r.Header.Set("Authorization", auth)
+		}
+		rec := httptest.NewRecorder()
+		chain.ServeHTTP(rec, r, svc, up)
+		if rec.Code != 200 {
+			t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+		}
+	}
+	own := aigw.WithOwnCredential(context.Background())
+
+	// Premise: without the mark the chain injects the bound credential.
+	do(context.Background(), "")
+	// With it: a request that carries none reaches the handler with none ...
+	do(own, "")
+	// ... and one the caller above the chain already gave its target's
+	// credential keeps exactly that one.
+	do(own, "Bearer the-attempts-own")
+	if want := []string{"Bearer sk-real-key", "", "Bearer the-attempts-own"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the upstream handler saw Authorization %q, want %q", got, want)
+	}
+	if injected != 1 {
+		t.Fatalf("the injector ran %d times, want once (the unmarked request)", injected)
+	}
+}

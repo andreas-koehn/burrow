@@ -2,6 +2,7 @@ package credinject_test
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"testing"
@@ -192,5 +193,39 @@ func TestInjectorOnlyFirstKeyPlaceholderReplaced(t *testing.T) {
 	}
 	if got := r.Header.Get("X-Custom"); got != "myval+{key}" {
 		t.Errorf("got %q; want myval+{key} (only first occurrence replaced)", got)
+	}
+}
+
+// A binding whose slot is missing from the vault sends no credential at all:
+// the visitor's own value for the bound header must not stand in for the one
+// the operator configured. Other headers are left alone.
+func TestInjectorMissingSlotStripsVisitorCredential(t *testing.T) {
+	v := stubVault{map[string]string{}}
+	s := &stubStore{
+		bind: credinject.Binding{
+			ServiceID:    "svc2",
+			Slot:         "OPENAI",
+			HeaderName:   "x-api-key",
+			HeaderFormat: "{key}",
+		},
+		bound: true,
+	}
+	missed := 0
+	i := credinject.New(v, s, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	i.OnMiss = func(string) { missed++ }
+
+	r, _ := http.NewRequest("POST", "/v1/messages", nil)
+	r.Header.Set("X-Api-Key", "visitor-key")
+	r.Header.Add("X-Api-Key", "visitor-key-2")
+	r.Header.Set("Content-Type", "application/json")
+	ok, err := i.Apply(context.Background(), "svc2", r)
+	if err != nil || ok {
+		t.Fatalf("Apply = %v, %v; want false, nil", ok, err)
+	}
+	if got := r.Header.Values("X-Api-Key"); len(got) != 0 {
+		t.Fatalf("the visitor's credential reached the upstream request: %q", got)
+	}
+	if r.Header.Get("Content-Type") != "application/json" || missed != 1 {
+		t.Fatalf("headers %v, OnMiss fired %d times", r.Header, missed)
 	}
 }

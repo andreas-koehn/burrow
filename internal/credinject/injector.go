@@ -59,10 +59,12 @@ func New(v Vault, s Store, log *slog.Logger) *Injector {
 //
 //  1. Looks up the binding from the Store.
 //  2. If unbound → returns (false, nil) — request passes through unchanged.
-//  3. If the slot env var is absent → fires OnMiss, logs a warning, returns
-//     (false, nil) — request passes through. The missing env var is a
-//     configuration error, not a request error.
-//  4. Strips any existing value for the configured header.
+//  3. Strips any existing value for the configured header: with a binding,
+//     that header is the upstream's credential and never the visitor's.
+//  4. If the slot env var is absent → fires OnMiss, logs a warning, returns
+//     (false, nil). The request goes on without a credential in that header
+//     (the upstream refuses it): the missing env var is a configuration
+//     error, and the visitor's own value must not stand in for it.
 //  5. Sets the header to strings.Replace(HeaderFormat, "{key}", value, 1).
 //  6. Returns (true, nil).
 //
@@ -77,6 +79,10 @@ func (i *Injector) Apply(ctx context.Context, serviceID string, r *http.Request)
 		return false, nil
 	}
 
+	// Before the vault is asked: whatever it says, the visitor-supplied
+	// value of the bound header does not reach the upstream.
+	r.Header.Del(bind.HeaderName)
+
 	val, present := i.v.Get(bind.Slot)
 	if !present {
 		// Binding exists but env var is gone — misconfiguration.
@@ -90,8 +96,6 @@ func (i *Injector) Apply(ctx context.Context, serviceID string, r *http.Request)
 		return false, nil
 	}
 
-	// Strip the visitor-supplied header value, then inject the real credential.
-	r.Header.Del(bind.HeaderName)
 	r.Header.Set(bind.HeaderName, strings.Replace(bind.HeaderFormat, "{key}", val, 1))
 	if i.OnInject != nil {
 		i.OnInject(serviceID, bind.Slot)

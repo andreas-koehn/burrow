@@ -187,6 +187,8 @@ func (t *writer) FlushError() error {
 
 func (t *writer) Failure() (code string, midStream bool) { return t.failCode, t.midStream }
 
+func (t *writer) Discarding() bool { return t.mode == modeFailed || t.over || t.midStream }
+
 // WriteHeader takes the upstream's status and decides how its body is read.
 // Informational statuses are not an answer and are not passed on.
 func (t *writer) WriteHeader(status int) {

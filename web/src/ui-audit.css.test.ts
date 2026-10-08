@@ -261,3 +261,25 @@ describe("workspace shell", () => {
     expect(css).not.toContain(".sidebar-brand .wordmark");
   });
 });
+
+describe("X08 — request inspector stays inside a narrow screen", () => {
+  it("gives the single column no minimum of its content's width", () => {
+    const narrow = css.match(/@media \(max-width: 900px\) \{[^@]*?\.inspector-grid\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(narrow).toContain("grid-template-columns: minmax(0, 1fr)");
+    expect(css).toMatch(/\.detail-pane\s*\{[^}]*min-width: 0/);
+  });
+  it("wraps the pane's tabs and scrolls a wide table inside its panel", () => {
+    expect(css).toMatch(/\.detail-pane \.tabs-list\s*\{[^}]*flex-wrap: wrap/);
+    const panel = css.match(/\.detail-pane \.tab-panel\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(panel).toContain("min-width: 0");
+    expect(panel).toContain("overflow-x: auto");
+  });
+  it("gives the translate switch and its label a target of at least 24px", () => {
+    expect(css).toMatch(/\.model-translate > label\s*\{[^}]*min-height: 24px/);
+  });
+  it("scrolls a captured body inside the detail pane", () => {
+    const rule = css.match(/\.detail-pane pre\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toContain("overflow-x: auto");
+    expect(rule).toContain("max-width: 100%");
+  });
+});

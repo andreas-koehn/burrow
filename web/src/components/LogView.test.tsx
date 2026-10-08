@@ -48,6 +48,16 @@ describe("LogView", () => {
     expect(within(table).getByRole("cell", { name: "beta" })).not.toHaveClass("col-num");
   });
 
+  it("marks every column header as a header of its column", () => {
+    mount();
+    const headers = within(screen.getByRole("table", { name: "Things" })).getAllByRole("columnheader");
+    expect(headers).toHaveLength(COLUMNS.length);
+    for (const h of headers) {
+      expect(h.tagName).toBe("TH");
+      expect(h).toHaveAttribute("scope", "col");
+    }
+  });
+
   it("shows skeleton rows and no table while loading", () => {
     const { container } = mount({ rows: undefined, isLoading: true });
     expect(container.querySelector(".skel")).not.toBeNull();

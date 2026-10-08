@@ -360,6 +360,15 @@ func (t *translatedWriter) Write(p []byte) (int, error) {
 		// The pair's writer fails a write only when the caller's did.
 		t.clientFailed = true
 	}
+	if !t.errorBody && t.Discarding() {
+		// The answer has failed or outgrown the pair's limit: nothing the
+		// upstream still sends will be used. A committed stream has no
+		// attempt timer left to end it, and the meter above keeps a line
+		// until its newline comes, so an upstream that goes on sending is
+		// not read to its end, or without end: its call stops here. (An
+		// error body has its own bounds, see WriteHeader.)
+		t.cancel()
+	}
 	return n, err
 }
 
@@ -467,56 +476,65 @@ func (t *translatedWriter) failure() (code string, status int, midStream, ok boo
 	return code, t.status, false, true
 }
 
-// estimateTarget reports whether POST /v1/messages/count_tokens for this
-// resolution is answered by the gateway itself, and names the target the
-// request then runs under: the first one a released pair reaches. That is so
-// for a synthetic model that has no Anthropic-format target and has
-// translation turned on. No target of another format counts tokens the way
-// the caller's client expects.
-func (g *Gateway) estimateTarget(res Resolution, d *Dialect, path string) (Target, bool) {
+// estimateTargets reports whether POST /v1/messages/count_tokens for this
+// resolution is answered by the gateway itself, and names the targets the
+// request can run under: those a released pair reaches, in the order a message
+// to the model would try them. That is so for a synthetic model that has no
+// Anthropic-format target and has translation turned on. No target of another
+// format counts tokens the way the caller's client expects.
+func (g *Gateway) estimateTargets(res Resolution, d *Dialect, path string) []Target {
 	if d.Name != DialectAnthropic.Name || path != pathCountTokens || !res.Synthetic || !res.Model.Translate || len(res.Targets) > 0 {
-		return Target{}, false
+		return nil
 	}
+	var out []Target
 	for _, t := range res.Other {
 		if _, ok := lookupPair(translate.Messages, translate.TargetFormat(t.Provider.APIFormat)); ok {
-			return t, true
+			out = append(out, t)
 		}
 	}
-	return Target{}, false
+	return out
 }
 
 // serveEstimate answers a token count with the gateway's own estimate, which
 // says it is one (Burrow-Estimated: 1). Nothing is sent to a provider, but
 // the request is a request like any other: the policy of the service it runs
-// under (the target's, as for a message to that model) is checked first, and
+// under (a target's, as for a message to that model) is checked first, and
 // it goes through the chain, so rate limits, redaction and guardrails apply
 // and it counts against the limits. The chain's "upstream" is the estimate
 // itself. As for a native count there is no usage row, and the cache is not
 // used.
-func (g *Gateway) serveEstimate(w http.ResponseWriter, r *http.Request, d *Dialect, key store.GatewayKey, requested string, t Target, body *requestBody) {
+//
+// It runs under the first of targets whose policy can be read. A message to
+// the model would leave a target whose policy cannot be read (its tunnel is
+// offline, a lookup failed) for the next one; a count does the same, so it is
+// answered whenever a message would be. A policy that is read and refuses
+// ends the request, as it does for a message.
+func (g *Gateway) serveEstimate(w http.ResponseWriter, r *http.Request, d *Dialect, key store.GatewayKey, requested string, targets []Target, body *requestBody) {
 	route := aigw.NewRoute(key.ID, d.Name, requested, w.Header().Get(headerRequestID))
-	route.SetTarget(t.Provider.Slug, t.Model)
 	r = r.WithContext(aigw.WithRoute(r.Context(), route))
-	host, checked, ok := g.firstTargetPolicy(w, r, t.Provider)
-	if !ok {
+	for _, t := range targets {
+		route.SetTarget(t.Provider.Slug, t.Model)
+		host, checked, ok := g.firstTargetPolicy(w, r, t.Provider)
+		if !ok {
+			return
+		}
+		if !checked {
+			continue
+		}
+		r = r.WithContext(aigw.WithoutUsage(aigw.WithoutCache(aigw.WithOwnCredential(r.Context()))))
+		setBody(r, body.WithModel(t.Model))
+		stripCredentials(r)
+		estimate := http.HandlerFunc(g.writeEstimate)
+		if g.Chain == nil {
+			estimate(w, r)
+			return
+		}
+		g.Chain.DispatchMetered(w, r, t.Provider.ServiceID, host, "Authorization", "", false, estimate)
 		return
 	}
-	if !checked {
-		// A message would meet the unreadable policy again in its attempt
-		// and fail there. There is no attempt here: nothing is answered for
-		// a caller that could not be checked.
-		g.fail(w, r, http.StatusServiceUnavailable, "provider_unavailable", "the provider of this model cannot be reached")
-		return
-	}
-	r = r.WithContext(aigw.WithoutUsage(aigw.WithoutCache(aigw.WithOwnCredential(r.Context()))))
-	setBody(r, body.WithModel(t.Model))
-	stripCredentials(r)
-	estimate := http.HandlerFunc(g.writeEstimate)
-	if g.Chain == nil {
-		estimate(w, r)
-		return
-	}
-	g.Chain.DispatchMetered(w, r, t.Provider.ServiceID, host, "Authorization", "", false, estimate)
+	// No target's policy could be read. There is no attempt here to fail in
+	// its place: nothing is answered for a caller that could not be checked.
+	g.fail(w, r, http.StatusServiceUnavailable, "provider_unavailable", "the provider of this model cannot be reached")
 }
 
 // writeEstimate stands where an upstream stands for a token count the

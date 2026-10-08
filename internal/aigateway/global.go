@@ -129,8 +129,8 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 	// flag the answers below are what they always were.
 	candidates, why := g.candidatesForRequest(r.Context(), res, d, path)
 	if len(candidates) == 0 {
-		if t, ok := g.estimateTarget(res, d, path); ok {
-			g.serveEstimate(w, r, d, key, requested, t, body)
+		if targets := g.estimateTargets(res, d, path); len(targets) > 0 {
+			g.serveEstimate(w, r, d, key, requested, targets, body)
 			return
 		}
 		g.failNoCandidate(w, r, res, d, requested, why)

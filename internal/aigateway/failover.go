@@ -525,6 +525,14 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 			}
 		case res.panicked && status == 0:
 			code, res.outcome = attemptPanic, outcomeFailed
+		case res.panicked && !res.committed && cw.decided && res.panicValue != http.ErrAbortHandler:
+			// The status was ruled the caller's answer ahead of its status
+			// line (see commitWriter.Decide), and the handler broke before
+			// anything of it was written. What ended the attempt is the
+			// fault, not the status: the row says so, and it counts like
+			// any attempt that ended in a panic. The row keeps the status
+			// the upstream had answered.
+			code, res.outcome = attemptPanic, outcomeFailed
 		case tw != nil && tw.clientFailed:
 			// The caller's writer refused a write before its context said
 			// it was gone: the caller left, as above.
@@ -574,6 +582,10 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 		// The target format's endpoint; the caller's query string is for
 		// another API and stays behind. (Clone made the URL this attempt's.)
 		req.URL.Path, req.URL.RawPath, req.URL.RawQuery = tr.pair.UpstreamPath(), "", ""
+		// Nor does how the caller framed its body: what goes upstream is
+		// the gateway's own, of a known length, and a caller's trailer
+		// fields are headers like the ones left behind below.
+		req.TransferEncoding, req.Trailer = nil, nil
 	}
 	// expire ends the attempt for lack of time, unless it is decided already.
 	expire := func() {
