@@ -142,6 +142,11 @@ const (
 	ToolNoOutput  = "[no output]"
 )
 
+// ContinueText is the user turn an encoder puts after a conversation that
+// ends with the assistant, for a target that wants the user to speak last
+// (and the encoder reports it).
+const ContinueText = "[continue]"
+
 // ToolImageNote is the text that stands before the images a tool call
 // returned: "Image returned by tool call <id>:". The id is the caller's and
 // the text is read by the model as the user's: only the characters

@@ -519,7 +519,7 @@ func checkResponsesMessages(p *pair) error {
 		return fmt.Errorf("history: %w", err)
 	}
 	if messages.CheckRequest(out) != nil || !jsonEqual(out, []byte(checkMessagesHistoryOfResponses)) ||
-		!reflect.DeepEqual(dropped, []string{"input:function_call.arguments", "input:function_call.unanswered", "input:function_call_output.orphan", "max_tokens:default"}) {
+		!reflect.DeepEqual(dropped, []string{"input:function_call.arguments", "input:function_call.unanswered", "input:function_call_output.orphan", "max_tokens.default"}) {
 		return errors.New("history: calls and outputs are not paired as the Messages API wants them")
 	}
 	return nil
@@ -550,7 +550,7 @@ const (
   {"type":"tool_result","tool_use_id":"call_2","content":"19°C"},
   {"type":"tool_result","tool_use_id":"call_3","content":"[no output]"},
   {"type":"text","text":"Thanks."}]}]}`
-	checkMessagesHistoryOfResponses = `{"model":"target-model","max_tokens":4096,"messages":[
+	checkMessagesHistoryOfResponses = `{"model":"target-model","max_tokens":32000,"messages":[
  {"role":"user","content":[{"type":"text","text":"Weather in Oslo and Rome?"}]},
  {"role":"assistant","content":[{"type":"text","text":"Checking."},
   {"type":"tool_use","id":"call_1","name":"get_weather","input":{"city":"Oslo"}},

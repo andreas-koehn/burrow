@@ -71,7 +71,8 @@ func TestEncodeRequest_FullConversation(t *testing.T) {
 		Stream:      true,
 	}
 	body, dropped, err := EncodeRequest(req, "claude-x")
-	if err != nil || dropped != nil {
+	// The sampling settings are not sent to a Messages target; that is told.
+	if err != nil || !reflect.DeepEqual(dropped, []string{"temperature"}) {
 		t.Fatalf("err %v, dropped %v", err, dropped)
 	}
 	assertJSONEqual(t, body, `{"model":"claude-x","max_tokens":256,"system":"Be brief.\n\nUse tools.",
@@ -85,7 +86,7 @@ func TestEncodeRequest_FullConversation(t *testing.T) {
   {"type":"tool_result","tool_use_id":"toolu_2","content":"no such city","is_error":true},
   {"type":"text","text":"And Paris?"}]}],
 "tools":[{"name":"get_weather","description":"Weather for a city","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}],
-"tool_choice":{"type":"auto"},"temperature":0.5,"stop_sequences":["END"],"stream":true}`)
+"tool_choice":{"type":"auto"},"stop_sequences":["END"],"stream":true}`)
 	// A tool call's input is the caller's bytes.
 	if !bytes.Contains(body, []byte(`"input":{ "city" : "Rome" }`)) {
 		t.Fatalf("the input's bytes changed: %s", body)
@@ -99,7 +100,7 @@ func TestEncodeRequest_MaxTokensIsRequired(t *testing.T) {
 	req := hello()
 	req.MaxTokens = 0
 	top, dropped := encodeTo(t, req)
-	if string(top["max_tokens"]) != "4096" || DefaultMaxTokens != 4096 || !reflect.DeepEqual(dropped, []string{"max_tokens:default"}) {
+	if string(top["max_tokens"]) != "32000" || DefaultMaxTokens != 32000 || !reflect.DeepEqual(dropped, []string{"max_tokens.default"}) {
 		t.Fatalf("max_tokens %s, dropped %v", top["max_tokens"], dropped)
 	}
 	top, dropped = encodeTo(t, hello())
@@ -217,6 +218,79 @@ func TestEncodeRequest_ToolCallIDsAnthropicWouldRefuse(t *testing.T) {
 	}
 }
 
+func TestEncodeRequest_ToolCallIDsAreUniqueInTheWholeConversation(t *testing.T) {
+	// Providers that number their calls anew in every answer (call_0, call_0, …) leave a history
+	// in which one id stands in every turn. Anthropic wants each tool_use id once: the first keeps
+	// it, every later call gets a numbered one, and its result the same.
+	msgs := []ir.Message{userMsg(text("go"))}
+	for turn := 0; turn < 5; turn++ {
+		msgs = append(msgs, assistantMsg(toolUse("call_0", "f", `{}`), toolUse("call.1", "f", `{}`)),
+			userMsg(result("call_0", fmt.Sprint("zero ", turn)), result("call.1", fmt.Sprint("one ", turn))))
+	}
+	top, dropped := encodeTo(t, talk(msgs...))
+	var got []struct {
+		Content []struct {
+			Type, ID, Content string
+			ToolUseID         string `json:"tool_use_id"`
+		}
+	}
+	if err := json.Unmarshal(top["messages"], &got); err != nil || len(got) != 11 || dropped != nil {
+		t.Fatalf("%v, dropped %v: %s", err, dropped, top["messages"])
+	}
+	seen := map[string]bool{}
+	for turn := 0; turn < 5; turn++ {
+		calls, results := got[1+2*turn].Content, got[2+2*turn].Content
+		for i := range calls {
+			if seen[calls[i].ID] || results[i].ToolUseID != calls[i].ID || results[i].Content != fmt.Sprint([]string{"zero ", "one "}[i], turn) {
+				t.Fatalf("turn %d: call %+v, result %+v", turn, calls[i], results[i])
+			}
+			seen[calls[i].ID] = true
+		}
+	}
+	if !seen["call_0"] || !seen["call_1"] || !seen["call_0_2"] || !seen["call_1_2"] || !seen["call_0_5"] || len(seen) != 10 {
+		t.Fatalf("ids %v", seen)
+	}
+}
+
+func TestEncodeRequest_ConversationThatEndsWithTheAssistant(t *testing.T) {
+	// Current models take no prefill: the user is given a turn with a fixed text, and that is told.
+	top, dropped := encodeTo(t, talk(userMsg(text("hi")), assistantMsg(text("Let me"))))
+	assertJSONEqual(t, top["messages"], `[
+ {"role":"user","content":[{"type":"text","text":"hi"}]},
+ {"role":"assistant","content":[{"type":"text","text":"Let me"}]},
+ {"role":"user","content":[{"type":"text","text":"[continue]"}]}]`)
+	if !reflect.DeepEqual(dropped, []string{"messages.end"}) || ir.ContinueText != "[continue]" {
+		t.Fatalf("dropped %v", dropped)
+	}
+}
+
+func TestEncodeRequest_ToolNames(t *testing.T) {
+	// A tool that is declared under a name Anthropic refuses is a client error that names it.
+	for _, name := range []string{"", "get.weather", "a b", "é", strings.Repeat("x", 129)} {
+		req := hello()
+		req.Tools = []ir.Tool{{Name: "ok_Tool-1"}, {Name: name}}
+		_, _, err := EncodeRequest(req, "m")
+		var bad *ir.BadRequestError
+		if !errors.As(err, &bad) || bad.Field != "tools[1].name" || bad.Format != "messages" || strings.Contains(err.Error(), "weather") {
+			t.Errorf("%q: err = %v", name, err)
+		}
+	}
+	req := hello()
+	req.Tools = []ir.Tool{{Name: strings.Repeat("x", 128)}}
+	if _, _, err := EncodeRequest(req, "m"); err != nil {
+		t.Fatal(err)
+	}
+	// A call in the history under such a name (it cannot be one of the declared tools) does not
+	// end the session: the name is written with the characters Anthropic takes, and that is told.
+	top, dropped := encodeTo(t, talk(userMsg(text("go")),
+		assistantMsg(toolUse("a", "functions.read:0", `{}`), toolUse("b", strings.Repeat("é", 200), `{}`), toolUse("c", "fine", `{}`)),
+		userMsg(result("a", "ra"), result("b", "rb"), result("c", "rc"))))
+	if !bytes.Contains(top["messages"], []byte(`"name":"functions_read_0"`)) || !bytes.Contains(top["messages"], []byte(`"name":"`+strings.Repeat("_", 128)+`"`)) ||
+		!bytes.Contains(top["messages"], []byte(`"name":"fine"`)) || !reflect.DeepEqual(dropped, []string{"input:tool_use.name"}) {
+		t.Fatalf("dropped %v: %s", dropped, top["messages"])
+	}
+}
+
 func TestEncodeRequest_ThinkingAndEmptyTextAreNotSent(t *testing.T) {
 	thinking := ir.Part{Kind: ir.Thinking, Text: "hm"}
 	top, dropped := encodeTo(t, talk(
@@ -277,7 +351,7 @@ func TestEncodeRequest_Tools(t *testing.T) {
 		}
 	}
 	req.Tools = []ir.Tool{{Schema: json.RawMessage(`{"type":"object"}`)}}
-	if _, _, err := EncodeRequest(req, "m"); !errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "tools[0].name") {
+	if _, _, err := EncodeRequest(req, "m"); err == nil || !strings.Contains(err.Error(), "tools[0].name") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -293,13 +367,15 @@ func TestEncodeRequest_ToolChoice(t *testing.T) {
 		{ir.ToolChoice{}, tools, ``, nil},
 		{ir.ToolChoice{Mode: ir.ChoiceAuto}, tools, `{"type":"auto"}`, nil},
 		{ir.ToolChoice{Mode: ir.ChoiceNone}, tools, `{"type":"none"}`, nil},
-		{ir.ToolChoice{Mode: ir.ChoiceRequired}, tools, `{"type":"any"}`, nil},
-		{ir.ToolChoice{Mode: ir.ChoiceTool, Name: "f"}, tools, `{"type":"tool","name":"f"}`, nil},
+		// Current models answer 400 to a forced choice: the model decides, and that is told.
+		{ir.ToolChoice{Mode: ir.ChoiceRequired}, tools, `{"type":"auto"}`, []string{"tool_choice"}},
+		{ir.ToolChoice{Mode: ir.ChoiceTool, Name: "f"}, tools, `{"type":"auto"}`, []string{"tool_choice"}},
 		// Anthropic refuses a tool_choice without tools: "auto" and "none" mean nothing then, the others are told.
 		{ir.ToolChoice{Mode: ir.ChoiceAuto}, nil, ``, nil},
 		{ir.ToolChoice{Mode: ir.ChoiceNone}, nil, ``, nil},
 		{ir.ToolChoice{Mode: ir.ChoiceRequired}, nil, ``, []string{"tool_choice"}},
-		{ir.ToolChoice{Mode: ir.ChoiceTool, Name: "g"}, tools, ``, []string{"tool_choice"}},
+		{ir.ToolChoice{Mode: ir.ChoiceTool, Name: "g"}, tools, `{"type":"auto"}`, []string{"tool_choice"}},
+		{ir.ToolChoice{Mode: ir.ChoiceTool, Name: "g"}, nil, ``, []string{"tool_choice"}},
 	} {
 		req := hello()
 		req.ToolChoice, req.Tools = c.choice, c.tools
@@ -327,12 +403,10 @@ func TestEncodeRequest_Parameters(t *testing.T) {
 		want        string // temperature, top_p, stop_sequences as they are written
 		wantDropped []string
 	}{
-		{"temperature", f(0.7000000000000001), nil, nil, `0.7000000000000001||`, nil},
-		{"top_p", nil, f(0.9), nil, `|0.9|`, nil},
-		// Anthropic's temperature ends at 1 where OpenAI's ends at 2.
-		{"a temperature above 1", f(1.5), nil, nil, `1||`, []string{"temperature.max"}},
-		// Newer Claude models refuse a request with both: the temperature stays.
-		{"both", f(0), f(0.5), nil, `0||`, []string{"top_p"}},
+		// Neither setting is sent: current models refuse any value but their default.
+		{"temperature", f(0.7000000000000001), nil, nil, `||`, []string{"temperature"}},
+		{"top_p", nil, f(0.9), nil, `||`, []string{"top_p"}},
+		{"both", f(1.5), f(0.5), nil, `||`, []string{"temperature", "top_p"}},
 		{"stop", nil, nil, []string{"END", "\n\nHuman:"}, `||["END","\n\nHuman:"]`, nil},
 		// Anthropic refuses a stop sequence that is only white space.
 		{"blank stops", nil, nil, []string{"\n", "END", " ", ""}, `||["END"]`, []string{"stop.blank"}},
@@ -349,13 +423,6 @@ func TestEncodeRequest_Parameters(t *testing.T) {
 	top, _ := encodeTo(t, hello())
 	if top["stream"] != nil {
 		t.Fatal("stream written though not asked")
-	}
-	nan := hello()
-	zero := 0.0
-	bad := zero / zero
-	nan.Temperature = &bad
-	if _, _, err := EncodeRequest(nan, "m"); !errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "temperature") {
-		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -489,32 +556,38 @@ func TestCheckRequest_RefusesWhatAnthropicWould(t *testing.T) {
 	use := `{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}}]}`
 	u := `{"role":"user","content":[{"type":"text","text":"x"}]}`
 	for name, body := range map[string]string{
-		"not JSON":                    `{`,
-		"no model":                    `{"max_tokens":5,"messages":[` + u + `]}`,
-		"no max_tokens":               `{"model":"m","messages":[` + u + `]}`,
-		"no messages":                 with(`[]`),
-		"assistant first":             with(`[{"role":"assistant","content":[{"type":"text","text":"x"}]},` + u + `]`),
-		"two user messages":           with(`[` + u + `,` + u + `]`),
-		"a system role":               with(`[{"role":"system","content":"x"}]`),
-		"empty content":               with(`[{"role":"user","content":[]}]`),
-		"blank text":                  with(`[{"role":"user","content":[{"type":"text","text":" \n"}]}]`),
-		"unanswered tool_use":         with(`[` + u + `,` + use + `,` + u + `]`),
-		"unanswered tool_use at end":  with(`[` + u + `,` + use + `]`),
-		"tool_result for nothing":     with(`[{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"r"}]}]`),
-		"tool_result after text":      with(`[` + u + `,` + use + `,{"role":"user","content":[{"type":"text","text":"x"},{"type":"tool_result","tool_use_id":"a","content":"r"}]}]`),
-		"tool_result twice":           with(`[` + u + `,` + use + `,{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"r"},{"type":"tool_result","tool_use_id":"a","content":"r"}]}]`),
-		"a tool_use id twice":         with(`[` + u + `,{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}},{"type":"tool_use","id":"a","name":"f","input":{}}]}]`),
-		"a tool_use id with a dot":    with(`[` + u + `,{"role":"assistant","content":[{"type":"tool_use","id":"a.b","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a.b","content":"r"}]}]`),
-		"a tool_use input as a list":  with(`[` + u + `,{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":[]}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"r"}]}]`),
-		"an image of an unknown type": with(`[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/tiff","data":"x"}}]}]`),
-		"a thinking block":            with(`[` + u + `,{"role":"assistant","content":[{"type":"thinking","thinking":"x"}]}]`),
-		"a schema that is no object":  `{"model":"m","max_tokens":5,"tools":[{"name":"f","input_schema":{"type":"string"}}],"messages":[` + u + `]}`,
-		"a tool without a schema":     `{"model":"m","max_tokens":5,"tools":[{"name":"f"}],"messages":[` + u + `]}`,
-		"tool_choice without tools":   `{"model":"m","max_tokens":5,"tool_choice":{"type":"auto"},"messages":[` + u + `]}`,
-		"a temperature above 1":       `{"model":"m","max_tokens":5,"temperature":1.5,"messages":[` + u + `]}`,
-		"temperature and top_p":       `{"model":"m","max_tokens":5,"temperature":1,"top_p":1,"messages":[` + u + `]}`,
-		"a blank stop sequence":       `{"model":"m","max_tokens":5,"stop_sequences":["\n"],"messages":[` + u + `]}`,
-		"an unknown field":            `{"model":"m","max_tokens":5,"n":2,"messages":[` + u + `]}`,
+		"not JSON":                     `{`,
+		"no model":                     `{"max_tokens":5,"messages":[` + u + `]}`,
+		"no max_tokens":                `{"model":"m","messages":[` + u + `]}`,
+		"no messages":                  with(`[]`),
+		"assistant first":              with(`[{"role":"assistant","content":[{"type":"text","text":"x"}]},` + u + `]`),
+		"two user messages":            with(`[` + u + `,` + u + `]`),
+		"a system role":                with(`[{"role":"system","content":"x"}]`),
+		"empty content":                with(`[{"role":"user","content":[]}]`),
+		"blank text":                   with(`[{"role":"user","content":[{"type":"text","text":" \n"}]}]`),
+		"unanswered tool_use":          with(`[` + u + `,` + use + `,` + u + `]`),
+		"unanswered tool_use at end":   with(`[` + u + `,` + use + `]`),
+		"tool_result for nothing":      with(`[{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"r"}]}]`),
+		"tool_result after text":       with(`[` + u + `,` + use + `,{"role":"user","content":[{"type":"text","text":"x"},{"type":"tool_result","tool_use_id":"a","content":"r"}]}]`),
+		"tool_result twice":            with(`[` + u + `,` + use + `,{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"r"},{"type":"tool_result","tool_use_id":"a","content":"r"}]}]`),
+		"a tool_use id twice":          with(`[` + u + `,{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}},{"type":"tool_use","id":"a","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"r"}]}]`),
+		"a tool_use id with a dot":     with(`[` + u + `,{"role":"assistant","content":[{"type":"tool_use","id":"a.b","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a.b","content":"r"}]}]`),
+		"a tool_use input as a list":   with(`[` + u + `,{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":[]}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"r"}]}]`),
+		"an image of an unknown type":  with(`[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/tiff","data":"x"}}]}]`),
+		"a thinking block":             with(`[` + u + `,{"role":"assistant","content":[{"type":"thinking","thinking":"x"}]}]`),
+		"a schema that is no object":   `{"model":"m","max_tokens":5,"tools":[{"name":"f","input_schema":{"type":"string"}}],"messages":[` + u + `]}`,
+		"a tool without a schema":      `{"model":"m","max_tokens":5,"tools":[{"name":"f"}],"messages":[` + u + `]}`,
+		"tool_choice without tools":    `{"model":"m","max_tokens":5,"tool_choice":{"type":"auto"},"messages":[` + u + `]}`,
+		"a temperature":                `{"model":"m","max_tokens":5,"temperature":0.5,"messages":[` + u + `]}`,
+		"a top_p":                      `{"model":"m","max_tokens":5,"top_p":1,"messages":[` + u + `]}`,
+		"a forced tool_choice":         `{"model":"m","max_tokens":5,"tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"any"},"messages":[` + u + `]}`,
+		"a named tool_choice":          `{"model":"m","max_tokens":5,"tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"f"},"messages":[` + u + `]}`,
+		"a tool name with a dot":       `{"model":"m","max_tokens":5,"tools":[{"name":"a.b","input_schema":{"type":"object"}}],"messages":[` + u + `]}`,
+		"a tool_use name with a dot":   with(`[` + u + `,{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"a.b","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"r"}]}]`),
+		"an assistant turn at the end": with(`[` + u + `,{"role":"assistant","content":[{"type":"text","text":"x"}]}]`),
+		"a tool_use id in two turns":   with(`[` + u + `,` + use + `,{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"r"}]},` + use + `,{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"r"}]}]`),
+		"a blank stop sequence":        `{"model":"m","max_tokens":5,"stop_sequences":["\n"],"messages":[` + u + `]}`,
+		"an unknown field":             `{"model":"m","max_tokens":5,"n":2,"messages":[` + u + `]}`,
 	} {
 		if err := CheckRequest([]byte(body)); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -1366,7 +1439,8 @@ func FuzzEncodeRequest(f *testing.F) {
 		}
 		body, dropped, err := EncodeRequest(req, "claude-x")
 		if err != nil {
-			if !errors.Is(err, ErrUnsupported) || body != nil || dropped != nil {
+			var bad *ir.BadRequestError
+			if !errors.Is(err, ErrUnsupported) && !errors.As(err, &bad) || body != nil || dropped != nil {
 				t.Fatalf("err = %v, body %s", err, body)
 			}
 			return

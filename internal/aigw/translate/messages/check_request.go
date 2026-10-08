@@ -19,28 +19,30 @@ import (
 // It holds, and returns an error otherwise:
 //   - the body is a JSON object of the fields EncodeRequest writes ("model",
 //     "max_tokens", "system", "messages", "tools", "tool_choice",
-//     "temperature", "top_p", "stop_sequences", "stream") and no other;
+//     "stop_sequences", "stream") and no other — "temperature" and "top_p"
+//     among them: current models refuse any value but their default;
 //   - "model" is a string that is not empty and "max_tokens" a whole number
 //     above 0; "system", when present, is a string with more than white
 //     space;
-//   - "messages" is not empty, begins with a user message, and its roles
-//     alternate between user and assistant;
+//   - "messages" is not empty, begins and ends with a user message (current
+//     models take no prefill), and its roles alternate between user and
+//     assistant;
 //   - the content of a message is a list of blocks that is not empty: text
 //     with more than white space; image with a base64 source of a known
 //     media type or an http(s) url source; tool_use (in an assistant
-//     message) with an id of the characters [a-zA-Z0-9_-] that is its own
-//     within the message, a name and an input object; tool_result (in a
+//     message) with an id of the characters [a-zA-Z0-9_-] that no other
+//     tool_use of the conversation has, a name of 1 to 128 of those
+//     characters and an input object; tool_result (in a
 //     user message) whose content is a string or a list of text and image
 //     blocks. No other block type;
 //   - every tool_use is answered: the user message after an assistant
 //     message holds one tool_result for each of its ids, before any other
 //     block, and a tool_result stands nowhere else and for no id twice;
-//   - a tool has a name and an "input_schema" that is an object whose "type"
-//     is "object";
-//   - "tool_choice" stands only next to tools, is of type auto, any, none,
-//     or tool with the name of one of them;
-//   - "temperature" and "top_p" lie between 0 and 1 and do not stand
-//     together; no stop sequence is white space only.
+//   - a tool has such a name and an "input_schema" that is an object whose
+//     "type" is "object";
+//   - "tool_choice" stands only next to tools and is of type auto or none
+//     (current models refuse a forced choice);
+//   - no stop sequence is white space only.
 func CheckRequest(body []byte) error {
 	var top map[string]json.RawMessage
 	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || json.Unmarshal(body, &top) != nil {
@@ -48,7 +50,7 @@ func CheckRequest(body []byte) error {
 	}
 	for key := range top {
 		switch key {
-		case "model", "max_tokens", "system", "messages", "tools", "tool_choice", "temperature", "top_p", "stop_sequences", "stream":
+		case "model", "max_tokens", "system", "messages", "tools", "tool_choice", "stop_sequences", "stream":
 		default:
 			return fmt.Errorf("a field the Messages API does not know: %q", key)
 		}
@@ -69,10 +71,8 @@ func CheckRequest(body []byte) error {
 			Type string `json:"type"`
 			Name string `json:"name"`
 		} `json:"tool_choice"`
-		Temperature *float64 `json:"temperature"`
-		TopP        *float64 `json:"top_p"`
-		Stop        []string `json:"stop_sequences"`
-		Stream      *bool    `json:"stream"`
+		Stop   []string `json:"stop_sequences"`
+		Stream *bool    `json:"stream"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return errors.New("a field of the wrong type")
@@ -88,7 +88,10 @@ func CheckRequest(body []byte) error {
 		return errors.New("no messages")
 	case req.Messages[0].Role != "user":
 		return errors.New("the first message is not the user's")
+	case req.Messages[len(req.Messages)-1].Role != "user":
+		return errors.New("the last message is not the user's")
 	}
+	used := map[string]bool{}   // every tool_use id of the conversation
 	var waiting map[string]bool // the tool_use ids of the assistant message before
 	for i, m := range req.Messages {
 		fail := func(what string) error { return fmt.Errorf("messages[%d] (%s): %s", i, m.Role, what) }
@@ -132,10 +135,10 @@ func CheckRequest(body []byte) error {
 					return fail("has an image the API does not take")
 				}
 			case "tool_use":
-				if m.Role != "assistant" || !soundToolID(b.ID) || ids[b.ID] || b.Name == "" || ir.CheckObject(b.Input) != nil {
-					return fail("has a tool_use without an id of its own, a name, or an input object")
+				if m.Role != "assistant" || !soundToolID(b.ID) || used[b.ID] || !soundToolID(b.Name) || len(b.Name) > maxToolName || ir.CheckObject(b.Input) != nil {
+					return fail("has a tool_use without an id of its own, a sound name, or an input object")
 				}
-				ids[b.ID] = true
+				ids[b.ID], used[b.ID] = true, true
 			case "tool_result":
 				switch {
 				case m.Role != "user":
@@ -162,33 +165,21 @@ func CheckRequest(body []byte) error {
 	if len(waiting) > 0 {
 		return errors.New("the last message has tool_use blocks without an answer")
 	}
-	names := map[string]bool{}
 	for i, t := range req.Tools {
 		var schema struct {
 			Type json.RawMessage `json:"type"`
 		}
-		if t.Name == "" || ir.CheckObject(t.Schema) != nil || json.Unmarshal(t.Schema, &schema) != nil || string(schema.Type) != `"object"` {
+		if !soundToolID(t.Name) || len(t.Name) > maxToolName || ir.CheckObject(t.Schema) != nil || json.Unmarshal(t.Schema, &schema) != nil || string(schema.Type) != `"object"` {
 			return fmt.Errorf("tools[%d]: no name, or an input_schema that is no object schema", i)
 		}
-		names[t.Name] = true
 	}
 	if c := req.ToolChoice; c != nil {
 		switch {
 		case len(req.Tools) == 0:
 			return errors.New("tool_choice without tools")
-		case c.Type == "tool" && !names[c.Name]:
-			return errors.New("tool_choice names no tool of the request")
-		case c.Type != "auto" && c.Type != "any" && c.Type != "none" && c.Type != "tool":
-			return errors.New("tool_choice of an unknown type")
+		case c.Type != "auto" && c.Type != "none":
+			return errors.New("tool_choice is not auto or none")
 		}
-	}
-	for name, v := range map[string]*float64{"temperature": req.Temperature, "top_p": req.TopP} {
-		if v != nil && (*v < 0 || *v > 1) {
-			return fmt.Errorf("%s is not between 0 and 1", name)
-		}
-	}
-	if req.Temperature != nil && req.TopP != nil {
-		return errors.New("temperature and top_p stand together")
 	}
 	for _, s := range req.Stop {
 		if strings.TrimSpace(s) == "" {

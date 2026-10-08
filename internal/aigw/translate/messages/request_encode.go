@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 
@@ -18,9 +17,14 @@ import (
 
 // DefaultMaxTokens is the "max_tokens" EncodeRequest sends when the caller
 // set no cap: Anthropic requires the field, and the other formats do not.
-// 4096 is what every model of the Messages API accepts; a caller that wants
-// more says so.
-const DefaultMaxTokens = 4096
+// It is generous on purpose: a coding client (Codex sends no cap) whose
+// answers are cut short retries them. A caller's own value is sent
+// unchanged.
+const DefaultMaxTokens = 32000
+
+// maxToolName is the longest tool name Anthropic takes; its characters are
+// those of a tool call id ([a-zA-Z0-9_-]).
+const maxToolName = 128
 
 // Version is the value of the "anthropic-version" request header the bodies
 // of this package are written for. The header is the gateway's to set.
@@ -33,12 +37,14 @@ const firstTurnText = "[no message]"
 // Names EncodeRequest adds to the dropped list (all fixed, none chosen by a
 // client).
 const (
-	droppedMaxTokensDefault = "max_tokens:default" // no cap was given: DefaultMaxTokens was sent
-	droppedFirstTurn        = "messages.start"     // the conversation began with the assistant: a user turn was put before it
-	droppedToolChoice       = "tool_choice"        // a choice that needs a tool the request does not carry
-	droppedTopP             = "top_p"              // left out next to a temperature
-	droppedTemperatureMax   = "temperature.max"    // a temperature above 1 was sent as 1
-	droppedStopBlank        = "stop.blank"         // stop sequences of white space only
+	droppedMaxTokensDefault = "max_tokens.default"  // no cap was given: DefaultMaxTokens was sent
+	droppedFirstTurn        = "messages.start"      // the conversation began with the assistant: a user turn was put before it
+	droppedLastTurn         = "messages.end"        // the conversation ended with the assistant: a user turn was put after it
+	droppedToolChoice       = "tool_choice"         // a forced choice: the model decides
+	droppedTemperature      = "temperature"         // not sent
+	droppedTopP             = "top_p"               // not sent
+	droppedStopBlank        = "stop.blank"          // stop sequences of white space only
+	droppedToolUseName      = "input:tool_use.name" // a call in the history under a name Anthropic refuses: written with the characters it takes
 )
 
 // ErrUnsupported is wrapped by every error of EncodeRequest, followed by the
@@ -71,14 +77,14 @@ var imageTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/g
 // client that sends its history with every request would meet the same 400
 // for ever. So the conversation is written as Anthropic wants it:
 //   - "max_tokens" is required: without a cap DefaultMaxTokens is sent and
-//     "max_tokens:default" is reported;
+//     "max_tokens.default" is reported;
 //   - roles alternate: messages of one role that follow each other become
 //     one message;
 //   - the user speaks first: a conversation that begins with the assistant
 //     (a greeting, in a Chat history) gets the user turn "[no message]"
-//     before it: "messages.start". One that ends with the assistant is sent
-//     as it is: whether the model takes such a prefill is the upstream's to
-//     say;
+//     before it: "messages.start". One that ends with the assistant would
+//     be a prefill, which current models refuse: the user turn
+//     ir.ContinueText is put after it: "messages.end";
 //   - in a user message the tool_result blocks stand first, whatever the
 //     order of the parts, and the rest follows in its order;
 //   - the images a tool returned go back into its tool_result: a Text part
@@ -93,27 +99,37 @@ var imageTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/g
 //   - Thinking parts are not sent back — without their signature the API
 //     refuses them: "thinking";
 //   - a tool call's id is written with the characters Anthropic takes
-//     ([a-zA-Z0-9_-]); any other becomes "_", in the call and in its result
-//     alike, and two ids that would read the same are kept apart. A history
-//     that began on another provider keeps working; nothing is lost, so
-//     nothing is reported;
+//     ([a-zA-Z0-9_-]); any other becomes "_". Every id stands once in the
+//     whole conversation: a call whose id was used before — by a provider
+//     that numbers its calls anew in every answer, or by an id that reads
+//     the same once cleaned — gets a number added, and its result, in the
+//     turn after it, the same. A history that began on another provider
+//     keeps working; nothing is lost, so nothing is reported;
+//   - a tool call in the history under a name Anthropic refuses (it cannot
+//     be one of the declared tools) is written with the characters it takes,
+//     cut to 128: "input:tool_use.name";
 //   - a tool without a schema gets {"type":"object","properties":{}}; a
 //     schema without a "type" gets "type":"object" as its first key and
 //     keeps its bytes otherwise. A schema of any other type is refused;
-//   - "tool_choice" without a tool it could mean: "auto" and "none" are
-//     left out, "required" and a named tool are left out and reported as
-//     "tool_choice";
-//   - a temperature above 1 is sent as 1: "temperature.max"; "top_p" next
-//     to a temperature is left out (newer models refuse both): "top_p";
+//   - "tool_choice": "auto" and "none" are sent ("none" is accepted by every
+//     model) and left out without tools, where they mean nothing. A forced
+//     choice — "required", a named tool — is answered 400 by current models:
+//     "auto" is sent in its place (nothing without tools): "tool_choice";
+//   - "temperature" and "top_p" are not sent: "temperature", "top_p".
+//     Current models refuse any value but their default, older ones both
+//     together, and the encoder does not know the model. (Sending them to
+//     targets that are known to take them is a later, per-target setting.)
 //   - stop sequences of white space only are left out: "stop.blank".
 //
 // What is refused (an error wrapping ErrUnsupported that names the field):
 // an image that is not base64 of a type Anthropic accepts or an http(s) URL
 // ("messages[0].image.media_type", ".image.url"), an image anywhere but in
 // a user message, a part its role cannot hold, a tool call without id or
-// name or with an input that is not a JSON object, a tool without a name or
-// with a schema that is not an object schema, a request in which no message
-// is left or over the ir limits. An image is never left out.
+// name or with an input that is not a JSON object, a tool with a schema
+// that is not an object schema, a request in which no message is left or
+// over the ir limits. An image is never left out. A tool declared under a
+// name that does not match ^[a-zA-Z0-9_-]{1,128}$ is refused with a
+// *ir.BadRequestError that names "tools[n].name".
 //
 // Tool schemas and tool inputs are copied into the body byte for byte; the
 // body is written by hand for that reason.
@@ -129,8 +145,8 @@ type requestEncoder struct {
 	b       []byte
 	dropped []string
 
-	ids   map[string]string // a tool call id of the request → the id that is written
-	taken map[string]bool   // the ids that are written
+	ids   map[string]string // a tool call id of the request → the id its latest call was written with
+	taken map[string]bool   // the ids that were written for a call
 }
 
 func (e *requestEncoder) raw(s string)     { e.b = append(e.b, s...) }
@@ -207,6 +223,10 @@ func (e *requestEncoder) request(req ir.Request, model string) error {
 		first := wireMessage{role: ir.User, blocks: [][]byte{encodeText(firstTurnText)}}
 		msgs = append([]wireMessage{first}, msgs...)
 	}
+	if msgs[len(msgs)-1].role != ir.User {
+		e.drop(droppedLastTurn)
+		msgs = append(msgs, wireMessage{role: ir.User, blocks: [][]byte{encodeText(ir.ContinueText)}})
+	}
 
 	e.raw(`{"model":`)
 	e.str(model)
@@ -242,8 +262,11 @@ func (e *requestEncoder) request(req ir.Request, model string) error {
 	if err := e.toolChoice(req.ToolChoice, req.Tools); err != nil {
 		return err
 	}
-	if err := e.sampling(req.Temperature, req.TopP); err != nil {
-		return err
+	if req.Temperature != nil {
+		e.drop(droppedTemperature)
+	}
+	if req.TopP != nil {
+		e.drop(droppedTopP)
 	}
 	var stops []string
 	for _, s := range req.Stop {
@@ -314,24 +337,39 @@ func encodeImage(p ir.Part, at func(string) string) ([]byte, error) {
 	return nil, unsupported(at("image.url"))
 }
 
-// wireID returns the id a tool call's id is written as: itself when Anthropic
-// takes it, else with "_" for every character it does not take, and with a
-// number added when that id is taken by another call.
-func (e *requestEncoder) wireID(id string) string {
+// clean writes s with "_" for every character Anthropic does not take in a
+// tool call id or a tool name; ok says nothing had to be changed.
+func clean(s string) (out string, ok bool) {
+	b := []byte(s)
+	ok = true
+	for i, c := range b {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			b[i], ok = '_', false
+		}
+	}
+	return string(b), ok
+}
+
+// callID returns the id a tool call is written with: its own, cleaned, when
+// no call before it was written with that, else with a number added. The
+// result that answers the call asks resultID for it.
+func (e *requestEncoder) callID(id string) string {
+	base, _ := clean(id)
+	w := base
+	for n := 2; e.taken[w]; n++ {
+		w = base + "_" + strconv.Itoa(n)
+	}
+	e.ids[id], e.taken[w] = w, true
+	return w
+}
+
+// resultID returns the id a tool result is written with: that of the latest
+// call with its id, which stands in the turn before it.
+func (e *requestEncoder) resultID(id string) string {
 	if w, ok := e.ids[id]; ok {
 		return w
 	}
-	b := []byte(id)
-	for i, c := range b {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
-			b[i] = '_'
-		}
-	}
-	w := string(b)
-	for n := 2; e.taken[w]; n++ {
-		w = string(b) + "_" + strconv.Itoa(n)
-	}
-	e.ids[id], e.taken[w] = w, true
+	w, _ := clean(id)
 	return w
 }
 
@@ -402,7 +440,7 @@ func (e *requestEncoder) user(m ir.Message, at func(string) string) (wireMessage
 		}
 	}
 	for _, r := range results {
-		b := ir.AppendString([]byte(`{"type":"tool_result","tool_use_id":`), e.wireID(r.part.ToolID))
+		b := ir.AppendString([]byte(`{"type":"tool_result","tool_use_id":`), e.resultID(r.part.ToolID))
 		b = append(b, `,"content":`...)
 		if len(r.images) == 0 {
 			b = ir.AppendString(b, r.part.Text)
@@ -448,8 +486,15 @@ func (e *requestEncoder) assistant(m ir.Message, at func(string) string) (wireMe
 				return w, unsupportedBecause(at("tool_use.input"), err)
 			}
 			ids[p.ToolID] = true
-			b := ir.AppendString([]byte(`{"type":"tool_use","id":`), e.wireID(p.ToolID))
-			b = ir.AppendString(append(b, `,"name":`...), p.ToolName)
+			name, ok := clean(p.ToolName)
+			if !ok || len(name) > maxToolName {
+				// Not a tool the request declares (those are refused): a call
+				// the client recorded from another provider.
+				name = name[:min(len(name), maxToolName)]
+				e.drop(droppedToolUseName)
+			}
+			b := ir.AppendString([]byte(`{"type":"tool_use","id":`), e.callID(p.ToolID))
+			b = ir.AppendString(append(b, `,"name":`...), name)
 			b = append(append(b, `,"input":`...), input...)
 			w.blocks = append(w.blocks, append(b, '}'))
 		case ir.Image:
@@ -497,8 +542,8 @@ func (e *requestEncoder) tools(tools []ir.Tool) error {
 	}
 	e.raw(`,"tools":[`)
 	for i, t := range tools {
-		if t.Name == "" {
-			return unsupported(fmt.Sprintf("tools[%d].name", i))
+		if name, ok := clean(t.Name); !ok || name == "" || len(name) > maxToolName {
+			return &ir.BadRequestError{Format: "messages", Field: fmt.Sprintf("tools[%d].name", i), Reason: "is not a name of 1 to 128 of the characters a-z, A-Z, 0-9, _ and - (Anthropic takes no other)"}
 		}
 		schema, err := objectSchema(t.Schema)
 		if err != nil {
@@ -528,56 +573,18 @@ func (e *requestEncoder) toolChoice(c ir.ToolChoice, tools []ir.Tool) error {
 		if len(tools) > 0 {
 			e.raw(`,"tool_choice":{"type":"` + string(c.Mode) + `"}`)
 		}
-	case ir.ChoiceRequired:
-		if len(tools) == 0 {
-			e.drop(droppedToolChoice)
-			return nil
-		}
-		e.raw(`,"tool_choice":{"type":"any"}`)
-	case ir.ChoiceTool:
-		if c.Name == "" {
+	case ir.ChoiceRequired, ir.ChoiceTool:
+		if c.Mode == ir.ChoiceTool && c.Name == "" {
 			return unsupported("tool_choice.name")
 		}
-		known := false
-		for _, t := range tools {
-			known = known || t.Name == c.Name
+		// {"type":"any"} and {"type":"tool"} are answered 400 by current
+		// models: the model decides.
+		e.drop(droppedToolChoice)
+		if len(tools) > 0 {
+			e.raw(`,"tool_choice":{"type":"auto"}`)
 		}
-		if !known {
-			e.drop(droppedToolChoice)
-			return nil
-		}
-		e.raw(`,"tool_choice":{"type":"tool","name":`)
-		e.str(c.Name)
-		e.raw(`}`)
 	default:
 		return unsupported("tool_choice")
-	}
-	return nil
-}
-
-func (e *requestEncoder) sampling(temperature, topP *float64) error {
-	if temperature != nil && (math.IsNaN(*temperature) || math.IsInf(*temperature, 0)) {
-		return unsupported("temperature")
-	}
-	if topP != nil && (math.IsNaN(*topP) || math.IsInf(*topP, 0)) {
-		return unsupported("top_p")
-	}
-	if temperature != nil {
-		t := *temperature
-		if t > 1 {
-			t = 1
-			e.drop(droppedTemperatureMax)
-		}
-		e.raw(`,"temperature":`)
-		e.b = strconv.AppendFloat(e.b, t, 'g', -1, 64)
-		if topP != nil {
-			e.drop(droppedTopP)
-		}
-		return nil
-	}
-	if topP != nil {
-		e.raw(`,"top_p":`)
-		e.b = strconv.AppendFloat(e.b, *topP, 'g', -1, 64)
 	}
 	return nil
 }

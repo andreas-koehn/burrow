@@ -96,12 +96,11 @@ func rtRequest(rng *rand.Rand) ir.Request {
 			req.ToolChoice = ir.ToolChoice{Mode: ir.ChoiceTool, Name: req.Tools[rng.Intn(len(req.Tools))].Name}
 		}
 	}
-	// Anthropic takes a temperature up to 1, and not a temperature and top_p together.
-	switch rng.Intn(3) {
-	case 0:
-		v := []float64{0, 0.2, 1, 0.7000000000000001, 1e-7}[rng.Intn(5)]
+	if rng.Intn(2) == 0 {
+		v := []float64{0, 0.2, 1, 0.7000000000000001, 1e-7, 2}[rng.Intn(6)]
 		req.Temperature = &v
-	case 1:
+	}
+	if rng.Intn(2) == 0 {
 		v := rng.Float64()
 		req.TopP = &v
 	}
@@ -155,8 +154,8 @@ func rtRequest(rng *rand.Rand) ir.Request {
 		}
 		req.Messages = append(req.Messages, ir.Message{Role: ir.Assistant, Parts: parts})
 	}
-	if len(open) > 0 {
-		userTurn(true)
+	if n := len(req.Messages); len(open) > 0 || req.Messages[n-1].Role == ir.Assistant {
+		userTurn(true) // every call is answered, and the user speaks last
 	}
 	return req
 }
@@ -189,9 +188,30 @@ func forChat(req ir.Request) ir.Request {
 	})
 }
 
-// forMessages: Anthropic Messages carries everything else as it is.
+// forMessages: toward Anthropic Messages the sampling settings are not sent and a forced tool
+// choice is left to the model (both are told); everything else is carried as it is.
 func forMessages(req ir.Request) ir.Request {
-	return forTarget(req, "m-target", func(p ir.Part) ir.Part { return p })
+	out := forTarget(req, "m-target", func(p ir.Part) ir.Part { return p })
+	out.Temperature, out.TopP = nil, nil
+	if out.ToolChoice.Mode == ir.ChoiceRequired || out.ToolChoice.Mode == ir.ChoiceTool {
+		out.ToolChoice = ir.ToolChoice{Mode: ir.ChoiceAuto}
+	}
+	return out
+}
+
+// messagesDropped is what messages.EncodeRequest reports for req besides its thinking.
+func messagesDropped(req ir.Request, more []string) []string {
+	names := append([]string(nil), more...)
+	if req.Temperature != nil {
+		names = append(names, "temperature")
+	}
+	if req.TopP != nil {
+		names = append(names, "top_p")
+	}
+	if req.ToolChoice.Mode == ir.ChoiceRequired || req.ToolChoice.Mode == ir.ChoiceTool {
+		names = append(names, "tool_choice")
+	}
+	return ir.Dropped(names)
 }
 
 func TestRoundTrip_Requests(t *testing.T) {
@@ -230,7 +250,7 @@ func TestRoundTrip_Requests(t *testing.T) {
 
 		// Anthropic Messages.
 		body, dropped, err = messages.EncodeRequest(req, "m-target")
-		if err != nil || !reflect.DeepEqual(dropped, wantDropped) {
+		if err != nil || !reflect.DeepEqual(dropped, messagesDropped(req, wantDropped)) {
 			t.Fatalf("seed %d: messages.EncodeRequest: %v, dropped %v", seed, err, dropped)
 		}
 		if err := messages.CheckRequest(body); err != nil {

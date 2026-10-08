@@ -142,7 +142,7 @@ func TestMessagesTarget_LookupAndRelease(t *testing.T) {
 	if len(pairs) != 4 {
 		t.Fatalf("%d pairs", len(pairs))
 	}
-	if messages.Version != "2023-06-01" || messages.DefaultMaxTokens != 4096 {
+	if messages.Version != "2023-06-01" || messages.DefaultMaxTokens != 32000 {
 		t.Fatal("the anthropic-version or the default max_tokens changed: the gateway and the docs name them")
 	}
 }
@@ -271,8 +271,9 @@ func TestChatMessages_Request(t *testing.T) {
 	if err := messages.CheckRequest(out); err != nil {
 		t.Fatal(err)
 	}
-	// The caller sent no cap: Anthropic requires one, the default is sent and told.
-	if !stream || !reflect.DeepEqual(dropped, []string{"max_tokens:default"}) {
+	// The caller sent no cap: Anthropic requires one, the default is sent and told. Its
+	// temperature is not sent on, and that is told as well.
+	if !stream || !reflect.DeepEqual(dropped, []string{"max_tokens.default", "temperature"}) {
 		t.Fatalf("stream %v, dropped %v", stream, dropped)
 	}
 	// Nothing dropped is nil, and a request that does not stream says so.
@@ -284,7 +285,7 @@ func TestChatMessages_Request(t *testing.T) {
 	_, _, dropped, err = lookup(t, Chat, Messages).Request([]byte(`{"model":"m","n":2,"seed":7,"temperature":1.7,"top_p":0.9,"stop":["\n","END"],"parallel_tool_calls":false,"response_format":{"type":"json_object"},
 "tools":[{"type":"web_search"}],"tool_choice":"required","zeta":1,
 "messages":[{"role":"assistant","content":"Hello.","reasoning_content":"hm"},{"role":"user","content":"hi"}]}`), nil, "claude-x")
-	want := []string{"max_tokens:default", "messages.start", "n", "parallel_tool_calls", "response_format", "seed", "stop.blank", "temperature.max", "thinking",
+	want := []string{"max_tokens.default", "messages.start", "n", "parallel_tool_calls", "response_format", "seed", "stop.blank", "temperature", "thinking",
 		"tool:web_search", "tool_choice", "top_p", "unknown:zeta"}
 	if err != nil || !reflect.DeepEqual(dropped, want) {
 		t.Fatalf("%v\n got %v\nwant %v", err, dropped, want)
@@ -301,7 +302,7 @@ func TestResponsesMessages_Request(t *testing.T) {
 	if err := messages.CheckRequest(out); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"client_metadata", "include", "input.namespace", "input.phase", "input:reasoning", "max_tokens:default", "parallel_tool_calls",
+	want := []string{"client_metadata", "include", "input.namespace", "input.phase", "input:reasoning", "max_tokens.default", "parallel_tool_calls",
 		"prompt_cache_key", "reasoning", "stream_options", "text.verbosity", "tool:custom", "tool:local_shell", "tool:web_search"}
 	if !stream || !reflect.DeepEqual(dropped, want) {
 		t.Fatalf("stream %v, dropped = %v, want %v", stream, dropped, want)
@@ -324,6 +325,9 @@ func TestMessagesTarget_Request_ClientErrors(t *testing.T) {
 			"messages: cannot be expressed in Anthropic Messages: messages[0].image.media_type"},
 		{Chat, `{"model":"m","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"array"}}}]}`,
 			"messages: cannot be expressed in Anthropic Messages: tools[0].input_schema (ir: not a JSON object)"},
+		// A tool declared under a name Anthropic refuses.
+		{Chat, `{"model":"m","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"SECRET.tool"}}]}`,
+			"messages: tools[0].name: is not a name of 1 to 128 of the characters a-z, A-Z, 0-9, _ and - (Anthropic takes no other)"},
 	} {
 		out, _, _, err := lookup(t, c.from, Messages).Request([]byte(c.body), nil, "claude-x")
 		message, ok := BadRequest(err)
@@ -901,4 +905,29 @@ func FuzzResponsesMessagesWriter(f *testing.F) {
 			t.Fatalf("code %q, OnError %v", code, c.onError)
 		}
 	})
+}
+
+func TestChatMessages_Request_OneCallIDInEveryTurn(t *testing.T) {
+	// A history from a provider that numbers its calls anew in every answer: five turns, each
+	// with the call "call_0". Every replay of it must be a request Anthropic accepts.
+	var msgs []string
+	for turn := 0; turn < 5; turn++ {
+		msgs = append(msgs, `{"role":"user","content":"go"}`,
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"call_0","type":"function","function":{"name":"f","arguments":"{}"}}]}`,
+			fmt.Sprintf(`{"role":"tool","tool_call_id":"call_0","content":"r%d"}`, turn))
+	}
+	body := `{"model":"m","max_tokens":5,"messages":[` + strings.Join(append(msgs, `{"role":"user","content":"and now?"}`), ",") + `]}`
+	out, _, dropped, err := lookup(t, Chat, Messages).Request([]byte(body), nil, "claude-x")
+	if err != nil || dropped != nil {
+		t.Fatalf("%v, dropped %v", err, dropped)
+	}
+	if err := messages.CheckRequest(out); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for turn, id := range []string{"call_0", "call_0_2", "call_0_3", "call_0_4", "call_0_5"} {
+		want := fmt.Sprintf(`{"type":"tool_result","tool_use_id":%q,"content":"r%d"}`, id, turn)
+		if !bytes.Contains(out, []byte(want)) || bytes.Count(out, []byte(`"id":"`+id+`"`)) != 1 {
+			t.Fatalf("turn %d: no %s in\n%s", turn, want, out)
+		}
+	}
 }

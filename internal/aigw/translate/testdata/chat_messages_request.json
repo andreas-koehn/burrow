@@ -1,4 +1,4 @@
-{"model":"claude-x","max_tokens":4096,"system":"You are a weather bot.",
+{"model":"claude-x","max_tokens":32000,"system":"You are a weather bot.",
  "messages":[
    {"role":"user","content":[{"type":"text","text":"Weather in Oslo and Rome?"}]},
    {"role":"assistant","content":[
@@ -11,4 +11,4 @@
      {"type":"text","text":"And tomorrow?"}]}
  ],
  "tools":[{"name":"get_weather","description":"Weather for a city","input_schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}],
- "tool_choice":{"type":"auto"},"temperature":0.2,"stream":true}
+ "tool_choice":{"type":"auto"},"stream":true}

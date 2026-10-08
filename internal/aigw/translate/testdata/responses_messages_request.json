@@ -1,4 +1,4 @@
-{"model":"claude-x","max_tokens":4096,"system":"You are a coding agent.\n\nBe careful.",
+{"model":"claude-x","max_tokens":32000,"system":"You are a coding agent.\n\nBe careful.",
  "messages":[
    {"role":"user","content":[{"type":"text","text":"List the files"}]},
    {"role":"assistant","content":[
