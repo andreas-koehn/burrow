@@ -18,12 +18,12 @@ const openaiOnly: ConnectModel = {
 /** An OpenAI target without the Responses API, translation on. */
 const translated: ConnectModel = {
   name: "burrow-simple", dialect_modes: { openai: "native", anthropic: "translated" }, responses_mode: "translated",
-  translation_pairs: { anthropic: "messages-chat", responses: "responses-chat" },
+  translation_pairs: { anthropic: ["messages-chat"], responses: ["responses-chat"] },
 };
 /** An Anthropic target only, translation on. */
 const anthropicOnly: ConnectModel = {
   name: "burrow-claude", dialect_modes: { openai: "translated", anthropic: "native" }, responses_mode: "translated",
-  translation_pairs: { openai: "chat-messages", responses: "responses-messages" },
+  translation_pairs: { openai: ["chat-messages"], responses: ["responses-messages"] },
 };
 const models: ConnectModel[] = [native, openaiOnly];
 const offered = (name: string) => within(screen.getByRole("list", { name })).getAllByRole("listitem").map((li) => li.textContent);
@@ -119,6 +119,16 @@ describe("ConnectCard", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Codex" }));
     expect(offered("Models for Codex")).toEqual(["burrow-claudetranslated"]);
     expect(screen.getByText(/output is capped at 32,000 tokens when the client sets no limit, and temperature and top_p are not sent/i)).toBeInTheDocument();
+  });
+
+  it("Codex: the Anthropic-format note shows when any candidate of a model is one, not only the first", async () => {
+    mount([{
+      name: "burrow-both", dialect_modes: { openai: "native", anthropic: "native" }, responses_mode: "translated",
+      translation_pairs: { responses: ["responses-chat", "responses-messages"] },
+    }]);
+    await userEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    expect(screen.getByText(/may be answered by an Anthropic-format provider/i)).toBeInTheDocument();
+    expect(screen.getByText(/32,000 tokens/)).toBeInTheDocument();
   });
 
   it("Codex: explains what to do when no model is served on the Responses API", async () => {

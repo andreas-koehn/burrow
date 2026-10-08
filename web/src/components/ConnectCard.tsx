@@ -30,8 +30,8 @@ type Endpoint = Dialect | "responses";
 interface Offer {
   name: string;
   translated: boolean;
-  /** The pair a translated request goes through first. */
-  pair?: string;
+  /** The pairs a translated request can go through, in the order they are tried. */
+  pairs?: string[];
 }
 
 const modeOf = (m: ConnectModel, e: Endpoint): DialectMode | undefined =>
@@ -40,7 +40,7 @@ const modeOf = (m: ConnectModel, e: Endpoint): DialectMode | undefined =>
 /** The models served on an endpoint: natively served ones first, then translated ones, each in list order. */
 function offers(models: ConnectModel[], e: Endpoint): Offer[] {
   const of = (mode: DialectMode) => models.filter((m) => modeOf(m, e) === mode)
-    .map((m) => ({ name: m.name, translated: mode === "translated", pair: m.translation_pairs?.[e] }));
+    .map((m) => ({ name: m.name, translated: mode === "translated", pairs: m.translation_pairs?.[e] }));
   return [...of("native"), ...of("translated")];
 }
 
@@ -62,11 +62,12 @@ const DROPPED_HEADER = <>Every translated response names what was left out in it
 
 /** What a translated model loses behind an Anthropic-format provider, for clients that speak an OpenAI format. */
 function TowardMessagesNote({ list }: { list: Offer[] }) {
-  if (!list.some((m) => m.translated && towardMessages(m.pair))) return null;
+  // Any candidate counts, not only the first: a later one can be the one that answers.
+  if (!list.some((m) => m.translated && towardMessages(m.pairs))) return null;
   return (
     <p className="muted small">
-      Toward an Anthropic-format provider the output is capped at 32,000 tokens when the client sets no limit, and
-      temperature and top_p are not sent.
+      A translated model may be answered by an Anthropic-format provider: there the output is capped at 32,000 tokens
+      when the client sets no limit, and temperature and top_p are not sent.
     </p>
   );
 }

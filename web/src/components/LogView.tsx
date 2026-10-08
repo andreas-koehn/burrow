@@ -104,7 +104,7 @@ export function LogView<Row>({
         <table className="data" aria-label={label} ref={tableRef}>
           <thead>
             <tr>
-              {columns.map((c) => <th key={c.id} className={c.numeric ? "col-num" : undefined}>{c.header}</th>)}
+              {columns.map((c) => <th key={c.id} scope="col" className={c.numeric ? "col-num" : undefined}>{c.header}</th>)}
             </tr>
           </thead>
           <tbody>

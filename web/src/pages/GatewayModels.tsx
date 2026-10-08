@@ -11,7 +11,7 @@ import { ConnectCard } from "@/components/ConnectCard";
 import { GatewayAddresses } from "@/components/GatewayAddresses";
 import { ModelDialog } from "@/components/ModelDialog";
 import { useAuth } from "@/auth/useAuth";
-import { pairWords } from "@/lib/translation";
+import { pairsWords } from "@/lib/translation";
 import type { AiModel, AiProvider, Dialect, GatewayInfo } from "@/lib/contract";
 
 const FORMAT_NAME: Record<Dialect, string> = { openai: "OpenAI format", anthropic: "Anthropic format" };
@@ -24,16 +24,17 @@ const FORMAT_NAME: Record<Dialect, string> = { openai: "OpenAI format", anthropi
  */
 function FormatCell({ model, dialect }: { model: AiModel; dialect: Dialect }) {
   const targets = model.targets.filter((t) => t.dialect === dialect);
-  if (targets.length === 0) {
-    const pair = model.translation_pairs?.[dialect];
-    if (model.dialect_modes?.[dialect] !== "translated" || !pair) return <span className="muted">not served</span>;
-    return (
-      <span className="format-mode">
-        <Badge kind="status-idle">translated</Badge>
-        <span className="muted small">{pairWords(pair)}</span>
-      </span>
-    );
-  }
+  // The mode first: a stored target whose provider speaks another format now
+  // is still listed, while the format is answered through translation.
+  const pairs = model.translation_pairs?.[dialect] ?? [];
+  const translated = model.dialect_modes?.[dialect] === "translated" && pairs.length > 0;
+  const mode = translated && (
+    <span className="format-mode">
+      <Badge kind="status-idle">translated</Badge>
+      <span className="muted small">{pairsWords(pairs)}</span>
+    </span>
+  );
+  if (targets.length === 0) return mode || <span className="muted">not served</span>;
   // A disabled model serves nothing; the Status column says why.
   const serving = model.enabled ? model.serving?.[dialect] : null;
   const servingAt = serving
@@ -41,6 +42,7 @@ function FormatCell({ model, dialect }: { model: AiModel; dialect: Dialect }) {
     : -1;
   return (
     <>
+      {mode}
       <ol className="target-chain" aria-label={`${FORMAT_NAME[dialect]} targets of ${model.name}, in the order they are tried`}>
         {targets.map((t, i) => (
           <li key={`${t.provider}/${t.model}`}>
@@ -55,7 +57,7 @@ function FormatCell({ model, dialect }: { model: AiModel; dialect: Dialect }) {
           </li>
         ))}
       </ol>
-      {model.enabled && servingAt < 0 && <Badge kind="status-offline">no target available</Badge>}
+      {model.enabled && servingAt < 0 && !translated && <Badge kind="status-offline">no target available</Badge>}
     </>
   );
 }
@@ -65,8 +67,8 @@ function responsesText(model: AiModel): string | null {
   // A disabled model serves nothing; the Status column says why.
   if (!model.enabled || !model.responses_mode) return null;
   if (model.responses_mode === "native") return "Responses API: served natively";
-  const pair = model.translation_pairs?.responses;
-  if (model.responses_mode === "translated" && pair) return `Responses API: translated (${pairWords(pair)})`;
+  const pairs = model.translation_pairs?.responses ?? [];
+  if (model.responses_mode === "translated" && pairs.length > 0) return `Responses API: translated (${pairsWords(pairs)})`;
   return "Responses API: not served";
 }
 

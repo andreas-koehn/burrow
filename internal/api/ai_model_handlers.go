@@ -71,12 +71,12 @@ type aiModelResp struct {
 	// Completions. ResponsesMode is the Responses API on the openai endpoint.
 	DialectModes  map[string]string `json:"dialect_modes"`
 	ResponsesMode string            `json:"responses_mode"`
-	// The pair a translated request goes through first, keyed "openai",
-	// "anthropic" or "responses"; a key exists only where the mode is
-	// "translated".
-	TranslationPairs map[string]string `json:"translation_pairs"`
-	CreatedAt        time.Time         `json:"created_at"`
-	UpdatedAt        time.Time         `json:"updated_at"`
+	// The pairs a translated request can go through, in the order its
+	// targets are tried, keyed "openai", "anthropic" or "responses"; a key
+	// exists only where the mode is "translated".
+	TranslationPairs map[string][]string `json:"translation_pairs"`
+	CreatedAt        time.Time           `json:"created_at"`
+	UpdatedAt        time.Time           `json:"updated_at"`
 }
 
 // providersBySlug loads every provider once for a model view. Without a
@@ -157,10 +157,10 @@ func (d Deps) modelView(m db.AIModel, providers map[string]db.AIProvider) aiMode
 	modes := aigateway.ServedModes(m, providers)
 	out.DialectModes = map[string]string{"openai": modes.OpenAI.Mode, "anthropic": modes.Anthropic.Mode}
 	out.ResponsesMode = modes.Responses.Mode
-	out.TranslationPairs = map[string]string{}
+	out.TranslationPairs = map[string][]string{}
 	for key, mode := range map[string]aigateway.Mode{"openai": modes.OpenAI, "anthropic": modes.Anthropic, "responses": modes.Responses} {
 		if mode.Mode == aigateway.ModeTranslated {
-			out.TranslationPairs[key] = mode.Pair
+			out.TranslationPairs[key] = mode.Pairs
 		}
 	}
 	return out

@@ -473,14 +473,20 @@ components:
           type: object
           readOnly: true
           description: >
-            The pair a translated request is sent through first. A key
-            exists only where the mode is translated; the object is empty
-            when nothing is. A request that carries this field is refused
-            with 400.
+            The pairs a translated request can be sent through, in the
+            order its targets are tried, each pair once. A key exists only
+            where the mode is translated; the object is empty when nothing
+            is. A request that carries this field is refused with 400.
           properties:
-            openai: { type: string, enum: [chat-messages] }
-            anthropic: { type: string, enum: [messages-chat] }
-            responses: { type: string, enum: [responses-chat, responses-messages] }
+            openai:
+              type: array
+              items: { type: string, enum: [chat-messages] }
+            anthropic:
+              type: array
+              items: { type: string, enum: [messages-chat] }
+            responses:
+              type: array
+              items: { type: string, enum: [responses-chat, responses-messages] }
         created_at: { type: string, format: date-time, readOnly: true }
         updated_at: { type: string, format: date-time, readOnly: true }
     InspectorTranslation:

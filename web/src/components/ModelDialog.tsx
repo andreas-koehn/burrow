@@ -469,7 +469,8 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
         </label>
         <p id="model-translate-help" className="muted small">
           A format is served natively where it has a target. With this on, a format without a target is answered by
-          translating to and from the targets of the other format. A target of its own format is always used first.
+          translating to and from the targets of the other format, and the Responses API is answered through an
+          OpenAI-format target that does not offer it. A target of its own format is always used first.
         </p>
         <p id="model-translate-limits" className="muted small">
           Translated requests lose what the other format cannot express: prompt caching hints, thinking signatures and

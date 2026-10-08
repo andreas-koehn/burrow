@@ -428,20 +428,20 @@ describe("MSW gateway handlers mirror the API", () => {
     expect(modes(await view("burrow-simple"))).toEqual([{ openai: "native", anthropic: "not_served" }, "not_served", {}]);
     db.aiModels[0]!.translate = true;
     expect(modes(await view("burrow-simple"))).toEqual([
-      { openai: "native", anthropic: "translated" }, "translated", { anthropic: "messages-chat", responses: "responses-chat" },
+      { openai: "native", anthropic: "translated" }, "translated", { anthropic: ["messages-chat"], responses: ["responses-chat"] },
     ]);
     // A provider that offers the Responses API serves it natively, whatever the flag says.
     db.aiProviders.find((p) => p.slug === "ollama")!.supports_responses = true;
-    expect(modes(await view("burrow-simple"))).toEqual([{ openai: "native", anthropic: "translated" }, "native", { anthropic: "messages-chat" }]);
+    expect(modes(await view("burrow-simple"))).toEqual([{ openai: "native", anthropic: "translated" }, "native", { anthropic: ["messages-chat"] }]);
     // Targets in both formats: native in both; Responses only through translation.
     const smart = db.aiModels.find((m) => m.name === "burrow-intelligence")!;
     expect(modes(await view("burrow-intelligence"))).toEqual([{ openai: "native", anthropic: "native" }, "not_served", {}]);
     smart.translate = true;
-    expect(modes(await view("burrow-intelligence"))).toEqual([{ openai: "native", anthropic: "native" }, "translated", { responses: "responses-chat" }]);
+    expect(modes(await view("burrow-intelligence"))).toEqual([{ openai: "native", anthropic: "native" }, "translated", { responses: ["responses-chat", "responses-messages"] }]);
     // An Anthropic target only.
     smart.targets = smart.targets.filter((t) => t.dialect === "anthropic");
     expect(modes(await view("burrow-intelligence"))).toEqual([
-      { openai: "translated", anthropic: "native" }, "translated", { openai: "chat-messages", responses: "responses-messages" },
+      { openai: "translated", anthropic: "native" }, "translated", { openai: ["chat-messages"], responses: ["responses-messages"] },
     ]);
     // A disabled model is served nowhere.
     smart.enabled = false;

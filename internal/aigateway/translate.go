@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -200,11 +201,12 @@ const (
 	ModeNotServed  = "not_served" // a request is refused
 )
 
-// Mode says how a model is served on one endpoint. Pair is the id of the
-// pair of the first target a translated request is sent to, "" otherwise.
+// Mode says how a model is served on one endpoint. Pairs holds the ids of the
+// pairs a translated request can go through, in the order its targets are
+// tried, each once; nil unless the mode is translated.
 type Mode struct {
-	Mode string
-	Pair string
+	Mode  string
+	Pairs []string
 }
 
 // Modes says how a synthetic model is served per endpoint a client is
@@ -241,7 +243,13 @@ func ServedModes(m db.AIModel, providers map[string]db.AIProvider) Modes {
 		case len(native) > 0:
 			return Mode{Mode: ModeNative}
 		case len(translated) > 0:
-			return Mode{Mode: ModeTranslated, Pair: translated[0].pair.ID()}
+			out := Mode{Mode: ModeTranslated}
+			for _, t := range translated {
+				if id := t.pair.ID(); !slices.Contains(out.Pairs, id) {
+					out.Pairs = append(out.Pairs, id)
+				}
+			}
+			return out
 		}
 		return Mode{Mode: ModeNotServed}
 	}
@@ -252,28 +260,16 @@ func ServedModes(m db.AIModel, providers map[string]db.AIProvider) Modes {
 	}
 }
 
-// translatedIn reports whether m, which has no usable target of dialect d, is
-// served there through translation: the rule of candidatesForRequest, applied
-// to the catalog. formats maps a provider slug to its api_format.
-func translatedIn(m db.AIModel, d *Dialect, formats map[string]string) bool {
-	if !m.Translate {
-		return false
+// listedIn reports whether a model with these modes belongs in the model
+// list of dialect d: it is served on one of the dialect's endpoints, natively
+// or through translation. The modes are ServedModes', so the list, the model
+// view and the request path share one rule (chooseTargets).
+func listedIn(modes Modes, d *Dialect) bool {
+	served := func(m Mode) bool { return m.Mode != ModeNotServed }
+	if d == DialectAnthropic {
+		return served(modes.Anthropic)
 	}
-	for path := range d.inferencePaths {
-		caller, ok := translate.CallerFormat(d.Name, path)
-		if !ok {
-			continue
-		}
-		for _, t := range m.Targets {
-			if t.Dialect == d.Name || formats[t.ProviderSlug] != t.Dialect {
-				continue
-			}
-			if _, ok := lookupPair(caller, translate.TargetFormat(t.Dialect)); ok {
-				return true
-			}
-		}
-	}
-	return false
+	return served(modes.OpenAI) || served(modes.Responses)
 }
 
 // translation is one attempt's translated request.

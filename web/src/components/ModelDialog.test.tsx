@@ -190,6 +190,8 @@ describe("ModelDialog", () => {
     expect(sw).toHaveAccessibleDescription(/a target of its own format is always used first/i);
     expect(sw).toHaveAccessibleDescription(/prompt caching hints, thinking signatures and beta features are not carried over/i);
     expect(sw).toHaveAccessibleDescription(/names what was left out/i);
+    // The Responses API can be translated through the model's own OpenAI-format target.
+    expect(sw).toHaveAccessibleDescription(/Responses API is answered through an OpenAI-format target that does not offer it/i);
     const save = screen.getByRole("button", { name: "Save changes" });
     expect(save).toBeDisabled();
     await userEvent.click(sw);

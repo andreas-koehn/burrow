@@ -369,11 +369,11 @@ func (g *Gateway) serveDialectModels(w http.ResponseWriter, r *http.Request, d *
 		g.fail(w, r, http.StatusInternalServerError, "internal_error", "internal error")
 		return
 	}
-	speaks := make(map[string]bool, len(providers))    // providers of this dialect
-	formats := make(map[string]string, len(providers)) // every provider's format
+	speaks := make(map[string]bool, len(providers))          // providers of this dialect
+	bySlug := make(map[string]db.AIProvider, len(providers)) // every provider's row
 	for _, p := range providers {
 		speaks[p.Slug] = p.APIFormat == d.Name
-		formats[p.Slug] = p.APIFormat
+		bySlug[p.Slug] = p
 	}
 	models, err := g.Catalog.ListModels(ctx)
 	if err != nil {
@@ -382,7 +382,7 @@ func (g *Gateway) serveDialectModels(w http.ResponseWriter, r *http.Request, d *
 		return
 	}
 	for _, m := range models {
-		if m.Enabled && (servedIn(m, d.Name, speaks) || translatedIn(m, d, formats)) && store.ModelAllowed(key.AllowedModels, m.Name) {
+		if listedIn(ServedModes(m, bySlug), d) && store.ModelAllowed(key.AllowedModels, m.Name) {
 			items = append(items, modelItem{ID: m.Name, OwnedBy: "burrow", DisplayName: m.Name})
 		}
 	}
@@ -407,17 +407,6 @@ func (g *Gateway) serveDialectModels(w http.ResponseWriter, r *http.Request, d *
 	}
 	sort.Slice(direct, func(i, j int) bool { return direct[i].ID < direct[j].ID })
 	d.writeModels(w, append(items, direct...))
-}
-
-// servedIn reports whether m has at least one target for dialect whose
-// provider speaks it (the same rule resolution applies to a request).
-func servedIn(m db.AIModel, dialect string, speaks map[string]bool) bool {
-	for _, t := range m.Targets {
-		if t.Dialect == dialect && speaks[t.ProviderSlug] {
-			return true
-		}
-	}
-	return false
 }
 
 // pathResponses is the one Responses API endpoint the gateway serves:

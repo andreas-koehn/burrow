@@ -1709,7 +1709,7 @@ func TestServedModes(t *testing.T) {
 	tB := db.AIModelTarget{Dialect: "openai", ProviderSlug: "b", TargetModel: "mb"}
 	tC := db.AIModelTarget{Dialect: "anthropic", ProviderSlug: "c", TargetModel: "mc"}
 	native, off := Mode{Mode: ModeNative}, Mode{Mode: ModeNotServed}
-	via := func(pair string) Mode { return Mode{Mode: ModeTranslated, Pair: pair} }
+	via := func(pairs ...string) Mode { return Mode{Mode: ModeTranslated, Pairs: pairs} }
 	model := func(on bool, targets ...db.AIModelTarget) db.AIModel {
 		return db.AIModel{Name: "m", Enabled: true, Translate: on, Targets: targets}
 	}
@@ -1724,8 +1724,11 @@ func TestServedModes(t *testing.T) {
 		{"openai without responses, flag on", model(true, tB),
 			Modes{OpenAI: native, Anthropic: via("messages-chat"), Responses: via("responses-chat")}},
 		{"both, responses offered", model(true, tA, tC), Modes{OpenAI: native, Anthropic: native, Responses: native}},
+		// Every pair a request can go through, in candidate order, each once.
 		{"both, responses not offered, flag on", model(true, tB, tC),
-			Modes{OpenAI: native, Anthropic: native, Responses: via("responses-chat")}},
+			Modes{OpenAI: native, Anthropic: native, Responses: via("responses-chat", "responses-messages")}},
+		{"two targets through one pair name it once", model(true, tB, db.AIModelTarget{Dialect: "openai", ProviderSlug: "b", TargetModel: "mb2"}),
+			Modes{OpenAI: native, Anthropic: via("messages-chat"), Responses: via("responses-chat")}},
 		{"both, responses not offered, flag off", model(false, tB, tC), Modes{OpenAI: native, Anthropic: native, Responses: off}},
 		{"anthropic only, flag on", model(true, tC),
 			Modes{OpenAI: via("chat-messages"), Anthropic: native, Responses: via("responses-messages")}},
@@ -1740,7 +1743,7 @@ func TestServedModes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ServedModes(tc.m, providers); got != tc.want {
+			if got := ServedModes(tc.m, providers); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("modes %+v, want %+v", got, tc.want)
 			}
 		})
@@ -1756,7 +1759,7 @@ func TestServedModes(t *testing.T) {
 			return old(from, to)
 		}
 		want := Modes{OpenAI: native, Anthropic: off, Responses: via("responses-chat")}
-		if got := ServedModes(model(true, tB), providers); got != want {
+		if got := ServedModes(model(true, tB), providers); !reflect.DeepEqual(got, want) {
 			t.Fatalf("modes %+v, want %+v", got, want)
 		}
 	})
@@ -1775,7 +1778,7 @@ func TestServedModes(t *testing.T) {
 			modes := ServedModes(m, map[string]db.AIProvider{"zai": p})
 			rec := serve(g, anthropicPost("/v1/messages", messagesHi), DialectAnthropic)
 			served := rec.Code == 200
-			if (modes.Anthropic.Mode == ModeTranslated) != served || rec.Header().Get("Burrow-Translated") != modes.Anthropic.Pair {
+			if (modes.Anthropic.Mode == ModeTranslated) != served || rec.Header().Get("Burrow-Translated") != strings.Join(modes.Anthropic.Pairs, ",") {
 				t.Fatalf("translate=%v: view %+v, request status %d translated %q",
 					on, modes.Anthropic, rec.Code, rec.Header().Get("Burrow-Translated"))
 			}

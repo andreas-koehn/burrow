@@ -53,6 +53,7 @@ describe("Requests page", () => {
     // Model, tokens and cost are not part of a captured request yet.
     expect(within(t).getAllByRole("columnheader").map((h) => h.textContent))
       .toEqual(["Time", "Provider", "Method", "Path", "Status", "Cache", "Guardrail", "Translation"]);
+    for (const h of within(t).getAllByRole("columnheader")) expect(h).toHaveAttribute("scope", "col");
   });
 
   it("names the provider the service belongs to, and '—' for a service without one", async () => {

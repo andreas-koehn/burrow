@@ -928,12 +928,12 @@ func TestModelView_ServingAndAvailability(t *testing.T) {
 }
 
 // modesOf reads the per-format modes of one model view as raw JSON.
-func modesOf(t *testing.T, body string) (modes map[string]string, responses string, pairs map[string]string) {
+func modesOf(t *testing.T, body string) (modes map[string]string, responses string, pairs map[string][]string) {
 	t.Helper()
 	var raw struct {
-		DialectModes     map[string]string `json:"dialect_modes"`
-		ResponsesMode    string            `json:"responses_mode"`
-		TranslationPairs map[string]string `json:"translation_pairs"`
+		DialectModes     map[string]string   `json:"dialect_modes"`
+		ResponsesMode    string              `json:"responses_mode"`
+		TranslationPairs map[string][]string `json:"translation_pairs"`
 	}
 	if err := json.Unmarshal([]byte(body), &raw); err != nil {
 		t.Fatalf("decode %s: %v", body, err)
@@ -966,13 +966,13 @@ func TestModelView_Modes(t *testing.T) {
 	}{
 		{"openai only, off", false, []db.AIModelTarget{tChat}, "map[anthropic:not_served openai:native]", "not_served", "map[]"},
 		{"openai only, on", true, []db.AIModelTarget{tChat}, "map[anthropic:translated openai:native]", "translated",
-			"map[anthropic:messages-chat responses:responses-chat]"},
+			"map[anthropic:[messages-chat] responses:[responses-chat]]"},
 		{"both, responses offered", true, []db.AIModelTarget{tMsg, tResp}, "map[anthropic:native openai:native]", "native", "map[]"},
 		{"both, responses not offered, on", true, []db.AIModelTarget{tMsg, tChat}, "map[anthropic:native openai:native]", "translated",
-			"map[responses:responses-chat]"},
+			"map[responses:[responses-chat responses-messages]]"},
 		{"both, responses not offered, off", false, []db.AIModelTarget{tMsg, tChat}, "map[anthropic:native openai:native]", "not_served", "map[]"},
 		{"anthropic only, on", true, []db.AIModelTarget{tMsg}, "map[anthropic:native openai:translated]", "translated",
-			"map[openai:chat-messages responses:responses-messages]"},
+			"map[openai:[chat-messages] responses:[responses-messages]]"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

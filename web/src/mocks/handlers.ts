@@ -334,10 +334,11 @@ function servedModes(m: AiModel): Pick<AiModel, "dialect_modes" | "responses_mod
     const offers = (p: (typeof own)[number]) => key !== "responses" || p.supports_responses === true;
     if (own.some(offers)) return "native";
     if (!m.translate) return "not_served";
-    const first = [...own.filter((p) => !offers(p)), ...usable(dialect === "openai" ? "anthropic" : "openai")][0];
-    if (!first) return "not_served";
+    const through = [...own.filter((p) => !offers(p)), ...usable(dialect === "openai" ? "anthropic" : "openai")];
+    if (through.length === 0) return "not_served";
     const caller = key === "anthropic" ? "messages" : key === "openai" ? "chat" : "responses";
-    pairs[key] = `${caller}-${first.api_format === "openai" ? "chat" : "messages"}`;
+    // Every pair once, in the order the targets are tried.
+    pairs[key] = [...new Set(through.map((p) => `${caller}-${p.api_format === "openai" ? "chat" : "messages"}`))];
     return "translated";
   };
   return { dialect_modes: { openai: mode("openai"), anthropic: mode("anthropic") }, responses_mode: mode("responses"), translation_pairs: pairs };

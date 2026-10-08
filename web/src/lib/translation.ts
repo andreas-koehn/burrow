@@ -12,12 +12,18 @@ const PAIRS: Record<string, string> = {
 
 /** A pair id in words; an id this dashboard does not know is shown as it is. */
 export function pairWords(pair: string): string {
-  return PAIRS[pair] ?? pair;
+  // An own key only: "constructor" is no pair.
+  return Object.hasOwn(PAIRS, pair) ? PAIRS[pair]! : pair;
 }
 
-/** Whether the pair asks an Anthropic-format provider. */
-export function towardMessages(pair: string | undefined): boolean {
-  return pair !== undefined && pair.endsWith("-messages");
+/** Whether any of the pairs asks an Anthropic-format provider. */
+export function towardMessages(pairs: string[] | undefined): boolean {
+  return (pairs ?? []).some((p) => p.endsWith("-messages"));
+}
+
+/** Several pairs in words, in the order they are tried. */
+export function pairsWords(pairs: string[]): string {
+  return pairs.map(pairWords).join(" or ");
 }
 
 /**

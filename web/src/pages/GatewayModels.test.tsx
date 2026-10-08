@@ -45,6 +45,32 @@ describe("Models page", () => {
     expect(within(row).getByText("Responses API: translated (OpenAI Responses → Chat Completions)")).toBeInTheDocument();
   });
 
+  it("a format whose stored target cannot serve any more says it is translated, not only that the target is unavailable", async () => {
+    // The Anthropic target's provider speaks the OpenAI format now.
+    const simple = db.aiModels.find((m) => m.name === "burrow-simple")!;
+    simple.translate = true;
+    simple.targets = [...simple.targets, { dialect: "anthropic", provider: "zai", model: "glm-5.1", available: false }];
+    simple.dialects = ["anthropic", "openai"];
+    mount();
+    const row = within(await screen.findByRole("table", { name: "Models" })).getByRole("row", { name: /burrow-simple/ });
+    expect(within(row).getByText("translated", { selector: "span.badge" })).toBeVisible();
+    expect(within(row).getByText("Anthropic Messages → Chat Completions")).toBeInTheDocument();
+    // The stored target stays visible, as unavailable.
+    const chain = within(row).getByRole("list", { name: "Anthropic format targets of burrow-simple, in the order they are tried" });
+    expect(within(chain).getByText("unavailable")).toBeInTheDocument();
+    expect(within(row).queryByText("no target available")).toBeNull();
+  });
+
+  it("names every pair a translated request can go through", async () => {
+    // zai (OpenAI format, no Responses API) and zai-anthropic.
+    db.aiModels.find((m) => m.name === "burrow-intelligence")!.translate = true;
+    mount();
+    const row = within(await screen.findByRole("table", { name: "Models" })).getByRole("row", { name: /burrow-intelligence/ });
+    expect(within(row).getByText(
+      "Responses API: translated (OpenAI Responses → Chat Completions or OpenAI Responses → Anthropic Messages)",
+    )).toBeInTheDocument();
+  });
+
   it("says how the Responses API is served", async () => {
     db.aiProviders.find((p) => p.slug === "zai")!.supports_responses = true;
     mount();

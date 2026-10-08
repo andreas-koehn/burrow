@@ -536,8 +536,11 @@ export interface AiModel {
   dialect_modes: Record<Dialect, DialectMode>;
   /** The Responses API on the OpenAI endpoint (what Codex uses). Computed by the relay. */
   responses_mode: DialectMode;
-  /** The pair a translated request goes through first; a key only where the mode is "translated". */
-  translation_pairs: Partial<Record<Dialect | "responses", string>>;
+  /**
+   * The pairs a translated request can go through, in the order its targets
+   * are tried; a key only where the mode is "translated".
+   */
+  translation_pairs: Partial<Record<Dialect | "responses", string[]>>;
   created_at: string;
   updated_at: string;
 }
