@@ -49,7 +49,9 @@ type Catalog interface {
 // nothing after it). Neither header reaches an upstream.
 //
 // Order of checks: gateway key, the key's allow-list on the name the client
-// asked for, the daily budget of the key and of that name, model resolution, which targets offer the endpoint, the first
+// asked for, the daily budget of the key and of that name, model resolution,
+// which targets offer the endpoint (or, for a model that opted in and has
+// none, which can be reached through a translating pair), the first
 // target's service policy (access mode, IP/geo), then the chain, and inside
 // it, per attempt, that target's policy and only then its upstream
 // credential (see failover). Nothing of the request but its key is looked at
@@ -121,26 +123,20 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 	}
 
 	// Only targets that offer the requested endpoint are candidates; a
-	// provider that does not offer it is not called and nothing of it is read.
-	var targets []Target
-	for _, t := range res.Targets {
-		if endpointSupported(path, t.Provider) {
-			targets = append(targets, t)
+	// provider that does not offer it is not called and nothing of it is
+	// read. A model that has none and has translation turned on gets
+	// translated candidates instead (see candidatesForRequest); without the
+	// flag the answers below are what they always were.
+	candidates, why := g.candidatesForRequest(res, d, path)
+	if len(candidates) == 0 {
+		if !g.estimateCount(w, r, res, d, path, body) {
+			g.failNoCandidate(w, r, res, d, requested, why)
 		}
-	}
-	if len(targets) == 0 {
-		// A synthetic name does not tell what stands behind it, and a key
-		// may be allowed that name alone: the provider is named only to a
-		// client that named it itself.
-		msg := "model " + shownName(requested) + " is not available on the Responses API; use /v1/chat/completions"
-		if !res.Synthetic {
-			msg = "provider " + res.Targets[0].Provider.Slug + " does not offer the Responses API; use /v1/chat/completions for model " + shownName(requested)
-		}
-		g.fail(w, r, http.StatusBadRequest, "endpoint_unsupported", msg)
 		return
 	}
-	candidates := candidatesFor(targets)
-	first := targets[0]
+	// All of a request's candidates are translated, or none is.
+	translated := candidates[0].pair != nil
+	first := Target{Provider: candidates[0].provider, Model: candidates[0].model}
 
 	requestID := w.Header().Get(headerRequestID)
 	route := aigw.NewRoute(key.ID, d.Name, requested, requestID)
@@ -157,9 +153,12 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 	if !ok {
 		return
 	}
-	if !checked {
+	if !checked || translated {
 		// In the context, not in a header: the request's headers go on to
-		// the upstream.
+		// the upstream. A translated answer is never cached: the key is the
+		// first target's service and model, which a request in that target's
+		// own format shares, and one of the two would be served the other's
+		// format.
 		r = r.WithContext(aigw.WithoutCache(r.Context()))
 	}
 	// Each attempt applies the upstream credential of its own target (see
@@ -186,8 +185,34 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 		r = r.WithContext(aigw.WithoutUsage(r.Context()))
 	}
 	// A reported cost is believed only when every candidate is an upstream
-	// the relay calls itself: the chain cannot tell which one answered.
-	g.Chain.DispatchMetered(w, r, first.Provider.ServiceID, host, "Authorization", "", allDirect(candidates), fo)
+	// the relay calls itself: the chain cannot tell which one answered. It
+	// is not believed for a translated answer: the chain reads the caller's
+	// side of it, where no upstream's figure stands.
+	g.Chain.DispatchMetered(w, r, first.Provider.ServiceID, host, "Authorization", "", allDirect(candidates) && !translated, fo)
+}
+
+// failNoCandidate answers a request whose model has nothing to try on this
+// endpoint. A synthetic name does not tell what stands behind it, and a key
+// may be allowed that name alone: a provider is named only to a client that
+// named it itself.
+func (g *Gateway) failNoCandidate(w http.ResponseWriter, r *http.Request, res Resolution, d *Dialect, requested, why string) {
+	switch why {
+	case whyEndpointUnsupported:
+		msg := "model " + shownName(requested) + " is not available on the Responses API; use /v1/chat/completions"
+		if !res.Synthetic {
+			msg = "provider " + res.Targets[0].Provider.Slug + " does not offer the Responses API; use /v1/chat/completions for model " + shownName(requested)
+		}
+		g.fail(w, r, http.StatusBadRequest, "endpoint_unsupported", msg)
+	case whyFormatMismatch:
+		g.failFormatMismatch(w, r, requested, d, res.Other[0].Provider.APIFormat)
+	default:
+		g.fail(w, r, http.StatusNotFound, "model_not_found", "unknown model "+shownName(requested))
+	}
+}
+
+func (g *Gateway) failFormatMismatch(w http.ResponseWriter, r *http.Request, requested string, d *Dialect, servedBy string) {
+	g.fail(w, r, http.StatusBadRequest, "format_mismatch",
+		"model "+shownName(requested)+" is not served in the "+d.Name+" format; use "+g.dialectBaseURL(servedBy))
 }
 
 // firstTargetPolicy checks the policy (access mode, IP/geo) of the service a
@@ -244,18 +269,20 @@ func (g *Gateway) readBodyOrFail(w http.ResponseWriter, r *http.Request) (*reque
 	return nil, false
 }
 
-// resolveOrFail resolves the requested model for d and writes the error itself.
+// resolveOrFail resolves the requested model for d and writes the error
+// itself. A model with translation turned on may come back without a target
+// of d (Resolution.Other): what a request can do with it depends on its
+// endpoint, see candidatesForRequest.
 func (g *Gateway) resolveOrFail(w http.ResponseWriter, r *http.Request, requested string, d *Dialect) (Resolution, bool) {
 	res, err := g.resolve(r.Context(), requested, d.Name)
 	var mismatch *formatMismatchError
 	switch {
-	case err == nil && len(res.Targets) > 0:
+	case err == nil && len(res.Targets)+len(res.Other) > 0:
 		return res, true
 	case err == nil || errors.Is(err, errModelNotFound):
 		g.fail(w, r, http.StatusNotFound, "model_not_found", "unknown model "+shownName(requested))
 	case errors.As(err, &mismatch):
-		g.fail(w, r, http.StatusBadRequest, "format_mismatch",
-			"model "+shownName(requested)+" is not served in the "+d.Name+" format; use "+g.dialectBaseURL(mismatch.ServedBy))
+		g.failFormatMismatch(w, r, requested, d, mismatch.ServedBy)
 	default:
 		g.Log.Error("aigateway: model resolution failed", "model", shownName(requested), "err", err)
 		g.fail(w, r, http.StatusInternalServerError, "internal_error", "internal error")
@@ -323,8 +350,10 @@ func (g *Gateway) authenticateGatewayKey(w http.ResponseWriter, r *http.Request)
 }
 
 // serveDialectModels lists the models the key may use in dialect d: enabled
-// synthetic models that have a usable target for d, then every catalogued
-// model of the providers that speak d, as "<provider>/<model>".
+// synthetic models that have a usable target for d or are served in d by
+// translation (the flag is on, a pair is released and a target of the other
+// dialect is usable: what resolution accepts), then every catalogued model
+// of the providers that speak d, as "<provider>/<model>".
 func (g *Gateway) serveDialectModels(w http.ResponseWriter, r *http.Request, d *Dialect, key store.GatewayKey) {
 	items := []modelItem{}
 	if g.Catalog == nil {
@@ -338,9 +367,11 @@ func (g *Gateway) serveDialectModels(w http.ResponseWriter, r *http.Request, d *
 		g.fail(w, r, http.StatusInternalServerError, "internal_error", "internal error")
 		return
 	}
-	speaks := make(map[string]bool, len(providers)) // providers of this dialect
+	speaks := make(map[string]bool, len(providers))    // providers of this dialect
+	formats := make(map[string]string, len(providers)) // every provider's format
 	for _, p := range providers {
 		speaks[p.Slug] = p.APIFormat == d.Name
+		formats[p.Slug] = p.APIFormat
 	}
 	models, err := g.Catalog.ListModels(ctx)
 	if err != nil {
@@ -349,7 +380,7 @@ func (g *Gateway) serveDialectModels(w http.ResponseWriter, r *http.Request, d *
 		return
 	}
 	for _, m := range models {
-		if m.Enabled && servedIn(m, d.Name, speaks) && store.ModelAllowed(key.AllowedModels, m.Name) {
+		if m.Enabled && (servedIn(m, d.Name, speaks) || translatedIn(m, d, formats)) && store.ModelAllowed(key.AllowedModels, m.Name) {
 			items = append(items, modelItem{ID: m.Name, OwnedBy: "burrow", DisplayName: m.Name})
 		}
 	}

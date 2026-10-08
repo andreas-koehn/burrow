@@ -284,3 +284,80 @@ func TestResolve_StoreErrorIsNotNotFound(t *testing.T) {
 		}
 	}
 }
+
+// A model that opted in resolves without a target of the request's dialect:
+// the targets of the other dialect are returned in Other. Without the flag
+// nothing changes, and a direct address has no flag.
+func TestResolve_TranslateOptIn(t *testing.T) {
+	g := resolveGateway()
+	models := g.Synthetic.(fakeSynthetic)
+	ctx := context.Background()
+
+	var fm *formatMismatchError
+	if _, err := g.resolve(ctx, "burrow-simple", "anthropic"); !errors.As(err, &fm) || fm.ServedBy != "openai" {
+		t.Fatalf("flag off: %v", err)
+	}
+	simple := models["burrow-simple"]
+	simple.Translate = true
+	models["burrow-simple"] = simple
+	res, err := g.resolve(ctx, "burrow-simple", "anthropic")
+	if err != nil || len(res.Targets) != 0 || len(res.Other) != 1 || res.Other[0].Provider.Slug != "ollama" || res.Other[0].Model != "mistral" ||
+		!res.Synthetic || res.Dialect != "anthropic" {
+		t.Fatalf("flag on: %v %+v", err, res)
+	}
+
+	// Targets in both dialects: the request's own are Targets, the rest Other, each in its order.
+	both := models["burrow-intelligence"]
+	both.Translate = true
+	models["burrow-intelligence"] = both
+	res, err = g.resolve(ctx, "burrow-intelligence", "openai")
+	if err != nil || len(res.Targets) != 2 || res.Targets[0].Provider.Slug != "zai" || res.Targets[1].Provider.Slug != "openrouter" ||
+		len(res.Other) != 1 || res.Other[0].Provider.Slug != "zai-anthropic" {
+		t.Fatalf("both: %v %+v", err, res)
+	}
+	// Without the flag the other dialect is not looked at.
+	both.Translate = false
+	models["burrow-intelligence"] = both
+	if res, err = g.resolve(ctx, "burrow-intelligence", "openai"); err != nil || len(res.Other) != 0 {
+		t.Fatalf("both, flag off: %v %+v", err, res)
+	}
+
+	// A direct address is unaffected by any model's flag.
+	if _, err := g.resolve(ctx, "zai/glm-5.1", "anthropic"); !errors.As(err, &fm) {
+		t.Fatalf("direct: %v", err)
+	}
+
+	// Only targets of the other dialect, all on providers that are gone or
+	// speak something else: not found, with or without the flag.
+	models["gone-only"] = db.AIModel{Name: "gone-only", Enabled: true, Translate: true, Targets: []db.AIModelTarget{
+		{Dialect: "openai", ProviderSlug: "gone", TargetModel: "x"},
+		{Dialect: "openai", Position: 1, ProviderSlug: "zai-anthropic", TargetModel: "x"},
+	}}
+	if _, err := g.resolve(ctx, "gone-only", "anthropic"); !errors.Is(err, errModelNotFound) {
+		t.Fatalf("gone-only: %v", err)
+	}
+}
+
+// A request that has a target of its own never fails because a provider of
+// the other dialect cannot be looked up, flag or not; a request that needs
+// the other dialect gets the real error.
+func TestResolve_TranslateOtherDialectLookupFailure(t *testing.T) {
+	g := resolveGateway()
+	models := g.Synthetic.(fakeSynthetic)
+	both := models["burrow-intelligence"]
+	both.Translate = true
+	models["burrow-intelligence"] = both
+	simple := models["burrow-simple"]
+	simple.Translate = true
+	models["burrow-simple"] = simple
+
+	g.Providers = downProviders{g.Providers.(fakeProviders), map[string]bool{"zai-anthropic": true, "ollama": true}}
+	res, err := g.resolve(context.Background(), "burrow-intelligence", "openai")
+	if err != nil || len(res.Targets) != 2 || len(res.Other) != 0 {
+		t.Fatalf("native: %v %+v", err, res)
+	}
+	var fm *formatMismatchError
+	if _, err := g.resolve(context.Background(), "burrow-simple", "anthropic"); err == nil || errors.Is(err, errModelNotFound) || errors.As(err, &fm) {
+		t.Fatalf("translated: err = %v, want a real error", err)
+	}
+}

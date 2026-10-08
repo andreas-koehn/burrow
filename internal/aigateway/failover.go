@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ankoehn/burrow/internal/aigw"
+	"github.com/ankoehn/burrow/internal/aigw/translate"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -33,6 +34,7 @@ const (
 	attemptBreakerOpen   = "breaker_open"     // skipped: the provider is failing; nothing was sent
 	attemptWrongDialect  = "dialect_mismatch" // skipped: the provider speaks another format; nothing was sent
 	attemptBusy          = "busy"             // the provider had no free place in time; nothing was sent
+	// A translated attempt has three more: see translate.go.
 )
 
 const msgProviderBusy = "the provider is serving as many requests as it is set to; try again shortly"
@@ -48,6 +50,10 @@ type candidate struct {
 	provider db.AIProvider // CredentialSlot narrowed to a single slot
 	model    string
 	pos      int // place in the request's candidate list; the attempt row's position
+	// pair translates the request for this target and its answer for the
+	// caller; nil for a candidate in the caller's own format. A request's
+	// candidates are all native or all translated (see candidatesForRequest).
+	pair translate.Pair
 }
 
 // candidatesFor expands targets into candidates: every credential slot of a
@@ -93,6 +99,7 @@ type failover struct {
 	g          *Gateway
 	candidates []candidate
 	dialect    string
+	requested  string // the model name the client asked for
 	route      *aigw.Route
 	requestID  string
 
@@ -120,7 +127,7 @@ func (g *Gateway) newFailover(res Resolution, candidates []candidate, route *aig
 		}
 	}
 	return &failover{
-		g: g, candidates: candidates, dialect: res.Dialect, route: route, requestID: requestID,
+		g: g, candidates: candidates, dialect: res.Dialect, requested: res.Requested, route: route, requestID: requestID,
 		rateLimitFallback: res.Synthetic && res.Model.FallbackOnRateLimit,
 		attemptTimeout:    time.Duration(attempt) * unit,
 		totalTimeout:      time.Duration(total) * unit,
@@ -173,6 +180,32 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if i+1 < len(order) {
 			next = &order[i+1]
 		}
+		// A translated candidate's request is written first, from the bytes
+		// the chain passed on and for this target's model; never from what
+		// another attempt was sent. It is the gateway's own work on bytes it
+		// already holds, so it comes before the breaker is asked and before
+		// anything of the target is read, and it is no attempt.
+		var tr *translation
+		if c.pair != nil {
+			out, stream, dropped, err := c.pair.Request(body.Raw(), r.Header, c.model)
+			if message, bad := translate.BadRequest(err); bad {
+				// The request cannot be said in the target's format. That
+				// is the request's fault, and no other candidate would do
+				// better with it: the caller is told which field, in its
+				// own format, and the providers hear nothing of it.
+				w.Header().Set(headerAttempts, strconv.Itoa(sent))
+				f.g.fail(w, r, http.StatusBadRequest, "invalid_request", message)
+				return
+			}
+			if err != nil {
+				// Not the caller's fault and not the provider's. The error
+				// names no content (see translate).
+				f.g.Log.Error("aigateway: request translation failed", "pair", c.pair.ID(), "provider", c.provider.Slug, "request_id", f.requestID, "err", err)
+				rows = append(rows, f.skipped(c, attemptTranslateError))
+				continue
+			}
+			tr = &translation{pair: c.pair, body: out, caller: body.Raw(), stream: stream, dropped: dropped}
+		}
 		// Asked at the moment of the first attempt on a provider: this is
 		// what lets it back in after its cool-down. The answer holds for the
 		// provider's further candidates in this request (its other keys, the
@@ -221,7 +254,11 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		sent++
-		res := f.attempt(w, r, c, next, body.WithModel(c.model), deadline, sent, atCommit)
+		attemptBody := body.WithModel(c.model)
+		if tr != nil {
+			attemptBody = tr.body
+		}
+		res := f.attempt(w, r, c, next, attemptBody, tr, deadline, sent, atCommit)
 		rows = append(rows, res.row)
 		f.report(c, order[i+1:], res.outcome, adm)
 		if res.panicked && res.committed {
@@ -256,16 +293,17 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.g.fail(w, r, http.StatusBadGateway, "upstream_unavailable", "no provider answered")
 }
 
-// order returns the candidates to try. A candidate whose provider speaks
-// another format than the request is never tried (resolution already leaves
-// such targets out; this is the last line). A candidate whose provider the
+// order returns the candidates to try. A native candidate whose provider
+// speaks another format than the request is never tried (resolution already
+// leaves such targets out; this is the last line); a translated candidate
+// carries the pair for its provider's format instead. A candidate whose provider the
 // breaker refuses is skipped; both skips are recorded. If the breaker refuses
 // every candidate, all are tried anyway (forced): a model with nowhere else to
 // go must keep trying rather than fail closed.
 func (f *failover) order(rows *[]db.UsageAttempt) (order []candidate, forced bool) {
 	var sameDialect, open []candidate
 	for _, c := range f.candidates {
-		if c.provider.APIFormat != f.dialect {
+		if c.pair == nil && c.provider.APIFormat != f.dialect {
 			*rows = append(*rows, f.skipped(c, attemptWrongDialect))
 			continue
 		}
@@ -362,13 +400,22 @@ const (
 // It always returns: a panic of the upstream handler is
 // caught, the timer is stopped and the attempt's context released before the
 // next candidate is looked at.
-func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, next *candidate, body []byte, deadline time.Time, n int, atCommit func(status int)) (res attemptResult) {
+//
+// tr is non-nil for a translated attempt: body is then the request in the
+// target's format. Everything above applies to it unchanged. What differs is
+// where the request goes (the pair's endpoint, with headers built from an
+// allow-list) and when the response commits: the pair's writer holds the
+// caller's status line back until the answer's first event, so an upstream
+// that answers 200 and then sends nothing usable, or nothing at all, is still
+// an attempt that can be left for the next candidate or ended by its timer.
+func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, next *candidate, body []byte, tr *translation, deadline time.Time, n int, atCommit func(status int)) (res attemptResult) {
 	ctx, cancel := context.WithCancel(r.Context())
 	var state atomic.Int32
-	var timer *time.Timer // nil = no timeout, or not admitted yet
-	reached := false      // the target's policy and credential passed; its upstream handler was called
-	late := false         // the status came after the time was up: it is the cancellation's, not the upstream's
-	busy := false         // no place came free at the provider in time; its upstream handler was not called
+	var timer *time.Timer    // nil = no timeout, or not admitted yet
+	reached := false         // the target's policy and credential passed; its upstream handler was called
+	late := false            // the status came after the time was up: it is the cancellation's, not the upstream's
+	busy := false            // no place came free at the provider in time; its upstream handler was not called
+	var tw *translatedWriter // the writer of a translated attempt, once its upstream is about to be called
 	cw := newCommitWriter(w,
 		func(status int) bool {
 			if state.Load() == attemptTimedOut {
@@ -408,6 +455,14 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 				h.Set(headerModel, c.model)
 			}
 			h.Set(headerAttempts, strconv.Itoa(n))
+			// The usage row and the response say whether this answer was
+			// translated. An error the gateway wrote before the target's
+			// upstream was called (its policy, its credential) was not.
+			if tw != nil {
+				tw.commit(h, f.route)
+			} else {
+				f.route.SetTranslation("", nil)
+			}
 		})
 	started := time.Now()
 
@@ -429,6 +484,21 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 		status := cw.status
 		if late || cw.upstreamTimeout {
 			status = 0 // what was written is the gateway's word for it, not an upstream's status
+		}
+		var (
+			failCode          string
+			failStatus        int
+			midStream         bool
+			translatedFailure bool
+		)
+		if tw != nil {
+			failCode, failStatus, midStream, translatedFailure = tw.failure()
+			if cw.committed {
+				// The usage row of a translated answer holds what the
+				// upstream counted, also when the stream broke off. Set
+				// here, on every way out, before the chain writes the row.
+				f.route.SetUpstreamUsage(tw.usage.Tokens(tw.Header()))
+			}
 		}
 		code := ""
 		switch {
@@ -455,6 +525,15 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 			}
 		case res.panicked && status == 0:
 			code, res.outcome = attemptPanic, outcomeFailed
+		case translatedFailure && midStream:
+			// As above: the answer had started, and the pair's writer has
+			// ended it with the caller's error event.
+			code, res.outcome = failCode, outcomeNeutral
+		case translatedFailure:
+			// The provider answered and the answer was no use: its failure,
+			// like a 5xx. The row holds its status, not the 502 that was
+			// made of it.
+			code, res.outcome, status = failCode, outcomeFailed, failStatus
 		case status == 0:
 			code, res.outcome = attemptNoResponse, outcomeFailed
 		case status >= 500:
@@ -487,6 +566,11 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 	// target's credential least of all, is seen by another attempt.
 	req := r.Clone(ctx)
 	setBody(req, body)
+	if tr != nil {
+		// The target format's endpoint; the caller's query string is for
+		// another API and stays behind. (Clone made the URL this attempt's.)
+		req.URL.Path, req.URL.RawPath, req.URL.RawQuery = tr.pair.UpstreamPath(), "", ""
+	}
 	// expire ends the attempt for lack of time, unless it is decided already.
 	expire := func() {
 		if state.CompareAndSwap(attemptPending, attemptTimedOut) {
@@ -522,6 +606,11 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 	}
 	upstream, _, ok := f.g.targetUpstream(cw, req, c.provider)
 	if ok {
+		if tr != nil {
+			// The policy above was checked on the caller's request as it
+			// came in. What goes upstream has none of its headers.
+			req.Header = tr.upstreamHeader(c.provider)
+		}
 		// Last, after this target's policy passed, and on this attempt's
 		// headers only.
 		f.g.applyCredential(req, c.provider)
@@ -566,7 +655,12 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 			timer = time.AfterFunc(timeout, expire)
 		}
 		reached = true
-		upstream.ServeHTTP(cw, req)
+		if tr == nil {
+			upstream.ServeHTTP(cw, req)
+		} else {
+			tw = f.newTranslatedWriter(cw, tr, c.provider)
+			tw.serve(upstream, req, r.Context())
+		}
 		if !cw.committed && !cw.discarded {
 			// A handler that returns without writing has answered 200 with
 			// an empty body, as under net/http; unless its time was up.

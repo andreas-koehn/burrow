@@ -29,6 +29,9 @@ type Route struct {
 	fallback       bool
 	translated     string
 	dropped        string
+	upstreamUsage  bool
+	tokensIn       int
+	tokensOut      int
 }
 
 // RouteInfo is an immutable copy of a Route.
@@ -41,6 +44,12 @@ type RouteInfo struct {
 	// it is served in its own format. Dropped names what the translation
 	// left out: sorted, comma-separated, cleaned and bounded names.
 	Translated, Dropped string
+	// UpstreamUsage: the answer the caller got is not what the upstream
+	// sent (it was translated), and TokensIn and TokensOut are what the
+	// gateway read from the upstream's own bytes (see UpstreamUsage, the
+	// type). The chain then records these and not what it reads itself.
+	UpstreamUsage       bool
+	TokensIn, TokensOut int
 }
 
 // NewRoute starts a route for a request; the target is set once it is known.
@@ -82,6 +91,16 @@ func (r *Route) SetTranslation(pair string, dropped []string) {
 	r.mu.Unlock()
 }
 
+// SetUpstreamUsage records the token counts of the answer as the upstream
+// sent it, for an attempt whose answer reaches the caller in another format.
+// The chain meters the caller's side of a response; with these set it writes
+// them into the usage row instead of what it read there.
+func (r *Route) SetUpstreamUsage(tokensIn, tokensOut int) {
+	r.mu.Lock()
+	r.upstreamUsage, r.tokensIn, r.tokensOut = true, tokensIn, tokensOut
+	r.mu.Unlock()
+}
+
 // Snapshot returns the route as it is now.
 func (r *Route) Snapshot() RouteInfo {
 	r.mu.Lock()
@@ -96,6 +115,9 @@ func (r *Route) Snapshot() RouteInfo {
 		Fallback:       r.fallback,
 		Translated:     r.translated,
 		Dropped:        r.dropped,
+		UpstreamUsage:  r.upstreamUsage,
+		TokensIn:       r.tokensIn,
+		TokensOut:      r.tokensOut,
 	}
 }
 

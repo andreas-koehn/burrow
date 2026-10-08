@@ -836,21 +836,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// (no `data: ` prefix → openAIParser.inspect won't fire). For these,
 	// reparse the captured body so usage_events records authoritative
 	// token counts instead of the byte-estimate fallback.
-	if !isStreamedResponse(wrapped.Header()) && !capw.truncated() {
-		body := capw.bytes()
-		if len(body) > 0 {
-			switch kind {
-			case KindOpenAI:
-				if t := aimeter.ParseOpenAIBody(body); t.Total > 0 || t.In > 0 || t.Out > 0 {
-					tokens = t
-				}
-			case KindAnthropic:
-				if t := aimeter.ParseAnthropicBody(body); t.Total > 0 || t.In > 0 || t.Out > 0 {
-					tokens = t
-				}
-			}
-		}
-	}
+	tokens = bodyTokens(kind, wrapped.Header(), capw, tokens)
 
 	// Cost the upstream itself reports (OpenRouter). Streamed responses carry
 	// it in the final usage chunk; plain JSON responses in the body. It is
@@ -886,6 +872,12 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	fallbackAnswer := false
 	if ri, ok := RouteFrom(r.Context()); ok {
 		fallbackAnswer = ri.Fallback
+		if ri.UpstreamUsage {
+			// The answer was translated on its way here: what passed through
+			// this writer is the caller's format, with the caller's view of
+			// the usage (or none). The gateway read the upstream's own bytes.
+			tokens = aimeter.Tokens{In: ri.TokensIn, Out: ri.TokensOut, Total: ri.TokensIn + ri.TokensOut}
+		}
 	}
 	if !aborted && !fallbackAnswer && cfg.Cache != nil && cfg.Cache.Enabled && c.Cache != nil && !bypass &&
 		wrapped.statusCode >= 200 && wrapped.statusCode < 300 &&
@@ -949,6 +941,62 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		reportedUSD,
 		elapsed,
 	)
+}
+
+// bodyTokens returns the usage of an answer that came in one piece, read
+// from its captured body, and tokens when the answer was streamed, was too
+// large to capture or names no usage.
+func bodyTokens(kind Kind, header http.Header, capw *capture, tokens aimeter.Tokens) aimeter.Tokens {
+	if isStreamedResponse(header) || capw.truncated() {
+		return tokens
+	}
+	body := capw.bytes()
+	if len(body) == 0 {
+		return tokens
+	}
+	var t aimeter.Tokens
+	switch kind {
+	case KindOpenAI:
+		t = aimeter.ParseOpenAIBody(body)
+	case KindAnthropic:
+		t = aimeter.ParseAnthropicBody(body)
+	}
+	if t.Total > 0 || t.In > 0 || t.Out > 0 {
+		return t
+	}
+	return tokens
+}
+
+// UpstreamUsage meters an upstream answer that does not pass through the
+// chain's own writer as it is: the gateway translates it for a caller of
+// another format, and the usage row must hold the upstream's figures. The
+// gateway writes the upstream's bytes to it as they arrive and hands the
+// result to the route (Route.SetUpstreamUsage). It reads an answer exactly as
+// the chain reads a native one of that kind: the usage frames of a stream as
+// they pass (so a stream that is cut leaves what had arrived), the body of an
+// answer in one piece, and the byte estimate when no usage was seen. It
+// keeps at most the inspector's capture size of the body and logs nothing.
+type UpstreamUsage struct {
+	kind   Kind
+	capw   *capture
+	stream *aimeter.Stream
+}
+
+// NewUpstreamUsage meters an answer of an upstream that speaks kind.
+func NewUpstreamUsage(kind Kind) *UpstreamUsage {
+	capw := newCapture(io.Discard, inspector.MaxRespBodyBytes)
+	return &UpstreamUsage{kind: kind, capw: capw, stream: aimeter.WrapResponse(capw, aimeter.Kind(kind))}
+}
+
+// Write takes the next bytes of the upstream's body.
+func (u *UpstreamUsage) Write(p []byte) (int, error) { return u.stream.Write(p) }
+
+// Tokens ends the answer and returns its usage. header is the upstream's
+// response header: it says whether the answer was a stream.
+func (u *UpstreamUsage) Tokens(header http.Header) (in, out int) {
+	_ = u.stream.Close()
+	t := bodyTokens(u.kind, header, u.capw, u.stream.Tokens())
+	return t.In, t.Out
 }
 
 // cachedCost is the cost of an answer served from the cache: nothing was

@@ -3,6 +3,7 @@ package aigw_test
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -109,5 +110,45 @@ func TestRoute_TranslationIsBounded(t *testing.T) {
 	r.SetTranslation("messages-chat\n"+strings.Repeat("z", 300), nil)
 	if got := r.Snapshot().Translated; len(got) != 64 || strings.ContainsAny(got, "\n ") {
 		t.Fatalf("pair stored as %q", got)
+	}
+}
+
+// The upstream's figures of a translated answer travel on the route; without
+// them the chain meters what it sees itself.
+func TestRoute_UpstreamUsage(t *testing.T) {
+	r := aigw.NewRoute("gk", "openai", "smart", "req-1")
+	if ri := r.Snapshot(); ri.UpstreamUsage || ri.TokensIn != 0 || ri.TokensOut != 0 {
+		t.Fatalf("a new route: %+v", ri)
+	}
+	r.SetUpstreamUsage(12, 0)
+	if ri := r.Snapshot(); !ri.UpstreamUsage || ri.TokensIn != 12 || ri.TokensOut != 0 {
+		t.Fatalf("after SetUpstreamUsage: %+v", ri)
+	}
+}
+
+// UpstreamUsage reads an answer the way the chain reads a native one of that
+// kind: usage frames of a stream, the body of an answer in one piece, the
+// byte estimate when neither names any.
+func TestUpstreamUsage(t *testing.T) {
+	stream := http.Header{"Content-Type": {"text/event-stream"}}
+	plain := http.Header{"Content-Type": {"application/json"}}
+
+	u := aigw.NewUpstreamUsage(aigw.KindAnthropic)
+	_, _ = u.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7,\"cache_read_input_tokens\":3,\"output_tokens\":1}}}\n\n"))
+	if in, out := u.Tokens(stream); in != 10 || out != 1 {
+		t.Fatalf("a cut Anthropic stream: %d in, %d out", in, out)
+	}
+
+	u = aigw.NewUpstreamUsage(aigw.KindOpenAI)
+	_, _ = u.Write([]byte(`{"choices":[],"usage":{"prompt_tokens":5,`))
+	_, _ = u.Write([]byte(`"completion_tokens":2,"total_tokens":7}}`))
+	if in, out := u.Tokens(plain); in != 5 || out != 2 {
+		t.Fatalf("an OpenAI body: %d in, %d out", in, out)
+	}
+
+	u = aigw.NewUpstreamUsage(aigw.KindOpenAI)
+	_, _ = u.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"12345678\"}}]}\n\n"))
+	if in, out := u.Tokens(stream); in != 0 || out == 0 {
+		t.Fatalf("a stream without usage: %d in, %d out, want the byte estimate", in, out)
 	}
 }

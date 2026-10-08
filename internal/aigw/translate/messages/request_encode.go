@@ -134,7 +134,7 @@ var imageTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/g
 // Tool schemas and tool inputs are copied into the body byte for byte; the
 // body is written by hand for that reason.
 func EncodeRequest(req ir.Request, model string) (body []byte, dropped []string, err error) {
-	e := requestEncoder{dropped: append([]string(nil), req.Dropped...), ids: map[string]string{}, taken: map[string]bool{}}
+	e := requestEncoder{dropped: append([]string(nil), req.Dropped...), ids: map[string]string{}, taken: map[string]bool{}, next: map[string]int{}}
 	if err := e.request(req, model); err != nil {
 		return nil, nil, err
 	}
@@ -147,6 +147,7 @@ type requestEncoder struct {
 
 	ids   map[string]string // a tool call id of the request → the id its latest call was written with
 	taken map[string]bool   // the ids that were written for a call
+	next  map[string]int    // per cleaned id: the first number callID has not tried yet
 }
 
 func (e *requestEncoder) raw(s string)     { e.b = append(e.b, s...) }
@@ -356,10 +357,14 @@ func clean(s string) (out string, ok bool) {
 func (e *requestEncoder) callID(id string) string {
 	base, _ := clean(id)
 	w := base
-	for n := 2; e.taken[w]; n++ {
+	// The search goes on where the last one for this base ended: every
+	// number below that is taken, so a history that repeats one id is not
+	// searched from "_2" again each time.
+	n := max(e.next[base], 2)
+	for ; e.taken[w]; n++ {
 		w = base + "_" + strconv.Itoa(n)
 	}
-	e.ids[id], e.taken[w] = w, true
+	e.ids[id], e.taken[w], e.next[base] = w, true, n
 	return w
 }
 

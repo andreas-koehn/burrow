@@ -21,7 +21,14 @@ type Resolution struct {
 	Dialect   string     // "openai" or "anthropic"
 	Synthetic bool       // true when Requested named a synthetic model
 	Model     db.AIModel // the synthetic model; zero value for a direct address
-	Targets   []Target   // at least one, all speaking Dialect, in try order
+	Targets   []Target   // all speaking Dialect, in try order
+	// Other holds a synthetic model's targets of the other dialect, in
+	// their order, each on a provider that speaks that dialect. It is filled
+	// only for a model with translation turned on (db.AIModel.Translate) and
+	// is always empty for a direct address. A resolution has at least one
+	// target in Targets or in Other; whether a request may use Other is
+	// decided by candidatesForRequest.
+	Other []Target
 }
 
 // SyntheticModels looks up a synthetic model by name.
@@ -54,8 +61,10 @@ func (e *formatMismatchError) Error() string {
 // In a direct address the provider slug is everything before the first "/";
 // the rest is the native model id, further slashes included.
 //
-// A request never crosses dialects: every returned target's provider speaks
-// dialect, checked against the provider row at request time.
+// A request is never sent across dialects as it is: every target in Targets
+// speaks dialect, checked against the provider row at request time. The
+// targets in Other speak the other one and can only be reached through a
+// translating pair (see candidatesForRequest).
 //
 // Errors: errModelNotFound and *formatMismatchError describe the request; any
 // other error is a failed lookup.
@@ -114,21 +123,44 @@ func (g *Gateway) resolveSynthetic(ctx context.Context, name, dialect string) (R
 		}
 	}
 	if len(res.Targets) > 0 {
+		if m.Translate {
+			// Used only for an endpoint none of the targets above offers
+			// (the Responses API). A request that has a target of its own
+			// must not fail because a provider it will most likely never
+			// use cannot be looked up: such a target is left out.
+			for _, t := range m.Targets {
+				if t.Dialect == dialect {
+					continue
+				}
+				if p, ok, err := g.targetProvider(ctx, t); err == nil && ok {
+					res.Other = append(res.Other, Target{Provider: p, Model: t.TargetModel})
+				}
+			}
+		}
 		return res, nil
 	}
 	// Nothing in this dialect. Only now look at the other one, to tell a
-	// model served elsewhere from one that is not served at all.
+	// model served elsewhere from one that is not served at all. A model
+	// that opted into translation is resolved with those targets; any other
+	// is a mismatch.
 	for _, t := range m.Targets {
 		if t.Dialect == dialect {
 			continue
 		}
-		_, ok, err := g.targetProvider(ctx, t)
+		p, ok, err := g.targetProvider(ctx, t)
 		if err != nil {
 			return Resolution{}, err
 		}
-		if ok {
+		if !ok {
+			continue
+		}
+		if !m.Translate {
 			return Resolution{}, &formatMismatchError{Model: name, Dialect: dialect, ServedBy: t.Dialect}
 		}
+		res.Other = append(res.Other, Target{Provider: p, Model: t.TargetModel})
+	}
+	if len(res.Other) > 0 {
+		return res, nil
 	}
 	return Resolution{}, errModelNotFound
 }
