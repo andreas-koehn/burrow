@@ -15,11 +15,15 @@ const RESULT: Record<string, string> = {
   client_closed: "client left",
   stream_aborted: "stream broke off",
   panic: "internal error",
+  // A translated attempt (internal/aigateway/translate.go).
+  upstream_invalid: "answer could not be translated",
+  upstream_error: "provider reported an error",
+  translate_error: "request could not be translated",
 };
 
 function resultText(a: AiRequestAttempt): string {
   if (a.error_code === "" && a.status < 400) return "answered";
-  return RESULT[a.error_code] ?? (a.status > 0 ? `HTTP ${a.status}` : a.error_code);
+  return (Object.hasOwn(RESULT, a.error_code) ? RESULT[a.error_code] : undefined) ?? (a.status > 0 ? `HTTP ${a.status}` : a.error_code);
 }
 
 function durationText(ms: number): string {

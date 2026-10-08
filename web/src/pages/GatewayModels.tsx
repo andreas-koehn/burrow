@@ -11,18 +11,29 @@ import { ConnectCard } from "@/components/ConnectCard";
 import { GatewayAddresses } from "@/components/GatewayAddresses";
 import { ModelDialog } from "@/components/ModelDialog";
 import { useAuth } from "@/auth/useAuth";
+import { pairWords } from "@/lib/translation";
 import type { AiModel, AiProvider, Dialect, GatewayInfo } from "@/lib/contract";
 
 const FORMAT_NAME: Record<Dialect, string> = { openai: "OpenAI format", anthropic: "Anthropic format" };
 
 /**
  * Where a model goes in one format: its targets in the order they are tried,
- * which one is answering right now and which cannot be tried. Every state is
- * said in words, never by colour alone.
+ * which one is answering right now and which cannot be tried. A format without
+ * a target says whether it is answered through translation, and in which
+ * direction, or not at all. Every state is said in words, never by colour alone.
  */
 function FormatCell({ model, dialect }: { model: AiModel; dialect: Dialect }) {
   const targets = model.targets.filter((t) => t.dialect === dialect);
-  if (targets.length === 0) return <span className="muted">not served</span>;
+  if (targets.length === 0) {
+    const pair = model.translation_pairs?.[dialect];
+    if (model.dialect_modes?.[dialect] !== "translated" || !pair) return <span className="muted">not served</span>;
+    return (
+      <span className="format-mode">
+        <Badge kind="status-idle">translated</Badge>
+        <span className="muted small">{pairWords(pair)}</span>
+      </span>
+    );
+  }
   // A disabled model serves nothing; the Status column says why.
   const serving = model.enabled ? model.serving?.[dialect] : null;
   const servingAt = serving
@@ -47,6 +58,16 @@ function FormatCell({ model, dialect }: { model: AiModel; dialect: Dialect }) {
       {model.enabled && servingAt < 0 && <Badge kind="status-offline">no target available</Badge>}
     </>
   );
+}
+
+/** How the Responses API (what Codex uses) is served on the OpenAI endpoint, in words. */
+function responsesText(model: AiModel): string | null {
+  // A disabled model serves nothing; the Status column says why.
+  if (!model.enabled || !model.responses_mode) return null;
+  if (model.responses_mode === "native") return "Responses API: served natively";
+  const pair = model.translation_pairs?.responses;
+  if (model.responses_mode === "translated" && pair) return `Responses API: translated (${pairWords(pair)})`;
+  return "Responses API: not served";
 }
 
 export default function GatewayModels() {
@@ -155,7 +176,10 @@ export default function GatewayModels() {
                       <div className="mono">{m.name}</div>
                       {m.description && <div className="muted small">{m.description}</div>}
                     </td>
-                    <td><FormatCell model={m} dialect="openai" /></td>
+                    <td>
+                      <FormatCell model={m} dialect="openai" />
+                      {responsesText(m) && <div className="muted small format-responses">{responsesText(m)}</div>}
+                    </td>
                     <td><FormatCell model={m} dialect="anthropic" /></td>
                     <td>
                       <Badge kind={m.enabled ? "status-connected" : "status-offline"}>
@@ -185,7 +209,7 @@ export default function GatewayModels() {
           <ConnectCard
             canCreate={canWrite}
             endpoints={endpoints}
-            models={list.filter((m) => m.enabled).map((m) => ({ name: m.name, dialects: m.dialects }))}
+            models={list.filter((m) => m.enabled)}
           />
           {/* The relay gives the attempt log to admins only. */}
           {canWrite && <AttemptLookup />}

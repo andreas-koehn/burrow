@@ -1,18 +1,32 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
-import type { Dialect } from "@/lib/contract";
-import { ConnectCard } from "@/components/ConnectCard";
+import { ConnectCard, type ConnectModel } from "@/components/ConnectCard";
 
 const endpoints = [
   { dialect: "openai" as const, base_url: "https://b.example.com/openai/v1" },
   { dialect: "anthropic" as const, base_url: "https://b.example.com/anthropic" },
 ];
-const models: { name: string; dialects: Dialect[] }[] = [
-  { name: "burrow-intelligence", dialects: ["anthropic", "openai"] },
-  { name: "burrow-simple", dialects: ["openai"] },
-];
+const native: ConnectModel = {
+  name: "burrow-intelligence", dialect_modes: { openai: "native", anthropic: "native" }, responses_mode: "native", translation_pairs: {},
+};
+/** An OpenAI target only, translation off. */
+const openaiOnly: ConnectModel = {
+  name: "burrow-simple", dialect_modes: { openai: "native", anthropic: "not_served" }, responses_mode: "native", translation_pairs: {},
+};
+/** An OpenAI target without the Responses API, translation on. */
+const translated: ConnectModel = {
+  name: "burrow-simple", dialect_modes: { openai: "native", anthropic: "translated" }, responses_mode: "translated",
+  translation_pairs: { anthropic: "messages-chat", responses: "responses-chat" },
+};
+/** An Anthropic target only, translation on. */
+const anthropicOnly: ConnectModel = {
+  name: "burrow-claude", dialect_modes: { openai: "translated", anthropic: "native" }, responses_mode: "translated",
+  translation_pairs: { openai: "chat-messages", responses: "responses-messages" },
+};
+const models: ConnectModel[] = [native, openaiOnly];
+const offered = (name: string) => within(screen.getByRole("list", { name })).getAllByRole("listitem").map((li) => li.textContent);
 
 function mount(list = models) {
   return renderApp(<ConnectCard endpoints={endpoints} models={list} />, "/gateway/models");
@@ -49,7 +63,7 @@ describe("ConnectCard", () => {
   });
 
   it("Claude Code: names several left-out models in the plural", () => {
-    mount([...models, { name: "burrow-medium", dialects: ["openai"] }]);
+    mount([...models, { ...openaiOnly, name: "burrow-medium" }]);
     expect(screen.getByText("2 models are not served in the Anthropic format: burrow-simple, burrow-medium")).toBeInTheDocument();
   });
 
@@ -59,7 +73,68 @@ describe("ConnectCard", () => {
     expect(screen.getByText("https://b.example.com/openai/v1")).toBeInTheDocument();
     expect(screen.getByText(/wire_api = "responses"/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy config for Codex" })).toBeInTheDocument();
-    expect(screen.getByText(/needs a provider that offers the Responses API/i)).toBeInTheDocument();
+    expect(screen.getByText(/Codex speaks the Responses API/i)).toBeInTheDocument();
+  });
+
+  it("lists translated models with a mark and explains it", async () => {
+    mount([translated, native]);
+    const user = userEvent.setup();
+    const writeText = clipboard();
+    // Both are offered now, the natively served one first; the translated one says so in words.
+    expect(offered("Models for Claude Code")).toEqual(["burrow-intelligence", "burrow-simpletranslated"]);
+    expect(screen.queryByText(/not served in the Anthropic format/)).toBeNull();
+    expect(screen.getByText(/Translated models run without extended thinking; these settings turn it off/)).toBeInTheDocument();
+    expect(screen.getByText(/prompt caching hints, thinking signatures and beta features are not carried over/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Copy settings for Claude Code" }));
+    const env = JSON.parse(writeText.mock.calls[0][0]).env;
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("burrow-intelligence");
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("burrow-simple");
+    expect(env.MAX_THINKING_TOKENS).toBe("0");
+  });
+
+  it("Claude Code: leaves thinking alone when no pinned model is translated", async () => {
+    mount();
+    const user = userEvent.setup();
+    const writeText = clipboard();
+    expect(screen.queryByText(/extended thinking/)).toBeNull();
+    expect(offered("Models for Claude Code")).toEqual(["burrow-intelligence"]);
+    await user.click(screen.getByRole("button", { name: "Copy settings for Claude Code" }));
+    expect("MAX_THINKING_TOKENS" in JSON.parse(writeText.mock.calls[0][0]).env).toBe(false);
+  });
+
+  it("Codex: offers what the Responses API serves, natively or translated, and nothing else", async () => {
+    mount([{ ...openaiOnly, name: "burrow-chat-only", responses_mode: "not_served" }, translated, native]);
+    await userEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    expect(offered("Models for Codex")).toEqual(["burrow-intelligence", "burrow-simpletranslated"]);
+    // The config names a natively served model first.
+    expect(screen.getByText(/model = "burrow-intelligence"/)).toBeInTheDocument();
+    expect(screen.getByText("1 model is not served on the Responses API: burrow-chat-only")).toBeInTheDocument();
+    expect(screen.getByText(/keeps no response state/i)).toBeInTheDocument();
+    // No Anthropic-format provider is involved here.
+    expect(screen.queryByText(/32,000/)).toBeNull();
+  });
+
+  it("Codex: says what a model behind an Anthropic-format provider loses", async () => {
+    mount([anthropicOnly]);
+    await userEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    expect(offered("Models for Codex")).toEqual(["burrow-claudetranslated"]);
+    expect(screen.getByText(/output is capped at 32,000 tokens when the client sets no limit, and temperature and top_p are not sent/i)).toBeInTheDocument();
+  });
+
+  it("Codex: explains what to do when no model is served on the Responses API", async () => {
+    mount([{ ...openaiOnly, responses_mode: "not_served" }]);
+    await userEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    expect(screen.getByText(/No model is served on the Responses API yet/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy config for Codex" })).toBeNull();
+  });
+
+  it("OpenAI SDK and Other: a model translated into the OpenAI format is offered and marked", async () => {
+    mount([anthropicOnly]);
+    await userEvent.click(screen.getByRole("tab", { name: "OpenAI SDK" }));
+    expect(offered("Models for the OpenAI SDK")).toEqual(["burrow-claudetranslated"]);
+    expect(screen.getAllByText(/model="burrow-claude"/).length).toBeGreaterThan(0);
+    await userEvent.click(screen.getByRole("tab", { name: "Other" }));
+    expect(offered("Models for other clients")).toEqual(["burrow-claudetranslated"]);
   });
 
   it("OpenAI SDK: offers Python and TypeScript", async () => {
@@ -84,7 +159,7 @@ describe("ConnectCard", () => {
   });
 
   it("explains what to do when a format has no model yet", () => {
-    mount([{ name: "burrow-simple", dialects: ["openai"] }]);
+    mount([openaiOnly]);
     expect(screen.getByText(/no model is served in the Anthropic format yet/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Models" })).toHaveAttribute("href", "/gateway/models");
     expect(screen.queryByRole("button", { name: "Copy settings for Claude Code" })).toBeNull();

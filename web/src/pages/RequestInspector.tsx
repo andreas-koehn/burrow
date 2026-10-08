@@ -10,6 +10,7 @@ import {
 import type { InspectorEntry, Service, ServiceAIConfig } from "@/lib/contract";
 import { withAIConfigDefaults } from "@/lib/aiConfig";
 import { InspectorOffHint } from "@/components/InspectorOffHint";
+import { droppedNames, pairWords } from "@/lib/translation";
 
 function RedactedHeaders({ headers }: { headers: Record<string, string> }) {
   const entries = Object.entries(headers);
@@ -25,6 +26,40 @@ function RedactedHeaders({ headers }: { headers: Record<string, string> }) {
         ))}
       </tbody>
     </table>
+  );
+}
+
+/**
+ * Says that a request was translated, in which direction, and what the
+ * translation left out. A name can end in text the client chose (after a
+ * prefix such as "unknown:"), so every name is a text node: never markup,
+ * never a link.
+ */
+function TranslationNote({ entry }: { entry: InspectorEntry }) {
+  if (!entry.translated) return null;
+  const { names, more } = droppedNames(entry.dropped);
+  return (
+    <div className="translation-note" role="group" aria-label="Translation">
+      <dl className="def-list">
+        <div className="def-row">
+          <dt className="def-key">Translated</dt>
+          <dd className="def-val">{pairWords(entry.translated)}</dd>
+        </div>
+        {(names.length > 0 || more) && (
+          <div className="def-row">
+            <dt className="def-key">Left out</dt>
+            <dd className="def-val">
+              {names.length > 0 && (
+                <ul className="dropped-list" aria-label="Left out">
+                  {names.map((n) => <li key={n} className="mono small">{n}</li>)}
+                </ul>
+              )}
+              {more && <span className="muted small">and more</span>}
+            </dd>
+          </div>
+        )}
+      </dl>
+    </div>
   );
 }
 
@@ -188,7 +223,10 @@ export default function RequestInspector() {
         <div className="table-wrap">
           <table className="data" aria-label="Requests">
             <thead>
-              <tr><th>When</th><th>Method</th><th>Path</th><th>Status</th><th>Cache</th></tr>
+              <tr>
+                <th scope="col">When</th><th scope="col">Method</th><th scope="col">Path</th>
+                <th scope="col">Status</th><th scope="col">Cache</th>
+              </tr>
             </thead>
             <tbody>
               {rows.length === 0
@@ -205,7 +243,10 @@ export default function RequestInspector() {
                       <td className="mono small">{r.ts}</td>
                       <td className="mono">{r.method}</td>
                       <td className="mono">{r.path}</td>
-                      <td><Badge nodot kind={`status-${Math.floor(r.status / 100)}xx`}>{r.status}</Badge></td>
+                      <td>
+                        <Badge nodot kind={`status-${Math.floor(r.status / 100)}xx`}>{r.status}</Badge>
+                        {r.translated && <>{" "}<Badge nodot kind="status-idle">translated</Badge></>}
+                      </td>
                       <td className="mono">{r.cache}</td>
                     </tr>
                   ))}
@@ -231,6 +272,7 @@ export default function RequestInspector() {
                   Replay &amp; compare
                 </Button>
               </div>
+              <TranslationNote entry={detail.data} />
               <Tabs
                 value={tab}
                 onChange={setTab}

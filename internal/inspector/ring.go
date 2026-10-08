@@ -65,6 +65,11 @@ type Entry struct {
 	RemoteIP     string            `json:"remote_ip,omitempty"`
 	MCP          *MCPInfo          `json:"mcp,omitempty"`
 	AdapterLossy bool              `json:"adapter_lossy,omitempty"`
+	// Translated is the id of the pair that translated the request, "" when
+	// it was served in its own format. Dropped names what the translation
+	// left out; a final "more" says the list was cut and is no name.
+	Translated string   `json:"translated"`
+	Dropped    []string `json:"dropped"`
 }
 
 // RedactionHit is one (rule, count) pair from the redactor's report.

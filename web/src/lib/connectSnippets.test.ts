@@ -17,6 +17,14 @@ describe("claudeCodeSettings", () => {
       },
     });
   });
+  it("turns thinking off in Claude Code settings when a pinned model is translated", () => {
+    const env = JSON.parse(claudeCodeSettings(ANTHROPIC, { sonnet: "burrow-simple" }, { thinkingOff: true })).env;
+    expect(env.MAX_THINKING_TOKENS).toBe("0");
+  });
+  it("leaves thinking alone otherwise", () => {
+    const env = JSON.parse(claudeCodeSettings(ANTHROPIC, { sonnet: "burrow-simple" })).env;
+    expect("MAX_THINKING_TOKENS" in env).toBe(false);
+  });
   it("leaves out a tier that has no model", () => {
     const env = JSON.parse(claudeCodeSettings(ANTHROPIC, { sonnet: "burrow-medium" })).env;
     expect(Object.keys(env)).toEqual(["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT_SONNET_MODEL"]);

@@ -7,7 +7,8 @@ package api
 // targets per dialect.  Any signed-in caller may read them; writes go
 // through requireAIModelWrite.  The store validates the data: its reasons are
 // the 400 messages.  A response also says which targets can be tried right
-// now and which one is serving each dialect.
+// now, which one is serving each dialect, and how each format is served:
+// natively, through translation or not at all.
 
 import (
 	"context"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ankoehn/burrow/internal/aigateway"
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
@@ -62,9 +64,19 @@ type aiModelResp struct {
 	Dialects []string `json:"dialects"`
 	// Per dialect the model has a target in: the first available target, or
 	// null when none is available or the model is disabled.
-	Serving   map[string]*aiServingTarget `json:"serving"`
-	CreatedAt time.Time                   `json:"created_at"`
-	UpdatedAt time.Time                   `json:"updated_at"`
+	Serving map[string]*aiServingTarget `json:"serving"`
+	// How the model is served per format, by the rule a request is routed
+	// by (aigateway.ServedModes): "native", "translated" or "not_served".
+	// DialectModes has both dialects; for openai it describes Chat
+	// Completions. ResponsesMode is the Responses API on the openai endpoint.
+	DialectModes  map[string]string `json:"dialect_modes"`
+	ResponsesMode string            `json:"responses_mode"`
+	// The pair a translated request goes through first, keyed "openai",
+	// "anthropic" or "responses"; a key exists only where the mode is
+	// "translated".
+	TranslationPairs map[string]string `json:"translation_pairs"`
+	CreatedAt        time.Time         `json:"created_at"`
+	UpdatedAt        time.Time         `json:"updated_at"`
 }
 
 // providersBySlug loads every provider once for a model view. Without a
@@ -139,6 +151,18 @@ func (d Deps) modelView(m db.AIModel, providers map[string]db.AIProvider) aiMode
 		}
 	}
 	slices.Sort(out.Dialects)
+	// The modes come from the gateway's own rule, never from a second copy
+	// of it here. They say what a request is answered with; "serving" and
+	// "available" say whether a native target can be reached right now.
+	modes := aigateway.ServedModes(m, providers)
+	out.DialectModes = map[string]string{"openai": modes.OpenAI.Mode, "anthropic": modes.Anthropic.Mode}
+	out.ResponsesMode = modes.Responses.Mode
+	out.TranslationPairs = map[string]string{}
+	for key, mode := range map[string]aigateway.Mode{"openai": modes.OpenAI, "anthropic": modes.Anthropic, "responses": modes.Responses} {
+		if mode.Mode == aigateway.ModeTranslated {
+			out.TranslationPairs[key] = mode.Pair
+		}
+	}
 	return out
 }
 

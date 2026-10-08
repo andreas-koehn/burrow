@@ -1696,3 +1696,89 @@ func TestTranslate_RedactionOnTheResponsesPairs(t *testing.T) {
 		})
 	}
 }
+
+// ServedModes is what the dashboard shows; it applies candidatesForRequest's
+// rule to a model and the provider rows.
+func TestServedModes(t *testing.T) {
+	providers := map[string]db.AIProvider{
+		"a": {Slug: "a", Kind: "direct", APIFormat: "openai", SupportsResponses: true},
+		"b": {Slug: "b", Kind: "direct", APIFormat: "openai"},
+		"c": {Slug: "c", Kind: "direct", APIFormat: "anthropic"},
+	}
+	tA := db.AIModelTarget{Dialect: "openai", ProviderSlug: "a", TargetModel: "ma"}
+	tB := db.AIModelTarget{Dialect: "openai", ProviderSlug: "b", TargetModel: "mb"}
+	tC := db.AIModelTarget{Dialect: "anthropic", ProviderSlug: "c", TargetModel: "mc"}
+	native, off := Mode{Mode: ModeNative}, Mode{Mode: ModeNotServed}
+	via := func(pair string) Mode { return Mode{Mode: ModeTranslated, Pair: pair} }
+	model := func(on bool, targets ...db.AIModelTarget) db.AIModel {
+		return db.AIModel{Name: "m", Enabled: true, Translate: on, Targets: targets}
+	}
+	disabled := model(true, tB)
+	disabled.Enabled = false
+	cases := []struct {
+		name string
+		m    db.AIModel
+		want Modes
+	}{
+		{"openai without responses, flag off", model(false, tB), Modes{OpenAI: native, Anthropic: off, Responses: off}},
+		{"openai without responses, flag on", model(true, tB),
+			Modes{OpenAI: native, Anthropic: via("messages-chat"), Responses: via("responses-chat")}},
+		{"both, responses offered", model(true, tA, tC), Modes{OpenAI: native, Anthropic: native, Responses: native}},
+		{"both, responses not offered, flag on", model(true, tB, tC),
+			Modes{OpenAI: native, Anthropic: native, Responses: via("responses-chat")}},
+		{"both, responses not offered, flag off", model(false, tB, tC), Modes{OpenAI: native, Anthropic: native, Responses: off}},
+		{"anthropic only, flag on", model(true, tC),
+			Modes{OpenAI: via("chat-messages"), Anthropic: native, Responses: via("responses-messages")}},
+		{"anthropic only, flag off", model(false, tC), Modes{OpenAI: off, Anthropic: native, Responses: off}},
+		{"a disabled model is refused", disabled, Modes{OpenAI: off, Anthropic: off, Responses: off}},
+		// The provider row decides: a target whose provider is gone or speaks
+		// another format is no target (targetProvider).
+		{"provider gone", model(true, db.AIModelTarget{Dialect: "openai", ProviderSlug: "gone", TargetModel: "x"}),
+			Modes{OpenAI: off, Anthropic: off, Responses: off}},
+		{"provider speaks another format", model(true, db.AIModelTarget{Dialect: "anthropic", ProviderSlug: "b", TargetModel: "x"}),
+			Modes{OpenAI: off, Anthropic: off, Responses: off}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ServedModes(tc.m, providers); got != tc.want {
+				t.Fatalf("modes %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("an unreleased pair is as if translation were off", func(t *testing.T) {
+		old := lookupPair
+		t.Cleanup(func() { lookupPair = old })
+		lookupPair = func(from, to translate.Format) (translate.Pair, bool) {
+			if from == translate.Messages {
+				return nil, false
+			}
+			return old(from, to)
+		}
+		want := Modes{OpenAI: native, Anthropic: off, Responses: via("responses-chat")}
+		if got := ServedModes(model(true, tB), providers); got != want {
+			t.Fatalf("modes %+v, want %+v", got, want)
+		}
+	})
+
+	// The data plane and the view cannot disagree: what a request for the
+	// model gets is what the view says.
+	t.Run("agrees with the request path", func(t *testing.T) {
+		s := script(map[string]http.HandlerFunc{"zai#ZAI": jsonBody(chatAnswer)})
+		for _, on := range []bool{false, true} {
+			g, _ := translateGateway(s, on, tZai)
+			m := g.Synthetic.(fakeSynthetic)["smart"]
+			p, err := g.Providers.ProviderBySlug(context.Background(), "zai")
+			if err != nil {
+				t.Fatal(err)
+			}
+			modes := ServedModes(m, map[string]db.AIProvider{"zai": p})
+			rec := serve(g, anthropicPost("/v1/messages", messagesHi), DialectAnthropic)
+			served := rec.Code == 200
+			if (modes.Anthropic.Mode == ModeTranslated) != served || rec.Header().Get("Burrow-Translated") != modes.Anthropic.Pair {
+				t.Fatalf("translate=%v: view %+v, request status %d translated %q",
+					on, modes.Anthropic, rec.Code, rec.Header().Get("Burrow-Translated"))
+			}
+		}
+	})
+}

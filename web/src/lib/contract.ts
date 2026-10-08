@@ -396,6 +396,13 @@ export interface InspectorEntry {
   trace_id: string;
   remote_ip: string;
   mcp?: { method: string; tool: string; params: unknown };
+  /** The pair that translated the request (e.g. "messages-chat"); "" when it was served in its own format. */
+  translated: string;
+  /**
+   * What the translation left out, sorted. A final "more" says the list was cut.
+   * A name can end in text the client chose: render it as text only.
+   */
+  dropped: string[];
 }
 
 // Audit (spec Part G).
@@ -505,11 +512,15 @@ export interface AiServingTarget {
   provider: string;
   model: string;
 }
+/** How a model is served in one format: by a target of that format, through translation, or not at all. */
+export type DialectMode = "native" | "translated" | "not_served";
 export interface AiModel {
   name: string;
   description: string;
   enabled: boolean;
   fallback_on_rate_limit: boolean;
+  /** A format the model has no target for is answered by translating to a target of the other format. */
+  translate: boolean;
   attempt_timeout_s: number;
   total_timeout_s: number;
   /** By format, then in the order they are tried. */
@@ -521,6 +532,12 @@ export interface AiModel {
    * when none is. A format without targets has no key.
    */
   serving: Partial<Record<Dialect, AiServingTarget | null>>;
+  /** Per format, by the rule a request is routed by; openai is Chat Completions. Computed by the relay. */
+  dialect_modes: Record<Dialect, DialectMode>;
+  /** The Responses API on the OpenAI endpoint (what Codex uses). Computed by the relay. */
+  responses_mode: DialectMode;
+  /** The pair a translated request goes through first; a key only where the mode is "translated". */
+  translation_pairs: Partial<Record<Dialect | "responses", string>>;
   created_at: string;
   updated_at: string;
 }
@@ -532,7 +549,10 @@ export interface AiRequestAttempt {
   model: string;
   /** Upstream HTTP status; 0 when none was received. */
   status: number;
-  /** "" for the attempt that answered; else http_<status>, timeout, no_response, busy, breaker_open, … */
+  /**
+   * "" for the attempt that answered; else http_<status>, timeout, no_response, busy, breaker_open, …;
+   * a translated attempt also upstream_invalid, upstream_error, translate_error.
+   */
   error_code: string;
   duration_ms: number;
   ts: string;

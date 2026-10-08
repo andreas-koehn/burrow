@@ -150,7 +150,7 @@ export default function GatewayOverview() {
         <ConnectCard
           canCreate={isAdmin}
           endpoints={endpoints}
-          models={modelList.filter((m) => m.enabled).map((m) => ({ name: m.name, dialects: m.dialects }))}
+          models={modelList.filter((m) => m.enabled)}
         />
       ),
     },

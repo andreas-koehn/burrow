@@ -7,6 +7,7 @@ import { parseTimeRange, timeRangeMs, widerRange, type TimeRange } from "@/lib/t
 import { withAIConfigDefaults } from "@/lib/aiConfig";
 import { useDebounced } from "@/lib/use-debounced";
 import { useUrlParams } from "@/lib/use-url-params";
+import { droppedNames, pairWords } from "@/lib/translation";
 import { InspectorOffHint } from "@/components/InspectorOffHint";
 import { Badge, Button, EmptyState, PageHeader, SkeletonRows } from "@/components/ds";
 import { LogView, type LogColumn } from "@/components/LogView";
@@ -139,6 +140,22 @@ export default function Requests() {
       cell: (r) => {
         const n = (r.redactions ?? []).reduce((sum, x) => sum + x.count, 0);
         return n > 0 ? `${n} redacted` : "—";
+      },
+    },
+    {
+      id: "translation",
+      header: "Translation",
+      cell: (r) => {
+        if (!r.translated) return "—";
+        const { names, more } = droppedNames(r.dropped);
+        return (
+          <span className="format-mode">
+            <Badge nodot kind="status-idle">translated</Badge>
+            {/* The direction is in the request's detail; here it is for a screen reader. */}
+            <span className="visually-hidden">{pairWords(r.translated)}</span>
+            {names.length > 0 && <span className="muted small">{`${names.length}${more ? "+" : ""} left out`}</span>}
+          </span>
+        );
       },
     },
   ];

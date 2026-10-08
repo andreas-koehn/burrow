@@ -1,7 +1,7 @@
 import { http, HttpResponse } from "msw";
 import { modelNameError } from "@/lib/modelNames";
-import { db, type MockDb, type CacheSettingsPayload, type AiProviderRow } from "@/mocks/db";
-import type { AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, CostGroupBy, CostSummary, Dialect, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
+import { db, NO_MODES, type MockDb, type CacheSettingsPayload, type AiProviderRow } from "@/mocks/db";
+import type { AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, CostGroupBy, CostSummary, Dialect, DialectMode, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
 
 const json = (body: unknown, status = 200) => HttpResponse.json(body as object, { status });
 const err = (status: number, message: string) => HttpResponse.json({ error: message }, { status });
@@ -311,7 +311,36 @@ function modelView(m: AiModel): AiModel {
     // Requests for a disabled model are refused whatever its targets can do.
     serving[t.dialect] = m.enabled && t.available ? { provider: t.provider, model: t.model } : null;
   }
-  return { ...m, targets, serving };
+  return { ...m, targets, serving, ...servedModes(m) };
+}
+
+// The relay's aigateway.ServedModes (internal/aigateway/translate.go
+// chooseTargets): targets of the format that offer the endpoint serve it
+// natively; only when there is none, and translate is on, the format is
+// translated — first through its own targets that lack the endpoint (an
+// OpenAI-format provider without the Responses API), then through the other
+// format's. A target counts when its provider exists and speaks its format;
+// a disabled model is served nowhere. All four pairs are released.
+function servedModes(m: AiModel): Pick<AiModel, "dialect_modes" | "responses_mode" | "translation_pairs"> {
+  const usable = (d: Dialect) => m.targets.flatMap((t) => {
+    const p = db.aiProviders.find((x) => x.slug === t.provider);
+    return t.dialect === d && p && p.api_format === d ? [p] : [];
+  });
+  const pairs: AiModel["translation_pairs"] = {};
+  const mode = (key: Dialect | "responses"): DialectMode => {
+    if (!m.enabled) return "not_served";
+    const dialect: Dialect = key === "anthropic" ? "anthropic" : "openai";
+    const own = usable(dialect);
+    const offers = (p: (typeof own)[number]) => key !== "responses" || p.supports_responses === true;
+    if (own.some(offers)) return "native";
+    if (!m.translate) return "not_served";
+    const first = [...own.filter((p) => !offers(p)), ...usable(dialect === "openai" ? "anthropic" : "openai")][0];
+    if (!first) return "not_served";
+    const caller = key === "anthropic" ? "messages" : key === "openai" ? "chat" : "responses";
+    pairs[key] = `${caller}-${first.api_format === "openai" ? "chat" : "messages"}`;
+    return "translated";
+  };
+  return { dialect_modes: { openai: mode("openai"), anthropic: mode("anthropic") }, responses_mode: mode("responses"), translation_pairs: pairs };
 }
 
 // ---- synthetic models (internal/store/ai_models.go) ----
@@ -320,12 +349,13 @@ interface ModelBody {
   description?: unknown;
   enabled?: unknown;
   fallback_on_rate_limit?: unknown;
+  translate?: unknown;
   attempt_timeout_s?: unknown;
   total_timeout_s?: unknown;
   targets?: unknown;
 }
 const TARGET_FIELDS = ["dialect", "provider", "model"];
-const MODEL_FIELDS = ["name", "description", "enabled", "fallback_on_rate_limit", "attempt_timeout_s", "total_timeout_s", "targets"];
+const MODEL_FIELDS = ["name", "description", "enabled", "fallback_on_rate_limit", "translate", "attempt_timeout_s", "total_timeout_s", "targets"];
 
 const MSG_MODEL_NAME = "name must be 2-63 characters: lowercase letters, digits, dot, underscore, hyphen";
 const MSG_MODEL_TARGETS = "a model needs at least one target and at most 8 per format";
@@ -334,12 +364,12 @@ const MODEL_DIALECTS: Dialect[] = ["anthropic", "openai"];
 /**
  * The stored model for a request body, or the reason the relay refuses it, in
  * the relay's words (internal/store/ai_models.go normalizeModel). `old` is the
- * model a PUT replaces: a name or enabled left out keeps its value.
+ * model a PUT replaces: a name, enabled or translate left out keeps its value.
  */
 function modelFromBody(b: ModelBody | null, old?: AiModel): Omit<AiModel, "created_at" | "updated_at"> | string {
   if (!b || typeof b !== "object") return "invalid JSON body";
-  // Strict decoding: "dialects" and "serving" are derived and may not be
-  // sent, and neither may a target's "available".
+  // Strict decoding: "dialects", "serving" and the mode fields are derived
+  // and may not be sent, and neither may a target's "available".
   const extra = Object.keys(b).find((k) => !MODEL_FIELDS.includes(k))
     ?? (Array.isArray(b.targets) ? b.targets : []).flatMap((t) => (t && typeof t === "object" ? Object.keys(t as object) : []))
       .find((k) => !TARGET_FIELDS.includes(k));
@@ -376,13 +406,16 @@ function modelFromBody(b: ModelBody | null, old?: AiModel): Omit<AiModel, "creat
     description,
     enabled: typeof b.enabled === "boolean" ? b.enabled : old?.enabled ?? true,
     fallback_on_rate_limit: b.fallback_on_rate_limit === true,
+    // Left out or null: off on create, the stored value on update.
+    translate: typeof b.translate === "boolean" ? b.translate : old?.translate ?? false,
     attempt_timeout_s: attempt,
     total_timeout_s: total,
     // As the relay returns them: by format, then in the order given.
-    // available and serving are worked out by modelView on every response.
+    // available, serving and the modes are worked out by modelView on every response.
     targets: MODEL_DIALECTS.flatMap((d) => targets.filter((t) => t.dialect === d)).map((t) => ({ ...t, available: false })),
     dialects: MODEL_DIALECTS.filter((d) => targets.some((t) => t.dialect === d)),
     serving: {},
+    ...NO_MODES,
   };
 }
 

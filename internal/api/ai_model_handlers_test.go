@@ -926,3 +926,120 @@ func TestModelView_ServingAndAvailability(t *testing.T) {
 			"targets": []map[string]any{{"provider": "zai", "model": "glm-5.1"}}}), http.StatusBadRequest)
 	})
 }
+
+// modesOf reads the per-format modes of one model view as raw JSON.
+func modesOf(t *testing.T, body string) (modes map[string]string, responses string, pairs map[string]string) {
+	t.Helper()
+	var raw struct {
+		DialectModes     map[string]string `json:"dialect_modes"`
+		ResponsesMode    string            `json:"responses_mode"`
+		TranslationPairs map[string]string `json:"translation_pairs"`
+	}
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		t.Fatalf("decode %s: %v", body, err)
+	}
+	if raw.TranslationPairs == nil {
+		t.Fatalf("translation_pairs is not an object: %s", body)
+	}
+	return raw.DialectModes, raw.ResponsesMode, raw.TranslationPairs
+}
+
+func TestModelView_Modes(t *testing.T) {
+	providers := []db.AIProvider{
+		directProvider("zai", "openai", "ZAI"), // no Responses API
+		directProvider("zai-anthropic", "anthropic", "ZAI"),
+	}
+	withResponses := directProvider("openrouter", "openai", "OPENROUTER")
+	withResponses.SupportsResponses = true
+	providers = append(providers, withResponses)
+	tChat := db.AIModelTarget{Dialect: "openai", ProviderSlug: "zai", TargetModel: "glm-5.1"}
+	tResp := db.AIModelTarget{Dialect: "openai", ProviderSlug: "openrouter", TargetModel: "google/gemini-x"}
+	tMsg := db.AIModelTarget{Dialect: "anthropic", ProviderSlug: "zai-anthropic", TargetModel: "glm-5.1"}
+
+	cases := []struct {
+		name      string
+		translate bool
+		targets   []db.AIModelTarget
+		modes     string // fmt.Sprint of the map: keys sorted
+		responses string
+		pairs     string
+	}{
+		{"openai only, off", false, []db.AIModelTarget{tChat}, "map[anthropic:not_served openai:native]", "not_served", "map[]"},
+		{"openai only, on", true, []db.AIModelTarget{tChat}, "map[anthropic:translated openai:native]", "translated",
+			"map[anthropic:messages-chat responses:responses-chat]"},
+		{"both, responses offered", true, []db.AIModelTarget{tMsg, tResp}, "map[anthropic:native openai:native]", "native", "map[]"},
+		{"both, responses not offered, on", true, []db.AIModelTarget{tMsg, tChat}, "map[anthropic:native openai:native]", "translated",
+			"map[responses:responses-chat]"},
+		{"both, responses not offered, off", false, []db.AIModelTarget{tMsg, tChat}, "map[anthropic:native openai:native]", "not_served", "map[]"},
+		{"anthropic only, on", true, []db.AIModelTarget{tMsg}, "map[anthropic:native openai:translated]", "translated",
+			"map[openai:chat-messages responses:responses-messages]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newModelFixture(db.AIModel{Name: "m1", Enabled: true, Translate: tc.translate,
+				AttemptTimeoutS: 60, TotalTimeoutS: 120, Targets: tc.targets})
+			f.d.AIProviders = &fakeProviderStore{rows: providers}
+			f.d.Users = &fakeUserStore{role: "user"} // any session reads models
+			c := f.serve(t)
+			for _, body := range []string{
+				wantStatus(t, c.get(t, "/api/v1/ai/models/m1"), http.StatusOK),
+				strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(wantStatus(t, c.get(t, "/api/v1/ai/models"), http.StatusOK)), "["), "]"),
+			} {
+				modes, responses, pairs := modesOf(t, body)
+				if fmt.Sprint(modes) != tc.modes || responses != tc.responses || fmt.Sprint(pairs) != tc.pairs {
+					t.Errorf("modes %v responses %q pairs %v in %s", modes, responses, pairs, body)
+				}
+			}
+		})
+	}
+
+	t.Run("a disabled model is served nowhere, as serving says", func(t *testing.T) {
+		f := newModelFixture(db.AIModel{Name: "m1", Translate: true, AttemptTimeoutS: 60, TotalTimeoutS: 120,
+			Targets: []db.AIModelTarget{tChat}})
+		f.d.AIProviders = &fakeProviderStore{rows: providers}
+		body := wantStatus(t, f.serve(t).get(t, "/api/v1/ai/models/m1"), http.StatusOK)
+		modes, responses, pairs := modesOf(t, body)
+		_, serving := servingOf(t, body)
+		if fmt.Sprint(modes) != "map[anthropic:not_served openai:not_served]" || responses != "not_served" || len(pairs) != 0 || serving["openai"] != nil {
+			t.Errorf("disabled: %s", body)
+		}
+	})
+
+	// serving names a target only for a format the modes call native; a
+	// translated format has no serving key.
+	t.Run("serving agrees with the modes", func(t *testing.T) {
+		f, _ := servingFixture()
+		body := wantStatus(t, f.serve(t).get(t, "/api/v1/ai/models/burrow-smart"), http.StatusOK)
+		modes, _, _ := modesOf(t, body)
+		_, serving := servingOf(t, body)
+		for dialect, target := range serving {
+			if target != nil && modes[dialect] != "native" {
+				t.Errorf("serving.%s is set while the mode is %q", dialect, modes[dialect])
+			}
+		}
+		f2 := newModelFixture(db.AIModel{Name: "m1", Enabled: true, Translate: true, AttemptTimeoutS: 60, TotalTimeoutS: 120,
+			Targets: []db.AIModelTarget{tChat}})
+		f2.d.AIProviders = &fakeProviderStore{rows: providers}
+		_, serving = servingOf(t, wantStatus(t, f2.serve(t).get(t, "/api/v1/ai/models/m1"), http.StatusOK))
+		if _, has := serving["anthropic"]; has {
+			t.Errorf("a translated format has a serving key: %v", serving)
+		}
+	})
+
+	t.Run("the computed fields are refused on write", func(t *testing.T) {
+		f := newModelFixture(simpleModel())
+		c := f.serve(t)
+		for _, field := range []string{`"dialect_modes":{"openai":"native"}`, `"responses_mode":"native"`, `"translation_pairs":{}`} {
+			body := `{"targets":[{"provider":"ollama","model":"mistral"}],` + field + `}`
+			for _, resp := range []*http.Response{
+				c.do(t, http.MethodPut, "/api/v1/ai/models/burrow-simple", json.RawMessage(body)),
+				c.do(t, http.MethodPost, "/api/v1/ai/models", json.RawMessage(`{"name":"m2",`+body[1:])),
+			} {
+				wantStatus(t, resp, http.StatusBadRequest)
+			}
+		}
+		if f.ms.rows[0].Translate || len(f.ms.rows) != 1 {
+			t.Errorf("a refused write changed the store: %+v", f.ms.rows)
+		}
+	})
+}

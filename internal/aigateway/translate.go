@@ -103,20 +103,61 @@ const (
 var lookupPair = translate.Lookup
 
 // candidatesForRequest returns what to try for a resolved request on path,
-// in order, or why there is nothing to try.
-//
-// Native candidates are the targets of the request's dialect that offer the
-// endpoint. If there is one, they are the whole list. Otherwise, and only for
-// a synthetic model with translation turned on and an endpoint that has a
-// caller format (messages, chat completions, creating a response), the
-// candidates are translated ones, each through the released pair for its
-// provider's format: first the targets of the request's own dialect that do
-// not offer the endpoint (an OpenAI-format provider without the Responses
-// API), then the targets of the other dialect. A pair that is not released
-// contributes nothing, as if translation were off.
+// in order, or why there is nothing to try. The rule is chooseTargets; here
+// its result is expanded into candidates.
 func (g *Gateway) candidatesForRequest(ctx context.Context, res Resolution, d *Dialect, path string) (cands []candidate, why string) {
-	var native, lacking []Target
-	for _, t := range res.Targets {
+	other := func() []Target {
+		if len(res.Targets) > 0 && res.Other == nil {
+			// Only now, when the request's own dialect has nothing that
+			// offers the endpoint, are the other dialect's providers read.
+			return g.otherTargets(ctx, res)
+		}
+		return res.Other
+	}
+	native, translated, why := chooseTargets(res.Targets, other, res.Synthetic && res.Model.Translate, d.Name, path)
+	if len(native) > 0 {
+		return candidatesFor(native), ""
+	}
+	for _, t := range translated {
+		for _, c := range candidatesFor([]Target{t.Target}) {
+			c.pair, c.pos = t.pair, len(cands)
+			cands = append(cands, c)
+		}
+	}
+	if len(cands) == 0 {
+		return nil, why
+	}
+	return cands, ""
+}
+
+// translatedTarget is a target reached through a translating pair.
+type translatedTarget struct {
+	Target
+	pair translate.Pair
+}
+
+// chooseTargets is the one rule for how a model is served on an endpoint. The
+// request path (candidatesForRequest) and the model view of the management
+// API (ServedModes) both call it, so they cannot disagree.
+//
+// own are the usable targets of the request's dialect, in order; other
+// returns those of the other dialect and is called only when they are
+// needed. translate says the model is a synthetic one with translation
+// turned on.
+//
+// Native targets are the ones in own that offer the endpoint. If there is
+// one, they are the whole answer. Otherwise, and only with translate on an
+// endpoint that has a caller format (messages, chat completions, creating a
+// response), the answer is translated targets, each through the released
+// pair for its provider's format: first the targets of the request's own
+// dialect that do not offer the endpoint (an OpenAI-format provider without
+// the Responses API), then the targets of the other dialect. A pair that is
+// not released contributes nothing, as if translation were off. why says
+// what a request is told when both lists are empty; when translated is not
+// empty it is what the request would have been told without translation.
+func chooseTargets(own []Target, other func() []Target, translateOn bool, dialect, path string) (native []Target, translated []translatedTarget, why string) {
+	var lacking []Target
+	for _, t := range own {
 		if endpointSupported(path, t.Provider) {
 			native = append(native, t)
 		} else {
@@ -124,42 +165,91 @@ func (g *Gateway) candidatesForRequest(ctx context.Context, res Resolution, d *D
 		}
 	}
 	if len(native) > 0 {
-		return candidatesFor(native), ""
+		return native, nil, ""
+	}
+	caller, translatable := translate.CallerFormat(dialect, path)
+	var others []Target
+	if len(own) == 0 || (translateOn && translatable) {
+		others = other()
 	}
 	switch {
-	case len(res.Targets) > 0:
+	case len(own) > 0:
 		why = whyEndpointUnsupported
-	case len(res.Other) > 0:
+	case len(others) > 0:
 		why = whyFormatMismatch
 	default:
 		why = whyModelNotFound
 	}
-	caller, translatable := translate.CallerFormat(d.Name, path)
-	if !res.Synthetic || !res.Model.Translate || !translatable {
-		return nil, why
+	if !translateOn || !translatable {
+		return nil, nil, why
 	}
-	other := res.Other
-	if len(res.Targets) > 0 && other == nil {
-		// Only now, when the request's own dialect has nothing that offers
-		// the endpoint, are the other dialect's providers read.
-		other = g.otherTargets(ctx, res)
-	}
-	for _, group := range [][]Target{lacking, other} {
+	for _, group := range [][]Target{lacking, others} {
 		for _, t := range group {
-			pair, ok := lookupPair(caller, translate.TargetFormat(t.Provider.APIFormat))
-			if !ok {
-				continue
-			}
-			for _, c := range candidatesFor([]Target{t}) {
-				c.pair, c.pos = pair, len(cands)
-				cands = append(cands, c)
+			if pair, ok := lookupPair(caller, translate.TargetFormat(t.Provider.APIFormat)); ok {
+				translated = append(translated, translatedTarget{Target: t, pair: pair})
 			}
 		}
 	}
-	if len(cands) == 0 {
-		return nil, why
+	return nil, translated, why
+}
+
+// The ways a model is served in a format, as the management API names them.
+const (
+	ModeNative     = "native"     // by a target of that format
+	ModeTranslated = "translated" // by a target of another format, through a pair
+	ModeNotServed  = "not_served" // a request is refused
+)
+
+// Mode says how a model is served on one endpoint. Pair is the id of the
+// pair of the first target a translated request is sent to, "" otherwise.
+type Mode struct {
+	Mode string
+	Pair string
+}
+
+// Modes says how a synthetic model is served per endpoint a client is
+// configured for: OpenAI is Chat Completions on /openai/v1, Anthropic is
+// Messages on /anthropic, Responses is creating a response on /openai/v1
+// (what Codex uses).
+type Modes struct {
+	OpenAI, Anthropic, Responses Mode
+}
+
+// ServedModes reports how m is served, by the rule a request is routed by
+// (chooseTargets). providers maps a slug to its row; as in resolution, a
+// target counts only when its provider exists and speaks the target's
+// dialect, and a disabled model is served nowhere. It says nothing about
+// whether a target can be reached right now: that is the model view's
+// "available" and "serving".
+func ServedModes(m db.AIModel, providers map[string]db.AIProvider) Modes {
+	mode := func(d *Dialect, path string) Mode {
+		if !m.Enabled {
+			return Mode{Mode: ModeNotServed}
+		}
+		targets := func(own bool) []Target {
+			var out []Target
+			for _, t := range m.Targets {
+				p, known := providers[t.ProviderSlug]
+				if (t.Dialect == d.Name) == own && known && p.APIFormat == t.Dialect {
+					out = append(out, Target{Provider: p, Model: t.TargetModel})
+				}
+			}
+			return out
+		}
+		native, translated, _ := chooseTargets(targets(true), func() []Target { return targets(false) }, m.Translate, d.Name, path)
+		switch {
+		case len(native) > 0:
+			return Mode{Mode: ModeNative}
+		case len(translated) > 0:
+			return Mode{Mode: ModeTranslated, Pair: translated[0].pair.ID()}
+		}
+		return Mode{Mode: ModeNotServed}
 	}
-	return cands, ""
+	return Modes{
+		OpenAI:    mode(DialectOpenAI, "/v1/chat/completions"),
+		Anthropic: mode(DialectAnthropic, "/v1/messages"),
+		Responses: mode(DialectOpenAI, pathResponses),
+	}
 }
 
 // translatedIn reports whether m, which has no usable target of dialect d, is

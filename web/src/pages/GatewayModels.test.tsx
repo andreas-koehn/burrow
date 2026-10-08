@@ -32,6 +32,36 @@ describe("Models page", () => {
     expect(within(smart).getByText("zai-anthropic/glm-5.1")).toBeInTheDocument();
   });
 
+  it("shows per format whether a model is native, translated or not served", async () => {
+    db.aiModels.find((m) => m.name === "burrow-simple")!.translate = true;
+    mount();
+    const row = within(await screen.findByRole("table", { name: "Models" })).getByRole("row", { name: /burrow-simple/ });
+    expect(within(row).getByText("ollama/mistral")).toBeInTheDocument();
+    // In words, as a badge, with the direction next to it.
+    expect(within(row).getByText("translated", { selector: "span.badge" })).toBeVisible();
+    expect(within(row).getByText("Anthropic Messages → Chat Completions")).toBeInTheDocument();
+    expect(within(row).queryByText("not served")).toBeNull();
+    // ollama does not offer the Responses API: Codex is translated too.
+    expect(within(row).getByText("Responses API: translated (OpenAI Responses → Chat Completions)")).toBeInTheDocument();
+  });
+
+  it("says how the Responses API is served", async () => {
+    db.aiProviders.find((p) => p.slug === "zai")!.supports_responses = true;
+    mount();
+    const table = await screen.findByRole("table", { name: "Models" });
+    expect(within(within(table).getByRole("row", { name: /burrow-intelligence/ })).getByText("Responses API: served natively")).toBeInTheDocument();
+    // Translation is off and ollama does not offer it.
+    expect(within(within(table).getByRole("row", { name: /burrow-simple/ })).getByText("Responses API: not served")).toBeInTheDocument();
+  });
+
+  it("offers a translated model to the connect card, marked", async () => {
+    db.aiModels.find((m) => m.name === "burrow-simple")!.translate = true;
+    mount();
+    await screen.findByRole("heading", { name: "Connect a client" });
+    const offered = await screen.findByRole("list", { name: "Models for Claude Code" });
+    expect(within(offered).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["burrow-intelligence", "burrow-simpletranslated"]);
+  });
+
   it("says in words when a model is switched off", async () => {
     db.aiModels[0]!.enabled = false;
     mount();
@@ -128,6 +158,7 @@ describe("Models page", () => {
         { dialect: "openai", provider: "zai", model: "glm-5.1", available: false },
         { dialect: "openai", provider: "openrouter", model: "google/gemini-x", available: false },
       ],
+      translate: false, dialect_modes: { openai: "native", anthropic: "not_served" }, responses_mode: "not_served", translation_pairs: {},
       dialects: ["openai"], serving: {}, created_at: "2026-05-21T00:00:00Z", updated_at: "2026-05-21T00:00:00Z",
     });
     mount();

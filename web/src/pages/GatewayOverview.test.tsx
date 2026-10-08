@@ -41,8 +41,10 @@ const withCost = (total_usd: number, tokens_in: number) =>
     window: "today", total_usd, tokens_in, tokens_out: 0, top_consumers: [], pct_of_budget: null,
   })));
 const checklist = () => screen.findByRole("list", { name: "Set up the AI Gateway" });
+// The steps are the list's own items: a step can hold a list itself (the
+// connect card names the models it offers).
 const stepStates = (list: HTMLElement) =>
-  within(list).getAllByRole("listitem").map((li) => [
+  Array.from(list.children).filter((li): li is HTMLElement => li instanceof HTMLElement).map((li) => [
     li.querySelector(".setup-step-title")?.textContent,
     li.querySelector(".visually-hidden")?.textContent,
     li.querySelector(".setup-step-title")?.getAttribute("aria-expanded"),

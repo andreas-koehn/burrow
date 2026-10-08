@@ -52,6 +52,10 @@ describe("AttemptLookup", () => {
       { position: 6, provider: "zai", model: "g", status: 200, error_code: "stream_aborted", duration_ms: 900, ts: "2026-10-06T09:31:05Z" },
       { position: 7, provider: "zai", model: "h", status: 0, error_code: "panic", duration_ms: 1, ts: "2026-10-06T09:31:06Z" },
       { position: 8, provider: "zai", model: "i", status: 429, error_code: "http_429", duration_ms: 40, ts: "2026-10-06T09:31:07Z" },
+      // Translated attempts.
+      { position: 9, provider: "zai", model: "j", status: 200, error_code: "upstream_invalid", duration_ms: 40, ts: "2026-10-06T09:31:08Z" },
+      { position: 10, provider: "zai", model: "k", status: 200, error_code: "upstream_error", duration_ms: 40, ts: "2026-10-06T09:31:09Z" },
+      { position: 11, provider: "zai", model: "l", status: 0, error_code: "translate_error", duration_ms: 1, ts: "2026-10-06T09:31:10Z" },
     ];
     renderLookup();
     await lookUp("req-2");
@@ -60,6 +64,7 @@ describe("AttemptLookup", () => {
     expect(rows.slice(1).map((_, i) => result(i + 1))).toEqual([
       "timed out", "no response", "no free place", "skipped: provider failing", "skipped: other API format",
       "client left", "stream broke off", "internal error", "HTTP 429",
+      "answer could not be translated", "provider reported an error", "request could not be translated",
     ]);
     // Order counts from 1, in the order the attempts were made.
     expect(within(rows[1]!).getAllByRole("cell")[0]).toHaveTextContent("1");

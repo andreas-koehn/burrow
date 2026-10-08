@@ -85,6 +85,10 @@ type inspectorEntryJSON struct {
 	RemoteIP     string                   `json:"remote_ip,omitempty"`
 	MCP          *inspector.MCPInfo       `json:"mcp,omitempty"`
 	AdapterLossy bool                     `json:"adapter_lossy,omitempty"`
+	// The pair that translated the request ("" for a request served in its
+	// own format) and what it left out (never null).
+	Translated string   `json:"translated"`
+	Dropped    []string `json:"dropped"`
 }
 
 // inspectorEntryToJSON converts a captured Entry to the wire shape. Bodies
@@ -112,6 +116,11 @@ func inspectorEntryToJSON(e inspector.Entry) inspectorEntryJSON {
 		RemoteIP:     e.RemoteIP,
 		MCP:          e.MCP,
 		AdapterLossy: e.AdapterLossy,
+		Translated:   e.Translated,
+		Dropped:      e.Dropped,
+	}
+	if out.Dropped == nil {
+		out.Dropped = []string{}
 	}
 	if len(e.ReqBody) > 0 {
 		out.ReqBody, out.ReqBodyEnc = encodeBody(e.ReqBody)

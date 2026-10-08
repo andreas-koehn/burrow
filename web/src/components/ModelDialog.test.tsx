@@ -171,9 +171,60 @@ describe("ModelDialog", () => {
     // What the dialog does not edit goes back as it came.
     expect(put!.body).toEqual({
       name: "burrow-simple", description: "Small and local.", enabled: false, fallback_on_rate_limit: false,
-      attempt_timeout_s: 60, total_timeout_s: 120,
+      translate: false, attempt_timeout_s: 60, total_timeout_s: 120,
       targets: [{ dialect: "openai", provider: "ollama", model: "mistral" }],
     });
+  });
+
+  it("has a translation switch that says what it does and what is lost", async () => {
+    let put: Record<string, unknown> | null = null;
+    server.use(http.put("/api/v1/ai/models/:name", async ({ request }) => {
+      put = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ name: "burrow-simple" });
+    }));
+    renderDialog({ model: fixtureModel("burrow-simple") }); // an OpenAI target only
+    const sw = screen.getByRole("switch", { name: "Translate for the other format" });
+    expect(sw).not.toBeChecked();
+    // The help is the switch's description, not only text nearby.
+    expect(sw).toHaveAccessibleDescription(/served natively where it has a target/i);
+    expect(sw).toHaveAccessibleDescription(/a target of its own format is always used first/i);
+    expect(sw).toHaveAccessibleDescription(/prompt caching hints, thinking signatures and beta features are not carried over/i);
+    expect(sw).toHaveAccessibleDescription(/names what was left out/i);
+    const save = screen.getByRole("button", { name: "Save changes" });
+    expect(save).toBeDisabled();
+    await userEvent.click(sw);
+    expect(sw).toBeChecked();
+    expect(save).toBeEnabled();
+    // Back to the stored value: nothing has changed.
+    await userEvent.click(sw);
+    expect(save).toBeDisabled();
+    await userEvent.click(sw);
+    await userEvent.click(save);
+    await waitFor(() => expect(put).not.toBeNull());
+    expect(put!.translate).toBe(true);
+  });
+
+  it("shows the stored translation setting and a new model starts with it off", async () => {
+    const model = fixtureModel("burrow-simple");
+    model.translate = true;
+    renderDialog({ model });
+    expect(screen.getByRole("switch", { name: "Translate for the other format" })).toBeChecked();
+  });
+
+  it("a new model is created with translation off unless it is switched on", async () => {
+    let post: Record<string, unknown> | null = null;
+    server.use(http.post("/api/v1/ai/models", async ({ request }) => {
+      post = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ name: "burrow-new" }, { status: 201 });
+    }));
+    renderDialog();
+    expect(screen.getByRole("switch", { name: "Translate for the other format" })).not.toBeChecked();
+    await userEvent.type(screen.getByLabelText("Model name"), "burrow-new");
+    await chooseOption("Provider", "ollama", await group("OpenAI format"));
+    await chooseOption("Target model", "mistral", await group("OpenAI format"));
+    await userEvent.click(screen.getByRole("button", { name: "Create model" }));
+    await waitFor(() => expect(post).not.toBeNull());
+    expect(post!.translate).toBe(false);
   });
 
   // The dialog has one target list per format ("OpenAI format", "Anthropic format").

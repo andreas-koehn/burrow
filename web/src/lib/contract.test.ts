@@ -88,6 +88,7 @@ describe("contract", () => {
       bytes_in: 100, bytes_out: 200, req_headers: { authorization: "Bearer •••" },
       req_body: "{}", resp_headers: {}, resp_body: "{}", truncated: false, cache: "MISS",
       redactions: [], trace_id: "tr1", remote_ip: "1.2.3.4",
+      translated: "messages-chat", dropped: ["cache_control", "top_k"],
     };
     const audit: AuditEvent = { id: "ae1", ts: "2026-05-19T00:00:00Z", actor_id: "u1", actor_email: "a@b.io", action: "tokens.create", subject_id: "tok_1", subject_label: "tok_1", result: "ok", source_ip: "1.2.3.4", user_agent: "UA", request_id: "req1", payload: {}, prev_hash: "00", hash: "ff" };
     const fp: AuditFingerprint = { public_key: "MIIB...", fingerprint: "SHA256:abcd" };

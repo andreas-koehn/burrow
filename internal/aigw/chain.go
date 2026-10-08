@@ -1102,6 +1102,15 @@ func (c *Chain) captureEntry(svc Service, r *http.Request,
 		BytesOmitted: reqOmitted + respOmitted,
 		Cache:        cacheStatus,
 		Redactions:   hits,
+		Dropped:      []string{},
+	}
+	// Read here, after the response, as the usage row does: the entry names
+	// the pair of the attempt that answered.
+	if ri, ok := RouteFrom(r.Context()); ok {
+		entry.Translated = ri.Translated
+		if ri.Dropped != "" {
+			entry.Dropped = strings.Split(ri.Dropped, ",")
+		}
 	}
 	ring.Capture(entry)
 	_ = bytesIn // future: include in DurationMs / metering

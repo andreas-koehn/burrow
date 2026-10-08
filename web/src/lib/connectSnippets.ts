@@ -10,6 +10,10 @@
 //   Its gateway model discovery keeps only ids that contain "claude" or
 //   "anthropic", so names like burrow-medium are pinned here instead.
 //   https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery
+//   MAX_THINKING_TOKENS=0 turns extended thinking off (on a gateway it leaves
+//   the "thinking" parameter out); the newest Claude models cannot have it
+//   turned off, which does not matter for a model served by another provider.
+//   https://code.claude.com/docs/en/env-vars
 // - Codex declares a provider under [model_providers.<id>] with name, base_url,
 //   env_key and wire_api; "responses" is the only wire_api it supports.
 //   https://developers.openai.com/codex/config-reference
@@ -32,8 +36,12 @@ export function pickTier(models: string[]): Tiers {
   return { opus: at(0), sonnet: at(1), haiku: at(2) };
 }
 
-/** The env block of Claude Code's ~/.claude/settings.json. */
-export function claudeCodeSettings(baseUrl: string, tiers: Tiers): string {
+/**
+ * The env block of Claude Code's ~/.claude/settings.json. thinkingOff is for a
+ * pinned model that is served through translation: it runs without extended
+ * thinking, so Claude Code is told not to ask for it.
+ */
+export function claudeCodeSettings(baseUrl: string, tiers: Tiers, opts: { thinkingOff?: boolean } = {}): string {
   const env: Record<string, string> = {
     ANTHROPIC_BASE_URL: baseUrl,
     ANTHROPIC_AUTH_TOKEN: KEY_PLACEHOLDER,
@@ -41,6 +49,7 @@ export function claudeCodeSettings(baseUrl: string, tiers: Tiers): string {
   if (tiers.opus) env.ANTHROPIC_DEFAULT_OPUS_MODEL = tiers.opus;
   if (tiers.sonnet) env.ANTHROPIC_DEFAULT_SONNET_MODEL = tiers.sonnet;
   if (tiers.haiku) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = tiers.haiku;
+  if (opts.thinkingOff) env.MAX_THINKING_TOKENS = "0";
   return JSON.stringify({ env }, null, 2);
 }
 

@@ -288,6 +288,7 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
     };
     return { openai: initial("openai"), anthropic: initial("anthropic") };
   });
+  const [translate, setTranslate] = useState(model?.translate ?? false);
   const [onRateLimit, setOnRateLimit] = useState(model?.fallback_on_rate_limit ?? false);
   const [attemptText, setAttemptText] = useState(String(model?.attempt_timeout_s ?? 60));
   const [totalText, setTotalText] = useState(String(model?.total_timeout_s ?? 120));
@@ -340,6 +341,7 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
     description: description.trim(),
     enabled,
     fallback_on_rate_limit: onRateLimit,
+    translate,
     attempt_timeout_s: attempt ?? 0,
     total_timeout_s: total ?? 0,
     targets,
@@ -349,6 +351,7 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
     || payload.description !== model.description
     || enabled !== model.enabled
     || onRateLimit !== model.fallback_on_rate_limit
+    || translate !== (model.translate ?? false)
     || attempt !== model.attempt_timeout_s
     || total !== model.total_timeout_s
     // Per format: the relay lists a model's targets by format, the form OpenAI first.
@@ -453,6 +456,26 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
       ) : targets.length === 0 && (
         <p className="muted small">Choose a target for at least one format.</p>
       )}
+
+      <div className="model-translate">
+        <label className="row row-center gap-2">
+          <Switch
+            aria-label="Translate for the other format"
+            aria-describedby="model-translate-help model-translate-limits"
+            checked={translate}
+            onChange={change(setTranslate)}
+          />
+          <span>Translate for the other format</span>
+        </label>
+        <p id="model-translate-help" className="muted small">
+          A format is served natively where it has a target. With this on, a format without a target is answered by
+          translating to and from the targets of the other format. A target of its own format is always used first.
+        </p>
+        <p id="model-translate-limits" className="muted small">
+          Translated requests lose what the other format cannot express: prompt caching hints, thinking signatures and
+          beta features are not carried over. Every translated response names what was left out.
+        </p>
+      </div>
 
       <div className="model-advanced">
         <button

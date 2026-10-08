@@ -2055,3 +2055,48 @@ func TestChain_AnthropicSection_ForwardsUnchangedAndMeters(t *testing.T) {
 		t.Fatalf("usage sample = %+v (recorded %v)", sink.sample, sink.got)
 	}
 }
+
+// The inspector entry of a request names the pair that translated it and
+// what was left out, read from the route as the usage row does.
+func TestChain_InspectorEntryCarriesTranslation(t *testing.T) {
+	capture := func(route *aigw.Route, during func()) inspector.Entry {
+		mgr := inspector.NewManager()
+		c := aigw.NewChain(nil, nil, nil, nil, nil, mgr, nil, nil, testLog())
+		svc := aigw.Service{ID: "svc-insp", AIConfig: aigw.ServiceAIConfig{
+			Inspector: &aigw.InspectorConfig{Enabled: true, MaxRequests: 10},
+		}}
+		up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			during()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		})
+		req := httptest.NewRequest("POST", "https://abc.example.com/v1/messages", strings.NewReader(`{"model":"burrow-medium"}`))
+		if route != nil {
+			req = req.WithContext(aigw.WithRoute(req.Context(), route))
+		}
+		runChain(t, c, up, svc, req)
+		entries := mgr.Get("svc-insp").List(inspector.ListQuery{})
+		if len(entries) != 1 {
+			t.Fatalf("inspector: want 1 entry, got %d", len(entries))
+		}
+		return entries[0]
+	}
+
+	route := aigw.NewRoute("gk1", "anthropic", "burrow-medium", "req-9")
+	e := capture(route, func() { route.SetTranslation("messages-chat", []string{"top_k", "cache_control"}) })
+	if e.Translated != "messages-chat" || !reflect.DeepEqual(e.Dropped, []string{"cache_control", "top_k"}) {
+		t.Fatalf("translated entry: translated=%q dropped=%v", e.Translated, e.Dropped)
+	}
+
+	// A first attempt was translated, the one that answered was native.
+	route = aigw.NewRoute("gk1", "anthropic", "burrow-medium", "req-10")
+	route.SetTranslation("messages-chat", []string{"top_k"})
+	e = capture(route, func() { route.SetTranslation("", nil) })
+	if e.Translated != "" || e.Dropped == nil || len(e.Dropped) != 0 {
+		t.Fatalf("native entry: translated=%q dropped=%#v", e.Translated, e.Dropped)
+	}
+
+	if e = capture(nil, func() {}); e.Translated != "" || e.Dropped == nil || len(e.Dropped) != 0 {
+		t.Fatalf("entry without a route: translated=%q dropped=%#v", e.Translated, e.Dropped)
+	}
+}

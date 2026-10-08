@@ -411,6 +411,54 @@ describe("MSW gateway handlers mirror the API", () => {
     });
   });
 
+  it("translate: off on create, kept on PUT when left out or null, as the relay does", async () => {
+    const created = (await (await send("POST", "/ai/models", { name: "burrow-new", targets: [target] })).json()) as AiModel;
+    expect(created.translate).toBe(false);
+    const put = async (body: Record<string, unknown>) => (await (await send("PUT", "/ai/models/burrow-new", { targets: [target], ...body })).json()) as AiModel;
+    expect((await put({ translate: true })).translate).toBe(true);
+    expect((await put({})).translate).toBe(true);
+    expect((await put({ translate: null })).translate).toBe(true);
+    expect((await put({ translate: false })).translate).toBe(false);
+  });
+
+  it("a model view says per format how the model is served, by the gateway's rule", async () => {
+    const view = async (name: string) => (await (await send("GET", `/ai/models/${name}`)).json()) as AiModel;
+    const modes = (m: AiModel) => [m.dialect_modes, m.responses_mode, m.translation_pairs];
+    // An OpenAI target on a provider without the Responses API.
+    expect(modes(await view("burrow-simple"))).toEqual([{ openai: "native", anthropic: "not_served" }, "not_served", {}]);
+    db.aiModels[0]!.translate = true;
+    expect(modes(await view("burrow-simple"))).toEqual([
+      { openai: "native", anthropic: "translated" }, "translated", { anthropic: "messages-chat", responses: "responses-chat" },
+    ]);
+    // A provider that offers the Responses API serves it natively, whatever the flag says.
+    db.aiProviders.find((p) => p.slug === "ollama")!.supports_responses = true;
+    expect(modes(await view("burrow-simple"))).toEqual([{ openai: "native", anthropic: "translated" }, "native", { anthropic: "messages-chat" }]);
+    // Targets in both formats: native in both; Responses only through translation.
+    const smart = db.aiModels.find((m) => m.name === "burrow-intelligence")!;
+    expect(modes(await view("burrow-intelligence"))).toEqual([{ openai: "native", anthropic: "native" }, "not_served", {}]);
+    smart.translate = true;
+    expect(modes(await view("burrow-intelligence"))).toEqual([{ openai: "native", anthropic: "native" }, "translated", { responses: "responses-chat" }]);
+    // An Anthropic target only.
+    smart.targets = smart.targets.filter((t) => t.dialect === "anthropic");
+    expect(modes(await view("burrow-intelligence"))).toEqual([
+      { openai: "translated", anthropic: "native" }, "translated", { openai: "chat-messages", responses: "responses-messages" },
+    ]);
+    // A disabled model is served nowhere.
+    smart.enabled = false;
+    expect(modes(await view("burrow-intelligence"))).toEqual([{ openai: "not_served", anthropic: "not_served" }, "not_served", {}]);
+  });
+
+  it("refuses the computed mode fields in a model body", async () => {
+    for (const field of ["dialect_modes", "responses_mode", "translation_pairs"]) {
+      expect(await refusal(await send("PUT", "/ai/models/burrow-simple", { [field]: {}, targets: [target] }))).toEqual([400, `unknown field "${field}"`]);
+    }
+  });
+
+  it("a captured request carries translated and dropped", async () => {
+    const rows = (await (await send("GET", "/services/svc_ai001/inspector/requests")).json()) as { translated: string; dropped: string[] }[];
+    expect(rows.every((r) => r.translated === "" && Array.isArray(r.dropped) && r.dropped.length === 0)).toBe(true);
+  });
+
   it("refuses the status fields in a model body, like the relay's strict decoder", async () => {
     expect(await refusal(await send("PUT", "/ai/models/burrow-simple", { serving: {}, targets: [target] }))).toEqual([400, 'unknown field "serving"']);
     expect(await refusal(await send("PUT", "/ai/models/burrow-simple", { targets: [{ ...target, available: true }] })))

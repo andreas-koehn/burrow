@@ -368,7 +368,8 @@ components:
           description: >
             Empty for the attempt that answered. Otherwise http_<status>,
             timeout, no_response, busy, breaker_open, dialect_mismatch,
-            client_closed, stream_aborted or panic.
+            client_closed, stream_aborted, panic, or for a translated
+            attempt upstream_invalid, upstream_error or translate_error.
         duration_ms: { type: integer, format: int64 }
         ts: { type: string, format: date-time }
     AIModel:
@@ -435,13 +436,79 @@ components:
             Per dialect the model has a target in: the first target that is
             available, in the order they are tried, or null when none is or
             the model is disabled (requests for it are refused).
-            A dialect without targets has no key. A request that carries
-            this field is refused with 400.
+            A dialect without targets has no key, also when the model is
+            served there through translation (see dialect_modes). A request
+            that carries this field is refused with 400.
           properties:
             openai: { $ref: '#/components/schemas/AIServingTarget' }
             anthropic: { $ref: '#/components/schemas/AIServingTarget' }
+        dialect_modes:
+          type: object
+          readOnly: true
+          description: >
+            How the model is served per format, by the rule a request is
+            routed by. native: a target of that format answers. translated:
+            the model has no such target, translate is on and a target of
+            the other format is reached through a translating pair.
+            not_served: a request is refused (also for a disabled model).
+            Both keys are always present. openai describes Chat Completions
+            on /openai/v1, anthropic the Messages API on /anthropic. The
+            mode says nothing about whether a target can be reached right
+            now; that is serving and targets[].available. A request that
+            carries this field is refused with 400.
+          required: [openai, anthropic]
+          properties:
+            openai: { $ref: '#/components/schemas/AIModelMode' }
+            anthropic: { $ref: '#/components/schemas/AIModelMode' }
+        responses_mode:
+          allOf: [ { $ref: '#/components/schemas/AIModelMode' } ]
+          readOnly: true
+          description: >
+            How the Responses API (POST /openai/v1/responses, what Codex
+            uses) is served. native: an OpenAI-format target offers it
+            (the provider's supports_responses). translated: none does,
+            translate is on and a target is reached through a pair.
+            A request that carries this field is refused with 400.
+        translation_pairs:
+          type: object
+          readOnly: true
+          description: >
+            The pair a translated request is sent through first. A key
+            exists only where the mode is translated; the object is empty
+            when nothing is. A request that carries this field is refused
+            with 400.
+          properties:
+            openai: { type: string, enum: [chat-messages] }
+            anthropic: { type: string, enum: [messages-chat] }
+            responses: { type: string, enum: [responses-chat, responses-messages] }
         created_at: { type: string, format: date-time, readOnly: true }
         updated_at: { type: string, format: date-time, readOnly: true }
+    InspectorTranslation:
+      type: object
+      additionalProperties: true
+      description: >
+        The translation fields of a captured request; the envelope has
+        further fields (id, ts, method, path, status, headers, bodies).
+      required: [translated, dropped]
+      properties:
+        translated:
+          type: string
+          enum: ['', messages-chat, responses-chat, chat-messages, responses-messages]
+          description: >
+            The pair that translated the request, as in the response header
+            Burrow-Translated. Empty for a request served in its own format.
+        dropped:
+          type: array
+          items: { type: string }
+          description: >
+            What the translation left out, as in the response header
+            Burrow-Dropped: sorted names, never null, empty when nothing
+            was left out. A final "more" says the list was cut; it is not a
+            name. A name can end in text the client chose (after a prefix
+            such as "unknown:"); treat every name as plain text.
+    AIModelMode:
+      type: string
+      enum: [native, translated, not_served]
     AIGatewayKey:
       type: object
       description: >
@@ -1225,12 +1292,14 @@ paths:
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
         '200':
-          description: List of request envelopes.
+          description: >
+            List of request envelopes. Each one carries translated and
+            dropped, see InspectorTranslation.
           content:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/InspectorTranslation' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/services/{serviceID}/inspector/requests/{rid}:
@@ -1245,10 +1314,12 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: Request envelope.
+          description: >
+            Request envelope. It carries translated and dropped, see
+            InspectorTranslation.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/InspectorTranslation' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 

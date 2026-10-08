@@ -86,8 +86,8 @@ export interface MockDb {
   // Places taken right now at a provider with a concurrency limit, by slug.
   aiProviderInUse: Record<string, number>;
   // Synthetic models and gateway keys (GET /ai/models, /ai/keys).
-  // available and serving are placeholders here: the handlers work both out
-  // on every response, as the relay does.
+  // available, serving and the modes are placeholders here: the handlers work
+  // them out on every response, as the relay does.
   aiModels: AiModel[];
   // Slugs of the providers the gateway is skipping right now.
   aiBreakerOpen: Set<string>;
@@ -231,19 +231,19 @@ function seed(): MockDb {
     aiModels: [
       {
         name: "burrow-simple", description: "Small and local.", enabled: true, fallback_on_rate_limit: false,
-        attempt_timeout_s: 60, total_timeout_s: 120,
+        translate: false, attempt_timeout_s: 60, total_timeout_s: 120,
         targets: [{ dialect: "openai", provider: "ollama", model: "mistral", available: true }],
-        dialects: ["openai"], serving: {}, created_at: "2026-05-19T00:00:00Z", updated_at: "2026-05-19T00:00:00Z",
+        dialects: ["openai"], serving: {}, ...NO_MODES, created_at: "2026-05-19T00:00:00Z", updated_at: "2026-05-19T00:00:00Z",
       },
       {
         name: "burrow-intelligence", description: "", enabled: true, fallback_on_rate_limit: false,
-        attempt_timeout_s: 60, total_timeout_s: 120,
+        translate: false, attempt_timeout_s: 60, total_timeout_s: 120,
         // As the relay returns them: by format, then by position.
         targets: [
           { dialect: "anthropic", provider: "zai-anthropic", model: "glm-5.1", available: false },
           { dialect: "openai", provider: "zai", model: "glm-5.1", available: false },
         ],
-        dialects: ["anthropic", "openai"], serving: {}, created_at: "2026-05-20T00:00:00Z", updated_at: "2026-05-20T00:00:00Z",
+        dialects: ["anthropic", "openai"], serving: {}, ...NO_MODES, created_at: "2026-05-20T00:00:00Z", updated_at: "2026-05-20T00:00:00Z",
       },
     ],
     aiBreakerOpen: new Set<string>(),
@@ -448,6 +448,14 @@ function defaultAiConfig(): ServiceAIConfig {
   };
 }
 
+/**
+ * Placeholder for a stored model's computed mode fields; the handlers replace
+ * them on every response (modelView).
+ */
+export const NO_MODES: Pick<AiModel, "dialect_modes" | "responses_mode" | "translation_pairs"> = {
+  dialect_modes: { openai: "not_served", anthropic: "not_served" }, responses_mode: "not_served", translation_pairs: {},
+};
+
 // Twelve inspector entries — enough to test the "10 newest" Recent Requests
 // table on the provider detail page.
 function seedInspector(serviceId: string): InspectorEntry[] {
@@ -473,6 +481,8 @@ function seedInspector(serviceId: string): InspectorEntry[] {
       redactions: [],
       trace_id: `tr_${i}`,
       remote_ip: "203.0.113.7",
+      translated: "",
+      dropped: [],
     });
   }
   return out;

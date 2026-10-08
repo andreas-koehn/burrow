@@ -52,7 +52,7 @@ describe("Requests page", () => {
     const t = await table();
     // Model, tokens and cost are not part of a captured request yet.
     expect(within(t).getAllByRole("columnheader").map((h) => h.textContent))
-      .toEqual(["Time", "Provider", "Method", "Path", "Status", "Cache", "Guardrail"]);
+      .toEqual(["Time", "Provider", "Method", "Path", "Status", "Cache", "Guardrail", "Translation"]);
   });
 
   it("names the provider the service belongs to, and '—' for a service without one", async () => {
@@ -108,6 +108,23 @@ describe("Requests page", () => {
     expect(row.getByText("502")).toHaveClass("badge", "status-5xx");
     expect(row.getByText("HIT")).toBeInTheDocument();
     expect(row.getByText("3 redacted")).toBeInTheDocument();
+  });
+
+  it("marks a translated request in words and names the direction", async () => {
+    capture("svc_web01", [1], { translated: "messages-chat", dropped: ["cache_control", "top_k"] });
+    mount();
+    const row = within(bodyRows(await table())[0]!);
+    expect(row.getByText("translated", { selector: "span.badge" })).toBeVisible();
+    expect(row.getByText("Anthropic Messages → Chat Completions")).toHaveClass("visually-hidden");
+    expect(row.getByText("2 left out")).toBeInTheDocument();
+  });
+
+  it("a request served in its own format has no translation mark", async () => {
+    capture("svc_web01", [1]);
+    mount();
+    const row = within(bodyRows(await table())[0]!);
+    expect(row.queryByText("translated")).toBeNull();
+    expect(row.queryByText(/left out/)).toBeNull();
   });
 
   it("the time range is sent to the relay as since and kept in the URL", async () => {

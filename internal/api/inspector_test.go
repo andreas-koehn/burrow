@@ -519,3 +519,30 @@ func TestInspectorListInvalidQueryReturns400(t *testing.T) {
 		r.Body.Close()
 	}
 }
+
+// A translated request says so in the list and in the detail: the pair and
+// what was left out. A native one has "" and an empty array, never null.
+func TestInspectorEntryCarriesTranslation(t *testing.T) {
+	d, mgr := inspectorDeps("admin", map[string]string{"svc1": "u-self"}, nil)
+	ring := mgr.GetOrCreate("svc1", 10)
+	now := time.Now().UTC()
+	ring.Capture(inspector.Entry{ID: "ins_n", ServiceID: "svc1", TS: now, Method: "POST", Path: "/v1/messages", Status: 200})
+	ring.Capture(inspector.Entry{ID: "ins_t", ServiceID: "svc1", TS: now.Add(time.Second), Method: "POST", Path: "/v1/messages", Status: 200,
+		Translated: "messages-chat", Dropped: []string{"cache_control", "top_k"}})
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	const translated = `"translated":"messages-chat","dropped":["cache_control","top_k"]`
+	const native = `"translated":"","dropped":[]`
+	list := readBody(t, c.get(t, "/api/v1/services/svc1/inspector/requests"))
+	if !strings.Contains(list, translated) || !strings.Contains(list, native) {
+		t.Fatalf("list: %s", list)
+	}
+	if got := readBody(t, c.get(t, "/api/v1/services/svc1/inspector/requests/ins_t")); !strings.Contains(got, translated) {
+		t.Fatalf("translated detail: %s", got)
+	}
+	if got := readBody(t, c.get(t, "/api/v1/services/svc1/inspector/requests/ins_n")); !strings.Contains(got, native) {
+		t.Fatalf("native detail: %s", got)
+	}
+}

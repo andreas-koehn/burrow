@@ -37,6 +37,67 @@ describe("Request inspector (§4.23)", () => {
     expect(within(headersTable).getByText(/\[redacted\]/)).toBeInTheDocument();
   });
 
+  it("a translated request names the direction and lists what was left out", async () => {
+    const e = db.inspectorEntries.svc_ai001![0]!;
+    e.translated = "messages-chat";
+    e.dropped = ["cache_control", "top_k"];
+    mount(`/gateway/requests/svc_ai001/${e.id}`);
+    const note = await screen.findByRole("group", { name: "Translation" });
+    expect(within(note).getByText("Translated")).toBeInTheDocument();
+    expect(within(note).getByText("Anthropic Messages → Chat Completions")).toBeInTheDocument();
+    const list = within(note).getByRole("list", { name: "Left out" });
+    expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["cache_control", "top_k"]);
+  });
+
+  it("a final 'more' is not a field: the list says it is incomplete", async () => {
+    const e = db.inspectorEntries.svc_ai001![0]!;
+    e.translated = "responses-messages";
+    e.dropped = ["store", "more"];
+    mount(`/gateway/requests/svc_ai001/${e.id}`);
+    const note = await screen.findByRole("group", { name: "Translation" });
+    expect(within(note).getByText("OpenAI Responses → Anthropic Messages")).toBeInTheDocument();
+    const list = within(note).getByRole("list", { name: "Left out" });
+    expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["store"]);
+    expect(within(note).getByText("and more")).toBeInTheDocument();
+  });
+
+  it("a dropped name is shown as text, never as markup or a link", async () => {
+    const e = db.inspectorEntries.svc_ai001![0]!;
+    e.translated = "messages-chat";
+    e.dropped = ["unknown:<img src=x onerror=alert(1)>", "unknown:https://evil.example/x"];
+    mount(`/gateway/requests/svc_ai001/${e.id}`);
+    const note = await screen.findByRole("group", { name: "Translation" });
+    expect(within(note).getByText("unknown:<img src=x onerror=alert(1)>")).toBeInTheDocument();
+    expect(within(note).getByText("unknown:https://evil.example/x")).toBeInTheDocument();
+    expect(note.querySelector("img")).toBeNull();
+    expect(note.querySelector("a")).toBeNull();
+  });
+
+  it("a translated request that left nothing out shows no list", async () => {
+    const e = db.inspectorEntries.svc_ai001![0]!;
+    e.translated = "chat-messages";
+    e.dropped = [];
+    mount(`/gateway/requests/svc_ai001/${e.id}`);
+    const note = await screen.findByRole("group", { name: "Translation" });
+    expect(within(note).getByText("Chat Completions → Anthropic Messages")).toBeInTheDocument();
+    expect(within(note).queryByRole("list")).toBeNull();
+    expect(within(note).queryByText(/left out/i)).toBeNull();
+  });
+
+  it("a request served in its own format shows no translation note", async () => {
+    const e = db.inspectorEntries.svc_ai001![0]!;
+    mount(`/gateway/requests/svc_ai001/${e.id}`);
+    expect(await screen.findByRole("tab", { name: /^request$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Translation" })).toBeNull();
+  });
+
+  it("the list marks a translated request", async () => {
+    db.inspectorEntries.svc_ai001![0]!.translated = "messages-chat";
+    mount();
+    const table = await screen.findByRole("table", { name: /requests/i });
+    expect(within(table).getAllByText("translated", { selector: "span.badge" })).toHaveLength(1);
+  });
+
   it("says the inspector is off and how to turn it on when inspector.enabled is false", async () => {
     db.aiConfigs.svc_ai001.inspector.enabled = false;
     mount();
