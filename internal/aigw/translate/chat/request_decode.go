@@ -478,7 +478,7 @@ func (d *requestDecoder) request(body []byte) error {
 		}
 	}
 	if raw, ok := top.take("service_tier"); ok {
-		if s, isString := asString(raw); asked(raw) && !(isString && (s == "auto" || s == "default")) {
+		if s, isString := asString(raw); asked(raw) && (!isString || (s != "auto" && s != "default")) {
 			d.drop("service_tier")
 		}
 	}

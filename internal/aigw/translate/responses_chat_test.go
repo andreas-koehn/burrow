@@ -757,7 +757,8 @@ func TestResponsesChat_ReleasedIsDecidedByTheToolCallChecks(t *testing.T) {
 			t.Errorf("%s: the checks pass", name)
 		}
 	}
-	if fresh := newResponsesChat(); !fresh.Released() || !fresh.Released() {
+	fresh := newResponsesChat()
+	if first, second := fresh.Released(), fresh.Released(); !first || !second {
 		t.Fatal("a sound pair is not released")
 	}
 }

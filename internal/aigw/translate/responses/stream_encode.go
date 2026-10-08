@@ -268,7 +268,7 @@ func (e *StreamEncoder) keepAlive() {
 	if !e.started || e.done || e.werr != nil || e.now().Sub(e.lastOut) < pingAfter {
 		return
 	}
-	if len(e.held) == 0 && !(e.cur >= 0 && e.parts[e.cur].kind == ir.Thinking) {
+	if len(e.held) == 0 && (e.cur < 0 || e.parts[e.cur].kind != ir.Thinking) {
 		return
 	}
 	_, e.werr = io.WriteString(e.w, keepAliveFrame)

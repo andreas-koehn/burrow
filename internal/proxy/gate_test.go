@@ -634,7 +634,7 @@ func TestGateNext_AcceptsOnlySvcPathsOnAuthDomain(t *testing.T) {
 		{"https://" + gateAuthDomain + "/svc%2Fgrafana/", fallback},
 		{"https://" + gateAuthDomain + "/svc/grafana/%2e%2e/other/", fallback},
 		{"https://" + gateAuthDomain + "/svc/grafana/%2E%2E/other/", fallback},
-		{"https://" + gateAuthDomain + `/svc/grafana/\..\other/`, fallback},
+		{"https://" + gateAuthDomain + `/svc/grafana/\..\` + `other/`, fallback},
 		{"https://" + gateAuthDomain + "/svc/grafana/%5C..%5Cother/", fallback},
 		{"https://" + gateAuthDomain + "/svc/grafana//", fallback},
 		{"https://user:pw@" + gateAuthDomain + "/svc/grafana/", "https://" + gateAuthDomain + "/svc/grafana/"},

@@ -1162,7 +1162,7 @@ func TestStreamDecoder_Limits(t *testing.T) {
 		"never opened": {`{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":\""}}]}`, ir.MaxToolArgsBytes / 4096},
 	} {
 		first, least := c.first, c.least
-		d, err = NewStreamDecoder(), nil
+		d = NewStreamDecoder()
 		if _, err = d.Feed(chunk(first)); err != nil {
 			t.Fatal(err)
 		}

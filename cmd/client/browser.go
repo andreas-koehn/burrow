@@ -20,7 +20,7 @@ func openableURL(target string) bool {
 	}
 	for i := 0; i < len(target); i++ {
 		c := target[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("-._~:/?=&%[]", c) >= 0) {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && strings.IndexByte("-._~:/?=&%[]", c) < 0 {
 			return false
 		}
 	}
@@ -96,7 +96,7 @@ func openBrowser(target string) error {
 	// the middle of the sign-in. No BURROW_ variable: a token in the
 	// environment stays with burrow. A session of its own: Ctrl-C at burrow's
 	// terminal does not reach the browser it started.
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) //nolint:gosec // G702: fixed program name, allowlist-validated https URL as its own argument, no shell
 	cmd.Env = openerEnv(os.Environ())
 	detachOpener(cmd)
 	if err := cmd.Start(); err != nil {

@@ -333,9 +333,10 @@ func (t *writer) events(events []ir.Event, code string) {
 		err := t.enc.Write(ev)
 		switch {
 		case err == nil:
-			if ev.Kind == ir.Error {
+			switch ev.Kind {
+			case ir.Error:
 				t.endedBadly(code)
-			} else if ev.Kind == ir.Finish {
+			case ir.Finish:
 				t.ended = true
 			}
 		case errors.Is(err, ir.ErrSequence), errors.Is(err, ir.ErrLimit):

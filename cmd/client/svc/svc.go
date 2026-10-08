@@ -86,9 +86,9 @@ type Plan struct {
 
 // The reasons why nothing is installed. Their texts are the messages.
 var (
-	ErrNoYAML           = errors.New("burrow service needs a burrow.yaml. Create one (see: burrow up) or pass its path.")
+	ErrNoYAML           = errors.New("burrow service needs a burrow.yaml. Create one (see: burrow up) or pass its path.") //nolint:staticcheck // ST1005: the text is the message printed to the user as it is
 	ErrNotSignedIn      = errors.New("not signed in")
-	ErrAlreadyInstalled = errors.New("The burrow service is already installed. Run: burrow service uninstall")
+	ErrAlreadyInstalled = errors.New("The burrow service is already installed. Run: burrow service uninstall") //nolint:staticcheck // ST1005: the text is the message printed to the user as it is
 )
 
 // NotElevatedError says that the action needs root or an administrator, and
@@ -206,7 +206,7 @@ func BuildPlan(in Inputs) (Plan, error) {
 		return Plan{}, ErrNotSignedIn
 	}
 	if in.GOOS == "darwin" && in.Elevated {
-		return Plan{}, errors.New("On macOS the service is an agent of your own user. Run this without sudo. Nothing was installed.")
+		return Plan{}, errors.New("On macOS the service is an agent of your own user. Run this without sudo. Nothing was installed.") //nolint:staticcheck // ST1005: the text is the message printed to the user as it is
 	}
 	if in.GOOS != "darwin" && !in.Elevated {
 		return Plan{}, &NotElevatedError{GOOS: in.GOOS, Action: "Installing", Command: in.Command}
@@ -300,6 +300,7 @@ func BuildPlan(in Inputs) (Plan, error) {
 		return Plan{}, &UntrustedFileError{File: in.UntrustedFiles[0]}
 	}
 	if in.GOOS == "windows" && in.TokenFile != "" {
+		//nolint:staticcheck // ST1005: the text is the message printed to the user as it is
 		return Plan{}, errors.New("The burrow.yaml names a token_file. The service runs as LocalSystem from a copy of the file " +
 			"and would read that path with LocalSystem's rights. Nothing was installed.\n" +
 			"Remove token_file from the burrow.yaml: the service uses the stored sign-in (burrow login), " +

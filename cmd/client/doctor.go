@@ -84,13 +84,12 @@ type doctorRun struct {
 	creds  client.Credentials
 	out    []checkResult
 
-	signedIn   bool
-	resolved   bool
-	reachable  bool
-	disc       *client.Discovery
-	discDate   time.Time
-	relayVer   string
-	authedHere bool
+	signedIn  bool
+	resolved  bool
+	reachable bool
+	disc      *client.Discovery
+	discDate  time.Time
+	relayVer  string
 }
 
 // runDoctor runs the eight checks in order. It always returns the whole list;

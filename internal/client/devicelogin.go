@@ -289,7 +289,7 @@ func validUserCode(s string) bool {
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
 			return false
 		}
 	}
@@ -306,7 +306,7 @@ func onOrigin(raw, origin string) bool {
 	}
 	for i := 0; i < len(raw); i++ {
 		c := raw[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("-._~:/?=&%[]", c) >= 0) {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && strings.IndexByte("-._~:/?=&%[]", c) < 0 {
 			return false
 		}
 	}

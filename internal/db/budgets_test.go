@@ -382,19 +382,19 @@ func checkUsageAccounting(t *testing.T, x *DB, userID string) {
 		t.Fatalf("today: %d rows, want 3: %+v", len(today), today)
 	}
 	for _, r := range today {
-		switch {
-		case r.ProviderSlug == "zai":
+		switch r.ProviderSlug {
+		case "zai":
 			if r.Requests != 2 || r.TokensIn != 110 || r.TokensOut != 55 || r.PricedTokensIn != 110 || r.PricedTokensOut != 55 ||
 				r.ReportedUSD != 0 || r.GatewayKeyID != gk1 || r.Dialect != "openai" || r.RequestedModel != smart ||
 				r.TargetModel != "glm-5.1" || r.APIKeyID != "" || r.BytesIn != 440 || r.Kind != "openai" {
 				t.Errorf("A+B row = %+v", r)
 			}
-		case r.ProviderSlug == "openrouter":
+		case "openrouter":
 			if r.Requests != 1 || r.ReportedUSD != 0.25 || r.PricedTokensIn != 0 || r.PricedTokensOut != 0 || r.TokensIn != 7 ||
 				r.TargetModel != "google/gemini-x" {
 				t.Errorf("C row = %+v", r)
 			}
-		case r.ProviderSlug == "ollama":
+		case "ollama":
 			if r.Requests != 1 || r.APIKeyID != key || r.GatewayKeyID != "" || r.Dialect != "" || r.RequestedModel != "" || r.TargetModel != "" {
 				t.Errorf("D row = %+v", r)
 			}

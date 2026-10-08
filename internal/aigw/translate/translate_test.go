@@ -239,7 +239,8 @@ func TestReleased_IsDecidedByTheToolCallChecks(t *testing.T) {
 	if got, ok := Lookup("test-from", "test-to"); ok || got != nil {
 		t.Fatal("Lookup handed out a pair that is not released")
 	}
-	if fresh := newMessagesChat(); !fresh.Released() || !fresh.Released() {
+	fresh := newMessagesChat()
+	if first, second := fresh.Released(), fresh.Released(); !first || !second {
 		t.Fatal("a sound pair is not released")
 	}
 }

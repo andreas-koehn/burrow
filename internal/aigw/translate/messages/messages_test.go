@@ -1204,7 +1204,7 @@ func TestStreamEncoder_HoldBackIsBounded(t *testing.T) {
 	want.WriteString(`{"k":"`)
 	for i := 0; i < 5000; i++ {
 		events = append(events, argsDelta(1, fmt.Sprint(i%10)))
-		want.WriteString(fmt.Sprint(i % 10))
+		fmt.Fprint(&want, i%10)
 	}
 	events = append(events, argsDelta(1, `"}`), ev(ir.PartStop, 0), ev(ir.PartStop, 1), finishEv(ir.StopToolUse, 1, 1))
 	want.WriteString(`"}`)

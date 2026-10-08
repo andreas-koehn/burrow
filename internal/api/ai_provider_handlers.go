@@ -742,7 +742,7 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	// Upstream settings on a tunnel provider would be dropped; say so instead
 	// of answering 201.
-	if in.upstreamReq.set() {
+	if in.set() {
 		writeErr(w, http.StatusBadRequest, "api_format, base_url, credential_slot, auth_header, auth_format, extra_headers and billing are for kind 'direct'")
 		return
 	}

@@ -159,7 +159,7 @@ func TestResponse_Streamed_ClientGoneWhileTheEncoderEndsTheStream(t *testing.T) 
 	for sent := 0; sent <= responses.MaxItemBytes; sent += 1 << 20 {
 		upstream = append(upstream, sseOf(text(1<<20)))
 	}
-	run := func(n int) (failed error, w ResponseWriter, client *goneAt) {
+	run := func(n int) (w ResponseWriter, client *goneAt, failed error) {
 		client = &goneAt{ResponseWriter: httptest.NewRecorder(), n: n}
 		w = lookup(t, Responses, Chat).Response(client, ResponseOptions{Stream: true})
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -169,10 +169,10 @@ func TestResponse_Streamed_ClientGoneWhileTheEncoderEndsTheStream(t *testing.T) 
 				break
 			}
 		}
-		return failed, w, client
+		return w, client, failed
 	}
 	// With a client that stays, the encoder ends the stream and the writer goes on taking bytes.
-	failed, w, client := run(1 << 30)
+	w, client, failed := run(1 << 30)
 	if code, mid := w.Failure(); failed != nil || code != CodeUpstreamInvalid || !mid || client.writes < 8 {
 		t.Fatalf("a client that stays: %v, Failure = %q, %v, %d writes", failed, code, mid, client.writes)
 	}
@@ -180,7 +180,7 @@ func TestResponse_Streamed_ClientGoneWhileTheEncoderEndsTheStream(t *testing.T) 
 	// Whichever write is the one that fails — among them every frame the encoder ends the stream
 	// with — the writer says so, and reports no failure of the answer.
 	for n := client.writes; n > client.writes-4; n-- {
-		failed, w, _ = run(n)
+		w, _, failed = run(n)
 		if failed == nil {
 			t.Fatalf("write %d of %d failed, and Write kept succeeding: the upstream would be read to its end", n, client.writes)
 		}

@@ -199,9 +199,9 @@ func TestReport_Refusals(t *testing.T) {
 // colour the terminal is not printed, and it does not grow without bound.
 func TestReport_RefusalTextIsMadeSafe(t *testing.T) {
 	var b bytes.Buffer
-	report(&b, &client.RefusedError{Code: "slug_taken", Message: "taken\x1b[2J\r\nsecond line‮" + strings.Repeat("x", 2000)})
+	report(&b, &client.RefusedError{Code: "slug_taken", Message: "taken\x1b[2J\r\nsecond line\u202e" + strings.Repeat("x", 2000)})
 	out := b.String()
-	if strings.ContainsAny(out[:len(out)-1], "\x1b\r\n‮") {
+	if strings.ContainsAny(out[:len(out)-1], "\x1b\r\n\u202e") {
 		t.Fatalf("control characters reached the terminal: %q", out)
 	}
 	if len(out) > 400 {

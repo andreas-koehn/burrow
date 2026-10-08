@@ -67,8 +67,8 @@ type seen struct {
 }
 
 type seenReq struct {
-	path, query, body string
-	header            http.Header
+	path, query string
+	header      http.Header
 }
 
 func (s *seen) then(h http.HandlerFunc) http.HandlerFunc {

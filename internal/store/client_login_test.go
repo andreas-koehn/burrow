@@ -704,7 +704,7 @@ func TestClientLogin_MetadataIsSanitised(t *testing.T) {
 	st, err := s.StartClientLogin(ctx, LoginMeta{
 		Hostname:      "\x1b[31m" + strings.Repeat("h", 500),
 		OS:            "li\nnux\x00" + strings.Repeat("o", 100),
-		Arch:          "amd‮64​",
+		Arch:          "amd\u202e64\u200b",
 		ClientVersion: "0.6.0\r\n\xff",
 		SourceIP:      "203.0.113.7",
 		TokenName:     "\tmy\x07 box" + strings.Repeat("n", 200),
@@ -744,7 +744,7 @@ func TestClientLogin_TokenNameRules(t *testing.T) {
 	ctx := context.Background()
 	s, _, _, u1 := loginFixture(t)
 	st := mustStart(t, s)
-	for _, bad := range []string{"", "   ", "a\nb", "a\x00b", "a‮b", strings.Repeat("x", 121), "\xff\xfe"} {
+	for _, bad := range []string{"", "   ", "a\nb", "a\x00b", "a\u202eb", strings.Repeat("x", 121), "\xff\xfe"} {
 		if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, bad); !errors.Is(err, ErrLoginTokenName) {
 			t.Fatalf("approve with name %q: %v, want ErrLoginTokenName", bad, err)
 		}

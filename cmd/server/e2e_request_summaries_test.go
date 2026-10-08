@@ -175,9 +175,9 @@ func TestE2ERequestSummaries(t *testing.T) {
 		t.Fatalf("locked: %d", code)
 	}
 
-	got := obs.wait(t, 3)
+	obs.wait(t, 3)
 	time.Sleep(100 * time.Millisecond)
-	got = obs.seen()
+	got := obs.seen()
 	want := []string{
 		reg.TunnelID + " GET /api/users 200",
 		reg.TunnelID + " POST /missing 404",

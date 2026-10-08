@@ -30,7 +30,7 @@ func SummaryPath(p string) string {
 // letters, digits, "-" and "_": anything else in it becomes "?".
 func SummaryMethod(m string) string {
 	return summaryText(m, MaxSummaryMethod, func(r rune) bool {
-		return !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_')
+		return (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' && r != '_'
 	})
 }
 
@@ -44,7 +44,7 @@ func summaryText(s string, max int, bad func(rune) bool) string {
 	clean := len(s) <= max
 	for i := 0; clean && i < len(s); {
 		r, size := utf8.DecodeRuneInString(s[i:])
-		clean = !(r == utf8.RuneError && size <= 1) && !bad(r)
+		clean = (r != utf8.RuneError || size > 1) && !bad(r)
 		i += size
 	}
 	if clean {

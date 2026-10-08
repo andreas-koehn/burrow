@@ -381,9 +381,9 @@ func TestRender_Notes(t *testing.T) {
 	}
 
 	// A note is text that partly comes from the relay.
-	m.Notes = []string{"evil \x1b[2J\r\nnote ‮"}
+	m.Notes = []string{"evil \x1b[2J\r\nnote \u202e"}
 	for _, l := range Render(m, 100, false) {
-		if strings.ContainsAny(l, "\x1b\r\n‮") {
+		if strings.ContainsAny(l, "\x1b\r\n\u202e") {
 			t.Fatalf("control characters in %q", l)
 		}
 	}

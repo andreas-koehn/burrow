@@ -403,7 +403,7 @@ func cleanName(name string) (cleaned string, ok bool) {
 	ok = len(b) <= maxToolName
 	b = b[:min(len(b), maxToolName)]
 	for i, c := range b {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' && c != '-' {
 			b[i], ok = '_', false
 		}
 	}

@@ -276,7 +276,8 @@ func TestBreaker_AbandonedTrialIsGrantedAgain(t *testing.T) {
 	}
 	// The second trial succeeds: closed, for everyone.
 	b.Report("zai", true, token)
-	if !allowed(b, "zai") || !allowed(b, "zai") || b.State("zai") != BreakerClosed {
+	first, second := allowed(b, "zai"), allowed(b, "zai")
+	if !first || !second || b.State("zai") != BreakerClosed {
 		t.Fatal("a successful trial did not close the breaker")
 	}
 	// And a failed trial reopens for a full cool-down.

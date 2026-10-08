@@ -435,7 +435,7 @@ func (d *decoder) request(body []byte) error {
 	// The two settings whose default says "nothing special".
 	for name, standard := range map[string]string{droppedTruncation: "disabled", droppedServiceTier: "auto"} {
 		if raw, ok := top.take(name); ok {
-			if s, isString := asString(raw); asked(raw) && !(isString && s == standard) {
+			if s, isString := asString(raw); asked(raw) && (!isString || s != standard) {
 				d.drop(name)
 			}
 		}

@@ -44,10 +44,7 @@ func TestReplaceExecutable_TimeoutEndsWhatTheStagedBinaryStarted(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if !processRuns(pid) {
-			break
-		}
+	for processRuns(pid) {
 		if time.Now().After(deadline) {
 			t.Fatalf("process %d, started by the staged binary, still runs after the check timed out", pid)
 		}

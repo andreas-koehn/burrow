@@ -397,12 +397,10 @@ func TestDecodeRequest_EveryTopLevelField(t *testing.T) {
 		`"tool_choice":{"type":"web_search"}`:                             "tool_choice",
 		`"tool_choice":{"type":"custom","name":"apply_patch"}`:            "tool_choice",
 	}
-	var all []string
 	for field, name := range fields {
 		if d := dropped(t, withInput(userItem, field)); !reflect.DeepEqual(d, []string{name}) {
 			t.Errorf("%s: dropped %v, want [%s]", field, d, name)
 		}
-		all = append(all, name)
 	}
 	// What asks for nothing is not reported.
 	for _, field := range []string{`"store":false`, `"store":null`, `"background":false`, `"previous_response_id":null`,

@@ -1087,7 +1087,8 @@ func TestStreamDecoder_FeedReturnsTheClosingEventsWithItsError(t *testing.T) {
 	if evs, err := feed(`{`); evs != nil || err != nil {
 		t.Fatalf("after the end: %v, %v", evs, err)
 	}
-	if d.Close() != nil || d.Close() != nil {
+	first, second := d.Close(), d.Close()
+	if first != nil || second != nil {
 		t.Fatal("Close after the end returned events")
 	}
 	// An oversized frame is refused before it is read.

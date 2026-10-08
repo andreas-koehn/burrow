@@ -203,16 +203,6 @@ func (s *sessionObserver) Session(i SessionInfo) {
 	s.mu.Unlock()
 }
 
-func (s *sessionObserver) firstReg(t *testing.T) RegisteredTunnel {
-	t.Helper()
-	if !waitTrue(func() bool { s.mu.Lock(); defer s.mu.Unlock(); return len(s.regs) > 0 }, 3*time.Second) {
-		t.Fatal("no tunnel was registered")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.regs[0]
-}
-
 // The pre-change answers of a relay, byte for byte.
 const (
 	oldAuthOK       = `{"ok":true,"session_id":"s1"}`

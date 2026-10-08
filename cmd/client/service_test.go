@@ -197,7 +197,7 @@ func TestServiceInstall_Linux(t *testing.T) {
 func TestServiceInstall_LinuxDefaultPathsUnderSudo(t *testing.T) {
 	s := newServiceHarness(t, "linux")
 	s.signIn()
-	s.harness.cfgPath = filepath.Join(t.TempDir(), "root", ".config", "burrow", "config.yaml") // what $HOME gives under sudo
+	s.cfgPath = filepath.Join(t.TempDir(), "root", ".config", "burrow", "config.yaml") // what $HOME gives under sudo
 	stored := filepath.Join(s.home, ".config", "burrow", "config.yaml")
 	if code := s.exec("service", "install"); code != 0 {
 		t.Fatalf("exit %d: %s", code, s.stderr.String())

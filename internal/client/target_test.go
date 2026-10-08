@@ -131,7 +131,8 @@ func TestDefaultName(t *testing.T) {
 		}
 	}
 	// Stable: the same inputs always give the same name.
-	if DefaultName("h", "127.0.0.1:3000") != DefaultName("h", "127.0.0.1:3000") {
+	first, second := DefaultName("h", "127.0.0.1:3000"), DefaultName("h", "127.0.0.1:3000")
+	if first != second {
 		t.Fatal("DefaultName is not deterministic")
 	}
 }

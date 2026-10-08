@@ -247,7 +247,7 @@ func TestClientLoginStart_BodyLimitsAndShape(t *testing.T) {
 	}
 	// Untrusted display strings are cleaned at the door.
 	resp, body := anonPost(t, url, map[string]string{
-		"hostname": "\u001b[31mred" + strings.Repeat("h", 400), "os": "li\nnux", "arch": "amd‮64",
+		"hostname": "\u001b[31mred" + strings.Repeat("h", 400), "os": "li\nnux", "arch": "amd\u202e64",
 		"client_version": "0.6.0", "token_name": "build\u0007-box",
 	})
 	if resp.StatusCode != http.StatusOK {
@@ -257,7 +257,7 @@ func TestClientLoginStart_BodyLimitsAndShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len([]rune(v.Hostname)) != 253 || strings.ContainsAny(v.Hostname+v.OS+v.Arch+v.SuggestedTokenName, "\x1b\n\x07‮") {
+	if len([]rune(v.Hostname)) != 253 || strings.ContainsAny(v.Hostname+v.OS+v.Arch+v.SuggestedTokenName, "\x1b\n\x07\u202e") {
 		t.Fatalf("stored %q %q %q %q", v.Hostname[:12], v.OS, v.Arch, v.SuggestedTokenName)
 	}
 	if v.OS != "linux" || v.Arch != "amd64" || v.SuggestedTokenName != "build-box" {

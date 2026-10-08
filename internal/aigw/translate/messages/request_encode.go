@@ -344,7 +344,7 @@ func clean(s string) (out string, ok bool) {
 	b := []byte(s)
 	ok = true
 	for i, c := range b {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' && c != '-' {
 			b[i], ok = '_', false
 		}
 	}
