@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
+	"github.com/ankoehn/burrow/internal/aigw/translate/irtest"
 	"github.com/ankoehn/burrow/internal/aigw/translate/sse"
 )
 
@@ -945,7 +946,7 @@ func TestProperty_StreamKeepsEveryByteAndEveryCall(t *testing.T) {
 		if err != nil {
 			t.Fatalf("case %d: decode: %v", i, err)
 		}
-		got, err := ir.Collect(decoded)
+		got, err := irtest.Collect(decoded)
 		shape := chatShape(want)
 		if len(calls) > 0 && shape.Stop == ir.StopEnd {
 			shape.Stop = ir.StopToolUse // the target half reads "stop" with tool calls as a tool turn
@@ -994,7 +995,7 @@ func FuzzDecodeRequest(f *testing.F) {
 			}
 			return
 		}
-		if err := CheckPairing(out); err != nil {
+		if err := irtest.CheckPairing(out); err != nil {
 			t.Fatalf("%v\n%s", err, out)
 		}
 	})
@@ -1056,7 +1057,7 @@ func FuzzStreamEncoder(f *testing.F) {
 			t.Fatal("the stream is not UTF-8")
 		}
 		s, cerr := checkStream(raw, false)
-		_, sound := ir.Collect(events)
+		_, sound := irtest.Collect(events)
 		switch {
 		case len(raw) == 0:
 			// Nothing was handed in that had to be written (and Close was not called).
@@ -1133,7 +1134,7 @@ func FuzzChatStreamRoundTrip(f *testing.F) {
 		if err != nil {
 			t.Fatalf("%v\n%s", err, buf.Bytes())
 		}
-		want, cerr := ir.Collect(events)
+		want, cerr := irtest.Collect(events)
 		if s.Done != (cerr == nil) {
 			t.Fatalf("Done %v, Collect %v", s.Done, cerr)
 		}

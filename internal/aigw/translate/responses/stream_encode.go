@@ -242,8 +242,9 @@ func NewStreamEncoder(w io.Writer, fallbackModel string, now time.Time) *StreamE
 // held back or ignored (anything after the end); an error wrapping
 // ir.ErrSequence or ir.ErrLimit when the event broke the rules or a limit,
 // in which case the stream has been ended with response.failed; or the
-// writer's error, after which nothing more is written and every call
-// returns it.
+// writer's error — also when it was one of the events of that end the writer
+// did not take — after which nothing more is written and every call returns
+// it.
 func (e *StreamEncoder) Write(ev ir.Event) error {
 	if e.werr != nil {
 		return e.werr
@@ -703,13 +704,20 @@ func (e *StreamEncoder) abort(message string) {
 	e.end()
 }
 
+// sequence and limit end the stream with response.failed. When the writer
+// did not take it, its error is what they return: the client is gone, and
+// that — not the answer's fault — is what the caller has to act on.
 func (e *StreamEncoder) sequence(what string) error {
-	e.abort(errUnreadable)
+	if e.abort(errUnreadable); e.werr != nil {
+		return e.werr
+	}
 	return fmt.Errorf("%w: %s", ir.ErrSequence, what)
 }
 
 func (e *StreamEncoder) limit(what string) error {
-	e.abort(errTooLarge)
+	if e.abort(errTooLarge); e.werr != nil {
+		return e.werr
+	}
 	return fmt.Errorf("%w: %s", ir.ErrLimit, what)
 }
 

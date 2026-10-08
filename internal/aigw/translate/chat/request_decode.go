@@ -127,7 +127,8 @@ func IncludeUsage(body []byte) bool {
 //     are left out: "input:tool.orphan" ("input:function.orphan" for the
 //     legacy role);
 //   - a call whose id waits for its result already is left out:
-//     "input:tool_call.duplicate";
+//     "input:tool_call.duplicate". The limit of ir.MaxToolCalls calls in
+//     one turn counts the calls that are kept;
 //   - "arguments" that are not the text of one JSON object become {}:
 //     "input:tool_call.arguments";
 //   - a tool call of another type (custom) is left out: ir.DroppedInput(type);
@@ -628,7 +629,9 @@ func (d *requestDecoder) assistantMessage(o object, at string) error {
 	}
 	var calls []ir.Part
 	if raw, ok := o.take("tool_calls"); ok {
-		items, err := list(raw, ir.MaxToolCalls, at+".tool_calls", "is not a list")
+		// The list is bounded like any list of a message; the limit on tool
+		// calls is on those that are kept (see below).
+		items, err := list(raw, ir.MaxParts, at+".tool_calls", "is not a list")
 		if err != nil {
 			return err
 		}

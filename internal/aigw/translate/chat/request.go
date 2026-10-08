@@ -28,7 +28,15 @@ const (
 	droppedThinking   = ir.DroppedThinking // thinking parts of the history are not sent back
 	droppedStopExtra  = "stop.extra"       // stop sequences beyond maxStop
 	droppedToolChoice = "tool_choice"      // a choice that needs a tool the request does not carry
+	// A call in the history under a name an OpenAI-compatible server refuses:
+	// written with the characters it takes. The Messages target reports its
+	// own repair of such a name under the same name.
+	droppedToolUseName = "input:tool_use.name"
 )
+
+// maxToolName is the longest function name an OpenAI-compatible server
+// takes: ^[a-zA-Z0-9_-]{1,64}$.
+const maxToolName = 64
 
 // ErrUnsupported is wrapped by every error of EncodeRequest, followed by the
 // field that cannot be expressed ("messages[2].tool_result.image"). The
@@ -66,6 +74,15 @@ func tooMany(field string, limit int) error {
 //     "Error: ". Nothing is lost, so nothing is reported.
 //   - Several Text parts of an assistant message, and the parts of the system
 //     prompt, become one string joined by a blank line.
+//   - A tool call in the history under a name that is no function name for
+//     an OpenAI-compatible server (^[a-zA-Z0-9_-]{1,64}$) and that is not
+//     one of the request's tools — a call the client recorded from another
+//     provider — is written with "_" for every other character and cut to
+//     64: "input:tool_use.name". A strict server answers 400 to such a name
+//     with every replay of the history. The name of a declared tool is
+//     written as it is, in "tools" and in the history alike, so that a call
+//     and its declaration stay one name: what the server makes of it is the
+//     server's answer.
 //
 // What is refused (an error wrapping ErrUnsupported that names the field):
 // an image anywhere but in a user message ("tool_result.image",
@@ -89,8 +106,9 @@ func EncodeRequest(req ir.Request, model string) (body []byte, dropped []string,
 type encoder struct {
 	b        []byte
 	dropped  []string
-	messages int // messages written so far
-	turns    int // those of them that are not the system message
+	declared map[string]bool // the names of the request's tools
+	messages int             // messages written so far
+	turns    int             // those of them that are not the system message
 }
 
 func (e *encoder) raw(s string)     { e.b = append(e.b, s...) }
@@ -121,6 +139,12 @@ func (e *encoder) request(req ir.Request, model string) error {
 		return tooMany("system", ir.MaxParts)
 	case len(req.Tools) > ir.MaxTools:
 		return tooMany("tools", ir.MaxTools)
+	}
+	if len(req.Tools) > 0 {
+		e.declared = make(map[string]bool, len(req.Tools))
+		for _, t := range req.Tools {
+			e.declared[t.Name] = true
+		}
 	}
 	e.raw(`{"model":`)
 	e.str(model)
@@ -323,6 +347,10 @@ func (e *encoder) assistant(m ir.Message, at func(string) string) error {
 			}
 			ids[p.ToolID] = true
 			p.Input = input
+			if name, ok := cleanName(p.ToolName); !ok && !e.declared[p.ToolName] {
+				p.ToolName = name
+				e.drop(droppedToolUseName)
+			}
 			calls = append(calls, p)
 		case ir.Image:
 			return unsupported(at("assistant.image"))
@@ -365,6 +393,21 @@ func (e *encoder) assistant(m ir.Message, at func(string) string) error {
 	}
 	e.raw(`}`)
 	return nil
+}
+
+// cleanName returns name as an OpenAI-compatible server takes a function
+// name: "_" for every byte that is not one of a-z, A-Z, 0-9, _ and -, and
+// at most maxToolName of them. ok says nothing had to be changed.
+func cleanName(name string) (cleaned string, ok bool) {
+	b := []byte(name)
+	ok = len(b) <= maxToolName
+	b = b[:min(len(b), maxToolName)]
+	for i, c := range b {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			b[i], ok = '_', false
+		}
+	}
+	return string(b), ok
 }
 
 func (e *encoder) tools(tools []ir.Tool) error {

@@ -11,9 +11,9 @@
 // the names of what the neutral form holds and its format cannot express. A
 // name is either fixed (the Dropped… constants here, or a field name the
 // codec itself spells out, such as "metadata") or built with Unknown,
-// DroppedTool, DroppedInput or DroppedBlock: a string the client chose never
-// stands alone in the list, because "more" is reserved there and an empty
-// string would vanish.
+// DroppedTool or DroppedInput: a string the client chose never stands alone
+// in the list, because "more" is reserved there and an empty string would
+// vanish.
 //
 // Unknown fields are reported at four depths, without array indexes so the
 // list stays short: the top level (Unknown("foo")), a message
@@ -176,9 +176,6 @@ func DroppedTool(typ string) string { return "tool:" + typ }
 
 // DroppedInput names a history item of a tool that is not emulated: "input:<type>".
 func DroppedInput(typ string) string { return "input:" + typ }
-
-// DroppedBlock names a content block that was left out: "block:<type>".
-func DroppedBlock(typ string) string { return "block:" + typ }
 
 // Request is a model call in neutral form.
 type Request struct {
@@ -524,143 +521,6 @@ func AppendString(dst []byte, s string) []byte {
 	}
 	dst = append(dst, s[start:]...)
 	return append(dst, '"')
-}
-
-// Collect folds a well-formed event sequence into a Response (used by tests
-// and by buffered fallbacks). It returns a *StreamError for a sequence that
-// holds an Error event (the event's message is in its field), ErrSequence
-// for one that is not well formed or has no Finish, ErrLimit for one over the
-// limits, and ErrBadJSON for a tool call whose arguments do not add up to a
-// JSON object.
-func Collect(events []Event) (Response, error) {
-	type state struct {
-		open bool
-		buf  []byte
-	}
-	var (
-		resp     Response
-		parts    []Part
-		states   []state
-		ids      = map[string]bool{}
-		calls    int
-		argBytes int
-		started  bool
-		finished bool
-	)
-	bad := func(what string) (Response, error) {
-		return Response{}, fmt.Errorf("%w: %s", ErrSequence, what)
-	}
-	// at returns the open part an event addresses.
-	at := func(ev Event, kind PartKind) (*state, bool) {
-		if ev.Index < 0 || ev.Index >= len(states) || !states[ev.Index].open {
-			return nil, false
-		}
-		if kind != "" && parts[ev.Index].Kind != kind {
-			return nil, false
-		}
-		return &states[ev.Index], true
-	}
-	for _, ev := range events {
-		if finished {
-			return bad("an event after the finish")
-		}
-		if ev.Kind == Error {
-			return Response{}, &StreamError{Message: ev.Err}
-		}
-		if started == (ev.Kind == Start) {
-			return bad("the sequence must begin with exactly one start")
-		}
-		switch ev.Kind {
-		case Start:
-			started = true
-			resp.ID, resp.Model, resp.Usage = ev.ID, ev.Model, ev.Usage
-		case PartStart:
-			if ev.Index != len(parts) {
-				return bad("a part's number is out of order")
-			}
-			if len(parts) >= MaxParts {
-				return Response{}, fmt.Errorf("%w: more than %d parts", ErrLimit, MaxParts)
-			}
-			p := Part{Kind: ev.Part.Kind}
-			switch ev.Part.Kind {
-			case Text, Thinking:
-			case ToolUse:
-				if ev.Part.ToolID == "" || ev.Part.ToolName == "" || ids[ev.Part.ToolID] {
-					return bad("a tool call needs a name and an id of its own")
-				}
-				if calls++; calls > MaxToolCalls {
-					return Response{}, fmt.Errorf("%w: more than %d tool calls", ErrLimit, MaxToolCalls)
-				}
-				ids[ev.Part.ToolID] = true
-				p.ToolID, p.ToolName = ev.Part.ToolID, ev.Part.ToolName
-			default:
-				return bad("a part of a kind an answer cannot hold")
-			}
-			parts = append(parts, p)
-			states = append(states, state{open: true})
-		case TextDelta, ThinkingDelta:
-			kind := Text
-			if ev.Kind == ThinkingDelta {
-				kind = Thinking
-			}
-			st, ok := at(ev, kind)
-			if !ok {
-				return bad("a text delta for a part that is not open")
-			}
-			st.buf = append(st.buf, ev.Text...)
-		case ToolArgsDelta:
-			st, ok := at(ev, ToolUse)
-			if !ok {
-				return bad("an argument delta for a tool call that is not open")
-			}
-			if len(st.buf)+len(ev.ArgsJSON) > MaxToolArgsBytes {
-				return Response{}, fmt.Errorf("%w: tool arguments over %d bytes", ErrLimit, MaxToolArgsBytes)
-			}
-			if argBytes += len(ev.ArgsJSON); argBytes > MaxTotalToolArgsBytes {
-				return Response{}, fmt.Errorf("%w: tool arguments over %d bytes in all", ErrLimit, MaxTotalToolArgsBytes)
-			}
-			st.buf = append(st.buf, ev.ArgsJSON...)
-		case PartStop:
-			st, ok := at(ev, "")
-			if !ok {
-				return bad("a stop for a part that is not open")
-			}
-			st.open = false
-			if parts[ev.Index].Kind != ToolUse {
-				parts[ev.Index].Text = string(st.buf)
-				st.buf = nil
-			}
-		case Finish:
-			for i := range states {
-				if states[i].open {
-					return bad("the finish came while a part was open")
-				}
-				// Arguments are judged here, not at the part's stop: a stream
-				// that fails stops its parts first, and is then an error of
-				// the stream, whatever the arguments looked like by then.
-				if parts[i].Kind == ToolUse {
-					input, err := ToolInput(states[i].buf)
-					if err != nil {
-						return Response{}, err
-					}
-					parts[i].Input = input
-				}
-			}
-			finished = true
-			resp.Stop = ev.Stop
-			if ev.Usage.InputTokens == 0 {
-				ev.Usage.InputTokens = resp.Usage.InputTokens
-			}
-			resp.Usage = ev.Usage
-		default:
-			return bad("an event of an unknown kind")
-		}
-	}
-	if !finished {
-		return bad("no finish")
-	}
-	resp.Parts = parts
-	return resp, nil
 }
 
 // Limits of what names a tool call. An upstream's answer over one of them is

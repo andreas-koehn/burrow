@@ -92,7 +92,9 @@ func NewStreamDecoder() *StreamDecoder {
 //     belongs to the latest call). Its part opens as soon as id and name
 //     are known, stopping an open text part first; arguments that came
 //     earlier follow as one delta. Calls may interleave. White space before
-//     a call's arguments is not passed on.
+//     a call's arguments is not passed on. The name comes whole in one
+//     chunk: the same name sent again with a later chunk is ignored, a
+//     different one fails the answer (it is malformed).
 //   - A character cut in two between chunks (as bytes, or as the two halves
 //     of an escaped surrogate pair) is put together again: the first half
 //     waits for the next delta of the same part.
@@ -410,8 +412,16 @@ func (d *StreamDecoder) toolCall(tc *wireToolCall) error {
 	}
 	fragment := ""
 	if tc.Function != nil {
-		if c.name == "" {
-			c.name = tc.Function.Name
+		// The name comes whole, with the call's first chunk. A server that
+		// sends it again with later chunks says the same name; one that
+		// sends another (a name in pieces, or a second name) leaves no way
+		// to tell what the model called.
+		switch name := tc.Function.Name; {
+		case name == "" || name == c.name:
+		case c.name == "":
+			c.name = name
+		default:
+			return malformed("a tool call's name changed")
 		}
 		raw, err := argumentsBytes(tc.Function.Arguments)
 		if err != nil {

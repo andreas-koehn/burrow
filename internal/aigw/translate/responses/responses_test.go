@@ -15,6 +15,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/aigw/translate/chat"
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
+	"github.com/ankoehn/burrow/internal/aigw/translate/irtest"
 	"github.com/ankoehn/burrow/internal/aigw/translate/sse"
 )
 
@@ -1922,7 +1923,7 @@ func FuzzDecodeRequest(f *testing.F) {
 			t.Fatalf("EncodeRequest: %v", err)
 		}
 		if err == nil {
-			if err := chat.CheckPairing(out); err != nil {
+			if err := irtest.CheckPairing(out); err != nil {
 				t.Fatalf("%v\n%s", err, out)
 			}
 		}
@@ -1962,7 +1963,7 @@ func FuzzStreamEncoder(f *testing.F) {
 		if !finished {
 			return
 		}
-		want, err := ir.Collect(events)
+		want, err := irtest.Collect(events)
 		if err != nil {
 			t.Fatalf("Collect: %v", err)
 		}
@@ -2070,7 +2071,7 @@ func FuzzStreamEncoderAnyEvents(f *testing.F) {
 			if n == len(events) {
 				t.Fatalf("an answer without a Finish: %+v", events)
 			}
-			if _, err := ir.Collect(events[:n+1]); err != nil {
+			if _, err := irtest.Collect(events[:n+1]); err != nil {
 				t.Fatalf("an answer for a sequence that is not well formed (%v): %+v", err, events[:n+1])
 			}
 		}

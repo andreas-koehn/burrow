@@ -377,8 +377,10 @@ components:
       description: >
         A synthetic model: a name that clients send as "model" on the
         gateway's endpoints and that resolves to an ordered list of provider
-        targets per dialect. A request reaches only targets of its own
-        dialect.
+        targets per dialect. A request reaches the targets of its own
+        dialect. Only when the model has none that can serve the endpoint
+        and translate is on does it reach a target of the other dialect,
+        through a translating pair (see translate and dialect_modes).
       properties:
         name:
           type: string
@@ -427,7 +429,11 @@ components:
         dialects:
           type: array
           readOnly: true
-          description: The formats the model is served in, sorted; derived from the targets.
+          description: >
+            The formats the model has targets in, sorted; derived from the
+            targets. With translate on, the model can be served in a format
+            that is not listed here: dialect_modes says how each format is
+            served.
           items: { type: string, enum: [anthropic, openai] }
         serving:
           type: object

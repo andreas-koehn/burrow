@@ -13,6 +13,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/aigw/translate/chat"
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
+	"github.com/ankoehn/burrow/internal/aigw/translate/irtest"
 	"github.com/ankoehn/burrow/internal/aigw/translate/messages"
 	"github.com/ankoehn/burrow/internal/aigw/translate/sse"
 )
@@ -461,7 +462,7 @@ func TestRoundTrip_Responses(t *testing.T) {
 			t.Fatalf("seed %d: Chat Completions changed the answer (%v)\nwant %+v\n got %+v\n%s", seed, err, want, got, body)
 		}
 		events := rtEvents(rng, want)
-		collected, err := ir.Collect(events)
+		collected, err := irtest.Collect(events)
 		if err != nil || !reflect.DeepEqual(collected, want) {
 			t.Fatalf("seed %d: the generated events do not add up to the answer: %v", seed, err)
 		}
@@ -479,7 +480,7 @@ func TestRoundTrip_Responses(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seed %d: the Chat stream cannot be read: %v\n%s", seed, err, buf.Bytes())
 		}
-		if got, err = ir.Collect(decoded); err != nil || !reflect.DeepEqual(got, want) {
+		if got, err = irtest.Collect(decoded); err != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("seed %d: the Chat stream changed the answer (%v)\nwant %+v\n got %+v\n%s", seed, err, want, got, buf.Bytes())
 		}
 
@@ -493,7 +494,7 @@ func TestRoundTrip_Responses(t *testing.T) {
 			t.Fatalf("seed %d: Anthropic Messages changed the answer (%v)\nwant %+v\n got %+v\n%s", seed, err, want, got, body)
 		}
 		events = rtEvents(rng, want)
-		if collected, err = ir.Collect(events); err != nil || !reflect.DeepEqual(collected, want) {
+		if collected, err = irtest.Collect(events); err != nil || !reflect.DeepEqual(collected, want) {
 			t.Fatalf("seed %d: the generated events do not add up to the answer: %v", seed, err)
 		}
 		buf.Reset()
@@ -510,7 +511,7 @@ func TestRoundTrip_Responses(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seed %d: the Messages stream cannot be read: %v\n%s", seed, err, buf.Bytes())
 		}
-		if got, err = ir.Collect(decoded); err != nil || !reflect.DeepEqual(got, want) {
+		if got, err = irtest.Collect(decoded); err != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("seed %d: the Messages stream changed the answer (%v)\nwant %+v\n got %+v\n%s", seed, err, want, got, buf.Bytes())
 		}
 	}

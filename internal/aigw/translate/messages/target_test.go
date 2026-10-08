@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
+	"github.com/ankoehn/burrow/internal/aigw/translate/irtest"
 	"github.com/ankoehn/burrow/internal/aigw/translate/sse"
 )
 
@@ -881,7 +882,7 @@ func TestStreamDecoder_Fixtures(t *testing.T) {
 			if err != nil {
 				t.Fatalf("piece %d: %v", piece, err)
 			}
-			got, err := ir.Collect(events)
+			got, err := irtest.Collect(events)
 			if err != nil || !reflect.DeepEqual(got, whole) {
 				t.Fatalf("piece %d: %v\n got %+v\nwant %+v", piece, err, got, whole)
 			}
@@ -962,7 +963,7 @@ func TestStreamDecoder_Blocks(t *testing.T) {
 			t.Errorf("%s: %v", c.name, err)
 			continue
 		}
-		got, err := ir.Collect(events)
+		got, err := irtest.Collect(events)
 		c.want.ID, c.want.Model, c.want.Usage = "msg_1", "m", ir.Usage{InputTokens: 7, OutputTokens: 3}
 		if strings.HasPrefix(c.name, "no message_delta") {
 			c.want.Usage.OutputTokens = 0
@@ -1058,7 +1059,7 @@ func TestStreamDecoder_BadEndings(t *testing.T) {
 			if last := events[len(events)-1]; last.Kind == ir.Error && last.Err != c.message {
 				t.Errorf("%s: message %q", c.name, last.Err)
 			}
-			if _, err := ir.Collect(events); c.message != "" && !errors.Is(err, ir.ErrStream) {
+			if _, err := irtest.Collect(events); c.message != "" && !errors.Is(err, ir.ErrStream) {
 				t.Errorf("%s: Collect = %v: a failed stream read as an answer", c.name, err)
 			}
 			if err != nil && (strings.Contains(err.Error(), "xxxx") || strings.Contains(err.Error(), "Overloaded")) {
@@ -1141,7 +1142,7 @@ func TestStreamDecoder_CharacterSplitAcrossDeltas(t *testing.T) {
 					t.Errorf("%s in %s: a delta that is empty or no UTF-8: %+v", c.name, kind, e)
 				}
 			}
-			got, err := ir.Collect(events)
+			got, err := irtest.Collect(events)
 			if err != nil || len(got.Parts) != 1 || !reflect.DeepEqual(got.Parts[0], want) {
 				t.Errorf("%s in %s: %v, %+v", c.name, kind, err, got.Parts)
 			}
@@ -1149,7 +1150,7 @@ func TestStreamDecoder_CharacterSplitAcrossDeltas(t *testing.T) {
 	}
 	// Text that is no UTF-8 at all is repaired as in a whole answer; arguments never are.
 	events, err := decodeSSE(frames(mStart, mTextStart, mText(0, "a\xffb"), mStop0, mEnd, mDone), 1<<20)
-	if got, cerr := ir.Collect(events); err != nil || cerr != nil || got.Parts[0].Text != "a�b" {
+	if got, cerr := irtest.Collect(events); err != nil || cerr != nil || got.Parts[0].Text != "a�b" {
 		t.Fatalf("%v %v %+v", err, cerr, got)
 	}
 }
@@ -1419,7 +1420,7 @@ func FuzzStreamDecoder(f *testing.F) {
 		if starts != stops {
 			t.Fatalf("%d parts started, %d stopped: %+v", starts, stops, events)
 		}
-		_, err := ir.Collect(events)
+		_, err := irtest.Collect(events)
 		if finished := events[n-1].Kind == ir.Finish; finished && err != nil || !finished && !errors.Is(err, ir.ErrStream) {
 			t.Fatalf("Collect: %v: %+v", err, events)
 		}

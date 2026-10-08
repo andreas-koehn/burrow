@@ -35,6 +35,7 @@ const (
 
 	// What is repaired in the history of tool calls and their results.
 	droppedUnansweredUse = "input:tool_use.unanswered" // a tool_use without a tool_result got one
+	droppedUseArguments  = "input:tool_use.arguments"  // an input that is no JSON object: the call has none
 	droppedLongID        = "input:tool_use.id"         // an id longer than ir.MaxToolIDBytes was cut
 	droppedDuplicateUse  = "input:tool_use.duplicate"  // a tool_use whose id waits already: left out
 	droppedOrphanResult  = "input:tool_result.orphan"  // a tool_result for no tool_use: left out
@@ -47,6 +48,10 @@ type BadRequestError = ir.BadRequestError
 
 func bad(field, reason string) error {
 	return &BadRequestError{Format: "messages", Field: field, Reason: reason}
+}
+
+func tooManyCalls(field string) error {
+	return &BadRequestError{Format: "messages", Field: field, Reason: fmt.Sprintf("has more than %d tool calls", ir.MaxToolCalls), Limit: true}
 }
 
 func tooMany(field string, limit int) error {
@@ -116,12 +121,16 @@ func tooMany(field string, limit int) error {
 //     held nothing else is left out with it;
 //   - a tool_use whose id waits for its result already is left out:
 //     "input:tool_use.duplicate";
+//   - a tool_use whose "input" is not a JSON object (the client's record of
+//     a call that was cut) keeps its place with the input {}:
+//     "input:tool_use.arguments";
 //   - two assistant messages with nothing between them are one turn.
 //
 // Refused with a *BadRequestError: a request in which no turn is left; a body that is not a JSON object; a
 // missing or mistyped required field; a role other than user and assistant;
-// a block in a turn that cannot hold it; a tool_use without id or name or
-// with an input that is not a JSON object; an image that cannot be carried
+// a block in a turn that cannot hold it; a tool_use without id or name; a
+// turn with more than ir.MaxToolCalls calls after the duplicates were left
+// out; an image that cannot be carried
 // (with a source that is neither base64 nor url); a
 // block of any other type (document, search_result, …), because content
 // must not vanish; anything over the ir limits. The request returned with
@@ -427,6 +436,12 @@ func (d *decoder) pair(in []ir.Message) ([]ir.Message, error) {
 					pending[p.ToolID] = t
 				}
 			}
+			// The limit is on the calls that are kept: a duplicate that was
+			// left out is no call of the turn. (Assistant messages become one
+			// turn only when the earlier one made no calls.)
+			if len(t.calls) > ir.MaxToolCalls {
+				return nil, tooManyCalls(fmt.Sprintf("messages[%d].content", i))
+			}
 			if len(t.calls) > 0 {
 				turns[i] = t
 			}
@@ -628,7 +643,6 @@ func (d *decoder) content(raw []byte, role ir.Role, at string) (parts []ir.Part,
 		}
 		return nil, 0, err
 	}
-	calls := 0
 	for i, item := range items {
 		here := fmt.Sprintf("%s[%d]", at, i)
 		o, ok := asObject(item)
@@ -642,11 +656,6 @@ func (d *decoder) content(raw []byte, role ir.Role, at string) (parts []ir.Part,
 		if !keep {
 			leftOut++
 			continue
-		}
-		if p.Kind == ir.ToolUse {
-			if calls++; calls > ir.MaxToolCalls {
-				return nil, 0, &BadRequestError{Format: "messages", Field: at, Reason: fmt.Sprintf("has more than %d tool calls", ir.MaxToolCalls), Limit: true}
-			}
 		}
 		parts = append(parts, p)
 	}
@@ -773,16 +782,20 @@ func (d *decoder) toolUseBlock(o object, at string) (ir.Part, error) {
 	case p.ToolName == "":
 		return ir.Part{}, bad(at+".name", "is required")
 	}
+	// The history is the client's record of an answer: an input that is not
+	// a JSON object (a call whose stream was cut) must not cost the session.
+	// The call stays, with no arguments, and that is reported.
 	raw, _ := o.take("input")
 	input, err := ir.ToolInput(raw)
-	if err != nil {
-		reason, limit := "is not a JSON object", false
-		if errors.Is(err, ir.ErrLimit) {
-			reason, limit = "is too large", true
-		}
-		return ir.Part{}, &BadRequestError{Format: "messages", Field: at + ".input", Reason: reason, Limit: limit}
+	switch {
+	case err == nil:
+		p.Input = input
+	case errors.Is(err, ir.ErrLimit):
+		return ir.Part{}, &BadRequestError{Format: "messages", Field: at + ".input", Reason: "is too large", Limit: true}
+	default:
+		p.Input = json.RawMessage("{}")
+		d.drop(droppedUseArguments)
 	}
-	p.Input = input
 	return p, nil
 }
 

@@ -40,7 +40,13 @@ const (
 //     arguments. Calls that are open side by side are written as their
 //     pieces come — nothing is held back, the index tells them apart. A call
 //     that stops without arguments gets the piece "{}", so that the
-//     arguments of every call are one JSON object.
+//     arguments of every call are one JSON object — but not at once. A
+//     stream decoder stops every open part before it reports a failure, so
+//     such a call may be one that was cut before its first byte, and "{}"
+//     would be arguments nobody sent. The piece is written when the next
+//     event shows that the stream goes on — a part that starts, a delta, the
+//     Finish; the stop of another part does not show it — and never when
+//     the stream fails instead.
 //   - Finish gives a chunk with an empty delta and the "finish_reason"
 //     ("stop", "length", "tool_calls", "content_filter"); then, when the
 //     caller asked for it ("stream_options.include_usage"), a chunk with
@@ -83,6 +89,9 @@ type StreamEncoder struct {
 	// A text (a thinking) was written: the next part of that kind is set
 	// apart by textGap.
 	wroteText, wroteThinking bool
+	// The calls that stopped without arguments and wait for their "{}", by
+	// neutral index, in the order they stopped.
+	waiting []int
 
 	buf []byte // the frame being built
 }
@@ -105,8 +114,9 @@ func NewStreamEncoder(w io.Writer, fallbackModel string, now time.Time, includeU
 // Write takes the next event. It returns nil for an event that was written
 // or ignored (anything after the end); an error wrapping ir.ErrSequence or
 // ir.ErrLimit when the event broke the rules or a limit, in which case the
-// stream has been ended with the error object; or the writer's error, after
-// which nothing more is written and every call returns it.
+// stream has been ended with the error object; or the writer's error — also
+// when it was that error object the writer did not take — after which
+// nothing more is written and every call returns it.
 func (e *StreamEncoder) Write(ev ir.Event) error {
 	if e.werr != nil {
 		return e.werr
@@ -141,6 +151,15 @@ func (e *StreamEncoder) write(ev ir.Event) error {
 	}
 	if e.started == (ev.Kind == ir.Start) {
 		return e.sequence("the stream must begin with exactly one start")
+	}
+	// The stream goes on: a call that stopped without arguments was a call
+	// without arguments, not one that was cut. (The stop of another part
+	// does not say so: a failing decoder stops every part first.)
+	if len(e.waiting) > 0 && ev.Kind != ir.PartStop {
+		for _, i := range e.waiting {
+			e.arguments(&e.parts[i], "{}")
+		}
+		e.waiting = e.waiting[:0]
 	}
 	switch ev.Kind {
 	case ir.Start:
@@ -201,7 +220,7 @@ func (e *StreamEncoder) write(ev ir.Event) error {
 		p := &e.parts[ev.Index]
 		p.open = false
 		if p.kind == ir.ToolUse && !p.wrote {
-			e.arguments(p, "{}")
+			e.waiting = append(e.waiting, ev.Index) // see the tool call rule at StreamEncoder
 		}
 	case ir.Finish:
 		for i := range e.parts {
@@ -317,20 +336,27 @@ func (e *StreamEncoder) abort(message string) {
 	e.end()
 }
 
+// sequence and limit end the stream with the error object. When the writer
+// did not take it, its error is what they return: the client is gone, and
+// that — not the answer's fault — is what the caller has to act on.
 func (e *StreamEncoder) sequence(what string) error {
-	e.abort(errUnreadable)
+	if e.abort(errUnreadable); e.werr != nil {
+		return e.werr
+	}
 	return fmt.Errorf("%w: %s", ir.ErrSequence, what)
 }
 
 func (e *StreamEncoder) limit(what string) error {
-	e.abort(errTooLarge)
+	if e.abort(errTooLarge); e.werr != nil {
+		return e.werr
+	}
 	return fmt.Errorf("%w: %s", ir.ErrLimit, what)
 }
 
 // end marks the stream ended and lets go of what the encoder held.
 func (e *StreamEncoder) end() {
 	e.done = true
-	e.parts, e.ids, e.buf, e.head = nil, nil, nil, nil
+	e.parts, e.ids, e.buf, e.head, e.waiting = nil, nil, nil, nil, nil
 }
 
 // frame writes e.buf as one frame, unless the writer has failed.

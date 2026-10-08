@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
+	"github.com/ankoehn/burrow/internal/aigw/translate/irtest"
 	"github.com/ankoehn/burrow/internal/aigw/translate/sse"
 )
 
@@ -150,9 +151,15 @@ func genObject(rng *rand.Rand, depth int) string {
 	return "{" + strings.Join(items, ",") + genSpace(rng) + "}"
 }
 
+// genName makes a function name an OpenAI-compatible server takes.
+func genName(rng *rand.Rand) string {
+	return []string{"read_file", "list-dir", "Tool_9", "a", strings.Repeat("n", maxToolName)}[rng.Intn(5)]
+}
+
 // genRequest makes a request in the shape Chat Completions can carry
 // without loss: roles alternate, one system part, no thinking, no error
-// flag on a tool result, no empty text, and every tool call answered.
+// flag on a tool result, no empty text, every tool call answered and under
+// a name a server takes.
 func genRequest(rng *rand.Rand) ir.Request {
 	req := ir.Request{Model: "caller-model", Stream: rng.Intn(2) == 0}
 	if rng.Intn(2) == 0 {
@@ -208,7 +215,7 @@ func genRequest(rng *rand.Rand) ir.Request {
 			for n := rng.Intn(4); n > 0 || len(parts) == 0; n-- {
 				id := fmt.Sprintf("call_%d", calls)
 				calls++
-				parts = append(parts, ir.Part{Kind: ir.ToolUse, ToolID: id, ToolName: genText(rng), Input: json.RawMessage(genObject(rng, 3))})
+				parts = append(parts, ir.Part{Kind: ir.ToolUse, ToolID: id, ToolName: genName(rng), Input: json.RawMessage(genObject(rng, 3))})
 				open = append(open, id)
 			}
 			req.Messages = append(req.Messages, ir.Message{Role: ir.Assistant, Parts: parts})
@@ -348,7 +355,7 @@ func TestProperty_ResponseRoundTrip(t *testing.T) {
 		if err := checkEvents(events); err != nil {
 			t.Fatalf("case %d: %v\n%+v", i, err, events)
 		}
-		streamed, err := ir.Collect(events)
+		streamed, err := irtest.Collect(events)
 		if err != nil || !reflect.DeepEqual(streamed, want) {
 			t.Fatalf("case %d: stream: %v\nwant %+v\n got %+v\n%s", i, err, want, streamed, raw)
 		}
@@ -607,7 +614,7 @@ func FuzzStreamDecoder(f *testing.F) {
 			t.Fatalf("%d parts started, %d stopped: %+v", starts, stops, events)
 		}
 		// What ended in a Finish folds into an answer; what ended in an Error says so.
-		_, err := ir.Collect(events)
+		_, err := irtest.Collect(events)
 		if finished := events[n-1].Kind == ir.Finish; finished && err != nil || !finished && !errors.Is(err, ir.ErrStream) {
 			t.Fatalf("Collect: %v: %+v", err, events)
 		}
@@ -641,7 +648,7 @@ func FuzzEncodeRequest(f *testing.F) {
 		if !json.Valid(body) || !utf8.Valid(body) || ir.Depth(body) > ir.MaxDepth+8 {
 			t.Fatalf("the body is not sound JSON:\n%s", body)
 		}
-		if err := CheckPairing(body); err != nil {
+		if err := irtest.CheckPairing(body); err != nil {
 			t.Fatalf("%v\n%s", err, body)
 		}
 		// The caller half reads it back with nothing left to repair or report, and written again

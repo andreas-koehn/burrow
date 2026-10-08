@@ -85,6 +85,16 @@ const pingAfter = time.Second
 // joined text as well as for the SDK accumulators (which keep the start's
 // {} unless the joined text is not empty).
 //
+// A call that stops without a byte of arguments is not closed at once. A
+// stream decoder stops every open part before it reports a failure, so such
+// a call may be one that was cut before its first byte, and "{}" would be
+// arguments nobody sent. Its "{}" and its content_block_stop are held until
+// the next event shows that the stream goes on — a part that starts, a
+// delta, the Finish; the stop of another part does not show it. When the
+// stream fails instead, the block is closed without the "{}": a block has
+// to be closed before the error event, and nothing says the call was
+// whole. A call that was held back is written the same way then.
+//
 // # Usage and stop reason
 //
 // message_start carries the input tokens the Start event has; a target that
@@ -97,7 +107,8 @@ const pingAfter = time.Second
 //
 // An Error event, Close before the Finish, a sequence that breaks the rules
 // of ir.Event, a limit: the open block is stopped, held parts are written
-// and stopped, and then one error event ends the stream:
+// and stopped (see Tool calls for a call without arguments), and then one
+// error event ends the stream:
 //
 //	event: error
 //	data: {"type":"error","error":{"type":"api_error","message":"…"}}
@@ -116,6 +127,7 @@ type StreamEncoder struct {
 	started bool
 	done    bool  // the stream was ended, well or badly
 	werr    error // the writer failed: nothing more is written
+	waiting bool  // the open block is a call that stopped without arguments: its end is held back
 
 	inputTokens int // what message_start told
 
@@ -159,8 +171,8 @@ func NewStreamEncoder(w io.Writer, fallbackModel string) *StreamEncoder {
 // held back or ignored (anything after the end); an error wrapping
 // ir.ErrSequence or ir.ErrLimit when the event broke the rules or a limit,
 // in which case the stream has been ended with an error event; or the
-// writer's error, after which nothing more is written and every call
-// returns it.
+// writer's error — also when it was that error event the writer did not
+// take — after which nothing more is written and every call returns it.
 func (e *StreamEncoder) Write(ev ir.Event) error {
 	if e.werr != nil {
 		return e.werr
@@ -198,6 +210,14 @@ func (e *StreamEncoder) write(ev ir.Event) error {
 	}
 	if e.started == (ev.Kind == ir.Start) {
 		return e.sequence("the stream must begin with exactly one start")
+	}
+	// The stream goes on: a call that stopped without arguments was a call
+	// without arguments, not one that was cut. (The stop of another part
+	// does not say so: a failing decoder stops every part first.)
+	for e.waiting && ev.Kind != ir.PartStop {
+		e.waiting = false
+		e.stopBlock(false)
+		e.drain(false)
 	}
 	switch ev.Kind {
 	case ir.Start:
@@ -238,8 +258,12 @@ func (e *StreamEncoder) write(ev ir.Event) error {
 		}
 		e.parts[ev.Index].open = false
 		if ev.Index == e.cur {
-			e.stopBlock()
-			e.drain()
+			if p := e.parts[e.cur]; p.kind == ir.ToolUse && !p.wroteArg {
+				e.waiting = true // see Tool calls at StreamEncoder
+				break
+			}
+			e.stopBlock(false)
+			e.drain(false)
 		} else if h := e.heldAt(ev.Index); h != nil {
 			h.stopped = true
 		}
@@ -356,8 +380,10 @@ func (e *StreamEncoder) delta(index int, s string) error {
 }
 
 // drain writes the held parts, in order, up to and including the first one
-// that has not stopped: that one becomes the live block.
-func (e *StreamEncoder) drain() {
+// that has not stopped: that one becomes the live block. When the stream is
+// being aborted all of them are written and stopped, a call that got no
+// arguments without its "{}".
+func (e *StreamEncoder) drain(aborting bool) {
 	for len(e.held) > 0 && e.werr == nil {
 		h := e.held[0]
 		e.held[0] = nil
@@ -372,10 +398,14 @@ func (e *StreamEncoder) drain() {
 			e.heldBytes -= len(h.tail)
 			e.writeDelta(h.start.Kind, string(h.tail))
 		}
-		if !h.stopped {
+		if !h.stopped && !aborting {
 			return
 		}
-		e.stopBlock()
+		if !aborting && h.start.Kind == ir.ToolUse && len(h.pieces) == 0 {
+			e.waiting = true // stopped without arguments: what follows decides
+			return
+		}
+		e.stopBlock(aborting)
 	}
 }
 
@@ -415,9 +445,11 @@ func (e *StreamEncoder) writeDelta(kind ir.PartKind, s string) {
 }
 
 // stopBlock stops the block that is open on the wire. A tool call that got
-// no arguments gets "{}" first (see Tool calls at StreamEncoder).
-func (e *StreamEncoder) stopBlock() {
-	if p := e.parts[e.cur]; p.kind == ir.ToolUse && !p.wroteArg {
+// no arguments gets "{}" first — unless the stream is being ended badly
+// (cut): then nothing says the call was whole (see Tool calls at
+// StreamEncoder).
+func (e *StreamEncoder) stopBlock(cut bool) {
+	if p := e.parts[e.cur]; !cut && p.kind == ir.ToolUse && !p.wroteArg {
 		e.writeDelta(ir.ToolUse, "{}")
 	}
 	e.buf = append(e.buf[:0], `{"type":"content_block_stop","index":`...)
@@ -431,25 +463,30 @@ func (e *StreamEncoder) stopBlock() {
 // abort ends the stream badly: the open block is stopped, held parts are
 // written and stopped, then the one error event.
 func (e *StreamEncoder) abort(message string) {
+	e.waiting = false
 	if e.cur >= 0 {
-		e.stopBlock()
+		e.stopBlock(true)
 	}
-	for _, h := range e.held {
-		h.stopped = true
-	}
-	e.drain()
+	e.drain(true)
 	e.buf = appendError(e.buf[:0], streamErrorType, message)
 	e.frame("error")
 	e.end()
 }
 
+// sequence and limit end the stream with an error event. When the writer
+// did not take it, its error is what they return: the client is gone, and
+// that — not the answer's fault — is what the caller has to act on.
 func (e *StreamEncoder) sequence(what string) error {
-	e.abort(errUnreadable)
+	if e.abort(errUnreadable); e.werr != nil {
+		return e.werr
+	}
 	return fmt.Errorf("%w: %s", ir.ErrSequence, what)
 }
 
 func (e *StreamEncoder) limit(what string) error {
-	e.abort(errTooLarge)
+	if e.abort(errTooLarge); e.werr != nil {
+		return e.werr
+	}
 	return fmt.Errorf("%w: %s", ir.ErrLimit, what)
 }
 

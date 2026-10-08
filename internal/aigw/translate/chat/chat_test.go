@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
+	"github.com/ankoehn/burrow/internal/aigw/translate/irtest"
 	"github.com/ankoehn/burrow/internal/aigw/translate/sse"
 )
 
@@ -838,7 +839,7 @@ func TestStreamDecoder_InterleavedToolCalls(t *testing.T) {
 			t.Fatalf("piece %d: %v\n%+v", piece, err, got)
 		}
 	}
-	resp, err := ir.Collect(toolsEvents())
+	resp, err := irtest.Collect(toolsEvents())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1442,7 +1443,7 @@ func TestStreamDecoder_CharacterSplitAcrossChunks(t *testing.T) {
 		if err != nil || checkEvents(got) != nil {
 			t.Fatalf("arguments cut %d: %v: %+v", cut, err, got)
 		}
-		resp, err := ir.Collect(got)
+		resp, err := irtest.Collect(got)
 		if err != nil || string(resp.Parts[0].Input) != `{"a":"`+smile+`"}` || string(resp.Parts[1].Input) != `{"b":"é`+smile+`"}` {
 			t.Fatalf("arguments cut %d: %v: %+v", cut, err, resp.Parts)
 		}
@@ -1456,7 +1457,7 @@ func TestStreamDecoder_CharacterSplitAcrossChunks(t *testing.T) {
 		if err != nil || checkEvents(got) != nil {
 			t.Fatalf("arguments cut %d: %v: %+v", cut, err, got)
 		}
-		resp, err = ir.Collect(got)
+		resp, err = irtest.Collect(got)
 		if err != nil || string(resp.Parts[0].Input) != `{"a":"`+smile+`"}` || string(resp.Parts[1].Input) != `{"b":"é`+smile+`"}` {
 			t.Fatalf("open arguments cut %d: %v: %+v", cut, err, resp.Parts)
 		}
@@ -1544,7 +1545,7 @@ func TestToolArguments_TheTextNullIsRefusedOnBothPaths(t *testing.T) {
 		if err != nil || kinds(evs) != "start part_start part_stop finish" {
 			t.Errorf("stream %s: err = %v, events %s", arguments, err, kinds(evs))
 		}
-		streamed, err := ir.Collect(evs)
+		streamed, err := irtest.Collect(evs)
 		if err != nil || !reflect.DeepEqual(streamed.Parts, resp.Parts) {
 			t.Errorf("stream %s: %v: %+v, buffered %+v", arguments, err, streamed.Parts, resp.Parts)
 		}
@@ -1583,7 +1584,7 @@ func TestToolArguments_AreNeverRepaired(t *testing.T) {
 			t.Errorf("buffered %s: %v, %+v", arguments, err, resp.Parts)
 		}
 		evs, err := feedAll(NewStreamDecoder(), toolStream(arguments)...)
-		streamed, cerr := ir.Collect(evs)
+		streamed, cerr := irtest.Collect(evs)
 		if err != nil || cerr != nil || string(streamed.Parts[0].Input) != want {
 			t.Errorf("stream %s: %v, %v, %+v", arguments, err, cerr, streamed.Parts)
 		}

@@ -60,7 +60,9 @@ type aiModelResp struct {
 	TotalTimeoutS   int  `json:"total_timeout_s"`
 	// Within one dialect the order is the order the targets are tried in.
 	Targets []aiModelTargetResp `json:"targets"`
-	// The formats the model is served in, sorted; derived from the targets.
+	// The formats the model has targets in, sorted; derived from the
+	// targets. With translate on a model can be served in a format that is
+	// not listed: DialectModes says how each format is served.
 	Dialects []string `json:"dialects"`
 	// Per dialect the model has a target in: the first available target, or
 	// null when none is available or the model is disabled.

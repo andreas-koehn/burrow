@@ -14,6 +14,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/aigw/translate/chat"
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
+	"github.com/ankoehn/burrow/internal/aigw/translate/irtest"
 	"github.com/ankoehn/burrow/internal/aigw/translate/sse"
 )
 
@@ -386,12 +387,10 @@ func TestDecodeRequest_BlocksThatAreRefused(t *testing.T) {
 		withContent("user", `{"type":"tool_use","id":"t","name":"f","input":{}}`):          "messages[0].content[0]",
 		withContent("user", `{"type":"thinking","thinking":"`+secret+`"}`):                 "messages[0].content[0]",
 		// Tool calls a client could not act on.
-		withContent("assistant", `{"type":"tool_use"}`):                                          "messages[0].content[0].id",
-		withContent("assistant", `{"type":"tool_use","id":"t"}`):                                 "messages[0].content[0].name",
-		withContent("assistant", `{"type":"tool_use","id":"t","name":"f","input":[]}`):           "messages[0].content[0].input",
-		withContent("assistant", `{"type":"tool_use","id":"t","name":"f","input":"`+secret+`"}`): "messages[0].content[0].input",
-		withContent("assistant", `{"type":"text","text":7}`):                                     "messages[0].content[0].text",
-		withContent("assistant", `{"type":"thinking","thinking":7}`):                             "messages[0].content[0].thinking",
+		withContent("assistant", `{"type":"tool_use"}`):              "messages[0].content[0].id",
+		withContent("assistant", `{"type":"tool_use","id":"t"}`):     "messages[0].content[0].name",
+		withContent("assistant", `{"type":"text","text":7}`):         "messages[0].content[0].text",
+		withContent("assistant", `{"type":"thinking","thinking":7}`): "messages[0].content[0].thinking",
 	}
 	for body, field := range cases {
 		bad := refused(t, body, field)
@@ -689,11 +688,11 @@ func TestDecodeRequest_ToolUseAndToolResultArePaired(t *testing.T) {
 }
 
 func TestStreamEncoder_ToolUseWithoutArgumentsBeforeAFailure(t *testing.T) {
-	// A tool call that was cut before its first argument byte: the block is closed (with the "{}"
-	// every block gets) and the error event follows. That is right for Anthropic: no message_stop
-	// came, and a client discards the turn of a stream that ended with an error.
+	// A tool call that was cut before its first argument byte: the block is closed, because a
+	// block has to be closed before the error event, but without the "{}" a call without arguments
+	// gets — nobody sent arguments, and nothing says the call was whole.
 	s, raw := mustStream(t, []ir.Event{startEv(), toolStart(0, "toolu_1", "f"), ev(ir.PartStop, 0), {Kind: ir.Error, Err: errEarlyEnd}}, true)
-	if got := eventNames(raw); got != "message_start content_block_start content_block_delta content_block_stop error" {
+	if got := eventNames(raw); got != "message_start content_block_start content_block_stop error" {
 		t.Fatalf("events: %s", got)
 	}
 	if s.Stopped || s.StopReason != "" || s.ErrType != "api_error" || s.ErrMessage != errEarlyEnd {
@@ -1463,7 +1462,16 @@ func TestProperty_BlocksAreSequentialAndBytesAreKept(t *testing.T) {
 		// Every part that was started is on the wire, in part order, with exactly the bytes it had got.
 		got := map[int]string{}
 		started := 0
+		// A call without arguments may get its "{}" only when the stream went on after it stopped.
+		wentOn := map[int]bool{}
+		var stopped []int
 		for _, ev := range events[:n] {
+			if ev.Kind != ir.PartStop {
+				for _, i := range stopped {
+					wentOn[i] = true
+				}
+				stopped = stopped[:0]
+			}
 			switch ev.Kind {
 			case ir.PartStart:
 				started++
@@ -1471,6 +1479,8 @@ func TestProperty_BlocksAreSequentialAndBytesAreKept(t *testing.T) {
 				got[ev.Index] += ev.Text
 			case ir.ToolArgsDelta:
 				got[ev.Index] += ev.ArgsJSON
+			case ir.PartStop:
+				stopped = append(stopped, ev.Index)
 			}
 		}
 		if len(s.Blocks) != started {
@@ -1480,7 +1490,7 @@ func TestProperty_BlocksAreSequentialAndBytesAreKept(t *testing.T) {
 			want := got[i]
 			switch parts[i].kind {
 			case ir.ToolUse:
-				if want == "" {
+				if want == "" && (whole || wentOn[i] && b.PartialJSON != "") {
 					want = "{}"
 				}
 				if b.Type != "tool_use" || b.ToolID != fmt.Sprint("call_", i) || b.PartialJSON != want {
@@ -1634,7 +1644,7 @@ func FuzzDecodeRequest(f *testing.F) {
 			t.Fatalf("EncodeRequest: %v", err)
 		}
 		if err == nil {
-			if err := chat.CheckPairing(out); err != nil {
+			if err := irtest.CheckPairing(out); err != nil {
 				t.Fatalf("%v\n%s", err, out)
 			}
 		}
@@ -1708,7 +1718,7 @@ func FuzzStreamEncoder(f *testing.F) {
 		if !finished {
 			return
 		}
-		want, err := ir.Collect(events)
+		want, err := irtest.Collect(events)
 		if err != nil {
 			t.Fatalf("Collect: %v", err)
 		}
@@ -1799,7 +1809,7 @@ func FuzzStreamEncoderAnyEvents(f *testing.F) {
 			if n == len(events) {
 				t.Fatalf("success without a Finish: %+v", events)
 			}
-			if _, err := ir.Collect(events[:n+1]); err != nil && !errors.Is(err, ir.ErrBadJSON) {
+			if _, err := irtest.Collect(events[:n+1]); err != nil && !errors.Is(err, ir.ErrBadJSON) {
 				t.Fatalf("success for a sequence that is not well formed (%v): %+v", err, events[:n+1])
 			}
 		}
