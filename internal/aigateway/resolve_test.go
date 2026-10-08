@@ -306,20 +306,18 @@ func TestResolve_TranslateOptIn(t *testing.T) {
 		t.Fatalf("flag on: %v %+v", err, res)
 	}
 
-	// Targets in both dialects: the request's own are Targets, the rest Other, each in its order.
+	// Targets in both dialects: the request's own are Targets. The other
+	// dialect is not looked at here, with the flag or without it: whether a
+	// request needs it depends on its endpoint (see candidatesForRequest).
 	both := models["burrow-intelligence"]
 	both.Translate = true
 	models["burrow-intelligence"] = both
 	res, err = g.resolve(ctx, "burrow-intelligence", "openai")
-	if err != nil || len(res.Targets) != 2 || res.Targets[0].Provider.Slug != "zai" || res.Targets[1].Provider.Slug != "openrouter" ||
-		len(res.Other) != 1 || res.Other[0].Provider.Slug != "zai-anthropic" {
+	if err != nil || len(res.Targets) != 2 || res.Targets[0].Provider.Slug != "zai" || res.Targets[1].Provider.Slug != "openrouter" || len(res.Other) != 0 {
 		t.Fatalf("both: %v %+v", err, res)
 	}
-	// Without the flag the other dialect is not looked at.
-	both.Translate = false
-	models["burrow-intelligence"] = both
-	if res, err = g.resolve(ctx, "burrow-intelligence", "openai"); err != nil || len(res.Other) != 0 {
-		t.Fatalf("both, flag off: %v %+v", err, res)
+	if other := g.otherTargets(ctx, res); len(other) != 1 || other[0].Provider.Slug != "zai-anthropic" || other[0].Model != "glm-5.1" {
+		t.Fatalf("otherTargets: %+v", other)
 	}
 
 	// A direct address is unaffected by any model's flag.

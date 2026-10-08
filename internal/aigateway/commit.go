@@ -20,6 +20,9 @@ type commitWriter struct {
 	status    int
 	committed bool
 	discarded bool
+	// decided: retry was asked ahead of the status line (see Decide) and
+	// said no. The attempt is the client's; nothing is written yet.
+	decided bool
 	// upstreamTimeout: the upstream handler said its transport gave up
 	// waiting for the response (see aiprovider.TimeoutNoter).
 	upstreamTimeout bool
@@ -33,6 +36,26 @@ func (c *commitWriter) NoteUpstreamTimeout() { c.upstreamTimeout = true }
 // committed attempt is written.
 func newCommitWriter(w http.ResponseWriter, retry func(int) bool, onCommit func(int)) *commitWriter {
 	return &commitWriter{w: w, header: http.Header{}, retry: retry, onCommit: onCommit}
+}
+
+// Decide asks, now, whether an attempt that will answer status is discarded,
+// without writing anything: for a writer above this one that learns the
+// upstream's status before it can write the client's response (a translated
+// error, whose body must be read and re-shaped first). true: the attempt is
+// discarded, as by WriteHeader. false: the response is the client's; the
+// WriteHeader that follows commits it without asking again. retry is asked
+// once per attempt either way.
+func (c *commitWriter) Decide(status int) (discarded bool) {
+	if c.committed || c.discarded || c.decided {
+		return c.discarded
+	}
+	c.status = status
+	if c.retry(status) {
+		c.discarded = true
+		return true
+	}
+	c.decided = true
+	return false
 }
 
 func (c *commitWriter) Header() http.Header {
@@ -50,7 +73,7 @@ func (c *commitWriter) WriteHeader(status int) {
 		return // informational responses are not a decision
 	}
 	c.status = status
-	if c.retry(status) {
+	if !c.decided && c.retry(status) {
 		c.discarded = true
 		return
 	}

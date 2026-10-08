@@ -127,11 +127,13 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 	// read. A model that has none and has translation turned on gets
 	// translated candidates instead (see candidatesForRequest); without the
 	// flag the answers below are what they always were.
-	candidates, why := g.candidatesForRequest(res, d, path)
+	candidates, why := g.candidatesForRequest(r.Context(), res, d, path)
 	if len(candidates) == 0 {
-		if !g.estimateCount(w, r, res, d, path, body) {
-			g.failNoCandidate(w, r, res, d, requested, why)
+		if t, ok := g.estimateTarget(res, d, path); ok {
+			g.serveEstimate(w, r, d, key, requested, t, body)
+			return
 		}
+		g.failNoCandidate(w, r, res, d, requested, why)
 		return
 	}
 	// All of a request's candidates are translated, or none is.

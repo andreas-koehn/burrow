@@ -116,3 +116,34 @@ func TestCommitWriter_NoUnwrap(t *testing.T) {
 		t.Fatal("commitWriter must implement http.Flusher")
 	}
 }
+
+// Decide asks the retry decision ahead of the status line, once: a discarded
+// attempt writes nothing, an accepted one commits with the WriteHeader that
+// follows, without being asked again.
+func TestCommitWriter_Decide(t *testing.T) {
+	asked := 0
+	rec := httptest.NewRecorder()
+	cw := newCommitWriter(rec, func(status int) bool { asked++; return status >= 500 }, func(int) {})
+	if !cw.Decide(503) || !cw.discarded || cw.status != 503 {
+		t.Fatalf("a retryable status was not discarded: %+v", cw)
+	}
+	cw.WriteHeader(503)
+	_, _ = cw.Write([]byte("x"))
+	if asked != 1 || rec.Body.Len() != 0 || cw.committed {
+		t.Fatalf("asked %d times, wrote %q", asked, rec.Body.String())
+	}
+
+	asked = 0
+	rec = httptest.NewRecorder()
+	committed := 0
+	cw = newCommitWriter(rec, func(status int) bool { asked++; return false }, func(int) { committed++ })
+	if cw.Decide(429) || cw.committed || rec.Body.Len() != 0 {
+		t.Fatalf("an accepted status wrote or was discarded: %+v", cw)
+	}
+	cw.Header().Set("Content-Type", "application/json")
+	cw.WriteHeader(429)
+	_, _ = cw.Write([]byte("{}"))
+	if asked != 1 || committed != 1 || rec.Code != 429 || rec.Body.String() != "{}" || rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("asked %d, committed %d, status %d body %q", asked, committed, rec.Code, rec.Body.String())
+	}
+}

@@ -23,11 +23,12 @@ type Resolution struct {
 	Model     db.AIModel // the synthetic model; zero value for a direct address
 	Targets   []Target   // all speaking Dialect, in try order
 	// Other holds a synthetic model's targets of the other dialect, in
-	// their order, each on a provider that speaks that dialect. It is filled
-	// only for a model with translation turned on (db.AIModel.Translate) and
-	// is always empty for a direct address. A resolution has at least one
-	// target in Targets or in Other; whether a request may use Other is
-	// decided by candidatesForRequest.
+	// their order, each on a provider that speaks that dialect. resolve
+	// fills it only when Targets is empty and the model has translation
+	// turned on (db.AIModel.Translate): then it is all the model has. With
+	// targets of the request's own dialect the other one is not looked up
+	// (see otherTargets). Always empty for a direct address. A resolution
+	// has at least one target in Targets or in Other.
 	Other []Target
 }
 
@@ -123,20 +124,10 @@ func (g *Gateway) resolveSynthetic(ctx context.Context, name, dialect string) (R
 		}
 	}
 	if len(res.Targets) > 0 {
-		if m.Translate {
-			// Used only for an endpoint none of the targets above offers
-			// (the Responses API). A request that has a target of its own
-			// must not fail because a provider it will most likely never
-			// use cannot be looked up: such a target is left out.
-			for _, t := range m.Targets {
-				if t.Dialect == dialect {
-					continue
-				}
-				if p, ok, err := g.targetProvider(ctx, t); err == nil && ok {
-					res.Other = append(res.Other, Target{Provider: p, Model: t.TargetModel})
-				}
-			}
-		}
+		// The other dialect is not looked at: a request that has a target
+		// of its own neither needs it nor may fail because of it. The one
+		// request that does need it (an endpoint none of these targets
+		// offers) asks for it then, see otherTargets.
 		return res, nil
 	}
 	// Nothing in this dialect. Only now look at the other one, to tell a
@@ -163,6 +154,25 @@ func (g *Gateway) resolveSynthetic(ctx context.Context, name, dialect string) (R
 		return res, nil
 	}
 	return Resolution{}, errModelNotFound
+}
+
+// otherTargets returns the targets of the other dialect for a resolution
+// that has targets of its own, and so came without them: a synthetic model's,
+// in their order, each on a provider that speaks its dialect. It is asked
+// only when none of the request's own targets offers the endpoint and the
+// model has translation turned on. A provider that cannot be looked up is
+// left out: the request still has the candidates of its own dialect.
+func (g *Gateway) otherTargets(ctx context.Context, res Resolution) []Target {
+	var other []Target
+	for _, t := range res.Model.Targets {
+		if t.Dialect == res.Dialect {
+			continue
+		}
+		if p, ok, err := g.targetProvider(ctx, t); err == nil && ok {
+			other = append(other, Target{Provider: p, Model: t.TargetModel})
+		}
+	}
+	return other
 }
 
 // targetProvider returns the provider of a target row. ok is false when the

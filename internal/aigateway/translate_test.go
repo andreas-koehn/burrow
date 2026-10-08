@@ -23,10 +23,12 @@ import (
 	"github.com/ankoehn/burrow/internal/aigw/translate"
 	"github.com/ankoehn/burrow/internal/aimeter"
 	"github.com/ankoehn/burrow/internal/cache/exact"
+	"github.com/ankoehn/burrow/internal/cache/semantic"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/ankoehn/burrow/internal/redact"
+	"github.com/ankoehn/burrow/internal/version"
 )
 
 // --- helpers -----------------------------------------------------------------
@@ -194,7 +196,7 @@ func TestTranslate_Candidates(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cands, why := g.candidatesForRequest(tc.res, tc.d, tc.path)
+			cands, why := g.candidatesForRequest(context.Background(), tc.res, tc.d, tc.path)
 			var got []string
 			for i, c := range cands {
 				s := c.provider.Slug + "#" + c.provider.CredentialSlot
@@ -322,12 +324,12 @@ func TestTranslate_ClaudeCodeOnAChatProvider(t *testing.T) {
 	}
 	for name := range got.header {
 		switch name {
-		case "Content-Type", "Content-Length", "Accept":
+		case "Content-Type", "Content-Length", "Accept", "User-Agent":
 		default:
 			t.Errorf("header %s: %q reached the translated upstream", name, got.header[name])
 		}
 	}
-	if got.header.Get("Accept") != "text/event-stream" || got.header.Get("Content-Type") != "application/json" {
+	if got.header.Get("Accept") != "text/event-stream" || got.header.Get("Content-Type") != "application/json" || got.header.Get("User-Agent") != "burrow/"+version.Version {
 		t.Fatalf("upstream headers: %v", got.header)
 	}
 
@@ -366,7 +368,7 @@ func TestTranslate_CodexOnAChatProvider(t *testing.T) {
 		t.Fatalf("the caller's stream:\n%s", rec.Body.String())
 	}
 	got := up.one(t)
-	if got.path != "/v1/chat/completions" || len(got.header) != 3 {
+	if got.path != "/v1/chat/completions" || len(got.header) != 4 {
 		t.Fatalf("upstream path %q headers %v", got.path, got.header)
 	}
 	want := strings.Replace(string(fixture(t, "testdata/responses_chat_request.json")), `"model":"gpt-x"`, `"model":"glm-5.1"`, 1)
@@ -418,7 +420,7 @@ func TestTranslate_ChatClientOnAMessagesProvider(t *testing.T) {
 	}
 	wantHeaders(t, rec, "zai-anthropic", "claude-x", "1")
 	got := up.one(t)
-	if got.path != "/v1/messages" || got.header.Get("Anthropic-Version") != "2023-06-01" || got.header.Get("Accept") != "application/json" || len(got.header) != 4 {
+	if got.path != "/v1/messages" || got.header.Get("Anthropic-Version") != "2023-06-01" || got.header.Get("Accept") != "application/json" || len(got.header) != 5 {
 		t.Fatalf("upstream path %q headers %v", got.path, got.header)
 	}
 	var sent struct {
@@ -1016,14 +1018,8 @@ func TestTranslate_ChainSteps(t *testing.T) {
 
 	// Cache: the same request again reaches the upstream again.
 	rec = serve(g, anthropicPost("/v1/messages", body), DialectAnthropic)
-	if rec.Code != 200 || rec.Header().Get("Burrow-Cache") == "HIT" || s.n("zai#ZAI") != 2 || rec.Header().Get("Burrow-Translated") != "messages-chat" {
+	if rec.Code != 200 || rec.Header().Get("Burrow-Cache") != "" || s.n("zai#ZAI") != 2 || rec.Header().Get("Burrow-Translated") != "messages-chat" {
 		t.Fatalf("second call: status %d Burrow-Cache %q, upstream calls %d", rec.Code, rec.Header().Get("Burrow-Cache"), s.n("zai#ZAI"))
-	}
-	// ... and a native request for the same target is not answered with a
-	// translated answer either.
-	rec = call(g, `{"model":"zai/glm-5.1","messages":[{"role":"user","content":"my code is TOPSECRET-1 ok"}]}`)
-	if rec.Code != 200 || rec.Header().Get("Burrow-Cache") == "HIT" || rec.Body.String() != chatAnswer {
-		t.Fatalf("native call: status %d Burrow-Cache %q body %s", rec.Code, rec.Header().Get("Burrow-Cache"), rec.Body.String())
 	}
 
 	// Guardrail: matched on the caller's prompt, answered in the caller's format, no upstream.
@@ -1096,8 +1092,9 @@ func TestTranslate_CountTokensEstimate(t *testing.T) {
 		rec.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
 	}
-	if len(s.sent()) != 0 || chain.n != 0 {
-		t.Fatalf("upstream calls %v, chain runs %d", s.sent(), chain.n)
+	// No provider is called; the chain runs once, without the cache.
+	if len(s.sent()) != 0 || chain.n != 1 || !chain.noCache || chain.trust || chain.serviceID != "prov-zai" {
+		t.Fatalf("upstream calls %v, chain %+v", s.sent(), chain)
 	}
 	// A body that cannot be read is the caller's fault.
 	rec = serve(g, anthropicPost("/v1/messages/count_tokens", `{"model":"smart","messages":"nope"}`), DialectAnthropic)
@@ -1222,5 +1219,480 @@ func TestTranslate_TranslatorFaultSkipsTheCandidate(t *testing.T) {
 	rec = serve(g, anthropicPost("/v1/messages", messagesHi), DialectAnthropic)
 	if rec.Code != 502 || rec.Header().Get("Burrow-Error-Code") != "upstream_unavailable" || rec.Header().Get("Burrow-Attempts") != "0" || s.n("zai#ZAI") != 0 {
 		t.Fatalf("alone: status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
+	}
+}
+
+// --- review: the cache never crosses formats ---------------------------------
+
+// The same bytes, once translated and once native, for the same first target:
+// neither is ever answered with the other's stored answer, on the exact tier
+// or the semantic one (which keys on the body alone).
+func TestTranslate_CacheNeverCrossesFormats(t *testing.T) {
+	// One body that is a valid request in both formats; after the model is
+	// spliced the chain sees the same bytes for both.
+	const tail = `,"max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`
+	translated := func(g *Gateway) *httptest.ResponseRecorder {
+		return serve(g, anthropicPost("/v1/messages", `{"model":"smart"`+tail), DialectAnthropic)
+	}
+	native := func(g *Gateway) *httptest.ResponseRecorder {
+		return call(g, `{"model":"zai/glm-5.1"`+tail)
+	}
+	isChat := func(rec *httptest.ResponseRecorder) bool { return rec.Body.String() == chatAnswer }
+	isMessage := func(rec *httptest.ResponseRecorder) bool {
+		var m struct{ Type, Role string }
+		return json.Unmarshal(rec.Body.Bytes(), &m) == nil && m.Type == "message" && m.Role == "assistant"
+	}
+	for _, order := range []string{"translated first", "native first"} {
+		t.Run(order, func(t *testing.T) {
+			raw, err := db.Open(filepath.Join(t.TempDir(), "cache.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Migrate(raw); err != nil {
+				t.Fatal(err)
+			}
+			d := db.Wrap(raw)
+			t.Cleanup(func() { _ = d.Close() })
+			log := slog.New(slog.NewTextHandler(io.Discard, nil))
+			s := script(map[string]http.HandlerFunc{"zai#ZAI": func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Content-Length", strconv.Itoa(len(chatAnswer)))
+				_, _ = w.Write([]byte(chatAnswer))
+			}})
+			g, _ := translateGateway(s, true, tZai)
+			sem := &semStub{}
+			chain := aigw.NewChain(exact.New(d, log), sem, nil, nil, nil, nil, nil, &recSink{}, log)
+			chain.Loader = cfgLoader{
+				Cache:    &exact.Settings{Enabled: true, AppliesPer: "global", TTLSeconds: 300, MaxEntries: 100, MaxPerEntryKB: 64},
+				Semantic: &semantic.Settings{Enabled: true, FallbackPolicy: "return_cached_marked", PromoteOnMiss: true},
+			}
+			g.Chain = chain
+
+			if order == "translated first" {
+				for i := 1; i <= 2; i++ {
+					rec := translated(g)
+					if rec.Code != 200 || !isMessage(rec) || rec.Header().Get("Burrow-Cache") != "" || s.n("zai#ZAI") != i {
+						t.Fatalf("translated call %d: status %d Burrow-Cache %q calls %d body %s", i, rec.Code, rec.Header().Get("Burrow-Cache"), s.n("zai#ZAI"), rec.Body.String())
+					}
+				}
+				if len(sem.promoted) != 0 || sem.lookups != 0 {
+					t.Fatalf("a translated request touched the semantic cache: %d promoted, %d lookups", len(sem.promoted), sem.lookups)
+				}
+				// The native request for the same target and bytes is a miss and its own answer.
+				rec := native(g)
+				if rec.Code != 200 || !isChat(rec) || rec.Header().Get("Burrow-Cache") != "" || s.n("zai#ZAI") != 3 {
+					t.Fatalf("native after translated: status %d Burrow-Cache %q body %s", rec.Code, rec.Header().Get("Burrow-Cache"), rec.Body.String())
+				}
+				return
+			}
+			// Native first: stored and promoted, and served again natively.
+			if rec := native(g); rec.Code != 200 || !isChat(rec) || len(sem.promoted) != 1 {
+				t.Fatalf("native: status %d promoted %d body %s", rec.Code, len(sem.promoted), rec.Body.String())
+			}
+			if rec := native(g); rec.Header().Get("Burrow-Cache") != "HIT" || s.n("zai#ZAI") != 1 {
+				t.Fatalf("native again: Burrow-Cache %q calls %d", rec.Header().Get("Burrow-Cache"), s.n("zai#ZAI"))
+			}
+			lookups := sem.lookups
+			// The translated request with the same bytes goes upstream and gets its own format.
+			rec := translated(g)
+			if rec.Code != 200 || !isMessage(rec) || rec.Header().Get("Burrow-Cache") != "" || rec.Header().Get("Burrow-Cache-Similarity") != "" ||
+				s.n("zai#ZAI") != 2 || sem.lookups != lookups || len(sem.promoted) != 1 {
+				t.Fatalf("translated after native: status %d headers %v calls %d body %s", rec.Code, rec.Header(), s.n("zai#ZAI"), rec.Body.String())
+			}
+		})
+	}
+}
+
+// --- review: an error status is decided when it arrives ----------------------
+
+// endlessStatus answers status and then a body without end.
+func endlessStatus(code int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		chunk := []byte(strings.Repeat("x", 1024))
+		for r.Context().Err() == nil {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+// The translated twin of TestFailover_DiscardedBodyDoesNotDelayTheNextTarget:
+// a retryable status moves on at once and stays the attempt's outcome; as the
+// answer it is the caller's, in its shape, without waiting for a body that
+// does not end.
+func TestTranslate_ErrorStatusDoesNotWaitForItsBody(t *testing.T) {
+	slow := func(m *db.AIModel) { m.AttemptTimeoutS, m.TotalTimeoutS = 3000, 6000 }
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": endlessStatus(500), "openrouter#OR": jsonBody(chatAnswer)})
+	g, att := failoverGateway(s, "ZAI", func(m *db.AIModel) {
+		slow(m)
+		m.Translate, m.Targets = true, []db.AIModelTarget{tZai, {Dialect: "openai", Position: 1, ProviderSlug: "openrouter", TargetModel: "google/gemini-x"}}
+	})
+	start := time.Now()
+	rec := serve(g, anthropicPost("/v1/messages", messagesHi), DialectAnthropic)
+	if el := time.Since(start); el > 2*time.Second || rec.Code != 200 {
+		t.Fatalf("status %d after %s: %s", rec.Code, el, rec.Body.String())
+	}
+	wantHeaders(t, rec, "openrouter", "google/gemini-x", "2")
+	if rows := att.all(); len(rows) != 2 || rows[0].ErrorCode != "http_500" || rows[0].Status != 500 || rows[1].ErrorCode != "" {
+		t.Fatalf("attempts: %+v", rows)
+	}
+	if _, failed := reports(g.Breaker, "zai"); failed != 1 {
+		t.Fatalf("breaker: %d failures of zai", failed)
+	}
+
+	// As the last candidate, and for a status that is never retried.
+	for _, code := range []int{500, 400} {
+		s := script(map[string]http.HandlerFunc{"zai#ZAI": endlessStatus(code), "openrouter#OR": jsonBody(chatAnswer)})
+		targets := []db.AIModelTarget{tZai}
+		if code == 400 {
+			targets = append(targets, db.AIModelTarget{Dialect: "openai", Position: 1, ProviderSlug: "openrouter", TargetModel: "google/gemini-x"})
+		}
+		g, att := failoverGateway(s, "ZAI", func(m *db.AIModel) { slow(m); m.Translate, m.Targets = true, targets })
+		start := time.Now()
+		rec := serve(g, anthropicPost("/v1/messages", messagesHi), DialectAnthropic)
+		var out struct {
+			Type string
+			Code string `json:"burrow_code"`
+		}
+		if el := time.Since(start); el > 2*time.Second || rec.Code != code || json.Unmarshal(rec.Body.Bytes(), &out) != nil || out.Type != "error" ||
+			out.Code != "upstream_error" || rec.Header().Get("Burrow-Error-Code") != "upstream_error" || rec.Header().Get("Burrow-Translated") != "messages-chat" {
+			t.Fatalf("%d: status %d after %s headers %v body %s", code, rec.Code, el, rec.Header(), rec.Body.String())
+		}
+		wantHeaders(t, rec, "zai", "glm-5.1", "1")
+		if rows := att.all(); len(rows) != 1 || rows[0].ErrorCode != "http_"+strconv.Itoa(code) || rows[0].Status != code || s.n("openrouter#OR") != 0 {
+			t.Fatalf("%d: attempts %+v", code, rows)
+		}
+	}
+}
+
+// --- review: the estimate is a request like any other ------------------------
+
+func TestTranslate_EstimateRunsTheChain(t *testing.T) {
+	const body = `{"model":"smart","messages":[{"role":"user","content":"12345678"}]}`
+	s := script(map[string]http.HandlerFunc{"zai#ZAI": jsonBody(chatAnswer)})
+	g, _ := translateGateway(s, true, tZai)
+	refuse := false
+	sink := &recSink{}
+	chain := aigw.NewChain(nil, nil, nil, nil, guardrails.NewEngine(), nil, nil, sink, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	chain.Loader = cfgLoader{Guardrails: &guardrails.Settings{Enabled: true, Action: guardrails.ActionRefuse403}}
+	chain.RateLimit = limiter(&refuse)
+	g.Chain = chain
+	shape := func(rec *httptest.ResponseRecorder) string {
+		var out struct{ Type string }
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return out.Type
+	}
+
+	rec := serve(g, anthropicPost("/v1/messages/count_tokens", body), DialectAnthropic)
+	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"input_tokens":2}` || rec.Header().Get("Burrow-Estimated") != "1" {
+		t.Fatalf("allowed: status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	// The rate limit applies.
+	refuse = true
+	rec = serve(g, anthropicPost("/v1/messages/count_tokens", body), DialectAnthropic)
+	if rec.Code != 429 || shape(rec) != "error" || rec.Header().Get("Burrow-Error-Code") != "rate_limited" || rec.Header().Get("Burrow-Estimated") != "" {
+		t.Fatalf("limited: status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	refuse = false
+	// So do the guardrails.
+	rec = serve(g, anthropicPost("/v1/messages/count_tokens", `{"model":"smart","messages":[{"role":"user","content":"`+injection+`"}]}`), DialectAnthropic)
+	if rec.Code != 403 || shape(rec) != "error" || rec.Header().Get("Burrow-Estimated") != "" {
+		t.Fatalf("guardrail: status %d body %s", rec.Code, rec.Body.String())
+	}
+	// And the policy of the service the request runs under, before the chain.
+	var asked []string
+	g.ServicePolicy = policyBy(map[string]string{"prov-zai": "public"}, &asked)
+	rec = serve(g, anthropicPost("/v1/messages/count_tokens", body), DialectAnthropic)
+	if rec.Code != 403 || shape(rec) != "error" || rec.Header().Get("Burrow-Error-Code") != "provider_unavailable" || rec.Header().Get("Burrow-Estimated") != "" {
+		t.Fatalf("policy: status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	if len(sink.all()) != 0 || len(s.sent()) != 0 || s.credentialReads("zai#ZAI") != 0 {
+		t.Fatalf("usage rows %+v, upstream calls %v", sink.all(), s.sent())
+	}
+}
+
+// --- review: the caller's writer fails mid-stream ----------------------------
+
+// failingWriter is a client connection that breaks at its n-th write, before
+// the request's context says so.
+type failingWriter struct {
+	*httptest.ResponseRecorder
+	left int
+}
+
+func (f *failingWriter) Write(p []byte) (int, error) {
+	if f.left--; f.left < 0 {
+		return 0, errors.New("write: broken pipe")
+	}
+	return f.ResponseRecorder.Write(p)
+}
+
+func TestTranslate_ClientWriteErrorIsNotASuccess(t *testing.T) {
+	stream := fixture(t, "chat/testdata/stream_tools.sse")
+	for _, tc := range []struct {
+		name   string
+		abort  bool // the provider handler panics as a reverse proxy does
+		code   string
+		panics bool
+	}{
+		{"the handler returns", false, "client_closed", false},
+		{"the handler aborts", true, "stream_aborted", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := script(map[string]http.HandlerFunc{"zai#ZAI": func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				if _, err := w.Write(stream); err != nil && tc.abort {
+					panic(http.ErrAbortHandler)
+				}
+			}})
+			g, att := translateGateway(s, true, tZai)
+			w := &failingWriter{ResponseRecorder: httptest.NewRecorder(), left: 3}
+			w.Header().Set("Burrow-Request-Id", "req-1")
+			body := `{"model":"smart","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`
+			panicked := func() (p bool) {
+				defer func() { p = recover() != nil }()
+				g.ServeDialect(w, anthropicPost("/v1/messages", body), DialectAnthropic)
+				return false
+			}()
+			drained(g)
+			if panicked != tc.panics {
+				t.Fatalf("panicked = %v", panicked)
+			}
+			rows := att.all()
+			if len(rows) != 1 || rows[0].ErrorCode != tc.code || rows[0].ProviderSlug != "zai" {
+				t.Fatalf("attempts: %+v", rows)
+			}
+			// The provider had answered; the caller leaving is not its failure.
+			if ok, failed := reports(g.Breaker, "zai"); ok != 1 || failed != 0 {
+				t.Fatalf("breaker: %d ok %d failed", ok, failed)
+			}
+		})
+	}
+}
+
+// --- review: the other dialect is looked up only when it is needed -----------
+
+type countingProviders struct {
+	ProviderStore
+	mu    sync.Mutex
+	count map[string]int
+}
+
+func (c *countingProviders) ProviderBySlug(ctx context.Context, slug string) (db.AIProvider, error) {
+	c.mu.Lock()
+	c.count[slug]++
+	c.mu.Unlock()
+	return c.ProviderStore.ProviderBySlug(ctx, slug)
+}
+
+func TestTranslate_OtherDialectIsResolvedLazily(t *testing.T) {
+	s := script(map[string]http.HandlerFunc{
+		"zai#ZAI": jsonBody(chatAnswer), "openrouter#OR": jsonBody(chatAnswer),
+		"zai-anthropic#ZAIA": jsonBody(string(fixture(t, "messages/testdata/resp_text.json"))),
+	})
+	g, _ := translateGateway(s, true, tZai, tZaiA)
+	counted := &countingProviders{ProviderStore: g.Providers, count: map[string]int{}}
+	g.Providers = counted
+
+	// Native requests in either dialect: the other one's provider is not read.
+	if rec := call(g, smartBody); rec.Code != 200 || counted.count["zai-anthropic"] != 0 || counted.count["zai"] == 0 {
+		t.Fatalf("native chat: status %d lookups %v", rec.Code, counted.count)
+	}
+	counted.count = map[string]int{}
+	if rec := serve(g, anthropicPost("/v1/messages", messagesHi), DialectAnthropic); rec.Code != 200 || counted.count["zai"] != 0 {
+		t.Fatalf("native messages: status %d lookups %v", rec.Code, counted.count)
+	}
+	// A provider of the other dialect that cannot be read does not fail them.
+	g.Providers = downProviders{g.Providers.(*countingProviders).ProviderStore.(fakeProviders), map[string]bool{"zai-anthropic": true}}
+	if rec := call(g, smartBody); rec.Code != 200 {
+		t.Fatalf("native chat, other dialect down: status %d body %s", rec.Code, rec.Body.String())
+	}
+
+	// The Responses API, which zai does not offer: now the other dialect is
+	// needed, after the own dialect's target without the endpoint.
+	g.Providers = counted
+	counted.count = map[string]int{}
+	zai := s.handlers["zai#ZAI"]
+	s.handlers["zai#ZAI"] = status(500, "down")
+	rec := serve(g, post("/v1/responses", "bgw_all", `{"model":"smart","input":"hi"}`), DialectOpenAI)
+	if rec.Code != 200 || rec.Header().Get("Burrow-Translated") != "responses-messages" || counted.count["zai-anthropic"] == 0 {
+		t.Fatalf("responses: status %d headers %v lookups %v body %s", rec.Code, rec.Header(), counted.count, rec.Body.String())
+	}
+	wantHeaders(t, rec, "zai-anthropic", "claude-x", "2")
+	s.handlers["zai#ZAI"] = zai
+	// With a provider of the other dialect that cannot be read, the own
+	// dialect's candidates remain.
+	g.Providers = downProviders{counted.ProviderStore.(fakeProviders), map[string]bool{"zai-anthropic": true}}
+	rec = serve(g, post("/v1/responses", "bgw_all", `{"model":"smart","input":"hi"}`), DialectOpenAI)
+	if rec.Code != 200 || rec.Header().Get("Burrow-Translated") != "responses-chat" {
+		t.Fatalf("responses, other dialect down: status %d headers %v", rec.Code, rec.Header())
+	}
+}
+
+// --- review: native stays native in every state of the native target ---------
+
+func TestTranslate_NativeStaysNativeWhateverItsState(t *testing.T) {
+	native := jsonBody(string(fixture(t, "messages/testdata/resp_text.json")))
+	type result struct {
+		status int
+		code   string
+	}
+	states := map[string]func(t *testing.T, g *Gateway, s *scripted) func(){
+		"breaker open": func(t *testing.T, g *Gateway, s *scripted) func() {
+			s.handlers["zai-anthropic#ZAIA"] = status(500, "down")
+			for i := 0; i < 20 && !g.Breaker.Open("zai-anthropic"); i++ {
+				serve(g, anthropicPost("/v1/messages", messagesHi), DialectAnthropic)
+			}
+			if !g.Breaker.Open("zai-anthropic") {
+				t.Fatal("the breaker did not open")
+			}
+			return nil
+		},
+		"credential missing": func(_ *testing.T, _ *Gateway, s *scripted) func() {
+			delete(s.handlers, "zai-anthropic#ZAIA")
+			return nil
+		},
+		"policy refuses": func(_ *testing.T, g *Gateway, _ *scripted) func() {
+			var asked []string
+			g.ServicePolicy = policyBy(map[string]string{"prov-zai-a": "public"}, &asked)
+			return nil
+		},
+		"busy": func(t *testing.T, g *Gateway, s *scripted) func() {
+			hold := make(chan struct{})
+			s.handlers["zai-anthropic#ZAIA"] = holdFirst(hold)
+			limit(g, "zai-anthropic", 1)
+			done := inFlight(t, g, "zai-anthropic", anthropicPost("/v1/messages", strings.Replace(messagesHi, "smart", "zai-anthropic/claude-x", 1)), DialectAnthropic)
+			return func() { close(hold); <-done }
+		},
+	}
+	for name, enter := range states {
+		t.Run(name, func(t *testing.T) {
+			var got [2]result
+			for i, on := range []bool{true, false} {
+				s := script(map[string]http.HandlerFunc{"zai-anthropic#ZAIA": native, "zai#ZAI": jsonBody(chatAnswer), "openrouter#OR": jsonBody(chatAnswer)})
+				g, _ := failoverGateway(s, "ZAI", func(m *db.AIModel) {
+					m.Translate, m.AttemptTimeoutS, m.TotalTimeoutS = on, 30, 60000
+					m.Targets = []db.AIModelTarget{tZaiA, tZai, {Dialect: "openai", Position: 1, ProviderSlug: "openrouter", TargetModel: "google/gemini-x"}}
+				})
+				g.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+				leave := enter(t, g, s)
+				rec := serve(g, anthropicPost("/v1/messages", messagesHi), DialectAnthropic)
+				if leave != nil {
+					leave()
+				}
+				got[i] = result{rec.Code, rec.Header().Get("Burrow-Error-Code")}
+				if rec.Header().Get("Burrow-Translated") != "" || s.n("zai#ZAI") != 0 || s.n("openrouter#OR") != 0 ||
+					s.credentialReads("zai#ZAI") != 0 || s.credentialReads("openrouter#OR") != 0 {
+					t.Fatalf("flag %v: a target of the other format was used: headers %v calls %v", on, rec.Header(), s.sent())
+				}
+				if rec.Code == 200 {
+					t.Fatalf("flag %v: the state was not entered: %s", on, rec.Body.String())
+				}
+			}
+			if got[0] != got[1] {
+				t.Fatalf("the flag changes the answer: on %+v, off %+v", got[0], got[1])
+			}
+		})
+	}
+}
+
+// --- review: a tunnel and a direct candidate, and what each receives ---------
+
+func TestTranslate_TunnelThenDirectHeaders(t *testing.T) {
+	var tunnelHeader http.Header
+	var tunnelPath string
+	tunnel := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tunnelHeader, tunnelPath = r.Header.Clone(), r.URL.RequestURI()
+		w.WriteHeader(503)
+	})
+	var direct seen
+	s := script(map[string]http.HandlerFunc{"zai-anthropic#ZAIA": direct.then(jsonBody(string(fixture(t, "messages/testdata/resp_text.json"))))})
+	tOllama := db.AIModelTarget{Dialect: "anthropic", ProviderSlug: "ollama", TargetModel: "local-claude"}
+	g, att := translateGateway(s, true, tOllama, tZaiA)
+	p := g.Providers.(fakeProviders)
+	ol := p["ollama"]
+	ol.APIFormat = "anthropic"
+	p["ollama"] = ol
+	g.Tunnels = fakeTunnels{res: &proxy.Resolved{ServiceID: "svc1", AccessMode: "api_key", LocalHost: "127.0.0.1:11434"}, upstream: tunnel}
+	g.Credentials = &headerCredentials{}
+
+	r := post("/v1/chat/completions?api-version=1", "bgw_all", chatHi)
+	for k, v := range map[string]string{
+		"OpenAI-Organization": "org-1", "OpenAI-Project": "proj-1", "OpenAI-Beta": "assistants=v2", "X-Api-Key": "sk-else", "Cookie": "burrow_session=abc",
+		"Anthropic-Version": "1999-01-01", "Anthropic-Beta": "x", "Accept-Encoding": "br", "User-Agent": "openai-python/1.0", "X-Stainless-Os": "Linux",
+		"Session_id": "s", "Idempotency-Key": "k", "Proxy-Authorization": "Basic x", "X-Forwarded-For": "203.0.113.9",
+	} {
+		r.Header.Set(k, v)
+	}
+	rec := serve(g, r, DialectOpenAI)
+	if rec.Code != 200 || rec.Header().Get("Burrow-Translated") != "chat-messages" {
+		t.Fatalf("status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	wantHeaders(t, rec, "zai-anthropic", "claude-x", "2")
+	if rows := att.all(); len(rows) != 2 || rows[0].ErrorCode != "http_503" || rows[0].ProviderSlug != "ollama" {
+		t.Fatalf("attempts: %+v", rows)
+	}
+	ua := "burrow/" + version.Version
+	wantTunnel := map[string]string{
+		"Content-Type": "application/json", "Accept": "application/json", "User-Agent": ua, "Anthropic-Version": "2023-06-01",
+		"Authorization": "Bearer upstream-of-svc1", "X-Forwarded-Host": "burrow.example.com", "X-Forwarded-Proto": "https",
+	}
+	wantDirect := map[string]string{"Content-Type": "application/json", "Accept": "application/json", "User-Agent": ua, "Anthropic-Version": "2023-06-01"}
+	check := func(who string, got http.Header, want map[string]string) {
+		t.Helper()
+		for name, vals := range got {
+			if name == "Content-Length" || name == "Connection" { // the transport's own
+				continue
+			}
+			if w, ok := want[name]; !ok || len(vals) != 1 || vals[0] != w {
+				t.Errorf("%s received %s: %q", who, name, vals)
+			}
+		}
+		for name := range want {
+			if got.Get(name) == "" {
+				t.Errorf("%s did not receive %s", who, name)
+			}
+		}
+	}
+	if tunnelPath != "/v1/messages" {
+		t.Fatalf("the tunnel was asked for %q", tunnelPath)
+	}
+	check("the tunnel", tunnelHeader, wantTunnel)
+	d := direct.one(t)
+	if d.path != "/v1/messages" || d.query != "" {
+		t.Fatalf("the direct provider was asked for %q?%q", d.path, d.query)
+	}
+	check("the direct provider", d.header, wantDirect)
+}
+
+// --- review: redaction on the Responses pairs --------------------------------
+
+func TestTranslate_RedactionOnTheResponsesPairs(t *testing.T) {
+	for pair, target := range map[string]db.AIModelTarget{"responses-chat": tZai, "responses-messages": tZaiA} {
+		t.Run(pair, func(t *testing.T) {
+			s := script(map[string]http.HandlerFunc{
+				"zai#ZAI":            jsonBody(chatAnswer),
+				"zai-anthropic#ZAIA": jsonBody(string(fixture(t, "messages/testdata/resp_text.json"))),
+			})
+			g, _ := translateGateway(s, true, target)
+			sink := chained(t, g)
+			body := `{"model":"smart","instructions":"keep TOPSECRET-7 safe","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"my code is TOPSECRET-1 ok"}]}]}`
+			rec := serve(g, post("/v1/responses", "bgw_all", body), DialectOpenAI)
+			if rec.Code != 200 || rec.Header().Get("Burrow-Translated") != pair {
+				t.Fatalf("status %d headers %v body %s", rec.Code, rec.Header(), rec.Body.String())
+			}
+			sent := s.sent()
+			if len(sent) != 1 || strings.Contains(sent[0], "TOPSECRET") || !strings.Contains(sent[0], "my code is") || !strings.Contains(sent[0], "safe") {
+				t.Fatalf("upstream body: %v", sent)
+			}
+			if u := oneRow(t, sink); u.Translated != pair {
+				t.Fatalf("usage row: %+v", u)
+			}
+		})
 	}
 }

@@ -525,6 +525,10 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 			}
 		case res.panicked && status == 0:
 			code, res.outcome = attemptPanic, outcomeFailed
+		case tw != nil && tw.clientFailed:
+			// The caller's writer refused a write before its context said
+			// it was gone: the caller left, as above.
+			code, res.outcome = attemptClientClosed, outcomeNeutral
 		case translatedFailure && midStream:
 			// As above: the answer had started, and the pair's writer has
 			// ended it with the caller's error event.
@@ -658,7 +662,7 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 		if tr == nil {
 			upstream.ServeHTTP(cw, req)
 		} else {
-			tw = f.newTranslatedWriter(cw, tr, c.provider)
+			tw = f.newTranslatedWriter(cw, tr, c.provider, cancel)
 			tw.serve(upstream, req, r.Context())
 		}
 		if !cw.committed && !cw.discarded {
