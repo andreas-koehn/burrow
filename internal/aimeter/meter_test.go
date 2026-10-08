@@ -1,9 +1,12 @@
 package aimeter_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
+	"hash"
 	"io"
 	"math"
 	"path/filepath"
@@ -533,5 +536,83 @@ func TestAnthropicStream_CountsCacheTokens(t *testing.T) {
 		if got := s.Tokens(); got.In != c.in || got.Out != c.out || got.Total != c.in+c.out {
 			t.Errorf("%s: tokens %+v, want in %d out %d", name, got, c.in, c.out)
 		}
+	}
+}
+
+// hashWriter is a visitor that keeps a digest of what it was sent, not the bytes.
+type hashWriter struct {
+	h hash.Hash
+	n int64
+}
+
+func (w *hashWriter) Write(p []byte) (int, error) {
+	w.h.Write(p)
+	w.n += int64(len(p))
+	return len(p), nil
+}
+
+// A line is kept until its newline so that it can be read for usage. A line
+// without end must not be kept without end: past MaxLineBytes it is passed on
+// as it comes and not read, on the native path as on any other, and the bytes
+// the visitor gets are still exactly the upstream's. Reading goes on with the
+// line after it.
+func TestStream_LongLineIsPassedOnNotKept(t *testing.T) {
+	for _, tc := range []struct {
+		kind         aimeter.Kind
+		first, usage string
+	}{
+		{aimeter.KindOpenAI, "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n",
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":7,\"total_tokens\":12}}\n\ndata: [DONE]\n\n"},
+		{aimeter.KindAnthropic, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n",
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7}}\n\n"},
+	} {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			got, want := &hashWriter{h: sha256.New()}, sha256.New()
+			s := aimeter.WrapResponse(got, tc.kind)
+			var fed int64
+			feed := func(p []byte) {
+				t.Helper()
+				want.Write(p)
+				fed += int64(len(p))
+				if n, err := s.Write(p); n != len(p) || err != nil {
+					t.Fatalf("Write = %d, %v", n, err)
+				}
+			}
+			feed([]byte(tc.first))
+			head := got.n
+			if head != int64(len(tc.first)) {
+				t.Fatalf("the first frame: %d of %d bytes passed on", head, len(tc.first))
+			}
+			piece := bytes.Repeat([]byte("x"), 64<<10)
+			feed([]byte(`data: {"id":"`))
+			for i := 0; i < 2*aimeter.MaxLineBytes/len(piece); i++ { // twice the limit, no newline
+				feed(piece)
+			}
+			// What is over the limit has been passed on: at most the limit is held.
+			if held := fed - got.n; held > aimeter.MaxLineBytes {
+				t.Fatalf("%d bytes of one line are held, the limit is %d", held, aimeter.MaxLineBytes)
+			}
+			for i := 0; i < aimeter.MaxLineBytes/len(piece); i++ { // and the line goes on
+				feed(piece)
+			}
+			if held := fed - got.n; held > 0 {
+				t.Fatalf("%d bytes are held of a line that is being passed on", held)
+			}
+			feed([]byte("\n\n"))
+			feed([]byte(tc.usage))
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if in, out := s.Bytes(); in != fed || out != fed || got.n != fed {
+				t.Fatalf("fed %d bytes; counted in %d, out %d; the visitor got %d", fed, in, out, got.n)
+			}
+			if !bytes.Equal(got.h.Sum(nil), want.Sum(nil)) {
+				t.Fatal("the visitor did not get the upstream's bytes as they were")
+			}
+			// The line after the long one is read again.
+			if tok := s.Tokens(); tok.In != 5 || tok.Out != 7 {
+				t.Fatalf("tokens after the long line: %+v", tok)
+			}
+		})
 	}
 }

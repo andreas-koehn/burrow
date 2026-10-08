@@ -1156,3 +1156,31 @@ func FuzzChatStreamRoundTrip(f *testing.F) {
 		}
 	})
 }
+
+// An id of a tool call in replayed history that is longer than a tool id may
+// be is not refused (no history may end a session): it is cut, the same way
+// on the call and on its result, so the two still pair, and reported.
+func TestDecodeRequest_LongToolIDInHistoryIsCut(t *testing.T) {
+	long := strings.Repeat("x", ir.MaxToolIDBytes+1)
+	req := decodeReq(t, chatReq(hi+`,{"role":"assistant","content":null,"tool_calls":[{"id":"`+long+`","type":"function","function":{"name":"f","arguments":"{}"}}]},{"role":"tool","tool_call_id":"`+long+`","content":"r"}`, ""))
+	var call, result string
+	for _, m := range req.Messages {
+		for _, p := range m.Parts {
+			switch p.Kind {
+			case ir.ToolUse:
+				call = p.ToolID
+			case ir.ToolResult:
+				result = p.ToolID
+				if p.Text != "r" {
+					t.Fatalf("the result's text is %q", p.Text)
+				}
+			}
+		}
+	}
+	if call == "" || call != result || len(call) > ir.MaxToolIDBytes {
+		t.Fatalf("call id %d bytes, result id %d bytes, equal %v", len(call), len(result), call == result)
+	}
+	if got := strings.Join(ir.Dropped(req.Dropped), ","); got != "input:tool_call.id" {
+		t.Fatalf("dropped = %s", got)
+	}
+}

@@ -31,52 +31,24 @@ import (
 // columns for them and the price table no separate prices.
 type anthropicParser struct {
 	s         *Stream
-	buf       bytes.Buffer
+	lines     lineBuffer
 	lastEvent string // most recent "event: NAME" value
 	// seen is the last non-zero value of each counter.
 	seen anthropicUsage
 }
 
-func newAnthropicParser(s *Stream) *anthropicParser { return &anthropicParser{s: s} }
+func newAnthropicParser(s *Stream) *anthropicParser {
+	return &anthropicParser{s: s, lines: lineBuffer{s: s}}
+}
 
+// write feeds bytes to the parser: each completed line is forwarded to the
+// visitor and then read for usage (see lineBuffer).
 func (p *anthropicParser) write(b []byte) (forwarded int, err error) {
-	for len(b) > 0 {
-		i := bytes.IndexByte(b, '\n')
-		if i < 0 {
-			p.buf.Write(b)
-			return forwarded, nil
-		}
-		var frame []byte
-		if p.buf.Len() > 0 {
-			p.buf.Write(b[:i+1])
-			frame = p.buf.Bytes()
-		} else {
-			frame = b[:i+1]
-		}
-		n, werr := p.s.w.Write(frame)
-		forwarded += n
-		if werr != nil {
-			return forwarded, werr
-		}
-		p.s.flush()
-		p.inspect(frame)
-		p.buf.Reset()
-		b = b[i+1:]
-	}
-	return forwarded, nil
+	return p.lines.write(b, p.inspect)
 }
 
-func (p *anthropicParser) close() error {
-	if p.buf.Len() == 0 {
-		return nil
-	}
-	n, err := p.s.w.Write(p.buf.Bytes())
-	p.s.bytesOut += int64(n)
-	p.s.flush()
-	p.inspect(p.buf.Bytes())
-	p.buf.Reset()
-	return err
-}
+// close forwards any pending partial line as a final fragment.
+func (p *anthropicParser) close() error { return p.lines.close(p.inspect) }
 
 func (p *anthropicParser) inspect(line []byte) {
 	trim := bytes.TrimRight(line, "\r\n")

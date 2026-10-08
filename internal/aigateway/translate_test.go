@@ -1958,6 +1958,54 @@ func TestTranslate_FailedAnswerIsNotReadToItsEnd(t *testing.T) {
 		}
 	})
 
+	// The answer ended well, and the upstream goes on sending: a line
+	// without end after its last event. Nothing of it is used; the call ends
+	// once more than a frame's worth has come, and the answer stays what it
+	// was, usage included.
+	t.Run("a stream that goes on after its finish", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			target db.AIModelTarget
+			key    string
+			stream string
+			in     int
+			out    int
+		}{
+			{"chat", tZai, "zai#ZAI", "chat/testdata/stream_text.sse", 12, 2},
+			{"messages", tZaiA, "zai-anthropic#ZAIA", "messages/testdata/stream_text.sse", 0, 0},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				wrote := 0
+				s := script(map[string]http.HandlerFunc{tc.key: endless("text/event-stream", string(fixture(t, tc.stream))+`data: {"id":"`, &wrote)})
+				g, att := translateGateway(s, true, tc.target)
+				sink := chained(t, g)
+				var rec *httptest.ResponseRecorder
+				if tc.name == "chat" {
+					rec = serve(g, anthropicPost("/v1/messages", `{"model":"smart","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`), DialectAnthropic)
+					if rec.Code != 200 || !strings.Contains(rec.Body.String(), "event: message_stop") || strings.Contains(rec.Body.String(), "event: error") {
+						t.Fatalf("status %d\n%s", rec.Code, rec.Body.String())
+					}
+				} else {
+					rec = serve(g, post("/v1/chat/completions", "bgw_all", `{"model":"smart","stream":true,"messages":[{"role":"user","content":"hi"}]}`), DialectOpenAI)
+					if rec.Code != 200 || !strings.Contains(rec.Body.String(), "data: [DONE]") || strings.Contains(rec.Body.String(), `"error"`) {
+						t.Fatalf("status %d\n%s", rec.Code, rec.Body.String())
+					}
+				}
+				// A frame is 4 MiB at most; the call must end soon after that much.
+				if wrote >= 8<<20 {
+					t.Fatalf("the upstream was read for %d MiB after its answer had ended", wrote>>20)
+				}
+				if rows := att.all(); len(rows) != 0 && rows[0].ErrorCode != "" {
+					t.Fatalf("attempts: %+v", rows)
+				}
+				u := oneRow(t, sink)
+				if tc.in > 0 && (u.TokensIn != tc.in || u.TokensOut != tc.out) || u.TokensIn+u.TokensOut == 0 || u.UpstreamStatus != 200 {
+					t.Fatalf("usage row: %+v", u)
+				}
+			})
+		}
+	})
+
 	// An answer that goes well is read to its end: the usage chunk of a
 	// Chat Completions stream comes after its finish.
 	t.Run("a good stream is read to its end", func(t *testing.T) {
@@ -2000,5 +2048,57 @@ func TestTranslate_CallersFramingAndTrailersStayBehind(t *testing.T) {
 	}
 	if up.ContentLength <= 0 || up.Header.Get("Content-Length") != strconv.FormatInt(up.ContentLength, 10) {
 		t.Fatalf("Content-Length %d, header %q", up.ContentLength, up.Header.Get("Content-Length"))
+	}
+}
+
+// A tool call whose id or name is longer than one may be is the provider's
+// failure, like any answer over a limit: the caller gets its format's error
+// and the attempt row says the answer was no use.
+func TestTranslate_OversizedToolCallIDIsTheProvidersFault(t *testing.T) {
+	long := strings.Repeat("i", 4<<10+1)
+	buffered := `{"id":"chatcmpl-1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"` + long +
+		`","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`
+	streamed := "data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"" + long +
+		"\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"
+	for name, tc := range map[string]struct {
+		up   http.HandlerFunc
+		body string
+	}{
+		"buffered": {jsonBody(buffered), messagesHi},
+		"streamed": {sse([]byte(streamed)), `{"model":"smart","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := script(map[string]http.HandlerFunc{"zai#ZAI": tc.up})
+			g, att := translateGateway(s, true, tZai)
+			rec := serve(g, anthropicPost("/v1/messages", tc.body), DialectAnthropic)
+			if strings.Contains(rec.Body.String(), "iiii") || strings.Contains(rec.Body.String(), "tool_use") {
+				t.Fatalf("something of the call reached the caller: %.300s", rec.Body.String())
+			}
+			rows := att.all()
+			if name == "streamed" {
+				// The stream had begun (the chunk opens the answer): it ends
+				// with the caller's error event, as any answer over a limit.
+				fr := frames(rec.Body.Bytes())
+				if rec.Code != 200 || len(fr) < 2 || !strings.HasPrefix(fr[len(fr)-1], "event: error") || !strings.Contains(fr[len(fr)-1], "the provider's answer is too large") {
+					t.Fatalf("status %d body %.400s", rec.Code, rec.Body.String())
+				}
+				if len(rows) != 1 || rows[0].ErrorCode != "stream_aborted" {
+					t.Fatalf("attempts: %+v", rows)
+				}
+				return
+			}
+			var out struct {
+				Type  string
+				Error struct{ Message string }
+				Code  string `json:"burrow_code"`
+			}
+			if rec.Code != 502 || json.Unmarshal(rec.Body.Bytes(), &out) != nil || out.Type != "error" || out.Code != "upstream_invalid" ||
+				out.Error.Message != "the provider's answer is too large" {
+				t.Fatalf("status %d body %.300s", rec.Code, rec.Body.String())
+			}
+			if len(rows) != 1 || rows[0].ErrorCode != "upstream_invalid" || rows[0].Status != 200 {
+				t.Fatalf("attempts: %+v", rows)
+			}
+		})
 	}
 }

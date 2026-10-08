@@ -386,6 +386,14 @@ func (d *StreamDecoder) find(index count, id string) (*toolCall, error) {
 }
 
 func (d *StreamDecoder) toolCall(tc *wireToolCall) error {
+	// Before anything of the call is kept: its id and its name stay for the
+	// whole answer.
+	if len(tc.ID) > ir.MaxToolIDBytes {
+		return overLimit("tool call id bytes", ir.MaxToolIDBytes)
+	}
+	if tc.Function != nil && len(tc.Function.Name) > ir.MaxToolNameBytes {
+		return overLimit("tool call name bytes", ir.MaxToolNameBytes)
+	}
 	c, err := d.find(tc.Index, tc.ID)
 	if err != nil {
 		return err

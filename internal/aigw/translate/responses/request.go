@@ -50,6 +50,7 @@ const (
 	// What is repaired in the history of calls and outputs.
 	droppedCallArguments = "input:function_call.arguments"     // arguments that are no JSON object: the call has none
 	droppedUnanswered    = "input:function_call.unanswered"    // a call without an output got one
+	droppedLongID        = "input:function_call.id"            // a call_id longer than ir.MaxToolIDBytes was cut
 	droppedDuplicateCall = "input:function_call.duplicate"     // a call whose id waits already: left out
 	droppedOrphanOutput  = "input:function_call_output.orphan" // an output for no waiting call: left out
 )
@@ -119,6 +120,8 @@ func tooMany(field string, limit int) error {
 //     ir.ToolImageText. Nothing is lost, so nothing is reported;
 //   - a call without an output gets the result ir.ToolNoOutput:
 //     "input:function_call.unanswered";
+//   - a call_id longer than ir.MaxToolIDBytes is cut, the same way on the
+//     call and on its output: "input:function_call.id";
 //   - an output whose call never comes, and a second output for one call,
 //     are left out: "input:function_call_output.orphan";
 //   - a call whose id waits for its output already is left out:
@@ -191,6 +194,17 @@ type decoder struct {
 }
 
 func (d *decoder) drop(name string) { d.dropped = append(d.dropped, name) }
+
+// toolID returns a call id as it is kept: one longer than a tool id may be
+// is cut (ir.BoundToolID, the same way on a call and on its output) and
+// reported. History is never refused for it.
+func (d *decoder) toolID(id string) string {
+	id, cut := ir.BoundToolID(id)
+	if cut {
+		d.drop(droppedLongID)
+	}
+	return id
+}
 
 // object is a JSON object whose values are not decoded yet.
 type object map[string]json.RawMessage
@@ -746,6 +760,7 @@ func (d *decoder) call(o object, at string) error {
 	if p.ToolID, err = o.required("call_id", at+".call_id"); err != nil {
 		return err
 	}
+	p.ToolID = d.toolID(p.ToolID)
 	if p.ToolName, err = o.required("name", at+".name"); err != nil {
 		return err
 	}
@@ -805,6 +820,7 @@ func (d *decoder) output(o object, at string) error {
 	if err != nil {
 		return err
 	}
+	id = d.toolID(id)
 	var out toolOutput
 	if raw, ok := o.take("output"); ok {
 		if out, err = d.outputParts(raw, at+".output"); err != nil {

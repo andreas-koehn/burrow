@@ -472,6 +472,7 @@ func FuzzDecodeResponse(f *testing.F) {
 	f.Add(fixture(f, "resp_tools.json"))
 	f.Add([]byte(`{"choices":[{"message":{"content":[{"type":"text","text":"a"}],"reasoning":"r","refusal":"no","tool_calls":[{"id":"a","function":{"name":"f","arguments":{"a":[1e400]}}}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":"7","completion_tokens":1e2}}`))
 	f.Add([]byte(`{"choices":[{"index":null,"message":null}],"error":{"message":"x"}}`))
+	f.Add([]byte(`{"choices":[{"message":{"tool_calls":[{"id":"` + strings.Repeat("i", ir.MaxToolIDBytes+1) + `","function":{"name":"` + strings.Repeat("n", ir.MaxToolNameBytes+1) + `","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
 	f.Add([]byte(`[[[[[[[[`))
 	f.Fuzz(func(t *testing.T, body []byte) {
 		got, err := DecodeResponse(body)
@@ -492,7 +493,7 @@ func FuzzDecodeResponse(f *testing.F) {
 					t.Fatal("an empty text part")
 				}
 			case ir.ToolUse:
-				if p.ToolID == "" || p.ToolName == "" || ids[p.ToolID] || ir.CheckObject(p.Input) != nil || len(p.Input) > ir.MaxToolArgsBytes {
+				if p.ToolID == "" || p.ToolName == "" || ids[p.ToolID] || len(p.ToolID) > ir.MaxToolIDBytes || len(p.ToolName) > ir.MaxToolNameBytes || ir.CheckObject(p.Input) != nil || len(p.Input) > ir.MaxToolArgsBytes {
 					t.Fatalf("tool call %+v", p)
 				}
 				ids[p.ToolID] = true
@@ -527,6 +528,7 @@ func FuzzStreamDecoder(f *testing.F) {
 	f.Add(fixture(f, "stream_tools.sse"), 64)
 	f.Add(bytes.ReplaceAll(fixture(f, "stream_tools.sse"), []byte("\n"), []byte("\r\n")), 3)
 	f.Add([]byte("data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1e9,\"function\":{\"arguments\":\"{\"}}]}}]}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"a\",\"function\":{\"name\":\"f\"}}]},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"), 5)
+	f.Add([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\""+strings.Repeat("i", ir.MaxToolIDBytes+1)+"\",\"function\":{\"name\":\""+strings.Repeat("n", ir.MaxToolNameBytes+1)+"\",\"arguments\":\"{}\"}}]}}]}\n\ndata: [DONE]\n\n"), 4096)
 	f.Add([]byte("data: {\"choices\":[{\"delta\":{\"reasoning\":\"r\",\"content\":\"c\",\"refusal\":\"no\"}}]}\n\ndata: {\"error\":{\"message\":\"overloaded\"}}\n\n"), 1)
 	f.Add([]byte("data: "+`{"id":"c","choices":[{"delta":{"content":"x`+"\xf0\x9f"+`"}}]}`+"\n\n"+
 		"data: "+`{"choices":[{"delta":{"content":"`+"\x98\x80"+`","tool_calls":[{"function":{"name":"f","arguments":" {\"a\":\"`+"\xc3"+`"}}]}}]}`+"\n\n"+

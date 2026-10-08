@@ -268,6 +268,12 @@ func DecodeResponse(body []byte) (ir.Response, error) {
 			if len(ids) >= ir.MaxToolCalls {
 				return ir.Response{}, answerOver("tool calls", ir.MaxToolCalls)
 			}
+			if len(b.ID) > ir.MaxToolIDBytes {
+				return ir.Response{}, answerOver("tool call id bytes", ir.MaxToolIDBytes)
+			}
+			if len(b.Name) > ir.MaxToolNameBytes {
+				return ir.Response{}, answerOver("tool call name bytes", ir.MaxToolNameBytes)
+			}
 			ids[b.ID] = true
 			input, err := blockInput(b.Input)
 			if err != nil {

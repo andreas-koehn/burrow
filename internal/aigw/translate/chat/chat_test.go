@@ -1697,3 +1697,45 @@ func TestCheckRequest(t *testing.T) {
 		t.Error("a body that is no object: accepted")
 	}
 }
+
+// A tool call's id and name come from the upstream and are kept for the whole
+// answer: each has a limit of its own, checked before anything is kept.
+func TestToolCallIDAndNameLimits(t *testing.T) {
+	okID, okName := strings.Repeat("i", ir.MaxToolIDBytes), strings.Repeat("n", ir.MaxToolNameBytes)
+	body := func(id, name string) []byte {
+		return []byte(fmt.Sprintf(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":%q,"type":"function","function":{"name":%q,"arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`, id, name))
+	}
+	stream := func(id, name string) ([]ir.Event, error) {
+		return feedAll(NewStreamDecoder(),
+			chunk(fmt.Sprintf(`{"tool_calls":[{"index":0,"id":%q,"function":{"name":%q,"arguments":"{}"}}]}`, id, name)),
+			finishChunk("tool_calls"), []byte("[DONE]"))
+	}
+	// At the limit both pass, buffered and streamed.
+	if resp, err := DecodeResponse(body(okID, okName)); err != nil || len(resp.Parts) != 1 || resp.Parts[0].ToolID != okID || resp.Parts[0].ToolName != okName {
+		t.Fatalf("at the limit, buffered: %v", err)
+	}
+	if evs, err := stream(okID, okName); err != nil || len(evs) == 0 || evs[len(evs)-1].Kind != ir.Finish {
+		t.Fatalf("at the limit, streamed: %v, %d events", err, len(evs))
+	}
+	for name, c := range map[string][2]string{"id": {okID + "i", "f"}, "name": {"call_1", okName + "n"}} {
+		if _, err := DecodeResponse(body(c[0], c[1])); !errors.Is(err, ir.ErrLimit) {
+			t.Fatalf("%s over the limit, buffered: %v", name, err)
+		}
+		evs, err := stream(c[0], c[1])
+		if !errors.Is(err, ir.ErrLimit) {
+			t.Fatalf("%s over the limit, streamed: %v", name, err)
+		}
+		// Nothing of the call was handed on, and the answer ends in one error.
+		for i, e := range evs {
+			if e.Kind == ir.PartStart || (e.Kind == ir.Error) != (i == len(evs)-1) {
+				t.Fatalf("%s over the limit, streamed: event %d is %s", name, i, e.Kind)
+			}
+		}
+	}
+	// The name and the id of a call that come in later chunks are held to the same limits.
+	d := NewStreamDecoder()
+	if _, err := feedAll(d, chunk(`{"tool_calls":[{"index":0,"function":{"arguments":"{"}}]}`),
+		chunk(fmt.Sprintf(`{"tool_calls":[{"index":0,"id":%q,"function":{"name":"f"}}]}`, okID+"i"))); !errors.Is(err, ir.ErrLimit) {
+		t.Fatalf("a late id over the limit: %v", err)
+	}
+}

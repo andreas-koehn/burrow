@@ -8,9 +8,10 @@
 // OpenAI-format provider without the Responses API, "msgonly" an
 // Anthropic-format one. Both answer with one call of the tool "echo" when the
 // request's last message is the user text "call a tool", and with text
-// otherwise. A streamed answer is written in several flushed pieces with the
-// tool call's arguments split across them; after the first piece the provider
-// waits until the test has read the caller's first frame.
+// otherwise. The call's arguments are mxArgs, byte for byte. A streamed answer
+// is written in several flushed pieces with the tool call's arguments split
+// across them; after the first piece the provider waits until the test has
+// read the caller's first frame.
 package main
 
 import (
@@ -24,16 +25,27 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	trchat "github.com/ankoehn/burrow/internal/aigw/translate/chat"
+	trmessages "github.com/ankoehn/burrow/internal/aigw/translate/messages"
 )
 
 const (
 	mxAsk        = "call a tool"
 	mxToolResult = "tool says hi"
-	mxSchema     = `{"type":"object","properties":{"text":{"type":"string","description":"what to echo"}},"required":["text"],"additionalProperties":false}`
+	// The arguments of the tool call as the stand-in providers write them:
+	// with spacing and a key order no encoder would produce, so a translator
+	// that decodes and re-encodes them is caught. They are never altered.
+	mxArgs   = `{"z": 1,  "text" :"hi" }`
+	mxSchema = `{"type":"object","properties":{"text":{"type":"string","description":"what to echo"}},"required":["text"],"additionalProperties":false}`
 )
 
 // mxTokens is what a stand-in provider reports as usage, per shape of answer.
 type mxTokens struct{ in, out int }
+
+// mxArgPieces is mxArgs as a stream delivers it: cut inside a key and inside
+// a value.
+var mxArgPieces = []string{`{"z": 1,  "te`, `xt" :"h`, `i" }`}
 
 var mxUsage = map[string]mxTokens{
 	"chat/buffered/text": {11, 7}, "chat/buffered/tool": {31, 17}, "chat/streamed/text": {21, 4}, "chat/streamed/tool": {41, 19},
@@ -159,7 +171,7 @@ func mxProvider(format, name string, gate *mxGate) func(w http.ResponseWriter, r
 				if tool {
 					finish = "tool_calls"
 					message = map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{{
-						"id": "call_e2e_1", "type": "function", "function": map[string]string{"name": "echo", "arguments": `{"text":"hi"}`},
+						"id": "call_e2e_1", "type": "function", "function": map[string]string{"name": "echo", "arguments": mxArgs},
 					}}}
 				}
 				gwJSON(w, 200, map[string]any{
@@ -180,9 +192,9 @@ func mxProvider(format, name string, gate *mxGate) func(w http.ResponseWriter, r
 			if tool {
 				first = []string{
 					chunk(`{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_e2e_1","type":"function","function":{"name":"echo","arguments":""}}]}`, "null"),
-					args(`{"te`),
+					args(mxArgPieces[0]),
 				}
-				rest = []string{args(`xt":"h`), args(`i"}`), chunk(`{}`, `"tool_calls"`)}
+				rest = []string{args(mxArgPieces[1]), args(mxArgPieces[2]), chunk(`{}`, `"tool_calls"`)}
 			} else {
 				first = []string{chunk(`{"role":"assistant","content":"hi "}`, "null")}
 				rest = []string{chunk(`{"content":"from `+name+`"}`, "null"), chunk(`{}`, `"stop"`)}
@@ -194,17 +206,14 @@ func mxProvider(format, name string, gate *mxGate) func(w http.ResponseWriter, r
 
 		case format == "messages" && strings.HasSuffix(r.URL.Path, "/v1/messages"):
 			if !req.Stream {
-				content := []map[string]any{{"type": "text", "text": text}}
-				stop := "end_turn"
+				// Written by hand: an encoder would re-space the input.
+				content, stop := fmt.Sprintf(`{"type":"text","text":%q}`, text), "end_turn"
 				if tool {
-					stop = "tool_use"
-					content = []map[string]any{{"type": "tool_use", "id": "toolu_e2e_1", "name": "echo", "input": map[string]string{"text": "hi"}}}
+					content, stop = `{"type":"tool_use","id":"toolu_e2e_1","name":"echo","input":`+mxArgs+`}`, "tool_use"
 				}
-				gwJSON(w, 200, map[string]any{
-					"id": "msg_e2e", "type": "message", "role": "assistant", "model": req.Model,
-					"content": content, "stop_reason": stop, "stop_sequence": nil,
-					"usage": map[string]int{"input_tokens": use.in, "output_tokens": use.out},
-				})
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"id":"msg_e2e","type":"message","role":"assistant","model":%q,"content":[%s],"stop_reason":%q,"stop_sequence":null,"usage":{"input_tokens":%d,"output_tokens":%d}}`,
+					req.Model, content, stop, use.in, use.out)
 				return true
 			}
 			ev := func(name, data string) string { return name + "\n" + data }
@@ -224,8 +233,8 @@ func mxProvider(format, name string, gate *mxGate) func(w http.ResponseWriter, r
 			if tool {
 				first = []string{start,
 					ev("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_e2e_1","name":"echo","input":{}}}`),
-					delta("input_json_delta", "partial_json", `{"te`)}
-				rest = append([]string{delta("input_json_delta", "partial_json", `xt":"h`), delta("input_json_delta", "partial_json", `i"}`)}, end("tool_use")...)
+					delta("input_json_delta", "partial_json", mxArgPieces[0])}
+				rest = append([]string{delta("input_json_delta", "partial_json", mxArgPieces[1]), delta("input_json_delta", "partial_json", mxArgPieces[2])}, end("tool_use")...)
 			} else {
 				first = []string{start,
 					ev("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
@@ -275,7 +284,7 @@ type mxCaller struct {
 	path     string
 	header   func(key string) []string
 	request  func(model, userText string, stream bool) string
-	turnTwo  func(model, callID string) string
+	turnTwo  func(model, callID string, stream bool) string
 	buffered func(t *testing.T, body []byte) mxAnswer
 	streamed func(t *testing.T, body []byte) mxAnswer
 }
@@ -316,11 +325,11 @@ var mxAnthropic = mxCaller{
 		return fmt.Sprintf(`{"model":%q,"max_tokens":256,"stream":%t,"tools":[{"name":"echo","description":"Echo a text.","input_schema":%s}],"messages":[{"role":"user","content":%q}]}`,
 			model, stream, mxSchema, text)
 	},
-	turnTwo: func(model, id string) string {
-		return fmt.Sprintf(`{"model":%q,"max_tokens":256,"tools":[{"name":"echo","description":"Echo a text.","input_schema":%s}],"messages":[`+
+	turnTwo: func(model, id string, stream bool) string {
+		return fmt.Sprintf(`{"model":%q,"max_tokens":256,"stream":%t,"tools":[{"name":"echo","description":"Echo a text.","input_schema":%s}],"messages":[`+
 			`{"role":"user","content":%q},`+
-			`{"role":"assistant","content":[{"type":"tool_use","id":%q,"name":"echo","input":{"text":"hi"}}]},`+
-			`{"role":"user","content":[{"type":"tool_result","tool_use_id":%q,"content":%q}]}]}`, model, mxSchema, mxAsk, id, id, mxToolResult)
+			`{"role":"assistant","content":[{"type":"tool_use","id":%q,"name":"echo","input":%s}]},`+
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":%q,"content":%q}]}]}`, model, stream, mxSchema, mxAsk, id, mxArgs, id, mxToolResult)
 	},
 	buffered: func(t *testing.T, body []byte) mxAnswer {
 		t.Helper()
@@ -423,11 +432,11 @@ var mxResponses = mxCaller{
 		return fmt.Sprintf(`{"model":%q,"stream":%t,"tools":[{"type":"function","name":"echo","description":"Echo a text.","parameters":%s}],`+
 			`"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":%q}]}]}`, model, stream, mxSchema, text)
 	},
-	turnTwo: func(model, id string) string {
-		return fmt.Sprintf(`{"model":%q,"tools":[{"type":"function","name":"echo","description":"Echo a text.","parameters":%s}],"input":[`+
+	turnTwo: func(model, id string, stream bool) string {
+		return fmt.Sprintf(`{"model":%q,"stream":%t,"tools":[{"type":"function","name":"echo","description":"Echo a text.","parameters":%s}],"input":[`+
 			`{"type":"message","role":"user","content":[{"type":"input_text","text":%q}]},`+
-			`{"type":"function_call","call_id":%q,"name":"echo","arguments":"{\"text\":\"hi\"}"},`+
-			`{"type":"function_call_output","call_id":%q,"output":%q}]}`, model, mxSchema, mxAsk, id, id, mxToolResult)
+			`{"type":"function_call","call_id":%q,"name":"echo","arguments":%q},`+
+			`{"type":"function_call_output","call_id":%q,"output":%q}]}`, model, stream, mxSchema, mxAsk, id, mxArgs, id, mxToolResult)
 	},
 	buffered: func(t *testing.T, body []byte) mxAnswer {
 		t.Helper()
@@ -528,11 +537,15 @@ var mxChat = mxCaller{
 		return fmt.Sprintf(`{"model":%q,"stream":%t,%s"tools":[{"type":"function","function":{"name":"echo","description":"Echo a text.","parameters":%s}}],`+
 			`"messages":[{"role":"user","content":%q}]}`, model, stream, opts, mxSchema, text)
 	},
-	turnTwo: func(model, id string) string {
-		return fmt.Sprintf(`{"model":%q,"tools":[{"type":"function","function":{"name":"echo","description":"Echo a text.","parameters":%s}}],"messages":[`+
+	turnTwo: func(model, id string, stream bool) string {
+		opts := ""
+		if stream {
+			opts = `"stream_options":{"include_usage":true},`
+		}
+		return fmt.Sprintf(`{"model":%q,"stream":%t,%s"tools":[{"type":"function","function":{"name":"echo","description":"Echo a text.","parameters":%s}}],"messages":[`+
 			`{"role":"user","content":%q},`+
-			`{"role":"assistant","content":null,"tool_calls":[{"id":%q,"type":"function","function":{"name":"echo","arguments":"{\"text\":\"hi\"}"}}]},`+
-			`{"role":"tool","tool_call_id":%q,"content":%q}]}`, model, mxSchema, mxAsk, id, id, mxToolResult)
+			`{"role":"assistant","content":null,"tool_calls":[{"id":%q,"type":"function","function":{"name":"echo","arguments":%q}}]},`+
+			`{"role":"tool","tool_call_id":%q,"content":%q}]}`, model, stream, opts, mxSchema, mxAsk, id, mxArgs, id, mxToolResult)
 	},
 	buffered: func(t *testing.T, body []byte) mxAnswer {
 		t.Helper()
@@ -745,10 +758,12 @@ func mxReadUpstream(t *testing.T, format string, body []byte) mxHistory {
 	return h
 }
 
-// mxEchoArgs reports whether s is valid JSON equal to {"text":"hi"}.
+// mxEchoArgs reports whether s is valid JSON with the value of mxArgs. Used
+// only where a format carries the arguments as a JSON value, not as a string
+// (a Messages body); everywhere else the bytes are compared.
 func mxEchoArgs(s string) bool {
 	var got any
-	return json.Unmarshal([]byte(s), &got) == nil && reflect.DeepEqual(got, map[string]any{"text": "hi"})
+	return json.Unmarshal([]byte(s), &got) == nil && reflect.DeepEqual(got, map[string]any{"z": float64(1), "text": "hi"})
 }
 
 func mxSameJSON(a, b []byte) bool {
@@ -798,13 +813,18 @@ func TestE2E_GatewayTranslationMatrix(t *testing.T) {
 		format   string // what it speaks
 		upstream string // the path it must be called on
 		target   string // the model it must be asked for
+		dropped  string // Burrow-Dropped for the requests this test sends, exactly
 	}
 	pairs := []pairRow{
-		{"messages-chat", mxAnthropic, "t-chat", "chatonly", "chat", "/v1/chat/completions", "up-chat"},
-		{"responses-chat", mxResponses, "t-chat", "chatonly", "chat", "/v1/chat/completions", "up-chat"},
-		{"chat-messages", mxChat, "t-msg", "msgonly", "messages", "/v1/messages", "up-msg"},
-		{"responses-messages", mxResponses, "t-msg", "msgonly", "messages", "/v1/messages", "up-msg"},
+		{"messages-chat", mxAnthropic, "t-chat", "chatonly", "chat", "/v1/chat/completions", "up-chat", ""},
+		{"responses-chat", mxResponses, "t-chat", "chatonly", "chat", "/v1/chat/completions", "up-chat", ""},
+		// Neither caller sends an output cap, and a Messages request needs
+		// one: the pair sets its default and says so.
+		{"chat-messages", mxChat, "t-msg", "msgonly", "messages", "/v1/messages", "up-msg", "max_tokens.default"},
+		{"responses-messages", mxResponses, "t-msg", "msgonly", "messages", "/v1/messages", "up-msg", "max_tokens.default"},
 	}
+	// (The Messages caller sends max_tokens, and nothing in these requests is
+	// left out toward a Chat Completions target: an empty list is exact.)
 
 	// checkUpstream: the provider got the request on its own endpoint, in its
 	// own format, with its own credential and nothing of the caller's.
@@ -854,17 +874,26 @@ func TestE2E_GatewayTranslationMatrix(t *testing.T) {
 		if tr != p.id || dropped != h.Get("Burrow-Dropped") {
 			t.Fatalf("usage row: translated %q dropped %q; headers: Burrow-Translated %q Burrow-Dropped %q", tr, dropped, h.Get("Burrow-Translated"), h.Get("Burrow-Dropped"))
 		}
+		if _, has := h["Burrow-Dropped"]; dropped != p.dropped || has != (p.dropped != "") {
+			t.Fatalf("Burrow-Dropped %q (header present: %v), want exactly %q", dropped, has, p.dropped)
+		}
 		if after := e.settled(t); after != before+1 {
 			t.Fatalf("%d usage rows for one request", after-before)
 		}
 		t.Logf("%s: Burrow-Dropped %q, usage %d/%d", p.id, dropped, u.TokensIn, u.TokensOut)
 	}
 
+	// The arguments are the provider's, byte for byte: the argument string
+	// of a Chat or Responses answer, the joined partial_json of a Messages
+	// stream, and the raw "input" of a Messages body.
 	checkAnswer := func(t *testing.T, p pairRow, a mxAnswer, tool bool) {
 		t.Helper()
 		if tool {
-			if a.Calls != 1 || a.ToolName != "echo" || a.ToolID == "" || !mxEchoArgs(a.ToolArgs) || a.Text != "" {
+			if a.Calls != 1 || a.ToolName != "echo" || a.ToolID == "" || a.Text != "" {
 				t.Fatalf("tool call as the caller got it: %+v", a)
+			}
+			if a.ToolArgs != mxArgs {
+				t.Fatalf("the tool call's arguments were altered on the way:\n got %q\nwant %q", a.ToolArgs, mxArgs)
 			}
 			wantStop := map[string]string{"messages": "tool_use", "chat": "tool_calls", "responses": "completed"}[p.caller.name]
 			if a.Stop != wantStop {
@@ -929,6 +958,7 @@ func TestE2E_GatewayTranslationMatrix(t *testing.T) {
 					resp := e.open(t, "POST", p.caller.path, body, hdr...)
 					defer resp.Body.Close()
 					if resp.StatusCode != 200 || resp.Header.Get("Burrow-Translated") != p.id || resp.Header.Get("Burrow-Provider") != p.provider ||
+						resp.Header.Get("Burrow-Model") != p.target || resp.Header.Get("Burrow-Attempts") != "1" || resp.Header.Get("Burrow-Error-Code") != "" ||
 						!strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 						b, _ := io.ReadAll(resp.Body)
 						t.Fatalf("status %d headers %v body %s", resp.StatusCode, resp.Header, b)
@@ -972,36 +1002,60 @@ func TestE2E_GatewayTranslationMatrix(t *testing.T) {
 		}
 	}
 
-	// A full tool round trip per pair: turn 1 gets the call; turn 2 sends the
-	// result in the caller's format; what the provider is sent for turn 2
-	// holds, in its own format, the call and the result under one id.
+	// A full tool round trip per pair, buffered and streamed: turn 1 gets the
+	// call; turn 2 sends the result in the caller's format; what the provider
+	// is sent for turn 2 is a valid request of its own format (the strict
+	// validators) that holds the call and the result under one id.
 	for _, p := range pairs {
-		t.Run(p.id+"/tool round trip", func(t *testing.T) {
-			hdr := p.caller.header(key)
-			r := e.call(t, "POST", p.caller.path, p.caller.request(p.model, mxAsk, false), hdr...)
-			if r.Status != 200 {
-				t.Fatalf("turn 1: status %d body %s", r.Status, r.Body)
+		for _, stream := range []bool{false, true} {
+			mode := "buffered"
+			if stream {
+				mode = "streamed"
 			}
-			first := p.caller.buffered(t, r.Body)
-			checkAnswer(t, p, first, true)
+			t.Run(p.id+"/tool round trip/"+mode, func(t *testing.T) {
+				hdr := p.caller.header(key)
+				read := p.caller.buffered
+				if stream {
+					read = p.caller.streamed
+				}
+				r := e.call(t, "POST", p.caller.path, p.caller.request(p.model, mxAsk, stream), hdr...)
+				if r.Status != 200 {
+					t.Fatalf("turn 1: status %d body %s", r.Status, r.Body)
+				}
+				first := read(t, r.Body)
+				checkAnswer(t, p, first, true)
 
-			r = e.call(t, "POST", p.caller.path, p.caller.turnTwo(p.model, first.ToolID), hdr...)
-			if r.Status != 200 || r.Header.Get("Burrow-Translated") != p.id {
-				t.Fatalf("turn 2: status %d headers %v body %s", r.Status, r.Header, r.Body)
-			}
-			checkAnswer(t, p, p.caller.buffered(t, r.Body), false)
-			h := checkUpstream(t, p)
-			if h.calls != 1 || h.results != 1 || h.callName != "echo" || !mxEchoArgs(h.args) || h.result != mxToolResult {
-				t.Fatalf("turn 2 as the provider got it: %+v\n%s", h, e.up.last(t, p.provider).Body)
-			}
-			if h.callID == "" || h.callID != h.resultID {
-				t.Fatalf("the call's id %q and the result's id %q do not match", h.callID, h.resultID)
-			}
-			if h.messages != 3 {
-				t.Fatalf("turn 2 reached the provider as %d messages, want 3 (user, assistant, tool result)", h.messages)
-			}
-			t.Logf("%s: call id from the caller %q, sent upstream as %q", p.id, first.ToolID, h.callID)
-		})
+				r = e.call(t, "POST", p.caller.path, p.caller.turnTwo(p.model, first.ToolID, stream), hdr...)
+				if r.Status != 200 || r.Header.Get("Burrow-Translated") != p.id || r.Header.Get("Burrow-Dropped") != p.dropped {
+					t.Fatalf("turn 2: status %d headers %v body %s", r.Status, r.Header, r.Body)
+				}
+				checkAnswer(t, p, read(t, r.Body), false)
+				h := checkUpstream(t, p)
+				sent := e.up.last(t, p.provider).Body
+				validate := trchat.CheckRequest
+				if p.format == "messages" {
+					validate = trmessages.CheckRequest
+				}
+				if err := validate(sent); err != nil {
+					t.Fatalf("turn 2 as the provider got it is not a valid request of its format: %v\n%s", err, sent)
+				}
+				if h.calls != 1 || h.results != 1 || h.callName != "echo" || h.result != mxToolResult {
+					t.Fatalf("turn 2 as the provider got it: %+v\n%s", h, sent)
+				}
+				// A Chat Completions target gets the arguments as the string
+				// they were; a Messages target as a JSON value.
+				if p.format == "chat" && h.args != mxArgs || !mxEchoArgs(h.args) {
+					t.Fatalf("the arguments in the history were altered: %q\n%s", h.args, sent)
+				}
+				if h.callID == "" || h.callID != h.resultID {
+					t.Fatalf("the call's id %q and the result's id %q do not match", h.callID, h.resultID)
+				}
+				if h.messages != 3 {
+					t.Fatalf("turn 2 reached the provider as %d messages, want 3 (user, assistant, tool result)", h.messages)
+				}
+				t.Logf("%s: call id from the caller %q, sent upstream as %q", p.id, first.ToolID, h.callID)
+			})
+		}
 	}
 
 	t.Run("translation off answers format_mismatch", func(t *testing.T) {
@@ -1030,7 +1084,7 @@ func TestE2E_GatewayTranslationMatrix(t *testing.T) {
 			if r.Status != 200 || r.Header.Get("Burrow-Translated") != "" || r.Header.Get("Burrow-Dropped") != "" || r.Header.Get("Burrow-Provider") != c.provider {
 				t.Fatalf("%s: status %d headers %v body %s", c.caller.name, r.Status, r.Header, r.Body)
 			}
-			if a := c.caller.buffered(t, r.Body); a.Calls != 1 || !mxEchoArgs(a.ToolArgs) {
+			if a := c.caller.buffered(t, r.Body); a.Calls != 1 || a.ToolArgs != mxArgs {
 				t.Fatalf("%s: answer %+v", c.caller.name, a)
 			}
 			// Byte for byte the caller's request, apart from the model.

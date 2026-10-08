@@ -18,59 +18,20 @@ import (
 // only after forwarding does it speculatively JSON-parse the payload to
 // look for a usage object.
 type openAIParser struct {
-	s   *Stream
-	buf bytes.Buffer // pending partial line
+	s     *Stream
+	lines lineBuffer // the line being read
 }
 
-func newOpenAIParser(s *Stream) *openAIParser { return &openAIParser{s: s} }
+func newOpenAIParser(s *Stream) *openAIParser { return &openAIParser{s: s, lines: lineBuffer{s: s}} }
 
-// write feeds bytes to the parser. It splits on '\n', forwards each
-// completed line (including the trailing '\n') to the visitor writer, and
-// flushes after each line. Partial trailing data is kept in buf.
-//
-// The returned forwarded count is the number of bytes successfully written
-// to the visitor (so Stream.bytesOut stays accurate even on short writes).
+// write feeds bytes to the parser: each completed line is forwarded to the
+// visitor and then read for usage (see lineBuffer).
 func (p *openAIParser) write(b []byte) (forwarded int, err error) {
-	for len(b) > 0 {
-		i := bytes.IndexByte(b, '\n')
-		if i < 0 {
-			// no newline yet — buffer and wait
-			p.buf.Write(b)
-			return forwarded, nil
-		}
-		// Forward the buffered prefix + the segment up to and including '\n'.
-		var frame []byte
-		if p.buf.Len() > 0 {
-			p.buf.Write(b[:i+1])
-			frame = p.buf.Bytes()
-		} else {
-			frame = b[:i+1]
-		}
-		n, werr := p.s.w.Write(frame)
-		forwarded += n
-		if werr != nil {
-			return forwarded, werr
-		}
-		p.s.flush()
-		p.inspect(frame)
-		p.buf.Reset()
-		b = b[i+1:]
-	}
-	return forwarded, nil
+	return p.lines.write(b, p.inspect)
 }
 
 // close forwards any pending partial line as a final fragment.
-func (p *openAIParser) close() error {
-	if p.buf.Len() == 0 {
-		return nil
-	}
-	n, err := p.s.w.Write(p.buf.Bytes())
-	p.s.bytesOut += int64(n)
-	p.s.flush()
-	p.inspect(p.buf.Bytes())
-	p.buf.Reset()
-	return err
-}
+func (p *openAIParser) close() error { return p.lines.close(p.inspect) }
 
 // inspect speculatively parses a forwarded SSE line for an OpenAI usage
 // object. Lines that are not "data: {…}" (e.g. blank separators, "data:

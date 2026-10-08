@@ -319,6 +319,14 @@ func (d *StreamDecoder) startBlock(index int, wire *wireStartBlock) error {
 		if wire.ID == "" || wire.Name == "" {
 			return malformed("a tool call without a name or an id")
 		}
+		// Before anything of the call is kept: its id stays for the whole
+		// answer, and both are handed on.
+		if len(wire.ID) > ir.MaxToolIDBytes {
+			return answerOver("tool call id bytes", ir.MaxToolIDBytes)
+		}
+		if len(wire.Name) > ir.MaxToolNameBytes {
+			return answerOver("tool call name bytes", ir.MaxToolNameBytes)
+		}
 		if d.ids[wire.ID] {
 			return malformed("two tool calls with one id")
 		}

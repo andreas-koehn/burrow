@@ -368,6 +368,12 @@ func DecodeResponse(body []byte) (ir.Response, error) {
 		if tc.ID == "" || ids[tc.ID] {
 			return ir.Response{}, malformed("a tool call without an id of its own")
 		}
+		if len(tc.ID) > ir.MaxToolIDBytes {
+			return ir.Response{}, overLimit("tool call id bytes", ir.MaxToolIDBytes)
+		}
+		if len(tc.Function.Name) > ir.MaxToolNameBytes {
+			return ir.Response{}, overLimit("tool call name bytes", ir.MaxToolNameBytes)
+		}
 		ids[tc.ID] = true
 		text, err := argumentsText(tc.Function.Arguments)
 		if err != nil {

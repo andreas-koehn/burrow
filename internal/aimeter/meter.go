@@ -48,6 +48,7 @@
 package aimeter
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -260,6 +261,102 @@ func (s *Stream) flush() {
 	if s.flusher != nil {
 		s.flusher.Flush()
 	}
+}
+
+// MaxLineBytes is the longest line a stream parser keeps until its newline
+// comes. A line is kept so that it can be read for a usage object; the frames
+// that carry one are far smaller. A longer line is not kept and not read: its
+// bytes are passed on to the visitor as they arrive, so the visitor still
+// gets exactly what the upstream sent, and reading goes on with the next
+// line. Without the limit an upstream that never sends a newline would have
+// its whole answer held in memory.
+const MaxLineBytes = 4 << 20
+
+// lineBuffer is the line handling the stream parsers share: bytes are
+// forwarded to the visitor a line at a time, and each complete line is
+// handed to inspect after it was forwarded.
+type lineBuffer struct {
+	s    *Stream
+	buf  bytes.Buffer // the line being read, up to MaxLineBytes
+	over bool         // that line went over the limit: it is passed on, not kept
+}
+
+// write feeds bytes. It returns how many bytes were written to the visitor
+// (so Stream.bytesOut stays right on a short write) and the visitor's error.
+func (l *lineBuffer) write(b []byte, inspect func(line []byte)) (forwarded int, err error) {
+	for len(b) > 0 {
+		i := bytes.IndexByte(b, '\n')
+		if l.over {
+			// The rest of a line over the limit, up to and with its newline.
+			part := b
+			if i >= 0 {
+				part = b[:i+1]
+			}
+			n, werr := l.s.w.Write(part)
+			forwarded += n
+			if werr != nil {
+				return forwarded, werr
+			}
+			l.s.flush()
+			if i < 0 {
+				return forwarded, nil
+			}
+			l.over, b = false, b[i+1:]
+			continue
+		}
+		if i < 0 {
+			if l.buf.Len()+len(b) <= MaxLineBytes {
+				// no newline yet: keep and wait
+				l.buf.Write(b)
+				return forwarded, nil
+			}
+			// Over the limit: what is held goes out now, with these bytes,
+			// and the memory is given back.
+			for _, part := range [][]byte{l.buf.Bytes(), b} {
+				n, werr := l.s.w.Write(part)
+				forwarded += n
+				if werr != nil {
+					return forwarded, werr
+				}
+			}
+			l.s.flush()
+			l.buf, l.over = bytes.Buffer{}, true
+			return forwarded, nil
+		}
+		// Forward what is held plus the bytes up to and with the newline.
+		var line []byte
+		if l.buf.Len() > 0 {
+			l.buf.Write(b[:i+1])
+			line = l.buf.Bytes()
+		} else {
+			line = b[:i+1]
+		}
+		n, werr := l.s.w.Write(line)
+		forwarded += n
+		if werr != nil {
+			return forwarded, werr
+		}
+		l.s.flush()
+		if len(line) <= MaxLineBytes+1 {
+			inspect(line)
+		}
+		l.buf.Reset()
+		b = b[i+1:]
+	}
+	return forwarded, nil
+}
+
+// close forwards a pending partial line as a final fragment.
+func (l *lineBuffer) close(inspect func(line []byte)) error {
+	if l.buf.Len() == 0 {
+		return nil
+	}
+	n, err := l.s.w.Write(l.buf.Bytes())
+	l.s.bytesOut += int64(n)
+	l.s.flush()
+	inspect(l.buf.Bytes())
+	l.buf.Reset()
+	return err
 }
 
 // passthroughParser is used for Kind values that have no SSE parser (mcp,

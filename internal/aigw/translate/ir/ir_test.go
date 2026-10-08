@@ -345,3 +345,29 @@ func TestToolImageNote(t *testing.T) {
 		t.Fatalf("%d bytes", len(got))
 	}
 }
+
+func TestBoundToolID(t *testing.T) {
+	for _, id := range []string{"", "call_1", strings.Repeat("a", MaxToolIDBytes)} {
+		if got, cut := BoundToolID(id); got != id || cut {
+			t.Fatalf("an id of %d bytes was changed (cut %v)", len(id), cut)
+		}
+	}
+	long := strings.Repeat("a", MaxToolIDBytes) + "1"
+	got, cut := BoundToolID(long)
+	if !cut || len(got) != MaxToolIDBytes || !strings.HasPrefix(long, got[:MaxToolIDBytes-17]) {
+		t.Fatalf("cut %v, %d bytes", cut, len(got))
+	}
+	// The same id is cut the same way, so a call and its result still pair;
+	// two ids that differ only past the cut stay two.
+	if again, _ := BoundToolID(long); again != got {
+		t.Fatal("one id, two results")
+	}
+	if other, _ := BoundToolID(strings.Repeat("a", MaxToolIDBytes) + "2"); other == got {
+		t.Fatal("two ids were cut to one")
+	}
+	// A character is not cut in half.
+	multi, _ := BoundToolID(strings.Repeat("é", MaxToolIDBytes))
+	if !utf8.ValidString(multi) || len(multi) > MaxToolIDBytes {
+		t.Fatalf("%d bytes, valid UTF-8: %v", len(multi), utf8.ValidString(multi))
+	}
+}

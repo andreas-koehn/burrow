@@ -136,6 +136,8 @@ type writer struct {
 	dec     streamDecoder
 	enc     streamEncoder
 	ended   bool            // modeStream: the answer ended (well or badly); the rest is discarded
+	after   int             // modeStream: bytes that came after the answer ended
+	surplus bool            // modeStream: more than a frame's worth of them
 	out     *countingWriter // modeStream, committed: what the encoder writes to
 	flushed int64           // out.n at the last flush
 
@@ -187,7 +189,7 @@ func (t *writer) FlushError() error {
 
 func (t *writer) Failure() (code string, midStream bool) { return t.failCode, t.midStream }
 
-func (t *writer) Discarding() bool { return t.mode == modeFailed || t.over || t.midStream }
+func (t *writer) Discarding() bool { return t.mode == modeFailed || t.over || t.midStream || t.surplus }
 
 // WriteHeader takes the upstream's status and decides how its body is read.
 // Informational statuses are not an answer and are not passed on.
@@ -249,6 +251,10 @@ func (t *writer) Write(p []byte) (int, error) {
 		if !t.ended {
 			t.feed(p)
 			_ = t.FlushError()
+		} else if t.after += len(p); t.after > t.c.maxFrame {
+			// More than a frame's worth after the answer's last event:
+			// nothing of it is used (see Discarding).
+			t.surplus = true
 		}
 		if t.clientErr != nil {
 			return 0, t.clientErr

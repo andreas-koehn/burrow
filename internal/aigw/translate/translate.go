@@ -148,7 +148,9 @@ type ResponseWriter interface {
 	// body will be used: the answer has failed, or it outgrew its limit.
 	// What the upstream still sends is thrown away, so whoever reads the
 	// upstream should stop reading. It is false for an answer that is going
-	// well, also after its last event (a usage figure may still follow).
+	// well, also after its last event (a usage figure may still follow),
+	// until more than a frame's worth of bytes has come after that event:
+	// then the answer is complete and the rest is not part of it.
 	Discarding() bool
 }
 

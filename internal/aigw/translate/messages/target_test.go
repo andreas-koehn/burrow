@@ -1286,6 +1286,7 @@ func FuzzDecodeResponse(f *testing.F) {
 	f.Add(fixture(f, "resp_tools.json"))
 	f.Add([]byte(`{"type":"message","content":[{"type":"thinking","thinking":"t"},{"type":"tool_use","id":"a","name":"f","input":{"a":[1e400]}}],"stop_reason":"end_turn","usage":{"input_tokens":"7","output_tokens":1e2}}`))
 	f.Add([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"x"}}`))
+	f.Add([]byte(`{"type":"message","content":[{"type":"tool_use","id":"` + strings.Repeat("i", ir.MaxToolIDBytes+1) + `","name":"` + strings.Repeat("n", ir.MaxToolNameBytes+1) + `","input":{}}],"stop_reason":"tool_use"}`))
 	f.Add([]byte(`[[[[[[[[`))
 	f.Fuzz(func(t *testing.T, body []byte) {
 		got, err := DecodeResponse(body)
@@ -1306,7 +1307,7 @@ func FuzzDecodeResponse(f *testing.F) {
 					t.Fatal("an empty text part")
 				}
 			case ir.ToolUse:
-				if p.ToolID == "" || p.ToolName == "" || ids[p.ToolID] || ir.CheckObject(p.Input) != nil || len(p.Input) > ir.MaxToolArgsBytes {
+				if p.ToolID == "" || p.ToolName == "" || ids[p.ToolID] || len(p.ToolID) > ir.MaxToolIDBytes || len(p.ToolName) > ir.MaxToolNameBytes || ir.CheckObject(p.Input) != nil || len(p.Input) > ir.MaxToolArgsBytes {
 					t.Fatalf("tool call %+v", p)
 				}
 				ids[p.ToolID] = true
@@ -1345,6 +1346,7 @@ func FuzzStreamDecoder(f *testing.F) {
 	f.Add(fixture(f, "stream_tools.sse"), 64)
 	f.Add(bytes.ReplaceAll(fixture(f, "stream_tools.sse"), []byte("\n"), []byte("\r\n")), 3)
 	f.Add(frames(mStart, mTool(0, "a", "f"), mTool(1, "b", "g"), mArgs(1, `{"b"`), mArgs(0, `{"a":`), mArgs(1, `:2}`), mArgs(0, `1}`), mToolEnd, mDone), 5)
+	f.Add(frames(mStart, mTool(0, strings.Repeat("i", ir.MaxToolIDBytes+1), "f"), mStop(0), mTool(1, "t", strings.Repeat("n", ir.MaxToolNameBytes+1)), mToolEnd, mDone), 4096)
 	f.Add(frames(mStart, mTextStart, mText(0, "a\xf0\x9f"), mText(0, "\x98\x80"), `{"type":"error","error":{"message":"overloaded"}}`), 1)
 	f.Add(frames(mStart, `{"type":"content_block_start","index":1e9,"content_block":{"type":"tool_use","id":"t","name":"f","input":{"a":1}}}`, mStart), 4)
 	f.Add([]byte(": ping\n\nnot a field\ndata: null\n\nevent: message_stop\ndata: {}\n\ndata:{\"type\":\"message_delta\",\"usage\":{\"output_tokens\":\"3\"}}"), 2)
@@ -1462,4 +1464,48 @@ func FuzzEncodeRequest(f *testing.F) {
 			t.Fatalf("the encoding does not settle (%v, dropped %v)\n%s\n%s", err, moreDropped, body, again)
 		}
 	})
+}
+
+// A tool call's id and name come from the upstream and are kept for the whole
+// answer: each has a limit of its own, checked before anything is kept.
+func TestToolCallIDAndNameLimits(t *testing.T) {
+	okID, okName := strings.Repeat("i", ir.MaxToolIDBytes), strings.Repeat("n", ir.MaxToolNameBytes)
+	body := func(id, name string) []byte {
+		return []byte(fmt.Sprintf(`{"type":"message","role":"assistant","content":[{"type":"tool_use","id":%q,"name":%q,"input":{}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`, id, name))
+	}
+	stream := func(id, name string) ([]ir.Event, error) {
+		d := NewStreamDecoder()
+		var out []ir.Event
+		for _, f := range []string{mStart, mTool(0, id, name), mStop(0), mToolEnd, mDone} {
+			evs, err := d.Feed("", []byte(f))
+			out = append(out, evs...)
+			if err != nil {
+				return out, err
+			}
+		}
+		return out, nil
+	}
+	if resp, err := DecodeResponse(body(okID, okName)); err != nil || len(resp.Parts) != 1 || resp.Parts[0].ToolID != okID || resp.Parts[0].ToolName != okName {
+		t.Fatalf("at the limit, buffered: %v", err)
+	}
+	if evs, err := stream(okID, okName); err != nil || len(evs) == 0 || evs[len(evs)-1].Kind != ir.Finish {
+		t.Fatalf("at the limit, streamed: %v, %s", err, kindsOf(evs))
+	}
+	for name, c := range map[string][2]string{"id": {okID + "i", "f"}, "name": {"toolu_1", okName + "n"}} {
+		if _, err := DecodeResponse(body(c[0], c[1])); !errors.Is(err, ir.ErrLimit) {
+			t.Fatalf("%s over the limit, buffered: %v", name, err)
+		}
+		evs, err := stream(c[0], c[1])
+		if !errors.Is(err, ir.ErrLimit) {
+			t.Fatalf("%s over the limit, streamed: %v", name, err)
+		}
+		for i, e := range evs {
+			if e.Kind == ir.PartStart || (e.Kind == ir.Error) != (i == len(evs)-1) {
+				t.Fatalf("%s over the limit, streamed: %s", name, kindsOf(evs))
+			}
+		}
+		if last := evs[len(evs)-1]; last.Err != errTooLarge {
+			t.Fatalf("%s over the limit: the caller is told %q", name, last.Err)
+		}
+	}
 }

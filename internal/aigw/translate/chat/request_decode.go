@@ -37,6 +37,7 @@ const (
 	// What is repaired in the history of tool calls and their results.
 	droppedCallArguments  = "input:tool_call.arguments"  // arguments that are no JSON object: the call has none
 	droppedUnanswered     = "input:tool_call.unanswered" // a call without a tool message got a result
+	droppedLongID         = "input:tool_call.id"         // an id longer than ir.MaxToolIDBytes was cut
 	droppedDuplicateCall  = "input:tool_call.duplicate"  // a call whose id waits already: left out
 	droppedOrphanTool     = "input:tool.orphan"          // a tool message for no waiting call: left out
 	droppedOrphanFunction = "input:function.orphan"      // a legacy function message for no call: left out
@@ -120,6 +121,8 @@ func IncludeUsage(body []byte) bool {
 //     is reported;
 //   - a call without a tool message gets the result ir.ToolNoOutput:
 //     "input:tool_call.unanswered";
+//   - an id longer than ir.MaxToolIDBytes is cut, the same way on the call
+//     and on its tool message: "input:tool_call.id";
 //   - a tool message whose call never comes, and a second one for one call,
 //     are left out: "input:tool.orphan" ("input:function.orphan" for the
 //     legacy role);
@@ -203,6 +206,17 @@ type toolOutput struct {
 type legacyCall struct{ id, name string }
 
 func (d *requestDecoder) drop(name string) { d.dropped = append(d.dropped, name) }
+
+// toolID returns a tool call's id as it is kept: one longer than a tool id
+// may be is cut (ir.BoundToolID, the same way on a call and on the tool
+// message that answers it) and reported. History is never refused for it.
+func (d *requestDecoder) toolID(id string) string {
+	id, cut := ir.BoundToolID(id)
+	if cut {
+		d.drop(droppedLongID)
+	}
+	return id
+}
 
 // object is a JSON object whose values are not decoded yet.
 type object map[string]json.RawMessage
@@ -711,6 +725,7 @@ func (d *requestDecoder) toolCall(raw []byte, at string) (p ir.Part, keep bool, 
 	if err != nil {
 		return ir.Part{}, false, err
 	}
+	id = d.toolID(id)
 	fn, ok := asObject(o["function"])
 	delete(o, "function")
 	if !ok {
@@ -760,6 +775,7 @@ func (d *requestDecoder) toolMessage(o object, at string) error {
 	if err != nil {
 		return err
 	}
+	id = d.toolID(id)
 	out, err := d.toolContent(o, at)
 	if err != nil {
 		return err

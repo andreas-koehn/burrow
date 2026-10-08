@@ -44,6 +44,8 @@ package ir
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -659,4 +661,32 @@ func Collect(events []Event) (Response, error) {
 	}
 	resp.Parts = parts
 	return resp, nil
+}
+
+// Limits of what names a tool call. An upstream's answer over one of them is
+// refused (ErrLimit) before the bytes are kept; a decoder of a caller's
+// request cuts an id of replayed history instead (BoundToolID).
+const (
+	// MaxToolNameBytes is the longest name of a tool call in an answer.
+	MaxToolNameBytes = 256
+	// MaxToolIDBytes is the longest id of a tool call.
+	MaxToolIDBytes = 4 << 10
+)
+
+// BoundToolID returns id as a tool call's id may be kept: unchanged when it
+// is no longer than MaxToolIDBytes, else its beginning with a digest of the
+// whole id in place of the rest, exactly MaxToolIDBytes long or a little
+// less (a character is not cut in half). The same id always gives the same
+// result, so a call and the result that answers it still pair, and two ids
+// that differ only past the cut stay different. cut says the id was changed.
+func BoundToolID(id string) (bounded string, cut bool) {
+	if len(id) <= MaxToolIDBytes {
+		return id, false
+	}
+	sum := sha256.Sum256([]byte(id))
+	keep := MaxToolIDBytes - 17 // "_" and 16 hex digits
+	for keep > 0 && !utf8.RuneStart(id[keep]) {
+		keep--
+	}
+	return id[:keep] + "_" + hex.EncodeToString(sum[:8]), true
 }

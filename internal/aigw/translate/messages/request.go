@@ -35,6 +35,7 @@ const (
 
 	// What is repaired in the history of tool calls and their results.
 	droppedUnansweredUse = "input:tool_use.unanswered" // a tool_use without a tool_result got one
+	droppedLongID        = "input:tool_use.id"         // an id longer than ir.MaxToolIDBytes was cut
 	droppedDuplicateUse  = "input:tool_use.duplicate"  // a tool_use whose id waits already: left out
 	droppedOrphanResult  = "input:tool_result.orphan"  // a tool_result for no tool_use: left out
 )
@@ -108,6 +109,8 @@ func tooMany(field string, limit int) error {
 //   - a tool_use without a tool_result — in the middle of the conversation
 //     or at its end — gets the result ir.ToolNoOutput:
 //     "input:tool_use.unanswered";
+//   - an id longer than ir.MaxToolIDBytes is cut, the same way on the call
+//     and on its result: "input:tool_use.id";
 //   - a tool_result whose tool_use never comes, and a second one for one
 //     call, are left out: "input:tool_result.orphan"; a user message that
 //     held nothing else is left out with it;
@@ -142,6 +145,17 @@ type decoder struct {
 }
 
 func (d *decoder) drop(name string) { d.dropped = append(d.dropped, name) }
+
+// toolID returns a tool call's id as it is kept: one longer than a tool id
+// may be is cut (ir.BoundToolID, the same way on a call and on its result)
+// and reported. History is never refused for it.
+func (d *decoder) toolID(id string) string {
+	id, cut := ir.BoundToolID(id)
+	if cut {
+		d.drop(droppedLongID)
+	}
+	return id
+}
 
 // object is a JSON object whose values are not decoded yet.
 type object map[string]json.RawMessage
@@ -674,7 +688,7 @@ func (d *decoder) block(o object, role ir.Role, at string) (p ir.Part, keep bool
 		if role != ir.Assistant {
 			return wrongTurn()
 		}
-		if p, err = toolUseBlock(o, at); err != nil {
+		if p, err = d.toolUseBlock(o, at); err != nil {
 			return ir.Part{}, false, err
 		}
 	case kind == "tool_result":
@@ -746,9 +760,10 @@ func imageBlock(o object, at string) (ir.Part, error) {
 	return p, nil
 }
 
-func toolUseBlock(o object, at string) (ir.Part, error) {
+func (d *decoder) toolUseBlock(o object, at string) (ir.Part, error) {
 	p := ir.Part{Kind: ir.ToolUse}
 	p.ToolID, _ = asString(o["id"])
+	p.ToolID = d.toolID(p.ToolID)
 	p.ToolName, _ = asString(o["name"])
 	delete(o, "id")
 	delete(o, "name")
@@ -774,6 +789,7 @@ func toolUseBlock(o object, at string) (ir.Part, error) {
 func (d *decoder) toolResultBlock(o object, at string) (ir.Part, error) {
 	p := ir.Part{Kind: ir.ToolResult}
 	p.ToolID, _ = asString(o["tool_use_id"])
+	p.ToolID = d.toolID(p.ToolID)
 	delete(o, "tool_use_id")
 	if p.ToolID == "" {
 		return ir.Part{}, bad(at+".tool_use_id", "is required")
