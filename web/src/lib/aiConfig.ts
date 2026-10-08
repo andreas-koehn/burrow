@@ -36,7 +36,6 @@ export const DEFAULT_AI_CONFIG: ServiceAIConfig = {
     paused: false,
     circuit_breaker: { failure_pct: 50, window_seconds: 30, cool_down_seconds: 60 },
     backends: [],
-    translate_to: "none",
   },
   ip_geo: { enabled: false, allow_cidrs: [], block_cidrs: [], allow_countries: [], block_countries: [] },
   mtls: { enabled: false, ca_fingerprint_sha256: "" },

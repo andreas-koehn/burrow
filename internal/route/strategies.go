@@ -44,15 +44,14 @@ func (r *Router) Pick(_ context.Context, p Policy, rc RouteContext) (Pick, error
 
 // PickMulti is the entry point for the multi_provider strategy (v0.5.0).
 // It uses p.MultiBackends (sorted by Priority ASC, then by the slice index
-// as a stable tiebreaker) and applies the cross-provider translation gate
-// described in spec C.2.
+// as a stable tiebreaker) and applies the provider gate described in spec
+// C.2.
 //
-// The RouteContext.Kind drives the provider filter:
-//   - translate_to == "none" (default): the backend's Provider must be
-//     compatible with the request wire kind (openai-wire → ollama/vllm/
-//     openai/openai-compat; anthropic-wire → anthropic only).
-//   - translate_to == "openai" or "anthropic": all providers are permitted
-//     (the translation adapter in the hot path handles transcoding).
+// The RouteContext.Kind drives the provider filter: the backend's Provider
+// must speak the request's wire format (openai-wire → ollama/vllm/openai/
+// openai-compat; anthropic-wire → anthropic only). A request is never routed
+// to a backend of another format: nothing on this path translates a body.
+// (Formats are translated per gateway model, in internal/aigw/translate.)
 //
 // Backends whose circuit breaker is OPEN are skipped; the returned Retry
 // closure walks to the next candidate in the filtered+sorted list.
@@ -74,19 +73,13 @@ var openaiKindProviders = map[string]bool{
 }
 
 // multiProviderCompatible reports whether a MultiProviderBackend is
-// routable given the request kind and the policy's translate_to setting.
-// When translate_to != "none", cross-provider routing is permitted so any
-// backend qualifies (the adapter handles transcoding). When translate_to ==
-// "none" (or empty), the provider must match the request's wire kind:
+// routable for the request kind: the provider must match the request's wire
+// format.
 //
 //   - kind "openai" → provider in {ollama, vllm, openai, openai-compat}
 //   - kind "anthropic" → provider == "anthropic"
 //   - any other kind → no filter applied (pass through)
-func multiProviderCompatible(b MultiProviderBackend, kind, translateTo string) bool {
-	if translateTo != "" && translateTo != "none" {
-		// Cross-provider translation enabled — all providers permitted.
-		return true
-	}
+func multiProviderCompatible(b MultiProviderBackend, kind string) bool {
 	switch kind {
 	case "openai":
 		return openaiKindProviders[b.Provider]
@@ -111,11 +104,10 @@ func (r *Router) pickMultiProvider(p Policy, rc RouteContext, hc HealthChecker) 
 	})
 
 	// Filter by provider compatibility.
-	translateTo := p.TranslateTo
 	kind := rc.Kind
 	filtered := make([]MultiProviderBackend, 0, len(sorted))
 	for _, b := range sorted {
-		if multiProviderCompatible(b, kind, translateTo) {
+		if multiProviderCompatible(b, kind) {
 			filtered = append(filtered, b)
 		}
 	}

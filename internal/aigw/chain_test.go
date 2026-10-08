@@ -2022,3 +2022,36 @@ func TestChain_GuardrailRefusalHookPanicIsContained(t *testing.T) {
 		}
 	}
 }
+
+// A service that has the "anthropic" section of the retired per-service
+// adapter keeps working as it did: its Messages request reaches the upstream
+// byte for byte, the upstream's answer reaches the caller byte for byte, and
+// the request is metered as Anthropic. Nothing is translated on this path.
+func TestChain_AnthropicSection_ForwardsUnchangedAndMeters(t *testing.T) {
+	const reqBody = `{"model":"claude-x","max_tokens":8,"top_k":5,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}}]}]}`
+	const respBody = `{"type":"message","model":"claude-x","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":11,"output_tokens":7}}`
+	var got string
+	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(respBody))
+	})
+	sink := &ctxSink{}
+	c := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, nil)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Anthropic-Version", "2023-06-01")
+	rec := httptest.NewRecorder()
+	svc := aigw.Service{ID: "svc1", AIConfig: aigw.ServiceAIConfig{Anthropic: &aigw.AnthropicConfig{Enabled: true}}}
+	c.ServeHTTP(rec, req, svc, up)
+	if got != reqBody {
+		t.Fatalf("the upstream got another body:\n%s", got)
+	}
+	if rec.Code != http.StatusOK || rec.Body.String() != respBody {
+		t.Fatalf("the caller got %d %s", rec.Code, rec.Body.String())
+	}
+	if !sink.got || sink.sample.Kind != aimeter.KindAnthropic || sink.sample.TokensIn != 11 || sink.sample.TokensOut != 7 {
+		t.Fatalf("usage sample = %+v (recorded %v)", sink.sample, sink.got)
+	}
+}

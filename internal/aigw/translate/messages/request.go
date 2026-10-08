@@ -1,8 +1,9 @@
 // Package messages is the Anthropic Messages codec of the format
-// translators. This file and its siblings hold the half a caller needs: read
-// a request into the neutral form (DecodeRequest), write an answer from it,
-// whole (EncodeResponse) or streamed (StreamEncoder), and write an error in
-// the Messages shape (EncodeError).
+// translators. This file, response.go and stream_encode.go hold the half a
+// caller needs: read a request into the neutral form (DecodeRequest), write
+// an answer from it, whole (EncodeResponse) or streamed (StreamEncoder), and
+// write an error in the Messages shape (EncodeError). The half a target
+// needs is in request_encode.go, response_decode.go and stream_decode.go.
 //
 // Nothing in this package logs, and no error it returns carries request or
 // answer content: an error names the field and the reason only.

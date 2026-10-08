@@ -1,7 +1,8 @@
 // Package chat is the Chat Completions codec of the format translators.
-// This file and its siblings hold the half a target needs: write a request
-// from the neutral form (EncodeRequest), read an answer into it, whole
-// (DecodeResponse) or streamed (StreamDecoder).
+// This file, response.go and stream.go hold the half a target needs: write
+// a request from the neutral form (EncodeRequest), read an answer into it,
+// whole (DecodeResponse) or streamed (StreamDecoder). The half a caller
+// needs is in request_decode.go, response_encode.go and stream_encode.go.
 //
 // Nothing in this package logs, and no error it returns carries request or
 // answer content: an error names the field or the reason only.

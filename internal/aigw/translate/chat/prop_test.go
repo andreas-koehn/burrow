@@ -9,210 +9,16 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
 	"github.com/ankoehn/burrow/internal/aigw/translate/sse"
 )
 
-// This file holds the property and fuzz tests. The package is the target
-// half of the Chat codec (write a request, read an answer); the caller half
-// (read a request, write an answer) comes with task X05. Until then the two
-// inverse functions the round trips need live here, as plain test code:
-// readChatRequest and writeChatResponse / writeChatStream.
-
-// ------------------------------------------------- inverse codecs (tests)
-
-type wireRequest struct {
-	Model    string `json:"model"`
-	Messages []struct {
-		Role       string          `json:"role"`
-		Content    json.RawMessage `json:"content"`
-		ToolCallID string          `json:"tool_call_id"`
-		ToolCalls  []struct {
-			ID       string `json:"id"`
-			Type     string `json:"type"`
-			Function struct {
-				Name      string `json:"name"`
-				Arguments string `json:"arguments"`
-			} `json:"function"`
-		} `json:"tool_calls"`
-	} `json:"messages"`
-	Tools []struct {
-		Type     string `json:"type"`
-		Function struct {
-			Name        string          `json:"name"`
-			Description string          `json:"description"`
-			Parameters  json.RawMessage `json:"parameters"`
-		} `json:"function"`
-	} `json:"tools"`
-	ToolChoice    json.RawMessage `json:"tool_choice"`
-	MaxTokens     int             `json:"max_tokens"`
-	Temperature   *float64        `json:"temperature"`
-	TopP          *float64        `json:"top_p"`
-	Stop          []string        `json:"stop"`
-	Stream        bool            `json:"stream"`
-	StreamOptions *struct {
-		IncludeUsage bool `json:"include_usage"`
-	} `json:"stream_options"`
-}
-
-// readChatRequest reads a Chat Completions request body into the neutral
-// form. strict refuses every key EncodeRequest is not supposed to write.
-func readChatRequest(body []byte, strict bool) (ir.Request, error) {
-	var w wireRequest
-	dec := json.NewDecoder(bytes.NewReader(body))
-	if strict {
-		dec.DisallowUnknownFields()
-	}
-	if err := dec.Decode(&w); err != nil {
-		return ir.Request{}, err
-	}
-	if w.Stream != (w.StreamOptions != nil && w.StreamOptions.IncludeUsage) && strict {
-		return ir.Request{}, errors.New("stream and stream_options.include_usage disagree")
-	}
-	req := ir.Request{Model: w.Model, MaxTokens: w.MaxTokens, Temperature: w.Temperature, TopP: w.TopP, Stop: w.Stop, Stream: w.Stream}
-	var pending *ir.Message // tool results waiting for the rest of their user message
-	flush := func() {
-		if pending != nil {
-			req.Messages = append(req.Messages, *pending)
-			pending = nil
-		}
-	}
-	for _, m := range w.Messages {
-		switch m.Role {
-		case "system":
-			var s string
-			if err := json.Unmarshal(m.Content, &s); err != nil {
-				return ir.Request{}, err
-			}
-			req.System = append(req.System, ir.Part{Kind: ir.Text, Text: s})
-		case "tool":
-			var s string
-			if err := json.Unmarshal(m.Content, &s); err != nil {
-				return ir.Request{}, err
-			}
-			if pending == nil {
-				pending = &ir.Message{Role: ir.User}
-			}
-			pending.Parts = append(pending.Parts, ir.Part{Kind: ir.ToolResult, ToolID: m.ToolCallID, Text: s})
-		case "user":
-			parts, err := readUserContent(m.Content)
-			if err != nil {
-				return ir.Request{}, err
-			}
-			if pending != nil {
-				pending.Parts = append(pending.Parts, parts...)
-				flush()
-				continue
-			}
-			req.Messages = append(req.Messages, ir.Message{Role: ir.User, Parts: parts})
-		case "assistant":
-			flush()
-			msg := ir.Message{Role: ir.Assistant}
-			var s *string
-			if err := json.Unmarshal(m.Content, &s); err != nil {
-				return ir.Request{}, err
-			}
-			if s != nil && *s != "" {
-				msg.Parts = append(msg.Parts, ir.Part{Kind: ir.Text, Text: *s})
-			}
-			for _, tc := range m.ToolCalls {
-				if tc.Type != "function" && strict {
-					return ir.Request{}, errors.New("tool call type")
-				}
-				msg.Parts = append(msg.Parts, ir.Part{Kind: ir.ToolUse, ToolID: tc.ID, ToolName: tc.Function.Name, Input: json.RawMessage(tc.Function.Arguments)})
-			}
-			req.Messages = append(req.Messages, msg)
-		default:
-			return ir.Request{}, errors.New("role")
-		}
-	}
-	flush()
-	for _, t := range w.Tools {
-		if t.Type != "function" && strict {
-			return ir.Request{}, errors.New("tool type")
-		}
-		req.Tools = append(req.Tools, ir.Tool{Name: t.Function.Name, Description: t.Function.Description, Schema: t.Function.Parameters})
-	}
-	if len(w.ToolChoice) > 0 {
-		var mode string
-		var named struct {
-			Type     string `json:"type"`
-			Function struct {
-				Name string `json:"name"`
-			} `json:"function"`
-		}
-		switch {
-		case json.Unmarshal(w.ToolChoice, &mode) == nil:
-			req.ToolChoice.Mode = ir.ToolChoiceMode(mode)
-		case json.Unmarshal(w.ToolChoice, &named) == nil && named.Type == "function":
-			req.ToolChoice = ir.ToolChoice{Mode: ir.ChoiceTool, Name: named.Function.Name}
-		default:
-			return ir.Request{}, errors.New("tool_choice")
-		}
-	}
-	return req, nil
-}
-
-func readUserContent(raw json.RawMessage) ([]ir.Part, error) {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		if s == "" {
-			return nil, nil
-		}
-		return []ir.Part{{Kind: ir.Text, Text: s}}, nil
-	}
-	var arr []struct {
-		Type     string `json:"type"`
-		Text     string `json:"text"`
-		ImageURL struct {
-			URL string `json:"url"`
-		} `json:"image_url"`
-	}
-	if err := json.Unmarshal(raw, &arr); err != nil {
-		return nil, err
-	}
-	var parts []ir.Part
-	for _, p := range arr {
-		switch p.Type {
-		case "text":
-			parts = append(parts, ir.Part{Kind: ir.Text, Text: p.Text})
-		case "image_url":
-			media, data, isData := strings.Cut(strings.TrimPrefix(p.ImageURL.URL, "data:"), ";base64,")
-			if strings.HasPrefix(p.ImageURL.URL, "data:") && isData && media != "" {
-				parts = append(parts, ir.Part{Kind: ir.Image, MediaType: media, Data: data})
-			} else {
-				parts = append(parts, ir.Part{Kind: ir.Image, Data: p.ImageURL.URL})
-			}
-		default:
-			return nil, errors.New("content part type")
-		}
-	}
-	return parts, nil
-}
-
-var wireStop = map[ir.StopReason]string{
-	ir.StopEnd: "stop", ir.StopMaxTokens: "length", ir.StopToolUse: "tool_calls", ir.StopRefusal: "content_filter",
-	ir.StopSequence: "stop", ir.StopUnknown: "something_new",
-}
-
-type wireCall struct {
-	Index    *int   `json:"index,omitempty"`
-	ID       string `json:"id,omitempty"`
-	Type     string `json:"type,omitempty"`
-	Function struct {
-		Name      string  `json:"name,omitempty"`
-		Arguments *string `json:"arguments,omitempty"`
-	} `json:"function"`
-}
-
-type wireMsg struct {
-	Role      string     `json:"role,omitempty"`
-	Content   *string    `json:"content"`
-	Reasoning string     `json:"reasoning_content,omitempty"`
-	ToolCalls []wireCall `json:"tool_calls,omitempty"`
-}
+// This file holds the property and fuzz tests of both halves together: what
+// EncodeRequest writes, DecodeRequest reads back; what EncodeResponse and the
+// StreamEncoder write, DecodeResponse and the StreamDecoder read back.
 
 func mustJSON(v any) []byte {
 	b, err := json.Marshal(v)
@@ -220,37 +26,6 @@ func mustJSON(v any) []byte {
 		panic(err)
 	}
 	return b
-}
-
-func joinKind(r ir.Response, kind ir.PartKind) string {
-	var b strings.Builder
-	for _, p := range r.Parts {
-		if p.Kind == kind {
-			b.WriteString(p.Text)
-		}
-	}
-	return b.String()
-}
-
-// writeChatResponse writes a neutral answer as a chat.completion body.
-func writeChatResponse(r ir.Response) []byte {
-	msg := wireMsg{Role: "assistant", Reasoning: joinKind(r, ir.Thinking)}
-	if s := joinKind(r, ir.Text); s != "" {
-		msg.Content = &s
-	}
-	for _, p := range r.Parts {
-		if p.Kind == ir.ToolUse {
-			args := string(p.Input)
-			c := wireCall{ID: p.ToolID, Type: "function"}
-			c.Function.Name, c.Function.Arguments = p.ToolName, &args
-			msg.ToolCalls = append(msg.ToolCalls, c)
-		}
-	}
-	return mustJSON(map[string]any{
-		"id": r.ID, "object": "chat.completion", "model": r.Model,
-		"choices": []any{map[string]any{"index": 0, "message": msg, "finish_reason": wireStop[r.Stop]}},
-		"usage":   map[string]any{"prompt_tokens": r.Usage.InputTokens, "completion_tokens": r.Usage.OutputTokens},
-	})
 }
 
 // cutRunes splits s into pieces at random character boundaries.
@@ -268,65 +43,67 @@ func cutRunes(rng *rand.Rand, s string) []string {
 	return out
 }
 
-// writeChatStream writes a neutral answer as chat.completion.chunk frames:
-// text and arguments cut into random pieces, the pieces of several tool
-// calls interleaved.
-func writeChatStream(rng *rand.Rand, r ir.Response) []byte {
-	var buf bytes.Buffer
-	frame := func(delta any, finish any, usage any) {
-		m := map[string]any{"id": r.ID, "object": "chat.completion.chunk", "model": r.Model}
-		if delta != nil || finish != nil {
-			m["choices"] = []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}
-		} else {
-			m["choices"] = []any{}
-		}
-		if usage != nil {
-			m["usage"] = usage
-		}
-		if err := sse.Write(&buf, "", mustJSON(m)); err != nil {
-			panic(err)
-		}
-	}
-	frame(map[string]any{"role": "assistant", "content": ""}, nil, nil)
-	for _, piece := range cutRunes(rng, joinKind(r, ir.Thinking)) {
-		frame(map[string]any{"reasoning_content": piece}, nil, nil)
-	}
-	for _, piece := range cutRunes(rng, joinKind(r, ir.Text)) {
-		frame(map[string]any{"content": piece}, nil, nil)
-	}
+// answerEvents makes the events of a streamed answer in the shape a Chat
+// Completions stream has: thinking, text, then the tool calls, their
+// arguments cut into random pieces that arrive interleaved.
+func answerEvents(rng *rand.Rand, r ir.Response) []ir.Event {
+	events := []ir.Event{{Kind: ir.Start, ID: r.ID, Model: r.Model}}
 	var pieces [][]string
-	n := 0
-	for _, p := range r.Parts {
-		if p.Kind != ir.ToolUse {
-			continue
+	var open []int
+	for i, p := range r.Parts {
+		switch p.Kind {
+		case ir.ToolUse:
+			events = append(events, ir.Event{Kind: ir.PartStart, Index: i, Part: ir.Part{Kind: ir.ToolUse, ToolID: p.ToolID, ToolName: p.ToolName}})
+			pieces, open = append(pieces, cutRunes(rng, string(p.Input))), append(open, i)
+		default:
+			delta := ir.TextDelta
+			if p.Kind == ir.Thinking {
+				delta = ir.ThinkingDelta
+			}
+			events = append(events, ir.Event{Kind: ir.PartStart, Index: i, Part: ir.Part{Kind: p.Kind}})
+			for _, piece := range cutRunes(rng, p.Text) {
+				events = append(events, ir.Event{Kind: delta, Index: i, Text: piece})
+			}
+			events = append(events, ir.Event{Kind: ir.PartStop, Index: i})
 		}
-		i := n
-		n++
-		empty := ""
-		c := wireCall{Index: &i, ID: p.ToolID, Type: "function"}
-		c.Function.Name, c.Function.Arguments = p.ToolName, &empty
-		frame(map[string]any{"tool_calls": []wireCall{c}}, nil, nil)
-		pieces = append(pieces, cutRunes(rng, string(p.Input)))
 	}
 	for left := true; left; {
 		left = false
-		for i := range pieces {
-			if len(pieces[i]) == 0 || rng.Intn(3) == 0 && len(pieces) > 1 {
-				left = left || len(pieces[i]) > 0
+		for n := range pieces {
+			if len(pieces[n]) == 0 || rng.Intn(3) == 0 && len(pieces) > 1 {
+				left = left || len(pieces[n]) > 0
 				continue
 			}
-			idx := i
-			c := wireCall{Index: &idx}
-			c.Function.Arguments = &pieces[i][0]
-			pieces[i] = pieces[i][1:]
-			frame(map[string]any{"tool_calls": []wireCall{c}}, nil, nil)
-			left = left || len(pieces[i]) > 0
+			events = append(events, ir.Event{Kind: ir.ToolArgsDelta, Index: open[n], ArgsJSON: pieces[n][0]})
+			pieces[n] = pieces[n][1:]
+			left = left || len(pieces[n]) > 0
 		}
 	}
-	frame(map[string]any{}, wireStop[r.Stop], nil)
-	frame(nil, nil, map[string]any{"prompt_tokens": r.Usage.InputTokens, "completion_tokens": r.Usage.OutputTokens})
-	buf.WriteString("data: [DONE]\n\n")
+	for _, i := range open {
+		events = append(events, ir.Event{Kind: ir.PartStop, Index: i})
+	}
+	return append(events, ir.Event{Kind: ir.Finish, Stop: r.Stop, Usage: r.Usage})
+}
+
+// writeChatStream writes a neutral answer as a Chat Completions stream.
+func writeChatStream(t testing.TB, rng *rand.Rand, r ir.Response) []byte {
+	var buf bytes.Buffer
+	enc := NewStreamEncoder(&buf, "fallback", time.Unix(1_700_000_000, 0), true)
+	for _, e := range answerEvents(rng, r) {
+		if err := enc.Write(e); err != nil {
+			t.Fatalf("StreamEncoder: %v", err)
+		}
+	}
 	return buf.Bytes()
+}
+
+// writeChatResponse writes a neutral answer as a chat.completion body.
+func writeChatResponse(t testing.TB, r ir.Response) []byte {
+	body, err := EncodeResponse(r, "fallback", time.Unix(1_700_000_000, 0))
+	if err != nil {
+		t.Fatalf("EncodeResponse: %v", err)
+	}
+	return body
 }
 
 // --------------------------------------------------------------- generators
@@ -375,7 +152,7 @@ func genObject(rng *rand.Rand, depth int) string {
 
 // genRequest makes a request in the shape Chat Completions can carry
 // without loss: roles alternate, one system part, no thinking, no error
-// flag on a tool result, no empty text.
+// flag on a tool result, no empty text, and every tool call answered.
 func genRequest(rng *rand.Rand) ir.Request {
 	req := ir.Request{Model: "caller-model", Stream: rng.Intn(2) == 0}
 	if rng.Intn(2) == 0 {
@@ -454,11 +231,19 @@ func genRequest(rng *rand.Rand) ir.Request {
 		}
 		req.Messages = append(req.Messages, ir.Message{Role: ir.User, Parts: parts})
 	}
+	if len(open) > 0 {
+		var parts []ir.Part
+		for _, id := range open {
+			parts = append(parts, ir.Part{Kind: ir.ToolResult, ToolID: id, Text: genText(rng)})
+		}
+		req.Messages = append(req.Messages, ir.Message{Role: ir.User, Parts: parts})
+	}
 	return req
 }
 
 // genResponse makes an answer in the shape a Chat Completions answer has:
-// at most one thinking part, then at most one text part, then tool calls.
+// at most one thinking part, then at most one text part, then tool calls,
+// and a stop reason Chat Completions has a word for.
 func genResponse(rng *rand.Rand) ir.Response {
 	r := ir.Response{ID: "chatcmpl-" + fmt.Sprint(rng.Intn(1000)), Model: genText(rng),
 		Usage: ir.Usage{InputTokens: rng.Intn(1 << 30), OutputTokens: rng.Intn(1 << 20)}}
@@ -482,7 +267,7 @@ func genResponse(rng *rand.Rand) ir.Response {
 	if tools > 0 {
 		r.Stop = []ir.StopReason{ir.StopToolUse, ir.StopToolUse, ir.StopMaxTokens, ir.StopRefusal}[rng.Intn(4)]
 	} else {
-		r.Stop = []ir.StopReason{ir.StopEnd, ir.StopEnd, ir.StopMaxTokens, ir.StopRefusal, ir.StopUnknown}[rng.Intn(5)]
+		r.Stop = []ir.StopReason{ir.StopEnd, ir.StopEnd, ir.StopMaxTokens, ir.StopRefusal}[rng.Intn(4)]
 	}
 	return r
 }
@@ -503,9 +288,17 @@ func TestProperty_RequestRoundTrip(t *testing.T) {
 		if !json.Valid(body) || !utf8.Valid(body) {
 			t.Fatalf("case %d: the body is not JSON:\n%s", i, body)
 		}
-		back, err := readChatRequest(body, true)
-		if err != nil {
+		// The body is one a strict server takes, and the caller half reads it back whole: nothing
+		// EncodeRequest writes is unknown to DecodeRequest, and nothing needs repair.
+		if err := CheckRequest(body); err != nil {
 			t.Fatalf("case %d: %v\n%s", i, err, body)
+		}
+		back, err := DecodeRequest(body)
+		if err != nil || back.Dropped != nil {
+			t.Fatalf("case %d: %v, dropped %v\n%s", i, err, back.Dropped, body)
+		}
+		if IncludeUsage(body) != req.Stream {
+			t.Fatalf("case %d: a stream is asked for with its usage, and only a stream", i)
 		}
 		if back.Model != "m-target" {
 			t.Fatalf("case %d: model %q", i, back.Model)
@@ -534,17 +327,20 @@ func TestProperty_ResponseRoundTrip(t *testing.T) {
 		want := genResponse(rng)
 
 		// Buffered: write -> decode gives the value; decode -> write -> decode gives it again.
-		body := writeChatResponse(want)
+		body := writeChatResponse(t, want)
 		got, err := DecodeResponse(body)
 		if err != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("case %d: buffered: %v\nwant %+v\n got %+v\n%s", i, err, want, got, body)
 		}
-		if again, err := DecodeResponse(writeChatResponse(got)); err != nil || !reflect.DeepEqual(again, got) {
+		if again, err := DecodeResponse(writeChatResponse(t, got)); err != nil || !reflect.DeepEqual(again, got) {
 			t.Fatalf("case %d: second decoding differs: %v", i, err)
 		}
 
 		// Streamed, in pieces of a random size: the events are well formed and fold to the same value.
-		raw := writeChatStream(rng, want)
+		raw := writeChatStream(t, rng, want)
+		if s, err := CheckStream(raw); err != nil || !s.Done {
+			t.Fatalf("case %d: a client refuses the stream: %v\n%s", i, err, raw)
+		}
 		events, err := decodeStream(t, raw, 1+rng.Intn(300))
 		if err != nil {
 			t.Fatalf("case %d: stream: %v\n%s", i, err, raw)
@@ -710,8 +506,16 @@ func FuzzDecodeResponse(f *testing.F) {
 		if len(ids) > ir.MaxToolCalls || len(got.Parts) > ir.MaxParts || got.Usage.InputTokens < 0 || got.Usage.OutputTokens < 0 {
 			t.Fatalf("over a limit: %d calls, %d parts, usage %+v", len(ids), len(got.Parts), got.Usage)
 		}
-		// decode -> encode -> decode gives the same neutral value.
-		again, err := DecodeResponse(writeChatResponse(got))
+		// decode -> encode -> decode gives the same neutral value (an id gets the Chat prefix, an
+		// answer without a model the fallback, and a stop reason no format knows is written "stop").
+		again, err := DecodeResponse(writeChatResponse(t, got))
+		got.ID, again.ID = "", ""
+		if got.Model == "" {
+			again.Model = ""
+		}
+		if got.Stop == ir.StopUnknown {
+			again.Stop = ir.StopUnknown
+		}
 		if err != nil || !reflect.DeepEqual(again, got) {
 			t.Fatalf("round trip: %v\n first %+v\nsecond %+v", err, got, again)
 		}
@@ -819,7 +623,7 @@ func FuzzEncodeRequest(f *testing.F) {
 	}
 	f.Add([]byte(`{"model":"m","messages":[{"role":"system","content":"s"},{"role":"tool","tool_call_id":"a","content":"r"},{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,aGk="}}]},{"role":"assistant","content":null,"tool_calls":[{"id":"a","function":{"name":"f","arguments":"{\"a\":1}"}}]}],"tools":[{"function":{"name":"f","parameters":{"a":"\u0000"}}}],"tool_choice":{"type":"function","function":{"name":"f"}},"stop":["a","b","c","d","e"],"temperature":1e-9}`))
 	f.Fuzz(func(t *testing.T, in []byte) {
-		req, err := readChatRequest(in, false)
+		req, err := DecodeRequest(in)
 		if err != nil {
 			return
 		}
@@ -830,33 +634,31 @@ func FuzzEncodeRequest(f *testing.F) {
 			}
 			return
 		}
-		// Whatever the request held, the body written by hand is JSON a strict reader accepts...
+		// Whatever the request held, the body written by hand is JSON, and its tool calls and
+		// results stand as a strict server wants them.
 		if !json.Valid(body) || !utf8.Valid(body) || ir.Depth(body) > ir.MaxDepth+8 {
 			t.Fatalf("the body is not sound JSON:\n%s", body)
 		}
-		back, err := readChatRequest(body, true)
-		if err != nil {
-			t.Fatalf("the body cannot be read back: %v\n%s", err, body)
+		if err := CheckPairing(body); err != nil {
+			t.Fatalf("%v\n%s", err, body)
 		}
-		// ...and reading it and writing it again settles: the test's reader folds "tool" messages
-		// into the user message that follows, which an arbitrary input need not have meant (the
-		// generated requests of TestProperty_RequestRoundTrip come back byte for byte at once).
+		// The caller half reads it back with nothing left to repair or report, and written again
+		// it settles.
+		back, err := DecodeRequest(body)
+		if err != nil || back.Dropped != nil {
+			t.Fatalf("the body cannot be read back: %v, dropped %v\n%s", err, back.Dropped, body)
+		}
 		again, _, err := EncodeRequest(back, "m")
 		if err != nil || !json.Valid(again) {
 			t.Fatalf("the second encoding failed (%v)\n%s\n%s", err, body, again)
 		}
-		back, err = readChatRequest(again, true)
-		if err != nil {
-			t.Fatalf("the second body cannot be read back: %v\n%s", err, again)
+		back, err = DecodeRequest(again)
+		if err != nil || back.Dropped != nil {
+			t.Fatalf("the second body cannot be read back: %v, dropped %v\n%s", err, back.Dropped, again)
 		}
 		third, _, err := EncodeRequest(back, "m")
 		if err != nil || !bytes.Equal(third, again) {
 			t.Fatalf("the encoding does not settle (%v)\n%s\n%s\n%s", err, body, again, third)
-		}
-		for _, d := range dropped {
-			if d != "thinking" && d != "stop.extra" && d != "tool_choice" {
-				t.Fatalf("dropped %q", d)
-			}
 		}
 	})
 }

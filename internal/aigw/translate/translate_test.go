@@ -197,12 +197,12 @@ func TestReleased_IsDecidedByTheToolCallChecks(t *testing.T) {
 	// hand it out.
 	broken := map[string]func(p *pair){
 		"the stream encoder loses argument pieces": func(p *pair) {
-			p.codec.newStreamEncoder = func(w io.Writer, model string) streamEncoder {
-				return dropArgs{messages.NewStreamEncoder(w, model)}
+			p.codec.newStreamEncoder = func(w io.Writer, o ResponseOptions) streamEncoder {
+				return dropArgs{messages.NewStreamEncoder(w, o.RequestedModel)}
 			}
 		},
 		"the stream decoder reorders nothing but stops early": func(p *pair) {
-			p.codec.newStreamDecoder = func() streamDecoder { return &stopsEarly{d: chat.NewStreamDecoder()} }
+			p.codec.newStreamDecoder = func() streamDecoder { return &stopsEarly{d: chatTarget.newStreamDecoder()} }
 		},
 		"the buffered answer loses its tool calls": func(p *pair) {
 			p.codec.encodeResponse = func(r ir.Response, model string) ([]byte, error) {
@@ -258,11 +258,11 @@ type stopsEarly struct {
 	seen int
 }
 
-func (s *stopsEarly) Feed(data []byte) ([]ir.Event, error) {
+func (s *stopsEarly) Feed(event string, data []byte) ([]ir.Event, error) {
 	if s.seen++; s.seen > 3 {
 		return nil, nil
 	}
-	return s.d.Feed(data)
+	return s.d.Feed(event, data)
 }
 func (s *stopsEarly) Close() []ir.Event { return s.d.Close() }
 

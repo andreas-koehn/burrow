@@ -80,7 +80,7 @@ func TestResponsesChat_Lookup(t *testing.T) {
 	if !ok || p.ID() != "responses-chat" || p.UpstreamPath() != "/v1/chat/completions" || !p.Released() {
 		t.Fatalf("Lookup(Responses, Chat) = %v, %v", p, ok)
 	}
-	for _, pair := range [][2]Format{{Responses, Responses}, {Chat, Responses}, {Messages, Responses}, {Responses, Messages}} {
+	for _, pair := range [][2]Format{{Responses, Responses}, {Chat, Responses}, {Messages, Responses}} {
 		if p, ok := Lookup(pair[0], pair[1]); ok || p != nil {
 			t.Errorf("Lookup(%q, %q) found a pair", pair[0], pair[1])
 		}
@@ -697,12 +697,12 @@ func TestResponsesChat_ReleasedIsDecidedByTheToolCallChecks(t *testing.T) {
 	now := time.Now()
 	broken := map[string]func(p *pair){
 		"the stream encoder loses argument pieces": func(p *pair) {
-			p.codec.newStreamEncoder = func(w io.Writer, model string) streamEncoder {
-				return dropArgs{responses.NewStreamEncoder(w, model, now)}
+			p.codec.newStreamEncoder = func(w io.Writer, o ResponseOptions) streamEncoder {
+				return dropArgs{responses.NewStreamEncoder(w, o.RequestedModel, now)}
 			}
 		},
 		"the stream decoder stops early": func(p *pair) {
-			p.codec.newStreamDecoder = func() streamDecoder { return &stopsEarly{d: chat.NewStreamDecoder()} }
+			p.codec.newStreamDecoder = func() streamDecoder { return &stopsEarly{d: chatTarget.newStreamDecoder()} }
 		},
 		"the buffered answer loses its tool calls": func(p *pair) {
 			p.codec.encodeResponse = func(r ir.Response, model string) ([]byte, error) {
@@ -742,8 +742,8 @@ func TestResponsesChat_ReleasedIsDecidedByTheToolCallChecks(t *testing.T) {
 			}
 		},
 		"the stream encoder hands over a call that was cut": func(p *pair) {
-			p.codec.newStreamEncoder = func(w io.Writer, model string) streamEncoder {
-				return closesCalls{responses.NewStreamEncoder(w, model, now)}
+			p.codec.newStreamEncoder = func(w io.Writer, o ResponseOptions) streamEncoder {
+				return closesCalls{responses.NewStreamEncoder(w, o.RequestedModel, now)}
 			}
 		},
 	}

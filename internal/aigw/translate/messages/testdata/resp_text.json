@@ -1,0 +1,1 @@
+{"id":"msg_01A","type":"message","role":"assistant","model":"claude-x","content":[{"type":"text","text":"Hello there."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":12,"cache_creation_input_tokens":3,"cache_read_input_tokens":5,"output_tokens":4}}

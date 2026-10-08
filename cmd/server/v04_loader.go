@@ -80,7 +80,10 @@ func (l chainConfigLoader) LoadAIConfig(ctx context.Context, serviceID string) (
 // additional sections this server version ignores). The routing
 // sub-object is intentionally NOT decoded here — v0.4.0 wires
 // route.Policy via the API layer, not the per-service config blob; the
-// chain's routing step is log-only in v0.4.0 (see aigw.Chain.run).
+// chain's routing step is log-only in v0.4.0 (see aigw.Chain.run). A
+// "translate_to" inside it, which older dashboards wrote, is therefore
+// read by nothing: it named a per-service format adapter that never ran
+// and no longer exists.
 func decodeServiceAIConfig(blob []byte) (aigw.ServiceAIConfig, error) {
 	if len(blob) == 0 {
 		return aigw.ServiceAIConfig{}, nil
@@ -163,7 +166,9 @@ func decodeServiceAIConfig(blob []byte) (aigw.ServiceAIConfig, error) {
 		out.Inspector = &aigw.InspectorConfig{Enabled: i.Enabled, MaxRequests: i.MaxRequests}
 	}
 
-	// .anthropic → *aigw.AnthropicConfig
+	// .anthropic → *aigw.AnthropicConfig. No adapter stands behind it (see
+	// aigw.AnthropicConfig): a service that has the section stays on the
+	// chain and is metered, and its requests are not rewritten.
 	if raw, ok := outer["anthropic"]; ok && len(raw) > 0 && string(raw) != "null" {
 		var a struct {
 			Enabled bool `json:"enabled"`

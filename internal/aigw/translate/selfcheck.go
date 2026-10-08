@@ -43,8 +43,13 @@ func (r *recorder) Write(p []byte) (int, error) {
 // answer plays an upstream answer through the pair in pieces of the given
 // size and returns what the caller got.
 func answer(p *pair, stream bool, contentType string, body []byte, piece int) *recorder {
+	return answerTo(p, ResponseOptions{Stream: stream, RequestedModel: "asked-for"}, contentType, body, piece)
+}
+
+// answerTo is answer for a call with options of its own.
+func answerTo(p *pair, o ResponseOptions, contentType string, body []byte, piece int) *recorder {
 	rec := &recorder{header: http.Header{}}
-	w := p.Response(rec, ResponseOptions{Stream: stream, RequestedModel: "asked-for"})
+	w := p.Response(rec, o)
 	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(http.StatusOK)
 	for i := 0; i < len(body); i += piece {
@@ -223,8 +228,30 @@ func checkResponsesChat(p *pair) error {
 	if stream || dropped != nil || !jsonEqual(out, []byte(checkChatRequest)) {
 		return errors.New("request: tools, tool calls or tool results are not carried as they must be")
 	}
+	if err := responsesAnswers(p, "application/json", []byte(checkChatAnswer), checkChatStream); err != nil {
+		return err
+	}
+	// A history as a client holds it after such answers — the items of an answer in the order
+	// they were written, a call that was cut, a call without an output, an output without a call,
+	// outputs after all items — is taken and becomes a conversation a strict server accepts.
+	out, _, dropped, err = p.Request([]byte(checkResponsesHistory), nil, "target-model")
+	if err != nil {
+		return fmt.Errorf("history: %w", err)
+	}
+	if chat.CheckRequest(out) != nil || !jsonEqual(out, []byte(checkChatHistory)) ||
+		!reflect.DeepEqual(dropped, []string{"input:function_call.arguments", "input:function_call.unanswered", "input:function_call_output.orphan"}) {
+		return errors.New("history: calls and outputs are not paired as a Chat Completions server wants them")
+	}
+	return nil
+}
+
+// responsesAnswers is the part of the checks both Responses pairs share: the
+// target's whole answer and its streamed answer (stream(cut) writes it, cut
+// inside the calls when asked) hold the two tool calls of the vectors, and
+// what the caller gets holds them too.
+func responsesAnswers(p *pair, contentType string, whole []byte, stream func(cut bool) []byte) error {
 	// A whole answer with several calls: "arguments" is a string that holds the upstream's bytes.
-	rec := answer(p, false, "application/json", []byte(checkChatAnswer), 1<<20)
+	rec := answer(p, false, contentType, whole, 1<<20)
 	var body struct {
 		ID, Object, Status, Model string
 		Output                    []struct {
@@ -252,7 +279,7 @@ func checkResponsesChat(p *pair) error {
 	}
 	// A streamed answer: the pieces of each call's arguments add up to the upstream's bytes, and
 	// the done events and the final response repeat them, however the upstream's bytes arrive.
-	upstream := checkChatStream(false)
+	upstream := stream(false)
 	for _, piece := range []int{1, 13, len(upstream)} {
 		rec := answer(p, true, "text/event-stream", upstream, piece)
 		s, err := responses.CheckStream(rec.body.Bytes())
@@ -271,7 +298,7 @@ func checkResponsesChat(p *pair) error {
 	}
 	// A stream that is cut inside the calls does not end as a success, and no call of it is
 	// handed over: a client would run it and send it back with every later request.
-	rec = answer(p, true, "text/event-stream", checkChatStream(true), 13)
+	rec = answer(p, true, "text/event-stream", stream(true), 13)
 	s, err := responses.CheckStream(rec.body.Bytes())
 	if err != nil {
 		return fmt.Errorf("cut stream: %w", err)
@@ -283,17 +310,6 @@ func checkResponsesChat(p *pair) error {
 		if it.Type == "function_call" && it.Done {
 			return errors.New("cut stream: a call that was cut is handed over")
 		}
-	}
-	// A history as a client holds it after such answers — the items of an answer in the order
-	// they were written, a call that was cut, a call without an output, an output without a call,
-	// outputs after all items — is taken and becomes a conversation a strict server accepts.
-	out, _, dropped, err = p.Request([]byte(checkResponsesHistory), nil, "target-model")
-	if err != nil {
-		return fmt.Errorf("history: %w", err)
-	}
-	if chat.CheckRequest(out) != nil || !jsonEqual(out, []byte(checkChatHistory)) ||
-		!reflect.DeepEqual(dropped, []string{"input:function_call.arguments", "input:function_call.unanswered", "input:function_call_output.orphan"}) {
-		return errors.New("history: calls and outputs are not paired as a Chat Completions server wants them")
 	}
 	return nil
 }
@@ -320,4 +336,230 @@ const (
  {"role":"tool","tool_call_id":"call_2","content":"19°C"},
  {"role":"tool","tool_call_id":"call_3","content":"[no output]"},
  {"role":"user","content":"Thanks."}]}`
+)
+
+// The vectors of the pairs with a Messages target. checkChatRequest, the
+// request a Chat Completions target is sent, is also the request a Chat
+// Completions caller sends: with checkResponsesRequest it must become
+// checkMessagesTargetRequest. The answers hold the calls of checkArgs1 and
+// checkArgs2, as the Chat answers do; 11 of the 31 input tokens are read
+// from the cache.
+const (
+	checkMessagesTargetRequest = `{"model":"target-model","max_tokens":64,
+"messages":[
+ {"role":"user","content":[{"type":"text","text":"Weather in Oslo and Rome?"}]},
+ {"role":"assistant","content":[{"type":"text","text":"Checking."},
+  {"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city":"Oslo"}},
+  {"type":"tool_use","id":"toolu_2","name":"get_weather","input":{"city":"Rome"}}]},
+ {"role":"user","content":[
+  {"type":"tool_result","tool_use_id":"toolu_1","content":"4°C"},
+  {"type":"tool_result","tool_use_id":"toolu_2","content":"19°C"}]}],
+"tools":[{"name":"get_weather","description":"Weather for a city","input_schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}],
+"tool_choice":{"type":"auto"}}`
+
+	checkMessagesTargetAnswer = `{"id":"msg_check","type":"message","role":"assistant","model":"m-up","content":[
+ {"type":"text","text":"Checking."},
+ {"type":"tool_use","id":"call_1","name":"get_weather","input":{"city":"Oslo","days":[1,2,3]}},
+ {"type":"tool_use","id":"call_2","name":"get_weather","input":{ "city": "Rome", "unit": "°C" }}],
+"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":20,"cache_read_input_tokens":11,"output_tokens":17}}`
+)
+
+// checkMessagesStream writes an Anthropic Messages stream with the two tool
+// calls of the vectors, their input cut into pieces of a few characters.
+// The two tool_use blocks are open side by side and their pieces alternate —
+// more than Anthropic's own streams do, and what the neutral events allow —
+// so that a caller's encoder is shown calls that interleave. cut leaves the
+// end of the stream out.
+func checkMessagesStream(cut bool) []byte {
+	var b []byte
+	frame := func(event, data string) {
+		b = fmt.Appendf(b, "event: %s\ndata: %s\n\n", event, data)
+	}
+	frame("message_start", `{"type":"message_start","message":{"id":"msg_check","type":"message","role":"assistant","model":"m-up","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":20,"cache_read_input_tokens":11,"output_tokens":1}}}`)
+	frame("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+	frame("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Checking."}}`)
+	frame("content_block_stop", `{"type":"content_block_stop","index":0}`)
+	frame("ping", `{"type":"ping"}`)
+	frame("content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call_1","name":"get_weather","input":{}}}`)
+	frame("content_block_start", `{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"call_2","name":"get_weather","input":{}}}`)
+	left := [][]rune{[]rune(checkArgs1), []rune(checkArgs2)}
+	for len(left[0]) > 0 || len(left[1]) > 0 {
+		for i := range left {
+			n := min(len(left[i]), 3+i)
+			if n == 0 {
+				continue
+			}
+			delta := fmt.Appendf(nil, `{"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":`, i+1)
+			frame("content_block_delta", string(append(ir.AppendString(delta, string(left[i][:n])), `}}`...)))
+			left[i] = left[i][n:]
+		}
+		if cut && len(left[0]) < len(checkArgs1)/2 {
+			return b
+		}
+	}
+	frame("content_block_stop", `{"type":"content_block_stop","index":1}`)
+	frame("content_block_stop", `{"type":"content_block_stop","index":2}`)
+	frame("message_delta", `{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":17}}`)
+	frame("message_stop", `{"type":"message_stop"}`)
+	return b
+}
+
+// checkChatMessages is the tool-call check of the pair chat-messages.
+func checkChatMessages(p *pair) error {
+	// Tool definitions, several calls in one turn and their results reach the target as Anthropic
+	// wants them: one user message with both results.
+	out, stream, dropped, err := p.Request([]byte(checkChatRequest), nil, "target-model")
+	if err != nil {
+		return fmt.Errorf("request: %w", err)
+	}
+	if stream || dropped != nil || messages.CheckRequest(out) != nil || !jsonEqual(out, []byte(checkMessagesTargetRequest)) {
+		return errors.New("request: tools, tool calls or tool results are not carried as they must be")
+	}
+	// A whole answer with several calls: "arguments" is a string that holds the upstream's bytes.
+	rec := answer(p, false, "application/json", []byte(checkMessagesTargetAnswer), 1<<20)
+	var body struct {
+		ID, Object, Model string
+		Choices           []struct {
+			Message struct {
+				Role      string
+				Content   string
+				ToolCalls []struct {
+					ID, Type string
+					Function struct{ Name, Arguments string }
+				} `json:"tool_calls"`
+			}
+			FinishReason string `json:"finish_reason"`
+		}
+		Usage struct {
+			Prompt     int `json:"prompt_tokens"`
+			Completion int `json:"completion_tokens"`
+			Total      int `json:"total_tokens"`
+		}
+	}
+	if rec.status != http.StatusOK || json.Unmarshal(rec.body.Bytes(), &body) != nil || body.Object != "chat.completion" || body.ID == "" || body.Model != "m-up" ||
+		body.Usage.Prompt != 31 || body.Usage.Completion != 17 || body.Usage.Total != 48 || len(body.Choices) != 1 {
+		return errors.New("answer: the completion is not carried as it must be")
+	}
+	msg := body.Choices[0].Message
+	if msg.Role != "assistant" || msg.Content != "Checking." || body.Choices[0].FinishReason != "tool_calls" || len(msg.ToolCalls) != 2 {
+		return errors.New("answer: tool calls are not carried as they must be")
+	}
+	one, two := msg.ToolCalls[0], msg.ToolCalls[1]
+	if one.ID != "call_1" || one.Type != "function" || one.Function.Name != "get_weather" || one.Function.Arguments != checkArgs1 ||
+		two.ID != "call_2" || two.Type != "function" || two.Function.Name != "get_weather" || two.Function.Arguments != checkArgs2 {
+		return errors.New("answer: tool calls are not carried as they must be")
+	}
+	// A streamed answer: per index, the pieces of a call's arguments add up to the upstream's
+	// bytes, however the upstream's bytes arrive; the usage chunk comes when it was asked for,
+	// and only then.
+	upstream := checkMessagesStream(false)
+	for _, usage := range []bool{true, false} {
+		o := ResponseOptions{Stream: true, RequestedModel: "asked-for"}
+		if usage {
+			o.CallerRequest = []byte(`{"stream":true,"stream_options":{"include_usage":true}}`)
+		}
+		for _, piece := range []int{1, 13, len(upstream)} {
+			rec := answerTo(p, o, "text/event-stream", upstream, piece)
+			s, err := chat.CheckStream(rec.body.Bytes())
+			if err != nil {
+				return fmt.Errorf("stream: %w", err)
+			}
+			if rec.status != http.StatusOK || !s.Done || s.FinishReason != "tool_calls" || s.Model != "m-up" || s.Content != "Checking." || len(s.Calls) != 2 ||
+				s.HasUsage != usage || usage && (s.PromptTokens != 31 || s.CompletionTokens != 17 || s.TotalTokens != 48) {
+				return errors.New("stream: the answer does not end as a tool call must")
+			}
+			one, two := s.Calls[0], s.Calls[1]
+			if one.ID != "call_1" || one.Name != "get_weather" || one.Arguments != checkArgs1 || strings.Join(one.Deltas, "") != checkArgs1 ||
+				two.ID != "call_2" || two.Name != "get_weather" || two.Arguments != checkArgs2 || strings.Join(two.Deltas, "") != checkArgs2 {
+				return errors.New("stream: the arguments do not add up to the upstream's bytes")
+			}
+		}
+	}
+	// A stream that is cut inside the calls does not end as a success: no finish_reason and no
+	// "[DONE]", an error object in their place.
+	rec = answer(p, true, "text/event-stream", checkMessagesStream(true), 13)
+	s, err := chat.CheckStream(rec.body.Bytes())
+	if err != nil {
+		return fmt.Errorf("cut stream: %w", err)
+	}
+	if s.Done || s.FinishReason != "" || s.ErrMessage == "" || s.Content != "Checking." || bytes.Contains(rec.body.Bytes(), []byte("[DONE]")) {
+		return errors.New("cut stream: the answer does not end as an error")
+	}
+	// A history as a client holds it — the assistant's greeting first, a call that was cut, a call
+	// without a result, a result without a call, results out of order — is taken and becomes a
+	// conversation Anthropic accepts.
+	out, _, dropped, err = p.Request([]byte(checkChatCallerHistory), nil, "target-model")
+	if err != nil {
+		return fmt.Errorf("history: %w", err)
+	}
+	if messages.CheckRequest(out) != nil || !jsonEqual(out, []byte(checkMessagesHistoryOfChat)) ||
+		!reflect.DeepEqual(dropped, []string{"input:tool.orphan", "input:tool_call.arguments", "input:tool_call.unanswered", "messages.start"}) {
+		return errors.New("history: calls and results are not paired as the Messages API wants them")
+	}
+	return nil
+}
+
+// checkResponsesMessages is the tool-call check of the pair
+// responses-messages.
+func checkResponsesMessages(p *pair) error {
+	out, stream, dropped, err := p.Request([]byte(checkResponsesRequest), nil, "target-model")
+	if err != nil {
+		return fmt.Errorf("request: %w", err)
+	}
+	if stream || dropped != nil || messages.CheckRequest(out) != nil || !jsonEqual(out, []byte(checkMessagesTargetRequest)) {
+		return errors.New("request: tools, tool calls or tool results are not carried as they must be")
+	}
+	if err := responsesAnswers(p, "application/json", []byte(checkMessagesTargetAnswer), checkMessagesStream); err != nil {
+		return err
+	}
+	// The history of checkResponsesChat becomes a conversation Anthropic accepts; without a
+	// token cap the one Anthropic requires is sent, and told.
+	out, _, dropped, err = p.Request([]byte(checkResponsesHistory), nil, "target-model")
+	if err != nil {
+		return fmt.Errorf("history: %w", err)
+	}
+	if messages.CheckRequest(out) != nil || !jsonEqual(out, []byte(checkMessagesHistoryOfResponses)) ||
+		!reflect.DeepEqual(dropped, []string{"input:function_call.arguments", "input:function_call.unanswered", "input:function_call_output.orphan", "max_tokens:default"}) {
+		return errors.New("history: calls and outputs are not paired as the Messages API wants them")
+	}
+	return nil
+}
+
+const (
+	checkChatCallerHistory = `{"model":"asked-for","max_tokens":64,"messages":[
+ {"role":"assistant","content":"Hello."},
+ {"role":"user","content":"Weather in Oslo and Rome?"},
+ {"role":"assistant","content":"Checking.","tool_calls":[
+  {"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Oslo\"}"}},
+  {"id":"call_2","type":"function","function":{"name":"get_weather","arguments":"{\"city\":"}},
+  {"id":"call_3","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},
+ {"role":"tool","tool_call_id":"call_2","content":"19°C"},
+ {"role":"tool","tool_call_id":"call_1","content":"4°C"},
+ {"role":"tool","tool_call_id":"call_9","content":"?"},
+ {"role":"user","content":"Thanks."}]}`
+	checkMessagesHistoryOfChat = `{"model":"target-model","max_tokens":64,"messages":[
+ {"role":"user","content":[{"type":"text","text":"[no message]"}]},
+ {"role":"assistant","content":[{"type":"text","text":"Hello."}]},
+ {"role":"user","content":[{"type":"text","text":"Weather in Oslo and Rome?"}]},
+ {"role":"assistant","content":[{"type":"text","text":"Checking."},
+  {"type":"tool_use","id":"call_1","name":"get_weather","input":{"city":"Oslo"}},
+  {"type":"tool_use","id":"call_2","name":"get_weather","input":{}},
+  {"type":"tool_use","id":"call_3","name":"get_weather","input":{}}]},
+ {"role":"user","content":[
+  {"type":"tool_result","tool_use_id":"call_1","content":"4°C"},
+  {"type":"tool_result","tool_use_id":"call_2","content":"19°C"},
+  {"type":"tool_result","tool_use_id":"call_3","content":"[no output]"},
+  {"type":"text","text":"Thanks."}]}]}`
+	checkMessagesHistoryOfResponses = `{"model":"target-model","max_tokens":4096,"messages":[
+ {"role":"user","content":[{"type":"text","text":"Weather in Oslo and Rome?"}]},
+ {"role":"assistant","content":[{"type":"text","text":"Checking."},
+  {"type":"tool_use","id":"call_1","name":"get_weather","input":{"city":"Oslo"}},
+  {"type":"text","text":"And Rome."},
+  {"type":"tool_use","id":"call_2","name":"get_weather","input":{}},
+  {"type":"tool_use","id":"call_3","name":"get_weather","input":{}}]},
+ {"role":"user","content":[
+  {"type":"tool_result","tool_use_id":"call_1","content":"4°C"},
+  {"type":"tool_result","tool_use_id":"call_2","content":"19°C"},
+  {"type":"tool_result","tool_use_id":"call_3","content":"[no output]"},
+  {"type":"text","text":"Thanks."}]}]}`
 )

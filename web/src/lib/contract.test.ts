@@ -70,7 +70,7 @@ describe("contract", () => {
     const routing: RoutingPolicy = {
       strategy: "single", model_alias: "", header_name: "X-Burrow-Model", paused: false,
       circuit_breaker: { failure_pct: 50, window_seconds: 30, cool_down_seconds: 60 },
-      backends: [], translate_to: "none",
+      backends: [],
     };
     const ipgeo: IpGeoConfig = { enabled: false, allow_cidrs: [], block_cidrs: [], allow_countries: [], block_countries: [] };
     const mtls: MtlsConfig = { enabled: false, ca_fingerprint_sha256: "" };
@@ -136,7 +136,6 @@ describe("contract", () => {
       paused: false,
       circuit_breaker: { failure_pct: 50, window_seconds: 30, cool_down_seconds: 60 },
       backends: [{ service_id: "svc_ai001", weight: 100, concrete_model: "llama3.1:8b" }],
-      translate_to: "none",
     };
     const domain: CustomDomain = {
       id: "dom_001", service_id: "svc_ai001", hostname: "foo.example.com",

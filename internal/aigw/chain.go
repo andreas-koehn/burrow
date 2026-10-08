@@ -187,7 +187,7 @@ type ServiceAIConfig struct {
 	Guardrails *guardrails.Settings // nil = guardrails disabled
 	Inspector  *InspectorConfig     // nil = inspector disabled
 	Routing    *route.Policy        // nil = single-backend (v0.3.0 default)
-	Anthropic  *AnthropicConfig     // nil = no Anthropic adapter
+	Anthropic  *AnthropicConfig     // nil = no "anthropic" section (see AnthropicConfig)
 }
 
 // RedactionConfig is the per-service redaction toggle. ForLogsOnly = true
@@ -205,14 +205,20 @@ type InspectorConfig struct {
 	MaxRequests int // capacity of the per-service ring; 0 → default
 }
 
-// AnthropicConfig is the per-service Anthropic-adapter toggle. For Task 10
-// we wire the simpler case (visitor speaks Anthropic, upstream is
-// Anthropic, no translation at all — just kind=anthropic + meter labels).
-// Bidirectional translation (OpenAI ↔ Anthropic) is deferred to a follow-up.
+// AnthropicConfig is the "anthropic" section of a service's AI config. It
+// was meant to switch on a per-service Anthropic ↔ OpenAI adapter; that
+// adapter was never put in a request's path and is gone. Formats are
+// translated per gateway model now (internal/aigw/translate, a model's
+// "translate" flag), never per service.
+//
+// What the section does, and keeps doing for the services that have it: like
+// every other section it takes the service off the pass-through path, so its
+// requests run through the chain — forwarded to the upstream as they came,
+// and metered (an Anthropic-shaped request as KindAnthropic). Nothing is
+// rewritten.
 type AnthropicConfig struct {
-	// Enabled gates whether the Anthropic adapter even runs. For v0.4.0
-	// Task 10 this is informational; the Chain detects Anthropic-shaped
-	// requests on its own and metering uses KindAnthropic accordingly.
+	// Enabled is what the stored section says. Nothing in the chain reads
+	// it: the section counts by being there.
 	Enabled bool
 }
 

@@ -1,0 +1,14 @@
+{"model":"claude-x","max_tokens":4096,"system":"You are a weather bot.",
+ "messages":[
+   {"role":"user","content":[{"type":"text","text":"Weather in Oslo and Rome?"}]},
+   {"role":"assistant","content":[
+     {"type":"text","text":"Checking both."},
+     {"type":"tool_use","id":"call_1","name":"get_weather","input":{"city":"Oslo"}},
+     {"type":"tool_use","id":"call_2","name":"get_weather","input":{"city":"Rome"}}]},
+   {"role":"user","content":[
+     {"type":"tool_result","tool_use_id":"call_1","content":"4°C"},
+     {"type":"tool_result","tool_use_id":"call_2","content":"19°C"},
+     {"type":"text","text":"And tomorrow?"}]}
+ ],
+ "tools":[{"name":"get_weather","description":"Weather for a city","input_schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}],
+ "tool_choice":{"type":"auto"},"temperature":0.2,"stream":true}

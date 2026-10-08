@@ -547,9 +547,8 @@ func TestMultiProviderRouterPicksByPriorityThenSkipsTrippedBreaker(t *testing.T)
 	r := newRouterForTest(t, hc)
 
 	policy := Policy{
-		Strategy:    StrategyMultiProvider,
-		ModelAlias:  "fast",
-		TranslateTo: "none",
+		Strategy:   StrategyMultiProvider,
+		ModelAlias: "fast",
 		MultiBackends: []MultiProviderBackend{
 			{Backend: Backend{ServiceID: "svc_ollama", ConcreteModel: "llama3.1:8b"}, Provider: "ollama", Priority: 0},
 			{Backend: Backend{ServiceID: "svc_openai", ConcreteModel: "gpt-4o-mini"}, Provider: "openai", Priority: 50},
@@ -580,8 +579,7 @@ func TestMultiProviderAllTripped(t *testing.T) {
 	r := newRouterForTest(t, hc)
 
 	policy := Policy{
-		Strategy:    StrategyMultiProvider,
-		TranslateTo: "none",
+		Strategy: StrategyMultiProvider,
 		MultiBackends: []MultiProviderBackend{
 			{Backend: Backend{ServiceID: "svc_ollama", ConcreteModel: "llama3.1:8b"}, Provider: "ollama", Priority: 0},
 			{Backend: Backend{ServiceID: "svc_openai", ConcreteModel: "gpt-4o-mini"}, Provider: "openai", Priority: 50},
@@ -593,27 +591,28 @@ func TestMultiProviderAllTripped(t *testing.T) {
 	}
 }
 
-// TestMultiProviderTranslateTo_CrossProvider: translate_to="openai" allows
-// anthropic backends to be routed to (cross-provider).
-func TestMultiProviderTranslateTo_CrossProvider(t *testing.T) {
+// TestMultiProvider_NeverCrossesFormats: a request is not routed to a backend
+// of another wire format, whatever else is tripped — nothing on this path
+// translates a body. (The per-service "translate_to" switch that once allowed
+// it named an adapter that never ran; formats are translated per gateway
+// model.)
+func TestMultiProvider_NeverCrossesFormats(t *testing.T) {
 	hc := newScriptedHealth()
 	hc.Trip("svc_ollama")
 	r := newRouterForTest(t, hc)
 
 	policy := Policy{
-		Strategy:    StrategyMultiProvider,
-		TranslateTo: "openai",
+		Strategy: StrategyMultiProvider,
 		MultiBackends: []MultiProviderBackend{
 			{Backend: Backend{ServiceID: "svc_ollama", ConcreteModel: "llama3.1:8b"}, Provider: "ollama", Priority: 0},
 			{Backend: Backend{ServiceID: "svc_anthropic", ConcreteModel: "claude-3-5-sonnet"}, Provider: "anthropic", Priority: 50},
 		},
 	}
-	// translate_to != "none" → cross-provider permitted; anthropic should be picked.
-	p, err := r.PickMulti(context.Background(), policy, RouteContext{Kind: "openai"})
-	if err != nil {
-		t.Fatalf("pick: %v", err)
+	if p, err := r.PickMulti(context.Background(), policy, RouteContext{Kind: "openai"}); err == nil {
+		t.Fatalf("an openai request was routed to %q", p.ServiceID)
 	}
-	if p.ServiceID != "svc_anthropic" {
-		t.Fatalf("want svc_anthropic (cross-provider with translate_to=openai); got %q", p.ServiceID)
+	p, err := r.PickMulti(context.Background(), policy, RouteContext{Kind: "anthropic"})
+	if err != nil || p.ServiceID != "svc_anthropic" {
+		t.Fatalf("an anthropic request: %q, %v", p.ServiceID, err)
 	}
 }

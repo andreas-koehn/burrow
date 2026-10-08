@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/aigw/translate/chat"
 	"github.com/ankoehn/burrow/internal/aigw/translate/ir"
@@ -27,8 +28,11 @@ const (
 	msgStatus     = "the provider answered " // + the status
 )
 
+// streamDecoder reads the frames of a target's stream. event is the SSE
+// event name of the frame: a Messages stream is told apart by it (and by
+// the "type" of the data), a Chat Completions stream has none.
 type streamDecoder interface {
-	Feed(data []byte) ([]ir.Event, error)
+	Feed(event string, data []byte) ([]ir.Event, error)
 	Close() []ir.Event
 }
 
@@ -48,9 +52,11 @@ type targetCodec struct {
 
 // callerCodec writes answers for a caller of one format.
 type callerCodec struct {
-	encodeResponse   func(resp ir.Response, fallbackModel string) ([]byte, error)
-	encodeError      func(status int, code, message string) []byte
-	newStreamEncoder func(w io.Writer, fallbackModel string) streamEncoder
+	encodeResponse func(resp ir.Response, fallbackModel string) ([]byte, error)
+	encodeError    func(status int, code, message string) []byte
+	// newStreamEncoder gets the options of the call: the model that was
+	// asked for, and what a format reads from the caller's request.
+	newStreamEncoder func(w io.Writer, o ResponseOptions) streamEncoder
 }
 
 // codec is what a response writer translates with: the target's half of
@@ -65,13 +71,42 @@ var chatTarget = targetCodec{
 	maxFrame:         chat.MaxFrameBytes,
 	decodeResponse:   chat.DecodeResponse,
 	decodeError:      chat.DecodeError,
-	newStreamDecoder: func() streamDecoder { return chat.NewStreamDecoder() },
+	newStreamDecoder: func() streamDecoder { return chatDecoder{chat.NewStreamDecoder()} },
+}
+
+// chatDecoder reads a Chat Completions stream, whose frames have no names.
+type chatDecoder struct{ d *chat.StreamDecoder }
+
+func (c chatDecoder) Feed(_ string, data []byte) ([]ir.Event, error) { return c.d.Feed(data) }
+func (c chatDecoder) Close() []ir.Event                              { return c.d.Close() }
+
+var messagesTarget = targetCodec{
+	maxBody:          messages.MaxResponseBytes,
+	maxFrame:         messages.MaxFrameBytes,
+	decodeResponse:   messages.DecodeResponse,
+	decodeError:      messages.DecodeError,
+	newStreamDecoder: func() streamDecoder { return messages.NewStreamDecoder() },
 }
 
 var messagesCaller = callerCodec{
-	encodeResponse:   messages.EncodeResponse,
-	encodeError:      messages.EncodeError,
-	newStreamEncoder: func(w io.Writer, model string) streamEncoder { return messages.NewStreamEncoder(w, model) },
+	encodeResponse: messages.EncodeResponse,
+	encodeError:    messages.EncodeError,
+	newStreamEncoder: func(w io.Writer, o ResponseOptions) streamEncoder {
+		return messages.NewStreamEncoder(w, o.RequestedModel)
+	},
+}
+
+// chatCaller writes answers for a Chat Completions caller. An answer's
+// "created" is the moment the gateway begins to write it. The usage chunk
+// of a stream is written only for a caller that asked for it.
+var chatCaller = callerCodec{
+	encodeResponse: func(resp ir.Response, model string) ([]byte, error) {
+		return chat.EncodeResponse(resp, model, time.Now())
+	},
+	encodeError: chat.EncodeError,
+	newStreamEncoder: func(w io.Writer, o ResponseOptions) streamEncoder {
+		return chat.NewStreamEncoder(w, o.RequestedModel, time.Now(), chat.IncludeUsage(o.CallerRequest))
+	},
 }
 
 type mode int
@@ -241,7 +276,7 @@ func (t *writer) feed(p []byte) {
 		if t.ended {
 			return
 		}
-		events, err := t.dec.Feed(f.Data)
+		events, err := t.dec.Feed(f.Event, f.Data)
 		code := CodeUpstreamError // an Error event without an error: the provider's own words, or its early "[DONE]"
 		if err != nil {
 			code = CodeUpstreamInvalid
@@ -358,7 +393,7 @@ func (t *writer) commitStream() {
 	h.Set("Cache-Control", "no-cache")
 	t.w.WriteHeader(t.status)
 	t.out = &countingWriter{w: t.w}
-	t.enc = t.c.newStreamEncoder(t.out, t.o.RequestedModel)
+	t.enc = t.c.newStreamEncoder(t.out, t.o)
 }
 
 // respond writes a whole response to the caller.
@@ -413,7 +448,7 @@ func (t *writer) finishStream() {
 			if t.ended {
 				break
 			}
-			events, err := t.dec.Feed(f.Data)
+			events, err := t.dec.Feed(f.Event, f.Data)
 			code := CodeUpstreamError
 			if err != nil {
 				code = CodeUpstreamInvalid

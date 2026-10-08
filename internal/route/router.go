@@ -78,7 +78,6 @@ type Policy struct {
 	CircuitFailurePct    int    // breaker tripping threshold (0–100)
 	CircuitWindowSeconds int    // rolling-window size; default 60s
 	CircuitCoolDownSecs  int    // cool-down before re-evaluating
-	TranslateTo          string // "none"|"openai"|"anthropic"
 }
 
 // Pick is the outcome of a single Pick() invocation. ServiceID + ConcreteModel

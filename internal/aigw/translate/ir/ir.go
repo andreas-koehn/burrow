@@ -102,7 +102,7 @@ func (e *StreamError) Is(target error) bool { return target == ErrStream }
 // BadRequestError is a client error a request decoder returns: the request
 // is not one of its format, or holds something that cannot be translated and
 // must not be left out. Format names the caller's format ("messages",
-// "responses"), Field is the JSON path of what the caller sent
+// "responses", "chat"), Field is the JSON path of what the caller sent
 // ("messages[2].content[0]", "input[3].call_id"), Reason says what is wrong
 // with it in fixed words. None of them holds content of the request. For a
 // request over one of the limits errors.Is(err, ErrLimit) holds.

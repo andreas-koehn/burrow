@@ -85,6 +85,14 @@ type ResponseOptions struct {
 	Stream bool
 	// RequestedModel is named in the answer when the target names no model.
 	RequestedModel string
+	// CallerRequest is the caller's request body, as it was given to
+	// Request. A caller format reads from it what shapes its answer and
+	// Request does not tell: for a Chat Completions caller that is
+	// "stream_options.include_usage" — the usage chunk of a stream is
+	// written only when it was asked for, because a client that did not ask
+	// need not expect a chunk without choices. The other formats do not
+	// read it. nil is fine: nothing was asked for then.
+	CallerRequest []byte
 	// OnError, when set, is called once when the answer the caller gets is
 	// an error the writer made: before the header of an error response
 	// (status is the one about to be written: the upstream's own when it
@@ -154,7 +162,7 @@ func Lookup(from, to Format) (Pair, bool) {
 // reason and holds nothing of the request.
 func BadRequest(err error) (message string, ok bool) {
 	var bad *ir.BadRequestError
-	if errors.As(err, &bad) || errors.Is(err, chat.ErrUnsupported) {
+	if errors.As(err, &bad) || errors.Is(err, chat.ErrUnsupported) || errors.Is(err, messages.ErrUnsupported) {
 		return err.Error(), true
 	}
 	return "", false
@@ -162,8 +170,10 @@ func BadRequest(err error) (message string, ok bool) {
 
 // pairs is the registry, filled once below and only read afterwards.
 var pairs = map[[2]Format]*pair{
-	{Messages, Chat}:  newMessagesChat(),
-	{Responses, Chat}: newResponsesChat(),
+	{Messages, Chat}:      newMessagesChat(),
+	{Responses, Chat}:     newResponsesChat(),
+	{Chat, Messages}:      newChatMessages(),
+	{Responses, Messages}: newResponsesMessages(),
 }
 
 // pair is a Pair made of a request function and the two halves of a codec.
@@ -264,7 +274,60 @@ var responsesCaller = callerCodec{
 		return responses.EncodeResponse(resp, model, time.Now())
 	},
 	encodeError: responses.EncodeError,
-	newStreamEncoder: func(w io.Writer, model string) streamEncoder {
-		return responses.NewStreamEncoder(w, model, time.Now())
+	newStreamEncoder: func(w io.Writer, o ResponseOptions) streamEncoder {
+		return responses.NewStreamEncoder(w, o.RequestedModel, time.Now())
 	},
+}
+
+// newChatMessages makes the pair "chat-messages": Chat Completions callers
+// (the OpenAI SDKs and what is built on them) on Anthropic Messages targets.
+// The request it writes is for the "anthropic-version" messages.Version; the
+// header is the gateway's to set.
+func newChatMessages() *pair {
+	return &pair{
+		id:      "chat-messages",
+		path:    "/v1/messages",
+		request: chatToMessages,
+		check:   checkChatMessages,
+		codec:   codec{messagesTarget, chatCaller},
+	}
+}
+
+// chatToMessages rewrites a Chat Completions request. Nothing is read from
+// the caller's header.
+func chatToMessages(body []byte, _ http.Header, model string) ([]byte, bool, []string, error) {
+	req, err := chat.DecodeRequest(body)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	out, dropped, err := messages.EncodeRequest(req, model)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	return out, req.Stream, dropped, nil
+}
+
+// newResponsesMessages makes the pair "responses-messages": OpenAI Responses
+// callers (Codex) on Anthropic Messages targets. As with responses-chat only
+// the call itself is translated (see CallerFormat).
+func newResponsesMessages() *pair {
+	return &pair{
+		id:      "responses-messages",
+		path:    "/v1/messages",
+		request: responsesToMessages,
+		check:   checkResponsesMessages,
+		codec:   codec{messagesTarget, responsesCaller},
+	}
+}
+
+func responsesToMessages(body []byte, _ http.Header, model string) ([]byte, bool, []string, error) {
+	req, err := responses.DecodeRequest(body)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	out, dropped, err := messages.EncodeRequest(req, model)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	return out, req.Stream, dropped, nil
 }

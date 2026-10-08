@@ -280,7 +280,6 @@ export interface RoutingPolicy {
   paused: boolean;
   circuit_breaker: { failure_pct: number; window_seconds: number; cool_down_seconds: number };
   backends: { service_id: string; weight: number; concrete_model: string }[];
-  translate_to: "none" | "openai" | "anthropic";
 }
 export interface IpGeoConfig {
   enabled: boolean;
@@ -637,7 +636,6 @@ export interface RoutingPolicyV5 {
   paused: boolean;
   circuit_breaker: { failure_pct: number; window_seconds: number; cool_down_seconds: number };
   backends: { service_id: string; weight: number; concrete_model: string }[];
-  translate_to: "none" | "openai" | "anthropic";
 }
 
 // Custom domains (spec Part D).
