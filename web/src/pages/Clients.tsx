@@ -198,7 +198,10 @@ function ClientList() {
                   <tr key={c.token_id || session?.session_id || c.token_name}>
                     <td>
                       {c.token_name}
-                      {c.sessions.length > 1 && <Sessions client={c} />}
+                      {/* One address at most: of the live session, or of the last one. Several sessions list their own. */}
+                      {c.sessions.length > 1
+                        ? <Sessions client={c} />
+                        : c.remote_addr && <div className="muted mono">{c.remote_addr}</div>}
                     </td>
                     <td><StatusBadge state={c.status} /></td>
                     <td className="col-created"><LastSeen client={c} /></td>

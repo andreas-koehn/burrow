@@ -402,6 +402,17 @@ describe("Layout workspace shell", () => {
     expect(await screen.findByRole("link", { name: "Clients, 1 online" })).toBeInTheDocument();
   });
 
+  it("counts a client that is connected twice once, as the Clients page lists it", async () => {
+    renderLayout("admin", {
+      path: "/",
+      clients: [
+        { session_id: "sess_1", user_id: "u1", token_name: "office-box-1" },
+        { session_id: "sess_2", user_id: "u1", token_name: "office-box-1" },
+      ],
+    });
+    expect(await screen.findByRole("link", { name: "Clients, 1 online" })).toBeInTheDocument();
+  });
+
   it("does not ask for clients as a non-admin", async () => {
     renderLayout("user");
     await chip();

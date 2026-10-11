@@ -23,7 +23,8 @@ const cell = (tr: HTMLElement, column: string) => {
   return within(tr).getAllByRole("cell")[at]!;
 };
 const rowOf = async (name: string) => (await within(await screen.findByRole("table", { name: "Clients" })).findByText(name)).closest("tr")!;
-const names = () => within(table()).getAllByRole("row").slice(1).map((tr) => within(tr).getAllByRole("cell")[0]!.textContent);
+/** The client names in table order: the name is the first thing in its cell, above the address or the sessions. */
+const names = () => within(table()).getAllByRole("row").slice(1).map((tr) => within(tr).getAllByRole("cell")[0]!.firstChild?.textContent);
 
 describe("Clients overview", () => {
   it("lists connected clients with their platform", async () => {
@@ -77,6 +78,8 @@ describe("Clients — every client the relay knows", () => {
     // Relative for the eye, the exact UTC time on hover.
     const seen = within(cell(row, "Last seen")).getByText(/ago$|^last |^yesterday$/);
     expect(seen).toHaveAttribute("title", "16 May 2026, 17:30:00 UTC");
+    // The address it connected from last, under its name.
+    expect(within(cell(row, "Client")).getByText("198.51.100.23:40112")).toHaveClass("muted", "mono");
   });
 
   it("lists a client that never connected without platform or version", async () => {
@@ -84,6 +87,7 @@ describe("Clients — every client the relay knows", () => {
     const row = await rowOf("build-server");
     expect(within(row).getByText("Never connected")).toHaveClass("badge", "status-never");
     for (const column of ["Last seen", "Platform", "Version", "Serves"]) expect(cell(row, column), column).toHaveTextContent(/^—$/);
+    expect(cell(row, "Client")).toHaveTextContent(/^build-server$/);
     expect(within(row).queryByRole("link")).toBeNull();
     expect(within(row).queryByText("update available")).toBeNull();
   });
@@ -93,8 +97,9 @@ describe("Clients — every client the relay knows", () => {
     const row = await rowOf("office-box-1");
     expect(within(row).getByRole("link", { name: "View" })).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
     expect(cell(row, "Last seen")).toHaveTextContent(/^now$/);
-    // One session needs no list of sessions.
+    // One session needs no list of sessions: its address stands under the name.
     expect(within(row).queryByRole("button")).toBeNull();
+    expect(within(cell(row, "Client")).getByText("203.0.113.7:51234")).toHaveClass("muted", "mono");
   });
 
   it("two sessions of one token are one row that says so", async () => {
@@ -108,7 +113,9 @@ describe("Clients — every client the relay knows", () => {
     const toggle = within(row).getByRole("button", { name: /2 sessions/ });
     expect(toggle).toHaveTextContent(/^2 sessions$/);
     expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // Each session has its own address: none stands under the name, they are in the list.
     expect(within(row).queryByText("198.51.100.9:40000")).toBeNull();
+    expect(within(row).queryByText("203.0.113.7:51234")).toBeNull();
     await userEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     const list = document.getElementById(toggle.getAttribute("aria-controls")!)!;

@@ -10,6 +10,7 @@ import { Sidebar } from "@/components/shell/Sidebar";
 import { TopBar } from "@/components/shell/TopBar";
 import { FOOTER_ENTRIES, breadcrumbFor, navigationFor, workspacesFor } from "@/lib/navigation";
 import { lastWorkspace, rememberWorkspace, workspaceFor } from "@/lib/workspace";
+import { clientsOnline } from "@/lib/status";
 import { useRelayNotices } from "@/lib/useRelayNotices";
 
 const COLLAPSED_KEY = "burrow.sidebarCollapsed";
@@ -124,8 +125,8 @@ export function Layout() {
         collapsed={collapsed}
         counts={{
           services: Array.isArray(services.data) ? servicesList.length : undefined,
-          // Every row of /clients is a connected session, so the list length is the online count.
-          clientsOnline: Array.isArray(clients.data) ? clientsList.length : undefined,
+          // Every row of /clients is a connected session; a client connected twice counts once, as on the Clients page.
+          clientsOnline: Array.isArray(clients.data) ? clientsOnline(clientsList) : undefined,
         }}
         attention={relayNotices.map((n) => n.action.to)}
         user={{ email: user?.email ?? "", isAdmin, role: user?.role }}

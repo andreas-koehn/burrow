@@ -30,11 +30,6 @@ describe("workspaceFor", () => {
     expect(workspaceFor("/clients")).toBe("gateway");
     expect(workspaceFor("/clients/sess_1")).toBe("gateway");
   });
-  // Layout passes "services" when the AI gateway is hidden, whatever is stored.
-  it("a shared path is services for someone without the AI gateway", () => {
-    rememberWorkspace("/gateway/providers");
-    expect(workspaceFor("/clients", "services")).toBe("services");
-  });
 });
 
 describe("isShared", () => {

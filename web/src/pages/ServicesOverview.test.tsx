@@ -26,6 +26,15 @@ const stepStates = (list: HTMLElement) =>
 describe("ServicesOverview", () => {
   afterEach(() => resetDb());
 
+  it("counts a client that is connected twice once", async () => {
+    db.clients.push({ ...db.clients[0]!, session_id: "sess_second" });
+    renderApp(<ServicesOverview />);
+    const el = await strip();
+    await waitFor(() => expect(tiles(el)[0]).toEqual(["Clients online", "1", "/clients"]));
+    // Both sessions still count towards the traffic.
+    expect(tiles(el)[3]).toEqual(["Traffic", "20.0 KiB / 8.0 KiB", "/traffic"]);
+  });
+
   it("has the Overview heading and its subtitle", async () => {
     renderApp(<ServicesOverview />);
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();

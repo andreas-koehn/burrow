@@ -7,6 +7,7 @@ import { useAuth } from "@/auth/useAuth";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { GLOSSARY } from "@/lib/glossary";
+import { clientsOnline } from "@/lib/status";
 import { useRelayNotices } from "@/lib/useRelayNotices";
 import type { ClientView, ConnectionLog, Service } from "@/lib/contract";
 
@@ -131,7 +132,7 @@ export default function ServicesOverview() {
         <MetricStrip ariaLabel="Overview">
           <MetricTile
             label="Clients online"
-            value={isAdmin && clients.data ? String(cls.length) : "—"}
+            value={isAdmin && clients.data ? String(clientsOnline(cls)) : "—"}
             sub="machines connected"
             tooltip={GLOSSARY.client.replace(/`/g, "")}
             to="/clients"
