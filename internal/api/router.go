@@ -338,14 +338,14 @@ func NewRouter(d Deps) http.Handler {
 			r.Get("/ai/keys", d.GetAIKeys)
 			r.Post("/ai/keys", d.PostAIKey)
 			r.Delete("/ai/keys/{id}", d.DeleteAIKey)
-			// What one gateway request tried: provider slugs, native model
-			// ids and failure codes of any user's request, so an admin's
-			// dashboard session only (the handler refuses a token).
 			// The captured requests of every provider in one list. The
 			// handler gates it like the per-service inspector list:
 			// inspector:read:any, or inspector:read:own for the caller's
 			// own providers.
 			r.Get("/ai/requests", d.GetAIRequests)
+			// What one gateway request tried: provider slugs, native model
+			// ids and failure codes of any user's request, so an admin's
+			// dashboard session only (the handler refuses a token).
 			r.With(d.RequireAdmin).Get("/ai/requests/{requestID}/attempts", d.GetAIRequestAttempts)
 			// v0.4.0 Task 11: rate-limit + quota CRUD (spec Part D.2).
 			// Reads are gated by quotas:read:own/:any (admin always passes);

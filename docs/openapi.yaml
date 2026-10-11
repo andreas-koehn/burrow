@@ -587,6 +587,15 @@ components:
               count: { type: integer }
         trace_id: { type: string }
         remote_ip: { type: string }
+        mcp:
+          type: object
+          description: >
+            The MCP call the request carried, when the inspector recognised
+            one.
+          properties:
+            method: { type: string, description: The JSON-RPC method, for example tools/call. }
+            tool: { type: string }
+            params: { description: The call's params, as sent. }
         adapter_lossy: { type: boolean }
         translated: { type: string, description: See InspectorTranslation. }
         dropped:
@@ -4126,7 +4135,11 @@ paths:
       parameters:
         - name: provider
           in: query
-          description: Provider slug, exact. An unknown slug answers an empty list.
+          description: >
+            Slug of the provider that answered the request, exact. A request
+            that was sent to one provider and answered by another (a
+            fallback) is listed under the one that answered. An unknown slug
+            answers an empty list.
           schema: { type: string }
         - name: model
           in: query

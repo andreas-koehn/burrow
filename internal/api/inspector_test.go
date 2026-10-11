@@ -741,30 +741,62 @@ func TestAIRequestsMergesProvidersNewestFirst(t *testing.T) {
 	}
 }
 
-// Rule 2: provider= returns that provider's entries and reads no other ring.
-func TestAIRequestsProviderFilterReadsOneRing(t *testing.T) {
-	d, rings := aiRequestsDeps("admin", bothMine)
-	seedTwoProviders(rings)
-	// A request that came for zai and was answered by ollama (a fallback)
-	// sits in zai's ring and is not one of zai's.
-	rings.seed("svc-zai", inspector.Entry{ID: "zf", TS: aiRequestsT0.Add(4 * time.Minute), Provider: "ollama", Model: "burrow-smart"})
-	srv := httptest.NewServer(NewRouter(d))
-	defer srv.Close()
-	c := authedClient(t, srv)
+// Rule 2: provider= returns the requests that provider answered, whichever
+// ring holds them. A request that came for zai and was answered by ollama (a
+// fallback) sits in zai's ring and is one of ollama's.
+func TestAIRequestsProviderFilter(t *testing.T) {
+	seed := func(rings *recordingRings) {
+		seedTwoProviders(rings)
+		rings.seed("svc-zai", inspector.Entry{ID: "zf", TS: aiRequestsT0.Add(4 * time.Minute), Provider: "ollama", Model: "burrow-smart"})
+	}
+	t.Run("an admin", func(t *testing.T) {
+		d, rings := aiRequestsDeps("admin", bothMine)
+		seed(rings)
+		srv := httptest.NewServer(NewRouter(d))
+		defer srv.Close()
+		c := authedClient(t, srv)
 
-	if ids := aiRequestIDs(t, c, "provider=zai"); ids != "z2,z0" {
-		t.Fatalf("provider=zai: got %q want z2,z0", ids)
-	}
-	if got := strings.Join(rings.reads(), ","); got != "svc-zai" {
-		t.Fatalf("rings read: %q, want svc-zai only", got)
-	}
+		for query, want := range map[string]string{
+			"":                "zf,o3,z2,o1,z0",
+			"provider=ollama": "zf,o3,o1",
+			"provider=zai":    "z2,z0",
+			"provider=nope":   "",
+			"provider=za":     "",
+		} {
+			if got := aiRequestIDs(t, c, query); got != want {
+				t.Errorf("%q: got %q want %q", query, got, want)
+			}
+		}
+		for _, e := range aiRequests(t, c, "provider=ollama") {
+			if e.Provider != "ollama" {
+				t.Errorf("provider=ollama returned %s of provider %q", e.ID, e.Provider)
+			}
+		}
+	})
+	// The fallback's entry is in the ring of a service the caller does not
+	// own: naming the provider that answered it does not open that ring.
+	t.Run("the owner of svc-ollama alone", func(t *testing.T) {
+		d, rings := aiRequestsDeps("user", map[string]string{"svc-ollama": "u-self", "svc-zai": "u-other"})
+		seed(rings)
+		srv := httptest.NewServer(NewRouter(d))
+		defer srv.Close()
+		c := authedClient(t, srv)
 
-	if ids := aiRequestIDs(t, c, "provider=nope"); ids != "" {
-		t.Fatalf("unknown provider: got %q want nothing", ids)
-	}
-	if read := rings.reads(); len(read) != 0 {
-		t.Fatalf("unknown provider read rings %v", read)
-	}
+		for query, want := range map[string]string{
+			"":                "o3,o1",
+			"provider=ollama": "o3,o1",
+			"provider=zai":    "",
+		} {
+			if got := aiRequestIDs(t, c, query); got != want {
+				t.Errorf("%q: got %q want %q", query, got, want)
+			}
+		}
+		for _, id := range rings.reads() {
+			if id != "svc-ollama" {
+				t.Errorf("read the ring of %s, which the caller does not own", id)
+			}
+		}
+	})
 }
 
 // Rule 3: model= and gateway_key= match exactly; an unknown value is an
@@ -1014,6 +1046,41 @@ func TestAIRequestsNamesProviderOfOldEntries(t *testing.T) {
 	// The ring's own copy is untouched.
 	if e, _ := rings.Manager.Get("svc-zai").Get("old"); e.Provider != "" {
 		t.Errorf("the ring's entry was changed: provider %q", e.Provider)
+	}
+}
+
+// The text filter matches the provider an entry is listed with: the slug it
+// is given when it names none, as much as one it recorded.
+func TestAIRequestsTextFilterSeesGivenProvider(t *testing.T) {
+	d, rings := aiRequestsDeps("admin", bothMine)
+	at := func(n int) time.Time { return aiRequestsT0.Add(time.Duration(n) * time.Minute) }
+	rings.seed("svc-zai",
+		inspector.Entry{ID: "z-old", TS: at(0)},
+		inspector.Entry{ID: "z-old-500", TS: at(1), Method: "POST", Path: "/v1/zai-compatible", Status: 500},
+		inspector.Entry{ID: "z-new", TS: at(2), Provider: "zai", Model: "burrow-smart"},
+		// Answered by ollama: the slug of the ring it sits in is not its provider.
+		inspector.Entry{ID: "z-fallback", TS: at(3), Provider: "ollama", Model: "burrow-smart"},
+	)
+	rings.seed("svc-ollama", inspector.Entry{ID: "o-old", TS: at(4)})
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	for query, want := range map[string]string{
+		"q=zai":                 "z-new,z-old-500,z-old",
+		"q=za":                  "z-new,z-old-500,z-old",
+		"q=zai&status=500":      "z-old-500",
+		"q=zai&model=nope":      "",
+		"q=zai&limit=1":         "z-new",
+		"q=ollama":              "o-old,z-fallback",
+		"q=zai&provider=ollama": "",
+		"q=ZAI":                 "",
+		"q=compatible":          "z-old-500",
+		"q=completions":         "o-old,z-fallback,z-new,z-old",
+	} {
+		if got := aiRequestIDs(t, c, query); got != want {
+			t.Errorf("%s: got %q want %q", query, got, want)
+		}
 	}
 }
 

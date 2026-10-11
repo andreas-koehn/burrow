@@ -149,9 +149,9 @@ func TestListFilters(t *testing.T) {
 	}
 }
 
-// TestListFiltersByProviderModelKey covers the three exact-match filters,
-// each alone and all together, and the free-text filter on provider and model.
-func TestListFiltersByProviderModelKey(t *testing.T) {
+// TestListFiltersByModelAndKey covers the two exact-match filters, each alone
+// and together, and the free-text filter on provider and model.
+func TestListFiltersByModelAndKey(t *testing.T) {
 	r := NewRing(10)
 	base := time.Unix(1_700_000_000, 0).UTC()
 	r.Capture(Entry{ID: "a", TS: base, Provider: "zai", Model: "burrow-smart", GatewayKeyID: "gk1"})
@@ -163,13 +163,12 @@ func TestListFiltersByProviderModelKey(t *testing.T) {
 		q    ListQuery
 		want string
 	}{
-		{"provider", ListQuery{Provider: "zai"}, "b,a"},
 		{"model", ListQuery{Model: "burrow-smart"}, "c,a"},
 		{"gateway key", ListQuery{GatewayKeyID: "gk2"}, "c,b"},
-		{"all three", ListQuery{Provider: "zai", Model: "zai/glm-5.1", GatewayKeyID: "gk2"}, "b"},
-		{"all three, no entry has them", ListQuery{Provider: "ollama", Model: "burrow-smart", GatewayKeyID: "gk1"}, ""},
-		{"provider is exact, not a prefix", ListQuery{Provider: "za"}, ""},
+		{"both", ListQuery{Model: "burrow-smart", GatewayKeyID: "gk2"}, "c"},
+		{"both, no entry has them", ListQuery{Model: "zai/glm-5.1", GatewayKeyID: "gk1"}, ""},
 		{"model is exact, not a prefix", ListQuery{Model: "burrow"}, ""},
+		{"gateway key is exact, not a prefix", ListQuery{GatewayKeyID: "gk"}, ""},
 		{"q matches the provider", ListQuery{Q: "ollama"}, "c"},
 		{"q matches the model", ListQuery{Q: "glm"}, "b"},
 	}
@@ -201,7 +200,8 @@ func TestListUntil(t *testing.T) {
 
 // TestListOldEntriesWithoutRoute: an entry that names no provider, model or
 // gateway key (it came without a route, or was captured before the fields
-// existed) is listed when none of the three is asked for and by none of them.
+// existed) is listed when neither a model nor a gateway key is asked for, and
+// by neither.
 func TestListOldEntriesWithoutRoute(t *testing.T) {
 	r := NewRing(10)
 	r.Capture(Entry{ID: "old", TS: time.Unix(1_700_000_000, 0).UTC(), Method: "POST", Path: "/v1/chat/completions"})
@@ -210,7 +210,6 @@ func TestListOldEntriesWithoutRoute(t *testing.T) {
 		t.Fatalf("no filter: %v", got)
 	}
 	for name, q := range map[string]ListQuery{
-		"provider":    {Provider: "zai"},
 		"model":       {Model: "burrow-smart"},
 		"gateway key": {GatewayKeyID: "gk1"},
 	} {

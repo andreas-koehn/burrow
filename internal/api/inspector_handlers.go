@@ -318,9 +318,9 @@ const (
 
 // GetAIRequests handles GET /api/v1/ai/requests: the captured requests of
 // every provider, one list, newest first.
-// Query params: provider (slug), model, gateway_key (a gateway key's id), all
-// three exact; q, status, since, until as on the per-service list; limit
-// (1 and up, default 200, cut to 1000).
+// Query params: provider (slug of the provider that answered), model,
+// gateway_key (a gateway key's id), all three exact; q, status, since, until
+// as on the per-service list; limit (1 and up, default 200, cut to 1000).
 //
 // The caller gets the entries of the providers whose inspector they may read:
 // every provider with inspector:read:any, their own services' providers with
@@ -328,7 +328,9 @@ const (
 //
 // An entry comes without headers and bodies: the list can span every
 // provider, the per-service detail endpoint has them. An entry that names no
-// provider is one of the provider whose ring holds it.
+// provider is one of the provider whose ring holds it. One that names another
+// (a fallback answered it, or the provider's slug changed since) keeps that
+// name, so provider= is answered from every ring the caller may read.
 func (d Deps) GetAIRequests(w http.ResponseWriter, r *http.Request) {
 	role, err := d.callerRole(r)
 	if err != nil {
@@ -370,9 +372,6 @@ func (d Deps) GetAIRequests(w http.ResponseWriter, r *http.Request) {
 	}
 	var entries []inspector.Entry
 	for _, p := range views {
-		if provider != "" && p.Slug != provider {
-			continue
-		}
 		if !readAny {
 			owns, ok := d.ownsInspectedService(w, r, p.ServiceID)
 			if !ok {
@@ -388,12 +387,7 @@ func (d Deps) GetAIRequests(w http.ResponseWriter, r *http.Request) {
 		if ring == nil {
 			continue
 		}
-		for _, e := range ring.List(q) {
-			if e.Provider == "" {
-				e.Provider = p.Slug
-			}
-			// A request another provider answered (a fallback) is in this
-			// ring too and is not one of this provider's.
+		for _, e := range providerEntries(ring, p.Slug, q) {
 			if provider != "" && e.Provider != provider {
 				continue
 			}
@@ -409,6 +403,37 @@ func (d Deps) GetAIRequests(w http.ResponseWriter, r *http.Request) {
 		out = append(out, inspectorEntryToJSON(e))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// providerEntries lists the entries of the ring of provider slug that match
+// q, in no order, each naming a provider: an entry that names none gets slug.
+// The text filter sees that name as it sees a recorded one, which the ring
+// cannot: it matches an entry without a provider by method, path and model.
+func providerEntries(ring *inspector.Ring, slug string, q inspector.ListQuery) []inspector.Entry {
+	entries := ring.List(q)
+	if q.Q != "" && strings.Contains(slug, q.Q) {
+		// Every entry without a provider matches by the slug it is given.
+		named := entries[:0]
+		for _, e := range entries {
+			if e.Provider != "" {
+				named = append(named, e)
+			}
+		}
+		entries = named
+		anyText := q
+		anyText.Q = ""
+		for _, e := range ring.List(anyText) {
+			if e.Provider == "" {
+				entries = append(entries, e)
+			}
+		}
+	}
+	for i := range entries {
+		if entries[i].Provider == "" {
+			entries[i].Provider = slug
+		}
+	}
+	return entries
 }
 
 // ownsInspectedService reports whether the caller owns serviceID, the second

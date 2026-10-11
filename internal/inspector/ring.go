@@ -102,7 +102,7 @@ type ListQuery struct {
 	Limit  int       // 0 = no limit
 	// Exact matches; "" = any. An entry that does not name the field is
 	// matched by no value of it.
-	Provider, Model, GatewayKeyID string
+	Model, GatewayKeyID string
 }
 
 // NewID returns a fresh inspector entry id of the form "ins_<rand6>" where
@@ -289,9 +289,6 @@ func (r *Ring) List(q ListQuery) []Entry {
 			continue
 		}
 		if !q.Until.IsZero() && e.TS.After(q.Until) {
-			continue
-		}
-		if q.Provider != "" && e.Provider != q.Provider {
 			continue
 		}
 		if q.Model != "" && e.Model != q.Model {
