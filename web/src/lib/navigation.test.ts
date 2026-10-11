@@ -1,10 +1,13 @@
 /// <reference types="node" />
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { matchPath } from "react-router-dom";
 import { OLD_ROUTES } from "./moved-routes";
 import { NAVIGATIONS, FOOTER_ENTRIES, navigationFor, workspacesFor, activeEntry, attentionTarget, breadcrumbFor, allEntries } from "./navigation";
+
+// What is remembered decides where a relay-level page is shown: start every test without it.
+beforeEach(() => localStorage.clear());
 
 const admin = { isAdmin: true, hasAiGateway: true };
 const user = { isAdmin: false, hasAiGateway: false };
@@ -23,6 +26,7 @@ describe("navigation description", () => {
   it("AI Gateway workspace", () => {
     expect(labels("gateway")).toEqual([
       ["", ["Overview"]],
+      ["Connect", ["Clients"]],
       ["Route", ["Providers", "Models", "Gateway keys"]],
       ["Control", ["Guardrails", "Prompt cache"]],
       ["Observe", ["Requests", "Cost & budgets"]],
@@ -42,12 +46,24 @@ describe("navigation description", () => {
   it("a non-admin sees only the Personal group in Settings", () => {
     expect(labels("settings", user)).toEqual([["Personal", ["Profile & password", "Sessions", "Automation tokens"]]]);
   });
-  // The spec's budget is seven entries per job. The AI Gateway wireframe reaches eight once
-  // Models and Gateway keys land (plan gateway-models); nothing may go beyond that.
+  // The spec's budget is seven entries per job. The AI Gateway wireframe reaches eight with
+  // Models and Gateway keys (plan gateway-models) and nine with Clients, which belongs to the
+  // relay and is listed in both workspaces; nothing may go beyond that.
   it("keeps each workspace short", () => {
     const count = (ws: "services" | "gateway") => navigationFor(ws, admin).groups.reduce((a, g) => a + g.entries.length, 0);
     expect(count("services")).toBeLessThanOrEqual(7);
-    expect(count("gateway")).toBeLessThanOrEqual(8);
+    expect(count("gateway")).toBeLessThanOrEqual(9);
+  });
+  it("both workspaces open the one Clients page, with the same count", () => {
+    for (const ws of ["services", "gateway"] as const) {
+      const all = navigationFor(ws, admin).groups.flatMap((g) => g.entries);
+      const clients = all.filter((e) => e.to === "/clients");
+      expect(clients.map((e) => [e.label, e.count]), ws).toEqual([["Clients", "clientsOnline"]]);
+      // In the first titled group, directly below Overview.
+      expect(navigationFor(ws, admin).groups[1].entries, ws).toContain(clients[0]);
+    }
+    const ids = (["services", "gateway"] as const).flatMap((ws) => NAVIGATIONS[ws].groups.flatMap((g) => g.entries.map((e) => e.id)));
+    expect(new Set(ids).size).toBe(ids.length);
   });
   it("the footer entries are for admins and point into Settings", () => {
     expect(FOOTER_ENTRIES.map((e) => [e.label, e.to, e.adminOnly])).toEqual([
@@ -63,6 +79,9 @@ describe("navigation description", () => {
   it("every path is unique and none belongs to the relay's own prefixes", () => {
     const paths = allEntries(admin).map((x) => x.entry.to);
     expect(new Set(paths).size).toBe(paths.length);
+    // Clients is in two sidebars and still one destination: the first one listed.
+    expect(allEntries(admin).filter((x) => x.entry.to === "/clients").map((x) => [x.entry.id, x.workspace]))
+      .toEqual([["clients", "services"]]);
     for (const p of paths) expect(p).not.toMatch(/^\/(ai|svc|openai|anthropic|api|__burrow)(\/|$)/);
   });
 });
@@ -75,6 +94,11 @@ describe("activeEntry", () => {
     expect(activeEntry("/gateway/requests/svc1/req9", gw)?.label).toBe("Requests");
     expect(activeEntry("/services/abc", svc)?.label).toBe("Services");
     expect(activeEntry("/clients/connect", svc)?.label).toBe("Clients");
+  });
+  it("marks Clients in the AI Gateway too", () => {
+    expect(activeEntry("/clients/abc", gw)?.id).toBe("gateway-clients");
+    expect(activeEntry("/clients", gw)?.id).toBe("gateway-clients");
+    expect(activeEntry("/clients/abc", svc)?.id).toBe("clients");
   });
   it("marks Overview only on the workspace's home", () => {
     expect(activeEntry("/gateway", gw)?.label).toBe("Overview");
@@ -101,6 +125,21 @@ describe("breadcrumbFor", () => {
     expect(breadcrumbFor("/clients/connect", admin)).toEqual([
       { label: "Services", to: "/" }, { label: "Clients", to: "/clients" }, { label: "Connect a client" },
     ]);
+  });
+  it("a relay-level page starts with the workspace used last", () => {
+    expect(breadcrumbFor("/clients", admin, {}, "gateway")).toEqual([{ label: "AI Gateway", to: "/gateway" }, { label: "Clients" }]);
+    expect(breadcrumbFor("/clients", admin, {}, "services")).toEqual([{ label: "Services", to: "/" }, { label: "Clients" }]);
+    expect(breadcrumbFor("/clients/connect", admin, {}, "gateway")).toEqual([
+      { label: "AI Gateway", to: "/gateway" }, { label: "Clients", to: "/clients" }, { label: "Connect a client" },
+    ]);
+    expect(breadcrumbFor("/clients/sess_1", admin, { sess_1: "office-box-1" }, "gateway").map((c) => c.label))
+      .toEqual(["AI Gateway", "Clients", "office-box-1"]);
+    // Without the argument it reads what is remembered.
+    localStorage.setItem("burrow.lastWorkspace", "gateway");
+    expect(breadcrumbFor("/clients", admin)[0]).toEqual({ label: "AI Gateway", to: "/gateway" });
+    // Every other page follows its URL.
+    expect(breadcrumbFor("/services", admin, {}, "gateway")[0]).toEqual({ label: "Services", to: "/" });
+    expect(breadcrumbFor("/gateway/models", admin, {}, "services")[0]).toEqual({ label: "AI Gateway", to: "/gateway" });
   });
   it("links the service and ends on the request", () => {
     expect(breadcrumbFor("/gateway/requests/svc1/req9", admin)).toEqual([

@@ -9,7 +9,7 @@ import { CommandPalette } from "@/components/CommandPalette";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { TopBar } from "@/components/shell/TopBar";
 import { FOOTER_ENTRIES, breadcrumbFor, navigationFor, workspacesFor } from "@/lib/navigation";
-import { rememberWorkspace, workspaceFor } from "@/lib/workspace";
+import { lastWorkspace, rememberWorkspace, workspaceFor } from "@/lib/workspace";
 import { useRelayNotices } from "@/lib/useRelayNotices";
 
 const COLLAPSED_KEY = "burrow.sidebarCollapsed";
@@ -63,7 +63,7 @@ export function Layout() {
   const isAdmin = user?.role === "admin";
   // Empty for non-admins, and no request is made for them.
   const relayNotices = useRelayNotices();
-  // Same key and fetch as the Clients page, so the two share one cache entry.
+  // The live sessions, under the key the Connect page and the palette use too.
   // The endpoint is admin-gated; nobody else gets a count.
   const clients = useQuery({
     queryKey: ["clients"],
@@ -77,11 +77,15 @@ export function Layout() {
     || servicesList.some((s) => s.type === "http" && s.connected);
   const ctx = { isAdmin, hasAiGateway };
 
-  // The sidebar follows the URL. The one exception: a /gateway/ deep link opened
-  // by someone the AI Gateway is not shown to. The page renders as it always
-  // did, but the shell offers neither the gateway's navigation nor a way to
-  // switch to it — it stays on Services, exactly what that user sees elsewhere.
-  const workspace = workspaceFor(pathname);
+  // The sidebar follows the URL, except on a relay-level page (Clients): that one is
+  // shown in the workspace the reader came from — Services for someone the AI Gateway
+  // is not shown to, whatever an earlier visit left behind.
+  const last = hasAiGateway ? lastWorkspace() : "services";
+  const workspace = workspaceFor(pathname, last);
+  // The other exception: a /gateway/ deep link opened by someone the AI Gateway is
+  // not shown to. The page renders as it always did, but the shell offers neither
+  // the gateway's navigation nor a way to switch to it — it stays on Services,
+  // exactly what that user sees elsewhere.
   const gatewayHidden = workspace === "gateway" && !hasAiGateway;
   const navigation = navigationFor(gatewayHidden ? "services" : workspace, ctx);
 
@@ -91,7 +95,7 @@ export function Layout() {
   for (const c of clientsList) names[c.session_id] = c.token_name;
   const crumbs = gatewayHidden
     ? [{ label: navigation.label, to: navigation.home }]
-    : breadcrumbFor(pathname, ctx, names);
+    : breadcrumbFor(pathname, ctx, names, last);
 
   useEffect(() => {
     if (!gatewayHidden) rememberWorkspace(pathname);

@@ -16,8 +16,17 @@ const currentLocation = () => screen.getByTestId("location").textContent ?? "";
 const mountAt = (route: string) => renderApp(<><Clients /><LocationProbe /></>, route);
 const mount = () => mountAt("/clients");
 
+const table = () => screen.getByRole("table", { name: "Clients" });
+/** The cell of a row under the column of that name. */
+const cell = (tr: HTMLElement, column: string) => {
+  const at = within(table()).getAllByRole("columnheader").findIndex((h) => h.textContent === column);
+  return within(tr).getAllByRole("cell")[at]!;
+};
+const rowOf = async (name: string) => (await within(await screen.findByRole("table", { name: "Clients" })).findByText(name)).closest("tr")!;
+const names = () => within(table()).getAllByRole("row").slice(1).map((tr) => within(tr).getAllByRole("cell")[0]!.textContent);
+
 describe("Clients overview", () => {
-  it("lists connected clients with platform and traffic", async () => {
+  it("lists connected clients with their platform", async () => {
     renderApp(
       <Routes><Route path="/clients" element={<Clients />} /></Routes>,
       "/clients",
@@ -46,23 +55,186 @@ describe("Clients overview", () => {
     expect(viewLink).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
   });
 
-  it("services-count badge links to client detail (P3B.1)", async () => {
-    renderApp(
-      <Routes><Route path="/clients" element={<Clients />} /></Routes>,
-      "/clients",
-    );
-    await screen.findByText("office-box-1");
-    const link = screen.getByRole("link", { name: /view \d+ services for office-box-1/i });
-    expect(link).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
+  it("has one row per client, with these columns", async () => {
+    mount();
+    await rowOf("office-box-1");
+    expect(within(table()).getAllByRole("columnheader").map((h) => h.textContent))
+      .toEqual(["Client", "Status", "Last seen", "Platform", "Version", "Serves", ""]);
+    // The relay's order: online, then offline, then never connected.
+    expect(names()).toEqual(["office-box-1", "koehn-laptop", "build-server"]);
+  });
+});
+
+describe("Clients — every client the relay knows", () => {
+  it("lists an offline client with what it served and when", async () => {
+    mount();
+    const row = (await screen.findByText("koehn-laptop")).closest("tr")!;
+    expect(within(row).getByText("Offline")).toBeInTheDocument();
+    expect(within(row).getByText(/ollama/)).toBeInTheDocument();
+    expect(within(row).queryByRole("link", { name: "View" })).toBeNull();
+    expect(cell(row, "Platform")).toHaveTextContent("darwin · arm64");
+    expect(cell(row, "Version")).toHaveTextContent("0.6.0");
+    // Relative for the eye, the exact UTC time on hover.
+    const seen = within(cell(row, "Last seen")).getByText(/ago$|^last |^yesterday$/);
+    expect(seen).toHaveAttribute("title", "16 May 2026, 17:30:00 UTC");
+  });
+
+  it("lists a client that never connected without platform or version", async () => {
+    mount();
+    const row = await rowOf("build-server");
+    expect(within(row).getByText("Never connected")).toHaveClass("badge", "status-never");
+    for (const column of ["Last seen", "Platform", "Version", "Serves"]) expect(cell(row, column), column).toHaveTextContent(/^—$/);
+    expect(within(row).queryByRole("link")).toBeNull();
+    expect(within(row).queryByText("update available")).toBeNull();
+  });
+
+  it("an online client links to its session", async () => {
+    mount();
+    const row = await rowOf("office-box-1");
+    expect(within(row).getByRole("link", { name: "View" })).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
+    expect(cell(row, "Last seen")).toHaveTextContent(/^now$/);
+    // One session needs no list of sessions.
+    expect(within(row).queryByRole("button")).toBeNull();
+  });
+
+  it("two sessions of one token are one row that says so", async () => {
+    db.clients.unshift({
+      ...db.clients[0]!, session_id: "sess_second", remote_addr: "198.51.100.9:40000", service_count: 1,
+      services: [{ ...db.clients[0]!.services[0]!, id: "tnl_metrics", name: "metrics" }],
+    });
+    mount();
+    const row = await rowOf("office-box-1");
+    expect(names().filter((n) => n?.startsWith("office-box-1"))).toHaveLength(1);
+    const toggle = within(row).getByRole("button", { name: /2 sessions/ });
+    expect(toggle).toHaveTextContent(/^2 sessions$/);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(within(row).queryByText("198.51.100.9:40000")).toBeNull();
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const list = document.getElementById(toggle.getAttribute("aria-controls")!)!;
+    const items = within(list).getAllByRole("listitem");
+    expect(items.map((li) => li.textContent)).toEqual([
+      expect.stringMatching(/sess_second.*198\.51\.100\.9:40000/),
+      expect.stringMatching(/sess_4f7a9c0b2e81.*203\.0\.113\.7:51234/),
+    ]);
+    expect(within(items[1]!).getByRole("link")).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
+    // "View" opens the newest session; the row names what all of them serve.
+    expect(within(row).getByRole("link", { name: "View" })).toHaveAttribute("href", "/clients/sess_second");
+    expect(cell(row, "Serves")).toHaveTextContent("metrics, ollama, web-staging");
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(within(row).queryByText("198.51.100.9:40000")).toBeNull();
+  });
+
+  it("a served name that is a provider links to the provider", async () => {
+    mount();
+    const online = await rowOf("office-box-1");
+    // ollama backs the provider of that name: the link leads there, not to the service behind it.
+    expect(await within(online).findByRole("link", { name: "ollama" })).toHaveAttribute("href", "/gateway/providers/ollama");
+    // No service is called web-staging: the name stays text.
+    expect(cell(online, "Serves")).toHaveTextContent("ollama, web-staging");
+    expect(within(online).queryByRole("link", { name: "web-staging" })).toBeNull();
+    // grafana backs no provider: it links to the service.
+    const offline = await rowOf("koehn-laptop");
+    expect(within(offline).getByRole("link", { name: "grafana" })).toHaveAttribute("href", "/services/svc_graf01");
+    expect(within(offline).getByRole("link", { name: "ollama" })).toHaveAttribute("href", "/gateway/providers/ollama");
+  });
+
+  it("a name that two services share is not linked to either", async () => {
+    db.services.push({ ...db.services.find((s) => s.id === "svc_graf01")!, id: "svc_graf02", slug: "gf2222" });
+    const { qc } = mount();
+    const offline = await rowOf("koehn-laptop");
+    await within(offline).findByRole("link", { name: "ollama" });
+    await waitFor(() => expect(qc.isFetching()).toBe(0));
+    expect(within(offline).queryByRole("link", { name: "grafana" })).toBeNull();
+    expect(cell(offline, "Serves")).toHaveTextContent("grafana, ollama");
+  });
+
+  it("names what a client serves even when the services cannot be read", async () => {
+    server.use(http.get("/api/v1/services", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    const { qc } = mount();
+    const row = await rowOf("koehn-laptop");
+    await waitFor(() => expect(qc.isFetching()).toBe(0));
+    expect(cell(row, "Serves")).toHaveTextContent("grafana, ollama");
+    expect(within(cell(row, "Serves")).queryByRole("link")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("the empty state offers to connect a client", async () => {
+    db.tokens = []; db.clients = []; db.clientLastSessions = {};
+    mount();
+    const panel = await screen.findByRole("tabpanel", { name: "Clients" });
+    expect(await within(panel).findByRole("link", { name: "Connect a client" })).toHaveAttribute("href", "/clients/connect");
+    expect(within(panel).getByRole("link", { name: "Connect a client" })).toHaveClass("btn");
+    // The three lines of the Connect page.
+    const lines = within(within(panel).getByRole("list", { name: "Commands" })).getAllByRole("listitem");
+    expect(lines.map((li) => li.querySelector(".install-line-label")?.textContent)).toEqual(["1. Install", "2. Sign in", "3. Run"]);
+    expect(screen.queryByRole("table", { name: "Clients" })).toBeNull();
+    expect(screen.queryByRole("searchbox", { name: "Search clients" })).toBeNull();
+  });
+
+  it("falls back to live sessions on an older relay", async () => {
+    server.use(http.get("/api/v1/clients/known", () => new HttpResponse(null, { status: 404 })));
+    const { qc } = mount();
+    const row = await rowOf("office-box-1");
+    await waitFor(() => expect(qc.isFetching()).toBe(0));
+    expect(names()).toEqual(["office-box-1"]);
+    expect(within(row).getByText("Online")).toHaveClass("badge", "status-online");
+    expect(cell(row, "Last seen")).toHaveTextContent(/^now$/);
+    expect(cell(row, "Platform")).toHaveTextContent("linux · amd64");
+    expect(within(row).getByRole("link", { name: "View" })).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
+    // Such a relay does not say what a client serves, only how much.
+    expect(within(cell(row, "Serves")).getByRole("link", { name: "2 services" })).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("an older relay without a connected client shows the empty state", async () => {
+    db.clients = [];
+    server.use(http.get("/api/v1/clients/known", () => new HttpResponse(null, { status: 404 })));
+    mount();
+    const panel = await screen.findByRole("tabpanel", { name: "Clients" });
+    expect(await within(panel).findByRole("link", { name: "Connect a client" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("says so when the relay fails for another reason, without asking for the live sessions", async () => {
+    const asked: string[] = [];
+    server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
+    server.use(http.get("/api/v1/clients/known", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    try {
+      mount();
+      expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load clients: boom");
+      expect(asked).not.toContain("/api/v1/clients");
+    } finally {
+      server.events.removeAllListeners();
+    }
+  });
+
+  it("search matches the client name and what it serves", async () => {
+    mount();
+    await rowOf("office-box-1");
+    const search = screen.getByRole("searchbox", { name: "Search clients" });
+    await userEvent.type(search, "LAPTOP");
+    expect(names()).toEqual(["koehn-laptop"]);
+    await userEvent.clear(search);
+    await userEvent.type(search, "graf");
+    expect(names()).toEqual(["koehn-laptop"]);
+    await userEvent.clear(search);
+    await userEvent.type(search, "ollama");
+    expect(names()).toEqual(["office-box-1", "koehn-laptop"]);
+    await userEvent.clear(search);
+    await userEvent.type(search, "zzz");
+    expect(screen.queryByRole("table", { name: "Clients" })).toBeNull();
+    expect(screen.getByText("No client matches “zzz”.")).toBeInTheDocument();
+    // Nothing found is not the same as nothing there.
+    expect(within(screen.getByRole("tabpanel", { name: "Clients" })).queryByRole("link", { name: "Connect a client" })).toBeNull();
+    expect(search).toHaveValue("zzz");
   });
 });
 
 describe("Clients — version", () => {
   const row = async () => (await screen.findByText("office-box-1")).closest("tr")!;
-  const versionCell = (tr: HTMLElement) => {
-    const at = within(screen.getByRole("table", { name: "Clients" })).getAllByRole("columnheader").findIndex((h) => h.textContent === "Version");
-    return within(tr).getAllByRole("cell")[at]!;
-  };
+  const versionCell = (tr: HTMLElement) => cell(tr, "Version");
 
   it("has a Version column with the client's version", async () => {
     mount();
@@ -155,7 +327,7 @@ describe("Clients — Clients | Tokens tabs", () => {
   });
 
   it("keeps the Tokens tab usable when the clients list is refused", async () => {
-    server.use(http.get("/api/v1/clients", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
+    server.use(http.get("/api/v1/clients/known", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
     mount();
     expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load clients/i);
     await userEvent.click(screen.getByRole("tab", { name: "Tokens" }));
@@ -195,23 +367,28 @@ describe("Clients — Clients | Tokens tabs", () => {
       db.me.role = "user";
       const asked: string[] = [];
       server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
-      server.use(http.get("/api/v1/clients", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
       mount();
       expect(await screen.findByRole("tab", { name: "Tokens" })).toHaveAttribute("aria-selected", "true");
       expect(await screen.findByRole("table", { name: "Tokens" })).toBeInTheDocument();
       expect(screen.queryByRole("alert")).toBeNull();
+      expect(asked).not.toContain("/api/v1/clients/known");
       expect(asked).not.toContain("/api/v1/clients");
       expect(currentLocation()).toBe("/clients");
     });
 
     it("can still open the Clients tab, which the URL then names", async () => {
       db.me.role = "user";
-      server.use(http.get("/api/v1/clients", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
+      // The relay refuses the list to anyone but an admin; the mock does the same.
+      const asked: string[] = [];
+      server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
       mount();
       await userEvent.click(await screen.findByRole("tab", { name: "Clients" }));
       expect(currentLocation()).toBe("/clients?tab=clients");
       expect(screen.getByRole("tab", { name: "Clients" })).toHaveAttribute("aria-selected", "true");
       expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load clients/i);
+      // A refusal is not an older relay: the live sessions are not asked for instead.
+      expect(asked).toContain("/api/v1/clients/known");
+      expect(asked).not.toContain("/api/v1/clients");
       await userEvent.click(screen.getByRole("tab", { name: "Tokens" }));
       expect(currentLocation()).toBe("/clients");
     });

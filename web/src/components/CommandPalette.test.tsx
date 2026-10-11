@@ -84,6 +84,17 @@ describe("CommandPalette — P6A.1: destinations", () => {
     expect(groups).toEqual(new Set(["Services", "AI Gateway", "Settings"]));
   });
 
+  // Clients is in both sidebars and is still one page.
+  it("lists Clients once, and opens the one page", async () => {
+    renderPalette({ isAdmin: true });
+    const pages = () => screen.getAllByRole("option").filter((o) => o.querySelector("span")?.textContent === "Clients");
+    expect(pages()).toHaveLength(1);
+    await userEvent.type(screen.getByRole("searchbox"), "clients");
+    expect(pages()).toHaveLength(1);
+    fireEvent.click(pages()[0]);
+    expect(screen.getByTestId("spy-location")).toHaveTextContent(/^\/clients$/);
+  });
+
   it("typing 'cost' finds 'Cost & budgets' under 'AI Gateway' and navigates to its new path", async () => {
     renderPalette({ isAdmin: true });
     await userEvent.type(screen.getByRole("searchbox"), "cost");

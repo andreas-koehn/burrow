@@ -2990,3 +2990,6 @@ button.setup-step-title:focus-visible { outline: 2px solid var(--ring); outline-
 .connect-downloads li { display: flex; flex-wrap: wrap; gap: var(--space-md); align-items: baseline; }
 .connect-downloads-os { min-width: 5.5em; font-weight: 500; }
 .connect-wait-done { color: var(--success); flex-shrink: 0; }
+/* Clients: the live sessions of a token that is connected more than once, under its name. */
+.client-sessions { list-style: none; margin: var(--space-xs) 0 0; padding: 0; font-size: 12px; }
+.client-sessions li + li { margin-top: var(--space-xs); }

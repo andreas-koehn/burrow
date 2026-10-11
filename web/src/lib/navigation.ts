@@ -68,6 +68,10 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
     workspace: "gateway", label: "AI Gateway", namespace: "/ai/…", icon: Sparkles, home: "/gateway",
     groups: [
       { entries: [{ id: "gateway-overview", label: "Overview", to: "/gateway", icon: LayoutDashboard }] },
+      // A client serves services and providers alike: the one page at /clients is listed in both workspaces.
+      { title: "Connect", entries: [
+        { id: "gateway-clients", label: "Clients", to: "/clients", icon: Boxes, count: "clientsOnline" },
+      ] },
       { title: "Route", entries: [
         { id: "providers", label: "Providers", to: "/gateway/providers", icon: Sparkles },
         { id: "models", label: "Models", to: "/gateway/models", icon: Layers },
@@ -169,14 +173,16 @@ function decoded(segment: string): string {
  * Workspace, entry, and — on a detail page — the object named by the next path segment.
  * `names` maps an object's id to what people call it (a service's or client's name); without
  * an entry the id itself is shown. A page below an object (a single request of a service)
- * adds a last crumb and turns the object into a link.
+ * adds a last crumb and turns the object into a link. `last` is the workspace a relay-level
+ * page (Clients) is shown in; left out, it is the one remembered.
  */
 export function breadcrumbFor(
   pathname: string,
   ctx: NavContext,
   names: Record<string, string> = {},
+  last?: "services" | "gateway",
 ): { label: string; to?: string }[] {
-  const nav = navigationFor(workspaceFor(pathname), ctx);
+  const nav = navigationFor(workspaceFor(pathname, last), ctx);
   const crumbs: { label: string; to?: string }[] = [{ label: nav.label, to: nav.home }];
   const entry = activeEntry(pathname, nav);
   if (!entry) return crumbs;
@@ -198,13 +204,21 @@ export function breadcrumbFor(
   return crumbs;
 }
 
-/** Every entry this user can open, for the command palette. */
+/**
+ * Every page this user can open, for the command palette. A page listed in two
+ * workspaces (Clients) appears once, as the first entry that opens it.
+ */
 export function allEntries(ctx: NavContext): { entry: NavEntry; workspace: Workspace; group?: string }[] {
   const out: { entry: NavEntry; workspace: Workspace; group?: string }[] = [];
+  const seen = new Set<string>();
   const spaces: Workspace[] = ctx.hasAiGateway ? ["services", "gateway", "settings"] : ["services", "settings"];
   for (const ws of spaces) {
     for (const g of navigationFor(ws, ctx).groups) {
-      for (const entry of g.entries) out.push({ entry, workspace: ws, group: g.title });
+      for (const entry of g.entries) {
+        if (seen.has(entry.to)) continue;
+        seen.add(entry.to);
+        out.push({ entry, workspace: ws, group: g.title });
+      }
     }
   }
   return out;

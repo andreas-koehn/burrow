@@ -1,14 +1,15 @@
-import { useState } from "react";
+import { Fragment, useId, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/auth/useAuth";
-import { formatBytes } from "@/lib/format";
-import { Input, Badge, PageHeader, SkeletonRows, Tabs } from "@/components/ds";
+import { formatRelativeTime, formatTimestamp } from "@/lib/format";
+import { Input, Badge, Button, EmptyState, PageHeader, SkeletonRows, Tabs } from "@/components/ds";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ClientTokensPanel } from "@/components/ClientTokensPanel";
-import type { ClientDiscovery, ClientView } from "@/lib/contract";
+import { InstallLines } from "@/components/InstallLines";
+import type { ClientDiscovery, ClientView, KnownClient, Service } from "@/lib/contract";
 
 /** MAJOR.MINOR.PATCH with an optional v; anything else (develop, a commit) has no order. */
 function versionNumbers(v: string): [number, number, number] | null {
@@ -27,6 +28,102 @@ function olderThan(client: string, relay: string | undefined): boolean {
   return false;
 }
 
+/** A live session as a row of its own: all a relay without /clients/known can say. */
+function fromSession(s: ClientView): KnownClient {
+  return {
+    token_id: "", token_name: s.token_name, user_id: s.user_id, status: "online", last_seen: null,
+    os: s.os, arch: s.arch, client_version: s.client_version, remote_addr: s.remote_addr,
+    served: [], sessions: [s],
+  };
+}
+
+/**
+ * Every client the relay knows, one row per client token. A relay that predates
+ * the list answers 404; its live sessions are then listed instead, so the page
+ * stays usable. Any other failure, a refusal included, is the caller's to show.
+ */
+async function knownClients(): Promise<KnownClient[]> {
+  try {
+    return await apiFetch<KnownClient[]>("/clients/known");
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status !== 404) throw e;
+    const live = await apiFetch<ClientView[]>("/clients");
+    return Array.isArray(live) ? live.map(fromSession) : [];
+  }
+}
+
+/**
+ * Where a served name leads: to the provider the service backs, else to the
+ * service. Nothing when no service has that name, or more than one has (an
+ * admin sees every owner's services, and a name alone does not say whose).
+ */
+function servedTarget(name: string, services: Service[]): string | undefined {
+  const named = services.filter((s) => s.name === name);
+  if (named.length !== 1) return undefined;
+  const svc = named[0]!;
+  return svc.provider_slug ? `/gateway/providers/${svc.provider_slug}` : `/services/${svc.id}`;
+}
+
+function Serves({ client, services }: { client: KnownClient; services: Service[] }) {
+  if (client.served.length === 0) {
+    // A relay that does not name what a session serves still counts it.
+    const n = client.sessions.reduce((sum, s) => sum + s.service_count, 0);
+    const first = client.sessions[0];
+    if (!first || n === 0) return <>—</>;
+    return <Link className="link-inline" to={`/clients/${first.session_id}`}>{n} {n === 1 ? "service" : "services"}</Link>;
+  }
+  return (
+    <>
+      {client.served.map((name, i) => {
+        const to = servedTarget(name, services);
+        return (
+          <Fragment key={name}>
+            {i > 0 && ", "}
+            {to ? <Link className="link-inline" to={to}>{name}</Link> : name}
+          </Fragment>
+        );
+      })}
+    </>
+  );
+}
+
+function LastSeen({ client }: { client: KnownClient }) {
+  if (client.status === "online") return <>now</>;
+  if (!client.last_seen) return <>—</>;
+  // Relative as the value, the exact UTC time on hover: as "Last used" on the Tokens tab.
+  return <time dateTime={client.last_seen} title={formatTimestamp(client.last_seen)}>{formatRelativeTime(client.last_seen)}</time>;
+}
+
+/** The live sessions of a token that is connected more than once. */
+function Sessions({ client }: { client: KnownClient }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const label = `${client.sessions.length} sessions`;
+  return (
+    <div>
+      <Button
+        variant="ghost"
+        size="sm"
+        aria-label={`${label} of ${client.token_name}`}
+        aria-expanded={open}
+        aria-controls={id}
+        icon={open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+        onClick={() => setOpen(!open)}
+      >
+        {label}
+      </Button>
+      <ul id={id} role="list" className="client-sessions" hidden={!open}>
+        {open && client.sessions.map((s) => (
+          <li key={s.session_id}>
+            <Link className="link-inline mono" to={`/clients/${s.session_id}`}>{s.session_id}</Link>{" "}
+            <span className="muted mono">{s.remote_addr}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function ClientList() {
   const [q, setQ] = useState("");
   // The relay's own version, to mark clients that are behind it. Without an answer nothing is marked.
@@ -37,12 +134,20 @@ function ClientList() {
     staleTime: 5 * 60_000,
   });
   const relayVersion = relay.data?.version;
+  // Below ["clients"], the live sessions, so that whatever refreshes those refreshes this list too.
   const { data, isLoading, error } = useQuery({
-    queryKey: ["clients"],
-    queryFn: () => apiFetch<ClientView[]>("/clients"),
+    queryKey: ["clients", "known"],
+    queryFn: knownClients,
     retry: false,
     refetchInterval: 30000,
   });
+  // Same key and fetch as the shell. Only the links depend on it: without an answer the names stay text.
+  const services = useQuery({
+    queryKey: ["services"],
+    queryFn: () => apiFetch<Service[]>("/services"),
+    retry: false,
+  });
+  const servicesList = Array.isArray(services.data) ? services.data : [];
 
   if (error) {
     return (
@@ -53,46 +158,68 @@ function ClientList() {
     );
   }
 
-  const rows = (data ?? []).filter((c) =>
-    `${c.token_name} ${c.session_id}`.toLowerCase().includes(q.toLowerCase()));
+  const known = Array.isArray(data) ? data : [];
+  if (!isLoading && known.length === 0) {
+    return (
+      <div className="stack-md">
+        <EmptyState
+          title="No clients yet"
+          action={<Link className="btn btn-primary btn-sm" to="/clients/connect">Connect a client</Link>}
+        >
+          A client is a machine running burrow. Run these three lines on it, and it appears here.
+        </EmptyState>
+        <InstallLines relayOrigin={typeof window !== "undefined" ? window.location.origin : ""} />
+      </div>
+    );
+  }
+
+  const needle = q.trim().toLowerCase();
+  const rows = known.filter((c) => [c.token_name, ...c.served].join(" ").toLowerCase().includes(needle));
 
   return (
     <>
       <div className="toolbar-row">
-        <Input type="search" role="searchbox" aria-label="Search clients" placeholder="search by client or token…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <Input type="search" role="searchbox" aria-label="Search clients" placeholder="search by client or what it serves…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       {isLoading ? (
         <div className="table-wrap"><SkeletonRows n={5} /></div>
       ) : rows.length === 0 ? (
-        <div className="state-card"><p>No clients connected</p></div>
+        <div className="state-card"><p>No client matches “{q.trim()}”.</p></div>
       ) : (
         <div className="table-wrap">
           <table className="data" aria-label="Clients">
-            <thead><tr><th>Client</th><th>Platform</th><th>Version</th><th>Remote IP</th><th>Status</th><th>Services</th><th>Traffic</th><th className="col-actions"></th></tr></thead>
+            <thead><tr><th>Client</th><th>Status</th><th>Last seen</th><th>Platform</th><th>Version</th><th>Serves</th><th className="col-actions"></th></tr></thead>
             <tbody>
-              {rows.map((c) => (
-                <tr key={c.session_id}>
-                  <td>{c.token_name}<div className="muted mono">{c.session_id}</div></td>
-                  <td>{c.os} · {c.arch}</td>
-                  <td>
-                    <span className="row row-center gap-2">
-                      <span className="mono">{c.client_version || "—"}</span>
-                      {olderThan(c.client_version, relayVersion) && (
-                        <Badge kind="status-idle" nodot>
-                          update available<span className="visually-hidden"> (older than the relay)</span>
-                        </Badge>
-                      )}
-                    </span>
-                  </td>
-                  <td className="col-created">{c.remote_addr}</td>
-                  {/* P1-8 — every row of /clients comes from the live session
-                      registry, so presence in the list is the "online" signal. */}
-                  <td><StatusBadge state="online" /></td>
-                  <td><Link to={`/clients/${c.session_id}`} aria-label={`View ${c.service_count} services for ${c.token_name}`}><Badge kind="" nodot>{c.service_count}</Badge></Link></td>
-                  <td className="col-created">↓{formatBytes(c.total_bytes_in)} ↑{formatBytes(c.total_bytes_out)}</td>
-                  <td className="col-actions"><Link className="btn btn-secondary btn-sm" to={`/clients/${c.session_id}`}>View</Link></td>
-                </tr>
-              ))}
+              {rows.map((c) => {
+                // The newest session; none unless the client is online.
+                const session = c.sessions[0];
+                return (
+                  // A live session whose token was revoked has no token id.
+                  <tr key={c.token_id || session?.session_id || c.token_name}>
+                    <td>
+                      {c.token_name}
+                      {c.sessions.length > 1 && <Sessions client={c} />}
+                    </td>
+                    <td><StatusBadge state={c.status} /></td>
+                    <td className="col-created"><LastSeen client={c} /></td>
+                    <td>{c.os || c.arch ? `${c.os} · ${c.arch}` : "—"}</td>
+                    <td>
+                      <span className="row row-center gap-2">
+                        <span className="mono">{c.client_version || "—"}</span>
+                        {olderThan(c.client_version, relayVersion) && (
+                          <Badge kind="status-idle" nodot>
+                            update available<span className="visually-hidden"> (older than the relay)</span>
+                          </Badge>
+                        )}
+                      </span>
+                    </td>
+                    <td><Serves client={c} services={servicesList} /></td>
+                    <td className="col-actions">
+                      {session && <Link className="btn btn-secondary btn-sm" to={`/clients/${session.session_id}`}>View</Link>}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -124,7 +251,7 @@ export default function Clients() {
     <div className="users-page">
       <PageHeader
         title="Clients"
-        subtitle="Machines running burrow connected to this relay, and the tokens they connect with."
+        subtitle="Machines running burrow that connect to this relay, and the tokens they connect with."
         actions={<Link className="btn btn-primary btn-sm" to="/clients/connect">Connect a client</Link>}
       />
       {!undecided && (

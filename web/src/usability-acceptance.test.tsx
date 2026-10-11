@@ -44,12 +44,13 @@ describe("INTUITIVE — navigation & mental-model alignment", () => {
     expect(screen.queryByRole("heading", { name: "How Burrow works" })).toBeNull();
   });
 
-  it("In-4: Clients page — services-count badge links to the client detail view", async () => {
+  it("In-4: Clients page — an online client links to its detail view, and what it serves to that page", async () => {
     renderApp(<Clients />, "/clients");
-    // db seeds one client: session_id = "sess_4f7a9c0b2e81", service_count = 2
-    // The aria-label is "View 2 services for office-box-1"
-    const link = await screen.findByRole("link", { name: /View.*services for office-box-1/i });
-    expect((link as HTMLAnchorElement).href).toContain("/clients/sess_4f7a9c0b2e81");
+    // db seeds one online client: session_id = "sess_4f7a9c0b2e81", serving ollama and web-staging.
+    const row = (await screen.findByText("office-box-1")).closest("tr")!;
+    expect(within(row).getByRole("link", { name: "View" })).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
+    // ollama backs a provider: the name leads there.
+    expect(await within(row).findByRole("link", { name: "ollama" })).toHaveAttribute("href", "/gateway/providers/ollama");
   });
 
   it("In-4: Services on Live — http tunnel name links to the service detail view", async () => {

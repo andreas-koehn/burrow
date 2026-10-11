@@ -135,28 +135,33 @@ describe("MSW status fields mirror the API", () => {
   });
 
   it("GET /clients/known: one row per token, online first, then offline, then never connected", async () => {
+    // The seed has one client of each state; two more to see the order within a state.
     db.tokens.push(
-      { id: "tok_2", name: "gpu-box", last_used: "2026-05-12T11:45:00Z", created_at: "2026-05-02T08:00:00Z" },
-      { id: "tok_3", name: "new-laptop", last_used: null, created_at: "2026-05-03T08:00:00Z" },
+      { id: "tok_4", name: "gpu-box", last_used: "2026-05-12T11:45:00Z", created_at: "2026-05-02T08:00:00Z" },
+      { id: "tok_5", name: "a-new-laptop", last_used: null, created_at: "2026-05-03T08:00:00Z" },
     );
-    db.clientLastSessions.tok_2 = {
+    db.clientLastSessions.tok_4 = {
       last_seen: "2026-05-12T11:45:00Z", os: "linux", arch: "arm64", client_version: "0.2.0",
       remote_addr: "198.51.100.9:40000", served: ["llamacpp"],
     };
     const r = await fetch("/api/v1/clients/known", authed("GET"));
     expect(r.status).toBe(200);
     const rows: KnownClient[] = await r.json();
+    // Offline by last seen, newest first; never connected by name.
     expect(rows.map((c) => [c.token_name, c.status])).toEqual([
-      ["office-box-1", "online"], ["gpu-box", "offline"], ["new-laptop", "never_connected"],
+      ["office-box-1", "online"],
+      ["koehn-laptop", "offline"], ["gpu-box", "offline"],
+      ["a-new-laptop", "never_connected"], ["build-server", "never_connected"],
     ]);
     expect(rows[0]).toMatchObject({
       token_id: "tok_1", os: "linux", arch: "amd64", served: ["ollama", "web-staging"],
       sessions: [expect.objectContaining({ session_id: "sess_4f7a9c0b2e81", service_count: 2 })],
     });
     expect(rows[0]!.sessions[0]).not.toHaveProperty("services");
-    expect(rows[1]).toMatchObject({ last_seen: "2026-05-12T11:45:00Z", arch: "arm64", served: ["llamacpp"], sessions: [] });
-    expect(rows[2]).toEqual({
-      token_id: "tok_3", token_name: "new-laptop", user_id: db.me.id, status: "never_connected", last_seen: null,
+    expect(rows[1]).toMatchObject({ last_seen: "2026-05-16T17:30:00Z", arch: "arm64", served: ["grafana", "ollama"], sessions: [] });
+    expect(rows[2]).toMatchObject({ last_seen: "2026-05-12T11:45:00Z", arch: "arm64", served: ["llamacpp"], sessions: [] });
+    expect(rows[3]).toEqual({
+      token_id: "tok_5", token_name: "a-new-laptop", user_id: db.me.id, status: "never_connected", last_seen: null,
       os: "", arch: "", client_version: "", remote_addr: "", served: [], sessions: [],
     });
   });

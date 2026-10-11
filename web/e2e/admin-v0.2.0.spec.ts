@@ -100,11 +100,11 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   await sidebar.getByRole("link", { name: /^Email(,|$)/ }).click();
   await expect(page.getByLabel("SMTP server")).toHaveValue("smtp.e2e.example.com");
 
-  // ── Clients: empty state (GET /clients → []) ─────────────────────────────
+  // ── Clients: empty state (GET /clients/known → []) ───────────────────────
   await sidebar.getByRole("link", { name: /^Back to / }).click();
   await sidebar.getByRole("link", { name: /^Clients/ }).click();
   await expect(page.getByRole("heading", { name: "Clients" })).toBeVisible();
-  await expect(page.getByText("No clients connected", { exact: false })).toBeVisible();
+  await expect(page.getByText("No clients yet", { exact: false })).toBeVisible();
 
   // ── Access-mode endpoint contract ─────────────────────────────────────────
   // The AccessModePanel UI renders in the ServiceDetail access tab and the

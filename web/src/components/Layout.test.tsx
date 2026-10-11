@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act, waitFor, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, Routes, Route, Link } from "react-router-dom";
+import { MemoryRouter, Routes, Route, Link, useLocation } from "react-router-dom";
 import { ThemeProvider } from "./theme-provider";
 import { Layout } from "./Layout";
 
@@ -15,6 +15,11 @@ interface Options {
 }
 
 const EMAIL_SET_UP = { "smtp.host": "smtp.example.com" };
+
+/** The path the router is on, for tests that follow a sidebar link. */
+function Where() {
+  return <span data-testid="where">{useLocation().pathname}</span>;
+}
 
 const settingsRequests = { count: 0 };
 
@@ -51,7 +56,7 @@ function renderLayout(meRole?: "admin" | "user" | null, { path = "/services", se
             <Route element={<Layout />}>
               <Route
                 path="*"
-                element={<div>PAGE <Link to="/gateway/cost">to gateway</Link> <Link to="/settings">to settings</Link></div>}
+                element={<div>PAGE <Where /> <Link to="/gateway/cost">to gateway</Link> <Link to="/settings">to settings</Link></div>}
               />
             </Route>
             <Route path="/login" element={<div>LOGIN</div>} />
@@ -170,8 +175,73 @@ describe("Layout workspace shell", () => {
   it("shows the AI Gateway sidebar on a gateway path", async () => {
     renderLayout("admin", { path: "/gateway" });
     expect(await screen.findByRole("button", { name: "Workspace: AI Gateway" })).toBeInTheDocument();
-    expect(sidebarLinks("AI Gateway")).toEqual(["Overview", "Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
-    expect(screen.queryByRole("link", { name: /^Clients(,|$)/ })).toBeNull();
+    expect(sidebarLinks("AI Gateway")).toEqual(["Overview", "Clients", "Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
+    expect(screen.getByRole("link", { name: /^Clients(,|$)/ })).toHaveAttribute("href", "/clients");
+  });
+
+  // Clients belong to the relay: one page at /clients, shown in the workspace the reader came from.
+  it("Clients opened from the AI Gateway keeps the AI Gateway sidebar and breadcrumb", async () => {
+    renderLayout("admin", { path: "/gateway/providers", clients: [{ session_id: "sess_1", token_name: "office-box-1" }] });
+    const gateway = await screen.findByRole("navigation", { name: "AI Gateway" });
+    await userEvent.click(await within(gateway).findByRole("link", { name: "Clients, 1 online" }));
+    expect(screen.getByTestId("where")).toHaveTextContent("/clients");
+    const nav = within(screen.getByRole("navigation", { name: "AI Gateway" }));
+    expect(nav.getByRole("link", { name: "Providers" })).not.toHaveAttribute("aria-current");
+    expect(nav.getByRole("link", { name: "Models" })).toBeInTheDocument();
+    expect(nav.getByRole("link", { name: "Clients, 1 online" })).toHaveAttribute("aria-current", "page");
+    expect(document.querySelectorAll('.sidebar [aria-current="page"]')).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Workspace: AI Gateway" })).toBeInTheDocument();
+    const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(within(crumbs).getByRole("link", { name: "AI Gateway" })).toHaveAttribute("href", "/gateway");
+    expect(within(crumbs).getByText("Clients")).toHaveAttribute("aria-current", "page");
+    expect(crumbs).toHaveTextContent(/^AI Gateway\W*Clients$/);
+    // Being on Clients changes nothing about where the reader came from.
+    expect(localStorage.getItem("burrow.lastWorkspace")).toBe("gateway");
+  });
+
+  it("Clients opened from Services keeps the Services sidebar", async () => {
+    localStorage.setItem("burrow.lastWorkspace", "gateway"); // an earlier visit
+    renderLayout("admin", { path: "/services" });
+    const services = await screen.findByRole("navigation", { name: "Services" });
+    await userEvent.click(within(services).getByRole("link", { name: /^Clients(,|$)/ }));
+    expect(screen.getByTestId("where")).toHaveTextContent("/clients");
+    expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
+    expect(screen.getByRole("link", { name: /^Clients(,|$)/ })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("navigation", { name: "AI Gateway" })).toBeNull();
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(/^Services\W*Clients$/);
+  });
+
+  it("Clients opened directly, with nothing remembered, shows the Services sidebar", async () => {
+    renderLayout("admin", { path: "/clients" });
+    await chip();
+    expect(screen.getByRole("navigation", { name: "Services" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "AI Gateway" })).toBeNull();
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(/^Services\W*Clients$/);
+    expect(localStorage.getItem("burrow.lastWorkspace")).toBeNull();
+  });
+
+  it("a client's own page stays in the AI Gateway when the reader came from there", async () => {
+    localStorage.setItem("burrow.lastWorkspace", "gateway");
+    renderLayout("admin", { path: "/clients/sess_1", clients: [{ session_id: "sess_1", token_name: "office-box-1" }] });
+    const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(await within(crumbs).findByText("office-box-1")).toHaveAttribute("aria-current", "page");
+    expect(crumbs).toHaveTextContent(/^AI Gateway\W*Clients\W*office-box-1$/);
+    expect(within(screen.getByRole("navigation", { name: "AI Gateway" })).getByRole("link", { name: "Clients, 1 online" }))
+      .toHaveAttribute("aria-current", "page");
+  });
+
+  it("without the AI gateway, Clients shows the Services sidebar whatever is remembered", async () => {
+    localStorage.setItem("burrow.lastWorkspace", "gateway");
+    renderLayout("user", { path: "/clients", services: [httpService("svc1", "ollama", false)] });
+    await screen.findByRole("link", { name: "Services, 1" });
+    expect(screen.getByRole("navigation", { name: "Services" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "AI Gateway" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Providers" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Workspace:/ })).toBeNull();
+    expect(screen.getByRole("link", { name: "Clients" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(/^Services\W*Clients$/);
+    // What was remembered is left as it was.
+    expect(localStorage.getItem("burrow.lastWorkspace")).toBe("gateway");
   });
 
   it("shows the Settings sidebar on a settings path, with a way back", async () => {
