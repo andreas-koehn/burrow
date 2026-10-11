@@ -165,53 +165,78 @@ func TestRoleDefaultForNewUsersClearsPrior(t *testing.T) {
 	}
 }
 
-// TestRoleDeleteCascadeReassigns — deleting a role used by users cascades
-// them onto the current default-for-new-users role (or "user" if no default
-// is configured). The store returns the affected user IDs for audit (Task 25).
-func TestRoleDeleteCascadeReassigns(t *testing.T) {
+// A custom role is assigned like a built-in one, and a role that a user holds
+// or an access policy names is not deleted: the users stay where they are.
+func TestCustomRoleAssignedAndKeptWhileInUse(t *testing.T) {
 	defer authz.SetRoles(nil)
 	ctx := context.Background()
-	s, _ := newStoreWithDB(t)
-
-	// Create custom role + two users on it; mark "user" as the default so
-	// the cascade has a clear target distinct from "admin".
+	s := newStore(t)
 	if err := s.CreateRole(ctx, "analyst", "", []string{"ai:read:any"}, false); err != nil {
 		t.Fatal(err)
 	}
-	yes := true
-	if err := s.UpdateRole(ctx, "user", RoleUpdate{DefaultForNewUsers: &yes}); err == nil {
-		t.Fatal("update builtin must fail (ErrRoleBuiltin)")
+
+	// Created with it, and moved onto it.
+	u1, err := s.CreateUser(ctx, "a1@x", "password1", "analyst")
+	if err != nil || u1.Role != "analyst" {
+		t.Fatalf("create with a custom role: %+v, %v", u1, err)
 	}
-	// Builtin can't be defaulted via UpdateRole — fall back to the safe
-	// default fallback inside DeleteRole (which routes to "user" when the
-	// default role is absent or is the role being deleted).
-	u1, err := s.CreateUser(ctx, "a1@x", "password1", "user")
-	if err != nil {
-		t.Fatal(err)
+	u2 := mustCreateUser(t, s, "a2@x", "user")
+	if err := s.UpdateUserRole(ctx, u2.ID, "analyst"); err != nil {
+		t.Fatalf("update to a custom role: %v", err)
 	}
-	// Manually push the user onto the analyst role (bypassing the role
-	// allowlist guard in UpdateUserRole, which is hardcoded to admin/user).
-	if _, err := s.q.DB().ExecContext(ctx,
-		`UPDATE users SET role='analyst' WHERE id=?`, u1.ID,
-	); err != nil {
-		t.Fatal(err)
+	if got, _ := s.GetUserByID(ctx, u2.ID); got.Role != "analyst" {
+		t.Fatalf("stored role = %q", got.Role)
+	}
+	// A name that is no role is refused both ways.
+	if _, err := s.CreateUser(ctx, "a3@x", "password1", "ghost"); !errors.Is(err, ErrInvalidRole) {
+		t.Fatalf("create with an unknown role: %v", err)
+	}
+	if err := s.UpdateUserRole(ctx, u2.ID, "ghost"); !errors.Is(err, ErrInvalidRole) {
+		t.Fatalf("update to an unknown role: %v", err)
 	}
 
-	affected, err := s.DeleteRole(ctx, "analyst")
-	if err != nil {
-		t.Fatalf("delete analyst: %v", err)
+	// An access policy names it.
+	owner := mustCreateUser(t, s, "owner@x", "user")
+	svc := mustGetOrCreateService(t, s, owner.ID, "web", "http")
+	if err := s.SetAccessPolicy(ctx, owner.ID, "user", svc.ID, []string{"analyst", "user"}); err != nil {
+		t.Fatalf("policy with a custom role: %v", err)
 	}
-	if len(affected) != 1 || affected[0] != u1.ID {
-		t.Fatalf("affected = %v want [%s]", affected, u1.ID)
+	if err := s.SetAccessPolicy(ctx, owner.ID, "user", svc.ID, []string{"ghost"}); !errors.Is(err, ErrUnknownRole) {
+		t.Fatalf("policy with an unknown role: %v", err)
 	}
-	got, err := s.GetUserByID(ctx, u1.ID)
-	if err != nil {
+	if users, policies, err := s.RoleUses(ctx, "analyst"); err != nil || users != 2 || policies != 1 {
+		t.Fatalf("RoleUses = %d users, %d policies, %v; want 2, 1", users, policies, err)
+	}
+
+	// In use: the role stays, and so do its users.
+	if _, err := s.DeleteRole(ctx, "analyst"); !errors.Is(err, ErrRoleInUse) {
+		t.Fatalf("delete while users hold it: %v, want ErrRoleInUse", err)
+	}
+	if got, _ := s.GetUserByID(ctx, u1.ID); got.Role != "analyst" {
+		t.Fatalf("the refused delete moved a user to %q", got.Role)
+	}
+	if !authz.Can("analyst", authz.PermAIReadAny) {
+		t.Fatal("the refused delete dropped the role from authz")
+	}
+	for _, id := range []string{u1.ID, u2.ID} {
+		if err := s.UpdateUserRole(ctx, id, "user"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.DeleteRole(ctx, "analyst"); !errors.Is(err, ErrRoleInUse) {
+		t.Fatalf("delete while a policy names it: %v, want ErrRoleInUse", err)
+	}
+	if err := s.SetAccessPolicy(ctx, owner.ID, "user", svc.ID, []string{"user"}); err != nil {
 		t.Fatal(err)
 	}
-	if got.Role != "user" {
-		t.Fatalf("user must be re-assigned to 'user', got %q", got.Role)
+	if _, err := s.DeleteRole(ctx, "analyst"); err != nil {
+		t.Fatalf("delete an unused role: %v", err)
 	}
 	if _, err := s.GetRole(ctx, "analyst"); !errors.Is(err, db.ErrNotFound) {
 		t.Fatalf("analyst row must be gone, got %v", err)
+	}
+	// A built-in role answers as before, whoever holds it.
+	if _, err := s.DeleteRole(ctx, "user"); !errors.Is(err, ErrRoleBuiltin) {
+		t.Fatalf("delete a built-in role: %v, want ErrRoleBuiltin", err)
 	}
 }

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -536,6 +537,24 @@ func (d Deps) PostService(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// roleKnown reports whether name is a role: a built-in one or a stored custom
+// role.
+func (d Deps) roleKnown(ctx context.Context, name string) (bool, error) {
+	if _, ok := authz.Get(name); ok {
+		return true, nil
+	}
+	if d.Roles == nil {
+		return false, nil
+	}
+	if _, err := d.Roles.GetRole(ctx, name); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // SetAccessPolicy handles PUT /api/v1/services/{serviceID}/access-policy.
 func (d Deps) SetAccessPolicy(w http.ResponseWriter, r *http.Request) {
 	serviceID := chi.URLParam(r, "serviceID")
@@ -551,7 +570,12 @@ func (d Deps) SetAccessPolicy(w http.ResponseWriter, r *http.Request) {
 	// Spec Part D: pre-validate each role before calling the store so the error
 	// body can include the offending role name: {"error":"unknown role \"<r>\""}
 	for _, roleName := range in.Roles {
-		if _, ok := authz.Get(roleName); !ok {
+		known, err := d.roleKnown(r.Context(), roleName)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if !known {
 			writeErr(w, http.StatusBadRequest, fmt.Sprintf("unknown role %q", roleName))
 			return
 		}

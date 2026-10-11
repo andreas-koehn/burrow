@@ -180,3 +180,16 @@ func effectivePerms(ctx context.Context, role string, p authz.Permission) bool {
 	}
 	return slices.Contains(bearerPerms(ctx), string(p)) && authz.Can(role, p)
 }
+
+// firstNotHeld returns the first of perms that the role does not hold, or ""
+// when it holds them all. A key that is no permission at all is skipped: the
+// store answers that one.
+func firstNotHeld(role string, perms []string) string {
+	known := authz.AllPermissions()
+	for _, p := range perms {
+		if slices.Contains(known, authz.Permission(p)) && !authz.Can(role, authz.Permission(p)) {
+			return p
+		}
+	}
+	return ""
+}

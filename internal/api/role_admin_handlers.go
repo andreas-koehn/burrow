@@ -67,6 +67,9 @@ func (d Deps) PostRole(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name must be a slug (lowercase letters, digits, dashes; 1..64 chars)")
 		return
 	}
+	if !d.mayGrant(w, r, in.Permissions) {
+		return
+	}
 	if err := d.Roles.CreateRole(r.Context(), in.Name, in.Description, in.Permissions, in.DefaultForNewUsers); err != nil {
 		if writeRoleErr(w, err) {
 			return
@@ -108,6 +111,9 @@ func (d Deps) PutRole(w http.ResponseWriter, r *http.Request) {
 	var in updateRoleReq
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if in.Permissions != nil && !d.mayGrant(w, r, *in.Permissions) {
 		return
 	}
 	if err := d.Roles.UpdateRole(r.Context(), name, store.RoleUpdate{
@@ -299,6 +305,10 @@ func writeRoleErr(w http.ResponseWriter, err error) bool {
 		return true
 	case errors.Is(err, store.ErrRoleBuiltin):
 		writeErr(w, http.StatusConflict, "role is built-in")
+		return true
+	case errors.Is(err, store.ErrRoleInUse):
+		// "role is in use: 2 user(s), 1 access policy(ies)"
+		writeErr(w, http.StatusConflict, strings.TrimPrefix(err.Error(), "store: "))
 		return true
 	case errors.Is(err, store.ErrRoleExists):
 		writeErr(w, http.StatusConflict, "role already exists")

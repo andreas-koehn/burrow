@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -98,12 +99,58 @@ func atoiDefault(s string, def int) int {
 	return n
 }
 
+// msgUnknownUserRole is the 400 for a role that is neither built-in nor a
+// stored custom role.
+const msgUnknownUserRole = "role must be a built-in role or an existing custom role"
+
+// mayGrant reports whether the caller's own role holds every one of perms,
+// and answers 403 itself when not: nobody hands out a permission their role
+// lacks. What an automation token declares does not matter here; handing a
+// permission on is not using it.
+func (d Deps) mayGrant(w http.ResponseWriter, r *http.Request, perms []string) bool {
+	role, err := d.callerRoleForAuth(r)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "lookup failed")
+		return false
+	}
+	if p := firstNotHeld(role, perms); p != "" {
+		writeErr(w, http.StatusForbidden, "your role does not hold "+p+" and cannot grant it")
+		return false
+	}
+	return true
+}
+
+// mayAssignRole reports whether the caller may give a user the named role
+// (mayGrant over the role's permissions). A role that does not exist passes:
+// the store refuses it with ErrInvalidRole.
+func (d Deps) mayAssignRole(w http.ResponseWriter, r *http.Request, name string) bool {
+	var perms []string
+	if d.Roles != nil {
+		rd, err := d.Roles.GetRole(r.Context(), name)
+		if errors.Is(err, db.ErrNotFound) {
+			return true
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "lookup failed")
+			return false
+		}
+		perms = rd.Permissions
+	} else if ar, ok := authz.Get(name); ok {
+		for _, p := range ar.Permissions {
+			perms = append(perms, string(p))
+		}
+	}
+	return d.mayGrant(w, r, perms)
+}
+
 type updateUserReq struct {
 	Role   *string `json:"role"`
 	Status *string `json:"status"`
 }
 
-// AdminUpdateUser changes a user's role and/or status (users:manage).
+// AdminUpdateUser changes a user's role and/or status (users:manage). The
+// role is a built-in role or a stored custom role, and one whose permissions
+// the caller's own role holds (mayAssignRole).
 // PATCH /api/v1/users/{id}. An admin cannot change their own status (lockout
 // guard, mirrors the self-delete guard).
 func (d Deps) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +159,9 @@ func (d Deps) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	var in updateUserReq
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || (in.Role == nil && in.Status == nil) {
 		writeErr(w, http.StatusBadRequest, "role and/or status required")
+		return
+	}
+	if in.Role != nil && !d.mayAssignRole(w, r, *in.Role) {
 		return
 	}
 	if in.Status != nil {
@@ -133,13 +183,13 @@ func (d Deps) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if in.Role != nil {
-		if *in.Role != "admin" && *in.Role != "user" {
-			writeErr(w, http.StatusBadRequest, "role must be 'admin' or 'user'")
-			return
-		}
 		if err := d.Users.UpdateUserRole(r.Context(), targetID, *in.Role); err != nil {
 			if errors.Is(err, db.ErrNotFound) {
 				writeErr(w, http.StatusNotFound, "user not found")
+				return
+			}
+			if errors.Is(err, store.ErrInvalidRole) {
+				writeErr(w, http.StatusBadRequest, msgUnknownUserRole)
 				return
 			}
 			writeErr(w, http.StatusInternalServerError, "update role failed")
@@ -173,6 +223,9 @@ func (d Deps) AdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "email, password, and role are required")
 		return
 	}
+	if !d.mayAssignRole(w, r, in.Role) {
+		return
+	}
 	u, err := d.Users.CreateUser(r.Context(), in.Email, in.Password, in.Role)
 	if errors.Is(err, store.ErrEmailConflict) {
 		writeErr(w, http.StatusConflict, "email already in use")
@@ -183,7 +236,7 @@ func (d Deps) AdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errors.Is(err, store.ErrInvalidRole) {
-		writeErr(w, http.StatusBadRequest, "role must be 'admin' or 'user'")
+		writeErr(w, http.StatusBadRequest, msgUnknownUserRole)
 		return
 	}
 	if err != nil {
