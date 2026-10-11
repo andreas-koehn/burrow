@@ -1,9 +1,14 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/ankoehn/burrow/internal/authz"
+	"github.com/ankoehn/burrow/internal/store"
 )
 
 // A custom role is a role like the built-in ones: a user can hold it and a
@@ -67,16 +72,52 @@ func TestNobodyGrantsWhatTheirRoleLacks(t *testing.T) {
 		map[string]string{"email": "boss@x", "password": "password1", "role": "admin"}, legacy); rec.Code != http.StatusForbidden {
 		t.Errorf("creating an admin without being one: %d, want 403", rec.Code)
 	}
-	// The same through an automation token: what the token declares does not
-	// lift what its user's role lacks.
+	// The same through an automation token.
 	if rec := h.do(t, http.MethodPatch, "/api/v1/users/u-cr-none", map[string]string{"role": "admin"},
 		h.token(t, "cr-legacy", "users:manage")); rec.Code != http.StatusForbidden {
 		t.Errorf("a token giving admin for a user who is none: %d, want 403", rec.Code)
 	}
-	// An admin's token that declares users:manage gives any role.
+	// A token is held to what it declares, not to its minter's whole role: an
+	// admin's token with users:manage only cannot hand out admin.
+	narrow := h.token(t, "admin", "users:manage")
+	if rec := h.do(t, http.MethodPatch, "/api/v1/users/u-cr-none", map[string]string{"role": "admin"}, narrow); rec.Code != http.StatusForbidden ||
+		!strings.Contains(rec.Body.String(), "token") {
+		t.Errorf("a narrow admin token updating to admin: %d %s, want 403", rec.Code, rec.Body)
+	}
+	if rec := h.do(t, http.MethodPost, "/api/v1/users",
+		map[string]string{"email": "boss2@x", "password": "password1", "role": "admin"}, narrow); rec.Code != http.StatusForbidden {
+		t.Errorf("a narrow admin token creating an admin: %d, want 403", rec.Code)
+	}
+	userPerms := []string{"users:manage"}
+	if ar, ok := authz.Get("user"); ok {
+		for _, p := range ar.Permissions {
+			userPerms = append(userPerms, string(p))
+		}
+	}
+	if rec := h.do(t, http.MethodPost, "/api/v1/users",
+		map[string]string{"email": "plain@x", "password": "password1", "role": "user"}, h.token(t, "admin", userPerms...)); rec.Code != http.StatusCreated {
+		t.Errorf("a token declaring the user role's permissions creating a user: %d %s, want 201", rec.Code, rec.Body)
+	}
+	// A token that declares every permission of admin may hand admin out.
+	var all []string
+	for _, p := range authz.AllPermissions() {
+		if authz.Can("admin", p) {
+			all = append(all, string(p))
+		}
+	}
 	if rec := h.do(t, http.MethodPatch, "/api/v1/users/u-cr-none", map[string]string{"role": "admin"},
-		h.token(t, "admin", "users:manage")); rec.Code != http.StatusNoContent {
-		t.Errorf("an admin's token giving admin: %d %s, want 204", rec.Code, rec.Body)
+		h.token(t, "admin", all...)); rec.Code != http.StatusNoContent {
+		t.Errorf("a full admin token giving admin: %d %s, want 204", rec.Code, rec.Body)
+	}
+	// roles:manage alone does not write other permissions into a role.
+	rolesOnly := h.token(t, "admin", "roles:manage")
+	if rec := h.do(t, http.MethodPost, "/api/v1/roles",
+		map[string]any{"name": "tok-made", "permissions": []string{"ai:read:any"}}, rolesOnly); rec.Code != http.StatusForbidden {
+		t.Errorf("a roles:manage token creating a role with an undeclared permission: %d, want 403", rec.Code)
+	}
+	if rec := h.do(t, http.MethodPut, "/api/v1/roles/cr-none",
+		map[string]any{"permissions": []string{"ai:read:any"}}, rolesOnly); rec.Code != http.StatusForbidden {
+		t.Errorf("a roles:manage token widening a role: %d, want 403", rec.Code)
 	}
 
 	if rec := h.do(t, http.MethodPost, "/api/v1/roles",
@@ -133,5 +174,88 @@ func TestDeleteRoleInUseIsRefused(t *testing.T) {
 	}
 	if code, _ := del("admin"); code != http.StatusConflict {
 		t.Errorf("deleting a built-in role: %d, want 409", code)
+	}
+}
+
+// failingBuiltinRoles is a RoleStore as on Postgres, where the built-in roles
+// have no row.
+type failingBuiltinRoles struct{ RoleStore }
+
+func (f failingBuiltinRoles) GetRole(ctx context.Context, name string) (store.RoleDetail, error) {
+	if name == "admin" || name == "user" {
+		return store.RoleDetail{}, errors.New("no row")
+	}
+	return f.RoleStore.GetRole(ctx, name)
+}
+
+// A built-in role is resolved from authz, not from the roles table.
+func TestAssigningABuiltInRoleNeedsNoRoleRow(t *testing.T) {
+	h := newAuthzHarness(t, func(d *Deps) { d.Roles = failingBuiltinRoles{d.Roles} })
+	rec := h.do(t, http.MethodPost, "/api/v1/users",
+		map[string]string{"email": "p@x", "password": "password1", "role": "user"}, h.session(t, "admin"))
+	if rec.Code != http.StatusCreated {
+		t.Errorf("creating a user without a row for the role: %d %s, want 201", rec.Code, rec.Body)
+	}
+	if rec := h.do(t, http.MethodPatch, "/api/v1/users/u-cr-none", map[string]string{"role": "admin"}, h.session(t, "cr-legacy")); rec.Code != http.StatusForbidden {
+		t.Errorf("admin for a caller who lacks it: %d, want 403", rec.Code)
+	}
+}
+
+// Whoever manages users must hold what the target's role holds: otherwise
+// users:manage would let the caller demote, suspend or delete every admin.
+func TestUserManagersAreHeldToTheTargetsRole(t *testing.T) {
+	h := newAuthzHarness(t)
+	ctx := context.Background()
+	if err := h.st.CreateRole(ctx, "cr-users", "", []string{"users:manage", "users:read"}, false); err != nil {
+		t.Fatal(err)
+	}
+	for id, role := range map[string]string{"u-cr-users": "cr-users", "u-admin2": "admin", "u-admin3": "admin"} {
+		if _, err := h.sqldb.ExecContext(ctx, `INSERT INTO users(id, email, password_hash, role) VALUES(?,?,?,?)`,
+			id, id+"@x", "x", role); err != nil {
+			t.Fatal(err)
+		}
+	}
+	managers := h.session(t, "cr-users")
+	for _, c := range []struct {
+		method, path string
+		body         any
+	}{
+		{http.MethodPatch, "/api/v1/users/u-admin2", map[string]string{"role": "user"}},
+		{http.MethodPatch, "/api/v1/users/u-admin2", map[string]string{"status": "suspended"}},
+		{http.MethodDelete, "/api/v1/users/u-admin2", nil},
+		{http.MethodPatch, "/api/v1/users/u-user", map[string]string{"status": "suspended"}},
+	} {
+		rec := h.do(t, c.method, c.path, c.body, managers)
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "does not hold") {
+			t.Errorf("%s %s by a users:manage role: %d %s, want 403", c.method, c.path, rec.Code, rec.Body)
+		}
+	}
+	var role, status string
+	if err := h.sqldb.QueryRow(`SELECT role, status FROM users WHERE id='u-admin2'`).Scan(&role, &status); err != nil || role != "admin" || status != "active" {
+		t.Errorf("the refused calls changed the admin: %q %q %v", role, status, err)
+	}
+	// A target whose role the caller holds is still managed.
+	legacy := h.session(t, "cr-legacy")
+	if rec := h.do(t, http.MethodPatch, "/api/v1/users/u-cr-none", map[string]string{"status": "suspended"}, legacy); rec.Code != http.StatusNoContent {
+		t.Errorf("managing a user whose role is within one's own: %d %s, want 204", rec.Code, rec.Body)
+	}
+	if rec := h.do(t, http.MethodPatch, "/api/v1/users/nobody", map[string]string{"status": "suspended"}, managers); rec.Code != http.StatusNotFound {
+		t.Errorf("a target that does not exist: %d, want 404", rec.Code)
+	}
+	// An admin's token that declares users:manage only is refused for an admin.
+	if rec := h.do(t, http.MethodPatch, "/api/v1/users/u-admin2", map[string]string{"status": "suspended"},
+		h.token(t, "admin", "users:manage")); rec.Code != http.StatusForbidden {
+		t.Errorf("a narrow admin token suspending an admin: %d, want 403", rec.Code)
+	}
+	if rec := h.do(t, http.MethodDelete, "/api/v1/users/u-admin2", nil, h.token(t, "admin", "users:manage")); rec.Code != http.StatusForbidden {
+		t.Errorf("a narrow admin token deleting an admin: %d, want 403", rec.Code)
+	}
+	// An admin session is unaffected.
+	admin := h.session(t, "admin")
+	if rec := h.do(t, http.MethodPatch, "/api/v1/users/u-admin2", map[string]string{"role": "user"}, admin); rec.Code != http.StatusNoContent {
+		t.Errorf("admin demoting an admin: %d %s, want 204", rec.Code, rec.Body)
+	}
+	if rec := h.do(t, http.MethodDelete, "/api/v1/users/u-admin3", nil, admin); rec.Code != http.StatusNoContent {
+		t.Errorf("admin deleting an admin: %d %s, want 204", rec.Code, rec.Body)
 	}
 }

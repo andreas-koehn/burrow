@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -103,44 +104,77 @@ func atoiDefault(s string, def int) int {
 // stored custom role.
 const msgUnknownUserRole = "role must be a built-in role or an existing custom role"
 
-// mayGrant reports whether the caller's own role holds every one of perms,
-// and answers 403 itself when not: nobody hands out a permission their role
-// lacks. What an automation token declares does not matter here; handing a
-// permission on is not using it.
+// mayGrant reports whether the caller holds every one of perms, and answers
+// 403 itself when not: nobody hands out a permission they lack. A session
+// holds what its role holds; a token only what it declares and its user's
+// role grants (effectivePerms), so a token hands out no more than it can use.
 func (d Deps) mayGrant(w http.ResponseWriter, r *http.Request, perms []string) bool {
 	role, err := d.callerRoleForAuth(r)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "lookup failed")
 		return false
 	}
-	if p := firstNotHeld(role, perms); p != "" {
-		writeErr(w, http.StatusForbidden, "your role does not hold "+p+" and cannot grant it")
+	if p := firstNotHeld(r.Context(), role, perms); p != "" {
+		who := "your role"
+		if bearerTokenID(r.Context()) != "" {
+			who = "this token"
+		}
+		writeErr(w, http.StatusForbidden, who+" does not hold "+p+" and cannot grant it")
 		return false
 	}
 	return true
+}
+
+// rolePerms returns the permissions of a role: a built-in role from authz
+// (it may have no row in the roles table), any other from the role store.
+func (d Deps) rolePerms(ctx context.Context, name string) ([]string, error) {
+	if ar, ok := authz.Get(name); ok {
+		var perms []string
+		for _, p := range ar.Permissions {
+			perms = append(perms, string(p))
+		}
+		return perms, nil
+	}
+	if d.Roles == nil {
+		return nil, nil
+	}
+	rd, err := d.Roles.GetRole(ctx, name)
+	if errors.Is(err, db.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return rd.Permissions, nil
 }
 
 // mayAssignRole reports whether the caller may give a user the named role
 // (mayGrant over the role's permissions). A role that does not exist passes:
 // the store refuses it with ErrInvalidRole.
 func (d Deps) mayAssignRole(w http.ResponseWriter, r *http.Request, name string) bool {
-	var perms []string
-	if d.Roles != nil {
-		rd, err := d.Roles.GetRole(r.Context(), name)
-		if errors.Is(err, db.ErrNotFound) {
-			return true
-		}
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return false
-		}
-		perms = rd.Permissions
-	} else if ar, ok := authz.Get(name); ok {
-		for _, p := range ar.Permissions {
-			perms = append(perms, string(p))
-		}
+	perms, err := d.rolePerms(r.Context(), name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "lookup failed")
+		return false
 	}
 	return d.mayGrant(w, r, perms)
+}
+
+// mayManageUser reports whether the caller may change or delete the target
+// user: the caller must hold every permission of the role the target holds
+// now, so that users:manage alone does not reach the admins. A target that
+// does not exist is a 404.
+func (d Deps) mayManageUser(w http.ResponseWriter, r *http.Request, targetID string) bool {
+	target, err := d.Users.GetUserByID(r.Context(), targetID)
+	if errors.Is(err, db.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "user not found")
+		return false
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "lookup failed")
+		return false
+	}
+	return d.mayAssignRole(w, r, target.Role)
 }
 
 type updateUserReq struct {
@@ -159,6 +193,9 @@ func (d Deps) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	var in updateUserReq
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || (in.Role == nil && in.Status == nil) {
 		writeErr(w, http.StatusBadRequest, "role and/or status required")
+		return
+	}
+	if !d.mayManageUser(w, r, targetID) {
 		return
 	}
 	if in.Role != nil && !d.mayAssignRole(w, r, *in.Role) {
@@ -253,6 +290,9 @@ func (d Deps) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	targetID := chi.URLParam(r, "id")
 	if targetID == userID(r.Context()) {
 		writeErr(w, http.StatusBadRequest, "cannot delete yourself")
+		return
+	}
+	if !d.mayManageUser(w, r, targetID) {
 		return
 	}
 	err := d.Users.DeleteUser(r.Context(), targetID)
