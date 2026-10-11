@@ -284,7 +284,7 @@ func (d Deps) allow(a access) func(http.Handler) http.Handler {
 				w.Header().Set("Cache-Control", "no-store")
 				writeErr(w, http.StatusForbidden, msgDashboardSession)
 				return
-			case !token && (a.kind == accessToken || len(a.perms) == 0):
+			case !token && (a.kind == accessToken || (a.kind == accessDashboard && len(a.perms) == 0)):
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -335,17 +335,23 @@ func (g declaredRouter) With(mw ...func(http.Handler) http.Handler) chi.Router {
 }
 
 func (g declaredRouter) Group(fn func(chi.Router)) chi.Router {
-	return g.Router.Group(func(r chi.Router) {
-		inner := g
-		inner.Router = r
-		fn(inner)
+	inner := g
+	inner.Router = g.Router.Group(func(r chi.Router) {
+		in := g
+		in.Router = r
+		fn(in)
 	})
+	return inner
 }
 
 func (g declaredRouter) Route(pattern string, fn func(chi.Router)) chi.Router {
-	return g.Router.With(g.with...).Route(pattern, func(r chi.Router) {
-		fn(declaredRouter{Router: r, d: g.d, prefix: g.prefix + pattern})
+	sub := declaredRouter{d: g.d, prefix: g.prefix + pattern, with: g.with}
+	sub.Router = g.Router.Route(pattern, func(r chi.Router) {
+		in := sub
+		in.Router = r
+		fn(in)
 	})
+	return sub
 }
 
 func (g declaredRouter) Method(method, pattern string, h http.Handler) {

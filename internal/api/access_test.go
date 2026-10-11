@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ankoehn/burrow/internal/authz"
+	"github.com/ankoehn/burrow/internal/db"
 )
 
 // gateRequest builds a request as the session middlewares leave it: the
@@ -62,6 +64,11 @@ func TestGateKinds(t *testing.T) {
 		{"tokenNeeds, token that declares nothing", tokenNeeds(audit), "admin", true, declares(), 403},
 		{"tokenNeeds, token of a minter who was demoted", tokenNeeds(audit), "user", true, declares("audit:read"), 403},
 
+		// An empty list passes only on a dashboard route; elsewhere it fails closed.
+		{"needs nothing, user's session", needs(), "user", false, nil, 403},
+		{"needs nothing, admin's token", needs(), "admin", true, declares("audit:read"), 403},
+		{"tokenNeeds nothing, token that declares something", tokenNeeds(), "admin", true, declares("audit:read"), 403},
+
 		{"dashboard, session", dashboard(), "user", false, nil, 200},
 		{"dashboard, token", dashboard(), "admin", true, declares("audit:read"), 403},
 		{"dashboard with a permission, session without it", dashboard(audit), "user", false, nil, 403},
@@ -83,8 +90,21 @@ func TestGateKinds(t *testing.T) {
 }
 
 func TestGateAnswers(t *testing.T) {
-	ok := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	reached := false
+	ok := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true })
 	d := Deps{Users: &fakeUserStore{role: "user"}, Log: discardLog()}
+	defer func() {
+		if reached {
+			t.Error("a refused request reached the handler")
+		}
+	}()
+
+	// An empty require fails closed.
+	rec0 := httptest.NewRecorder()
+	d.require()(ok).ServeHTTP(rec0, gateRequest("user", false, nil))
+	if rec0.Code != 403 {
+		t.Errorf("require(): %d, want 403", rec0.Code)
+	}
 
 	// The 403 names what would have opened the route.
 	rec := httptest.NewRecorder()
@@ -107,6 +127,23 @@ func TestGateAnswers(t *testing.T) {
 	if rec.Code != 401 {
 		t.Errorf("deleted user: %d, want 401", rec.Code)
 	}
+
+	// A store that fails is not a refusal of the caller: 500.
+	broken := Deps{Users: failingUserFake{}, Log: discardLog()}
+	rec = httptest.NewRecorder()
+	broken.require(authz.PermUsersRead)(ok).ServeHTTP(rec, gateRequest("", false, nil))
+	if rec.Code != 500 {
+		t.Errorf("failing store: %d, want 500", rec.Code)
+	}
+}
+
+// failingUserFake answers every user lookup with an error other than not-found.
+type failingUserFake struct {
+	fakeUsers
+}
+
+func (failingUserFake) GetUserByID(context.Context, string) (db.User, error) {
+	return db.User{}, errors.New("disk on fire")
 }
 
 // TestEveryRouteDeclaresItsAccess keeps routeAccess equal to the router: a
@@ -194,6 +231,13 @@ func TestUndeclaredRouteStopsTheRouter(t *testing.T) {
 	panics("in a sub-route", "GET /api/v1/sub/nope", func(r chi.Router) {
 		r.Route("/sub", func(r chi.Router) { r.Get("/nope", ok) })
 	})
+	// A router handed back by Group or Route registers through the gate too.
+	panics("on the router Group returns", "GET /api/v1/nope", func(r chi.Router) {
+		r.Group(func(chi.Router) {}).Get("/nope", ok)
+	})
+	panics("on the router Route returns", "DELETE /api/v1/roles/nope", func(r chi.Router) {
+		r.Route("/roles", func(chi.Router) {}).Delete("/nope", ok)
+	})
 	panics("another method of a declared path", "PUT /api/v1/me", func(r chi.Router) { r.Put("/me", ok) })
 	panics("Handle", "must name its method", func(r chi.Router) { r.Handle("/me", http.HandlerFunc(ok)) })
 	panics("Mount", "Mount is not allowed", func(r chi.Router) { r.Mount("/me", http.HandlerFunc(ok)) })
@@ -219,5 +263,36 @@ func TestGateRunsBeforeRouteMiddlewares(t *testing.T) {
 	root.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/users", nil))
 	if rec.Code != http.StatusForbidden || reached {
 		t.Fatalf("status %d, middleware reached %v; want 403 and false", rec.Code, reached)
+	}
+}
+
+// In r.With(mw).Route(...) the middleware runs after the gate of each route in
+// the sub-router, as it does for a plain r.With(mw).Get.
+func TestGateRunsBeforeMiddlewaresOfASubRoute(t *testing.T) {
+	for _, role := range []string{"user", "admin"} {
+		reached := false
+		mw := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reached = true
+				next.ServeHTTP(w, r)
+			})
+		}
+		root := chi.NewRouter()
+		d := Deps{Users: &fakeUserStore{role: role}, Log: discardLog()}
+		root.Route("/api/v1", func(r chi.Router) {
+			r = d.declared(r, "/api/v1")
+			r.With(mw).Route("/roles", func(r chi.Router) {
+				r.Get("/{name}", func(http.ResponseWriter, *http.Request) {})
+			})
+		})
+		rec := httptest.NewRecorder()
+		root.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/roles/x", nil))
+		want := http.StatusForbidden
+		if role == "admin" {
+			want = http.StatusOK
+		}
+		if rec.Code != want || reached != (role == "admin") {
+			t.Errorf("%s: status %d, middleware reached %v; want %d and %v", role, rec.Code, reached, want, role == "admin")
+		}
 	}
 }
