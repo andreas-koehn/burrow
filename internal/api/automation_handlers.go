@@ -24,7 +24,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -96,32 +95,11 @@ func toAutomationTokenResp(v store.AutomationTokenView) automationTokenResp {
 	}
 }
 
-// --- Permission gate ------------------------------------------------------
+// --- Permission ------------------------------------------------------------
 //
-// All three routes require admin OR automation:tokens:manage:own (anyone with
-// the :own perm may at least try — the store narrows what they see/revoke).
-// :any callers and admin pass trivially; everyone else gets 403.
-
-func (d Deps) requireAutomationTokensManage(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		role, err := d.callerRoleForAuth(r)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if role == "admin" ||
-			effectivePerms(r.Context(), role, authz.PermAutomationTokensManageAny) ||
-			effectivePerms(r.Context(), role, authz.PermAutomationTokensManageOwn) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "automation:tokens:manage required")
-	})
-}
+// All three routes need automation:tokens:manage:own or :any (routeAccess in
+// access.go). Anyone with the :own perm may at least try — the store narrows
+// what they see/revoke.
 
 // callerRoleForAuth returns the role attached to the request. For bearer-
 // authed calls the role lives in ctx (set by RequireBearerOrSession); for

@@ -17,7 +17,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/webhook"
 	wtemplate "github.com/ankoehn/burrow/internal/webhook/template"
@@ -64,25 +63,6 @@ type WebhookSecretRegistry interface {
 // --- Permission gate --------------------------------------------------------
 //
 // Spec Part H: every webhook route requires admin OR webhooks:manage.
-
-func (d Deps) requireWebhooksManage(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		role, err := d.callerRole(r)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if role == "admin" || authz.Can(role, authz.PermWebhooksManage) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "webhooks:manage required")
-	})
-}
 
 // --- Wire shapes ------------------------------------------------------------
 

@@ -32,7 +32,7 @@ func (d Deps) GetConnectInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ConnectInfo{Server: d.controlEndpoint(r)})
 }
 
-// ListClients returns live clients grouped with aggregate traffic (admin only).
+// ListClients returns live clients grouped with aggregate traffic (tunnels:read:any).
 // GET /api/v1/clients
 func (d Deps) ListClients(w http.ResponseWriter, r *http.Request) {
 	var out []ClientView
@@ -45,7 +45,7 @@ func (d Deps) ListClients(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// GetClient returns one client + its services (admin only).
+// GetClient returns one client + its services (tunnels:read:any).
 // GET /api/v1/clients/{sessionID}
 func (d Deps) GetClient(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "sessionID")
@@ -66,7 +66,7 @@ func (d Deps) GetClient(w http.ResponseWriter, r *http.Request) {
 
 // ListKnownClients returns every client token with its status: online with
 // its live sessions, offline with the last session the relay remembers, or
-// never connected (admin only, like ListClients).
+// never connected (tunnels:read:any, like ListClients).
 // GET /api/v1/clients/known
 func (d Deps) ListKnownClients(w http.ResponseWriter, r *http.Request) {
 	out := []KnownClient{}

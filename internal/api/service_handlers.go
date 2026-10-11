@@ -427,8 +427,8 @@ var postServiceAccessModes = map[string]string{
 }
 
 // PostService handles POST /api/v1/services — admin pre-provisioning of a
-// service row (v0.5.2 P3.6 / Task 9). Permission: admin (gated by
-// RequireAdmin in router.go; the handler does no second check).
+// service row (v0.5.2 P3.6 / Task 9). Permission: services:configure:any
+// (routeAccess in access.go; the handler does no second check).
 //
 // Body: { service_id (req), title?, access_mode?, slug? }.
 //   - service_id matches ^[a-z0-9_-]{3,64}$.

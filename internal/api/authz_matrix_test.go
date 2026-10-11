@@ -31,6 +31,35 @@ func cookieMatrix(t *testing.T) []string {
 	return lines
 }
 
+// intendedCookieChanges lists every cell of the matrix that the permission
+// gate changed on purpose: "<role> <METHOD> <pattern>" → the status now. All
+// of them are routes that only the admin role could call and that now ask
+// for a permission that existed before; "cr-legacy" holds every one of those.
+var intendedCookieChanges = map[string]string{
+	// users:read / users:manage
+	"cr-legacy GET /api/v1/users":         "200",
+	"cr-legacy POST /api/v1/users":        "400",
+	"cr-legacy PATCH /api/v1/users/{id}":  "400",
+	"cr-legacy DELETE /api/v1/users/{id}": "404",
+	// roles:read / roles:manage
+	"cr-legacy GET /api/v1/roles":        "200",
+	"cr-legacy GET /api/v1/roles/{name}": "404",
+	// settings:manage
+	"cr-legacy GET /api/v1/settings":             "200",
+	"cr-legacy PUT /api/v1/settings":             "204",
+	"cr-legacy POST /api/v1/settings/test-email": "400",
+	"cr-legacy GET /api/v1/settings/retention":   "200",
+	"cr-legacy PUT /api/v1/settings/retention":   "204",
+	// tunnels:read:any
+	"cr-legacy GET /api/v1/clients":             "200",
+	"cr-legacy GET /api/v1/clients/known":       "200",
+	"cr-legacy GET /api/v1/clients/{sessionID}": "404",
+	// services:configure:any
+	"cr-legacy POST /api/v1/services": "400",
+	// ai:read:any
+	"cr-legacy GET /api/v1/ai/requests/{requestID}/attempts": "200",
+}
+
 // TestCookieSessionMatrix pins what each role may call with a dashboard
 // session: the status of every /api/v1 route for an admin, a plain user, a
 // custom role without permissions and a custom role with every permission of
@@ -56,6 +85,15 @@ func TestCookieSessionMatrix(t *testing.T) {
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		i := strings.LastIndexByte(line, ' ')
 		want[line[:i]] = line[i+1:]
+	}
+	for cell, status := range intendedCookieChanges {
+		switch was, ok := want[cell]; {
+		case !ok:
+			t.Errorf("intendedCookieChanges names %q, which is not in the golden file", cell)
+		case was == status:
+			t.Errorf("intendedCookieChanges: %s answered %s before as well; drop the entry", cell, status)
+		}
+		want[cell] = status
 	}
 	seen := map[string]bool{}
 	for _, line := range got {

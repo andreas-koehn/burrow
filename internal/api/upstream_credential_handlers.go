@@ -42,23 +42,6 @@ type CredentialVaultIface interface {
 
 // --- Permission gates -------------------------------------------------------
 
-// requireSlotsRead gates GET /upstream-credentials/slots:
-// admin OR ai:configure:any.
-func (d Deps) requireSlotsRead(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		role, err := d.callerRole(r)
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if role == "admin" || authz.Can(role, authz.PermAIConfigureAny) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "forbidden")
-	})
-}
-
 // ensureCredentialAccess gates all per-service upstream-credential routes.
 //
 //   - admin or PermAIConfigureAny → allow (and surface 404 when service missing).
@@ -161,7 +144,7 @@ type putCredReq struct {
 // --- Handlers ---------------------------------------------------------------
 
 // GetUpstreamCredentialSlots handles GET /api/v1/upstream-credentials/slots.
-// Permission: admin OR ai:configure:any (middleware-gated via requireSlotsRead).
+// Permission: ai:configure:any (routeAccess in access.go).
 // Returns {"slots": ["OPENAI", "X", ...]} — sorted, from the vault.
 func (d Deps) GetUpstreamCredentialSlots(w http.ResponseWriter, r *http.Request) {
 	if d.CredentialVault == nil {

@@ -16,8 +16,6 @@ import (
 
 	"github.com/ankoehn/burrow/internal/api/install"
 	"github.com/ankoehn/burrow/internal/audit"
-	"github.com/ankoehn/burrow/internal/authz"
-	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -268,37 +266,6 @@ func (d Deps) requireDashboardSession(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
-	})
-}
-
-// requireClientTokensManage gates the approval on the permission to manage
-// client tokens (tokens:manage:own or :any; admin always passes): approving
-// a sign-in creates a client token for the approver.
-//
-// POST /tokens itself has no permission gate: any session may create a token
-// there. The gate here is still not a new restriction for the defaults — the
-// built-in "user" role holds tokens:manage:own, so everyone who can create a
-// token today can approve a sign-in. It differs only for a custom role
-// without that permission, which is what the permission is for; the spec asks
-// for it on this route ("tokens:write" there is tokens:manage in the code).
-func (d Deps) requireClientTokensManage(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		role, err := d.callerRoleForAuth(r)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if role == "admin" ||
-			effectivePerms(r.Context(), role, authz.PermTokensManageAny) ||
-			effectivePerms(r.Context(), role, authz.PermTokensManageOwn) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "tokens:manage required")
 	})
 }
 

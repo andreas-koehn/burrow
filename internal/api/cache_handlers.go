@@ -370,28 +370,3 @@ func (d Deps) DeleteServiceCacheEntries(w http.ResponseWriter, r *http.Request) 
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
-
-// requireAdminOrAIConfigureAny is the middleware applied to PUT /cache/settings
-// and DELETE /cache/entries (global). It must run AFTER RequireSession so
-// unauthenticated requests get 401 before this 403 check.
-//
-// Allows: role admin OR role holds PermAIConfigureAny.
-func (d Deps) requireAdminOrAIConfigureAny(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		uid := userID(r.Context())
-		u, err := d.Users.GetUserByID(r.Context(), uid)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if u.Role == "admin" || authz.Can(u.Role, authz.PermAIConfigureAny) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "ai:configure:any required")
-	})
-}

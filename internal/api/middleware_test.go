@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -215,7 +216,7 @@ func TestRequireAdminDeletedUserIs401(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	h := d.RequireSession(d.RequireAdmin(inner))
+	h := d.RequireSession(d.require(authz.PermUsersManage)(inner))
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/admin", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "any"})

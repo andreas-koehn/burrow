@@ -133,52 +133,6 @@ func validateRateLimit(in rateLimitReq) string {
 	return ""
 }
 
-// requireQuotasReadOwnOrAny is the read-gate for GET /rate-limits and
-// GET /rate-limits/usage. Admin always passes; non-admin requires either
-// quotas:read:own or quotas:read:any.
-func (d Deps) requireQuotasReadOwnOrAny(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		role, err := d.callerRole(r)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if role == "admin" ||
-			authz.Can(role, authz.PermQuotasReadOwn) ||
-			authz.Can(role, authz.PermQuotasReadAny) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "quotas:read required")
-	})
-}
-
-// requireQuotasManageAny is the write-gate for POST/PUT/DELETE /rate-limits.
-// Admin always passes; non-admin requires quotas:manage:any (there is no
-// :own write permission in the spec — limit configuration is global state).
-func (d Deps) requireQuotasManageAny(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		role, err := d.callerRole(r)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if role == "admin" || authz.Can(role, authz.PermQuotasManageAny) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "quotas:manage:any required")
-	})
-}
-
 // GetRateLimits handles GET /api/v1/rate-limits.
 // Returns the list of every configured rate-limit row.
 func (d Deps) GetRateLimits(w http.ResponseWriter, r *http.Request) {

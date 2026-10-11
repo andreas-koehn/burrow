@@ -364,7 +364,7 @@ func (d Deps) writeProviderView(w http.ResponseWriter, r *http.Request, status i
 			MaxConcurrent:     p.MaxConcurrent, InUse: d.providerInUse(p),
 			BreakerOpen: d.breakerOpen(p.Slug),
 		}
-		// Only the admin-only write handlers answer through here.
+		// Only the write handlers (ai:providers:manage) answer through here.
 		upstreamAuthView(&v, p)
 	}
 	writeJSON(w, status, v)
@@ -695,7 +695,7 @@ func upstreamAudit(p db.AIProvider) map[string]any {
 	}
 }
 
-// PostAIProvider handles POST /api/v1/ai/providers (admin only).  Kind
+// PostAIProvider handles POST /api/v1/ai/providers (ai:providers:manage).  Kind
 // "tunnel" registers an existing http service in API-key mode as a provider;
 // kind "direct" adds a provider the relay calls itself.  An empty slug is
 // derived from the name.
@@ -819,7 +819,7 @@ func (d Deps) postDirectProvider(w http.ResponseWriter, r *http.Request, slug, n
 	d.writeProviderView(w, r, http.StatusCreated, p)
 }
 
-// PutAIProvider handles PUT /api/v1/ai/providers/{slug} (admin only).  Slug
+// PutAIProvider handles PUT /api/v1/ai/providers/{slug} (ai:providers:manage).  Slug
 // and name are both required.  After a slug change the old base URL stops
 // working at once.  supports_responses is optional and states whether the
 // provider offers POST /responses, max_concurrent is optional and sets how
@@ -874,7 +874,7 @@ func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
 	d.writeProviderView(w, r, http.StatusOK, p)
 }
 
-// DeleteAIProvider handles DELETE /api/v1/ai/providers/{slug} (admin only).
+// DeleteAIProvider handles DELETE /api/v1/ai/providers/{slug} (ai:providers:manage).
 // A tunnel provider's service is kept.  A direct provider's backing service
 // is removed with it, and with that its API keys and model list; the vault
 // slot is configured on the relay and is not touched.  A provider that a
@@ -896,7 +896,7 @@ func (d Deps) DeleteAIProvider(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// providerForWrite loads the provider named in the path for an admin-only
+// providerForWrite loads the provider named in the path for a write
 // handler and writes the 404 / 500 itself.
 func (d Deps) providerForWrite(w http.ResponseWriter, r *http.Request) (db.AIProvider, bool) {
 	p, err := d.AIProviders.ProviderBySlug(r.Context(), chi.URLParam(r, "slug"))
@@ -912,7 +912,7 @@ func (d Deps) providerForWrite(w http.ResponseWriter, r *http.Request) (db.AIPro
 }
 
 // PutAIProviderUpstream handles PUT /api/v1/ai/providers/{slug}/upstream
-// (admin only).  It changes the upstream settings of a direct provider; a
+// (ai:providers:manage).  It changes the upstream settings of a direct provider; a
 // field that is left out keeps its stored value, so the credential slot stays
 // unless the body names another one.  extra_headers {} removes all headers.
 // The change applies to the next request.
@@ -999,7 +999,7 @@ var modelSyncTimeout = 25 * time.Second
 var modelSyncs sync.Map
 
 // PostAIProviderModelsSync handles POST /api/v1/ai/providers/{slug}/models/sync
-// (admin only).  It reads the model list from a direct provider's upstream
+// (ai:providers:manage).  It reads the model list from a direct provider's upstream
 // and replaces the stored list with it.  The call leaves the relay through
 // the guarded upstream transport; nothing the upstream sent is returned
 // except the number of models.
@@ -1074,8 +1074,8 @@ func (d Deps) PostAIProviderModelsSync(w http.ResponseWriter, r *http.Request) {
 // msgModelID is the 400 message for a model id that cannot be stored.
 const msgModelID = "id must be 1-200 characters without control characters"
 
-// PostAIProviderModel handles POST /api/v1/ai/providers/{slug}/models (admin
-// only): adds one model id by hand, for either kind of provider.
+// PostAIProviderModel handles POST /api/v1/ai/providers/{slug}/models
+// (ai:providers:manage): adds one model id by hand, for either kind of provider.
 func (d Deps) PostAIProviderModel(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	var in struct {
@@ -1104,7 +1104,7 @@ func (d Deps) PostAIProviderModel(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteAIProviderModel handles DELETE /api/v1/ai/providers/{slug}/models?id=…
-// (admin only).  The id is a query parameter because model ids contain "/".
+// (ai:providers:manage).  The id is a query parameter because model ids contain "/".
 func (d Deps) DeleteAIProviderModel(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if !aiprovider.ValidModelID(id) {

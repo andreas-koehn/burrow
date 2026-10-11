@@ -49,8 +49,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ankoehn/burrow/internal/audit"
-	"github.com/ankoehn/burrow/internal/authz"
-	"github.com/ankoehn/burrow/internal/db"
 )
 
 // BackupArchiveExt is the on-disk suffix for archives produced by both the
@@ -174,30 +172,6 @@ func (t *restoreTracker) get(id string) (restoreStatusResp, bool) {
 	defer t.mu.Unlock()
 	r, ok := t.rec[id]
 	return r, ok
-}
-
-// --- Permission gate --------------------------------------------------------
-
-// requireBackupRun is the admin OR backup:run gate. Cookie callers resolve
-// their role via callerRoleForAuth (bearer-set ctx wins; otherwise fresh
-// GetUserByID). Same shape as requireWebhooksManage.
-func (d Deps) requireBackupRun(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		role, err := d.callerRoleForAuth(r)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if role == "admin" || effectivePerms(r.Context(), role, authz.PermBackupRun) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "backup:run required")
-	})
 }
 
 // --- Helpers ---------------------------------------------------------------

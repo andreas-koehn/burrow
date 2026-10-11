@@ -155,8 +155,8 @@ func (d Deps) GetGuardrailSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // PutGuardrailSettings handles PUT /api/v1/guardrails/settings.
-// Admin or ai:configure:any (router applies the requireAdminOrAIConfigureAny
-// middleware). 400 on invalid action; 204 on success. The persisted blob
+// Needs ai:configure:any (routeAccess in access.go). 400 on invalid action;
+// 204 on success. The persisted blob
 // is canonicalized (re-marshaled from the typed struct) so extra/unknown
 // fields don't survive the round-trip.
 func (d Deps) PutGuardrailSettings(w http.ResponseWriter, r *http.Request) {

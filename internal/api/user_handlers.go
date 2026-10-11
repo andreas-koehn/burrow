@@ -65,7 +65,7 @@ type usersPageResp struct {
 	Total int             `json:"total"`
 }
 
-// AdminListUsers returns a filtered page of users (admin only).
+// AdminListUsers returns a filtered page of users (users:read or users:manage).
 // GET /api/v1/users?q=&limit=&offset=
 func (d Deps) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
@@ -103,7 +103,7 @@ type updateUserReq struct {
 	Status *string `json:"status"`
 }
 
-// AdminUpdateUser changes a user's role and/or status (admin only).
+// AdminUpdateUser changes a user's role and/or status (users:manage).
 // PATCH /api/v1/users/{id}. An admin cannot change their own status (lockout
 // guard, mirrors the self-delete guard).
 func (d Deps) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +156,7 @@ type createUserReq struct {
 	Role     string `json:"role"`
 }
 
-// AdminCreateUser creates a new user account (admin only).
+// AdminCreateUser creates a new user account (users:manage).
 // POST /api/v1/users
 func (d Deps) AdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
@@ -193,7 +193,7 @@ func (d Deps) AdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toUserAdminResp(u))
 }
 
-// AdminDeleteUser removes a user (admin only).
+// AdminDeleteUser removes a user (users:manage).
 // DELETE /api/v1/users/{id}
 // Returns 400 if the admin attempts to delete themselves (lockout guard).
 func (d Deps) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {

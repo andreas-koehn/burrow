@@ -16,37 +16,14 @@ import (
 
 // Spec Part I (v0.4.0 Task 15): editable custom roles + permission matrix.
 //
-// Permission gating: admin OR authz.PermRolesManage for POST/PUT/DELETE
-// mutations; the existing /roles GET routes (registered in router.go under
-// the admin-only Group) keep their stricter admin-only stance for v0.4.0 so
-// the list/detail wire shape stays consistent across reads. The mutation
-// routes accept rolesm:manage so a custom role can be granted curator
-// privileges without admin escalation.
+// Permission gating (routeAccess in access.go): roles:manage for the
+// POST/PUT/DELETE mutations, so a custom role can be granted curator
+// privileges without admin escalation; roles:read or roles:manage for the
+// /roles GET routes.
 //
 // All four routes consult the closed authz.AllPermissions() catalog when
 // validating role payloads — an unknown key short-circuits with
 // 400 {"error":"unknown permission \"<key>\""}.
-
-// requireRolesManage gates the POST/PUT/DELETE routes on admin OR the
-// role:manage permission. Mirrors requireWebhooksManage in shape.
-func (d Deps) requireRolesManage(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		role, err := d.callerRole(r)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if role == "admin" || authz.Can(role, authz.PermRolesManage) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "roles:manage required")
-	})
-}
 
 // --- Wire shapes -----------------------------------------------------------
 
