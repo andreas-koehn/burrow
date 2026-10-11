@@ -26,6 +26,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -169,15 +170,13 @@ func RequireBearerOrSession(bs BearerStore, us UserStore) func(http.Handler) htt
 // declared permission set (snapshot at mint) and the user's CURRENT role:
 // the token must declare p AND the role must still grant p. This is the rule
 // that makes role demotion immediately revoke a token's :any reach.
+//
+// A request is a token's when it carries a token id, whatever the token
+// declares: one that declares nothing (or whose store hands back no list at
+// all) is still a token and holds nothing.
 func effectivePerms(ctx context.Context, role string, p authz.Permission) bool {
-	bperms := bearerPerms(ctx)
-	if bperms == nil {
+	if bearerTokenID(ctx) == "" {
 		return authz.Can(role, p)
 	}
-	for _, bp := range bperms {
-		if bp == string(p) {
-			return authz.Can(role, p)
-		}
-	}
-	return false
+	return slices.Contains(bearerPerms(ctx), string(p)) && authz.Can(role, p)
 }
