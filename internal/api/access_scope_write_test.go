@@ -213,9 +213,13 @@ func TestTokenOfCustomRoleGetsNoMoreThanItsSession(t *testing.T) {
 func TestPostProviderGatewayOnlyNeedsConfigure(t *testing.T) {
 	h := newAuthzHarness(t)
 	ctx := context.Background()
-	for _, id := range []string{"svc-a", "svc-b", "svc-c"} {
+	for _, id := range []string{"svc-a", "svc-b", "svc-c", "svc-d", "svc-e"} {
+		owner := "u-user"
+		if id == "svc-d" || id == "svc-e" {
+			owner = "u-admin"
+		}
 		if err := h.st.CreateService(ctx, db.Service{
-			ID: id, UserID: "u-user", Name: id, Type: "http", Subdomain: id, AccessMode: "api_key",
+			ID: id, UserID: owner, Name: id, Type: "http", Subdomain: id, AccessMode: "api_key",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -239,6 +243,24 @@ func TestPostProviderGatewayOnlyNeedsConfigure(t *testing.T) {
 	}
 	if !h.service(t, "svc-b").GatewayOnly {
 		t.Error("the flag is not set on svc-b")
+	}
+	// The admin's own service (svc-d, svc-e): the token still needs to declare
+	// that it configures services.
+	provs = h.rows(t, "ai_providers")
+	if code := post(h.token(t, "admin", "ai:providers:manage"), "svc-d", "prov-d"); code != http.StatusForbidden {
+		t.Errorf("gateway_only on the user's own service, token without configure: %d, want 403", code)
+	}
+	if n := h.rows(t, "ai_providers"); n != provs {
+		t.Errorf("the refused request created %d provider(s)", n-provs)
+	}
+	if h.service(t, "svc-d").GatewayOnly {
+		t.Error("the flag is set on svc-d")
+	}
+	if code := post(h.token(t, "admin", "ai:providers:manage", "services:configure:own"), "svc-e", "prov-e"); code != http.StatusCreated {
+		t.Errorf("gateway_only on the user's own service, token with configure:own: %d, want 201", code)
+	}
+	if !h.service(t, "svc-e").GatewayOnly {
+		t.Error("the flag is not set on svc-e")
 	}
 	if code := post(h.session(t, "admin"), "svc-c", "prov-c"); code != http.StatusCreated {
 		t.Errorf("gateway_only by an admin session: %d, want 201", code)

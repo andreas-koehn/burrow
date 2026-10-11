@@ -88,6 +88,20 @@ func TestRoleCreateRejectsBuiltinName(t *testing.T) {
 	}
 }
 
+// An empty or blank role name is refused: nothing is stored.
+func TestRoleCreateRejectsEmptyName(t *testing.T) {
+	defer authz.SetRoles(nil)
+	s := testStore(t)
+	for _, name := range []string{"", " ", "\t\n"} {
+		if err := s.CreateRole(context.Background(), name, "x", []string{"ai:read:own"}, false); !errors.Is(err, ErrInvalidRole) {
+			t.Errorf("CreateRole(%q): %v, want ErrInvalidRole", name, err)
+		}
+	}
+	if authz.Can("", authz.PermAIReadOwn) {
+		t.Error("the empty role holds a permission")
+	}
+}
+
 // TestRoleUpdateBuiltinRefused proves admin/user remain read-only.
 func TestRoleUpdateBuiltinRefused(t *testing.T) {
 	defer authz.SetRoles(nil)

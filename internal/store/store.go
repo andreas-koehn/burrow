@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -605,6 +606,11 @@ func (s *Store) GetRole(ctx context.Context, name string) (RoleDetail, error) {
 // process-wide authz custom-roles cache is refreshed so the new role's
 // permissions become visible to every Can() lookup.
 func (s *Store) CreateRole(ctx context.Context, name, description string, permissions []string, defaultForNewUsers bool) error {
+	// "" must never name a role: authz.Can("", …) is what a caller without a
+	// role is measured by, and a stored "" role would hand it permissions.
+	if strings.TrimSpace(name) == "" {
+		return ErrInvalidRole
+	}
 	if err := validateRolePermissions(permissions); err != nil {
 		return err
 	}

@@ -77,10 +77,10 @@ type aiProviderResp struct {
 
 	// How the relay presents the credential upstream, for callers who may
 	// change it (ai:providers:manage): PUT …/upstream keeps what a body
-	// leaves out, and these fields show what that is. auth_format holds the literal {key}
-	// placeholder, never the credential. Of the extra headers only the names
-	// are shown, sorted: a value is free text and may be a secret. Left out
-	// for other callers and for tunnel providers.
+	// leaves out, and these fields show what that is. auth_format holds the
+	// literal {key} placeholder, never the credential. Of the extra headers
+	// only the names are shown, sorted: a value is free text and may be a
+	// secret. Left out for other callers and for tunnel providers.
 	AuthHeader       string   `json:"auth_header,omitempty"`
 	AuthFormat       string   `json:"auth_format,omitempty"`
 	ExtraHeaderNames []string `json:"extra_header_names,omitzero"`
@@ -775,7 +775,9 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			_, err = d.Services.GetService(r.Context(), userID(r.Context()), role, in.ServiceID)
 		}
-		if errors.Is(err, store.ErrForbidden) {
+		// The route's gate is ai:providers:manage; a token must also declare
+		// that it configures services.
+		if errors.Is(err, store.ErrForbidden) || (err == nil && !mayConfigureServices(r, role)) {
 			writeErr(w, http.StatusForbidden, "gateway_only needs the right to configure the service")
 			return
 		}
@@ -799,11 +801,21 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 	d.writeProviderView(w, r, http.StatusCreated, p)
 }
 
+// mayConfigureServices reports whether the caller holds a permission to
+// configure services (a token: declares it and its role grants it).
+func mayConfigureServices(r *http.Request, role string) bool {
+	return effectivePerms(r.Context(), role, authz.PermServicesConfigureOwn) ||
+		effectivePerms(r.Context(), role, authz.PermServicesConfigureAny)
+}
+
 // closeDirectDoors sets gateway-only on the backing service of a provider that
 // was just created. A failure is logged and does not undo the provider: the
 // switch can be set from the service page.
 func (d Deps) closeDirectDoors(r *http.Request, p db.AIProvider) {
 	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
+	if err == nil && !mayConfigureServices(r, role) {
+		err = store.ErrForbidden
+	}
 	if err == nil {
 		err = d.Services.SetServiceGatewayOnly(r.Context(), userID(r.Context()), role, p.ServiceID, true)
 	}
