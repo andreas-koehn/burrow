@@ -180,7 +180,7 @@ export function ApiKeysPanel({ serviceId, ownToaster = true }: ApiKeysPanelProps
           </>
         }
       >
-        <p className="muted">Clients using this key will start receiving 401 responses.</p>
+        <p className="muted">Apps using this key will start receiving 401 responses.</p>
       </Dialog>
 
       {ownToaster && <Toaster />}

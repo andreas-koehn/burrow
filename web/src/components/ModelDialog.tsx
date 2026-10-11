@@ -497,7 +497,7 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
                 <label htmlFor="model-on-rate-limit">Also fall back when a provider rate-limits (429)</label>
               </div>
               <p id="model-on-rate-limit-help" className="muted small">
-                Off, a 429 goes back to the client as it is.
+                Off, a 429 goes back to the app as it is.
               </p>
               <FormField
                 label="Attempt timeout (seconds)"

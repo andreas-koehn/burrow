@@ -15,8 +15,10 @@ const RETIRED: [RegExp, string][] = [
   // As JSX text, or as a literal of its own ({x ? "connected" : "idle"}). A
   // value that only contains the word (closed_idle, the badge kind status-idle) is not a status label.
   [/>\s*idle\s*<|["'`]idle["'`]/i, "say Offline or Never connected"],
-  // A client is a machine running burrow: it serves, it does not ask for a model.
-  [/\bclients? (can )?(asks?|sends?)\b|\bclients that (ask|use)\b|\bother clients\b/i, "say app"],
+  // A client is a machine running burrow: it signs in, sends its name and asks
+  // its local server, so each alternative names what only an app does: asking
+  // for a model, sending one, using a URL or a key.
+  [/\bclients? (can )?asks? for\b|\bclients? sends? as the model\b|\bclients that (ask for|use (it|this (base )?URL))\b|\bmodels for other clients\b|\bclients using this key\b/i, "say app"],
   [/OpenAI-compatible client|Anthropic-compatible client|\b(use|paste|set) (it |this )?in a client\b/i, "say app"],
   [/Rotate cache/i, "removed"],
   [/edit this table in Settings/i, "no such page"],
@@ -146,11 +148,16 @@ describe("the guard itself", () => {
     ["a client asks for", "<p>What a client asks for when you add a provider by hand.</p>"],
     ["clients can ask for", "<p>give it a name clients can ask for.</p>"],
     ["clients send", 'const h = "What clients send as the model";'],
-    ["a client sends", "<p>the header a client\n  sends</p>"],
-    ["clients that ask", "<p>Clients that ask for this model will get an error.</p>"],
-    ["clients that use", "<p>Clients that\n  use this base URL will start receiving errors.</p>"],
-    ["other clients", '<OfferList label="Models for other clients" />'],
-    ["other clients, other case", "<h3>Other Clients</h3>"],
+    ["clients send, wrapped", "<p>A name clients\n  send as the model, and where each API format sends it.</p>"],
+    ["a client sends as the model", "<p>the name a client Sends As The Model</p>"],
+    ["clients that ask for", "<p>Clients that ask for this model will get an error.</p>"],
+    ["clients that use this base URL", "<p>Clients that\n  use this base URL will start receiving errors.</p>"],
+    ["clients that use this URL", "<p>clients that use this url</p>"],
+    ["clients that use it", "<p>The old URL stops working immediately. Clients that use it must be updated.</p>"],
+    ["models for other clients", '<OfferList label="Models for other clients" />'],
+    ["models for other clients, other case", "<h3>Models For\n  Other Clients</h3>"],
+    ["clients using this key", "<p>Clients using this key will start receiving 401 responses.</p>"],
+    ["clients using this key, wrapped", "<p>clients using\n  this key</p>"],
     ["OpenAI-compatible client", "<p>any OpenAI-compatible client</p>"],
     ["OpenAI-compatible client, wrapped", "<p>any OpenAI-compatible\n  client</p>"],
     ["OpenAI-compatible client, other case", 'const s = "an openai-compatible Client";'],
@@ -178,6 +185,11 @@ describe("the guard itself", () => {
     ["the connection status closed_idle", 'case "closed_idle": return "status-idle";'],
     ["a client that serves", "<p>A service goes live when a client runs burrow connect for it.</p>"],
     ["clients as machines", "<p>No clients connected</p>"],
+    ["clients that use a token", "<p>Clients that use this token will be disconnected.</p>"],
+    ["clients using a token", "<p>Clients using this token will be disconnected on the next reconnect.</p>"],
+    ["the name a client sends", "<p>The name the client sends when it signs in.</p>"],
+    ["what a client asks its local server", "<p>Here the client asks the local server for its model list.</p>"],
+    ["other clients that are connected", "<p>No other clients are connected.</p>"],
     ["retired words in a comment", "// an AI service, idle, client offline\nconst a = 1; /* Rotate cache */"],
     ["the new words", "<p>Names apps ask for. Global (cache shared across providers). Online, Offline, Never connected.</p>"],
   ];
