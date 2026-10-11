@@ -408,6 +408,56 @@ func TestChain_InspectorCaptures(t *testing.T) {
 	}
 }
 
+// A captured request names the provider that answered, the model the caller
+// asked for and the gateway key, all read from the request's route. A request
+// without a route is captured all the same, with the three left empty.
+func TestChain_InspectorEntryCarriesRoute(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	capture := func(t *testing.T, route *aigw.Route) inspector.Entry {
+		t.Helper()
+		mgr := inspector.NewManager()
+		chain := aigw.NewChain(nil, nil, nil, nil, nil, mgr, nil, nil, testLog())
+		svc := aigw.Service{
+			ID:       "svc-insp",
+			AIConfig: aigw.ServiceAIConfig{Inspector: &aigw.InspectorConfig{Enabled: true, MaxRequests: 10}},
+		}
+		req := httptest.NewRequest("POST", "https://abc.example.com/v1/chat/completions",
+			strings.NewReader(`{"model":"glm-5.1"}`))
+		req.Header.Set("Content-Type", "application/json")
+		if route != nil {
+			req = req.WithContext(aigw.WithRoute(req.Context(), route))
+		}
+		if rec := runChain(t, chain, upstream, svc, req); rec.Code != http.StatusOK {
+			t.Fatalf("status: want 200, got %d", rec.Code)
+		}
+		entries := mgr.GetOrCreate("svc-insp", 10).List(inspector.ListQuery{})
+		if len(entries) != 1 {
+			t.Fatalf("inspector: want 1 entry, got %d", len(entries))
+		}
+		return entries[0]
+	}
+
+	t.Run("with a route", func(t *testing.T) {
+		route := aigw.NewRoute("gk1", "openai", "burrow-smart", "req-1")
+		route.SetTarget("zai", "glm-5.1")
+		e := capture(t, route)
+		if e.Provider != "zai" || e.Model != "burrow-smart" || e.GatewayKeyID != "gk1" {
+			t.Fatalf("provider=%q model=%q gateway_key_id=%q, want zai, burrow-smart, gk1",
+				e.Provider, e.Model, e.GatewayKeyID)
+		}
+	})
+	t.Run("without a route", func(t *testing.T) {
+		e := capture(t, nil)
+		if e.Provider != "" || e.Model != "" || e.GatewayKeyID != "" {
+			t.Fatalf("provider=%q model=%q gateway_key_id=%q, want all empty",
+				e.Provider, e.Model, e.GatewayKeyID)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Test 5: SSE flush invariant — each frame visible to the visitor within
 // a short window of when the upstream wrote it. Verifies that the

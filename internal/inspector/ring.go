@@ -70,6 +70,13 @@ type Entry struct {
 	// left out; a final "more" says the list was cut and is no name.
 	Translated string   `json:"translated"`
 	Dropped    []string `json:"dropped"`
+	// Provider is the slug of the provider that answered, Model the name the
+	// caller asked for, GatewayKeyID the gateway key it presented. All three
+	// are "" for a request that came without a route (a service's own
+	// address, or a service API key on a provider's path).
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
+	GatewayKeyID string `json:"gateway_key_id"`
 }
 
 // RedactionHit is one (rule, count) pair from the redactor's report.
@@ -89,9 +96,13 @@ type MCPInfo struct {
 // ListQuery is the filter passed to Ring.List. Empty fields are ignored.
 type ListQuery struct {
 	Status int       // 0 = no status filter; otherwise exact match
-	Q      string    // substring match on Method+Path (case-sensitive)
+	Q      string    // substring match on Method, Path, Provider, Model (case-sensitive)
 	Since  time.Time // only entries with TS >= Since when non-zero
+	Until  time.Time // only entries with TS <= Until when non-zero
 	Limit  int       // 0 = no limit
+	// Exact matches; "" = any. An entry that does not name the field is
+	// matched by no value of it.
+	Provider, Model, GatewayKeyID string
 }
 
 // NewID returns a fresh inspector entry id of the form "ins_<rand6>" where
@@ -277,6 +288,18 @@ func (r *Ring) List(q ListQuery) []Entry {
 		if !q.Since.IsZero() && e.TS.Before(q.Since) {
 			continue
 		}
+		if !q.Until.IsZero() && e.TS.After(q.Until) {
+			continue
+		}
+		if q.Provider != "" && e.Provider != q.Provider {
+			continue
+		}
+		if q.Model != "" && e.Model != q.Model {
+			continue
+		}
+		if q.GatewayKeyID != "" && e.GatewayKeyID != q.GatewayKeyID {
+			continue
+		}
 		out = append(out, e)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].TS.After(out[j].TS) })
@@ -371,12 +394,14 @@ func (r *Ring) snapshotLocked() []Entry {
 	return out
 }
 
-// matchQ reports whether the q substring matches the entry's method+path.
+// matchQ reports whether the q substring matches the entry's method, path,
+// provider or model.
 func matchQ(e Entry, q string) bool {
 	if q == "" {
 		return true
 	}
-	return contains(e.Method, q) || contains(e.Path, q)
+	return contains(e.Method, q) || contains(e.Path, q) ||
+		contains(e.Provider, q) || contains(e.Model, q)
 }
 
 // contains is a hand-rolled substring check (no strings import to keep this

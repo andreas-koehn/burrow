@@ -149,6 +149,77 @@ func TestListFilters(t *testing.T) {
 	}
 }
 
+// TestListFiltersByProviderModelKey covers the three exact-match filters,
+// each alone and all together, and the free-text filter on provider and model.
+func TestListFiltersByProviderModelKey(t *testing.T) {
+	r := NewRing(10)
+	base := time.Unix(1_700_000_000, 0).UTC()
+	r.Capture(Entry{ID: "a", TS: base, Provider: "zai", Model: "burrow-smart", GatewayKeyID: "gk1"})
+	r.Capture(Entry{ID: "b", TS: base.Add(time.Second), Provider: "zai", Model: "zai/glm-5.1", GatewayKeyID: "gk2"})
+	r.Capture(Entry{ID: "c", TS: base.Add(2 * time.Second), Provider: "ollama", Model: "burrow-smart", GatewayKeyID: "gk2"})
+
+	cases := []struct {
+		name string
+		q    ListQuery
+		want string
+	}{
+		{"provider", ListQuery{Provider: "zai"}, "b,a"},
+		{"model", ListQuery{Model: "burrow-smart"}, "c,a"},
+		{"gateway key", ListQuery{GatewayKeyID: "gk2"}, "c,b"},
+		{"all three", ListQuery{Provider: "zai", Model: "zai/glm-5.1", GatewayKeyID: "gk2"}, "b"},
+		{"all three, no entry has them", ListQuery{Provider: "ollama", Model: "burrow-smart", GatewayKeyID: "gk1"}, ""},
+		{"provider is exact, not a prefix", ListQuery{Provider: "za"}, ""},
+		{"model is exact, not a prefix", ListQuery{Model: "burrow"}, ""},
+		{"q matches the provider", ListQuery{Q: "ollama"}, "c"},
+		{"q matches the model", ListQuery{Q: "glm"}, "b"},
+	}
+	for _, tc := range cases {
+		if got := strings.Join(ids(r.List(tc.q)), ","); got != tc.want {
+			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestListUntil: Until keeps the entries up to and including that instant.
+func TestListUntil(t *testing.T) {
+	r := NewRing(10)
+	t0 := time.Unix(1_700_000_000, 0).UTC()
+	r.Capture(Entry{ID: "a", TS: t0})
+	r.Capture(Entry{ID: "b", TS: t0.Add(time.Minute)})
+	r.Capture(Entry{ID: "c", TS: t0.Add(2 * time.Minute)})
+
+	if got := strings.Join(ids(r.List(ListQuery{Until: t0.Add(time.Minute)})), ","); got != "b,a" {
+		t.Fatalf("until: got %q want %q", got, "b,a")
+	}
+	if got := strings.Join(ids(r.List(ListQuery{Since: t0.Add(time.Minute), Until: t0.Add(time.Minute)})), ","); got != "b" {
+		t.Fatalf("since and until: got %q want %q", got, "b")
+	}
+	if got := len(r.List(ListQuery{})); got != 3 {
+		t.Fatalf("no until: got %d entries want 3", got)
+	}
+}
+
+// TestListOldEntriesWithoutRoute: an entry that names no provider, model or
+// gateway key (it came without a route, or was captured before the fields
+// existed) is listed when none of the three is asked for and by none of them.
+func TestListOldEntriesWithoutRoute(t *testing.T) {
+	r := NewRing(10)
+	r.Capture(Entry{ID: "old", TS: time.Unix(1_700_000_000, 0).UTC(), Method: "POST", Path: "/v1/chat/completions"})
+
+	if got := ids(r.List(ListQuery{})); len(got) != 1 || got[0] != "old" {
+		t.Fatalf("no filter: %v", got)
+	}
+	for name, q := range map[string]ListQuery{
+		"provider":    {Provider: "zai"},
+		"model":       {Model: "burrow-smart"},
+		"gateway key": {GatewayKeyID: "gk1"},
+	} {
+		if got := ids(r.List(q)); len(got) != 0 {
+			t.Errorf("%s filter returned %v", name, got)
+		}
+	}
+}
+
 func ids(es []Entry) []string {
 	out := make([]string, len(es))
 	for i, e := range es {

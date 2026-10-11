@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -89,6 +90,11 @@ type inspectorEntryJSON struct {
 	// own format) and what it left out (never null).
 	Translated string   `json:"translated"`
 	Dropped    []string `json:"dropped"`
+	// The provider that answered (slug), the model the caller asked for and
+	// the gateway key it presented; "" where the request had none.
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
+	GatewayKeyID string `json:"gateway_key_id"`
 }
 
 // inspectorEntryToJSON converts a captured Entry to the wire shape. Bodies
@@ -118,6 +124,9 @@ func inspectorEntryToJSON(e inspector.Entry) inspectorEntryJSON {
 		AdapterLossy: e.AdapterLossy,
 		Translated:   e.Translated,
 		Dropped:      e.Dropped,
+		Provider:     e.Provider,
+		Model:        e.Model,
+		GatewayKeyID: e.GatewayKeyID,
 	}
 	if out.Dropped == nil {
 		out.Dropped = []string{}
@@ -236,7 +245,8 @@ func (d Deps) inspectorRing(serviceID string) *inspector.Ring {
 }
 
 // ListInspectorRequests handles GET /api/v1/services/{serviceID}/inspector/requests.
-// Query params: status (int), q (substring), since (RFC3339), limit (int).
+// Query params: status (int), q (substring), since and until (RFC3339),
+// limit (int).
 // Response: 200 [InspectorEntry] in descending TS.
 func (d Deps) ListInspectorRequests(w http.ResponseWriter, r *http.Request) {
 	serviceID := chi.URLParam(r, "serviceID")
@@ -280,6 +290,14 @@ func parseListQuery(w http.ResponseWriter, vals url.Values) (inspector.ListQuery
 		}
 		q.Since = t
 	}
+	if s := vals.Get("until"); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid until")
+			return q, false
+		}
+		q.Until = t
+	}
 	if s := vals.Get("limit"); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil || n < 0 {
@@ -289,6 +307,128 @@ func parseListQuery(w http.ResponseWriter, vals url.Values) (inspector.ListQuery
 		q.Limit = n
 	}
 	return q, true
+}
+
+// The length of the list GET /ai/requests answers: without a limit, and at
+// most.
+const (
+	aiRequestsDefaultLimit = 200
+	aiRequestsMaxLimit     = 1000
+)
+
+// GetAIRequests handles GET /api/v1/ai/requests: the captured requests of
+// every provider, one list, newest first.
+// Query params: provider (slug), model, gateway_key (a gateway key's id), all
+// three exact; q, status, since, until as on the per-service list; limit
+// (1 and up, default 200, cut to 1000).
+//
+// The caller gets the entries of the providers whose inspector they may read:
+// every provider with inspector:read:any, their own services' providers with
+// inspector:read:own (the rule of requireInspectorRead), 403 with neither.
+//
+// An entry comes without headers and bodies: the list can span every
+// provider, the per-service detail endpoint has them. An entry that names no
+// provider is one of the provider whose ring holds it.
+func (d Deps) GetAIRequests(w http.ResponseWriter, r *http.Request) {
+	role, err := d.callerRole(r)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	readAny := authz.Can(role, authz.PermInspectorReadAny)
+	if !readAny && !authz.Can(role, authz.PermInspectorReadOwn) {
+		writeErr(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	vals := r.URL.Query()
+	q, ok := parseListQuery(w, vals)
+	if !ok {
+		return
+	}
+	limit := aiRequestsDefaultLimit
+	if vals.Get("limit") != "" {
+		if q.Limit == 0 {
+			writeErr(w, http.StatusBadRequest, "invalid limit")
+			return
+		}
+		limit = min(q.Limit, aiRequestsMaxLimit)
+	}
+	q.Limit = 0 // the cut comes after the merge
+	q.Model = vals.Get("model")
+	q.GatewayKeyID = vals.Get("gateway_key")
+	provider := vals.Get("provider")
+
+	out := []inspectorEntryJSON{}
+	if d.InspectorRings == nil {
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	views, err := d.providerViews(r)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	var entries []inspector.Entry
+	for _, p := range views {
+		if provider != "" && p.Slug != provider {
+			continue
+		}
+		if !readAny {
+			owns, ok := d.ownsInspectedService(w, r, p.ServiceID)
+			if !ok {
+				return
+			}
+			if !owns {
+				continue
+			}
+		}
+		// Get, not GetOrCreate: the chain creates a ring with the capacity
+		// its service is configured with.
+		ring := d.InspectorRings.Get(p.ServiceID)
+		if ring == nil {
+			continue
+		}
+		for _, e := range ring.List(q) {
+			if e.Provider == "" {
+				e.Provider = p.Slug
+			}
+			// A request another provider answered (a fallback) is in this
+			// ring too and is not one of this provider's.
+			if provider != "" && e.Provider != provider {
+				continue
+			}
+			entries = append(entries, e)
+		}
+	}
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].TS.After(entries[j].TS) })
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+	for _, e := range entries {
+		e.ReqHeaders, e.ReqBody, e.RespHeaders, e.RespBody = nil, nil, nil, nil
+		out = append(out, inspectorEntryToJSON(e))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// ownsInspectedService reports whether the caller owns serviceID, the second
+// half of the inspector:read:own rule in requireInspectorPerm. A service that
+// is gone is not the caller's. ok is false when the lookup failed and the
+// response has been written.
+func (d Deps) ownsInspectedService(w http.ResponseWriter, r *http.Request, serviceID string) (owns, ok bool) {
+	if d.InspectorServices == nil {
+		writeErr(w, http.StatusInternalServerError, "service lookup unavailable")
+		return false, false
+	}
+	owner, err := d.InspectorServices.GetServiceOwner(r.Context(), serviceID)
+	if errors.Is(err, db.ErrNotFound) {
+		return false, true
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "service lookup failed")
+		return false, false
+	}
+	return owner == userID(r.Context()), true
 }
 
 // GetInspectorRequest handles GET /api/v1/services/{serviceID}/inspector/requests/{rid}.

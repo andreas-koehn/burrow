@@ -522,10 +522,25 @@ components:
       type: object
       additionalProperties: true
       description: >
-        The translation fields of a captured request; the envelope has
-        further fields (id, ts, method, path, status, headers, bodies).
-      required: [translated, dropped]
+        The translation and route fields of a captured request; the envelope
+        has further fields (id, ts, method, path, status, headers, bodies).
+      required: [translated, dropped, provider, model, gateway_key_id]
       properties:
+        provider:
+          type: string
+          description: >
+            Slug of the provider that answered. Empty for a request that came
+            without a gateway key (a service's own address, or a service API
+            key on /ai/<provider>/).
+        model:
+          type: string
+          description: >
+            The model the caller asked for, under the name it has on the
+            gateway endpoints ("<provider>/<id>" on a provider's own path).
+            Empty where provider is, and for a request that names no model.
+        gateway_key_id:
+          type: string
+          description: Id of the gateway key the caller presented, or empty.
         translated:
           type: string
           enum: ['', messages-chat, responses-chat, chat-messages, responses-messages]
@@ -541,6 +556,54 @@ components:
             was left out. A final "more" says the list was cut; it is not a
             name. A name can end in text the client chose (after a prefix
             such as "unknown:"); treat every name as plain text.
+    AICapturedRequest:
+      type: object
+      description: >
+        A captured request as the list across providers shows it: the
+        envelope of the per-service inspector list without headers and
+        bodies. Read those from
+        /api/v1/services/{service_id}/inspector/requests/{id}.
+      required: [id, service_id, ts, method, path, status, duration_ms, bytes_in, bytes_out, translated, dropped, provider, model, gateway_key_id]
+      properties:
+        id: { type: string }
+        service_id: { type: string, description: The service behind the provider. }
+        api_key_id: { type: string, description: Id of the service API key, when one was presented. }
+        ts: { type: string, format: date-time }
+        method: { type: string }
+        path: { type: string }
+        status: { type: integer }
+        duration_ms: { type: integer }
+        bytes_in: { type: integer }
+        bytes_out: { type: integer }
+        truncated: { type: boolean }
+        bytes_omitted: { type: integer }
+        cache: { type: string }
+        redactions:
+          type: array
+          items:
+            type: object
+            properties:
+              rule: { type: string }
+              count: { type: integer }
+        trace_id: { type: string }
+        remote_ip: { type: string }
+        adapter_lossy: { type: boolean }
+        translated: { type: string, description: See InspectorTranslation. }
+        dropped:
+          type: array
+          items: { type: string }
+          description: See InspectorTranslation.
+        provider:
+          type: string
+          description: >
+            Slug of the provider that answered. Never empty here: an entry
+            that names none is given the provider whose buffer holds it.
+        model:
+          type: string
+          description: The model the caller asked for; empty for a request without a gateway key.
+        gateway_key_id:
+          type: string
+          description: Id of the gateway key the caller presented, or empty.
     AIModelMode:
       type: string
       enum: [native, translated, not_served]
@@ -1414,12 +1477,33 @@ paths:
     get:
       tags: [inspector]
       summary: List captured requests
-      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      parameters:
+        - { $ref: '#/components/parameters/PathServiceID' }
+        - name: q
+          in: query
+          description: Text the method, path, provider or model contains (case-sensitive).
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: integer, minimum: 100, maximum: 599 }
+        - name: since
+          in: query
+          description: Only requests at or after this time.
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          description: Only requests at or before this time.
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          description: At most this many, newest first; 0 or absent for all.
+          schema: { type: integer, minimum: 0 }
       responses:
         '200':
           description: >
-            List of request envelopes. Each one carries translated and
-            dropped, see InspectorTranslation.
+            List of request envelopes, newest first. Each one carries
+            translated and dropped, provider, model and gateway_key_id, see
+            InspectorTranslation.
           content:
             application/json:
               schema:
@@ -1440,8 +1524,8 @@ paths:
       responses:
         '200':
           description: >
-            Request envelope. It carries translated and dropped, see
-            InspectorTranslation.
+            Request envelope. It carries translated and dropped, provider,
+            model and gateway_key_id, see InspectorTranslation.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/InspectorTranslation' }
@@ -4020,6 +4104,70 @@ paths:
         '204': { description: Key revoked. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/ai/requests:
+    get:
+      tags: [models]
+      summary: List captured requests across providers
+      description: |
+        The requests the inspector captured for every provider, as one list,
+        newest first. A provider's requests are captured while its service
+        has the inspector enabled; the buffers are kept in memory and are
+        empty after a restart.
+
+        The caller gets the requests of the providers whose inspector they
+        may read: every provider with inspector:read:any, the providers of
+        their own services with inspector:read:own. Another user's requests
+        are never listed for a caller without inspector:read:any.
+
+        Headers and bodies are left out. The entry's service_id and id name
+        the request on /api/v1/services/{service_id}/inspector/requests/{id},
+        which has them.
+      parameters:
+        - name: provider
+          in: query
+          description: Provider slug, exact. An unknown slug answers an empty list.
+          schema: { type: string }
+        - name: model
+          in: query
+          description: The model the caller asked for, exact. An unknown name answers an empty list.
+          schema: { type: string }
+        - name: gateway_key
+          in: query
+          description: Id of a gateway key, exact. An unknown id answers an empty list.
+          schema: { type: string }
+        - name: q
+          in: query
+          description: Text the method, path, provider or model contains (case-sensitive).
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: integer, minimum: 100, maximum: 599 }
+        - name: since
+          in: query
+          description: Only requests at or after this time.
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          description: Only requests at or before this time.
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          description: At most this many. A larger number is cut to 1000.
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+      responses:
+        '200':
+          description: The captured requests, newest first; an empty list when there is none.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AICapturedRequest' }
+              example:
+                - { id: ins_ab12cd, service_id: 9f1c2a, ts: '2026-10-11T09:30:01Z', method: POST, path: /v1/chat/completions, status: 200, duration_ms: 0, bytes_in: 182, bytes_out: 941, cache: MISS, translated: '', dropped: [], provider: zai, model: burrow-smart, gateway_key_id: 4c9d1e7a }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/ai/requests/{requestID}/attempts:
     get:

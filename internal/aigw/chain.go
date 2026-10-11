@@ -1105,8 +1105,13 @@ func (c *Chain) captureEntry(svc Service, r *http.Request,
 		Dropped:      []string{},
 	}
 	// Read here, after the response, as the usage row does: the entry names
-	// the pair of the attempt that answered.
+	// the provider and the pair of the attempt that answered. A request
+	// without a route (a service's own address, a service key on a provider's
+	// path) leaves provider, model and gateway key empty.
 	if ri, ok := RouteFrom(r.Context()); ok {
+		entry.Provider = ri.ProviderSlug
+		entry.Model = ri.RequestedModel
+		entry.GatewayKeyID = ri.GatewayKeyID
 		entry.Translated = ri.Translated
 		if ri.Dropped != "" {
 			entry.Dropped = strings.Split(ri.Dropped, ",")

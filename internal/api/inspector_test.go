@@ -14,6 +14,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/inspector"
+	"github.com/ankoehn/burrow/internal/store"
 )
 
 // fakeInspectorOwner is the InspectorOwnerLookup stand-in. owners maps
@@ -544,5 +545,512 @@ func TestInspectorEntryCarriesTranslation(t *testing.T) {
 	}
 	if got := readBody(t, c.get(t, "/api/v1/services/svc1/inspector/requests/ins_n")); !strings.Contains(got, native) {
 		t.Fatalf("native detail: %s", got)
+	}
+}
+
+// The per-service list names the provider, the model and the gateway key of
+// each request, and still carries everything it did.
+func TestInspectorListCarriesProviderModelKey(t *testing.T) {
+	d, mgr := inspectorDeps("admin", map[string]string{"svc1": "u-self"}, nil)
+	ring := mgr.GetOrCreate("svc1", 10)
+	now := time.Now().UTC()
+	ring.Capture(inspector.Entry{ID: "ins_old", ServiceID: "svc1", TS: now, Method: "POST", Path: "/v1/messages", Status: 200})
+	ring.Capture(inspector.Entry{
+		ID: "ins_full", ServiceID: "svc1", APIKeyID: "key1", TS: now.Add(time.Second),
+		Method: "POST", Path: "/v1/chat/completions", Status: 200, DurationMs: 12, BytesIn: 3, BytesOut: 4,
+		ReqHeaders: map[string]string{"Content-Type": "application/json"}, ReqBody: []byte(`{"a":1}`),
+		RespHeaders: map[string]string{"Content-Type": "application/json"}, RespBody: []byte(`{"b":2}`),
+		Truncated: true, BytesOmitted: 9, Cache: "MISS",
+		Redactions: []inspector.RedactionHit{{Rule: "email", Count: 1}},
+		TraceID:    "trace1", RemoteIP: "203.0.113.7",
+		MCP:          &inspector.MCPInfo{Method: "tools/call", Tool: "search"},
+		AdapterLossy: true, Translated: "messages-chat", Dropped: []string{"top_k"},
+		Provider: "zai", Model: "burrow-smart", GatewayKeyID: "gk1",
+	})
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	var got []map[string]any
+	if err := json.Unmarshal([]byte(readBody(t, c.get(t, "/api/v1/services/svc1/inspector/requests"))), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 entries, got %d", len(got))
+	}
+	full, old := got[0], got[1]
+	if full["provider"] != "zai" || full["model"] != "burrow-smart" || full["gateway_key_id"] != "gk1" {
+		t.Errorf("full entry: provider=%v model=%v gateway_key_id=%v", full["provider"], full["model"], full["gateway_key_id"])
+	}
+	for _, k := range []string{
+		"id", "service_id", "api_key_id", "ts", "method", "path", "status", "duration_ms", "bytes_in", "bytes_out",
+		"req_headers", "req_body", "req_body_encoding", "resp_headers", "resp_body", "resp_body_encoding",
+		"truncated", "bytes_omitted", "cache", "redactions", "trace_id", "remote_ip", "mcp", "adapter_lossy",
+		"translated", "dropped", "provider", "model", "gateway_key_id",
+	} {
+		if _, ok := full[k]; !ok {
+			t.Errorf("full entry lacks %q", k)
+		}
+	}
+	// An entry without a route has the three keys too, as empty strings.
+	for _, k := range []string{"provider", "model", "gateway_key_id"} {
+		if v, ok := old[k]; !ok || v != "" {
+			t.Errorf("entry without a route: %q = %v (present %v), want an empty string", k, v, ok)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/ai/requests: captured requests across providers
+// ---------------------------------------------------------------------------
+
+// recordingRings is an InspectorRings that notes which services' rings were
+// asked for. Tests fill rings through the embedded Manager, which is not
+// recorded.
+type recordingRings struct {
+	*inspector.Manager
+	mu   sync.Mutex
+	read []string
+}
+
+func (r *recordingRings) note(serviceID string) {
+	r.mu.Lock()
+	r.read = append(r.read, serviceID)
+	r.mu.Unlock()
+}
+
+// reads returns the services asked for so far and forgets them.
+func (r *recordingRings) reads() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.read
+	r.read = nil
+	return out
+}
+
+func (r *recordingRings) Get(serviceID string) *inspector.Ring {
+	r.note(serviceID)
+	return r.Manager.Get(serviceID)
+}
+
+func (r *recordingRings) GetOrCreate(serviceID string, max int) *inspector.Ring {
+	r.note(serviceID)
+	return r.Manager.GetOrCreate(serviceID, max)
+}
+
+func (r *recordingRings) seed(serviceID string, entries ...inspector.Entry) {
+	ring := r.Manager.GetOrCreate(serviceID, inspector.HardMaxRequests)
+	for _, e := range entries {
+		e.ServiceID = serviceID
+		if e.Method == "" {
+			e.Method, e.Path, e.Status = "POST", "/v1/chat/completions", 200
+		}
+		ring.Capture(e)
+	}
+}
+
+// aiRequestsDeps is the common setup: provider "ollama" on svc-ollama and
+// provider "zai" on svc-zai, both in the caller's service list. owners says
+// who owns which service; the caller is "u-self".
+func aiRequestsDeps(role string, owners map[string]string) (Deps, *recordingRings) {
+	ss := &fakeServiceStore{listSvcs: []store.ServiceView{
+		{ID: "svc-ollama", Name: "ollama", Type: "http", AccessMode: "api_key"},
+		{ID: "svc-zai", Name: "zai", Type: "http", AccessMode: "api_key"},
+	}}
+	ps := &fakeProviderStore{rows: []db.AIProvider{
+		tunnelProvider("ollama", "Ollama", "svc-ollama"),
+		tunnelProvider("zai", "Z.ai", "svc-zai"),
+	}}
+	d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
+	d.Users = &fakeUserStore{role: role}
+	rings := &recordingRings{Manager: inspector.NewManager()}
+	d.InspectorRings = rings
+	d.InspectorServices = &fakeInspectorOwner{owners: owners}
+	return d, rings
+}
+
+var bothMine = map[string]string{"svc-ollama": "u-self", "svc-zai": "u-self"}
+
+// aiRequestsT0 is the time of the oldest seeded entry.
+var aiRequestsT0 = time.Unix(1_700_000_000, 0).UTC()
+
+// seedTwoProviders captures z0, o1, z2, o3 (oldest to newest), alternating
+// between zai and ollama.
+func seedTwoProviders(rings *recordingRings) {
+	at := func(n int) time.Time { return aiRequestsT0.Add(time.Duration(n) * time.Minute) }
+	rings.seed("svc-zai",
+		inspector.Entry{ID: "z0", TS: at(0), Provider: "zai", Model: "burrow-smart", GatewayKeyID: "gk1", Status: 200, Method: "POST", Path: "/v1/chat/completions"},
+		inspector.Entry{ID: "z2", TS: at(2), Provider: "zai", Model: "zai/glm-5.1", GatewayKeyID: "gk2", Status: 500, Method: "POST", Path: "/v1/chat/completions"},
+	)
+	rings.seed("svc-ollama",
+		inspector.Entry{ID: "o1", TS: at(1), Provider: "ollama", Model: "burrow-smart", GatewayKeyID: "gk2", Status: 200, Method: "POST", Path: "/v1/embeddings"},
+		inspector.Entry{ID: "o3", TS: at(3), Provider: "ollama", Model: "ollama/qwen", GatewayKeyID: "gk1", Status: 200, Method: "POST", Path: "/v1/chat/completions"},
+	)
+}
+
+// aiRequestIDs GETs /api/v1/ai/requests with the query, wants 200 and returns
+// the entry ids joined by ",".
+func aiRequestIDs(t *testing.T, c *authClient, query string) string {
+	t.Helper()
+	return strings.Join(entryIDs(aiRequests(t, c, query)), ",")
+}
+
+func aiRequests(t *testing.T, c *authClient, query string) []inspectorEntryJSON {
+	t.Helper()
+	path := "/api/v1/ai/requests"
+	if query != "" {
+		path += "?" + query
+	}
+	r := c.get(t, path)
+	body := readBody(t, r)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s: status %d body %s", path, r.StatusCode, body)
+	}
+	var got []inspectorEntryJSON
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("GET %s: %v in %s", path, err, body)
+	}
+	if got == nil {
+		t.Fatalf("GET %s: body %s, want an array", path, body)
+	}
+	return got
+}
+
+func entryIDs(es []inspectorEntryJSON) []string {
+	out := make([]string, len(es))
+	for i, e := range es {
+		out[i] = e.ID
+	}
+	return out
+}
+
+// Rule 1: the entries of every provider come as one list, newest first.
+func TestAIRequestsMergesProvidersNewestFirst(t *testing.T) {
+	d, rings := aiRequestsDeps("admin", bothMine)
+	seedTwoProviders(rings)
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	got := aiRequests(t, c, "")
+	if ids := strings.Join(entryIDs(got), ","); ids != "o3,z2,o1,z0" {
+		t.Fatalf("got %q want o3,z2,o1,z0", ids)
+	}
+	if e := got[1]; e.Provider != "zai" || e.Model != "zai/glm-5.1" || e.GatewayKeyID != "gk2" || e.ServiceID != "svc-zai" {
+		t.Errorf("z2: provider=%q model=%q gateway_key_id=%q service_id=%q", e.Provider, e.Model, e.GatewayKeyID, e.ServiceID)
+	}
+}
+
+// Rule 2: provider= returns that provider's entries and reads no other ring.
+func TestAIRequestsProviderFilterReadsOneRing(t *testing.T) {
+	d, rings := aiRequestsDeps("admin", bothMine)
+	seedTwoProviders(rings)
+	// A request that came for zai and was answered by ollama (a fallback)
+	// sits in zai's ring and is not one of zai's.
+	rings.seed("svc-zai", inspector.Entry{ID: "zf", TS: aiRequestsT0.Add(4 * time.Minute), Provider: "ollama", Model: "burrow-smart"})
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	if ids := aiRequestIDs(t, c, "provider=zai"); ids != "z2,z0" {
+		t.Fatalf("provider=zai: got %q want z2,z0", ids)
+	}
+	if got := strings.Join(rings.reads(), ","); got != "svc-zai" {
+		t.Fatalf("rings read: %q, want svc-zai only", got)
+	}
+
+	if ids := aiRequestIDs(t, c, "provider=nope"); ids != "" {
+		t.Fatalf("unknown provider: got %q want nothing", ids)
+	}
+	if read := rings.reads(); len(read) != 0 {
+		t.Fatalf("unknown provider read rings %v", read)
+	}
+}
+
+// Rule 3: model= and gateway_key= match exactly; an unknown value is an
+// empty list, not an error.
+func TestAIRequestsModelAndGatewayKeyFilters(t *testing.T) {
+	d, rings := aiRequestsDeps("admin", bothMine)
+	seedTwoProviders(rings)
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	for query, want := range map[string]string{
+		"model=burrow-smart":                               "o1,z0",
+		"model=burrow":                                     "",
+		"model=zai%2Fglm-5.1":                              "z2",
+		"gateway_key=gk1":                                  "o3,z0",
+		"gateway_key=gk":                                   "",
+		"gateway_key=unknown":                              "",
+		"model=burrow-smart&gateway_key=gk2":               "o1",
+		"provider=zai&model=burrow-smart&gateway_key=gk1":  "z0",
+		"provider=zai&model=burrow-smart&gateway_key=gk2":  "",
+		"provider=ollama&model=nope&gateway_key=also-nope": "",
+	} {
+		if got := aiRequestIDs(t, c, query); got != want {
+			t.Errorf("%s: got %q want %q", query, got, want)
+		}
+	}
+	if body := strings.TrimSpace(readBody(t, c.get(t, "/api/v1/ai/requests?model=nope"))); body != "[]" {
+		t.Errorf("unknown model: body %s, want []", body)
+	}
+}
+
+// Rule 4: since, until, status, q and limit work as on the per-service list,
+// and a malformed one is refused with the same message.
+func TestAIRequestsQueryFilters(t *testing.T) {
+	d, rings := aiRequestsDeps("admin", bothMine)
+	seedTwoProviders(rings)
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	at := func(n int) string { return aiRequestsT0.Add(time.Duration(n) * time.Minute).Format(time.RFC3339) }
+	for query, want := range map[string]string{
+		"since=" + at(2):                     "o3,z2",
+		"until=" + at(1):                     "o1,z0",
+		"since=" + at(1) + "&until=" + at(2): "z2,o1",
+		"status=500":                         "z2",
+		"status=404":                         "",
+		"q=embeddings":                       "o1",
+		"q=ollama":                           "o3,o1",
+		"q=glm":                              "z2",
+		"limit=3":                            "o3,z2,o1",
+		"limit=1&provider=zai":               "z2",
+	} {
+		if got := aiRequestIDs(t, c, query); got != want {
+			t.Errorf("%s: got %q want %q", query, got, want)
+		}
+	}
+
+	for _, query := range []string{"status=abc", "status=99", "since=not-a-date", "until=not-a-date", "limit=abc", "limit=-1"} {
+		across := c.get(t, "/api/v1/ai/requests?"+query)
+		acrossBody := readBody(t, across)
+		if across.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status %d body %s, want 400", query, across.StatusCode, acrossBody)
+			continue
+		}
+		one := c.get(t, "/api/v1/services/svc-zai/inspector/requests?"+query)
+		oneBody := readBody(t, one)
+		if one.StatusCode != http.StatusBadRequest || oneBody != acrossBody {
+			t.Errorf("%s: per-service list answers %d %s, the list across providers %s", query, one.StatusCode, oneBody, acrossBody)
+		}
+	}
+	if body := readBody(t, c.get(t, "/api/v1/ai/requests?until=nope")); !strings.Contains(body, "invalid until") {
+		t.Errorf("malformed until: body %s", body)
+	}
+	// The per-service list knows until as well.
+	var one []inspectorEntryJSON
+	if err := json.Unmarshal([]byte(readBody(t, c.get(t, "/api/v1/services/svc-zai/inspector/requests?until="+at(1)))), &one); err != nil {
+		t.Fatal(err)
+	}
+	if ids := strings.Join(entryIDs(one), ","); ids != "z0" {
+		t.Errorf("per-service until: got %q want z0", ids)
+	}
+}
+
+// Rule 5: an entry is returned only to a caller who may read its service's
+// inspector. A user sees the requests of their own providers and never
+// another user's, even when the service list shows both.
+func TestAIRequestsPermission(t *testing.T) {
+	t.Run("a user gets their own providers only", func(t *testing.T) {
+		d, rings := aiRequestsDeps("user", map[string]string{"svc-zai": "u-self", "svc-ollama": "u-other"})
+		seedTwoProviders(rings)
+		srv := httptest.NewServer(NewRouter(d))
+		defer srv.Close()
+		c := authedClient(t, srv)
+
+		for _, query := range []string{"", "provider=ollama", "model=burrow-smart", "gateway_key=gk1", "q=ollama", "limit=1000"} {
+			for _, e := range aiRequests(t, c, query) {
+				if e.ServiceID != "svc-zai" || e.Provider != "zai" {
+					t.Errorf("query %q returned another user's entry %s (service %s, provider %s)", query, e.ID, e.ServiceID, e.Provider)
+				}
+			}
+		}
+		if ids := aiRequestIDs(t, c, ""); ids != "z2,z0" {
+			t.Errorf("own entries: got %q want z2,z0", ids)
+		}
+		for _, id := range rings.reads() {
+			if id != "svc-zai" {
+				t.Errorf("read the ring of %s, which the caller does not own", id)
+			}
+		}
+	})
+	t.Run("a service nobody is known to own is left out", func(t *testing.T) {
+		d, rings := aiRequestsDeps("user", map[string]string{"svc-zai": "u-self"})
+		seedTwoProviders(rings)
+		srv := httptest.NewServer(NewRouter(d))
+		defer srv.Close()
+		if ids := aiRequestIDs(t, authedClient(t, srv), ""); ids != "z2,z0" {
+			t.Errorf("got %q want z2,z0", ids)
+		}
+	})
+	t.Run("an admin gets every provider", func(t *testing.T) {
+		d, rings := aiRequestsDeps("admin", map[string]string{"svc-zai": "u-other", "svc-ollama": "u-other"})
+		seedTwoProviders(rings)
+		srv := httptest.NewServer(NewRouter(d))
+		defer srv.Close()
+		if ids := aiRequestIDs(t, authedClient(t, srv), ""); ids != "o3,z2,o1,z0" {
+			t.Errorf("got %q want o3,z2,o1,z0", ids)
+		}
+	})
+	t.Run("without a read permission", func(t *testing.T) {
+		d, rings := aiRequestsDeps("no-such-role", bothMine)
+		seedTwoProviders(rings)
+		srv := httptest.NewServer(NewRouter(d))
+		defer srv.Close()
+		r := authedClient(t, srv).get(t, "/api/v1/ai/requests")
+		if body := readBody(t, r); r.StatusCode != http.StatusForbidden || strings.Contains(body, "z0") {
+			t.Fatalf("status %d body %s, want 403", r.StatusCode, body)
+		}
+		if read := rings.reads(); len(read) != 0 {
+			t.Errorf("read rings %v", read)
+		}
+	})
+	t.Run("without a session", func(t *testing.T) {
+		d, _ := aiRequestsDeps("admin", bothMine)
+		srv := httptest.NewServer(NewRouter(d))
+		defer srv.Close()
+		r, err := http.Get(srv.URL + "/api/v1/ai/requests")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Body.Close()
+		if r.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status %d, want 401", r.StatusCode)
+		}
+	})
+}
+
+// Rule 6: the list carries neither bodies nor headers; the detail does.
+func TestAIRequestsLeavesOutBodiesAndHeaders(t *testing.T) {
+	d, rings := aiRequestsDeps("admin", bothMine)
+	rings.seed("svc-zai", inspector.Entry{
+		ID: "zb", TS: aiRequestsT0, Provider: "zai", Method: "POST", Path: "/v1/chat/completions", Status: 200,
+		ReqHeaders: map[string]string{"X-Marker": "request-header-value"}, ReqBody: []byte("request-body-value"),
+		RespHeaders: map[string]string{"X-Marker": "response-header-value"}, RespBody: []byte("response-body-value"),
+		BytesIn: 18, BytesOut: 19,
+	})
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	body := readBody(t, c.get(t, "/api/v1/ai/requests"))
+	var got []map[string]any
+	if err := json.Unmarshal([]byte(body), &got); err != nil || len(got) != 1 {
+		t.Fatalf("list: %v %s", err, body)
+	}
+	for _, k := range []string{"req_body", "resp_body", "req_headers", "resp_headers", "req_body_encoding", "resp_body_encoding"} {
+		if _, ok := got[0][k]; ok {
+			t.Errorf("list entry carries %q", k)
+		}
+	}
+	for _, v := range []string{"request-header-value", "request-body-value", "response-header-value", "response-body-value"} {
+		if strings.Contains(body, v) {
+			t.Errorf("list carries %q", v)
+		}
+	}
+	if got[0]["bytes_in"] != float64(18) || got[0]["bytes_out"] != float64(19) {
+		t.Errorf("sizes: bytes_in=%v bytes_out=%v", got[0]["bytes_in"], got[0]["bytes_out"])
+	}
+	detail := readBody(t, c.get(t, "/api/v1/services/svc-zai/inspector/requests/zb"))
+	if !strings.Contains(detail, "request-body-value") || !strings.Contains(detail, "response-header-value") {
+		t.Errorf("detail lost bodies or headers: %s", detail)
+	}
+}
+
+// Rule 7: no provider, or no ring manager, is an empty list.
+func TestAIRequestsEmpty(t *testing.T) {
+	want := func(t *testing.T, d Deps) {
+		t.Helper()
+		srv := httptest.NewServer(NewRouter(d))
+		defer srv.Close()
+		r := authedClient(t, srv).get(t, "/api/v1/ai/requests")
+		if body := strings.TrimSpace(readBody(t, r)); r.StatusCode != http.StatusOK || body != "[]" {
+			t.Fatalf("status %d body %s, want 200 []", r.StatusCode, body)
+		}
+	}
+	t.Run("no providers", func(t *testing.T) {
+		d, rings := aiRequestsDeps("admin", bothMine)
+		seedTwoProviders(rings)
+		d.AIProviders = &fakeProviderStore{}
+		want(t, d)
+	})
+	t.Run("no ring manager", func(t *testing.T) {
+		d, _ := aiRequestsDeps("admin", bothMine)
+		d.InspectorRings = nil
+		want(t, d)
+	})
+	t.Run("nothing captured", func(t *testing.T) {
+		d, rings := aiRequestsDeps("admin", bothMine)
+		want(t, d)
+		// Looking must not create a ring: the chain creates it with the
+		// capacity the service is configured with.
+		if rings.Manager.Get("svc-zai") != nil || rings.Manager.Get("svc-ollama") != nil {
+			t.Error("the list created a ring")
+		}
+	})
+}
+
+// Rule 8: an entry that names no provider (captured before entries did, or
+// for a request without a route) is given the slug of the provider whose ring
+// holds it.
+func TestAIRequestsNamesProviderOfOldEntries(t *testing.T) {
+	d, rings := aiRequestsDeps("admin", bothMine)
+	rings.seed("svc-zai", inspector.Entry{ID: "old", TS: aiRequestsT0})
+	rings.seed("svc-ollama", inspector.Entry{ID: "new", TS: aiRequestsT0.Add(time.Minute), Provider: "ollama"})
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	got := aiRequests(t, c, "")
+	if len(got) != 2 || got[1].ID != "old" || got[1].Provider != "zai" || got[1].Model != "" || got[1].GatewayKeyID != "" {
+		t.Fatalf("list: %+v", got)
+	}
+	if got := aiRequests(t, c, "provider=zai"); len(got) != 1 || got[0].ID != "old" || got[0].Provider != "zai" {
+		t.Fatalf("provider=zai: %+v", got)
+	}
+	// The ring's own copy is untouched.
+	if e, _ := rings.Manager.Get("svc-zai").Get("old"); e.Provider != "" {
+		t.Errorf("the ring's entry was changed: provider %q", e.Provider)
+	}
+}
+
+// Rule 9: the list is 200 long unless limit says otherwise, never longer
+// than 1000, and limit must be a positive number.
+func TestAIRequestsLimit(t *testing.T) {
+	d, rings := aiRequestsDeps("admin", bothMine)
+	for i := 0; i < 600; i++ {
+		ts := aiRequestsT0.Add(time.Duration(i) * time.Second)
+		rings.seed("svc-zai", inspector.Entry{ID: fmt.Sprintf("z%d", i), TS: ts, Provider: "zai"})
+		rings.seed("svc-ollama", inspector.Entry{ID: fmt.Sprintf("o%d", i), TS: ts.Add(time.Millisecond), Provider: "ollama"})
+	}
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	for query, want := range map[string]int{"": 200, "limit=5": 5, "limit=1000": 1000, "limit=1001": 1000, "limit=5000": 1000} {
+		got := aiRequests(t, c, query)
+		if len(got) != want {
+			t.Errorf("%q: %d entries, want %d", query, len(got), want)
+			continue
+		}
+		// The newest ones, from both providers.
+		if got[0].ID != "o599" || got[1].ID != "z599" {
+			t.Errorf("%q: starts with %s, %s; want o599, z599", query, got[0].ID, got[1].ID)
+		}
+	}
+	for _, query := range []string{"limit=0", "limit=-1", "limit=-5000"} {
+		r := c.get(t, "/api/v1/ai/requests?"+query)
+		if body := readBody(t, r); r.StatusCode != http.StatusBadRequest || !strings.Contains(body, "invalid limit") {
+			t.Errorf("%s: status %d body %s, want 400 invalid limit", query, r.StatusCode, body)
+		}
+	}
+	// The per-service list keeps its own rule: limit=0 means no limit.
+	if r := c.get(t, "/api/v1/services/svc-zai/inspector/requests?limit=0"); r.StatusCode != http.StatusOK {
+		t.Errorf("per-service limit=0: status %d", r.StatusCode)
+	} else {
+		r.Body.Close()
 	}
 }
