@@ -350,8 +350,8 @@ func (d Deps) ensureCustomDomainAccess(w http.ResponseWriter, r *http.Request, s
 	}
 	uid := userID(r.Context())
 
-	hasAny := role == "admin" || authz.Can(role, authz.PermServicesConfigureAny)
-	hasOwn := authz.Can(role, authz.PermServicesConfigureOwn)
+	hasAny := effectivePerms(r.Context(), role, authz.PermServicesConfigureAny)
+	hasOwn := effectivePerms(r.Context(), role, authz.PermServicesConfigureOwn)
 	if !hasAny && !hasOwn {
 		writeErr(w, http.StatusForbidden, "forbidden")
 		return "", false

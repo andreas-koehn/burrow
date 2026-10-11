@@ -114,9 +114,9 @@ func (d Deps) PutServiceAIConfig(w http.ResponseWriter, r *http.Request) {
 	uid := userID(r.Context())
 
 	// :any short-circuits ownership.
-	if !authz.Can(role, authz.PermAIConfigureAny) {
+	if !effectivePerms(r.Context(), role, authz.PermAIConfigureAny) {
 		// Must be an :own caller and own the service.
-		if !authz.Can(role, authz.PermAIConfigureOwn) {
+		if !effectivePerms(r.Context(), role, authz.PermAIConfigureOwn) {
 			writeErr(w, http.StatusForbidden, "forbidden")
 			return
 		}
@@ -240,8 +240,8 @@ func (d Deps) GetServiceAIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	uid := userID(r.Context())
 
-	if !authz.Can(role, authz.PermAIConfigureAny) {
-		if !authz.Can(role, authz.PermAIConfigureOwn) {
+	if !effectivePerms(r.Context(), role, authz.PermAIConfigureAny) {
+		if !effectivePerms(r.Context(), role, authz.PermAIConfigureOwn) {
 			writeErr(w, http.StatusForbidden, "forbidden")
 			return
 		}

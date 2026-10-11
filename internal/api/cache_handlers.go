@@ -326,9 +326,9 @@ func (d Deps) DeleteServiceCacheEntries(w http.ResponseWriter, r *http.Request) 
 	uid := userID(r.Context())
 
 	// :any short-circuits ownership.
-	if !authz.Can(role, authz.PermAIConfigureAny) {
+	if !effectivePerms(r.Context(), role, authz.PermAIConfigureAny) {
 		// Must be an :own caller and own the service.
-		if !authz.Can(role, authz.PermAIConfigureOwn) {
+		if !effectivePerms(r.Context(), role, authz.PermAIConfigureOwn) {
 			writeErr(w, http.StatusForbidden, "forbidden")
 			return
 		}

@@ -61,8 +61,8 @@ func (d Deps) ensureCredentialAccess(w http.ResponseWriter, r *http.Request, ser
 	}
 	uid := userID(r.Context())
 
-	hasAny := role == "admin" || authz.Can(role, authz.PermAIConfigureAny)
-	hasOwn := authz.Can(role, authz.PermAIConfigureOwn)
+	hasAny := effectivePerms(r.Context(), role, authz.PermAIConfigureAny)
+	hasOwn := effectivePerms(r.Context(), role, authz.PermAIConfigureOwn)
 	if !hasAny && !hasOwn {
 		writeErr(w, http.StatusForbidden, "forbidden")
 		return false

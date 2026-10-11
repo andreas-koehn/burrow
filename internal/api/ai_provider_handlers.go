@@ -28,6 +28,7 @@ import (
 	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/auth"
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -75,7 +76,7 @@ type aiProviderResp struct {
 	ModelCount        int                  `json:"model_count"`
 
 	// How the relay presents the credential upstream, for callers who may
-	// change it (admins): PUT …/upstream keeps what a body leaves out, and
+	// change it (ai:providers:manage): PUT …/upstream keeps what a body leaves out, and
 	// these fields show what that is. auth_format holds the literal {key}
 	// placeholder, never the credential. Of the extra headers only the names
 	// are shown, sorted: a value is free text and may be a secret. Left out
@@ -209,16 +210,26 @@ func (d Deps) firstModelByProvider(ctx context.Context) map[string]providerModel
 	return out
 }
 
+// providerRole is the role the provider reads ask the service store with (a
+// provider is seen by who sees its backing service). An automation token
+// sees other users' providers with ai:read:any, ai:providers:manage or
+// services:configure:any; with ai:read:own it sees its user's own.
+func (d Deps) providerRole(r *http.Request) (string, error) {
+	return d.actingRole(r, authz.PermAIReadAny, authz.PermAIProvidersManage, authz.PermServicesConfigureAny)
+}
+
 // providerViews returns the response item for every provider whose backing
 // service the caller may see (same visibility as ListServices), ordered by
 // slug.  Identity fields come from the provider row; api_key_count, status
 // and the 24h counts are read live from the backing service; model_alias and
 // concrete_model name the first synthetic model that targets the provider.
 func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
-	role, err := d.callerRole(r)
+	role, err := d.providerRole(r)
 	if err != nil {
 		return nil, err
 	}
+	// Who may change a provider's upstream is shown how it is presented.
+	manages := effectivePerms(r.Context(), role, authz.PermAIProvidersManage)
 	uid := userID(r.Context())
 
 	svcs, err := d.Services.ListServices(r.Context(), uid, role)
@@ -310,8 +321,8 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 			Billing:           p.Billing,
 			ModelCount:        d.modelCount(r.Context(), p.Slug),
 		}
-		// The upstream routes are admin only.
-		if role == "admin" {
+		// The upstream routes need ai:providers:manage.
+		if manages {
 			upstreamAuthView(&v, p)
 		}
 		out = append(out, v)
@@ -412,7 +423,7 @@ func (d Deps) GetAIProviderMetrics(w http.ResponseWriter, r *http.Request) {
 	serviceID := p.ServiceID
 
 	// Validate the backing service is accessible to the caller.
-	role, err := d.callerRole(r)
+	role, err := d.providerRole(r)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
@@ -779,7 +790,7 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 // was just created. A failure is logged and does not undo the provider: the
 // switch can be set from the service page.
 func (d Deps) closeDirectDoors(r *http.Request, p db.AIProvider) {
-	role, err := d.callerRole(r)
+	role, err := d.actingRole(r, authz.PermServicesConfigureAny)
 	if err == nil {
 		err = d.Services.SetServiceGatewayOnly(r.Context(), userID(r.Context()), role, p.ServiceID, true)
 	}

@@ -194,3 +194,23 @@ func firstNotHeld(ctx context.Context, role string, perms []string) string {
 	}
 	return ""
 }
+
+// actingRole is the role a handler hands to a store that scopes by role: the
+// caller's own rows, or everyone's. A dashboard session acts with its user's
+// role. An automation token acts with it only where it has one of anyPerms
+// (the :any half of what the route needs, by effectivePerms); otherwise it
+// acts as the built-in "user", whose reach ends at the caller's own rows. An
+// admin's token that declares services:configure:own does not configure the
+// services of other users.
+func (d Deps) actingRole(r *http.Request, anyPerms ...authz.Permission) (string, error) {
+	role, err := d.callerRoleForAuth(r)
+	if err != nil || bearerTokenID(r.Context()) == "" {
+		return role, err
+	}
+	for _, p := range anyPerms {
+		if effectivePerms(r.Context(), role, p) {
+			return role, nil
+		}
+	}
+	return "user", nil
+}

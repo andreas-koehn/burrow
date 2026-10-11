@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -226,7 +227,7 @@ func (d Deps) SetAccessMode(w http.ResponseWriter, r *http.Request) {
 	// v0.3 delegation path: resolve tunnelID → serviceID via live registry.
 	if d.LiveTunnels != nil {
 		if loc, ok := d.LiveTunnels.LookupByTunnelID(id); ok {
-			callerRole, err := d.callerRole(r)
+			callerRole, err := d.actingRole(r, authz.PermServicesConfigureAny)
 			if err != nil {
 				writeErr(w, http.StatusInternalServerError, "internal error")
 				return

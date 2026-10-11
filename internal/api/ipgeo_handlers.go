@@ -83,8 +83,8 @@ func (d Deps) ensureIPGeoServiceAccess(w http.ResponseWriter, r *http.Request, s
 	}
 	uid := userID(r.Context())
 
-	hasAny := role == "admin" || authz.Can(role, authz.PermIPGeoManageAny)
-	hasOwn := authz.Can(role, authz.PermIPGeoManageOwn)
+	hasAny := effectivePerms(r.Context(), role, authz.PermIPGeoManageAny)
+	hasOwn := effectivePerms(r.Context(), role, authz.PermIPGeoManageOwn)
 	if !hasAny && !hasOwn {
 		writeErr(w, http.StatusForbidden, "forbidden")
 		return false

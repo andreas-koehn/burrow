@@ -401,11 +401,11 @@ func (d Deps) GetRateLimitUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// mayReadAnyQuota reports whether the caller is an admin or holds
-// quotas:read:any. A caller whose role cannot be read may not.
+// mayReadAnyQuota reports whether the caller holds quotas:read:any (a token:
+// declares it as well). A caller whose role cannot be read may not.
 func (d Deps) mayReadAnyQuota(r *http.Request) bool {
 	role, err := d.callerRole(r)
-	return err == nil && (role == "admin" || authz.Can(role, authz.PermQuotasReadAny))
+	return err == nil && effectivePerms(r.Context(), role, authz.PermQuotasReadAny)
 }
 
 // mayReadGatewayKeyUsage reports whether the caller may see the usage of

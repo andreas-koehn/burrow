@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -123,7 +124,7 @@ func (d Deps) GetAutomationTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := userID(r.Context())
-	role, err := d.callerRoleForAuth(r)
+	role, err := d.actingRole(r, authz.PermAutomationTokensManageAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "lookup failed")
 		return
@@ -171,6 +172,17 @@ func (d Deps) PostAutomationToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "lookup failed")
 		return
 	}
+	// A token mints nothing wider than itself: each permission it asks for
+	// must be one it declares (and its user's role still grants). For a
+	// session the store checks the role, as before.
+	if bearerTokenID(r.Context()) != "" {
+		for _, p := range in.Permissions {
+			if !effectivePerms(r.Context(), role, authz.Permission(p)) {
+				writeErr(w, http.StatusForbidden, "requested permission not granted by the calling token")
+				return
+			}
+		}
+	}
 
 	view, plaintext, err := d.Automation.MintAutomationToken(r.Context(), uid, role, in.Name, in.Permissions, in.ExpiresAt)
 	if err != nil {
@@ -204,7 +216,7 @@ func (d Deps) DeleteAutomationToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := userID(r.Context())
-	role, err := d.callerRoleForAuth(r)
+	role, err := d.actingRole(r, authz.PermAutomationTokensManageAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "lookup failed")
 		return
