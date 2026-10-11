@@ -272,20 +272,12 @@ func (s *Store) RevokeClientToken(ctx context.Context, id, userID string) error 
 }
 
 // Authenticate validates a plaintext client token and returns the owning user's ID.
-// Returns ErrUnauthorized for unknown or invalid tokens.
+// Returns ErrUnauthorized for unknown or invalid tokens and for the token of
+// a suspended user.
 // The last-used timestamp update is best-effort and does not fail authentication.
 func (s *Store) Authenticate(ctx context.Context, plaintext string) (userID string, err error) {
-	hash := auth.HashToken(plaintext)
-	ct, err := s.q.GetClientTokenByHash(ctx, hash)
-	if errors.Is(err, db.ErrNotFound) {
-		return "", ErrUnauthorized
-	}
-	if err != nil {
-		return "", err
-	}
-	// Best-effort: update last_used without failing auth on error.
-	_ = s.q.TouchClientTokenLastUsed(ctx, ct.ID)
-	return ct.UserID, nil
+	userID, _, _, err = s.AuthenticateToken(ctx, plaintext)
+	return userID, err
 }
 
 // AuthenticateNamed is like Authenticate but also returns the client-token's
@@ -298,7 +290,8 @@ func (s *Store) AuthenticateNamed(ctx context.Context, plaintext string) (userID
 
 // AuthenticateToken is like AuthenticateNamed but also returns the id of the
 // client token, which the server needs to record the session on the token
-// (RecordClientSession). Returns ErrUnauthorized for unknown/invalid tokens.
+// (RecordClientSession). Returns ErrUnauthorized for unknown/invalid tokens
+// and for the token of a suspended user.
 func (s *Store) AuthenticateToken(ctx context.Context, plaintext string) (userID, tokenID, tokenName string, err error) {
 	hash := auth.HashToken(plaintext)
 	ct, err := s.q.GetClientTokenByHash(ctx, hash)
@@ -308,6 +301,19 @@ func (s *Store) AuthenticateToken(ctx context.Context, plaintext string) (userID
 	if err != nil {
 		return "", "", "", err
 	}
+	// The token of a suspended user opens no session: suspending closes the
+	// live ones, and this keeps the client from coming straight back.
+	u, err := s.q.GetUserByID(ctx, ct.UserID)
+	if errors.Is(err, db.ErrNotFound) {
+		return "", "", "", ErrUnauthorized
+	}
+	if err != nil {
+		return "", "", "", err
+	}
+	if u.Status == "suspended" {
+		return "", "", "", ErrUnauthorized
+	}
+	// Best-effort: update last_used without failing auth on error.
 	_ = s.q.TouchClientTokenLastUsed(ctx, ct.ID)
 	return ct.UserID, ct.ID, ct.Name, nil
 }

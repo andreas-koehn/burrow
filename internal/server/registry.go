@@ -231,6 +231,32 @@ func (r *Registry) Sessions() []*ClientSession {
 	return out
 }
 
+// CloseByToken ends every live session that logged in with the client token
+// and returns how many there were. It closes the session's yamux session,
+// which is how a session ends everywhere else (a lost connection, a
+// shutdown): the handler of the connection then closes the tunnels'
+// listeners, frees their ports, writes the last session record and takes the
+// session out of the registry. An empty id closes nothing.
+func (r *Registry) CloseByToken(tokenID string) int {
+	if tokenID == "" {
+		return 0
+	}
+	n := 0
+	for _, cs := range r.Sessions() {
+		if cs.TokenID != tokenID || cs.Yamux == nil {
+			continue
+		}
+		_ = cs.Yamux.Close()
+		n++
+	}
+	return n
+}
+
+// CloseByToken ends the live sessions of a client token (see
+// Registry.CloseByToken). The API calls it when the token is revoked and when
+// its user is suspended or deleted.
+func (s *Server) CloseByToken(tokenID string) int { return s.reg.CloseByToken(tokenID) }
+
 // Tunnel returns the named tunnel for a session, or nil.
 func (r *Registry) Tunnel(cs *ClientSession, id string) *Tunnel {
 	cs.mu.Lock()

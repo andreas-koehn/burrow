@@ -345,6 +345,10 @@ type Deps struct {
 	Clients     ClientLister
 	AccessModes AccessModeSetter
 	DB          Pinger
+	// ClientSessions ends the live sessions of a client token. The handlers
+	// call it when a token is revoked and when its user is suspended or
+	// deleted. *server.Server satisfies it. nil: nothing is closed.
+	ClientSessions interface{ CloseByToken(tokenID string) int }
 	// v0.3.0 surfaces.
 	// Services is the durable service store (api keys, access mode, policy).
 	Services ServiceStore

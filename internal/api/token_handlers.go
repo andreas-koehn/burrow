@@ -58,7 +58,8 @@ func (d Deps) CreateToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, newTokenResp{Name: in.Name, Token: pt})
 }
 
-// RevokeToken deletes one of the caller's tokens.
+// RevokeToken deletes one of the caller's tokens and ends the sessions that
+// are connected with it.
 func (d Deps) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	err := d.Users.RevokeClientToken(r.Context(), id, userID(r.Context()))
@@ -70,5 +71,32 @@ func (d Deps) RevokeToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "revoke failed")
 		return
 	}
+	// A token that is gone must not keep a tunnel up.
+	d.closeClientSessions(id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// closeClientSessions ends the live sessions of the client tokens.
+func (d Deps) closeClientSessions(tokenIDs ...string) {
+	if d.ClientSessions == nil {
+		return
+	}
+	for _, id := range tokenIDs {
+		if n := d.ClientSessions.CloseByToken(id); n > 0 {
+			d.Log.Info("client sessions closed", "token_id", id, "sessions", n)
+		}
+	}
+}
+
+// clientTokenIDs returns the ids of the user's client tokens.
+func (d Deps) clientTokenIDs(r *http.Request, userID string) ([]string, error) {
+	ts, err := d.Users.ListClientTokens(r.Context(), userID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(ts))
+	for _, t := range ts {
+		ids = append(ids, t.ID)
+	}
+	return ids, nil
 }

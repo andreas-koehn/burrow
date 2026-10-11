@@ -210,6 +210,18 @@ func (d Deps) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "cannot change your own status")
 			return
 		}
+		// Read the tokens before anything changes: a failing list answers
+		// 500 and leaves the user as it was.
+		var tokenIDs []string
+		if *in.Status == "suspended" {
+			ids, err := d.clientTokenIDs(r, targetID)
+			if err != nil {
+				d.Log.Error("list client tokens failed", "user_id", targetID, "err", err)
+				writeErr(w, http.StatusInternalServerError, "update status failed")
+				return
+			}
+			tokenIDs = ids
+		}
 		if err := d.Users.SetUserStatus(r.Context(), targetID, *in.Status); err != nil {
 			if errors.Is(err, db.ErrNotFound) {
 				writeErr(w, http.StatusNotFound, "user not found")
@@ -218,6 +230,9 @@ func (d Deps) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "update status failed")
 			return
 		}
+		// The store ended the user's dashboard sessions; the clients that
+		// are connected with the user's tokens go too.
+		d.closeClientSessions(tokenIDs...)
 	}
 	if in.Role != nil {
 		if err := d.Users.UpdateUserRole(r.Context(), targetID, *in.Role); err != nil {
@@ -295,7 +310,13 @@ func (d Deps) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if !d.mayManageUser(w, r, targetID) {
 		return
 	}
-	err := d.Users.DeleteUser(r.Context(), targetID)
+	// Read before the delete: the tokens go with the user.
+	tokenIDs, err := d.clientTokenIDs(r, targetID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "delete user failed")
+		return
+	}
+	err = d.Users.DeleteUser(r.Context(), targetID)
 	if errors.Is(err, db.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "user not found")
 		return
@@ -310,5 +331,6 @@ func (d Deps) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "delete user failed")
 		return
 	}
+	d.closeClientSessions(tokenIDs...)
 	w.WriteHeader(http.StatusNoContent)
 }
