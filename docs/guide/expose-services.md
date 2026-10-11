@@ -297,7 +297,7 @@ For a full description of all access modes (`open`, `api_key`, `burrow_login`,
 ## (D) Model providers at `/ai/<provider>/v1`
 
 A provider is a model backend with its own base URL,
-`https://<auth_domain>/ai/<provider>/v1`, which any OpenAI-compatible client
+`https://<auth_domain>/ai/<provider>/v1`, which any OpenAI-compatible app
 can use with a Burrow API key. Providers are managed in the dashboard under
 **AI Gateway → Providers**.
 

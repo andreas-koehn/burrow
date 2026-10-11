@@ -35,10 +35,10 @@ describe("ServicesOverview", () => {
   it("shows four tiles, each a link to its page", async () => {
     renderApp(<ServicesOverview />);
     const el = await strip();
-    // Seed: 1 client (10240 in / 4096 out), 4 services, 3 of them connected.
+    // Seed: 1 client (10240 in / 4096 out), 6 services, 3 of them online.
     await waitFor(() => expect(tiles(el)).toEqual([
       ["Clients online", "1", "/clients"],
-      ["Services", "4", "/services"],
+      ["Services", "6", "/services"],
       ["Live now", "3", "/services?live=1"],
       ["Traffic", "10.0 KiB / 4.0 KiB", "/traffic"],
     ]));

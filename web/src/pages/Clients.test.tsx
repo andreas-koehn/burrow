@@ -27,6 +27,13 @@ describe("Clients overview", () => {
     expect(within(row).getByText(/linux/i)).toBeInTheDocument();
   });
 
+  it("writes the status of a live client out as Online", async () => {
+    mount();
+    const row = (await screen.findByText("office-box-1")).closest("tr")!;
+    expect(within(row).getByText("Online")).toHaveClass("badge", "status-online");
+    expect(within(row).queryByText("connected")).toBeNull();
+  });
+
   it("has a link to client detail", async () => {
     renderApp(
       <Routes><Route path="/clients" element={<Clients />} /></Routes>,

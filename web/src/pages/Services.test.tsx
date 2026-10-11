@@ -95,7 +95,7 @@ describe("Services page", () => {
     expect(within(table).getAllByRole("row")).toHaveLength(2); // header + grafana
     await userEvent.clear(box);
     await userEvent.type(box, "/svc/");
-    expect(within(table).getAllByRole("row")).toHaveLength(4); // header + 3 http rows
+    expect(within(table).getAllByRole("row")).toHaveLength(6); // header + 5 http rows
   });
 
   it("renders a row per service with name, type, URL, access badge", async () => {
@@ -139,13 +139,21 @@ describe("Services page", () => {
     expect(screen.getByText("burrow connect")).toBeInTheDocument();
   });
 
-  it("renders idle services as a status-idle badge, not bare muted text (D-12/L-15)", async () => {
+  it("writes every status out with its own badge, not bare muted text (D-12/L-15)", async () => {
     mount();
     const table = await screen.findByRole("table");
-    const gf = within(table).getByText("grafana").closest("tr")!;
-    const idle = within(gf).getByText("idle");
-    expect(idle).toHaveClass("badge", "status-idle");
-    expect(idle).not.toHaveClass("muted");
+    const statusOf = (name: string) => {
+      const row = within(table).getByText(name).closest("tr")!;
+      return row.querySelector(".badge[class*='status-']:not(.status-idle)")!;
+    };
+    expect(statusOf("web")).toHaveTextContent(/^Online$/);
+    expect(statusOf("web")).toHaveClass("status-online");
+    expect(statusOf("grafana")).toHaveTextContent(/^Offline$/);
+    expect(statusOf("grafana")).toHaveClass("status-offline");
+    expect(statusOf("grafana")).not.toHaveClass("muted");
+    expect(statusOf("lmstudio")).toHaveTextContent(/^Never connected$/);
+    expect(statusOf("lmstudio")).toHaveClass("status-never");
+    for (const old of ["idle", "connected"]) expect(within(table).queryByText(old)).toBeNull();
   });
 
   it("shows an error notice with Retry on failure", async () => {
@@ -170,21 +178,23 @@ describe("Services page", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("connected service status badge links to the Live filter (P3B.2)", async () => {
+  it("online service status badge links to the Live filter (P3B.2)", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /services/i });
     const web = within(table).getByText("web").closest("tr")!;
-    const connectedLink = within(web).getByRole("link", { name: /view live tunnel for web/i });
-    expect(connectedLink).toHaveAttribute("href", "/services?live=1");
+    // The accessible name contains the visible label.
+    const onlineLink = within(web).getByRole("link", { name: "Online: view live tunnel for web" });
+    expect(onlineLink).toHaveAttribute("href", "/services?live=1");
+    expect(onlineLink).toHaveTextContent(/^Online$/);
   });
 
-  it("idle service status badge is NOT wrapped in a link (P3B.2)", async () => {
+  it("offline service status badge is NOT wrapped in a link (P3B.2)", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /services/i });
     const gf = within(table).getByText("grafana").closest("tr")!;
     expect(within(gf).queryByRole("link", { name: /view live tunnel for grafana/i })).toBeNull();
-    // The idle badge itself must still be present
-    expect(within(gf).getByText("idle")).toBeInTheDocument();
+    // The badge itself must still be present
+    expect(within(gf).getByText("Offline")).toBeInTheDocument();
   });
 
   it("creates a new service via the New service dialog and shows a success toast", async () => {
@@ -252,11 +262,11 @@ describe("Services page", () => {
   });
 
   // P5.2 — ?new=ai auto-opens the dialog; access mode is fixed to API key, no picker
-  it("P5.2: ?new=ai auto-opens the New AI service dialog without an access-mode picker", async () => {
+  it("P5.2: ?new=ai auto-opens the New service and provider dialog without an access-mode picker", async () => {
     renderApp(<Services />, "/services?new=ai");
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /new ai service/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /new service and provider/i })).toBeInTheDocument();
     // Access mode is fixed to API key for AI services: no picker is offered.
     expect(screen.queryByRole("combobox", { name: /access mode/i })).toBeNull();
   });
@@ -270,7 +280,7 @@ describe("Services page", () => {
       }),
     );
     renderApp(<Services />, "/services?new=ai");
-    const dialog = await screen.findByRole("dialog", { name: "New AI service" });
+    const dialog = await screen.findByRole("dialog", { name: "New service and provider" });
     await userEvent.type(within(dialog).getByLabelText(/service id/i), "ai-svc-2");
     await userEvent.click(within(dialog).getByRole("button", { name: "Create and continue" }));
     await waitFor(() => expect(captured).not.toBeNull());
@@ -279,16 +289,16 @@ describe("Services page", () => {
 
   it("explains the AI flow when opened via ?new=ai (F8)", async () => {
     renderApp(<Services />, "/services?new=ai");
-    const dialog = await screen.findByRole("dialog", { name: "New AI service" });
+    const dialog = await screen.findByRole("dialog", { name: "New service and provider" });
     expect(within(dialog).getByText("Creates a service with API-key access and registers it as a model provider, reachable through the AI gateway only.")).toBeInTheDocument();
     // Access mode is fixed for AI services, so the picker is not offered.
     expect(within(dialog).queryByLabelText("Access mode")).toBeNull();
     expect(within(dialog).getByRole("button", { name: "Create and continue" })).toBeInTheDocument();
   });
 
-  it("the New AI service dialog advertises no /svc/ address", async () => {
+  it("the New service and provider dialog advertises no /svc/ address", async () => {
     renderApp(<Services />, "/services?new=ai");
-    const dialog = await screen.findByRole("dialog", { name: "New AI service" });
+    const dialog = await screen.findByRole("dialog", { name: "New service and provider" });
     expect(within(dialog).queryByLabelText(/url slug/i)).toBeNull();
     expect(dialog.textContent).not.toMatch(/\/svc\//);
   });
@@ -309,7 +319,7 @@ describe("Services page", () => {
       </Routes>,
       "/services?new=ai",
     );
-    const dialog = await screen.findByRole("dialog", { name: "New AI service" });
+    const dialog = await screen.findByRole("dialog", { name: "New service and provider" });
     await userEvent.type(within(dialog).getByLabelText(/service id/i), "local-llm");
     await userEvent.type(within(dialog).getByLabelText("Title"), "Local LLM");
     await userEvent.click(within(dialog).getByRole("button", { name: "Create and continue" }));
@@ -335,7 +345,7 @@ describe("Services page", () => {
       </>,
       "/services?new=ai",
     );
-    const dialog = await screen.findByRole("dialog", { name: "New AI service" });
+    const dialog = await screen.findByRole("dialog", { name: "New service and provider" });
     await userEvent.type(within(dialog).getByLabelText(/service id/i), "local-llm");
     await userEvent.type(within(dialog).getByLabelText("Title"), "AI");
     await userEvent.click(within(dialog).getByRole("button", { name: "Create and continue" }));
@@ -439,7 +449,7 @@ describe("Services page — All | Live", () => {
     const all = rowCount();
     await userEvent.click(within(filter).getByRole("radio", { name: "Live" }));
     await waitFor(() => expect(within(screen.getByRole("table", { name: "Services" })).getByRole("columnheader", { name: "Client" })).toBeInTheDocument());
-    expect(rowCount()).toBeLessThan(all); // the fixtures contain an idle service
+    expect(rowCount()).toBeLessThan(all); // the fixtures contain services no client serves
     // the choice is in the URL, so a reload or a shared link keeps it
     expect(currentLocation()).toMatch(/[?&]live=1/);
     await userEvent.click(within(filter).getByRole("radio", { name: "All" }));
@@ -467,7 +477,8 @@ describe("Services page — All | Live", () => {
     const holders = await within(table).findAllByRole("link", { name: /office-box-1/ });
     expect(holders).toHaveLength(2);
     expect(holders[0]).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
-    expect(within(table).queryByText("idle")).toBeNull();
+    expect(within(table).queryByText("Offline")).toBeNull();
+    expect(within(table).queryByText("Never connected")).toBeNull();
   });
 
   it("has no Client column outside Live", async () => {
@@ -496,7 +507,7 @@ describe("Services page — All | Live", () => {
     expect(within(row).getByText("API key")).toBeInTheDocument();
     expect(within(row).getByText("127.0.0.1:11434")).toBeInTheDocument();
     expect(within(row).queryByText(":0")).toBeNull(); // an http tunnel has no remote port
-    expect(within(row).getByText("connected")).toBeInTheDocument();
+    expect(within(row).getByText("Online")).toHaveClass("badge", "status-online");
     // Configure from a live row opens the access dialog of the durable service.
     await userEvent.click(within(row).getByRole("button", { name: /configure/i }));
     expect(await screen.findByRole("dialog", { name: "Access · ollama" })).toBeInTheDocument();

@@ -21,9 +21,28 @@ export interface CacheSettingsPayload {
 // before serialization — owner-scoping the v0.3.0 /services surface).
 // Type "direct" is the backing row of a direct AI provider; GET /services
 // leaves it out.
-export interface ServiceRow extends Omit<Service, "type"> {
+//
+// status, client_session_id and provider_slug are not stored: the handlers
+// work them out on every response (serviceWire), as the relay does. A row is
+// online while `connected`, offline when it has a last_seen, never connected
+// otherwise.
+export interface ServiceRow extends Omit<Service, "type" | "status" | "last_seen" | "last_client" | "client_session_id" | "provider_slug"> {
   type: Service["type"] | "direct";
   user_id: string;
+  /** When a client last served it; absent while none has. */
+  last_seen?: string;
+  /** Token name of that client. */
+  last_client?: string;
+}
+
+/** What the relay remembers of a client token's last session (GET /clients/known). */
+export interface ClientLastSession {
+  last_seen: string;
+  os: string;
+  arch: string;
+  client_version: string;
+  remote_addr: string;
+  served: string[];
 }
 
 // Per-service metadata the /ai/providers handlers join onto a provider row.
@@ -76,6 +95,8 @@ export interface MockDb {
   smtpPasswordSet: boolean;
   clients: ClientDetail[];
   tokens: { id: string; name: string; last_used: string | null; created_at: string }[];
+  /** Last session per client token id; a token without an entry and without a live session never connected. */
+  clientLastSessions: Record<string, ClientLastSession>;
   services: ServiceRow[];
   serviceApiKeys: Record<string, ServiceApiKey[]>;
   serviceAccessPolicy: Record<string, string[]>;
@@ -180,14 +201,24 @@ function seed(): MockDb {
     tokens: [
       { id: "tok_1", name: "office-box-1", last_used: "2026-05-18T09:00:00Z", created_at: "2026-05-01T08:00:00Z" },
     ],
+    clientLastSessions: {
+      tok_1: { last_seen: "2026-05-18T09:00:00Z", os: "linux", arch: "amd64", client_version: "0.2.0", remote_addr: "203.0.113.7:51234", served: ["ollama", "web-staging"] },
+    },
+    // One row of each state: web, ollama and postgres are online, grafana and
+    // llamacpp are offline, lmstudio never connected.
     services: [
-      { id: "svc_web01", user_id: meId, name: "web", type: "http", slug: "k7p2qx", url: "https://tunnels.example.com/svc/k7p2qx/", access_mode: "open", api_key_header: "Authorization", gateway_only: false, connected: true, remote_port: 0, local_addr: "127.0.0.1:3000" },
-      { id: "svc_ai001", user_id: meId, name: "ollama", type: "http", slug: "ai4m2q", url: "https://tunnels.example.com/svc/ai4m2q/", access_mode: "api_key", api_key_header: "Authorization", gateway_only: false, connected: true, remote_port: 0, local_addr: "127.0.0.1:11434" },
-      { id: "svc_graf01", user_id: meId, name: "grafana", type: "http", slug: "gf7x1p", url: "https://tunnels.example.com/svc/gf7x1p/", access_mode: "burrow_login", api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "127.0.0.1:3001" },
-      { id: "svc_pg001", user_id: meId, name: "postgres", type: "tcp", slug: "", url: "", access_mode: "open", api_key_header: "Authorization", gateway_only: false, connected: true, remote_port: 9000, local_addr: "127.0.0.1:5432" },
+      { id: "svc_web01", user_id: meId, name: "web", type: "http", slug: "k7p2qx", url: "https://tunnels.example.com/svc/k7p2qx/", access_mode: "open", api_key_header: "Authorization", gateway_only: false, connected: true, remote_port: 0, local_addr: "127.0.0.1:3000", last_seen: "2026-05-18T09:00:00Z", last_client: "office-box-1" },
+      { id: "svc_ai001", user_id: meId, name: "ollama", type: "http", slug: "ai4m2q", url: "https://tunnels.example.com/svc/ai4m2q/", access_mode: "api_key", api_key_header: "Authorization", gateway_only: false, connected: true, remote_port: 0, local_addr: "127.0.0.1:11434", last_seen: "2026-05-18T09:00:00Z", last_client: "office-box-1" },
+      { id: "svc_graf01", user_id: meId, name: "grafana", type: "http", slug: "gf7x1p", url: "https://tunnels.example.com/svc/gf7x1p/", access_mode: "burrow_login", api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "127.0.0.1:3001", last_seen: "2026-05-16T17:30:00Z", last_client: "office-box-1" },
+      { id: "svc_pg001", user_id: meId, name: "postgres", type: "tcp", slug: "", url: "", access_mode: "open", api_key_header: "Authorization", gateway_only: false, connected: true, remote_port: 9000, local_addr: "127.0.0.1:5432", last_seen: "2026-05-18T09:00:00Z", last_client: "office-box-1" },
+      // Backing services of the tunnel providers llamacpp (offline) and lmstudio (never connected).
+      { id: "svc_llama01", user_id: meId, name: "llamacpp", type: "http", slug: "lc8k3d", url: "https://tunnels.example.com/svc/lc8k3d/", access_mode: "api_key", api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "", last_seen: "2026-05-12T11:45:00Z", last_client: "office-box-1" },
+      { id: "svc_lms001", user_id: meId, name: "lmstudio", type: "http", slug: "lm5t9w", url: "https://tunnels.example.com/svc/lm5t9w/", access_mode: "api_key", api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "" },
       // Backing rows of the direct providers zai and zai-anthropic.
       { id: "prov-zai", user_id: meId, name: "zai", type: "direct", slug: "", url: "", access_mode: "api_key", api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "" },
       { id: "prov-zai-anthropic", user_id: meId, name: "zai-anthropic", type: "direct", slug: "", url: "", access_mode: "api_key", api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "" },
+      // Backing row of the direct provider openai-team.
+      { id: "prov-openai-team", user_id: meId, name: "openai-team", type: "direct", slug: "", url: "", access_mode: "api_key", api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "" },
     ],
     serviceApiKeys: {
       svc_ai001: [
@@ -208,6 +239,9 @@ function seed(): MockDb {
         client_session_id: "sess_4f7a9c0b2e81",
       },
     },
+    // One row of each state: ollama is online, llamacpp offline, lmstudio never
+    // connected (no aiMeta row: no client reports for them); zai and
+    // zai-anthropic are not configured, openai-team is ready.
     aiProviders: [
       { slug: "ollama", name: "ollama", kind: "tunnel", api_format: "openai", service_id: "svc_ai001" },
       // One hosted API in both formats; the slots are not set on this relay.
@@ -220,6 +254,14 @@ function seed(): MockDb {
         slug: "zai-anthropic", name: "zai-anthropic", kind: "direct", api_format: "anthropic", service_id: "prov-zai-anthropic",
         upstream_base_url: "https://api.z.example.net/api/anthropic", credential_slot: "ZAI",
         auth_header: "x-api-key", auth_format: "{key}", extra_headers: {}, billing: "metered",
+      },
+      { slug: "llamacpp", name: "llamacpp", kind: "tunnel", api_format: "openai", service_id: "svc_llama01" },
+      { slug: "lmstudio", name: "lmstudio", kind: "tunnel", api_format: "openai", service_id: "svc_lms001" },
+      // A hosted API whose slot (OPENAI) is set on this relay.
+      {
+        slug: "openai-team", name: "openai-team", kind: "direct", api_format: "openai", service_id: "prov-openai-team",
+        upstream_base_url: "https://api.openai.example.net/v1", credential_slot: "OPENAI",
+        auth_header: "Authorization", auth_format: "Bearer {key}", extra_headers: {}, billing: "metered",
       },
     ],
     aiProviderModels: {

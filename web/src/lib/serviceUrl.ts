@@ -16,7 +16,7 @@ export function serviceUrl(slug: string, apiUrl?: string): string {
   return `${origin}${servicePath(slug)}`;
 }
 
-/** Base URL an OpenAI-compatible client is configured with for a provider. */
+/** Base URL an OpenAI-compatible app is configured with for a provider. */
 export function providerBaseUrl(slug: string, apiUrl?: string): string {
   if (apiUrl) return apiUrl;
   const origin = typeof window !== "undefined" ? window.location.origin : "";

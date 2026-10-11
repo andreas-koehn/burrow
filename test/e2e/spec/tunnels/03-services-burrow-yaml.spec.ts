@@ -19,16 +19,16 @@ test("03-services-burrow-yaml: client-multi exposes 2 services through one clien
     const row = table.locator("tr").filter({ hasText: name });
     await expect(row, `${name} row visible`).toBeVisible();
     await expect(
-      row.getByText("connected", { exact: true }),
-      `${name} connected`,
+      row.getByText("Online", { exact: true }),
+      `${name} online`,
     ).toBeVisible();
   }
 
   await pingMultiTunnels(request);
 
-  // Both tunnels stay connected after traffic.
+  // Both tunnels stay online after traffic.
   for (const name of ["svc-a", "svc-b"]) {
     const row = table.locator("tr").filter({ hasText: name });
-    await expect(row.getByText("connected", { exact: true })).toBeVisible();
+    await expect(row.getByText("Online", { exact: true })).toBeVisible();
   }
 });

@@ -62,7 +62,34 @@ describe("Providers page", () => {
     expect(within(ollama).getByText("1,024")).toBeInTheDocument(); // requests_24h
     expect(within(ollama).getByText("200")).toBeInTheDocument(); // cache_hits_24h
     expect(within(ollama).getByText("1,200 ms")).toBeInTheDocument(); // latency_p95_ms
-    expect(within(ollama).getByText("connected", { selector: "span.badge" })).toBeInTheDocument();
+    expect(within(ollama).getByText("Online", { selector: "span.badge" })).toHaveClass("status-online");
+  });
+
+  it("writes the state of every provider out in the same five words", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: /providers/i });
+    const status = (name: string) => {
+      const cells = within(table).getByRole("link", { name }).closest("tr")!.querySelectorAll("td");
+      return cells[cells.length - 2]!;
+    };
+    expect(status("ollama")).toHaveTextContent(/^Online$/);
+    expect(status("llamacpp")).toHaveTextContent(/^Offline$/);
+    expect(status("lmstudio")).toHaveTextContent(/^Never connected$/);
+    expect(status("openai-team")).toHaveTextContent(/^Ready$/);
+    expect(status("zai")).toHaveTextContent(/^Not configured$/);
+    expect(within(status("lmstudio")).getByText("Never connected")).toHaveClass("badge", "status-never");
+    for (const old of ["connected", "offline", "ready", "not configured", "idle"]) {
+      expect(within(table).queryByText(old)).toBeNull();
+    }
+  });
+
+  it("keeps degraded as its own badge beside the state", async () => {
+    db.aiMeta.svc_ai001!.status = "Degraded";
+    mount();
+    const table = await screen.findByRole("table", { name: /providers/i });
+    const row = within(table).getByRole("link", { name: "ollama" }).closest("tr")!;
+    expect(within(row).getByText("Online", { selector: "span.badge" })).toBeInTheDocument();
+    expect(within(row).getByText("degraded", { selector: "span.badge" })).toBeInTheDocument();
   });
 
   it("⋯ menu offers Inspect / Keys / Access settings / Cost", async () => {
@@ -94,17 +121,17 @@ describe("Providers page", () => {
       "An administrator can add one from a service in API-key mode, or add a hosted API. Switching a service to API-key mode does not create a provider.",
     )).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New provider" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "New AI service" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New service and provider" })).toBeNull();
   });
 
   // P5.5 — admin empty-state CTA + concept explainer
-  it("P5.5: admin sees 'New AI service' and 'New provider' with an empty list", async () => {
+  it("P5.5: admin sees 'New service and provider' and 'New provider' with an empty list", async () => {
     // db.me is admin by default. A service whose provider is gone, or that was
     // switched to API-key mode later, has no provider until an admin adds one.
     db.services = db.services.filter((s) => s.access_mode !== "api_key");
     mount();
     expect(await screen.findByRole("heading", { name: "No providers yet" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "New AI service" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New service and provider" })).toBeInTheDocument();
     // One in the page header, one in the empty state.
     expect(screen.getAllByRole("button", { name: "New provider" })).toHaveLength(2);
   });
@@ -116,7 +143,7 @@ describe("Providers page", () => {
     expect(link).toHaveAttribute("href", "/services");
   });
 
-  it("P5.5: featureAbsent branch has NO 'New AI service' button", async () => {
+  it("P5.5: featureAbsent branch has NO 'New service and provider' button", async () => {
     server.use(
       http.get("/api/v1/ai/providers", () =>
         HttpResponse.json({ error: "not found" }, { status: 404 }),
@@ -309,13 +336,13 @@ describe("Providers page", () => {
     expect(within(table).getByRole("columnheader", { name: "Kind" })).toBeInTheDocument();
     const row = (name: string) => within(table).getByRole("link", { name }).closest("tr")!;
     expect(within(row("ollama")).getByText("tunnel", { selector: "span.badge" })).toBeInTheDocument();
-    expect(within(row("ollama")).getByText("connected", { selector: "span.badge" })).toBeInTheDocument();
+    expect(within(row("ollama")).getByText("Online", { selector: "span.badge" })).toBeInTheDocument();
     expect(within(row("OpenRouter")).getByText("direct", { selector: "span.badge" })).toBeInTheDocument();
-    expect(within(row("OpenRouter")).getByText("ready", { selector: "span.badge" })).toBeInTheDocument();
+    expect(within(row("OpenRouter")).getByText("Ready", { selector: "span.badge" })).toBeInTheDocument();
     expect(within(row("z.ai")).getByText("direct", { selector: "span.badge" })).toBeInTheDocument();
-    expect(within(row("z.ai")).getByText("not configured", { selector: "span.badge" })).toBeInTheDocument();
+    expect(within(row("z.ai")).getByText("Not configured", { selector: "span.badge" })).toBeInTheDocument();
     // A direct provider has no client that could be offline.
-    expect(within(row("z.ai")).queryByText("offline")).toBeNull();
+    expect(within(row("z.ai")).queryByText(/offline/i)).toBeNull();
   });
 
   it("a direct provider's row menu stays on the provider: no link to its hidden service", async () => {

@@ -5,7 +5,8 @@ import { Copy, MoreHorizontal, Sparkles } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { statusLabel } from "@/lib/status";
+import { providerState } from "@/lib/status";
+import { StatusBadge } from "@/components/StatusBadge";
 import { Badge, Button, DropdownMenu, EmptyState, ErrorNotice, MetricStrip, MetricTile, PageHeader, SkeletonRows } from "@/components/ds";
 import { useAuth } from "@/auth/useAuth";
 import { NewProviderDialog } from "@/components/NewProviderDialog";
@@ -25,12 +26,6 @@ function hitRatio(hits: number, requests: number): string {
   return `${Math.round((hits / requests) * 100)}%`;
 }
 
-
-const STATUS_BADGE: Record<AiProvider["status"], string> = {
-  Connected: "status-connected",
-  Degraded: "status-degraded",
-  Offline: "status-offline",
-};
 
 export default function Providers() {
   const qc = useQueryClient();
@@ -98,7 +93,7 @@ export default function Providers() {
         actions={isAdmin ? (
           <>
             <Button variant="secondary" size="sm" onClick={() => nav("/services?new=ai")}>
-              New AI service
+              New service and provider
             </Button>
             <Button variant="primary" size="sm" onClick={() => setNewOpen(true)}>
               New provider
@@ -225,14 +220,11 @@ export default function Providers() {
                   </td>
                   <td className="mono">{fmtInt(e.latency_p95_ms)} ms</td>
                   <td>
-                    {/* A direct provider has no client to be connected: it is ready once its credential is set. */}
-                    {direct ? (
-                      e.credential_present
-                        ? <Badge kind="status-connected">ready</Badge>
-                        : <Badge kind="status-idle">not configured</Badge>
-                    ) : (
-                      <Badge kind={STATUS_BADGE[e.status]}>{statusLabel(e.status)}</Badge>
-                    )}
+                    <span className="row row-center gap-2">
+                      <StatusBadge state={providerState(e)} />
+                      {/* Not a state of its own: the relay's `status` says so beside the state. */}
+                      {!direct && e.status === "Degraded" && <Badge kind="status-degraded">degraded</Badge>}
+                    </span>
                   </td>
                   <td className="col-actions">
                     <DropdownMenu

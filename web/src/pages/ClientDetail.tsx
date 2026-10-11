@@ -4,6 +4,7 @@ import { AlertTriangle } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { Badge, PageHeader, SkeletonRows, TableEmptyRow } from "@/components/ds";
+import { StatusBadge } from "@/components/StatusBadge";
 import type { AccessMode, ClientDetail as ClientDetailT } from "@/lib/contract";
 
 const ACCESS_LABEL: Record<AccessMode, string> = {
@@ -42,6 +43,8 @@ export default function ClientDetail() {
         back={BACK}
         title={data.token_name}
         subtitle={<span className="mono">{data.session_id} · {data.os}/{data.arch} · burrow {data.client_version}</span>}
+        // The page shows a live session: while it answers, the client is online.
+        actions={<StatusBadge state="online" />}
       />
       <section className="account-section" aria-labelledby="sec-services">
         <div className="section-head"><div className="left"><h2 id="sec-services">Services</h2></div></div>
@@ -73,7 +76,7 @@ export default function ClientDetail() {
                 );
               })}
               {data.services.length === 0 && (
-                <TableEmptyRow colSpan={6} title="Connected, but not serving any service yet." />
+                <TableEmptyRow colSpan={6} title="Online, but not serving any service yet." />
               )}
             </tbody>
           </table>

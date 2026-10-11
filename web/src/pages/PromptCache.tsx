@@ -17,8 +17,8 @@ interface CacheSettingsPayload {
 }
 
 const APPLIES_OPTIONS = [
-  { value: "global", label: "Global (cache shared across endpoints)" },
-  { value: "per_endpoint", label: "Per-endpoint" },
+  { value: "global", label: "Global (cache shared across providers)" },
+  { value: "per_endpoint", label: "Per-provider" },
   { value: "per_api_key", label: "Per-API-key" },
 ];
 

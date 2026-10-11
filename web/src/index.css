@@ -473,8 +473,17 @@ select.input { height: 32px; padding-right: 8px; cursor: pointer; }
 .badge.role-user { color: var(--muted-foreground); }
 .badge.role-user .dot { background: var(--muted-foreground); }
 
-.badge.status-connected { color: var(--success); border-color: color-mix(in oklch, var(--success) 35%, var(--border)); }
-.badge.status-connected .dot { background: var(--success); box-shadow: 0 0 0 3px color-mix(in oklch, var(--success) 18%, transparent); }
+.badge.status-connected,
+.badge.status-online { color: var(--success); border-color: color-mix(in oklch, var(--success) 35%, var(--border)); }
+.badge.status-connected .dot,
+.badge.status-online .dot { background: var(--success); box-shadow: 0 0 0 3px color-mix(in oklch, var(--success) 18%, transparent); }
+/* The three states of anything served through a client (StatusBadge): online
+   above, offline as the plain badge with a filled dot, never connected muted
+   with a dashed border and a hollow dot. The word is always written out. */
+.badge.status-offline { color: var(--foreground); }
+.badge.status-offline .dot { background: var(--muted-foreground); }
+.badge.status-never { color: var(--muted-foreground); border-style: dashed; }
+.badge.status-never .dot { background: transparent; box-shadow: inset 0 0 0 1px var(--muted-foreground); }
 /* --warning on the light card is about 2:1; the text is mixed towards the
    foreground until it reads (the dot keeps the plain token). */
 .badge.status-idle { color: color-mix(in oklch, var(--warning) 45%, var(--foreground)); border-color: color-mix(in oklch, var(--warning) 40%, var(--border)); }
@@ -486,7 +495,8 @@ select.input { height: 32px; padding-right: 8px; cursor: pointer; }
    against card/row backgrounds (--card ~0.212; --border ~10% opacity).  */
 .dark .badge { border-color: oklch(0.42 0 0); }
 /* Preserve tinted borders for coloured status variants in dark mode */
-.dark .badge.status-connected { border-color: color-mix(in oklch, var(--success) 35%, oklch(0.42 0 0)); }
+.dark .badge.status-connected,
+.dark .badge.status-online { border-color: color-mix(in oklch, var(--success) 35%, oklch(0.42 0 0)); }
 .dark .badge.status-idle      { color: var(--warning); border-color: color-mix(in oklch, var(--warning) 40%, oklch(0.42 0 0)); }
 .dark .badge.status-suspended { border-color: color-mix(in oklch, var(--destructive) 35%, oklch(0.42 0 0)); }
 

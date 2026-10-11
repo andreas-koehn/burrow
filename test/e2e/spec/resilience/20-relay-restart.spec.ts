@@ -13,7 +13,7 @@ test("20-relay-restart: all 4 clients reconnect within 60s", async ({ page }) =>
   const table = page.locator('table[aria-label="Services"]');
   for (const name of TUNNEL_NAMES) {
     await expect(
-      table.locator("tr").filter({ hasText: name }).getByText("connected", { exact: true }),
+      table.locator("tr").filter({ hasText: name }).getByText("Online", { exact: true }),
     ).toBeVisible({ timeout: 15_000 });
   }
 
@@ -30,7 +30,7 @@ test("20-relay-restart: all 4 clients reconnect within 60s", async ({ page }) =>
 
   for (const name of TUNNEL_NAMES) {
     await expect(
-      page.locator('table[aria-label="Services"] tr').filter({ hasText: name }).getByText("connected", { exact: true }),
+      page.locator('table[aria-label="Services"] tr').filter({ hasText: name }).getByText("Online", { exact: true }),
       `${name} reconnects`,
     ).toBeVisible({ timeout: 60_000 });
   }

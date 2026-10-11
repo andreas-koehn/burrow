@@ -27,16 +27,26 @@ function mountAt(path: string) {
 }
 
 describe("ServiceDetail page", () => {
-  it("renders an idle service as a status-idle badge (C4)", async () => {
-    renderApp(
-      <Routes>
-        <Route path="/services/:id" element={<ServiceDetail />} />
-      </Routes>,
-      "/services/svc_graf01",
-    );
-    const idle = await screen.findByText("idle");
-    expect(idle).toHaveClass("badge", "status-idle");
-    expect(idle).not.toHaveClass("muted");
+  it.each([
+    ["svc_ai001", "Online", "status-online"],
+    ["svc_graf01", "Offline", "status-offline"],
+    ["svc_lms001", "Never connected", "status-never"],
+  ])("writes the status of %s out as %s", async (id, label, kind) => {
+    mountAt(`/services/${id}`);
+    const badge = await screen.findByText(label);
+    expect(badge).toHaveClass("badge", kind);
+    expect(badge).not.toHaveClass("muted");
+    for (const old of ["idle", "connected"]) expect(screen.queryByText(old)).toBeNull();
+  });
+
+  it("falls back to connected on a relay that sends no status", async () => {
+    server.use(http.get("/api/v1/services/:id", () => HttpResponse.json({
+      id: "svc_old", name: "old", type: "http", slug: "old123", url: "https://tunnels.example.com/svc/old123/",
+      access_mode: "open", api_key_header: "Authorization", gateway_only: false, connected: false,
+      remote_port: 0, local_addr: "", api_key_count: 0, access_policy: [],
+    })));
+    mountAt("/services/svc_old");
+    expect(await screen.findByText("Offline")).toHaveClass("badge", "status-offline");
   });
 
   it("shows the path URL in the meta strip with a copy button, no subdomain host", async () => {

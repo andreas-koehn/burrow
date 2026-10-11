@@ -388,7 +388,7 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
       open
       onOpenChange={(o) => { if (!save.isPending) onOpenChange(o); }}
       title={model ? `Edit ${model.name}` : "New model"}
-      description="A name clients send as the model, and where each API format sends it."
+      description="A name apps send as the model, and where each API format sends it."
       size="md"
       footer={
         <>
@@ -407,7 +407,7 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
           error={nameErr ?? undefined}
           help={model && name !== model.name
             ? "Gateway keys that list the old name are not updated."
-            : "What clients send as the model, e.g. burrow-medium."}
+            : "What apps send as the model, e.g. burrow-medium."}
         >
           <Input
             id="model-name"

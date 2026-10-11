@@ -183,6 +183,7 @@ describe("Provider detail", () => {
   it("delete: cancel sends nothing and hands focus back to the menu button", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockClear(); // the spy is shared with earlier cases
+    const before = db.aiProviders.map((p) => p.slug);
     mount();
     await screen.findByRole("heading", { name: /connect a client/i });
     const more = screen.getByRole("button", { name: /more actions/i });
@@ -193,7 +194,8 @@ describe("Provider detail", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(more).toHaveFocus());
     expect(fetchSpy.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "DELETE")).toBe(false);
-    expect(db.aiProviders.map((p) => p.slug)).toEqual(["ollama", "zai", "zai-anthropic"]);
+    expect(before).toContain("ollama");
+    expect(db.aiProviders.map((p) => p.slug)).toEqual(before);
   });
 
   it("delete: a failure shows in the dialog and keeps it open", async () => {
@@ -296,6 +298,27 @@ describe("Provider detail", () => {
       const body = JSON.parse(String((putCalls.at(-1)![1] as RequestInit).body));
       expect(body.routing.paused).toBe(true);
     });
+  });
+
+  it.each([
+    ["ollama", "Online", "status-online"],
+    ["llamacpp", "Offline", "status-offline"],
+    ["lmstudio", "Never connected", "status-never"],
+    ["openai-team", "Ready", "status-online"],
+    ["zai", "Not configured", "status-never"],
+  ])("writes the state of %s out as %s in the header", async (slug, label, kind) => {
+    mountAt(`/gateway/providers/${slug}`);
+    await screen.findByRole("heading", { name: `Provider · ${slug}` });
+    const header = document.querySelector(".page-header") as HTMLElement;
+    expect(within(header).getByText(label)).toHaveClass("badge", kind);
+  });
+
+  it("has one cache action in the kebab: Clear cache", async () => {
+    mount();
+    await screen.findByRole("heading", { name: /connect a client/i });
+    await userEvent.click(screen.getByRole("button", { name: /more actions/i }));
+    expect(await screen.findByRole("menuitem", { name: "Clear cache" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /rotate cache/i })).toBeNull();
   });
 
   it("Clear cache in the kebab calls DELETE /services/:id/cache/entries", async () => {

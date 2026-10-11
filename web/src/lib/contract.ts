@@ -1,6 +1,8 @@
 // Typed mirror of dev/superpowers/specs/2026-05-19-v0.2.0-api-contract.md.
 // snake_case fields match the wire verbatim; do not rename.
 
+import type { ServedState, State } from "./status";
+
 export type UserRole = "admin" | "user";
 export type UserStatus = "active" | "suspended";
 
@@ -109,6 +111,30 @@ export interface ClientDetail extends ClientView {
   services: ServiceView[];
 }
 
+/**
+ * GET /clients/known: one row per client token, with what the relay knows of
+ * the machine that uses it. The platform fields and `served` come from the
+ * client and are display text only.
+ */
+export interface KnownClient {
+  /** "" for a live session whose token was revoked meanwhile; such a row is always online. */
+  token_id: string;
+  token_name: string;
+  user_id: string;
+  status: ServedState;
+  /** Null while the token never connected. */
+  last_seen: string | null;
+  /** Of the newest live session, or of the last one; "" while the token never connected. Same for arch, client_version and remote_addr. */
+  os: string;
+  arch: string;
+  client_version: string;
+  remote_addr: string;
+  /** Names of the services the live sessions serve, or the last session served. Sorted. */
+  served: string[];
+  /** The live sessions, newest first; empty unless status is "online". */
+  sessions: ClientView[];
+}
+
 export interface NewToken {
   name: string;
   token: string;
@@ -127,9 +153,20 @@ export interface Service {
   api_key_header: string;
   /** Reachable through the AI gateway only; `url` is then empty. */
   gateway_only: boolean;
+  /** True exactly while `status` is "online". */
   connected: boolean;
   remote_port: number;
   local_addr: string;
+  /** Absent on a relay that predates the field; read it through serviceState(). */
+  status: ServedState;
+  /** When a client last served the service; null while none has. */
+  last_seen: string | null;
+  /** Token name of the client that served it last; "" while none has. */
+  last_client: string;
+  /** The client session that serves it now; "" while none does. */
+  client_session_id: string;
+  /** Slug of the tunnel provider this service backs; "" when it backs none. */
+  provider_slug: string;
 }
 
 export interface ServiceDetail extends Service {
@@ -206,6 +243,16 @@ export interface AiProvider {
   latency_p95_ms: number;
   status: "Connected" | "Degraded" | "Offline";
   client_session_id: string;
+  /**
+   * Tunnel provider: online, offline or never_connected, as its backing
+   * service. Direct provider: ready or not_configured. Absent on a relay that
+   * predates the field; read it through providerState().
+   */
+  state: State;
+  /** Tunnel provider: when a client last served it; null while none has, and always null for a direct provider. */
+  last_seen: string | null;
+  /** Tunnel provider: token name of the client that served it last; "" otherwise. */
+  last_client: string;
 }
 
 // One entry of a provider's stored model list.

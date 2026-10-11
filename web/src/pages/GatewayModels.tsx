@@ -128,7 +128,7 @@ export default function GatewayModels() {
     <div className="gateway-models-page">
       <PageHeader
         title="Models"
-        subtitle="Names clients ask for, and where each one is sent."
+        subtitle="Names apps ask for, and where each one is sent."
         actions={newModel}
       />
       <GatewayAddresses endpoints={endpoints} />

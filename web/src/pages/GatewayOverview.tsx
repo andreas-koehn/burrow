@@ -8,7 +8,8 @@ import { GatewayAddresses } from "@/components/GatewayAddresses";
 import { SetupChecklist, type ChecklistStep } from "@/components/SetupChecklist";
 import { useAuth } from "@/auth/useAuth";
 import { apiFetch, ApiError } from "@/lib/api";
-import { statusLabel } from "@/lib/status";
+import { providerState } from "@/lib/status";
+import { StatusBadge } from "@/components/StatusBadge";
 import { useRelayNotices } from "@/lib/useRelayNotices";
 import type { AiGatewayKey, AiModel, AiProvider, Budget, CostSummary, GatewayInfo } from "@/lib/contract";
 
@@ -21,18 +22,6 @@ function fmtInt(n: number): string {
 
 function fmtUsd(n: number): string {
   return `$${n.toFixed(2)}`;
-}
-
-/** Whether requests can reach the provider, in the words of the Providers page where it has them. */
-function reachability(p: AiProvider): { badge: string; text: string } {
-  // A hosted API has no client to be connected: it is ready once its credential is set.
-  if (p.kind === "direct") {
-    return p.credential_present
-      ? { badge: "status-connected", text: "ready" }
-      : { badge: "status-idle", text: "not configured" };
-  }
-  if (p.status === "Offline") return { badge: "status-offline", text: "client offline" };
-  return { badge: p.status === "Degraded" ? "status-degraded" : "status-connected", text: statusLabel(p.status) };
 }
 
 function budgetNotices(budgets: Budget[]): { id: string; variant: "error" | "warn"; message: string }[] {
@@ -144,7 +133,7 @@ export default function GatewayOverview() {
     {
       id: "request",
       title: "Send the first request",
-      description: "Point Claude Code, Codex or any OpenAI-compatible client at the gateway.",
+      description: "Point Claude Code, Codex or any OpenAI-compatible app at the gateway.",
       done: served,
       content: (
         <ConnectCard
@@ -212,16 +201,19 @@ export default function GatewayOverview() {
                   </tr>
                 </thead>
                 <tbody>
-                  {list.map((p) => {
-                    const reach = reachability(p);
-                    return (
-                      <tr key={p.slug}>
-                        <td className="col-name"><Link to={`/gateway/providers/${p.slug}`}>{p.name}</Link></td>
-                        <td><Badge kind={reach.badge}>{reach.text}</Badge></td>
-                        <td className="mono">{fmtInt(p.requests_24h)}</td>
-                      </tr>
-                    );
-                  })}
+                  {list.map((p) => (
+                    <tr key={p.slug}>
+                      <td className="col-name"><Link to={`/gateway/providers/${p.slug}`}>{p.name}</Link></td>
+                      <td>
+                        {/* The same words as the Providers page. */}
+                        <span className="row row-center gap-2">
+                          <StatusBadge state={providerState(p)} />
+                          {p.kind === "tunnel" && p.status === "Degraded" && <Badge kind="status-degraded">degraded</Badge>}
+                        </span>
+                      </td>
+                      <td className="mono">{fmtInt(p.requests_24h)}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>

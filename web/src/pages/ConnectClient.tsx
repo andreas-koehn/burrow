@@ -6,7 +6,8 @@ import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { clientNameError } from "@/lib/clientName";
 import { shellQuote } from "@/lib/shell";
-import { Button, FormField, FormFieldGroup, Input, Select, Badge, PageHeader, ErrorNotice } from "@/components/ds";
+import { Button, FormField, FormFieldGroup, Input, Select, PageHeader, ErrorNotice } from "@/components/ds";
+import { StatusBadge } from "@/components/StatusBadge";
 import { Toaster } from "@/components/ui/sonner";
 import { useAuth } from "@/auth/useAuth";
 import { InstallLines } from "@/components/InstallLines";
@@ -287,7 +288,7 @@ function ConnectForm({ endpoint }: { endpoint: string }) {
               {isAdmin ? (
                 connected && matched ? (
                   <span className="row row-center gap-2">
-                    <Badge kind="status-connected">connected</Badge>
+                    <StatusBadge state="online" />
                     <span>✓ <strong>{name}</strong> connected</span>
                     <Link to={`/clients/${matched.session_id}`}>View client</Link>
                   </span>

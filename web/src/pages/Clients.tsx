@@ -6,6 +6,7 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/auth/useAuth";
 import { formatBytes } from "@/lib/format";
 import { Input, Badge, PageHeader, SkeletonRows, Tabs } from "@/components/ds";
+import { StatusBadge } from "@/components/StatusBadge";
 import { ClientTokensPanel } from "@/components/ClientTokensPanel";
 import type { ClientDiscovery, ClientView } from "@/lib/contract";
 
@@ -85,10 +86,8 @@ function ClientList() {
                   </td>
                   <td className="col-created">{c.remote_addr}</td>
                   {/* P1-8 — every row of /clients comes from the live session
-                      registry, so presence in the list IS the "connected"
-                      signal. When the backend later exposes last_seen the
-                      column can show relative time for disconnected clients. */}
-                  <td><Badge kind="status-connected">connected</Badge></td>
+                      registry, so presence in the list is the "online" signal. */}
+                  <td><StatusBadge state="online" /></td>
                   <td><Link to={`/clients/${c.session_id}`} aria-label={`View ${c.service_count} services for ${c.token_name}`}><Badge kind="" nodot>{c.service_count}</Badge></Link></td>
                   <td className="col-created">↓{formatBytes(c.total_bytes_in)} ↑{formatBytes(c.total_bytes_out)}</td>
                   <td className="col-actions"><Link className="btn btn-secondary btn-sm" to={`/clients/${c.session_id}`}>View</Link></td>

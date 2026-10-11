@@ -89,7 +89,7 @@ describe("Requests page", () => {
     mount();
     await table();
     const picker = screen.getByRole("combobox", { name: "Service" });
-    expect(within(picker).getAllByRole("option").map((o) => o.textContent)).toEqual(["web", "ollama", "grafana"]);
+    expect(within(picker).getAllByRole("option").map((o) => o.textContent)).toEqual(["web", "ollama", "grafana", "llamacpp", "lmstudio"]);
     await userEvent.selectOptions(picker, "svc_ai001");
     expect(screen.getByTestId("path")).toHaveTextContent("/gateway/requests?service=svc_ai001");
     await waitFor(async () => expect(bodyRows(await table())).toHaveLength(2));

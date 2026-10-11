@@ -8,8 +8,10 @@ import { EMAIL_NOT_CONFIGURED } from "@/lib/copy";
 import type { AiGatewayKey, AiModel, AiProvider, Budget } from "@/lib/contract";
 import GatewayOverview from "./GatewayOverview";
 
+// Without `state`, as a relay that predates it answers; the page then falls back to the old fields.
 function provider(over: Partial<AiProvider>): AiProvider {
   return {
+    state: undefined as never, last_seen: null, last_client: "",
     slug: "ollama", name: "ollama", kind: "tunnel", api_format: "openai", service_id: "svc_ai001",
     base_url: "https://tunnels.example.com/ai/ollama/v1", upstream_base_url: "", credential_slot: "",
     credential_present: false, credential_slots: [], breaker_open: false, billing: "metered", supports_responses: false, max_concurrent: 0, in_use: 0, model_count: 0, model_alias: "fast", concrete_model: "llama3.1:8b",
@@ -79,25 +81,42 @@ describe("GatewayOverview", () => {
     expect(tiles(el).map((t) => t[0])).toEqual(["Requests 24h"]);
   });
 
-  it("lists every provider with a link, whether it is reachable, and its requests", async () => {
+  it("lists every provider with a link, its state in the words of the Providers page, and its requests", async () => {
+    withProviders([
+      provider({ slug: "ollama", name: "ollama", state: "online", requests_24h: 1024 }),
+      provider({ slug: "gone", name: "gone", state: "offline", status: "Offline", requests_24h: 0 }),
+      provider({ slug: "new", name: "new", state: "never_connected", status: "Offline", requests_24h: 0 }),
+      provider({ slug: "slow", name: "slow", state: "online", status: "Degraded", requests_24h: 3 }),
+      provider({ slug: "zai", name: "zai", kind: "direct", state: "ready", status: "Connected", credential_present: true, requests_24h: 7 }),
+      provider({ slug: "bare", name: "bare", kind: "direct", state: "not_configured", status: "Offline", credential_present: false, requests_24h: 0 }),
+    ]);
+    renderApp(<GatewayOverview />);
+    const table = await screen.findByRole("table", { name: "Providers" });
+    expect(rows()).toEqual([
+      ["ollama", "Online", "1,024"],
+      ["gone", "Offline", "0"],
+      ["new", "Never connected", "0"],
+      // Degraded is not a state of its own: it stays a second badge beside it.
+      ["slow", "Onlinedegraded", "3"],
+      ["zai", "Ready", "7"],
+      ["bare", "Not configured", "0"],
+    ]);
+    expect(within(table).getByText("Never connected")).toHaveClass("badge", "status-never");
+    expect(within(table).queryByText(/client offline/i)).toBeNull();
+    expect(screen.getByRole("link", { name: "zai" })).toHaveAttribute("href", "/gateway/providers/zai");
+    expect(screen.getByRole("columnheader", { name: "Requests (24h)" })).toBeInTheDocument();
+  });
+
+  it("falls back to the old fields on a relay that sends no state", async () => {
     withProviders([
       provider({ slug: "ollama", name: "ollama", requests_24h: 1024 }),
       provider({ slug: "gone", name: "gone", status: "Offline", requests_24h: 0 }),
-      provider({ slug: "slow", name: "slow", status: "Degraded", requests_24h: 3 }),
       provider({ slug: "zai", name: "zai", kind: "direct", status: "Connected", credential_present: true, requests_24h: 7 }),
       provider({ slug: "bare", name: "bare", kind: "direct", status: "Offline", credential_present: false, requests_24h: 0 }),
     ]);
     renderApp(<GatewayOverview />);
     await screen.findByRole("table", { name: "Providers" });
-    expect(rows()).toEqual([
-      ["ollama", "connected", "1,024"],
-      ["gone", "client offline", "0"],
-      ["slow", "degraded", "3"],
-      ["zai", "ready", "7"],
-      ["bare", "not configured", "0"],
-    ]);
-    expect(screen.getByRole("link", { name: "zai" })).toHaveAttribute("href", "/gateway/providers/zai");
-    expect(screen.getByRole("columnheader", { name: "Requests (24h)" })).toBeInTheDocument();
+    expect(rows().map((r) => r[1])).toEqual(["Online", "Offline", "Ready", "Not configured"]);
   });
 
   it("shows the gateway's two base URLs as copyable chips", async () => {

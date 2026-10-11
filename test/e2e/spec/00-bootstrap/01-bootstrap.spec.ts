@@ -15,8 +15,8 @@ test("01-bootstrap: login + all 4 seeded tunnels visible + connected", async ({ 
     const row = table.locator("tr").filter({ hasText: name });
     await expect(row, `${name} row visible`).toBeVisible({ timeout: 15_000 });
     await expect(
-      row.getByText("connected", { exact: true }),
-      `${name} connected`,
+      row.getByText("Online", { exact: true }),
+      `${name} online`,
     ).toBeVisible({ timeout: 15_000 });
   }
 

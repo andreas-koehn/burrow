@@ -22,6 +22,13 @@ describe("Client detail", () => {
     expect(within(svcTable).getByText(":9000")).toBeInTheDocument();
   });
 
+  it("writes the status of the live session out as Online", async () => {
+    mount();
+    await screen.findByRole("heading", { name: /office-box-1/i });
+    const header = document.querySelector(".page-header") as HTMLElement;
+    expect(within(header).getByText("Online")).toHaveClass("badge", "status-online");
+  });
+
   it("shows 'client not found' for an unknown id", async () => {
     renderApp(
       <Routes><Route path="/clients/:id" element={<ClientDetail />} /></Routes>,

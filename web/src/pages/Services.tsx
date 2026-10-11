@@ -12,6 +12,8 @@ import type { Service, AccessMode, ClientDetail, ClientView } from "@/lib/contra
 import { ServiceUrl } from "@/components/ServiceUrl";
 import { SlugField, slugError } from "@/components/SlugField";
 import { AccessModePanel, type AccessModePanelHandle } from "@/components/AccessModePanel";
+import { StatusBadge } from "@/components/StatusBadge";
+import { serviceState, type ServedState } from "@/lib/status";
 
 const ACCESS_LABEL: Record<AccessMode, string> = {
   open: "Open",
@@ -42,11 +44,14 @@ interface Row {
   key: string;
   name: string;
   type: string;
-  connected: boolean;
+  state: ServedState;
   haystack: string;
   service?: Service;
   tunnel?: Tunnel;
 }
+
+/** Sorting by status: what is served now comes first. */
+const STATE_ORDER: Record<ServedState, number> = { online: 0, offline: 1, never_connected: 2 };
 
 const SHOW = [{ value: "all", label: "All" }, { value: "live", label: "Live" }] as const;
 
@@ -173,12 +178,14 @@ export default function Services() {
       ? (tunnelList ?? []).map((t) => {
           const s = t.service_id ? byId.get(t.service_id) : undefined;
           return {
-            key: t.id, name: s?.name || t.name || s?.id || "", type: t.type, connected: t.connected, service: s, tunnel: t,
+            key: t.id, name: s?.name || t.name || s?.id || "", type: t.type, service: s, tunnel: t,
+            // A live tunnel is held by a client right now.
+            state: t.connected ? "online" as const : s ? serviceState(s) : "offline" as const,
             haystack: `${t.name} ${s?.name ?? ""} ${t.type} ${t.local_addr} ${s?.slug ?? ""} ${s?.url || t.url || ""}`,
           };
         })
       : services.map((s) => ({
-          key: s.id, name: s.name || s.id, type: s.type, connected: s.connected, service: s,
+          key: s.id, name: s.name || s.id, type: s.type, state: serviceState(s), service: s,
           haystack: `${s.name} ${s.type} ${s.slug ?? ""} ${s.url ?? ""}`,
         }));
     const f = q ? rows.filter((r) => r.haystack.toLowerCase().includes(q.toLowerCase())) : rows;
@@ -186,7 +193,7 @@ export default function Services() {
     return [...f].sort((a, b) => {
       let cmp = 0;
       if (sortKey === "type") cmp = a.type.localeCompare(b.type);
-      else if (sortKey === "status") cmp = Number(b.connected) - Number(a.connected);
+      else if (sortKey === "status") cmp = STATE_ORDER[a.state] - STATE_ORDER[b.state];
       if (cmp === 0) cmp = a.name.localeCompare(b.name);
       return cmp * sgn;
     });
@@ -372,7 +379,7 @@ export default function Services() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map(({ key, name, type, connected, service: s, tunnel: t }) => {
+              {filtered.map(({ key, name, type, state, service: s, tunnel: t }) => {
                 const serviceId = s?.id ?? t?.service_id;
                 const access = s?.access_mode ?? t?.access_mode ?? "open";
                 const holder = t ? holders.get(t.id) : undefined;
@@ -425,11 +432,9 @@ export default function Services() {
                   </>
                 )}
                 <td>
-                  {!connected
-                    ? <Badge kind="status-idle">idle</Badge>
-                    : live
-                      ? <Badge kind="status-connected">connected</Badge>
-                      : <Link to="/services?live=1" aria-label={`View live tunnel for ${name}`}><Badge kind="status-connected">connected</Badge></Link>}
+                  {state !== "online" || live
+                    ? <StatusBadge state={state} />
+                    : <Link to="/services?live=1" aria-label={`Online: view live tunnel for ${name}`}><StatusBadge state={state} /></Link>}
                 </td>
                 <td className="col-actions">
                   {target && <Button variant="secondary" size="sm" onClick={() => setConfigure(target)}>Configure</Button>}
@@ -477,7 +482,7 @@ export default function Services() {
       <Dialog
         open={newOpen}
         onOpenChange={(o) => { if (!o) closeNew(); }}
-        title={aiFlow ? "New AI service" : "New service"}
+        title={aiFlow ? "New service and provider" : "New service"}
         description={aiFlow
           ? "Creates a service with API-key access and registers it as a model provider, reachable through the AI gateway only."
           : "Pre-provision a service so a connecting client adopts the same id."}

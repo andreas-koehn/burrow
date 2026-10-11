@@ -16,7 +16,7 @@ describe("Cost & budgets (§4.24)", () => {
     mount();
     expect(
       await screen.findByText(
-        "Estimates from the pricing table shipped with Burrow v0.4. Operators can edit this table in Settings.",
+        "Estimates from the price table shipped with Burrow.",
       ),
     ).toBeInTheDocument();
   });

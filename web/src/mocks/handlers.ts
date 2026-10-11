@@ -1,7 +1,7 @@
 import { http, HttpResponse } from "msw";
 import { modelNameError } from "@/lib/modelNames";
-import { db, NO_MODES, type MockDb, type CacheSettingsPayload, type AiProviderRow } from "@/mocks/db";
-import type { AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, CostGroupBy, CostSummary, Dialect, DialectMode, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
+import { db, NO_MODES, type MockDb, type CacheSettingsPayload, type AiProviderRow, type ServiceRow } from "@/mocks/db";
+import type { AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, ClientView, CostGroupBy, CostSummary, Dialect, DialectMode, KnownClient, Service, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
 
 const json = (body: unknown, status = 200) => HttpResponse.json(body as object, { status });
 const err = (status: number, message: string) => HttpResponse.json({ error: message }, { status });
@@ -243,8 +243,29 @@ function providerVisible(p: AiProviderRow): boolean {
   return !!svc && (db.me.role === "admin" || svc.user_id === db.me.id);
 }
 
+// A service as the relay returns it: the stored row without its owner, with
+// the status the relay works out. Online while a client serves it, offline
+// when one served it before, never connected otherwise.
+function serviceWire(svc: ServiceRow): Omit<Service, "type"> & { type: ServiceRow["type"] } {
+  const { user_id: _u, last_seen, last_client, ...row } = svc;
+  // The session that holds the tunnel of the same name, as the relay matches them.
+  const holder = svc.connected
+    ? db.clients.find((c) => c.services.some((t) => t.name === svc.name && t.type === svc.type))
+    : undefined;
+  return {
+    ...row,
+    url: row.gateway_only ? "" : row.url,
+    status: svc.connected ? "online" : last_seen ? "offline" : "never_connected",
+    last_seen: last_seen ?? null,
+    last_client: holder?.token_name ?? last_client ?? "",
+    client_session_id: holder?.session_id ?? "",
+    provider_slug: db.aiProviders.find((p) => p.kind === "tunnel" && p.service_id === svc.id)?.slug ?? "",
+  };
+}
+
 function providerView(p: AiProviderRow): AiProvider {
   const meta = db.aiMeta[p.service_id];
+  const backing = db.services.find((s) => s.id === p.service_id);
   // The first synthetic model that targets the provider, as the server reports it.
   const model = db.aiModels.find((m) => m.targets.some((t) => t.provider === p.slug));
   const target = model?.targets.find((t) => t.provider === p.slug);
@@ -287,6 +308,13 @@ function providerView(p: AiProviderRow): AiProvider {
     // A direct provider has no tunnel: it is usable when its slots are set.
     status: direct ? (present ? "Connected" : "Offline") : meta?.status ?? "Offline",
     client_session_id: meta?.client_session_id ?? "",
+    // A tunnel provider is online with its client (aiMeta, as `status`);
+    // without one, whether a client served its backing service before decides.
+    state: direct
+      ? (present ? "ready" : "not_configured")
+      : (meta?.status ?? "Offline") !== "Offline" ? "online" : backing?.last_seen ? "offline" : "never_connected",
+    last_seen: direct ? null : backing?.last_seen ?? null,
+    last_client: direct ? "" : backing?.last_client ?? "",
   };
 }
 
@@ -592,6 +620,45 @@ export const handlers = [
     return json(db.clients.map(({ services: _services, ...v }) => v));
   }),
   http.get("/api/v1/clients/connect-info", ({ request }) => gate(request) ?? json({ server: db.connectServer })),
+  // Registered before /clients/:id so the literal segment wins.
+  // One row per client token: online with its live sessions, offline with the
+  // last session the relay remembers, or never connected.
+  http.get("/api/v1/clients/known", ({ request }) => {
+    const g = gate(request, { admin: true }); if (g) return g;
+    const live = (name: string) => db.clients.filter((c) => c.token_name === name);
+    const row = (tokenId: string, name: string): KnownClient => {
+      const sessions = live(name);
+      const last = db.clientLastSessions[tokenId];
+      const newest = sessions[0];
+      const views: ClientView[] = sessions.map(({ services: _services, ...v }) => v);
+      if (newest) {
+        return {
+          token_id: tokenId, token_name: name, user_id: newest.user_id, status: "online",
+          last_seen: last?.last_seen ?? new Date().toISOString(),
+          os: newest.os, arch: newest.arch, client_version: newest.client_version, remote_addr: newest.remote_addr,
+          served: [...new Set(sessions.flatMap((c) => c.services.map((s) => s.name)))].sort(),
+          sessions: views,
+        };
+      }
+      return {
+        token_id: tokenId, token_name: name, user_id: db.me.id,
+        status: last ? "offline" : "never_connected",
+        last_seen: last?.last_seen ?? null,
+        os: last?.os ?? "", arch: last?.arch ?? "", client_version: last?.client_version ?? "", remote_addr: last?.remote_addr ?? "",
+        served: [...(last?.served ?? [])].sort(),
+        sessions: [],
+      };
+    };
+    const rows = db.tokens.map((t) => row(t.id, t.name));
+    // A live session whose token was revoked meanwhile keeps its row, without a token id.
+    const revoked = [...new Set(db.clients.map((c) => c.token_name))].filter((n) => !db.tokens.some((t) => t.name === n));
+    rows.push(...revoked.map((n) => row("", n)));
+    const rank = { online: 0, offline: 1, never_connected: 2 } as const;
+    rows.sort((a, b) =>
+      rank[a.status] - rank[b.status]
+      || (a.status === "offline" ? (b.last_seen ?? "").localeCompare(a.last_seen ?? "") : a.token_name.localeCompare(b.token_name)));
+    return json(rows);
+  }),
   // Public: a client asks before it has a token.
   http.get("/api/v1/client/discovery", () => json(db.discovery)),
 
@@ -655,7 +722,7 @@ export const handlers = [
     const rows = (db.me.role === "admin"
       ? db.services
       : db.services.filter((s) => s.user_id === db.me.id)).filter((s) => s.type !== "direct");
-    return json(rows.map(({ user_id: _u, ...s }) => ({ ...s, url: s.gateway_only ? "" : s.url })));
+    return json(rows.map(serviceWire));
   }),
   // Registered before /services/:id so the literal segment wins.
   http.get("/api/v1/services/slug-suggestion", ({ request }) =>
@@ -664,10 +731,8 @@ export const handlers = [
     const g = gate(request); if (g) return g;
     const svc = db.services.find((s) => s.id === params.id);
     if (!svc) return err(404, "service not found");
-    const { user_id: _u, ...wire } = svc;
     return json({
-      ...wire,
-      url: wire.gateway_only ? "" : wire.url,
+      ...serviceWire(svc),
       api_key_count: (db.serviceApiKeys[svc.id] ?? []).length,
       access_policy: db.serviceAccessPolicy[svc.id] ?? [],
     });

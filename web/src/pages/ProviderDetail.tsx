@@ -13,6 +13,8 @@ import { ProviderModelsPanel } from "@/components/ProviderModelsPanel";
 import { ProviderConcurrencySetting, ProviderResponsesSetting, ProviderUpstreamPanel } from "@/components/ProviderUpstreamPanel";
 import { useAuth } from "@/auth/useAuth";
 import { providerBaseUrl } from "@/lib/serviceUrl";
+import { providerState } from "@/lib/status";
+import { StatusBadge } from "@/components/StatusBadge";
 import type {
   AiProvider, AiProviderModel, Service, ServiceAIConfig,
 } from "@/lib/contract";
@@ -257,6 +259,7 @@ export default function ProviderDetail() {
         subtitle={SUBTITLE}
         actions={
           <>
+            <StatusBadge state={providerState(provider.data)} />
             {isAdmin && (
               <Button variant="secondary" size="sm" onClick={() => setRenameOpen(true)}>
                 Rename
@@ -282,7 +285,6 @@ export default function ProviderDetail() {
                 </button>
               }
               items={[
-                { label: "Rotate cache", onSelect: () => clearCache.mutate() },
                 { label: "Clear cache", onSelect: () => clearCache.mutate() },
                 { label: "Export logs (NDJSON)", onSelect: () => { void apiFetch(`/services/${id}/inspector/export?format=ndjson`); } },
                 ...(isAdmin

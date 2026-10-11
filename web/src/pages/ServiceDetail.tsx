@@ -8,6 +8,8 @@ import { EditSlugDialog } from "@/components/EditSlugDialog";
 import { AccessModePanel } from "@/components/AccessModePanel";
 import { ApiKeysPanel } from "@/components/ApiKeysPanel";
 import { UpstreamCredentialsPanel } from "@/pages/UpstreamCredentials";
+import { StatusBadge } from "@/components/StatusBadge";
+import { serviceState } from "@/lib/status";
 import type { ServiceDetail as ServiceDetailType, AccessMode, AiProvider } from "@/lib/contract";
 
 const ACCESS_LABEL: Record<AccessMode, string> = {
@@ -116,9 +118,7 @@ export default function ServiceDetail() {
         <Badge kind={`access-${svc.access_mode}`} nodot>
           {ACCESS_LABEL[svc.access_mode]}
         </Badge>
-        {svc.connected
-          ? <Badge kind="status-connected">connected</Badge>
-          : <Badge kind="status-idle">idle</Badge>}
+        <StatusBadge state={serviceState(svc)} />
       </div>
 
       {showGatewaySwitch && (

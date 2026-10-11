@@ -12,8 +12,8 @@ test("22-clients: all 3 seeded clients visible + connected", async ({ page }) =>
     const row = table.locator("tr").filter({ hasText: name });
     await expect(row, `${name} row visible`).toBeVisible({ timeout: 10_000 });
     await expect(
-      row.getByText("connected", { exact: true }),
-      `${name} connected`,
+      row.getByText("Online", { exact: true }),
+      `${name} online`,
     ).toBeVisible({ timeout: 10_000 });
   }
 });

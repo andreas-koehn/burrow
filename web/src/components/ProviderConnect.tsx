@@ -29,7 +29,7 @@ export function ProviderConnect({ baseUrl, exampleModel }: ProviderConnectProps)
     <section className="card provider-connect" aria-labelledby={titleId}>
       <h2 id={titleId}>Connect a client</h2>
       <p className="muted small">
-        Use this as the base URL of any OpenAI-compatible client, with one of this provider's API keys.
+        Use this as the base URL of any OpenAI-compatible app, with one of this provider's API keys.
       </p>
       <div className="row row-center gap-2 service-url">
         <code className="mono service-url-path">{baseUrl}</code>

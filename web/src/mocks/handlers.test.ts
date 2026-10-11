@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { addDirectProvider, db, resetDb } from "@/mocks/db";
-import type { AiModel } from "@/lib/contract";
+import type { AiModel, AiProvider, KnownClient, Service } from "@/lib/contract";
 import "@/mocks/server"; // installed via test setup; import asserts module loads
 
 const CSRF = "test-csrf-token";
@@ -94,6 +94,87 @@ describe("MSW handlers (contract fidelity)", () => {
   });
 });
 
+describe("MSW status fields mirror the API", () => {
+  beforeEach(() => { resetDb(); document.cookie = `burrow_csrf=${CSRF}; path=/`; });
+
+  it("GET /services has one row of each status, with the fields that go with it", async () => {
+    const list: Service[] = await (await fetch("/api/v1/services", authed("GET"))).json();
+    const by = (id: string) => list.find((s) => s.id === id)!;
+    expect(new Set(list.map((s) => s.status))).toEqual(new Set(["online", "offline", "never_connected"]));
+    // connected is true exactly while the status is online.
+    for (const s of list) expect(s.connected).toBe(s.status === "online");
+    expect(by("svc_ai001")).toMatchObject({
+      status: "online", last_client: "office-box-1", client_session_id: "sess_4f7a9c0b2e81", provider_slug: "ollama",
+    });
+    expect(by("svc_graf01")).toMatchObject({
+      status: "offline", last_seen: "2026-05-16T17:30:00Z", last_client: "office-box-1", client_session_id: "", provider_slug: "",
+    });
+    expect(by("svc_lms001")).toMatchObject({
+      status: "never_connected", last_seen: null, last_client: "", client_session_id: "", provider_slug: "lmstudio",
+    });
+    expect(list.every((s) => !("user_id" in s))).toBe(true);
+  });
+
+  it("GET /services/:id carries the same fields", async () => {
+    const s = await (await fetch("/api/v1/services/svc_llama01", authed("GET"))).json();
+    expect(s).toMatchObject({ status: "offline", connected: false, provider_slug: "llamacpp", api_key_count: 0 });
+    expect(s.last_seen).toEqual(expect.any(String));
+  });
+
+  it("GET /ai/providers has one row of each state", async () => {
+    const list: AiProvider[] = await (await fetch("/api/v1/ai/providers", authed("GET"))).json();
+    expect(Object.fromEntries(list.map((p) => [p.slug, p.state]))).toEqual({
+      ollama: "online", llamacpp: "offline", lmstudio: "never_connected",
+      "openai-team": "ready", zai: "not_configured", "zai-anthropic": "not_configured",
+    });
+    const by = (slug: string) => list.find((p) => p.slug === slug)!;
+    expect(by("llamacpp")).toMatchObject({ status: "Offline", last_seen: "2026-05-12T11:45:00Z", last_client: "office-box-1" });
+    expect(by("lmstudio")).toMatchObject({ status: "Offline", last_seen: null, last_client: "" });
+    // A direct provider has no client: nothing was seen, whatever its state.
+    expect(by("openai-team")).toMatchObject({ status: "Connected", last_seen: null, last_client: "" });
+  });
+
+  it("GET /clients/known: one row per token, online first, then offline, then never connected", async () => {
+    db.tokens.push(
+      { id: "tok_2", name: "gpu-box", last_used: "2026-05-12T11:45:00Z", created_at: "2026-05-02T08:00:00Z" },
+      { id: "tok_3", name: "new-laptop", last_used: null, created_at: "2026-05-03T08:00:00Z" },
+    );
+    db.clientLastSessions.tok_2 = {
+      last_seen: "2026-05-12T11:45:00Z", os: "linux", arch: "arm64", client_version: "0.2.0",
+      remote_addr: "198.51.100.9:40000", served: ["llamacpp"],
+    };
+    const r = await fetch("/api/v1/clients/known", authed("GET"));
+    expect(r.status).toBe(200);
+    const rows: KnownClient[] = await r.json();
+    expect(rows.map((c) => [c.token_name, c.status])).toEqual([
+      ["office-box-1", "online"], ["gpu-box", "offline"], ["new-laptop", "never_connected"],
+    ]);
+    expect(rows[0]).toMatchObject({
+      token_id: "tok_1", os: "linux", arch: "amd64", served: ["ollama", "web-staging"],
+      sessions: [expect.objectContaining({ session_id: "sess_4f7a9c0b2e81", service_count: 2 })],
+    });
+    expect(rows[0]!.sessions[0]).not.toHaveProperty("services");
+    expect(rows[1]).toMatchObject({ last_seen: "2026-05-12T11:45:00Z", arch: "arm64", served: ["llamacpp"], sessions: [] });
+    expect(rows[2]).toEqual({
+      token_id: "tok_3", token_name: "new-laptop", user_id: db.me.id, status: "never_connected", last_seen: null,
+      os: "", arch: "", client_version: "", remote_addr: "", served: [], sessions: [],
+    });
+  });
+
+  it("GET /clients/known keeps a live session whose token was revoked, without a token id", async () => {
+    db.tokens = [];
+    const rows: KnownClient[] = await (await fetch("/api/v1/clients/known", authed("GET"))).json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ token_id: "", token_name: "office-box-1", status: "online" });
+  });
+
+  it("GET /clients/known is admin only, like GET /clients", async () => {
+    db.me = { ...db.me, role: "user" };
+    expect((await fetch("/api/v1/clients/known", authed("GET"))).status).toBe(403);
+    expect((await fetch("/api/v1/clients", authed("GET"))).status).toBe(403);
+  });
+});
+
 describe("MSW redaction rule handlers mirror the API's errors", () => {
   beforeEach(() => { resetDb(); document.cookie = `burrow_csrf=${CSRF}; path=/`; });
   const post = (b: object) =>
@@ -161,7 +242,7 @@ describe("MSW provider handlers mirror the API", () => {
       expect(msg).toBe('unknown field "api_key"; the credential is set on the relay, credential_slot names its slot');
       expect(msg).not.toContain("sk-secret");
     }
-    expect(db.aiProviders.map((p) => p.slug)).toEqual(["ollama", "zai", "zai-anthropic"]);
+    expect(db.aiProviders.map((p) => p.slug)).toEqual(["ollama", "zai", "zai-anthropic", "llamacpp", "lmstudio", "openai-team"]);
   });
 
   it("POST /ai/providers kind direct: creates the provider with a hidden backing service", async () => {
@@ -309,7 +390,7 @@ describe("MSW provider handlers mirror the API", () => {
     expect([used.status, (await used.json()).error]).toEqual([409, "provider is used by model(s): burrow-simple"]);
     db.aiModels = db.aiModels.filter((m) => m.name !== "burrow-simple");
     expect((await fetch("/api/v1/ai/providers/ollama", authed("DELETE"))).status).toBe(204);
-    expect(db.aiProviders.map((p) => p.slug)).toEqual(["zai", "zai-anthropic"]);
+    expect(db.aiProviders.map((p) => p.slug)).toEqual(["zai", "zai-anthropic", "llamacpp", "lmstudio", "openai-team"]);
     expect(db.services.some((x) => x.id === "svc_ai001")).toBe(true);
   });
 });

@@ -2,14 +2,14 @@ import { test, expect } from "@playwright/test";
 
 // Phase 5: AI gateway actionable — guided create-service flow.
 //
-// Flow: /gateway/providers → click "New AI service" → Services page "New AI
+// Flow: /gateway/providers → click "New service and provider" → Services page "New AI
 // service" dialog opens (access mode fixed to API key, no picker) → fill
 // service_id → "Create and continue" → the service is created and registered
 // as a provider → navigate to /gateway/providers/<slug>.
 //
 // This spec runs against the REAL built burrowd (no MSW). It navigates
 // directly to /services?new=ai to exercise the auto-open flow on its own; the
-// "New AI service" button on the Providers page is covered by RTL.
+// "New service and provider" button on the Providers page is covered by RTL.
 
 test.use({ storageState: "playwright-auth.json" });
 
@@ -17,13 +17,13 @@ test.use({ storageState: "playwright-auth.json" });
 // shared embedded-burrowd session even if two POSTs land in the same millisecond.
 let svcSeq = 0;
 
-test("P5: ?new=ai auto-opens the New AI service dialog without an access-mode picker", async ({ page }) => {
+test("P5: ?new=ai auto-opens the New service and provider dialog without an access-mode picker", async ({ page }) => {
   await page.goto("/services?new=ai");
 
   // The create dialog should auto-open
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("heading", { name: "New AI service" })).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "New service and provider" })).toBeVisible();
 
   // Access mode is fixed to API key for AI services: no picker is offered
   await expect(dialog.getByRole("combobox", { name: /access mode/i })).toHaveCount(0);

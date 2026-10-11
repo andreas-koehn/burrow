@@ -74,7 +74,7 @@ describe("ModelDialog", () => {
   it("offers each format only the providers that speak it", async () => {
     renderDialog();
     expect(await listOptions("Provider", await group("Anthropic format"))).toEqual(["Not served", "zai-anthropic"]);
-    expect(await listOptions("Provider", await group("OpenAI format"))).toEqual(["Not served", "ollama", "zai"]);
+    expect(await listOptions("Provider", await group("OpenAI format"))).toEqual(["Not served", "ollama", "zai", "llamacpp", "lmstudio", "openai-team"]);
   });
 
   it("accepts one format and requires at least one", async () => {
@@ -359,7 +359,7 @@ describe("ModelDialog", () => {
     expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
     expect(screen.getByText("Every target needs a provider and a model. Remove the ones you do not need.")).toBeInTheDocument();
     // A fallback target is removed, not switched to "Not served".
-    expect(await listOptions("Provider", screen.getByRole("group", { name: "OpenAI format, target 2" }))).toEqual(["ollama", "zai"]);
+    expect(await listOptions("Provider", screen.getByRole("group", { name: "OpenAI format, target 2" }))).toEqual(["ollama", "zai", "llamacpp", "lmstudio", "openai-team"]);
   });
 
   it("offers the rate-limit option and the timeouts under Advanced", async () => {

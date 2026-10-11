@@ -36,10 +36,11 @@ describe("Automation tokens", () => {
   });
 
   // P4.3 — reciprocal hint
-  it("renders the 'not tunneling agents' hint text (P4.3)", () => {
+  it("says these tokens are for scripts, not clients (P4.3)", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }) as Response);
     mount();
-    expect(screen.getByText(/not tunneling agents/i)).toBeInTheDocument();
+    const hint = screen.getByText(/These authenticate scripts, not clients\./);
+    expect(hint).toHaveTextContent("These authenticate scripts, not clients. To connect a machine that runs burrow, use Client tokens.");
   });
 
   it("renders Client tokens cross-link pointing to the Tokens tab of Clients (P4.3)", () => {

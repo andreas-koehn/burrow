@@ -116,14 +116,14 @@ describe("CLEAR — information architecture & labelling", () => {
     expect((await screen.findByRole("note")).textContent).toContain("saved configuration");
   });
 
-  it("Clr-4: Providers page with no providers renders a 'New AI service' CTA button (admin)", async () => {
+  it("Clr-4: Providers page with no providers renders a 'New service and provider' CTA button (admin)", async () => {
     // Override /ai/providers to return an empty list
     server.use(
       http.get("/api/v1/ai/providers", () => HttpResponse.json([])),
     );
     renderApp(<Providers />, "/gateway/providers");
     // The PageHeader renders the button for admin.
-    const btns = await screen.findAllByRole("button", { name: "New AI service" });
+    const btns = await screen.findAllByRole("button", { name: "New service and provider" });
     expect(btns.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -182,13 +182,13 @@ describe("EASY — onboarding & discoverability", () => {
       expect(btn).toBeDefined();
     });
 
-    it("Providers page with no providers (admin) has a 'New AI service' button", async () => {
+    it("Providers page with no providers (admin) has a 'New service and provider' button", async () => {
       server.use(
         http.get("/api/v1/ai/providers", () => HttpResponse.json([])),
       );
       renderApp(<Providers />, "/gateway/providers");
       // The PageHeader renders the button for admin.
-      const btns = await screen.findAllByRole("button", { name: /^New AI service$/i });
+      const btns = await screen.findAllByRole("button", { name: /^New service and provider$/i });
       expect(btns.length).toBeGreaterThanOrEqual(1);
     });
 

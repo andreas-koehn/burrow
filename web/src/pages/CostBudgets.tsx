@@ -223,7 +223,7 @@ export default function CostBudgets() {
     <div className="cost-page">
       <PageHeader
         title="Cost & budgets"
-        subtitle="Estimates from the pricing table shipped with Burrow v0.4. Operators can edit this table in Settings."
+        subtitle="Estimates from the price table shipped with Burrow."
         actions={<Button variant="secondary" size="sm" onClick={() => { void apiFetch("/cost/export?format=ndjson&window=month"); }}>Export cost report</Button>}
       />
 

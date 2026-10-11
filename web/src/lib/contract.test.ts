@@ -1,7 +1,7 @@
 import { describe, it, expect, expectTypeOf } from "vitest";
 import type {
   UserAdmin, UsersPage, RoleSummary, RoleDetail, Session,
-  ClientView, ClientDetail, ServiceView, SettingsMap, AccessMode,
+  ClientView, ClientDetail, KnownClient, ServiceView, SettingsMap, AccessMode,
   Service, ServiceDetail, ServiceApiKey, AccessPolicy, CreatedApiKey,
   AiProvider, ServiceAIConfig, UsageEvent, RateLimit, Budget, PricingTable,
   PricingEntry, InspectorEntry, AuditEvent, AuditFingerprint, Webhook,
@@ -45,7 +45,10 @@ describe("contract", () => {
       url: "https://tunnels.example.com/svc/k7p2qx/", access_mode: "open",
       api_key_header: "Authorization", gateway_only: false, connected: true,
       remote_port: 0, local_addr: "127.0.0.1:3000",
+      status: "online", last_seen: "2026-10-11T08:00:00Z", last_client: "office-box-1",
+      client_session_id: "sess_abc", provider_slug: "",
     };
+    expectTypeOf(s.status).toEqualTypeOf<"online" | "offline" | "never_connected">();
     expectTypeOf(s.access_mode).toEqualTypeOf<"open" | "api_key" | "burrow_login" | "mtls">();
     const d: ServiceDetail = { ...s, api_key_count: 2, access_policy: ["user"] };
     const k: ServiceApiKey = { id: "k1", name: "ci", last_used: null, created_at: "2026-05-19T00:00:00Z" };
@@ -61,8 +64,15 @@ describe("contract", () => {
       upstream_base_url: "", credential_slot: "", credential_present: false, credential_slots: [], breaker_open: false, billing: "metered", supports_responses: false, max_concurrent: 0, in_use: 0, model_count: 0,
       concrete_model: "llama3.1:8b", backend_type: "ollama",
       api_key_count: 2, requests_24h: 1024, cache_hits_24h: 200,
-      latency_p95_ms: 1200, status: "Connected", client_session_id: "sess_abc",
+      latency_p95_ms: 1200, status: "Connected", client_session_id: "",
+      state: "online", last_seen: "2026-10-11T08:00:00Z", last_client: "office-box-1",
     };
+    expectTypeOf(ai.state).toEqualTypeOf<"online" | "offline" | "never_connected" | "ready" | "not_configured">();
+    const known: KnownClient = {
+      token_id: "tok_1", token_name: "office-box-1", user_id: "u1", status: "never_connected", last_seen: null,
+      os: "", arch: "", client_version: "", remote_addr: "", served: [], sessions: [],
+    };
+    expect(known.sessions).toEqual([]);
     const cache: CacheSettings = { enabled: false, applies_per: "per_endpoint", ttl_seconds: 600, max_entries: 1000, max_per_entry_kb: 64 };
     const red: RedactionSettings = { enabled: false, redact_for_logs_only: false, rule_ids: [], presidio_enabled: false };
     const gr: GuardrailSettings = { enabled: false, action: "log_only" };
