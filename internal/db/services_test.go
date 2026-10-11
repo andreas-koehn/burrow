@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mustUser inserts a users row for the given ID (e-mail derived from id).
@@ -385,5 +386,212 @@ func checkServiceGatewayOnly(t *testing.T, x *DB, userID string) {
 	}
 	if err := x.SetServiceGatewayOnly(ctx, "missing", true); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing err = %v", err)
+	}
+}
+
+// freshServiceUser creates the user anew: deleting a user deletes its
+// services. A database that outlives the test run (Postgres) keeps them.
+func freshServiceUser(t *testing.T, x *DB, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	_ = x.DeleteUser(ctx, userID)
+	mustUser(t, x, userID)
+	t.Cleanup(func() { _ = x.DeleteUser(ctx, userID) })
+}
+
+func TestServiceNeverSeen(t *testing.T) { checkServiceNeverSeen(t, testDB(t), "u-never-seen") }
+
+func checkServiceNeverSeen(t *testing.T, x *DB, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	freshServiceUser(t, x, userID)
+	s, err := x.GetOrCreateService(ctx, userID, "web", "http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.LastSeen != nil || s.LastClient != "" {
+		t.Fatalf("a new service: LastSeen = %v, LastClient = %q, want nil and \"\"", s.LastSeen, s.LastClient)
+	}
+	// A row inserted by the admin API reads the same.
+	if err := x.CreateService(ctx, Service{ID: "svc-" + userID, UserID: userID, Name: "api", Type: "http", AccessMode: "open"}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := x.GetServiceByID(ctx, "svc-"+userID)
+	if err != nil || created.LastSeen != nil || created.LastClient != "" {
+		t.Fatalf("a created service: %v %+v", err, created)
+	}
+}
+
+func TestTouchServiceLastSeen(t *testing.T) { checkTouchServiceLastSeen(t, testDB(t), "u-seen") }
+
+func checkTouchServiceLastSeen(t *testing.T, x *DB, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	freshServiceUser(t, x, userID)
+	s, err := x.GetOrCreateService(ctx, userID, "web", "http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := x.GetOrCreateService(ctx, userID, "other", "http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := "sub-" + userID
+	if err := x.SetServiceSubdomain(ctx, s.ID, sub); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := x.TouchServiceLastSeen(ctx, s.ID, "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	seen := func(what string, got Service, err error, client string) {
+		t.Helper()
+		if err != nil || got.ID != s.ID || got.LastClient != client {
+			t.Fatalf("%s: %v %+v, want LastClient %q", what, err, got, client)
+		}
+		if got.LastSeen == nil || time.Since(*got.LastSeen) > time.Second || time.Until(*got.LastSeen) > time.Second {
+			t.Fatalf("%s: LastSeen = %v, want within a second of now", what, got.LastSeen)
+		}
+	}
+	// Every read of a service holds the two columns.
+	byID, err := x.GetServiceByID(ctx, s.ID)
+	seen("by id", byID, err, "laptop")
+	bySub, err := x.GetServiceBySubdomain(ctx, sub)
+	seen("by subdomain", bySub, err, "laptop")
+	again, err := x.GetOrCreateService(ctx, userID, "web", "http")
+	seen("get or create", again, err, "laptop")
+	mine, err := x.ListServicesByUser(ctx, userID)
+	if err != nil || len(mine) != 2 {
+		t.Fatalf("list by user: %v %+v", err, mine)
+	}
+	all, err := x.ListAllServices(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, list := range [][]Service{mine, all} {
+		found := false
+		for _, sv := range list {
+			switch sv.ID {
+			case s.ID:
+				found = true
+				seen("list", sv, nil, "laptop")
+			case other.ID:
+				// The service beside it was not touched.
+				if sv.LastSeen != nil || sv.LastClient != "" {
+					t.Fatalf("the other service was stamped: %+v", sv)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("the service is missing from a list: %+v", list)
+		}
+	}
+
+	// A second touch by another client replaces last_client and moves last_seen on.
+	first := *byID.LastSeen
+	time.Sleep(5 * time.Millisecond)
+	if err := x.TouchServiceLastSeen(ctx, s.ID, "desktop"); err != nil {
+		t.Fatal(err)
+	}
+	byID, err = x.GetServiceByID(ctx, s.ID)
+	seen("after the second touch", byID, err, "desktop")
+	if !byID.LastSeen.After(first) {
+		t.Fatalf("LastSeen did not move on: %v then %v", first, byID.LastSeen)
+	}
+}
+
+func TestTouchServiceLastSeenUnknown(t *testing.T) {
+	checkTouchServiceLastSeenUnknown(t, testDB(t), "u-seen-unknown")
+}
+
+func checkTouchServiceLastSeenUnknown(t *testing.T, x *DB, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	freshServiceUser(t, x, userID)
+	s, err := x.GetOrCreateService(ctx, userID, "web", "http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := x.TouchServiceLastSeen(ctx, s.ID+"-missing", "laptop"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown service err = %v, want ErrNotFound", err)
+	}
+	got, err := x.GetServiceByID(ctx, s.ID)
+	if err != nil || got.LastSeen != nil || got.LastClient != "" {
+		t.Fatalf("a touch of an unknown service must write nothing: %v %+v", err, got)
+	}
+}
+
+// What migration 0027 adds, checked on both engines.
+var migration0027Columns = []string{"last_seen", "last_client"}
+
+func TestMigrate0027Schema(t *testing.T) {
+	x := testDB(t)
+	for _, c := range migration0027Columns {
+		var n int
+		if err := x.DB().QueryRow(`SELECT COUNT(*) FROM pragma_table_info('services') WHERE name=?`, c).Scan(&n); err != nil || n != 1 {
+			t.Errorf("column services.%s missing (n=%d, err=%v)", c, n, err)
+		}
+	}
+}
+
+// The SQLite and the Postgres file of migration 0027 hold the same
+// statements; only the path in the first comment line and the type of
+// last_seen differ.
+func TestMigration0027_PairIsIdentical(t *testing.T) {
+	body := func(name string) string {
+		raw, err := migrationFS.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, rest, _ := strings.Cut(string(raw), "\n")
+		return rest
+	}
+	a := body("0027_v0.10.0_service_last_seen.sql")
+	b := strings.Replace(body("0027_v0.10.0_service_last_seen.postgres.sql"), "TIMESTAMPTZ;", "TIMESTAMP;", 1)
+	if a != b || !strings.Contains(a, "-- +goose Down") {
+		t.Fatalf("the pair differs or has no Down block:\n%s\n---\n%s", a, b)
+	}
+}
+
+func TestMigration0027_DownAndUp(t *testing.T) {
+	checkMigration0027DownAndUp(t, testDB(t), "0027_v0.10.0_service_last_seen.sql", "u-mig27")
+}
+
+// checkMigration0027DownAndUp runs the Down block and the Up block again: Up
+// only succeeds when Down removed both columns, and a service that was there
+// before reads as never seen. Everything happens in one transaction that is
+// rolled back, so a database shared with other tests never shows the schema
+// without the columns.
+func checkMigration0027DownAndUp(t *testing.T, x *DB, file, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	raw, err := migrationFS.ReadFile("migrations/" + file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, down, found := strings.Cut(string(raw), "-- +goose Down")
+	if !found || strings.TrimSpace(down) == "" {
+		t.Fatalf("%s has no Down block", file)
+	}
+	freshServiceUser(t, x, userID)
+
+	tx, err := x.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, down); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO services(id, user_id, name, type) VALUES(?,?,?,?)`,
+		"svc-"+userID, userID, "old", "http"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, upBlock(string(raw))); err != nil {
+		t.Fatalf("up after down (a column the Down block left behind fails here): %v", err)
+	}
+	s, err := scanService(tx.QueryRowContext(ctx, `SELECT `+selectServiceCols+` FROM services WHERE id=?`, "svc-"+userID))
+	if err != nil || s.LastSeen != nil || s.LastClient != "" {
+		t.Fatalf("old service: %v %+v, want never seen", err, s)
 	}
 }

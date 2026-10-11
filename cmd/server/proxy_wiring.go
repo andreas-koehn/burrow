@@ -513,6 +513,7 @@ func (a proxyDialerAdapter) DialTunnelStreamByServiceID(ctx context.Context, ser
 type httpTunnelSource interface {
 	HTTPTunnels() []*server.Tunnel
 	SnapshotSessions() []server.SessionSnapshot
+	LookupSessionByTunnelID(tunnelID string) (sessionID, userID string, ok bool)
 }
 
 // liveTunnelLookupAdapter exposes the in-memory tunnel registry to the HTTP API
@@ -524,13 +525,17 @@ type liveTunnelLookupAdapter struct {
 
 // LookupByServiceID implements api.LiveTunnelLookup.
 // Returns the first HTTP tunnel with matching ServiceID; ok=false when absent.
+// SessionID names the session that owns the tunnel ("" when it left the
+// registry between the two reads).
 func (a liveTunnelLookupAdapter) LookupByServiceID(serviceID string) (api.LiveTunnelSnapshot, bool) {
 	for _, tn := range a.srv.HTTPTunnels() {
 		if tn.ServiceID == serviceID {
+			sessionID, _, _ := a.srv.LookupSessionByTunnelID(tn.ID)
 			return api.LiveTunnelSnapshot{
 				LocalAddr:  tn.LocalAddr,
 				Connected:  true,
 				RemotePort: tn.RemotePort, // 0 for http tunnels
+				SessionID:  sessionID,
 			}, true
 		}
 	}

@@ -237,12 +237,12 @@ func TestMigrateDriverFilter(t *testing.T) {
 		}
 	}
 
-	// Expect exactly 25 SQLite files and 25 Postgres files.
-	if len(sqliteFiles) != 25 {
-		t.Errorf("want 25 sqlite migration files, got %d: %v", len(sqliteFiles), sqliteFiles)
+	// Expect exactly 26 SQLite files and 26 Postgres files.
+	if len(sqliteFiles) != 26 {
+		t.Errorf("want 26 sqlite migration files, got %d: %v", len(sqliteFiles), sqliteFiles)
 	}
-	if len(postgresFiles) != 25 {
-		t.Errorf("want 25 postgres migration files, got %d: %v", len(postgresFiles), postgresFiles)
+	if len(postgresFiles) != 26 {
+		t.Errorf("want 26 postgres migration files, got %d: %v", len(postgresFiles), postgresFiles)
 	}
 
 	// Each SQLite file must have a matching postgres twin.
@@ -369,6 +369,16 @@ func TestMigrationParitySQLiteAndPostgres(t *testing.T) {
 			c,
 		).Scan(&n); err != nil || n != 1 {
 			t.Errorf("postgres: column client_tokens.%s missing (n=%d, err=%v)", c, n, err)
+		}
+	}
+	// 0027: the columns TestMigrate0027Schema checks on SQLite.
+	for _, c := range migration0027Columns {
+		var n int
+		if err := pgDB.QueryRow(
+			`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='services' AND column_name=$1`,
+			c,
+		).Scan(&n); err != nil || n != 1 {
+			t.Errorf("postgres: column services.%s missing (n=%d, err=%v)", c, n, err)
 		}
 	}
 	for _, idx := range append(append([]string{}, migration0023Indexes...), migration0024Indexes...) {

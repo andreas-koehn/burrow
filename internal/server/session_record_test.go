@@ -73,16 +73,23 @@ type recordedClient struct {
 // that says it is linux/amd64 0.9.0. http tunnels need no port.
 func connectRecorded(t *testing.T, auth TokenAuthenticator, rec SessionRecorder) *recordedClient {
 	t.Helper()
+	return connectRelay(t, auth, func(o *Options) { o.SessionRecorder = rec })
+}
+
+// connectRelay is connectRecorded for a relay whose options the test sets.
+func connectRelay(t *testing.T, auth TokenAuthenticator, set func(*Options)) *recordedClient {
+	t.Helper()
 	dir := t.TempDir()
 	if err := devcert.Generate(dir, true); err != nil {
 		t.Fatal(err)
 	}
-	srv, err := New(Options{
+	o := Options{
 		Listen: "127.0.0.1:0", TLSCert: filepath.Join(dir, "dev-server.pem"),
 		TLSKey: filepath.Join(dir, "dev-server-key.pem"), Auth: auth,
 		PublicBind: "127.0.0.1", Services: fakeResolver{id: "svc-1", sub: "abc123"},
-		SessionRecorder: rec,
-	})
+	}
+	set(&o)
+	srv, err := New(o)
 	if err != nil {
 		t.Fatal(err)
 	}

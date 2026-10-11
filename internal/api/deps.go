@@ -48,6 +48,9 @@ type LiveTunnelSnapshot struct {
 	LocalAddr  string
 	Connected  bool
 	RemotePort int // non-zero for tcp services; 0 for http services
+	// SessionID is the client session that serves the service now; "" when
+	// the lookup cannot name it.
+	SessionID string
 }
 
 // TunnelLocator holds the service and user association for a live tunnel,
@@ -183,7 +186,8 @@ type KnownClient struct {
 	Status    string `json:"status"` // "online" | "offline" | "never_connected"
 	// LastSeen is null while the token never connected. While it is online
 	// it is when the relay last wrote the session down (at connect and at
-	// every change of what it serves).
+	// every change of what it serves). For an online client with nothing
+	// stored it is the time the session connected.
 	LastSeen *time.Time `json:"last_seen"`
 	// The platform of the newest live session, or of the last session.
 	OS            string `json:"os"`

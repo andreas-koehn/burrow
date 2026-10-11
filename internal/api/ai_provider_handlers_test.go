@@ -2180,3 +2180,153 @@ func TestProviderWrites_ForgetBreakerState(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// state, last_seen and last_client
+// ---------------------------------------------------------------------------
+
+// providerStateFixture holds a tunnel provider in each of the three states
+// and a direct provider with and without its credential.
+func providerStateFixture() Deps {
+	ss := &fakeServiceStore{listSvcs: []store.ServiceView{
+		{ID: "s-live", Name: "live", Type: "http", AccessMode: "api_key", LastSeen: &servedAt, LastClient: "laptop"},
+		{ID: "s-off", Name: "off", Type: "http", AccessMode: "api_key", LastSeen: &servedAt, LastClient: "desktop"},
+		{ID: "s-new", Name: "new", Type: "http", AccessMode: "api_key"},
+		// A stamp on the backing row of a direct provider is never shown.
+		{ID: "prov-ready", Name: "Ready", Type: "direct", AccessMode: "api_key", LastSeen: &servedAt, LastClient: "laptop"},
+		{ID: "prov-nokey", Name: "No key", Type: "direct", AccessMode: "api_key"},
+	}}
+	ps := &fakeProviderStore{rows: []db.AIProvider{
+		tunnelProvider("live", "Live", "s-live"),
+		tunnelProvider("off", "Off", "s-off"),
+		tunnelProvider("new", "New", "s-new"),
+		{Slug: "ready", Name: "Ready", Kind: "direct", ServiceID: "prov-ready", APIFormat: "openai", CredentialSlot: "OPENROUTER"},
+		{Slug: "nokey", Name: "No key", Kind: "direct", ServiceID: "prov-nokey", APIFormat: "openai", CredentialSlot: "OPENROUTER,EMPTY"},
+	}}
+	d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
+	d.LiveTunnels = liveServices{"s-live": {Connected: true, SessionID: "sess-1"}}
+	d.CredentialVault = secretVault{"OPENROUTER": upstreamSecret, "EMPTY": ""}
+	return d
+}
+
+// wantProviderState maps a slug of providerStateFixture to its state, the
+// status it has always had, last_seen and last_client.
+var wantProviderState = map[string][4]any{
+	"live":  {"online", "Connected", servedAtJSON, "laptop"},
+	"off":   {"offline", "Offline", servedAtJSON, "desktop"},
+	"new":   {"never_connected", "Offline", nil, ""},
+	"ready": {"ready", "Connected", nil, ""},
+	"nokey": {"not_configured", "Offline", nil, ""},
+}
+
+func checkProviderState(t *testing.T, got map[string]any) {
+	t.Helper()
+	slug, _ := got["slug"].(string)
+	want, ok := wantProviderState[slug]
+	if !ok {
+		t.Fatalf("unexpected provider %v", got)
+	}
+	for i, k := range []string{"state", "status", "last_seen", "last_client"} {
+		v, present := got[k]
+		if !present {
+			t.Errorf("%s: field %q is missing", slug, k)
+			continue
+		}
+		if v != want[i] {
+			t.Errorf("%s: %s = %#v, want %#v", slug, k, v, want[i])
+		}
+	}
+	// client_session_id keeps the value it has always had.
+	if got["client_session_id"] != "" {
+		t.Errorf("%s: client_session_id = %#v, want \"\"", slug, got["client_session_id"])
+	}
+}
+
+func TestProviderView_State(t *testing.T) {
+	srv, c := newAIProviderServer(t, providerStateFixture())
+	defer srv.Close()
+
+	var list []map[string]any
+	if err := json.Unmarshal([]byte(wantStatus(t, c.get(t, "/api/v1/ai/providers"), http.StatusOK)), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != len(wantProviderState) {
+		t.Fatalf("want %d providers, got %v", len(wantProviderState), list)
+	}
+	for _, got := range list {
+		checkProviderState(t, got)
+	}
+	// The single read answers the same.
+	for slug := range wantProviderState {
+		var one map[string]any
+		if err := json.Unmarshal([]byte(wantStatus(t, c.get(t, "/api/v1/ai/providers/"+slug), http.StatusOK)), &one); err != nil {
+			t.Fatal(err)
+		}
+		checkProviderState(t, one)
+	}
+}
+
+// A tunnel provider whose backing service row is gone reports that no client
+// ever served it; the request does not fail.
+func TestProviderView_MissingServiceRowIsNeverConnected(t *testing.T) {
+	d := providerStateFixture()
+	ps := d.AIProviders.(*fakeProviderStore)
+	ps.rows = append(ps.rows, tunnelProvider("ghost", "Ghost", "s-gone"))
+	// Even a tunnel that still names the service does not make it online.
+	d.LiveTunnels = liveServices{"s-live": {Connected: true}, "s-gone": {Connected: true}}
+	srv, c := newAIProviderServer(t, d)
+	defer srv.Close()
+
+	// The list holds every other provider as before.
+	var list []map[string]any
+	if err := json.Unmarshal([]byte(wantStatus(t, c.get(t, "/api/v1/ai/providers"), http.StatusOK)), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != len(wantProviderState) {
+		t.Fatalf("want the %d providers with a service, got %v", len(wantProviderState), list)
+	}
+	for _, got := range list {
+		checkProviderState(t, got)
+	}
+
+	// A write answers with the provider's view although its service is gone.
+	body := wantStatus(t, c.put(t, "/api/v1/ai/providers/ghost", map[string]string{"slug": "ghost", "name": "Ghost 2"}), http.StatusOK)
+	var got map[string]any
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["state"] != "never_connected" || got["status"] != "Offline" || got["last_client"] != "" {
+		t.Errorf("view of a provider without a service row: %s", body)
+	}
+	if v, present := got["last_seen"]; !present || v != nil {
+		t.Errorf("last_seen = %#v (present %v), want null", v, present)
+	}
+}
+
+func TestProviderState(t *testing.T) {
+	tunnel := tunnelProvider("ollama", "Ollama", "svc1")
+	direct := db.AIProvider{Slug: "openrouter", Kind: "direct", ServiceID: "prov"}
+	seen := store.ServiceView{ID: "svc1", LastSeen: &servedAt, LastClient: "laptop"}
+	for _, tc := range []struct {
+		name       string
+		p          db.AIProvider
+		credential bool
+		live       bool
+		sv         store.ServiceView
+		state      string
+		lastSeen   *time.Time
+		lastClient string
+	}{
+		{"tunnel live", tunnel, false, true, seen, "online", &servedAt, "laptop"},
+		{"tunnel seen", tunnel, false, false, seen, "offline", &servedAt, "laptop"},
+		{"tunnel never", tunnel, false, false, store.ServiceView{ID: "svc1"}, "never_connected", nil, ""},
+		{"tunnel without a service row", tunnel, false, false, store.ServiceView{}, "never_connected", nil, ""},
+		{"direct with its credential", direct, true, false, seen, "ready", nil, ""},
+		{"direct without", direct, false, true, seen, "not_configured", nil, ""},
+	} {
+		state, lastSeen, lastClient := providerState(tc.p, tc.credential, tc.live, tc.sv)
+		if state != tc.state || lastSeen != tc.lastSeen || lastClient != tc.lastClient {
+			t.Errorf("%s: got %q %v %q, want %q %v %q", tc.name, state, lastSeen, lastClient, tc.state, tc.lastSeen, tc.lastClient)
+		}
+	}
+}

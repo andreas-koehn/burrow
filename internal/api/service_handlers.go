@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +32,89 @@ type serviceResp struct {
 	Connected   bool   `json:"connected"`
 	RemotePort  int    `json:"remote_port"`
 	LocalAddr   string `json:"local_addr"`
+	// Status says in one word what connected and last_seen say together:
+	// see servedState.
+	Status string `json:"status"`
+	// LastSeen is when a client last served the service (null when none ever
+	// did) and LastClient the name of the client token of that client.
+	LastSeen   *time.Time `json:"last_seen"`
+	LastClient string     `json:"last_client"`
+	// ClientSessionID is the session that serves the service now, "" when
+	// none does.
+	ClientSessionID string `json:"client_session_id"`
+	// ProviderSlug is the slug of the tunnel provider the service backs, ""
+	// when it backs none.
+	ProviderSlug string `json:"provider_slug"`
+}
+
+// What a service or a tunnel provider reports of the client behind it: the
+// three states of a KnownClient.
+const (
+	servedOnline         = "online"
+	servedOffline        = "offline"
+	servedNeverConnected = "never_connected"
+)
+
+// servedState is the status of anything served through a client: "online"
+// when a live tunnel serves it; else "offline" when a client served it
+// before; else "never_connected".
+func servedState(live bool, lastSeen *time.Time) string {
+	switch {
+	case live:
+		return servedOnline
+	case lastSeen != nil:
+		return servedOffline
+	}
+	return servedNeverConnected
+}
+
+// serviceView joins a stored service with its live tunnel. providerSlug is
+// the slug of the tunnel provider it backs (see providerSlugByService).
+func (d Deps) serviceView(sv store.ServiceView, providerSlug string) serviceResp {
+	snap := d.composeLive(sv.ID)
+	v := serviceResp{
+		ID:           sv.ID,
+		Name:         sv.Name,
+		Type:         sv.Type,
+		Slug:         sv.Subdomain,
+		URL:          serviceURL(sv.Subdomain, d.AuthDomain, sv.GatewayOnly),
+		GatewayOnly:  sv.GatewayOnly,
+		AccessMode:   sv.AccessMode,
+		APIKeyHeader: sv.APIKeyHeader,
+		Connected:    snap.Connected,
+		RemotePort:   snap.RemotePort,
+		LocalAddr:    snap.LocalAddr,
+		Status:       servedState(snap.Connected, sv.LastSeen),
+		LastSeen:     sv.LastSeen,
+		LastClient:   sv.LastClient,
+		ProviderSlug: providerSlug,
+	}
+	if snap.Connected {
+		v.ClientSessionID = snap.SessionID
+	}
+	return v
+}
+
+// providerSlugByService maps a service id to the slug of the tunnel provider
+// that service backs, with one providers query for the whole response. Empty
+// when the provider store is not wired or the query fails (logged): the
+// services still render.
+func (d Deps) providerSlugByService(ctx context.Context) map[string]string {
+	out := map[string]string{}
+	if d.AIProviders == nil {
+		return out
+	}
+	providers, err := d.AIProviders.ListProviders(ctx)
+	if err != nil {
+		d.warn("service view: provider list failed", "err", err)
+		return out
+	}
+	for _, p := range providers {
+		if p.Kind != "direct" {
+			out[p.ServiceID] = p.Slug
+		}
+	}
+	return out
 }
 
 // serviceDetailResp extends serviceResp with the single-service aggregate fields.
@@ -153,6 +237,7 @@ func (d Deps) ListServices(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	providerSlugs := d.providerSlugByService(r.Context())
 	out := make([]serviceResp, 0, len(svcs))
 	for _, sv := range svcs {
 		// The backing row of a direct AI provider is not a service anyone
@@ -160,20 +245,7 @@ func (d Deps) ListServices(w http.ResponseWriter, r *http.Request) {
 		if sv.Type == "direct" {
 			continue
 		}
-		snap := d.composeLive(sv.ID)
-		out = append(out, serviceResp{
-			ID:           sv.ID,
-			Name:         sv.Name,
-			Type:         sv.Type,
-			Slug:         sv.Subdomain,
-			URL:          serviceURL(sv.Subdomain, d.AuthDomain, sv.GatewayOnly),
-			GatewayOnly:  sv.GatewayOnly,
-			AccessMode:   sv.AccessMode,
-			APIKeyHeader: sv.APIKeyHeader,
-			Connected:    snap.Connected,
-			RemotePort:   snap.RemotePort,
-			LocalAddr:    snap.LocalAddr,
-		})
+		out = append(out, d.serviceView(sv, providerSlugs[sv.ID]))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -194,25 +266,12 @@ func (d Deps) GetService(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	snap := d.composeLive(det.ID)
 	policy := det.AccessPolicy
 	if policy == nil {
 		policy = []string{}
 	}
 	resp := serviceDetailResp{
-		serviceResp: serviceResp{
-			ID:           det.ID,
-			Name:         det.Name,
-			Type:         det.Type,
-			Slug:         det.Subdomain,
-			URL:          serviceURL(det.Subdomain, d.AuthDomain, det.GatewayOnly),
-			GatewayOnly:  det.GatewayOnly,
-			AccessMode:   det.AccessMode,
-			APIKeyHeader: det.APIKeyHeader,
-			Connected:    snap.Connected,
-			RemotePort:   snap.RemotePort,
-			LocalAddr:    snap.LocalAddr,
-		},
+		serviceResp:  d.serviceView(det.ServiceView, d.providerSlugByService(r.Context())[det.ID]),
 		APIKeyCount:  det.APIKeyCount,
 		AccessPolicy: policy,
 	}

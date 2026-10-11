@@ -56,6 +56,10 @@ type ServiceView struct {
 	APIKeyHeader string // effective header name (default "Authorization")
 	GatewayOnly  bool   // reachable through the AI gateway only
 	CreatedAt    time.Time
+	// LastSeen is when a client last served the service, nil when none ever
+	// did; LastClient is the name of the client token of that client.
+	LastSeen   *time.Time
+	LastClient string
 }
 
 // ServiceDetail extends ServiceView with the aggregate fields returned by the
@@ -478,7 +482,17 @@ func serviceToView(s db.Service) ServiceView {
 		APIKeyHeader: s.APIKeyHeader,
 		GatewayOnly:  s.GatewayOnly,
 		CreatedAt:    s.CreatedAt,
+		LastSeen:     s.LastSeen,
+		LastClient:   s.LastClient,
 	}
+}
+
+// TouchServiceLastSeen notes that the client that logged in with the token
+// named tokenName is serving the service, or just stopped. db.ErrNotFound
+// when the service was deleted meanwhile. It is not scoped to a caller: the
+// control server calls it for a tunnel it bound to the service itself.
+func (s *Store) TouchServiceLastSeen(ctx context.Context, serviceID, tokenName string) error {
+	return s.q.TouchServiceLastSeen(ctx, serviceID, tokenName)
 }
 
 // CreateService is the admin-only pre-provisioning surface exposed via

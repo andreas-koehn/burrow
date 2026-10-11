@@ -91,6 +91,12 @@ type Service struct {
 	MTLSCAPEM string
 	// GatewayOnly: reachable only through the AI gateway, not directly.
 	GatewayOnly bool
+	// LastSeen is when a client last served the service: stamped when its
+	// tunnel is registered and when it goes away (TouchServiceLastSeen). nil
+	// for a service no client has served. LastClient is the name of the client
+	// token that client logged in with, "" until then.
+	LastSeen   *time.Time
+	LastClient string
 }
 
 // ServiceAPIKey is a row of the service_api_keys table.

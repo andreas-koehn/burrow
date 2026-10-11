@@ -625,3 +625,40 @@ func TestSetServiceGatewayOnly_AdminAndDirect(t *testing.T) {
 		t.Fatalf("direct err = %v, want ErrDirectService", err)
 	}
 }
+
+// The stamp a client leaves on a service it serves shows in the list and in
+// the detail; a service nobody served reads as never seen.
+func TestTouchServiceLastSeenShowsInTheViews(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, st, "owner@x", "user")
+	web := mustGetOrCreateService(t, st, owner.ID, "web", "http")
+	idle := mustGetOrCreateService(t, st, owner.ID, "idle", "http")
+
+	if err := st.TouchServiceLastSeen(ctx, web.ID, "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	svcs, err := st.ListServices(ctx, owner.ID, "user")
+	if err != nil || len(svcs) != 2 {
+		t.Fatalf("ListServices: %v %+v", err, svcs)
+	}
+	for _, sv := range svcs {
+		switch sv.ID {
+		case web.ID:
+			if sv.LastSeen == nil || time.Since(*sv.LastSeen) > time.Second || sv.LastClient != "laptop" {
+				t.Fatalf("the served service: %+v", sv)
+			}
+		case idle.ID:
+			if sv.LastSeen != nil || sv.LastClient != "" {
+				t.Fatalf("the service nobody served: %+v", sv)
+			}
+		}
+	}
+	detail, err := st.GetService(ctx, owner.ID, "user", web.ID)
+	if err != nil || detail.LastSeen == nil || detail.LastClient != "laptop" {
+		t.Fatalf("GetService: %v %+v", err, detail)
+	}
+	if err := st.TouchServiceLastSeen(ctx, "no-such-service", "laptop"); !errors.Is(err, db.ErrNotFound) {
+		t.Fatalf("a deleted service err = %v, want db.ErrNotFound", err)
+	}
+}

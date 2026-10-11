@@ -50,6 +50,14 @@ type aiProviderResp struct {
 	LatencyP95ms    int    `json:"latency_p95_ms"`
 	Status          string `json:"status"`
 	ClientSessionID string `json:"client_session_id"`
+	// State says what the provider needs to answer (see providerState):
+	// "online", "offline" or "never_connected" for a tunnel provider, "ready"
+	// or "not_configured" for a direct one. LastSeen and LastClient are when
+	// a client last served a tunnel provider and the name of its client
+	// token; null and "" for a direct provider.
+	State      string     `json:"state"`
+	LastSeen   *time.Time `json:"last_seen"`
+	LastClient string     `json:"last_client"`
 	// Whether the provider offers POST /responses, as its operator stated.
 	// While it is off, /openai/v1/responses refuses a model of this provider.
 	SupportsResponses bool `json:"supports_responses"`
@@ -181,6 +189,28 @@ func composeProviderURL(slug, authDomain string) string {
 	return "https://" + authDomain + "/ai/" + slug + "/v1"
 }
 
+// The states of a direct provider; a tunnel provider has those of servedState.
+const (
+	providerReady         = "ready"
+	providerNotConfigured = "not_configured"
+)
+
+// providerState is the state of a provider with when a client last served it
+// and the name of that client's token. A tunnel provider has the state of its
+// backing service sv (servedState); one whose service row is missing (the zero
+// sv) was never connected. A direct provider is served by no client: it is
+// ready when every credential slot it names holds a value, and has neither a
+// last_seen nor a last_client.
+func providerState(p db.AIProvider, credentialPresent, live bool, sv store.ServiceView) (state string, lastSeen *time.Time, lastClient string) {
+	if p.Kind == "direct" {
+		if credentialPresent {
+			return providerReady, nil, ""
+		}
+		return providerNotConfigured, nil, ""
+	}
+	return servedState(live, sv.LastSeen), sv.LastSeen, sv.LastClient
+}
+
 // providerModel is the synthetic model a provider view names.
 type providerModel struct{ name, target string }
 
@@ -225,9 +255,9 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 	if err != nil {
 		return nil, err
 	}
-	visible := make(map[string]bool, len(svcs))
+	visible := make(map[string]store.ServiceView, len(svcs))
 	for _, sv := range svcs {
-		visible[sv.ID] = true
+		visible[sv.ID] = sv
 	}
 
 	providers, err := d.AIProviders.ListProviders(r.Context())
@@ -251,7 +281,8 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 
 	out := make([]aiProviderResp, 0, len(providers))
 	for _, p := range providers {
-		if !visible[p.ServiceID] {
+		sv, ok := visible[p.ServiceID]
+		if !ok {
 			continue
 		}
 
@@ -264,20 +295,18 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 
 		// Live tunnel snapshot: determines status.  LiveTunnels may be nil in
 		// some wiring configurations; composeLive handles that gracefully
-		// (returns zero-value snapshot).  client_session_id stays empty:
-		// LiveTunnelSnapshot has no SessionID field today and the dashboard
-		// handles "" gracefully.
+		// (returns zero-value snapshot).  client_session_id stays empty, as
+		// it always was: the session is named on the backing service (GET
+		// /services/{id}).
 		// A direct provider has no tunnel: it is usable when every credential
 		// slot it names is set.
 		status := "Offline"
 		slots, present := d.credentialSlots(p)
-		if p.Kind == "direct" {
-			if present {
-				status = "Connected"
-			}
-		} else if d.composeLive(p.ServiceID).Connected {
+		live := p.Kind != "direct" && d.composeLive(p.ServiceID).Connected
+		if live || (p.Kind == "direct" && present) {
 			status = "Connected"
 		}
+		state, lastSeen, lastClient := providerState(p, present, live, sv)
 
 		model := firstModel[p.Slug]
 
@@ -297,6 +326,9 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 			LatencyP95ms:    0, // usage_events has no latency column — not derivable
 			Status:          status,
 			ClientSessionID: "",
+			State:           state,
+			LastSeen:        lastSeen,
+			LastClient:      lastClient,
 
 			SupportsResponses: p.SupportsResponses,
 			MaxConcurrent:     p.MaxConcurrent,
@@ -354,10 +386,12 @@ func (d Deps) writeProviderView(w http.ResponseWriter, r *http.Request, status i
 		// The write went through but the live join has no row for it (the
 		// backing service vanished in between): answer with the stored fields.
 		slots, present := d.credentialSlots(p)
+		// Without its service row a tunnel provider was never connected.
+		state, _, _ := providerState(p, present, false, store.ServiceView{})
 		v = aiProviderResp{
 			Slug: p.Slug, Name: p.Name, Kind: p.Kind, APIFormat: p.APIFormat, ServiceID: p.ServiceID,
 			BaseURL:     composeProviderURL(p.Slug, d.AuthDomain),
-			BackendType: backendTypeOther, Status: "Offline",
+			BackendType: backendTypeOther, Status: "Offline", State: state,
 			UpstreamBaseURL: p.BaseURL, CredentialSlot: p.CredentialSlot, Billing: p.Billing,
 			CredentialPresent: present, CredentialSlots: slots,
 			SupportsResponses: p.SupportsResponses,

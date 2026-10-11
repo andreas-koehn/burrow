@@ -521,6 +521,7 @@ func newRootCmd() *cobra.Command {
 				PublicBind: cfg.PublicBind, PortMin: cfg.PortMin, PortMax: cfg.PortMax,
 				Auth: st, Tunnels: tunnelStoreAdapter{st}, Events: bus, Logger: log,
 				SessionRecorder: st,
+				ServiceRecorder: st,
 				// v0.3.0: HTTP tunnel service identity + subdomain resolver.
 				Services:   serviceResolverAdapter{db: db.Wrap(database), authDomain: proxyAuthDomain},
 				AuthDomain: proxyAuthDomain,

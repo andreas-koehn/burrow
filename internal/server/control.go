@@ -237,6 +237,7 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 					s.log.Warn("persist tunnel failed", "tunnel_id", tn.ID, "err", err)
 				}
 				s.recordSession(reg, cs)
+				s.stampService(cs, tn)
 				s.opts.Events.PublishTunnelsChanged(cs.UserID)
 				var tunnelURL, dashboardURL string
 				if s.opts.AuthDomain != "" {
@@ -272,6 +273,7 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 					s.log.Warn("persist tunnel failed", "tunnel_id", tn.ID, "err", err)
 				}
 				s.recordSession(reg, cs)
+				s.stampService(cs, tn)
 				s.opts.Events.PublishTunnelsChanged(cs.UserID)
 				s.log.Info("tunnel registered", "tunnel_id", tn.ID, "remote_port", port, "session_id", cs.SessionID)
 				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{
@@ -286,12 +288,14 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 		case proto.MsgTunnelUnregister:
 			var tu proto.TunnelUnregister
 			if err := proto.DecodePayload(env, &tu); err == nil {
-				if tn := reg.Tunnel(cs, tu.TunnelID); tn != nil && tn.Listener != nil {
+				tn := reg.Tunnel(cs, tu.TunnelID)
+				if tn != nil && tn.Listener != nil {
 					_ = tn.Listener.Close()
 					s.ports.Release(tn.RemotePort)
 				}
 				reg.RemoveTunnel(cs, tu.TunnelID)
 				s.recordSession(reg, cs)
+				s.stampService(cs, tn)
 			}
 		case proto.MsgPing:
 			var p proto.Ping

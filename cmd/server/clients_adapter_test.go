@@ -212,7 +212,7 @@ func TestKnownClientsThroughStoreAndServer(t *testing.T) {
 	srv, err := server.New(server.Options{
 		Listen: "127.0.0.1:0", TLSCert: filepath.Join(dir, "dev-server.pem"), TLSKey: filepath.Join(dir, "dev-server-key.pem"),
 		Auth: st, Tunnels: tunnelStoreAdapter{st}, Services: serviceResolverAdapter{db: db.Wrap(d)},
-		PublicBind: "127.0.0.1", SessionRecorder: st,
+		PublicBind: "127.0.0.1", SessionRecorder: st, ServiceRecorder: st,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -290,6 +290,16 @@ func TestKnownClientsThroughStoreAndServer(t *testing.T) {
 	if spare.Status != api.ClientNeverConnected || spare.LastSeen != nil {
 		t.Fatalf("the other token: %+v", spare)
 	}
+	// The service the client serves is stamped with the name of its token.
+	served := func() store.ServiceView {
+		t.Helper()
+		svcs, err := st.ListServices(ctx, u.ID, "admin")
+		if err != nil || len(svcs) != 1 || svcs[0].Name != "web" || svcs[0].LastSeen == nil || svcs[0].LastClient != "laptop" {
+			t.Fatalf("the served service: %v %+v", err, svcs)
+		}
+		return svcs[0]
+	}
+	atRegister := *served().LastSeen
 
 	_ = conn.Close()
 	deadline := time.Now().Add(3 * time.Second)
@@ -306,5 +316,9 @@ func TestKnownClientsThroughStoreAndServer(t *testing.T) {
 		laptop.LastSeen == nil || time.Since(*laptop.LastSeen) > 5*time.Second ||
 		len(laptop.Sessions) != 0 || !reflect.DeepEqual(laptop.Served, []string{"web"}) {
 		t.Fatalf("offline: %+v", laptop)
+	}
+	// The stamp of the disconnect is written before the session is gone.
+	if last := *served().LastSeen; last.Before(atRegister) || time.Since(last) > 5*time.Second {
+		t.Fatalf("service last seen %v after the disconnect, %v at the register", last, atRegister)
 	}
 }

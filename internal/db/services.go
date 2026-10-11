@@ -71,7 +71,21 @@ func (x *DB) CreateService(ctx context.Context, s Service) error {
 // mtls_ca_pem (migration 0009) is included so the proxy layer can populate
 // proxy.Resolved.MTLSCAPEM without a second round-trip; non-mtls services
 // store it as NULL, which COALESCE rewrites to ”.
-const selectServiceCols = `id, user_id, name, type, COALESCE(subdomain,''), access_mode, api_key_header, created_at, COALESCE(mtls_ca_pem,''), gateway_only`
+const selectServiceCols = `id, user_id, name, type, COALESCE(subdomain,''), access_mode, api_key_header, created_at, COALESCE(mtls_ca_pem,''), gateway_only, last_seen, last_client`
+
+// scanService reads one row of selectServiceCols.
+func scanService(row interface{ Scan(...any) error }) (Service, error) {
+	var s Service
+	var lastSeen sql.NullTime
+	if err := row.Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt,
+		&s.MTLSCAPEM, (*intBool)(&s.GatewayOnly), &lastSeen, &s.LastClient); err != nil {
+		return Service{}, err
+	}
+	if lastSeen.Valid {
+		s.LastSeen = &lastSeen.Time
+	}
+	return s, nil
+}
 
 // ErrServiceNameReserved is returned by GetOrCreateService when the name
 // belongs to the backing row of a direct AI provider.
@@ -96,11 +110,10 @@ func (x *DB) GetOrCreateService(ctx context.Context, userID, name, typ string) (
 	if err != nil {
 		return Service{}, fmt.Errorf("get or create service: %w", err)
 	}
-	var s Service
-	err = x.sqlDB.QueryRowContext(ctx,
+	s, err := scanService(x.sqlDB.QueryRowContext(ctx,
 		`SELECT `+selectServiceCols+` FROM services WHERE user_id=? AND name=?`,
 		userID, name,
-	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, (*intBool)(&s.GatewayOnly))
+	))
 	if err == sql.ErrNoRows {
 		return Service{}, ErrNotFound
 	}
@@ -115,10 +128,9 @@ func (x *DB) GetOrCreateService(ctx context.Context, userID, name, typ string) (
 
 // GetServiceByID returns the service with the given id, or ErrNotFound.
 func (x *DB) GetServiceByID(ctx context.Context, id string) (Service, error) {
-	var s Service
-	err := x.sqlDB.QueryRowContext(ctx,
+	s, err := scanService(x.sqlDB.QueryRowContext(ctx,
 		`SELECT `+selectServiceCols+` FROM services WHERE id=?`, id,
-	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, (*intBool)(&s.GatewayOnly))
+	))
 	if err == sql.ErrNoRows {
 		return Service{}, ErrNotFound
 	}
@@ -134,10 +146,9 @@ func (x *DB) GetServiceBySubdomain(ctx context.Context, sub string) (Service, er
 	if sub == "" {
 		return Service{}, ErrNotFound
 	}
-	var s Service
-	err := x.sqlDB.QueryRowContext(ctx,
+	s, err := scanService(x.sqlDB.QueryRowContext(ctx,
 		`SELECT `+selectServiceCols+` FROM services WHERE subdomain=?`, sub,
-	).Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, (*intBool)(&s.GatewayOnly))
+	))
 	if err == sql.ErrNoRows {
 		return Service{}, ErrNotFound
 	}
@@ -160,8 +171,8 @@ func (x *DB) ListServicesByUser(ctx context.Context, userID string) ([]Service, 
 	defer rows.Close()
 	var out []Service
 	for rows.Next() {
-		var s Service
-		if err := rows.Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, (*intBool)(&s.GatewayOnly)); err != nil {
+		s, err := scanService(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan service: %w", err)
 		}
 		out = append(out, s)
@@ -183,8 +194,8 @@ func (x *DB) ListAllServices(ctx context.Context) ([]Service, error) {
 	defer rows.Close()
 	var out []Service
 	for rows.Next() {
-		var s Service
-		if err := rows.Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt, &s.MTLSCAPEM, (*intBool)(&s.GatewayOnly)); err != nil {
+		s, err := scanService(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan service: %w", err)
 		}
 		out = append(out, s)
@@ -237,6 +248,21 @@ func (x *DB) SetServiceSubdomain(ctx context.Context, id, sub string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// TouchServiceLastSeen notes that a client is serving the service, or just
+// stopped: it sets last_seen to the current time and last_client to the name
+// of the client token that client logged in with. A later touch replaces
+// both. Returns ErrNotFound when no service has the id (it was deleted
+// meanwhile).
+func (x *DB) TouchServiceLastSeen(ctx context.Context, serviceID, tokenName string) error {
+	res, err := x.sqlDB.ExecContext(ctx,
+		`UPDATE services SET last_seen=?, last_client=? WHERE id=?`, time.Now().UTC(), tokenName, serviceID,
+	)
+	if err != nil {
+		return fmt.Errorf("touch service last_seen: %w", err)
+	}
+	return notFoundIfNoRows(res, "touch service last_seen")
 }
 
 // DeleteService removes the service with the given ID.

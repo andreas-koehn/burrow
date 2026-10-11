@@ -445,6 +445,9 @@ func (f *fakeHTTPTunnelLister) HTTPTunnels() []*server.Tunnel { return f.tunnels
 func (f *fakeHTTPTunnelLister) SnapshotSessions() []server.SessionSnapshot {
 	return nil
 }
+func (f *fakeHTTPTunnelLister) LookupSessionByTunnelID(string) (string, string, bool) {
+	return "", "", false
+}
 
 // TestLiveTunnelLookupAdapter_ByServiceID checks that LookupByServiceID returns
 // a correct snapshot for a known service and false for an unknown one.
@@ -537,6 +540,35 @@ func (f *fakeHTTPTunnelListerWithSessions) HTTPTunnels() []*server.Tunnel {
 }
 func (f *fakeHTTPTunnelListerWithSessions) SnapshotSessions() []server.SessionSnapshot {
 	return f.sessions
+}
+func (f *fakeHTTPTunnelListerWithSessions) LookupSessionByTunnelID(tunnelID string) (string, string, bool) {
+	for _, ss := range f.sessions {
+		for _, tv := range ss.Tunnels {
+			if tv.ID == tunnelID {
+				return ss.SessionID, ss.UserID, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// TestLiveTunnelLookupAdapter_ByServiceID_NamesTheSession checks that the
+// snapshot of a served service names the session that serves it, and that a
+// tunnel whose session is already gone names none.
+func TestLiveTunnelLookupAdapter_ByServiceID_NamesTheSession(t *testing.T) {
+	a := liveTunnelLookupAdapter{srv: &fakeHTTPTunnelListerWithSessions{
+		tunnels: []*server.Tunnel{
+			{ID: "tn-a", ServiceID: "svc-a", IsHTTP: true},
+			{ID: "tn-b", ServiceID: "svc-b", IsHTTP: true},
+		},
+		sessions: []server.SessionSnapshot{{SessionID: "sess-1", UserID: "u1", Tunnels: []server.TunnelView{{ID: "tn-a"}}}},
+	}}
+	if snap, ok := a.LookupByServiceID("svc-a"); !ok || !snap.Connected || snap.SessionID != "sess-1" {
+		t.Errorf("svc-a: %+v ok=%v, want connected through sess-1", snap, ok)
+	}
+	if snap, ok := a.LookupByServiceID("svc-b"); !ok || !snap.Connected || snap.SessionID != "" {
+		t.Errorf("svc-b: %+v ok=%v, want connected with no session named", snap, ok)
+	}
 }
 
 // ---------------------------------------------------------------------------

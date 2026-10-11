@@ -248,6 +248,29 @@ components:
             Tunnel provider: whether its client is connected. Direct provider:
             Connected when the credential slot is set, Offline otherwise.
         client_session_id: { type: string }
+        state:
+          type: string
+          enum: [online, offline, never_connected, ready, not_configured]
+          description: >
+            Tunnel provider: `online` while a client serves its backing
+            service, `offline` when a client served it before and none does
+            now, `never_connected` otherwise. Direct provider: `ready` when
+            every credential slot it names holds a value, `not_configured`
+            otherwise. `status` keeps its values beside it.
+        last_seen:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Tunnel provider: when a client last served it, written when its
+            tunnel is registered and when it goes away. Null while no client
+            has served it, and always null for a direct provider.
+        last_client:
+          type: string
+          description: >
+            Tunnel provider: the name of the client token of the client that
+            served it last. Empty while no client has served it, and always
+            empty for a direct provider.
     AIProviderUpstream:
       type: object
       description: >
@@ -596,7 +619,8 @@ components:
           description: >
             When the relay last wrote the session down: when it connected,
             when what it serves changed and when it ended. Null while the
-            token never connected.
+            token never connected. For an online client with nothing stored
+            it is the time the session connected.
         os:
           type: string
           description: >
@@ -673,6 +697,32 @@ components:
         remote_port: { type: integer }
         local_addr: { type: string }
         connected: { type: boolean }
+        status:
+          type: string
+          enum: [online, offline, never_connected]
+          description: >
+            `online` while a client serves the service, `offline` when a
+            client served it before and none does now, `never_connected`
+            otherwise. `connected` is true exactly while it is `online`.
+        last_seen:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            When a client last served the service, written when its tunnel is
+            registered and when it goes away. Null while no client has served
+            it.
+        last_client:
+          type: string
+          description: >
+            The name of the client token of the client that served the
+            service last. Empty while no client has served it.
+        client_session_id:
+          type: string
+          description: The client session that serves the service now; empty while none does.
+        provider_slug:
+          type: string
+          description: The slug of the tunnel provider this service backs; empty when it backs none.
     Tunnel:
       type: object
       properties:

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -145,7 +146,16 @@ type SessionRecorder interface {
 	RecordClientSession(ctx context.Context, tokenID string, rec db.ClientSessionRecord) error
 }
 
-// sessionRecordTimeout bounds one write of a session record.
+// ServiceRecorder remembers when a client last served a durable service and
+// which client token it logged in with, so that a service nobody serves now
+// can be told from one nobody ever served. *store.Store satisfies it. It is
+// called inline on the serial control loop, like TunnelStore.
+type ServiceRecorder interface {
+	TouchServiceLastSeen(ctx context.Context, serviceID, tokenName string) error
+}
+
+// sessionRecordTimeout bounds one write of a session record or of a service
+// stamp.
 const sessionRecordTimeout = 2 * time.Second
 
 // Options configures a Server.
@@ -185,6 +195,11 @@ type Options struct {
 	// it connects, when its tunnels change and when it ends. nil: nothing is
 	// recorded.
 	SessionRecorder SessionRecorder
+	// ServiceRecorder, when non-nil, is told that a durable service is being
+	// served when its tunnel is registered and when that tunnel goes away
+	// (unregistered, or still open when the session ends). nil: nothing is
+	// stamped.
+	ServiceRecorder ServiceRecorder
 }
 
 // Server is the burrowd relay control server.
@@ -331,14 +346,19 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	s.recordSession(s.reg, cs)
 
 	defer func() {
-		// Before RemoveSession: the record names what the session served last.
-		s.recordSession(s.reg, cs)
-		for _, tn := range s.reg.snapshotTunnels(cs) {
+		tunnels := s.reg.snapshotTunnels(cs)
+		for _, tn := range tunnels {
 			if tn.Listener != nil {
 				_ = tn.Listener.Close()
 			}
 			s.ports.Release(tn.RemotePort)
 			_ = s.opts.Tunnels.MarkTunnelSeen(context.Background(), tn.ID)
+		}
+		// After the ports are free, so that a slow write keeps none taken, and
+		// before RemoveSession: the record names what the session served last.
+		s.recordSession(s.reg, cs)
+		for _, tn := range tunnels {
+			s.stampService(cs, tn)
 		}
 		if cs.UserID != "" {
 			s.opts.Events.PublishTunnelsChanged(cs.UserID)
@@ -478,8 +498,36 @@ func (s *Server) recordSession(reg *Registry, cs *ClientSession) {
 		OS: cs.OS, Arch: cs.Arch, ClientVersion: cs.ClientVersion, RemoteAddr: cs.RemoteAddr,
 		Served: slices.Compact(served),
 	}); err != nil {
-		s.log.Warn("record client session failed", "session_id", cs.SessionID, "err", err)
+		s.logRecordFailure("record client session failed", err, "session_id", cs.SessionID)
 	}
+}
+
+// stampService notes on the durable service of tn that the client of cs is
+// serving it, or just stopped: when the tunnel is registered, when it is
+// unregistered and for every tunnel still open when the session ends. A
+// failure is logged and never fails the tunnel. Nothing is written without a
+// recorder or for a tunnel that has no durable service (a tcp tunnel).
+func (s *Server) stampService(cs *ClientSession, tn *Tunnel) {
+	if s.opts.ServiceRecorder == nil || tn == nil || tn.ServiceID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sessionRecordTimeout)
+	defer cancel()
+	if err := s.opts.ServiceRecorder.TouchServiceLastSeen(ctx, tn.ServiceID, cs.TokenName); err != nil {
+		s.logRecordFailure("record service last seen failed", err, "session_id", cs.SessionID, "service_id", tn.ServiceID)
+	}
+}
+
+// logRecordFailure logs a write of a recorder that failed. A row that is gone
+// (the token was revoked or the service deleted while the client was
+// connected) is an expected state and logged at Debug; anything else is a
+// warning.
+func (s *Server) logRecordFailure(msg string, err error, args ...any) {
+	level := slog.LevelWarn
+	if errors.Is(err, db.ErrNotFound) {
+		level = slog.LevelDebug
+	}
+	s.log.Log(context.Background(), level, msg, append(args, "err", err)...)
 }
 
 // LookupSessionByTunnelID returns the sessionID and userID that own the tunnel

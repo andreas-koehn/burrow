@@ -171,8 +171,9 @@ func TestContractV3_ServicesList_Shape(t *testing.T) {
 		t.Fatalf("element 0: want object, got %T", arr[0])
 	}
 	want := []string{
-		"access_mode", "api_key_header", "connected", "gateway_only", "id",
-		"local_addr", "name", "remote_port", "slug", "type", "url",
+		"access_mode", "api_key_header", "client_session_id", "connected", "gateway_only", "id",
+		"last_client", "last_seen", "local_addr", "name", "provider_slug", "remote_port", "slug",
+		"status", "type", "url",
 	}
 	assertKeys(t, "GET /services[0]", keysOf(t, obj), want)
 
@@ -208,8 +209,8 @@ func TestContractV3_ServiceDetail_Shape(t *testing.T) {
 	obj := decodeObj(t, r)
 	want := []string{
 		"access_mode", "access_policy", "api_key_count", "api_key_header",
-		"connected", "gateway_only", "id", "local_addr", "name", "remote_port",
-		"slug", "type", "url",
+		"client_session_id", "connected", "gateway_only", "id", "last_client", "last_seen",
+		"local_addr", "name", "provider_slug", "remote_port", "slug", "status", "type", "url",
 	}
 	assertKeys(t, "GET /services/{id}", keysOf(t, obj), want)
 
