@@ -159,6 +159,9 @@ func RequireBearerOrSession(bs BearerStore, us UserStore) func(http.Handler) htt
 			ctx = context.WithValue(ctx, bearerTokenIDKey, info.ID)
 			ctx = context.WithValue(ctx, bearerPermsKey, info.Permissions)
 			ctx = context.WithValue(ctx, callerRoleKey, u.Role)
+			if info.ExpiresAt != nil {
+				ctx = context.WithValue(ctx, bearerExpiresKey, *info.ExpiresAt)
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -196,13 +199,16 @@ func firstNotHeld(ctx context.Context, role string, perms []string) string {
 }
 
 // actingRole is the role a handler hands to a store that scopes by role: the
-// caller's own rows, or everyone's. A dashboard session acts with its user's
-// role. An automation token acts with it only where it has one of anyPerms
-// (the :any half of what the route needs, by effectivePerms); otherwise it
-// acts as the built-in "user", whose reach ends at the caller's own rows. An
-// admin's token that declares services:configure:own does not configure the
-// services of other users.
-func (d Deps) actingRole(r *http.Request, anyPerms ...authz.Permission) (string, error) {
+// caller's own rows, or everyone's. own is the :own permission that store is
+// going to check. A dashboard session acts with its user's role. An
+// automation token acts with it only where it has one of anyPerms (the :any
+// half of what the route needs, by effectivePerms); otherwise it acts as the
+// built-in "user", whose reach ends at the caller's own rows, but only when
+// the caller's real role grants own. A token never gets more than its user's
+// role, so a role without own acts as "", which holds nothing. An admin's
+// token that declares services:configure:own does not configure the services
+// of other users.
+func (d Deps) actingRole(r *http.Request, own authz.Permission, anyPerms ...authz.Permission) (string, error) {
 	role, err := d.callerRoleForAuth(r)
 	if err != nil || bearerTokenID(r.Context()) == "" {
 		return role, err
@@ -212,5 +218,8 @@ func (d Deps) actingRole(r *http.Request, anyPerms ...authz.Permission) (string,
 			return role, nil
 		}
 	}
-	return "user", nil
+	if authz.Can(role, own) {
+		return "user", nil
+	}
+	return "", nil
 }

@@ -227,7 +227,7 @@ func (d Deps) SetAccessMode(w http.ResponseWriter, r *http.Request) {
 	// v0.3 delegation path: resolve tunnelID → serviceID via live registry.
 	if d.LiveTunnels != nil {
 		if loc, ok := d.LiveTunnels.LookupByTunnelID(id); ok {
-			callerRole, err := d.actingRole(r, authz.PermServicesConfigureAny)
+			callerRole, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
 			if err != nil {
 				writeErr(w, http.StatusInternalServerError, "internal error")
 				return

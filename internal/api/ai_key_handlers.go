@@ -128,10 +128,11 @@ func (d Deps) GetAIKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 // PostAIKey handles POST /api/v1/ai/keys (dashboard session only; the gate
-// of the route answers an automation token with 403).  The 201 carries the key; it cannot be read
-// again.  allowed_models restricts the key to synthetic model names,
-// "<provider>/<model>" and "<provider>/*" entries; empty or left out means
-// every model.  An entry need not name something that exists.
+// of the route answers an automation token with 403).  The 201 carries the
+// key; it cannot be read again.  allowed_models restricts the key to
+// synthetic model names, "<provider>/<model>" and "<provider>/*" entries;
+// empty or left out means every model.  An entry need not name something
+// that exists.
 func (d Deps) PostAIKey(w http.ResponseWriter, r *http.Request) {
 	// The answer holds a secret: no cache may keep it.
 	w.Header().Set("Cache-Control", "no-store")

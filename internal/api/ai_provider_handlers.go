@@ -76,8 +76,8 @@ type aiProviderResp struct {
 	ModelCount        int                  `json:"model_count"`
 
 	// How the relay presents the credential upstream, for callers who may
-	// change it (ai:providers:manage): PUT …/upstream keeps what a body leaves out, and
-	// these fields show what that is. auth_format holds the literal {key}
+	// change it (ai:providers:manage): PUT …/upstream keeps what a body
+	// leaves out, and these fields show what that is. auth_format holds the literal {key}
 	// placeholder, never the credential. Of the extra headers only the names
 	// are shown, sorted: a value is free text and may be a secret. Left out
 	// for other callers and for tunnel providers.
@@ -215,7 +215,7 @@ func (d Deps) firstModelByProvider(ctx context.Context) map[string]providerModel
 // sees other users' providers with ai:read:any, ai:providers:manage or
 // services:configure:any; with ai:read:own it sees its user's own.
 func (d Deps) providerRole(r *http.Request) (string, error) {
-	return d.actingRole(r, authz.PermAIReadAny, authz.PermAIProvidersManage, authz.PermServicesConfigureAny)
+	return d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermAIReadAny, authz.PermAIProvidersManage, authz.PermServicesConfigureAny)
 }
 
 // providerViews returns the response item for every provider whose backing
@@ -768,6 +768,19 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// gateway_only is set with the caller's right to configure the service.
+	// Without it the flag would stay off behind a 201, so refuse first.
+	if in.GatewayOnly {
+		role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
+		if err == nil {
+			_, err = d.Services.GetService(r.Context(), userID(r.Context()), role, in.ServiceID)
+		}
+		if errors.Is(err, store.ErrForbidden) {
+			writeErr(w, http.StatusForbidden, "gateway_only needs the right to configure the service")
+			return
+		}
+	}
+
 	p, err := d.AIProviders.CreateTunnelProvider(r.Context(), slug, name, in.ServiceID)
 	if err != nil {
 		if !mapProviderErr(w, err) {
@@ -790,7 +803,7 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 // was just created. A failure is logged and does not undo the provider: the
 // switch can be set from the service page.
 func (d Deps) closeDirectDoors(r *http.Request, p db.AIProvider) {
-	role, err := d.actingRole(r, authz.PermServicesConfigureAny)
+	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
 	if err == nil {
 		err = d.Services.SetServiceGatewayOnly(r.Context(), userID(r.Context()), role, p.ServiceID, true)
 	}

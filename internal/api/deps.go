@@ -679,6 +679,9 @@ const (
 	// Set by RequireBearerOrSession so the request hot path does not need
 	// a second GetUserByID; the bearer middleware already did one.
 	callerRoleKey
+	// bearerExpiresKey carries the expiry (a time.Time) of a bearer token
+	// that has one; absent for a token that never expires.
+	bearerExpiresKey
 )
 
 // userID returns the authenticated user id stored by RequireSession (or
@@ -705,6 +708,13 @@ func bearerTokenID(ctx context.Context) string {
 func bearerPerms(ctx context.Context) []string {
 	v, _ := ctx.Value(bearerPermsKey).([]string)
 	return v
+}
+
+// bearerExpiry returns the expiry of the authenticated bearer token, and false
+// for a token that never expires and for a cookie-authed request.
+func bearerExpiry(ctx context.Context) (time.Time, bool) {
+	v, ok := ctx.Value(bearerExpiresKey).(time.Time)
+	return v, ok
 }
 
 // callerRole returns the role attached to the request context by the

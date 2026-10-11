@@ -61,8 +61,9 @@ func attemptRequestID(r *http.Request) (string, bool) {
 // GetAIRequestAttempts handles GET /api/v1/ai/requests/{requestID}/attempts
 // (a dashboard session of a role with ai:read:any).  The log covers the
 // requests of every user and gateway key, so an automation token does not
-// open it, whatever it declares: the gate of the route refuses it.  An id without a log answers an empty list: a log is kept only
-// for requests that needed more than one attempt or failed.
+// open it, whatever it declares: the gate of the route refuses it.  An id
+// without a log answers an empty list: a log is kept only for requests that
+// needed more than one attempt or failed.
 func (d Deps) GetAIRequestAttempts(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	id, ok := attemptRequestID(r)

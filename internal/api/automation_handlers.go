@@ -124,7 +124,7 @@ func (d Deps) GetAutomationTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := userID(r.Context())
-	role, err := d.actingRole(r, authz.PermAutomationTokensManageAny)
+	role, err := d.actingRole(r, authz.PermAutomationTokensManageOwn, authz.PermAutomationTokensManageAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "lookup failed")
 		return
@@ -182,6 +182,12 @@ func (d Deps) PostAutomationToken(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// ... and outlives nothing: a token that expires mints one that
+		// expires, no later than itself.
+		if exp, ok := bearerExpiry(r.Context()); ok && (in.ExpiresAt == nil || in.ExpiresAt.After(exp)) {
+			writeErr(w, http.StatusForbidden, "requested expiry is later than the calling token's")
+			return
+		}
 	}
 
 	view, plaintext, err := d.Automation.MintAutomationToken(r.Context(), uid, role, in.Name, in.Permissions, in.ExpiresAt)
@@ -216,7 +222,7 @@ func (d Deps) DeleteAutomationToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := userID(r.Context())
-	role, err := d.actingRole(r, authz.PermAutomationTokensManageAny)
+	role, err := d.actingRole(r, authz.PermAutomationTokensManageOwn, authz.PermAutomationTokensManageAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "lookup failed")
 		return
