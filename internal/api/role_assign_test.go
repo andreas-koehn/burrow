@@ -230,6 +230,11 @@ func TestUserManagersAreHeldToTheTargetsRole(t *testing.T) {
 			t.Errorf("%s %s by a users:manage role: %d %s, want 403", c.method, c.path, rec.Code, rec.Body)
 		}
 	}
+	// Only the target guard can refuse this one: the new role is the caller's
+	// own, the target's current role (admin) is not.
+	if rec := h.do(t, http.MethodPatch, "/api/v1/users/u-admin2", map[string]string{"role": "cr-users"}, managers); rec.Code != http.StatusForbidden {
+		t.Errorf("moving an admin onto the caller's own role: %d %s, want 403", rec.Code, rec.Body)
+	}
 	var role, status string
 	if err := h.sqldb.QueryRow(`SELECT role, status FROM users WHERE id='u-admin2'`).Scan(&role, &status); err != nil || role != "admin" || status != "active" {
 		t.Errorf("the refused calls changed the admin: %q %q %v", role, status, err)
@@ -257,5 +262,65 @@ func TestUserManagersAreHeldToTheTargetsRole(t *testing.T) {
 	}
 	if rec := h.do(t, http.MethodDelete, "/api/v1/users/u-admin3", nil, admin); rec.Code != http.StatusNoContent {
 		t.Errorf("admin deleting an admin: %d %s, want 204", rec.Code, rec.Body)
+	}
+}
+
+// Changing or deleting a role takes the permissions the role holds now, or
+// "PUT permissions: []" would empty the guard on its users.
+func TestChangingARoleNeedsWhatItHoldsNow(t *testing.T) {
+	h := newAuthzHarness(t)
+	ctx := context.Background()
+	for name, perms := range map[string][]string{
+		"cr-mgr": {"roles:manage", "users:manage", "users:read"},
+		"small":  {"users:read"},
+		"small2": {"users:read"},
+	} {
+		if err := h.st.CreateRole(ctx, name, "", perms, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.sqldb.ExecContext(ctx, `INSERT INTO users(id, email, password_hash, role) VALUES('u-cr-mgr','m@x','x','cr-mgr')`); err != nil {
+		t.Fatal(err)
+	}
+	mgr := h.session(t, "cr-mgr")
+
+	if rec := h.do(t, http.MethodPut, "/api/v1/roles/cr-legacy", map[string]any{"permissions": []string{}}, mgr); rec.Code != http.StatusForbidden {
+		t.Errorf("emptying a role the caller does not fully hold: %d %s, want 403", rec.Code, rec.Body)
+	}
+	if rec := h.do(t, http.MethodDelete, "/api/v1/users/u-cr-legacy", nil, mgr); rec.Code != http.StatusForbidden {
+		t.Errorf("deleting a holder of that role: %d, want 403", rec.Code)
+	}
+	var n int
+	if err := h.sqldb.QueryRow(`SELECT COUNT(*) FROM users WHERE id='u-cr-legacy'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("the user is gone: %d %v", n, err)
+	}
+	if rec := h.do(t, http.MethodDelete, "/api/v1/roles/cr-legacy", nil, mgr); rec.Code != http.StatusForbidden {
+		t.Errorf("deleting a role the caller does not fully hold: %d, want 403", rec.Code)
+	}
+	if rec := h.do(t, http.MethodPut, "/api/v1/roles/small", map[string]any{"permissions": []string{}}, mgr); rec.Code != http.StatusNoContent {
+		t.Errorf("editing a role within one's own: %d %s, want 204", rec.Code, rec.Body)
+	}
+	if rec := h.do(t, http.MethodDelete, "/api/v1/roles/small", nil, mgr); rec.Code != http.StatusNoContent {
+		t.Errorf("deleting a role within one's own: %d %s, want 204", rec.Code, rec.Body)
+	}
+	if rec := h.do(t, http.MethodDelete, "/api/v1/roles/ghost", nil, mgr); rec.Code != http.StatusNotFound {
+		t.Errorf("deleting a role that does not exist: %d, want 404", rec.Code)
+	}
+
+	admin := h.session(t, "admin")
+	if rec := h.do(t, http.MethodPut, "/api/v1/roles/cr-legacy", map[string]any{"description": "d"}, admin); rec.Code != http.StatusNoContent {
+		t.Errorf("admin editing a role: %d %s, want 204", rec.Code, rec.Body)
+	}
+	// An admin's token that declares roles:manage only does not reach a role
+	// that holds more.
+	tok := h.token(t, "admin", "roles:manage")
+	if rec := h.do(t, http.MethodPut, "/api/v1/roles/small2", map[string]any{"description": "d"}, tok); rec.Code != http.StatusForbidden {
+		t.Errorf("a narrow token editing a role: %d, want 403", rec.Code)
+	}
+	if rec := h.do(t, http.MethodDelete, "/api/v1/roles/small2", nil, tok); rec.Code != http.StatusForbidden {
+		t.Errorf("a narrow token deleting a role: %d, want 403", rec.Code)
+	}
+	if rec := h.do(t, http.MethodDelete, "/api/v1/roles/small2", nil, admin); rec.Code != http.StatusNoContent {
+		t.Errorf("admin deleting a role: %d %s, want 204", rec.Code, rec.Body)
 	}
 }

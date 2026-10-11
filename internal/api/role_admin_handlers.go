@@ -99,6 +99,18 @@ func (d Deps) PostRole(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// mayChangeRole reports whether the caller may edit or delete the named role:
+// the caller must hold every permission the role holds now (mayGrant), or
+// emptying a role would open its users to anyone who manages roles. A
+// built-in role keeps its own refusal from the store, and a role that does
+// not exist its 404.
+func (d Deps) mayChangeRole(w http.ResponseWriter, r *http.Request, name string) bool {
+	if _, builtin := authz.Get(name); builtin {
+		return true
+	}
+	return d.mayAssignRole(w, r, name)
+}
+
 // PutRole patches an existing non-builtin role. 204 on success, 404 if no
 // row matches, 409 for built-in rows, 400 on an unknown perm key.
 func (d Deps) PutRole(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +123,9 @@ func (d Deps) PutRole(w http.ResponseWriter, r *http.Request) {
 	var in updateRoleReq
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if !d.mayChangeRole(w, r, name) {
 		return
 	}
 	if in.Permissions != nil && !d.mayGrant(w, r, *in.Permissions) {
@@ -144,6 +159,9 @@ func (d Deps) DeleteRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := chi.URLParam(r, "name")
+	if !d.mayChangeRole(w, r, name) {
+		return
+	}
 	if _, err := d.Roles.DeleteRole(r.Context(), name); err != nil {
 		if writeRoleErr(w, err) {
 			return
