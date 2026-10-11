@@ -70,7 +70,7 @@ export function EditSlugDialog({ service, open, onOpenChange }: EditSlugDialogPr
       }
     >
       <ErrorNotice variant="warn" role="note">
-        The old URL stops working immediately. Clients that use it must be updated.
+        The old URL stops working immediately. Apps that use it must be updated.
       </ErrorNotice>
       <SlugField
         id="edit-slug"

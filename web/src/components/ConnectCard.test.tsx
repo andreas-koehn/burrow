@@ -118,7 +118,7 @@ describe("ConnectCard", () => {
     mount([anthropicOnly]);
     await userEvent.click(screen.getByRole("tab", { name: "Codex" }));
     expect(offered("Models for Codex")).toEqual(["burrow-claudetranslated"]);
-    expect(screen.getByText(/output is capped at 32,000 tokens when the client sets no limit, and temperature and top_p are not sent/i)).toBeInTheDocument();
+    expect(screen.getByText(/output is capped at 32,000 tokens when the app sets no limit, and temperature and top_p are not sent/i)).toBeInTheDocument();
   });
 
   it("Codex: the Anthropic-format note shows when any candidate of a model is one, not only the first", async () => {
@@ -144,7 +144,7 @@ describe("ConnectCard", () => {
     expect(offered("Models for the OpenAI SDK")).toEqual(["burrow-claudetranslated"]);
     expect(screen.getAllByText(/model="burrow-claude"/).length).toBeGreaterThan(0);
     await userEvent.click(screen.getByRole("tab", { name: "Other" }));
-    expect(offered("Models for other clients")).toEqual(["burrow-claudetranslated"]);
+    expect(offered("Models for other apps")).toEqual(["burrow-claudetranslated"]);
   });
 
   it("OpenAI SDK: offers Python and TypeScript", async () => {

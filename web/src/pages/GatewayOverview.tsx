@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Sparkles } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
-import { Badge, Button, EmptyState, ErrorNotice, MetricStrip, MetricTile, PageHeader, SkeletonRows } from "@/components/ds";
+import { Button, EmptyState, ErrorNotice, MetricStrip, MetricTile, PageHeader, SkeletonRows } from "@/components/ds";
 import { ConnectCard } from "@/components/ConnectCard";
 import { GatewayAddresses } from "@/components/GatewayAddresses";
 import { SetupChecklist, type ChecklistStep } from "@/components/SetupChecklist";
@@ -118,7 +118,7 @@ export default function GatewayOverview() {
     ...(isAdmin ? [{
       id: "model",
       title: "Create a model",
-      description: "A model is a name clients ask for, and for each API format the provider it is sent to.",
+      description: "A model is a name apps ask for, and for each API format the provider it is sent to.",
       done: modelList.length > 0,
       action: { label: "Create a model", to: "/gateway/models" },
     }] : []),
@@ -206,10 +206,7 @@ export default function GatewayOverview() {
                       <td className="col-name"><Link to={`/gateway/providers/${p.slug}`}>{p.name}</Link></td>
                       <td>
                         {/* The same words as the Providers page. */}
-                        <span className="row row-center gap-2">
-                          <StatusBadge state={providerState(p)} />
-                          {p.kind === "tunnel" && p.status === "Degraded" && <Badge kind="status-degraded">degraded</Badge>}
-                        </span>
+                        <StatusBadge state={providerState(p)} />
                       </td>
                       <td className="mono">{fmtInt(p.requests_24h)}</td>
                     </tr>

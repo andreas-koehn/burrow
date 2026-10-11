@@ -83,15 +83,6 @@ describe("Providers page", () => {
     }
   });
 
-  it("keeps degraded as its own badge beside the state", async () => {
-    db.aiMeta.svc_ai001!.status = "Degraded";
-    mount();
-    const table = await screen.findByRole("table", { name: /providers/i });
-    const row = within(table).getByRole("link", { name: "ollama" }).closest("tr")!;
-    expect(within(row).getByText("Online", { selector: "span.badge" })).toBeInTheDocument();
-    expect(within(row).getByText("degraded", { selector: "span.badge" })).toBeInTheDocument();
-  });
-
   it("⋯ menu offers Inspect / Keys / Access settings / Cost", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /providers/i });

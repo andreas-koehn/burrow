@@ -150,7 +150,7 @@ export default function GatewayModels() {
           title="Add a provider first"
           action={<Link className="btn btn-primary btn-sm" to="/gateway/providers">Go to Providers</Link>}
         >
-          A model sends its requests to a provider. Once there is one, give it a name clients can ask for.
+          A model sends its requests to a provider. Once there is one, give it a name apps can ask for.
         </EmptyState>
       ) : list.length === 0 ? (
         <EmptyState icon={<Layers size={18} />} title="No models yet" action={newModel}>
@@ -240,7 +240,7 @@ export default function GatewayModels() {
             </>
           }
         >
-          <p className="muted">Clients that ask for this model will get an error.</p>
+          <p className="muted">Apps that ask for this model will get an error.</p>
           <p className="muted small">Gateway keys that list it keep the name and are not changed.</p>
           {deleteErr && <ErrorNotice>{deleteErr}</ErrorNotice>}
         </Dialog>

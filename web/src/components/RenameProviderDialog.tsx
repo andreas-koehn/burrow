@@ -74,7 +74,7 @@ function RenameProviderForm({ provider, onOpenChange, onRenamed }: Omit<RenamePr
       }
     >
       <ErrorNotice variant="warn" role="note">
-        The old base URL stops working immediately. Clients that use it must be updated.
+        The old base URL stops working immediately. Apps that use it must be updated.
       </ErrorNotice>
       <FormFieldGroup>
         <FormField label="Name" htmlFor="rp-name" w="md">

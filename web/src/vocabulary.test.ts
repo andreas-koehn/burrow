@@ -5,17 +5,31 @@ import { join, relative } from "node:path";
 // Words that may not appear in what the user reads. Checked in string literals
 // and JSX text only: comments and import lines are stripped first, so a
 // component named ClientTokensPanel or a type ClientView does not count.
+// Every rule ignores case and is matched with whitespace runs collapsed, so a
+// phrase wrapped over two JSX lines counts as well.
 const RETIRED: [RegExp, string][] = [
   [/tunnell?ing agents?/i, "say client"],
-  [/\bAI services?\b/, "say provider"],
-  [/\bAI endpoints?\b|across endpoints\b|shared across endpoints/i, "say provider"],
+  [/\bAI services?\b/i, "say provider"],
+  [/\bAI endpoints?\b|across endpoints\b/i, "say provider"],
   [/\bclient offline\b/i, "say Offline"],
-  [/>\s*idle\s*</, "say Offline or Never connected"],
-  [/Names clients ask for|What clients send as the model|clients send as the model/i, "say app"],
-  [/OpenAI-compatible client|Anthropic-compatible client|in a client\b/i, "say app"],
-  [/Rotate cache/, "removed"],
+  // As JSX text, or as a literal of its own ({x ? "connected" : "idle"}). A
+  // value that only contains the word (closed_idle, the badge kind status-idle) is not a status label.
+  [/>\s*idle\s*<|["'`]idle["'`]/i, "say Offline or Never connected"],
+  // A client is a machine running burrow: it serves, it does not ask for a model.
+  [/\bclients? (can )?(asks?|sends?)\b|\bclients that (ask|use)\b|\bother clients\b/i, "say app"],
+  [/OpenAI-compatible client|Anthropic-compatible client|\b(use|paste|set) (it |this )?in a client\b/i, "say app"],
+  [/Rotate cache/i, "removed"],
   [/edit this table in Settings/i, "no such page"],
 ];
+
+/** The retired wordings in a source text, each with what to say instead. */
+function retiredIn(src: string): string[] {
+  const text = readable(src).replace(/\s+/g, " ");
+  return RETIRED.flatMap(([re, instead]) => {
+    const m = text.match(re);
+    return m ? [`"${m[0]}": ${instead}`] : [];
+  });
+}
 
 // Mocks and tests quote the relay and the old words; the contract mirrors the wire.
 const ALLOW = [/mocks\//, /\.test\.tsx?$/, /contract\.ts$/, /vocabulary\.test\.ts$/];
@@ -103,6 +117,75 @@ describe("readable", () => {
   });
 });
 
+describe("the guard itself", () => {
+  // Each retired wording as it was written, wrapped over two lines, and in another case.
+  const CAUGHT: [string, string][] = [
+    ["tunneling agents", "<p>not tunneling agents.</p>"],
+    ["tunneling agents, wrapped", "<p>\n  not tunneling\n  agents.\n</p>"],
+    ["tunneling agents, other case", "<p>Tunnelling Agent</p>"],
+    ["AI service", "<Button>New AI service</Button>"],
+    ["AI service, wrapped", "<Button>\n  New AI\n  service\n</Button>"],
+    ["AI service, other case", 'const title = "New AI Service";'],
+    ["AI endpoint", 'const t = "One AI endpoint";'],
+    ["AI endpoint, wrapped", "<p>Every AI\n  endpoint</p>"],
+    ["AI endpoint, other case", 'const t = "ai endpoints";'],
+    ["across endpoints", 'const l = "Global (cache shared across endpoints)";'],
+    ["across endpoints, wrapped", "<p>shared across\n  endpoints</p>"],
+    ["across endpoints, other case", 'const l = "Across Endpoints";'],
+    ["client offline", "<Badge>client offline</Badge>"],
+    ["client offline, wrapped", "<Badge>\n  client\n  offline\n</Badge>"],
+    ["client offline, other case", 'const t = "Client Offline";'],
+    ["idle", "<Badge>idle</Badge>"],
+    ["idle, wrapped", "<Badge>\n  idle\n</Badge>"],
+    ["idle, other case", "<Badge>Idle</Badge>"],
+    ["idle as a literal", '<Badge>{up ? "connected" : "idle"}</Badge>'],
+    ["idle as a literal, other case", "const label = up ? 'Online' : 'Idle';"],
+    ["clients ask for", 'const s = "Names clients ask for, and where each one is sent.";'],
+    ["clients ask for, wrapped", "<p>A model is a name clients\n  ask for.</p>"],
+    ["clients ask for, other case", "<p>Clients Ask for it</p>"],
+    ["a client asks for", "<p>What a client asks for when you add a provider by hand.</p>"],
+    ["clients can ask for", "<p>give it a name clients can ask for.</p>"],
+    ["clients send", 'const h = "What clients send as the model";'],
+    ["a client sends", "<p>the header a client\n  sends</p>"],
+    ["clients that ask", "<p>Clients that ask for this model will get an error.</p>"],
+    ["clients that use", "<p>Clients that\n  use this base URL will start receiving errors.</p>"],
+    ["other clients", '<OfferList label="Models for other clients" />'],
+    ["other clients, other case", "<h3>Other Clients</h3>"],
+    ["OpenAI-compatible client", "<p>any OpenAI-compatible client</p>"],
+    ["OpenAI-compatible client, wrapped", "<p>any OpenAI-compatible\n  client</p>"],
+    ["OpenAI-compatible client, other case", 'const s = "an openai-compatible Client";'],
+    ["Anthropic-compatible client", "<p>an Anthropic-compatible client</p>"],
+    ["use it in a client", "<p>Copy the key and use it in a client.</p>"],
+    ["paste this in a client, wrapped", "<p>Paste this in\n  a client.</p>"],
+    ["Rotate cache", '{ label: "Rotate cache" }'],
+    ["Rotate cache, wrapped", "<button>\n  Rotate\n  cache\n</button>"],
+    ["Rotate cache, other case", '{ label: "rotate Cache" }'],
+    ["edit this table in Settings", "<p>Operators can edit this table in Settings.</p>"],
+    ["edit this table in Settings, wrapped", "<p>Operators can edit this table\n  in Settings.</p>"],
+    ["edit this table in Settings, other case", 'const s = "Edit This Table In settings";'],
+  ];
+  it.each(CAUGHT)("catches %s", (_name, src) => {
+    expect(retiredIn(src)).toHaveLength(1);
+  });
+
+  // What the dashboard may say, and names the user never reads.
+  const ALLOWED: [string, string][] = [
+    ["Sign in a client", "<h2>Sign in a client</h2>"],
+    ["Connect a client", "<h2>Connect a client</h2>"],
+    ["a component name", 'import { ClientTokensPanel } from "@/components/ClientTokensPanel";\nconst a = <ClientTokensPanel />;'],
+    ["a type name", "const rows: ClientView[] = [];"],
+    ["the badge kind status-idle", '<Badge kind="status-idle" nodot>translated</Badge>'],
+    ["the connection status closed_idle", 'case "closed_idle": return "status-idle";'],
+    ["a client that serves", "<p>A service goes live when a client runs burrow connect for it.</p>"],
+    ["clients as machines", "<p>No clients connected</p>"],
+    ["retired words in a comment", "// an AI service, idle, client offline\nconst a = 1; /* Rotate cache */"],
+    ["the new words", "<p>Names apps ask for. Global (cache shared across providers). Online, Offline, Never connected.</p>"],
+  ];
+  it.each(ALLOWED)("lets %s pass", (_name, src) => {
+    expect(retiredIn(src)).toEqual([]);
+  });
+});
+
 describe("one vocabulary in the dashboard", () => {
   const root = join(__dirname);
   const files = walk(root)
@@ -115,11 +198,6 @@ describe("one vocabulary in the dashboard", () => {
   });
 
   it.each(files)("%s", (file) => {
-    const src = readable(readFileSync(join(root, file), "utf8"));
-    const found = RETIRED.flatMap(([re, instead]) => {
-      const m = src.match(re);
-      return m ? [`"${m[0]}": ${instead}`] : [];
-    });
-    expect(found, `${file} uses retired words`).toEqual([]);
+    expect(retiredIn(readFileSync(join(root, file), "utf8")), `${file} uses retired words`).toEqual([]);
   });
 });

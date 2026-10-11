@@ -23,7 +23,7 @@ export interface ConnectCardProps {
 
 const FORMAT: Record<Dialect, string> = { openai: "OpenAI", anthropic: "Anthropic" };
 
-/** What a client asks for: a format's main endpoint, or the Responses API on the OpenAI endpoint. */
+/** What an app asks for: a format's main endpoint, or the Responses API on the OpenAI endpoint. */
 type Endpoint = Dialect | "responses";
 
 /** A model a tab offers. */
@@ -60,14 +60,14 @@ function OfferList({ label, list }: { label: string; list: Offer[] }) {
 
 const DROPPED_HEADER = <>Every translated response names what was left out in its <code>Burrow-Dropped</code> header.</>;
 
-/** What a translated model loses behind an Anthropic-format provider, for clients that speak an OpenAI format. */
+/** What a translated model loses behind an Anthropic-format provider, for apps that speak an OpenAI format. */
 function TowardMessagesNote({ list }: { list: Offer[] }) {
   // Any candidate counts, not only the first: a later one can be the one that answers.
   if (!list.some((m) => m.translated && towardMessages(m.pairs))) return null;
   return (
     <p className="muted small">
       A translated model may be answered by an Anthropic-format provider: there the output is capped at 32,000 tokens
-      when the client sets no limit, and temperature and top_p are not sent.
+      when the app sets no limit, and temperature and top_p are not sent.
     </p>
   );
 }
@@ -82,7 +82,7 @@ function BaseUrl({ url }: { url: string }) {
 }
 
 /**
- * Ready configurations for the clients people point at the gateway. Every one
+ * Ready configurations for the apps people point at the gateway. Every one
  * carries a placeholder or an environment variable where the key goes: the
  * card never receives a key, so it cannot show one.
  */
@@ -102,7 +102,7 @@ export function ConnectCard({ endpoints, models, canCreate = true }: ConnectCard
   const tiers = pickTier(names(anthropic));
   const pinnedTranslated = anthropic.some((m) => m.translated && Object.values(tiers).includes(m.name));
 
-  // A client speaks one format: without a model in it there is nothing to configure.
+  // An app speaks one format: without a model in it there is nothing to configure.
   const forFormat = (d: Dialect, list: Offer[], content: () => ReactNode) =>
     list.length > 0 ? content() : (
       <p className="muted">
@@ -224,7 +224,7 @@ export function ConnectCard({ endpoints, models, canCreate = true }: ConnectCard
               content: forFormat("openai", chat, () => (
                 <>
                   <p className="muted small">
-                    What a client asks for when you add an OpenAI-compatible provider by hand.
+                    What an app asks for when you add an OpenAI-compatible provider by hand.
                   </p>
                   <dl className="def-list">
                     {genericProvider(base("openai"), names(chat)).map((row) => (
@@ -235,7 +235,7 @@ export function ConnectCard({ endpoints, models, canCreate = true }: ConnectCard
                       </div>
                     ))}
                   </dl>
-                  <OfferList label="Models for other clients" list={chat} />
+                  <OfferList label="Models for other apps" list={chat} />
                   {chat.some((m) => m.translated) && <p className="muted small">{DROPPED_HEADER}</p>}
                   <TowardMessagesNote list={chat} />
                 </>

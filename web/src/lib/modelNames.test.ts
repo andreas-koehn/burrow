@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { modelNameError } from "./modelNames";
 
 describe("modelNameError", () => {
-  it("accepts valid names, including names a client asks for by default", () => {
+  it("accepts valid names, including names an app asks for by default", () => {
     for (const n of ["burrow-intelligence", "fast", "gpt4.mini_v2", "a1", "claude-sonnet-4-6"]) expect(modelNameError(n)).toBeNull();
   });
   it("rejects invalid names", () => {

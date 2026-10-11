@@ -535,7 +535,7 @@ export default function ProviderDetail() {
           }
         >
           <p className="muted">
-            Clients that use this base URL will start receiving errors.{" "}
+            Apps that use this base URL will start receiving errors.{" "}
             {direct
               ? `Its API keys, its AI configuration and its model list are deleted with it. The credential slot ${provider.data.credential_slot} on the relay is not touched.`
               : "The service, its API keys and its tunnel are kept."}

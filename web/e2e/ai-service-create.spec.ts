@@ -2,8 +2,8 @@ import { test, expect } from "@playwright/test";
 
 // Phase 5: AI gateway actionable — guided create-service flow.
 //
-// Flow: /gateway/providers → click "New service and provider" → Services page "New AI
-// service" dialog opens (access mode fixed to API key, no picker) → fill
+// Flow: /gateway/providers → click "New service and provider" → the Services
+// page opens the dialog of that name (access mode fixed to API key, no picker) → fill
 // service_id → "Create and continue" → the service is created and registered
 // as a provider → navigate to /gateway/providers/<slug>.
 //

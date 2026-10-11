@@ -127,7 +127,7 @@ describe("Models page", () => {
     await userEvent.click(within(table).getByRole("button", { name: "More actions for burrow-simple" }));
     await userEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
     const dialog = await screen.findByRole("dialog", { name: /delete burrow-simple/i });
-    expect(within(dialog).getByText("Clients that ask for this model will get an error.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Apps that ask for this model will get an error.")).toBeInTheDocument();
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete model" }));
     await waitFor(() => expect(screen.queryByRole("row", { name: /burrow-simple/ })).toBeNull());
   });

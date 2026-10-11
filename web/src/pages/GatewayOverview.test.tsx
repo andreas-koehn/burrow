@@ -86,7 +86,6 @@ describe("GatewayOverview", () => {
       provider({ slug: "ollama", name: "ollama", state: "online", requests_24h: 1024 }),
       provider({ slug: "gone", name: "gone", state: "offline", status: "Offline", requests_24h: 0 }),
       provider({ slug: "new", name: "new", state: "never_connected", status: "Offline", requests_24h: 0 }),
-      provider({ slug: "slow", name: "slow", state: "online", status: "Degraded", requests_24h: 3 }),
       provider({ slug: "zai", name: "zai", kind: "direct", state: "ready", status: "Connected", credential_present: true, requests_24h: 7 }),
       provider({ slug: "bare", name: "bare", kind: "direct", state: "not_configured", status: "Offline", credential_present: false, requests_24h: 0 }),
     ]);
@@ -96,8 +95,6 @@ describe("GatewayOverview", () => {
       ["ollama", "Online", "1,024"],
       ["gone", "Offline", "0"],
       ["new", "Never connected", "0"],
-      // Degraded is not a state of its own: it stays a second badge beside it.
-      ["slow", "Onlinedegraded", "3"],
       ["zai", "Ready", "7"],
       ["bare", "Not configured", "0"],
     ]);

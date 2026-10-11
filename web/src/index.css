@@ -478,10 +478,9 @@ select.input { height: 32px; padding-right: 8px; cursor: pointer; }
 .badge.status-connected .dot,
 .badge.status-online .dot { background: var(--success); box-shadow: 0 0 0 3px color-mix(in oklch, var(--success) 18%, transparent); }
 /* The three states of anything served through a client (StatusBadge): online
-   above, offline as the plain badge with a filled dot, never connected muted
-   with a dashed border and a hollow dot. The word is always written out. */
-.badge.status-offline { color: var(--foreground); }
-.badge.status-offline .dot { background: var(--muted-foreground); }
+   above; offline (.status-offline) is the plain badge with its filled dot and
+   needs no rule; never connected is muted, with a dashed border and a hollow
+   dot. The word is always written out. */
 .badge.status-never { color: var(--muted-foreground); border-style: dashed; }
 .badge.status-never .dot { background: transparent; box-shadow: inset 0 0 0 1px var(--muted-foreground); }
 /* --warning on the light card is about 2:1; the text is mixed towards the

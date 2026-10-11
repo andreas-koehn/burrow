@@ -427,6 +427,24 @@ describe("Services page — All | Live", () => {
 
   const rowCount = () => within(screen.getByRole("table", { name: "Services" })).getAllByRole("row").length;
 
+  it("sorts by status: Online first, then Offline, then Never connected, by name within each", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: "Services" });
+    const order = () => Array.from(table.querySelectorAll("tbody tr")).map((tr) => [
+      tr.querySelector("td.col-name")!.textContent,
+      tr.querySelector("td:nth-last-child(2) .badge")!.textContent,
+    ]);
+    await userEvent.click(within(table).getByRole("button", { name: /^Sort by status/ }));
+    expect(within(table).getByRole("button", { name: /^Sort by status/ }).closest("th")).toHaveAttribute("aria-sort", "ascending");
+    expect(order()).toEqual([
+      ["ollama", "Online"], ["postgres", "Online"], ["web", "Online"],
+      ["grafana", "Offline"], ["llamacpp", "Offline"],
+      ["lmstudio", "Never connected"],
+    ]);
+    await userEvent.click(within(table).getByRole("button", { name: /^Sort by status/ }));
+    expect(order().map((r) => r[1])).toEqual(["Never connected", "Offline", "Offline", "Online", "Online", "Online"]);
+  });
+
   it("says which column the table is sorted by, and in which direction", async () => {
     mount();
     const table = await screen.findByRole("table", { name: "Services" });

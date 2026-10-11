@@ -220,11 +220,7 @@ export default function Providers() {
                   </td>
                   <td className="mono">{fmtInt(e.latency_p95_ms)} ms</td>
                   <td>
-                    <span className="row row-center gap-2">
-                      <StatusBadge state={providerState(e)} />
-                      {/* Not a state of its own: the relay's `status` says so beside the state. */}
-                      {!direct && e.status === "Degraded" && <Badge kind="status-degraded">degraded</Badge>}
-                    </span>
+                    <StatusBadge state={providerState(e)} />
                   </td>
                   <td className="col-actions">
                     <DropdownMenu

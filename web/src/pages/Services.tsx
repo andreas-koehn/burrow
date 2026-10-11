@@ -180,7 +180,7 @@ export default function Services() {
           return {
             key: t.id, name: s?.name || t.name || s?.id || "", type: t.type, service: s, tunnel: t,
             // A live tunnel is held by a client right now.
-            state: t.connected ? "online" as const : s ? serviceState(s) : "offline" as const,
+            state: t.connected ? "online" as const : "offline" as const,
             haystack: `${t.name} ${s?.name ?? ""} ${t.type} ${t.local_addr} ${s?.slug ?? ""} ${s?.url || t.url || ""}`,
           };
         })
