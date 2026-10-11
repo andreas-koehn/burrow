@@ -35,6 +35,28 @@ describe("ServicesOverview", () => {
     expect(tiles(el)[3]).toEqual(["Traffic", "20.0 KiB / 8.0 KiB", "/traffic"]);
   });
 
+  it("counts two online tokens of the same name as two clients", async () => {
+    const row = (token_id: string, session_id: string) => ({
+      token_id, token_name: "laptop", user_id: db.me.id, status: "online", last_seen: null,
+      os: "linux", arch: "amd64", client_version: "0.6.0", remote_addr: "", served: [],
+      sessions: [{ session_id, token_name: "laptop", user_id: db.me.id, service_count: 1, total_bytes_in: 0, total_bytes_out: 0 }],
+    });
+    server.use(http.get("/api/v1/clients/known", () => HttpResponse.json([row("tok_a", "sess_a"), row("tok_b", "sess_b")])));
+    renderApp(<ServicesOverview />);
+    const el = await strip();
+    await waitFor(() => expect(tiles(el)[0]).toEqual(["Clients online", "2", "/clients"]));
+  });
+
+  it("on a relay without the list of known clients, counts its live sessions", async () => {
+    db.clients.push({ ...db.clients[0]!, session_id: "sess_second" });
+    server.use(http.get("/api/v1/clients/known", () => new HttpResponse(null, { status: 404 })));
+    renderApp(<ServicesOverview />);
+    const el = await strip();
+    // Such a relay cannot say that two sessions are one client: the Clients page lists two rows.
+    await waitFor(() => expect(tiles(el)[0]).toEqual(["Clients online", "2", "/clients"]));
+    expect(tiles(el)[3]).toEqual(["Traffic", "20.0 KiB / 8.0 KiB", "/traffic"]);
+  });
+
   it("has the Overview heading and its subtitle", async () => {
     renderApp(<ServicesOverview />);
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();

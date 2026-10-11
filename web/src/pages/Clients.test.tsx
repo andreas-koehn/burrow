@@ -7,6 +7,7 @@ import { renderApp } from "@/mocks/test-utils";
 import { db } from "@/mocks/db";
 import { Routes, Route, useLocation } from "react-router-dom";
 import Clients from "@/pages/Clients";
+import { Layout } from "@/components/Layout";
 
 function LocationProbe() {
   const { pathname, search } = useLocation();
@@ -236,6 +237,69 @@ describe("Clients — every client the relay knows", () => {
     // Nothing found is not the same as nothing there.
     expect(within(screen.getByRole("tabpanel", { name: "Clients" })).queryByRole("link", { name: "Connect a client" })).toBeNull();
     expect(search).toHaveValue("zzz");
+  });
+});
+
+// The sidebar count and the page read the same rows, so they cannot disagree.
+describe("Clients — the sidebar counts what the page lists", () => {
+  const mountInShell = () => renderApp(
+    <Routes><Route element={<Layout />}><Route path="/clients" element={<Clients />} /></Route></Routes>,
+    "/clients",
+  );
+  const onlineRows = () => within(table()).getAllByRole("row").slice(1).filter((tr) => within(tr).queryByText("Online"));
+  const sidebarCount = (n: number) => screen.findByRole("link", { name: `Clients, ${n} online` });
+
+  it("the seed: three clients, one of them online", async () => {
+    mountInShell();
+    await rowOf("build-server");
+    expect(onlineRows()).toHaveLength(1);
+    expect(await sidebarCount(1)).toHaveAttribute("aria-current", "page");
+  });
+
+  it("two online tokens of one user with the same name are two rows, and two in the sidebar", async () => {
+    const session = (session_id: string) => ({ ...db.clients[0]!, services: undefined, session_id, token_name: "laptop" });
+    const row = (token_id: string, session_id: string) => ({
+      token_id, token_name: "laptop", user_id: db.me.id, status: "online", last_seen: "2026-05-18T09:00:00Z",
+      os: "linux", arch: "amd64", client_version: "0.6.0", remote_addr: "203.0.113.7:51234", served: [],
+      sessions: [session(session_id)],
+    });
+    server.use(http.get("/api/v1/clients/known", () => HttpResponse.json([row("tok_a", "sess_a"), row("tok_b", "sess_b")])));
+    mountInShell();
+    await waitFor(() => expect(names()).toEqual(["laptop", "laptop"]));
+    expect(onlineRows()).toHaveLength(2);
+    expect(await sidebarCount(2)).toBeInTheDocument();
+  });
+
+  it("two sessions of one token are one row, and one in the sidebar", async () => {
+    db.clients.unshift({ ...db.clients[0]!, session_id: "sess_second" });
+    mountInShell();
+    await rowOf("office-box-1");
+    expect(onlineRows()).toHaveLength(1);
+    expect(await sidebarCount(1)).toBeInTheDocument();
+  });
+
+  it("on an older relay every live session is a row, and the sidebar counts those rows", async () => {
+    db.clients.unshift({ ...db.clients[0]!, session_id: "sess_second" });
+    server.use(http.get("/api/v1/clients/known", () => new HttpResponse(null, { status: 404 })));
+    mountInShell();
+    await waitFor(() => expect(names()).toEqual(["office-box-1", "office-box-1"]));
+    expect(onlineRows()).toHaveLength(2);
+    expect(await sidebarCount(2)).toBeInTheDocument();
+  });
+
+  it("asks for the list once for both", async () => {
+    const asked: string[] = [];
+    server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
+    try {
+      const { qc } = mountInShell();
+      await rowOf("office-box-1");
+      await sidebarCount(1);
+      await waitFor(() => expect(qc.isFetching()).toBe(0));
+      expect(asked.filter((p) => p === "/api/v1/clients/known")).toHaveLength(1);
+      expect(asked).not.toContain("/api/v1/clients");
+    } finally {
+      server.events.removeAllListeners();
+    }
   });
 });
 

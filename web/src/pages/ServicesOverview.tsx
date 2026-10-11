@@ -7,9 +7,9 @@ import { useAuth } from "@/auth/useAuth";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { GLOSSARY } from "@/lib/glossary";
-import { clientsOnline } from "@/lib/status";
+import { clientsOnline, useKnownClients } from "@/lib/useKnownClients";
 import { useRelayNotices } from "@/lib/useRelayNotices";
-import type { ClientView, ConnectionLog, Service } from "@/lib/contract";
+import type { ConnectionLog, Service } from "@/lib/contract";
 
 // The three lines of the Connect page, split over the first two steps.
 const SIGN_IN_LINES = ["install", "login"] as const;
@@ -23,13 +23,9 @@ export default function ServicesOverview() {
   const isAdmin = user?.role === "admin";
   const notices = useRelayNotices();
 
+  // The rows of the Clients page, from the request the sidebar makes too.
   // Admin-only endpoint; everyone else gets a dash instead of a count.
-  const clients = useQuery({
-    queryKey: ["clients"],
-    queryFn: () => apiFetch<ClientView[]>("/clients"),
-    enabled: isAdmin,
-    retry: false,
-  });
+  const clients = useKnownClients({ enabled: isAdmin });
 
   const services = useQuery({
     queryKey: ["services"],
@@ -55,11 +51,13 @@ export default function ServicesOverview() {
   });
 
   const svc = Array.isArray(services.data) ? services.data : [];
-  const cls = Array.isArray(clients.data) ? clients.data : [];
+  const known = clients.rows ?? [];
+  // The live sessions of the clients that are online.
+  const cls = known.flatMap((c) => c.sessions);
   const toks = Array.isArray(tokens.data) ? tokens.data : [];
   const liveNow = svc.filter((s) => s.connected).length;
 
-  const trafficValue = isAdmin && clients.data
+  const trafficValue = isAdmin && clients.rows
     ? `${formatBytes(cls.reduce((a, c) => a + c.total_bytes_in, 0))} / ${formatBytes(cls.reduce((a, c) => a + c.total_bytes_out, 0))}`
     : "—";
 
@@ -132,7 +130,7 @@ export default function ServicesOverview() {
         <MetricStrip ariaLabel="Overview">
           <MetricTile
             label="Clients online"
-            value={isAdmin && clients.data ? String(clientsOnline(cls)) : "—"}
+            value={isAdmin && clients.rows ? String(clientsOnline(known)) : "—"}
             sub="machines connected"
             tooltip={GLOSSARY.client.replace(/`/g, "")}
             to="/clients"

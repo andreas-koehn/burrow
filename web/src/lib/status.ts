@@ -1,4 +1,4 @@
-import type { AiProvider, ClientView, Service } from "./contract";
+import type { AiProvider, Service } from "./contract";
 
 /** Display text for a status value: lower-case words, underscores as spaces. */
 export function statusLabel(raw: string | null | undefined): string {
@@ -30,15 +30,6 @@ export const STATE_BADGE: Record<State, string> = {
 };
 
 const SERVED: readonly string[] = ["online", "offline", "never_connected"];
-
-/**
- * How many clients are online, given the live sessions (GET /clients). A client
- * is a token of a user: one that is connected twice counts once, as it is one
- * row of the Clients page.
- */
-export function clientsOnline(sessions: Pick<ClientView, "user_id" | "token_name">[]): number {
-  return new Set(sessions.map((s) => JSON.stringify([s.user_id, s.token_name]))).size;
-}
 
 /**
  * Works against a relay that predates `status`: falls back to `connected`,

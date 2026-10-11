@@ -9,6 +9,9 @@ import { Layout } from "./Layout";
 interface Options {
   path?: string;
   services?: unknown[];
+  /** GET /clients/known; "missing" is a relay that predates it (404). */
+  known?: unknown[] | "missing";
+  /** GET /clients: the live sessions, which only a relay without the list above is asked for. */
   clients?: unknown[];
   /** GET /settings; email is set up unless a test says otherwise. */
   settings?: Record<string, string> | "fail";
@@ -23,7 +26,14 @@ function Where() {
 
 const settingsRequests = { count: 0 };
 
-function renderLayout(meRole?: "admin" | "user" | null, { path = "/services", services, clients, settings = EMAIL_SET_UP }: Options = {}) {
+/** A row of GET /clients/known: an online client and its live sessions. */
+const online = (token_id: string, token_name: string, ...sessionIds: string[]) => ({
+  token_id, token_name, user_id: "u1", status: "online", last_seen: null,
+  os: "", arch: "", client_version: "", remote_addr: "", served: [],
+  sessions: sessionIds.map((session_id) => ({ session_id, token_name, user_id: "u1" })),
+});
+
+function renderLayout(meRole?: "admin" | "user" | null, { path = "/services", services, known, clients, settings = EMAIL_SET_UP }: Options = {}) {
   // Mock fetch: /api/v1/me returns a user with the given role, or 401 if null.
   vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
     const u = String(url);
@@ -43,6 +53,8 @@ function renderLayout(meRole?: "admin" | "user" | null, { path = "/services", se
         ? new Response(JSON.stringify({ error: "boom" }), { status: 500 })
         : new Response(JSON.stringify(settings), { status: 200 })) as Response;
     }
+    if (known === "missing" && u.endsWith("/api/v1/clients/known")) return new Response(JSON.stringify({ error: "client not found" }), { status: 404 }) as Response;
+    if (known && u.endsWith("/api/v1/clients/known")) return new Response(JSON.stringify(known), { status: 200 }) as Response;
     if (clients && u.endsWith("/api/v1/clients")) return new Response(JSON.stringify(clients), { status: 200 }) as Response;
     return new Response("{}", { status: 200 }) as Response;
   });
@@ -181,7 +193,7 @@ describe("Layout workspace shell", () => {
 
   // Clients belong to the relay: one page at /clients, shown in the workspace the reader came from.
   it("Clients opened from the AI Gateway keeps the AI Gateway sidebar and breadcrumb", async () => {
-    renderLayout("admin", { path: "/gateway/providers", clients: [{ session_id: "sess_1", token_name: "office-box-1" }] });
+    renderLayout("admin", { path: "/gateway/providers", known: [online("tok_1", "office-box-1", "sess_1")] });
     const gateway = await screen.findByRole("navigation", { name: "AI Gateway" });
     await userEvent.click(await within(gateway).findByRole("link", { name: "Clients, 1 online" }));
     expect(screen.getByTestId("where")).toHaveTextContent("/clients");
@@ -222,7 +234,7 @@ describe("Layout workspace shell", () => {
 
   it("a client's own page stays in the AI Gateway when the reader came from there", async () => {
     localStorage.setItem("burrow.lastWorkspace", "gateway");
-    renderLayout("admin", { path: "/clients/sess_1", clients: [{ session_id: "sess_1", token_name: "office-box-1" }] });
+    renderLayout("admin", { path: "/clients/sess_1", known: [online("tok_1", "office-box-1", "sess_1")] });
     const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
     expect(await within(crumbs).findByText("office-box-1")).toHaveAttribute("aria-current", "page");
     expect(crumbs).toHaveTextContent(/^AI Gateway\W*Clients\W*office-box-1$/);
@@ -396,20 +408,44 @@ describe("Layout workspace shell", () => {
     renderLayout("admin", {
       path: "/",
       services: [httpService("svc1", "ollama"), httpService("svc2", "grafana")],
-      clients: [{ session_id: "sess_1", token_name: "office-box-1" }],
+      known: [
+        online("tok_1", "office-box-1", "sess_1"),
+        { ...online("tok_2", "koehn-laptop"), status: "offline" },
+        { ...online("tok_3", "build-server"), status: "never_connected" },
+      ],
     });
     expect(await screen.findByRole("link", { name: "Services, 2" })).toBeInTheDocument();
     expect(await screen.findByRole("link", { name: "Clients, 1 online" })).toBeInTheDocument();
   });
 
-  it("counts a client that is connected twice once, as the Clients page lists it", async () => {
+  // The count is the number of rows the Clients page shows as Online.
+  it("counts two online tokens of the same name as two clients", async () => {
+    renderLayout("admin", { path: "/", known: [online("tok_1", "laptop", "sess_1"), online("tok_2", "laptop", "sess_2")] });
+    expect(await screen.findByRole("link", { name: "Clients, 2 online" })).toBeInTheDocument();
+  });
+
+  it("on a relay without the list of known clients, counts its live sessions, as the Clients page lists them", async () => {
     renderLayout("admin", {
-      path: "/",
+      path: "/clients/sess_2",
+      known: "missing",
       clients: [
-        { session_id: "sess_1", user_id: "u1", token_name: "office-box-1" },
-        { session_id: "sess_2", user_id: "u1", token_name: "office-box-1" },
+        { session_id: "sess_1", user_id: "u1", token_name: "office-box-1", service_count: 1 },
+        { session_id: "sess_2", user_id: "u1", token_name: "office-box-1", service_count: 1 },
       ],
     });
+    expect(await screen.findByRole("link", { name: "Clients, 2 online" })).toBeInTheDocument();
+    // The breadcrumb still names the client of a session.
+    expect(within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByText("office-box-1")).toHaveAttribute("aria-current", "page");
+  });
+
+  it("names every session of a client in the breadcrumb", async () => {
+    renderLayout("admin", { path: "/clients/sess_2", known: [online("tok_1", "office-box-1", "sess_1", "sess_2")] });
+    const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(await within(crumbs).findByText("office-box-1")).toHaveAttribute("aria-current", "page");
+  });
+
+  it("counts a client that is connected twice once, as the Clients page lists it", async () => {
+    renderLayout("admin", { path: "/", known: [online("tok_1", "office-box-1", "sess_1", "sess_2")] });
     expect(await screen.findByRole("link", { name: "Clients, 1 online" })).toBeInTheDocument();
   });
 

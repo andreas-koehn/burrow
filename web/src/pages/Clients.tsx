@@ -9,7 +9,8 @@ import { Input, Badge, Button, EmptyState, PageHeader, SkeletonRows, Tabs } from
 import { StatusBadge } from "@/components/StatusBadge";
 import { ClientTokensPanel } from "@/components/ClientTokensPanel";
 import { InstallLines } from "@/components/InstallLines";
-import type { ClientDiscovery, ClientView, KnownClient, Service } from "@/lib/contract";
+import { useKnownClients } from "@/lib/useKnownClients";
+import type { ClientDiscovery, KnownClient, Service } from "@/lib/contract";
 
 /** MAJOR.MINOR.PATCH with an optional v; anything else (develop, a commit) has no order. */
 function versionNumbers(v: string): [number, number, number] | null {
@@ -26,30 +27,6 @@ function olderThan(client: string, relay: string | undefined): boolean {
     if (c[i] !== r[i]) return c[i]! < r[i]!;
   }
   return false;
-}
-
-/** A live session as a row of its own: all a relay without /clients/known can say. */
-function fromSession(s: ClientView): KnownClient {
-  return {
-    token_id: "", token_name: s.token_name, user_id: s.user_id, status: "online", last_seen: null,
-    os: s.os, arch: s.arch, client_version: s.client_version, remote_addr: s.remote_addr,
-    served: [], sessions: [s],
-  };
-}
-
-/**
- * Every client the relay knows, one row per client token. A relay that predates
- * the list answers 404; its live sessions are then listed instead, so the page
- * stays usable. Any other failure, a refusal included, is the caller's to show.
- */
-async function knownClients(): Promise<KnownClient[]> {
-  try {
-    return await apiFetch<KnownClient[]>("/clients/known");
-  } catch (e) {
-    if (!(e instanceof ApiError) || e.status !== 404) throw e;
-    const live = await apiFetch<ClientView[]>("/clients");
-    return Array.isArray(live) ? live.map(fromSession) : [];
-  }
 }
 
 /**
@@ -134,13 +111,8 @@ function ClientList() {
     staleTime: 5 * 60_000,
   });
   const relayVersion = relay.data?.version;
-  // Below ["clients"], the live sessions, so that whatever refreshes those refreshes this list too.
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["clients", "known"],
-    queryFn: knownClients,
-    retry: false,
-    refetchInterval: 30000,
-  });
+  // The same rows, from the same request, as the sidebar's count.
+  const { rows: data, isLoading, error } = useKnownClients({ refetchInterval: 30000 });
   // Same key and fetch as the shell. Only the links depend on it: without an answer the names stay text.
   const services = useQuery({
     queryKey: ["services"],
@@ -158,7 +130,7 @@ function ClientList() {
     );
   }
 
-  const known = Array.isArray(data) ? data : [];
+  const known = data ?? [];
   if (!isLoading && known.length === 0) {
     return (
       <div className="stack-md">

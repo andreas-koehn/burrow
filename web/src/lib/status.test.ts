@@ -1,20 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { STATE_BADGE, STATE_LABEL, clientsOnline, providerState, serviceState, statusLabel, type State } from "./status";
-
-describe("clientsOnline", () => {
-  const session = (user_id: string, token_name: string) => ({ user_id, token_name });
-  it("counts clients, not sessions", () => {
-    expect(clientsOnline([])).toBe(0);
-    expect(clientsOnline([session("u1", "office-box-1")])).toBe(1);
-    // One token connected twice is one client.
-    expect(clientsOnline([session("u1", "office-box-1"), session("u1", "office-box-1"), session("u1", "laptop")])).toBe(2);
-  });
-  it("two owners may give their tokens the same name", () => {
-    expect(clientsOnline([session("u1", "laptop"), session("u2", "laptop")])).toBe(2);
-    // No pair of user and name reads like another one.
-    expect(clientsOnline([session("u1", "a b"), session("u1 a", "b")])).toBe(2);
-  });
-});
+import { STATE_BADGE, STATE_LABEL, providerState, serviceState, statusLabel, type State } from "./status";
 
 describe("statusLabel", () => {
   it.each([

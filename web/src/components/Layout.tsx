@@ -4,13 +4,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 import { useTheme } from "@/components/theme-provider";
 import { useAuth } from "@/auth/useAuth";
-import type { ClientView, Service } from "@/lib/contract";
+import type { Service } from "@/lib/contract";
 import { CommandPalette } from "@/components/CommandPalette";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { TopBar } from "@/components/shell/TopBar";
 import { FOOTER_ENTRIES, breadcrumbFor, navigationFor, workspacesFor } from "@/lib/navigation";
 import { lastWorkspace, rememberWorkspace, workspaceFor } from "@/lib/workspace";
-import { clientsOnline } from "@/lib/status";
+import { clientsOnline, useKnownClients } from "@/lib/useKnownClients";
 import { useRelayNotices } from "@/lib/useRelayNotices";
 
 const COLLAPSED_KEY = "burrow.sidebarCollapsed";
@@ -64,16 +64,11 @@ export function Layout() {
   const isAdmin = user?.role === "admin";
   // Empty for non-admins, and no request is made for them.
   const relayNotices = useRelayNotices();
-  // The live sessions, under the key the Connect page and the palette use too.
-  // The endpoint is admin-gated; nobody else gets a count.
-  const clients = useQuery({
-    queryKey: ["clients"],
-    queryFn: () => apiFetch<ClientView[]>("/clients"),
-    retry: false,
-    enabled: isAdmin,
-  });
+  // The rows of the Clients page, from the request that page makes too. The
+  // endpoint is admin-gated; nobody else is asked for, or gets, a count.
+  const clients = useKnownClients({ enabled: isAdmin });
   const servicesList = Array.isArray(services.data) ? services.data : [];
-  const clientsList = Array.isArray(clients.data) ? clients.data : [];
+  const clientsList = clients.rows ?? [];
   const hasAiGateway = isAdmin
     || servicesList.some((s) => s.type === "http" && s.connected);
   const ctx = { isAdmin, hasAiGateway };
@@ -93,7 +88,7 @@ export function Layout() {
   // Names for the breadcrumb's object crumb; an id nobody has a name for shows as itself.
   const names: Record<string, string> = {};
   for (const s of servicesList) names[s.id] = s.name;
-  for (const c of clientsList) names[c.session_id] = c.token_name;
+  for (const c of clientsList) for (const s of c.sessions) names[s.session_id] = c.token_name;
   const crumbs = gatewayHidden
     ? [{ label: navigation.label, to: navigation.home }]
     : breadcrumbFor(pathname, ctx, names, last);
@@ -125,8 +120,8 @@ export function Layout() {
         collapsed={collapsed}
         counts={{
           services: Array.isArray(services.data) ? servicesList.length : undefined,
-          // Every row of /clients is a connected session; a client connected twice counts once, as on the Clients page.
-          clientsOnline: Array.isArray(clients.data) ? clientsOnline(clientsList) : undefined,
+          // The rows the Clients page shows as Online, so the two always agree.
+          clientsOnline: clients.rows ? clientsOnline(clients.rows) : undefined,
         }}
         attention={relayNotices.map((n) => n.action.to)}
         user={{ email: user?.email ?? "", isAdmin, role: user?.role }}
