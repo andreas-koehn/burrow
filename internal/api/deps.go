@@ -165,11 +165,57 @@ type ClientDetail struct {
 	Services []ClientServiceView `json:"services"`
 }
 
+// The states of a KnownClient.
+const (
+	ClientOnline         = "online"
+	ClientOffline        = "offline"
+	ClientNeverConnected = "never_connected"
+)
+
+// KnownClient is one client token with what the relay knows of the machine
+// that uses it: its live sessions, or the last session it remembers. A live
+// session whose token was revoked meanwhile is a row too, with an empty
+// token_id.
+type KnownClient struct {
+	TokenID   string `json:"token_id"`
+	TokenName string `json:"token_name"`
+	UserID    string `json:"user_id"`
+	Status    string `json:"status"` // "online" | "offline" | "never_connected"
+	// LastSeen is null while the token never connected. While it is online
+	// it is when the relay last wrote the session down (at connect and at
+	// every change of what it serves).
+	LastSeen *time.Time `json:"last_seen"`
+	// The platform of the newest live session, or of the last session.
+	OS            string `json:"os"`
+	Arch          string `json:"arch"`
+	ClientVersion string `json:"client_version"`
+	RemoteAddr    string `json:"remote_addr"`
+	// Served holds the names of the services the live sessions serve, or the
+	// last session served; sorted, never null.
+	Served []string `json:"served"`
+	// Sessions holds the live sessions of the token, newest first; never null.
+	Sessions []ClientView `json:"sessions"`
+}
+
+// LiveClient is a live session with what joins it to its client token.
+type LiveClient struct {
+	ClientView
+	// TokenID is the id of the token the session logged in with; "" when
+	// the relay does not know it.
+	TokenID     string
+	ConnectedAt time.Time
+	// Served holds the names of the session's tunnels.
+	Served []string
+}
+
 // ClientLister exposes live client sessions + their services (cmd/server
 // adapts the registry + store totals). See client_handlers.go.
 type ClientLister interface {
 	ListClients() []ClientView
 	GetClient(sessionID string) (ClientDetail, bool)
+	// ListKnownClients returns every client token of every user with its
+	// status (see KnownClients). It is not scoped to a caller.
+	ListKnownClients(ctx context.Context) ([]KnownClient, error)
 }
 
 // AccessModeSetter sets a tunnel's per-service access mode (scoped to owner).

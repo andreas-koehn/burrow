@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/yamux"
+
+	"github.com/ankoehn/burrow/internal/db"
 )
 
 // TokenAuthenticator validates a client's plaintext token, returning its user id.
@@ -135,6 +138,16 @@ type ControlSessionSink interface {
 	RecordControl(ctx context.Context, sessionID, userID, remoteAddr string, startedAt, endedAt time.Time)
 }
 
+// SessionRecorder remembers the last session of every client token, so that
+// a client that is offline can still be shown. *store.Store satisfies it.
+// It is called inline on the serial control loop, like TunnelStore.
+type SessionRecorder interface {
+	RecordClientSession(ctx context.Context, tokenID string, rec db.ClientSessionRecord) error
+}
+
+// sessionRecordTimeout bounds one write of a session record.
+const sessionRecordTimeout = 2 * time.Second
+
 // Options configures a Server.
 type Options struct {
 	Listen     string
@@ -168,6 +181,10 @@ type Options struct {
 	// a leading v allowed). Empty lets every client in, and so does a client
 	// that names no version or one that cannot be compared.
 	MinClientVersion string
+	// SessionRecorder, when non-nil, is told what a session looks like when
+	// it connects, when its tunnels change and when it ends. nil: nothing is
+	// recorded.
+	SessionRecorder SessionRecorder
 }
 
 // Server is the burrowd relay control server.
@@ -311,8 +328,11 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	s.reg.AddSession(cs)
 	defer s.reg.RemoveSession(cs)
 	s.log.Info("client authenticated", "session_id", cs.SessionID, "remote_addr", cs.RemoteAddr)
+	s.recordSession(s.reg, cs)
 
 	defer func() {
+		// Before RemoveSession: the record names what the session served last.
+		s.recordSession(s.reg, cs)
 		for _, tn := range s.reg.snapshotTunnels(cs) {
 			if tn.Listener != nil {
 				_ = tn.Listener.Close()
@@ -429,7 +449,37 @@ func (s *Server) byteTicker(ctx context.Context) {
 type SessionSnapshot struct {
 	SessionID, UserID, RemoteAddr  string
 	OS, Arch, ClientVersion, Token string
-	Tunnels                        []TunnelView
+	// TokenID is the id of the client token of the session ("" when the
+	// authenticator named none); ConnectedAt is when it logged in.
+	TokenID     string
+	ConnectedAt time.Time
+	Tunnels     []TunnelView
+}
+
+// recordSession writes what the session looks like now on the client token it
+// logged in with: at connect (nothing served yet), after every change of its
+// tunnels and when it ends, so that a relay that crashes loses no more than
+// the last change. A failure is logged and never fails the session. Without a
+// recorder or a token id nothing is written.
+func (s *Server) recordSession(reg *Registry, cs *ClientSession) {
+	if s.opts.SessionRecorder == nil || cs.TokenID == "" {
+		return
+	}
+	served := []string{}
+	for _, tn := range reg.snapshotTunnels(cs) {
+		if tn.Name != "" {
+			served = append(served, tn.Name)
+		}
+	}
+	slices.Sort(served)
+	ctx, cancel := context.WithTimeout(context.Background(), sessionRecordTimeout)
+	defer cancel()
+	if err := s.opts.SessionRecorder.RecordClientSession(ctx, cs.TokenID, db.ClientSessionRecord{
+		OS: cs.OS, Arch: cs.Arch, ClientVersion: cs.ClientVersion, RemoteAddr: cs.RemoteAddr,
+		Served: slices.Compact(served),
+	}); err != nil {
+		s.log.Warn("record client session failed", "session_id", cs.SessionID, "err", err)
+	}
 }
 
 // LookupSessionByTunnelID returns the sessionID and userID that own the tunnel
@@ -462,6 +512,7 @@ func (s *Server) SnapshotSessions() []SessionSnapshot {
 		ss := SessionSnapshot{
 			SessionID: cs.SessionID, UserID: cs.UserID, RemoteAddr: cs.RemoteAddr,
 			OS: cs.OS, Arch: cs.Arch, ClientVersion: cs.ClientVersion, Token: cs.TokenName,
+			TokenID: cs.TokenID, ConnectedAt: cs.ConnectedAt,
 		}
 		for _, tn := range s.reg.snapshotTunnels(cs) {
 			ss.Tunnels = append(ss.Tunnels, TunnelView{

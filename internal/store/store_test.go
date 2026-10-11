@@ -357,3 +357,48 @@ func TestValidateSessionExpiry(t *testing.T) {
 		t.Fatalf("expired session should be deleted, got %v", err)
 	}
 }
+
+// AuthenticateToken names the token a client logged in with, so that the
+// relay can record the session on it; AuthenticateNamed keeps its answer.
+func TestAuthenticateTokenReturnsTheTokenID(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	_ = s.SeedAdmin(ctx, "a@x", "pw")
+	u, _ := s.GetUserByEmail(ctx, "a@x")
+	pt, err := s.IssueClientToken(ctx, u.ID, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine, err := s.ListClientTokens(ctx, u.ID)
+	if err != nil || len(mine) != 1 {
+		t.Fatalf("tokens: %v %+v", err, mine)
+	}
+
+	uid, tokenID, name, err := s.AuthenticateToken(ctx, pt)
+	if err != nil || uid != u.ID || tokenID != mine[0].ID || name != "laptop" {
+		t.Fatalf("AuthenticateToken = %q %q %q %v, want %q %q laptop", uid, tokenID, name, err, u.ID, mine[0].ID)
+	}
+	if uid, name, err := s.AuthenticateNamed(ctx, pt); err != nil || uid != u.ID || name != "laptop" {
+		t.Fatalf("AuthenticateNamed = %q %q %v", uid, name, err)
+	}
+	if _, _, _, err := s.AuthenticateToken(ctx, "bur_bogus"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unknown token err = %v, want ErrUnauthorized", err)
+	}
+	if after, _ := s.ListClientTokens(ctx, u.ID); len(after) != 1 || after[0].LastUsed == nil {
+		t.Fatalf("AuthenticateToken must touch last_used: %+v", after)
+	}
+
+	// The session of that token is recorded and read back for every user.
+	rec := db.ClientSessionRecord{OS: "linux", Arch: "amd64", ClientVersion: "0.9.0", RemoteAddr: "10.0.0.5:4242", Served: []string{"web"}}
+	if err := s.RecordClientSession(ctx, tokenID, rec); err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.ListAllClientTokens(ctx)
+	if err != nil || len(all) != 1 || all[0].ID != tokenID || all[0].LastSeen == nil || all[0].LastOS != "linux" ||
+		len(all[0].LastServed) != 1 || all[0].LastServed[0] != "web" {
+		t.Fatalf("all tokens: %v %+v", err, all)
+	}
+	if err := s.RecordClientSession(ctx, "no-such-token", rec); !errors.Is(err, db.ErrNotFound) {
+		t.Fatalf("record for a revoked token err = %v, want db.ErrNotFound", err)
+	}
+}

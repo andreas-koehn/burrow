@@ -457,6 +457,8 @@ func NewRouter(d Deps) http.Handler {
 				r.Get("/settings/retention", d.GetRetentionSettings)
 				r.Put("/settings/retention", d.PutRetentionSettings)
 				r.Get("/clients", d.ListClients)
+				// Before /clients/{sessionID}: "known" is no session id.
+				r.Get("/clients/known", d.ListKnownClients)
 				r.Get("/clients/{sessionID}", d.GetClient)
 				// v0.5.2 P3.6 / Task 9: admin-only service pre-provisioning.
 				// Lets dashboard / e2e flows POST a known service_id before any

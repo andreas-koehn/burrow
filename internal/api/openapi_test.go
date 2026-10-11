@@ -401,6 +401,10 @@ func (*fullDepsStub) GetClient(string) (ClientDetail, bool) {
 	stubPanic("GetClient")
 	return ClientDetail{}, false
 }
+func (*fullDepsStub) ListKnownClients(context.Context) ([]KnownClient, error) {
+	stubPanic("ListKnownClients")
+	return nil, nil
+}
 
 // AccessModeSetter.
 func (*fullDepsStub) SetTunnelAccessMode(context.Context, string, string, string) error {

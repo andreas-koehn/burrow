@@ -2,10 +2,23 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 
+	"github.com/hashicorp/yamux"
+
+	"github.com/ankoehn/burrow/internal/api"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/devcert"
+	"github.com/ankoehn/burrow/internal/proto"
 	"github.com/ankoehn/burrow/internal/server"
+	"github.com/ankoehn/burrow/internal/store"
 )
 
 type fakeSnapshotter struct{ sessions []server.SessionSnapshot }
@@ -102,5 +115,196 @@ func TestClientsAdapterUsesDurableServiceMode(t *testing.T) {
 	}
 	if cd.Services[1].AccessMode != "open" || cd.Services[1].ServiceID != "" {
 		t.Fatalf("tcp service: want open/empty service id, got %+v", cd.Services[1])
+	}
+}
+
+type fakeTokenLister struct {
+	tokens []db.ClientToken
+	err    error
+}
+
+func (f fakeTokenLister) ListAllClientTokens(context.Context) ([]db.ClientToken, error) {
+	return f.tokens, f.err
+}
+
+// The adapter hands the join every token and every live session with the id
+// of its token, when it connected and the names of its tunnels.
+func TestClientsAdapterListKnownClients(t *testing.T) {
+	seen := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	snap := fakeSnapshotter{sessions: []server.SessionSnapshot{
+		{
+			SessionID: "c-old", UserID: "u1", Token: "laptop", TokenID: "tok-1", OS: "linux", ConnectedAt: seen.Add(time.Minute),
+			Tunnels: []server.TunnelView{{ID: "tn1", Name: "web", Type: "http"}},
+		},
+		{
+			SessionID: "c-new", UserID: "u1", Token: "laptop", TokenID: "tok-1", OS: "darwin", ConnectedAt: seen.Add(time.Hour),
+			Tunnels: []server.TunnelView{{ID: "tn2", Name: "ollama", Type: "http"}, {ID: "tn3", Name: "web", Type: "http"}},
+		},
+		{SessionID: "c-gone", UserID: "u2", Token: "revoked", TokenID: "tok-gone", ConnectedAt: seen},
+	}}
+	tg := fakeTunnelGetter{rows: map[string]db.Tunnel{"tn1": {ID: "tn1", TotalBytesIn: 7}}}
+	a := clientsAdapter{srv: snap, st: tg, tokens: fakeTokenLister{tokens: []db.ClientToken{
+		{ID: "tok-1", UserID: "u1", Name: "laptop", LastSeen: &seen},
+		{ID: "tok-2", UserID: "u1", Name: "nas", LastSeen: &seen, LastOS: "linux", LastServed: []string{"files"}},
+		{ID: "tok-3", UserID: "u3", Name: "spare"},
+	}}}
+	list, err := a.ListKnownClients(context.Background())
+	if err != nil || len(list) != 4 {
+		t.Fatalf("known clients: %v %+v", err, list)
+	}
+	on := list[0]
+	if on.TokenID != "tok-1" || on.Status != api.ClientOnline || on.OS != "darwin" || !on.LastSeen.Equal(seen) ||
+		!reflect.DeepEqual(on.Served, []string{"ollama", "web"}) {
+		t.Fatalf("online row: %+v", on)
+	}
+	if len(on.Sessions) != 2 || on.Sessions[0].SessionID != "c-new" || on.Sessions[0].ServiceCount != 2 ||
+		on.Sessions[1].SessionID != "c-old" || on.Sessions[1].TotalBytesIn != 7 {
+		t.Fatalf("sessions: %+v", on.Sessions)
+	}
+	if gone := list[1]; gone.TokenID != "" || gone.TokenName != "revoked" || gone.UserID != "u2" || gone.Status != api.ClientOnline {
+		t.Fatalf("session of a revoked token: %+v", gone)
+	}
+	if off := list[2]; off.TokenID != "tok-2" || off.Status != api.ClientOffline || off.OS != "linux" || !reflect.DeepEqual(off.Served, []string{"files"}) {
+		t.Fatalf("offline row: %+v", off)
+	}
+	if never := list[3]; never.TokenID != "tok-3" || never.Status != api.ClientNeverConnected || never.LastSeen != nil {
+		t.Fatalf("never connected row: %+v", never)
+	}
+
+	a.tokens = fakeTokenLister{err: errors.New("database is locked")}
+	if _, err := a.ListKnownClients(context.Background()); err == nil {
+		t.Fatal("a failing token list must fail the answer, not show every session as revoked")
+	}
+}
+
+// The wiring of main.go, with a real store and a real control server: the
+// store names the token at the handshake, the server records the session on
+// it, and the adapter reads it back while the client is online and after it
+// has gone.
+func TestKnownClientsThroughStoreAndServer(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	d, err := db.Open(filepath.Join(dir, "known.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(d); err != nil {
+		t.Fatal(err)
+	}
+	st := store.New(d)
+	if err := st.SeedAdmin(ctx, "admin@x", "password1"); err != nil {
+		t.Fatal(err)
+	}
+	u, err := st.GetUserByEmail(ctx, "admin@x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := st.IssueClientToken(ctx, u.ID, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.IssueClientToken(ctx, u.ID, "spare"); err != nil {
+		t.Fatal(err)
+	}
+	if err := devcert.Generate(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := server.New(server.Options{
+		Listen: "127.0.0.1:0", TLSCert: filepath.Join(dir, "dev-server.pem"), TLSKey: filepath.Join(dir, "dev-server-key.pem"),
+		Auth: st, Tunnels: tunnelStoreAdapter{st}, Services: serviceResolverAdapter{db: db.Wrap(d)},
+		PublicBind: "127.0.0.1", SessionRecorder: st,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx, cancel := context.WithCancel(ctx)
+	go func() { _ = srv.Serve(sctx) }()
+	// LIFO: the server stops before the database closes.
+	t.Cleanup(func() { _ = d.Close() })
+	t.Cleanup(func() { cancel(); srv.Wait() })
+	for deadline := time.Now().Add(2 * time.Second); srv.Addr() == ""; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("control server never bound")
+		}
+	}
+	a := clientsAdapter{srv: srv, st: st, services: st, tokens: st}
+	known := func() (laptop, spare api.KnownClient) {
+		t.Helper()
+		list, err := a.ListKnownClients(ctx)
+		if err != nil || len(list) != 2 {
+			t.Fatalf("known clients: %v %+v", err, list)
+		}
+		for _, kc := range list {
+			if kc.TokenName == "laptop" {
+				laptop = kc
+			} else {
+				spare = kc
+			}
+		}
+		return laptop, spare
+	}
+	if laptop, spare := known(); laptop.Status != api.ClientNeverConnected || spare.Status != api.ClientNeverConnected {
+		t.Fatalf("before any client: %+v %+v", laptop, spare)
+	}
+
+	caPEM, _ := os.ReadFile(filepath.Join(dir, "dev-ca.pem"))
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(caPEM)
+	conn, err := tls.Dial("tcp", srv.Addr(), &tls.Config{RootCAs: pool, ServerName: "localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := proto.WriteMessage(conn, proto.MsgAuthRequest, proto.AuthRequest{
+		ProtocolVersion: 1, Token: token, OS: "linux", Arch: "amd64", ClientVersion: "0.9.0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var env proto.Envelope
+	if err := proto.ReadFrame(conn, &env); err != nil || env.Type != proto.MsgAuthResponse {
+		t.Fatalf("auth: %v %v", env.Type, err)
+	}
+	sess, err := yamux.Client(conn, yamux.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	ctrl, err := sess.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := proto.WriteMessage(ctrl, proto.MsgTunnelRegister, proto.TunnelRegister{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000"}); err != nil {
+		t.Fatal(err)
+	}
+	var rr proto.TunnelRegisterResponse
+	if err := proto.ReadFrame(ctrl, &env); err != nil || proto.DecodePayload(env, &rr) != nil || !rr.OK {
+		t.Fatalf("register: %v %+v", err, rr)
+	}
+
+	laptop, spare := known()
+	if laptop.Status != api.ClientOnline || laptop.TokenID == "" || laptop.UserID != u.ID || laptop.OS != "linux" ||
+		laptop.ClientVersion != "0.9.0" || laptop.LastSeen == nil || len(laptop.Sessions) != 1 ||
+		!reflect.DeepEqual(laptop.Served, []string{"web"}) {
+		t.Fatalf("online: %+v", laptop)
+	}
+	if spare.Status != api.ClientNeverConnected || spare.LastSeen != nil {
+		t.Fatalf("the other token: %+v", spare)
+	}
+
+	_ = conn.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if laptop, _ = known(); laptop.Status == api.ClientOffline {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the client never went offline: %+v", laptop)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if laptop.OS != "linux" || laptop.Arch != "amd64" || laptop.ClientVersion != "0.9.0" || laptop.RemoteAddr != conn.LocalAddr().String() ||
+		laptop.LastSeen == nil || time.Since(*laptop.LastSeen) > 5*time.Second ||
+		len(laptop.Sessions) != 0 || !reflect.DeepEqual(laptop.Served, []string{"web"}) {
+		t.Fatalf("offline: %+v", laptop)
 	}
 }

@@ -567,6 +567,69 @@ components:
           type: array
           items: { type: integer }
           description: 60-element array — one bucket per minute over the trailing hour.
+    KnownClient:
+      type: object
+      description: >
+        A client token with what the relay knows of the machine that uses it.
+        The platform fields and `served` come from the client and are display
+        text only.
+      required: [token_id, token_name, user_id, status, last_seen, os, arch, client_version, remote_addr, served, sessions]
+      properties:
+        token_id:
+          type: string
+          description: >
+            The id of the client token. Empty for a live session whose token
+            was revoked meanwhile; such a row is always `online`.
+        token_name: { type: string }
+        user_id: { type: string, description: The owner of the token. }
+        status:
+          type: string
+          enum: [online, offline, never_connected]
+          description: >
+            `online` while at least one session of the token is live,
+            `offline` when it connected before and no session is live,
+            `never_connected` otherwise.
+        last_seen:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            When the relay last wrote the session down: when it connected,
+            when what it serves changed and when it ended. Null while the
+            token never connected.
+        os:
+          type: string
+          description: >
+            Operating system of the newest live session, or of the last
+            session; empty while the token never connected. The same holds
+            for `arch`, `client_version` and `remote_addr`.
+        arch: { type: string }
+        client_version: { type: string }
+        remote_addr: { type: string }
+        served:
+          type: array
+          description: >
+            The names of the services the live sessions serve, or the last
+            session served. Sorted; empty while the token never connected.
+          items: { type: string }
+        sessions:
+          type: array
+          description: >
+            The live sessions of the token, newest first, each as
+            `GET /api/v1/clients` lists it. Empty unless `status` is `online`.
+          items:
+            type: object
+            properties:
+              session_id: { type: string }
+              user_id: { type: string }
+              token_name: { type: string }
+              remote_addr: { type: string }
+              os: { type: string }
+              arch: { type: string }
+              client_version: { type: string }
+              service_count: { type: integer }
+              total_bytes_in: { type: integer, format: int64 }
+              total_bytes_out: { type: integer, format: int64 }
     Error:
       type: object
       required: [error]
@@ -2497,6 +2560,28 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Empty' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/clients/known:
+    get:
+      tags: [clients]
+      summary: List every client that has a token (admin)
+      description: >
+        One row per client token of every user: a client that is online with
+        its live sessions, a client that is offline with the last session the
+        relay remembers, and a token that never connected. Online rows come
+        first (by name), then the offline ones (last seen first), then those
+        that never connected (by name). `GET /api/v1/clients` keeps listing
+        the live sessions only.
+      responses:
+        '200':
+          description: The known clients.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/KnownClient' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 

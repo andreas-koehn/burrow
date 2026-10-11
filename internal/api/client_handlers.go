@@ -1,9 +1,11 @@
 package api
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -60,6 +62,138 @@ func (d Deps) GetClient(w http.ResponseWriter, r *http.Request) {
 		cd.Services = []ClientServiceView{}
 	}
 	writeJSON(w, http.StatusOK, cd)
+}
+
+// ListKnownClients returns every client token with its status: online with
+// its live sessions, offline with the last session the relay remembers, or
+// never connected (admin only, like ListClients).
+// GET /api/v1/clients/known
+func (d Deps) ListKnownClients(w http.ResponseWriter, r *http.Request) {
+	out := []KnownClient{}
+	if d.Clients != nil {
+		list, err := d.Clients.ListKnownClients(r.Context())
+		if err != nil {
+			d.Log.Error("list known clients failed", "err", err)
+			writeErr(w, http.StatusInternalServerError, "list failed")
+			return
+		}
+		out = append(out, list...)
+	}
+	for i := range out {
+		if out[i].Served == nil {
+			out[i].Served = []string{}
+		}
+		if out[i].Sessions == nil {
+			out[i].Sessions = []ClientView{}
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// KnownClients joins the client tokens with the live sessions by token id:
+//
+//   - a token with a live session is online: its platform is that of the
+//     newest session, it serves what its sessions serve, and last_seen is the
+//     stored one;
+//   - a token that was seen and has no live session is offline, with what
+//     the relay stored of its last session;
+//   - a token that was never seen is never connected and shows no platform;
+//   - a live session without a token (it was revoked meanwhile, or the relay
+//     does not know its id) is online with an empty token id. Sessions that
+//     name the same revoked token are one row.
+//
+// Online rows come first (by name), then the offline ones (last seen first),
+// then those that never connected (by name).
+func KnownClients(tokens []db.ClientToken, live []LiveClient) []KnownClient {
+	byToken := map[string][]LiveClient{}
+	var orphans [][]LiveClient
+	for _, lc := range live {
+		if lc.TokenID == "" {
+			orphans = append(orphans, []LiveClient{lc})
+			continue
+		}
+		byToken[lc.TokenID] = append(byToken[lc.TokenID], lc)
+	}
+	out := make([]KnownClient, 0, len(tokens)+len(orphans))
+	for _, ct := range tokens {
+		kc := KnownClient{
+			TokenID: ct.ID, TokenName: ct.Name, UserID: ct.UserID, Status: ClientNeverConnected,
+			Served: []string{}, Sessions: []ClientView{},
+		}
+		sessions := byToken[ct.ID]
+		delete(byToken, ct.ID)
+		switch {
+		case len(sessions) > 0:
+			kc.LastSeen = ct.LastSeen
+			kc.setOnline(sessions)
+		case ct.LastSeen != nil:
+			kc.Status, kc.LastSeen = ClientOffline, ct.LastSeen
+			kc.OS, kc.Arch, kc.ClientVersion, kc.RemoteAddr = ct.LastOS, ct.LastArch, ct.LastClientVersion, ct.LastRemoteAddr
+			kc.Served = append(kc.Served, ct.LastServed...)
+		}
+		out = append(out, kc)
+	}
+	// What is left names a token that is gone.
+	for _, sessions := range byToken {
+		orphans = append(orphans, sessions)
+	}
+	for _, sessions := range orphans {
+		var kc KnownClient
+		kc.setOnline(sessions)
+		kc.TokenName, kc.UserID = kc.Sessions[0].TokenName, kc.Sessions[0].UserID
+		out = append(out, kc)
+	}
+
+	rank := map[string]int{ClientOnline: 0, ClientOffline: 1, ClientNeverConnected: 2}
+	newest := func(kc KnownClient) string {
+		if len(kc.Sessions) == 0 {
+			return ""
+		}
+		return kc.Sessions[0].SessionID
+	}
+	slices.SortStableFunc(out, func(a, b KnownClient) int {
+		if c := cmp.Compare(rank[a.Status], rank[b.Status]); c != 0 {
+			return c
+		}
+		if a.Status == ClientOffline {
+			if c := b.LastSeen.Compare(*a.LastSeen); c != 0 {
+				return c
+			}
+		}
+		return cmp.Or(
+			cmp.Compare(a.TokenName, b.TokenName),
+			cmp.Compare(a.TokenID, b.TokenID),
+			cmp.Compare(newest(a), newest(b)),
+		)
+	})
+	return out
+}
+
+// setOnline fills the row from the live sessions of one token (at least one).
+func (kc *KnownClient) setOnline(sessions []LiveClient) {
+	sessions = slices.Clone(sessions)
+	slices.SortFunc(sessions, func(a, b LiveClient) int {
+		return cmp.Or(b.ConnectedAt.Compare(a.ConnectedAt), cmp.Compare(a.SessionID, b.SessionID))
+	})
+	first := sessions[0]
+	kc.Status = ClientOnline
+	kc.OS, kc.Arch, kc.ClientVersion, kc.RemoteAddr = first.OS, first.Arch, first.ClientVersion, first.RemoteAddr
+	if kc.LastSeen == nil && !first.ConnectedAt.IsZero() {
+		// Nothing is stored for it (yet): it was seen when it connected.
+		at := first.ConnectedAt.UTC()
+		kc.LastSeen = &at
+	}
+	kc.Served, kc.Sessions = []string{}, make([]ClientView, 0, len(sessions))
+	for _, s := range sessions {
+		kc.Sessions = append(kc.Sessions, s.ClientView)
+		for _, name := range s.Served {
+			if name != "" {
+				kc.Served = append(kc.Served, name)
+			}
+		}
+	}
+	slices.Sort(kc.Served)
+	kc.Served = slices.Compact(kc.Served)
 }
 
 type accessModeReq struct {

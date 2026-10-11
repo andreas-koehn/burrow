@@ -289,16 +289,38 @@ func (s *Store) Authenticate(ctx context.Context, plaintext string) (userID stri
 // name (used by the server to label clients in the overview). Returns
 // ErrUnauthorized for unknown/invalid tokens.
 func (s *Store) AuthenticateNamed(ctx context.Context, plaintext string) (userID, tokenName string, err error) {
+	userID, _, tokenName, err = s.AuthenticateToken(ctx, plaintext)
+	return userID, tokenName, err
+}
+
+// AuthenticateToken is like AuthenticateNamed but also returns the id of the
+// client token, which the server needs to record the session on the token
+// (RecordClientSession). Returns ErrUnauthorized for unknown/invalid tokens.
+func (s *Store) AuthenticateToken(ctx context.Context, plaintext string) (userID, tokenID, tokenName string, err error) {
 	hash := auth.HashToken(plaintext)
 	ct, err := s.q.GetClientTokenByHash(ctx, hash)
 	if errors.Is(err, db.ErrNotFound) {
-		return "", "", ErrUnauthorized
+		return "", "", "", ErrUnauthorized
 	}
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	_ = s.q.TouchClientTokenLastUsed(ctx, ct.ID)
-	return ct.UserID, ct.Name, nil
+	return ct.UserID, ct.ID, ct.Name, nil
+}
+
+// RecordClientSession stores what the session that logged in with the token
+// looks like now (see db.RecordClientSession). Returns db.ErrNotFound when
+// the token was revoked meanwhile.
+func (s *Store) RecordClientSession(ctx context.Context, tokenID string, rec db.ClientSessionRecord) error {
+	return s.q.RecordClientSession(ctx, tokenID, rec)
+}
+
+// ListAllClientTokens returns the client tokens of every user with the last
+// session of each. It is not scoped to a caller: only handlers behind the
+// admin gate may use it.
+func (s *Store) ListAllClientTokens(ctx context.Context) ([]db.ClientToken, error) {
+	return s.q.ListClientTokens(ctx)
 }
 
 // SaveTunnel upserts a tunnel row belonging to the given user.

@@ -50,9 +50,13 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 		_ = proto.WriteMessage(conn, proto.MsgError, proto.Error{Message: "bad auth payload", Code: proto.CodeBadRequest})
 		return nil, err
 	}
-	var userID, tokenName string
+	var userID, tokenID, tokenName string
 	var err error
-	if na, ok := auth.(interface {
+	if ta, ok := auth.(interface {
+		AuthenticateToken(ctx context.Context, token string) (string, string, string, error)
+	}); ok {
+		userID, tokenID, tokenName, err = ta.AuthenticateToken(context.Background(), ar.Token)
+	} else if na, ok := auth.(interface {
 		AuthenticateNamed(ctx context.Context, token string) (string, string, error)
 	}); ok {
 		userID, tokenName, err = na.AuthenticateNamed(context.Background(), ar.Token)
@@ -79,6 +83,7 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 	cs := &ClientSession{
 		SessionID: sessionID, UserID: userID, RemoteAddr: conn.RemoteAddr().String(),
 		OS: ar.OS, Arch: ar.Arch, ClientVersion: ar.ClientVersion, TokenName: tokenName,
+		TokenID: tokenID, ConnectedAt: time.Now(),
 		Tunnels: map[string]*Tunnel{},
 	}
 	// Only a client that says it reads request summaries is sent any. A name
@@ -231,6 +236,7 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 				if err := s.opts.Tunnels.SaveTunnel(context.Background(), cs.UserID, tn); err != nil {
 					s.log.Warn("persist tunnel failed", "tunnel_id", tn.ID, "err", err)
 				}
+				s.recordSession(reg, cs)
 				s.opts.Events.PublishTunnelsChanged(cs.UserID)
 				var tunnelURL, dashboardURL string
 				if s.opts.AuthDomain != "" {
@@ -265,6 +271,7 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 				if err := s.opts.Tunnels.SaveTunnel(context.Background(), cs.UserID, tn); err != nil {
 					s.log.Warn("persist tunnel failed", "tunnel_id", tn.ID, "err", err)
 				}
+				s.recordSession(reg, cs)
 				s.opts.Events.PublishTunnelsChanged(cs.UserID)
 				s.log.Info("tunnel registered", "tunnel_id", tn.ID, "remote_port", port, "session_id", cs.SessionID)
 				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{
@@ -284,6 +291,7 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 					s.ports.Release(tn.RemotePort)
 				}
 				reg.RemoveTunnel(cs, tu.TunnelID)
+				s.recordSession(reg, cs)
 			}
 		case proto.MsgPing:
 			var p proto.Ping

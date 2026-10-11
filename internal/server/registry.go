@@ -59,9 +59,15 @@ type ClientSession struct {
 	Arch          string
 	ClientVersion string
 	TokenName     string
-	Yamux         *yamux.Session
-	mu            sync.Mutex
-	Tunnels       map[string]*Tunnel
+	// TokenID is the id of the client token the session logged in with. Empty
+	// when the authenticator names none (see HandleHandshakeWith); such a
+	// session is never recorded on a token.
+	TokenID string
+	// ConnectedAt is when the handshake succeeded.
+	ConnectedAt time.Time
+	Yamux       *yamux.Session
+	mu          sync.Mutex
+	Tunnels     map[string]*Tunnel
 
 	pending       *pendingStreams
 	ctrlMu        sync.Mutex

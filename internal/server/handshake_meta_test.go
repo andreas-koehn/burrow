@@ -41,3 +41,34 @@ func TestHandshakeCapturesMetadata(t *testing.T) {
 		t.Fatalf("token name not captured: %q", cs.TokenName)
 	}
 }
+
+// tokenFakeAuth also reports the id of the token (AuthenticateToken). Its
+// AuthenticateNamed answers with another name, to show which one is asked.
+type tokenFakeAuth struct{ uid, id, name string }
+
+func (a tokenFakeAuth) Authenticate(context.Context, string) (string, error) {
+	return a.uid, nil
+}
+func (a tokenFakeAuth) AuthenticateNamed(context.Context, string) (string, string, error) {
+	return a.uid, "named-" + a.name, nil
+}
+func (a tokenFakeAuth) AuthenticateToken(context.Context, string) (string, string, string, error) {
+	return a.uid, a.id, a.name, nil
+}
+
+func TestHandshakeCapturesTheTokenID(t *testing.T) {
+	req := proto.AuthRequest{ProtocolVersion: 1, Token: "bur_test_0000"}
+	_, cs := handshake(t, tokenFakeAuth{uid: "u1", id: "tok-1", name: "laptop"}, HandshakeOptions{}, req)
+	if cs == nil || cs.UserID != "u1" || cs.TokenID != "tok-1" || cs.TokenName != "laptop" {
+		t.Fatalf("session: %+v", cs)
+	}
+	// An authenticator without AuthenticateToken keeps working, with no id.
+	_, cs = handshake(t, namedFakeAuth{uid: "u1", name: "laptop"}, HandshakeOptions{}, req)
+	if cs == nil || cs.TokenID != "" || cs.TokenName != "laptop" {
+		t.Fatalf("named authenticator: %+v", cs)
+	}
+	_, cs = handshake(t, fakeAuth{uid: "u1"}, HandshakeOptions{}, req)
+	if cs == nil || cs.TokenID != "" || cs.TokenName != "" || cs.UserID != "u1" {
+		t.Fatalf("plain authenticator: %+v", cs)
+	}
+}

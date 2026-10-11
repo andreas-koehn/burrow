@@ -29,6 +29,22 @@ type ClientToken struct {
 	ID, UserID, Name, TokenHash string
 	LastUsed                    *time.Time
 	CreatedAt                   time.Time
+
+	// The last session that logged in with the token (RecordClientSession).
+	// All zero for a token that never connected. The text fields come from
+	// the client and are display text only.
+	LastSeen                                            *time.Time
+	LastOS, LastArch, LastClientVersion, LastRemoteAddr string
+	// LastServed holds the names of the services that session served, sorted.
+	// Never nil on a token read from the database.
+	LastServed []string
+}
+
+// ClientSessionRecord is what the relay remembers of a client session on the
+// token it logged in with.
+type ClientSessionRecord struct {
+	OS, Arch, ClientVersion, RemoteAddr string
+	Served                              []string // names of the services the session served, sorted
 }
 
 // Tunnel is a persisted tunnel row (live state stays in-memory).

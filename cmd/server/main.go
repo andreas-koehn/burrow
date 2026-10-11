@@ -181,12 +181,19 @@ func durableMode(g serviceModeGetter, serviceID, fallback string) string {
 	return fallback
 }
 
+// clientTokenLister lists the client tokens of every user with the last
+// session of each. *store.Store satisfies it.
+type clientTokenLister interface {
+	ListAllClientTokens(ctx context.Context) ([]db.ClientToken, error)
+}
+
 // clientsAdapter exposes live sessions + persisted per-service totals to the
 // HTTP API (keeps internal/api decoupled from internal/server and internal/db).
 type clientsAdapter struct {
 	srv      sessionSnapshotter
 	st       tunnelGetter
 	services serviceModeGetter // optional; nil in unit tests
+	tokens   clientTokenLister // optional; nil in unit tests
 }
 
 func (a clientsAdapter) serviceViews(ss server.SessionSnapshot) ([]api.ClientServiceView, int64, int64) {
@@ -242,6 +249,33 @@ func (a clientsAdapter) GetClient(sessionID string) (api.ClientDetail, bool) {
 		}, true
 	}
 	return api.ClientDetail{}, false
+}
+
+// ListKnownClients joins every client token with the live sessions that
+// logged in with it (api.KnownClients).
+func (a clientsAdapter) ListKnownClients(ctx context.Context) ([]api.KnownClient, error) {
+	// The sessions first: a client that connects in between is missing from
+	// this answer, instead of showing up as a session without a token.
+	var live []api.LiveClient
+	for _, ss := range a.srv.SnapshotSessions() {
+		_, in, outB := a.serviceViews(ss)
+		lc := api.LiveClient{
+			ClientView: a.toView(ss, in, outB, len(ss.Tunnels)),
+			TokenID:    ss.TokenID, ConnectedAt: ss.ConnectedAt,
+		}
+		for _, tn := range ss.Tunnels {
+			lc.Served = append(lc.Served, tn.Name)
+		}
+		live = append(live, lc)
+	}
+	var tokens []db.ClientToken
+	if a.tokens != nil {
+		var err error
+		if tokens, err = a.tokens.ListAllClientTokens(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return api.KnownClients(tokens, live), nil
 }
 
 // runTrafficFlusher periodically persists the delta of each live tunnel's
@@ -486,6 +520,7 @@ func newRootCmd() *cobra.Command {
 				Listen: cfg.Listen, TLSCert: cfg.TLSCert, TLSKey: cfg.TLSKey,
 				PublicBind: cfg.PublicBind, PortMin: cfg.PortMin, PortMax: cfg.PortMax,
 				Auth: st, Tunnels: tunnelStoreAdapter{st}, Events: bus, Logger: log,
+				SessionRecorder: st,
 				// v0.3.0: HTTP tunnel service identity + subdomain resolver.
 				Services:   serviceResolverAdapter{db: db.Wrap(database), authDomain: proxyAuthDomain},
 				AuthDomain: proxyAuthDomain,
@@ -821,7 +856,7 @@ func newRootCmd() *cobra.Command {
 					// Wire env override: 0 means use the api.LoginRateLimitPerIP constant.
 					LoginRateLimitPerIPOverride: cfg.LoginRateLimitPerIP,
 					Roles:                       st, Sessions: st, Settings: st,
-					Clients: clientsAdapter{srv: srv, st: st, services: st}, AccessModes: st,
+					Clients: clientsAdapter{srv: srv, st: st, services: st, tokens: st}, AccessModes: st,
 					DB: database,
 					// v0.3.0: service API + live tunnel lookup + auth domain.
 					Services:    st,

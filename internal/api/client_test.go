@@ -18,6 +18,9 @@ type fakeClients struct {
 }
 
 func (f fakeClients) ListClients() []ClientView { return f.list }
+func (f fakeClients) ListKnownClients(context.Context) ([]KnownClient, error) {
+	return nil, nil
+}
 func (f fakeClients) GetClient(id string) (ClientDetail, bool) {
 	if id == "miss" {
 		return ClientDetail{}, false

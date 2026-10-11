@@ -215,6 +215,9 @@ func (noopClientLister) ListClients() []api.ClientView { return nil }
 func (noopClientLister) GetClient(_ string) (api.ClientDetail, bool) {
 	return api.ClientDetail{}, false
 }
+func (noopClientLister) ListKnownClients(context.Context) ([]api.KnownClient, error) {
+	return nil, nil
+}
 
 // TestV050ReleaseSmoke boots the v0.5.0 wired API server and asserts every
 // new endpoint returns < 500 (no panics, all deps wired correctly).
