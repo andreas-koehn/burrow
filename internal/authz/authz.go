@@ -70,6 +70,13 @@ const (
 	PermMtlsManageAny  Permission = "mtls:manage:any"
 	PermIPGeoManageOwn Permission = "ipgeo:manage:own"
 	PermIPGeoManageAny Permission = "ipgeo:manage:any"
+
+	// v0.10.0: what only the admin role could do until the permission gate.
+	// Global capabilities, held by no role but admin unless a custom role
+	// names them.
+	PermAIProvidersManage Permission = "ai:providers:manage"
+	PermBudgetsManage     Permission = "budgets:manage"
+	PermCostPricingManage Permission = "cost:pricing:manage"
 )
 
 // Role is a named permission set (built-in only in v0.2.0).
@@ -99,6 +106,8 @@ var adminPerms = []Permission{
 	PermBackupRun, PermMetricsRead, PermMcpToolsRead,
 	PermMtlsManageAny, PermMtlsManageOwn,
 	PermIPGeoManageAny, PermIPGeoManageOwn,
+	// v0.10.0
+	PermAIProvidersManage, PermBudgetsManage, PermCostPricingManage,
 }
 
 // userPerms is the standard-user :own subset.
@@ -174,6 +183,8 @@ func AllPermissions() []Permission {
 		PermBackupRun, PermMetricsRead, PermMcpToolsRead,
 		PermMtlsManageOwn, PermMtlsManageAny,
 		PermIPGeoManageOwn, PermIPGeoManageAny,
+		// v0.10.0
+		PermAIProvidersManage, PermBudgetsManage, PermCostPricingManage,
 	}
 }
 
