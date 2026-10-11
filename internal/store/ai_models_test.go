@@ -18,7 +18,7 @@ func modelFixture(t *testing.T, s *Store) (svcOllama, adminID string) {
 	t.Helper()
 	ctx := context.Background()
 	svcA, _, _ := providerFixture(t, s)
-	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA); err != nil {
+	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA, ""); err != nil {
 		t.Fatal(err)
 	}
 	adminID = mustCreateUser(t, s, "models-admin@x", "admin").ID
@@ -251,7 +251,7 @@ func TestProviderGuards(t *testing.T) {
 	}
 
 	// A provider cannot take a model's name, on any path that sets a slug.
-	if _, err := s.UpdateProvider(ctx, "ollama", "burrow-simple", "x", nil, nil); !errors.Is(err, ErrProviderExists) {
+	if _, err := s.UpdateProvider(ctx, "ollama", "burrow-simple", "x", nil, nil, nil); !errors.Is(err, ErrProviderExists) {
 		t.Fatalf("rename onto model name err = %v", err)
 	}
 	if _, err := s.CreateDirectProvider(ctx, adminID, DirectProviderInput{Slug: "burrow-simple", Name: "X", BaseURL: "https://x.example/v1", CredentialSlot: "S"}); !errors.Is(err, ErrProviderExists) {
@@ -265,12 +265,12 @@ func TestProviderGuards(t *testing.T) {
 	if err := s.q.SetServiceAccessMode(ctx, free.ID, "api_key", "Authorization"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateTunnelProvider(ctx, "burrow-simple", "X", free.ID); !errors.Is(err, ErrProviderExists) {
+	if _, err := s.CreateTunnelProvider(ctx, "burrow-simple", "X", free.ID, ""); !errors.Is(err, ErrProviderExists) {
 		t.Fatalf("tunnel provider on model name err = %v", err)
 	}
 
 	// A rename is followed by the targets.
-	if _, err := s.UpdateProvider(ctx, "ollama", "local", "Local", nil, nil); err != nil {
+	if _, err := s.UpdateProvider(ctx, "ollama", "local", "Local", nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	m, err := s.ModelByName(ctx, "burrow-simple")
@@ -502,7 +502,7 @@ func TestBackfillAIProviders_SkipsModelNames(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	svcA, _, _ := providerFixture(t, s)
-	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA); err != nil {
+	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA, ""); err != nil {
 		t.Fatal(err)
 	}
 	m := simpleModel()

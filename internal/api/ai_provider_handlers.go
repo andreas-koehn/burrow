@@ -510,6 +510,7 @@ func (d Deps) warn(msg string, args ...any) {
 // no field for the credential: credential_slot names a vault slot, and the
 // value of that slot is configured on the relay, not through the API.
 type upstreamReq struct {
+	// A tunnel provider has a format too: POST takes it for both kinds.
 	APIFormat      string            `json:"api_format"`
 	BaseURL        string            `json:"base_url"`
 	CredentialSlot string            `json:"credential_slot"`
@@ -528,6 +529,16 @@ type upstreamReq struct {
 func validMaxConcurrent(w http.ResponseWriter, n *int) bool {
 	if n != nil && (*n < 0 || *n > store.MaxProviderConcurrency) {
 		writeErr(w, http.StatusBadRequest, "max concurrent requests must be between 0 and 1000")
+		return false
+	}
+	return true
+}
+
+// validAPIFormat checks the API format of a tunnel provider at the boundary
+// and writes the 400 itself. The store checks it again.
+func validAPIFormat(w http.ResponseWriter, format string) bool {
+	if !store.ValidAPIFormat(format) {
+		writeErr(w, http.StatusBadRequest, "api_format must be 'openai' or 'anthropic'")
 		return false
 	}
 	return true
@@ -571,16 +582,17 @@ func decodeStrictJSON(body io.Reader, v any) (msg string, unknownField bool) {
 	return "invalid JSON body", false
 }
 
-// set reports whether the body carried any upstream setting.
-// supports_responses and max_concurrent are not among them: a tunnel provider
-// has them too.
+// set reports whether the body carried a setting only a direct provider has.
+// api_format, supports_responses and max_concurrent are not among them: a
+// tunnel provider has them too.
 func (u upstreamReq) set() bool {
-	return u.APIFormat != "" || u.BaseURL != "" || u.CredentialSlot != "" || u.AuthHeader != "" ||
+	return u.BaseURL != "" || u.CredentialSlot != "" || u.AuthHeader != "" ||
 		u.AuthFormat != "" || u.ExtraHeaders != nil || u.Billing != ""
 }
 
 // postProviderReq is the body of POST /api/v1/ai/providers. service_id is
-// for kind "tunnel", the upstream settings for kind "direct".
+// for kind "tunnel", the upstream settings for kind "direct"; api_format is
+// for both and "openai" when left out.
 type postProviderReq struct {
 	Slug      string `json:"slug"`
 	Name      string `json:"name"`
@@ -602,6 +614,10 @@ type putProviderReq struct {
 	// Optional: how many requests the provider serves at once, 0 = no limit.
 	// This is how a tunnel provider gets a limit.
 	MaxConcurrent *int `json:"max_concurrent"`
+	// Optional, tunnel providers only: "openai" or "anthropic", the format
+	// the server behind the tunnel speaks. A direct provider has its format
+	// among its upstream settings (PUT …/upstream).
+	APIFormat *string `json:"api_format"`
 }
 
 // providerSlugRule is the 400 message for a malformed or reserved slug.
@@ -732,7 +748,8 @@ func upstreamAudit(p db.AIProvider) map[string]any {
 // PostAIProvider handles POST /api/v1/ai/providers (admin only).  Kind
 // "tunnel" registers an existing http service in API-key mode as a provider;
 // kind "direct" adds a provider the relay calls itself.  An empty slug is
-// derived from the name.
+// derived from the name.  api_format says which format the provider speaks,
+// "openai" when left out.
 func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	// The body is read strictly for both kinds: without a kind a body is a
@@ -777,7 +794,14 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 	// Upstream settings on a tunnel provider would be dropped; say so instead
 	// of answering 201.
 	if in.set() {
-		writeErr(w, http.StatusBadRequest, "api_format, base_url, credential_slot, auth_header, auth_format, extra_headers and billing are for kind 'direct'")
+		writeErr(w, http.StatusBadRequest, "base_url, credential_slot, auth_header, auth_format, extra_headers and billing are for kind 'direct'")
+		return
+	}
+	apiFormat := in.APIFormat
+	if apiFormat == "" {
+		apiFormat = "openai"
+	}
+	if !validAPIFormat(w, apiFormat) {
 		return
 	}
 	// A 201 that dropped the flag would leave the operator believing it is set.
@@ -791,7 +815,7 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := d.AIProviders.CreateTunnelProvider(r.Context(), slug, name, in.ServiceID)
+	p, err := d.AIProviders.CreateTunnelProvider(r.Context(), slug, name, in.ServiceID, apiFormat)
 	if err != nil {
 		if !mapProviderErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
@@ -802,6 +826,7 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 	d.auditProvider(r, audit.ActionAIProviderCreate, p, map[string]any{
 		"kind":       p.Kind,
 		"service_id": p.ServiceID,
+		"api_format": p.APIFormat,
 	})
 	if in.GatewayOnly {
 		d.closeDirectDoors(r, p)
@@ -857,8 +882,13 @@ func (d Deps) postDirectProvider(w http.ResponseWriter, r *http.Request, slug, n
 // and name are both required.  After a slug change the old base URL stops
 // working at once.  supports_responses is optional and states whether the
 // provider offers POST /responses, max_concurrent is optional and sets how
-// many requests the provider serves at once (0 = no limit); left out, the
-// stored values stay.  All of them are stored together or not at all.
+// many requests the provider serves at once (0 = no limit), api_format is
+// optional and sets the format of a tunnel provider; left out, the stored
+// values stay.  All of them are stored together or not at all.  api_format
+// is refused with 400 for a direct provider (its format is one of its
+// upstream settings) and when the provider would offer the Responses API in
+// another format than OpenAI, and with 409 and the names of the models while
+// models target the provider.
 func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
 	oldSlug := chi.URLParam(r, "slug")
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
@@ -878,10 +908,14 @@ func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
 	if !validMaxConcurrent(w, in.MaxConcurrent) {
 		return
 	}
+	if in.APIFormat != nil && !validAPIFormat(w, *in.APIFormat) {
+		return
+	}
 
-	// Slug, name, the flag and the limit are one write in the store: a flag
-	// the provider's format does not allow is a 400 and nothing has changed.
-	p, err := d.AIProviders.UpdateProvider(r.Context(), oldSlug, in.Slug, name, in.SupportsResponses, in.MaxConcurrent)
+	// Slug, name, the flag, the limit and the format are one write in the
+	// store: a flag or a format the provider does not allow is refused and
+	// nothing has changed.
+	p, err := d.AIProviders.UpdateProvider(r.Context(), oldSlug, in.Slug, name, in.SupportsResponses, in.MaxConcurrent, in.APIFormat)
 	if err != nil {
 		if !mapProviderErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
@@ -897,6 +931,9 @@ func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.MaxConcurrent != nil {
 		payload["max_concurrent"] = p.MaxConcurrent
+	}
+	if in.APIFormat != nil {
+		payload["api_format"] = p.APIFormat
 	}
 
 	// The breaker keys its state by slug: nothing answers under the old one.

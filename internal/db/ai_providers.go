@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -270,55 +271,73 @@ func (x *DB) ListAIProviders(ctx context.Context) ([]AIProvider, error) {
 // whose API format is not "openai".
 var ErrResponsesFormat = errors.New("db: the Responses API belongs to the OpenAI format")
 
+// ErrProviderNotTunnel is returned when UpdateAIProvider is given an API
+// format for a provider that is not of kind "tunnel": the format of a direct
+// provider is one of its upstream settings (ModifyAIProviderUpstream).
+var ErrProviderNotTunnel = errors.New("db: the API format of a direct provider is one of its upstream settings")
+
 // UpdateAIProvider changes a provider's slug and display name and, when
-// responses is not nil, whether it offers POST /responses, and, when
+// responses is not nil, whether it offers POST /responses, when
 // maxConcurrent is not nil, how many requests it serves at once (0 = no
-// limit). All of it is one UPDATE: a flag the provider's format does not
-// allow (ErrResponsesFormat) leaves the rest as it was.
-func (x *DB) UpdateAIProvider(ctx context.Context, slug, newSlug, name string, responses *bool, maxConcurrent *int) error {
+// limit), and, when apiFormat is not nil, the API format of a tunnel
+// provider. All of it is one UPDATE, and what it must not break is part of
+// its WHERE clause: no other write to the row can get between a check and
+// the write. A refused update leaves every field as it was:
+//
+//   - ErrProviderNotTunnel: apiFormat is given and the provider is direct.
+//   - ErrResponsesFormat: the provider would offer the Responses API in a
+//     format other than "openai", by the flag and format it has afterwards.
+//   - ErrProviderInUse, wrapped with the model names: the format would change
+//     while a synthetic model targets the provider. A target has the dialect
+//     of its provider. A model created at the same moment can still slip
+//     past; model resolution checks a target against its provider again on
+//     every request.
+func (x *DB) UpdateAIProvider(ctx context.Context, slug, newSlug, name string, responses *bool, maxConcurrent *int, apiFormat *string) error {
 	tx, err := x.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin update provider tx: %w", err)
 	}
 	set, args := `slug=?, name=?`, []any{newSlug, name}
+	where, whereArgs := `slug=?`, []any{slug}
 	if maxConcurrent != nil {
 		set += `, max_concurrent=?`
 		args = append(args, *maxConcurrent)
 	}
-	var res sql.Result
-	if responses == nil {
-		res, err = tx.ExecContext(ctx,
-			`UPDATE ai_providers SET `+set+` WHERE slug=?`, append(args, slug)...)
-	} else {
-		// The format condition is part of the statement, so no change of the
-		// format can get between a check and the write.
-		res, err = tx.ExecContext(ctx,
-			`UPDATE ai_providers SET `+set+`, supports_responses=?
-			  WHERE slug=? AND (?=0 OR api_format='openai')`,
-			append(args, boolToInt(*responses), slug, boolToInt(*responses))...)
+	if responses != nil {
+		set += `, supports_responses=?`
+		args = append(args, boolToInt(*responses))
+	}
+	if apiFormat != nil {
+		set += `, api_format=?`
+		args = append(args, *apiFormat)
+		where += ` AND kind='tunnel' AND (api_format=? OR NOT EXISTS (SELECT 1 FROM ai_model_targets t WHERE t.provider_slug=ai_providers.slug))`
+		whereArgs = append(whereArgs, *apiFormat)
+	}
+	// The Responses flag and the format of the row after the update must fit.
+	// Where the caller names only one of them, the statement requires the
+	// stored other one to fit; where it names both and they do not fit, there
+	// is nothing to write.
+	fits := true
+	switch {
+	case responses != nil && apiFormat != nil:
+		fits = !*responses || *apiFormat == "openai"
+	case responses != nil && *responses:
+		where += ` AND api_format='openai'`
+	case apiFormat != nil && *apiFormat != "openai":
+		where += ` AND supports_responses=0`
+	}
+	var n int64
+	if fits {
+		var res sql.Result
+		res, err = tx.ExecContext(ctx, `UPDATE ai_providers SET `+set+` WHERE `+where, append(args, whereArgs...)...)
 		if err == nil {
-			var n int64
-			if n, err = res.RowsAffected(); err == nil && n == 0 && *responses {
-				// No row, or a row of another format: say which. A row of
-				// the OpenAI format here was created after the UPDATE ran
-				// (possible under READ COMMITTED): the update did not find
-				// it, so it is reported as missing, not as a format error.
-				var format string
-				switch qerr := tx.QueryRowContext(ctx, `SELECT api_format FROM ai_providers WHERE slug=?`, slug).Scan(&format); {
-				case qerr == nil && format != "openai":
-					_ = tx.Rollback()
-					return ErrResponsesFormat
-				case qerr != nil && !errors.Is(qerr, sql.ErrNoRows):
-					err = qerr
-				}
-			}
+			n, err = res.RowsAffected()
 		}
 	}
+	if err == nil && n == 0 {
+		return x.updateAIProviderRefused(ctx, tx, slug, responses, apiFormat)
+	}
 	if err == nil {
-		if err = notFoundIfNoRows(res, "update ai provider"); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
 		// The backing row of a direct provider exists only for the provider
 		// and carries its name; left behind, the old name would stay taken
 		// for the owner. A tunnel provider's service keeps its own name.
@@ -337,6 +356,50 @@ func (x *DB) UpdateAIProvider(ctx context.Context, slug, newSlug, name string, r
 		return fmt.Errorf("commit update provider tx: %w", err)
 	}
 	return nil
+}
+
+// updateAIProviderRefused ends the transaction of an UpdateAIProvider whose
+// statement matched no row and says why: no provider has the slug, or one of
+// the statement's conditions did not hold. A row that passes every condition
+// here was created or changed after the UPDATE ran (possible under READ
+// COMMITTED): the update did not find it, so it is reported as missing.
+func (x *DB) updateAIProviderRefused(ctx context.Context, tx *sql.Tx, slug string, responses *bool, apiFormat *string) error {
+	var kind, format string
+	var flag bool
+	err := tx.QueryRowContext(ctx, `SELECT kind, api_format, supports_responses FROM ai_providers WHERE slug=?`, slug).
+		Scan(&kind, &format, (*intBool)(&flag))
+	// Nothing was written. The connection is given back before the model
+	// names are read: that read does not use the transaction.
+	_ = tx.Rollback()
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("update ai provider: %w", err)
+	}
+	if apiFormat != nil && kind != "tunnel" {
+		return ErrProviderNotTunnel
+	}
+	newFormat := format
+	if apiFormat != nil {
+		newFormat = *apiFormat
+	}
+	if responses != nil {
+		flag = *responses
+	}
+	if flag && newFormat != "openai" {
+		return ErrResponsesFormat
+	}
+	if newFormat != format {
+		names, err := x.ListAIModelNamesByProvider(ctx, slug)
+		if err != nil {
+			return err
+		}
+		if len(names) > 0 {
+			return fmt.Errorf("%w: %s", ErrProviderInUse, strings.Join(names, ", "))
+		}
+	}
+	return ErrNotFound
 }
 
 // DeleteAIProvider removes a provider row. The backing service is untouched.

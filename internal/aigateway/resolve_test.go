@@ -3,7 +3,9 @@ package aigateway
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -184,6 +186,53 @@ func TestResolve_FormatMismatch(t *testing.T) {
 		if len(res.Targets) != 0 {
 			t.Errorf("resolve(%q, %s) returned targets with an error", c.name, c.dialect)
 		}
+	}
+}
+
+// A tunnel provider can speak the Anthropic format (a local model server
+// behind a client). The format is the provider row's, whatever its kind: a
+// model with an Anthropic target on such a provider is served on
+// /anthropic/v1/messages and, with translation off, is a format mismatch on
+// /openai/v1/chat/completions.
+func TestResolve_AnthropicTunnelProvider(t *testing.T) {
+	var gotPath, gotBody string
+	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotPath, gotBody = r.URL.Path, string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","model":"claude-x","content":[]}`))
+	})
+	g := globalGateway(up, &spyChain{})
+	g.Providers.(fakeProviders)["claude-local"] = db.AIProvider{Slug: "claude-local", Kind: "tunnel", ServiceID: "svc1", APIFormat: "anthropic"}
+	g.Synthetic.(fakeSynthetic)["local-claude"] = db.AIModel{Name: "local-claude", Enabled: true, Targets: []db.AIModelTarget{
+		{Dialect: "anthropic", Position: 0, ProviderSlug: "claude-local", TargetModel: "claude-x"},
+	}}
+	ctx := context.Background()
+
+	for _, name := range []string{"local-claude", "claude-local/claude-x"} {
+		res, err := g.resolve(ctx, name, "anthropic")
+		if err != nil || len(res.Targets) != 1 || len(res.Other) != 0 ||
+			res.Targets[0].Provider.Slug != "claude-local" || res.Targets[0].Provider.Kind != "tunnel" || res.Targets[0].Model != "claude-x" {
+			t.Fatalf("resolve(%q, anthropic): %v %+v", name, err, res)
+		}
+		res, err = g.resolve(ctx, name, "openai")
+		var fm *formatMismatchError
+		if !errors.As(err, &fm) || fm.Model != name || fm.Dialect != "openai" || fm.ServedBy != "anthropic" || len(res.Targets) != 0 {
+			t.Fatalf("resolve(%q, openai) = %+v, %#v, want format mismatch served by anthropic", name, res, err)
+		}
+	}
+
+	// The same through the two endpoints.
+	rec := httptest.NewRecorder()
+	g.ServeDialect(rec, msg("/v1/messages", "bgw_all", `{"model":"local-claude","max_tokens":8,"messages":[]}`), DialectAnthropic)
+	if rec.Code != 200 || gotPath != "/v1/messages" || gotBody != `{"model":"claude-x","max_tokens":8,"messages":[]}` {
+		t.Fatalf("/anthropic/v1/messages: status %d body %s; upstream got %s %s", rec.Code, rec.Body.String(), gotPath, gotBody)
+	}
+	gotPath, gotBody = "", ""
+	rec = httptest.NewRecorder()
+	g.ServeDialect(rec, post("/v1/chat/completions", "bgw_all", `{"model":"local-claude","messages":[]}`), DialectOpenAI)
+	if rec.Code != 400 || rec.Header().Get("Burrow-Error-Code") != "format_mismatch" || gotPath != "" {
+		t.Fatalf("/openai/v1/chat/completions: status %d code %q body %s; upstream got %q", rec.Code, rec.Header().Get("Burrow-Error-Code"), rec.Body.String(), gotPath)
 	}
 }
 

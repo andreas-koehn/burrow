@@ -287,8 +287,8 @@ type AIMetricsStore interface {
 type AIProviderStore interface {
 	ListProviders(ctx context.Context) ([]db.AIProvider, error)
 	ProviderBySlug(ctx context.Context, slug string) (db.AIProvider, error)
-	CreateTunnelProvider(ctx context.Context, slug, name, serviceID string) (db.AIProvider, error)
-	UpdateProvider(ctx context.Context, slug, newSlug, name string, responses *bool, maxConcurrent *int) (db.AIProvider, error)
+	CreateTunnelProvider(ctx context.Context, slug, name, serviceID, apiFormat string) (db.AIProvider, error)
+	UpdateProvider(ctx context.Context, slug, newSlug, name string, responses *bool, maxConcurrent *int, apiFormat *string) (db.AIProvider, error)
 	DeleteProvider(ctx context.Context, slug string) error
 	CreateDirectProvider(ctx context.Context, ownerID string, in store.DirectProviderInput) (db.AIProvider, error)
 	UpdateProviderUpstream(ctx context.Context, slug string, in store.DirectProviderInput) (db.AIProvider, error)

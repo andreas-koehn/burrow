@@ -38,7 +38,8 @@ type AIModelTarget struct {
 var ErrDuplicateModel = errors.New("db: model name already in use")
 
 // ErrProviderInUse is returned, wrapped with the model names, when a delete
-// would remove a provider that a synthetic model still targets.
+// would remove a provider that a synthetic model still targets, or an update
+// would change the API format of one.
 var ErrProviderInUse = errors.New("provider is used by a model")
 
 const aiModelCols = `name, description, enabled, fallback_on_rate_limit, translate, attempt_timeout_s, total_timeout_s, created_at, updated_at`

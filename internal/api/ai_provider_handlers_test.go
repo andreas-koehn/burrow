@@ -28,9 +28,11 @@ import (
 // fakeProviderStore implements AIProviderStore over a slice. A non-nil
 // createErr/updateErr/deleteErr is returned instead of touching the slice.
 // It does not validate slugs — that is the handlers' job — and counts the
-// create/update calls it receives.
+// create/update calls it receives. usedBy names, per provider slug, the
+// models that target it.
 type fakeProviderStore struct {
 	rows      []db.AIProvider
+	usedBy    map[string][]string
 	writes    int
 	createErr error
 	updateErr error
@@ -161,29 +163,46 @@ func (f *fakeProviderStore) ProviderBySlug(_ context.Context, slug string) (db.A
 	return db.AIProvider{}, db.ErrNotFound
 }
 
-func (f *fakeProviderStore) CreateTunnelProvider(_ context.Context, slug, name, serviceID string) (db.AIProvider, error) {
+// CreateTunnelProvider stores the format it is given: the default is the
+// handler's to fill in.
+func (f *fakeProviderStore) CreateTunnelProvider(_ context.Context, slug, name, serviceID, apiFormat string) (db.AIProvider, error) {
 	f.writes++
 	if f.createErr != nil {
 		return db.AIProvider{}, f.createErr
 	}
-	p := db.AIProvider{Slug: slug, Name: name, Kind: "tunnel", ServiceID: serviceID, APIFormat: "openai"}
+	p := db.AIProvider{Slug: slug, Name: name, Kind: "tunnel", ServiceID: serviceID, APIFormat: apiFormat}
 	f.rows = append(f.rows, p)
 	return p, nil
 }
 
-// UpdateProvider writes slug, name and the flag together or, like the store,
-// none of them when the flag does not fit the provider's format.
-func (f *fakeProviderStore) UpdateProvider(_ context.Context, slug, newSlug, name string, responses *bool, maxConcurrent *int) (db.AIProvider, error) {
+// UpdateProvider writes slug, name, the flag and the format together or, like
+// the store, none of them: when the flag does not fit the format the provider
+// has afterwards, when the format of a direct provider is named, or when the
+// format would change under a model.
+func (f *fakeProviderStore) UpdateProvider(_ context.Context, slug, newSlug, name string, responses *bool, maxConcurrent *int, apiFormat *string) (db.AIProvider, error) {
 	f.writes++
 	if f.updateErr != nil {
 		return db.AIProvider{}, f.updateErr
 	}
 	for i := range f.rows {
 		if f.rows[i].Slug == slug {
-			if responses != nil && *responses && f.rows[i].APIFormat != "openai" {
+			format, flag := f.rows[i].APIFormat, f.rows[i].SupportsResponses
+			if apiFormat != nil {
+				if f.rows[i].Kind != "tunnel" {
+					return db.AIProvider{}, fmt.Errorf("%w: api_format of a direct provider is one of its upstream settings", store.ErrInvalidProviderConfig)
+				}
+				format = *apiFormat
+			}
+			if responses != nil {
+				flag = *responses
+			}
+			if flag && format != "openai" {
 				return db.AIProvider{}, fmt.Errorf("%w: the Responses API belongs to the OpenAI format", store.ErrInvalidProviderConfig)
 			}
-			f.rows[i].Slug, f.rows[i].Name = newSlug, name
+			if format != f.rows[i].APIFormat && len(f.usedBy[slug]) > 0 {
+				return db.AIProvider{}, fmt.Errorf("%w: %s", store.ErrProviderInUse, strings.Join(f.usedBy[slug], ", "))
+			}
+			f.rows[i].Slug, f.rows[i].Name, f.rows[i].APIFormat = newSlug, name, format
 			if responses != nil {
 				f.rows[i].SupportsResponses = *responses
 			}
@@ -2329,4 +2348,230 @@ func TestProviderState(t *testing.T) {
 			t.Errorf("%s: got %q %v %q, want %q %v %q", tc.name, state, lastSeen, lastClient, tc.state, tc.lastSeen, tc.lastClient)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// api_format of a tunnel provider
+// ---------------------------------------------------------------------------
+
+// A local model server may speak the Anthropic format: a tunnel provider
+// takes api_format when it is created, and is an OpenAI one without it.
+func TestAIProviderTunnelFormat_Post(t *testing.T) {
+	newServer := func(t *testing.T) (*authClient, *fakeProviderStore, *stubAuditAppender) {
+		ss, ps := oneProviderFixture()
+		ps.rows = nil
+		aud := &stubAuditAppender{}
+		d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
+		d.AuditAppender = aud
+		srv, c := newAIProviderServer(t, d)
+		t.Cleanup(srv.Close)
+		return c, ps, aud
+	}
+	tunnel := func(extra map[string]any) map[string]any {
+		in := map[string]any{"name": "Ollama", "slug": "ollama", "kind": "tunnel", "service_id": "svc1"}
+		for k, v := range extra {
+			in[k] = v
+		}
+		return in
+	}
+
+	for name, tc := range map[string]struct {
+		extra map[string]any
+		want  string
+	}{
+		"anthropic":       {map[string]any{"api_format": "anthropic"}, "anthropic"},
+		"openai":          {map[string]any{"api_format": "openai"}, "openai"},
+		"left out":        {nil, "openai"},
+		"empty is absent": {map[string]any{"api_format": ""}, "openai"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, ps, aud := newServer(t)
+			body := wantStatus(t, c.post(t, "/api/v1/ai/providers", tunnel(tc.extra)), http.StatusCreated)
+			if p := decodeProvider(t, body); p.APIFormat != tc.want || p.Kind != "tunnel" || p.Slug != "ollama" {
+				t.Errorf("view: %+v", p)
+			}
+			if len(ps.rows) != 1 || ps.rows[0].APIFormat != tc.want {
+				t.Errorf("store rows: %+v", ps.rows)
+			}
+			if p := decodeProvider(t, wantStatus(t, c.get(t, "/api/v1/ai/providers/ollama"), http.StatusOK)); p.APIFormat != tc.want {
+				t.Errorf("after refetch: %+v", p)
+			}
+			if len(aud.events) != 1 || aud.events[0].Action != audit.ActionAIProviderCreate {
+				t.Fatalf("audit events: %+v", aud.events)
+			}
+			if got := auditPayload(t, aud.events[0]); got["api_format"] != tc.want || got["kind"] != "tunnel" || got["service_id"] != "svc1" {
+				t.Errorf("audit payload: %v", got)
+			}
+		})
+	}
+
+	for name, format := range map[string]any{"unknown format": "grpc", "wrong case": "Anthropic", "not a string": 1} {
+		t.Run(name, func(t *testing.T) {
+			c, ps, aud := newServer(t)
+			body := wantStatus(t, c.post(t, "/api/v1/ai/providers", tunnel(map[string]any{"api_format": format})), http.StatusBadRequest)
+			if _, isString := format.(string); isString && !strings.Contains(body, "api_format must be 'openai' or 'anthropic'") {
+				t.Errorf("body = %s", body)
+			}
+			if ps.writes != 0 || len(ps.rows) != 0 || len(aud.events) != 0 {
+				t.Errorf("rejected request reached the store: writes=%d rows=%+v events=%+v", ps.writes, ps.rows, aud.events)
+			}
+		})
+	}
+
+	// The upstream settings stay with kind 'direct', next to an api_format or
+	// without one, and the message no longer lists api_format among them.
+	for name, extra := range map[string]map[string]any{
+		"base_url":                       {"base_url": "https://api.z.ai/v4"},
+		"credential_slot":                {"credential_slot": "ZAI"},
+		"api_format and base_url":        {"api_format": "anthropic", "base_url": "https://api.z.ai/v4"},
+		"api_format and credential_slot": {"api_format": "anthropic", "credential_slot": "ZAI"},
+	} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			c, ps, aud := newServer(t)
+			body := wantStatus(t, c.post(t, "/api/v1/ai/providers", tunnel(extra)), http.StatusBadRequest)
+			if !strings.Contains(body, "base_url, credential_slot, auth_header, auth_format, extra_headers and billing are for kind 'direct'") ||
+				strings.Contains(body, "api_format") {
+				t.Errorf("body = %s", body)
+			}
+			if ps.writes != 0 || len(ps.rows) != 0 || len(aud.events) != 0 {
+				t.Errorf("rejected request reached the store: writes=%d rows=%+v events=%+v", ps.writes, ps.rows, aud.events)
+			}
+		})
+	}
+}
+
+func TestAIProviderTunnelFormat_Put(t *testing.T) {
+	// "ollama" is a tunnel provider, "openrouter" a direct one, both OpenAI.
+	newServer := func(t *testing.T) (*authClient, *fakeProviderStore, *stubAuditAppender) {
+		f := newDirectFixture()
+		return f.serve(t), f.ps, f.aud
+	}
+	put := func(extra map[string]any) map[string]any {
+		in := map[string]any{"slug": "ollama", "name": "Ollama"}
+		for k, v := range extra {
+			in[k] = v
+		}
+		return in
+	}
+	// unchanged fails when a refused update left a trace.
+	unchanged := func(t *testing.T, c *authClient, ps *fakeProviderStore, aud *stubAuditAppender, want db.AIProvider) {
+		t.Helper()
+		row := ps.rows[0]
+		if row.Slug != want.Slug || row.Name != want.Name || row.APIFormat != want.APIFormat || row.SupportsResponses != want.SupportsResponses || len(aud.events) != 0 {
+			t.Errorf("a refused update left a trace: row=%+v events=%+v", row, aud.events)
+		}
+		if p := decodeProvider(t, wantStatus(t, c.get(t, "/api/v1/ai/providers/"+want.Slug), http.StatusOK)); p.APIFormat != want.APIFormat {
+			t.Errorf("after refetch: %+v", p)
+		}
+	}
+
+	t.Run("changes the format, and a later update without the field keeps it", func(t *testing.T) {
+		c, ps, aud := newServer(t)
+		body := wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", put(map[string]any{"api_format": "anthropic"})), http.StatusOK)
+		if p := decodeProvider(t, body); p.APIFormat != "anthropic" || p.Slug != "ollama" || p.Kind != "tunnel" {
+			t.Errorf("view: %+v", p)
+		}
+		if ps.rows[0].APIFormat != "anthropic" || ps.writes != 1 {
+			t.Errorf("store: %+v writes=%d", ps.rows[0], ps.writes)
+		}
+		if len(aud.events) != 1 || aud.events[0].Action != audit.ActionAIProviderUpdate {
+			t.Fatalf("audit events: %+v", aud.events)
+		}
+		if got := auditPayload(t, aud.events[0]); got["api_format"] != "anthropic" || got["old_slug"] != "ollama" || got["new_slug"] != "ollama" {
+			t.Errorf("audit payload: %v", got)
+		}
+
+		body = wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "local", "name": "Local"}), http.StatusOK)
+		if p := decodeProvider(t, body); p.APIFormat != "anthropic" || p.Slug != "local" {
+			t.Errorf("after a rename: %+v", p)
+		}
+		if _, named := auditPayload(t, aud.events[1])["api_format"]; named {
+			t.Errorf("the audit payload names a format the request did not: %s", aud.events[1].Payload)
+		}
+		// And back.
+		body = wantStatus(t, c.put(t, "/api/v1/ai/providers/local", map[string]any{"slug": "local", "name": "Local", "api_format": "openai"}), http.StatusOK)
+		if p := decodeProvider(t, body); p.APIFormat != "openai" || ps.rows[0].APIFormat != "openai" {
+			t.Errorf("after the way back: %+v", p)
+		}
+	})
+
+	t.Run("slug, name and format change in one store write", func(t *testing.T) {
+		c, ps, aud := newServer(t)
+		body := wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "local", "name": "Local", "api_format": "anthropic"}), http.StatusOK)
+		if p := decodeProvider(t, body); p.APIFormat != "anthropic" || p.Slug != "local" || p.Name != "Local" {
+			t.Errorf("view: %+v", p)
+		}
+		if ps.writes != 1 || len(aud.events) != 1 {
+			t.Errorf("writes=%d events=%+v", ps.writes, aud.events)
+		}
+	})
+
+	for name, format := range map[string]any{"unknown format": "grpc", "empty": "", "not a string": true} {
+		t.Run(name, func(t *testing.T) {
+			c, ps, aud := newServer(t)
+			body := wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", put(map[string]any{"api_format": format})), http.StatusBadRequest)
+			if _, isString := format.(string); isString && !strings.Contains(body, "api_format must be 'openai' or 'anthropic'") {
+				t.Errorf("body = %s", body)
+			}
+			if ps.writes != 0 {
+				t.Errorf("rejected request reached the store: writes=%d", ps.writes)
+			}
+			unchanged(t, c, ps, aud, tunnelProvider("ollama", "Ollama", "svc1"))
+		})
+	}
+
+	// A direct provider's format is one of its upstream settings; even the
+	// format it already has is refused here.
+	for _, format := range []string{"anthropic", "openai"} {
+		t.Run("direct provider, "+format, func(t *testing.T) {
+			c, ps, aud := newServer(t)
+			body := wantStatus(t, c.put(t, "/api/v1/ai/providers/openrouter", map[string]any{"slug": "router2", "name": "Router Two", "api_format": format}), http.StatusBadRequest)
+			if !strings.Contains(body, "api_format of a direct provider is one of its upstream settings") {
+				t.Errorf("body = %s", body)
+			}
+			if row := ps.rows[1]; row.Slug != "openrouter" || row.Name != "OpenRouter" || row.APIFormat != "openai" || len(aud.events) != 0 {
+				t.Errorf("a refused update left a trace: row=%+v events=%+v", row, aud.events)
+			}
+		})
+	}
+
+	t.Run("the Responses flag keeps the provider in the OpenAI format", func(t *testing.T) {
+		c, ps, aud := newServer(t)
+		ps.rows[0].SupportsResponses = true
+		want := ps.rows[0]
+		body := wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "local", "name": "Local", "api_format": "anthropic"}), http.StatusBadRequest)
+		if !strings.Contains(body, "the Responses API belongs to the OpenAI format") {
+			t.Errorf("body = %s", body)
+		}
+		unchanged(t, c, ps, aud, want)
+		// Naming the flag as on in the same request does not help.
+		wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", put(map[string]any{"api_format": "anthropic", "supports_responses": true})), http.StatusBadRequest)
+		unchanged(t, c, ps, aud, want)
+		// Turning it off in the same request does.
+		body = wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", put(map[string]any{"api_format": "anthropic", "supports_responses": false})), http.StatusOK)
+		if p := decodeProvider(t, body); p.APIFormat != "anthropic" || p.SupportsResponses {
+			t.Errorf("view: %+v", p)
+		}
+	})
+
+	t.Run("a provider that models use keeps its format", func(t *testing.T) {
+		c, ps, aud := newServer(t)
+		ps.usedBy = map[string][]string{"ollama": {"burrow-simple", "burrow-smart"}}
+		body := wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", map[string]any{"slug": "local", "name": "Local", "api_format": "anthropic"}), http.StatusConflict)
+		// The same answer as for deleting a provider that is a model target.
+		if !strings.Contains(body, "provider is used by model(s): burrow-simple, burrow-smart") {
+			t.Errorf("body = %s", body)
+		}
+		unchanged(t, c, ps, aud, tunnelProvider("ollama", "Ollama", "svc1"))
+		// Naming the format it has is no change.
+		wantStatus(t, c.put(t, "/api/v1/ai/providers/ollama", put(map[string]any{"api_format": "openai"})), http.StatusOK)
+	})
+
+	t.Run("unknown provider", func(t *testing.T) {
+		c, _, aud := newServer(t)
+		wantStatus(t, c.put(t, "/api/v1/ai/providers/nope", map[string]any{"slug": "local", "name": "Local", "api_format": "anthropic"}), http.StatusNotFound)
+		if len(aud.events) != 0 {
+			t.Errorf("audit events: %+v", aud.events)
+		}
+	})
 }

@@ -138,10 +138,18 @@ func (s *Store) ListProviders(ctx context.Context) ([]db.AIProvider, error) {
 }
 
 // CreateTunnelProvider registers an existing http service in api_key mode as
-// a model provider. Callers gate on admin; the store only validates the data.
-func (s *Store) CreateTunnelProvider(ctx context.Context, slug, name, serviceID string) (db.AIProvider, error) {
+// a model provider. apiFormat is the format the server behind the tunnel
+// speaks, "openai" or "anthropic"; "" means "openai". Callers gate on admin;
+// the store only validates the data.
+func (s *Store) CreateTunnelProvider(ctx context.Context, slug, name, serviceID, apiFormat string) (db.AIProvider, error) {
 	if !ValidProviderSlug(slug) {
 		return db.AIProvider{}, ErrInvalidProviderSlug
+	}
+	if apiFormat == "" {
+		apiFormat = "openai"
+	}
+	if !ValidAPIFormat(apiFormat) {
+		return db.AIProvider{}, errAPIFormat()
 	}
 	svc, err := s.q.GetServiceByID(ctx, serviceID)
 	if errors.Is(err, db.ErrNotFound) {
@@ -158,7 +166,7 @@ func (s *Store) CreateTunnelProvider(ctx context.Context, slug, name, serviceID 
 	} else if taken {
 		return db.AIProvider{}, ErrProviderExists
 	}
-	p := db.AIProvider{Slug: slug, Name: name, Kind: "tunnel", ServiceID: serviceID, APIFormat: "openai"}
+	p := db.AIProvider{Slug: slug, Name: name, Kind: "tunnel", ServiceID: serviceID, APIFormat: apiFormat}
 	if err := s.q.CreateAIProvider(ctx, p); err != nil {
 		if errors.Is(err, db.ErrDuplicateProvider) {
 			return db.AIProvider{}, ErrProviderExists
@@ -173,14 +181,22 @@ func (s *Store) CreateTunnelProvider(ctx context.Context, slug, name, serviceID 
 // say so in the same step as a rename, and how a tunnel provider is flagged),
 // and, when maxConcurrent is not nil, how many requests it serves at once
 // (0 = no limit; this is how a tunnel provider, which has no upstream
-// settings, gets a limit). They are written together or not at all: a flag
-// that the provider's format does not allow or a limit out of range is
-// ErrInvalidProviderConfig and changes nothing. The gateway reads the row per
-// request, so a new limit applies from the next request on. The
-// old base URL stops working at once. The backing service of a direct
-// provider is renamed with it, and model targets follow the new slug. A slug
-// that a synthetic model has as its name is refused with ErrProviderExists.
-func (s *Store) UpdateProvider(ctx context.Context, slug, newSlug, name string, responses *bool, maxConcurrent *int) (db.AIProvider, error) {
+// settings, gets a limit), and, when apiFormat is not nil, the API format of
+// a tunnel provider ("openai" or "anthropic"). They are written together or
+// not at all: a flag that the provider's format does not allow, a format
+// that does not allow the provider's flag, a format for a direct provider
+// (it has its format among its upstream settings, see UpdateProviderUpstream)
+// or a limit out of range is ErrInvalidProviderConfig and changes nothing. A
+// format cannot change while a synthetic model targets the provider: the
+// error wraps ErrProviderInUse and names the models, as for a delete. Model
+// resolution re-checks a target's dialect against its provider at request
+// time, so a change that races a new model is still not served. The gateway
+// reads the row per request, so a new limit or format applies from the next
+// request on. The old base URL stops working at once. The backing service of
+// a direct provider is renamed with it, and model targets follow the new
+// slug. A slug that a synthetic model has as its name is refused with
+// ErrProviderExists.
+func (s *Store) UpdateProvider(ctx context.Context, slug, newSlug, name string, responses *bool, maxConcurrent *int, apiFormat *string) (db.AIProvider, error) {
 	if !ValidProviderSlug(newSlug) {
 		return db.AIProvider{}, ErrInvalidProviderSlug
 	}
@@ -189,16 +205,22 @@ func (s *Store) UpdateProvider(ctx context.Context, slug, newSlug, name string, 
 			return db.AIProvider{}, err
 		}
 	}
+	if apiFormat != nil && !ValidAPIFormat(*apiFormat) {
+		return db.AIProvider{}, errAPIFormat()
+	}
 	if taken, err := s.slugTakenByModel(ctx, newSlug); err != nil {
 		return db.AIProvider{}, err
 	} else if taken {
 		return db.AIProvider{}, ErrProviderExists
 	}
-	switch err := s.q.UpdateAIProvider(ctx, slug, newSlug, name, responses, maxConcurrent); {
+	// ErrProviderInUse comes back as it is, with the model names.
+	switch err := s.q.UpdateAIProvider(ctx, slug, newSlug, name, responses, maxConcurrent, apiFormat); {
 	case errors.Is(err, db.ErrNotFound):
 		return db.AIProvider{}, ErrProviderNotFound
 	case errors.Is(err, db.ErrResponsesFormat):
 		return db.AIProvider{}, errResponsesFormat()
+	case errors.Is(err, db.ErrProviderNotTunnel):
+		return db.AIProvider{}, invalidConfig("api_format of a direct provider is one of its upstream settings")
 	case errors.Is(err, db.ErrDuplicateProvider):
 		return db.AIProvider{}, ErrProviderExists
 	case err != nil:
@@ -257,6 +279,14 @@ func validMaxConcurrent(n int) error {
 // errResponsesFormat refuses the Responses flag on a provider of another format.
 func errResponsesFormat() error {
 	return invalidConfig("the Responses API belongs to the OpenAI format")
+}
+
+// ValidAPIFormat reports whether f names an API format a provider can speak.
+func ValidAPIFormat(f string) bool { return f == "openai" || f == "anthropic" }
+
+// errAPIFormat refuses an API format that is neither of the two.
+func errAPIFormat() error {
+	return invalidConfig("api_format must be 'openai' or 'anthropic'")
 }
 
 var (
@@ -349,12 +379,11 @@ func normalizeDirect(in DirectProviderInput) (DirectProviderInput, error) {
 	default:
 		return in, invalidConfig("billing must be 'metered' or 'flat'")
 	}
-	switch in.APIFormat {
-	case "":
+	if in.APIFormat == "" {
 		in.APIFormat = "openai"
-	case "openai", "anthropic":
-	default:
-		return in, invalidConfig("api_format must be 'openai' or 'anthropic'")
+	}
+	if !ValidAPIFormat(in.APIFormat) {
+		return in, errAPIFormat()
 	}
 	if in.SupportsResponses != nil && *in.SupportsResponses && in.APIFormat != "openai" {
 		return in, errResponsesFormat()

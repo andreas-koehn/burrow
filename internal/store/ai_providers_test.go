@@ -93,30 +93,30 @@ func TestCreateTunnelProvider(t *testing.T) {
 	svcA, svcOpen, svcTCP := providerFixture(t, s)
 	ctx := context.Background()
 
-	p, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA)
+	p, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA, "")
 	if err != nil || p.Slug != "ollama" || p.Kind != "tunnel" || p.APIFormat != "openai" {
 		t.Fatalf("create: %v %+v", err, p)
 	}
-	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Again", svcA); !errors.Is(err, ErrProviderExists) {
+	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Again", svcA, ""); !errors.Is(err, ErrProviderExists) {
 		t.Fatalf("duplicate err = %v", err)
 	}
 	// One provider per service: a free slug does not help.
-	if _, err := s.CreateTunnelProvider(ctx, "second", "Second", svcA); !errors.Is(err, ErrProviderExists) {
+	if _, err := s.CreateTunnelProvider(ctx, "second", "Second", svcA, ""); !errors.Is(err, ErrProviderExists) {
 		t.Fatalf("second provider on the same service err = %v", err)
 	}
-	if _, err := s.CreateTunnelProvider(ctx, "v1", "Reserved", svcA); !errors.Is(err, ErrInvalidProviderSlug) {
+	if _, err := s.CreateTunnelProvider(ctx, "v1", "Reserved", svcA, ""); !errors.Is(err, ErrInvalidProviderSlug) {
 		t.Fatalf("reserved slug err = %v", err)
 	}
-	if _, err := s.CreateTunnelProvider(ctx, "Bad_Slug", "Bad", svcA); !errors.Is(err, ErrInvalidProviderSlug) {
+	if _, err := s.CreateTunnelProvider(ctx, "Bad_Slug", "Bad", svcA, ""); !errors.Is(err, ErrInvalidProviderSlug) {
 		t.Fatalf("malformed slug err = %v", err)
 	}
-	if _, err := s.CreateTunnelProvider(ctx, "open", "Open", svcOpen); !errors.Is(err, ErrProviderService) {
+	if _, err := s.CreateTunnelProvider(ctx, "open", "Open", svcOpen, ""); !errors.Is(err, ErrProviderService) {
 		t.Fatalf("open-mode service err = %v", err)
 	}
-	if _, err := s.CreateTunnelProvider(ctx, "tcp", "TCP", svcTCP); !errors.Is(err, ErrProviderService) {
+	if _, err := s.CreateTunnelProvider(ctx, "tcp", "TCP", svcTCP, ""); !errors.Is(err, ErrProviderService) {
 		t.Fatalf("tcp service err = %v", err)
 	}
-	if _, err := s.CreateTunnelProvider(ctx, "ghost", "Ghost", "no-such-service"); !errors.Is(err, ErrProviderService) {
+	if _, err := s.CreateTunnelProvider(ctx, "ghost", "Ghost", "no-such-service", ""); !errors.Is(err, ErrProviderService) {
 		t.Fatalf("missing service err = %v", err)
 	}
 	ps, err := s.ListProviders(ctx)
@@ -129,10 +129,10 @@ func TestUpdateAndDeleteProvider(t *testing.T) {
 	s := newStore(t)
 	svcA, _, _ := providerFixture(t, s)
 	ctx := context.Background()
-	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA); err != nil {
+	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA, ""); err != nil {
 		t.Fatal(err)
 	}
-	p, err := s.UpdateProvider(ctx, "ollama", "local", "Local models", nil, nil)
+	p, err := s.UpdateProvider(ctx, "ollama", "local", "Local models", nil, nil, nil)
 	if err != nil || p.Slug != "local" || p.Name != "Local models" {
 		t.Fatalf("update: %v %+v", err, p)
 	}
@@ -140,10 +140,10 @@ func TestUpdateAndDeleteProvider(t *testing.T) {
 	if _, err := s.ProviderBySlug(ctx, "ollama"); !errors.Is(err, db.ErrNotFound) {
 		t.Fatalf("old slug err = %v", err)
 	}
-	if _, err := s.UpdateProvider(ctx, "local", "v1", "x", nil, nil); !errors.Is(err, ErrInvalidProviderSlug) {
+	if _, err := s.UpdateProvider(ctx, "local", "v1", "x", nil, nil, nil); !errors.Is(err, ErrInvalidProviderSlug) {
 		t.Fatalf("reserved err = %v", err)
 	}
-	if _, err := s.UpdateProvider(ctx, "gone", "abc", "x", nil, nil); !errors.Is(err, ErrProviderNotFound) {
+	if _, err := s.UpdateProvider(ctx, "gone", "abc", "x", nil, nil, nil); !errors.Is(err, ErrProviderNotFound) {
 		t.Fatalf("missing err = %v", err)
 	}
 	if err := s.DeleteProvider(ctx, "local"); err != nil {
@@ -315,7 +315,7 @@ func TestDeleteProvider_KeepsTunnelService(t *testing.T) {
 	s := newStore(t)
 	svcA, _, _ := providerFixture(t, s)
 	ctx := context.Background()
-	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA); err != nil {
+	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteProvider(ctx, "ollama"); err != nil {
@@ -369,7 +369,7 @@ func TestUpdateProviderUpstream(t *testing.T) {
 	if _, err := s.UpdateProviderUpstream(ctx, "gone", DirectProviderInput{BaseURL: "https://x.example/v1"}); !errors.Is(err, ErrProviderNotFound) {
 		t.Fatalf("unknown provider err = %v", err)
 	}
-	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA); err != nil {
+	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.UpdateProviderUpstream(ctx, "ollama", DirectProviderInput{BaseURL: "https://x.example/v1", CredentialSlot: "S"}); !errors.Is(err, ErrInvalidProviderConfig) {
@@ -381,7 +381,7 @@ func TestProviderModels(t *testing.T) {
 	s := newStore(t)
 	svcA, _, _ := providerFixture(t, s)
 	ctx := context.Background()
-	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA); err != nil {
+	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -471,7 +471,7 @@ func TestDirectBackingService_Guards(t *testing.T) {
 		t.Fatalf("backing row changed: %+v", svc)
 	}
 	// It cannot be turned into a tunnel provider either.
-	if _, err := s.CreateTunnelProvider(ctx, "second", "Second", p.ServiceID); !errors.Is(err, ErrProviderService) {
+	if _, err := s.CreateTunnelProvider(ctx, "second", "Second", p.ServiceID, ""); !errors.Is(err, ErrProviderService) {
 		t.Errorf("tunnel provider on a direct row err = %v", err)
 	}
 	id, _, err := s.CreateAPIKey(ctx, ownerID, "admin", p.ServiceID, "ci")
@@ -498,7 +498,7 @@ func TestRenameDirectProvider_FreesSlugAndName(t *testing.T) {
 	if strings.Contains(first.ServiceID, "openrouter") {
 		t.Fatalf("service id %q is derived from the slug", first.ServiceID)
 	}
-	renamed, err := s.UpdateProvider(ctx, "openrouter", "router2", "Router Two", nil, nil)
+	renamed, err := s.UpdateProvider(ctx, "openrouter", "router2", "Router Two", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,25 +581,25 @@ func TestUpdateProvider_Responses(t *testing.T) {
 	svcA, _, _ := providerFixture(t, s)
 	ctx := context.Background()
 	on, off := true, false
-	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA); err != nil {
+	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "claude", Name: "Claude", BaseURL: "https://x.example/v1", CredentialSlot: "C", APIFormat: "anthropic"}); err != nil {
 		t.Fatal(err)
 	}
 
-	p, err := s.UpdateProvider(ctx, "ollama", "local", "Local", &on, nil)
+	p, err := s.UpdateProvider(ctx, "ollama", "local", "Local", &on, nil, nil)
 	if err != nil || p.Slug != "local" || p.Name != "Local" || !p.SupportsResponses {
 		t.Fatalf("update: %v %+v", err, p)
 	}
-	if p, err = s.UpdateProvider(ctx, "local", "local", "Local", nil, nil); err != nil || !p.SupportsResponses {
+	if p, err = s.UpdateProvider(ctx, "local", "local", "Local", nil, nil, nil); err != nil || !p.SupportsResponses {
 		t.Fatalf("flag left out: %v %+v", err, p)
 	}
-	if p, err = s.UpdateProvider(ctx, "local", "local", "Local", &off, nil); err != nil || p.SupportsResponses {
+	if p, err = s.UpdateProvider(ctx, "local", "local", "Local", &off, nil, nil); err != nil || p.SupportsResponses {
 		t.Fatalf("flag off: %v %+v", err, p)
 	}
 
-	_, err = s.UpdateProvider(ctx, "claude", "claude2", "Claude Two", &on, nil)
+	_, err = s.UpdateProvider(ctx, "claude", "claude2", "Claude Two", &on, nil, nil)
 	if !errors.Is(err, ErrInvalidProviderConfig) || !strings.Contains(err.Error(), "the Responses API belongs to the OpenAI format") {
 		t.Fatalf("anthropic provider: %v", err)
 	}
@@ -609,7 +609,143 @@ func TestUpdateProvider_Responses(t *testing.T) {
 	if _, err := s.ProviderBySlug(ctx, "claude2"); err == nil {
 		t.Fatal("the new slug exists after a refused update")
 	}
-	if _, err := s.UpdateProvider(ctx, "gone", "abc", "x", &on, nil); !errors.Is(err, ErrProviderNotFound) {
+	if _, err := s.UpdateProvider(ctx, "gone", "abc", "x", &on, nil, nil); !errors.Is(err, ErrProviderNotFound) {
+		t.Fatalf("unknown provider: %v", err)
+	}
+}
+
+// A tunnel provider is created in the OpenAI format unless the caller names
+// the other one, and a model can then have a target of that format on it.
+func TestCreateTunnelProvider_APIFormat(t *testing.T) {
+	s := newStore(t)
+	svcA, _, _ := providerFixture(t, s)
+	ctx := context.Background()
+
+	for _, bad := range []string{"grpc", "Anthropic", " openai"} {
+		_, err := s.CreateTunnelProvider(ctx, "claude-local", "Claude local", svcA, bad)
+		if !errors.Is(err, ErrInvalidProviderConfig) || !strings.Contains(err.Error(), "api_format must be 'openai' or 'anthropic'") {
+			t.Fatalf("format %q: err = %v", bad, err)
+		}
+	}
+	if ps, err := s.ListProviders(ctx); err != nil || len(ps) != 0 {
+		t.Fatalf("a refused create left a row: %v %+v", err, ps)
+	}
+
+	p, err := s.CreateTunnelProvider(ctx, "claude-local", "Claude local", svcA, "anthropic")
+	if err != nil || p.Kind != "tunnel" || p.APIFormat != "anthropic" || p.SupportsResponses {
+		t.Fatalf("create: %v %+v", err, p)
+	}
+	if got, err := s.ProviderBySlug(ctx, "claude-local"); err != nil || got.APIFormat != "anthropic" {
+		t.Fatalf("read back: %v %+v", err, got)
+	}
+	m, err := s.CreateModel(ctx, db.AIModel{Name: "local-claude", Enabled: true,
+		Targets: []db.AIModelTarget{{Dialect: "anthropic", ProviderSlug: "claude-local", TargetModel: "claude-x"}}})
+	if err != nil || len(m.Targets) != 1 || m.Targets[0].Dialect != "anthropic" {
+		t.Fatalf("anthropic target on the tunnel provider: %v %+v", err, m)
+	}
+	if _, err := s.CreateModel(ctx, db.AIModel{Name: "local-gpt", Enabled: true,
+		Targets: []db.AIModelTarget{{Dialect: "openai", ProviderSlug: "claude-local", TargetModel: "gpt-x"}}}); err == nil {
+		t.Fatal("an openai target on an anthropic provider was accepted")
+	}
+}
+
+// The API format of a tunnel provider changes with slug, name and the
+// Responses flag, or nothing changes.
+func TestUpdateProvider_APIFormat(t *testing.T) {
+	s := newStore(t)
+	ownerID := mustCreateUser(t, s, "admin@x", "admin").ID
+	svcA, _, _ := providerFixture(t, s)
+	ctx := context.Background()
+	on, off := true, false
+	f := func(v string) *string { return &v }
+	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateDirectProvider(ctx, ownerID, DirectProviderInput{Slug: "zai", Name: "z.ai", BaseURL: "https://x.example/v1", CredentialSlot: "Z"}); err != nil {
+		t.Fatal(err)
+	}
+	// unchanged fails when a refused update left a trace on "ollama".
+	unchanged := func(what, format string, flag bool) {
+		t.Helper()
+		got, err := s.ProviderBySlug(ctx, "ollama")
+		if err != nil || got.Name != "Ollama" || got.APIFormat != format || got.SupportsResponses != flag {
+			t.Fatalf("%s changed the row: %v %+v", what, err, got)
+		}
+		if _, err := s.ProviderBySlug(ctx, "local"); err == nil {
+			t.Fatalf("%s: the new slug exists after a refused update", what)
+		}
+	}
+
+	p, err := s.UpdateProvider(ctx, "ollama", "local", "Local", nil, nil, f("anthropic"))
+	if err != nil || p.Slug != "local" || p.Name != "Local" || p.APIFormat != "anthropic" {
+		t.Fatalf("update: %v %+v", err, p)
+	}
+	if p, err = s.UpdateProvider(ctx, "local", "ollama", "Ollama", nil, nil, nil); err != nil || p.APIFormat != "anthropic" {
+		t.Fatalf("format left out: %v %+v", err, p)
+	}
+	if p, err = s.UpdateProvider(ctx, "ollama", "ollama", "Ollama", nil, nil, f("openai")); err != nil || p.APIFormat != "openai" {
+		t.Fatalf("back to openai: %v %+v", err, p)
+	}
+
+	for _, bad := range []string{"", "grpc", "Anthropic"} {
+		_, err := s.UpdateProvider(ctx, "ollama", "local", "Local", nil, nil, f(bad))
+		if !errors.Is(err, ErrInvalidProviderConfig) || !strings.Contains(err.Error(), "api_format must be 'openai' or 'anthropic'") {
+			t.Fatalf("format %q: err = %v", bad, err)
+		}
+		unchanged("format "+bad, "openai", false)
+	}
+
+	// A direct provider's format is one of its upstream settings.
+	for _, format := range []string{"anthropic", "openai"} {
+		_, err := s.UpdateProvider(ctx, "zai", "zai2", "z.ai Two", nil, nil, f(format))
+		if !errors.Is(err, ErrInvalidProviderConfig) || !strings.Contains(err.Error(), "api_format of a direct provider is one of its upstream settings") {
+			t.Fatalf("direct provider to %s: err = %v", format, err)
+		}
+		if got, err := s.ProviderBySlug(ctx, "zai"); err != nil || got.Name != "z.ai" || got.APIFormat != "openai" {
+			t.Fatalf("a refused update changed the direct provider: %v %+v", err, got)
+		}
+	}
+
+	// The Responses flag keeps a provider in the OpenAI format.
+	if _, err := s.UpdateProvider(ctx, "ollama", "ollama", "Ollama", &on, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	for name, flag := range map[string]*bool{"flag left out": nil, "flag on": &on} {
+		_, err := s.UpdateProvider(ctx, "ollama", "local", "Local", flag, nil, f("anthropic"))
+		if !errors.Is(err, ErrInvalidProviderConfig) || !strings.Contains(err.Error(), "the Responses API belongs to the OpenAI format") {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+		unchanged(name, "openai", true)
+	}
+	if p, err = s.UpdateProvider(ctx, "ollama", "ollama", "Ollama", &off, nil, f("anthropic")); err != nil || p.APIFormat != "anthropic" || p.SupportsResponses {
+		t.Fatalf("flag off with the format: %v %+v", err, p)
+	}
+	if p, err = s.UpdateProvider(ctx, "ollama", "ollama", "Ollama", &on, nil, f("openai")); err != nil || p.APIFormat != "openai" || !p.SupportsResponses {
+		t.Fatalf("flag on with the openai format: %v %+v", err, p)
+	}
+	if _, err := s.UpdateProvider(ctx, "ollama", "ollama", "Ollama", &off, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// A model's target has the dialect of its provider: the format stays
+	// while models use the provider, as the provider does on a delete.
+	for _, name := range []string{"burrow-simple", "another-model"} {
+		m := db.AIModel{Name: name, Enabled: true, Targets: []db.AIModelTarget{{Dialect: "openai", ProviderSlug: "ollama", TargetModel: "mistral"}}}
+		if _, err := s.CreateModel(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = s.UpdateProvider(ctx, "ollama", "local", "Local", nil, nil, f("anthropic"))
+	if !errors.Is(err, ErrProviderInUse) || !strings.Contains(err.Error(), "another-model, burrow-simple") {
+		t.Fatalf("format change under models: err = %v", err)
+	}
+	unchanged("a provider in use", "openai", false)
+	// Naming the format it has is no change.
+	if p, err = s.UpdateProvider(ctx, "ollama", "ollama", "Ollama", nil, nil, f("openai")); err != nil || p.APIFormat != "openai" {
+		t.Fatalf("same format under models: %v %+v", err, p)
+	}
+
+	if _, err := s.UpdateProvider(ctx, "gone", "abc", "x", nil, nil, f("anthropic")); !errors.Is(err, ErrProviderNotFound) {
 		t.Fatalf("unknown provider: %v", err)
 	}
 }
@@ -707,7 +843,7 @@ func TestProviderMaxConcurrent(t *testing.T) {
 		if _, err := s.UpdateProviderUpstream(ctx, "local", DirectProviderInput{MaxConcurrent: n(bad)}); !errors.Is(err, ErrInvalidProviderConfig) {
 			t.Fatalf("upstream update with %d: %v", bad, err)
 		}
-		if _, err := s.UpdateProvider(ctx, "local", "renamed", "Renamed", nil, n(bad)); !errors.Is(err, ErrInvalidProviderConfig) {
+		if _, err := s.UpdateProvider(ctx, "local", "renamed", "Renamed", nil, n(bad), nil); !errors.Is(err, ErrInvalidProviderConfig) {
 			t.Fatalf("update with %d: %v", bad, err)
 		}
 	}
@@ -732,16 +868,16 @@ func TestProviderMaxConcurrent(t *testing.T) {
 
 	// A tunnel provider gets its limit through UpdateProvider, in one step
 	// with slug, name and the Responses flag.
-	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA); err != nil {
+	if _, err := s.CreateTunnelProvider(ctx, "ollama", "Ollama", svcA, ""); err != nil {
 		t.Fatal(err)
 	}
-	if p, err = s.UpdateProvider(ctx, "ollama", "gpu", "GPU box", &on, n(1)); err != nil || p.Slug != "gpu" || p.MaxConcurrent != 1 || !p.SupportsResponses {
+	if p, err = s.UpdateProvider(ctx, "ollama", "gpu", "GPU box", &on, n(1), nil); err != nil || p.Slug != "gpu" || p.MaxConcurrent != 1 || !p.SupportsResponses {
 		t.Fatalf("tunnel provider: %v %+v", err, p)
 	}
-	if p, err = s.UpdateProvider(ctx, "gpu", "gpu", "GPU box", nil, nil); err != nil || p.MaxConcurrent != 1 || !p.SupportsResponses {
+	if p, err = s.UpdateProvider(ctx, "gpu", "gpu", "GPU box", nil, nil, nil); err != nil || p.MaxConcurrent != 1 || !p.SupportsResponses {
 		t.Fatalf("limit left out: %v %+v", err, p)
 	}
-	if p, err = s.UpdateProvider(ctx, "gpu", "gpu", "GPU box", nil, n(0)); err != nil || p.MaxConcurrent != 0 {
+	if p, err = s.UpdateProvider(ctx, "gpu", "gpu", "GPU box", nil, n(0), nil); err != nil || p.MaxConcurrent != 0 {
 		t.Fatalf("no limit: %v %+v", err, p)
 	}
 }

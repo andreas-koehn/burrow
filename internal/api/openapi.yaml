@@ -278,7 +278,15 @@ components:
         credential: credential_slot names a vault slot whose value is
         configured on the relay.
       properties:
-        api_format: { type: string, enum: [openai, anthropic], default: openai }
+        api_format:
+          type: string
+          enum: [openai, anthropic]
+          default: openai
+          description: >
+            The API format the provider speaks. POST /api/v1/ai/providers
+            takes it for both kinds; a tunnel provider changes it with
+            PUT /api/v1/ai/providers/{slug}, a direct provider with its
+            upstream settings. Another value is refused with 400.
         base_url:
           type: string
           maxLength: 2048
@@ -3504,13 +3512,15 @@ paths:
         https://<auth_domain>/ai/<provider>/v1. When slug is empty it is
         derived from name. A field this body does not have (for example
         api_key) is refused with 400 naming the field, for either kind:
-        the credential is set on the relay, not through this API. The
-        upstream settings (api_format, base_url, credential_slot,
-        auth_header, auth_format, extra_headers, billing) are for kind
-        "direct"; on a tunnel create, or one without a kind, they are
-        refused with 400 instead of being dropped. So are supports_responses
-        and max_concurrent on a tunnel create: a tunnel provider gets them
-        with PUT /api/v1/ai/providers/{slug}.
+        the credential is set on the relay, not through this API.
+        api_format is for both kinds and says which format the provider
+        speaks: "openai" when left out, "anthropic" for a model server that
+        speaks the Anthropic format. The other upstream settings (base_url,
+        credential_slot, auth_header, auth_format, extra_headers, billing)
+        are for kind "direct"; on a tunnel create, or one without a kind,
+        they are refused with 400 instead of being dropped. So are
+        supports_responses and max_concurrent on a tunnel create: a tunnel
+        provider gets them with PUT /api/v1/ai/providers/{slug}.
       requestBody:
         required: true
         content:
@@ -3534,6 +3544,8 @@ paths:
             examples:
               tunnel:
                 value: { name: Ollama, kind: tunnel, service_id: 0b1f6c0e-4f0a-4a55-9b53-0d0c8f5a2a11 }
+              tunnel_anthropic:
+                value: { name: Local Claude, kind: tunnel, service_id: 0b1f6c0e-4f0a-4a55-9b53-0d0c8f5a2a11, api_format: anthropic }
               direct:
                 value:
                   name: OpenRouter
@@ -3593,11 +3605,19 @@ paths:
         whether the provider offers the OpenAI Responses API and is how a
         tunnel provider is flagged. max_concurrent is optional too: it sets
         how many requests the provider serves at once (0 = no limit) and is
-        how a tunnel provider gets a limit. Left out, the stored values stay.
-        Slug, name, supports_responses and max_concurrent are stored together
-        or not at all: true for a provider whose api_format is not openai, or
-        a limit outside 0-1000, is refused with 400 and the rest stays as it
-        was.
+        how a tunnel provider gets a limit. api_format is optional as well
+        and sets the API format of a tunnel provider. Left out, the stored
+        values stay. Slug, name, supports_responses, max_concurrent and
+        api_format are stored together or not at all: supports_responses
+        true for a provider whose api_format is not openai, or a limit
+        outside 0-1000, is refused with 400 and the rest stays as it was.
+        So is api_format on a direct provider (its format is one of its
+        upstream settings, PUT /api/v1/ai/providers/{slug}/upstream), an
+        api_format other than openai while the provider's
+        supports_responses stays true, and an unknown api_format. The
+        format of a provider that a synthetic model targets cannot change:
+        409, and the rest stays as it was; naming the format the provider
+        already has is not a change.
       requestBody:
         required: true
         content:
@@ -3619,6 +3639,10 @@ paths:
                   minimum: 0
                   maximum: 1000
                   description: Optional. How many requests the provider serves at once; 0 = no limit.
+                api_format:
+                  type: string
+                  enum: [openai, anthropic]
+                  description: Optional, tunnel providers only. The API format the server behind the tunnel speaks.
       responses:
         '200':
           description: Provider updated.
@@ -3633,8 +3657,11 @@ paths:
         '409':
           description: >
             The slug is already in use by another provider, the slug is the
-            name of a synthetic model, or (direct provider) the name is
-            taken by another service of the owner. Nothing was changed.
+            name of a synthetic model, (direct provider) the name is taken
+            by another service of the owner, or api_format would change
+            while a synthetic model targets the provider; the message is
+            then "provider is used by model(s): " followed by their names.
+            Nothing was changed.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
