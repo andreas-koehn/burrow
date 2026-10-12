@@ -8,7 +8,8 @@ package api
 // join that row with live data of its backing service (key count, tunnel
 // status, trailing-24h request counts) and the first synthetic model that
 // targets it.  latency_p95_ms is
-// always 0: usage_events has no latency column.
+// the 95th percentile of the latency of the requests of the last 24h that an
+// upstream answered.
 
 import (
 	"context"
@@ -294,7 +295,7 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 			APIKeyCount:     keyCount,
 			Requests24h:     counts[p.ServiceID].Requests,
 			CacheHits24h:    counts[p.ServiceID].CacheHits,
-			LatencyP95ms:    0, // usage_events has no latency column — not derivable
+			LatencyP95ms:    counts[p.ServiceID].LatencyP95Ms,
 			Status:          status,
 			ClientSessionID: "",
 

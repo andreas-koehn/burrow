@@ -469,6 +469,33 @@ func TestProviderMetrics(t *testing.T) {
 
 // A provider that exists but whose service belongs to someone else answers
 // 404 like an unknown slug, so slugs cannot be enumerated through the status.
+// latency_p95_ms is what the metrics store measured for the provider's
+// service; it was a constant 0.
+func TestProvider_ReportsLatencyP95(t *testing.T) {
+	ss, ps := oneProviderFixture()
+	d := newAIProviderDeps(ss, &fakeModelStore{}, ps)
+	d.AIMetrics = &fakeAIMetrics{counts: map[string]db.AIEndpointCount{
+		ps.rows[0].ServiceID: {Requests: 22, CacheHits: 1, LatencyP95Ms: 840},
+	}}
+	srv, c := newAIProviderServer(t, d)
+	defer srv.Close()
+
+	resp := c.get(t, "/api/v1/ai/providers/"+ps.rows[0].Slug)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var out struct {
+		LatencyP95ms int `json:"latency_p95_ms"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	resp.Body.Close()
+	if out.LatencyP95ms != 840 {
+		t.Fatalf("latency_p95_ms = %d, want 840", out.LatencyP95ms)
+	}
+}
+
 func TestProviderMetrics_404WhenServiceNotVisible(t *testing.T) {
 	ss, ps := oneProviderFixture()
 	ss.getSvcErr = store.ErrForbidden

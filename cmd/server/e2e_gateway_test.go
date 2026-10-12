@@ -192,6 +192,7 @@ type gwEnv struct {
 	csrf  string
 	sqldb *sql.DB
 	up    *gwUpstream
+	v04   *v04Stack // the wiring under test: its observer, recorder and chain
 
 	adminEmail string
 }
@@ -298,7 +299,7 @@ func bootGatewayE2EWith(t *testing.T, tunnels tunnelStreamOpener) *gwEnv {
 	if csrf == "" {
 		t.Fatal("no CSRF cookie after login")
 	}
-	return &gwEnv{srv: srv, hc: hc, plain: &http.Client{Timeout: 60 * time.Second}, csrf: csrf, sqldb: sqldb, up: up, adminEmail: adminEmail}
+	return &gwEnv{srv: srv, hc: hc, plain: &http.Client{Timeout: 60 * time.Second}, csrf: csrf, sqldb: sqldb, up: up, v04: v04, adminEmail: adminEmail}
 }
 
 // admin sends a management request as the admin session.

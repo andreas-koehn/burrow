@@ -683,8 +683,6 @@ func familiesAndSamples(text string) (declared []string, sampled map[string]bool
 // give a sample, each with the reason. Everything else must have one.
 var metricFamiliesWithoutSamples = map[string]string{
 	// --- Not wired yet. A task takes its lines out when it wires them. ---
-	"burrow_ai_failover_events_total":  "W06",
-	"burrow_ai_upstream_errors_total":  "W06",
 	"burrow_db_query_duration_seconds": "W07",
 	"burrow_audit_chain_length":        "W07",
 	"burrow_audit_chain_last_hash":     "W07",
@@ -744,13 +742,23 @@ func TestServe_MetricFamiliesHaveSamples(t *testing.T) {
 	for wait := time.Now().Add(obsWait); time.Now().Before(wait); text = r.metricsText() {
 		hits, _ := familySum(text, "burrow_ai_cache_hits_total")
 		out, _ := familySum(text, "burrow_ai_tokens_out_total")
-		if hits >= 1 && out > 0 {
+		failovers, _ := familySum(text, "burrow_ai_failover_events_total")
+		errs, _ := familySum(text, "burrow_ai_upstream_errors_total")
+		if hits >= 1 && out > 0 && failovers >= 1 && errs >= 1 {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	if hits, _ := familySum(text, "burrow_ai_cache_hits_total"); hits != 1 {
 		t.Errorf("burrow_ai_cache_hits_total = %v, want 1 (one request was answered from the cache)", hits)
+	}
+	// The first provider fails once and the second answers: one failover from
+	// one provider to the other, one upstream error for the failed attempt.
+	if v, _ := familySum(text, "burrow_ai_failover_events_total"); v != 1 {
+		t.Errorf("burrow_ai_failover_events_total = %v, want 1 (one request failed over)", v)
+	}
+	if v, _ := familySum(text, "burrow_ai_upstream_errors_total"); v != 1 {
+		t.Errorf("burrow_ai_upstream_errors_total = %v, want 1 (one attempt failed)", v)
 	}
 	if misses, _ := familySum(text, "burrow_ai_cache_misses_total"); misses < 1 {
 		t.Errorf("burrow_ai_cache_misses_total = %v, want at least 1", misses)
@@ -800,9 +808,7 @@ var webhookEventProof = map[string]struct{ how, why string }{
 	"access.denied":       {proofDelivered, ""},
 	"redaction.applied":   {proofDelivered, ""},
 	"guardrail.refused":   {proofDelivered, ""},
-	// Published by the observer (cmd/server/observer.go), which is not
-	// handed this event yet. The task named makes it "delivered".
-	"ai.upstream_error": {proofSource, "W06 hands the observer the gateway's attempts"},
+	"ai.upstream_error":   {proofDelivered, ""},
 	// Published by code one run of this test does not reach.
 	"quota.exceeded":              {proofSource, "needs a rate limit and a burst of requests: cmd/server/quota_events_test.go"},
 	"budget.exceeded":             {proofSource, "needs a budget and usage over it: internal/cost/engine_test.go"},

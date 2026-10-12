@@ -13,6 +13,7 @@ import (
 	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/aigw/translate"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -145,8 +146,14 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var rows []db.UsageAttempt
+	// What was sent to an upstream, for the chain's observer: the chain
+	// reads it from the route when this handler has returned.
+	var tried []observe.Attempt
 	// Deferred so the log is written when an aborted stream unwinds, too.
-	defer func() { f.record(rows) }()
+	defer func() {
+		f.record(rows)
+		f.route.SetAttempts(tried)
+	}()
 
 	order, forced := f.order(&rows)
 	var deadline time.Time // zero = no total timeout
@@ -260,6 +267,14 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		res := f.attempt(w, r, c, next, attemptBody, tr, deadline, sent, atCommit)
 		rows = append(rows, res.row)
+		if res.sent {
+			// A wait in vain for a place, or a refusal before the upstream
+			// was called, sent nothing.
+			tried = append(tried, observe.Attempt{
+				ProviderSlug: c.provider.Slug, ServiceID: c.provider.ServiceID,
+				Status: res.row.Status, Failed: res.outcome == outcomeFailed, Sent: true,
+			})
+		}
 		f.report(c, order[i+1:], res.outcome, adm)
 		if res.panicked && res.committed {
 			// The response had started and broke off. The server must abort
@@ -365,6 +380,7 @@ type attemptResult struct {
 	committed  bool // the response went to the client
 	timedOut   bool // the attempt's time ran out before a response started
 	busy       bool // the provider had no free place in time; nothing was sent
+	sent       bool // the upstream handler was called: the request left for the provider
 	outcome    int
 	panicked   bool
 	panicValue any
@@ -476,6 +492,7 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 		cancel()
 
 		res.committed = cw.committed
+		res.sent = reached
 		// Out of time: the attempt's own clock, or the upstream handler's
 		// transport giving up on the response headers.
 		gaveUp := cw.upstreamTimeout || state.Load() == attemptTimedOut

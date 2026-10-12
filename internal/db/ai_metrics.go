@@ -4,11 +4,11 @@ package db
 // dashboard surfaces (GET /api/v1/ai/providers and .../{slug}/metrics). The proxy
 // hot path (internal/aimeter SQLSink) writes one usage_events row per proxied
 // request; these read-side aggregations turn that into the numbers the UI shows.
-// usage_events has no latency column, so p95 latency is not derivable here.
 
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -22,6 +22,10 @@ import (
 type AIEndpointCount struct {
 	Requests  int
 	CacheHits int
+	// LatencyP95Ms is the 95th percentile of latency_ms over the requests an
+	// upstream answered (no cache hits, no rows from before the column
+	// existed); 0 when there is none.
+	LatencyP95Ms int
 }
 
 // AIEndpointKindTokens is a per-"kind" token subtotal for one service. kind is
@@ -54,13 +58,14 @@ type AIEndpointAgg struct {
 // AIEndpointCounts24h returns per-service request + cache-hit counts over the
 // trailing 24h, keyed by service_id.
 func (x *DB) AIEndpointCounts24h(ctx context.Context) (map[string]AIEndpointCount, error) {
+	since := time.Now().UTC().Add(-24 * time.Hour)
 	rows, err := x.sqlDB.QueryContext(ctx, `
 		SELECT service_id,
 		       COUNT(*) AS requests,
 		       CAST(COALESCE(SUM(CASE WHEN cache_hit THEN 1 ELSE 0 END), 0) AS BIGINT) AS cache_hits
 		  FROM usage_events
 		 WHERE ts >= ?
-		 GROUP BY service_id`, time.Now().UTC().Add(-24*time.Hour))
+		 GROUP BY service_id`, since)
 	if err != nil {
 		return nil, fmt.Errorf("ai endpoint counts 24h: %w", err)
 	}
@@ -74,7 +79,50 @@ func (x *DB) AIEndpointCounts24h(ctx context.Context) (map[string]AIEndpointCoun
 		}
 		out[sid] = c
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_ = rows.Close()
+
+	// p95 latency per service, computed here: the two databases share no
+	// percentile function. Index idx_usage_events_ts serves the range.
+	lrows, err := x.sqlDB.QueryContext(ctx, `
+		SELECT service_id, latency_ms
+		  FROM usage_events
+		 WHERE ts >= ? AND latency_ms > 0 AND NOT cache_hit`, since)
+	if err != nil {
+		return nil, fmt.Errorf("ai endpoint latency 24h: %w", err)
+	}
+	defer lrows.Close()
+	latencies := map[string][]int64{}
+	for lrows.Next() {
+		var sid string
+		var ms int64
+		if err := lrows.Scan(&sid, &ms); err != nil {
+			return nil, fmt.Errorf("scan ai endpoint latency: %w", err)
+		}
+		latencies[sid] = append(latencies[sid], ms)
+	}
+	if err := lrows.Err(); err != nil {
+		return nil, err
+	}
+	for sid, ms := range latencies {
+		c := out[sid]
+		c.LatencyP95Ms = int(percentile95(ms))
+		out[sid] = c
+	}
+	return out, nil
+}
+
+// percentile95 is the nearest-rank 95th percentile of values, 0 for none.
+// It sorts values in place.
+func percentile95(values []int64) int64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	rank := (95*len(values) + 99) / 100 // ceil(0.95 n), 1-based
+	return values[rank-1]
 }
 
 // AIEndpointMetrics24h returns the trailing-24h aggregate for one service plus a
