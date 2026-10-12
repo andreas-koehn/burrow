@@ -632,6 +632,11 @@ table.data tbody td.cell-wrap { white-space: normal; overflow-wrap: anywhere; }
 table.data tbody tr:last-child td { border-bottom: none; }
 table.data tbody tr:hover td { background: var(--hover); }
 table.data tbody tr.is-hover td { background: var(--hover); }
+/* The row a link names (the command palette's link to a model): the marker of
+   the current navigation entry, the tint and the bar in the accent. */
+table.data tbody tr[aria-current="true"] td { background: color-mix(in oklch, var(--primary) 10%, transparent); }
+table.data tbody tr[aria-current="true"] td:first-child { box-shadow: inset 3px 0 0 var(--primary); }
+.dark table.data tbody tr[aria-current="true"] td { background: color-mix(in oklch, var(--primary) 16%, transparent); }
 
 table.data td.col-id, table.data td.col-endpoint, table.data td.col-time {
   font-family: var(--font-mono);
@@ -727,12 +732,6 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--muted-foreground);
-}
-.menu-item .menu-check {
-  display: inline-flex;
-  flex-shrink: 0;
-  width: 14px;
-  color: var(--foreground);
 }
 .menu-item:hover, .menu-item.is-focus { background: var(--hover); }
 .menu-item:focus-visible { outline: 2px solid var(--ring); outline-offset: -1px; }
@@ -982,60 +981,86 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
   box-sizing: border-box;
 }
 
-/* Workspace switcher — the head of the sidebar: mark, workspace, relay
-   namespace. A <button> when there is more than one workspace, a plain
-   <div> otherwise; both workspaces share the one accent and differ only by
-   name, icon and namespace. */
-.workspace-switcher {
+/* Workspace tabs — the head of the sidebar: the Burrow mark, then one link per
+   workspace in a single row of equal widths. With one workspace there is
+   nothing to choose, and the mark stands beside its name. Both workspaces
+   share the one accent and differ by name and icon. */
+.sidebar-workspaces {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 8px 8px 0;
+}
+.workspace-brand {
   display: flex;
   align-items: center;
   gap: 9px;
-  width: 100%;
   min-width: 0;
-  padding: 6px 8px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
+  padding: 4px 8px 8px;
   color: var(--foreground);
   font-family: var(--font-sans);
-  text-align: left;
 }
-button.workspace-switcher {
-  cursor: pointer;
-  transition: background var(--t-micro), border-color var(--t-micro);
-}
-button.workspace-switcher:hover,
-button.workspace-switcher[aria-expanded="true"] {
-  background: var(--hover);
-  border-color: var(--border);
-}
-button.workspace-switcher:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: -2px;
-}
-.workspace-switcher .workspace-text {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  flex: 1;
-}
-.workspace-switcher .workspace-name {
+.workspace-brand .workspace-title {
   font-size: 14px;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
-.workspace-switcher .namespace {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--muted-foreground);
+.workspace-tabs {
+  display: flex;
+  gap: 2px;
 }
-.workspace-switcher .chev {
+.workspace-tab {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 6px 9px;
+  border-radius: 6px 6px 0 0;
   color: var(--muted-foreground);
-  flex-shrink: 0;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 400;
+  text-decoration: none;
+  white-space: nowrap;
+  outline: none;
+  transition: background var(--t-micro), color var(--t-micro);
+}
+.workspace-tab svg { flex-shrink: 0; }
+.workspace-tab:hover {
+  background: color-mix(in oklch, var(--primary) 6%, transparent);
+  color: var(--foreground);
+}
+.workspace-tab:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+/* The current workspace carries the marker of .nav-item.is-active — the tint
+   and the bar in the accent — with the bar lying under the tab, on the border
+   that closes the head. */
+.workspace-tab.is-active {
+  color: var(--foreground);
+  font-weight: 500;
+  background: color-mix(in oklch, var(--primary) 10%, transparent);
+}
+.workspace-tab.is-active::before {
+  content: '';
+  position: absolute;
+  left: 6px; right: 6px; bottom: 0;
+  height: 3px;
+  background: var(--primary);
+  border-radius: 2px 2px 0 0;
+}
+.dark .workspace-tab:hover {
+  background: color-mix(in oklch, var(--primary) 10%, transparent);
+}
+.dark .workspace-tab.is-active {
+  background: color-mix(in oklch, var(--primary) 16%, transparent);
 }
 
-/* Settings has no switcher: a way back to the last workspace, then its title. */
+/* Settings has no tabs: a way back to the last workspace, then its title. */
 .sidebar-back {
   flex-direction: column;
   align-items: stretch;
@@ -1253,9 +1278,25 @@ a.user-chip:focus-visible {
 .sidebar.is-collapsed { width: 56px; }
 .sidebar.is-collapsed .sidebar-brand { padding: 8px 6px; }
 .sidebar.is-collapsed .sidebar-back { padding: 8px 0 6px; }
-.sidebar.is-collapsed .workspace-switcher {
+/* The tabs stack and turn into entries like the ones below them: the bar
+   moves to the left edge, where .nav-item.is-active has it. */
+.sidebar.is-collapsed .sidebar-workspaces { padding: 8px 0 6px; }
+.sidebar.is-collapsed .workspace-brand {
   justify-content: center;
-  padding: 6px 0;
+  padding: 4px 0 8px;
+}
+.sidebar.is-collapsed .workspace-tabs {
+  flex-direction: column;
+  gap: 0;
+}
+.sidebar.is-collapsed .workspace-tab {
+  padding: 8px 0;
+  border-radius: 0;
+}
+.sidebar.is-collapsed .workspace-tab.is-active::before {
+  left: 0; right: auto; top: 6px; bottom: 6px;
+  width: 3px; height: auto;
+  border-radius: 0 2px 2px 0;
 }
 .sidebar.is-collapsed .nav-item {
   justify-content: center;
@@ -2292,6 +2333,17 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   padding: 0;
   min-width: 0;
 }
+/* ServicesOverview: where services are published, under the page header, in
+   the place and spacing of the gateway's addresses. */
+.address-pattern {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-xs) var(--space-sm);
+  margin: 0 0 var(--space-md);
+  min-width: 0;
+}
+.address-pattern .mono { min-width: 0; overflow-wrap: anywhere; }
 /* ConnectCard: a snippet scrolls inside its own box and never widens the page. */
 .connect-card { min-width: 0; margin-top: var(--space-lg); }
 .connect-card .tabs-list { flex-wrap: wrap; }

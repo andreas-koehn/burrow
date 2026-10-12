@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Dialog, Input } from "@/components/ds";
 import { destinationsFor } from "@/lib/destinations";
 import { apiFetch } from "@/lib/api";
-import type { Service, ClientView } from "@/lib/contract";
+import type { AiGatewayKey, AiModel, AiProvider, Service, ClientView } from "@/lib/contract";
 
 export interface CommandPaletteProps {
   open: boolean;
@@ -19,6 +19,13 @@ interface PaletteItem {
   group: string;
   path: string;
 }
+
+/** The rows of an answer; anything but a list (not loaded, failed, a relay without the route) is none. */
+function rows<T>(data: unknown): T[] {
+  return Array.isArray(data) ? (data as T[]) : [];
+}
+
+const has = (text: string | undefined, q: string) => (text ?? "").toLowerCase().includes(q);
 
 /**
  * Command palette — query/focusIdx reset on every open because Layout passes
@@ -52,6 +59,29 @@ export function CommandPalette({
     enabled: open && isAdmin,
   });
 
+  // Providers, models and gateway keys, under the keys and fetches of their own pages, so
+  // an answer one of those already has is here at once. Nobody the AI Gateway is not shown
+  // to is asked on behalf of; a lookup that fails adds no rows and takes nothing else away.
+  const ai = open && hasAiGateway;
+  const providersQuery = useQuery({
+    queryKey: ["ai", "providers"],
+    queryFn: () => apiFetch<AiProvider[]>("/ai/providers"),
+    retry: false,
+    enabled: ai,
+  });
+  const modelsQuery = useQuery({
+    queryKey: ["ai", "models"],
+    queryFn: () => apiFetch<AiModel[]>("/ai/models"),
+    retry: false,
+    enabled: ai,
+  });
+  const keysQuery = useQuery({
+    queryKey: ["ai", "keys"],
+    queryFn: () => apiFetch<AiGatewayKey[]>("/ai/keys"),
+    retry: false,
+    enabled: ai,
+  });
+
   const q = query.toLowerCase();
 
   // Build the item list: the navigation description's destinations + entity matches.
@@ -61,20 +91,35 @@ export function CommandPalette({
     const destinations = destinationsFor({ isAdmin, hasAiGateway });
 
     // Filter destinations by query. A page whose own name matches comes before the
-    // pages that only sit in a workspace of that name ("Services" is both).
-    const byLabel = (d: { label: string }) => d.label.toLowerCase().includes(q);
+    // pages that only sit in a workspace of that name ("Services" is both, and the
+    // name an Overview has here carries its workspace).
+    const byName = (d: { entryLabel: string }) => has(d.entryLabel, q);
     const filteredDestinations = q === ""
       ? destinations
       : [
-          ...destinations.filter(byLabel),
-          ...destinations.filter((d) => !byLabel(d) && d.group.toLowerCase().includes(q)),
+          ...destinations.filter(byName),
+          ...destinations.filter((d) => !byName(d) && (has(d.label, q) || has(d.group, q))),
         ];
 
     const entityItems: PaletteItem[] = [];
     if (q !== "") {
-      const servicesList = Array.isArray(servicesQuery.data) ? servicesQuery.data : [];
-      for (const svc of servicesList) {
-        if (svc.name.toLowerCase().includes(q)) {
+      // Before the services: a provider and the service behind it often share a name,
+      // and the provider's page is the one that says how an app uses it.
+      for (const p of rows<AiProvider>(providersQuery.data)) {
+        if (has(p.name, q) || has(p.slug, q)) {
+          entityItems.push({
+            key: `prov-${p.slug}`,
+            label: `${p.name} — provider`,
+            group: "Results",
+            path: `/gateway/providers/${encodeURIComponent(p.slug)}`,
+          });
+        }
+      }
+
+      for (const svc of rows<Service>(servicesQuery.data)) {
+        // Reachable through the AI gateway only: its provider stands for it, as in the services list.
+        if (svc.gateway_only) continue;
+        if (has(svc.name, q)) {
           entityItems.push({
             key: `svc-${svc.id}`,
             label: `${svc.name} — service`,
@@ -84,14 +129,36 @@ export function CommandPalette({
         }
       }
 
-      const clientsList = Array.isArray(clientsQuery.data) ? clientsQuery.data : [];
-      for (const cl of clientsList) {
-        if (cl.token_name.toLowerCase().includes(q)) {
+      for (const cl of rows<ClientView>(clientsQuery.data)) {
+        if (has(cl.token_name, q)) {
           entityItems.push({
             key: `cl-${cl.session_id}`,
             label: `${cl.token_name} — client`,
             group: "Results",
             path: `/clients/${cl.session_id}`,
+          });
+        }
+      }
+
+      for (const m of rows<AiModel>(modelsQuery.data)) {
+        if (has(m.name, q)) {
+          entityItems.push({
+            key: `model-${m.name}`,
+            label: `${m.name} — model`,
+            group: "Results",
+            // The Models page scrolls to the row of that name and marks it.
+            path: `/gateway/models?focus=${encodeURIComponent(m.name)}`,
+          });
+        }
+      }
+
+      for (const k of rows<AiGatewayKey>(keysQuery.data)) {
+        if (has(k.name, q)) {
+          entityItems.push({
+            key: `key-${k.id}`,
+            label: `${k.name} — gateway key`,
+            group: "Results",
+            path: "/gateway/keys",
           });
         }
       }
@@ -107,7 +174,7 @@ export function CommandPalette({
       })),
       ...entityItems,
     ];
-  }, [q, servicesQuery.data, clientsQuery.data, isAdmin, hasAiGateway]);
+  }, [q, servicesQuery.data, clientsQuery.data, providersQuery.data, modelsQuery.data, keysQuery.data, isAdmin, hasAiGateway]);
 
   const activate = useCallback(
     (path: string) => {

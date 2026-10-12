@@ -10,10 +10,12 @@ const DIALECTS: { dialect: Dialect; label: string }[] = [
 export interface GatewayAddressesProps {
   /** As GET /ai/gateway reports them; a missing or empty one falls back to this origin. */
   endpoints?: GatewayInfo["endpoints"];
+  /** Show each URL as it is copied, host included; without it only the path is shown. */
+  full?: boolean;
 }
 
-/** The gateway's base URL per API format: shows the path, copies the full URL. */
-export function GatewayAddresses({ endpoints = [] }: GatewayAddressesProps) {
+/** The gateway's base URL per API format: shows the path or the full URL, copies the full URL. */
+export function GatewayAddresses({ endpoints = [], full: showFull = false }: GatewayAddressesProps) {
   return (
     <ul className="gateway-addresses" aria-label="Gateway base URLs">
       {DIALECTS.map(({ dialect, label }) => {
@@ -21,7 +23,7 @@ export function GatewayAddresses({ endpoints = [] }: GatewayAddressesProps) {
         return (
           <li key={dialect} className="row row-center gap-2 service-url">
             <span className="muted small">{label}</span>
-            <span className="mono service-url-path" title={full}>{urlPath(full)}</span>
+            <span className="mono service-url-path" title={showFull ? undefined : full}>{showFull ? full : urlPath(full)}</span>
             <button
               type="button"
               className="icon-btn"

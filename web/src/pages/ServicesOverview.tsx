@@ -7,6 +7,7 @@ import { useAuth } from "@/auth/useAuth";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { GLOSSARY } from "@/lib/glossary";
+import { NAVIGATIONS } from "@/lib/navigation";
 import { clientsOnline, useKnownClients } from "@/lib/useKnownClients";
 import { useRelayNotices } from "@/lib/useRelayNotices";
 import type { ConnectionLog, Service } from "@/lib/contract";
@@ -116,6 +117,11 @@ export default function ServicesOverview() {
   return (
     <div className="home-page">
       <PageHeader title="Overview" subtitle="Machines, services and traffic on this relay." actions={quickActions} />
+      {/* A pattern, not an address anybody can open: muted, and without a copy button. */}
+      <p className="address-pattern">
+        <span className="muted small">Services are published under</span>{" "}
+        <span className="mono muted">{relayOrigin}{NAVIGATIONS.services.namespace}</span>
+      </p>
 
       {services.error ? (
         <ErrorNotice

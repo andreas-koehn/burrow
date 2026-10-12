@@ -34,6 +34,10 @@ const entries = (name: string) =>
   within(screen.getByRole("navigation", { name })).getAllByRole("link").map((a) => a.getAttribute("aria-label"));
 
 const footerZone = () => document.querySelector(".sidebar-footer") as HTMLElement;
+/** The workspace tabs: [label, href, aria-current] of each. */
+const tabs = () =>
+  within(screen.getByRole("navigation", { name: "Workspace" })).getAllByRole("link")
+    .map((a) => [a.textContent, a.getAttribute("href"), a.getAttribute("aria-current")]);
 const footerShape = () =>
   [...footerZone().querySelectorAll("a, button")].map((el) => [el.tagName, el.getAttribute("aria-label"), el.getAttribute("href")]);
 
@@ -58,16 +62,53 @@ describe("Sidebar", () => {
     expect(entries("AI Gateway")).toEqual(["Overview", "Clients", "Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
     expect(screen.getByRole("link", { name: "Providers" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "Requests" })).toHaveAttribute("href", "/gateway/requests");
-    expect(screen.getByRole("button", { name: "Workspace: AI Gateway" })).toBeInTheDocument();
+    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "page"]]);
   });
 
-  it("Settings: a way back to the last workspace instead of the switcher", () => {
+  it("the workspaces are two tabs at the head, not a menu behind a button", () => {
+    mount("/services");
+    expect(tabs()).toEqual([["Services", "/", "page"], ["AI Gateway", "/gateway", null]]);
+    expect(screen.queryByRole("button", { name: /^Workspace/ })).toBeNull();
+    expect(screen.queryByRole("menu")).toBeNull();
+    // Above the workspace's own navigation, in the head of the sidebar.
+    const head = document.querySelector(".sidebar-brand") as HTMLElement;
+    expect(head).toContainElement(screen.getByRole("navigation", { name: "Workspace" }));
+    expect(head.querySelector("svg")).not.toBeNull();
+    expect(head.compareDocumentPosition(screen.getByRole("navigation", { name: "Services" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("the relay namespace is not part of the sidebar", () => {
+    for (const path of ["/services", "/gateway"]) {
+      const view = mount(path);
+      expect(document.querySelector(".sidebar")!.textContent).not.toMatch(/\/svc\/|\/ai\//);
+      expect(document.querySelector(".sidebar .namespace")).toBeNull();
+      view.unmount();
+    }
+  });
+
+  it("on the Clients page the tab of the workspace whose navigation is showing is the current one", () => {
+    localStorage.setItem("burrow.lastWorkspace", "gateway");
+    mount("/clients");
+    expect(screen.getByRole("navigation", { name: "AI Gateway" })).toBeInTheDocument();
+    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "page"]]);
+  });
+
+  it("with one workspace there are no tabs: the mark and the workspace's name", () => {
+    mount("/services", plain);
+    expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();
+    const head = document.querySelector(".sidebar-brand") as HTMLElement;
+    expect(within(head).queryByRole("link")).toBeNull();
+    expect(within(head).getByText("Services")).toBeInTheDocument();
+    expect(head.querySelector("svg")).not.toBeNull();
+  });
+
+  it("Settings: a way back to the last workspace instead of the tabs", () => {
     mount("/settings");
     expect(screen.getByRole("navigation", { name: "Settings" })).toBeInTheDocument();
     const first = document.querySelector(".sidebar a") as HTMLAnchorElement;
     expect(first).toHaveAccessibleName("Back to Services");
     expect(first).toHaveAttribute("href", "/");
-    expect(screen.queryByRole("button", { name: /^Workspace:/ })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();
     expect(document.querySelector(".workspace-title")).toHaveTextContent("Settings");
   });
 
@@ -118,7 +159,8 @@ describe("Sidebar", () => {
 
   it("shows no count while the figure is unknown", () => {
     mount("/services");
-    expect(within(screen.getByRole("link", { name: "Services" })).queryByText(/\d/)).toBeNull();
+    const nav = within(screen.getByRole("navigation", { name: "Services" }));
+    expect(within(nav.getByRole("link", { name: "Services" })).queryByText(/\d/)).toBeNull();
   });
 
   it("collapsed: icons only, every control keeps its name", () => {
@@ -130,7 +172,10 @@ describe("Sidebar", () => {
     expect(document.querySelector(".nav-count")).toBeNull();
     expect(screen.getByRole("link", { name: "Traffic" })).toHaveAttribute("title", "Traffic");
     expect(screen.getByRole("button", { name: "Search" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Workspace: Services" })).toBeInTheDocument();
+    // The tabs are icons too, each with its name and a tooltip.
+    const workspaces = within(screen.getByRole("navigation", { name: "Workspace" })).getAllByRole("link");
+    expect(workspaces.map((a) => [a.textContent, a.getAttribute("aria-label"), a.getAttribute("title"), a.getAttribute("aria-current")]))
+      .toEqual([["", "Services", "Services", "page"], ["", "AI Gateway", "AI Gateway", null]]);
     expect(screen.getByRole("link", { name: "Users & roles" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Your profile, alice@example.com" })).not.toHaveTextContent("alice");
     expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();

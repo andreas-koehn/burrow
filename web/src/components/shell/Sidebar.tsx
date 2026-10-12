@@ -4,7 +4,7 @@ import { cx } from "@/components/ds";
 import { shortcutLabel } from "@/lib/platform";
 import { NAVIGATIONS, PROFILE_ENTRY, activeEntry, attentionTarget, type NavEntry, type Navigation } from "@/lib/navigation";
 import { lastWorkspace } from "@/lib/workspace";
-import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
+import { WorkspaceTabs } from "./WorkspaceTabs";
 
 export interface SidebarProps {
   /** The navigation of the workspace the URL is in, already filtered for this user. */
@@ -81,8 +81,8 @@ export function Sidebar({
           {!collapsed && <div className="workspace-title">{navigation.label}</div>}
         </div>
       ) : (
-        <div className="sidebar-brand">
-          <WorkspaceSwitcher current={navigation} workspaces={workspaces} collapsed={collapsed} />
+        <div className="sidebar-brand sidebar-workspaces">
+          <WorkspaceTabs current={navigation} workspaces={workspaces} collapsed={collapsed} />
         </div>
       )}
 

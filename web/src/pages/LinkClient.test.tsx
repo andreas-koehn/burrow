@@ -77,12 +77,12 @@ describe("Link page: a pending request", () => {
     expect(warning).toHaveTextContent("If you did not just run burrow login, deny.");
   });
 
-  it("is outside the workspace shell: no navigation, no workspace switcher", async () => {
+  it("is outside the workspace shell: no navigation, no workspace tabs", async () => {
     renderAt(`/link?code=${CODE}`);
     await screen.findByText(CODE);
     expect(screen.queryByRole("navigation")).toBeNull();
     expect(screen.queryByRole("link", { name: /^Clients/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /workspace/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: /^(Services|AI Gateway)$/ })).toBeNull();
   });
 
   it("approves nothing by itself: opening the page only looks the request up", async () => {

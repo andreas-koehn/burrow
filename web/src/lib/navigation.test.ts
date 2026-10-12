@@ -65,6 +65,15 @@ describe("navigation description", () => {
     const ids = (["services", "gateway"] as const).flatMap((ws) => NAVIGATIONS[ws].groups.flatMap((g) => g.entries.map((e) => e.id)));
     expect(new Set(ids).size).toBe(ids.length);
   });
+  // Two pages are called "Overview"; a list that shows both at once needs to tell them apart.
+  it("the two Overview entries carry a longer name for the palette, and only they", () => {
+    const named = (["services", "gateway", "settings"] as const)
+      .flatMap((ws) => NAVIGATIONS[ws].groups.flatMap((g) => g.entries))
+      .filter((e) => e.paletteLabel !== undefined)
+      .map((e) => [e.to, e.label, e.paletteLabel]);
+    expect(named).toEqual([["/", "Overview", "Services overview"], ["/gateway", "Overview", "AI Gateway overview"]]);
+    expect(FOOTER_ENTRIES.every((e) => e.paletteLabel === undefined)).toBe(true);
+  });
   it("the footer entries are for admins and point into Settings", () => {
     expect(FOOTER_ENTRIES.map((e) => [e.label, e.to, e.adminOnly])).toEqual([
       ["Users & roles", "/settings/users", true],

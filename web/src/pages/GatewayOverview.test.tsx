@@ -122,6 +122,31 @@ describe("GatewayOverview", () => {
     expect(screen.getByRole("button", { name: "Copy URL https://tunnels.example.com/anthropic" })).toBeInTheDocument();
   });
 
+  // The addresses the sidebar's "/ai/…" stood for: written out as the copy button copies them.
+  it("shows the two base URLs in full, host included", async () => {
+    renderApp(<GatewayOverview />);
+    const list = await screen.findByRole("list", { name: "Gateway base URLs" });
+    await waitFor(() => expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "OpenAIhttps://tunnels.example.com/openai/v1",
+      "Anthropichttps://tunnels.example.com/anthropic",
+    ]));
+    // What is shown is what is copied.
+    for (const li of within(list).getAllByRole("listitem")) {
+      const shown = li.querySelector(".mono")!.textContent;
+      expect(within(li).getByRole("button")).toHaveAccessibleName(`Copy URL ${shown}`);
+    }
+  });
+
+  it("falls back to this origin while the relay has not said where the gateway is", async () => {
+    server.use(http.get("/api/v1/ai/gateway", () => HttpResponse.json({ endpoints: [] })));
+    renderApp(<GatewayOverview />);
+    const list = await screen.findByRole("list", { name: "Gateway base URLs" });
+    expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      `OpenAI${window.location.origin}/openai/v1`,
+      `Anthropic${window.location.origin}/anthropic`,
+    ]);
+  });
+
   it("has no checklist once there is a provider, a model, a key and a served request", async () => {
     const { qc } = renderApp(<GatewayOverview />);
     await screen.findByRole("table", { name: "Providers" });

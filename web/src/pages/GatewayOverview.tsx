@@ -148,7 +148,8 @@ export default function GatewayOverview() {
   return (
     <div className="gateway-overview-page">
       {header}
-      <GatewayAddresses endpoints={endpoints} />
+      {/* In full: on this page the addresses say where the gateway is, the job the sidebar's "/ai/…" had. */}
+      <GatewayAddresses endpoints={endpoints} full />
 
       {providers.error ? (
         <ErrorNotice

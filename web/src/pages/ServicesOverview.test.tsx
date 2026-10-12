@@ -63,6 +63,21 @@ describe("ServicesOverview", () => {
     expect(screen.getByText("Machines, services and traffic on this relay.")).toBeInTheDocument();
   });
 
+  // The namespace the sidebar used to show under the workspace's name.
+  it("shows under the title where services are published: a pattern, muted and not copied", async () => {
+    renderApp(<ServicesOverview />);
+    const heading = await screen.findByRole("heading", { name: "Overview" });
+    const pattern = screen.getByText(`${window.location.origin}/svc/…`);
+    expect(pattern).toHaveClass("mono", "muted");
+    const line = pattern.closest(".address-pattern") as HTMLElement;
+    expect(line).toHaveTextContent(`Services are published under ${window.location.origin}/svc/…`);
+    expect(within(line).queryByRole("button")).toBeNull();
+    expect(within(line).queryByRole("link")).toBeNull();
+    // Below the header, above the tiles.
+    expect(heading.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(line.compareDocumentPosition(await strip()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("shows four tiles, each a link to its page", async () => {
     renderApp(<ServicesOverview />);
     const el = await strip();

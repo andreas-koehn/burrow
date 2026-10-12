@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Layers, MoreHorizontal } from "lucide-react";
@@ -138,6 +138,14 @@ export default function GatewayModels() {
   });
 
   const list = Array.isArray(models.data) ? models.data : [];
+  // /gateway/models?focus=<name>, as the command palette links a model: its row is
+  // scrolled to once it is there and stays marked while the link names it.
+  const focused = searchParams.get("focus");
+  const focusedRow = useRef<HTMLTableRowElement>(null);
+  const focusedListed = focused !== null && list.some((m) => m.name === focused);
+  useEffect(() => {
+    if (focusedListed) focusedRow.current?.scrollIntoView?.({ block: "center" });
+  }, [focusedListed, focused]);
   const endpoints = gateway.data?.endpoints ?? [];
   const noProviders = Array.isArray(providers.data) && providers.data.length === 0;
   const newModel = canWrite
@@ -193,7 +201,11 @@ export default function GatewayModels() {
               </thead>
               <tbody>
                 {list.map((m) => (
-                  <tr key={m.name}>
+                  <tr
+                    key={m.name}
+                    ref={m.name === focused ? focusedRow : undefined}
+                    aria-current={m.name === focused ? "true" : undefined}
+                  >
                     <td className="col-name">
                       <div className="mono">{m.name}</div>
                       {m.description && <div className="muted small">{m.description}</div>}

@@ -239,12 +239,25 @@ describe("workspace shell", () => {
     expect(rule(".topbar .crumbs")).toMatch(/color:\s*var\(--muted-foreground\)/);
     expect(rule('.topbar .crumbs [aria-current="page"]')).toMatch(/color:\s*var\(--foreground\)/);
   });
-  it("draws the switcher with existing tokens and the namespace in the mono face", () => {
-    expect(rule(".workspace-switcher")).toMatch(/color:\s*var\(--foreground\)/);
-    expect(rule(".workspace-switcher")).toMatch(/font-family:\s*var\(--font-sans\)/);
-    expect(rule(".workspace-switcher .namespace")).toMatch(/font-family:\s*var\(--font-mono\)/);
-    expect(rule(".workspace-switcher .namespace")).toMatch(/color:\s*var\(--muted-foreground\)/);
-    expect(rule("button.workspace-switcher:focus-visible")).toMatch(/outline:\s*2px solid var\(--ring\)/);
+  it("draws the workspace tabs with existing tokens, in one row of equal widths", () => {
+    expect(rule(".workspace-tabs")).toMatch(/display:\s*flex/);
+    expect(rule(".workspace-tab")).toMatch(/flex:\s*1 1 0/);
+    expect(rule(".workspace-tab")).toMatch(/color:\s*var\(--muted-foreground\)/);
+    expect(rule(".workspace-tab")).toMatch(/font-family:\s*var\(--font-sans\)/);
+    expect(rule(".workspace-tab:focus-visible")).toMatch(/outline:\s*2px solid var\(--ring\)/);
+  });
+  it("marks the current tab as the current navigation entry is marked", () => {
+    const declared = (r: string, property: string) => r.match(new RegExp(`(?:^|[\\s;{])${property}:\\s*([^;]+);`))?.[1];
+    for (const property of ["color", "font-weight", "background"]) {
+      expect(declared(rule(".workspace-tab.is-active"), property), property).toBe(declared(rule(".nav-item.is-active"), property));
+    }
+    expect(declared(rule(".workspace-tab.is-active::before"), "background")).toBe(declared(rule(".nav-item.is-active::before"), "background"));
+    expect(declared(rule(".dark .workspace-tab.is-active"), "background")).toBe(declared(rule(".dark .nav-item.is-active"), "background"));
+    // Collapsed, the bar is on the left edge, exactly where an entry has it.
+    expect(rule(".sidebar.is-collapsed .workspace-tab.is-active::before")).toMatch(/left:\s*0;[^}]*width:\s*3px/);
+  });
+  it("leaves nothing of the switcher behind", () => {
+    expect(css).not.toMatch(/workspace-switcher|\.workspace-text|\.workspace-name|\.namespace\b|\.menu-check/);
   });
   it("narrows the collapsed sidebar to its icons without hiding named text", () => {
     expect(rule(".sidebar.is-collapsed")).toMatch(/width:\s*56px/);
@@ -253,7 +266,7 @@ describe("workspace shell", () => {
     expect(css).not.toMatch(/\.sidebar\.is-collapsed[^{]*\{[^}]*display:\s*none/);
   });
   it("adds no colour of its own: every colour in the shell rules is a custom property", () => {
-    const shell = css.match(/\.(?:topbar|workspace-switcher|sidebar\.is-collapsed|sidebar-back|shell-column|nav-search|sidebar-footer-nav)[^{]*\{[^}]*\}/g) ?? [];
+    const shell = css.match(/\.(?:topbar|workspace-tabs?|workspace-brand|sidebar-workspaces|sidebar\.is-collapsed|sidebar-back|shell-column|nav-search|sidebar-footer-nav)[^{]*\{[^}]*\}/g) ?? [];
     expect(shell.length).toBeGreaterThan(10);
     for (const r of shell) expect(r).not.toMatch(/#[0-9a-f]{3,8}\b|oklch\(|rgba?\(|hsla?\(/i);
   });

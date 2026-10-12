@@ -88,3 +88,48 @@ test("palette: typing 'zzz' shows no-matches state", async ({ page }) => {
   await dialog.getByRole("searchbox").fill("zzz");
   await expect(dialog.getByText(/no matches/i)).toBeVisible();
 });
+
+test("palette: the two overviews are named apart", async ({ page }) => {
+  await page.goto("/services");
+  await page.getByRole("button", { name: "Search" }).first().click();
+  const dialog = page.getByRole("dialog", { name: "Jump to…" });
+  await expect(dialog).toBeVisible();
+
+  await dialog.getByRole("searchbox").fill("overview");
+  await expect(dialog.getByRole("option")).toHaveText([/^Services overview/, /^AI Gateway overview/]);
+
+  await dialog.getByRole("option", { name: /^AI Gateway overview/ }).click();
+  await expect(page).toHaveURL(/\/gateway$/);
+});
+
+test("palette: a provider is found by name, before the service of that name", async ({ page }) => {
+  // A service and the provider it backs, both under one name.
+  await page.goto("/");
+  const cookies = await page.context().cookies();
+  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
+  const name = `palette-prov-${Date.now()}`;
+  const service = await page.request.post("/api/v1/services", {
+    headers,
+    data: { service_id: name, title: name, access_mode: "api_key" },
+  });
+  expect(service.status()).toBe(201);
+  const provider = await page.request.post("/api/v1/ai/providers", {
+    headers,
+    data: { slug: name, name, kind: "tunnel", service_id: name },
+  });
+  expect(provider.status()).toBe(201);
+
+  await page.getByRole("button", { name: "Search" }).first().click();
+  const dialog = page.getByRole("dialog", { name: "Jump to…" });
+  await dialog.getByRole("searchbox").fill(name);
+  await expect(dialog.getByRole("option")).toHaveText([`${name} — provider`, `${name} — service`]);
+
+  // Enter opens the first row: the provider.
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(new RegExp(`/gateway/providers/${name}$`));
+
+  // Clean up: the provider first, then the service it stands on.
+  await page.request.delete(`/api/v1/ai/providers/${name}`, { headers }).catch(() => {});
+  await page.request.delete(`/api/v1/services/${name}`, { headers }).catch(() => {});
+});

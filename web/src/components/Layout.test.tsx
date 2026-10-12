@@ -83,6 +83,15 @@ const chip = () => screen.findByRole("link", { name: /^Your profile/ });
 const httpService = (id: string, name: string, connected = true) => ({ id, name, type: "http", connected });
 const sidebarLinks = (name: string) =>
   within(screen.getByRole("navigation", { name })).getAllByRole("link").map((a) => a.getAttribute("aria-label"));
+/** The workspace tabs at the head of the sidebar: [label, href, aria-current] of each. */
+const tabs = () =>
+  within(screen.getByRole("navigation", { name: "Workspace" })).getAllByRole("link")
+    .map((a) => [a.textContent, a.getAttribute("href"), a.getAttribute("aria-current")]);
+const tab = (name: string) => within(screen.getByRole("navigation", { name: "Workspace" })).getByRole("link", { name });
+const noTabs = () => {
+  expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();
+  expect(screen.queryByRole("link", { name: "AI Gateway" })).toBeNull();
+};
 
 function resetEnvironment() {
   document.documentElement.classList.remove("dark");
@@ -181,12 +190,15 @@ describe("Layout workspace shell", () => {
     await chip();
     expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
     expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
-    expect(await screen.findByRole("button", { name: "Workspace: Services" })).toBeInTheDocument();
+    await screen.findByRole("navigation", { name: "Workspace" });
+    expect(tabs()).toEqual([["Services", "/", "page"], ["AI Gateway", "/gateway", null]]);
+    expect(screen.queryByRole("button", { name: /^Workspace/ })).toBeNull();
   });
 
   it("shows the AI Gateway sidebar on a gateway path", async () => {
     renderLayout("admin", { path: "/gateway" });
-    expect(await screen.findByRole("button", { name: "Workspace: AI Gateway" })).toBeInTheDocument();
+    await screen.findByRole("navigation", { name: "AI Gateway" });
+    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "page"]]);
     expect(sidebarLinks("AI Gateway")).toEqual(["Overview", "Clients", "Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
     expect(screen.getByRole("link", { name: /^Clients(,|$)/ })).toHaveAttribute("href", "/clients");
   });
@@ -201,8 +213,9 @@ describe("Layout workspace shell", () => {
     expect(nav.getByRole("link", { name: "Providers" })).not.toHaveAttribute("aria-current");
     expect(nav.getByRole("link", { name: "Models" })).toBeInTheDocument();
     expect(nav.getByRole("link", { name: "Clients, 1 online" })).toHaveAttribute("aria-current", "page");
-    expect(document.querySelectorAll('.sidebar [aria-current="page"]')).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Workspace: AI Gateway" })).toBeInTheDocument();
+    expect(document.querySelectorAll('.sidebar-nav [aria-current="page"]')).toHaveLength(1);
+    // The tab follows the sidebar, not the URL: Clients has no workspace of its own.
+    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "page"]]);
     const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
     expect(within(crumbs).getByRole("link", { name: "AI Gateway" })).toHaveAttribute("href", "/gateway");
     expect(within(crumbs).getByText("Clients")).toHaveAttribute("aria-current", "page");
@@ -220,6 +233,7 @@ describe("Layout workspace shell", () => {
     expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
     expect(screen.getByRole("link", { name: /^Clients(,|$)/ })).toHaveAttribute("aria-current", "page");
     expect(screen.queryByRole("navigation", { name: "AI Gateway" })).toBeNull();
+    expect(tabs()).toEqual([["Services", "/", "page"], ["AI Gateway", "/gateway", null]]);
     expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(/^Services\W*Clients$/);
   });
 
@@ -249,7 +263,7 @@ describe("Layout workspace shell", () => {
     expect(screen.getByRole("navigation", { name: "Services" })).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "AI Gateway" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Providers" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Workspace:/ })).toBeNull();
+    noTabs();
     expect(screen.getByRole("link", { name: "Clients" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(/^Services\W*Clients$/);
     // What was remembered is left as it was.
@@ -261,7 +275,7 @@ describe("Layout workspace shell", () => {
     expect(await screen.findByRole("link", { name: "Users" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Settings" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Back to Services" })).toHaveAttribute("href", "/");
-    expect(screen.queryByRole("button", { name: /^Workspace:/ })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();
     // The footer shortcuts would only repeat the list above them.
     expect(screen.queryByRole("link", { name: "Users & roles" })).toBeNull();
   });
@@ -359,19 +373,62 @@ describe("Layout workspace shell", () => {
     expect(settingsRequests.count).toBe(0);
   });
 
-  it("a non-admin sees no Settings or Users shortcut, and no switcher without AI access", async () => {
+  it("a non-admin sees no Settings or Users shortcut, and no tabs without AI access", async () => {
     renderLayout("user");
     await chip();
     await waitFor(() => expect(screen.getByRole("link", { name: /^Your profile, alice/ })).toBeInTheDocument());
     expect(screen.queryByRole("link", { name: "Users & roles" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Workspace:/ })).toBeNull();
+    noTabs();
+    // The head still says where the reader is: the mark and the workspace's name, as text.
+    const head = document.querySelector(".sidebar-brand") as HTMLElement;
+    expect(head).toHaveTextContent(/^Services$/);
+    expect(within(head).queryByRole("link")).toBeNull();
     expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
   });
 
-  it("a non-admin with a connected http service gets the switcher", async () => {
+  it("a non-admin with a connected http service gets the tabs", async () => {
     renderLayout("user", { services: [httpService("svc1", "ollama")] });
-    expect(await screen.findByRole("button", { name: "Workspace: Services" })).toBeInTheDocument();
+    await screen.findByRole("navigation", { name: "Workspace" });
+    expect(tabs()).toEqual([["Services", "/", "page"], ["AI Gateway", "/gateway", null]]);
+  });
+
+  it("a click on the AI Gateway tab opens the gateway and its navigation", async () => {
+    renderLayout("admin", { path: "/services" });
+    await screen.findByRole("navigation", { name: "Workspace" });
+    await userEvent.click(tab("AI Gateway"));
+    expect(screen.getByTestId("where")).toHaveTextContent(/^\/gateway$/);
+    expect(sidebarLinks("AI Gateway")).toEqual(["Overview", "Clients", "Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
+    expect(screen.queryByRole("navigation", { name: "Services" })).toBeNull();
+    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "page"]]);
+    expect(within(screen.getByRole("navigation", { name: "AI Gateway" })).getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
+    expect(localStorage.getItem("burrow.lastWorkspace")).toBe("gateway");
+  });
+
+  it("a click on the Services tab from a gateway page opens the Services overview", async () => {
+    renderLayout("admin", { path: "/gateway/models" });
+    await screen.findByRole("navigation", { name: "Workspace" });
+    await userEvent.click(tab("Services"));
+    expect(screen.getByTestId("where")).toHaveTextContent(/^\/$/);
+    expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
+    expect(screen.queryByRole("navigation", { name: "AI Gateway" })).toBeNull();
+    expect(tabs()).toEqual([["Services", "/", "page"], ["AI Gateway", "/gateway", null]]);
+  });
+
+  it("the tabs come before the navigation in the tab order, and Enter follows one", async () => {
+    renderLayout("admin", { path: "/services" });
+    await screen.findByRole("navigation", { name: "Workspace" });
+    const order = [...document.querySelectorAll(".sidebar a, .sidebar button")].map((el) => el.getAttribute("aria-label") ?? el.textContent);
+    expect(order.slice(0, 4)).toEqual(["Services", "AI Gateway", "Search", "Overview"]);
+    tab("AI Gateway").focus();
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByTestId("where")).toHaveTextContent(/^\/gateway$/);
+  });
+
+  it("the relay namespace is no longer in the sidebar", async () => {
+    renderLayout("admin", { path: "/gateway" });
+    await screen.findByRole("navigation", { name: "Workspace" });
+    expect(document.querySelector(".sidebar")!.textContent).not.toMatch(/\/svc\/|\/ai\//);
   });
 
   it("a /gateway deep link without AI access keeps the Services shell and offers no way in", async () => {
@@ -381,7 +438,7 @@ describe("Layout workspace shell", () => {
     expect(screen.getByRole("navigation", { name: "Services" })).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "AI Gateway" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Providers" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Workspace:/ })).toBeNull();
+    noTabs();
     // No entry claims to be the current page, and the breadcrumb names no gateway page.
     expect(document.querySelector('.sidebar [aria-current="page"]')).toBeNull();
     const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });

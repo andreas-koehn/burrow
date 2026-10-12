@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { http, HttpResponse } from "msw";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -6,12 +7,14 @@ import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom";
 import { ThemeProvider } from "@/components/theme-provider";
 import { CommandPalette } from "@/components/CommandPalette";
 import { setCsrfCookie } from "@/mocks/test-utils";
+import { server } from "@/mocks/server";
+import { db } from "@/mocks/db";
 
 // Helper to render CommandPalette inside a router and query provider.
 // Renders a "spy" route so we can detect navigation by checking current location.
 function SpyHeading() {
   const loc = useLocation();
-  return <div data-testid="spy-location">{loc.pathname}</div>;
+  return <div data-testid="spy-location">{loc.pathname}{loc.search}</div>;
 }
 
 interface RenderOptions {
@@ -77,11 +80,29 @@ describe("CommandPalette — P6A.1: destinations", () => {
     const rows = screen.getAllByRole("option").map((o) => o.textContent);
     // Services first, then the gateway, then Settings.
     expect(rows.slice(0, 5)).toEqual([
-      "OverviewServices", "ServicesServices", "ClientsServices", "TrafficServices",
-      "OverviewAI Gateway",
+      "Services overviewServices", "ServicesServices", "ClientsServices", "TrafficServices",
+      "AI Gateway overviewAI Gateway",
     ]);
     const groups = new Set(screen.getAllByRole("option").map((o) => o.querySelector(".shortcut")?.textContent));
     expect(groups).toEqual(new Set(["Services", "AI Gateway", "Settings"]));
+  });
+
+  // Both workspaces have an "Overview"; side by side the two rows would read the same.
+  it("names the two overviews apart", async () => {
+    renderPalette();
+    const names = () => screen.getAllByRole("option").map((o) => o.querySelector("span")?.textContent);
+    expect(names().filter((n) => /overview/i.test(n ?? ""))).toEqual(["Services overview", "AI Gateway overview"]);
+    expect(names()).not.toContain("Overview");
+    await userEvent.type(screen.getByRole("searchbox"), "overview");
+    expect(names()).toEqual(["Services overview", "AI Gateway overview"]);
+    fireEvent.click(screen.getByRole("option", { name: /^AI Gateway overview/ }));
+    expect(screen.getByTestId("spy-location")).toHaveTextContent(/^\/gateway$/);
+  });
+
+  it("finds an overview by its full name", async () => {
+    renderPalette();
+    await userEvent.type(screen.getByRole("searchbox"), "ai gateway over");
+    expect(screen.getAllByRole("option").map((o) => o.querySelector("span")?.textContent)).toEqual(["AI Gateway overview"]);
   });
 
   // Clients is in both sidebars and is still one page.
@@ -113,7 +134,7 @@ describe("CommandPalette — P6A.1: destinations", () => {
     await userEvent.type(screen.getByRole("searchbox"), "services");
     const options = screen.getAllByRole("option").map((o) => o.textContent);
     expect(options[0]).toBe("ServicesServices");
-    expect(options).toContain("OverviewServices");
+    expect(options).toContain("Services overviewServices");
     await userEvent.keyboard("{Enter}");
     expect(screen.getByTestId("spy-location")).toHaveTextContent(/^\/services$/);
   });
@@ -160,7 +181,7 @@ describe("CommandPalette — P6A.1: destinations", () => {
     const keyTarget = dialog.querySelector(".dialog-body > div") as HTMLElement;
     expect(keyTarget).not.toBeNull();
 
-    // Arrow down from first item (index 0 = Overview) to second item (index 1).
+    // Arrow down from first item (index 0 = Services overview) to second item (index 1).
     fireEvent.keyDown(keyTarget, { key: "ArrowDown" });
     // Press Enter to activate index 1.
     fireEvent.keyDown(keyTarget, { key: "Enter" });
@@ -178,7 +199,7 @@ describe("CommandPalette — P6A.1: destinations", () => {
     const keyTarget = dialog.querySelector(".dialog-body > div") as HTMLElement;
     expect(keyTarget).not.toBeNull();
 
-    // Enter on focusIdx=0 (first item = Overview → "/")
+    // Enter on focusIdx=0 (first item = Services overview → "/")
     fireEvent.keyDown(keyTarget, { key: "Enter" });
 
     await waitFor(() => {
@@ -246,5 +267,107 @@ describe("CommandPalette — P6A.2: live entities (MSW seed)", () => {
     const input = screen.getByRole("searchbox");
     await userEvent.type(input, "graf");
     expect(await screen.findByRole("option", { name: /grafana.*service/i })).toBeInTheDocument();
+  });
+});
+
+describe("CommandPalette — providers, models and gateway keys", () => {
+  const results = () => screen.getAllByRole("option").map((o) => o.textContent);
+  const seenOllama = () => screen.findByRole("option", { name: /ollama.*service/i });
+
+  it("finds a provider by name", async () => {
+    renderPalette();
+    await userEvent.type(screen.getByRole("searchbox"), "ollama");
+    // Seed: a provider and a service, both called ollama. The provider comes first.
+    await waitFor(() => expect(results()).toEqual(["ollama — provider", "ollama — service"]));
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByTestId("spy-location")).toHaveTextContent(/^\/gateway\/providers\/ollama$/);
+  });
+
+  it("leaves out a service that is reachable through the AI gateway only: its provider stands for it", async () => {
+    db.services.find((s) => s.id === "svc_ai001")!.gateway_only = true;
+    renderPalette();
+    await userEvent.type(screen.getByRole("searchbox"), "ollama");
+    await waitFor(() => expect(results()).toEqual(["ollama — provider"]));
+    // The services have answered too: another one is found.
+    await userEvent.clear(screen.getByRole("searchbox"));
+    await userEvent.type(screen.getByRole("searchbox"), "a");
+    expect(await screen.findByRole("option", { name: /grafana.*service/i })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /ollama.*service/i })).toBeNull();
+    expect(screen.getByRole("option", { name: /ollama.*provider/i })).toBeInTheDocument();
+  });
+
+  it("opens the provider by its slug when the name differs", async () => {
+    server.use(http.get("/api/v1/ai/providers", () => HttpResponse.json([{ slug: "local-llm", name: "Office GPU" }])));
+    renderPalette();
+    await userEvent.type(screen.getByRole("searchbox"), "office g");
+    fireEvent.click(await screen.findByRole("option", { name: "Office GPU — provider" }));
+    expect(screen.getByTestId("spy-location")).toHaveTextContent(/^\/gateway\/providers\/local-llm$/);
+  });
+
+  it("finds a model and a gateway key by name", async () => {
+    const first = renderPalette();
+    await userEvent.type(screen.getByRole("searchbox"), "burrow-si");
+    fireEvent.click(await screen.findByRole("option", { name: "burrow-simple — model" }));
+    expect(screen.getByTestId("spy-location")).toHaveTextContent(/^\/gateway\/models\?focus=burrow-simple$/);
+    first.unmount();
+
+    // Seed: one gateway key, called laptop.
+    renderPalette();
+    await userEvent.type(screen.getByRole("searchbox"), "lapt");
+    fireEvent.click(await screen.findByRole("option", { name: "laptop — gateway key" }));
+    expect(screen.getByTestId("spy-location")).toHaveTextContent(/^\/gateway\/keys$/);
+  });
+
+  it("links a model whose name needs escaping", async () => {
+    server.use(http.get("/api/v1/ai/models", () => HttpResponse.json([{ name: "team a/fast&cheap" }])));
+    renderPalette();
+    await userEvent.type(screen.getByRole("searchbox"), "team a");
+    fireEvent.click(await screen.findByRole("option", { name: "team a/fast&cheap — model" }));
+    expect(screen.getByTestId("spy-location")).toHaveTextContent("/gateway/models?focus=team%20a%2Ffast%26cheap");
+  });
+
+  it("does not ask for providers when the user has no AI gateway", async () => {
+    const asked: string[] = [];
+    const count = (what: string) => http.get(`/api/v1/ai/${what}`, () => { asked.push(what); return HttpResponse.json([]); });
+    server.use(count("providers"), count("models"), count("keys"));
+    renderPalette({ isAdmin: false, hasAiGateway: false });
+    await userEvent.type(screen.getByRole("searchbox"), "ollama");
+    // The services have answered, so everything the palette asks for has been asked.
+    expect(await seenOllama()).toBeInTheDocument();
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    expect(asked).toEqual([]);
+    expect(results()).toEqual(["ollama — service"]);
+  });
+
+  it("asks for them only once the palette is open", async () => {
+    const asked: string[] = [];
+    const count = (what: string) => http.get(`/api/v1/ai/${what}`, () => { asked.push(what); return HttpResponse.json([]); });
+    server.use(count("providers"), count("models"), count("keys"));
+    renderPalette({ open: false });
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    expect(asked).toEqual([]);
+  });
+
+  it("a failed lookup does not break the palette", async () => {
+    server.use(http.get("/api/v1/ai/models", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    renderPalette();
+    // Pages are listed as ever.
+    expect(results()).toContain("ServicesServices");
+    await userEvent.type(screen.getByRole("searchbox"), "ollama");
+    await waitFor(() => expect(results()).toEqual(["ollama — provider", "ollama — service"]));
+    await userEvent.clear(screen.getByRole("searchbox"));
+    await userEvent.type(screen.getByRole("searchbox"), "burrow");
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    expect(screen.queryByRole("option", { name: /model$/ })).toBeNull();
+    await userEvent.clear(screen.getByRole("searchbox"));
+    await userEvent.type(screen.getByRole("searchbox"), "lapt");
+    expect(await screen.findByRole("option", { name: "laptop — gateway key" })).toBeInTheDocument();
+  });
+
+  it("an answer that is not a list adds no rows", async () => {
+    server.use(http.get("/api/v1/ai/providers", () => HttpResponse.json({})), http.get("/api/v1/ai/keys", () => HttpResponse.json(null)));
+    renderPalette();
+    await userEvent.type(screen.getByRole("searchbox"), "ollama");
+    await waitFor(() => expect(results()).toEqual(["ollama — service"]));
   });
 });

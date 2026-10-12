@@ -9,6 +9,8 @@ import { workspaceFor, type Workspace } from "./workspace";
 export interface NavEntry {
   id: string;
   label: string;
+  /** What the command palette calls the entry, where its label alone names two pages ("Overview"). */
+  paletteLabel?: string;
   /** Path the entry opens. */
   to: string;
   icon: LucideIcon;
@@ -30,7 +32,7 @@ export interface Navigation {
   workspace: Workspace;
   /** "Services" | "AI Gateway" | "Settings" */
   label: string;
-  /** The relay namespace the workspace manages: "/svc/…" | "/ai/…". */
+  /** The relay namespace the workspace manages: "/svc/…" | "/ai/…". Shown on the Overview, not in the shell. */
   namespace?: string;
   icon: LucideIcon;
   /** "/" | "/gateway" | "/settings" */
@@ -56,7 +58,7 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
   services: {
     workspace: "services", label: "Services", namespace: "/svc/…", icon: Network, home: "/",
     groups: [
-      { entries: [{ id: "services-overview", label: "Overview", to: "/", icon: LayoutDashboard }] },
+      { entries: [{ id: "services-overview", label: "Overview", paletteLabel: "Services overview", to: "/", icon: LayoutDashboard }] },
       { title: "Connect", entries: [
         { id: "services", label: "Services", to: "/services", icon: Globe, count: "services" },
         { id: "clients", label: "Clients", to: "/clients", icon: Boxes, count: "clientsOnline" },
@@ -67,7 +69,7 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
   gateway: {
     workspace: "gateway", label: "AI Gateway", namespace: "/ai/…", icon: Sparkles, home: "/gateway",
     groups: [
-      { entries: [{ id: "gateway-overview", label: "Overview", to: "/gateway", icon: LayoutDashboard }] },
+      { entries: [{ id: "gateway-overview", label: "Overview", paletteLabel: "AI Gateway overview", to: "/gateway", icon: LayoutDashboard }] },
       // A client serves services and providers alike: the one page at /clients is listed in both workspaces.
       { title: "Connect", entries: [
         { id: "gateway-clients", label: "Clients", to: "/clients", icon: Boxes, count: "clientsOnline" },
@@ -139,7 +141,7 @@ export function navigationFor(workspace: Workspace, ctx: NavContext): Navigation
   return { ...nav, groups };
 }
 
-/** The workspaces the switcher offers. */
+/** The workspaces the tabs at the head of the sidebar offer. */
 export function workspacesFor(ctx: NavContext): Navigation[] {
   return ctx.hasAiGateway ? [NAVIGATIONS.services, NAVIGATIONS.gateway] : [NAVIGATIONS.services];
 }

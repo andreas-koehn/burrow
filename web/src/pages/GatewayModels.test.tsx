@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
@@ -205,6 +205,56 @@ describe("Models page", () => {
     mountAt("/gateway/models?new=1&provider=ollama");
     await screen.findByRole("table", { name: "Models" });
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  // The command palette links a model by its name; jsdom has no layout, so the scroll is observed.
+  describe("?focus=<name>", () => {
+    const scrolled: Element[] = [];
+    const had = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
+    beforeEach(() => {
+      scrolled.length = 0;
+      Object.defineProperty(Element.prototype, "scrollIntoView", {
+        configurable: true, writable: true, value(this: Element) { scrolled.push(this); },
+      });
+    });
+    afterEach(() => {
+      if (had) Object.defineProperty(Element.prototype, "scrollIntoView", had);
+      else delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    });
+    const rowOf = (table: HTMLElement, name: string) => within(table).getByText(name).closest("tr")!;
+
+    it("scrolls to the row of that model and marks it", async () => {
+      mountAt("/gateway/models?focus=burrow-intelligence");
+      const table = await screen.findByRole("table", { name: "Models" });
+      const row = rowOf(table, "burrow-intelligence");
+      await waitFor(() => expect(scrolled).toEqual([row]));
+      expect(row).toHaveAttribute("aria-current", "true");
+      expect(table.querySelectorAll("[aria-current]")).toHaveLength(1);
+      // The link stays what it was: a reload shows the same row.
+      expect(screen.getByTestId("location")).toHaveTextContent("/gateway/models?focus=burrow-intelligence");
+      // Once: a refetch of the list does not pull the page back to the row.
+      await userEvent.click(screen.getByRole("button", { name: "New model" }));
+      await userEvent.keyboard("{Escape}");
+      expect(scrolled).toHaveLength(1);
+    });
+
+    it("takes a name with characters a link escapes", async () => {
+      db.aiModels.push({ ...db.aiModels[0]!, name: "team a/fast&cheap" });
+      mountAt(`/gateway/models?focus=${encodeURIComponent("team a/fast&cheap")}`);
+      const table = await screen.findByRole("table", { name: "Models" });
+      await waitFor(() => expect(scrolled).toEqual([rowOf(table, "team a/fast&cheap")]));
+    });
+
+    it("marks nothing for a model that is not there, or without the parameter", async () => {
+      for (const route of ["/gateway/models?focus=gone", "/gateway/models"]) {
+        const view = mountAt(route);
+        const table = await screen.findByRole("table", { name: "Models" });
+        expect(within(table).getAllByRole("row").length).toBeGreaterThan(1);
+        expect(table.querySelector("[aria-current]")).toBeNull();
+        expect(scrolled).toEqual([]);
+        view.unmount();
+      }
+    });
   });
 
   it("asks before deleting and removes the row", async () => {
