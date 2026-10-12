@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // guidePath is the operator's guide to this endpoint. The test reads it from
@@ -52,6 +53,7 @@ func TestGuide_MatchesTheServer(t *testing.T) {
 		EndpointPath,
 		fmt.Sprintf("%d per token and minute", DefaultRateLimit),
 		"1 MiB",
+		fmt.Sprintf("%d seconds", int(toolTimeout/time.Second)),
 		"Authorization: Bearer",
 	}, protocolVersions...) {
 		if !strings.Contains(guide, want) {

@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -547,5 +549,19 @@ func TestMCPMount_StatusPerMethodAndCase(t *testing.T) {
 		if r := mcpDo(t, c.method, url, c.hdr); r.StatusCode != c.want {
 			t.Errorf("%s: %d, want %d", c.name, r.StatusCode, c.want)
 		}
+	}
+}
+
+// TestGuide_NamesThePerAddressLimit keeps the number in docs/guide/mcp.md
+// equal to MCPRateLimitPerIP. (The other numbers of the guide are checked in
+// package mcpserv, which this package imports.)
+func TestGuide_NamesThePerAddressLimit(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/guide/mcp.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("%d per client address and minute", MCPRateLimitPerIP)
+	if !strings.Contains(string(raw), want) {
+		t.Errorf("docs/guide/mcp.md does not say %q", want)
 	}
 }
