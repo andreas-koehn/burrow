@@ -122,7 +122,7 @@ var knownEventFields = map[string]map[string]any{
 	"audit.exported":              {"ActorEmail": "", "RecordCount": 0},
 	"backup.completed":            {"Path": "", "SizeBytes": 0},
 	"ai.upstream_error":           {"service_id": "", "backend_service_id": "", "status": 0, "error": "", "retry_count": 0},
-	"ai.cache_promotion":          {"service_id": "", "exact_key_hash": "", "prompt_fingerprint": "", "similarity_to_first": 0.0},
+	"ai.cache_promotion":          {"service_id": "", "exact_key_hash": "", "prompt_fingerprint": ""},
 	"audit.policy_change":         {"actor_email": "", "action": "", "before": nil, "after": nil},
 	"service.created":             {"service_id": "", "name": "", "type": "", "access_mode": ""},
 	"service.deleted":             {"service_id": "", "name": ""},

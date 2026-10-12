@@ -113,7 +113,7 @@ var closedSet = []metricDef{
 		help:   "Total AI upstream failover events.",
 		labels: []string{"service", "from", "to", "cross_provider"}},
 	{name: "burrow_ai_upstream_errors_total", kind: kindCounter,
-		help:   "Total AI upstream errors.",
+		help:   "Total AI upstream errors. status is a class (1xx..5xx) or none; for an upstream the gateway tried, none means it gave no response; for a proxied model service it is the class of what the visitor received.",
 		labels: []string{"service", "status"}},
 
 	// Internal.
@@ -124,7 +124,7 @@ var closedSet = []metricDef{
 		help:   "Histogram of DB query durations (seconds).",
 		labels: []string{"op"}},
 	{name: "burrow_control_reconnects_total", kind: kindCounter,
-		help:   "Total control-plane reconnect events.",
+		help:   "Total control-plane reconnect events: a session opened with a client token that already had one (also while the first is open); tokens beyond the 16384 remembered never count.",
 		labels: []string{"client"}},
 	{name: "burrow_cert_expiry_days", kind: kindGauge,
 		help:   "Days remaining until the operator-supplied wildcard cert expires.",
@@ -279,7 +279,7 @@ func (h *histogramSeries) sum() float64 {
 // The zero value is NOT usable — call New().
 type Recorder struct {
 	// counters maps the fully-rendered series key (e.g.
-	// `burrow_http_requests_total{service="foo",method="GET",status="200"}`)
+	// `burrow_http_requests_total{service="foo",method="GET",status="2xx"}`)
 	// to its atomic counter. sync.Map gives us a lock-free hot path; the
 	// LoadOrStore on first observation pays a single allocation.
 	counters sync.Map // map[string]*atomic.Int64
@@ -390,7 +390,7 @@ func StatusClass(status int) string {
 }
 
 // Method is the label value for a request method: the method when it is one
-// of the nine of RFC 9110 and PATCH, "other" for everything else.
+// of the eight of RFC 9110 and PATCH, "other" for everything else.
 func Method(m string) string {
 	switch m {
 	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE":
@@ -551,7 +551,8 @@ func (r *Recorder) IncAIFailover(service, from, to, crossProvider string) {
 
 // IncAIUpstreamError records one upstream error for service at HTTP status.
 // The status label is the class of the upstream's status (StatusClass); "none"
-// when it gave no status at all (no response, a timeout).
+// when it gave no status at all (no response, a timeout). A caller that only
+// knows what the visitor received (the proxy) passes that status instead.
 func (r *Recorder) IncAIUpstreamError(service string, status int) {
 	r.incCounter("burrow_ai_upstream_errors_total",
 		[]string{"service", "status"},

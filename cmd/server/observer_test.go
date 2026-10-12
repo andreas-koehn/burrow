@@ -45,10 +45,6 @@ func (e *recEmitter) EmitAIUpstreamError(serviceID, backendServiceID string, sta
 	e.add("ai.upstream_error", map[string]any{"service_id": serviceID, "backend_service_id": backendServiceID, "status": status, "error": errMsg, "retry_count": retryCount})
 }
 
-func (e *recEmitter) EmitAICachePromotion(serviceID, exactKeyHash, promptFingerprint string, similarity float64) {
-	e.add("ai.cache_promotion", map[string]any{"service_id": serviceID, "exact_key_hash": exactKeyHash, "prompt_fingerprint": promptFingerprint, "similarity_to_first": similarity})
-}
-
 func (e *recEmitter) EmitServiceCreated(serviceID, name, kind, accessMode string) {
 	e.add("service.created", map[string]any{"service_id": serviceID, "name": name, "type": kind, "access_mode": accessMode})
 }
@@ -451,4 +447,79 @@ func TestEventBudget(t *testing.T) {
 	if n > eventThrottleMaxKeys {
 		t.Fatalf("the budget remembers %d keys, more than %d", n, eventThrottleMaxKeys)
 	}
+}
+
+// Concurrent opens and closes of one user's sessions leave the gauge exact:
+// it is set under the same lock that counts.
+func TestObserver_SessionGaugeConcurrent(t *testing.T) {
+	o, rec, _, _ := newTestObserver(t)
+	const n = 64
+	run := func(kind string) {
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				o.ObserveSession(observe.Session{Kind: kind, UserID: "u1", TokenID: "tok", ConnectedAt: time.Now()})
+			}()
+		}
+		wg.Wait()
+	}
+	run(observe.SessionOpened)
+	wantLines(t, expo(t, rec), `burrow_client_session_count{user="u1"} 64`)
+	run(observe.SessionClosed)
+	wantLines(t, expo(t, rec), `burrow_client_session_count{user="u1"} 0`)
+}
+
+type panicEmitter struct{}
+
+func (*panicEmitter) Publish(context.Context, string, any) { panic("publish") }
+func (*panicEmitter) EmitAIUpstreamError(string, string, int, string, int) {
+	panic("emit")
+}
+func (*panicEmitter) EmitServiceCreated(string, string, string, string) { panic("emit") }
+
+type panicPricer struct{}
+
+func (panicPricer) RowUSD(db.UsageRow) float64 { panic("price") }
+
+// An observer whose parts panic, or are typed nils, never panics into the
+// goroutine of what it observes.
+func TestObserver_PartsThatPanicOrAreTypedNil(t *testing.T) {
+	var nilEm *recEmitter
+	var nilAu *recAudit
+	var nilRec *metrics.Recorder
+	for name, p := range map[string]observerParts{
+		"panicking": {Recorder: metrics.New(), Events: &panicEmitter{}, Audit: &recAudit{}, Cost: panicPricer{}},
+		"typed nil": {Recorder: nilRec, Events: nilEm, Audit: nilAu, Cost: (*flatPricer)(nil), Chain: (*aigw.Chain)(nil)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			o := newObserver(p)
+			t.Cleanup(o.stop)
+			o.ObserveSession(observe.Session{Kind: observe.SessionOpened, UserID: "u"})
+			o.ObserveSession(observe.Session{Kind: observe.SessionClosed, UserID: "u"})
+			o.ObserveSession(observe.Session{Kind: observe.TunnelOpened, UserID: "u", ServiceCreated: true})
+			o.ObserveSession(observe.Session{Kind: observe.TunnelRefused, UserID: "u", RefusalCode: "x"})
+			o.ObserveTraffic(observe.Traffic{Kind: observe.TrafficHTTP, Outcome: observe.OutcomeRejected})
+			o.ObserveTraffic(observe.Traffic{Kind: observe.TrafficHTTP, Outcome: observe.OutcomeError, KeyService: true})
+			o.ObserveModelRequest(observe.ModelRequest{
+				Metered: true, SemanticPromoted: true, Outcome: observe.ModelGuardrailRefused,
+				Redactions: []observe.Redaction{{Rule: "email"}}, Attempts: []observe.Attempt{{Failed: true}},
+			})
+			if err := o.Flush(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// A session that ends with a stated outcome is counted with it; one without
+// is counted as clean.
+func TestObserver_SessionOutcome(t *testing.T) {
+	o, rec, _, _ := newTestObserver(t)
+	o.ObserveSession(observe.Session{Kind: observe.SessionClosed, UserID: "u"})
+	o.ObserveSession(observe.Session{Kind: observe.SessionClosed, UserID: "u", Outcome: observe.OutcomeError})
+	wantLines(t, expo(t, rec),
+		`burrow_connections_total{service="",kind="control",status="closed_clean"} 1`,
+		`burrow_connections_total{service="",kind="control",status="closed_error"} 1`)
 }

@@ -45,6 +45,9 @@ type Session struct {
 	// lasted (SessionClosed only).
 	ConnectedAt time.Time
 	Duration    time.Duration
+	// Outcome is how the session ended (SessionClosed): an Outcome… value. ""
+	// means the server knows of no error and is counted as OutcomeClean.
+	Outcome string
 
 	TunnelID   string
 	TunnelType string // "http" or "tcp"
@@ -101,8 +104,9 @@ type Traffic struct {
 	// KeyService: the service has an API-key header, which is how the proxy
 	// tells a model service from a plain one (see emitAIUpstreamErrorAudit).
 	KeyService bool
-	// SourceIP is the visitor's address as the connection log stores it.
-	// Payloads only, never a metric label.
+	// SourceIP is the visitor's address as the connection log stores it. It
+	// is for the IP field of the access.denied webhook payload only: never a
+	// metric label, never logged.
 	SourceIP string
 
 	// BytesIn is what the visitor sent to the service (the request body for
@@ -136,7 +140,8 @@ type ModelRequest struct {
 	GatewayKeyID string // the id of the gateway key's row; "" without one
 	ProviderSlug string // who answered (or was first in line), "" outside the gateway
 	// RequestedModel is the caller's name for the model: a caller's words,
-	// never a metric label. TargetModel is the provider's model that answered.
+	// never a metric label (set by the chain; read by tests and later
+	// consumers). TargetModel is the provider's model that answered.
 	RequestedModel, TargetModel string
 	Kind                        string // "openai", "anthropic", "mcp" or "unknown"
 
@@ -163,10 +168,13 @@ type ModelRequest struct {
 	PromotedKey string
 
 	// Redactions names the redaction rules that changed the request and how
-	// often; rule names, never what they matched.
+	// often (set by the chain, W05; the observer announces each rule once, so
+	// Count is for later consumers); rule names, never what they matched.
 	Redactions []Redaction
 	// GuardrailPattern is the id of the pattern that refused the request,
-	// GuardrailAction the action taken (ModelGuardrailRefused).
+	// GuardrailAction the action taken (ModelGuardrailRefused). Both are set by
+	// the chain (W05); the observer uses the pattern, the action is for later
+	// consumers.
 	GuardrailPattern, GuardrailAction string
 
 	// Attempts is what the gateway sent to upstreams, in order; empty outside
@@ -189,7 +197,8 @@ type Attempt struct {
 	// Failed: the attempt counts against the provider (a 5xx, no response,
 	// a timeout), as the breaker sees it.
 	Failed bool
-	// Sent: the request left for the upstream.
+	// Sent: the request left for the upstream. Set by the gateway (W06); no
+	// observer reads it yet, it is for the attempt log and later consumers.
 	Sent bool
 }
 
@@ -200,7 +209,7 @@ type Attempt struct {
 //	type ToolCallObserver interface{ ObserveToolCall(observe.ToolCall) }
 type ToolCall struct {
 	Server   string // which MCP server: "management", or the slug of a gateway target
-	Tool     string // the tool's registered name
+	Tool     string // the tool's name as the caller or an upstream gave it: never a label
 	TokenID  string // the id of the automation token's row
 	UserID   string
 	Outcome  string // "ok", "denied" or "error"

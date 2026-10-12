@@ -16,6 +16,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"reflect"
 	"strconv"
 	"sync"
 	"time"
@@ -34,7 +35,6 @@ import (
 type eventEmitter interface {
 	eventPublisher
 	EmitAIUpstreamError(serviceID, backendServiceID string, status int, errMsg string, retryCount int)
-	EmitAICachePromotion(serviceID, exactKeyHash, promptFingerprint string, similarity float64)
 	EmitServiceCreated(serviceID, name, kind, accessMode string)
 }
 
@@ -102,6 +102,17 @@ func newObserver(p observerParts) *observer {
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	// A typed nil in an interface is not == nil: drop those parts too, so that
+	// "any part may be nil" holds for them.
+	if isNil(p.Events) {
+		p.Events = nil
+	}
+	if isNil(p.Audit) {
+		p.Audit = nil
+	}
+	if isNil(p.Cost) {
+		p.Cost = nil
+	}
 	o := &observer{
 		observerParts: p,
 		log:           log,
@@ -118,6 +129,28 @@ func newObserver(p observerParts) *observer {
 	return o
 }
 
+// isNil reports whether v is nil or holds a nil pointer, map, slice, func or
+// channel.
+func isNil(v any) bool {
+	if v == nil {
+		return true
+	}
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return rv.IsNil()
+	}
+	return false
+}
+
+// recovered ends an entry point: a panic in a part of the observer (a
+// dispatcher, a pricer) is logged with what kind of event it was, never with
+// its contents, and does not reach the goroutine of what is observed.
+func (o *observer) recovered(point, kind string) {
+	if r := recover(); r != nil {
+		o.log.Error("observer: panic while observing", "point", point, "kind", kind, "panic", r)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Control sessions and tunnels (server.Observer)
 // ---------------------------------------------------------------------------
@@ -127,8 +160,11 @@ func (o *observer) ObserveSession(e observe.Session) {
 	if o == nil {
 		return
 	}
+	defer o.recovered("session", e.Kind)
 	switch e.Kind {
 	case observe.SessionOpened:
+		// The gauge is set under the lock that counts, so concurrent opens
+		// and closes of one user cannot leave an older count in it.
 		o.mu.Lock()
 		o.sessions[e.UserID]++
 		n := o.sessions[e.UserID]
@@ -136,25 +172,33 @@ func (o *observer) ObserveSession(e observe.Session) {
 		if e.TokenID != "" && !again && len(o.tokens) < observerMaxTokens {
 			o.tokens[e.TokenID] = struct{}{}
 		}
-		o.mu.Unlock()
 		if o.Recorder != nil {
 			o.Recorder.SetClientSessionCount(e.UserID, n)
-			if again {
-				// The token had a session before: its client came back.
-				o.Recorder.IncControlReconnect(e.TokenID)
-			}
+		}
+		o.mu.Unlock()
+		// A token that already had a session counts as a reconnect, also when
+		// the earlier session is still open (a second client with the same
+		// token); tokens beyond observerMaxTokens are not remembered and
+		// never count.
+		if again && o.Recorder != nil {
+			o.Recorder.IncControlReconnect(e.TokenID)
 		}
 	case observe.SessionClosed:
 		o.mu.Lock()
 		if o.sessions[e.UserID] > 0 {
 			o.sessions[e.UserID]--
 		}
-		n := o.sessions[e.UserID]
+		if o.Recorder != nil {
+			o.Recorder.SetClientSessionCount(e.UserID, o.sessions[e.UserID])
+		}
 		o.mu.Unlock()
 		if o.Recorder != nil {
-			o.Recorder.SetClientSessionCount(e.UserID, n)
 			o.Recorder.ObserveClientSessionDuration(e.UserID, e.Duration.Seconds())
-			o.Recorder.IncConnections("", "control", observe.OutcomeClean)
+			outcome := e.Outcome
+			if outcome == "" {
+				outcome = observe.OutcomeClean // no error known to the server
+			}
+			o.Recorder.IncConnections("", "control", outcome)
 		}
 	case observe.TunnelOpened:
 		o.publishTunnel(e.UserID, "tunnel.connected", map[string]any{
@@ -206,6 +250,7 @@ func (o *observer) ObserveTraffic(e observe.Traffic) {
 	if o == nil {
 		return
 	}
+	defer o.recovered("traffic", e.Kind)
 	if r := o.Recorder; r != nil {
 		if e.Kind == observe.TrafficHTTP {
 			r.IncHTTPRequest(e.ServiceID, e.Method, e.Status)
@@ -235,7 +280,10 @@ func (o *observer) ObserveTraffic(e observe.Traffic) {
 
 // upstreamError counts one failed upstream of a model service and announces
 // it. service is the service the request ran under, backend the service of
-// the upstream that failed. The dispatcher lets one such event per service
+// the upstream that failed. status 0 (no response) is the label "none" and
+// the error "no_response". Through ObserveTraffic the status is what the
+// visitor received, so a proxied upstream that did not answer shows as the
+// class of the proxy's own answer (5xx), not "none". The dispatcher lets one such event per service
 // through per hour.
 func (o *observer) upstreamError(service, backend string, status, retries int) {
 	if o.Recorder != nil {
@@ -264,6 +312,7 @@ func (o *observer) ObserveModelRequest(e observe.ModelRequest) {
 	if o == nil {
 		return
 	}
+	defer o.recovered("model_request", e.Outcome)
 	key := e.APIKeyID
 	if key == "" && e.GatewayKeyID != "" {
 		key = aigw.GatewayKeySubjectPrefix + e.GatewayKeyID
@@ -333,9 +382,13 @@ func (o *observer) costUSD(e observe.ModelRequest) float64 {
 // dispatcher lets one per service through per hour), writes its audit entry
 // at the same rate, and refreshes the index gauges of the service.
 func (o *observer) cachePromoted(e observe.ModelRequest) {
-	if o.Events != nil {
-		// No fingerprint: the chain hands the observer no hash of a prompt.
-		o.Events.EmitAICachePromotion(e.ServiceID, e.PromotedKey, "", 1)
+	// One event per service per hour, like the dispatcher's own helper. No
+	// fingerprint and no similarity: nothing measures either, so the payload
+	// does not carry them.
+	if o.perHour.allow("ai.cache_promotion\x00" + e.ServiceID) {
+		o.publish("ai.cache_promotion", map[string]any{
+			"service_id": e.ServiceID, "exact_key_hash": e.PromotedKey, "prompt_fingerprint": "",
+		})
 	}
 	service := e.ServiceID
 	if o.Audit != nil && o.perHour.allow("ai.cache.promoted\x00"+service) {
