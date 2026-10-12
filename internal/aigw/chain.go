@@ -272,8 +272,11 @@ type Chain struct {
 	// is the request's. nil = not reported.
 	OnGuardrailRefuse func(ctx context.Context, serviceID, pattern, action string)
 
-	// Observer is told of every request the chain finished, whoever answered
-	// it: an upstream, a cache, or the chain itself with a refusal. It is
+	// Observer is told of every request that ran through the chain, whoever
+	// answered it: an upstream, a cache, or the chain itself with a refusal
+	// (a guardrail, a redaction rule, the size limit). A request the rate
+	// limit or a budget turned away never reaches the chain and is not told,
+	// and neither is a replay from the inspector: it is not traffic. It is
 	// called once per request, on the request's goroutine, after the response
 	// and after the usage row was handed to Meter; it must return at once
 	// (see package observe). nil = nobody is told.
@@ -527,7 +530,9 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// What the observer is told when this function returns, by whichever way
 	// it does: every step below notes what it decided.
 	ev := observe.ModelRequest{ServiceID: svc.ID, APIKeyID: svc.APIKeyID, Outcome: observe.ModelAnswered}
-	defer c.report(r, &ev, started)
+	if !fromReplay { // an inspector replay is not traffic
+		defer c.report(r, &ev, started)
+	}
 
 	// ---------------------------------------------------------------
 	// Step 0: cap inbound body so a multi-GB POST cannot OOM the

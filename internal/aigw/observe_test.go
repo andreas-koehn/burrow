@@ -279,3 +279,206 @@ func TestInspectorEntryHasDuration(t *testing.T) {
 		t.Fatalf("inspector entries: %+v", entries)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Exactly one event on every way out of the chain.
+// ---------------------------------------------------------------------------
+
+// chainSvc is a service the chain runs for (a section of AI config is set;
+// without any the request is passed through and the chain never runs).
+func chainSvc(id, key string) aigw.Service {
+	return aigw.Service{ID: id, APIKeyID: key, AIConfig: aigw.ServiceAIConfig{Inspector: &aigw.InspectorConfig{}}}
+}
+
+// A streamed answer: the event comes after the last streamed byte, with the
+// usage the stream ended with, and its latency covers the whole stream.
+func TestObserver_StreamedAnswer(t *testing.T) {
+	obs, sink := &requestObserver{}, newMemSink()
+	chain := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, testLog())
+	chain.Observer = obs
+	const pause = 40 * time.Millisecond // a stream needs a lifetime to be measured
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fl := w.(http.Flusher)
+		for _, chunk := range []string{
+			"data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n",
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}\n\n",
+			"data: [DONE]\n\n",
+		} {
+			_, _ = w.Write([]byte(chunk))
+			fl.Flush()
+			time.Sleep(pause)
+		}
+	})
+	rec := runChain(t, chain, upstream, chainSvc("svc1", "key1"), obsRequest(`{"model":"m","stream":true}`))
+	if !strings.Contains(rec.Body.String(), "[DONE]") {
+		t.Fatalf("the stream did not end: %q", rec.Body.String())
+	}
+	got := obs.only(t)
+	if got.Outcome != observe.ModelAnswered || got.Status != 200 || got.Kind != "openai" || !got.Streamed || !got.Metered ||
+		got.TokensIn != 11 || got.TokensOut != 7 || got.Latency < 3*pause {
+		t.Fatalf("streamed answer: %+v", got)
+	}
+}
+
+// A caller who goes away while the answer streams: one event with the usage
+// seen so far, and the abort still reaches the server, whether or not the
+// observer itself panics.
+func TestObserver_MidStreamAbort(t *testing.T) {
+	const sent = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hel"
+	svc := chainSvc("svc1", "key-1")
+	abortedRequest := func() *http.Request {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // the caller is gone
+		return httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true}`)).WithContext(ctx)
+	}
+
+	obs := &requestObserver{}
+	chain := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, newMemSink(), testLog())
+	chain.Observer = obs
+	if got := serveRecovering(chain, httptest.NewRecorder(), abortedRequest(), svc, abortingUpstream("text/event-stream", 0, sent)); got != http.ErrAbortHandler {
+		t.Fatalf("panic = %v, want http.ErrAbortHandler passed on unchanged", got)
+	}
+	got := obs.only(t)
+	if got.Outcome != observe.ModelAnswered || got.Status != 200 || got.Kind != "openai" || !got.Streamed || !got.Metered ||
+		got.TokensIn != 7 || got.TokensOut != 3 {
+		t.Fatalf("aborted stream: %+v", got)
+	}
+
+	bad := &panickingObserver{}
+	chain = aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, newMemSink(), testLog())
+	chain.Observer = bad
+	if got := serveRecovering(chain, httptest.NewRecorder(), abortedRequest(), svc, abortingUpstream("text/event-stream", 0, sent)); got != http.ErrAbortHandler {
+		t.Fatalf("with a panicking observer: panic = %v, want http.ErrAbortHandler unchanged", got)
+	}
+	bad.mu.Lock()
+	defer bad.mu.Unlock()
+	if bad.calls != 1 {
+		t.Fatalf("the panicking observer was called %d times, want 1", bad.calls)
+	}
+}
+
+// A provider that answers 5xx: the caller got it, and so the event says.
+func TestObserver_ProviderServerError(t *testing.T) {
+	obs := &requestObserver{}
+	chain := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, newMemSink(), testLog())
+	chain.Observer = obs
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"boom"}`))
+	})
+	rec := runChain(t, chain, upstream, chainSvc("svc1", ""), obsRequest(`{"model":"m","messages":[]}`))
+	if rec.Code != 500 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	got := obs.only(t)
+	if got.Outcome != observe.ModelAnswered || got.Status != 500 || got.Kind != "openai" || !got.Metered ||
+		got.TokensIn != 0 || len(got.Attempts) != 0 { // the output tokens are the chain's estimate from the error body
+		t.Fatalf("provider 5xx: %+v", got)
+	}
+}
+
+// A redaction rule that drops the request.
+func TestObserver_RedactionDrop(t *testing.T) {
+	obs := &requestObserver{}
+	engine, err := redact.NewEngine(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain := aigw.NewChain(nil, nil, nil, engine, nil, nil, nil, newMemSink(), testLog())
+	chain.Observer = obs
+	svc := aigw.Service{ID: "svc1", AIConfig: aigw.ServiceAIConfig{Redaction: &aigw.RedactionConfig{Enabled: true}}}
+	up := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("upstream reached") })
+	rec := runChain(t, chain, up, svc, obsRequest(`{"model":"m","prompt":"key AKIAABCDEFGHIJKLMNOP"}`))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d", rec.Code)
+	}
+	got := obs.only(t)
+	if got.Outcome != observe.ModelRedactionDropped || got.Status != http.StatusBadRequest || got.Kind != "openai" ||
+		got.Metered || got.TokensIn != 0 || got.TokensOut != 0 || len(got.Redactions) == 0 {
+		t.Fatalf("redaction drop: %+v", got)
+	}
+}
+
+// A request over the size limit: refused before it was read, so its kind is
+// not determined.
+func TestObserver_TooLarge(t *testing.T) {
+	obs := &requestObserver{}
+	chain := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, newMemSink(), testLog())
+	chain.Observer = obs
+	chain.MaxRequestBodyBytes = 8
+	up := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("upstream reached") })
+	rec := runChain(t, chain, up, chainSvc("svc1", ""), obsRequest(`{"model":"m","messages":[]}`))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d", rec.Code)
+	}
+	got := obs.only(t)
+	if got.Outcome != observe.ModelTooLarge || got.Status != http.StatusRequestEntityTooLarge || got.Kind != "" ||
+		got.Metered || got.TokensIn != 0 || got.TokensOut != 0 {
+		t.Fatalf("too large: %+v", got)
+	}
+}
+
+// A request a rate limit or a budget turns away never reaches the chain: no
+// event. The same request, let through, has one.
+func TestObserver_RateLimitedIsNotReported(t *testing.T) {
+	obs := &requestObserver{}
+	chain := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, newMemSink(), testLog())
+	chain.Observer = obs
+	limited := true
+	chain.RateLimit = func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if limited {
+				http.Error(w, "slow down", http.StatusTooManyRequests)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	svc := chainSvc("svc1", "")
+	const body = `{"model":"m","messages":[]}`
+	if rec := runChain(t, chain, obsUpstream(200), svc, obsRequest(body)); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status %d", rec.Code)
+	}
+	obs.mu.Lock()
+	n := len(obs.got)
+	obs.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d events for a request the limiter turned away", n)
+	}
+	limited = false
+	if rec := runChain(t, chain, obsUpstream(200), svc, obsRequest(body)); rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	obs.only(t)
+}
+
+// A replay from the inspector is not traffic: no event. The same request,
+// sent normally, has one.
+func TestObserver_ReplayIsNotReported(t *testing.T) {
+	obs := &requestObserver{}
+	mgr := inspector.NewManager()
+	chain := aigw.NewChain(nil, nil, nil, nil, nil, mgr, nil, newMemSink(), testLog())
+	chain.Observer = obs
+	svc := aigw.Service{ID: "svc-replay", AIConfig: aigw.ServiceAIConfig{Inspector: &aigw.InspectorConfig{Enabled: true}}}
+	const body = `{"model":"m","messages":[]}`
+
+	entry, err := chain.Replay(context.Background(), svc, obsRequest(body), obsUpstream(200))
+	if err != nil || entry.Status != 200 {
+		t.Fatalf("replay: %+v, %v", entry, err)
+	}
+	obs.mu.Lock()
+	n := len(obs.got)
+	obs.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("a replay was reported %d times", n)
+	}
+
+	runChain(t, chain, obsUpstream(200), svc, obsRequest(body))
+	obs.only(t)
+}

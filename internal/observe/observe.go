@@ -146,7 +146,7 @@ type ModelRequest struct {
 	// never a metric label (set by the chain; read by tests and later
 	// consumers). TargetModel is the provider's model that answered.
 	RequestedModel, TargetModel string
-	Kind                        string // "openai", "anthropic", "mcp" or "unknown"
+	Kind                        string // "openai", "anthropic", "mcp" or "unknown"; "" = not determined (refused before the request was read)
 
 	Outcome string
 	Status  int // what the caller received
