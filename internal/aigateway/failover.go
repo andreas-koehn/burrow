@@ -152,7 +152,7 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Deferred so the log is written when an aborted stream unwinds, too.
 	defer func() {
 		f.record(rows)
-		f.route.SetAttempts(tried)
+		aigw.SetAttemptsIn(r.Context(), tried)
 	}()
 
 	order, forced := f.order(&rows)

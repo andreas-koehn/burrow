@@ -13,12 +13,16 @@ import (
 
 // attemptSpy is a chain that reads, as the real one does when the gateway's
 // handler has returned, what the gateway says it tried.
-type attemptSpy struct{ got []observe.Attempt }
+type attemptSpy struct {
+	got    []observe.Attempt
+	routed bool // the request had a route when the chain was dispatched
+}
 
 func (c *attemptSpy) Dispatch(http.ResponseWriter, *http.Request, string, string, string, string, http.Handler) {
 }
 
 func (c *attemptSpy) DispatchMetered(w http.ResponseWriter, r *http.Request, _, _, _, _ string, _ bool, up http.Handler) {
+	_, c.routed = aigw.RouteFrom(r.Context())
 	up.ServeHTTP(w, r)
 	c.got = aigw.AttemptsFrom(r.Context())
 }
@@ -218,12 +222,40 @@ func TestOwnPath_AttemptIsReported(t *testing.T) {
 	})
 }
 
-// A request without a route has no attempts, and a nil route takes none.
-func TestAttemptsWithoutARoute(t *testing.T) {
-	var none *aigw.Route
-	none.SetAttempts([]observe.Attempt{{ProviderSlug: "x"}})
+// A key that is not a gateway key (a service key, as every client from before
+// gateway keys has) gives the request no route, so its usage row and its
+// rate-limit subject stay what they were; its attempt is reported all the
+// same.
+func TestOwnPath_ServiceKeyAttemptIsReported(t *testing.T) {
+	for name, tc := range map[string]struct {
+		h      http.HandlerFunc
+		failed bool
+		status int
+	}{
+		"an upstream failure": {status(503, "down"), true, 503},
+		"an answer":           {status(200, `{"ok":true}`), false, 200},
+	} {
+		t.Run(name, func(t *testing.T) {
+			spy := &attemptSpy{}
+			g := newGateway(tc.h, spy)
+			req := post("/v1/chat/completions", "sk-good", `{"model":"m","messages":[]}`)
+			g.Serve(httptest.NewRecorder(), req, "ollama")
+			if spy.routed {
+				t.Fatal("a service-key request got a route")
+			}
+			want := observe.Attempt{ProviderSlug: "ollama", ServiceID: "svc1", Status: tc.status, Failed: tc.failed, Sent: true}
+			if len(spy.got) != 1 || spy.got[0] != want {
+				t.Fatalf("attempts %+v, want %+v", spy.got, want)
+			}
+		})
+	}
+}
+
+// A request without a holder has no attempts, and setting them is a no-op.
+func TestAttemptsWithoutAHolder(t *testing.T) {
 	req, _ := http.NewRequest("POST", "/", nil)
+	aigw.SetAttemptsIn(req.Context(), []observe.Attempt{{ProviderSlug: "x"}})
 	if got := aigw.AttemptsFrom(req.Context()); got != nil {
-		t.Fatalf("attempts without a route: %+v", got)
+		t.Fatalf("attempts without a holder: %+v", got)
 	}
 }

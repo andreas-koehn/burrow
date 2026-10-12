@@ -1230,8 +1230,9 @@ func (c *Chain) report(r *http.Request, ev *observe.ModelRequest, started time.T
 	if ri, ok := RouteFrom(r.Context()); ok {
 		ev.GatewayKeyID, ev.ProviderSlug = ri.GatewayKeyID, ri.ProviderSlug
 		ev.RequestedModel, ev.TargetModel = ri.RequestedModel, ri.TargetModel
-		ev.Attempts = AttemptsFrom(r.Context())
 	}
+	// Not part of the route: a request without one has attempts as well.
+	ev.Attempts = AttemptsFrom(r.Context())
 	defer func() {
 		if rec := recover(); rec != nil {
 			c.Log.Error("aigw: request observer panicked",

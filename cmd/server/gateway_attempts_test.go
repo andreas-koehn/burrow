@@ -269,3 +269,51 @@ func serviceOfProvider(t *testing.T, e *gwEnv, slug string) string {
 	}
 	return out.ServiceID
 }
+
+// The same failure on the provider's own path, reached with a service key (the
+// api_key service behind the provider; every client from before gateway keys
+// has one) is counted once as well, and the request keeps having no route: its
+// usage row names no gateway key, dialect, provider or model.
+func TestGatewayAttempts_ProviderPathServiceKey(t *testing.T) {
+	e, _, rec, events, taps := gatewayAttemptsEnv(t)
+	svc := serviceOfProvider(t, e, "alpha")
+	code, b := e.admin(t, "POST", "/api/v1/services/"+svc+"/api-keys", map[string]any{"name": "legacy"})
+	var out struct{ Key string }
+	if code != http.StatusCreated || json.Unmarshal(b, &out) != nil || out.Key == "" {
+		t.Fatalf("create a service key: %d %s", code, b)
+	}
+	e.up.set("alpha", func(w http.ResponseWriter, _ *http.Request, _ []byte) bool {
+		gwJSON(w, 502, map[string]any{"error": map[string]string{"message": "boom"}})
+		return true
+	})
+	const body = `{"model":"m-a","messages":[{"role":"user","content":"hi"}]}`
+	if r := e.call(t, "POST", "/ai/alpha/v1/chat/completions", body, bearer(out.Key)...); r.Status != 502 {
+		t.Fatalf("status %d body %s", r.Status, r.Body)
+	}
+	if ev := awaitModelRequest(t, taps); len(ev.Attempts) != 1 || !ev.Attempts[0].Failed {
+		t.Fatalf("attempts %+v, want one failed", ev.Attempts)
+	}
+	text := expo(t, rec)
+	wantLines(t, text, `burrow_ai_upstream_errors_total{service="`+svc+`",status="5xx"} 1`)
+	if n, _ := familySum(text, "burrow_ai_failover_events_total"); n != 0 {
+		t.Errorf("failovers counted: %v, want none", n)
+	}
+	if up := events.named("ai.upstream_error"); len(up) != 1 {
+		t.Errorf("ai.upstream_error events: %v, want 1", up)
+	}
+	// No route: the usage row carries none of its fields.
+	var gk, dialect, provider, requested, target, reqID string
+	for end := time.Now().Add(20 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		err := e.sqldb.QueryRow(`SELECT gateway_key_id, dialect, provider_slug, requested_model, target_model, request_id
+			FROM usage_events WHERE service_id = ?`, svc).Scan(&gk, &dialect, &provider, &requested, &target, &reqID)
+		if err == nil {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatalf("no usage row for the service key request: %v", err)
+		}
+	}
+	if gk != "" || dialect != "" || provider != "" || requested != "" || target != "" || reqID != "" {
+		t.Errorf("usage row has route fields: %q %q %q %q %q %q", gk, dialect, provider, requested, target, reqID)
+	}
+}

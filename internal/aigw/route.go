@@ -33,7 +33,6 @@ type Route struct {
 	upstreamUsage  bool
 	tokensIn       int
 	tokensOut      int
-	attempts       []observe.Attempt
 }
 
 // RouteInfo is an immutable copy of a Route.
@@ -103,36 +102,50 @@ func (r *Route) SetUpstreamUsage(tokensIn, tokensOut int) {
 	r.mu.Unlock()
 }
 
-// SetAttempts records what the gateway sent to upstreams for the request,
-// when it is done trying. The chain hands it to its observer with the
-// finished request.
-func (r *Route) SetAttempts(attempts []observe.Attempt) {
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	r.attempts = append([]observe.Attempt(nil), attempts...)
-	r.mu.Unlock()
+// attemptHolder is where the gateway says what it sent to upstreams. It is a
+// holder of its own and not part of the Route: a request on a provider's own
+// path that a service key authenticated has no route (a route would fill the
+// usage row and the model rate-limit subject), and its attempts count all the
+// same.
+type attemptHolder struct {
+	mu       sync.Mutex
+	attempts []observe.Attempt
 }
 
-// SetAttemptsIn is SetAttempts on the route attached to ctx; it does nothing
-// without one. For code that serves a request but does not hold the route.
+type attemptsKey struct{}
+
+// WithAttempts attaches a holder for the attempts of one request to ctx, for
+// the gateway to fill (SetAttemptsIn) and the chain's report to read
+// (AttemptsFrom). The context must be the one the chain is dispatched with.
+func WithAttempts(ctx context.Context) context.Context {
+	return context.WithValue(ctx, attemptsKey{}, &attemptHolder{})
+}
+
+// SetAttemptsIn records what the gateway sent to upstreams for the request of
+// ctx, when it is done trying; it does nothing without a holder. Whoever
+// serves the request writes it once: the fallback chain of a dialect endpoint,
+// or the single attempt of a provider's own path.
 func SetAttemptsIn(ctx context.Context, attempts []observe.Attempt) {
-	r, _ := ctx.Value(routeKey{}).(*Route)
-	r.SetAttempts(attempts)
+	h, ok := ctx.Value(attemptsKey{}).(*attemptHolder)
+	if !ok || h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.attempts = append([]observe.Attempt(nil), attempts...)
+	h.mu.Unlock()
 }
 
 // AttemptsFrom returns what the gateway sent to upstreams for the request of
-// ctx (see SetAttempts): nil without a route, and until the gateway is done.
-// It is not part of RouteInfo, which stays a comparable value.
+// ctx (see SetAttemptsIn): nil without a holder, and until the gateway is
+// done. It is not part of RouteInfo, which stays a comparable value.
 func AttemptsFrom(ctx context.Context) []observe.Attempt {
-	r, ok := ctx.Value(routeKey{}).(*Route)
-	if !ok || r == nil {
+	h, ok := ctx.Value(attemptsKey{}).(*attemptHolder)
+	if !ok || h == nil {
 		return nil
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]observe.Attempt(nil), r.attempts...)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]observe.Attempt(nil), h.attempts...)
 }
 
 // Snapshot returns the route as it is now.

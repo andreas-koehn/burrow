@@ -101,7 +101,7 @@ func (x *DB) AIEndpointCounts24h(ctx context.Context) (map[string]AIEndpointCoun
 		               COUNT(*)     OVER (PARTITION BY service_id) AS n
 		          FROM usage_events
 		         WHERE ts >= ? AND latency_ms > 0 AND NOT cache_hit
-		           AND upstream_status BETWEEN 200 AND 499) ranked
+		           AND upstream_status BETWEEN 200 AND 299) ranked
 		 WHERE rn = (95 * n + 99) / 100`, since)
 	if err != nil {
 		return nil, fmt.Errorf("ai endpoint latency 24h: %w", err)

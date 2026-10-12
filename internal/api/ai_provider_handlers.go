@@ -8,8 +8,8 @@ package api
 // join that row with live data of its backing service (key count, tunnel
 // status, trailing-24h request counts) and the first synthetic model that
 // targets it.  latency_p95_ms is
-// the 95th percentile of the latency of the requests of the last 24h that an
-// upstream answered (a status of 200-499; not cache hits, not failures).
+// the 95th percentile, nearest rank, of the latency of the requests of the
+// last 24 hours that were answered with a 2xx.
 
 import (
 	"context"

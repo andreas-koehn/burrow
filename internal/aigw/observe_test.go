@@ -199,11 +199,11 @@ func TestObserver_AttemptsAndRoute(t *testing.T) {
 		{ProviderSlug: "beta", ServiceID: "svc-b", Status: 200, Sent: true},
 	}
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		route.SetAttempts(tried) // as the gateway's handler does when it returns
+		aigw.SetAttemptsIn(r.Context(), tried) // as the gateway's handler does when it returns
 		obsUpstream(200).ServeHTTP(w, r)
 	})
 	req := obsRequest(`{"model":"m-a","messages":[]}`)
-	req = req.WithContext(aigw.WithRoute(req.Context(), route))
+	req = req.WithContext(aigw.WithAttempts(aigw.WithRoute(req.Context(), route)))
 	rec := httptest.NewRecorder()
 	chain.DispatchMetered(rec, req, "svc-a", "", "Authorization", "", false, upstream)
 

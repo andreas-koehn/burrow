@@ -157,7 +157,9 @@ type Gateway struct {
 func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 	// Everything the gateway and the chain write from here on (rate limit,
 	// body cap, guardrails) is in the /ai/ shape.
-	r = r.WithContext(aigw.WithErrorWriter(r.Context(), WriteError))
+	// The attempt of this path is told to the chain's observer through a holder
+	// of its own: a request authenticated with a service key has no route.
+	r = r.WithContext(aigw.WithAttempts(aigw.WithErrorWriter(r.Context(), WriteError)))
 	ctx := r.Context()
 
 	p, err := g.Providers.ProviderBySlug(ctx, slug)
