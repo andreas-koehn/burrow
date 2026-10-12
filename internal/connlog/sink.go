@@ -348,6 +348,7 @@ func ListConnectionLogRollups(ctx context.Context, x *db.DB, q RollupQuery) ([]d
 		); err != nil {
 			return nil, fmt.Errorf("scan connection_log_rollup: %w", err)
 		}
+		r.Day = dayKey(r.Day) // a date, whatever the driver hands a DATE column back as
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -465,8 +466,22 @@ func ListConnectionLogRollupTopIPs(ctx context.Context, x *db.DB, day, serviceID
 // P95 is computed in Go: SELECT all duration_ms values for the day+service+kind
 // group, sort ascending, take index floor(0.95 * n).
 func (s *SQLSink) Rollup(ctx context.Context, day time.Time) error {
+	_, err := s.RollupDay(ctx, day)
+	return err
+}
+
+// RolledGroup is one (service, kind) group of a rolled-up day, as written.
+type RolledGroup struct {
+	ServiceID, Kind                                           string
+	Sessions, BytesIn, BytesOut, AvgDurationMs, P95DurationMs int64
+	TopIPs                                                    []TopIP // empty when the top-IP aggregation is off
+}
+
+// RollupDay is Rollup that also returns what it wrote, from what it computed
+// before the transaction, so a caller needs no read after the commit.
+func (s *SQLSink) RollupDay(ctx context.Context, day time.Time) ([]RolledGroup, error) {
 	if s == nil || s.b == nil {
-		return nil
+		return nil, nil
 	}
 	dayStr := day.UTC().Format("2006-01-02")
 	dayStart, dayEnd := dayBounds(dayStr)
@@ -488,7 +503,7 @@ func (s *SQLSink) Rollup(ctx context.Context, day time.Time) error {
 		dayStart, dayEnd,
 	)
 	if err != nil {
-		return fmt.Errorf("rollup groups: %w", err)
+		return nil, fmt.Errorf("rollup groups: %w", err)
 	}
 	defer groupRows.Close()
 
@@ -504,13 +519,13 @@ func (s *SQLSink) Rollup(ctx context.Context, day time.Time) error {
 		var g group
 		var d groupData
 		if err := groupRows.Scan(&g.serviceID, &g.kind, &d.sessions, &d.bytesIn, &d.bytesOut, &d.avgDurationMs); err != nil {
-			return fmt.Errorf("rollup scan: %w", err)
+			return nil, fmt.Errorf("rollup scan: %w", err)
 		}
 		groups[g] = d
 		groupOrder = append(groupOrder, g)
 	}
 	if err := groupRows.Err(); err != nil {
-		return fmt.Errorf("rollup groups rows: %w", err)
+		return nil, fmt.Errorf("rollup groups rows: %w", err)
 	}
 	// We need to close before re-querying.
 	groupRows.Close()
@@ -534,19 +549,19 @@ func (s *SQLSink) Rollup(ctx context.Context, day time.Time) error {
 	for _, g := range groupOrder {
 		p95, err := s.computeP95(ctx, dayStr, g.serviceID, g.kind)
 		if err != nil {
-			return fmt.Errorf("rollup p95 %s/%s: %w", g.serviceID, g.kind, err)
+			return nil, fmt.Errorf("rollup p95 %s/%s: %w", g.serviceID, g.kind, err)
 		}
 		r := rolled{g: g, d: groups[g], p95: p95}
 		if topIPsEnabled {
 			if r.tops, err = s.topIPs(ctx, dayStr, g.serviceID, g.kind); err != nil {
-				return fmt.Errorf("rollup top_ips %s/%s: %w", g.serviceID, g.kind, err)
+				return nil, fmt.Errorf("rollup top_ips %s/%s: %w", g.serviceID, g.kind, err)
 			}
 		}
 		all = append(all, r)
 	}
 	tx, err := s.b.DB().BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("rollup begin tx: %w", err)
+		return nil, fmt.Errorf("rollup begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op after Commit
 	for _, r := range all {
@@ -564,19 +579,31 @@ func (s *SQLSink) Rollup(ctx context.Context, day time.Time) error {
 			r.d.sessions, r.d.bytesIn, r.d.bytesOut, int64(r.d.avgDurationMs), r.p95,
 		)
 		if err != nil {
-			return fmt.Errorf("rollup upsert %s/%s: %w", r.g.serviceID, r.g.kind, err)
+			return nil, fmt.Errorf("rollup upsert %s/%s: %w", r.g.serviceID, r.g.kind, err)
 		}
 		// Top source IPs (Q12). With the toggle off r.tops is empty and the
 		// delete scrubs any pre-existing aux rows of the group, so the read
 		// path no longer surfaces stale top-IP data.
 		if err := writeTopIPs(ctx, tx, dayStr, r.g.serviceID, r.g.kind, r.tops); err != nil {
-			return fmt.Errorf("rollup top_ips %s/%s: %w", r.g.serviceID, r.g.kind, err)
+			return nil, fmt.Errorf("rollup top_ips %s/%s: %w", r.g.serviceID, r.g.kind, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("rollup commit: %w", err)
+		return nil, fmt.Errorf("rollup commit: %w", err)
 	}
-	return nil
+	out := make([]RolledGroup, 0, len(all))
+	for _, r := range all {
+		g := RolledGroup{
+			ServiceID: r.g.serviceID, Kind: r.g.kind,
+			Sessions: r.d.sessions, BytesIn: r.d.bytesIn, BytesOut: r.d.bytesOut,
+			AvgDurationMs: int64(r.d.avgDurationMs), P95DurationMs: r.p95,
+		}
+		for _, t := range r.tops {
+			g.TopIPs = append(g.TopIPs, TopIP{IP: t.ip, Sessions: t.sessions})
+		}
+		out = append(out, g)
+	}
+	return out, nil
 }
 
 // topIPsEnabled returns the effective value of the

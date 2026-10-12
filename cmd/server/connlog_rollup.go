@@ -186,38 +186,27 @@ func interrupted(ctx context.Context) error {
 // rollDay rolls up one day and announces its groups, paced; st counts them.
 //
 // The rollup rows of the day are written in one transaction (Rollup), so a
-// day is rolled completely or not at all. The announcements come after the
-// commit and are best-effort: if the relay shuts down in a pause between two
+// day is rolled completely or not at all. What the announcements need is
+// computed by that run itself (RollupDay), so nothing is read after the
+// commit. The announcements come after it and are best-effort: if the relay shuts down in a pause between two
 // batches, the remaining summaries of the day are not announced later (the
 // day has rollup rows by then and is not rolled again), and no audit entry is
 // written for it; rollDay returns the number announced and the error.
 func (r connLogRoller) rollDay(ctx context.Context, day time.Time, st *rollStats) (int, error) {
 	start := time.Date(day.UTC().Year(), day.UTC().Month(), day.UTC().Day(), 0, 0, 0, 0, time.UTC)
-	if err := r.sink.Rollup(ctx, start); err != nil {
-		return 0, err
-	}
-	rows, err := connlog.ListConnectionLogRollups(ctx, r.db, connlog.RollupQuery{Since: &start, Until: &start})
+	// Everything the announcement needs comes from the rollup itself: no read
+	// after the commit that could fail and leave a rolled day unannounced.
+	rows, err := r.sink.RollupDay(ctx, start)
 	if err != nil {
 		return 0, err
 	}
-	// The day as the rollup wrote it into the top-IP table. row.Day is not
-	// used for it: a driver may hand a DATE column back as a timestamp.
 	dayStr := start.Format("2006-01-02")
-	groups := make([]connlog.TopIPsGroup, 0, len(rows))
-	for _, row := range rows {
-		groups = append(groups, connlog.TopIPsGroup{Day: dayStr, ServiceID: row.ServiceID, Kind: row.Kind})
-	}
-	// Empty when the operator turned the top-IP aggregation off.
-	top, err := connlog.ListConnectionLogRollupTopIPsBatch(ctx, r.db, groups)
-	if err != nil {
-		return 0, err
-	}
 	for i, row := range rows {
 		data := webhook.RollupData{
 			Sessions: row.Sessions, BytesIn: row.BytesIn, BytesOut: row.BytesOut,
 			AvgDurationMs: row.AvgDurationMs, P95DurationMs: row.P95DurationMs,
 		}
-		for j, ip := range top[groups[i]] {
+		for j, ip := range row.TopIPs {
 			if j == 10 {
 				break
 			}

@@ -639,3 +639,43 @@ func TestListTopIPsBatch_KeyedByShortDay(t *testing.T) {
 		t.Fatalf("batch: %v, %v", got, err)
 	}
 }
+
+// A rollup row whose day comes back as a timestamp (Postgres hands a DATE
+// column back that way) is listed with the short date, so the API's day is the
+// same on both databases and matches the keys of the top-IP batch.
+func TestListConnectionLogRollups_DayIsADate(t *testing.T) {
+	x := testDB(t)
+	ctx := context.Background()
+	seedUser(t, x, "u1")
+	seedService(t, x, "s1", "u1")
+	if _, err := x.DB().Exec(`INSERT INTO connection_log_rollups
+		(day, service_id, kind, sessions, bytes_in, bytes_out, avg_duration_ms, p95_duration_ms)
+		VALUES ('2026-03-16T00:00:00Z','s1','http_proxy',1,1,1,1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := ListConnectionLogRollups(ctx, x, RollupQuery{})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("%v, %v", rows, err)
+	}
+	if rows[0].Day != "2026-03-16" {
+		t.Fatalf("Day = %q, want 2026-03-16", rows[0].Day)
+	}
+}
+
+// RollupDay returns what it wrote.
+func TestRollupDay_ReturnsWhatItWrote(t *testing.T) {
+	x := testDB(t)
+	seedUser(t, x, "u1")
+	seedService(t, x, "s1", "u1")
+	d := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)
+	insertLogAt(t, x, "a", "198.51.100.2", d.Add(time.Hour), 10)
+	insertLogAt(t, x, "b", "198.51.100.2", d.Add(2*time.Hour), 30)
+	got, err := NewSQLSink(x, nil).RollupDay(context.Background(), d)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("%v, %v", got, err)
+	}
+	g := got[0]
+	if g.ServiceID != "s1" || g.Kind != "http_proxy" || g.Sessions != 2 || g.AvgDurationMs != 20 || g.P95DurationMs != 30 || len(g.TopIPs) != 1 || g.TopIPs[0] != (TopIP{IP: "198.51.100.2", Sessions: 2}) {
+		t.Fatalf("%+v", g)
+	}
+}

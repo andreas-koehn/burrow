@@ -79,6 +79,17 @@ func TestRollup_Postgres(t *testing.T) {
 	if err := x.DB().QueryRow(`SELECT COUNT(*) FROM connection_log_rollup_top_ips WHERE service_id=? AND day=?`, svc, "2026-03-16").Scan(&ips); err != nil || ips != 2 {
 		t.Fatalf("top ips = %d, %v; want 2", ips, err)
 	}
+	// The listed rows carry the short day, and the lookup the API handler
+	// makes (rows keyed by Day against the batch) finds the top IPs.
+	listed, err := ListConnectionLogRollups(ctx, x, RollupQuery{ServiceID: svc})
+	if err != nil || len(listed) != 1 || listed[0].Day != "2026-03-16" {
+		t.Fatalf("listed rollups: %+v, %v; want one with Day 2026-03-16", listed, err)
+	}
+	hg := TopIPsGroup{Day: listed[0].Day, ServiceID: listed[0].ServiceID, Kind: listed[0].Kind}
+	byRow, err := ListConnectionLogRollupTopIPsBatch(ctx, x, []TopIPsGroup{hg})
+	if err != nil || len(byRow[hg]) != 2 {
+		t.Fatalf("top ips by the listed row's day: %v, %v; want 2", byRow, err)
+	}
 	// The announcement looks the top IPs up by the short day: Postgres hands
 	// the DATE column back as a timestamp, the batch must key it as 2006-01-02.
 	g := TopIPsGroup{Day: "2026-03-16", ServiceID: svc, Kind: "http_proxy"}
