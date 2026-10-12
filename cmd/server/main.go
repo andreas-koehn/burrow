@@ -932,7 +932,7 @@ func newRootCmd() *cobra.Command {
 					ClientDownloadDir:  cfg.ClientDownloadDir,
 					// v0.4.0 Task 20: backup / restore wiring.
 					BackupDir:      backupDir,
-					BackupRunner:   backupRunnerAdapter{cfg: cfg},
+					BackupRunner:   backupRunnerAdapter{cfg: cfg, events: v04.WebhookDispatcher},
 					RestoreRunner:  restoreRunnerAdapter{cfg: cfg},
 					RestoreTracker: restoreTracker,
 					AuditAppender:  v04.AuditAppender,

@@ -52,6 +52,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/client"
 	"github.com/ankoehn/burrow/internal/devcert"
+	"github.com/ankoehn/burrow/internal/metrics"
 	"github.com/ankoehn/burrow/internal/webhook"
 	wtemplate "github.com/ankoehn/burrow/internal/webhook/template"
 )
@@ -834,17 +835,17 @@ var webhookEventProof = map[string]struct{ how, why string }{
 	"redaction.applied":   {proofDelivered, ""},
 	"guardrail.refused":   {proofDelivered, ""},
 	"ai.upstream_error":   {proofDelivered, ""},
+	"audit.exported":      {proofDelivered, ""},
+	"backup.completed":    {proofDelivered, ""},
+	"audit.policy_change": {proofDelivered, ""},
 	// Published by code one run of this test does not reach.
 	"quota.exceeded":              {proofSource, "needs a rate limit and a burst of requests: cmd/server/quota_events_test.go"},
 	"budget.exceeded":             {proofSource, "needs a budget and usage over it: internal/cost/engine_test.go"},
 	"custom_domain.cert.expiring": {proofSource, "fires on the daily status tick: internal/proxy/customdomain/tick_test.go"},
 	"ai.cache_promotion":          {proofSource, "needs -tags semantic_cache: cmd/server TestObserver_ModelRequest"},
 	"connection.session_summary":  {proofSource, "fires on the daily rollup: cmd/server TestConnLogRoller"},
-	// Nothing publishes these: the first group until the task named, the last for good.
-	"audit.exported":      {proofNone, "W08"},
-	"backup.completed":    {proofNone, "W08"},
-	"audit.policy_change": {proofNone, "W08"},
-	"service.deleted":     {proofNone, "no code path deletes a service (db.DeleteService has no caller)"},
+	// Nothing publishes it.
+	"service.deleted": {proofNone, "no code path deletes a service (db.DeleteService has no caller)"},
 }
 
 func TestServe_WebhookEventsArePublished(t *testing.T) {
@@ -862,6 +863,13 @@ func TestServe_WebhookEventsArePublished(t *testing.T) {
 	if code, body := r.admin(http.MethodPost, "/api/v1/webhooks/"+hooks[0].ID+"/test", nil); code/100 != 2 {
 		t.Fatalf("webhook test: %d %s", code, body)
 	}
+
+	// The operator actions: a backup, an audit export, a retention change.
+	r.mustAdmin(http.MethodPost, "/api/v1/backups", nil, http.StatusAccepted, nil)
+	if code, body := r.admin(http.MethodGet, "/api/v1/audit/export", nil); code != http.StatusOK {
+		t.Fatalf("audit export: %d %s", code, body)
+	}
+	r.mustAdmin(http.MethodPut, "/api/v1/settings/retention", map[string]int{"audit_retention_days": 400}, http.StatusNoContent, nil)
 
 	// Deliveries are made behind the events: wait once for all of them.
 	deadline := time.Now().Add(obsWait)
@@ -1042,4 +1050,31 @@ func TestServe_HTTPTunnelCountsBytes(t *testing.T) {
 		// request line and the headers come on top.
 		return tn.BytesIn >= uint64(len(body)) && tn.BytesOut > 100
 	})
+}
+
+// The operations guide names every metric family and every webhook event.
+func TestOperationsGuideIsComplete(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "guide", "operations.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guide := string(raw)
+	var buf bytes.Buffer
+	if err := metrics.New().WriteText(&buf); err != nil {
+		t.Fatal(err)
+	}
+	declared, _ := familiesAndSamples(buf.String())
+	if len(declared) < 30 {
+		t.Fatalf("%d families declared", len(declared))
+	}
+	for _, name := range declared {
+		if !strings.Contains(guide, "`"+name+"`") {
+			t.Errorf("docs/guide/operations.md does not name the metric family %s", name)
+		}
+	}
+	for _, event := range webhook.ClosedEvents {
+		if !strings.Contains(guide, "`"+event+"`") {
+			t.Errorf("docs/guide/operations.md does not name the webhook event %s", event)
+		}
+	}
 }

@@ -127,6 +127,9 @@ func buildV04Stack(
 	webhookSecrets := webhook.NewInMemorySecrets()
 	dispatcher := webhook.New(wrapped, webhookSecrets, auditLogger, log)
 	costEngine.SetDispatcher(dispatcher)
+	// The store announces a service an admin created and a change of the
+	// retention settings.
+	st.SetEvents(dispatcher)
 
 	// --- quota.Engine ------------------------------------------------------
 	quotaEngine := quota.New(wrapped)
@@ -222,7 +225,7 @@ func buildV04Stack(
 		AuditLogger:       auditLogger,
 		AuditAppender:     auditLogger,
 		AuditEvents:       wrapped,
-		AuditChain:        api.NewAuditChainAdapter(auditLogger),
+		AuditChain:        exportAnnouncingChain{AuditChain: api.NewAuditChainAdapter(auditLogger), events: dispatcher},
 		WebhookDispatcher: dispatcher,
 		WebhookSecrets:    webhookSecrets,
 		CostEngine:        costEngine,

@@ -715,28 +715,6 @@ func (d *Dispatcher) EmitAIUpstreamError(serviceID, backendServiceID string, sta
 	})
 }
 
-// EmitAICachePromotion publishes an "ai.cache_promotion" webhook event.
-// Rate-limited to 1/h per serviceID.
-// Payload keys are snake_case per spec H.2/E.3.
-//
-// NOTE: the webhook event name is "ai.cache_promotion" (spec H.2) while the
-// audit action constant is ActionAICachePromoted = "ai.cache.promoted" (spec L).
-// Both names refer to the same underlying cache-promotion event; the split is
-// deliberate — webhook events use dot-separated lowercase segments with an
-// underscore within segment names, whereas audit action strings use only dots.
-func (d *Dispatcher) EmitAICachePromotion(serviceID, exactKeyHash, promptFingerprint string, similarity float64) {
-	const event = "ai.cache_promotion"
-	if !dispatcherRateLimiter().allow(event, serviceID, time.Hour) {
-		return
-	}
-	d.Publish(context.Background(), event, map[string]any{
-		"service_id":          serviceID,
-		"exact_key_hash":      exactKeyHash,
-		"prompt_fingerprint":  promptFingerprint,
-		"similarity_to_first": similarity,
-	})
-}
-
 // EmitAuditPolicyChange publishes an "audit.policy_change" webhook event.
 // Not rate-limited (admin-initiated, low-volume).
 // Payload keys are snake_case per spec H.2/E.3.

@@ -112,6 +112,10 @@ type Store struct {
 	// constructor change. Nil-safe (no caller calls .Append on it today).
 	auditLogger AuditAppender
 
+	// events announces what the store changed as webhook events (SetEvents).
+	// Nil: nothing is announced.
+	events EventSink
+
 	// clientLoginNow is the clock of the client sign-in requests (their
 	// expiry and poll interval). Nil means time.Now; tests inject one with
 	// SetClientLoginClock.
@@ -134,6 +138,20 @@ func (s *Store) SetSMTPPassword(pw string) { s.smtpPassword = pw }
 // goroutines (Task 25 wires it during cmd/server's serve bootstrap,
 // before any HTTP handler runs).
 func (s *Store) SetAuditLogger(a AuditAppender) { s.auditLogger = a }
+
+// EventSink announces changes the store made as webhook events.
+// *webhook.Dispatcher satisfies it; its methods never block.
+type EventSink interface {
+	EmitServiceCreated(serviceID, name, kind, accessMode string)
+	EmitAuditPolicyChange(actorEmail, action string, before, after any)
+}
+
+// SetEvents installs the sink for the store's webhook events, like
+// SetAuditLogger once at startup.
+func (s *Store) SetEvents(e EventSink) { s.events = e }
+
+// auditWriteTimeout bounds one audit write of the store.
+const auditWriteTimeout = 5 * time.Second
 
 // emitAudit is the nil-safe, panic-safe trampoline every store mutation
 // uses to append a typed audit row. Mutations call it AFTER their DB write
@@ -168,7 +186,13 @@ func (s *Store) emitAudit(ctx context.Context, action string, fill func(*audit.E
 	if fill != nil {
 		fill(&ev)
 	}
-	_ = s.auditLogger.Append(ctx, ev)
+	// Detached from the caller's cancellation, with a limit of its own: the
+	// mutation is done, and a caller that hangs up right after it must not
+	// take the entry with it. The context's values (the actor) stay. A failed
+	// write is dropped, as before; it never fails the mutation.
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), auditWriteTimeout)
+	defer cancel()
+	_ = s.auditLogger.Append(actx, ev)
 }
 
 // SeedAdmin ensures the bootstrap admin user exists.
@@ -766,8 +790,79 @@ func (s *Store) GetSettings(ctx context.Context) (map[string]string, error) {
 }
 
 // SaveSettings upserts the given non-secret settings.
+//
+// A write of the model gateway's global settings (guardrails, cache,
+// redaction) leaves an audit entry that names the key, never the value; a
+// change of a retention setting is announced as an audit.policy_change
+// webhook event with the old and new values of what changed.
 func (s *Store) SaveSettings(ctx context.Context, kv map[string]string) error {
-	return s.q.SetSettings(ctx, kv)
+	var before map[string]string
+	if s.events != nil && touchesRetention(kv) {
+		// Best-effort: without the old values the event is not sent.
+		before, _ = s.GetSettings(ctx)
+	}
+	if err := s.q.SetSettings(ctx, kv); err != nil {
+		return err
+	}
+	for key := range kv {
+		if action, ok := auditedSettings[key]; ok {
+			k := key
+			s.emitAudit(ctx, action, func(e *audit.Event) {
+				e.SubjectID, e.SubjectLabel = k, k
+				e.Payload = audit.MustJSON(map[string]string{"key": k})
+			})
+		}
+	}
+	s.announceRetentionChange(ctx, before, kv)
+	return nil
+}
+
+// auditedSettings maps the settings keys of the model gateway's global
+// configuration to the audit action of a write.
+var auditedSettings = map[string]string{
+	"guardrails.global":      audit.ActionGuardrailSettingsUpdate,
+	"cache.settings":         audit.ActionCacheSettingsUpdate,
+	"redaction.global":       audit.ActionRedactionSettingsUpdate,
+	"redaction.custom_rules": audit.ActionRedactionRuleUpdate,
+}
+
+// retentionSettings are the settings keys that say how long records are kept.
+var retentionSettings = map[string]bool{
+	"audit.retention_days":                   true,
+	"inspector.retention_count":              true,
+	"usage.retention_days":                   true,
+	"redaction.retention_days":               true,
+	"connection_logs.retention_days":         true,
+	"connection_logs.rollups_retention_days": true,
+	"webhook_deliveries.retention_days":      true,
+}
+
+func touchesRetention(kv map[string]string) bool {
+	for k := range kv {
+		if retentionSettings[k] {
+			return true
+		}
+	}
+	return false
+}
+
+// announceRetentionChange sends audit.policy_change for the retention
+// settings in kv whose value differs from before. Nothing is sent when none
+// changed or the old values could not be read.
+func (s *Store) announceRetentionChange(ctx context.Context, before, kv map[string]string) {
+	if s.events == nil || before == nil {
+		return
+	}
+	was, now := map[string]string{}, map[string]string{}
+	for k, v := range kv {
+		if retentionSettings[k] && before[k] != v {
+			was[k], now[k] = before[k], v
+		}
+	}
+	if len(now) == 0 {
+		return
+	}
+	s.events.EmitAuditPolicyChange(audit.LogContextFrom(ctx).ActorEmail, "retention.update", was, now)
 }
 
 // GetTunnel returns one persisted tunnel row, or db.ErrNotFound.

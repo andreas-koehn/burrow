@@ -488,7 +488,13 @@ func serviceToView(s db.Service) ServiceView {
 // the API entirely call it on *db.DB directly. Returns db.ErrDuplicateService
 // on UNIQUE-constraint violations, mapped to HTTP 409 by the handler.
 func (s *Store) CreateService(ctx context.Context, svc db.Service) error {
-	return s.q.CreateService(ctx, svc)
+	if err := s.q.CreateService(ctx, svc); err != nil {
+		return err
+	}
+	if s.events != nil {
+		s.events.EmitServiceCreated(svc.ID, svc.Name, svc.Type, svc.AccessMode)
+	}
+	return nil
 }
 
 // ServiceAccessMode returns the durable access mode of a service. It is the
