@@ -763,6 +763,9 @@ func newRootCmd() *cobra.Command {
 				// client that serves it, when that client asked (the status
 				// view of `burrow http`). The control server never waits.
 				proxy.WithSummarySink(srv),
+				// Each finished request is told to the observer: metrics,
+				// webhook events.
+				proxy.WithObserver(v04.Observer),
 			}
 			if ingressPort != "" {
 				proxyOpts = append(proxyOpts, proxy.WithIngressPort(ingressPort))

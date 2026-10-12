@@ -662,24 +662,20 @@ func familiesAndSamples(text string) (declared []string, sampled map[string]bool
 // give a sample, each with the reason. Everything else must have one.
 var metricFamiliesWithoutSamples = map[string]string{
 	// --- Not wired yet. A task takes its lines out when it wires them. ---
-	"burrow_http_requests_total":           "W04",
-	"burrow_http_request_duration_seconds": "W04",
-	"burrow_http_request_bytes_in_total":   "W04",
-	"burrow_http_request_bytes_out_total":  "W04",
-	"burrow_ai_tokens_in_total":            "W05",
-	"burrow_ai_tokens_out_total":           "W05",
-	"burrow_ai_cost_usd_total":             "W05",
-	"burrow_ai_cache_hits_total":           "W05",
-	"burrow_ai_cache_misses_total":         "W05",
-	"burrow_ai_failover_events_total":      "W06",
-	"burrow_ai_upstream_errors_total":      "W06",
-	"burrow_db_query_duration_seconds":     "W07",
-	"burrow_audit_chain_length":            "W07",
-	"burrow_audit_chain_last_hash":         "W07",
-	"burrow_custom_domain_count":           "W07",
-	"burrow_db_backend":                    "W07",
-	"burrow_db_pool_active":                "W07",
-	"burrow_db_pool_idle":                  "W07",
+	"burrow_ai_tokens_in_total":        "W05",
+	"burrow_ai_tokens_out_total":       "W05",
+	"burrow_ai_cost_usd_total":         "W05",
+	"burrow_ai_cache_hits_total":       "W05",
+	"burrow_ai_cache_misses_total":     "W05",
+	"burrow_ai_failover_events_total":  "W06",
+	"burrow_ai_upstream_errors_total":  "W06",
+	"burrow_db_query_duration_seconds": "W07",
+	"burrow_audit_chain_length":        "W07",
+	"burrow_audit_chain_last_hash":     "W07",
+	"burrow_custom_domain_count":       "W07",
+	"burrow_db_backend":                "W07",
+	"burrow_db_pool_active":            "W07",
+	"burrow_db_pool_idle":              "W07",
 
 	// --- Stays: this test cannot produce them. ---
 	// The semantic cache is compiled in with -tags semantic_cache only, and
@@ -760,9 +756,9 @@ var webhookEventProof = map[string]struct{ how, why string }{
 	"tunnel.disconnected": {proofDelivered, ""},
 	"tunnel.failed":       {proofDelivered, ""},
 	"service.created":     {proofDelivered, ""},
+	"access.denied":       {proofDelivered, ""},
 	// Published by the observer (cmd/server/observer.go), which is not
 	// handed these events yet. The task named makes it "delivered".
-	"access.denied":     {proofSource, "W04 hands the observer the proxied requests"},
 	"redaction.applied": {proofSource, "W05 hands the observer the model requests"},
 	"guardrail.refused": {proofSource, "W05 hands the observer the model requests"},
 	"ai.upstream_error": {proofSource, "W06 hands the observer the gateway's attempts"},

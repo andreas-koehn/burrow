@@ -18,6 +18,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/httpduplex"
+	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/proto"
 	"github.com/ankoehn/burrow/pkg/clientip"
 )
@@ -124,6 +125,24 @@ type Proxy struct {
 	// summaries is told of every request that was answered for an http
 	// service. nil = nobody is told. Wired via WithSummarySink.
 	summaries SummarySink
+
+	// observer is told of every request that reached a service, when it is
+	// over. nil = nobody is told. Wired via WithObserver.
+	observer Observer
+}
+
+// Observer receives one observe.Traffic for each request that reached an http
+// service, when the response is complete (or the connection was taken over):
+// also for a request the access check or the IP policy refused. It is called
+// on the goroutine of the request, after the response, and must return at
+// once; see package observe.
+type Observer interface {
+	ObserveTraffic(observe.Traffic)
+}
+
+// WithObserver registers the observer of finished requests.
+func WithObserver(o Observer) Option {
+	return func(p *Proxy) { p.observer = o }
 }
 
 // SummarySink receives one summary for each request the proxy has answered for
@@ -419,13 +438,13 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 		p.trustedProxies,
 	)
 
-	logStatus := StatusClosedClean
-	defer p.recordOnClose(r, res, resolvedClientIP, started, rc, ww, &logStatus)
+	logStatus, rejected := StatusClosedClean, ""
+	defer p.recordOnClose(r, res, resolvedClientIP, started, rc, ww, &logStatus, &rejected)
 
 	// Step 1b: enforce ip-geo block/allow policy BEFORE access-mode check.
 	if denied, reason := p.ipGeoDenied(res, resolvedClientIP); denied {
 		p.log.Info("ip-geo deny", "service_id", res.ServiceID, "ip", resolvedClientIP, "reason", reason)
-		logStatus = StatusRejected
+		logStatus, rejected = StatusRejected, observe.RejectedIPGeo
 		http.Error(w, "forbidden: ip not allowed", http.StatusForbidden)
 		return
 	}
@@ -433,7 +452,7 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 	// Step 2: enforce access mode BEFORE opening a stream.
 	ok, status, body, hdr := p.checker.Allow(ctx, res, r)
 	if !ok {
-		logStatus = StatusRejected
+		logStatus, rejected = StatusRejected, observe.RejectedAccess
 		for k, vs := range hdr {
 			for _, v := range vs {
 				w.Header().Add(k, v)
@@ -598,13 +617,13 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 	// return so the deferred call sees the correct terminal status. Detached
 	// context (context.WithoutCancel via SQLSink.Record's own machinery)
 	// keeps the row recordable even on client cancel.
-	logStatus := StatusClosedClean
-	defer p.recordOnClose(r, res, resolvedClientIP, started, rc, ww, &logStatus)
+	logStatus, rejected := StatusClosedClean, ""
+	defer p.recordOnClose(r, res, resolvedClientIP, started, rc, ww, &logStatus, &rejected)
 
 	// Step 1b: enforce ip-geo block/allow policy BEFORE access-mode check.
 	if denied, reason := p.ipGeoDenied(res, resolvedClientIP); denied {
 		p.log.Info("ip-geo deny", "service_id", res.ServiceID, "ip", resolvedClientIP, "reason", reason)
-		logStatus = StatusRejected
+		logStatus, rejected = StatusRejected, observe.RejectedIPGeo
 		http.Error(w, "forbidden: ip not allowed", http.StatusForbidden)
 		return
 	}
@@ -612,7 +631,7 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 	// Step 2: enforce access mode BEFORE opening a stream.
 	ok, status, body, hdr := p.checker.Allow(ctx, res, r)
 	if !ok {
-		logStatus = StatusRejected
+		logStatus, rejected = StatusRejected, observe.RejectedAccess
 		for k, vs := range hdr {
 			for _, v := range vs {
 				w.Header().Add(k, v)
@@ -980,15 +999,10 @@ func (p *Proxy) GetConfigForClient(hello *tls.ClientHelloInfo) (*tls.Config, err
 // v0.5.0 F-13: connection-log accounting helpers.
 // ---------------------------------------------------------------------------
 
-// TODO(P2-6): the per-request rc.bytes()/ww.bytes() values below are written
-// to the connection log but NOT folded back into the live registry's
-// tunnel.BytesIn/BytesOut atomic counters that the dashboard's Traffic
-// column reads from. The TCP data plane updates them via
-// internal/server/data.go (bridge.Pipe(... &tun.BytesIn, &tun.BytesOut)),
-// so TCP tunnels show traffic while HTTP tunnels stay at zero. Adding a
-// narrow `LiveTunnelCounter` interface and routing the per-request totals
-// through it would close the gap; tracked in docs/BACKLOG.md.
-//
+// The tunnel's own byte counters (the dashboard's Traffic column) are fed by
+// the tunnel stream itself (internal/server/tunnel_stream.go); what is counted
+// here goes to the connection log and to the observer.
+
 // recordOnClose builds a ConnLogEntry from the captured per-request counters
 // and dispatches it through the registered ConnLogSink. Safe to call when
 // p.connLogSink is nil — recordOnClose returns immediately. Called from a
@@ -1013,8 +1027,10 @@ func (p *Proxy) recordOnClose(
 	rc *countingBody,
 	ww *countingResponseWriter,
 	status *string,
+	rejected *string,
 ) {
 	p.summarise(r, res, started, ww)
+	p.observe(r, res, sourceIP, started, rc, ww, *status, *rejected)
 	if p.connLogSink == nil {
 		return
 	}
@@ -1074,6 +1090,35 @@ func (p *Proxy) summarise(r *http.Request, res *Resolved, started time.Time, ww 
 		Path:       proto.SummaryPath(r.URL.Path),
 		Status:     status,
 		DurationMs: time.Since(started).Milliseconds(),
+	})
+}
+
+// observe hands the finished request to the observer. It runs where the
+// connection log is written, so once per request that reached a service and
+// after its response. Nothing of the request's context is used: the visitor
+// may be gone already.
+func (p *Proxy) observe(r *http.Request, res *Resolved, sourceIP string, started time.Time,
+	rc *countingBody, ww *countingResponseWriter, outcome, rejected string) {
+	if p.observer == nil || res == nil {
+		return
+	}
+	status := ww.statusCode
+	switch {
+	case ww.hijacked:
+		status = http.StatusSwitchingProtocols // as in summarise
+	case status == 0:
+		status = http.StatusOK
+	}
+	p.observer.ObserveTraffic(observe.Traffic{
+		Kind:      observe.TrafficHTTP,
+		ServiceID: res.ServiceID, TunnelID: res.TunnelID,
+		UserID: res.UserID, SessionID: res.ClientSessionID,
+		Method: r.Method, Status: status,
+		Outcome: outcome, RejectReason: rejected,
+		KeyService: res.APIKeyHeader != "",
+		SourceIP:   sourceIP,
+		BytesIn:    rc.bytes(), BytesOut: ww.bytes(),
+		Started: started, Duration: time.Since(started),
 	})
 }
 
