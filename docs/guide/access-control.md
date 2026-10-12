@@ -189,6 +189,12 @@ curl -X PATCH https://burrow.insingo.com/api/v1/users/USER_ID \
   -d '{"role": "auditor"}'
 ```
 
+A custom role should include `sessions:manage:own`, otherwise its users cannot
+list or end their own browser sessions, and at least one of the read
+permissions `tunnels:read:own`/`:any`, `services:configure:own`/`:any`,
+`ai:read:own`/`:any` or `inspector:read:own`/`:any`, which lets the dashboard
+refresh live.
+
 The dashboard's user dialog offers the two built-in roles; assign a custom role
 through the API. A role name that is neither built in nor an existing custom
 role answers `400`.
@@ -264,14 +270,17 @@ curl -X POST https://burrow.insingo.com/api/v1/automation/tokens \
 ```
 
 `name` is required. `permissions` may hold only what your role holds (and, when
-a token mints, what that token declares); left out, the new token declares
-nothing. `expires_at` is optional; without it the token does not expire. Any
+a token mints, what that token declares). Left out (or `null`), the new token
+inherits its minter's permissions at that moment: everything the role of a
+dashboard session holds, or exactly the effective permissions of a minting
+token. `"permissions": []` declares nothing. `expires_at` is optional; without it the token does not expire. Any
 other field answers `400`. The answer carries the token once, in `plaintext`.
 
 The dashboard's **New automation token** dialog asks for a name and an expiry
-only: a token minted there declares no permission and reaches nothing beyond
-its own account (see below the table). Mint through the API to give a token
-permissions.
+only, so a token minted there inherits your permissions as they are at that
+moment. It is a snapshot: the token still holds only what your role holds, so
+a later demotion narrows it. To mint a narrow token, send `permissions` through
+the API.
 
 ::: warning Upgrading to v0.10: tokens are held to their permissions
 Before v0.10 a token minted by an admin passed most checks whatever it
@@ -283,7 +292,8 @@ every route asks. A token that worked before and now answers
 ```
 
 with status `403` is missing one of the permissions named in the message.
-Mint a new token that declares it, then revoke the old one.
+Mint a new token that declares it (a token minted in the dashboard inherits
+your permissions), then revoke the old one.
 
 To see what your existing tokens declare, list them:
 `GET /api/v1/automation/tokens` answers each token with its `permissions`. It

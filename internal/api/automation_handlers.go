@@ -73,8 +73,10 @@ type createTokenWrap struct {
 
 // postAutomationTokenReq is the POST request body.
 type postAutomationTokenReq struct {
-	Name        string     `json:"name"`
-	Permissions []string   `json:"permissions"`
+	Name string `json:"name"`
+	// Permissions is a pointer so that an absent field (or null) differs from
+	// an explicit empty list: absent means "inherit the minter's".
+	Permissions *[]string  `json:"permissions"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 }
 
@@ -172,11 +174,20 @@ func (d Deps) PostAutomationToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "lookup failed")
 		return
 	}
+	isToken := bearerTokenID(r.Context()) != ""
+	var perms []string
+	if in.Permissions != nil {
+		perms = *in.Permissions
+	} else if perms, err = d.inheritedPerms(r.Context(), role, isToken); err != nil {
+		// No list: the token inherits its minter's permissions at this moment.
+		writeErr(w, http.StatusInternalServerError, "lookup failed")
+		return
+	}
 	// A token mints nothing wider than itself: each permission it asks for
 	// must be one it declares (and its user's role still grants). For a
 	// session the store checks the role, as before.
-	if bearerTokenID(r.Context()) != "" {
-		for _, p := range in.Permissions {
+	if isToken {
+		for _, p := range perms {
 			if !effectivePerms(r.Context(), role, authz.Permission(p)) {
 				writeErr(w, http.StatusForbidden, "requested permission not granted by the calling token")
 				return
@@ -190,7 +201,7 @@ func (d Deps) PostAutomationToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	view, plaintext, err := d.Automation.MintAutomationToken(r.Context(), uid, role, in.Name, in.Permissions, in.ExpiresAt)
+	view, plaintext, err := d.Automation.MintAutomationToken(r.Context(), uid, role, in.Name, perms, in.ExpiresAt)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrPermissionNotInRole):
@@ -206,6 +217,24 @@ func (d Deps) PostAutomationToken(w http.ResponseWriter, r *http.Request) {
 		Token:     toAutomationTokenResp(view),
 		Plaintext: plaintext,
 	})
+}
+
+// inheritedPerms is the permission list of a token minted without one: for a
+// dashboard session everything the caller's role holds now, for a token
+// exactly what it declares and its user's role still grants. The result is
+// never nil.
+func (d Deps) inheritedPerms(ctx context.Context, role string, isToken bool) ([]string, error) {
+	held, err := d.rolePerms(ctx, role)
+	if err != nil {
+		return nil, err
+	}
+	out := []string{}
+	for _, p := range held {
+		if !isToken || effectivePerms(ctx, role, authz.Permission(p)) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 // DeleteAutomationToken handles DELETE /api/v1/automation/tokens/{id}.

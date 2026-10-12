@@ -112,7 +112,7 @@ func perServiceGuardrailsFromConfig(blob []byte) (guardrails.Settings, bool) {
 }
 
 // GetGuardrailSettings handles GET /api/v1/guardrails/settings.
-// Session-authed (any logged-in user may read settings). Returns the
+// The route needs ai:read:own or :any, or ai:configure:own or :any (routeAccess). Returns the
 // global blob plus a per_service list synthesized from every row in
 // service_ai_config (reusing the CacheServiceLookup surface to avoid
 // duplicating the listing query). When a service has no .guardrails
@@ -194,7 +194,7 @@ func (d Deps) PutGuardrailSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetGuardrailPatterns handles GET /api/v1/guardrails/patterns.
-// Session-authed (any logged-in user may read). Returns the closed
+// The route needs ai:read:own or :any, or ai:configure:own or :any (routeAccess). Returns the closed
 // bundled list as [{id, description}] — regex sources are deliberately
 // NOT exposed (spec Part B.5: "regex source NOT exposed publicly").
 //

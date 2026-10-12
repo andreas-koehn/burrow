@@ -100,8 +100,14 @@ var (
 	ipGeoManage       = anyOf(authz.PermIPGeoManageOwn, authz.PermIPGeoManageAny)
 	automationTokens  = anyOf(authz.PermAutomationTokensManageOwn, authz.PermAutomationTokensManageAny)
 	tunnelsRead       = anyOf(authz.PermTunnelsReadOwn, authz.PermTunnelsReadAny)
-	rolesRead         = anyOf(authz.PermRolesRead, authz.PermRolesManage)
-	usersRead         = anyOf(authz.PermUsersRead, authz.PermUsersManage)
+	// eventsRead: the events stream refreshes the Services, Tunnels,
+	// Providers, Requests and Inspector pages, so any role that reads one.
+	eventsRead = anyOf(authz.PermTunnelsReadOwn, authz.PermTunnelsReadAny,
+		authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny,
+		authz.PermAIReadOwn, authz.PermAIReadAny,
+		authz.PermInspectorReadOwn, authz.PermInspectorReadAny)
+	rolesRead = anyOf(authz.PermRolesRead, authz.PermRolesManage)
+	usersRead = anyOf(authz.PermUsersRead, authz.PermUsersManage)
 )
 
 // routeAccess declares every route under /api/v1, keyed by "<METHOD> <chi
@@ -121,7 +127,7 @@ var routeAccess = map[string]access{
 	"GET /api/v1/me":                    self(),
 
 	// --- Dashboard sessions only ----------------------------------------
-	"GET /api/v1/events": dashboard(tunnelsRead...), // SSE of "tunnels changed"; the handler scopes to the caller
+	"GET /api/v1/events": dashboard(eventsRead...), // SSE of content-free "refetch" notices; the handler scopes to the caller
 	"GET /api/v1/services/{serviceID}/inspector/stream":      dashboard(inspectorRead...), // SSE; the handler checks the owner
 	"GET /api/v1/client/login/requests/{user_code}":          dashboard(clientTokens...),  // the request that approve decides
 	"POST /api/v1/client/login/requests/{user_code}/approve": dashboard(clientTokens...),  // mints a client token

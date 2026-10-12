@@ -23,9 +23,9 @@ import (
 //
 //	POST /client/login/start                         client, no authentication
 //	POST /client/login/poll                          client, no authentication
-//	GET  /client/login/requests/{user_code}          dashboard session
-//	POST /client/login/requests/{user_code}/approve  dashboard session + client-token permission
-//	POST /client/login/requests/{user_code}/deny     dashboard session
+//	GET  /client/login/requests/{user_code}          dashboard session with tokens:manage:own or :any
+//	POST /client/login/requests/{user_code}/approve  the same permission
+//	POST /client/login/requests/{user_code}/deny     the same permission
 //
 // start and poll are public because a client has no token yet; they are
 // rate-limited per source IP and say nothing about users. The other three sit
