@@ -254,8 +254,8 @@ via environment:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `BURROW_MCP_LISTEN` | `""` | MCP JSON-RPC listener address (e.g. `:7800`). Empty = MCP disabled. |
-| `BURROW_MCP_TOKEN` | `""` | Bearer token for the MCP endpoint. Also accepts `BURROW_MCP_TOKEN_FILE`. |
+| `BURROW_MCP_LISTEN` | `""` | **No longer used.** Accepted and ignored; the relay logs a warning at start when it is set. The MCP endpoint is `/mcp/burrow` on the main address and needs no setting. See [Manage Burrow from an agent](/guide/mcp#upgrade). |
+| `BURROW_MCP_TOKEN` | `""` | **No longer used.** Accepted and ignored, like `BURROW_MCP_TOKEN_FILE`. MCP clients send an [automation token](/guide/mcp#token). |
 | `BURROW_GEO_DB_PATH` | `""` | Path to a MaxMind GeoLite2 `.mmdb` file. Required for the `geo` access mode (needs `-tags=geo` build). |
 | `BURROW_PRICING_PATH` | `""` | Path to a YAML file that overrides the embedded AI gateway pricing table. |
 | `BURROW_UPSTREAM_KEY_<SLOT>` | unset | The credential of an upstream API, stored under the slot name `<SLOT>`. A [direct AI provider](/guide/expose-services#direct-providers) names the slot it uses; the relay sends the value upstream and never returns it through the API or the dashboard. Slot names match `^[A-Z0-9_]{1,32}$` and must not end in `_FILE`. Read once at start: restart the relay after a change. Also accepts `BURROW_UPSTREAM_KEY_<SLOT>_FILE` (path of a file holding the value; wins when both are set). See the note on trust below. |
@@ -288,7 +288,6 @@ Variables that commonly use `_FILE`:
 | `BURROW_TLS_CERT_FILE` | Control channel certificate |
 | `BURROW_TLS_KEY_FILE` | Control channel private key |
 | `BURROW_SMTP_PASSWORD_FILE` | SMTP auth password |
-| `BURROW_MCP_TOKEN_FILE` | MCP bearer token |
 | `BURROW_DATABASE_URL_FILE` | PostgreSQL DSN |
 | `BURROW_UPSTREAM_KEY_<SLOT>_FILE` | Upstream credential of slot `<SLOT>` |
 

@@ -29,6 +29,7 @@ export default defineConfig({
             { text: 'Connect a client', link: '/guide/connect-client' },
             { text: 'Expose services', link: '/guide/expose-services' },
             { text: 'Access control & security', link: '/guide/access-control' },
+            { text: 'Manage from an agent (MCP)', link: '/guide/mcp' },
             { text: 'Configuration', link: '/guide/configuration' },
             { text: 'Operations', link: '/guide/operations' },
             { text: 'Troubleshooting', link: '/guide/troubleshooting' },
