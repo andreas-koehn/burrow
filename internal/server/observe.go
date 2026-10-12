@@ -61,11 +61,12 @@ func tunnelType(typ string) string {
 	return "other"
 }
 
-// refused tells the observer that a registration of cs was refused with code.
-func (s *Server) refused(cs *ClientSession, tr proto.TunnelRegister, code string) {
+// refused tells the observer of reg that a registration of cs was refused
+// with code.
+func (s *Server) refused(reg *Registry, cs *ClientSession, tr proto.TunnelRegister, code string) {
 	ev := sessionEvent(observe.TunnelRefused, cs)
 	ev.TunnelName, ev.TunnelType, ev.RefusalCode = tr.Name, tunnelType(tr.Type), code
-	s.reg.observer().ObserveSession(ev)
+	reg.observer().ObserveSession(ev)
 }
 
 // countingStream adds what passes through a tunnel stream to the tunnel's

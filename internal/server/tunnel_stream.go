@@ -23,7 +23,8 @@ import (
 //  4. Block until the client opens a yamux stream carrying that streamID in its
 //     StreamHeader, or until the 10 s timeout.
 //
-// The returned net.Conn is the raw *yamux.Stream; the caller is responsible for
+// The returned net.Conn is the *yamux.Stream wrapped in a countingStream (it
+// adds what passes to the tunnel's byte counters); the caller is responsible for
 // closing it after the proxied request completes.
 //
 // Returns proxy.ErrNotFound-equivalent when tn is nil; returns a
