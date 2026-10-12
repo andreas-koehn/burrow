@@ -25,7 +25,8 @@ type ConnectInfo struct {
 }
 
 // GetConnectInfo returns the relay control-plane endpoint clients should
-// dial. Session-authed (any signed-in user can render the wizard).
+// dial, for the "Connect a client" wizard: whoever may manage client tokens
+// (tokens:manage:own or :any) may read it.
 //
 // The value is Deps.controlEndpoint's, which the public discovery endpoint
 // returns too.

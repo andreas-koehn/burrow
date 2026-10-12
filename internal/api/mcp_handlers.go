@@ -5,7 +5,8 @@
 //	GET /api/v1/mcp/status  → { enabled, listen, token_id }
 //	GET /api/v1/mcp/tools   → [ { name, description, parameters_schema, permission } ]
 //
-// Both routes are gated by admin OR mcp:tools:read. The actual MCP listener
+// Both routes need mcp:tools:read (routeAccess in access.go), from a session
+// through its role and from a token that declares it. The actual MCP listener
 // (port :7800) is wired by cmd/server (Task 25); these endpoints just
 // surface its configuration + the closed tool inventory so the dashboard
 // can render a "burrowd mcp" page without speaking JSON-RPC.

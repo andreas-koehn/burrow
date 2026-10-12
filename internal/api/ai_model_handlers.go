@@ -4,8 +4,8 @@ package api
 // base URLs clients are given.
 //
 // A synthetic model is a name that resolves to an ordered list of provider
-// targets per dialect.  Any signed-in caller may read them; writes need
-// ai:configure:any.  The store validates the data: its reasons are
+// targets per dialect.  Reads need ai:read:own / :any or ai:configure:own /
+// :any; writes need ai:configure:any.  The store validates the data: its reasons are
 // the 400 messages.  A response also says which targets can be tried right
 // now, which one is serving each dialect, and how each format is served:
 // natively, through translation or not at all.

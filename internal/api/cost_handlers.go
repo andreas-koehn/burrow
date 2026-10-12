@@ -52,7 +52,7 @@ type BudgetStore interface {
 // --- Permissions --------------------------------------------------------------
 //
 // Spec Part F mapping (routeAccess in access.go):
-//   - GET  /cost/pricing   — session-authed (any user may read)
+//   - GET  /cost/pricing   — quotas:read:own / :any or cost:pricing:manage
 //   - PUT  /cost/pricing   — cost:pricing:manage
 //   - GET  /cost/summary   — quotas:read:any
 //   - GET  /cost/export    — quotas:read:any

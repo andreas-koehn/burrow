@@ -8,7 +8,12 @@
 //	POST   /api/v1/backups/restore          -> multipart -> 202 {restore_id}
 //	GET    /api/v1/backups/restores/{id}    -> {status, error?}
 //
-// Permission model (spec Part L): admin OR backup:run. Both the CLI and the
+// Permission (routeAccess in access.go): backup:run on every route. A download
+// is the whole database, so the permission is to be given like admin rights.
+// The restore swaps an uploaded archive into the live database and takes every
+// permission there is; the gate refuses anyone else before the upload is read.
+//
+// Both the CLI and the
 // JSON layer use the same archive on-disk shape (db.sqlite + manifest.json
 // + optional tls/* + config/burrow.yaml) so an operator can interchange
 // archives produced by either path.

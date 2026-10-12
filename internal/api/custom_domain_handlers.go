@@ -330,11 +330,14 @@ func publicKeysMatch(certPub, privKey any) bool {
 
 // ─── Permission gate ─────────────────────────────────────────────────────────
 
-// ensureCustomDomainAccess gates all per-service custom domain routes.
+// ensureCustomDomainAccess scopes the per-service custom domain routes by
+// owner. The gate of the route let the caller pass with
+// services:configure:own or :any; by effectivePerms (a session: its role; a
+// token: declared and granted):
 //
-//   - admin or PermServicesConfigureAny → allow.
-//   - PermServicesConfigureOwn          → allow only when the caller owns the service.
-//   - else                              → 403.
+//   - PermServicesConfigureAny → allow.
+//   - PermServicesConfigureOwn → allow only when the caller owns the service.
+//   - else                     → 403.
 //
 // Returns (serviceOwnerID, true) to continue; ("", false) means the handler
 // already wrote the response.

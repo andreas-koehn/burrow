@@ -63,11 +63,13 @@ type geoStatusResp struct {
 	DBAgeSeconds *int64 `json:"db_age_seconds"`
 }
 
-// ensureIPGeoServiceAccess gates a per-service IP/Geo handler.
+// ensureIPGeoServiceAccess scopes a per-service IP/Geo handler by owner. The
+// gate of the route let the caller pass with ipgeo:manage:own or :any; by
+// effectivePerms (a session: its role; a token: declared and granted):
 //
-//   - admin or PermIPGeoManageAny → allow + optionally surface 404 cleanly.
-//   - PermIPGeoManageOwn          → allow only when the caller owns the service.
-//   - else                        → 403 forbidden.
+//   - PermIPGeoManageAny → allow + surface 404 cleanly.
+//   - PermIPGeoManageOwn → allow only when the caller owns the service.
+//   - else               → 403 forbidden.
 //
 // Returns true to continue; false to indicate the handler already wrote the
 // response (caller MUST return).
@@ -199,9 +201,8 @@ func (d Deps) PutServiceIPGeo(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// GetGeoStatus handles GET /api/v1/geo/status. Session-authed; any user may
-// read the global geo-lookup status (mirrors the cache/redaction settings
-// reads).
+// GetGeoStatus handles GET /api/v1/geo/status: the global geo-lookup status,
+// for a caller with ipgeo:manage:own or :any.
 //
 // In the default build (no geo tag) enabled=false and db_path="". Task 17
 // surfaces real values when the MMDBGeoLookup is wired.

@@ -135,8 +135,8 @@ func toCacheSettingsJSON(s exact.Settings) cacheSettingsJSON {
 }
 
 // GetCacheSettings handles GET /api/v1/cache/settings.
-// Any session-authed user may read settings (spec Part B.3 + v0.5.0 spec
-// A.4); the response shape is {global: {...}, semantic: {...},
+// Needs ai:read:own / :any or ai:configure:own / :any (spec Part B.3 +
+// v0.5.0 spec A.4); the response shape is {global: {...}, semantic: {...},
 // per_service: [...]}. The semantic block carries global defaults only
 // (per-service semantic overrides are not yet exposed in v0.5.0).
 // Per-service rows are derived from service_ai_config.config[.cache] for
@@ -209,8 +209,8 @@ func perServiceCacheFromConfig(blob []byte) (exact.Settings, bool) {
 }
 
 // PutCacheSettings handles PUT /api/v1/cache/settings.
-// Admin or ai:configure:any only — gating is enforced by the router (this
-// runs inside the admin-or-ai-configure group). 400 on unknown applies_per
+// Needs ai:configure:any; the gate of the route decides (routeAccess in
+// access.go). 400 on unknown applies_per
 // (via exact.SettingsFromJSON). The validated blob is persisted as a single
 // JSON value under the settings key cacheSettingsKey.
 func (d Deps) PutCacheSettings(w http.ResponseWriter, r *http.Request) {
@@ -247,7 +247,8 @@ func (d Deps) PutCacheSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetCacheStats handles GET /api/v1/cache/stats.
-// Session-authed (any user may see aggregate stats). hit_rate_24h is derived
+// Needs ai:read:own / :any or ai:configure:own / :any (the stats are
+// aggregates over every service). hit_rate_24h is derived
 // from in-process atomic counters in the engine — they reset on process
 // restart (documented limitation; the field name is preserved for wire
 // stability). The five semantic_* fields (spec A.4) are sourced from
@@ -283,8 +284,8 @@ func (d Deps) GetCacheStats(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteCacheEntries handles DELETE /api/v1/cache/entries (clear all).
-// Admin or ai:configure:any only — gating is enforced by the router (this
-// runs inside the admin-or-ai-configure group). 204 on success.
+// Needs ai:configure:any; the gate of the route decides (routeAccess in
+// access.go). 204 on success.
 // Spec A.4: clears BOTH tiers — exact (CacheEngine.Clear) and semantic
 // (SemanticEngine.ClearAll). A nil SemanticEngine is skipped gracefully so
 // legacy callers that do not wire the semantic tier continue to work.

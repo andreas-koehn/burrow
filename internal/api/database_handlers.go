@@ -2,7 +2,8 @@
 //
 // GET /api/v1/database → 200 {driver, postgres_alpha, url_redacted}
 //
-// Permission: admin OR metrics:read (same gate as /metrics and /openapi/viewer).
+// Permission: metrics:read, as for /metrics and /openapi/viewer (routeAccess
+// in access.go).
 // url_redacted is the database URL with user:password replaced by ****:****;
 // for SQLite it is the on-disk file path (no credentials to redact).
 package api

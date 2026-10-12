@@ -8,8 +8,11 @@ package api
 // answer to its creation: the database keeps a hash, and no other response,
 // audit event or log line carries it.
 //
-// There is no permission to hold: every signed-in user manages their own
-// keys, and an admin lists and revokes every key.  Automation tokens are
+// A caller manages their own keys: listing needs ai:read:own / :any or
+// ai:configure:own / :any, creating and revoking ai:configure:own / :any
+// (routeAccess in access.go).  A key spends AI budget, and the gateway does
+// not look at its user's role again, so a role without the permission gets
+// none.  An admin lists and revokes every key.  Automation tokens are
 // held to less than the session of their user:
 //   - a token cannot create a key.  A gateway key does not expire and would
 //     outlive the token, whatever the token was minted for;
@@ -127,8 +130,9 @@ func (d Deps) GetAIKeys(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// PostAIKey handles POST /api/v1/ai/keys (dashboard session only; the gate
-// of the route answers an automation token with 403).  The 201 carries the
+// PostAIKey handles POST /api/v1/ai/keys (a dashboard session of a role with
+// ai:configure:own or :any; the gate of the route answers an automation
+// token with 403).  The 201 carries the
 // key; it cannot be read again.  allowed_models restricts the key to
 // synthetic model names, "<provider>/<model>" and "<provider>/*" entries;
 // empty or left out means every model.  An entry need not name something

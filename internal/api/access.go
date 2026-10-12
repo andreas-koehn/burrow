@@ -4,9 +4,10 @@
 // through declared(), which looks the entry up when a route is registered and
 // puts its gate in front of the handler; a route without an entry stops the
 // router from being built. The gate is the only place that decides whether a
-// caller may pass, and for an automation token it always asks effectivePerms:
-// the token must declare the permission and its user's role must still grant
-// it.
+// caller may pass. Outside the allow-list every caller needs a permission: a
+// dashboard session holds what its user's role holds, and for an automation
+// token the gate asks effectivePerms: the token must declare the permission
+// and its user's role must still grant it.
 
 package api
 
@@ -34,11 +35,8 @@ const (
 	// accessPerm: every caller needs one of the permissions. A session holds
 	// it through its user's role, a token through effectivePerms.
 	accessPerm
-	// accessToken: a dashboard session passes, and what its handler or the
-	// store checks decides. An automation token needs one of the permissions.
-	accessToken
-	// accessDashboard: a dashboard session only; an automation token gets 403
-	// whatever it declares. With permissions, the session's role needs one.
+	// accessDashboard: a dashboard session only, whose role needs one of the
+	// permissions; an automation token gets 403 whatever it declares.
 	accessDashboard
 )
 
@@ -46,14 +44,23 @@ const (
 type access struct {
 	kind  accessKind
 	perms []authz.Permission
+	// every: the caller must hold every permission there is (which includes
+	// perms). For what amounts to owning the relay.
+	every bool
 }
 
 func public() access                                 { return access{kind: accessPublic} }
 func self() access                                   { return access{kind: accessSelf} }
 func needs(p ...authz.Permission) access             { return access{kind: accessPerm, perms: p} }
-func tokenNeeds(p ...authz.Permission) access        { return access{kind: accessToken, perms: p} }
 func dashboard(p ...authz.Permission) access         { return access{kind: accessDashboard, perms: p} }
 func anyOf(p ...authz.Permission) []authz.Permission { return p }
+
+// andEveryPermission asks the caller for every permission of
+// authz.AllPermissions() on top of the route's own.
+func (a access) andEveryPermission() access {
+	a.every = true
+	return a
+}
 
 // open reports whether the route is on the allow-list: it asks for no
 // permission and no dashboard session.
@@ -62,12 +69,15 @@ func (a access) open() bool { return a.kind == accessPublic || a.kind == accessS
 // covers reports whether an automation token that declares exactly p (and
 // whose user's role grants it) passes the route's gate.
 func (a access) covers(p authz.Permission) bool {
-	return (a.kind == accessPerm || a.kind == accessToken) && slices.Contains(a.perms, p)
+	return a.kind == accessPerm && !a.every && slices.Contains(a.perms, p)
 }
 
 // denied is the 403 message of the route's gate for a caller without any of
 // the permissions: "users:read or users:manage required".
 func (a access) denied() string {
+	if a.every {
+		return "every permission required"
+	}
 	names := make([]string, len(a.perms))
 	for i, p := range a.perms {
 		names[i] = string(p)
@@ -75,7 +85,7 @@ func (a access) denied() string {
 	return strings.Join(names, " or ") + " required"
 }
 
-// Permission sets that several routes share. A read is open to the token that
+// Permission sets that several routes share. A read is open to the caller who
 // may write the same thing.
 var (
 	servicesConfigure = anyOf(authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
@@ -89,6 +99,7 @@ var (
 	inspectorReplay   = anyOf(authz.PermInspectorReplayOwn, authz.PermInspectorReplayAny)
 	ipGeoManage       = anyOf(authz.PermIPGeoManageOwn, authz.PermIPGeoManageAny)
 	automationTokens  = anyOf(authz.PermAutomationTokensManageOwn, authz.PermAutomationTokensManageAny)
+	tunnelsRead       = anyOf(authz.PermTunnelsReadOwn, authz.PermTunnelsReadAny)
 	rolesRead         = anyOf(authz.PermRolesRead, authz.PermRolesManage)
 	usersRead         = anyOf(authz.PermUsersRead, authz.PermUsersManage)
 )
@@ -110,66 +121,66 @@ var routeAccess = map[string]access{
 	"GET /api/v1/me":                    self(),
 
 	// --- Dashboard sessions only ----------------------------------------
-	"GET /api/v1/events": dashboard(), // SSE; the handler scopes to the caller
-	"GET /api/v1/services/{serviceID}/inspector/stream":      dashboard(), // SSE; the handler checks inspector:read
-	"GET /api/v1/client/login/requests/{user_code}":          dashboard(),
-	"POST /api/v1/client/login/requests/{user_code}/approve": dashboard(clientTokens...), // mints a client token
-	"POST /api/v1/client/login/requests/{user_code}/deny":    dashboard(),
-	"POST /api/v1/ai/keys":                                   dashboard(), // no token mints a credential that outlives it
+	"GET /api/v1/events": dashboard(tunnelsRead...), // SSE of "tunnels changed"; the handler scopes to the caller
+	"GET /api/v1/services/{serviceID}/inspector/stream":      dashboard(inspectorRead...), // SSE; the handler checks the owner
+	"GET /api/v1/client/login/requests/{user_code}":          dashboard(clientTokens...),  // the request that approve decides
+	"POST /api/v1/client/login/requests/{user_code}/approve": dashboard(clientTokens...),  // mints a client token
+	"POST /api/v1/client/login/requests/{user_code}/deny":    dashboard(clientTokens...),
+	"POST /api/v1/ai/keys":                                   dashboard(aiConfigure...), // no token mints a credential that outlives it
 	"GET /api/v1/ai/requests/{requestID}/attempts":           dashboard(authz.PermAIReadAny),
 
 	// --- Client tokens, browser sessions, tunnels -----------------------
-	"GET /api/v1/clients/connect-info":     tokenNeeds(clientTokens...),
-	"GET /api/v1/tokens":                   tokenNeeds(clientTokens...),
-	"POST /api/v1/tokens":                  tokenNeeds(clientTokens...),
-	"DELETE /api/v1/tokens/{id}":           tokenNeeds(clientTokens...),
-	"GET /api/v1/sessions":                 tokenNeeds(browserSessions...),
-	"DELETE /api/v1/sessions/{id}":         tokenNeeds(browserSessions...),
-	"POST /api/v1/sessions/revoke-all":     tokenNeeds(browserSessions...),
-	"GET /api/v1/tunnels":                  tokenNeeds(authz.PermTunnelsReadOwn, authz.PermTunnelsReadAny),
-	"PUT /api/v1/tunnels/{id}/access-mode": tokenNeeds(servicesConfigure...),
+	"GET /api/v1/clients/connect-info":     needs(clientTokens...),
+	"GET /api/v1/tokens":                   needs(clientTokens...),
+	"POST /api/v1/tokens":                  needs(clientTokens...),
+	"DELETE /api/v1/tokens/{id}":           needs(clientTokens...),
+	"GET /api/v1/sessions":                 needs(browserSessions...),
+	"DELETE /api/v1/sessions/{id}":         needs(browserSessions...),
+	"POST /api/v1/sessions/revoke-all":     needs(browserSessions...),
+	"GET /api/v1/tunnels":                  needs(tunnelsRead...),
+	"PUT /api/v1/tunnels/{id}/access-mode": needs(servicesConfigure...),
 	"GET /api/v1/clients":                  needs(authz.PermTunnelsReadAny),
 	"GET /api/v1/clients/known":            needs(authz.PermTunnelsReadAny),
 	"GET /api/v1/clients/{sessionID}":      needs(authz.PermTunnelsReadAny),
 
 	// --- Services -------------------------------------------------------
 	"POST /api/v1/services":                                                     needs(authz.PermServicesConfigureAny), // pre-provisioning
-	"GET /api/v1/services":                                                      tokenNeeds(servicesConfigure...),
-	"GET /api/v1/services/slug-suggestion":                                      tokenNeeds(servicesConfigure...),
-	"GET /api/v1/services/{serviceID}":                                          tokenNeeds(servicesConfigure...),
-	"PUT /api/v1/services/{serviceID}/slug":                                     tokenNeeds(servicesConfigure...),
-	"PUT /api/v1/services/{serviceID}/access-mode":                              tokenNeeds(servicesConfigure...),
-	"PUT /api/v1/services/{serviceID}/gateway-only":                             tokenNeeds(servicesConfigure...),
-	"GET /api/v1/services/{serviceID}/api-keys":                                 tokenNeeds(servicesConfigure...),
-	"POST /api/v1/services/{serviceID}/api-keys":                                tokenNeeds(servicesConfigure...),
-	"DELETE /api/v1/services/{serviceID}/api-keys/{id}":                         tokenNeeds(servicesConfigure...),
-	"GET /api/v1/services/{serviceID}/access-policy":                            tokenNeeds(servicesConfigure...),
-	"PUT /api/v1/services/{serviceID}/access-policy":                            tokenNeeds(servicesConfigure...),
-	"GET /api/v1/services/{serviceID}/domains":                                  tokenNeeds(servicesConfigure...),
-	"POST /api/v1/services/{serviceID}/domains":                                 tokenNeeds(servicesConfigure...),
-	"GET /api/v1/services/{serviceID}/domains/{did}":                            tokenNeeds(servicesConfigure...),
-	"PUT /api/v1/services/{serviceID}/domains/{did}":                            tokenNeeds(servicesConfigure...),
-	"DELETE /api/v1/services/{serviceID}/domains/{did}":                         tokenNeeds(servicesConfigure...),
-	"GET /api/v1/services/{serviceID}/ip-geo":                                   tokenNeeds(ipGeoManage...),
-	"PUT /api/v1/services/{serviceID}/ip-geo":                                   tokenNeeds(ipGeoManage...),
-	"GET /api/v1/geo/status":                                                    tokenNeeds(ipGeoManage...),
-	"GET /api/v1/services/{serviceID}/ai-config":                                tokenNeeds(aiConfigure...),
-	"PUT /api/v1/services/{serviceID}/ai-config":                                tokenNeeds(aiConfigure...),
-	"DELETE /api/v1/services/{serviceID}/cache/entries":                         tokenNeeds(aiConfigure...),
-	"GET /api/v1/services/{serviceID}/upstream-credential":                      tokenNeeds(aiConfigure...),
-	"PUT /api/v1/services/{serviceID}/upstream-credential":                      tokenNeeds(aiConfigure...),
-	"DELETE /api/v1/services/{serviceID}/upstream-credential":                   tokenNeeds(aiConfigure...),
+	"GET /api/v1/services":                                                      needs(servicesConfigure...),
+	"GET /api/v1/services/slug-suggestion":                                      needs(servicesConfigure...),
+	"GET /api/v1/services/{serviceID}":                                          needs(servicesConfigure...),
+	"PUT /api/v1/services/{serviceID}/slug":                                     needs(servicesConfigure...),
+	"PUT /api/v1/services/{serviceID}/access-mode":                              needs(servicesConfigure...),
+	"PUT /api/v1/services/{serviceID}/gateway-only":                             needs(servicesConfigure...),
+	"GET /api/v1/services/{serviceID}/api-keys":                                 needs(servicesConfigure...),
+	"POST /api/v1/services/{serviceID}/api-keys":                                needs(servicesConfigure...),
+	"DELETE /api/v1/services/{serviceID}/api-keys/{id}":                         needs(servicesConfigure...),
+	"GET /api/v1/services/{serviceID}/access-policy":                            needs(servicesConfigure...),
+	"PUT /api/v1/services/{serviceID}/access-policy":                            needs(servicesConfigure...),
+	"GET /api/v1/services/{serviceID}/domains":                                  needs(servicesConfigure...),
+	"POST /api/v1/services/{serviceID}/domains":                                 needs(servicesConfigure...),
+	"GET /api/v1/services/{serviceID}/domains/{did}":                            needs(servicesConfigure...),
+	"PUT /api/v1/services/{serviceID}/domains/{did}":                            needs(servicesConfigure...),
+	"DELETE /api/v1/services/{serviceID}/domains/{did}":                         needs(servicesConfigure...),
+	"GET /api/v1/services/{serviceID}/ip-geo":                                   needs(ipGeoManage...),
+	"PUT /api/v1/services/{serviceID}/ip-geo":                                   needs(ipGeoManage...),
+	"GET /api/v1/geo/status":                                                    needs(ipGeoManage...),
+	"GET /api/v1/services/{serviceID}/ai-config":                                needs(aiConfigure...),
+	"PUT /api/v1/services/{serviceID}/ai-config":                                needs(aiConfigure...),
+	"DELETE /api/v1/services/{serviceID}/cache/entries":                         needs(aiConfigure...),
+	"GET /api/v1/services/{serviceID}/upstream-credential":                      needs(aiConfigure...),
+	"PUT /api/v1/services/{serviceID}/upstream-credential":                      needs(aiConfigure...),
+	"DELETE /api/v1/services/{serviceID}/upstream-credential":                   needs(aiConfigure...),
 	"GET /api/v1/upstream-credentials/slots":                                    needs(authz.PermAIConfigureAny),
-	"GET /api/v1/services/{serviceID}/inspector/requests":                       tokenNeeds(inspectorRead...),
-	"GET /api/v1/services/{serviceID}/inspector/requests/{rid}":                 tokenNeeds(inspectorRead...),
-	"POST /api/v1/services/{serviceID}/inspector/requests/{rid}/replay":         tokenNeeds(inspectorReplay...),
-	"POST /api/v1/services/{serviceID}/inspector/requests/{rid}/replay-compare": tokenNeeds(inspectorReplay...),
+	"GET /api/v1/services/{serviceID}/inspector/requests":                       needs(inspectorRead...),
+	"GET /api/v1/services/{serviceID}/inspector/requests/{rid}":                 needs(inspectorRead...),
+	"POST /api/v1/services/{serviceID}/inspector/requests/{rid}/replay":         needs(inspectorReplay...),
+	"POST /api/v1/services/{serviceID}/inspector/requests/{rid}/replay-compare": needs(inspectorReplay...),
 
 	// --- AI gateway -----------------------------------------------------
-	"GET /api/v1/ai/providers":                     tokenNeeds(providersRead...),
-	"GET /api/v1/ai/providers/{slug}":              tokenNeeds(providersRead...),
-	"GET /api/v1/ai/providers/{slug}/metrics":      tokenNeeds(providersRead...),
-	"GET /api/v1/ai/providers/{slug}/models":       tokenNeeds(providersRead...),
+	"GET /api/v1/ai/providers":                     needs(providersRead...),
+	"GET /api/v1/ai/providers/{slug}":              needs(providersRead...),
+	"GET /api/v1/ai/providers/{slug}/metrics":      needs(providersRead...),
+	"GET /api/v1/ai/providers/{slug}/models":       needs(providersRead...),
 	"POST /api/v1/ai/providers":                    needs(authz.PermAIProvidersManage),
 	"PUT /api/v1/ai/providers/{slug}":              needs(authz.PermAIProvidersManage),
 	"DELETE /api/v1/ai/providers/{slug}":           needs(authz.PermAIProvidersManage),
@@ -177,28 +188,28 @@ var routeAccess = map[string]access{
 	"POST /api/v1/ai/providers/{slug}/models/sync": needs(authz.PermAIProvidersManage), // an outbound call
 	"POST /api/v1/ai/providers/{slug}/models":      needs(authz.PermAIProvidersManage),
 	"DELETE /api/v1/ai/providers/{slug}/models":    needs(authz.PermAIProvidersManage),
-	"GET /api/v1/ai/gateway":                       tokenNeeds(aiRead...),
-	"GET /api/v1/ai/models":                        tokenNeeds(aiRead...),
-	"GET /api/v1/ai/models/{name}":                 tokenNeeds(aiRead...),
+	"GET /api/v1/ai/gateway":                       needs(aiRead...),
+	"GET /api/v1/ai/models":                        needs(aiRead...),
+	"GET /api/v1/ai/models/{name}":                 needs(aiRead...),
 	"POST /api/v1/ai/models":                       needs(authz.PermAIConfigureAny),
 	"PUT /api/v1/ai/models/{name}":                 needs(authz.PermAIConfigureAny),
 	"DELETE /api/v1/ai/models/{name}":              needs(authz.PermAIConfigureAny),
-	"GET /api/v1/ai/keys":                          tokenNeeds(aiRead...),      // a token sees its user's own keys
-	"DELETE /api/v1/ai/keys/{id}":                  tokenNeeds(aiConfigure...), // and revokes only those
-	"GET /api/v1/cache/settings":                   tokenNeeds(aiRead...),
-	"GET /api/v1/cache/stats":                      tokenNeeds(aiRead...),
+	"GET /api/v1/ai/keys":                          needs(aiRead...),      // a token sees its user's own keys
+	"DELETE /api/v1/ai/keys/{id}":                  needs(aiConfigure...), // and revokes only those
+	"GET /api/v1/cache/settings":                   needs(aiRead...),
+	"GET /api/v1/cache/stats":                      needs(aiRead...),
 	"PUT /api/v1/cache/settings":                   needs(authz.PermAIConfigureAny),
 	"DELETE /api/v1/cache/entries":                 needs(authz.PermAIConfigureAny),
 	"DELETE /api/v1/cache/semantic/entries":        needs(authz.PermAIConfigureAny),
-	"GET /api/v1/redaction/rules":                  tokenNeeds(aiRead...),
-	"GET /api/v1/redaction/settings":               tokenNeeds(aiRead...),
+	"GET /api/v1/redaction/rules":                  needs(aiRead...),
+	"GET /api/v1/redaction/settings":               needs(aiRead...),
 	"POST /api/v1/redaction/rules":                 needs(authz.PermAIConfigureAny),
 	"PUT /api/v1/redaction/rules/{id}":             needs(authz.PermAIConfigureAny),
 	"DELETE /api/v1/redaction/rules/{id}":          needs(authz.PermAIConfigureAny),
 	"PUT /api/v1/redaction/settings":               needs(authz.PermAIConfigureAny),
 	"POST /api/v1/redaction/preview":               needs(authz.PermAIConfigureAny),
-	"GET /api/v1/guardrails/settings":              tokenNeeds(aiRead...),
-	"GET /api/v1/guardrails/patterns":              tokenNeeds(aiRead...),
+	"GET /api/v1/guardrails/settings":              needs(aiRead...),
+	"GET /api/v1/guardrails/patterns":              needs(aiRead...),
 	"PUT /api/v1/guardrails/settings":              needs(authz.PermAIConfigureAny),
 
 	// --- Quotas and cost --------------------------------------------------
@@ -207,7 +218,7 @@ var routeAccess = map[string]access{
 	"POST /api/v1/rate-limits":        needs(authz.PermQuotasManageAny),
 	"PUT /api/v1/rate-limits/{id}":    needs(authz.PermQuotasManageAny),
 	"DELETE /api/v1/rate-limits/{id}": needs(authz.PermQuotasManageAny),
-	"GET /api/v1/cost/pricing":        tokenNeeds(authz.PermQuotasReadOwn, authz.PermQuotasReadAny, authz.PermCostPricingManage),
+	"GET /api/v1/cost/pricing":        needs(authz.PermQuotasReadOwn, authz.PermQuotasReadAny, authz.PermCostPricingManage),
 	"PUT /api/v1/cost/pricing":        needs(authz.PermCostPricingManage),
 	"GET /api/v1/cost/summary":        needs(authz.PermQuotasReadAny),
 	"GET /api/v1/cost/export":         needs(authz.PermQuotasReadAny),
@@ -238,7 +249,7 @@ var routeAccess = map[string]access{
 	"GET /api/v1/backups/{id}/download":        needs(authz.PermBackupRun),
 	"POST /api/v1/backups/{id}/verify":         needs(authz.PermBackupRun),
 	"DELETE /api/v1/backups/{id}":              needs(authz.PermBackupRun),
-	"POST /api/v1/backups/restore":             needs(authz.PermBackupRun),
+	"POST /api/v1/backups/restore":             needs(authz.PermBackupRun).andEveryPermission(), // swaps the database
 	"GET /api/v1/backups/restores/{id}":        needs(authz.PermBackupRun),
 	"GET /api/v1/database":                     needs(authz.PermMetricsRead),
 	"GET /api/v1/openapi/viewer/":              needs(authz.PermMetricsRead),
@@ -250,7 +261,7 @@ var routeAccess = map[string]access{
 	"GET /api/v1/automation/tokens":         needs(automationTokens...),
 	"POST /api/v1/automation/tokens":        needs(automationTokens...),
 	"DELETE /api/v1/automation/tokens/{id}": needs(automationTokens...),
-	"GET /api/v1/roles/permissions":         tokenNeeds(authz.PermRolesRead, authz.PermRolesManage, authz.PermAutomationTokensManageOwn, authz.PermAutomationTokensManageAny),
+	"GET /api/v1/roles/permissions":         needs(authz.PermRolesRead, authz.PermRolesManage, authz.PermAutomationTokensManageOwn, authz.PermAutomationTokensManageAny),
 	"GET /api/v1/roles":                     needs(rolesRead...),
 	"GET /api/v1/roles/{name}":              needs(rolesRead...),
 	"POST /api/v1/roles":                    needs(authz.PermRolesManage),
@@ -267,25 +278,29 @@ var routeAccess = map[string]access{
 	"PUT /api/v1/settings/retention":        needs(authz.PermSettingsManage),
 }
 
-// allow returns the gate of a declaration. It must run after the session
-// middlewares, so that an unauthenticated request got its 401 already.
+// allow returns the gate of a declaration. It runs after the session
+// middlewares, which answer an unauthenticated request with 401; the gate
+// does not rely on them and refuses a request without a user itself.
 func (d Deps) allow(a access) func(http.Handler) http.Handler {
-	if a.open() {
+	if a.kind == accessPublic {
 		return func(next http.Handler) http.Handler { return next }
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if userID(r.Context()) == "" {
+				writeErr(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			if a.kind == accessSelf {
+				next.ServeHTTP(w, r)
+				return
+			}
 			// A token is told from a session by its id, never by what it
 			// declares: a token that declares nothing is still a token.
-			token := bearerTokenID(r.Context()) != ""
-			switch {
-			case token && a.kind == accessDashboard:
+			if bearerTokenID(r.Context()) != "" && a.kind == accessDashboard {
 				// What these routes answer is not for a cache to keep.
 				w.Header().Set("Cache-Control", "no-store")
 				writeErr(w, http.StatusForbidden, msgDashboardSession)
-				return
-			case !token && (a.kind == accessToken || (a.kind == accessDashboard && len(a.perms) == 0)):
-				next.ServeHTTP(w, r)
 				return
 			}
 			role, err := d.callerRoleForAuth(r)
@@ -296,6 +311,16 @@ func (d Deps) allow(a access) func(http.Handler) http.Handler {
 				}
 				writeErr(w, http.StatusInternalServerError, "lookup failed")
 				return
+			}
+			if a.every {
+				// Measured like mayGrant: a session by its role, a token by
+				// what it declares and its user's role grants.
+				for _, p := range authz.AllPermissions() {
+					if !effectivePerms(r.Context(), role, p) {
+						writeErr(w, http.StatusForbidden, a.denied())
+						return
+					}
+				}
 			}
 			for _, p := range a.perms {
 				if effectivePerms(r.Context(), role, p) {

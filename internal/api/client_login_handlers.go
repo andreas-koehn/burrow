@@ -288,7 +288,8 @@ func (d Deps) writeClientLoginErr(w http.ResponseWriter, r *http.Request, err er
 	}
 }
 
-// GetClientLoginRequest shows a sign-in request to a signed-in user.
+// GetClientLoginRequest shows a sign-in request to a user who may decide it
+// (the three request endpoints need tokens:manage:own or :any).
 // GET /client/login/requests/{user_code}.
 func (d Deps) GetClientLoginRequest(w http.ResponseWriter, r *http.Request) {
 	v, err := d.ClientLogins.GetClientLogin(r.Context(), chi.URLParam(r, "user_code"))

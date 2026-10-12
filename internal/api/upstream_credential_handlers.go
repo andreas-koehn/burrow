@@ -42,11 +42,13 @@ type CredentialVaultIface interface {
 
 // --- Permission gates -------------------------------------------------------
 
-// ensureCredentialAccess gates all per-service upstream-credential routes.
+// ensureCredentialAccess scopes the per-service upstream-credential routes by
+// owner. The gate of the route let the caller pass with ai:configure:own or
+// :any; by effectivePerms (a session: its role; a token: declared and granted):
 //
-//   - admin or PermAIConfigureAny → allow (and surface 404 when service missing).
-//   - PermAIConfigureOwn          → allow only when the caller owns the service.
-//   - else                        → 403.
+//   - PermAIConfigureAny → allow (and surface 404 when service missing).
+//   - PermAIConfigureOwn → allow only when the caller owns the service.
+//   - else               → 403.
 //
 // Returns true to continue; false means the handler already wrote the response.
 func (d Deps) ensureCredentialAccess(w http.ResponseWriter, r *http.Request, serviceID string) bool {

@@ -60,9 +60,10 @@ type WebhookSecretRegistry interface {
 	Delete(id string)
 }
 
-// --- Permission gate --------------------------------------------------------
+// --- Permission -------------------------------------------------------------
 //
-// Spec Part H: every webhook route requires admin OR webhooks:manage.
+// Spec Part H: every webhook route needs webhooks:manage (routeAccess in
+// access.go).
 
 // --- Wire shapes ------------------------------------------------------------
 

@@ -166,7 +166,15 @@ Every user has one role. Two are built in:
 | Role | Holds |
 |------|-------|
 | `admin` | every permission |
-| `user` | the `:own` permissions: its own tunnels, client tokens, services, AI settings, request inspector, automation tokens and IP/geo lists |
+| `user` | `tunnels:read:own`, `tunnels:manage:own`, `tokens:manage:own`, `services:configure:own`, `sessions:manage:own`, `ai:read:own`, `ai:configure:own`, `quotas:read:own`, `inspector:read:own`, `inspector:replay:own`, `automation:tokens:manage:own`, `mtls:manage:own`, `ipgeo:manage:own` |
+
+A role's permissions bind everything its users do, in the dashboard as much as
+through an automation token: every route of the API asks for a permission, and
+a dashboard session holds what its user's role holds. The table under
+[Automation tokens](#automation-tokens) says which permission each area asks
+for. A role that lacks it gets `403`. A role without any permission can sign
+in, read its own account (`GET /api/v1/me`), change its password and sign out,
+and nothing else: it gets no client token and no gateway key.
 
 An admin can define **custom roles** (dashboard: **Settings → Roles**; API:
 `POST /api/v1/roles`) from the permission catalog
@@ -203,10 +211,24 @@ Four rules keep roles from becoming a way around the permissions:
   `409` while a user holds the role or an access policy names it, and says how
   many. Move the users to another role and take the role out of the policies
   first.
-- **A permission ending in `:own` reaches your own resources only**, `:any`
+- **A permission ending in `:own` is for your own resources**, `:any` for
   everyone's. This holds for an automation token as well: an admin's token that
   declares only `:own` permissions stays with its user's own services, tokens
-  and lists.
+  and lists. One exception: rate limits are not tied to a user. With
+  `quotas:read:own`, `GET /api/v1/rate-limits` lists every configured limit,
+  and `GET /api/v1/rate-limits/usage` answers for any subject of the scopes
+  `api_key`, `role` and `service`. Only the usage of a model, and of a gateway
+  key that is not yours, takes `quotas:read:any`.
+
+::: warning Three permissions are as good as admin rights
+`backup:run`, `ai:providers:manage` and `settings:manage` reach secrets or the
+whole database. A backup download is the whole database. A provider can be
+pointed at any address, and a model sync then sends a stored upstream
+credential there. A test email sends the SMTP password to the host the
+settings name. Give these three only to people and tokens you would give admin
+rights. Restoring a backup replaces the database and takes every permission,
+whatever else the caller holds.
+:::
 
 ### Automation tokens
 
@@ -223,9 +245,33 @@ Together these are the token's **effective permissions**. So a token never does
 more than it declares, and it loses a permission the moment its user's role
 loses it. When a token hands something out (a role, a permission in a role, a
 new token), the effective permissions decide. A token cannot mint a token with
-a permission it does not declare itself, nor one that outlives its own expiry:
-a job that mints its own successor needs a parent without an expiry. The
+a permission it does not declare itself, nor one that outlives it: a token
+with an expiry mints only tokens that expire no later than itself. Only a
+successor that is to outlive its parent needs a parent without an expiry. The
 permissions of a token cannot be changed: mint a new one and revoke the old one.
+
+Mint a token with the permissions it needs through the API:
+
+```sh
+curl -X POST https://burrow.insingo.com/api/v1/automation/tokens \
+  -H "Authorization: Bearer bua_YOUR_AUTOMATION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "name": "ci-deploy",
+        "permissions": ["services:configure:own", "tokens:manage:own"],
+        "expires_at": "2027-01-31T00:00:00Z"
+      }'
+```
+
+`name` is required. `permissions` may hold only what your role holds (and, when
+a token mints, what that token declares); left out, the new token declares
+nothing. `expires_at` is optional; without it the token does not expire. Any
+other field answers `400`. The answer carries the token once, in `plaintext`.
+
+The dashboard's **New automation token** dialog asks for a name and an expiry
+only: a token minted there declares no permission and reaches nothing beyond
+its own account (see below the table). Mint through the API to give a token
+permissions.
 
 ::: warning Upgrading to v0.10: tokens are held to their permissions
 Before v0.10 a token minted by an admin passed most checks whatever it
@@ -238,45 +284,65 @@ every route asks. A token that worked before and now answers
 
 with status `403` is missing one of the permissions named in the message.
 Mint a new token that declares it, then revoke the old one.
+
+To see what your existing tokens declare, list them:
+`GET /api/v1/automation/tokens` answers each token with its `permissions`. It
+takes `automation:tokens:manage:own` or `:any`, which both built-in roles
+hold. The dashboard's **Automation tokens** page shows how many permissions
+each token declares, not which.
 :::
 
-What a token needs:
+What each area asks for. A dashboard session needs a role that holds one of
+the permissions; a token must declare it as well:
 
-| To … | The token declares |
-|------|--------------------|
+| To … | Permission |
+|------|------------|
 | read or change services, their API keys, access mode, access policy, slug and custom domains | `services:configure:own` or `services:configure:any` |
 | pre-provision a service (`POST /services`) | `services:configure:any` |
-| read or change a service's IP/geo lists | `ipgeo:manage:own` or `ipgeo:manage:any` |
+| read or change a service's IP/geo lists, read the geo status | `ipgeo:manage:own` or `ipgeo:manage:any` |
 | read or change a service's AI config and upstream credential, clear its cache | `ai:configure:own` or `ai:configure:any` |
 | read captured requests of a service / replay them | `inspector:read:own` or `:any` / `inspector:replay:own` or `:any` |
 | read AI providers | `ai:read:own`, `ai:read:any` or `ai:providers:manage` |
-| create, change or delete AI providers and their model catalogs | `ai:providers:manage` |
+| create, change or delete AI providers and their model catalogs | `ai:providers:manage` (reaches the upstream credentials: give it like admin rights) |
 | read synthetic models, the gateway's endpoints, cache, redaction and guardrail settings | `ai:read:own`, `ai:read:any`, `ai:configure:own` or `ai:configure:any` |
 | change synthetic models, cache, redaction and guardrail settings | `ai:configure:any` |
-| list its user's gateway keys / revoke one of them | `ai:read:…` or `ai:configure:…` / `ai:configure:own` or `ai:configure:any` |
+| list your own gateway keys / revoke one of them | `ai:read:…` or `ai:configure:…` / `ai:configure:own` or `ai:configure:any` |
 | read rate limits and usage / change rate limits | `quotas:read:own` or `quotas:read:any` / `quotas:manage:any` |
 | read the cost summary and export | `quotas:read:any` |
 | read the pricing table / change it | `quotas:read:own`, `quotas:read:any` or `cost:pricing:manage` / `cost:pricing:manage` |
 | read and manage budgets | `budgets:manage` |
 | read the audit log and the connection logs | `audit:read` |
 | manage webhooks | `webhooks:manage` |
-| run, download, verify, delete and restore backups | `backup:run` |
+| run, list, download, verify and delete backups | `backup:run` (a download is the whole database: give it like admin rights) |
+| restore a backup (`POST /backups/restore`) | every permission there is: a role that holds them all (the admin role does) and, for a token, one that declares them all |
 | read `/metrics`, the database status and the API viewer | `metrics:read` |
 | read the MCP status and tool list | `mcp:tools:read` |
-| list, create and revoke its user's client tokens | `tokens:manage:own` or `tokens:manage:any` |
-| list and end its user's browser sessions | `sessions:manage:own` or `sessions:manage:any` |
-| list live tunnels of its user / of every client | `tunnels:read:own` or `tunnels:read:any` / `tunnels:read:any` |
+| list, create and revoke your own client tokens, read the connect info | `tokens:manage:own` or `tokens:manage:any` |
+| list and end your own browser sessions | `sessions:manage:own` or `sessions:manage:any` |
+| list your own live tunnels / the clients of everyone | `tunnels:read:own` or `tunnels:read:any` / `tunnels:read:any` |
 | manage automation tokens | `automation:tokens:manage:own` or `automation:tokens:manage:any` |
 | read roles / create, change and delete custom roles | `roles:read` or `roles:manage` / `roles:manage` |
 | read the permission catalog (`GET /roles/permissions`) | `roles:read`, `roles:manage` or `automation:tokens:manage:own` / `:any` |
 | read users / create, change and delete users | `users:read` or `users:manage` / `users:manage` |
-| read and change settings | `settings:manage` |
+| read and change settings | `settings:manage` (reaches the SMTP password: give it like admin rights) |
 
-Without any permission a token can still read `GET /api/v1/me`.
+Three routes are about the caller's own account and open to every signed-in
+caller, whatever its role holds or its token declares: `GET /api/v1/me`,
+`POST /api/v1/auth/change-password` (which asks for the current password) and
+`POST /api/v1/auth/logout`. Signing in, the client's side of `burrow login`,
+client discovery and the API description (`/api/v1/openapi.yaml`, `.json`)
+need no credentials at all. Everything else asks for a permission.
 
-Some things take a person in the dashboard, whatever a token declares: creating
-a gateway key, approving a client sign-in (`burrow login`), reading the attempt
-log of a gateway request, and the live event streams.
+Some things take a person in the dashboard, whatever a token declares. The
+role of that person needs the permission all the same:
+
+| In the dashboard only | The role holds |
+|-----------------------|----------------|
+| create a gateway key | `ai:configure:own` or `ai:configure:any` |
+| look at, approve or deny a client sign-in (`burrow login`) | `tokens:manage:own` or `tokens:manage:any` |
+| read the attempt log of a gateway request | `ai:read:any` |
+| the live stream of tunnel changes | `tunnels:read:own` or `tunnels:read:any` |
+| the live stream of a service's request inspector | `inspector:read:own` or `inspector:read:any` |
 
 Setting `gateway_only` when creating an AI provider (`POST /api/v1/ai/providers`)
 needs permission to configure the service as well. Without it the request

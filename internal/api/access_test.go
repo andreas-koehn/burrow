@@ -29,6 +29,22 @@ func gateRequest(role string, token bool, declared []string) *http.Request {
 	return httptest.NewRequest(http.MethodGet, "/x", nil).WithContext(ctx)
 }
 
+// gateRequestTo is a GET of a signed-in session for a router that has no
+// session middleware in front of the gate.
+func gateRequestTo(path string) *http.Request {
+	ctx := context.WithValue(context.Background(), userIDKey, "u1")
+	return httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
+}
+
+// everyPermission is what a token declares that declares everything.
+func everyPermission() []string {
+	var out []string
+	for _, p := range authz.AllPermissions() {
+		out = append(out, string(p))
+	}
+	return out
+}
+
 // TestGateKinds is the rule of the gate, one line per kind of route and
 // caller. A session's role comes from the user store; a token's from the
 // request.
@@ -59,21 +75,24 @@ func TestGateKinds(t *testing.T) {
 		{"needs, admin's token without a permission list", needs(audit), "admin", true, nil, 403},
 		{"needs, token of a minter who was demoted", needs(audit), "user", true, declares("audit:read"), 403},
 
-		{"tokenNeeds, session of a role without it", tokenNeeds(audit), "user", false, nil, 200},
-		{"tokenNeeds, token that declares it", tokenNeeds(audit), "admin", true, declares("audit:read"), 200},
-		{"tokenNeeds, token that declares nothing", tokenNeeds(audit), "admin", true, declares(), 403},
-		{"tokenNeeds, token of a minter who was demoted", tokenNeeds(audit), "user", true, declares("audit:read"), 403},
-
-		// An empty list passes only on a dashboard route; elsewhere it fails closed.
+		// An empty list fails closed, for everyone and on every kind.
 		{"needs nothing, user's session", needs(), "user", false, nil, 403},
+		{"needs nothing, admin's session", needs(), "admin", false, nil, 403},
 		{"needs nothing, admin's token", needs(), "admin", true, declares("audit:read"), 403},
-		{"tokenNeeds nothing, token that declares something", tokenNeeds(), "admin", true, declares("audit:read"), 403},
+		{"dashboard without a permission, admin's session", dashboard(), "admin", false, nil, 403},
+		{"dashboard without a permission, token", dashboard(), "admin", true, declares("audit:read"), 403},
 
-		{"dashboard, session", dashboard(), "user", false, nil, 200},
-		{"dashboard, token", dashboard(), "admin", true, declares("audit:read"), 403},
-		{"dashboard with a permission, session without it", dashboard(audit), "user", false, nil, 403},
-		{"dashboard with a permission, session with it", dashboard(audit), "auditor", false, nil, 200},
-		{"dashboard with a permission, token with it", dashboard(audit), "admin", true, declares("audit:read"), 403},
+		{"dashboard, session without the permission", dashboard(audit), "user", false, nil, 403},
+		{"dashboard, session with it", dashboard(audit), "auditor", false, nil, 200},
+		{"dashboard, admin's session", dashboard(audit), "admin", false, nil, 200},
+		{"dashboard, token with it", dashboard(audit), "admin", true, declares("audit:read"), 403},
+
+		// Every permission: one of the route's own is not enough.
+		{"every permission, admin's session", needs(audit).andEveryPermission(), "admin", false, nil, 200},
+		{"every permission, session of a role with the route's own only", needs(audit).andEveryPermission(), "auditor", false, nil, 403},
+		{"every permission, admin's token with the route's own only", needs(audit).andEveryPermission(), "admin", true, declares("audit:read"), 403},
+		{"every permission, admin's token that declares them all", needs(audit).andEveryPermission(), "admin", true, everyPermission(), 200},
+		{"every permission, such a token of a minter who was demoted", needs(audit).andEveryPermission(), "user", true, everyPermission(), 403},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -165,7 +184,7 @@ func TestEveryRouteDeclaresItsAccess(t *testing.T) {
 			if len(a.perms) != 0 {
 				t.Errorf("%s: an allow-listed route names permissions %v", r.key(), a.perms)
 			}
-		case accessPerm, accessToken:
+		case accessPerm, accessDashboard:
 			if len(a.perms) == 0 {
 				t.Errorf("%s: no permission named", r.key())
 			}
@@ -260,7 +279,7 @@ func TestGateRunsBeforeRouteMiddlewares(t *testing.T) {
 		r.With(mw).Get("/users", func(http.ResponseWriter, *http.Request) {})
 	})
 	rec := httptest.NewRecorder()
-	root.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/users", nil))
+	root.ServeHTTP(rec, gateRequestTo("/api/v1/users"))
 	if rec.Code != http.StatusForbidden || reached {
 		t.Fatalf("status %d, middleware reached %v; want 403 and false", rec.Code, reached)
 	}
@@ -286,7 +305,7 @@ func TestGateRunsBeforeMiddlewaresOfASubRoute(t *testing.T) {
 			})
 		})
 		rec := httptest.NewRecorder()
-		root.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/roles/x", nil))
+		root.ServeHTTP(rec, gateRequestTo("/api/v1/roles/x"))
 		want := http.StatusForbidden
 		if role == "admin" {
 			want = http.StatusOK

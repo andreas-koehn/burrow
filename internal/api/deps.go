@@ -577,8 +577,8 @@ type Deps struct {
 	// (Task 25) constructs *metrics.Recorder, wraps it via
 	// NewMetricsRecorderAdapter and assigns it here. Nil disables /metrics
 	// (the handler returns 500 "metrics recorder unavailable"); the gate
-	// (admin OR metrics:read) still runs first so unauthenticated callers
-	// still get 401 / 403 — never a leak of internal state.
+	// (metrics:read) still runs first, so a caller without credentials or
+	// without the permission gets 401 / 403 — never a leak of internal state.
 	Metrics MetricsRecorder
 
 	// v0.4.0 Task 23: `burrowd mcp` configuration + tool registry surface.

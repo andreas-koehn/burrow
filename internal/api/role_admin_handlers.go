@@ -145,14 +145,14 @@ func (d Deps) PutRole(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DeleteRole removes a non-builtin role. Users on the role are re-assigned
-// to the current default-for-new-users role (single tx). 204 on success,
-// 404 if no row matches, 409 for built-in rows.
+// DeleteRole removes a non-builtin role that nobody uses. 204 on success, 404
+// if no row matches, 409 for a built-in role and for a role that a user holds
+// or an access policy names (the store counts both; nobody is moved to
+// another role). The caller must hold what the role holds (mayChangeRole).
 //
-// TODO(Task 25): wire audit Logger so we emit one "role.delete" event
-// followed by one "user.update" event per affected user (the affected list
-// is already plumbed back from the store). Until the Logger is injected
-// into Deps the handler simply discards the list.
+// The store hands back the users the database moved off the role, which is
+// empty unless a user was given the role between its check and the delete;
+// the handler discards the list.
 func (d Deps) DeleteRole(w http.ResponseWriter, r *http.Request) {
 	if d.Roles == nil {
 		writeErr(w, http.StatusInternalServerError, "role store unavailable")
@@ -233,13 +233,13 @@ var permissionInfoTable = map[authz.Permission]permissionInfo{
 	authz.PermUsersManage:    {Group: "Users", Description: "Manage users"},
 	authz.PermRolesRead:      {Group: "Roles", Description: "Read roles"},
 	authz.PermRolesManage:    {Group: "Roles", Description: "Create, edit, delete custom roles"},
-	authz.PermSettingsManage: {Group: "Settings", Description: "Manage server settings"},
+	authz.PermSettingsManage: {Group: "Settings", Description: "Manage server settings. Reaches the SMTP password (a test email goes to the host the settings name): give it like admin rights"},
 	// AI
 	authz.PermAIReadOwn:         {Group: "AI", Description: "Read own AI traffic + settings"},
 	authz.PermAIReadAny:         {Group: "AI", Description: "Read all AI traffic + settings"},
 	authz.PermAIConfigureOwn:    {Group: "AI", Description: "Configure own AI service settings"},
 	authz.PermAIConfigureAny:    {Group: "AI", Description: "Configure all AI service settings"},
-	authz.PermAIProvidersManage: {Group: "AI", Description: "Create, change and delete AI providers and their model catalogs"},
+	authz.PermAIProvidersManage: {Group: "AI", Description: "Create, change and delete AI providers and their model catalogs. Reaches the stored upstream credentials (a provider sends one to the address it names): give it like admin rights"},
 	// Quotas + cost
 	authz.PermQuotasReadOwn:     {Group: "Quotas", Description: "Read own usage + limits"},
 	authz.PermQuotasReadAny:     {Group: "Quotas", Description: "Read all usage + limits"},
@@ -259,7 +259,7 @@ var permissionInfoTable = map[authz.Permission]permissionInfo{
 	authz.PermAutomationTokensManageOwn: {Group: "Automation tokens", Description: "Manage own automation tokens"},
 	authz.PermAutomationTokensManageAny: {Group: "Automation tokens", Description: "Manage all automation tokens"},
 	// Backup / metrics / MCP
-	authz.PermBackupRun:    {Group: "Backup", Description: "Run on-demand backups"},
+	authz.PermBackupRun:    {Group: "Backup", Description: "Run, download, verify and delete backups. A download is the whole database: give it like admin rights. Restoring takes every permission"},
 	authz.PermMetricsRead:  {Group: "Metrics", Description: "Read Prometheus metrics + dashboards"},
 	authz.PermMcpToolsRead: {Group: "MCP", Description: "Read MCP tool catalog"},
 	// mTLS / IP-geo

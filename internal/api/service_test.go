@@ -1171,8 +1171,8 @@ func TestPostServicesDefaultsAccessModeWhenOmitted(t *testing.T) {
 	}
 }
 
-// TestPostServicesNonAdminReturns403 asserts the non-admin caller is rejected
-// at the RequireAdmin gate with 403.
+// TestPostServicesNonAdminReturns403 asserts that a caller whose role lacks
+// services:configure:any is rejected by the route's gate with 403.
 func TestPostServicesNonAdminReturns403(t *testing.T) {
 	ss := &fakeServiceStore{}
 	d := Deps{
@@ -1290,7 +1290,7 @@ func TestPostServicesBurrowLoginWithoutAuthDomainReturns409(t *testing.T) {
 }
 
 // TestPostServicesUnauthenticatedReturns401 keeps the auth-ordering invariant:
-// unauthenticated requests get 401 before RequireAdmin's 403.
+// unauthenticated requests get 401 before the permission gate's 403.
 func TestPostServicesUnauthenticatedReturns401(t *testing.T) {
 	ss := &fakeServiceStore{}
 	d := newServiceDeps(ss, fakeLiveTunnels{}, "")

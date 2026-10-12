@@ -32,9 +32,16 @@ func cookieMatrix(t *testing.T) []string {
 }
 
 // intendedCookieChanges lists every cell of the matrix that the permission
-// gate changed on purpose: "<role> <METHOD> <pattern>" → the status now. All
-// of them are routes that only the admin role could call and that now ask
-// for a permission that existed before; "cr-legacy" holds every one of those.
+// gate changed on purpose: "<role> <METHOD> <pattern>" → the status now. They
+// are cells of the two custom roles only; no user could hold a custom role
+// when the golden file was recorded. What the built-in roles may call is
+// unchanged.
+//
+// "cr-legacy" gained routes that only the admin role could call and that now
+// ask for a permission that existed before; it holds every one of those.
+// "cr-none" lost every route outside the allow-list: a role's permissions
+// bind its dashboard session too, and this role holds none. Before, a session
+// passed wherever no handler or store asked for a permission of its own.
 var intendedCookieChanges = map[string]string{
 	// users:read / users:manage
 	"cr-legacy GET /api/v1/users":         "200",
@@ -58,6 +65,55 @@ var intendedCookieChanges = map[string]string{
 	"cr-legacy POST /api/v1/services": "400",
 	// ai:read:any
 	"cr-legacy GET /api/v1/ai/requests/{requestID}/attempts": "200",
+	// Restoring takes every permission; the role lacks the three of v0.10.
+	"cr-legacy POST /api/v1/backups/restore": "403", // was 400
+
+	// tokens:manage:own / :any
+	"cr-none GET /api/v1/clients/connect-info":                    "403", // was 200
+	"cr-none GET /api/v1/tokens":                                  "403", // was 200
+	"cr-none POST /api/v1/tokens":                                 "403", // was 400
+	"cr-none DELETE /api/v1/tokens/{id}":                          "403", // was 404
+	"cr-none GET /api/v1/client/login/requests/{user_code}":       "403", // was 404
+	"cr-none POST /api/v1/client/login/requests/{user_code}/deny": "403", // was 404
+	// sessions:manage:own / :any
+	"cr-none GET /api/v1/sessions":             "403", // was 200
+	"cr-none DELETE /api/v1/sessions/{id}":     "403", // was 404
+	"cr-none POST /api/v1/sessions/revoke-all": "403", // was 200
+	// tunnels:read:own / :any
+	"cr-none GET /api/v1/tunnels": "403", // was 200
+	"cr-none GET /api/v1/events":  "403", // was 200
+	// services:configure:own / :any
+	"cr-none GET /api/v1/services":                          "403", // was 200
+	"cr-none GET /api/v1/services/slug-suggestion":          "403", // was 200
+	"cr-none PUT /api/v1/services/{serviceID}/access-mode":  "403", // was 400
+	"cr-none PUT /api/v1/services/{serviceID}/gateway-only": "403", // was 400
+	"cr-none POST /api/v1/services/{serviceID}/api-keys":    "403", // was 400
+	"cr-none PUT /api/v1/tunnels/{id}/access-mode":          "403", // was 400
+	// ipgeo:manage:own / :any
+	"cr-none GET /api/v1/geo/status": "403", // was 200
+	// ai:read:own / :any, ai:configure:own / :any
+	"cr-none GET /api/v1/ai/gateway":          "403", // was 200
+	"cr-none GET /api/v1/ai/models":           "403", // was 200
+	"cr-none GET /api/v1/ai/models/{name}":    "403", // was 404
+	"cr-none GET /api/v1/ai/keys":             "403", // was 200
+	"cr-none GET /api/v1/cache/settings":      "403", // was 200
+	"cr-none GET /api/v1/cache/stats":         "403", // was 200
+	"cr-none GET /api/v1/redaction/rules":     "403", // was 200
+	"cr-none GET /api/v1/redaction/settings":  "403", // was 200
+	"cr-none GET /api/v1/guardrails/settings": "403", // was 200
+	"cr-none GET /api/v1/guardrails/patterns": "403", // was 200
+	// ai:configure:own / :any
+	"cr-none POST /api/v1/ai/keys":        "403", // was 400
+	"cr-none DELETE /api/v1/ai/keys/{id}": "403", // was 404
+	// ai:read:own / :any, ai:providers:manage
+	"cr-none GET /api/v1/ai/providers":                "403", // was 200
+	"cr-none GET /api/v1/ai/providers/{slug}":         "403", // was 404
+	"cr-none GET /api/v1/ai/providers/{slug}/metrics": "403", // was 404
+	"cr-none GET /api/v1/ai/providers/{slug}/models":  "403", // was 404
+	// quotas:read:own / :any, cost:pricing:manage
+	"cr-none GET /api/v1/cost/pricing": "403", // was 200
+	// roles:read, roles:manage, automation:tokens:manage:own / :any
+	"cr-none GET /api/v1/roles/permissions": "403", // was 200
 }
 
 // TestCookieSessionMatrix pins what each role may call with a dashboard
@@ -66,6 +122,12 @@ var intendedCookieChanges = map[string]string{
 // v0.9. The golden file was recorded before the permission gate was unified
 // and must not change with it.
 func TestCookieSessionMatrix(t *testing.T) {
+	// The gate must leave the built-in roles alone, whatever else it changes.
+	for cell := range intendedCookieChanges {
+		if !strings.HasPrefix(cell, "cr-none ") && !strings.HasPrefix(cell, "cr-legacy ") {
+			t.Errorf("intendedCookieChanges names %q: only cells of the custom roles may change", cell)
+		}
+	}
 	got := cookieMatrix(t)
 	if *updateAuthzMatrix {
 		if err := os.MkdirAll(filepath.Dir(authzMatrixGolden), 0o755); err != nil {
