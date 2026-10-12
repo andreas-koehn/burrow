@@ -468,9 +468,9 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 	}
 
 	// v0.5.1 P2.3: wrap context with per-request idle timeout when configured.
-	// The cancel is called at function return (deferred); the deferred
-	// recordOnClose runs first (defer is LIFO) so it sees the final logStatus
-	// value before the context is released.
+	// The cancel is called at function return (deferred). recordOnClose was
+	// deferred first, so it runs last (defer is LIFO): it sees the final
+	// logStatus value, after the context was released.
 	if p.idleTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, p.idleTimeout)
@@ -544,7 +544,7 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 				logStatus = StatusClosedIdle
 			} else {
 				logStatus = StatusClosedError
-				if visitorGone(r, err) {
+				if visitorGone(r) {
 					// The visitor hung up before the upstream answered: the
 					// upstream did not fail.
 					ost.clientGone = true
@@ -653,9 +653,9 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 	}
 
 	// v0.5.1 P2.3: wrap context with per-request idle timeout when configured.
-	// The cancel is called at function return (deferred); the deferred
-	// recordOnClose runs first (defer is LIFO) so it sees the final logStatus
-	// value before the context is released.
+	// The cancel is called at function return (deferred). recordOnClose was
+	// deferred first, so it runs last (defer is LIFO): it sees the final
+	// logStatus value, after the context was released.
 	if p.idleTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, p.idleTimeout)
@@ -780,7 +780,7 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 				logStatus = StatusClosedIdle
 			} else {
 				logStatus = StatusClosedError
-				if visitorGone(r, err) {
+				if visitorGone(r) {
 					// The visitor hung up before the upstream answered: the
 					// upstream did not fail.
 					ost.clientGone = true
@@ -1019,9 +1019,14 @@ func (p *Proxy) GetConfigForClient(hello *tls.ClientHelloInfo) (*tls.Config, err
 // recordOnClose builds a ConnLogEntry from the captured per-request counters
 // and dispatches it through the registered ConnLogSink. It first tells the
 // summary sink and the observer; with no ConnLogSink it returns after that.
-// Called from a
-// deferred closure in serveResolved / serveCustomDomain so it fires on every
-// terminal exit (happy path, access-deny, panics recovered by the stdlib).
+//
+// It must be deferred DIRECTLY by serveResolved / serveCustomDomain (a
+// recover() in a function the deferred function calls recovers nothing), so
+// it fires on every terminal exit: happy path, access-deny, and a panic. A
+// panic is recovered, the outcome is marked closed_error (the visitor got a
+// broken response; if it is http.ErrAbortHandler and the visitor's context is
+// cancelled, the visitor left and the upstream is not blamed), the request is
+// told, and the same value is panicked again.
 //
 // Notes:
 //   - TunnelID, UserID, ClientSessionID are populated from res (v0.5.1 P2.4).
@@ -1050,6 +1055,11 @@ func (p *Proxy) recordOnClose(
 	panicked := recover()
 	if panicked != nil {
 		*status = StatusClosedError
+		// ReverseProxy aborts the handler on any error of the body copy, the
+		// visitor leaving included; that is not the upstream failing.
+		if panicked == http.ErrAbortHandler && errors.Is(r.Context().Err(), context.Canceled) {
+			ost.clientGone = true
+		}
 		defer panic(panicked)
 	}
 	p.summarise(r, res, started, ww)
@@ -1151,10 +1161,10 @@ type obsState struct {
 	clientGone bool   // the visitor hung up before the upstream answered
 }
 
-// visitorGone reports whether err of the upstream round trip is the visitor's
+// visitorGone reports whether a failed upstream round trip is the visitor's
 // doing: the request's context was cancelled (not timed out).
-func visitorGone(r *http.Request, err error) bool {
-	return errors.Is(r.Context().Err(), context.Canceled) || errors.Is(err, context.Canceled)
+func visitorGone(r *http.Request) bool {
+	return errors.Is(r.Context().Err(), context.Canceled)
 }
 
 // observedIP is the visitor's address for the observer, or "" when it is not

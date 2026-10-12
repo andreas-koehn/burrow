@@ -198,7 +198,8 @@ func TestObserver_EventAfterTheVisitorHungUp(t *testing.T) {
 		}
 	})
 	d := newFakeDialer(upstream)
-	d.register("abc123", &proxy.Resolved{ServiceID: "svc1", TunnelID: "tun1", AccessMode: "open", LocalHost: "127.0.0.1:3000"})
+	// A key service: the observer counts an upstream error for one.
+	d.register("abc123", &proxy.Resolved{ServiceID: "svc1", TunnelID: "tun1", AccessMode: "open", LocalHost: "127.0.0.1:3000", APIKeyHeader: "Authorization"})
 	obs := &trafficObserver{}
 	ts := httptest.NewServer(proxy.New(d, openChecker{}, authDomain, testLog(), proxy.WithObserver(obs)))
 	defer ts.Close()
@@ -218,6 +219,11 @@ func TestObserver_EventAfterTheVisitorHungUp(t *testing.T) {
 	got := obs.one(t)
 	if got.ServiceID != "svc1" || got.Status != 200 || got.BytesOut < int64(len("first")) {
 		t.Fatalf("event after the visitor hung up: %+v", got)
+	}
+	// The visitor left in the middle of the stream: the copy failed because of
+	// it, so it is no failure of the upstream (the observer counts none).
+	if !got.ClientGone || !got.KeyService {
+		t.Fatalf("a visitor who left mid-stream is not marked as gone: %+v", got)
 	}
 }
 
@@ -260,7 +266,21 @@ func TestObserver_UpgradeThroughTheReverseProxy(t *testing.T) {
 		}
 		defer conn.Close()
 		_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
-		_, _ = io.Copy(conn, conn)
+		// Echo the first message, then keep writing until the proxy lets go
+		// of the connection: the write overlaps the end of the request.
+		buf := make([]byte, 64)
+		n, err := conn.Read(buf)
+		if err != nil {
+			return
+		}
+		_, _ = conn.Write(buf[:n])
+		_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+		filler := bytes.Repeat([]byte("x"), 256)
+		for {
+			if _, err := conn.Write(filler); err != nil {
+				return
+			}
+		}
 	})
 	d := newFakeDialer(upstream)
 	d.register("abc123", &proxy.Resolved{ServiceID: "svc1", TunnelID: "tun1", AccessMode: "open", LocalHost: "127.0.0.1:3000"})
@@ -296,12 +316,15 @@ func TestObserver_UpgradeThroughTheReverseProxy(t *testing.T) {
 	if open != 0 {
 		t.Fatalf("an event while the connection is open: %+v", obs.got)
 	}
-	_ = conn.Close()
+	// The visitor stops sending but keeps reading: the proxy's handler ends
+	// while the upstream is still writing to the visitor.
+	_ = conn.(*net.TCPConn).CloseWrite()
+	go func() { _, _ = io.Copy(io.Discard, br) }()
 	lived := time.Since(opened)
 
 	got := obs.one(t)
-	if got.Status != http.StatusSwitchingProtocols || got.BytesOut != int64(len(msg)) {
-		t.Errorf("status %d, bytes out %d, want 101 and %d", got.Status, got.BytesOut, len(msg))
+	if got.Status != http.StatusSwitchingProtocols || got.BytesOut < int64(len(msg)) {
+		t.Errorf("status %d, bytes out %d, want 101 and at least %d", got.Status, got.BytesOut, len(msg))
 	}
 	if got.Duration < 100*time.Millisecond || got.Duration > lived+time.Second {
 		t.Errorf("duration %s does not cover the connection (open for at least 100ms, %s)", got.Duration, lived)
@@ -440,7 +463,7 @@ func TestObserver_UpstreamDiesMidBody(t *testing.T) {
 		_ = conn.Close()
 	})
 	d := newFakeDialer(upstream)
-	d.register("abc123", &proxy.Resolved{ServiceID: "svc1", TunnelID: "tun1", AccessMode: "open", LocalHost: "127.0.0.1:3000"})
+	d.register("abc123", &proxy.Resolved{ServiceID: "svc1", TunnelID: "tun1", AccessMode: "open", LocalHost: "127.0.0.1:3000", APIKeyHeader: "Authorization"})
 	obs := &trafficObserver{}
 	ts := httptest.NewServer(proxy.New(d, openChecker{}, authDomain, testLog(), proxy.WithObserver(obs)))
 	defer ts.Close()
@@ -454,7 +477,8 @@ func TestObserver_UpstreamDiesMidBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("the visitor got a complete body")
 	}
-	if got := obs.one(t); got.Outcome != observe.OutcomeError {
+	// The visitor was there all along: the upstream failed, and it counts.
+	if got := obs.one(t); got.Outcome != observe.OutcomeError || got.ClientGone || !got.KeyService {
 		t.Fatalf("outcome %q for an upstream that died mid-body: %+v", got.Outcome, got)
 	}
 }
