@@ -55,6 +55,12 @@ const notSet = (slot: string) => `${slot} is not set. Add BURROW_UPSTREAM_KEY_${
 async function hosted() {
   await userEvent.click(screen.getByRole("radio", { name: /a hosted api/i }));
 }
+/** Opens Advanced unless it is open already ("Other API" opens it by itself). */
+async function advanced() {
+  const toggle = screen.getByRole("button", { name: "Advanced" });
+  if (toggle.getAttribute("aria-expanded") !== "true") await userEvent.click(toggle);
+}
+const advancedOpen = () => screen.getByRole("button", { name: "Advanced" }).getAttribute("aria-expanded") === "true";
 
 describe("New provider dialog", () => {
   it("starts on a choice between a model server on one's own machine and a hosted API", async () => {
@@ -159,6 +165,9 @@ describe("New provider dialog", () => {
     const { onOpenChange } = renderDialog();
     await hosted();
     await choosePreset("OpenRouter");
+    // A preset fills what is under Advanced too; it stays closed.
+    expect(advancedOpen()).toBe(false);
+    await advanced();
     expect(screen.getByLabelText("Name")).toHaveValue("OpenRouter");
     expect(screen.getByLabelText("Base URL")).toHaveValue("https://openrouter.ai/api/v1");
     expect(screen.getByLabelText("Provider slug")).toHaveValue("openrouter");
@@ -190,6 +199,7 @@ describe("New provider dialog", () => {
     // A local service has no such choice in this dialog.
     expect(screen.queryByRole("checkbox", { name: RESPONSES })).toBeNull();
     await hosted();
+    await advanced();
     const box = screen.getByRole("checkbox", { name: RESPONSES });
     expect(box).not.toBeChecked();
     expect(box).toHaveAccessibleDescription(
@@ -208,6 +218,7 @@ describe("New provider dialog", () => {
     const { onOpenChange } = renderDialog();
     await hosted();
     await choosePreset("z.ai — Coding Plan");
+    await advanced();
     await userEvent.click(screen.getByRole("checkbox", { name: RESPONSES }));
     expect(screen.getByRole("checkbox", { name: RESPONSES })).toBeChecked();
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
@@ -219,6 +230,7 @@ describe("New provider dialog", () => {
     const { onOpenChange } = renderDialog();
     expect(screen.queryByRole("textbox", { name: "Requests at once" })).toBeNull();
     await hosted();
+    await advanced();
     const field = screen.getByRole("textbox", { name: "Requests at once" });
     expect(field).toHaveValue("");
     expect(field).toHaveAccessibleDescription(
@@ -235,10 +247,16 @@ describe("New provider dialog", () => {
     const { onOpenChange } = renderDialog();
     await hosted();
     await choosePreset("z.ai — Coding Plan");
-    const field = screen.getByRole("textbox", { name: "Requests at once" });
-    await userEvent.type(field, "1001");
+    await advanced();
+    await userEvent.type(screen.getByRole("textbox", { name: "Requests at once" }), "1001");
+    // Closed again before it is sent: the relay's verdict opens it and puts the focus on the field.
+    await userEvent.click(screen.getByRole("button", { name: "Advanced" }));
+    expect(screen.queryByRole("textbox", { name: "Requests at once" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
     expect(await screen.findByText("max concurrent requests must be between 0 and 1000")).toBeInTheDocument();
+    const field = screen.getByRole("textbox", { name: "Requests at once" });
+    expect(advancedOpen()).toBe(true);
+    await waitFor(() => expect(field).toHaveFocus());
     expect(field).toBeInvalid();
     expect(field).toHaveAccessibleDescription("max concurrent requests must be between 0 and 1000");
     expect(onOpenChange).not.toHaveBeenCalled();
@@ -248,6 +266,7 @@ describe("New provider dialog", () => {
     await userEvent.type(field, "-1");
     expect(screen.getByText("Enter a whole number, or leave empty for no limit.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Create" })).toHaveAccessibleDescription("Check the requests at once.");
   });
 
   it("creates through the mock API and choosing another preset overwrites the fields", async () => {
@@ -255,6 +274,7 @@ describe("New provider dialog", () => {
     await hosted();
     await choosePreset("OpenRouter");
     await choosePreset("z.ai — Coding Plan");
+    await advanced();
     expect(screen.getByLabelText("Name")).toHaveValue("z.ai");
     expect(screen.getByLabelText("Provider slug")).toHaveValue("zai");
     expect(screen.getByLabelText("Base URL")).toHaveValue("https://api.z.ai/api/coding/paas/v4");
@@ -313,6 +333,9 @@ describe("New provider dialog", () => {
     await hosted();
     const slot = screen.getByLabelText("Credential slot");
     await userEvent.type(slot, "A,B,C,D,E");
+    // Not while it is typed: the field says so once it is left.
+    expect(slot).not.toHaveAttribute("aria-invalid");
+    await userEvent.tab();
     expect(slot).toHaveAccessibleDescription(/At most four slots\./);
     await userEvent.clear(slot);
     await userEvent.type(slot, "A,B,A");
@@ -334,6 +357,7 @@ describe("New provider dialog", () => {
     await userEvent.type(slot, "my_slot");
     expect(slot).toHaveValue("MY_SLOT");
     await userEvent.type(slot, "-x");
+    await userEvent.tab();
     expect(slot).toHaveAttribute("aria-invalid", "true");
     expect(slot).toHaveAccessibleDescription(/A–Z, 0–9 and underscore/);
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
@@ -362,10 +386,14 @@ describe("New provider dialog", () => {
     renderDialog();
     await hosted();
     await choosePreset("OpenRouter");
+    expect(screen.queryByLabelText("Provider slug")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
-    const slug = screen.getByLabelText("Provider slug");
+    // The slug is under Advanced: the relay's verdict opens it and puts the focus on the field.
+    const slug = await screen.findByLabelText("Provider slug");
     await waitFor(() => expect(slug).toHaveAttribute("aria-invalid", "true"));
     expect(slug).toHaveAccessibleDescription("provider slug or service already in use");
+    expect(advancedOpen()).toBe(true);
+    await waitFor(() => expect(slug).toHaveFocus());
   });
 
   it("shows any other refusal in the dialog body", async () => {
@@ -376,6 +404,9 @@ describe("New provider dialog", () => {
     await choosePreset("OpenRouter");
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("auth header is not a valid header name");
+    // No field under Advanced is to blame: it stays closed.
+    expect(advancedOpen()).toBe(false);
+    await advanced();
     expect(screen.getByLabelText("Provider slug")).not.toHaveAttribute("aria-invalid");
   });
 
@@ -398,9 +429,12 @@ describe("New provider dialog", () => {
     const slot = screen.getByLabelText("Credential slot");
     await userEvent.clear(slot);
     await userEvent.type(slot, "foo_file");
+    // The button says so at once, the field once it is left.
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Create" })).toHaveAccessibleDescription("Check the credential slot.");
+    await userEvent.tab();
     expect(slot).toHaveAttribute("aria-invalid", "true");
     expect(slot).toHaveAccessibleDescription(/cannot end in _FILE/);
-    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
     // A name the relay cannot have is not looked up.
     expect(screen.queryByRole("list", { name: "Credential slots on the relay" })).toBeNull();
   });
@@ -454,6 +488,7 @@ describe("New provider dialog", () => {
     await hosted();
     // Ticked by the preset, then left behind with the format.
     await choosePreset("OpenRouter");
+    await advanced();
     expect(screen.getByRole("checkbox", { name: RESPONSES })).toBeChecked();
     await choosePreset("Other API");
     await userEvent.click(screen.getByRole("checkbox", { name: RESPONSES }));
@@ -470,6 +505,97 @@ describe("New provider dialog", () => {
     await userEvent.type(screen.getByLabelText("Credential slot"), "OPENAI");
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(posted).toMatchObject({ kind: "direct", api_format: "anthropic", supports_responses: false }));
+  });
+
+  it("the default state of a hosted API shows five fields; the rest is under Advanced", async () => {
+    renderDialog();
+    await hosted();
+    for (const label of ["Provider", "Name", "API format", "Credential slot", "Billing"]) {
+      expect(screen.getByLabelText(label)).toBeInTheDocument();
+    }
+    expect(advancedOpen()).toBe(false);
+    for (const label of ["Provider slug", "Base URL", "Requests at once", RESPONSES]) {
+      expect(screen.queryByLabelText(label)).toBeNull();
+    }
+    // Nothing is called wrong before anything was typed.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(document.querySelector("[aria-invalid='true']")).toBeNull();
+
+    await advanced();
+    const region = document.getElementById(screen.getByRole("button", { name: "Advanced" }).getAttribute("aria-controls")!)!;
+    for (const label of ["Provider slug", "Base URL", "Requests at once", RESPONSES]) {
+      expect(within(region).getByLabelText(label)).toBeInTheDocument();
+    }
+    // The slug's help sits under the slug.
+    expect(within(region).getByLabelText("Provider slug")).toHaveAccessibleDescription("Leave the slug empty to derive it from the name.");
+  });
+
+  it("choosing Other API opens Advanced, where its base URL is asked for", async () => {
+    renderDialog();
+    await hosted();
+    await choosePreset("OpenRouter");
+    expect(advancedOpen()).toBe(false);
+    await choosePreset("Other API");
+    expect(advancedOpen()).toBe(true);
+    const url = screen.getByLabelText("Base URL");
+    expect(url).toHaveValue("");
+    expect(url).toBeRequired();
+    await userEvent.type(screen.getByLabelText("Name"), "LAN");
+    await userEvent.type(screen.getByLabelText("Credential slot"), "LAN");
+    const create = screen.getByRole("button", { name: "Create" });
+    expect(create).toBeDisabled();
+    expect(create).toHaveAccessibleDescription("Enter a base URL.");
+    await userEvent.type(url, "https://lan.example.net/v1");
+    expect(create).toBeEnabled();
+  });
+
+  it("a base URL the relay refuses opens Advanced and takes the focus", async () => {
+    server.use(http.post("/api/v1/ai/providers", () =>
+      HttpResponse.json({ error: "base URL must be an https URL" }, { status: 400 })));
+    renderDialog();
+    await hosted();
+    await choosePreset("OpenRouter");
+    expect(screen.queryByLabelText("Base URL")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    const url = await screen.findByLabelText("Base URL");
+    expect(advancedOpen()).toBe(true);
+    expect(url).toHaveAttribute("aria-invalid", "true");
+    expect(url).toHaveAccessibleDescription("base URL must be an https URL");
+    await waitFor(() => expect(url).toHaveFocus());
+  });
+
+  it("the button says what is missing for a hosted API, in order", async () => {
+    renderDialog();
+    await hosted();
+    const create = screen.getByRole("button", { name: "Create" });
+    expect(create).toBeDisabled();
+    expect(create).toHaveAccessibleDescription("Choose a provider.");
+    expect(screen.getByText("Choose a provider.")).toBeInTheDocument();
+
+    await choosePreset("OpenRouter");
+    expect(create).toBeEnabled();
+    expect(create).not.toHaveAttribute("aria-describedby");
+
+    await userEvent.clear(screen.getByLabelText("Name"));
+    expect(create).toHaveAccessibleDescription("Enter a name.");
+    await userEvent.clear(screen.getByLabelText("Credential slot"));
+    expect(create).toHaveAccessibleDescription("Enter a name.");
+    await userEvent.type(screen.getByLabelText("Name"), "OpenRouter");
+    expect(create).toHaveAccessibleDescription("Enter a credential slot.");
+    await userEvent.type(screen.getByLabelText("Credential slot"), "openrouter");
+    expect(create).toBeEnabled();
+  });
+
+  it("the button says what is missing for a service that already exists", async () => {
+    db.services.push({ ...db.services.find((x) => x.id === "svc_ai001")!, id: "svc_ai002", name: "vllm", slug: "vl9k2p" });
+    db.services.push({ ...db.services.find((x) => x.id === "svc_ai001")!, id: "svc_ai003", name: "tgi", slug: "tg1k2p" });
+    renderDialog();
+    await useExisting();
+    await screen.findByLabelText("Service");
+    const create = screen.getByRole("button", { name: "Create" });
+    expect(create).toHaveAccessibleDescription("Enter a name.");
+    await userEvent.type(screen.getByLabelText("Name"), "vLLM");
+    expect(create).toHaveAccessibleDescription("Choose a service.");
   });
 
   it("describes a hosted API without naming one format", async () => {

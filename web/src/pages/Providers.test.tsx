@@ -377,9 +377,13 @@ describe("Providers page", () => {
     await userEvent.type(within(dialog).getByLabelText("Name"), "Local");
     const slug = within(dialog).getByLabelText("Provider slug");
     await userEvent.type(slug, "v1");
+    // The button is held back at once; the field says why once it is left.
+    expect(within(dialog).getByRole("button", { name: "Create" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Create" })).toHaveAccessibleDescription("Check the provider slug.");
+    expect(slug).not.toHaveAttribute("aria-invalid");
+    await userEvent.tab();
     expect(slug).toHaveAttribute("aria-invalid", "true");
     expect(slug).toHaveAccessibleDescription('"v1" is reserved.');
-    expect(within(dialog).getByRole("button", { name: "Create" })).toBeDisabled();
     await userEvent.clear(slug);
     await userEvent.type(slug, "local");
     expect(slug).toHaveAccessibleDescription(`${window.location.origin}/ai/local/v1`);

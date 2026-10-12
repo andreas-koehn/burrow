@@ -5,7 +5,7 @@ import { Copy, KeyRound } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Badge, Button, Checkbox, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows } from "@/components/ds";
+import { Badge, Button, Checkbox, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
 import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/auth/useAuth";
 import { formatRelativeTime } from "@/lib/format";
@@ -67,8 +67,13 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
   });
 
   const trimmed = name.trim();
-  // Nothing ticked would be sent as an empty list, which means every model.
-  const ready = trimmed !== "" && (!restricted || chosen.length > 0) && !create.isPending;
+  // Beside the button while it is disabled. Nothing ticked would be sent as an
+  // empty list, which means every model.
+  const missing = [
+    trimmed === "" && "Enter a name.",
+    restricted && chosen.length === 0 && "Choose at least one model or provider.",
+  ];
+  const hint = firstMissing(missing);
 
   if (secret !== null) {
     return (
@@ -115,8 +120,14 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
       description="A key a program sends to the AI gateway. It is shown once, right after it is created."
       footer={
         <>
+          <SubmitHint id="gateway-key-hint" missing={missing} />
           <Button variant="secondary" disabled={create.isPending} onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={!ready} onClick={() => { setFormErr(null); create.mutate(); }}>
+          <Button
+            variant="primary"
+            disabled={hint !== undefined || create.isPending}
+            aria-describedby={hint !== undefined ? "gateway-key-hint" : undefined}
+            onClick={() => { setFormErr(null); create.mutate(); }}
+          >
             {create.isPending ? "Creating…" : "Create key"}
           </Button>
         </>
@@ -174,7 +185,6 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
                   </div>
                 );
               })}
-              {chosen.length === 0 && <p className="muted small">Choose at least one.</p>}
               <p className="muted small">A model allows that name on <code>/openai/v1</code> and <code>/anthropic</code>.</p>
               <p className="muted small">
                 Everything from a provider also allows the provider's own address <code>/ai/&lt;provider&gt;/…</code>.

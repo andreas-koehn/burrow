@@ -115,6 +115,7 @@ describe("Gateway keys page", () => {
     await userEvent.click(within(dialog).getByRole("radio", { name: "Only these models" }));
     // An empty list would mean every model: nothing chosen is not a restriction.
     expect(within(dialog).getByRole("button", { name: "Create key" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Create key" })).toHaveAccessibleDescription("Choose at least one model or provider.");
     // What each kind of entry opens: two short lines.
     const lines = [
       "A model allows that name on /openai/v1 and /anthropic.",
@@ -176,9 +177,31 @@ describe("Gateway keys page", () => {
     mountAt("/gateway/keys?new=1&provider=gone");
     const dialog = await screen.findByRole("dialog", { name: "New gateway key" });
     expect(within(dialog).getByRole("radio", { name: "Only these models" })).toBeChecked();
-    expect(await within(dialog).findByText("Choose at least one.")).toBeInTheDocument();
+    await within(dialog).findByRole("checkbox", { name: "burrow-simple" });
+    expect(within(dialog).getByRole("button", { name: "Create key" })).toHaveAccessibleDescription("Enter a name.");
     await userEvent.type(within(dialog).getByLabelText("Name"), "laptop");
+    expect(within(dialog).getByRole("button", { name: "Create key" })).toHaveAccessibleDescription("Choose at least one model or provider.");
+    // Said once, beside the button it explains.
+    expect(within(dialog).getAllByText(/Choose at least one/)).toHaveLength(1);
     expect(within(dialog).getByRole("button", { name: "Create key" })).toBeDisabled();
+  });
+
+  it("opens without an error, and the button says what is missing", async () => {
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New key" }));
+    const dialog = await screen.findByRole("dialog", { name: "New gateway key" });
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    const create = within(dialog).getByRole("button", { name: "Create key" });
+    expect(create).toBeDisabled();
+    expect(within(dialog).getByRole("status")).toHaveTextContent("Enter a name.");
+    expect(create).toHaveAccessibleDescription("Enter a name.");
+    await userEvent.type(within(dialog).getByLabelText("Name"), "laptop");
+    expect(create).toBeEnabled();
+    expect(within(dialog).queryByRole("status")).toBeNull();
+    expect(create).not.toHaveAttribute("aria-describedby");
+    // The default state is two things to decide: the name, and what the key may use.
+    expect(within(dialog).getAllByRole("textbox")).toHaveLength(1);
+    expect(within(dialog).getAllByRole("radiogroup")).toHaveLength(1);
   });
 
   it("an unrestricted key sends no list", async () => {

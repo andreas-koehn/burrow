@@ -1,10 +1,10 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, X } from "lucide-react";
+import { ArrowDown, ArrowUp, X } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Checkbox, Combobox, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select, Switch } from "@/components/ds";
+import { Button, Checkbox, Combobox, Dialog, Disclosure, ErrorNotice, FormField, FormFieldGroup, Input, Select, SubmitHint, Switch, firstMissing } from "@/components/ds";
 import { modelNameError } from "@/lib/modelNames";
 import { providerState } from "@/lib/status";
 import type { AiModel, AiModelTarget, AiProvider, AiProviderModel, Dialect } from "@/lib/contract";
@@ -200,6 +200,8 @@ function TargetList({ dialect, legend, short, providers, value, onChange, announ
 
   const speaking = (providers ?? []).filter((p) => p.api_format === dialect);
   const served = value.some((t) => t.provider !== "");
+  // A fallback is offered once there is something to fall back from.
+  const complete = value.some((t) => t.provider !== "" && t.model.trim() !== "");
 
   function move(i: number, by: -1 | 1) {
     const to = i + by;
@@ -233,7 +235,7 @@ function TargetList({ dialect, legend, short, providers, value, onChange, announ
       ) : speaking.length === 0 && !served ? (
         <p className="muted small">
           <span>No provider speaks this format yet.</span>{" "}
-          Add one under <Link className="link-inline" to="/gateway/providers">Providers</Link>.
+          <Link className="link-inline" to="/gateway/providers?new=local">Add a provider</Link>.
         </p>
       ) : (
         <>
@@ -257,7 +259,7 @@ function TargetList({ dialect, legend, short, providers, value, onChange, announ
               announce={announce}
             />
           ))}
-          {served && (
+          {complete && (
             <Button
               variant="secondary"
               size="sm"
@@ -295,7 +297,6 @@ const TIMEOUT_RANGE = "Between 1 and 600 seconds.";
 function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps, "open">) {
   const qc = useQueryClient();
   const editing = model !== undefined;
-  const advancedId = useId();
   const [name, setName] = useState(model?.name ?? "");
   const [description, setDescription] = useState(model?.description ?? "");
   const [enabled, setEnabled] = useState(model?.enabled ?? true);
@@ -314,7 +315,16 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
   const [onRateLimit, setOnRateLimit] = useState(model?.fallback_on_rate_limit ?? false);
   const [attemptText, setAttemptText] = useState(String(model?.attempt_timeout_s ?? 60));
   const [totalText, setTotalText] = useState(String(model?.total_timeout_s ?? 120));
-  const [advanced, setAdvanced] = useState(false);
+  // Advanced starts open where the model holds something set there.
+  const [advanced, setAdvanced] = useState(() => model !== undefined && (
+    model.description !== "" || !model.enabled || model.fallback_on_rate_limit
+    || model.attempt_timeout_s !== 60 || model.total_timeout_s !== 120
+  ));
+  const [lostOpen, setLostOpen] = useState(false);
+  // A field's rule is named once the field was left; an unfinished target once the form was sent.
+  const [nameLeft, setNameLeft] = useState(false);
+  const [timeoutsLeft, setTimeoutsLeft] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const [formErr, setFormErr] = useState<string | null>(null);
 
@@ -342,9 +352,11 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
   const targets: AiModelTarget[] = FORMATS.flatMap(({ dialect }) => choices[dialect]
     .filter((t) => t.provider !== "" && t.model.trim() !== "")
     .map((t) => ({ dialect, provider: t.provider, model: t.model.trim() })));
-  // An entry with a provider but no model id, or a fallback entry left empty, is unfinished.
-  const unfinished = FORMATS.some(({ dialect }) => choices[dialect]
-    .some((t, _, list) => (t.provider === "" ? list.length > 1 : t.model.trim() === "")));
+  // An entry with a provider but no model id, or a fallback entry left empty,
+  // is unfinished: the first one, by the name its group carries.
+  const unfinished = FORMATS.flatMap(({ dialect, legend }) => choices[dialect]
+    .map((t, i, list) => ((t.provider === "" ? list.length > 1 : t.model.trim() === "") ? `${legend}, target ${i + 1}` : null)))
+    .find((name) => name !== null) ?? null;
   // The relay refuses the same provider and model twice in one format.
   const twice = targets.some((t, i) => targets.findIndex((x) => x.dialect === t.dialect && x.provider === t.provider && x.model === t.model) !== i);
   const nameErr = modelNameError(name)
@@ -399,11 +411,29 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
     },
   });
 
-  const ready = name !== "" && nameErr === null && targets.length > 0 && !unfinished && !twice && timeoutsOk
-    && dirty && !save.isPending;
+  // Beside the button while it is disabled, the first of these that applies.
+  const missing = [
+    name === "" && "Enter a name.",
+    nameErr !== null && "Check the model name.",
+    targets.length === 0 && "Choose a provider and a model for at least one format.",
+    twice && "A target is listed twice.",
+    !timeoutsOk && "Check the timeouts under Advanced.",
+    !dirty && "No changes to save.",
+  ];
+  const hint = firstMissing(missing);
   const change = <T,>(set: (v: T) => void) => (v: T) => { set(v); setFormErr(null); };
   // A field with an error is never left hidden.
   const advancedOpen = advanced || !timeoutsOk;
+  const shownNameErr = nameLeft ? nameErr : null;
+  const shownAttemptErr = timeoutsLeft ? attemptErr : null;
+  const shownTotalErr = timeoutsLeft ? totalErr : null;
+
+  // An unfinished target does not disable the button: it is named when the form is sent.
+  function submit() {
+    setFormErr(null);
+    if (unfinished !== null) { setSubmitted(true); return; }
+    save.mutate();
+  }
 
   return (
     <Dialog
@@ -414,8 +444,14 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
       size="md"
       footer={
         <>
+          <SubmitHint id="model-hint" missing={missing} />
           <Button variant="secondary" disabled={save.isPending} onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button variant="primary" disabled={!ready} onClick={() => save.mutate()}>
+          <Button
+            variant="primary"
+            disabled={hint !== undefined || save.isPending}
+            aria-describedby={hint !== undefined ? "model-hint" : undefined}
+            onClick={submit}
+          >
             {save.isPending ? "Saving…" : editing ? "Save changes" : "Create model"}
           </Button>
         </>
@@ -426,7 +462,7 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
           label="Model name"
           htmlFor="model-name"
           w="md"
-          error={nameErr ?? undefined}
+          error={shownNameErr ?? undefined}
           help={model && name !== model.name
             ? "Gateway keys that list the old name are not updated."
             : "What apps send as the model, e.g. burrow-medium."}
@@ -435,26 +471,15 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
             id="model-name"
             mono
             value={name}
-            invalid={nameErr !== null}
+            invalid={shownNameErr !== null}
             autoComplete="off"
             autoCapitalize="none"
             spellCheck={false}
             maxLength={63}
             onChange={(e) => change(setName)(e.target.value)}
+            onBlur={() => setNameLeft(true)}
           />
         </FormField>
-        <FormField label="Description (optional)" htmlFor="model-description" w="md">
-          <Input
-            id="model-description"
-            value={description}
-            maxLength={500}
-            onChange={(e) => change(setDescription)(e.target.value)}
-          />
-        </FormField>
-        <label className="row row-center gap-2">
-          <Switch aria-label="Enabled" checked={enabled} onChange={change(setEnabled)} />
-          <span>Enabled</span>
-        </label>
       </FormFieldGroup>
 
       {FORMATS.map(({ dialect, legend, short }) => (
@@ -465,104 +490,105 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
           short={short}
           providers={providerList}
           value={choices[dialect]}
-          onChange={(next) => { setChoices((c) => ({ ...c, [dialect]: next })); setFormErr(null); }}
+          onChange={(next) => { setChoices((c) => ({ ...c, [dialect]: next })); setFormErr(null); setSubmitted(false); }}
           announce={announce}
         />
       ))}
       {/* Moves and removals, for a screen reader. */}
       <p className="visually-hidden" role="status">{announcement}</p>
-      {twice ? (
-        <ErrorNotice>A target is listed twice. Each provider and model can be in a format once.</ErrorNotice>
-      ) : unfinished ? (
-        <p className="muted small">Every target needs a provider and a model. Remove the ones you do not need.</p>
-      ) : targets.length === 0 && (
-        <p className="muted small">Choose a target for at least one format.</p>
+      {submitted && unfinished !== null && (
+        <ErrorNotice>{unfinished} needs a provider and a model. Remove it if you do not need it.</ErrorNotice>
       )}
 
       <div className="model-translate">
         <label className="row row-center gap-2">
           <Switch
             aria-label="Translate for the other format"
-            aria-describedby="model-translate-help model-translate-limits"
+            aria-describedby="model-translate-help"
             checked={translate}
             onChange={change(setTranslate)}
           />
           <span>Translate for the other format</span>
         </label>
         <p id="model-translate-help" className="muted small">
-          A format is served natively where it has a target. With this on, a format without a target is answered by
-          translating to and from the targets of the other format, and the Responses API is answered through an
-          OpenAI-format target that does not offer it. A target of its own format is always used first.
+          Answer the other format by translating to this model's targets.
         </p>
-        <p id="model-translate-limits" className="muted small">
-          Translated requests lose what the other format cannot express: prompt caching hints, thinking signatures and
-          beta features are not carried over. Every translated response names what was left out.
-        </p>
+        <Disclosure label="What gets lost" open={lostOpen} onOpenChange={setLostOpen}>
+          <p className="muted small">
+            A format is served natively where it has a target. With this on, a format without a target is answered by
+            translating to and from the targets of the other format, and the Responses API is answered through an
+            OpenAI-format target that does not offer it. A target of its own format is always used first.
+          </p>
+          <p className="muted small">
+            Translated requests lose what the other format cannot express: prompt caching hints, thinking signatures and
+            beta features are not carried over. Every translated response names what was left out.
+          </p>
+        </Disclosure>
       </div>
 
-      <div className="model-advanced">
-        <button
-          type="button"
-          className="link small model-advanced-toggle"
-          aria-expanded={advancedOpen}
-          aria-controls={advancedId}
-          onClick={() => setAdvanced(!advancedOpen)}
-        >
-          {advancedOpen ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
-          Advanced
-        </button>
-        {advancedOpen && (
-          <div id={advancedId} className="model-advanced-body">
-            <FormFieldGroup>
-              <div className="row row-center gap-2">
-                <Checkbox id="model-on-rate-limit" checked={onRateLimit} onChange={change(setOnRateLimit)} describedBy="model-on-rate-limit-help" />
-                <label htmlFor="model-on-rate-limit">Also fall back when a provider rate-limits (429)</label>
-              </div>
-              <p id="model-on-rate-limit-help" className="muted small">
-                Off, a 429 goes back to the app as it is.
-              </p>
-              <FormField
-                label="Attempt timeout (seconds)"
-                htmlFor="model-attempt-timeout"
-                w="sm"
-                error={attemptErr ?? undefined}
-                help="How long one target may take to start answering before the next one is tried."
-              >
-                <Input
-                  id="model-attempt-timeout"
-                  type="number"
-                  inputMode="numeric"
-                  min={1}
-                  max={600}
-                  step={1}
-                  value={attemptText}
-                  invalid={attemptErr !== null}
-                  onChange={(e) => change(setAttemptText)(e.target.value)}
-                />
-              </FormField>
-              <FormField
-                label="Total timeout (seconds)"
-                htmlFor="model-total-timeout"
-                w="sm"
-                error={totalErr ?? undefined}
-                help="How long all attempts together may take before the request fails."
-              >
-                <Input
-                  id="model-total-timeout"
-                  type="number"
-                  inputMode="numeric"
-                  min={1}
-                  max={600}
-                  step={1}
-                  value={totalText}
-                  invalid={totalErr !== null}
-                  onChange={(e) => change(setTotalText)(e.target.value)}
-                />
-              </FormField>
-            </FormFieldGroup>
+      <Disclosure label="Advanced" open={advancedOpen} onOpenChange={setAdvanced}>
+        <FormFieldGroup>
+          <FormField label="Description (optional)" htmlFor="model-description" w="md">
+            <Input
+              id="model-description"
+              value={description}
+              maxLength={500}
+              onChange={(e) => change(setDescription)(e.target.value)}
+            />
+          </FormField>
+          <label className="row row-center gap-2">
+            <Switch aria-label="Enabled" checked={enabled} onChange={change(setEnabled)} />
+            <span>Enabled</span>
+          </label>
+          <div className="row row-center gap-2">
+            <Checkbox id="model-on-rate-limit" checked={onRateLimit} onChange={change(setOnRateLimit)} describedBy="model-on-rate-limit-help" />
+            <label htmlFor="model-on-rate-limit">Also fall back when a provider rate-limits (429)</label>
           </div>
-        )}
-      </div>
+          <p id="model-on-rate-limit-help" className="muted small">
+            Off, a 429 goes back to the app as it is.
+          </p>
+          <FormField
+            label="Attempt timeout (seconds)"
+            htmlFor="model-attempt-timeout"
+            w="sm"
+            error={shownAttemptErr ?? undefined}
+            help="How long one target may take to start answering before the next one is tried."
+          >
+            <Input
+              id="model-attempt-timeout"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={600}
+              step={1}
+              value={attemptText}
+              invalid={shownAttemptErr !== null}
+              onChange={(e) => change(setAttemptText)(e.target.value)}
+              onBlur={() => setTimeoutsLeft(true)}
+            />
+          </FormField>
+          <FormField
+            label="Total timeout (seconds)"
+            htmlFor="model-total-timeout"
+            w="sm"
+            error={shownTotalErr ?? undefined}
+            help="How long all attempts together may take before the request fails."
+          >
+            <Input
+              id="model-total-timeout"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={600}
+              step={1}
+              value={totalText}
+              invalid={shownTotalErr !== null}
+              onChange={(e) => change(setTotalText)(e.target.value)}
+              onBlur={() => setTimeoutsLeft(true)}
+            />
+          </FormField>
+        </FormFieldGroup>
+      </Disclosure>
       {formErr && <ErrorNotice>{formErr}</ErrorNotice>}
     </Dialog>
   );

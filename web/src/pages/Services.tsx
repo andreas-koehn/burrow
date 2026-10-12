@@ -5,7 +5,7 @@ import { ArrowDown, ArrowUp, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/auth/useAuth";
-import { Button, Badge, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, Segmented, Select, SkeletonRows } from "@/components/ds";
+import { Button, Badge, Dialog, Disclosure, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, Segmented, Select, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { formatBytes } from "@/lib/format";
 import type { Service, AccessMode, ClientDetail, ClientView } from "@/lib/contract";
@@ -14,6 +14,8 @@ import { SlugField, slugError } from "@/components/SlugField";
 import { AccessModePanel, type AccessModePanelHandle } from "@/components/AccessModePanel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { serviceState, type ServedState } from "@/lib/status";
+import { SERVICE_ID_HINT, deriveServiceId, deriveSlug, serviceIdError } from "@/lib/slug";
+import { serviceUrl } from "@/lib/serviceUrl";
 
 const ACCESS_LABEL: Record<AccessMode, string> = {
   open: "Open",
@@ -220,13 +222,23 @@ export default function Services() {
     navigate(`/services/${encodeURIComponent(serviceId)}`);
   }
 
-  // P2-1: minimal "New service" dialog. POST /services is admin-only on the
-  // backend (v0.5.2 P3.6); 403 here surfaces a friendly message.
+  // "New service" asks for one name. The id, the URL slug and the title follow
+  // it; under Advanced each can be given a value of its own. POST /services is
+  // admin-only on the backend (v0.5.2 P3.6); 403 here surfaces a friendly message.
   const [newOpen, setNewOpen] = useState(false);
-  const [nsServiceId, setNsServiceId] = useState("");
-  const [nsTitle, setNsTitle] = useState("");
-  const [nsSlug, setNsSlug] = useState("");
+  const [nsName, setNsName] = useState("");
+  // null: the field follows the name.
+  const [nsServiceId, setNsServiceId] = useState<string | null>(null);
+  const [nsSlug, setNsSlug] = useState<string | null>(null);
+  const [nsTitle, setNsTitle] = useState<string | null>(null);
   const [nsAccessMode, setNsAccessMode] = useState("open");
+  const [nsAdvanced, setNsAdvanced] = useState(false);
+  // A field's own rule is shown once the field was left, not while it is typed in.
+  const [nsNameLeft, setNsNameLeft] = useState(false);
+  const [nsIdLeft, setNsIdLeft] = useState(false);
+  // What the relay said about one field; nsErr is everything else.
+  const [nsIdErr, setNsIdErr] = useState<string | null>(null);
+  const [nsSlugErr, setNsSlugErr] = useState<string | null>(null);
   const [nsErr, setNsErr] = useState<string | null>(null);
 
   // A service with its provider is made under Providers; ?new=ai, the old way
@@ -246,26 +258,65 @@ export default function Services() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Burrow suggests a slug each time the dialog opens; the operator may replace it.
+  const derivedId = deriveServiceId(nsName);
+  const derivedSlug = deriveSlug(nsName);
+  // Burrow suggests a slug only where the name gives none (a name without a
+  // letter or digit, whose id is typed under Advanced).
   const suggestion = useQuery({
     queryKey: ["slug-suggestion"],
     queryFn: () => apiFetch<{ slug: string }>("/services/slug-suggestion"),
-    enabled: newOpen,
+    enabled: newOpen && nsName.trim() !== "" && derivedSlug === "" && !nsSlug,
     staleTime: 0,
     gcTime: 0,
     retry: false,
   });
+  const followedSlug = derivedSlug || suggestion.data?.slug || "";
+  // An emptied field counts as following the name.
+  const nsId = nsServiceId || derivedId;
+  const nsUrlSlug = nsSlug || followedSlug;
+  const nsShownTitle = (nsTitle || nsName).trim();
+
+  const nsNameMissing = nsName.trim() === "";
+  // The name has to give an id the relay takes, unless the id is typed.
+  const nsNameProblem = nsNameMissing || nsServiceId ? null
+    : derivedId === "" ? "Use letters or digits."
+    : derivedId.length < 3 ? "Use at least three letters or digits."
+    : null;
+  const nsIdProblem = nsServiceId ? serviceIdError(nsServiceId) : null;
+  const nsSlugProblem = slugError(nsSlug ?? "");
+  const nsMissing = [
+    nsNameMissing && "Enter a name.",
+    nsNameProblem,
+    nsIdProblem && "Check the service ID.",
+    nsSlugProblem && "Check the URL slug.",
+  ];
+  const nsHint = firstMissing(nsMissing);
+  const nsNameError = nsNameLeft ? nsNameProblem : null;
+  const nsIdError = nsIdErr ?? (nsIdLeft ? nsIdProblem : null);
+  // A field with an error is never left hidden.
+  const nsAdvancedOpen = nsAdvanced || nsIdProblem !== null || nsSlugProblem !== null;
+
+  // The relay refused a field under Advanced: the same answer has opened it, and it takes the focus here.
   useEffect(() => {
-    if (newOpen && suggestion.data && nsSlug === "") setNsSlug(suggestion.data.slug);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [newOpen, suggestion.data]);
+    const field = nsIdErr !== null ? "ns-service-id" : nsSlugErr !== null ? "ns-slug" : null;
+    if (field) document.getElementById(field)?.focus();
+  }, [nsIdErr, nsSlugErr]);
 
   function closeNew() {
     setNewOpen(false);
-    setNsServiceId("");
-    setNsTitle("");
-    setNsSlug("");
+    setNsName("");
+    setNsServiceId(null);
+    setNsSlug(null);
+    setNsTitle(null);
     setNsAccessMode("open");
+    setNsAdvanced(false);
+    setNsNameLeft(false);
+    setNsIdLeft(false);
+    clearNsErrors();
+  }
+  function clearNsErrors() {
+    setNsIdErr(null);
+    setNsSlugErr(null);
     setNsErr(null);
   }
 
@@ -274,25 +325,29 @@ export default function Services() {
       apiFetch<{ id: string; created_at: string }>("/services", {
         method: "POST",
         body: JSON.stringify({
-          service_id: nsServiceId,
-          title: nsTitle || undefined,
-          slug: nsSlug || undefined,
+          service_id: nsId,
+          title: nsShownTitle || undefined,
+          slug: nsUrlSlug || undefined,
           access_mode: nsAccessMode,
         }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["services"] });
-      toast.success(`Service ${nsServiceId} created.`);
+      toast.success(`Service ${nsShownTitle || nsId} created.`);
       closeNew();
     },
     onError: (e: unknown) => {
-      if (e instanceof ApiError && e.status === 403) {
-        setNsErr("You don't have permission to create services.");
-      } else if (e instanceof ApiError) {
-        setNsErr(e.message);
-      } else {
-        setNsErr("Couldn't create service.");
-      }
+      if (!(e instanceof ApiError)) setNsErr("Couldn't create service.");
+      else if (e.status === 403) setNsErr("You don't have permission to create services.");
+      // The relay names the id by its field ("service_id must match …"). A
+      // field under Advanced is shown with what the relay said about it, and
+      // stays shown while it is corrected.
+      else if (e.status === 400 && e.message.startsWith("service_id")) { setNsIdErr(e.message); setNsAdvanced(true); }
+      // A taken name is "service id or slug already in use"; both follow the
+      // name, and the slug is the one a reader changes without a second thought.
+      // The relay's other 409 (Burrow login without an auth domain) is no field's.
+      else if ((e.status === 409 && e.message.includes("slug")) || (e.status === 400 && e.message.startsWith("slug"))) { setNsSlugErr(e.message); setNsAdvanced(true); }
+      else setNsErr(e.message);
     },
   });
 
@@ -306,7 +361,7 @@ export default function Services() {
       <PageHeader
         title="Services"
         subtitle="Durable services exposed through this relay, with their access configuration."
-        actions={<Button variant="primary" size="sm" onClick={() => { setNewOpen(true); setNsErr(null); }}>New service</Button>}
+        actions={<Button variant="primary" size="sm" onClick={() => setNewOpen(true)}>New service</Button>}
       />
       {/* Always there, also while Online loads or fails: it is the way back to All. */}
       <div className="toolbar-row">
@@ -508,14 +563,16 @@ export default function Services() {
         open={newOpen}
         onOpenChange={(o) => { if (!o) closeNew(); }}
         title="New service"
-        description="Pre-provision a service so a connecting client adopts the same id."
+        description="Reserve a service and its address before a client serves it."
         footer={
           <>
+            <SubmitHint id="ns-hint" missing={nsMissing} />
             <Button variant="secondary" onClick={closeNew}>Cancel</Button>
             <Button
               variant="primary"
-              disabled={!nsServiceId || slugError(nsSlug) !== null || createService.isPending}
-              onClick={() => createService.mutate()}
+              disabled={nsHint !== undefined || createService.isPending}
+              aria-describedby={nsHint !== undefined ? "ns-hint" : undefined}
+              onClick={() => { clearNsErrors(); createService.mutate(); }}
             >
               {createService.isPending ? "Creating…" : "Create"}
             </Button>
@@ -523,13 +580,31 @@ export default function Services() {
         }
       >
         <FormFieldGroup>
-          <FormField label="Service ID" htmlFor="ns-service-id" w="md">
-            <Input id="ns-service-id" className="mono" placeholder="e.g. web-prod (a-z 0-9 - _, 3–64)" value={nsServiceId} onChange={(e) => setNsServiceId(e.target.value)} />
+          <FormField
+            label="Name"
+            htmlFor="ns-name"
+            w="md"
+            descId="ns-name-desc"
+            error={nsNameError ?? undefined}
+            help={nsNameMissing || nsHint !== undefined ? "The address and the service ID follow from it." : (
+              <>
+                {nsUrlSlug && <><span className="mono">{serviceUrl(nsUrlSlug)}</span>{" · "}</>}
+                ID <span className="mono">{nsId}</span>
+              </>
+            )}
+          >
+            <Input
+              id="ns-name"
+              value={nsName}
+              maxLength={120}
+              autoComplete="off"
+              invalid={nsNameError !== null}
+              aria-describedby="ns-name-desc"
+              onChange={(e) => { setNsName(e.target.value); clearNsErrors(); }}
+              onBlur={() => setNsNameLeft(true)}
+            />
           </FormField>
-          <FormField label="Title" htmlFor="ns-title" w="md">
-            <Input id="ns-title" placeholder="optional display name" value={nsTitle} onChange={(e) => setNsTitle(e.target.value)} />
-          </FormField>
-          <SlugField id="ns-slug" value={nsSlug} onChange={setNsSlug} />
+          <p className="muted small">Apps that load assets from absolute paths (/assets/…) need base-path support to work under a /svc/ URL.</p>
           <FormField label="Access mode" htmlFor="ns-access-mode" w="md">
             <Select
               id="ns-access-mode"
@@ -539,8 +614,52 @@ export default function Services() {
             />
           </FormField>
         </FormFieldGroup>
-        <p className="muted small">Apps that load assets from absolute paths (/assets/…) need base-path support to work under a /svc/ URL.</p>
-        {nsErr && <p role="alert" className="notice-inline error">{nsErr}</p>}
+        <Disclosure label="Advanced" open={nsAdvancedOpen} onOpenChange={setNsAdvanced}>
+          <FormFieldGroup>
+            <FormField
+              label="Service ID"
+              htmlFor="ns-service-id"
+              w="md"
+              descId="ns-service-id-desc"
+              error={nsIdError ?? undefined}
+              help={SERVICE_ID_HINT}
+            >
+              <Input
+                id="ns-service-id"
+                mono
+                value={nsServiceId ?? derivedId}
+                maxLength={64}
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                invalid={nsIdError !== null}
+                aria-describedby="ns-service-id-desc"
+                onChange={(e) => { setNsServiceId(e.target.value.toLowerCase()); clearNsErrors(); }}
+                onBlur={() => { setNsIdLeft(true); if (nsServiceId === "") setNsServiceId(null); }}
+              />
+            </FormField>
+            <SlugField
+              id="ns-slug"
+              value={nsSlug ?? followedSlug}
+              error={nsSlugErr}
+              errorAfterBlur
+              onChange={(v) => { setNsSlug(v); clearNsErrors(); }}
+              onBlur={() => { if (nsSlug === "") setNsSlug(null); }}
+            />
+            <FormField label="Title" htmlFor="ns-title" w="md" descId="ns-title-desc" help="Shown in lists in place of the ID.">
+              <Input
+                id="ns-title"
+                value={nsTitle ?? nsName}
+                maxLength={120}
+                autoComplete="off"
+                aria-describedby="ns-title-desc"
+                onChange={(e) => { setNsTitle(e.target.value); setNsErr(null); }}
+                onBlur={() => { if (nsTitle?.trim() === "") setNsTitle(null); }}
+              />
+            </FormField>
+          </FormFieldGroup>
+        </Disclosure>
+        {nsErr && <ErrorNotice>{nsErr}</ErrorNotice>}
       </Dialog>
       <Toaster />
     </div>

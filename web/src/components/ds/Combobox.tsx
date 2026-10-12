@@ -27,6 +27,8 @@ export interface ComboboxProps {
   maxLength?: number;
   required?: boolean;
   autoCapitalize?: string;
+  /** The field was left: the moment its owner may name what is wrong with the value. */
+  onBlur?: () => void;
 }
 
 /**
@@ -36,7 +38,7 @@ export interface ComboboxProps {
  */
 export function Combobox({
   id, value, onChange, options, placeholder, mono, invalid, "aria-describedby": describedBy, emptyText,
-  maxLength, required, autoCapitalize = "none",
+  maxLength, required, autoCapitalize = "none", onBlur,
 }: ComboboxProps) {
   const listId = `${id}-options`;
   const emptyId = `${id}-empty`;
@@ -57,6 +59,7 @@ export function Combobox({
         aria-invalid={invalid || undefined}
         aria-describedby={[describedBy, empty ? emptyId : ""].filter(Boolean).join(" ") || undefined}
         onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
       />
       <datalist id={listId}>
         {options.map((o) => (

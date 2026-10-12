@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Combobox, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
+import { Button, Combobox, Dialog, Disclosure, ErrorNotice, FormField, FormFieldGroup, Input, Select, SubmitHint, firstMissing } from "@/components/ds";
 import { SlugField } from "@/components/SlugField";
 import { useLocalProviderFlow } from "@/components/LocalProviderFlow";
 import { ConcurrencyField, ResponsesCheckbox, SlotStatus } from "@/components/ProviderUpstreamPanel";
@@ -67,6 +67,10 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
   const [urlErr, setUrlErr] = useState<string | null>(null);
   const [slotErr, setSlotErr] = useState<string | null>(null);
   const [formErr, setFormErr] = useState<string | null>(null);
+  // Hosted API only: slug, base URL, requests at once and the Responses API.
+  const [advanced, setAdvanced] = useState(false);
+  // The slot's rule is named once its field was left, not while it is typed in.
+  const [slotLeft, setSlotLeft] = useState(false);
   const direct = kind === "direct";
   const guided = kind === "local" && !existing;
 
@@ -130,6 +134,9 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
     setSlot(p.credentialSlot);
     setBilling(p.billing);
     setResponses(p.supportsResponses);
+    // A preset without a base URL ("Other API") has one to ask for.
+    if (p.baseUrl === "") setAdvanced(true);
+    setSlotLeft(false);
     clearErrors();
   }
   function clearErrors() {
@@ -153,28 +160,67 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
       onOpenChange(false);
     },
     onError: (e: unknown) => {
+      // A field under Advanced is shown with what the relay said about it,
+      // and stays shown while it is corrected.
+      const underAdvanced = (set: (message: string) => void, message: string) => { set(message); if (direct) setAdvanced(true); };
       if (!(e instanceof ApiError)) setFormErr("Couldn't create the provider.");
       // Only the slug rule ("slug must be …") is about the slug.
-      else if (e.status === 400 && e.message.startsWith("slug")) setSlugErr(e.message);
+      else if (e.status === 400 && e.message.startsWith("slug")) underAdvanced(setSlugErr, e.message);
       // A hosted API has no service to be taken: its only conflict is the slug.
-      else if (direct && e.status === 409) setSlugErr(e.message);
-      else if (direct && e.status === 400 && e.message.startsWith("base URL")) setUrlErr(e.message);
+      else if (direct && e.status === 409) underAdvanced(setSlugErr, e.message);
+      else if (direct && e.status === 400 && e.message.startsWith("base URL")) underAdvanced(setUrlErr, e.message);
       else if (direct && e.status === 400 && e.message.startsWith("credential slot")) setSlotErr(e.message);
-      else if (direct && e.status === 400 && e.message.startsWith("max concurrent")) setConcurrencyErr(e.message);
+      else if (direct && e.status === 400 && e.message.startsWith("max concurrent")) underAdvanced(setConcurrencyErr, e.message);
       else if (e.status === 403) setFormErr("You don't have permission to add providers.");
       else setFormErr(e.message);
     },
   });
 
-  const slugMessage = slugErr ?? providerSlugError(slug);
-  const slotMessage = slotErr ?? credentialSlotsError(slot);
+  const slugProblem = providerSlugError(slug);
+  const slotProblem = credentialSlotsError(slot);
+  const slotMessage = slotErr ?? (slotLeft ? slotProblem : null);
   // The list names every slot that is set, also one set to an empty value, so
   // a listed slot is no proof of a usable key; an unlisted one is proof of none.
   const known = slots.data?.slots;
-  const filled = direct
-    ? baseUrl.trim() !== "" && splitSlots(slot).length > 0 && slotMessage === null && limit !== null
-    : chosen !== "";
-  const canCreate = name.trim() !== "" && filled && slugMessage === null && !create.isPending;
+  // Beside Create while it is disabled, the first of these that applies; top to bottom as the form reads.
+  const missing = direct ? [
+    presetId === "" && "Choose a provider.",
+    name.trim() === "" && "Enter a name.",
+    splitSlots(slot).length === 0 && "Enter a credential slot.",
+    slotProblem !== null && "Check the credential slot.",
+    baseUrl.trim() === "" && "Enter a base URL.",
+    slugProblem !== null && "Check the provider slug.",
+    limit === null && "Check the requests at once.",
+  ] : [
+    name.trim() === "" && "Enter a name.",
+    slugProblem !== null && "Check the provider slug.",
+    chosen === "" && (loaded && eligible.length === 0 ? "There is no service to use." : "Choose a service."),
+  ];
+  const hint = firstMissing(missing);
+  // A field that holds the button back is never left hidden.
+  const advancedOpen = advanced || slugProblem !== null || limit === null || (presetId !== "" && baseUrl.trim() === "");
+
+  // The relay refused one field: it takes the focus. Where the field is under
+  // Advanced, the same answer has opened it.
+  useEffect(() => {
+    const field = slugErr !== null ? "np-slug" : urlErr !== null ? "np-base-url" : concurrencyErr !== null ? "np-concurrency"
+      : slotErr !== null ? "np-slot" : null;
+    if (field) document.getElementById(field)?.focus();
+  }, [slugErr, urlErr, concurrencyErr, slotErr]);
+
+  const slugField = (
+    <SlugField
+      id="np-slug"
+      label="Provider slug"
+      value={slug}
+      onChange={(v) => { setSlug(v); setSlugErr(null); setFormErr(null); }}
+      error={slugErr}
+      rule={providerSlugError}
+      errorAfterBlur
+      help="Leave the slug empty to derive it from the name."
+      preview={(s) => providerBaseUrl(s)}
+    />
+  );
   return (
     <Dialog
       open
@@ -187,8 +233,14 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
           : "Serve a service in API-key mode as a model provider under its own base URL."}
       footer={guided ? flow.footer : (
         <>
+          <SubmitHint id="np-hint" missing={missing} />
           <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button variant="primary" disabled={!canCreate} onClick={() => create.mutate()}>
+          <Button
+            variant="primary"
+            disabled={hint !== undefined || create.isPending}
+            aria-describedby={hint !== undefined ? "np-hint" : undefined}
+            onClick={() => { clearErrors(); create.mutate(); }}
+          >
             {create.isPending ? "Creating…" : "Create"}
           </Button>
         </>
@@ -239,14 +291,7 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
                 onChange={(e) => { setName(e.target.value); setFormErr(null); }}
               />
             </FormField>
-            <SlugField
-              id="np-slug"
-              label="Provider slug"
-              value={slug}
-              onChange={(v) => { setSlug(v); setSlugErr(null); setFormErr(null); }}
-              error={slugMessage}
-              preview={(s) => providerBaseUrl(s)}
-            />
+            {!direct && slugField}
             {direct && (
               <>
                 <FormField
@@ -266,6 +311,62 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
                     options={FORMAT_OPTIONS}
                   />
                 </FormField>
+                <FormField
+                  label="Credential slot"
+                  htmlFor="np-slot"
+                  w="md"
+                  error={slotMessage ? <span id="np-slot-err">{slotMessage}</span> : undefined}
+                  help={<span id="np-slot-help">{CREDENTIAL_SLOT_HELP}</span>}
+                >
+                  <Combobox
+                    id="np-slot"
+                    mono
+                    value={slot}
+                    options={slotSuggestions(slot, known ?? [])}
+                    emptyText={known?.length === 0 ? NO_CREDENTIAL_SLOTS : undefined}
+                    maxLength={140}
+                    required
+                    invalid={!!slotMessage}
+                    autoCapitalize="characters"
+                    aria-describedby={slotMessage ? "np-slot-err" : "np-slot-help"}
+                    onChange={(v) => { setSlot(v.toUpperCase()); setSlotErr(null); setFormErr(null); }}
+                    onBlur={() => setSlotLeft(true)}
+                  />
+                </FormField>
+                {/* A name the relay cannot have is not looked up. */}
+                {known !== undefined && slotErr === null && slotProblem === null && (
+                  <SlotStatus
+                    slots={splitSlots(slot)}
+                    known={known}
+                    whileMissing="You can create the provider now. It shows as Not configured until the key is set."
+                  />
+                )}
+                <FormField label="Billing" htmlFor="np-billing" w="md">
+                  <Select
+                    id="np-billing"
+                    value={billing}
+                    onChange={(v) => { setBilling(v as "metered" | "flat"); setFormErr(null); }}
+                    options={BILLING_OPTIONS}
+                  />
+                </FormField>
+              </>
+            )}
+            {!direct && eligible.length > 0 && (
+              <FormField label="Service" htmlFor="np-service" w="md">
+                <Select
+                  id="np-service"
+                  value={chosen}
+                  onChange={(v) => { setServiceId(v); setFormErr(null); }}
+                  options={eligible.map((s) => ({ value: s.id, label: s.name || s.id }))}
+                  placeholder="Select a service…"
+                />
+              </FormField>
+            )}
+          </FormFieldGroup>
+          {direct && (
+            <Disclosure label="Advanced" open={advancedOpen} onOpenChange={setAdvanced}>
+              <FormFieldGroup>
+                {slugField}
                 <FormField
                   label="Base URL"
                   htmlFor="np-base-url"
@@ -289,43 +390,6 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
                     onChange={(e) => { setBaseUrl(e.target.value); setUrlErr(null); setFormErr(null); }}
                   />
                 </FormField>
-                <FormField
-                  label="Credential slot"
-                  htmlFor="np-slot"
-                  w="md"
-                  error={slotMessage ? <span id="np-slot-err">{slotMessage}</span> : undefined}
-                  help={<span id="np-slot-help">{CREDENTIAL_SLOT_HELP}</span>}
-                >
-                  <Combobox
-                    id="np-slot"
-                    mono
-                    value={slot}
-                    options={slotSuggestions(slot, known ?? [])}
-                    emptyText={known?.length === 0 ? NO_CREDENTIAL_SLOTS : undefined}
-                    maxLength={140}
-                    required
-                    invalid={!!slotMessage}
-                    autoCapitalize="characters"
-                    aria-describedby={slotMessage ? "np-slot-err" : "np-slot-help"}
-                    onChange={(v) => { setSlot(v.toUpperCase()); setSlotErr(null); setFormErr(null); }}
-                  />
-                </FormField>
-                {/* A name the relay cannot have is not looked up. */}
-                {known !== undefined && slotMessage === null && (
-                  <SlotStatus
-                    slots={splitSlots(slot)}
-                    known={known}
-                    whileMissing="You can create the provider now. It shows as Not configured until the key is set."
-                  />
-                )}
-                <FormField label="Billing" htmlFor="np-billing" w="md">
-                  <Select
-                    id="np-billing"
-                    value={billing}
-                    onChange={(v) => { setBilling(v as "metered" | "flat"); setFormErr(null); }}
-                    options={BILLING_OPTIONS}
-                  />
-                </FormField>
                 <ConcurrencyField
                   id="np-concurrency"
                   value={concurrency}
@@ -335,21 +399,9 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
                 {apiFormat === "openai" && (
                   <ResponsesCheckbox id="np-responses" checked={responses} onChange={(v) => { setResponses(v); setFormErr(null); }} />
                 )}
-              </>
-            )}
-            {!direct && eligible.length > 0 && (
-              <FormField label="Service" htmlFor="np-service" w="md">
-                <Select
-                  id="np-service"
-                  value={chosen}
-                  onChange={(v) => { setServiceId(v); setFormErr(null); }}
-                  options={eligible.map((s) => ({ value: s.id, label: s.name || s.id }))}
-                  placeholder="Select a service…"
-                />
-              </FormField>
-            )}
-          </FormFieldGroup>
-          <p className="muted small">Leave the slug empty to derive it from the name.</p>
+              </FormFieldGroup>
+            </Disclosure>
+          )}
           {direct ? null : loadFailed ? (
             <ErrorNotice>Couldn't load the services to choose from.</ErrorNotice>
           ) : loaded && eligible.length === 0 ? (

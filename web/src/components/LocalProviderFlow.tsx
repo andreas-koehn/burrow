@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/auth/useAuth";
-import { Button, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
+import { Button, ErrorNotice, FormField, FormFieldGroup, Input, Select, SubmitHint } from "@/components/ds";
 import { InstallLines } from "@/components/InstallLines";
 import { WaitForProvider } from "@/components/WaitForProvider";
 import { isTarget } from "@/lib/installSnippets";
@@ -292,7 +292,7 @@ export function useLocalProviderFlow({ onDone, onUseExisting }: LocalProviderFlo
     ),
     footer: (
       <>
-        {missing && <span id={reasonId} className="muted small" style={{ alignSelf: "center" }}>{missing}</span>}
+        <SubmitHint id={reasonId} missing={[missing]} />
         <Button variant="secondary" onClick={onDone}>Cancel</Button>
         <Button
           variant="primary"

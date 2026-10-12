@@ -2,6 +2,12 @@ import { useState } from "react";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { createPortal } from "react-dom";
+import userEvent from "@testing-library/user-event";
+import { renderApp } from "@/mocks/test-utils";
+import Services from "@/pages/Services";
+import GatewayKeys from "@/pages/GatewayKeys";
+import { ModelDialog } from "@/components/ModelDialog";
+import { NewProviderDialog } from "@/components/NewProviderDialog";
 import { Dialog } from "./Dialog";
 
 // jsdom does not load CSS files — inject the dialog rules so getComputedStyle
@@ -391,5 +397,72 @@ describe("Dialog size, close button, focus (F2/U2)", () => {
     expect(() => fireEvent.keyDown(document, { key: "Escape" })).not.toThrow();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(focusSpy).not.toHaveBeenCalled();
+  });
+});
+
+// The rule: the default state of a dialog fits a 720 px high window without
+// the dialog body scrolling. jsdom lays nothing out (every height is 0), so
+// the height itself cannot be measured here; it is measured in a browser by
+// the release checklist. What is held here is what the height depends on: how
+// many fields the default state shows. Everything else is under "Advanced".
+describe("Dialog default state stays short (720 px rule)", () => {
+  /** What the reader fills in or sets: text fields, selects, switches, checkboxes. */
+  const fields = (dialog: HTMLElement) => dialog.querySelectorAll(
+    ".dialog-body :is(input:not([type='hidden']):not([type='radio']), textarea, select, [role='combobox'], [role='switch'], [role='checkbox'])",
+  ).length;
+  /** A group of radios is one choice. */
+  const choices = (dialog: HTMLElement) => dialog.querySelectorAll(".dialog-body [role='radiogroup']").length;
+  const closed = (dialog: HTMLElement) =>
+    [...dialog.querySelectorAll(".disclosure-toggle")].every((b) => b.getAttribute("aria-expanded") === "false");
+
+  it("jsdom measures no layout, which is why the fields are counted instead", () => {
+    const { getByRole } = render(
+      <Dialog open title="Tall" onOpenChange={() => {}}><div style={{ height: 5000 }}>tall</div></Dialog>,
+    );
+    const body = getByRole("dialog").querySelector(".dialog-body") as HTMLElement;
+    expect(body.scrollHeight).toBe(0);
+    expect(body.clientHeight).toBe(0);
+  });
+
+  it("New service: two fields", async () => {
+    renderApp(<Services />, "/services?new=1");
+    const dialog = await screen.findByRole("dialog", { name: "New service" });
+    expect(fields(dialog)).toBe(2);
+    expect(choices(dialog)).toBe(0);
+    expect(closed(dialog)).toBe(true);
+  });
+
+  it("New model: at most six fields", async () => {
+    renderApp(<ModelDialog open onOpenChange={() => {}} />, "/gateway/models");
+    const dialog = await screen.findByRole("dialog", { name: "New model" });
+    // Both formats have their provider to choose once the providers are in.
+    await waitFor(() => expect(dialog.querySelectorAll(".target-group [role='combobox']")).toHaveLength(2));
+    expect(fields(dialog)).toBeLessThanOrEqual(6);
+    // The name, a provider per format, and the translation switch.
+    expect(fields(dialog)).toBe(4);
+    expect(closed(dialog)).toBe(true);
+  });
+
+  it("New provider, a model server: the choice and three fields", async () => {
+    renderApp(<NewProviderDialog open onOpenChange={() => {}} />, "/gateway/providers");
+    const dialog = await screen.findByRole("dialog", { name: "New provider" });
+    expect(choices(dialog)).toBe(1);
+    expect(fields(dialog)).toBe(3);
+  });
+
+  it("New provider, a hosted API: the choice and five fields", async () => {
+    renderApp(<NewProviderDialog open onOpenChange={() => {}} />, "/gateway/providers");
+    const dialog = await screen.findByRole("dialog", { name: "New provider" });
+    await userEvent.click(screen.getByRole("radio", { name: "A hosted API" }));
+    expect(choices(dialog)).toBe(1);
+    expect(fields(dialog)).toBe(5);
+    expect(closed(dialog)).toBe(true);
+  });
+
+  it("New gateway key: a name and one choice", async () => {
+    renderApp(<GatewayKeys />, "/gateway/keys?new=1");
+    const dialog = await screen.findByRole("dialog", { name: "New gateway key" });
+    expect(fields(dialog) + choices(dialog)).toBe(2);
+    expect(fields(dialog)).toBe(1);
   });
 });

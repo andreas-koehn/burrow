@@ -28,6 +28,15 @@ async function listOptions(label: string, container: HTMLElement) {
   return names;
 }
 const group = (name: string) => screen.findByRole("group", { name });
+/** Opens Advanced unless it is open already (a model with a description opens it by itself). */
+async function openAdvanced() {
+  const advanced = screen.getByRole("button", { name: "Advanced" });
+  if (advanced.getAttribute("aria-expanded") !== "true") await userEvent.click(advanced);
+}
+// What is said to a screen reader after a move, a removal or a sync. The line
+// beside the button is a status of its own.
+const announcement = () => screen.getAllByRole("status").find((el) => el.id !== "model-hint")!;
+const LOST = /prompt caching hints, thinking signatures and beta features are not carried over/i;
 // The target model is a text field that suggests the provider's catalog.
 const modelField = (container: HTMLElement) => within(container).findByLabelText("Target model id");
 async function typeModel(id: string, container: HTMLElement) {
@@ -90,13 +99,14 @@ describe("ModelDialog", () => {
   it("accepts one format and requires at least one", async () => {
     renderDialog();
     await userEvent.type(screen.getByLabelText("Model name"), "burrow-x");
-    expect(screen.getByRole("button", { name: "Create model" })).toBeDisabled();
-    expect(screen.getByText("Choose a target for at least one format.")).toBeInTheDocument();
+    const create = screen.getByRole("button", { name: "Create model" });
+    expect(create).toBeDisabled();
+    expect(create).toHaveAccessibleDescription("Choose a provider and a model for at least one format.");
     const openai = await group("OpenAI format");
     await chooseOption("Provider", "ollama", openai);
     await typeModel("qwen2.5:0.5b", openai);
-    expect(screen.getByRole("button", { name: "Create model" })).toBeEnabled();
-    expect(screen.queryByText("Choose a target for at least one format.")).toBeNull();
+    expect(create).toBeEnabled();
+    expect(screen.queryByText("Choose a provider and a model for at least one format.")).toBeNull();
   });
 
   it("suggests the provider's catalog: the id is taken, and the display name is shown after it", async () => {
@@ -151,7 +161,7 @@ describe("ModelDialog", () => {
       ["acme/large-1", "acme/large-1 · Acme Large 1"], ["acme/small-1", "acme/small-1 · Acme Small 1"],
     ]));
     // The wait is over: said to a screen reader.
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Catalog synced: 2 models."));
+    await waitFor(() => expect(announcement()).toHaveTextContent("Catalog synced: 2 models."));
     expect(field).toHaveAccessibleDescription("The provider's own id for the model: one from its catalog, or typed.");
     expect(within(openai).queryByRole("button", { name: "Sync catalog" })).toBeNull();
   });
@@ -210,14 +220,21 @@ describe("ModelDialog", () => {
     renderDialog();
     const anthropic = await group("Anthropic format");
     expect(await within(anthropic).findByText("No provider speaks this format yet.")).toBeInTheDocument();
-    expect(within(anthropic).getByRole("link", { name: "Providers" })).toHaveAttribute("href", "/gateway/providers");
+    // The link opens "New provider" on its guided steps.
+    expect(within(anthropic).getByRole("link", { name: "Add a provider" })).toHaveAttribute("href", "/gateway/providers?new=local");
   });
 
   it("blocks invalid names", async () => {
     renderDialog();
     await userEvent.type(screen.getByLabelText("Model name"), "Bad/Name");
+    // Not while it is typed: the rule is named once the field is left.
+    expect(screen.queryByRole("alert")).toBeNull();
+    const create = screen.getByRole("button", { name: "Create model" });
+    expect(create).toBeDisabled();
+    expect(create).toHaveAccessibleDescription("Check the model name.");
+    await userEvent.tab();
     expect(screen.getByRole("alert")).toHaveTextContent(/no slash/i);
-    expect(screen.getByRole("button", { name: "Create model" })).toBeDisabled();
+    expect(screen.getByLabelText("Model name")).toHaveAttribute("aria-invalid", "true");
   });
 
   it("shows the server's reason on failure and stays open", async () => {
@@ -253,6 +270,8 @@ describe("ModelDialog", () => {
     expect(await modelField(await group("Anthropic format"))).toHaveValue("glm-5.1");
     expect(await modelField(await group("OpenAI format"))).toHaveValue("glm-5.1");
     expect(save).toBeDisabled();
+    expect(save).toHaveAccessibleDescription("No changes to save.");
+    await openAdvanced();
     await userEvent.type(screen.getByLabelText("Description (optional)"), "x");
     expect(save).toBeEnabled();
     await userEvent.clear(screen.getByLabelText("Description (optional)"));
@@ -269,6 +288,7 @@ describe("ModelDialog", () => {
     expect(screen.getByLabelText("Model name")).toHaveValue("burrow-simple");
     const save = screen.getByRole("button", { name: "Save changes" });
     expect(save).toBeDisabled();
+    await openAdvanced();
     await userEvent.click(screen.getByRole("switch", { name: "Enabled" }));
     expect(save).toBeEnabled();
     await userEvent.click(save);
@@ -282,7 +302,7 @@ describe("ModelDialog", () => {
     });
   });
 
-  it("has a translation switch that says what it does and what is lost", async () => {
+  it("has a translation switch that says in one sentence what it does", async () => {
     let put: Record<string, unknown> | null = null;
     server.use(http.put("/api/v1/ai/models/:name", async ({ request }) => {
       put = (await request.json()) as Record<string, unknown>;
@@ -291,13 +311,8 @@ describe("ModelDialog", () => {
     renderDialog({ model: fixtureModel("burrow-simple") }); // an OpenAI target only
     const sw = screen.getByRole("switch", { name: "Translate for the other format" });
     expect(sw).not.toBeChecked();
-    // The help is the switch's description, not only text nearby.
-    expect(sw).toHaveAccessibleDescription(/served natively where it has a target/i);
-    expect(sw).toHaveAccessibleDescription(/a target of its own format is always used first/i);
-    expect(sw).toHaveAccessibleDescription(/prompt caching hints, thinking signatures and beta features are not carried over/i);
-    expect(sw).toHaveAccessibleDescription(/names what was left out/i);
-    // The Responses API can be translated through the model's own OpenAI-format target.
-    expect(sw).toHaveAccessibleDescription(/Responses API is answered through an OpenAI-format target that does not offer it/i);
+    // The sentence is the switch's description, not only text nearby.
+    expect(sw).toHaveAccessibleDescription("Answer the other format by translating to this model's targets.");
     const save = screen.getByRole("button", { name: "Save changes" });
     expect(save).toBeDisabled();
     await userEvent.click(sw);
@@ -310,6 +325,162 @@ describe("ModelDialog", () => {
     await userEvent.click(save);
     await waitFor(() => expect(put).not.toBeNull());
     expect(put!.translate).toBe(true);
+  });
+
+  it("opens without an error and without the long explanation", async () => {
+    renderDialog();
+    await group("Anthropic format");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(document.querySelector("[aria-invalid='true']")).toBeNull();
+    expect(screen.queryByText(/Every target needs a provider and a model/)).toBeNull();
+    expect(screen.queryByText(/needs a provider and a model/)).toBeNull();
+    // The two paragraphs about translation are behind "What gets lost".
+    expect(screen.queryByText(/served natively where it has a target/i)).toBeNull();
+    expect(screen.queryByText(LOST)).toBeNull();
+    // Top to bottom: the name, the two formats, the switch, Advanced.
+    const order = [
+      screen.getByLabelText("Model name"),
+      await group("OpenAI format"),
+      await group("Anthropic format"),
+      screen.getByRole("switch", { name: "Translate for the other format" }),
+      screen.getByRole("button", { name: "Advanced" }),
+    ];
+    for (let i = 1; i < order.length; i++) {
+      expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+  });
+
+  it("'What gets lost' reveals the explanation", async () => {
+    renderDialog();
+    const more = screen.getByRole("button", { name: "What gets lost" });
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(more);
+    expect(more).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/served natively where it has a target/i)).toBeInTheDocument();
+    expect(screen.getByText(/a target of its own format is always used first/i)).toBeInTheDocument();
+    // The Responses API can be translated through the model's own OpenAI-format target.
+    expect(screen.getByText(/Responses API is answered through an OpenAI-format target that does not offer it/i)).toBeInTheDocument();
+    expect(screen.getByText(LOST)).toBeInTheDocument();
+    expect(screen.getByText(/names what was left out/i)).toBeInTheDocument();
+  });
+
+  it("'Add fallback target' appears once the first target is complete", async () => {
+    renderDialog();
+    const openai = await group("OpenAI format");
+    expect(screen.queryByRole("button", { name: "Add fallback target" })).toBeNull();
+    await chooseOption("Provider", "ollama", openai);
+    await modelField(openai);
+    // A provider alone is half a target.
+    expect(screen.queryByRole("button", { name: "Add fallback target" })).toBeNull();
+    await typeModel("mistral", openai);
+    expect(within(openai).getByRole("button", { name: "Add fallback target" })).toBeEnabled();
+    // The other format has none of its own yet.
+    expect(within(await group("Anthropic format")).queryByRole("button", { name: "Add fallback target" })).toBeNull();
+  });
+
+  it("description, enabled and timeouts are under Advanced", async () => {
+    let posted: Record<string, unknown> | null = null;
+    server.use(http.post("/api/v1/ai/models", async ({ request }) => {
+      posted = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ name: "burrow-adv" }, { status: 201 });
+    }));
+    renderDialog();
+    const advanced = screen.getByRole("button", { name: "Advanced" });
+    expect(advanced).toHaveAttribute("aria-expanded", "false");
+    for (const label of ["Description (optional)", "Attempt timeout (seconds)", "Total timeout (seconds)"]) {
+      expect(screen.queryByLabelText(label)).toBeNull();
+    }
+    expect(screen.queryByRole("switch", { name: "Enabled" })).toBeNull();
+
+    await userEvent.click(advanced);
+    const region = document.getElementById(advanced.getAttribute("aria-controls")!)!;
+    expect(within(region).getByLabelText("Description (optional)")).toHaveValue("");
+    expect(within(region).getByRole("switch", { name: "Enabled" })).toBeChecked();
+    expect(within(region).getByLabelText("Attempt timeout (seconds)")).toHaveValue(60);
+    expect(within(region).getByLabelText("Total timeout (seconds)")).toHaveValue(120);
+
+    // What is set there is sent as before, also with Advanced closed again.
+    await userEvent.type(within(region).getByLabelText("Description (optional)"), "For tests.");
+    await userEvent.click(within(region).getByRole("switch", { name: "Enabled" }));
+    await userEvent.click(advanced);
+    await userEvent.type(screen.getByLabelText("Model name"), "burrow-adv");
+    const openai = await group("OpenAI format");
+    await chooseOption("Provider", "ollama", openai);
+    await typeModel("mistral", openai);
+    await userEvent.click(screen.getByRole("button", { name: "Create model" }));
+    await waitFor(() => expect(posted).toEqual({
+      name: "burrow-adv", description: "For tests.", enabled: false, fallback_on_rate_limit: false,
+      translate: false, attempt_timeout_s: 60, total_timeout_s: 120,
+      targets: [{ dialect: "openai", provider: "ollama", model: "mistral" }],
+    }));
+  });
+
+  it("the button says what is missing, in order", async () => {
+    renderDialog();
+    const create = screen.getByRole("button", { name: "Create model" });
+    expect(create).toBeDisabled();
+    expect(screen.getByText("Enter a name.")).toBeInTheDocument();
+    expect(create).toHaveAccessibleDescription("Enter a name.");
+
+    await userEvent.type(screen.getByLabelText("Model name"), "burrow-next");
+    expect(create).toBeDisabled();
+    expect(create).toHaveAccessibleDescription("Choose a provider and a model for at least one format.");
+
+    const openai = await group("OpenAI format");
+    await chooseOption("Provider", "ollama", openai);
+    // A provider without its model is no target yet.
+    await modelField(openai);
+    expect(create).toHaveAccessibleDescription("Choose a provider and a model for at least one format.");
+    await typeModel("mistral", openai);
+    expect(create).toBeEnabled();
+    expect(create).not.toHaveAttribute("aria-describedby");
+    expect(screen.queryByText("Choose a provider and a model for at least one format.")).toBeNull();
+  });
+
+  it("an incomplete second target is named after submit, not before", async () => {
+    let posted = 0;
+    server.use(http.post("/api/v1/ai/models", () => { posted++; return HttpResponse.json({ name: "burrow-two" }, { status: 201 }); }));
+    renderDialog();
+    await userEvent.type(screen.getByLabelText("Model name"), "burrow-two");
+    const openai = await group("OpenAI format");
+    await chooseOption("Provider", "ollama", openai);
+    await typeModel("mistral", openai);
+    await userEvent.click(within(openai).getByRole("button", { name: "Add fallback target" }));
+    // Nothing is said about the entry that was just added.
+    expect(screen.queryByRole("alert")).toBeNull();
+    const create = screen.getByRole("button", { name: "Create model" });
+    expect(create).toBeEnabled();
+
+    await userEvent.click(create);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "OpenAI format, target 2 needs a provider and a model. Remove it if you do not need it.",
+    );
+    expect(posted).toBe(0);
+
+    // Finished or removed, the model is created.
+    await userEvent.click(screen.getByRole("button", { name: "Remove OpenAI target 2" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    await userEvent.click(create);
+    await waitFor(() => expect(posted).toBe(1));
+  });
+
+  it("editing an existing model opens Advanced when it holds a non-default value", async () => {
+    const plain: AiModel = {
+      ...fixtureModel("burrow-simple"), description: "", enabled: true, fallback_on_rate_limit: false,
+      attempt_timeout_s: 60, total_timeout_s: 120,
+    };
+    const first = renderApp(<ModelDialog open onOpenChange={() => {}} model={plain} />, "/gateway/models");
+    expect(screen.getByRole("button", { name: "Advanced" })).toHaveAttribute("aria-expanded", "false");
+    first.unmount();
+
+    for (const changed of [
+      { description: "Small and local." }, { enabled: false }, { fallback_on_rate_limit: true },
+      { attempt_timeout_s: 30 }, { total_timeout_s: 300 },
+    ]) {
+      const view = renderApp(<ModelDialog open onOpenChange={() => {}} model={{ ...plain, ...changed }} />, "/gateway/models");
+      expect(screen.getByRole("button", { name: "Advanced" })).toHaveAttribute("aria-expanded", "true");
+      view.unmount();
+    }
   });
 
   it("shows the stored translation setting and a new model starts with it off", async () => {
@@ -388,7 +559,7 @@ describe("ModelDialog", () => {
     const moved = within(openai).getByRole("group", { name: "OpenAI format, target 2" });
     expect(await modelField(moved)).toHaveValue("mistral");
     expect(moved).toHaveFocus();
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("ollama/mistral is now target 2 of 2 in the OpenAI format."));
+    await waitFor(() => expect(announcement()).toHaveTextContent("ollama/mistral is now target 2 of 2 in the OpenAI format."));
   });
 
   it("names the format in every move and remove button, so the two lists do not repeat a name", async () => {
@@ -413,7 +584,7 @@ describe("ModelDialog", () => {
     const add = await screen.findByRole("button", { name: "Add fallback target" });
     await userEvent.click(add);
     await userEvent.click(add);
-    const status = screen.getByRole("status");
+    const status = announcement();
     // Two empty entries, removed one after the other from the same place.
     await userEvent.click(screen.getByRole("button", { name: "Remove OpenAI target 2" }));
     await waitFor(() => expect(status).toHaveTextContent("Target 2 removed from the OpenAI format."));
@@ -440,7 +611,7 @@ describe("ModelDialog", () => {
     }));
     renderDialog({ model: twoTargets() });
     await userEvent.click(await screen.findByRole("button", { name: "Remove OpenAI target 1" }));
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("ollama/mistral removed from the OpenAI format."));
+    await waitFor(() => expect(announcement()).toHaveTextContent("ollama/mistral removed from the OpenAI format."));
     expect(screen.queryByRole("group", { name: "OpenAI format, target 2" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove OpenAI target 1" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
@@ -454,21 +625,24 @@ describe("ModelDialog", () => {
     const second = screen.getByRole("group", { name: "OpenAI format, target 2" });
     await chooseOption("Provider", "ollama", second);
     await typeModel("mistral", second);
-    expect(screen.getByRole("alert")).toHaveTextContent("A target is listed twice.");
-    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    const save = screen.getByRole("button", { name: "Save changes" });
+    expect(save).toBeDisabled();
+    expect(save).toHaveAccessibleDescription("A target is listed twice.");
   });
 
-  it("an unfinished fallback target blocks Save", async () => {
+  it("an unfinished fallback target is no change to save, and is removed, not switched off", async () => {
     renderDialog({ model: fixtureModel("burrow-simple") });
     await userEvent.click(await screen.findByRole("button", { name: "Add fallback target" }));
-    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
-    expect(screen.getByText("Every target needs a provider and a model. Remove the ones you do not need.")).toBeInTheDocument();
+    const save = screen.getByRole("button", { name: "Save changes" });
+    expect(save).toBeDisabled();
+    expect(save).toHaveAccessibleDescription("No changes to save.");
+    expect(screen.queryByRole("alert")).toBeNull();
     // A fallback target is removed, not switched to "Not served".
     expect(await listOptions("Provider", screen.getByRole("group", { name: "OpenAI format, target 2" }))).toEqual(["ollama", "zai", "llamacpp", "lmstudio", "openai-team"]);
   });
 
   it("offers the rate-limit option and the timeouts under Advanced", async () => {
-    renderDialog({ model: fixtureModel("burrow-simple") });
+    renderDialog();
     const advanced = screen.getByRole("button", { name: "Advanced" });
     expect(advanced).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByLabelText("Attempt timeout (seconds)")).toBeNull();
@@ -487,7 +661,7 @@ describe("ModelDialog", () => {
     }));
     renderDialog({ model: fixtureModel("burrow-simple") });
     const save = screen.getByRole("button", { name: "Save changes" });
-    await userEvent.click(screen.getByRole("button", { name: "Advanced" }));
+    await openAdvanced();
     await userEvent.click(screen.getByRole("checkbox", { name: "Also fall back when a provider rate-limits (429)" }));
     expect(save).toBeEnabled();
     const attempt = screen.getByLabelText("Attempt timeout (seconds)");
@@ -500,20 +674,26 @@ describe("ModelDialog", () => {
 
   it("refuses a total timeout shorter than the attempt timeout", async () => {
     renderDialog({ model: fixtureModel("burrow-simple") });
-    await userEvent.click(screen.getByRole("button", { name: "Advanced" }));
+    await openAdvanced();
     const total = screen.getByLabelText("Total timeout (seconds)");
     await userEvent.clear(total);
     await userEvent.type(total, "30");
+    const save = screen.getByRole("button", { name: "Save changes" });
+    expect(save).toBeDisabled();
+    expect(save).toHaveAccessibleDescription("Check the timeouts under Advanced.");
+    // The field says why once it is left.
+    expect(screen.queryByRole("alert")).toBeNull();
+    await userEvent.tab();
     expect(screen.getByRole("alert")).toHaveTextContent(/not be shorter/i);
-    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
   });
 
   it("refuses a timeout outside 1-600 seconds", async () => {
     renderDialog({ model: fixtureModel("burrow-simple") });
-    await userEvent.click(screen.getByRole("button", { name: "Advanced" }));
+    await openAdvanced();
     const total = screen.getByLabelText("Total timeout (seconds)");
     await userEvent.clear(total);
     await userEvent.type(total, "601");
+    await userEvent.tab();
     expect(screen.getByRole("alert")).toHaveTextContent("Between 1 and 600 seconds.");
     expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
   });
@@ -522,6 +702,7 @@ describe("ModelDialog", () => {
     server.use(http.put("/api/v1/ai/models/burrow-simple", () =>
       HttpResponse.json({ error: "timeouts must be between 1 and 600 seconds" }, { status: 400 })));
     renderDialog({ model: fixtureModel("burrow-simple") });
+    await openAdvanced();
     await userEvent.click(screen.getByRole("switch", { name: "Enabled" }));
     await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("timeouts must be between 1 and 600 seconds");

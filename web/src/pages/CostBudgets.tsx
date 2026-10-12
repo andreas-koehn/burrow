@@ -3,7 +3,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Badge, Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, NotAuthorized, PageHeader, Segmented, Select, SkeletonRows, TableEmptyRow } from "@/components/ds";
+import { Badge, Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, NotAuthorized, PageHeader, Segmented, Select, SkeletonRows, SubmitHint, TableEmptyRow } from "@/components/ds";
 import UsageBreakdown from "@/components/UsageBreakdown";
 import { useAuth } from "@/auth/useAuth";
 import { fmtCount, fmtUsd, shortId } from "@/lib/costFormat";
@@ -376,7 +376,7 @@ export default function CostBudgets() {
         title="New budget"
         footer={
           <>
-            {missing && <span id="budget-missing" className="muted small" style={{ alignSelf: "center" }}>{missing}</span>}
+            <SubmitHint id="budget-missing" missing={[missing]} />
             <Button variant="secondary" onClick={() => setAddOpen(false)}>Cancel</Button>
             <Button variant="primary" disabled={create.isPending || !canSubmit} aria-describedby={missing ? "budget-missing" : undefined} onClick={submit}>
               Create

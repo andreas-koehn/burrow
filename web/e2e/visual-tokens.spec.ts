@@ -75,9 +75,9 @@ test.describe("Visual color-token verification (D-1/D-2)", () => {
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
 
-    // The Create button in the footer is disabled while the Service ID field
-    // is empty (disabled={!nsServiceId} in Services.tsx). Dialog.tsx renders
-    // the footer inside the [role=dialog] element.
+    // The Create button in the footer is disabled while the Name field is
+    // empty (Services.tsx; the line beside it says "Enter a name."). Dialog.tsx
+    // renders the footer inside the [role=dialog] element.
     const btn = dialog.locator(".dialog-footer button.btn-primary");
     await expect(btn).toBeVisible();
 

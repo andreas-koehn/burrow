@@ -377,17 +377,14 @@ describe("Services page", () => {
     await userEvent.click(screen.getByRole("button", { name: /^new service$/i }));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
 
-    // Fill in the service ID and an optional title
-    const idInput = screen.getByLabelText(/service id/i);
-    await userEvent.type(idInput, "ai-svc");
-    const titleInput = screen.getByLabelText(/title/i);
-    await userEvent.type(titleInput, "My AI Service");
+    // One name is all it asks for.
+    await userEvent.type(screen.getByLabelText("Name"), "My AI Service");
 
     // Click Create
     await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
 
-    // Success toast appears with the service_id
-    await screen.findByText("Service ai-svc created.");
+    // The toast names the service as the reader named it.
+    await screen.findByText("Service My AI Service created.");
 
     // Dialog should be closed
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -395,6 +392,7 @@ describe("Services page", () => {
     // The new service appears in the table on refetch (by its title/name)
     const table = await screen.findByRole("table", { name: /services/i });
     expect(within(table).getByText("My AI Service")).toBeInTheDocument();
+    expect(db.services.find((x) => x.id === "my-ai-service")?.slug).toBe("my-ai-service");
   });
 
   // P5.1 — Access mode Select in the create dialog
@@ -421,9 +419,7 @@ describe("Services page", () => {
     const apiKeyOption = await screen.findByRole("option", { name: /api key/i });
     await userEvent.click(apiKeyOption);
 
-    // Fill required service ID
-    const idInput = screen.getByLabelText(/service id/i);
-    await userEvent.type(idInput, "new-ai-svc");
+    await userEvent.type(screen.getByLabelText("Name"), "new-ai-svc");
 
     // Submit
     await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
@@ -478,18 +474,11 @@ describe("Services page", () => {
     await userEvent.click(screen.getByRole("button", { name: "New service" }));
     const dialog = await screen.findByRole("dialog", { name: "New service" });
     expect(within(dialog).getByLabelText("Access mode")).toBeInTheDocument();
-    await userEvent.type(within(dialog).getByLabelText("Service ID"), "plain-svc");
+    await userEvent.type(within(dialog).getByLabelText("Name"), "plain-svc");
     await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
     await screen.findByText("Service plain-svc created.");
     expect(providerCalls).toBe(0);
     expect(db.services.find((x) => x.id === "plain-svc")?.gateway_only).toBe(false);
-  });
-
-  it("the plain New service dialog still shows the slug field and the /svc/ hint", async () => {
-    renderApp(<Services />, "/services?new=1");
-    const dialog = await screen.findByRole("dialog", { name: "New service" });
-    expect(within(dialog).getByLabelText(/url slug/i)).toBeInTheDocument();
-    expect(dialog.textContent).toMatch(/\/svc\//);
   });
 
   it("keeps the generic dialog for the normal flow", async () => {
@@ -499,31 +488,262 @@ describe("Services page", () => {
     expect(within(dialog).getByRole("button", { name: "Create" })).toBeInTheDocument();
   });
 
-  it("prefills the suggested slug in the new-service dialog and sends the edited one", async () => {
-    let posted: Record<string, unknown> | null = null;
-    server.use(http.post("/api/v1/services", async ({ request }) => {
-      posted = (await request.json()) as Record<string, unknown>;
-      return HttpResponse.json({ id: "web-prod", created_at: "2026-10-04T00:00:00Z" }, { status: 201 });
-    }));
-    mount();
-    await userEvent.click(await screen.findByRole("button", { name: "New service" }));
-    const slug = await screen.findByLabelText("URL slug");
-    await waitFor(() => expect(slug).toHaveValue("q4m7kx"));
-    await userEvent.type(screen.getByLabelText("Service ID"), "web-prod");
-    await userEvent.clear(slug);
-    await userEvent.type(slug, "web");
-    await userEvent.click(screen.getByRole("button", { name: "Create" }));
-    await waitFor(() => expect(posted).toMatchObject({ service_id: "web-prod", slug: "web" }));
-  });
+  describe("New service", () => {
+    const address = (slug: string) => `${window.location.origin}/svc/${slug}/`;
+    const BASE_PATH_HINT = /need base-path support to work under a \/svc\/ URL/;
 
-  it("blocks Create while the slug is invalid", async () => {
-    mount();
-    await userEvent.click(await screen.findByRole("button", { name: "New service" }));
-    await userEvent.type(screen.getByLabelText("Service ID"), "web-prod");
-    const slug = await screen.findByLabelText("URL slug");
-    await userEvent.clear(slug);
-    await userEvent.type(slug, "-bad");
-    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+    function capturePost() {
+      const sent: Record<string, unknown>[] = [];
+      server.use(http.post("/api/v1/services", async ({ request }) => {
+        sent.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: "x", created_at: "2026-10-04T00:00:00Z" }, { status: 201 });
+      }));
+      return sent;
+    }
+    /** How often the relay was asked to suggest a slug. */
+    function countSuggestions() {
+      const calls = { n: 0 };
+      server.use(http.get("/api/v1/services/slug-suggestion", () => { calls.n++; return HttpResponse.json({ slug: "q4m7kx" }); }));
+      return calls;
+    }
+    async function open() {
+      renderApp(<Services />, "/services?new=1");
+      return screen.findByRole("dialog", { name: "New service" });
+    }
+
+    it("asks for one name and previews the address", async () => {
+      const sent = capturePost();
+      const suggestions = countSuggestions();
+      const dialog = await open();
+      // Two fields in the default state: the name and the access mode.
+      expect(within(dialog).queryByLabelText("Service ID")).toBeNull();
+      expect(within(dialog).queryByLabelText("URL slug")).toBeNull();
+      expect(within(dialog).queryByLabelText("Title")).toBeNull();
+
+      const name = within(dialog).getByLabelText("Name");
+      await userEvent.type(name, "Web Prod");
+      expect(within(dialog).getByText(address("web-prod"))).toBeInTheDocument();
+      // The preview is the field's description, the derived id included.
+      expect(name).toHaveAccessibleDescription(new RegExp(`${address("web-prod")}.*web-prod`));
+
+      await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+      await waitFor(() => expect(sent).toHaveLength(1));
+      expect(sent[0]).toEqual({ service_id: "web-prod", slug: "web-prod", title: "Web Prod", access_mode: "open" });
+      // A name gives its own slug: the relay is not asked for one.
+      expect(suggestions.n).toBe(0);
+    });
+
+    it("Advanced lets the id, the slug and the title differ", async () => {
+      const sent = capturePost();
+      const dialog = await open();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "Web Prod");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Advanced" }));
+      // What was derived is what the fields start with.
+      const id = within(dialog).getByLabelText("Service ID");
+      const slug = within(dialog).getByLabelText("URL slug");
+      const title = within(dialog).getByLabelText("Title");
+      expect(id).toHaveValue("web-prod");
+      expect(slug).toHaveValue("web-prod");
+      expect(title).toHaveValue("Web Prod");
+
+      await userEvent.clear(id);
+      await userEvent.type(id, "web_prod_1");
+      await userEvent.clear(slug);
+      await userEvent.type(slug, "web");
+      await userEvent.clear(title);
+      await userEvent.type(title, "Website (production)");
+      // The preview follows what will be sent.
+      expect(within(dialog).getAllByText(address("web")).length).toBeGreaterThan(0);
+
+      // A changed field stays as it is when the name changes afterwards.
+      await userEvent.type(within(dialog).getByLabelText("Name"), "uction");
+      expect(id).toHaveValue("web_prod_1");
+
+      await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+      await waitFor(() => expect(sent).toHaveLength(1));
+      expect(sent[0]).toEqual({ service_id: "web_prod_1", slug: "web", title: "Website (production)", access_mode: "open" });
+    });
+
+    it("a field under Advanced that is emptied follows the name again", async () => {
+      const dialog = await open();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "Web Prod");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Advanced" }));
+      const slug = within(dialog).getByLabelText("URL slug");
+      await userEvent.clear(slug);
+      expect(slug).toHaveValue("");
+      await userEvent.tab();
+      expect(slug).toHaveValue("web-prod");
+    });
+
+    it("a name that derives to nothing usable says so after the field is left", async () => {
+      const dialog = await open();
+      const name = within(dialog).getByLabelText("Name");
+      await userEvent.type(name, "!");
+      // No error while the first character is being typed.
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      expect(name).not.toHaveAttribute("aria-invalid");
+      await userEvent.type(name, "!!");
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+
+      await userEvent.tab();
+      expect(within(dialog).getByRole("alert")).toHaveTextContent("Use letters or digits.");
+      expect(name).toHaveAttribute("aria-invalid", "true");
+      expect(name).toHaveAccessibleDescription("Use letters or digits.");
+      expect(within(dialog).getByRole("button", { name: "Create" })).toBeDisabled();
+
+      // Two usable characters are one too few for the relay.
+      await userEvent.clear(name);
+      await userEvent.type(name, "ab");
+      expect(within(dialog).getByRole("alert")).toHaveTextContent("Use at least three letters or digits.");
+      await userEvent.type(name, "c");
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      expect(within(dialog).getByRole("button", { name: "Create" })).toBeEnabled();
+    });
+
+    it("a name without a usable character can still be the title: the id is typed, the slug is suggested", async () => {
+      const sent = capturePost();
+      const suggestions = countSuggestions();
+      const dialog = await open();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "!!!");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Advanced" }));
+      // Nothing to derive a slug from: only now is the relay asked for one.
+      const slug = within(dialog).getByLabelText("URL slug");
+      await waitFor(() => expect(slug).toHaveValue("q4m7kx"));
+      expect(suggestions.n).toBe(1);
+      await userEvent.type(within(dialog).getByLabelText("Service ID"), "bang");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+      await waitFor(() => expect(sent).toHaveLength(1));
+      expect(sent[0]).toEqual({ service_id: "bang", slug: "q4m7kx", title: "!!!", access_mode: "open" });
+    });
+
+    it("no error is shown when the dialog opens", async () => {
+      const dialog = await open();
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      expect(dialog.querySelector("[aria-invalid='true']")).toBeNull();
+      // Leaving the empty field is no mistake either: the button says what is missing.
+      await waitFor(() => expect(within(dialog).getByLabelText("Name")).toHaveFocus());
+      await userEvent.tab();
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+    });
+
+    it("the button says what is missing", async () => {
+      const dialog = await open();
+      const create = within(dialog).getByRole("button", { name: "Create" });
+      expect(create).toBeDisabled();
+      expect(within(dialog).getByRole("status")).toHaveTextContent("Enter a name.");
+      expect(create).toHaveAccessibleDescription("Enter a name.");
+
+      await userEvent.type(within(dialog).getByLabelText("Name"), "!!!");
+      expect(create).toHaveAccessibleDescription("Use letters or digits.");
+
+      await userEvent.clear(within(dialog).getByLabelText("Name"));
+      await userEvent.type(within(dialog).getByLabelText("Name"), "web");
+      expect(create).toBeEnabled();
+      expect(within(dialog).queryByRole("status")).toBeNull();
+      expect(create).not.toHaveAttribute("aria-describedby");
+    });
+
+    it("a taken slug is reported on the slug field, with Advanced opened", async () => {
+      server.use(http.post("/api/v1/services", () =>
+        HttpResponse.json({ error: "service id or slug already in use" }, { status: 409 })));
+      const dialog = await open();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "Web Prod");
+      expect(within(dialog).queryByLabelText("URL slug")).toBeNull();
+      await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+
+      const slug = await within(dialog).findByLabelText("URL slug");
+      expect(within(dialog).getByRole("button", { name: "Advanced" })).toHaveAttribute("aria-expanded", "true");
+      expect(slug).toHaveAttribute("aria-invalid", "true");
+      expect(slug).toHaveAccessibleDescription("service id or slug already in use");
+      await waitFor(() => expect(slug).toHaveFocus());
+
+      // Changing it takes the relay's verdict away, and the field stays where it is.
+      await userEvent.type(slug, "-2");
+      expect(slug).toBeInTheDocument();
+      expect(slug).toHaveValue("web-prod-2");
+      expect(slug).not.toHaveAttribute("aria-invalid");
+      expect(within(dialog).getByRole("button", { name: "Create" })).toBeEnabled();
+    });
+
+    it("a service id the relay refuses is reported on its field, with Advanced opened", async () => {
+      server.use(http.post("/api/v1/services", () =>
+        HttpResponse.json({ error: "service_id must match ^[a-z0-9_-]{3,64}$" }, { status: 400 })));
+      const dialog = await open();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "Web Prod");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+      const id = await within(dialog).findByLabelText("Service ID");
+      expect(id).toHaveAccessibleDescription(/service_id must match/);
+      await waitFor(() => expect(id).toHaveFocus());
+    });
+
+    it("a conflict that is not about the name stays out of the slug field", async () => {
+      server.use(http.post("/api/v1/services", () =>
+        HttpResponse.json({ error: "burrow_login requires a configured auth_domain" }, { status: 409 })));
+      const dialog = await open();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "Web Prod");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+      expect(await within(dialog).findByRole("alert")).toHaveTextContent("burrow_login requires a configured auth_domain");
+      expect(within(dialog).queryByLabelText("URL slug")).toBeNull();
+    });
+
+    it("says who may create services when the relay answers 403", async () => {
+      server.use(http.post("/api/v1/services", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
+      const dialog = await open();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "Web Prod");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+      expect(await within(dialog).findByRole("alert")).toHaveTextContent("You don't have permission to create services.");
+      // Nothing under Advanced is to blame.
+      expect(within(dialog).queryByLabelText("URL slug")).toBeNull();
+    });
+
+    it("an invalid slug blocks Create and is named once its field is left", async () => {
+      const dialog = await open();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "web-prod");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Advanced" }));
+      const slug = within(dialog).getByLabelText("URL slug");
+      await userEvent.clear(slug);
+      await userEvent.type(slug, "-bad");
+      const create = within(dialog).getByRole("button", { name: "Create" });
+      expect(create).toBeDisabled();
+      expect(create).toHaveAccessibleDescription("Check the URL slug.");
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      await userEvent.tab();
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(/3.40 characters/);
+    });
+
+    it("the base-path hint sits under the address preview", async () => {
+      const dialog = await open();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "Web Prod");
+      const preview = within(dialog).getByText(address("web-prod"));
+      const hint = within(dialog).getByText(BASE_PATH_HINT);
+      const access = within(dialog).getByLabelText("Access mode");
+      expect(preview.compareDocumentPosition(hint) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(hint.compareDocumentPosition(access) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("labels are bound to their fields", async () => {
+      const dialog = await open();
+      expect(within(dialog).getByLabelText("Name")).toHaveAttribute("id", "ns-name");
+      expect(within(dialog).getByLabelText("Access mode")).toBeInTheDocument();
+      await userEvent.click(within(dialog).getByRole("button", { name: "Advanced" }));
+      expect(within(dialog).getByLabelText("Service ID").tagName).toBe("INPUT");
+      expect(within(dialog).getByLabelText("URL slug").tagName).toBe("INPUT");
+      expect(within(dialog).getByLabelText("Title").tagName).toBe("INPUT");
+    });
+
+    it("starts empty every time it opens", async () => {
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: "New service" }));
+      let dialog = await screen.findByRole("dialog", { name: "New service" });
+      await userEvent.type(within(dialog).getByLabelText("Name"), "Web Prod");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Advanced" }));
+      await userEvent.type(within(dialog).getByLabelText("Title"), "!");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      await userEvent.click(screen.getByRole("button", { name: "New service" }));
+      dialog = await screen.findByRole("dialog", { name: "New service" });
+      expect(within(dialog).getByLabelText("Name")).toHaveValue("");
+      expect(within(dialog).getByRole("button", { name: "Advanced" })).toHaveAttribute("aria-expanded", "false");
+    });
   });
 });
 

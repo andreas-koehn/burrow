@@ -504,6 +504,9 @@ describe("Cost & budgets (§4.24)", () => {
     expect(create).toBeDisabled();
     expect(create).toHaveAccessibleDescription("Choose a gateway key.");
     expect(within(dialog).getByText("Choose a gateway key.")).toBeVisible();
+    // A status: what is missing changes while the form is filled in.
+    expect(within(dialog).getByRole("status")).toHaveTextContent("Choose a gateway key.");
+    expect(within(dialog).queryByRole("alert")).toBeNull();
 
     await chooseOption(dialog, "Scope", "API key");
     expect(create).toHaveAccessibleDescription("Choose a service and a key.");

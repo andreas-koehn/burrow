@@ -11,9 +11,10 @@ interface Service {
 test.use({ storageState: AUTH_STORAGE_PATH });
 
 test("35-create-service: pre-provision a service through the UI dialog", async ({ page, request }) => {
-  // The dialog pre-provisions a service by id. service_id must match
+  // The dialog asks for one name and derives the id and the slug from it;
+  // under Advanced the id is given a value of its own. service_id must match
   // ^[a-z0-9_-]{3,64}$ — keep it lowercase letters/digits/hyphen. The backend
-  // stores the optional Title as the service's display name.
+  // stores the name as the service's display name (its title).
   const serviceId = `uitest-${Date.now()}`;
   // Unique title too — the backend enforces a unique service name, so a
   // hardcoded title would collide with a leftover on a non-fresh stack.
@@ -27,11 +28,12 @@ test("35-create-service: pre-provision a service through the UI dialog", async (
 
     const dialog = page.getByRole("dialog", { name: "New service" });
     await expect(dialog).toBeVisible();
+    await dialog.locator("#ns-name").fill(title);
+    await dialog.getByRole("button", { name: "Advanced", exact: true }).click();
     await dialog.locator("#ns-service-id").fill(serviceId);
-    await dialog.locator("#ns-title").fill(title);
     await dialog.getByRole("button", { name: "Create", exact: true }).click();
 
-    // Success toast: "Service {serviceId} created."
+    // Success toast: "Service {title} created.", and the title ends in the id.
     await expect(page.getByText(new RegExp(`${serviceId} created`))).toBeVisible({ timeout: 5_000 });
 
     // The new row appears in the Services table (displayed name = the title).
