@@ -453,11 +453,16 @@ func (m *metricsBuf) String() string              { return string(m.b) }
 // The audit logger is wired into the server so every tools/call dispatch
 // emits one mcp.tool.call audit row (Task 15 — closes spec Part P's audit
 // contract).
+//
+// authDomain is the resolved auth domain the API router gets as
+// api.Deps.AuthDomain: without one the access-mode tool refuses burrow_login,
+// as the JSON API does.
 func BuildMCPServer(
 	st *store.Store,
 	stack *v04Stack,
 	tunnels mcpTunnelSource,
 	wrapped *db.DB,
+	authDomain string,
 	log *slog.Logger,
 ) *mcpserv.Server {
 	toolStore := mcpToolStoreAdapter{
@@ -471,6 +476,7 @@ func BuildMCPServer(
 		st,
 		toolStore,
 		log,
+		mcpserv.WithAuthDomain(authDomain),
 	)
 	if stack.AuditLogger != nil {
 		srv.SetAuditAppender(stack.AuditLogger)

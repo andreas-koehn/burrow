@@ -571,32 +571,11 @@ func (d Deps) SetAccessPolicy(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// isValidHTTPHeaderName reports whether s is a non-empty RFC 7230 token
-// (the grammar for HTTP header field names). The valid set is:
-//
-//	tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." / "^"
-//	      / "_" / "`" / "|" / "~" / DIGIT / ALPHA
-//
-// In particular: NO colon, NO whitespace, NO control characters.
-func isValidHTTPHeaderName(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'a' && c <= 'z':
-		case c >= 'A' && c <= 'Z':
-		case c >= '0' && c <= '9':
-		case c == '!' || c == '#' || c == '$' || c == '%' || c == '&' || c == '\'':
-		case c == '*' || c == '+' || c == '-' || c == '.' || c == '^' || c == '_':
-		case c == '`' || c == '|' || c == '~':
-		default:
-			return false
-		}
-	}
-	return true
-}
+// isValidHTTPHeaderName reports whether s is a non-empty RFC 7230 token (the
+// grammar for HTTP header field names): NO colon, NO whitespace, NO control
+// characters. The rule lives in the store package, where the MCP tool that
+// sets an access mode reaches it too.
+func isValidHTTPHeaderName(s string) bool { return store.ValidHTTPHeaderName(s) }
 
 type setSlugReq struct {
 	Slug string `json:"slug"`

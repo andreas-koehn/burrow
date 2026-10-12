@@ -26,7 +26,7 @@ func TestGuide_MatchesTheServer(t *testing.T) {
 	for _, m := range row.FindAllStringSubmatch(guide, -1) {
 		documented[m[1]] = [2]string{m[2], m[3]}
 	}
-	tools := buildTools(nil)
+	tools := buildTools(nil, toolEnv{})
 	if len(documented) != len(tools) {
 		t.Errorf("the guide's tool table has %d rows, the registry %d tools", len(documented), len(tools))
 	}
@@ -54,6 +54,8 @@ func TestGuide_MatchesTheServer(t *testing.T) {
 		fmt.Sprintf("%d per token and minute", DefaultRateLimit),
 		"1 MiB",
 		fmt.Sprintf("%d seconds", int(toolTimeout/time.Second)),
+		fmt.Sprintf("at most %d events per call, %d unless", auditSearchMaxLimit, auditSearchDefaultLimit),
+		fmt.Sprintf("at most %d users per call, %d unless", usersListMaxLimit, usersListDefaultLimit),
 		"Authorization: Bearer",
 	}, protocolVersions...) {
 		if !strings.Contains(guide, want) {

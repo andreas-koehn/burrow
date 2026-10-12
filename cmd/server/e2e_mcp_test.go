@@ -15,7 +15,7 @@ package main
 //   2. `tools/call` for services_list with the full bearer → the shape
 //      mirrors GET /api/v1/services (sub-set of fields compared).
 //   3. `tools/call` for services_set_access_mode with the SECOND bearer
-//      that has only `tunnels:read:any` → refused like an unknown tool AND
+//      that has only `tunnels:read:own` → refused like an unknown tool AND
 //      one audit_events row with action=mcp.tool.call result=denied.
 
 import (
@@ -37,6 +37,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/api"
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/config"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/mcpserv"
 	"github.com/ankoehn/burrow/internal/store"
@@ -175,12 +176,15 @@ func installAuditLoggerOnStoreForMCP(t *testing.T, s *e2eStack) *audit.Logger {
 }
 
 // mcpBearerTransport sends the Authorization header a configured MCP client
-// sends with every request.
-type mcpBearerTransport struct{ token string }
+// sends with every request, and its User-Agent when one is set.
+type mcpBearerTransport struct{ token, userAgent string }
 
 func (b mcpBearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r = r.Clone(r.Context())
 	r.Header.Set("Authorization", "Bearer "+b.token)
+	if b.userAgent != "" {
+		r.Header.Set("User-Agent", b.userAgent)
+	}
 	return http.DefaultTransport.RoundTrip(r)
 }
 
@@ -188,12 +192,18 @@ func (b mcpBearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // speaking the given protocol revision.
 func mcpConnect(t *testing.T, url, bearer, revision string) *mcp.ClientSession {
 	t.Helper()
+	return mcpConnectAs(t, url, mcpBearerTransport{token: bearer}, revision)
+}
+
+// mcpConnectAs is mcpConnect with the transport given.
+func mcpConnectAs(t *testing.T, url string, transport mcpBearerTransport, revision string) *mcp.ClientSession {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	client := mcp.NewClient(&mcp.Implementation{Name: "burrow-e2e", Version: "0"}, nil)
 	cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{
 		Endpoint:             url,
-		HTTPClient:           &http.Client{Transport: mcpBearerTransport{token: bearer}, Timeout: 10 * time.Second},
+		HTTPClient:           &http.Client{Transport: transport, Timeout: 10 * time.Second},
 		DisableStandaloneSSE: true,
 		MaxRetries:           -1,
 	}, &mcp.ClientSessionOptions{ProtocolVersion: revision})
@@ -263,7 +273,7 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 	// permission. The seeded admin trivially has every permission, so the
 	// subset check at MintAutomationToken passes.
 	fullPerms := []string{
-		"tunnels:read:any",
+		"tunnels:read:own",
 		"services:configure:any",
 		"services:configure:own",
 		"tokens:manage:own",
@@ -285,7 +295,7 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 		context.Background(),
 		stack.userID, "admin",
 		"e2e-mcp-narrow",
-		[]string{"tunnels:read:any"},
+		[]string{"tunnels:read:own"},
 		nil,
 	)
 	if err != nil {
@@ -362,7 +372,7 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 					stack.serviceID, svcList.Services)
 			}
 
-			// --- 3. Permission gate: a token with ONLY tunnels:read:any cannot ---
+			// --- 3. Permission gate: a token with ONLY tunnels:read:own cannot ---
 			// drive services_set_access_mode. The call is refused like a call on
 			// a tool that does not exist, and one mcp.tool.call audit row with
 			// result=denied is written.
@@ -409,5 +419,201 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 				t.Fatalf("denied audit rows for services_set_access_mode: %d, want %d", got, before+1)
 			}
 		})
+	}
+}
+
+// mcpCall calls a tool and returns its result as text; wantError says
+// whether the tool is expected to fail (an isError result, never a protocol
+// error).
+func mcpCall(t *testing.T, cs *mcp.ClientSession, wantError bool, name string, args map[string]any) string {
+	t.Helper()
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatalf("tools/call %s: %v", name, err)
+	}
+	if res.IsError != wantError || len(res.Content) != 1 {
+		t.Fatalf("tools/call %s: isError=%v, want %v: %+v", name, res.IsError, wantError, res)
+	}
+	text, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("tools/call %s: content is %T, want text", name, res.Content[0])
+	}
+	return text.Text
+}
+
+// TestE2EMCP_WritesLeaveTheAuditTrailOfTheAPI drives the server cmd/server
+// builds (BuildMCPServer), mounted on the API router, against the real store
+// and the real audit log. What a tool changes must leave the rows the same
+// change leaves through the JSON API: the store's own row and the
+// mcp.tool.call row both name the token's user (id and email), the client
+// address, the user agent and the request id, and no row holds a secret.
+// The same run pins what the tools refuse and bound against the real store.
+func TestE2EMCP_WritesLeaveTheAuditTrailOfTheAPI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip e2e in -short")
+	}
+	ctx := context.Background()
+	st, wrapped := freshTestStack(t)
+	stack, err := buildV04Stack(ctx, &config.ServerConfig{}, wrapped.DB(), st, discardLog())
+	if err != nil {
+		t.Fatalf("buildV04Stack: %v", err)
+	}
+	t.Cleanup(stack.GuardrailAudit.stop)
+	t.Cleanup(func() { stack.WebhookDispatcher.Close() })
+
+	admin, err := st.GetUserByEmail(ctx, "admin@x")
+	if err != nil {
+		t.Fatalf("admin: %v", err)
+	}
+	const serviceID = "svc-audit"
+	if err := st.CreateService(ctx, db.Service{
+		ID: serviceID, UserID: admin.ID, Name: "echo", Type: "http", Subdomain: "echo",
+		AccessMode: "open", APIKeyHeader: "Authorization", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create service: %v", err)
+	}
+	_, bearer, err := st.MintAutomationToken(ctx, admin.ID, "admin", "audit-trail",
+		[]string{"tokens:manage:own", "services:configure:own", "audit:read"}, nil)
+	if err != nil {
+		t.Fatalf("mint token: %v", err)
+	}
+
+	// serve mounts a server built for the given auth domain as main.go does.
+	serve := func(authDomain string) string {
+		srv := BuildMCPServer(st, stack, nil, wrapped, authDomain, discardLog())
+		hs := httptest.NewServer(api.NewRouter(api.Deps{
+			Log: discardLog(),
+			MCP: api.MCPInfo{Enabled: true, Server: srv, Handler: srv},
+		}))
+		t.Cleanup(hs.Close)
+		return hs.URL + mcpserv.EndpointPath
+	}
+	mcpURL := serve("burrow.example.com")
+	const agent = "burrow-e2e-agent/1"
+
+	allRows := func() []db.AuditEvent {
+		rows, err := wrapped.ListAuditEvents(ctx, db.AuditQuery{})
+		if err != nil {
+			t.Fatalf("list audit: %v", err)
+		}
+		return rows
+	}
+	var secrets []string
+
+	for _, revision := range []string{"2026-07-28", "2025-11-25"} {
+		t.Run(revision, func(t *testing.T) {
+			cs := mcpConnectAs(t, mcpURL, mcpBearerTransport{token: bearer, userAgent: agent}, revision)
+			seen := map[string]bool{}
+			for _, r := range allRows() {
+				seen[r.ID] = true
+			}
+
+			var minted struct {
+				Token string `json:"token"`
+			}
+			if err := json.Unmarshal([]byte(mcpCall(t, cs, false, "tokens_mint", map[string]any{"name": "ci-" + revision})), &minted); err != nil || minted.Token == "" {
+				t.Fatalf("tokens_mint returned no token: %v", err)
+			}
+			mcpCall(t, cs, false, "services_set_access_mode", map[string]any{"id": serviceID, "mode": "api_key", "api_key_header": "X-Api-Key"})
+			var key struct {
+				ID  string `json:"id"`
+				Key string `json:"key"`
+			}
+			if err := json.Unmarshal([]byte(mcpCall(t, cs, false, "api_keys_create", map[string]any{"service_id": serviceID, "name": "prod"})), &key); err != nil || key.Key == "" {
+				t.Fatalf("api_keys_create returned no key: %v", err)
+			}
+			mcpCall(t, cs, false, "api_keys_delete", map[string]any{"service_id": serviceID, "id": key.ID})
+			secrets = append(secrets, minted.Token, key.Key)
+
+			// Input the REST route refuses is refused, and nothing is stored.
+			if got := mcpCall(t, cs, true, "services_set_access_mode", map[string]any{
+				"id": serviceID, "mode": "api_key", "api_key_header": "X Bad: header\r\nInjected",
+			}); got != "api_key_header must be a valid HTTP header name (RFC 7230 token)" {
+				t.Errorf("bad header name: %q", got)
+			}
+			if svc, err := st.ServiceByID(ctx, serviceID); err != nil || svc.AccessMode != "api_key" || svc.APIKeyHeader != "X-Api-Key" {
+				t.Errorf("after the refused call: mode %q header %q err %v", svc.AccessMode, svc.APIKeyHeader, err)
+			}
+			// No header is the default one, as on the REST route.
+			mcpCall(t, cs, false, "services_set_access_mode", map[string]any{"id": serviceID, "mode": "api_key"})
+			if svc, err := st.ServiceByID(ctx, serviceID); err != nil || svc.APIKeyHeader != "Authorization" {
+				t.Errorf("api_key without a header: header %q err %v", svc.APIKeyHeader, err)
+			}
+
+			want := map[string]int{
+				audit.ActionTokenMint:               1,
+				audit.ActionServiceAccessModeUpdate: 2,
+				audit.ActionServiceAPIKeyCreate:     1,
+				audit.ActionServiceAPIKeyRevoke:     1,
+				audit.ActionMCPToolCall:             6,
+			}
+			got := map[string]int{}
+			for _, r := range allRows() {
+				if seen[r.ID] {
+					continue
+				}
+				got[r.Action]++
+				if r.ActorID != admin.ID || r.ActorEmail != "admin@x" {
+					t.Errorf("%s %s: actor %q <%s>, want %s <admin@x>", r.Action, r.SubjectLabel, r.ActorID, r.ActorEmail, admin.ID)
+				}
+				if r.SourceIP != "127.0.0.1" || r.UserAgent != agent || r.RequestID == "" {
+					t.Errorf("%s %s: source ip %q, user agent %q, request id %q", r.Action, r.SubjectLabel, r.SourceIP, r.UserAgent, r.RequestID)
+				}
+			}
+			for action, n := range want {
+				if got[action] != n {
+					t.Errorf("%d new %s rows, want %d (all new rows: %v)", got[action], action, n, got)
+				}
+			}
+			if len(got) != len(want) {
+				t.Errorf("new audit rows %v, want only %v", got, want)
+			}
+		})
+	}
+
+	// burrow_login follows the relay's auth domain, as on the REST route.
+	with := mcpConnect(t, mcpURL, bearer, "2026-07-28")
+	mcpCall(t, with, false, "services_set_access_mode", map[string]any{"id": serviceID, "mode": "open"})
+	without := mcpConnect(t, serve(""), bearer, "2026-07-28")
+	if got := mcpCall(t, without, true, "services_set_access_mode", map[string]any{"id": serviceID, "mode": "burrow_login"}); got != "burrow_login requires a configured auth_domain" {
+		t.Errorf("burrow_login without an auth domain: %q", got)
+	}
+	if svc, err := st.ServiceByID(ctx, serviceID); err != nil || svc.AccessMode != "open" {
+		t.Errorf("after the refused burrow_login: mode %q err %v", svc.AccessMode, err)
+	}
+	mcpCall(t, with, false, "services_set_access_mode", map[string]any{"id": serviceID, "mode": "burrow_login"})
+	if svc, err := st.ServiceByID(ctx, serviceID); err != nil || svc.AccessMode != "burrow_login" {
+		t.Errorf("burrow_login with an auth domain: mode %q err %v", svc.AccessMode, err)
+	}
+
+	// No audit row holds a secret: not the bearer, not what a tool handed out.
+	rows := allRows()
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range append(secrets, bearer) {
+		if secret == "" || strings.Contains(string(raw), secret) {
+			t.Errorf("the audit log holds a secret (or one is empty)")
+		}
+	}
+
+	// audit_search is bounded whatever limit is asked for. The log is made
+	// longer than the default page first.
+	for i := len(rows); i <= 120; i++ {
+		if err := stack.AuditLogger.Append(ctx, audit.Event{Action: audit.ActionUserUpdate, SubjectLabel: "filler"}); err != nil {
+			t.Fatalf("append filler row: %v", err)
+		}
+	}
+	for _, args := range []map[string]any{{}, {"limit": 0}, {"limit": -1}, {"limit": -1000000}} {
+		var out struct {
+			Events []json.RawMessage `json:"events"`
+		}
+		if err := json.Unmarshal([]byte(mcpCall(t, with, false, "audit_search", args)), &out); err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Events) != 100 {
+			t.Errorf("audit_search %v: %d events of %d in the log, want the default 100", args, len(out.Events), len(allRows()))
+		}
 	}
 }

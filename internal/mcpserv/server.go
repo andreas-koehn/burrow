@@ -14,7 +14,7 @@
 //
 // Permissions: every tool declares an authz.Permission string that maps to
 // the SAME permission the equivalent REST endpoint enforces (e.g.
-// tunnels_list → tunnels:read:any). Cookie/admin shortcuts are NOT applied;
+// audit_search → audit:read). Cookie/admin shortcuts are NOT applied;
 // the bearer token's permission set is the source of truth, intersected
 // with the minter user's CURRENT role (matches Task 18 effectivePerms). A
 // token sees and can call exactly the tools that rule allows.
@@ -31,7 +31,10 @@
 //	               200  JSON-RPC, errors included
 //
 // One audit row (mcp.tool.call) is written per tools/call on a tool of the
-// registry: ok, error, or denied.
+// registry: ok, error, or denied. That row and the rows the store writes for
+// a tool's own changes (token.mint, service.access_mode.update, …) name the
+// token's user, the client address, the user agent and the request id, like
+// the rows of the JSON API (auditContext).
 package mcpserv
 
 import (
@@ -39,10 +42,12 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/httprate"
 
 	"github.com/ankoehn/burrow/internal/audit"
@@ -114,7 +119,9 @@ type Server struct {
 	// toolTimeout overrides the package constant of that name; tests only.
 	toolTimeout time.Duration
 	rateWindow  time.Duration
-	handler     http.Handler
+	// authDomain: the relay has an auth domain (WithAuthDomain).
+	authDomain bool
+	handler    http.Handler
 }
 
 // Option adjusts a Server at construction.
@@ -124,6 +131,14 @@ type Option func(*Server)
 // automation token per window.
 func WithRateLimit(requests int, window time.Duration) Option {
 	return func(s *Server) { s.rateLimit, s.rateWindow = requests, window }
+}
+
+// WithAuthDomain tells the server the relay's auth domain, the value the
+// JSON API has as api.Deps.AuthDomain. Only whether it is set matters:
+// services_set_access_mode refuses burrow_login without one, as the JSON API
+// does. Without this option the mode is refused.
+func WithAuthDomain(domain string) Option {
+	return func(s *Server) { s.authDomain = domain != "" }
 }
 
 // SetAuditAppender installs an audit appender. The MCP server emits one
@@ -142,17 +157,23 @@ func (s *Server) SetAuditAppender(a AuditAppender) {
 
 // emitToolAudit appends one mcp.tool.call row recording the (tool, result)
 // pair under the bearer's user as actor. Nil-safe — best-effort on writes;
-// the answer is never blocked on the audit append. The row names the tool
-// and the outcome and nothing else: no arguments, no result.
+// the answer is never blocked on the audit append. The row names the tool,
+// the outcome, who called and from where (the request's audit context), and
+// nothing else: no arguments, no result.
 func (s *Server) emitToolAudit(ctx context.Context, tok *authedToken, toolName, result string) {
 	if s == nil || s.audit == nil || tok == nil {
 		return
 	}
+	lc := audit.LogContextFrom(ctx)
 	_ = s.audit.Append(ctx, audit.Event{
 		ActorID:      tok.userID,
+		ActorEmail:   tok.email,
 		Action:       audit.ActionMCPToolCall,
 		SubjectLabel: toolName,
 		Result:       result,
+		SourceIP:     lc.SourceIP,
+		UserAgent:    lc.UserAgent,
+		RequestID:    lc.RequestID,
 	})
 }
 
@@ -167,31 +188,29 @@ func New(bearer BearerStore, users UserLookup, toolStore ToolStore, log *slog.Lo
 	if log == nil {
 		log = slog.Default()
 	}
-	tools := buildTools(toolStore)
-	ordered := make([]Tool, 0, len(orderedTools))
-	list := make([]ToolDescriptor, 0, len(orderedTools))
-	for _, name := range orderedTools {
-		t := tools[name]
-		ordered = append(ordered, t)
-		list = append(list, ToolDescriptor{
-			Name:             t.Name,
-			Description:      t.Description,
-			ParametersSchema: t.ParamsSchema,
-			Permission:       string(t.Permission),
-		})
-	}
 	s := &Server{
 		bearer:     bearer,
 		users:      users,
 		log:        log,
-		tools:      tools,
-		ordered:    ordered,
-		toolList:   list,
 		rateLimit:  DefaultRateLimit,
 		rateWindow: DefaultRateWindow,
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+	// After the options: the tools read what they set.
+	s.tools = buildTools(toolStore, toolEnv{authDomain: s.authDomain})
+	s.ordered = make([]Tool, 0, len(orderedTools))
+	s.toolList = make([]ToolDescriptor, 0, len(orderedTools))
+	for _, name := range orderedTools {
+		t := s.tools[name]
+		s.ordered = append(s.ordered, t)
+		s.toolList = append(s.toolList, ToolDescriptor{
+			Name:             t.Name,
+			Description:      t.Description,
+			ParametersSchema: t.ParamsSchema,
+			Permission:       string(t.Permission),
+		})
 	}
 	limit := httprate.Limit(s.rateLimit, s.rateWindow,
 		httprate.WithKeyFuncs(func(r *http.Request) (string, error) {
@@ -248,8 +267,9 @@ func checkOrigin(next http.Handler) http.Handler {
 }
 
 // requireBearer authenticates the request and hands the token on in the
-// request context. Bearer auth runs BEFORE any JSON-RPC parsing, so a
-// malformed body without a valid token is a 401, not a parse error.
+// request context, together with the audit context of the request. Bearer
+// auth runs BEFORE any JSON-RPC parsing, so a malformed body without a valid
+// token is a 401, not a parse error.
 func (s *Server) requireBearer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok, err := s.authenticate(r)
@@ -257,8 +277,35 @@ func (s *Server) requireBearer(next http.Handler) http.Handler {
 			writeAuthErr(w, err)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
+		ctx := audit.WithLogContext(withToken(r.Context(), tok), auditContext(r, tok))
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// auditContext is who acts and from where, for the audit rows of this
+// request: the store's own rows for what a tool changes read it from the
+// context (audit.LogContextFrom), and emitToolAudit does. It holds what the
+// JSON API's withAuditContext holds, built the same way, so a change made
+// through a tool leaves the trail of the same change made through the API.
+//
+// The address is r.RemoteAddr: the API router's TrustedProxyMiddleware has
+// put the client's address there when a trusted proxy forwarded the request.
+// No forwarding header is read here. The request id is the one of the
+// router's request-id middleware, empty when the handler is served without
+// it. The audit model has no field for the token, so the row does not name
+// it.
+func auditContext(r *http.Request, tok *authedToken) audit.LogContext {
+	ip := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(ip); err == nil {
+		ip = h
+	}
+	return audit.LogContext{
+		ActorID:    tok.userID,
+		ActorEmail: tok.email,
+		SourceIP:   ip,
+		UserAgent:  r.UserAgent(),
+		RequestID:  middleware.GetReqID(r.Context()),
+	}
 }
 
 // touchBearer records last_used. It sits behind the rate limit, so a request
@@ -280,6 +327,7 @@ func (s *Server) touchBearer(next http.Handler) http.Handler {
 type authedToken struct {
 	tokenID string
 	userID  string
+	email   string // for the audit trail
 	role    string
 	perms   []string
 }
@@ -340,6 +388,7 @@ func (s *Server) authenticate(r *http.Request) (*authedToken, error) {
 	return &authedToken{
 		tokenID: info.ID,
 		userID:  u.ID,
+		email:   u.Email,
 		role:    u.Role,
 		perms:   info.Permissions,
 	}, nil

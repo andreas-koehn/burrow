@@ -295,6 +295,36 @@ func validateCAPEM(in []byte) bool {
 	}
 }
 
+// ValidHTTPHeaderName reports whether s is a non-empty RFC 7230 token, the
+// grammar of an HTTP header field name:
+//
+//	tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." / "^"
+//	      / "_" / "`" / "|" / "~" / DIGIT / ALPHA
+//
+// In particular: NO colon, NO whitespace, NO control characters. It is the
+// rule for a service's api_key_header. Every surface that takes one from a
+// caller (the JSON API, the MCP tool) checks it before SetServiceAccessMode,
+// which stores the name as it is given.
+func ValidHTTPHeaderName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '!' || c == '#' || c == '$' || c == '%' || c == '&' || c == '\'':
+		case c == '*' || c == '+' || c == '-' || c == '.' || c == '^' || c == '_':
+		case c == '`' || c == '|' || c == '~':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // ListAPIKeys returns all API keys for the given service.
 // Gate: configure:own (owner) or configure:any (admin).
 // Key hashes are included in the returned rows (the caller is trusted).

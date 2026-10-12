@@ -18,6 +18,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/mcpserv"
 )
@@ -97,7 +98,7 @@ func TestMCPStatus_Disabled(t *testing.T) {
 
 func TestMCPTools_AdminSeesInventory(t *testing.T) {
 	tools := []mcpserv.ToolDescriptor{
-		{Name: "tunnels_list", Description: "x", Permission: "tunnels:read:any",
+		{Name: "tunnels_list", Description: "x", Permission: "tunnels:read:own",
 			ParametersSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "services_list", Description: "y", Permission: "services:configure:own",
 			ParametersSchema: json.RawMessage(`{"type":"object"}`)},
@@ -115,7 +116,7 @@ func TestMCPTools_AdminSeesInventory(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d tools, want 2", len(got))
 	}
-	if got[0].Name != "tunnels_list" || got[0].Permission != "tunnels:read:any" {
+	if got[0].Name != "tunnels_list" || got[0].Permission != "tunnels:read:own" {
 		t.Errorf("tool[0] mismatch: %+v", got[0])
 	}
 	if string(got[0].ParametersSchema) != `{"type":"object"}` {
@@ -186,7 +187,7 @@ func (m mcpTokens) LookupBearer(_ context.Context, hash string) (mcpserv.TokenIn
 func (mcpTokens) TouchBearer(context.Context, string) error { return nil }
 
 func (mcpTokens) GetUserByID(_ context.Context, id string) (db.User, error) {
-	return db.User{ID: id, Role: "admin", Status: "active"}, nil
+	return db.User{ID: id, Email: "admin@x", Role: "admin", Status: "active"}, nil
 }
 
 // lockedLog is a log sink the request logger and the test share: the logger
@@ -223,7 +224,7 @@ func (a mcpAuth) RoundTrip(r *http.Request) (*http.Response, error) {
 func TestMCPMount_SDKClientThroughTheRouter(t *testing.T) {
 	const token = "bua_routertesttoken123"
 	var logs lockedLog
-	srv := mcpserv.New(mcpTokens{plaintext: token, perms: []string{"tunnels:read:any", "audit:read"}},
+	srv := mcpserv.New(mcpTokens{plaintext: token, perms: []string{"tunnels:read:own", "audit:read"}},
 		mcpTokens{}, nil, discardLog())
 	hs := httptest.NewServer(NewRouter(Deps{
 		Log: slog.New(slog.NewTextHandler(&logs, nil)),
@@ -360,7 +361,7 @@ func (c *countingTokens) lookups() int {
 func TestMCPMount_PerAddressLimit(t *testing.T) {
 	const token = "bua_addresslimittoken1"
 	const limit = 5
-	store := &countingTokens{mcpTokens: mcpTokens{plaintext: token, perms: []string{"tunnels:read:any"}}}
+	store := &countingTokens{mcpTokens: mcpTokens{plaintext: token, perms: []string{"tunnels:read:own"}}}
 	srv := mcpserv.New(store, mcpTokens{}, nil, discardLog())
 	hs := httptest.NewServer(NewRouter(Deps{
 		Log:            discardLog(),
@@ -418,7 +419,7 @@ func TestMCPMount_PerAddressLimit(t *testing.T) {
 func mcpLimitServer(t *testing.T, limit int, proxies []string) (*httptest.Server, *countingTokens, string) {
 	t.Helper()
 	const token = "bua_limitservertoken01"
-	store := &countingTokens{mcpTokens: mcpTokens{plaintext: token, perms: []string{"tunnels:read:any"}}}
+	store := &countingTokens{mcpTokens: mcpTokens{plaintext: token, perms: []string{"tunnels:read:own"}}}
 	srv := mcpserv.New(store, mcpTokens{}, nil, discardLog())
 	hs := httptest.NewServer(NewRouter(Deps{
 		Log:            discardLog(),
@@ -548,6 +549,83 @@ func TestMCPMount_StatusPerMethodAndCase(t *testing.T) {
 	for _, c := range cases {
 		if r := mcpDo(t, c.method, url, c.hdr); r.StatusCode != c.want {
 			t.Errorf("%s: %d, want %d", c.name, r.StatusCode, c.want)
+		}
+	}
+}
+
+// ---------- the audit row of a tool call --------------------------------------
+
+// mcpAuditRows keeps what the MCP server appends to the audit log.
+type mcpAuditRows struct {
+	mu   sync.Mutex
+	rows []audit.Event
+}
+
+func (a *mcpAuditRows) Append(_ context.Context, e audit.Event) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.rows = append(a.rows, e)
+	return nil
+}
+
+// The audit row of a tool call names the client address the router decided
+// on (the forwarded one behind a trusted proxy, the TCP peer otherwise, never
+// a header any caller can set) and the request id of the router's middleware.
+func TestMCPMount_AuditRowCarriesAddressAndRequestID(t *testing.T) {
+	const token = "bua_auditaddresstoken1"
+	for _, c := range []struct {
+		name    string
+		proxies []string
+		want    string
+	}{
+		{"behind a trusted proxy", []string{"127.0.0.0/8"}, "198.51.100.7"},
+		{"no trusted proxy", nil, "127.0.0.1"},
+	} {
+		sink := &mcpAuditRows{}
+		srv := mcpserv.New(mcpTokens{plaintext: token, perms: []string{"tunnels:read:own"}}, mcpTokens{}, nil, discardLog())
+		srv.SetAuditAppender(sink)
+		hs := httptest.NewServer(NewRouter(Deps{
+			Log:            discardLog(),
+			TrustedProxies: c.proxies,
+			MCP:            MCPInfo{Enabled: true, Server: srv, Handler: srv},
+		}))
+		t.Cleanup(hs.Close)
+
+		req, _ := http.NewRequest(http.MethodPost, hs.URL+"/mcp/burrow", strings.NewReader(
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tunnels_list","arguments":{}}}`))
+		for k, v := range map[string]string{
+			"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+			"MCP-Protocol-Version": "2025-06-18", "Authorization": "Bearer " + token,
+			"User-Agent": "api-test-agent/1", "X-Forwarded-For": "198.51.100.7",
+		} {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: %d %s", c.name, resp.StatusCode, body)
+		}
+		sink.mu.Lock()
+		rows := append([]audit.Event(nil), sink.rows...)
+		sink.mu.Unlock()
+		if len(rows) != 1 {
+			t.Fatalf("%s: %d audit rows, want 1 (%s)", c.name, len(rows), body)
+		}
+		r := rows[0]
+		if r.SubjectLabel != "tunnels_list" || r.ActorID != "u1" || r.ActorEmail != "admin@x" {
+			t.Errorf("%s: row %+v", c.name, r)
+		}
+		if r.SourceIP != c.want {
+			t.Errorf("%s: source ip %q, want %q", c.name, r.SourceIP, c.want)
+		}
+		if r.UserAgent != "api-test-agent/1" || r.RequestID == "" {
+			t.Errorf("%s: user agent %q, request id %q", c.name, r.UserAgent, r.RequestID)
+		}
+		if raw, _ := json.Marshal(r); strings.Contains(string(raw), token) {
+			t.Errorf("%s: the audit row carries the bearer token", c.name)
 		}
 	}
 }

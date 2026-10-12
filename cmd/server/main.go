@@ -633,7 +633,7 @@ func newRootCmd() *cobra.Command {
 			// The management MCP server, mounted at /mcp/burrow by the API
 			// router below. The ToolStore adapter binds to the live tunnel
 			// registry + audit query store + metrics recorder.
-			v04.MCPServer = BuildMCPServer(st, v04, mcpTunnelAdapter{s: srv}, db.Wrap(database), log)
+			v04.MCPServer = BuildMCPServer(st, v04, mcpTunnelAdapter{s: srv}, db.Wrap(database), proxyAuthDomain, log)
 
 			// v0.5.0 Task 17: build every new v0.5.0 component and wire the
 			// semantic cache + credinject injector into the aigw.Chain.

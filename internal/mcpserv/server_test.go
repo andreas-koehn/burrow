@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/db"
@@ -94,8 +96,13 @@ type fakeStore struct {
 	metricsBody   string
 
 	// counters / capture
+	setModeCalls  int
 	lastSetMode   string
 	lastSetHeader string
+	lastAuditQ    db.AuditQuery
+	lastUsersPage [2]int // limit, offset
+	// lastLC is the audit context a write saw on its ctx.
+	lastLC        audit.LogContext
 	lastCreatedID string
 	lastCreatedPT string
 	lastDeleted   string
@@ -115,7 +122,9 @@ func (f *fakeStore) GetService(_ context.Context, _, _, id string) (store.Servic
 	}
 	return f.serviceDetail, nil
 }
-func (f *fakeStore) SetServiceAccessMode(_ context.Context, _, _, id, mode, header string, _ []byte) error {
+func (f *fakeStore) SetServiceAccessMode(ctx context.Context, _, _, id, mode, header string, _ []byte) error {
+	f.setModeCalls++
+	f.lastLC = audit.LogContextFrom(ctx)
 	if id == "missing" {
 		return db.ErrNotFound
 	}
@@ -147,15 +156,25 @@ func (f *fakeStore) DeleteAPIKey(_ context.Context, _, _, _, keyID string) error
 func (f *fakeStore) ListClientTokens(_ context.Context, _ string) ([]db.ClientToken, error) {
 	return append([]db.ClientToken(nil), f.clientTokens...), nil
 }
-func (f *fakeStore) IssueClientToken(_ context.Context, _, name string) (string, error) {
+func (f *fakeStore) IssueClientToken(ctx context.Context, _, name string) (string, error) {
+	f.lastLC = audit.LogContextFrom(ctx)
 	f.lastMintedPT = "burrow_plain-" + name
 	return f.lastMintedPT, nil
 }
-func (f *fakeStore) ListUsers(_ context.Context, _ string, _, _ int) ([]db.User, int, error) {
+func (f *fakeStore) ListUsers(_ context.Context, _ string, limit, offset int) ([]db.User, int, error) {
+	f.lastUsersPage = [2]int{limit, offset}
 	return append([]db.User(nil), f.users...), f.userTotal, nil
 }
-func (f *fakeStore) SearchAuditEvents(_ context.Context, _ db.AuditQuery) ([]db.AuditEvent, error) {
-	return append([]db.AuditEvent(nil), f.audit...), nil
+
+// SearchAuditEvents reads the limit as db.ListAuditEvents does: zero or
+// below is no limit at all.
+func (f *fakeStore) SearchAuditEvents(_ context.Context, q db.AuditQuery) ([]db.AuditEvent, error) {
+	f.lastAuditQ = q
+	rows := append([]db.AuditEvent(nil), f.audit...)
+	if q.Limit > 0 && len(rows) > q.Limit {
+		rows = rows[:q.Limit]
+	}
+	return rows, nil
 }
 func (f *fakeStore) MetricsText() (string, error) {
 	return f.metricsBody, nil
@@ -171,6 +190,7 @@ const (
 // testEnv is one Server behind httptest with its fakes.
 type testEnv struct {
 	url    string
+	srv    *Server
 	bearer *fakeBearer
 	users  *fakeUsers
 	store  *fakeStore
@@ -198,7 +218,7 @@ func newTestEnv(t *testing.T, perms []string, role string, opts ...Option) *test
 	srv.SetAuditAppender(env.audit)
 	hs := httptest.NewServer(srv)
 	t.Cleanup(hs.Close)
-	env.url = hs.URL
+	env.url, env.srv = hs.URL, srv
 	return env
 }
 
@@ -227,7 +247,7 @@ var legacyHeader = map[string]string{"MCP-Protocol-Version": "2025-06-18"}
 func TestHTTP_EveryRevision_WithBearer(t *testing.T) {
 	for _, rev := range testRevisions {
 		t.Run(rev, func(t *testing.T) {
-			env := newTestEnv(t, []string{"tunnels:read:any", "metrics:read"}, "admin")
+			env := newTestEnv(t, []string{"tunnels:read:own", "metrics:read"}, "admin")
 			env.store.tunnels = []TunnelInfo{{ID: "tun-a", Name: "alpha", Type: "http"}}
 			env.store.metricsBody = "# HELP burrow_x demo\nburrow_x 1\n"
 			cs := connectMCP(t, env.url, testBearer, rev)
@@ -257,12 +277,12 @@ func TestHTTP_EveryRevision_WithBearer(t *testing.T) {
 
 func TestHTTP_Unauthenticated_401WithChallenge(t *testing.T) {
 	expired := time.Now().UTC().Add(-time.Hour)
-	env := newTestEnv(t, []string{"tunnels:read:any"}, "admin")
+	env := newTestEnv(t, []string{"tunnels:read:own"}, "admin")
 	env.bearer.put("bua_expiredtoken12345", TokenInfo{ID: "tokE", UserID: testUserID,
-		Permissions: []string{"tunnels:read:any"}, ExpiresAt: &expired})
-	env.bearer.put("bua_suspendeduser1234", TokenInfo{ID: "tokS", UserID: "u-susp", Permissions: []string{"tunnels:read:any"}})
+		Permissions: []string{"tunnels:read:own"}, ExpiresAt: &expired})
+	env.bearer.put("bua_suspendeduser1234", TokenInfo{ID: "tokS", UserID: "u-susp", Permissions: []string{"tunnels:read:own"}})
 	env.users.users["u-susp"] = db.User{ID: "u-susp", Role: "admin", Status: "suspended"}
-	env.bearer.put("bua_deleteduser123456", TokenInfo{ID: "tokD", UserID: "u-gone", Permissions: []string{"tunnels:read:any"}})
+	env.bearer.put("bua_deleteduser123456", TokenInfo{ID: "tokD", UserID: "u-gone", Permissions: []string{"tunnels:read:own"}})
 
 	cases := map[string]string{
 		"no header":             "",
@@ -288,7 +308,7 @@ func TestHTTP_Unauthenticated_401WithChallenge(t *testing.T) {
 	// A valid expiry in the future still works.
 	later := time.Now().UTC().Add(time.Hour)
 	env.bearer.put("bua_validuntillater12", TokenInfo{ID: "tokL", UserID: testUserID,
-		Permissions: []string{"tunnels:read:any"}, ExpiresAt: &later})
+		Permissions: []string{"tunnels:read:own"}, ExpiresAt: &later})
 	if resp, body := rawPOST(t, env.url, "bua_validuntillater12", legacyHeader, rawToolsList); resp.StatusCode != http.StatusOK {
 		t.Errorf("token with a later expiry: %d %s", resp.StatusCode, body)
 	}
@@ -310,7 +330,7 @@ func TestHTTP_Unauthenticated_401WithChallenge(t *testing.T) {
 }
 
 func TestHTTP_TokenStoreFails_500(t *testing.T) {
-	env := newTestEnv(t, []string{"tunnels:read:any"}, "admin")
+	env := newTestEnv(t, []string{"tunnels:read:own"}, "admin")
 	env.bearer.err = errors.New("database is locked")
 	resp, body := rawPOST(t, env.url, testBearer, legacyHeader, rawToolsList)
 	if resp.StatusCode != http.StatusInternalServerError || strings.Contains(body, "database") {
@@ -327,9 +347,9 @@ func TestHTTP_TokenStoreFails_500(t *testing.T) {
 // The role is read on every request: demoting the user who minted a token
 // narrows the token at once.
 func TestHTTP_MinterDemoted_TokenNarrowsAtOnce(t *testing.T) {
-	env := newTestEnv(t, []string{"tunnels:read:any", "services:configure:own"}, "admin")
+	env := newTestEnv(t, []string{"users:read", "services:configure:own"}, "admin")
 	cs := connectMCP(t, env.url, testBearer, "2026-07-28")
-	if got := len(listedTools(t, cs)); got != 7 { // tunnels_list + the six services:configure:own tools
+	if got := len(listedTools(t, cs)); got != 7 { // users_list + the six services:configure:own tools
 		t.Fatalf("as admin: %d tools", got)
 	}
 
@@ -338,16 +358,16 @@ func TestHTTP_MinterDemoted_TokenNarrowsAtOnce(t *testing.T) {
 	env.users.users[testUserID] = u
 
 	tools := listedTools(t, cs)
-	if _, still := tools["tunnels_list"]; still || len(tools) != 6 {
+	if _, still := tools["users_list"]; still || len(tools) != 6 {
 		t.Errorf("after the demotion: %s", sortedNames(tools))
 	}
-	_, err := callTool(t, cs, "tunnels_list", nil)
+	_, err := callTool(t, cs, "users_list", nil)
 	var rpcErr *jsonrpc.Error
 	if !errors.As(err, &rpcErr) || rpcErr.Code != jsonrpc.CodeInvalidParams {
 		t.Fatalf("call after the demotion: %v", err)
 	}
 	rows := env.audit.all()
-	if len(rows) != 1 || rows[0].SubjectLabel != "tunnels_list" || rows[0].Result != "denied" {
+	if len(rows) != 1 || rows[0].SubjectLabel != "users_list" || rows[0].Result != "denied" {
 		t.Errorf("audit rows = %+v", rows)
 	}
 }
@@ -355,7 +375,7 @@ func TestHTTP_MinterDemoted_TokenNarrowsAtOnce(t *testing.T) {
 // ---------- limits ---------------------------------------------------------
 
 func TestHTTP_BodyOverOneMiB_413(t *testing.T) {
-	env := newTestEnv(t, []string{"tunnels:read:any"}, "admin")
+	env := newTestEnv(t, []string{"tunnels:read:own"}, "admin")
 	big := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tunnels_list","arguments":{"filter":"` +
 		strings.Repeat("a", MaxBodyBytes) + `"}}}`
 	resp, _ := rawPOST(t, env.url, testBearer, legacyHeader, big)
@@ -371,8 +391,8 @@ func TestHTTP_BodyOverOneMiB_413(t *testing.T) {
 }
 
 func TestHTTP_RateLimit_PerToken(t *testing.T) {
-	env := newTestEnv(t, []string{"tunnels:read:any"}, "admin", WithRateLimit(3, time.Minute))
-	env.bearer.put("bua_secondtoken123456", TokenInfo{ID: "tok2", UserID: testUserID, Permissions: []string{"tunnels:read:any"}})
+	env := newTestEnv(t, []string{"tunnels:read:own"}, "admin", WithRateLimit(3, time.Minute))
+	env.bearer.put("bua_secondtoken123456", TokenInfo{ID: "tok2", UserID: testUserID, Permissions: []string{"tunnels:read:own"}})
 
 	for i := 1; i <= 3; i++ {
 		if resp, body := rawPOST(t, env.url, testBearer, legacyHeader, rawToolsList); resp.StatusCode != http.StatusOK {
@@ -399,7 +419,7 @@ func TestHTTP_RateLimit_PerToken(t *testing.T) {
 // A request over the limit costs nothing: no last_used write, no audit row,
 // no tool run.
 func TestHTTP_OverTheLimit_NoTouchNoAuditNoTool(t *testing.T) {
-	env := newTestEnv(t, []string{"tunnels:read:any"}, "admin", WithRateLimit(2, time.Minute))
+	env := newTestEnv(t, []string{"tunnels:read:own"}, "admin", WithRateLimit(2, time.Minute))
 	call := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tunnels_list","arguments":{}}}`
 	for i := 1; i <= 2; i++ {
 		if resp, body := rawPOST(t, env.url, testBearer, legacyHeader, call); resp.StatusCode != http.StatusOK {
@@ -433,7 +453,7 @@ func TestHTTP_DefaultRateLimit(t *testing.T) {
 }
 
 func TestHTTP_OnlyPOST(t *testing.T) {
-	env := newTestEnv(t, []string{"tunnels:read:any"}, "admin")
+	env := newTestEnv(t, []string{"tunnels:read:own"}, "admin")
 	for _, method := range []string{http.MethodGet, http.MethodDelete, http.MethodPut} {
 		req, _ := http.NewRequest(method, env.url, nil)
 		req.Header.Set("Authorization", "Bearer "+testBearer)
@@ -454,7 +474,7 @@ func TestHTTP_OnlyPOST(t *testing.T) {
 // A page on another origin must not be able to drive the endpoint, token or
 // no token. A client without Origin (every CLI client) is served.
 func TestHTTP_CrossOrigin(t *testing.T) {
-	env := newTestEnv(t, []string{"tunnels:read:any"}, "admin")
+	env := newTestEnv(t, []string{"tunnels:read:own"}, "admin")
 	self := env.url // http://127.0.0.1:<port>
 	cases := []struct {
 		name string
@@ -513,7 +533,7 @@ func TestHTTP_CrossOrigin(t *testing.T) {
 // loopback address with the public name in Host. The SDK's default
 // DNS-rebinding check would answer 403 to every such request.
 func TestHTTP_BehindALocalReverseProxy(t *testing.T) {
-	env := newTestEnv(t, []string{"tunnels:read:any"}, "admin")
+	env := newTestEnv(t, []string{"tunnels:read:own"}, "admin")
 	req, _ := http.NewRequest(http.MethodPost, env.url, strings.NewReader(rawToolsList))
 	req.Host = "burrow.example.com"
 	req.Header.Set("Content-Type", "application/json")
@@ -607,5 +627,150 @@ func TestHTTP_ServicesList_HidesDirectBackingRows(t *testing.T) {
 	}
 	if len(out.Services) != 2 || out.Services[0].ID != "svc-a" || out.Services[1].ID != "svc-b" {
 		t.Fatalf("services = %+v, want svc-a and svc-b only", out.Services)
+	}
+}
+
+// ---------- the audit trail of a write -------------------------------------
+
+const testUserAgent = "burrow-test-agent/1"
+
+// agentTransport sends what a client behind a forging hop would: the bearer,
+// a User-Agent, and a forwarding header this package must not read (the
+// router's TrustedProxyMiddleware alone decides the client address).
+type agentTransport struct{ token string }
+
+func (a agentTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+a.token)
+	r.Header.Set("User-Agent", testUserAgent)
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// What the JSON API puts on a request for the store's audit rows (who, from
+// where, with which client, in which request) travels through the SDK to the
+// tool's store call, on every revision, and the mcp.tool.call row carries the
+// same.
+func TestHTTP_AuditContext_ReachesTheStoreAndTheRow(t *testing.T) {
+	for _, rev := range testRevisions {
+		t.Run(rev, func(t *testing.T) {
+			env := newTestEnv(t, []string{"tokens:manage:own", "services:configure:own"}, "admin")
+			// Behind the request-id middleware, as on the API router.
+			hs := httptest.NewServer(middleware.RequestID(env.srv))
+			t.Cleanup(hs.Close)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cs, err := mcp.NewClient(&mcp.Implementation{Name: "burrow-test", Version: "0"}, nil).Connect(ctx,
+				&mcp.StreamableClientTransport{
+					Endpoint:             hs.URL,
+					HTTPClient:           &http.Client{Transport: agentTransport{token: testBearer}},
+					DisableStandaloneSSE: true,
+					MaxRetries:           -1,
+				}, &mcp.ClientSessionOptions{ProtocolVersion: rev})
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			t.Cleanup(func() { _ = cs.Close() })
+
+			check := func(what string, lc audit.LogContext) {
+				t.Helper()
+				if lc.ActorID != testUserID || lc.ActorEmail != "ci@x" {
+					t.Errorf("%s: actor %q <%s>, want %s <ci@x>", what, lc.ActorID, lc.ActorEmail, testUserID)
+				}
+				if lc.SourceIP != "127.0.0.1" {
+					t.Errorf("%s: source ip %q, want the TCP peer 127.0.0.1", what, lc.SourceIP)
+				}
+				if lc.UserAgent != testUserAgent {
+					t.Errorf("%s: user agent %q, want %q", what, lc.UserAgent, testUserAgent)
+				}
+				if lc.RequestID == "" {
+					t.Errorf("%s: no request id", what)
+				}
+			}
+
+			if res, err := callTool(t, cs, "tokens_mint", map[string]any{"name": "ci"}); err != nil || res.IsError {
+				t.Fatalf("tokens_mint: %v %+v", err, res)
+			}
+			check("the store call of tokens_mint", env.store.lastLC)
+			env.store.lastLC = audit.LogContext{}
+			if res, err := callTool(t, cs, "services_set_access_mode", map[string]any{"id": "svc1", "mode": "open"}); err != nil || res.IsError {
+				t.Fatalf("services_set_access_mode: %v %+v", err, res)
+			}
+			check("the store call of services_set_access_mode", env.store.lastLC)
+			_, _ = callTool(t, cs, "users_list", nil) // not this token's tool
+
+			rows := env.audit.all()
+			var got []string
+			for _, r := range rows {
+				got = append(got, r.SubjectLabel+"="+r.Result)
+				check("the "+r.SubjectLabel+" row", audit.LogContext{
+					ActorID: r.ActorID, ActorEmail: r.ActorEmail,
+					SourceIP: r.SourceIP, UserAgent: r.UserAgent, RequestID: r.RequestID,
+				})
+			}
+			if want := "tokens_mint=ok,services_set_access_mode=ok,users_list=denied"; strings.Join(got, ",") != want {
+				t.Fatalf("audit rows %v, want %s", got, want)
+			}
+			// Each call is a request of its own.
+			if rows[0].RequestID == rows[1].RequestID {
+				t.Errorf("two calls share the request id %q", rows[0].RequestID)
+			}
+			raw, _ := json.Marshal(rows)
+			for name, secret := range map[string]string{"bearer token": testBearer, "minted token": env.store.lastMintedPT} {
+				if secret == "" || strings.Contains(string(raw), secret) {
+					t.Errorf("the audit rows carry the %s (or it is empty): %s", name, raw)
+				}
+			}
+		})
+	}
+}
+
+// Without the request-id middleware and without an email on the user the
+// row still names the actor; nothing is invented.
+func TestHTTP_AuditRow_WithoutRequestID(t *testing.T) {
+	env := newTestEnv(t, []string{"tokens:manage:own"}, "admin")
+	cs := connectMCP(t, env.url, testBearer, "2026-07-28")
+	if res, err := callTool(t, cs, "tokens_mint", map[string]any{"name": "ci"}); err != nil || res.IsError {
+		t.Fatalf("tokens_mint: %v %+v", err, res)
+	}
+	rows := env.audit.all()
+	if len(rows) != 1 || rows[0].ActorID != testUserID || rows[0].ActorEmail != "ci@x" ||
+		rows[0].SourceIP != "127.0.0.1" || rows[0].RequestID != "" {
+		t.Fatalf("audit rows = %+v", rows)
+	}
+}
+
+// Through the whole handler: input the REST route refuses is a result the
+// model can read, and the value reaches neither the answer nor the log nor
+// the store.
+func TestHTTP_SetAccessMode_RefusedInput_ValueStaysOut(t *testing.T) {
+	env := newTestEnv(t, []string{"services:configure:own"}, "admin")
+	cs := connectMCP(t, env.url, testBearer, "2025-11-25")
+	res, err := callTool(t, cs, "services_set_access_mode", map[string]any{
+		"id": "svc1", "mode": "api_key", "api_key_header": "X Bad: MARKERHDR\r\nInjected",
+	})
+	if err != nil || !res.IsError {
+		t.Fatalf("err=%v result=%+v", err, res)
+	}
+	if got := resultText(t, res); got != "api_key_header must be a valid HTTP header name (RFC 7230 token)" {
+		t.Errorf("result text %q", got)
+	}
+	if res, err := callTool(t, cs, "services_set_access_mode", map[string]any{"id": "svc1", "mode": "burrow_login"}); err != nil ||
+		!res.IsError || resultText(t, res) != "burrow_login requires a configured auth_domain" {
+		t.Errorf("burrow_login without an auth domain: err=%v result=%+v", err, res)
+	}
+	if env.store.setModeCalls != 0 {
+		t.Errorf("refused input reached the store %d times", env.store.setModeCalls)
+	}
+	logs := env.logs.String()
+	if !strings.Contains(logs, "services_set_access_mode") || strings.Contains(logs, "MARKERHDR") || strings.Contains(logs, "Injected") {
+		t.Errorf("log: %s", logs)
+	}
+	var got []string
+	for _, r := range env.audit.all() {
+		got = append(got, r.SubjectLabel+"="+r.Result)
+	}
+	if want := "services_set_access_mode=error,services_set_access_mode=error"; strings.Join(got, ",") != want {
+		t.Errorf("audit rows %v, want %s", got, want)
 	}
 }

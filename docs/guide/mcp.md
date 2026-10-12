@@ -17,8 +17,10 @@ browser is reachable for an MCP client. Use exactly this path, without a
 trailing slash: with the dashboard present, `POST /mcp/burrow/`, any other
 sub-path and any method other than GET, POST and DELETE on the path are
 answered with the dashboard's HTML, not with an error. `GET` and `DELETE` on
-`/mcp/burrow` are answered with `405` and `Allow: POST`: there is no event
-stream and no session to end.
+`/mcp/burrow` with a valid token are answered with `405` and `Allow: POST`:
+there is no event stream and no session to end. Without a valid token they get
+`401` like every other request, because the token is checked before the
+method.
 
 ---
 
@@ -50,7 +52,7 @@ curl -b cookies.txt -X POST https://burrow.insingo.com/api/v1/automation/tokens 
   -H 'Content-Type: application/json' \
   -d '{
         "name": "claude-code",
-        "permissions": ["tunnels:read:any", "audit:read", "metrics:read"]
+        "permissions": ["tunnels:read:own", "audit:read", "metrics:read"]
       }'
 ```
 
@@ -63,7 +65,7 @@ sets:
 
 | Purpose | `permissions` |
 |---------|---------------|
-| Look, do not touch | `tunnels:read:any`, `users:read`, `audit:read`, `metrics:read` |
+| Look, do not touch | `tunnels:read:own`, `users:read`, `audit:read`, `metrics:read` |
 | Operate services | the above plus `services:configure:own` |
 | Everything the tools offer | the above plus `tokens:manage:own` |
 
@@ -157,7 +159,7 @@ can only sign in through OAuth cannot connect yet.
 
 | Tool | What it does | Permission | Kind |
 |------|--------------|------------|------|
-| `tunnels_list` | Lists live tunnels; optional `filter` on the name | `tunnels:read:any` | read |
+| `tunnels_list` | Lists your own live tunnels; optional `filter` on the name | `tunnels:read:own` | read |
 | `services_list` | Lists services | `services:configure:own` | read |
 | `services_get` | One service with its access policy and key count | `services:configure:own` | read |
 | `services_set_access_mode` | Sets `open`, `api_key` or `burrow_login` on a service | `services:configure:own` | write, repeatable |
@@ -174,10 +176,16 @@ The "Kind" column is sent to the client as MCP tool annotations
 (`readOnlyHint`, `destructiveHint`, `idempotentHint`), so a client can ask
 before it runs a tool that changes or deletes something.
 
-A tool with `:own` in its permission acts on what belongs to the token's user;
-an admin's token reaches every service. `mtls` cannot be set through MCP: it
-needs a CA certificate, which is uploaded through the dashboard or the REST
-API.
+A tool with `:own` in its permission acts on what belongs to the token's user.
+For services an admin's token reaches every service; `tunnels_list` shows the
+tunnels of the token's user, also for an admin, and `tunnels:read:any` does not
+open it.
+
+`services_set_access_mode` applies the rules of the REST API: `burrow_login`
+needs an auth domain on the relay, and `api_key_header` must be an HTTP header
+name (without it the header is `Authorization`). `mtls` cannot be set through
+MCP: it needs a CA certificate, which is uploaded through the dashboard or the
+REST API.
 
 ::: warning Secrets end up in the conversation
 `api_keys_create` and `tokens_mint` return a secret in their result. The client
@@ -186,8 +194,12 @@ acceptable, or leave their permission off the token.
 :::
 
 Every call is written to the audit log as `mcp.tool.call` with the tool and the
-outcome (`ok`, `error` or `denied`), under the user the token belongs to. See
-**Settings → Audit log**.
+outcome (`ok`, `error` or `denied`), under the user the token belongs to, with
+the client's address and user agent. A tool that changes something also leaves
+the row the same change leaves through the dashboard (`token.mint`,
+`service.access_mode.update`, `service.api_key.create`,
+`service.api_key.revoke`), under the same user. Arguments and results are not
+recorded. See **Settings → Audit log**.
 
 ---
 
@@ -200,6 +212,7 @@ outcome (`ok`, `error` or `denied`), under the user the token belongs to. See
 | Request size | 1 MiB. Beyond that: `413`. Answered after the token is checked: a request without a valid token gets `401` first. |
 | Batches | A JSON-RPC batch (a request body that is an array) is refused with `400`. Send one request per POST. Also answered after the token is checked. |
 | Tool call duration | A call is ended after 30 seconds; the result is the error `timed out`. |
+| List sizes | `audit_search` returns at most 1000 events per call, 100 unless `limit` asks for another number. `users_list` returns at most 200 users per call, 50 unless `limit` asks for another number; `offset` pages through them. A `limit` of zero or below means the default, one above the cap means the cap. The other lists are not paged. |
 | Protocol | MCP revisions `2026-07-28` (stateless, no handshake), `2025-11-25`, `2025-06-18` and `2025-03-26` over Streamable HTTP. An `initialize` for `2024-11-05` is answered with a revision the server offers. Not the older HTTP+SSE transport, not stdio. |
 | Sessions | None. Every request stands alone; `Mcp-Session-Id` is ignored and there is no event stream to hold open. |
 | Features | Tools only. No resources, no prompts. |

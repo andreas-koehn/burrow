@@ -153,7 +153,7 @@ func TestBuildMCPServer_AlwaysBuilt(t *testing.T) {
 		t.Cleanup(stack.GuardrailAudit.stop)
 		t.Cleanup(func() { stack.WebhookDispatcher.Close() })
 
-		mcp := BuildMCPServer(st, stack, nil, wrapped, discardLog())
+		mcp := BuildMCPServer(st, stack, nil, wrapped, "", discardLog())
 		if mcp == nil {
 			t.Fatal("BuildMCPServer returned nil")
 		}

@@ -120,13 +120,44 @@ var schemaAPIKeysDelete = json.RawMessage(`{"type":"object","properties":{"servi
 var schemaMintToken = json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}`)
 
 // schemaUsersList is the schema for users_list.
-var schemaUsersList = json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":1000},"offset":{"type":"integer","minimum":0}},"additionalProperties":false}`)
+var schemaUsersList = json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0}},"additionalProperties":false}`)
 
 // schemaAuditSearch is the schema for audit_search.
 var schemaAuditSearch = json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"},"since":{"type":"string","format":"date-time"},"until":{"type":"string","format":"date-time"},"limit":{"type":"integer","minimum":1,"maximum":1000}},"additionalProperties":false}`)
 
 // schemaTunnelsList is the schema for tunnels_list — optional filter string.
 var schemaTunnelsList = json.RawMessage(`{"type":"object","properties":{"filter":{"type":"string"}},"additionalProperties":false}`)
+
+// The page sizes of the two tools that take a limit. audit_search has the
+// default and the cap of GET /api/v1/audit/events; users_list those of
+// db.ListUsersPage, which GET /api/v1/users reads through.
+const (
+	auditSearchDefaultLimit = 100
+	auditSearchMaxLimit     = 1000
+	usersListDefaultLimit   = 50
+	usersListMaxLimit       = 200
+)
+
+// clampLimit returns a page size within 1..limit: def for a value that is
+// absent, zero or negative, limit for one above it. The clamp is the tool's
+// own, whatever the store does with the number: db.ListAuditEvents reads a
+// limit of zero or below as "no limit".
+func clampLimit(n, def, limit int) int {
+	if n <= 0 {
+		return def
+	}
+	if n > limit {
+		return limit
+	}
+	return n
+}
+
+// toolEnv is what the tools know about the relay besides its store.
+type toolEnv struct {
+	// authDomain: the relay has an auth domain. burrow_login needs one; the
+	// JSON API refuses the mode without it (api.Deps.AuthDomain).
+	authDomain bool
+}
 
 // ----- buildTools ----------------------------------------------------------
 
@@ -151,14 +182,15 @@ var orderedTools = []string{
 // buildTools returns the 12-tool registry, wrapping toolStore methods. Pass
 // nil for toolStore to get tools whose Call returns errStoreUnavailable —
 // useful in tests that exercise only the registry shape (tools/list, schema).
-func buildTools(s ToolStore) map[string]Tool {
+// env is the relay's configuration the tools decide on.
+func buildTools(s ToolStore, env toolEnv) map[string]Tool {
 	m := make(map[string]Tool, len(orderedTools))
 	add := func(t Tool) { m[t.Name] = t }
 
 	add(Tool{
 		Name:         "tunnels_list",
-		Description:  "List all live tunnels visible to the caller, as {tunnels: [...]}. Optional 'filter' parameter does a substring match on tunnel name (case-insensitive).",
-		Permission:   authz.PermTunnelsReadAny,
+		Description:  "List the caller's own live tunnels (those of the token's user), as {tunnels: [...]}. Optional 'filter' parameter does a substring match on tunnel name (case-insensitive).",
+		Permission:   authz.PermTunnelsReadOwn,
 		ParamsSchema: schemaTunnelsList,
 		ReadOnly:     true,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
@@ -287,7 +319,7 @@ func buildTools(s ToolStore) map[string]Tool {
 
 	add(Tool{
 		Name:         "services_set_access_mode",
-		Description:  "Set a service's access mode. mode is one of open / api_key / burrow_login / mtls. api_key_header is honored only for api_key mode.",
+		Description:  "Set a service's access mode. mode is one of open / api_key / burrow_login / mtls. api_key_header is honored only for api_key mode and must be an HTTP header name; without it the header is Authorization. burrow_login needs an auth domain on the relay. mtls cannot be set here: it needs a CA certificate.",
 		Permission:   authz.PermServicesConfigureOwn,
 		ParamsSchema: schemaSetAccessMode,
 		Idempotent:   true,
@@ -306,9 +338,18 @@ func buildTools(s ToolStore) map[string]Tool {
 			if in.ID == "" || in.Mode == "" {
 				return nil, userError("id and mode are required")
 			}
+			// The rules of PUT /api/v1/services/{id}/access-mode, checked
+			// before the store is asked and answered with fixed texts: the
+			// store writes the header name as it gets it.
+			if in.Mode == "burrow_login" && !env.authDomain {
+				return nil, userError("burrow_login requires a configured auth_domain")
+			}
 			header := ""
 			if in.Mode == "api_key" {
 				header = in.APIKeyHeader
+				if header != "" && !store.ValidHTTPHeaderName(header) {
+					return nil, userError("api_key_header must be a valid HTTP header name (RFC 7230 token)")
+				}
 			}
 			// mtls / burrow_login pem inputs are out of scope for MCP in
 			// v0.4.0 — the operator-supplied PEM bundle does not belong
@@ -488,7 +529,7 @@ func buildTools(s ToolStore) map[string]Tool {
 
 	add(Tool{
 		Name:         "users_list",
-		Description:  "List users (admin / users:read). Optional q (substring), limit (1..1000, default 50), offset.",
+		Description:  "List users (admin / users:read), as {users: [...], total}. Optional q (substring of the email), limit (1..200, default 50), offset.",
 		Permission:   authz.PermUsersRead,
 		ParamsSchema: schemaUsersList,
 		ReadOnly:     true,
@@ -504,16 +545,12 @@ func buildTools(s ToolStore) map[string]Tool {
 			if err := decodeArgs(args, &in); err != nil {
 				return nil, err
 			}
-			if in.Limit == 0 {
-				in.Limit = 50
-			}
-			if in.Limit > 1000 {
-				in.Limit = 1000
-			}
+			// A negative offset is the start, as GET /api/v1/users reads it.
 			if in.Offset < 0 {
 				in.Offset = 0
 			}
-			rows, total, err := s.ListUsers(ctx, in.Q, in.Limit, in.Offset)
+			rows, total, err := s.ListUsers(ctx, in.Q,
+				clampLimit(in.Limit, usersListDefaultLimit, usersListMaxLimit), in.Offset)
 			if err != nil {
 				return nil, err
 			}
@@ -546,7 +583,7 @@ func buildTools(s ToolStore) map[string]Tool {
 
 	add(Tool{
 		Name:         "audit_search",
-		Description:  "Search the audit log, as {events: [...]}. q does a substring match (action / subject_label / actor_email); since/until are RFC3339; limit caps at 1000.",
+		Description:  "Search the audit log, newest first, as {events: [...]}. q does a substring match (action / subject_label / actor_email); since/until are RFC3339; limit (1..1000, default 100).",
 		Permission:   authz.PermAuditRead,
 		ParamsSchema: schemaAuditSearch,
 		ReadOnly:     true,
@@ -563,17 +600,11 @@ func buildTools(s ToolStore) map[string]Tool {
 			if err := decodeArgs(args, &in); err != nil {
 				return nil, err
 			}
-			if in.Limit == 0 {
-				in.Limit = 100
-			}
-			if in.Limit > 1000 {
-				in.Limit = 1000
-			}
 			rows, err := s.SearchAuditEvents(ctx, db.AuditQuery{
 				Q:     in.Q,
 				Since: in.Since,
 				Until: in.Until,
-				Limit: in.Limit,
+				Limit: clampLimit(in.Limit, auditSearchDefaultLimit, auditSearchMaxLimit),
 			})
 			if err != nil {
 				return nil, err

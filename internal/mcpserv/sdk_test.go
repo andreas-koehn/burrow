@@ -30,7 +30,7 @@ var testRevisions = []string{"2026-07-28", "2025-11-25", "2025-06-18", "2025-03-
 
 // allToolPerms is what a token needs to see the whole registry.
 var allToolPerms = []string{
-	"tunnels:read:any", "services:configure:own", "tokens:manage:own",
+	"tunnels:read:own", "services:configure:own", "tokens:manage:own",
 	"users:read", "audit:read", "metrics:read",
 }
 
@@ -307,13 +307,16 @@ func TestMCP_ListShowsOnlyWhatTheTokenMayCall(t *testing.T) {
 	}{
 		{"everything", allToolPerms, "admin",
 			"api_keys_create,api_keys_delete,api_keys_list,audit_search,metrics_snapshot,services_get,services_list,services_set_access_mode,tokens_list,tokens_mint,tunnels_list,users_list"},
-		{"one permission", []string{"tunnels:read:any"}, "admin", "tunnels_list"},
-		{"read-only operator", []string{"tunnels:read:any", "audit:read", "metrics:read"}, "admin",
+		{"one permission", []string{"tunnels:read:own"}, "admin", "tunnels_list"},
+		{"read-only operator", []string{"tunnels:read:own", "audit:read", "metrics:read"}, "admin",
 			"audit_search,metrics_snapshot,tunnels_list"},
 		// The token still declares everything; the role of its user no
-		// longer grants the :any and admin permissions.
+		// longer grants the admin permissions.
 		{"minter demoted to user", allToolPerms, "user",
-			"api_keys_create,api_keys_delete,api_keys_list,services_get,services_list,services_set_access_mode,tokens_list,tokens_mint"},
+			"api_keys_create,api_keys_delete,api_keys_list,services_get,services_list,services_set_access_mode,tokens_list,tokens_mint,tunnels_list"},
+		// The permission for every user's tunnels does not open the tool
+		// that lists the caller's own.
+		{"tunnels of anyone", []string{"tunnels:read:any"}, "admin", ""},
 		{"no tool permission", []string{"webhooks:manage"}, "admin", ""},
 		// What the dashboard mints today: a token that declares nothing.
 		// It authenticates and is shown an empty list, not an error.
@@ -336,7 +339,7 @@ func TestMCP_ListShowsOnlyWhatTheTokenMayCall(t *testing.T) {
 func TestMCP_CallOutsideTheTokensTools(t *testing.T) {
 	for _, rev := range []string{"2026-07-28", "2025-11-25"} {
 		fs := &fakeStore{}
-		hs, sink := newSDKTestServer(t, fs, []string{"tunnels:read:any"}, "admin")
+		hs, sink := newSDKTestServer(t, fs, []string{"tunnels:read:own"}, "admin")
 		cs := connectMCP(t, hs.URL, "", rev)
 
 		_, errHidden := callTool(t, cs, "services_set_access_mode", map[string]any{"id": "svc1", "mode": "open"})
@@ -497,7 +500,7 @@ func TestMCP_MintedSecrets_StayOutOfTheAuditLog(t *testing.T) {
 
 // The list depends on the caller, so no shared cache may keep it.
 func TestMCP_ListIsMarkedPrivate(t *testing.T) {
-	hs, _ := newSDKTestServer(t, &fakeStore{}, []string{"tunnels:read:any"}, "admin")
+	hs, _ := newSDKTestServer(t, &fakeStore{}, []string{"tunnels:read:own"}, "admin")
 	resp, body := rawPOST(t, hs.URL, "", map[string]string{"MCP-Protocol-Version": "2025-06-18"}, rawToolsList)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("tools/list: %d %s", resp.StatusCode, body)
@@ -570,7 +573,7 @@ func (panicAudit) Append(context.Context, audit.Event) error { panic("audit sink
 func TestMCP_AuditPanic_IsContained(t *testing.T) {
 	s := New(nil, nil, &fakeStore{}, quietLog())
 	s.SetAuditAppender(panicAudit{})
-	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: []string{"tunnels:read:any"}}
+	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: []string{"tunnels:read:own"}}
 	h := s.mcpHandler()
 	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
@@ -658,7 +661,7 @@ func TestMCP_TwoTokensOneHandler(t *testing.T) {
 	s := New(nil, nil, &fakeStore{}, quietLog())
 	s.SetAuditAppender(&auditSink{})
 	toks := map[string]*authedToken{
-		"a": {tokenID: "ta", userID: "u1", role: "admin", perms: []string{"tunnels:read:any"}},
+		"a": {tokenID: "ta", userID: "u1", role: "admin", perms: []string{"tunnels:read:own"}},
 		"b": {tokenID: "tb", userID: "u2", role: "admin", perms: []string{"audit:read", "metrics:read"}},
 	}
 	h := s.mcpHandler()
