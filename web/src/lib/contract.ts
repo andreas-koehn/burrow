@@ -454,7 +454,18 @@ export interface InspectorEntry {
    * A name can end in text the client chose: render it as text only.
    */
   dropped: string[];
+  /**
+   * Slug of the provider that answered. "" in a per-service list for a request
+   * that names none; never "" in the list across providers.
+   */
+  provider: string;
+  /** The model the caller asked for; "" for a request made without a gateway key. */
+  model: string;
+  /** Id of the gateway key the caller presented, or "". */
+  gateway_key_id: string;
 }
+/** One entry of GET /ai/requests: a captured request without its headers and bodies. */
+export type AiCapturedRequest = Omit<InspectorEntry, "req_headers" | "req_body" | "resp_headers" | "resp_body">;
 
 // Audit (spec Part G).
 export interface AuditEvent {

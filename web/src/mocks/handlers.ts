@@ -1670,6 +1670,37 @@ export const handlers = [
     db.aiModels.splice(i, 1);
     return noContent();
   }),
+  // The captured requests of every provider the caller sees, as one list:
+  // newest first, without headers and bodies. An entry that names no provider
+  // is given the one whose buffer holds it.
+  http.get("/api/v1/ai/requests", ({ request }) => {
+    const g = gate(request); if (g) return g;
+    const url = new URL(request.url);
+    const param = (name: string) => url.searchParams.get(name) ?? "";
+    let limit = 200;
+    if (url.searchParams.has("limit")) {
+      limit = Number(param("limit"));
+      if (!Number.isInteger(limit) || limit < 1) return err(400, "limit must be a positive integer");
+      limit = Math.min(limit, 1000);
+    }
+    const [provider, model, key, q, status, since, until] = ["provider", "model", "gateway_key", "q", "status", "since", "until"].map(param);
+    const rows = db.aiProviders.filter(providerVisible)
+      .flatMap((p) => (db.inspectorEntries[p.service_id] ?? []).map((e) => {
+        const { req_headers: _qh, req_body: _qb, resp_headers: _ph, resp_body: _pb, ...row } = e;
+        return { ...row, provider: e.provider || p.slug };
+      }))
+      .filter((r) => !provider || r.provider === provider)
+      .filter((r) => !model || r.model === model)
+      .filter((r) => !key || r.gateway_key_id === key)
+      .filter((r) => !status || r.status === Number(status))
+      .filter((r) => !since || r.ts >= since)
+      .filter((r) => !until || r.ts <= until)
+      // Case-sensitive, as on the relay.
+      .filter((r) => !q || [r.method, r.path, r.provider, r.model].some((text) => text.includes(q)))
+      .sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))
+      .slice(0, limit);
+    return json(rows);
+  }),
   // What one gateway request tried: an admin's dashboard session. An id
   // without a log is an empty list.
   http.get("/api/v1/ai/requests/:requestID/attempts", ({ request, params }) => {

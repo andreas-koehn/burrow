@@ -314,8 +314,16 @@ function seed(): MockDb {
     aiConfigs: {
       svc_ai001: defaultAiConfig(),
     },
+    // ollama was called with service API keys (no model, no gateway key), zai
+    // through the gateway; openai-team holds one entry that names none of the three.
     inspectorEntries: {
-      svc_ai001: seedInspector("svc_ai001"),
+      svc_ai001: seedInspector("svc_ai001", { provider: "ollama" }),
+      "prov-zai": [
+        ...seedInspector("prov-zai", { provider: "zai", model: "burrow-intelligence", gateway_key_id: "gk_laptop1", api_key_id: "" }).slice(0, 2),
+        // Asked for by its provider and catalog id, which is no model of GET /ai/models.
+        ...seedInspector("prov-zai", { provider: "zai", model: "zai/glm-5.1", gateway_key_id: "gk_laptop1", api_key_id: "" }).slice(2, 3),
+      ],
+      "prov-openai-team": seedInspector("prov-openai-team").slice(0, 1),
     },
     cacheSettings: {
       global: { enabled: true, applies_per: "per_endpoint", ttl_seconds: 600, max_entries: 1000, max_per_entry_kb: 64 },
@@ -504,7 +512,7 @@ export const NO_MODES: Pick<AiModel, "dialect_modes" | "responses_mode" | "trans
 
 // Twelve inspector entries — enough to test the "10 newest" Recent Requests
 // table on the provider detail page.
-function seedInspector(serviceId: string): InspectorEntry[] {
+function seedInspector(serviceId: string, over: Partial<InspectorEntry> = {}): InspectorEntry[] {
   const out: InspectorEntry[] = [];
   for (let i = 0; i < 12; i++) {
     out.push({
@@ -529,6 +537,10 @@ function seedInspector(serviceId: string): InspectorEntry[] {
       remote_ip: "203.0.113.7",
       translated: "",
       dropped: [],
+      provider: "",
+      model: "",
+      gateway_key_id: "",
+      ...over,
     });
   }
   return out;
