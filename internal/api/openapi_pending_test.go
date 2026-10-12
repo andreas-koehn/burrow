@@ -12,32 +12,6 @@ const openAPIConversionDone = false
 // openAPIPendingOperationIDs lists the operations that have no operationId
 // yet, as "METHOD path".
 var openAPIPendingOperationIDs = []string{
-	// O02: services, tunnels, domains, upstream credentials, geo
-	"GET /api/v1/tunnels",
-	"PUT /api/v1/tunnels/{id}/access-mode",
-	"GET /api/v1/services",
-	"GET /api/v1/services/slug-suggestion",
-	"GET /api/v1/services/{serviceID}",
-	"PUT /api/v1/services/{serviceID}/access-mode",
-	"PUT /api/v1/services/{serviceID}/slug",
-	"PUT /api/v1/services/{serviceID}/gateway-only",
-	"GET /api/v1/services/{serviceID}/api-keys",
-	"POST /api/v1/services/{serviceID}/api-keys",
-	"DELETE /api/v1/services/{serviceID}/api-keys/{id}",
-	"GET /api/v1/services/{serviceID}/access-policy",
-	"PUT /api/v1/services/{serviceID}/access-policy",
-	"GET /api/v1/services/{serviceID}/ip-geo",
-	"PUT /api/v1/services/{serviceID}/ip-geo",
-	"GET /api/v1/geo/status",
-	"GET /api/v1/upstream-credentials/slots",
-	"GET /api/v1/services/{serviceID}/upstream-credential",
-	"PUT /api/v1/services/{serviceID}/upstream-credential",
-	"DELETE /api/v1/services/{serviceID}/upstream-credential",
-	"GET /api/v1/services/{serviceID}/domains",
-	"POST /api/v1/services/{serviceID}/domains",
-	"GET /api/v1/services/{serviceID}/domains/{did}",
-	"PUT /api/v1/services/{serviceID}/domains/{did}",
-	"DELETE /api/v1/services/{serviceID}/domains/{did}",
 	// O03: auth, sessions, client tokens, clients, client sign-in, users, roles, automation tokens
 	"POST /api/v1/auth/login",
 	"POST /api/v1/auth/logout",
@@ -174,11 +148,6 @@ var openAPIPendingOperationIDs = []string{
 // openAPIPendingEmpty lists the operations that still reference the Empty
 // schema in a request body or a response.
 var openAPIPendingEmpty = []string{
-	// O02: services, tunnels, domains, upstream credentials, geo
-	"GET /api/v1/services/{serviceID}/api-keys",
-	"GET /api/v1/services/{serviceID}/ip-geo",
-	"PUT /api/v1/services/{serviceID}/ip-geo",
-	"GET /api/v1/services/{serviceID}/upstream-credential",
 	// O03: auth, sessions, client tokens, clients, client sign-in, users, roles, automation tokens
 	"GET /api/v1/automation/tokens",
 	"POST /api/v1/automation/tokens",
@@ -240,9 +209,4 @@ var openAPIPendingEmpty = []string{
 
 // openAPIPendingResponseContent lists the operations whose 200/201/202
 // response declares no content yet.
-var openAPIPendingResponseContent = []string{
-	// O02: services, tunnels, domains, upstream credentials, geo
-	"GET /api/v1/services/{serviceID}/domains",
-	"POST /api/v1/services/{serviceID}/domains",
-	"GET /api/v1/services/{serviceID}/domains/{did}",
-}
+var openAPIPendingResponseContent = []string{}

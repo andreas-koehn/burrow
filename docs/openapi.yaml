@@ -656,27 +656,45 @@ components:
         last_login_at: { type: string, format: date-time, nullable: true }
     Service:
       type: object
+      required: [id, name, type, slug, url, access_mode, api_key_header, gateway_only, connected, remote_port, local_addr]
       properties:
         id: { type: string }
         name: { type: string }
-        type: { type: string, enum: [http, tcp] }
+        type:
+          type: string
+          enum: [http, tcp, direct]
+          description: >
+            direct is the backing row of a direct AI provider. It is never
+            listed; GET /api/v1/services/{serviceID} returns it by id.
         slug:
           type: string
           description: URL segment of an http service; empty for tcp or until one is assigned.
         url:
           type: string
           description: Public address, `https://<auth_domain>/svc/<slug>/`; empty without a slug or auth domain, and empty while `gateway_only` is true.
-        access_mode: { type: string }
+        access_mode: { type: string, enum: [open, api_key, burrow_login, mtls] }
+        api_key_header:
+          type: string
+          description: The request header that carries the key in api_key mode.
+          example: Authorization
         gateway_only:
           type: boolean
           description: When true the service is reachable through the AI gateway only; its `/svc/<slug>/` address and custom domains answer 404.
-        remote_port: { type: integer }
-        local_addr: { type: string }
         connected: { type: boolean }
+        remote_port:
+          type: integer
+          description: Public port of a connected tcp service; 0 for http and while not connected.
+        local_addr:
+          type: string
+          description: Address the client forwards to; empty while not connected.
     Tunnel:
       type: object
+      description: One live tunnel of the caller.
+      required: [id, name, type, remote_port, local_addr, bytes_in, bytes_out, connected]
       properties:
-        id: { type: string }
+        id:
+          type: string
+          description: Id of the live tunnel; a new one with every connect.
         name: { type: string }
         type: { type: string, enum: [http, tcp] }
         remote_port: { type: integer }
@@ -684,9 +702,16 @@ components:
         bytes_in: { type: integer, format: int64 }
         bytes_out: { type: integer, format: int64 }
         connected: { type: boolean }
+        service_id:
+          type: string
+          description: Id of the durable service of an http tunnel, for the /api/v1/services/{serviceID} routes; omitted for tcp.
         url:
           type: string
           description: Public address of an http tunnel, `https://<auth_domain>/svc/<slug>/`; omitted for tcp and for a gateway-only service.
+        access_mode:
+          type: string
+          enum: [open, api_key, burrow_login, mtls]
+          description: The access mode in effect; omitted for tcp.
     Session:
       type: object
       properties:
@@ -727,11 +752,21 @@ components:
         expires_at: { type: string, format: date-time }
     AccessModeReq:
       type: object
-      required: [mode]
+      required: [access_mode]
       properties:
-        mode: { type: string }
-        header: { type: string }
-        mtls_ca_pem: { type: string }
+        access_mode: { type: string, enum: [open, api_key, burrow_login, mtls] }
+        api_key_header:
+          type: string
+          description: >
+            api_key mode only, ignored for the other modes. The request
+            header that carries the key; an RFC 7230 token.
+          example: X-Api-Key
+        mtls_ca_pem:
+          type: string
+          description: >
+            mtls mode only, where it is required; ignored for the other
+            modes. A PEM bundle with at least one CERTIFICATE block: the
+            trust anchor client certificates are verified against.
     ConnectionLog:
       type: object
       properties:
@@ -761,6 +796,88 @@ components:
         bytes_out: { type: integer, format: int64 }
         avg_duration_ms: { type: integer, format: int64 }
         p95_duration_ms: { type: integer, format: int64 }
+    ServiceDetail:
+      description: One service with what only the detail view has.
+      allOf:
+        - $ref: '#/components/schemas/Service'
+        - type: object
+          required: [api_key_count, access_policy]
+          properties:
+            api_key_count: { type: integer }
+            access_policy:
+              type: array
+              description: The role allowlist of burrow_login mode, as GET .../access-policy returns it.
+              items: { type: string }
+    ServiceApiKey:
+      type: object
+      description: >
+        A per-service API key as it is listed. The key itself is stored as a
+        hash and is never returned again.
+      required: [id, name, last_used, created_at]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        last_used: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+    ServiceIpGeoInput:
+      type: object
+      description: >
+        IP and country rules of one service. A list that is left out is
+        stored as empty; enabled left out is false.
+      properties:
+        enabled: { type: boolean }
+        allow_cidrs:
+          type: array
+          description: Checked when stored; a malformed entry is refused with 400.
+          items: { type: string, example: 203.0.113.0/24 }
+        block_cidrs:
+          type: array
+          items: { type: string, example: 198.51.100.7/32 }
+        allow_countries:
+          type: array
+          description: ISO 3166-1 alpha-2 codes.
+          items: { type: string, example: DE }
+        block_countries:
+          type: array
+          description: ISO 3166-1 alpha-2 codes.
+          items: { type: string, example: US }
+    ServiceIpGeo:
+      description: The stored rules; every list is present, empty when unset.
+      allOf:
+        - $ref: '#/components/schemas/ServiceIpGeoInput'
+        - type: object
+          required: [enabled, allow_cidrs, block_cidrs, allow_countries, block_countries]
+    UpstreamCredentialBinding:
+      type: object
+      description: >
+        The upstream credential bound to a service. While none is bound the
+        object holds slot_present false and nothing else. The credential
+        itself is configured on the relay and is never returned.
+      required: [slot_present]
+      properties:
+        slot: { type: string, description: Name of the vault slot., example: OPENAI }
+        header_name: { type: string, example: Authorization }
+        header_format: { type: string, example: 'Bearer {key}' }
+        slot_present:
+          type: boolean
+          description: Whether the vault holds a value for the slot.
+    CustomDomain:
+      type: object
+      description: >
+        A custom domain of a service with the data of its certificate. The
+        private key is never returned.
+      required: [id, service_id, hostname, cert_sha256, not_before, not_after, created_at, updated_at, status, status_updated_at]
+      properties:
+        id: { type: string }
+        service_id: { type: string }
+        hostname: { type: string, description: Lower case. }
+        cert_sha256: { type: string, description: Fingerprint of the stored certificate. }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        status: { type: string, enum: [pending, active, cert_expiring, cert_expired] }
+        status_updated_at: { type: string, format: date-time }
 
   responses:
     Unauthorized:
@@ -992,6 +1109,7 @@ paths:
   /api/v1/tunnels:
     get:
       tags: [tunnels]
+      operationId: tunnelsList
       summary: List the caller's live tunnels
       responses:
         '200':
@@ -1006,13 +1124,21 @@ paths:
   /api/v1/tunnels/{id}/access-mode:
     put:
       tags: [tunnels]
+      operationId: tunnelAccessModeUpdate
       summary: Set tunnel access mode (v0.2 back-compat — delegates to services)
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/AccessModeReq' }
+            schema:
+              type: object
+              required: [access_mode]
+              properties:
+                access_mode:
+                  type: string
+                  enum: [open, api_key, burrow_login]
+                  description: mtls needs a CA bundle and is set with PUT /api/v1/services/{serviceID}/access-mode.
       responses:
         '204': { description: Access mode set. }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -1026,6 +1152,7 @@ paths:
   /api/v1/services:
     get:
       tags: [services]
+      operationId: servicesList
       summary: List services visible to the caller
       description: |
         The backing rows of direct AI providers (type "direct") are not
@@ -1073,6 +1200,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [id, slug, created_at]
                 properties:
                   id:         { type: string }
                   slug:       { type: string }
@@ -1085,6 +1213,7 @@ paths:
   /api/v1/services/slug-suggestion:
     get:
       tags: [services]
+      operationId: serviceSlugSuggestionGet
       summary: Suggest a slug no service uses
       description: A suggestion only; uniqueness is enforced when the slug is saved.
       responses:
@@ -1094,6 +1223,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [slug]
                 properties:
                   slug: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1101,6 +1231,7 @@ paths:
   /api/v1/services/{serviceID}:
     get:
       tags: [services]
+      operationId: serviceGet
       summary: Service detail (config + live state)
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -1108,13 +1239,14 @@ paths:
           description: Service detail.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Service' }
+              schema: { $ref: '#/components/schemas/ServiceDetail' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/services/{serviceID}/access-mode:
     put:
       tags: [services]
+      operationId: serviceAccessModeUpdate
       summary: Set the service's access mode
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
@@ -1132,6 +1264,7 @@ paths:
   /api/v1/services/{serviceID}/slug:
     put:
       tags: [services]
+      operationId: serviceSlugUpdate
       summary: Change the service's slug
       description: The old URL stops working immediately; there is no redirect.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
@@ -1151,6 +1284,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [slug, url]
                 properties:
                   slug: { type: string }
                   url:  { type: string }
@@ -1162,6 +1296,7 @@ paths:
   /api/v1/services/{serviceID}/gateway-only:
     put:
       tags: [services]
+      operationId: serviceGatewayOnlyUpdate
       summary: Reach the service through the AI gateway only
       description: |
         With `gateway_only` true the service answers 404 at `/svc/<slug>/`, on
@@ -1187,6 +1322,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [gateway_only]
                 properties:
                   gateway_only: { type: boolean }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -1198,6 +1334,7 @@ paths:
   /api/v1/services/{serviceID}/api-keys:
     get:
       tags: [services]
+      operationId: serviceApiKeysList
       summary: List per-service API keys
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -1207,10 +1344,11 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/ServiceApiKey' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [services]
+      operationId: serviceApiKeyCreate
       summary: Mint a new per-service API key (plaintext returned ONCE)
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
@@ -1223,21 +1361,23 @@ paths:
               properties:
                 name: { type: string }
       responses:
-        '200':
+        '201':
           description: Key created.
           content:
             application/json:
               schema:
                 type: object
+                required: [id, name, key]
                 properties:
                   id: { type: string }
                   name: { type: string }
-                  key: { type: string }
+                  key: { type: string, description: The key. Shown this once. }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/services/{serviceID}/api-keys/{id}:
     delete:
       tags: [services]
+      operationId: serviceApiKeyDelete
       summary: Revoke a per-service API key
       parameters:
         - { $ref: '#/components/parameters/PathServiceID' }
@@ -1250,6 +1390,7 @@ paths:
   /api/v1/services/{serviceID}/access-policy:
     get:
       tags: [services]
+      operationId: serviceAccessPolicyGet
       summary: Get the role allowlist for burrow_login access
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -1259,6 +1400,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [roles]
                 properties:
                   roles:
                     type: array
@@ -1266,6 +1408,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
     put:
       tags: [services]
+      operationId: serviceAccessPolicyUpdate
       summary: Replace the role allowlist
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
@@ -1285,6 +1428,7 @@ paths:
   /api/v1/services/{serviceID}/ip-geo:
     get:
       tags: [services]
+      operationId: serviceIpGeoGet
       summary: Get per-service IP / Geo allow / deny rules
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -1292,17 +1436,18 @@ paths:
           description: IP/Geo configuration.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/ServiceIpGeo' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     put:
       tags: [services]
+      operationId: serviceIpGeoUpdate
       summary: Replace per-service IP / Geo rules
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/ServiceIpGeoInput' }
       responses:
         '204': { description: Updated. }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -2917,6 +3062,7 @@ paths:
   /api/v1/geo/status:
     get:
       tags: [geo]
+      operationId: geoStatusGet
       summary: Global geo-lookup status (enabled, db path, age)
       responses:
         '200':
@@ -2925,10 +3071,15 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [enabled, db_path, db_age_seconds]
                 properties:
                   enabled: { type: boolean }
                   db_path: { type: string }
-                  db_age_seconds: { type: integer, format: int64 }
+                  db_age_seconds:
+                    type: integer
+                    format: int64
+                    nullable: true
+                    description: Null while geo lookup is disabled.
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ────────────────────────────────────────────────────────────────────────
@@ -2979,6 +3130,7 @@ paths:
   /api/v1/upstream-credentials/slots:
     get:
       tags: [services]
+      operationId: upstreamCredentialSlotsList
       summary: List available vault slot handles (admin or ai:configure:any)
       responses:
         '200':
@@ -2987,6 +3139,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [slots]
                 properties:
                   slots:
                     type: array
@@ -2997,6 +3150,7 @@ paths:
   /api/v1/services/{serviceID}/upstream-credential:
     get:
       tags: [services]
+      operationId: serviceUpstreamCredentialGet
       summary: Read the upstream-credential binding for a service
       parameters:
         - name: serviceID
@@ -3008,12 +3162,13 @@ paths:
           description: Binding (when bound) or {slot_present:false} (when unbound).
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/UpstreamCredentialBinding' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [services]
+      operationId: serviceUpstreamCredentialUpdate
       summary: Bind an upstream credential slot to a service
       parameters:
         - name: serviceID
@@ -3039,6 +3194,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [services]
+      operationId: serviceUpstreamCredentialDelete
       summary: Unbind the upstream credential from a service
       parameters:
         - name: serviceID
@@ -3057,6 +3213,7 @@ paths:
   /api/v1/services/{serviceID}/domains:
     get:
       tags: [services]
+      operationId: serviceDomainsList
       summary: List custom domains bound to a service
       parameters:
         - name: serviceID
@@ -3065,12 +3222,18 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: Array of custom domain objects (no key_pem).
+          description: The custom domains of the service (no key_pem).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CustomDomain' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     post:
       tags: [services]
+      operationId: serviceDomainCreate
       summary: Add a custom domain to a service
       parameters:
         - name: serviceID
@@ -3091,6 +3254,9 @@ paths:
       responses:
         '201':
           description: Domain created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomDomain' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -3098,6 +3264,7 @@ paths:
   /api/v1/services/{serviceID}/domains/{did}:
     get:
       tags: [services]
+      operationId: serviceDomainGet
       summary: Get a single custom domain by ID
       parameters:
         - name: serviceID
@@ -3110,12 +3277,16 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: Domain object (no key_pem).
+          description: The custom domain (no key_pem).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomDomain' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [services]
+      operationId: serviceDomainUpdate
       summary: Replace the cert/key for a custom domain
       parameters:
         - name: serviceID
@@ -3146,6 +3317,7 @@ paths:
         '409': { description: Hostname already bound. }
     delete:
       tags: [services]
+      operationId: serviceDomainDelete
       summary: Remove a custom domain
       parameters:
         - name: serviceID
