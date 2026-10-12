@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ankoehn/burrow/internal/aigw"
@@ -135,47 +137,72 @@ func TestAIChain_PassThroughWhenNoServiceConfig(t *testing.T) {
 	}
 }
 
-// TestBuildMCPServer_BuiltWhenMCPListenSet asserts the optional :7800 MCP
-// listener is constructed exactly when cfg.MCPListen is non-empty —
-// matching Task 25 Step 1's "fourth http.Server when MCPListen != ”"
-// invariant.
-func TestBuildMCPServer_BuiltWhenMCPListenSet(t *testing.T) {
-	st, wrapped := freshTestStack(t)
-	cfg := &config.ServerConfig{MCPListen: ":7800"}
-	stack, err := buildV04Stack(context.Background(), cfg, wrapped.DB(), st, discardLog())
-	if err != nil {
-		t.Fatalf("buildV04Stack: %v", err)
-	}
-	t.Cleanup(stack.GuardrailAudit.stop)
-	t.Cleanup(func() { stack.WebhookDispatcher.Close() })
+// TestBuildMCPServer_AlwaysBuilt asserts every relay gets the management MCP
+// server: there is no setting that turns it on, and the variables of the
+// old listener do not turn it off.
+func TestBuildMCPServer_AlwaysBuilt(t *testing.T) {
+	for _, cfg := range []*config.ServerConfig{
+		{},
+		{MCPListen: ":7800", BurrowMCPToken: "bua_retired_setting"},
+	} {
+		st, wrapped := freshTestStack(t)
+		stack, err := buildV04Stack(context.Background(), cfg, wrapped.DB(), st, discardLog())
+		if err != nil {
+			t.Fatalf("buildV04Stack: %v", err)
+		}
+		t.Cleanup(stack.GuardrailAudit.stop)
+		t.Cleanup(func() { stack.WebhookDispatcher.Close() })
 
-	mcp := BuildMCPServer(cfg, st, stack, nil, wrapped, discardLog())
-	if mcp == nil {
-		t.Fatal("BuildMCPServer returned nil when cfg.MCPListen=':7800' (want non-nil)")
-	}
-	// The server's tool inventory must be non-empty (spec Part P.2: closed
-	// 12-tool set).
-	if got := len(mcp.Tools()); got == 0 {
-		t.Fatalf("mcp server tool inventory empty; want spec-closed 12 tools")
+		mcp := BuildMCPServer(st, stack, nil, wrapped, discardLog())
+		if mcp == nil {
+			t.Fatal("BuildMCPServer returned nil")
+		}
+		// The closed 12-tool set of spec Part P.2.
+		if got := len(mcp.Tools()); got != 12 {
+			t.Fatalf("mcp server has %d tools, want 12", got)
+		}
+		// It is the handler of /mcp/burrow: a request without a token is
+		// refused, not ignored.
+		rr := httptest.NewRecorder()
+		mcp.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/mcp/burrow", nil))
+		if rr.Code != http.StatusUnauthorized || rr.Header().Get("WWW-Authenticate") != "Bearer" {
+			t.Fatalf("unauthenticated request: %d %q", rr.Code, rr.Header().Get("WWW-Authenticate"))
+		}
 	}
 }
 
-// TestBuildMCPServer_NilWhenMCPListenEmpty asserts the reverse: when
-// MCPListen is empty the listener is not constructed (matches the
-// "OFF unless configured" default per spec Part P.1).
-func TestBuildMCPServer_NilWhenMCPListenEmpty(t *testing.T) {
-	st, wrapped := freshTestStack(t)
-	cfg := &config.ServerConfig{}
-	stack, err := buildV04Stack(context.Background(), cfg, wrapped.DB(), st, discardLog())
-	if err != nil {
-		t.Fatalf("buildV04Stack: %v", err)
+// TestWarnRetiredMCPConfig asserts the relay says once that
+// BURROW_MCP_LISTEN and BURROW_MCP_TOKEN do nothing any more — and that it
+// says so without printing either value.
+func TestWarnRetiredMCPConfig(t *testing.T) {
+	const want = "BURROW_MCP_LISTEN and BURROW_MCP_TOKEN are no longer used; the MCP endpoint is /mcp/burrow on the main address"
+	cases := []struct {
+		name string
+		cfg  config.ServerConfig
+		warn bool
+	}{
+		{"neither set", config.ServerConfig{}, false},
+		{"listen set", config.ServerConfig{MCPListen: ":7800"}, true},
+		{"token set", config.ServerConfig{BurrowMCPToken: "bua_secret_value_1234"}, true},
+		{"both set", config.ServerConfig{MCPListen: "0.0.0.0:7800", BurrowMCPToken: "bua_secret_value_1234"}, true},
 	}
-	t.Cleanup(stack.GuardrailAudit.stop)
-	t.Cleanup(func() { stack.WebhookDispatcher.Close() })
-
-	mcp := BuildMCPServer(cfg, st, stack, nil, wrapped, discardLog())
-	if mcp != nil {
-		t.Fatal("BuildMCPServer returned non-nil when cfg.MCPListen='' (want nil — listener disabled)")
+	for _, c := range cases {
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+		if got := warnRetiredMCPConfig(&c.cfg, log); got != c.warn {
+			t.Errorf("%s: warned=%v, want %v", c.name, got, c.warn)
+		}
+		out := buf.String()
+		if c.warn {
+			if strings.Count(out, "\n") != 1 || !strings.Contains(out, "level=WARN") || !strings.Contains(out, want) {
+				t.Errorf("%s: log = %q", c.name, out)
+			}
+		} else if out != "" {
+			t.Errorf("%s: unexpected log %q", c.name, out)
+		}
+		if strings.Contains(out, "bua_secret_value_1234") || strings.Contains(out, "7800") {
+			t.Errorf("%s: the warning prints a configured value: %q", c.name, out)
+		}
 	}
 }
 

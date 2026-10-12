@@ -4,8 +4,10 @@ package main
 //
 // Boots a full e2e stack, constructs an mcpserv.Server bound to the same
 // *store.Store + the live tunnel registry (via the same adapters cmd/server
-// uses in main.go), and drives it with the SDK's own MCP client, once per
-// protocol revision (2026-07-28 without a handshake, 2025-11-25 with one):
+// uses in main.go), mounts it on the API router the way main.go does, and
+// drives it at /mcp/burrow on that address with the SDK's own MCP client,
+// once per protocol revision (2026-07-28 without a handshake, 2025-11-25
+// with one):
 //
 //   1. `tools/list` with a bearer that has every permission the 12-tool
 //      inventory needs → exactly the 12 tool names of spec Part P.2; with a
@@ -33,6 +35,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/ankoehn/burrow/internal/api"
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/mcpserv"
@@ -118,7 +121,7 @@ func (a mcpToolStoreForTest) SearchAuditEvents(ctx context.Context, q db.AuditQu
 }
 
 func (a mcpToolStoreForTest) MetricsText() (string, error) {
-	// The MCP listener can run without a metrics recorder; the metrics_snapshot
+	// The MCP server can run without a metrics recorder; the metrics_snapshot
 	// tool is not exercised by this test, but the interface still requires
 	// the method.
 	return "", nil
@@ -247,9 +250,14 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 	mcpSrv := mcpserv.New(bearerAdapter, stack.store, toolStore, stack.log)
 	mcpSrv.SetAuditAppender(auditLogger)
 
-	hs := httptest.NewServer(mcpSrv)
+	// The main address: the API router with the MCP server mounted, as
+	// main.go wires it. There is no listener of its own any more.
+	hs := httptest.NewServer(api.NewRouter(api.Deps{
+		Log: stack.log,
+		MCP: api.MCPInfo{Enabled: true, Server: mcpSrv, Handler: mcpSrv},
+	}))
 	t.Cleanup(hs.Close)
-	mcpURL := hs.URL
+	mcpURL := hs.URL + mcpserv.EndpointPath
 
 	// Mint a "full-perm" automation token covering every tool's required
 	// permission. The seeded admin trivially has every permission, so the

@@ -416,6 +416,9 @@ func newRootCmd() *cobra.Command {
 				log.Warn("serving with a DEVELOPMENT self-signed TLS certificate — NOT for production; set BURROW_TLS_CERT/BURROW_TLS_KEY (or --tls-cert/--tls-key) to real certificates",
 					"reason", reason, "cert", cfg.TLSCert)
 			}
+			// The separate MCP listener is gone. Its two variables are still
+			// accepted, so a relay deployed with them keeps starting.
+			warnRetiredMCPConfig(cfg, log)
 			// v0.5.0 Task 15: branch on Postgres vs SQLite at startup.
 			// openBackend (tag-gated in db_default.go / db_postgres.go) selects
 			// the backend and runs migrations. The returned Backend is unwrapped
@@ -627,10 +630,10 @@ func newRootCmd() *cobra.Command {
 				log.Warn("v0.4 refresh roles cache failed", "err", err)
 			}
 
-			// v0.4.0 Task 25: optional MCP listener — constructed only when
-			// cfg.MCPListen is non-empty. The ToolStore adapter binds to the
-			// live tunnel registry + audit query store + metrics recorder.
-			v04.MCPServer = BuildMCPServer(cfg, st, v04, mcpTunnelAdapter{s: srv}, db.Wrap(database), log)
+			// The management MCP server, mounted at /mcp/burrow by the API
+			// router below. The ToolStore adapter binds to the live tunnel
+			// registry + audit query store + metrics recorder.
+			v04.MCPServer = BuildMCPServer(st, v04, mcpTunnelAdapter{s: srv}, db.Wrap(database), log)
 
 			// v0.5.0 Task 17: build every new v0.5.0 component and wire the
 			// semantic cache + credinject injector into the aigw.Chain.
@@ -925,9 +928,9 @@ func newRootCmd() *cobra.Command {
 					Bearer:            api.NewStoreBearerStore(st),
 					Automation:        st,
 					MCP: api.MCPInfo{
-						Enabled: cfg.MCPListen != "",
-						Listen:  cfg.MCPListen,
+						Enabled: true,
 						Server:  v04.MCPServer,
+						Handler: v04.MCPServer,
 					},
 					RateLimitDB:       db.Wrap(database),
 					RateLimits:        v04.QuotaEngine,
@@ -981,7 +984,6 @@ func newRootCmd() *cobra.Command {
 			// equal senderCount so that no sender ever blocks after shutdown.
 			// Baseline: control listener (srv.Serve) + api server = 2.
 			// The proxy listener adds 1 when cfg.HTTPProxyListen is non-empty.
-			// The MCP listener (Task 25) adds 1 more when cfg.MCPListen is set.
 			// The ACME :80 challenge+redirect listener adds 1 when ACME is on.
 			senderCount := 2
 
@@ -1034,18 +1036,6 @@ func newRootCmd() *cobra.Command {
 					// + RequireAndVerifyClientCert at TLS-handshake time; non-mTLS
 					// vhosts use the base config (no client cert required).
 					proxySrv.TLSConfig = proxyTLSCfg
-				}
-			}
-
-			// v0.4.0 Task 25: optional MCP JSON-RPC listener (default :7800).
-			// Same errc/Shutdown LIFO pattern as the :8443 proxy listener.
-			var mcpSrv *http.Server
-			if v04.MCPServer != nil {
-				senderCount++
-				mcpSrv = &http.Server{
-					Addr:              cfg.MCPListen,
-					Handler:           v04.MCPServer,
-					ReadHeaderTimeout: 10 * time.Second,
 				}
 			}
 
@@ -1126,17 +1116,6 @@ func newRootCmd() *cobra.Command {
 					errc <- nil
 				}()
 			}
-			if mcpSrv != nil {
-				go func() {
-					log.Info("mcp jsonrpc listening", "addr", cfg.MCPListen)
-					if err := mcpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-						errc <- err
-						return
-					}
-					errc <- nil
-				}()
-			}
-
 			// Wait for a shutdown signal OR an early server error (e.g. a
 			// listener bind failure such as the HTTP port already in use):
 			// surface it immediately instead of running half-dead until SIGINT.
@@ -1151,18 +1130,14 @@ func newRootCmd() *cobra.Command {
 			// returns) before Shutdown returns. The deferred reaperWg.Wait()
 			// and database.Close() then run in LIFO order after this point.
 			//
-			// Shutdown order (reverse of start): mcp → proxy → api → control listener (srv).
+			// Shutdown order (reverse of start): proxy → api → control listener (srv).
 			// The proxy is shut first so no new tunnel streams are opened while
-			// the control listener is still draining. The MCP listener uses
-			// the same in-process surfaces as the API, so it shuts first to
-			// drain any in-flight automation calls before the proxy quiesces.
+			// the control listener is still draining. MCP calls arrive on the
+			// api server and drain with it.
 			// The ACME :80 challenge+redirect listener (nil unless ACME is on)
 			// is shut alongside the api tier it fronts.
 			shutCtx, cancel := context.WithTimeout(context.Background(), apiShutdownGrace)
 			defer cancel()
-			if mcpSrv != nil {
-				_ = mcpSrv.Shutdown(shutCtx)
-			}
 			if proxySrv != nil {
 				_ = proxySrv.Shutdown(shutCtx)
 			}

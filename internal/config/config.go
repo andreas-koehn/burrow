@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/go-playground/validator/v10"
@@ -95,20 +94,15 @@ type ServerConfig struct {
 
 	// ----- v0.4.0 additions (Task 24) ---------------------------------------
 
-	// MCPListen is the TCP address the optional `burrowd mcp` JSON-RPC listener
-	// binds to (spec Part P). Defaults to "" — listener disabled. ":7800" is
-	// the conventional bind-all form. Env: BURROW_MCP_LISTEN.
-	MCPListen string `koanf:"mcp_listen"`
-	// BurrowMCPToken is the plaintext bua_-prefixed bearer token the MCP
-	// listener authenticates with. Empty (default) means the listener falls
-	// back to bearer-token lookup against the automation_tokens table. SECRET
-	// — sourced from BURROW_MCP_TOKEN or BURROW_MCP_TOKEN_FILE (the _FILE form
-	// wins, handled by applyFileSecrets) and never written to the settings
-	// table. Env: BURROW_MCP_TOKEN (also _FILE variant).
-	//
-	// koanf key is "mcp_token" — derived from BURROW_MCP_TOKEN via the
-	// prefix-strip + lowercase rule. The Go field name keeps the "Burrow"
-	// stem to match the plan's Type contract.
+	// MCPListen and BurrowMCPToken are retired. They belonged to the separate
+	// MCP listener, which is gone: the MCP endpoint is /mcp/burrow on the main
+	// address and takes automation tokens. Both are still read, so that a
+	// relay deployed with BURROW_MCP_LISTEN or BURROW_MCP_TOKEN (also _FILE)
+	// keeps starting, and neither is used or checked: cmd/server logs one
+	// warning when either is set. BurrowMCPToken may hold a SECRET; never
+	// log it. (No "Deprecated:" marker: the one reader, that warning, would
+	// trip the linter.)
+	MCPListen      string `koanf:"mcp_listen"`
 	BurrowMCPToken string `koanf:"mcp_token"`
 	// GeoDBPath is the on-disk path to a MaxMind GeoLite2 database file used
 	// by the geo-restriction access mode (spec Q11). Empty (default) selects
@@ -307,25 +301,6 @@ func deriveV04Fields(c *ServerConfig) {
 	}
 }
 
-// validateV04Fields checks the spec-mandated shape of the v0.4.0 fields:
-//
-//   - MCPListen: empty (disabled) or parseable as [host]:port.
-//
-// Returns the first violation as an error.
-func validateV04Fields(c *ServerConfig) error {
-	if c.MCPListen != "" {
-		_, port, err := net.SplitHostPort(c.MCPListen)
-		if err != nil {
-			return fmt.Errorf("mcp_listen %q is not a valid [host]:port: %w", c.MCPListen, err)
-		}
-		n, err := strconv.Atoi(port)
-		if err != nil || n < 1 || n > 65535 {
-			return fmt.Errorf("mcp_listen %q has invalid numeric port", c.MCPListen)
-		}
-	}
-	return nil
-}
-
 // validateDatabaseConfig enforces the v0.5.0 Task 15 backend-selection rules:
 //
 //   - Both database_path AND database_url set → fatal (ambiguous).
@@ -395,7 +370,8 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 		// auth_domain defaults to empty (no subdomain-routing configured).
 		"http_proxy_listen": "", "http_proxy_tls_cert": "", "http_proxy_tls_key": "", "auth_domain": "",
 		// v0.4.0 (Task 24) defaults. The empty-string defaults disable the
-		// associated feature (MCP listener, geo lookup, pricing override).
+		// associated feature (geo lookup, pricing override); mcp_listen is
+		// read and ignored.
 		// BackupDir defaults to empty here and is derived after unmarshalling —
 		// once DatabasePath has been resolved through env+_FILE+overrides — so
 		// the derivation rule sees the final post-merge value.
@@ -443,12 +419,8 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 	if (c.HTTPProxyTLSCert == "") != (c.HTTPProxyTLSKey == "") {
 		return nil, fmt.Errorf("invalid server config: http_proxy_tls_cert and http_proxy_tls_key must both be set or both be empty")
 	}
-	// v0.4.0 (Task 24): derive BackupDir from the already-merged DatabasePath,
-	// then validate the v0.4.0 field shapes.
+	// v0.4.0 (Task 24): derive BackupDir from the already-merged DatabasePath.
 	deriveV04Fields(&c)
-	if err := validateV04Fields(&c); err != nil {
-		return nil, fmt.Errorf("invalid server config: %w", err)
-	}
 	// A minimum that clients cannot compare with would be ignored by them
 	// without a word, so it is refused here.
 	c.MinClientVersion = strings.TrimSpace(c.MinClientVersion)

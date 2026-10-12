@@ -583,8 +583,8 @@ func TestHTTPProxyTLSCertKeyFile(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 24 (v0.4.0): MCP listener, geo db, pricing override, backup dir, MCP
-// token — defaults + env + _FILE + validation.
+// Task 24 (v0.4.0): geo db, pricing override, backup dir — defaults + env +
+// _FILE — and the two retired MCP variables, which are read and ignored.
 // ---------------------------------------------------------------------------
 
 // TestV04DefaultsAllNewFields asserts every new v0.4.0 ServerConfig field
@@ -592,11 +592,11 @@ func TestHTTPProxyTLSCertKeyFile(t *testing.T) {
 //
 // Defaults (Task 24):
 //
-//	MCPListen        ""     (MCP listener disabled)
+//	MCPListen        ""     (retired; read and ignored)
 //	GeoDBPath        ""     (NoopGeoLookup)
 //	PricingPath      ""     (embedded pricing.yaml)
 //	BackupDir        "./burrow.db.backups"  (derived from default DatabasePath)
-//	BurrowMCPToken   ""     (empty; falls back to automation_tokens lookup)
+//	BurrowMCPToken   ""     (retired; read and ignored)
 func TestV04DefaultsAllNewFields(t *testing.T) {
 	c, err := LoadServer(nil)
 	if err != nil {
@@ -619,7 +619,8 @@ func TestV04DefaultsAllNewFields(t *testing.T) {
 	}
 }
 
-// TestMCPListenEnvOverride asserts BURROW_MCP_LISTEN takes effect.
+// TestMCPListenEnvOverride asserts BURROW_MCP_LISTEN is still read: the
+// value does nothing, but cmd/server needs to see it to warn about it.
 func TestMCPListenEnvOverride(t *testing.T) {
 	t.Setenv("BURROW_MCP_LISTEN", ":7800")
 	c, err := LoadServer(nil)
@@ -655,20 +656,38 @@ func TestPricingPathEnvOverride(t *testing.T) {
 	}
 }
 
-// TestMCPListenInvalidPort asserts that mcp_listen=":abc" fails validation
-// (port must parse).
-func TestMCPListenInvalidPort(t *testing.T) {
-	_, err := LoadServer(map[string]any{"mcp_listen": ":abc"})
-	if err == nil {
-		t.Fatal("expected error for mcp_listen with non-numeric port, got nil")
+// TestRetiredMCPVariables_DoNotStopTheRelay: a relay that is deployed with
+// the variables of the removed MCP listener must keep starting, whatever
+// they hold. The values are no longer checked — ":abc" used to be refused.
+func TestRetiredMCPVariables_DoNotStopTheRelay(t *testing.T) {
+	for _, listen := range []string{":7800", "0.0.0.0:7800", ":abc", "not an address", ":99999"} {
+		t.Setenv("BURROW_MCP_LISTEN", listen)
+		t.Setenv("BURROW_MCP_TOKEN", "bua_some_token_value")
+		c, err := LoadServer(nil)
+		if err != nil {
+			t.Fatalf("BURROW_MCP_LISTEN=%q: LoadServer: %v", listen, err)
+		}
+		if c.MCPListen != listen || c.BurrowMCPToken != "bua_some_token_value" {
+			t.Fatalf("BURROW_MCP_LISTEN=%q: read as %q / %q", listen, c.MCPListen, c.BurrowMCPToken)
+		}
 	}
-	if !strings.Contains(err.Error(), "mcp_listen") {
-		t.Fatalf("error should mention mcp_listen, got: %v", err)
+	if _, err := LoadServer(map[string]any{"mcp_listen": ":abc"}); err != nil {
+		t.Fatalf("override mcp_listen=:abc: %v", err)
+	}
+}
+
+// TestUnknownVariable_IsIgnored pins what the two retired variables rely on
+// once their fields are deleted for good: a BURROW_ variable no field reads
+// is not an error.
+func TestUnknownVariable_IsIgnored(t *testing.T) {
+	t.Setenv("BURROW_NO_SUCH_SETTING", "x")
+	if _, err := LoadServer(nil); err != nil {
+		t.Fatalf("LoadServer with an unknown BURROW_ variable: %v", err)
 	}
 }
 
 // TestMCPListenEmptyHostValid asserts that mcp_listen=":7800" (empty host)
-// is accepted — common bind-all form.
+// is read as written.
 func TestMCPListenEmptyHostValid(t *testing.T) {
 	c, err := LoadServer(map[string]any{"mcp_listen": ":7800"})
 	if err != nil {
@@ -679,8 +698,9 @@ func TestMCPListenEmptyHostValid(t *testing.T) {
 	}
 }
 
-// TestMCPTokenFile asserts that BURROW_MCP_TOKEN_FILE is read via the
-// generic applyFileSecrets mechanism into BurrowMCPToken.
+// TestMCPTokenFile asserts that BURROW_MCP_TOKEN_FILE is still read via the
+// generic applyFileSecrets mechanism into BurrowMCPToken (a deployment that
+// mounts the secret keeps starting).
 func TestMCPTokenFile(t *testing.T) {
 	path := writeSecret(t, "bua_some_token_value\n")
 	t.Setenv("BURROW_MCP_TOKEN_FILE", path)
