@@ -1,11 +1,11 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { server } from "@/mocks/server";
 import { renderApp } from "@/mocks/test-utils";
 import { db } from "@/mocks/db";
-import { Routes, Route, useLocation } from "react-router-dom";
+import { Link, Routes, Route, useLocation } from "react-router-dom";
 import Clients from "@/pages/Clients";
 import { Layout } from "@/components/Layout";
 
@@ -286,6 +286,50 @@ describe("Clients — the sidebar counts what the page lists", () => {
     expect(onlineRows()).toHaveLength(2);
     expect(await sidebarCount(2)).toBeInTheDocument();
   });
+
+  // The shell refreshes the list 30 seconds after its last answer; the page shows
+  // the new rows and asks for nothing beside it.
+  it("the page follows the shell's refresh, one request each time", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const asked: string[] = [];
+    server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
+    const known = () => asked.filter((p) => p === "/api/v1/clients/known").length;
+    const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+    try {
+      // The reader opens another page first, and Clients ten seconds later.
+      renderApp(
+        <Routes>
+          <Route element={<Layout />}>
+            <Route path="/start" element={<Link to="/clients">open clients</Link>} />
+            <Route path="/clients" element={<Clients />} />
+          </Route>
+        </Routes>,
+        "/start",
+      );
+      await sidebarCount(1);
+      expect(known()).toBe(1);
+      await advance(10_000);
+      fireEvent.click(screen.getByRole("link", { name: "open clients" }));
+      await rowOf("office-box-1");
+      await waitFor(() => expect(known()).toBe(2)); // opening the page asks again
+      // koehn-laptop comes back online.
+      db.clients.push({ ...db.clients[0]!, session_id: "sess_laptop", token_name: "koehn-laptop" });
+      await advance(25_000);
+      expect(onlineRows()).toHaveLength(1);
+      expect(known()).toBe(2);
+      await advance(6_000);
+      await waitFor(() => expect(onlineRows()).toHaveLength(2));
+      expect(await sidebarCount(2)).toBeInTheDocument();
+      expect(known()).toBe(3);
+      await advance(25_000);
+      expect(known()).toBe(3);
+      await advance(6_000);
+      await waitFor(() => expect(known()).toBe(4));
+    } finally {
+      server.events.removeAllListeners();
+      vi.useRealTimers();
+    }
+  }, 15000);
 
   it("asks for the list once for both", async () => {
     const asked: string[] = [];

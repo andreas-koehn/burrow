@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, CircleCheck, Copy } from "lucide-react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -12,6 +12,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { useAuth } from "@/auth/useAuth";
 import { InstallLines } from "@/components/InstallLines";
 import { CHECKSUMS_HREF, downloadTargets } from "@/lib/installSnippets";
+import { KNOWN_CLIENTS_KEY } from "@/lib/useKnownClients";
 import type { NewToken, ClientView, ClientDiscovery } from "@/lib/contract";
 
 interface ConnectInfo { server: string }
@@ -349,6 +350,14 @@ function WaitForClient() {
       if (fresh) setArrived(fresh);
     }
   }
+
+  // The sidebar counts from the list of known clients, which this page does not
+  // ask for: tell it once, so the count does not wait for the shell's next refresh.
+  const qc = useQueryClient();
+  const hasArrived = arrived !== null;
+  useEffect(() => {
+    if (hasArrived) void qc.invalidateQueries({ queryKey: KNOWN_CLIENTS_KEY });
+  }, [hasArrived, qc]);
 
   if (loading) return null;
   return (

@@ -66,7 +66,9 @@ export function Layout() {
   const relayNotices = useRelayNotices();
   // The rows of the Clients page, from the request that page makes too. The
   // endpoint is admin-gated; nobody else is asked for, or gets, a count.
-  const clients = useKnownClients({ enabled: isAdmin });
+  // The shell is the one reader that is always there, so it keeps the list
+  // fresh for every page: no other reader sets an interval of its own.
+  const clients = useKnownClients({ enabled: isAdmin, refetchInterval: 30000 });
   const servicesList = Array.isArray(services.data) ? services.data : [];
   const clientsList = clients.rows ?? [];
   const hasAiGateway = isAdmin

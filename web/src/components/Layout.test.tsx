@@ -424,6 +424,41 @@ describe("Layout workspace shell", () => {
     expect(await screen.findByRole("link", { name: "Clients, 2 online" })).toBeInTheDocument();
   });
 
+  // No page has to ask: the shell keeps its own count fresh.
+  it("refreshes the count every 30 seconds without any page action", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const known = [online("tok_1", "office-box-1", "sess_1")];
+      renderLayout("admin", { path: "/services", known });
+      expect(await screen.findByRole("link", { name: "Clients, 1 online" })).toBeInTheDocument();
+      const asked = () => vi.mocked(globalThis.fetch).mock.calls.filter((c) => String(c[0]).endsWith("/api/v1/clients/known")).length;
+      expect(asked()).toBe(1);
+      // A second client connects; the relay says so from the next answer on.
+      known.push(online("tok_2", "koehn-laptop", "sess_2"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(29_000); });
+      expect(asked()).toBe(1);
+      expect(screen.getByRole("link", { name: "Clients, 1 online" })).toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+      expect(await screen.findByRole("link", { name: "Clients, 2 online" })).toBeInTheDocument();
+      expect(asked()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not keep asking on behalf of a non-admin", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderLayout("user", { known: [online("tok_1", "office-box-1", "sess_1")] });
+      await chip();
+      await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+      const urls = vi.mocked(globalThis.fetch).mock.calls.map((c) => String(c[0]));
+      expect(urls.some((u) => u.includes("/api/v1/clients"))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("on a relay without the list of known clients, counts its live sessions, as the Clients page lists them", async () => {
     renderLayout("admin", {
       path: "/clients/sess_2",

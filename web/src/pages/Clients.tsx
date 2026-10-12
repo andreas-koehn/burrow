@@ -111,8 +111,9 @@ function ClientList() {
     staleTime: 5 * 60_000,
   });
   const relayVersion = relay.data?.version;
-  // The same rows, from the same request, as the sidebar's count.
-  const { rows: data, isLoading, error } = useKnownClients({ refetchInterval: 30000 });
+  // The same rows, from the same request, as the sidebar's count. The shell
+  // refreshes them every 30 seconds, so the page sets no interval of its own.
+  const { rows: data, isLoading, error } = useKnownClients();
   // Same key and fetch as the shell. Only the links depend on it: without an answer the names stay text.
   const services = useQuery({
     queryKey: ["services"],

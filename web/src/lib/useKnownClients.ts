@@ -7,7 +7,7 @@ import type { ClientView, KnownClient } from "@/lib/contract";
  * share one request. It sits below ["clients"], the live sessions: invalidating
  * those invalidates this list too.
  */
-const KNOWN_CLIENTS_KEY = ["clients", "known"] as const;
+export const KNOWN_CLIENTS_KEY = ["clients", "known"] as const;
 
 /** A live session as a row of its own: all a relay without /clients/known can say. */
 function fromSession(s: ClientView): KnownClient {
@@ -36,7 +36,10 @@ async function fetchKnownClients(): Promise<KnownClient[]> {
 export interface KnownClientsOptions {
   /** The relay lists clients for an admin only: a reader that knows better does not ask. */
   enabled?: boolean;
-  /** Milliseconds between two requests; without it the list is not refreshed on its own. */
+  /**
+   * Milliseconds from one answer to the next request. The shell sets it, for
+   * every reader: a page inside the shell leaves it out.
+   */
   refetchInterval?: number;
 }
 

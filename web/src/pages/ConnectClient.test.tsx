@@ -7,6 +7,7 @@ import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
 import ConnectClient from "@/pages/ConnectClient";
+import { Layout } from "@/components/Layout";
 import type { ClientView } from "@/lib/contract";
 
 function mount() {
@@ -110,6 +111,31 @@ describe("Connect a client — three lines", () => {
     // It stays, also when the list changes again.
     expect(screen.getByRole("link", { name: "edge-99" })).toBeInTheDocument();
   }, 15000);
+
+  // The sidebar counts from the list of known clients, which this page does not poll.
+  it("a client that arrives is counted in the sidebar at once, not at the shell's next refresh", async () => {
+    renderApp(
+      <Routes><Route element={<Layout />}><Route path="/clients/connect" element={<ConnectClient />} /></Route></Routes>,
+      "/clients/connect",
+    );
+    await screen.findByText("Waiting for your client…");
+    // Seed: one client is connected.
+    expect(await screen.findByRole("link", { name: "Clients, 1 online" })).toBeInTheDocument();
+    const asked: string[] = [];
+    server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
+    try {
+      db.tokens.push({ id: "tok_edge", name: "edge-99", last_used: null, created_at: "2026-05-18T10:00:00Z" });
+      db.clients.push({ ...db.clients[0]!, session_id: "sess_new", token_name: "edge-99" });
+      const link = await screen.findByRole("link", { name: "edge-99" }, { timeout: 6000 });
+      expect(link).toHaveAttribute("href", "/clients/sess_new");
+      expect(await screen.findByRole("link", { name: "Clients, 2 online" }, { timeout: 3000 })).toBeInTheDocument();
+      // Told once, not with every answer of the poll.
+      await pause(2500);
+      expect(asked.filter((p) => p === "/api/v1/clients/known")).toHaveLength(1);
+    } finally {
+      server.events.removeAllListeners();
+    }
+  }, 20000);
 
   it("stops asking when the page is left", async () => {
     const feed = clientsFeed([]);
