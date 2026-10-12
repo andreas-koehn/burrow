@@ -217,6 +217,8 @@ Every label value comes from a set whose size you control: the id of a service, 
 - `method` is `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, `CONNECT`, `TRACE`, or `other`.
 - `status` of an HTTP family is the class of the status: `1xx`, `2xx`, `3xx`, `4xx`, `5xx`, or `none` when nothing was answered.
 
+Requests to the model gateway (`/openai`, `/anthropic`, `/ai/…`) are not proxied requests: they appear in the `burrow_ai_*` families and not in `burrow_http_*`, `burrow_connections_total`, `burrow_connection_bytes_*` or `burrow_client_bytes_*`. A gateway request that is refused before it reaches a provider (by a guardrail, a rate limit, a bad key, an unknown model, a budget, a redaction that drops it, or a body over the limit) leaves no sample in any family; a guardrail and a rate limit still publish their webhook event.
+
 | Family | Labels | Counts |
 |---|---|---|
 | `burrow_http_requests_total` | `service`, `method`, `status` | requests the proxy answered for an http service (a visitor who hangs up is counted too) |
@@ -270,7 +272,7 @@ What the figures do not include, by design:
 
 The traffic figures of the **Tunnels** and **Clients** pages are not these counters: they count every byte that passes through a tunnel, headers included, while it passes.
 
-The provider list (`GET /api/v1/ai/providers`) reports `latency_p95_ms` per provider: the nearest-rank 95th percentile of the latency of the requests of the last 24 hours that the provider answered with a 2xx.
+The provider list (`GET /api/v1/ai/providers`) and a single provider (`GET /api/v1/ai/providers/{slug}`) report `latency_p95_ms`: the nearest-rank 95th percentile of the latency of the requests of the last 24 hours that the provider answered with a 2xx. The relay computes it at most once a minute, for all providers together, so the figure is up to a minute old; a request that arrives while it is being computed again gets the previous figure. The request and cache-hit counts next to it are read on every request. If the computation fails, the last figure stays (0 when there never was one) and one warning is logged until it succeeds again.
 
 ---
 
@@ -283,7 +285,7 @@ Several events are throttled so that one fault cannot flood a receiver; the thro
 | Event | When | Fields |
 |---|---|---|
 | `tunnel.connected` | a client registers a tunnel (60 per user per minute, shared with `tunnel.disconnected` and `service.created`) | `ServiceID`, `TunnelID`, `Kind` (`http`, `tcp` or `other`) |
-| `tunnel.disconnected` | a tunnel is unregistered or its session ends (same budget) | `ServiceID`, `TunnelID`, `Kind` |
+| `tunnel.disconnected` | a tunnel is unregistered or its session ends (same budget). Not when the relay itself stops: see below the table | `ServiceID`, `TunnelID`, `Kind` |
 | `tunnel.failed` | the relay refuses a registration; at most one per user and refusal code per minute | `ServiceID` (empty), `TunnelID` (empty), `Error` (the refusal code) |
 | `service.created` | a client's first registration creates a service (same budget), or an admin creates one through the API (not throttled) | `service_id`, `name`, `type`, `access_mode` |
 | `service.deleted` | never published: no code path deletes a service yet | `service_id`, `name` |
@@ -302,7 +304,9 @@ Several events are throttled so that one fault cannot flood a receiver; the thro
 | `backup.completed` | a backup started from the dashboard or the API finished. `burrowd backup` on the command line announces nothing | `Path` (the archive's name), `SizeBytes` |
 | `webhook.test` | the **Test** button | `hello` |
 
-Events are delivered from a queue of 256; when it is full, events are dropped and a warning is logged. A relay that is stopping delivers what is queued. A request that a rate limit or a budget refuses produces no model-request event.
+Events are delivered from a queue of 256; when it is full, events are dropped and a warning is logged. A request that a rate limit or a budget refuses produces no model-request event.
+
+A relay that is stopping does not wait on webhook receivers. From the moment it is told to stop, it publishes none of the events that come from sessions, tunnels, proxied requests and model requests (`tunnel.connected`, `tunnel.disconnected`, `tunnel.failed`, a client's `service.created`, `access.denied`, `redaction.applied`, `guardrail.refused`, `ai.upstream_error`, `ai.cache_promotion`): the tunnels it closes itself are not announced as disconnected, so a receiver does not learn of a stop or a restart from `tunnel.disconnected`. The metrics still count what ends during the stop. Events that are still queued get 5 seconds in all: each is tried once, without retries; a delivery that is still running when the 5 seconds are over is cancelled and the rest of the queue is dropped, and one warning in the log says how many events were not delivered. A delivery cancelled this way is not counted against the webhook as a failure.
 
 Writes of the model gateway's global settings (guardrails, cache, redaction) leave an audit entry that names the settings key and never its value. The audit entry of a change is written even when the caller has already hung up.
 

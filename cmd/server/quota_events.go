@@ -30,28 +30,49 @@ const quotaEventInterval = time.Minute
 // eventThrottleMaxKeys bounds the throttle's memory.
 const eventThrottleMaxKeys = 1024
 
+// eventThrottleFullLogEvery is how often a throttle that is full says so.
+const eventThrottleFullLogEvery = time.Minute
+
 // eventThrottle lets one event per key through per interval.
 type eventThrottle struct {
 	mu    sync.Mutex
 	last  map[string]time.Time
 	now   func() time.Time
 	every time.Duration
+	// name and log are for the one thing a throttle reports itself: that it
+	// is full and refuses keys it has not seen. Without a log it stays
+	// silent.
+	name       string
+	log        *slog.Logger
+	fullLogged time.Time
 }
 
 // allow reports whether key may publish now, and if so starts its interval.
 // When the map is full, entries whose interval is over are dropped; while it
 // is full of live entries a new key is refused, so the map never grows past
-// eventThrottleMaxKeys.
+// eventThrottleMaxKeys. Such a refusal is logged, at most once a minute, with
+// the throttle's name and never the key (a key may hold an address or an id).
 func (t *eventThrottle) allow(key string) bool {
+	allowed, full := t.take(key)
+	if full && t.log != nil {
+		t.log.Warn("event throttle full, new keys are refused until entries expire",
+			"throttle", t.name, "max_keys", eventThrottleMaxKeys, "interval", t.every.String())
+	}
+	return allowed
+}
+
+// take is allow's locked part. full is true when the key was refused because
+// the map is full and it is time to say so again.
+func (t *eventThrottle) take(key string) (allowed, full bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
 	if last, ok := t.last[key]; ok {
 		if now.Sub(last) < t.every {
-			return false
+			return false, false
 		}
 		t.last[key] = now
-		return true
+		return true, false
 	}
 	if len(t.last) >= eventThrottleMaxKeys {
 		for k, at := range t.last {
@@ -60,14 +81,18 @@ func (t *eventThrottle) allow(key string) bool {
 			}
 		}
 		if len(t.last) >= eventThrottleMaxKeys {
-			return false
+			if t.fullLogged.IsZero() || now.Sub(t.fullLogged) >= eventThrottleFullLogEvery {
+				t.fullLogged = now
+				return false, true
+			}
+			return false, false
 		}
 	}
 	if t.last == nil {
 		t.last = map[string]time.Time{}
 	}
 	t.last[key] = now
-	return true
+	return true, false
 }
 
 func (t *eventThrottle) size() int {
@@ -85,12 +110,13 @@ type quotaEvents struct {
 }
 
 // newQuotaEvents returns the publisher for the quota middleware. pub may be
-// nil (nothing is published); now may be nil (time.Now).
-func newQuotaEvents(pub eventPublisher, now func() time.Time) *quotaEvents {
+// nil (nothing is published); now may be nil (time.Now); log may be nil (a
+// full throttle is then not reported).
+func newQuotaEvents(pub eventPublisher, now func() time.Time, log *slog.Logger) *quotaEvents {
 	if now == nil {
 		now = time.Now
 	}
-	return &quotaEvents{pub: pub, throttle: &eventThrottle{now: now, every: quotaEventInterval}}
+	return &quotaEvents{pub: pub, throttle: &eventThrottle{now: now, every: quotaEventInterval, name: "quota_exceeded", log: log}}
 }
 
 // denied announces a denial. The payload describes the limit that denied and
@@ -155,7 +181,7 @@ func newGuardrailAuditor(a auditAppender, log *slog.Logger) *guardrailAuditor {
 		log:   log,
 		queue: make(chan guardrailRefusal, guardrailAuditQueue),
 		quit:  make(chan struct{}),
-		full:  &eventThrottle{now: time.Now, every: time.Minute},
+		full:  &eventThrottle{now: time.Now, every: time.Minute, name: "guardrail_audit_warnings", log: log},
 	}
 	go g.work()
 	return g

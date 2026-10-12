@@ -569,3 +569,97 @@ func TestObserver_ClientGoneIsNoUpstreamError(t *testing.T) {
 		t.Fatalf("ai.upstream_error events: %v", up)
 	}
 }
+
+// A relay that is shutting down ends every session itself. Once the observer
+// has stopped publishing, what it observes is still counted, and its audit
+// entries are still written, but no webhook event leaves it.
+func TestObserver_StoppedPublishesNothing(t *testing.T) {
+	o, rec, em, au := newTestObserver(t)
+	o.ObserveSession(observe.Session{Kind: observe.SessionOpened, SessionID: "s1", UserID: "u1", TokenID: "tok1", ConnectedAt: time.Now()})
+	o.ObserveSession(observe.Session{Kind: observe.TunnelOpened, SessionID: "s1", UserID: "u1", TunnelID: "t1", TunnelType: "http", ServiceID: "svc1"})
+	if n := len(em.named("tunnel.connected")); n != 1 {
+		t.Fatalf("%d tunnel.connected events before the stop, want 1", n)
+	}
+	count := func() int {
+		em.mu.Lock()
+		defer em.mu.Unlock()
+		return len(em.events)
+	}
+	before := count()
+
+	o.stopPublishing()
+
+	// The shutdown itself: the tunnel and its session end.
+	o.ObserveSession(observe.Session{Kind: observe.TunnelClosed, SessionID: "s1", UserID: "u1", TunnelID: "t1", TunnelType: "http", ServiceID: "svc1"})
+	o.ObserveSession(observe.Session{Kind: observe.SessionClosed, SessionID: "s1", UserID: "u1", TokenID: "tok1", Duration: 42 * time.Second})
+	// And everything else that may still finish while the relay stops.
+	o.ObserveSession(observe.Session{Kind: observe.TunnelOpened, UserID: "u2", TunnelID: "t2", TunnelType: "tcp", ServiceID: "svc2", ServiceCreated: true})
+	o.ObserveSession(observe.Session{Kind: observe.TunnelRefused, UserID: "u2", RefusalCode: "port_unavailable"})
+	o.ObserveTraffic(observe.Traffic{Kind: observe.TrafficHTTP, ServiceID: "svc1", Method: "GET", Status: 401, Outcome: observe.OutcomeRejected, RejectReason: observe.RejectedAccess})
+	o.ObserveTraffic(observe.Traffic{Kind: observe.TrafficHTTP, ServiceID: "svc-ai", Method: "POST", Status: 502, Outcome: observe.OutcomeError, KeyService: true})
+	o.ObserveModelRequest(observe.ModelRequest{
+		ServiceID: "svc-a", Outcome: observe.ModelGuardrailRefused, GuardrailPattern: "ignore_prev",
+		SemanticPromoted: true, PromotedKey: "global:abc",
+		Redactions: []observe.Redaction{{Rule: "email", Count: 1}},
+		Attempts:   []observe.Attempt{{ProviderSlug: "alpha", ServiceID: "svc-a", Status: 500, Failed: true, Sent: true}},
+	})
+	if err := o.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if after := count(); after != before {
+		em.mu.Lock()
+		defer em.mu.Unlock()
+		t.Fatalf("%d events were published after the observer stopped publishing: %v", after-before, em.events[before:])
+	}
+	wantLines(t, expo(t, rec),
+		`burrow_client_session_count{user="u1"} 0`,
+		`burrow_client_session_duration_seconds_count{user="u1"} 1`,
+		`burrow_client_session_duration_seconds_sum{user="u1"} 42`,
+		`burrow_connections_total{service="",kind="control",status="closed_clean"} 1`,
+		`burrow_connections_total{service="svc1",kind="http_proxy",status="rejected"} 1`,
+		`burrow_ai_upstream_errors_total{service="svc-ai",status="5xx"} 1`,
+		`burrow_ai_upstream_errors_total{service="svc-a",status="5xx"} 1`,
+		`burrow_ai_semantic_promotions_total{service="svc-a"} 1`,
+	)
+	acts := strings.Join(au.actions(), ",")
+	if !strings.Contains(acts, "redaction.applied:svc-a") {
+		t.Fatalf("the audit entry of a redaction was not written after the stop: %s", acts)
+	}
+
+	// The worker's stop silences an observer that was never told to.
+	late, _, lateEvents, _ := newTestObserver(t)
+	late.stop()
+	late.ObserveSession(observe.Session{Kind: observe.TunnelClosed, UserID: "u1", TunnelID: "t1", TunnelType: "http"})
+	if n := len(lateEvents.named("tunnel.disconnected")); n != 0 {
+		t.Fatalf("%d events from an observer whose worker was stopped", n)
+	}
+	// A nil observer has nothing to stop.
+	var none *observer
+	none.stopPublishing()
+}
+
+// The section that counts sessions releases its lock also when it panics:
+// the entry point recovers the panic, and a lock left held would block every
+// session open and close after it.
+func TestObserver_PanicUnderTheLockDoesNotHoldIt(t *testing.T) {
+	o, rec, _, _ := newTestObserver(t)
+	sessions := o.sessions
+	o.sessions = nil // a write to a nil map panics inside the locked section
+	o.ObserveSession(observe.Session{Kind: observe.SessionOpened, SessionID: "s1", UserID: "u1", TokenID: "tok1"})
+	o.sessions = sessions
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		o.ObserveSession(observe.Session{Kind: observe.SessionOpened, SessionID: "s2", UserID: "u1", TokenID: "tok2"})
+		o.ObserveSession(observe.Session{Kind: observe.SessionClosed, SessionID: "s2", UserID: "u1", TokenID: "tok2"})
+		o.ObserveSession(observe.Session{Kind: observe.SessionOpened, SessionID: "s3", UserID: "u1", TokenID: "tok3"})
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a panic inside the locked section left the observer's lock held")
+	}
+	wantLines(t, expo(t, rec), `burrow_client_session_count{user="u1"} 1`)
+}

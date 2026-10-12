@@ -281,16 +281,33 @@ func (a clientsAdapter) ListKnownClients(ctx context.Context) ([]api.KnownClient
 	return api.KnownClients(tokens, live), nil
 }
 
+// trafficFinalFlushTimeout bounds the traffic flusher's last flush, the one
+// at shutdown.
+const trafficFinalFlushTimeout = 5 * time.Second
+
+// liveTunnelSource is the control server as the traffic flusher needs it
+// (*server.Server), tunnelTotalsWriter the store (*store.Store). Interfaces
+// make the flusher testable without either.
+type liveTunnelSource interface {
+	SnapshotSessions() []server.SessionSnapshot
+}
+
+type tunnelTotalsWriter interface {
+	FlushTunnelTotals(ctx context.Context, id string, addIn, addOut int64) error
+}
+
 // runTrafficFlusher periodically persists the delta of each live tunnel's
 // in-memory byte counters into tunnels.total_bytes_*, so traffic survives
 // reconnects. WaitGroup-tracked + ctx-cancelled like runSessionReaper; a final
-// flush runs on ctx cancellation before the DB is closed.
-func runTrafficFlusher(ctx context.Context, wg *sync.WaitGroup, srv *server.Server, st *store.Store, log *slog.Logger, interval time.Duration) {
+// flush runs on ctx cancellation before the DB is closed. That one cannot use
+// ctx, which is over by then and would fail every write: it runs on a context
+// detached from it, bounded by trafficFinalFlushTimeout as a whole.
+func runTrafficFlusher(ctx context.Context, wg *sync.WaitGroup, srv liveTunnelSource, st tunnelTotalsWriter, log *slog.Logger, interval time.Duration) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		last := map[string][2]uint64{} // tunnelID -> {in,out} already persisted
-		flush := func() {
+		flush := func(ctx context.Context) {
 			seen := map[string]struct{}{}
 			for _, ss := range srv.SnapshotSessions() {
 				for _, tn := range ss.Tunnels {
@@ -325,10 +342,13 @@ func runTrafficFlusher(ctx context.Context, wg *sync.WaitGroup, srv *server.Serv
 		for {
 			select {
 			case <-ctx.Done():
-				flush() // final flush before shutdown / DB close
+				// final flush before shutdown / DB close
+				fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), trafficFinalFlushTimeout)
+				flush(fctx)
+				cancel()
 				return
 			case <-t.C:
-				flush()
+				flush(ctx)
 			}
 		}
 	}()
@@ -957,7 +977,7 @@ func newRootCmd() *cobra.Command {
 					RateLimits:        v04.QuotaEngine,
 					Budgets:           db.Wrap(database),
 					CostEngine:        v04.CostEngine,
-					AIMetrics:         db.Wrap(database),
+					AIMetrics:         newAIMetricsStore(db.Wrap(database), log),
 					CacheEngine:       v04.CacheEngine,
 					CacheServices:     cacheServiceLookupAdapter{db: db.Wrap(database)},
 					InspectorRings:    v04.InspectorMgr,
@@ -1074,7 +1094,19 @@ func newRootCmd() *cobra.Command {
 			}
 
 			errc := make(chan error, senderCount)
-			go func() { errc <- srv.Serve(ctx) }()
+			// The control listener ends every session when its context ends,
+			// and each tunnel of a session is then told to the observer as
+			// closed. Its context therefore ends after the observer has
+			// stopped publishing: a shutdown announces no tunnel.disconnected
+			// for the tunnels it closes itself, and does not wait on webhook
+			// receivers for them.
+			srvCtx, stopSrv := context.WithCancel(context.WithoutCancel(ctx))
+			defer stopSrv()
+			context.AfterFunc(ctx, func() {
+				v04.Observer.stopPublishing()
+				stopSrv()
+			})
+			go func() { errc <- srv.Serve(srvCtx) }()
 			go func() {
 				if acmeMgr != nil {
 					// Certs come from apiSrv.TLSConfig.GetCertificate (ACME),

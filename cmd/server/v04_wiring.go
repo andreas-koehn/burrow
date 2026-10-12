@@ -185,7 +185,7 @@ func buildV04Stack(
 	// 4-9 run. On denial Charge returns Allow=false; the middleware writes 429
 	// and emits a ratelimit.enforced audit row (sampled: one per limit per
 	// hour) without calling next.
-	aiChain.RateLimit = buildQuotaMiddleware(quotaEngine, auditLogger, newQuotaEvents(dispatcher, nil))
+	aiChain.RateLimit = buildQuotaMiddleware(quotaEngine, auditLogger, newQuotaEvents(dispatcher, nil, log))
 
 	// A guardrail refusal leaves an audit entry (guardrail.refused, sampled
 	// by the audit logger), written off the request path.

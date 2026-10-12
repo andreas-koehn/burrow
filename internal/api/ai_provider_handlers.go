@@ -9,7 +9,10 @@ package api
 // status, trailing-24h request counts) and the first synthetic model that
 // targets it.  latency_p95_ms is
 // the 95th percentile, nearest rank, of the latency of the requests of the
-// last 24 hours that were answered with a 2xx.
+// last 24 hours that were answered with a 2xx.  It is up to a minute old: the
+// metrics store the relay wires in computes it at most once a minute, for all
+// providers together, because the read walks a day of usage rows.  The
+// request and cache-hit counts beside it are read on every call.
 
 import (
 	"context"
@@ -238,9 +241,10 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 
 	firstModel := d.firstModelByProvider(r.Context())
 
-	// Trailing-24h request + cache-hit counts per service. Degrades to zeros
-	// when the metrics store isn't wired (early-wiring / handler tests) or
-	// the query fails (logged).
+	// Trailing-24h request + cache-hit counts per service, and the p95
+	// latency, which the store may serve up to a minute old. Degrades to
+	// zeros when the metrics store isn't wired (early-wiring / handler tests)
+	// or the query fails (logged).
 	counts := map[string]db.AIEndpointCount{}
 	if d.AIMetrics != nil {
 		if c, err := d.AIMetrics.AIEndpointCounts24h(r.Context()); err != nil {

@@ -22,9 +22,10 @@ type AIEndpointCount struct {
 	Requests  int
 	CacheHits int
 	// LatencyP95Ms is the nearest-rank 95th percentile of latency_ms over the
-	// requests of the last 24h that an upstream answered (upstream_status
-	// 200-499; no cache hits, no 5xx or gateway-made failures, no rows from
-	// before the column existed); 0 when there is none.
+	// requests of the last 24h that an upstream answered with a 2xx
+	// (upstream_status 200-299; no cache hits, no other status, no rows from
+	// before the column existed); 0 when there is none. See
+	// AIEndpointLatencyP95.
 	LatencyP95Ms int
 }
 
@@ -55,9 +56,32 @@ type AIEndpointAgg struct {
 	PerMinute [60]int
 }
 
-// AIEndpointCounts24h returns per-service request + cache-hit counts over the
-// trailing 24h, keyed by service_id.
+// AIEndpointCounts24h returns per-service request and cache-hit counts over
+// the trailing 24h plus the p95 latency, keyed by service_id: the two reads
+// below, both run now. The API does not call it per request: it reads the
+// counts with AIEndpointRequests24h and takes the latency from a value it
+// keeps for a minute (cmd/server, aiMetricsStore), because the latency read
+// is the expensive one.
 func (x *DB) AIEndpointCounts24h(ctx context.Context) (map[string]AIEndpointCount, error) {
+	out, err := x.AIEndpointRequests24h(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p95, err := x.AIEndpointLatencyP95(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for sid, ms := range p95 {
+		c := out[sid]
+		c.LatencyP95Ms = ms
+		out[sid] = c
+	}
+	return out, nil
+}
+
+// AIEndpointRequests24h returns per-service request + cache-hit counts over
+// the trailing 24h, keyed by service_id. LatencyP95Ms is not filled.
+func (x *DB) AIEndpointRequests24h(ctx context.Context) (map[string]AIEndpointCount, error) {
 	since := time.Now().UTC().Add(-24 * time.Hour)
 	rows, err := x.sqlDB.QueryContext(ctx, `
 		SELECT service_id,
@@ -79,45 +103,95 @@ func (x *DB) AIEndpointCounts24h(ctx context.Context) (map[string]AIEndpointCoun
 		}
 		out[sid] = c
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	_ = rows.Close()
+	return out, rows.Err()
+}
 
-	// p95 latency per service: the nearest-rank percentile, the row at rank
-	// ceil(0.95 n) of the service's latencies in ascending order. A window
-	// function does it in the database (SQLite 3.25+ and Postgres both have
-	// ROW_NUMBER and COUNT OVER; the integer division is exact on both). Only
-	// requests an upstream answered count: the row carries the status of the
-	// answer, 200-499. A 5xx is a failure of the upstream, or the gateway's
-	// own 502/504 when none answered, and its latency is the whole chain's;
-	// 0 is a request that got no status. Cache hits and rows from before the
-	// latency column (0 ms) are left out. Index idx_usage_events_ts serves
-	// the range.
-	lrows, err := x.sqlDB.QueryContext(ctx, `
-		SELECT service_id, latency_ms
-		  FROM (SELECT service_id, latency_ms,
-		               ROW_NUMBER() OVER (PARTITION BY service_id ORDER BY latency_ms) AS rn,
-		               COUNT(*)     OVER (PARTITION BY service_id) AS n
-		          FROM usage_events
-		         WHERE ts >= ? AND latency_ms > 0 AND NOT cache_hit
-		           AND upstream_status BETWEEN 200 AND 299) ranked
-		 WHERE rn = (95 * n + 99) / 100`, since)
+// AIEndpointLatencyP95 returns the p95 latency in ms per service over the
+// trailing 24h, keyed by service_id: the nearest-rank percentile, the value
+// at rank ceil(0.95 n) of the service's latencies in ascending order. A
+// service without a counted request has no entry.
+//
+// Only requests an upstream answered with a 2xx count. Any other status is
+// left out: a 5xx is a failure of the upstream, or the gateway's own 502/504
+// when none answered, and its latency is the whole chain's; a 4xx the gateway
+// writes (chiefly provider_busy, 429) carries the wait in the queue; 0 is a
+// request that got no status. Cache hits and rows from before the latency
+// column (0 ms) are left out too.
+//
+// The database returns how often each latency occurred per service, in
+// ascending order, and the rank is taken here from the running total. That
+// gives the value a ROW_NUMBER over the same rows gives (the statement this
+// replaced), without the window: SQLite materialises every partition of a
+// window, which made this read several times slower than everything else the
+// provider list needs, on the one connection SQLite has. Index
+// idx_usage_events_ts serves the range. The statement is plain GROUP BY and
+// ORDER BY and runs on SQLite and Postgres alike.
+func (x *DB) AIEndpointLatencyP95(ctx context.Context) (map[string]int, error) {
+	since := time.Now().UTC().Add(-24 * time.Hour)
+	rows, err := x.sqlDB.QueryContext(ctx, `
+		SELECT service_id, latency_ms, COUNT(*) AS n
+		  FROM usage_events
+		 WHERE ts >= ? AND latency_ms > 0 AND NOT cache_hit
+		   AND upstream_status BETWEEN 200 AND 299
+		 GROUP BY service_id, latency_ms
+		 ORDER BY service_id, latency_ms`, since)
 	if err != nil {
 		return nil, fmt.Errorf("ai endpoint latency 24h: %w", err)
 	}
-	defer lrows.Close()
-	for lrows.Next() {
+	defer rows.Close()
+	out := map[string]int{}
+	var (
+		current string
+		hist    []latencyCount // of the service being read, ascending
+	)
+	for rows.Next() {
 		var sid string
-		var ms int64
-		if err := lrows.Scan(&sid, &ms); err != nil {
+		var lc latencyCount
+		if err := rows.Scan(&sid, &lc.ms, &lc.n); err != nil {
 			return nil, fmt.Errorf("scan ai endpoint latency: %w", err)
 		}
-		c := out[sid]
-		c.LatencyP95Ms = int(ms)
-		out[sid] = c
+		if sid != current {
+			if ms, ok := nearestRankP95(hist); ok {
+				out[current] = ms
+			}
+			current, hist = sid, hist[:0]
+		}
+		hist = append(hist, lc)
 	}
-	return out, lrows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if ms, ok := nearestRankP95(hist); ok {
+		out[current] = ms
+	}
+	return out, nil
+}
+
+// latencyCount says that n requests took ms milliseconds.
+type latencyCount struct {
+	ms, n int64
+}
+
+// nearestRankP95 returns the 95th percentile, nearest rank, of the values in
+// hist, which is ordered by ms ascending: the value at rank ceil(0.95 n) of
+// all n values. In integers, like the SQL it replaced: (95 n + 99) / 100.
+func nearestRankP95(hist []latencyCount) (int, bool) {
+	var n int64
+	for _, h := range hist {
+		n += h.n
+	}
+	if n == 0 {
+		return 0, false
+	}
+	rank := (95*n + 99) / 100
+	var seen int64
+	for _, h := range hist {
+		seen += h.n
+		if seen >= rank {
+			return int(h.ms), true
+		}
+	}
+	return int(hist[len(hist)-1].ms), true
 }
 
 // AIEndpointMetrics24h returns the trailing-24h aggregate for one service plus a

@@ -37,6 +37,8 @@ func TestUsageAccounting_Postgres(t *testing.T) {
 	t.Cleanup(func() { _ = x.Close() })
 	t.Run("usage accounting", func(t *testing.T) { checkUsageAccounting(t, x, "u-acct-pg") })
 	t.Run("ai endpoint metrics", func(t *testing.T) { checkAIEndpointMetrics(t, x, "u-metrics-pg") })
+	t.Run("ai endpoint latency", func(t *testing.T) { checkAIEndpointLatency(t, x, "u-lat-pg") })
+	t.Run("ai endpoint latency against a sort", func(t *testing.T) { checkAIEndpointLatencyAgainstSort(t, x, "u-lat-sort-pg") })
 	t.Run("expired sessions", func(t *testing.T) { checkDeleteExpiredSessions(t, x, "u-sess-pg") })
 	t.Run("revoke if active", func(t *testing.T) { checkRevokeAIGatewayKeyIfActive(t, x, "u-revoke-pg") })
 	// Bound times are instants: nothing changes when the session's time zone

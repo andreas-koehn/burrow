@@ -20,6 +20,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ankoehn/burrow/internal/aigw"
@@ -79,6 +80,9 @@ type observer struct {
 	jobs chan observerJob
 	quit chan struct{}
 	once sync.Once
+	// muted is set when the relay begins to shut down: from then on nothing
+	// is published (see stopPublishing).
+	muted atomic.Bool
 
 	perMinute *eventThrottle // one event per key per minute
 	perHour   *eventThrottle // one per key per hour
@@ -119,9 +123,9 @@ func newObserver(p observerParts) *observer {
 		log:           log,
 		jobs:          make(chan observerJob, observerQueue),
 		quit:          make(chan struct{}),
-		perMinute:     &eventThrottle{now: time.Now, every: time.Minute},
-		perHour:       &eventThrottle{now: time.Now, every: time.Hour},
-		full:          &eventThrottle{now: time.Now, every: time.Minute},
+		perMinute:     &eventThrottle{now: time.Now, every: time.Minute, name: "observer_per_minute", log: log},
+		perHour:       &eventThrottle{now: time.Now, every: time.Hour, name: "observer_per_hour", log: log},
+		full:          &eventThrottle{now: time.Now, every: time.Minute, name: "observer_warnings", log: log},
 		budget:        &eventBudget{now: time.Now, every: time.Minute, max: tunnelEventsPerMinute},
 		sessions:      map[string]int{},
 		tokens:        map[string]struct{}{},
@@ -164,35 +168,15 @@ func (o *observer) ObserveSession(e observe.Session) {
 	defer o.recovered("session", e.Kind)
 	switch e.Kind {
 	case observe.SessionOpened:
-		// The gauge is set under the lock that counts, so concurrent opens
-		// and closes of one user cannot leave an older count in it.
-		o.mu.Lock()
-		o.sessions[e.UserID]++
-		n := o.sessions[e.UserID]
-		_, again := o.tokens[e.TokenID]
-		if e.TokenID != "" && !again && len(o.tokens) < observerMaxTokens {
-			o.tokens[e.TokenID] = struct{}{}
-		}
-		if o.Recorder != nil {
-			o.Recorder.SetClientSessionCount(e.UserID, n)
-		}
-		o.mu.Unlock()
 		// A token that already had a session counts as a reconnect, also when
 		// the earlier session is still open (a second client with the same
 		// token); tokens beyond observerMaxTokens are not remembered and
 		// never count.
-		if again && o.Recorder != nil {
+		if again := o.sessionOpened(e.UserID, e.TokenID); again && o.Recorder != nil {
 			o.Recorder.IncControlReconnect(e.TokenID)
 		}
 	case observe.SessionClosed:
-		o.mu.Lock()
-		if o.sessions[e.UserID] > 0 {
-			o.sessions[e.UserID]--
-		}
-		if o.Recorder != nil {
-			o.Recorder.SetClientSessionCount(e.UserID, o.sessions[e.UserID])
-		}
-		o.mu.Unlock()
+		o.sessionClosed(e.UserID)
 		if o.Recorder != nil {
 			o.Recorder.ObserveClientSessionDuration(e.UserID, e.Duration.Seconds())
 			outcome := e.Outcome
@@ -205,8 +189,8 @@ func (o *observer) ObserveSession(e observe.Session) {
 		o.publishTunnel(e.UserID, "tunnel.connected", map[string]any{
 			"ServiceID": e.ServiceID, "TunnelID": e.TunnelID, "Kind": e.TunnelType,
 		})
-		if e.ServiceCreated && o.Events != nil && o.budget.allow(e.UserID) {
-			o.Events.EmitServiceCreated(e.ServiceID, e.TunnelName, e.TunnelType, e.AccessMode)
+		if ev := o.events(); e.ServiceCreated && ev != nil && o.budget.allow(e.UserID) {
+			ev.EmitServiceCreated(e.ServiceID, e.TunnelName, e.TunnelType, e.AccessMode)
 		}
 	case observe.TunnelClosed:
 		o.publishTunnel(e.UserID, "tunnel.disconnected", map[string]any{
@@ -221,9 +205,63 @@ func (o *observer) ObserveSession(e observe.Session) {
 	}
 }
 
+// sessionOpened counts one more open session of the user and remembers the
+// token; again says that the token had a session before. The gauge is set
+// under the lock that counts, so concurrent opens and closes of one user
+// cannot leave an older count in it. The lock is released by defer: a panic
+// in here ends in the entry point's recover, and a lock left held would
+// block every later session open and close.
+func (o *observer) sessionOpened(userID, tokenID string) (again bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.sessions[userID]++
+	_, again = o.tokens[tokenID]
+	if tokenID != "" && !again && len(o.tokens) < observerMaxTokens {
+		o.tokens[tokenID] = struct{}{}
+	}
+	if o.Recorder != nil {
+		o.Recorder.SetClientSessionCount(userID, o.sessions[userID])
+	}
+	return again
+}
+
+// sessionClosed counts one open session of the user less, under the same
+// lock and for the same reasons as sessionOpened.
+func (o *observer) sessionClosed(userID string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.sessions[userID] > 0 {
+		o.sessions[userID]--
+	}
+	if o.Recorder != nil {
+		o.Recorder.SetClientSessionCount(userID, o.sessions[userID])
+	}
+}
+
+// events is the dispatcher the observer publishes to, or nil: when there is
+// none, and once the observer has stopped publishing.
+func (o *observer) events() eventEmitter {
+	if o.muted.Load() {
+		return nil
+	}
+	return o.Events
+}
+
+// stopPublishing ends the observer's webhook events, for good. main calls it
+// when the relay begins to shut down, before the control listener ends its
+// sessions: those sessions and their tunnels end because the relay stops,
+// and one tunnel.disconnected per tunnel would make the shutdown wait on
+// every webhook receiver. What is observed afterwards is still counted in
+// the metrics, and audit entries are still written.
+func (o *observer) stopPublishing() {
+	if o != nil {
+		o.muted.Store(true)
+	}
+}
+
 // publishTunnel publishes a tunnel event within the user's budget.
 func (o *observer) publishTunnel(userID, event string, payload map[string]any) {
-	if o.Events == nil {
+	if o.events() == nil {
 		return
 	}
 	if !o.budget.allow(userID) {
@@ -236,9 +274,9 @@ func (o *observer) publishTunnel(userID, event string, payload map[string]any) {
 }
 
 func (o *observer) publish(event string, payload map[string]any) {
-	if o.Events != nil {
+	if ev := o.events(); ev != nil {
 		// Background: the event outlives whatever caused it.
-		o.Events.Publish(context.Background(), event, payload)
+		ev.Publish(context.Background(), event, payload)
 	}
 }
 
@@ -295,8 +333,8 @@ func (o *observer) upstreamError(service, backend string, status, retries int) {
 	if o.Recorder != nil {
 		o.Recorder.IncAIUpstreamError(backend, status)
 	}
-	if o.Events != nil {
-		o.Events.EmitAIUpstreamError(service, backend, status, upstreamErrorText(status), retries)
+	if ev := o.events(); ev != nil {
+		ev.EmitAIUpstreamError(service, backend, status, upstreamErrorText(status), retries)
 	}
 }
 
@@ -511,9 +549,11 @@ func (o *observer) Flush(ctx context.Context) error {
 }
 
 // stop ends the worker without draining: after Flush at shutdown, and in the
-// cleanup of a test that built one.
+// cleanup of a test that built one. A stopped observer publishes nothing
+// either.
 func (o *observer) stop() {
 	if o != nil {
+		o.stopPublishing()
 		o.once.Do(func() { close(o.quit) })
 	}
 }

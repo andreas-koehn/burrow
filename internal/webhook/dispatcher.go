@@ -12,6 +12,9 @@
 // worker goroutine. Overflow drops with slog.Warn rather than blocking
 // the publisher. Per-attempt deliveries are persisted to
 // webhook_deliveries so the JSON API can show the history.
+//
+// A relay that stops does not wait on a receiver: Close gives what is in
+// flight and queued closeBudget as a whole, then cancels the rest.
 package webhook
 
 import (
@@ -28,6 +31,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ankoehn/burrow/internal/audit"
@@ -68,6 +72,13 @@ const PreviewCap = 4 * 1024 // 4 KiB
 // 256 is large enough that a brief blip in the remote endpoint (one slow
 // 30s retry chain) cannot back the publisher up under normal load.
 const queueCapacity = 256
+
+// closeBudget is how long Close lets the worker go on delivering: the
+// delivery in flight and every event still queued share it. A relay has to
+// stop promptly whatever a receiver does, and one that does not answer would
+// otherwise hold each delivery for the HTTP client's 30 seconds. Events the
+// budget does not reach are dropped and counted in one log line.
+const closeBudget = 5 * time.Second
 
 // ClosedEvents is the spec-defined closed event vocabulary (Part H.3).
 // Publish silently no-ops any event outside this set (defense in depth:
@@ -141,8 +152,8 @@ type AuditLogger interface {
 }
 
 // Dispatcher is the singleton outbound HMAC delivery engine. Start
-// launches the worker goroutine; Close shuts it down (closes the queue
-// and waits for the worker to drain in-flight retries).
+// launches the worker goroutine; Close shuts it down (no more events are
+// accepted, the worker delivers what is queued within closeBudget).
 type Dispatcher struct {
 	store   Store
 	secrets SecretLookup
@@ -153,11 +164,23 @@ type Dispatcher struct {
 	mu      sync.RWMutex
 	backoff []time.Duration
 
+	// queue is never closed: Publish may race with Close, and a send on a
+	// closed channel panics. stopped (under mu) is what refuses new events.
 	queue   chan job
 	wg      sync.WaitGroup
 	once    sync.Once
 	stop    chan struct{}
 	stopped bool
+
+	// ctx is the context of everything the worker does: each HTTP request
+	// and each write of a delivery row. Close cancels it when closeBudget is
+	// spent, which ends a request in flight.
+	ctx         context.Context
+	cancel      context.CancelFunc
+	closeBudget time.Duration
+	// cutOff counts the events the worker took and could not finish because
+	// Close's budget ran out.
+	cutOff atomic.Int64
 }
 
 // job is one Publish unit-of-work pushed onto the queue.
@@ -176,15 +199,19 @@ func New(store Store, secrets SecretLookup, auditor AuditLogger, log *slog.Logge
 	}
 	bo := make([]time.Duration, len(DefaultRetryBackoff))
 	copy(bo, DefaultRetryBackoff)
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Dispatcher{
-		store:   store,
-		secrets: secrets,
-		auditor: auditor,
-		log:     log,
-		hc:      &http.Client{Timeout: 30 * time.Second},
-		backoff: bo,
-		queue:   make(chan job, queueCapacity),
-		stop:    make(chan struct{}),
+		store:       store,
+		secrets:     secrets,
+		auditor:     auditor,
+		log:         log,
+		hc:          &http.Client{Timeout: 30 * time.Second},
+		backoff:     bo,
+		queue:       make(chan job, queueCapacity),
+		stop:        make(chan struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
+		closeBudget: closeBudget,
 	}
 }
 
@@ -219,8 +246,13 @@ func (d *Dispatcher) Start() {
 	})
 }
 
-// Close stops accepting new jobs, waits for the worker to drain the
-// queue, then returns. Safe to call multiple times.
+// Close stops accepting events and returns within closeBudget: the worker
+// goes on delivering what is in flight and queued, each event tried once (a
+// wait for a retry ends here), until the queue is empty or the budget is
+// spent. Then the request in flight is cancelled through its context, the
+// rest of the queue is dropped, and one line logs how many events were not
+// delivered. No delivery runs after Close has returned. Safe to call
+// multiple times; a call after the first returns at once.
 func (d *Dispatcher) Close() {
 	d.mu.Lock()
 	if d.stopped {
@@ -228,10 +260,31 @@ func (d *Dispatcher) Close() {
 		return
 	}
 	d.stopped = true
-	close(d.queue)
 	close(d.stop)
+	budget := d.closeBudget
 	d.mu.Unlock()
+
+	timer := time.AfterFunc(budget, d.cancel)
 	d.wg.Wait()
+	timer.Stop()
+	d.cancel()
+
+	// What the worker was cut off in, plus what it never took. Nothing is
+	// added to the queue any more (stopped), so this count is final.
+	lost := d.cutOff.Load()
+	for {
+		select {
+		case <-d.queue:
+			lost++
+			continue
+		default:
+		}
+		break
+	}
+	if lost > 0 {
+		d.log.Warn("webhook: events not delivered at shutdown",
+			"count", lost, "budget", budget.String())
+	}
 }
 
 // Compile-time check that *Dispatcher satisfies the cost.Dispatcher
@@ -262,6 +315,13 @@ func (d *Dispatcher) Publish(ctx context.Context, event string, payload any) {
 		d.log.Warn("webhook: dropped non-closed event", "event", event)
 		return
 	}
+	// The read lock orders this against Close: an event is either queued
+	// before Close looks at the queue, or dropped here. The send never waits.
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.stopped {
+		return
+	}
 	select {
 	case d.queue <- job{event: event, payload: payload}:
 	default:
@@ -270,12 +330,26 @@ func (d *Dispatcher) Publish(ctx context.Context, event string, payload any) {
 	}
 }
 
-// workerLoop is the single worker goroutine that consumes the queue.
-// It exits when the queue is closed.
+// workerLoop is the single worker goroutine that consumes the queue. When
+// Close is called it delivers what is still queued and exits: when the
+// queue is empty, or when Close's budget is spent.
 func (d *Dispatcher) workerLoop() {
 	defer d.wg.Done()
-	for j := range d.queue {
-		d.handleJob(j)
+	for {
+		select {
+		case j := <-d.queue:
+			d.handleJob(j)
+		case <-d.stop:
+			for d.ctx.Err() == nil {
+				select {
+				case j := <-d.queue:
+					d.handleJob(j)
+				default:
+					return
+				}
+			}
+			return
+		}
 	}
 }
 
@@ -284,7 +358,11 @@ func (d *Dispatcher) workerLoop() {
 // non-empty PayloadTemplate renders its own body; webhooks with an empty
 // template use the shared default body.
 func (d *Dispatcher) handleJob(j job) {
-	ctx := context.Background()
+	ctx := d.ctx
+	if ctx.Err() != nil {
+		d.cutOff.Add(1) // taken after Close's budget was spent
+		return
+	}
 	hooks, err := d.store.ListWebhooks(ctx)
 	if err != nil {
 		d.log.Warn("webhook: list webhooks failed", "err", err)
@@ -322,7 +400,17 @@ func (d *Dispatcher) handleJob(j job) {
 				body = rendered
 			}
 		}
-		d.deliverOne(ctx, wh, j.event, body)
+		// Close's budget ran out before this webhook's turn, or during its
+		// delivery: the event did not reach everyone, and the webhooks after
+		// this one are not tried.
+		if ctx.Err() != nil {
+			d.cutOff.Add(1)
+			return
+		}
+		if _, cut := d.deliverOne(ctx, wh, j.event, body); cut {
+			d.cutOff.Add(1)
+			return
+		}
 	}
 }
 
@@ -375,7 +463,8 @@ func (d *Dispatcher) DeliverNow(ctx context.Context, webhookID, event string, pa
 		}
 		// On render error we fall back to the default body silently.
 	}
-	return d.deliverOne(ctx, wh, event, body), 0, nil
+	attempts, _ := d.deliverOne(ctx, wh, event, body)
+	return attempts, 0, nil
 }
 
 // deliverOne attempts to deliver one event to one webhook with the
@@ -383,7 +472,10 @@ func (d *Dispatcher) DeliverNow(ctx context.Context, webhookID, event string, pa
 // row. Returns the number of attempts that ran. Updates the
 // webhook's consecutive_failures + first_failure_at counters; on the
 // 4xx-pause heuristic, calls SetWebhookPaused + emits one audit event.
-func (d *Dispatcher) deliverOne(ctx context.Context, wh db.Webhook, event string, body []byte) int {
+//
+// The second result reports that ctx ended before the receiver answered with
+// a 2xx: the delivery was given up, not failed.
+func (d *Dispatcher) deliverOne(ctx context.Context, wh db.Webhook, event string, body []byte) (int, bool) {
 	d.mu.RLock()
 	backoff := append([]time.Duration(nil), d.backoff...)
 	client := d.hc
@@ -399,6 +491,14 @@ func (d *Dispatcher) deliverOne(ctx context.Context, wh db.Webhook, event string
 	for attempt < maxAttempts {
 		attempt++
 		status, respPreview, latency := d.attempt(ctx, wh, event, body, client)
+		if ctx.Err() != nil {
+			// Cut off: by Close's budget, or the caller of DeliverNow is
+			// gone. That says nothing about the receiver, so no failure is
+			// counted against the webhook, and nothing can be written on
+			// this context any more. An answer that arrived just before
+			// counts as delivered all the same.
+			return attempt, status < 200 || status >= 300
+		}
 		// Persist this attempt regardless of outcome.
 		preview := previewBytes(body)
 		_ = d.store.InsertWebhookDelivery(ctx, db.WebhookDelivery{
@@ -416,7 +516,7 @@ func (d *Dispatcher) deliverOne(ctx context.Context, wh db.Webhook, event string
 		if status >= 200 && status < 300 {
 			// Success: clear failure counters, exit retry loop.
 			d.recordSuccess(ctx, wh.ID)
-			return attempt
+			return attempt, false
 		}
 		// Non-2xx or network error. If we have a retry left, sleep then loop.
 		if attempt < maxAttempts {
@@ -426,16 +526,16 @@ func (d *Dispatcher) deliverOne(ctx context.Context, wh db.Webhook, event string
 			case <-d.stop:
 				// Shutting down — stop retrying, but record the failure first.
 				d.recordFailure(ctx, wh, lastStatus)
-				return attempt
+				return attempt, false
 			case <-ctx.Done():
 				d.recordFailure(ctx, wh, lastStatus)
-				return attempt
+				return attempt, false
 			}
 		}
 	}
 	// All attempts exhausted without success.
 	d.recordFailure(ctx, wh, lastStatus)
-	return attempt
+	return attempt, false
 }
 
 // attempt performs one HTTP POST and returns (status, response preview,
@@ -464,8 +564,10 @@ func (d *Dispatcher) attempt(ctx context.Context, wh db.Webhook, event string, b
 
 	resp, err := client.Do(req)
 	if err != nil {
-		d.log.Warn("webhook: HTTP error",
-			"webhook_id", wh.ID, "url", wh.URL, "err", err)
+		if ctx.Err() == nil { // a request this side cancelled is no fault of the receiver
+			d.log.Warn("webhook: HTTP error",
+				"webhook_id", wh.ID, "url", wh.URL, "err", err)
+		}
 		return 0, "", time.Since(start)
 	}
 	defer resp.Body.Close()

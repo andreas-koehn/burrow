@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -66,7 +67,7 @@ func TestQuotaMiddleware_PublishesQuotaExceededOncePerMinute(t *testing.T) {
 	e.SetClock(func() time.Time { return now }) // the bucket never refills
 	pub := &recordingPublisher{}
 	clock := now
-	events := newQuotaEvents(pub, func() time.Time { return clock })
+	events := newQuotaEvents(pub, func() time.Time { return clock }, nil)
 	passed := 0
 	h := buildQuotaMiddleware(e, nil, events)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { passed++ }))
 	do := func(key string) int {
@@ -130,7 +131,7 @@ func TestQuotaMiddleware_PublishesQuotaExceededOncePerMinute(t *testing.T) {
 func TestQuotaMiddleware_NoPublisher(t *testing.T) {
 	for name, events := range map[string]*quotaEvents{
 		"nil events":    nil,
-		"nil publisher": newQuotaEvents(nil, nil),
+		"nil publisher": newQuotaEvents(nil, nil, nil),
 	} {
 		e := quota.NewWithStores(oneLimit{}, noDailyUsage{})
 		if err := e.Reload(context.Background()); err != nil {
@@ -153,7 +154,7 @@ func TestQuotaMiddleware_NoPublisher(t *testing.T) {
 func TestQuotaEvents_ConcurrentDenialsPublishOnce(t *testing.T) {
 	pub := &recordingPublisher{}
 	clock := time.Unix(1_000_000, 0)
-	q := newQuotaEvents(pub, func() time.Time { return clock })
+	q := newQuotaEvents(pub, func() time.Time { return clock }, nil)
 	dec := quota.Decision{LimitingScope: "model", LimitingSubject: "zai/glm", Dimension: "rpm", Limit: 2, Window: "day"}
 	var wg sync.WaitGroup
 	for range 64 {
@@ -210,6 +211,62 @@ func TestEventThrottle_Bounded(t *testing.T) {
 	}
 	if n := th.size(); n != 1 {
 		t.Fatalf("size %d after pruning, want 1", n)
+	}
+}
+
+// A throttle that is full of live keys says so: at most once a minute, by
+// its name, and without the key it refused.
+func TestEventThrottle_FullIsLogged(t *testing.T) {
+	clock := time.Unix(1_000_000, 0)
+	var logs bytes.Buffer
+	th := &eventThrottle{
+		now: func() time.Time { return clock }, every: time.Hour,
+		name: "test_throttle", log: slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	for i := range eventThrottleMaxKeys {
+		th.allow(fmt.Sprintf("k%d", i))
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("logged before anything was refused:\n%s", logs.String())
+	}
+	lines := func() int { return strings.Count(logs.String(), "event throttle full") }
+	if th.allow("refused-key-203.0.113.7") || th.allow("refused-key-2") {
+		t.Fatal("a new key was admitted into a full throttle")
+	}
+	if n := lines(); n != 1 {
+		t.Fatalf("%d lines for two refusals in one minute, want 1:\n%s", n, logs.String())
+	}
+	clock = clock.Add(59 * time.Second)
+	th.allow("refused-key-3")
+	if n := lines(); n != 1 {
+		t.Fatalf("%d lines within the minute, want 1", n)
+	}
+	clock = clock.Add(time.Second)
+	th.allow("refused-key-4")
+	if n := lines(); n != 2 {
+		t.Fatalf("%d lines after a minute, want 2", n)
+	}
+	// A key that is already in, and is merely inside its interval, is the
+	// throttle doing its work: no line.
+	th.allow("k0")
+	if n := lines(); n != 2 {
+		t.Fatalf("a throttled known key was logged as a full throttle")
+	}
+	out := logs.String()
+	if !strings.Contains(out, "throttle=test_throttle") {
+		t.Fatalf("the line does not name the throttle:\n%s", out)
+	}
+	if strings.Contains(out, "refused-key") || strings.Contains(out, "203.0.113.7") {
+		t.Fatalf("the line carries a key:\n%s", out)
+	}
+
+	// Without a logger a full throttle refuses silently, as before.
+	quiet := &eventThrottle{now: func() time.Time { return clock }, every: time.Hour}
+	for i := range eventThrottleMaxKeys {
+		quiet.allow(fmt.Sprintf("k%d", i))
+	}
+	if quiet.allow("one-too-many") {
+		t.Fatal("a new key was admitted into a full throttle")
 	}
 }
 
@@ -520,7 +577,7 @@ func TestQuotaMiddleware_AuditsADenialOncePerLimit(t *testing.T) {
 func TestQuotaEvents_WindowIsPartOfTheThrottleKey(t *testing.T) {
 	pub := &recordingPublisher{}
 	clock := time.Unix(1_000_000, 0)
-	q := newQuotaEvents(pub, func() time.Time { return clock })
+	q := newQuotaEvents(pub, func() time.Time { return clock }, nil)
 	dec := quota.Decision{LimitingScope: "model", LimitingSubject: "zai/glm", Dimension: "rpm", Limit: 2, Window: "minute"}
 	q.denied(context.Background(), quota.Subjects{ServiceID: "s"}, dec)
 	q.denied(context.Background(), quota.Subjects{ServiceID: "s"}, dec)

@@ -51,6 +51,7 @@ import (
 	"time"
 
 	"github.com/ankoehn/burrow/internal/client"
+	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/devcert"
 	"github.com/ankoehn/burrow/internal/metrics"
 	"github.com/ankoehn/burrow/internal/webhook"
@@ -83,6 +84,12 @@ type obsRelay struct {
 	// A certificate for a custom domain, in its last day and signed by
 	// itself; the relay is told to trust it.
 	certPEM, keyPEM []byte
+
+	// stop ends the relay as a signal does and returns how long that took;
+	// the test's cleanup calls it too. dbPath is its database, to read once
+	// the relay has stopped.
+	stop   func() time.Duration
+	dbPath string
 }
 
 // obsHook records every delivery it receives: the event of its Burrow-Event
@@ -187,20 +194,29 @@ func bootObsRelay(t *testing.T) *obsRelay {
 	root.SetArgs([]string{"serve"})
 	done := make(chan error, 1)
 	go func() { done <- root.ExecuteContext(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(90 * time.Second):
-			t.Error("serve did not stop after its context was cancelled")
-		}
-	})
+	var stopOnce sync.Once
+	var stopTook time.Duration
+	stop := func() time.Duration {
+		stopOnce.Do(func() {
+			start := time.Now()
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(90 * time.Second):
+				t.Error("serve did not stop after its context was cancelled")
+			}
+			stopTook = time.Since(start)
+		})
+		return stopTook
+	}
+	t.Cleanup(func() { stop() })
 
 	jar, _ := cookiejar.New(nil)
 	r := &obsRelay{
 		t: t, base: "http://" + httpAddr, control: controlAddr, tcpPort: tcpPort, caPool: pool,
 		hc:      &http.Client{Jar: jar, Timeout: 30 * time.Second},
 		certPEM: certPEM, keyPEM: keyPEM,
+		stop: stop, dbPath: filepath.Join(dir, "burrow.db"),
 	}
 	login, _ := json.Marshal(map[string]string{"email": obsAdminEmail, "password": obsAdminPass})
 	deadline := time.Now().Add(60 * time.Second)
@@ -1050,6 +1066,100 @@ func TestServe_HTTPTunnelCountsBytes(t *testing.T) {
 		// request line and the headers come on top.
 		return tn.BytesIn >= uint64(len(body)) && tn.BytesOut > 100
 	})
+}
+
+// A relay that stops closes its sessions itself. It announces no
+// tunnel.disconnected for them, and what its tunnels carried since the last
+// periodic flush is in the database afterwards.
+func TestServe_ShutdownIsQuietAndKeepsTheTotals(t *testing.T) {
+	r := bootObsRelay(t)
+	app := newObsApp(t)
+	var token struct {
+		Token string `json:"token"`
+	}
+	r.mustAdmin(http.MethodPost, "/api/v1/tokens", map[string]string{"name": "stop"}, http.StatusCreated, &token)
+	r.connectWith(token.Token,
+		client.TunnelSpec{Name: "stop-web", Type: "http", LocalAddr: app.addr()},
+		client.TunnelSpec{Name: "stop-web-2", Type: "http", LocalAddr: app.addr()})
+	r.eventually("tunnel.connected is delivered", func() bool { return r.hook.seen("tunnel.connected") })
+
+	path := strings.TrimPrefix(r.tunnels()["stop-web"].URL, "https://"+obsAuthDomain)
+	const body = `{"some":"request body of a known size"}`
+	if code, b := r.data(http.MethodPost, path+"x", body); code != http.StatusOK {
+		t.Fatalf("proxied request: %d %s", code, b)
+	}
+	var live obsTunnel
+	r.eventually("the tunnel counts the request and the answer", func() bool {
+		live = r.tunnels()["stop-web"]
+		return live.BytesIn >= uint64(len(body)) && live.BytesOut > 100
+	})
+
+	if took := r.stop(); took > 20*time.Second {
+		t.Fatalf("the relay took %s to stop", took)
+	}
+	// No delivery runs after serve has returned, so this is final.
+	if r.hook.seen("tunnel.disconnected") {
+		t.Fatal("the relay announced tunnel.disconnected for a tunnel its own shutdown closed")
+	}
+	database, err := db.Open(r.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	var in, out uint64
+	if err := database.QueryRow(`SELECT total_bytes_in, total_bytes_out FROM tunnels WHERE name = ?`, "stop-web").Scan(&in, &out); err != nil {
+		t.Fatal(err)
+	}
+	if in < live.BytesIn || out < live.BytesOut {
+		t.Fatalf("totals in the database after the stop: %d in, %d out; the tunnel had carried %d and %d", in, out, live.BytesIn, live.BytesOut)
+	}
+}
+
+// A webhook receiver that does not answer cannot hold a stopping relay: the
+// delivery in flight gets the dispatcher's budget and is then cancelled.
+func TestServe_ShutdownDoesNotWaitOnAWebhookReceiver(t *testing.T) {
+	r := bootObsRelay(t)
+	arrived, release := make(chan struct{}, 64), make(chan struct{})
+	silent := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
+		_, _ = io.Copy(io.Discard, req.Body)
+		arrived <- struct{}{}
+		select {
+		case <-req.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(func() {
+		close(release)
+		silent.Close()
+	})
+	r.mustAdmin(http.MethodPost, "/api/v1/webhooks", map[string]any{
+		"name": "silent", "url": silent.URL, "events": []string{"tunnel.connected", "tunnel.disconnected"},
+	}, http.StatusCreated, nil)
+
+	app := newObsApp(t)
+	var token struct {
+		Token string `json:"token"`
+	}
+	r.mustAdmin(http.MethodPost, "/api/v1/tokens", map[string]string{"name": "stop-silent"}, http.StatusCreated, &token)
+	specs := make([]client.TunnelSpec, 4)
+	for i := range specs {
+		specs[i] = client.TunnelSpec{Name: fmt.Sprintf("silent-web-%d", i), Type: "http", LocalAddr: app.addr()}
+	}
+	r.connectWith(token.Token, specs...)
+	select {
+	case <-arrived:
+	case <-time.After(obsWait):
+		t.Fatal("no delivery reached the silent receiver")
+	}
+
+	// One delivery is in flight and will never be answered; the rest of the
+	// queue waits behind it. Before the budget, each of them held the
+	// shutdown for the HTTP client's 30 seconds.
+	took := r.stop()
+	t.Logf("the relay stopped in %s", took)
+	if took > 20*time.Second {
+		t.Fatalf("the relay took %s to stop with a webhook receiver that does not answer", took)
+	}
 }
 
 // The operations guide names every metric family and every webhook event.
