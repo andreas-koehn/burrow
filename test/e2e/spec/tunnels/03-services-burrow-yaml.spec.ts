@@ -4,7 +4,7 @@
 // /services. In v0.5.2, only HTTP-type tunnels become persisted Service rows
 // (the `ai` row); TCP-type tunnels live in the in-memory tunnel registry
 // only. So this spec asserts the v0.3 burrow.yaml multi-service surface via
-// Services on Live (where both svc-a and svc-b appear connected) rather than
+// the Online view of Services (where both svc-a and svc-b appear connected) rather than
 // the saved services. Same end-to-end signal: one client process exposes two services.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";

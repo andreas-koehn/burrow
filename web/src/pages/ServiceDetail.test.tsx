@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { screen, within, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { act, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
 import { Route, Routes } from "react-router-dom";
@@ -150,6 +150,104 @@ describe("ServiceDetail page", () => {
     expect(within(panel).queryByRole("group", { name: "Run command" })).toBeNull();
     expect(panel).toHaveTextContent("This is not an HTTP service: burrow http does not serve it.");
     expect(within(panel).getByRole("link", { name: "Connect a client" })).toHaveAttribute("href", "/clients/connect?service=svc_pg001");
+  });
+
+  it("the hidden service of a hosted provider has no Client panel: no client serves it", async () => {
+    mountAt("/services/prov-zai");
+    await screen.findByRole("heading", { level: 1, name: "zai" });
+    await screen.findByRole("tab", { name: "Access" });
+    expect(screen.queryByRole("region", { name: "Client" })).toBeNull();
+    expect(screen.queryByText(/burrow http/)).toBeNull();
+    expect(screen.queryByRole("link", { name: "Connect a client" })).toBeNull();
+  });
+
+  describe("while nobody serves it", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      server.events.removeAllListeners();
+    });
+
+    /** How often the service itself was asked for. */
+    function countAsks(id: string) {
+      const asked: string[] = [];
+      server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
+      return () => asked.filter((p) => p === `/api/v1/services/${id}`).length;
+    }
+
+    it("asks again until a client serves it, says Online by itself, and then asks no more", async () => {
+      // Time moves on by itself too, so the first load and findBy keep working.
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const asks = countAsks("svc_graf01");
+      mountAt("/services/svc_graf01");
+      const panel = await screen.findByRole("region", { name: "Client" });
+      const line = within(panel).getAllByRole("status")[0]!;
+      expect(line).toHaveTextContent(/^Offline · last served by office-box-1/);
+      expect(within(panel).getByRole("group", { name: "Run command" })).toBeInTheDocument();
+      // Still offline: it is asked for again, every two seconds.
+      const first = asks();
+      await act(() => vi.advanceTimersByTimeAsync(2_100));
+      await waitFor(() => expect(asks()).toBe(first + 1));
+      expect(line).toHaveTextContent(/^Offline/);
+
+      // The reader runs the command on the machine.
+      db.services.find((x) => x.id === "svc_graf01")!.connected = true;
+      await act(() => vi.advanceTimersByTimeAsync(2_100));
+      // The same line, so the change is announced; the command is gone.
+      await waitFor(() => expect(line).toHaveTextContent("Online · Served by office-box-1"));
+      expect(line).toHaveAttribute("role", "status");
+      expect(within(panel).queryByRole("group", { name: "Run command" })).toBeNull();
+      expect(within(panel).queryByRole("link", { name: "Connect a client" })).toBeNull();
+
+      const online = asks();
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(asks()).toBe(online);
+    });
+
+    it("does not ask again for a service that is online", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const asks = countAsks("svc_ai001");
+      mount();
+      await screen.findByRole("region", { name: "Client" });
+      const first = asks();
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(asks()).toBe(first);
+    });
+
+    it("stops asking when the page is left", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const asks = countAsks("svc_graf01");
+      const view = mountAt("/services/svc_graf01");
+      await screen.findByRole("region", { name: "Client" });
+      view.unmount();
+      const left = asks();
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(asks()).toBe(left);
+    });
+
+    it("an answer that fails leaves the page as it is, says so, and ends the asking", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      mountAt("/services/svc_graf01");
+      const panel = await screen.findByRole("region", { name: "Client" });
+      let failed = 0;
+      server.use(http.get("/api/v1/services/:id", () => { failed++; return HttpResponse.json({ error: "boom" }, { status: 500 }); }));
+      await act(() => vi.advanceTimersByTimeAsync(2_100));
+      expect(await within(panel).findByText("The status could not be read: this page no longer updates by itself.")).toBeInTheDocument();
+      // The service read before stays on the page, with its tabs: no error page in its place.
+      expect(screen.getByRole("heading", { level: 1, name: "grafana" })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "Access" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(within(panel).getAllByRole("status")[0]).toHaveTextContent(/^Offline/);
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(failed).toBe(1);
+    });
+  });
+
+  it("a service that cannot be loaded at all still shows the error with Retry", async () => {
+    server.use(http.get("/api/v1/services/:id", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    mountAt("/services/svc_graf01");
+    expect(await screen.findByRole("alert")).toHaveTextContent("boom");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Client" })).toBeNull();
   });
 
   it("a name that cannot stand in a command is never put into one", async () => {

@@ -17,7 +17,7 @@ const SELECTABLE = ["open", "api_key", "burrow_login"] as const;
 // The title is the radio's name, so it is the mode and nothing else; what kind of
 // check that is opens the description.
 const META: Record<AccessMode, { title: string; help: string }> = {
-  open: { title: "Open", help: "Raw passthrough: Burrow adds no auth — visitor traffic flows straight through. The safe default for TCP tunnels." },
+  open: { title: "Open", help: "Raw passthrough: Burrow adds no auth — visitor traffic flows straight through. The safe default for TCP services." },
   api_key: { title: "API key", help: "Header check: Burrow verifies an API key header before proxying." },
   burrow_login: { title: "Burrow login", help: "Role-based: visitors sign in with their Burrow account at a hosted gate." },
   mtls: { title: "mTLS", help: "Client certificate: Burrow terminates TLS and requires a client certificate chained to a CA you upload." },

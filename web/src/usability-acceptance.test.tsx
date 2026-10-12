@@ -53,7 +53,7 @@ describe("INTUITIVE — navigation & mental-model alignment", () => {
     expect(await within(row).findByRole("link", { name: "ollama" })).toHaveAttribute("href", "/gateway/providers/ollama");
   });
 
-  it("In-4: Services on Live — http tunnel name links to the service detail view", async () => {
+  it("In-4: Services on Online — http tunnel name links to the service detail view", async () => {
     // Seed a non-empty tunnels list with an http tunnel that has a service_id
     server.use(
       http.get("/api/v1/tunnels", () =>
@@ -79,11 +79,11 @@ describe("INTUITIVE — navigation & mental-model alignment", () => {
     expect((link as HTMLAnchorElement).href).toContain("/services/svc_web01");
   });
 
-  it("In-4: Services page — connected row's status badge links to the Live filter", async () => {
+  it("In-4: Services page — connected row's status badge links to the Online filter", async () => {
     renderApp(<Services />, "/services");
     // db seeds svc_web01 with connected=true; the status cell renders
-    // <Link to="/services?live=1" aria-label="View live tunnel for web">
-    const link = await screen.findByRole("link", { name: /View live tunnel for web/i });
+    // <Link to="/services?live=1" aria-label="Online: show web in the Online view">
+    const link = await screen.findByRole("link", { name: "Online: show web in the Online view" });
     expect(link).toHaveAttribute("href", "/services?live=1");
   });
 
@@ -159,7 +159,7 @@ describe("EASY — onboarding & discoverability", () => {
   // Ea-5: empty states have a next action
   // ---------------------------------------------------------------------------
   describe("Ea-5 — empty states have a next action", () => {
-    it("Services on Live: the empty state has a 'Connect a client' CTA link", async () => {
+    it("Services on Online: the empty state has a 'Connect a client' CTA link", async () => {
       server.use(
         http.get("/api/v1/tunnels", () => HttpResponse.json([])),
       );

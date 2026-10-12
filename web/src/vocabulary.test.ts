@@ -12,6 +12,9 @@ const RETIRED: [RegExp, string][] = [
   [/\bAI services?\b/i, "say provider"],
   [/\bAI endpoints?\b|across endpoints\b/i, "say provider"],
   [/\bclient offline\b/i, "say Offline"],
+  // What is published is a service. Only with the word that makes it copy: on its own
+  // "tunnel" is also a provider kind, a query key, an event and a route of the relay.
+  [/\b(TCP|HTTP|live) tunnels?\b/i, "say service"],
   // As JSX text, or as a literal of its own ({x ? "connected" : "idle"}). A
   // value that only contains the word (closed_idle, the badge kind status-idle) is not a status label.
   [/>\s*idle\s*<|["'`]idle["'`]/i, "say Offline or Never connected"],
@@ -139,6 +142,10 @@ describe("the guard itself", () => {
     ["client offline", "<Badge>client offline</Badge>"],
     ["client offline, wrapped", "<Badge>\n  client\n  offline\n</Badge>"],
     ["client offline, other case", 'const t = "Client Offline";'],
+    ["TCP tunnels", 'const help = "The safe default for TCP tunnels.";'],
+    ["TCP tunnels, wrapped", "<p>Raw TCP\n  tunnel — only Open applies.</p>"],
+    ["live tunnel", "const label = `Online: view live tunnel for ${name}`;"],
+    ["HTTP tunnels, other case", "<p>needs http Tunnels</p>"],
     ["idle", "<Badge>idle</Badge>"],
     ["idle, wrapped", "<Badge>\n  idle\n</Badge>"],
     ["idle, other case", "<Badge>Idle</Badge>"],
@@ -195,6 +202,12 @@ describe("the guard itself", () => {
     ["the name a client sends", "<p>The name the client sends when it signs in.</p>"],
     ["what a client asks its local server", "<p>Here the client asks the local server for its model list.</p>"],
     ["other clients that are connected", "<p>No other clients are connected.</p>"],
+    ["tunnel as a provider kind", 'const hosted = provider.kind !== "tunnel";'],
+    ["tunnels as a query key and a route", 'useQuery({ queryKey: ["tunnels"], queryFn: () => apiFetch<Tunnel[]>("/tunnels") });'],
+    ["tunnel as an event of the relay", 'const EVENTS = ["tunnel.connected", "tunnel.failed"]; es.addEventListener("tunnels", onTunnels);'],
+    ["tunnel in a type and its fields", "interface Tunnel { id: string } const live = tunnels.data ?? []; const t: Tunnel | undefined = row.tunnel;"],
+    ["a host name", 'const host = "tunnels.example.com";'],
+    ["a live tunnel in a comment", "// A live tunnel is held by a client right now.\nconst a = 1; /** One live tunnel: what a client holds. */"],
     ["retired words in a comment", "// an AI service, idle, client offline\nconst a = 1; /* Rotate cache */"],
     ["the new words", "<p>Names apps ask for. Global (cache shared across providers). Online, Offline, Never connected.</p>"],
     ["the gateway key's variable", "const env = `export OPENAI_API_KEY=$BURROW_GATEWAY_KEY`;"],

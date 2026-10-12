@@ -84,7 +84,7 @@ export default function Services() {
     queryFn: () => apiFetch<Service[]>("/services"),
     retry: false,
   });
-  // Live only. SSE is primary; poll every 30 s as a fallback when SSE is unavailable.
+  // Online only. SSE is primary; poll every 30 s as a fallback when SSE is unavailable.
   const tunnels = useQuery({
     queryKey: ["tunnels"],
     queryFn: () => apiFetch<Tunnel[]>("/tunnels"),
@@ -213,6 +213,8 @@ export default function Services() {
 
   function openRow(e: MouseEvent<HTMLTableRowElement>, serviceId: string) {
     if ((e.target as Element).closest(OWN_CLICK)) return;
+    // A click with a key held asks for a new tab or window, which only the name's link can open.
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     // Marking a URL to copy it ends in a click too.
     if (window.getSelection()?.toString()) return;
     navigate(`/services/${encodeURIComponent(serviceId)}`);
@@ -456,7 +458,8 @@ export default function Services() {
                 <td>
                   {state !== "online" || live
                     ? <StatusBadge state={state} />
-                    : <Link to="/services?live=1" aria-label={`Online: view live tunnel for ${name}`}><StatusBadge state={state} /></Link>}
+                    // The AI filter goes along: without it the Online view would leave out the row just clicked.
+                    : <Link to={ai ? "/services?live=1&ai=1" : "/services?live=1"} aria-label={`Online: show ${name} in the Online view`}><StatusBadge state={state} /></Link>}
                 </td>
                 <td className="col-actions">
                   {target && <Button variant="secondary" size="sm" onClick={() => setConfigure(target)}>Configure</Button>}

@@ -115,7 +115,7 @@ describe("AccessModePanel (v0.3.0)", () => {
   it("says what a title used to say after its dash in the description line", () => {
     renderApp(<AccessModePanel serviceId="svc_web01" serviceName="web" mode="open" />);
     expect(screen.getByRole("radio", { name: "Open" })).toHaveAccessibleDescription(
-      "Raw passthrough: Burrow adds no auth — visitor traffic flows straight through. The safe default for TCP tunnels.",
+      "Raw passthrough: Burrow adds no auth — visitor traffic flows straight through. The safe default for TCP services.",
     );
     expect(screen.getByRole("radio", { name: "API key" })).toHaveAccessibleDescription(
       "Header check: Burrow verifies an API key header before proxying.",

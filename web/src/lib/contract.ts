@@ -146,7 +146,11 @@ export interface NewToken {
 export interface Service {
   id: string;
   name: string;
-  type: "tcp" | "http";
+  /**
+   * "direct" is the hidden service of a hosted provider: no client serves it.
+   * The list leaves these out; one read by its id can be of this type.
+   */
+  type: "tcp" | "http" | "direct";
   slug: string;
   url: string;
   access_mode: AccessMode;

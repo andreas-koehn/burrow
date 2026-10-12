@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { act, screen, within, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
@@ -301,6 +301,17 @@ describe("Services page", () => {
       expect(currentLocation()).toBe("/services?live=1");
     });
 
+    it.each(["ctrlKey", "metaKey", "shiftKey", "altKey"] as const)("a click with %s held does not open the service in this tab", async (key) => {
+      mountWithDetail();
+      const row = await webRow();
+      fireEvent.click(within(row).getByText("http"), { [key]: true });
+      expect(currentLocation()).toBe("/services");
+      expect(screen.queryByText("SERVICE_PAGE")).toBeNull();
+      // The same cell without the key still opens it.
+      fireEvent.click(within(row).getByText("http"));
+      expect(await screen.findByText("SERVICE_PAGE")).toBeInTheDocument();
+    });
+
     it("a selection made in the row is not taken for a click", async () => {
       mountWithDetail();
       const row = await webRow();
@@ -323,21 +334,36 @@ describe("Services page", () => {
     });
   });
 
-  it("online service status badge links to the Live filter (P3B.2)", async () => {
+  it("online service status badge links to the Online filter (P3B.2)", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /services/i });
     const web = within(table).getByText("web").closest("tr")!;
     // The accessible name contains the visible label.
-    const onlineLink = within(web).getByRole("link", { name: "Online: view live tunnel for web" });
+    const onlineLink = within(web).getByRole("link", { name: "Online: show web in the Online view" });
     expect(onlineLink).toHaveAttribute("href", "/services?live=1");
     expect(onlineLink).toHaveTextContent(/^Online$/);
+  });
+
+  it("the status link of a gateway-only service keeps the AI filter, so the Online view still lists it", async () => {
+    db.services.find((x) => x.id === "svc_ai001")!.gateway_only = true;
+    mountAt("/services?ai=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    const row = within(table).getByRole("link", { name: "ollama" }).closest("tr")!;
+    const link = within(row).getByRole("link", { name: "Online: show ollama in the Online view" });
+    expect(link).toHaveAttribute("href", "/services?live=1&ai=1");
+    await userEvent.click(link);
+    expect(currentLocation()).toBe("/services?live=1&ai=1");
+    await waitFor(() => expect(within(screen.getByRole("table", { name: "Services" })).getByRole("columnheader", { name: "Client" })).toBeInTheDocument());
+    expect(within(screen.getByRole("table", { name: "Services" })).getByRole("link", { name: "ollama" })).toBeInTheDocument();
+    // Without the filter every other row links as before.
+    expect(screen.getByRole("button", { name: "AI" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("offline service status badge is NOT wrapped in a link (P3B.2)", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /services/i });
     const gf = within(table).getByText("grafana").closest("tr")!;
-    expect(within(gf).queryByRole("link", { name: /view live tunnel for grafana/i })).toBeNull();
+    expect(within(gf).queryByRole("link", { name: /in the Online view/ })).toBeNull();
     // The badge itself must still be present
     expect(within(gf).getByText("Offline")).toBeInTheDocument();
   });
@@ -587,7 +613,7 @@ describe("Services page — All | Online", () => {
     expect(all).toHaveAttribute("tabindex", "-1");
   });
 
-  it("opens on Live when the URL says so and shows who holds each connection", async () => {
+  it("opens on Online when the URL says so and shows who holds each connection", async () => {
     mountAt("/services?live=1");
     const table = await screen.findByRole("table", { name: "Services" });
     expect(screen.getByRole("radio", { name: "Online" })).toBeChecked();
@@ -599,7 +625,7 @@ describe("Services page — All | Online", () => {
     expect(within(table).queryByText("Never connected")).toBeNull();
   });
 
-  it("has no Client column outside Live", async () => {
+  it("has no Client column outside Online", async () => {
     mount();
     const table = await screen.findByRole("table", { name: "Services" });
     for (const name of ["Client", "Local", "Remote", "Traffic"]) {
@@ -658,7 +684,7 @@ describe("Services page — All | Online", () => {
     expect(within(row).getByTitle("Out: 1024 bytes")).toBeInTheDocument();
   });
 
-  it("keeps the text filter when switching between All and Live", async () => {
+  it("keeps the text filter when switching between All and Online", async () => {
     mount();
     await screen.findByRole("table", { name: "Services" });
     const box = screen.getByRole("searchbox", { name: "Filter services" });
@@ -673,7 +699,7 @@ describe("Services page — All | Online", () => {
     expect(rowCount()).toBe(2);
   });
 
-  it("filters Live by local address and sorts it by name", async () => {
+  it("filters Online by local address and sorts it by name", async () => {
     mountAt("/services?live=1");
     const table = await screen.findByRole("table", { name: "Services" });
     const names = () => within(table).getAllByRole("row").slice(1).map((r) => r.querySelector("td")!.textContent);
@@ -697,7 +723,7 @@ describe("Services page — All | Online", () => {
     expect(within(row).getByRole("link", { name: "Provider: ollama" })).toHaveAttribute("href", "/gateway/providers/ollama");
   });
 
-  it("says so when nothing is live", async () => {
+  it("says so when nothing is online", async () => {
     server.use(http.get("/api/v1/tunnels", () => HttpResponse.json([])));
     mountAt("/services?live=1");
     expect(await screen.findByText("Nothing is online right now")).toBeInTheDocument();
@@ -714,13 +740,13 @@ describe("Services page — All | Online", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/boom/);
   });
 
-  it("keeps the Live filter when ?new=1 opens the dialog", async () => {
+  it("keeps the Online filter when ?new=1 opens the dialog", async () => {
     mountAt("/services?live=1&new=1");
     expect(await screen.findByRole("dialog", { name: "New service" })).toBeInTheDocument();
     expect(currentLocation()).toBe("/services?live=1");
   });
 
-  it("a non-admin in Live makes no /clients request, not even on a stream event", async () => {
+  it("a non-admin in Online makes no /clients request, not even on a stream event", async () => {
     vi.stubGlobal("EventSource", FakeES);
     db.me.role = "user";
     const asked: string[] = [];
@@ -780,7 +806,7 @@ describe("Services page — All | Online", () => {
     }
   });
 
-  it("Live does not wait for the saved services: the tunnel rows show while that request is open", async () => {
+  it("Online does not wait for the saved services: the tunnel rows show while that request is open", async () => {
     server.use(http.get("/api/v1/services", () => new Promise<never>(() => {})));
     mountAt("/services?live=1");
     const table = await screen.findByRole("table", { name: "Services" });
@@ -788,7 +814,7 @@ describe("Services page — All | Online", () => {
     expect(within(table).getByText("ollama")).toBeInTheDocument();
   });
 
-  it("Live still shows the tunnel rows when the saved services cannot be loaded", async () => {
+  it("Online still shows the tunnel rows when the saved services cannot be loaded", async () => {
     server.use(http.get("/api/v1/services", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
     mountAt("/services?live=1");
     const table = await screen.findByRole("table", { name: "Services" });
@@ -818,7 +844,7 @@ describe("Services page — All | Online", () => {
     expect(within(tcp).queryByRole("button", { name: /configure/i })).toBeNull();
   });
 
-  it("does not ask for tunnels or clients outside Live", async () => {
+  it("does not ask for tunnels or clients outside Online", async () => {
     const asked: string[] = [];
     server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
     try {
@@ -854,7 +880,7 @@ describe("Services page — All | Online", () => {
     expect(invalidate).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["me"] }));
   });
 
-  it("opens no event stream outside Live", async () => {
+  it("opens no event stream outside Online", async () => {
     vi.stubGlobal("EventSource", FakeES);
     mount();
     await screen.findByRole("table", { name: "Services" });

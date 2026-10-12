@@ -1,6 +1,6 @@
 // test-only — never deploy this shape.
 //
-// Covers the list controls of Services on Live (/services?live=1, formerly
+// Covers the list controls of the Online view of Services (/services?live=1, formerly
 // /tunnels): the search/filter box and the sortable column headers. The stack
 // seeds four tunnels (ai, tcp-echo, svc-a, svc-b); see web/src/pages/Services.tsx
 // for the search input (aria-label="Filter services") and the sort buttons

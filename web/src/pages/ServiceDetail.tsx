@@ -9,6 +9,7 @@ import { AccessModePanel } from "@/components/AccessModePanel";
 import { ApiKeysPanel } from "@/components/ApiKeysPanel";
 import { UpstreamCredentialsPanel } from "@/pages/UpstreamCredentials";
 import { ServiceClientPanel } from "@/components/ServiceClientPanel";
+import { serviceState } from "@/lib/status";
 import type { ServiceDetail as ServiceDetailType, AccessMode, AiProvider } from "@/lib/contract";
 
 const ACCESS_LABEL: Record<AccessMode, string> = {
@@ -20,6 +21,9 @@ const ACCESS_LABEL: Record<AccessMode, string> = {
 
 const BACK = { to: "/services", label: "Services" } as const;
 const TAB_VALUES = ["access", "api-keys", "upstream-key"];
+// How often a service nobody serves is asked for again: the reader has the command
+// in front of them and waits for the page to say Online (as WaitForProvider does).
+const WAIT_MS = 2000;
 
 export default function ServiceDetail() {
   const { id } = useParams<{ id: string }>();
@@ -36,6 +40,14 @@ export default function ServiceDetail() {
     queryFn: () => apiFetch<ServiceDetailType>(`/services/${id}`),
     enabled: !!id,
     retry: false,
+    // Asked again until a client serves it, then no more. An answer that fails ends
+    // the asking too: the panel says so, and a reload starts it again.
+    refetchInterval: (query) => {
+      if (query.state.status === "error") return false;
+      const s = query.state.data;
+      // The hidden service of a hosted provider never comes online: no client serves it.
+      return s && s.type !== "direct" && serviceState(s) !== "online" ? WAIT_MS : false;
+    },
   });
 
   // The switch is offered for a service that backs a model provider. The list
@@ -74,7 +86,8 @@ export default function ServiceDetail() {
     );
   }
 
-  if (error || !svc) {
+  // Only without a service to show: one that is on the page stays there when a later answer fails.
+  if (!svc) {
     return (
       <div className="service-detail-page">
         <PageHeader back={BACK} title="Service" />
@@ -133,7 +146,7 @@ export default function ServiceDetail() {
       </div>
 
       {/* Only what a client serves: the hidden service of a hosted provider has no machine behind it. */}
-      {(svc.type === "http" || svc.type === "tcp") && <ServiceClientPanel service={svc} />}
+      {svc.type !== "direct" && <ServiceClientPanel service={svc} unread={!!error} />}
 
       <Tabs
         value={tab}

@@ -8,12 +8,19 @@ import type { Service } from "@/lib/contract";
 
 const RUN_ONLY: readonly InstallLineId[] = ["run"];
 
+export interface ServiceClientPanelProps {
+  service: Service;
+  /** The last answer about the service failed: what is shown may be out of date. */
+  unread?: boolean;
+}
+
 /**
  * Who serves a service: the client by name while it is online; otherwise who
  * served it last and the command that starts it. Installing and signing in are
- * left to the page the link opens, which also waits for the client.
+ * left to the page the link opens. Whoever holds the service asks for it again
+ * while it is not online, so the line turns Online by itself.
  */
-export function ServiceClientPanel({ service }: { service: Service }) {
+export function ServiceClientPanel({ service, unread = false }: ServiceClientPanelProps) {
   const titleId = useId();
   const state = serviceState(service);
   const online = state === "online";
@@ -30,6 +37,7 @@ export function ServiceClientPanel({ service }: { service: Service }) {
       <h2 id={titleId}>Client</h2>
       {/* A relay that predates these fields leaves them out. */}
       <ServedBy state={state} client={service.last_client ?? ""} sessionId={service.client_session_id ?? ""} lastSeen={service.last_seen} />
+      {unread && <p className="muted small">The status could not be read: this page no longer updates by itself.</p>}
       {!online && !(http && named) && (
         <p className="muted small">
           {http

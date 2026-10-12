@@ -6,7 +6,7 @@ import { TUNNEL_NAMES } from "../../fixtures/env";
 test("01-bootstrap: login + all 4 seeded tunnels visible + connected", async ({ page, context }) => {
   await loginAsAdmin(page);
 
-  // / now renders <Home /> (Overview); navigate explicitly to Services on Live (formerly /tunnels).
+  // / now renders <Home /> (Overview); navigate explicitly to the Online view of Services (formerly /tunnels).
   await page.goto("/services?live=1");
   await expect(page.getByRole("heading", { name: "Services", level: 1 })).toBeVisible();
 
