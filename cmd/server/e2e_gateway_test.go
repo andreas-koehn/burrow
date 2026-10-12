@@ -239,6 +239,7 @@ func bootGatewayE2EWith(t *testing.T, tunnels tunnelStreamOpener) *gwEnv {
 	}
 	v04.WebhookDispatcher.Start()
 	t.Cleanup(v04.GuardrailAudit.stop)
+	t.Cleanup(v04.Observer.stop)
 	t.Cleanup(func() { v04.WebhookDispatcher.Close() })
 	v04.AIChain.Semantic = v05.SemanticCache
 	v04.AIChain.CredInjector = v05.CredInjector

@@ -44,3 +44,13 @@ func TestNoopCachePromoteAndClearAreNoops(t *testing.T) {
 		t.Errorf("Stats must be zero: %+v", stats)
 	}
 }
+
+// Available tells a tier that does something from none at all.
+func TestAvailable(t *testing.T) {
+	if semantic.Available(nil) || semantic.Available(semantic.NoopCache{}) {
+		t.Fatal("nil or the no-op tier reported as available")
+	}
+	if !semantic.Available(struct{ semantic.Cache }{semantic.NoopCache{}}) {
+		t.Fatal("a tier of another type reported as unavailable")
+	}
+}

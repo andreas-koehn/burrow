@@ -193,10 +193,10 @@ var closedSet = []metricDef{
 		help:   "Always 1; the driver label identifies the database backend.",
 		labels: []string{"driver"}},
 	{name: "burrow_db_pool_active", kind: kindGauge,
-		help:   "Active database connections in the pool (Postgres only).",
+		help:   "Database connections in use.",
 		labels: nil},
 	{name: "burrow_db_pool_idle", kind: kindGauge,
-		help:   "Idle database connections in the pool (Postgres only).",
+		help:   "Idle database connections in the pool.",
 		labels: nil},
 }
 
@@ -298,6 +298,11 @@ type Recorder struct {
 	// is the constant 1.
 	chainHashMu sync.RWMutex
 	chainHash   string
+
+	// collectors run at the start of every WriteText: they set the gauges
+	// whose value is read rather than counted (see AddCollector).
+	collectorsMu sync.RWMutex
+	collectors   []func()
 }
 
 // New returns a fresh Recorder ready for concurrent use.
@@ -358,6 +363,57 @@ func seriesKey(name string, labelKeys, labelValues []string) string {
 	return name + labelString(labelKeys, labelValues)
 }
 
+// --- Bounded label values --------------------------------------------------
+//
+// A label value multiplies the series of its family, so every value comes
+// from a set whose size the operator controls: the id of a row (a service, a
+// user, a key, a client token), a provider slug, or one of the fixed
+// vocabularies below. What a visitor, a client or an upstream chooses (a
+// method, a status, an error) passes through one of these functions first.
+
+// StatusClass is the label value for an HTTP status: "1xx" … "5xx", and
+// "none" for anything that is no status (0: nothing was answered).
+func StatusClass(status int) string {
+	switch {
+	case status >= 100 && status < 200:
+		return "1xx"
+	case status >= 200 && status < 300:
+		return "2xx"
+	case status >= 300 && status < 400:
+		return "3xx"
+	case status >= 400 && status < 500:
+		return "4xx"
+	case status >= 500 && status < 600:
+		return "5xx"
+	}
+	return "none"
+}
+
+// Method is the label value for a request method: the method when it is one
+// of the nine of RFC 9110 and PATCH, "other" for everything else.
+func Method(m string) string {
+	switch m {
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE":
+		return m
+	}
+	return "other"
+}
+
+// oneOf returns v when it is one of allowed, "other" otherwise.
+func oneOf(v string, allowed ...string) string {
+	for _, a := range allowed {
+		if v == a {
+			return v
+		}
+	}
+	return "other"
+}
+
+// connKind bounds the kind label of the connection families.
+func connKind(kind string) string {
+	return oneOf(kind, "control", "http_proxy", "tcp_proxy")
+}
+
 // incCounter increments the counter named `name` with the given labels by
 // delta. Allocates a new *atomic.Int64 on first observation.
 func (r *Recorder) incCounter(name string, labelKeys, labelValues []string, delta int64) {
@@ -396,12 +452,13 @@ func (r *Recorder) observeHistogram(name string, labelKeys, labelValues []string
 // for Task 21 the API + tests are the deliverable.
 
 // IncHTTPRequest records one HTTP request through the proxy: it increments
-// burrow_http_requests_total{service,method,status}. Status is converted to
-// the canonical decimal string.
+// burrow_http_requests_total{service,method,status}. The status label is the
+// status class (StatusClass), the method label a known method or "other"
+// (Method): both are a visitor's or an upstream's to choose.
 func (r *Recorder) IncHTTPRequest(service, method string, status int) {
 	r.incCounter("burrow_http_requests_total",
 		[]string{"service", "method", "status"},
-		[]string{service, method, strconv.Itoa(status)},
+		[]string{service, Method(method), StatusClass(status)},
 		1)
 }
 
@@ -409,7 +466,7 @@ func (r *Recorder) IncHTTPRequest(service, method string, status int) {
 func (r *Recorder) ObserveHTTPDuration(service, method string, seconds float64) {
 	r.observeHistogram("burrow_http_request_duration_seconds",
 		[]string{"service", "method"},
-		[]string{service, method},
+		[]string{service, Method(method)},
 		seconds)
 }
 
@@ -489,14 +546,16 @@ func (r *Recorder) IncAICacheMiss(service string) {
 func (r *Recorder) IncAIFailover(service, from, to, crossProvider string) {
 	r.incCounter("burrow_ai_failover_events_total",
 		[]string{"service", "from", "to", "cross_provider"},
-		[]string{service, from, to, crossProvider}, 1)
+		[]string{service, from, to, oneOf(crossProvider, "true", "false")}, 1)
 }
 
 // IncAIUpstreamError records one upstream error for service at HTTP status.
+// The status label is the class of the upstream's status (StatusClass); "none"
+// when it gave no status at all (no response, a timeout).
 func (r *Recorder) IncAIUpstreamError(service string, status int) {
 	r.incCounter("burrow_ai_upstream_errors_total",
 		[]string{"service", "status"},
-		[]string{service, strconv.Itoa(status)}, 1)
+		[]string{service, StatusClass(status)}, 1)
 }
 
 // SetGoroutines sets burrow_goroutines to n. Callers typically pass
@@ -549,7 +608,7 @@ func (r *Recorder) IncAISemanticLookups(service string) {
 // "treat_as_miss" or "return_cached_marked".
 func (r *Recorder) IncAISemanticHits(service, policy string) {
 	r.incCounter("burrow_ai_semantic_hits_total",
-		[]string{"service", "policy"}, []string{service, policy}, 1)
+		[]string{"service", "policy"}, []string{service, oneOf(policy, "treat_as_miss", "return_cached_marked")}, 1)
 }
 
 // IncAISemanticPromotions records one semantic cache promotion for service.
@@ -562,7 +621,7 @@ func (r *Recorder) IncAISemanticPromotions(service string) {
 // "timeout", "model", or "index".
 func (r *Recorder) IncAISemanticErrors(service, kind string) {
 	r.incCounter("burrow_ai_semantic_errors_total",
-		[]string{"service", "kind"}, []string{service, kind}, 1)
+		[]string{"service", "kind"}, []string{service, oneOf(kind, "timeout", "model", "index")}, 1)
 }
 
 // SetAISemanticIndexEntries sets burrow_ai_semantic_index_entries{service} to n.
@@ -601,21 +660,21 @@ func (r *Recorder) SetCustomDomainCount(n int64) {
 func (r *Recorder) IncConnections(service, kind, status string) {
 	r.incCounter("burrow_connections_total",
 		[]string{"service", "kind", "status"},
-		[]string{service, kind, status}, 1)
+		[]string{service, connKind(kind), oneOf(status, "closed_clean", "closed_error", "closed_idle", "rejected")}, 1)
 }
 
 // AddConnectionBytesIn adds n bytes to
 // burrow_connection_bytes_in_total{service,kind}.
 func (r *Recorder) AddConnectionBytesIn(service, kind string, n int64) {
 	r.incCounter("burrow_connection_bytes_in_total",
-		[]string{"service", "kind"}, []string{service, kind}, n)
+		[]string{"service", "kind"}, []string{service, connKind(kind)}, n)
 }
 
 // AddConnectionBytesOut adds n bytes to
 // burrow_connection_bytes_out_total{service,kind}.
 func (r *Recorder) AddConnectionBytesOut(service, kind string, n int64) {
 	r.incCounter("burrow_connection_bytes_out_total",
-		[]string{"service", "kind"}, []string{service, kind}, n)
+		[]string{"service", "kind"}, []string{service, connKind(kind)}, n)
 }
 
 // AddRetentionCompactRowsDeleted adds n to
@@ -638,15 +697,46 @@ func (r *Recorder) SetDBBackend(driver string) {
 		[]string{"driver"}, []string{driver}, 1)
 }
 
-// SetDBPoolActive sets burrow_db_pool_active to n. For SQLite this is always
-// 1; call it with 0 when no pool is active.
+// SetDBPoolActive sets burrow_db_pool_active to n: the connections in use
+// (sql.DBStats.InUse), whatever the driver.
 func (r *Recorder) SetDBPoolActive(n int64) {
 	r.setGauge("burrow_db_pool_active", nil, nil, float64(n))
 }
 
-// SetDBPoolIdle sets burrow_db_pool_idle to n. For SQLite this is always 0.
+// SetDBPoolIdle sets burrow_db_pool_idle to n: the idle connections of the pool
+// (sql.DBStats.Idle), whatever the driver.
 func (r *Recorder) SetDBPoolIdle(n int64) {
 	r.setGauge("burrow_db_pool_idle", nil, nil, float64(n))
+}
+
+// --- Collectors ------------------------------------------------------------
+
+// AddCollector registers fn to run at the start of every WriteText, on the
+// goroutine of the scrape. A collector sets gauges whose value is read from
+// somewhere (a pool, a table, a registry) rather than counted as it happens.
+// It must be quick and must bound whatever it waits for: a scrape waits for
+// it. A collector that panics is skipped for that scrape.
+func (r *Recorder) AddCollector(fn func()) {
+	if fn == nil {
+		return
+	}
+	r.collectorsMu.Lock()
+	r.collectors = append(r.collectors, fn)
+	r.collectorsMu.Unlock()
+}
+
+// collect runs the collectors. The list is copied first: a collector may
+// take its time, and AddCollector must not wait for it.
+func (r *Recorder) collect() {
+	r.collectorsMu.RLock()
+	fns := append([]func(){}, r.collectors...)
+	r.collectorsMu.RUnlock()
+	for _, fn := range fns {
+		func() {
+			defer func() { _ = recover() }()
+			fn()
+		}()
+	}
 }
 
 // --- WriteText -------------------------------------------------------------
@@ -659,6 +749,7 @@ func (r *Recorder) SetDBPoolIdle(n int64) {
 // each metric's snapshot is taken via an atomic load; the rendered text is
 // emitted without holding any lock.
 func (r *Recorder) WriteText(w io.Writer) error {
+	r.collect()
 	bw := &writeErr{w: w}
 
 	for _, def := range closedSet {

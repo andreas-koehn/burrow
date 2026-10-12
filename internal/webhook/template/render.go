@@ -32,6 +32,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
@@ -108,24 +109,41 @@ var allowedFuncs = template.FuncMap{
 // uses when building the default payload body — they let Validate catch
 // function-misuse beyond syntax errors.
 var knownEventFields = map[string]map[string]any{
-	"webhook.test":               {"ServiceID": "", "Event": "webhook.test"},
-	"tunnel.connected":           {"ServiceID": "", "TunnelID": "", "Kind": ""},
-	"tunnel.disconnected":        {"ServiceID": "", "TunnelID": "", "Kind": ""},
-	"tunnel.failed":              {"ServiceID": "", "TunnelID": "", "Error": ""},
-	"access.denied":              {"ServiceID": "", "Reason": "", "IP": ""},
-	"quota.exceeded":             {"scope": "", "subject": "", "dimension": "", "limit": 0, "window": "", "service_id": ""},
-	"budget.exceeded":            {"budget_id": "", "scope": "", "subject_id": "", "daily_usd": 0.0, "current_usd": 0.0, "daily_tokens": 0, "current_tokens": 0, "action_on_exceed": "", "gateway_key_id": "", "model": ""},
-	"redaction.applied":          {"ServiceID": "", "RuleID": ""},
-	"guardrail.refused":          {"ServiceID": "", "Pattern": ""},
-	"cert.expiring":              {"Domain": "", "ExpiryDays": 0},
-	"audit.exported":             {"ActorEmail": "", "RecordCount": 0},
-	"backup.completed":           {"Path": "", "SizeBytes": 0},
-	"ai.upstream_error":          {"service_id": "", "backend_service_id": "", "status": 0, "error": "", "retry_count": 0},
-	"ai.cache_promotion":         {"service_id": "", "exact_key_hash": "", "prompt_fingerprint": "", "similarity_to_first": 0.0},
-	"audit.policy_change":        {"actor_email": "", "action": "", "before": nil, "after": nil},
-	"service.created":            {"service_id": "", "name": "", "type": "", "access_mode": ""},
-	"service.deleted":            {"service_id": "", "name": ""},
-	"connection.session_summary": {"service_id": "", "kind": "", "window_start": "", "window_end": "", "sessions": 0, "bytes_in": 0, "bytes_out": 0, "avg_duration_ms": 0, "p95_duration_ms": 0, "top_source_ips": []map[string]any{}},
+	"webhook.test":                {"hello": ""},
+	"tunnel.connected":            {"ServiceID": "", "TunnelID": "", "Kind": ""},
+	"tunnel.disconnected":         {"ServiceID": "", "TunnelID": "", "Kind": ""},
+	"tunnel.failed":               {"ServiceID": "", "TunnelID": "", "Error": ""},
+	"access.denied":               {"ServiceID": "", "Reason": "", "IP": ""},
+	"quota.exceeded":              {"scope": "", "subject": "", "dimension": "", "limit": 0, "window": "", "service_id": ""},
+	"budget.exceeded":             {"budget_id": "", "scope": "", "subject_id": "", "daily_usd": 0.0, "current_usd": 0.0, "daily_tokens": 0, "current_tokens": 0, "action_on_exceed": "", "gateway_key_id": "", "model": ""},
+	"redaction.applied":           {"ServiceID": "", "RuleID": ""},
+	"guardrail.refused":           {"ServiceID": "", "Pattern": ""},
+	"cert.expiring":               {"hostname": "", "service_id": "", "not_after": ""},
+	"audit.exported":              {"ActorEmail": "", "RecordCount": 0},
+	"backup.completed":            {"Path": "", "SizeBytes": 0},
+	"ai.upstream_error":           {"service_id": "", "backend_service_id": "", "status": 0, "error": "", "retry_count": 0},
+	"ai.cache_promotion":          {"service_id": "", "exact_key_hash": "", "prompt_fingerprint": "", "similarity_to_first": 0.0},
+	"audit.policy_change":         {"actor_email": "", "action": "", "before": nil, "after": nil},
+	"service.created":             {"service_id": "", "name": "", "type": "", "access_mode": ""},
+	"service.deleted":             {"service_id": "", "name": ""},
+	"connection.session_summary":  {"service_id": "", "kind": "", "window_start": "", "window_end": "", "sessions": 0, "bytes_in": 0, "bytes_out": 0, "avg_duration_ms": 0, "p95_duration_ms": 0, "top_source_ips": []map[string]any{}},
+	"custom_domain.cert.expiring": {"id": "", "hostname": "", "service_id": "", "not_after": ""},
+}
+
+// Fields returns the documented payload fields of event, sorted; nil for an
+// event without a documented payload. It is what a template may reference and
+// what a publisher of the event must send.
+func Fields(event string) []string {
+	known, ok := knownEventFields[event]
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(known))
+	for k := range known {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Render compiles src and executes it with fields as the template dot value.

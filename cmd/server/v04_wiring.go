@@ -67,6 +67,10 @@ type v04Stack struct {
 	AIChain           *aigw.Chain
 	// GuardrailAudit writes the guardrail.refused entries; flushed at shutdown.
 	GuardrailAudit *guardrailAuditor
+	// Observer receives the events of the observation points (sessions,
+	// traffic, model requests) and turns them into metrics, webhook events
+	// and audit entries. Flushed at shutdown.
+	Observer *observer
 }
 
 // buildV04Stack wires every v0.4.0 engine in dependency order. The order
@@ -188,6 +192,14 @@ func buildV04Stack(
 	// --- metrics recorder --------------------------------------------------
 	metricsRec := metrics.New()
 
+	// --- observer ------------------------------------------------------------
+	// One value for all observation points: the chain, the control server
+	// and the proxy hand it their events.
+	obs := newObserver(observerParts{
+		Recorder: metricsRec, Events: dispatcher, Audit: auditLogger,
+		Cost: costEngine, Chain: aiChain, Log: log,
+	})
+
 	// --- geo lookup (default build = noop; geo build tag = real MMDB) ------
 	geoLookup, err := proxy.OpenGeoDB(cfg.GeoDBPath)
 	if err != nil {
@@ -225,6 +237,7 @@ func buildV04Stack(
 		MCPServer:         mcpServer,
 		AIChain:           aiChain,
 		GuardrailAudit:    guardrailAudit,
+		Observer:          obs,
 	}, nil
 }
 
