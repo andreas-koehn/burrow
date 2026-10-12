@@ -9,9 +9,9 @@ package main
 //   1. JSON-RPC `tools/list` with a bearer that has every permission the
 //      12-tool inventory needs → response lists exactly the 12 tool names
 //      from spec Part P.2 in the canonical declaration order.
-//   2. JSON-RPC `tools/call` for services.list with the same bearer → the
+//   2. JSON-RPC `tools/call` for services_list with the same bearer → the
 //      shape mirrors GET /api/v1/services (sub-set of fields compared).
-//   3. JSON-RPC `tools/call` for services.set_access_mode with a SECOND
+//   3. JSON-RPC `tools/call` for services_set_access_mode with a SECOND
 //      bearer that has only `tunnels:read:any` (NOT services:configure:any)
 //      → JSON-RPC error -32603 "forbidden" AND one audit_events row with
 //      action=mcp.tool.call result=denied.
@@ -39,18 +39,18 @@ import (
 // order. Matches internal/mcpserv/tools.go orderedTools — duplicated here
 // so the test pins the wire contract independently of the source.
 var closedMCPTools = []string{
-	"tunnels.list",
-	"services.list",
-	"services.get",
-	"services.set_access_mode",
-	"api_keys.list",
-	"api_keys.create",
-	"api_keys.delete",
-	"tokens.list",
-	"tokens.mint",
-	"users.list",
-	"audit.search",
-	"metrics.snapshot",
+	"tunnels_list",
+	"services_list",
+	"services_get",
+	"services_set_access_mode",
+	"api_keys_list",
+	"api_keys_create",
+	"api_keys_delete",
+	"tokens_list",
+	"tokens_mint",
+	"users_list",
+	"audit_search",
+	"metrics_snapshot",
 }
 
 // mcpRPCEnvelope is the JSON-RPC 2.0 response shape — defined here so the
@@ -137,7 +137,7 @@ func (a mcpToolStoreForTest) SearchAuditEvents(ctx context.Context, q db.AuditQu
 }
 
 func (a mcpToolStoreForTest) MetricsText() (string, error) {
-	// The MCP listener can run without a metrics recorder; the metrics.snapshot
+	// The MCP listener can run without a metrics recorder; the metrics_snapshot
 	// tool is not exercised by this test, but the interface still requires
 	// the method.
 	return "", nil
@@ -239,9 +239,9 @@ func mcpRPC(t *testing.T, addr, bearer, method string, params any) mcpRPCEnvelop
 
 // TestE2EMCP_ToolsListAndCall is the Task 15 acceptance test. It covers:
 //   - tools/list returns exactly the 12 closed-set tools.
-//   - tools/call services.list with the right bearer returns a list whose
+//   - tools/call services_list with the right bearer returns a list whose
 //     shape matches what the store's ListServices yields.
-//   - tools/call services.set_access_mode with a token lacking the required
+//   - tools/call services_set_access_mode with a token lacking the required
 //     permission returns JSON-RPC -32603 "forbidden" AND emits one
 //     mcp.tool.call audit row with result=denied.
 func TestE2EMCP_ToolsListAndCall(t *testing.T) {
@@ -335,27 +335,30 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 		t.Errorf("tools/list unexpected tool %q (not in spec Part P.2)", extra)
 	}
 
-	// --- 2. tools/call services.list returns the same shape as REST -------
+	// --- 2. tools/call services_list returns the same shape as REST -------
 	callEnv := mcpRPC(t, mcpAddr, fullPlaintext, "tools/call", map[string]any{
-		"name":      "services.list",
+		"name":      "services_list",
 		"arguments": map[string]any{},
 	})
 	if callEnv.Error != nil {
-		t.Fatalf("tools/call services.list err=%+v", callEnv.Error)
+		t.Fatalf("tools/call services_list err=%+v", callEnv.Error)
 	}
-	// services.list returns []svcOut (id, user_id, name, type, slug,
+	// services_list returns []svcOut (id, user_id, name, type, slug,
 	// access_mode, api_key_header, created_at). The closed-set wire shape.
-	var svcOut []struct {
-		ID         string `json:"id"`
-		UserID     string `json:"user_id"`
-		Name       string `json:"name"`
-		Type       string `json:"type"`
-		Subdomain  string `json:"slug"`
-		AccessMode string `json:"access_mode"`
+	var svcList struct {
+		Services []struct {
+			ID         string `json:"id"`
+			UserID     string `json:"user_id"`
+			Name       string `json:"name"`
+			Type       string `json:"type"`
+			Subdomain  string `json:"slug"`
+			AccessMode string `json:"access_mode"`
+		} `json:"services"`
 	}
-	if err := json.Unmarshal(callEnv.Result, &svcOut); err != nil {
-		t.Fatalf("decode services.list result: %v body=%s", err, callEnv.Result)
+	if err := json.Unmarshal(callEnv.Result, &svcList); err != nil {
+		t.Fatalf("decode services_list result: %v body=%s", err, callEnv.Result)
 	}
+	svcOut := svcList.Services
 	// The bootE2EStack registered the "echo" tunnel which produces an HTTP
 	// service row. Find it.
 	foundSvc := false
@@ -363,23 +366,23 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 		if sv.ID == stack.serviceID {
 			foundSvc = true
 			if sv.Type != "http" {
-				t.Errorf("services.list svc.type=%q want http", sv.Type)
+				t.Errorf("services_list svc.type=%q want http", sv.Type)
 			}
 			if sv.UserID != stack.userID {
-				t.Errorf("services.list svc.user_id=%q want %q", sv.UserID, stack.userID)
+				t.Errorf("services_list svc.user_id=%q want %q", sv.UserID, stack.userID)
 			}
 			if sv.Subdomain != stack.subdomain {
-				t.Errorf("services.list svc.slug=%q want %q", sv.Subdomain, stack.subdomain)
+				t.Errorf("services_list svc.slug=%q want %q", sv.Subdomain, stack.subdomain)
 			}
 		}
 	}
 	if !foundSvc {
-		t.Fatalf("services.list did not include serviceID=%q got=%+v",
+		t.Fatalf("services_list did not include serviceID=%q got=%+v",
 			stack.serviceID, svcOut)
 	}
 
 	// --- 3. Permission gate: a token with ONLY tunnels:read:any cannot ---
-	// drive services.set_access_mode. Returns -32603 "forbidden" + emits one
+	// drive services_set_access_mode. Returns -32603 "forbidden" + emits one
 	// mcp.tool.call audit row with result=denied.
 
 	// Baseline: capture pre-test audit row count to count denied delta.
@@ -402,14 +405,14 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 	}
 
 	denyEnv := mcpRPC(t, mcpAddr, narrowPlaintext, "tools/call", map[string]any{
-		"name": "services.set_access_mode",
+		"name": "services_set_access_mode",
 		"arguments": map[string]any{
 			"id":   stack.serviceID,
 			"mode": "open",
 		},
 	})
 	if denyEnv.Error == nil {
-		t.Fatalf("tools/call services.set_access_mode: want error, got result=%s",
+		t.Fatalf("tools/call services_set_access_mode: want error, got result=%s",
 			denyEnv.Result)
 	}
 	if denyEnv.Error.Code != -32603 {
@@ -434,7 +437,7 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 		if len(rows) > preCount {
 			// Find the newest denied row for set_access_mode.
 			for _, r := range rows {
-				if r.SubjectLabel == "services.set_access_mode" && r.Result == "denied" {
+				if r.SubjectLabel == "services_set_access_mode" && r.Result == "denied" {
 					denied = r
 					break
 				}
@@ -446,7 +449,7 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if denied.ID == "" {
-		t.Fatalf("no mcp.tool.call audit row with subject=services.set_access_mode result=denied")
+		t.Fatalf("no mcp.tool.call audit row with subject=services_set_access_mode result=denied")
 	}
 	if denied.ActorID != stack.userID {
 		t.Errorf("audit row actor_id=%q want %q", denied.ActorID, stack.userID)

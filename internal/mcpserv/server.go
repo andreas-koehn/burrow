@@ -12,7 +12,7 @@
 //
 // Permissions: every tool declares an authz.Permission string that maps to
 // the SAME permission the equivalent REST endpoint enforces (e.g.
-// tunnels.list → tunnels:read:any). Cookie/admin shortcuts are NOT applied;
+// tunnels_list → tunnels:read:any). Cookie/admin shortcuts are NOT applied;
 // the bearer token's permission set is the source of truth, intersected
 // with the minter user's CURRENT role (matches Task 18 effectivePerms).
 //
@@ -149,8 +149,10 @@ func New(bearer BearerStore, users UserLookup, toolStore ToolStore, log *slog.Lo
 		log = slog.Default()
 	}
 	tools := buildTools(toolStore)
-	list := make([]ToolDescriptor, 0, len(tools))
-	for _, t := range tools {
+	// buildTools returns a map; orderedTools gives the list its order.
+	list := make([]ToolDescriptor, 0, len(orderedTools))
+	for _, name := range orderedTools {
+		t := tools[name]
 		list = append(list, ToolDescriptor{
 			Name:             t.Name,
 			Description:      t.Description,
@@ -158,8 +160,6 @@ func New(bearer BearerStore, users UserLookup, toolStore ToolStore, log *slog.Lo
 			Permission:       string(t.Permission),
 		})
 	}
-	// buildTools returns tools in the canonical declaration order via the
-	// orderedTools helper; list is already stable.
 	return &Server{
 		bearer:   bearer,
 		users:    users,

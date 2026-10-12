@@ -255,7 +255,7 @@ func TestToolsCall_TunnelsList_ReturnsStoreData(t *testing.T) {
 	status, body := rpcCall(t, srv.URL, tok, map[string]any{
 		"jsonrpc": "2.0", "id": "abc", "method": "tools/call",
 		"params": map[string]any{
-			"name":      "tunnels.list",
+			"name":      "tunnels_list",
 			"arguments": map[string]any{},
 		},
 	})
@@ -266,11 +266,13 @@ func TestToolsCall_TunnelsList_ReturnsStoreData(t *testing.T) {
 	if env.Error != nil {
 		t.Fatalf("unexpected error: %+v", env.Error)
 	}
-	var rows []TunnelInfo
-	if err := json.Unmarshal(env.Result, &rows); err != nil {
+	var out struct {
+		Tunnels []TunnelInfo `json:"tunnels"`
+	}
+	if err := json.Unmarshal(env.Result, &out); err != nil {
 		t.Fatalf("decode result: %v body=%s", err, body)
 	}
-	if len(rows) != 2 || rows[0].ID != "tun-a" {
+	if rows := out.Tunnels; len(rows) != 2 || rows[0].ID != "tun-a" {
 		t.Fatalf("rows mismatch: %+v", rows)
 	}
 }
@@ -278,12 +280,12 @@ func TestToolsCall_TunnelsList_ReturnsStoreData(t *testing.T) {
 func TestToolsCall_Forbidden_WhenTokenLacksPermission(t *testing.T) {
 	// Token declares only services:configure:own — admin role gives it the
 	// :any reach, but the token does NOT carry tunnels:read:any, so
-	// tunnels.list must fail with -32603 forbidden.
+	// tunnels_list must fail with -32603 forbidden.
 	srv, tok, _ := newTestServer(t, []string{"services:configure:own"}, "admin")
 	status, body := rpcCall(t, srv.URL, tok, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
 		"params": map[string]any{
-			"name":      "tunnels.list",
+			"name":      "tunnels_list",
 			"arguments": map[string]any{},
 		},
 	})
@@ -421,7 +423,7 @@ func TestRoleDemotionImmediatelyRevokesReach(t *testing.T) {
 	srv, tok, _ := newTestServer(t, []string{"tunnels:read:any"}, "user")
 	status, body := rpcCall(t, srv.URL, tok, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-		"params": map[string]any{"name": "tunnels.list", "arguments": map[string]any{}},
+		"params": map[string]any{"name": "tunnels_list", "arguments": map[string]any{}},
 	})
 	if status != http.StatusOK {
 		t.Fatalf("status=%d body=%s", status, body)
@@ -471,7 +473,7 @@ func TestTunnelsFilter(t *testing.T) {
 	status, body := rpcCall(t, srv.URL, tok, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
 		"params": map[string]any{
-			"name":      "tunnels.list",
+			"name":      "tunnels_list",
 			"arguments": map[string]any{"filter": "alpha"},
 		},
 	})
@@ -482,12 +484,14 @@ func TestTunnelsFilter(t *testing.T) {
 	if env.Error != nil {
 		t.Fatalf("unexpected error: %+v", env.Error)
 	}
-	var rows []TunnelInfo
-	if err := json.Unmarshal(env.Result, &rows); err != nil {
+	var out struct {
+		Tunnels []TunnelInfo `json:"tunnels"`
+	}
+	if err := json.Unmarshal(env.Result, &out); err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("filter mismatch: %+v", rows)
+	if len(out.Tunnels) != 2 {
+		t.Fatalf("filter mismatch: %+v", out.Tunnels)
 	}
 }
 
@@ -496,7 +500,7 @@ func TestMetricsSnapshot(t *testing.T) {
 	fs.metricsBody = "# HELP burrow_x demo\nburrow_x 1\n"
 	status, body := rpcCall(t, srv.URL, tok, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-		"params": map[string]any{"name": "metrics.snapshot"},
+		"params": map[string]any{"name": "metrics_snapshot"},
 	})
 	if status != http.StatusOK {
 		t.Fatalf("status=%d body=%s", status, body)
@@ -523,10 +527,10 @@ func TestMintTokenAndAPIKey(t *testing.T) {
 	srv, tok, fs := newTestServer(t, []string{
 		"tokens:manage:own", "services:configure:own",
 	}, "user")
-	// tokens.mint
+	// tokens_mint
 	status, body := rpcCall(t, srv.URL, tok, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-		"params": map[string]any{"name": "tokens.mint", "arguments": map[string]any{"name": "ci"}},
+		"params": map[string]any{"name": "tokens_mint", "arguments": map[string]any{"name": "ci"}},
 	})
 	if status != http.StatusOK {
 		t.Fatalf("status=%d body=%s", status, body)
@@ -543,11 +547,11 @@ func TestMintTokenAndAPIKey(t *testing.T) {
 		t.Errorf("mint plaintext mismatch: got %q want %q", mintOut.Token, fs.lastMintedPT)
 	}
 
-	// api_keys.create
+	// api_keys_create
 	status2, body2 := rpcCall(t, srv.URL, tok, map[string]any{
 		"jsonrpc": "2.0", "id": 2, "method": "tools/call",
 		"params": map[string]any{
-			"name":      "api_keys.create",
+			"name":      "api_keys_create",
 			"arguments": map[string]any{"service_id": "svc1", "name": "prod"},
 		},
 	})
@@ -565,7 +569,7 @@ func TestMintTokenAndAPIKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ck.Key == "" || ck.ID != "k1" {
-		t.Errorf("api_keys.create return mismatch: %+v", ck)
+		t.Errorf("api_keys_create return mismatch: %+v", ck)
 	}
 }
 
@@ -620,7 +624,7 @@ func TestToolsCall_ServicesList_HidesDirectBackingRows(t *testing.T) {
 	status, body := rpcCall(t, srv.URL, tok, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
 		"params": map[string]any{
-			"name":      "services.list",
+			"name":      "services_list",
 			"arguments": map[string]any{},
 		},
 	})
@@ -631,13 +635,16 @@ func TestToolsCall_ServicesList_HidesDirectBackingRows(t *testing.T) {
 	if env.Error != nil {
 		t.Fatalf("unexpected error: %+v", env.Error)
 	}
-	var rows []struct {
-		ID   string `json:"id"`
-		Type string `json:"type"`
+	var out struct {
+		Services []struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+		} `json:"services"`
 	}
-	if err := json.Unmarshal(env.Result, &rows); err != nil {
+	if err := json.Unmarshal(env.Result, &out); err != nil {
 		t.Fatalf("decode result: %v body=%s", err, body)
 	}
+	rows := out.Services
 	if len(rows) != 2 || rows[0].ID != "svc-a" || rows[1].ID != "svc-b" {
 		t.Fatalf("rows = %+v, want svc-a and svc-b only", rows)
 	}

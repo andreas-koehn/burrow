@@ -3,8 +3,12 @@
 // Each tool wraps an existing store / recorder method through a narrow
 // ToolStore interface. No business logic is duplicated here — the wrappers
 // resolve callerID/callerRole from the request ctx (set by Server) and
-// delegate verbatim. Adding a 13th tool requires a doc PR and a
-// corresponding plan-task in v0.5.
+// delegate verbatim.
+//
+// Names are snake_case (^[a-z][a-z0-9_]{0,63}$): MCP allows dots, several
+// model APIs do not. Every result is a JSON object, because that is what
+// MCP's structuredContent holds in the revisions before 2026-07-28; a tool
+// that lists rows wraps them under one key.
 
 package mcpserv
 
@@ -27,10 +31,17 @@ type Tool struct {
 	Description  string
 	Permission   authz.Permission
 	ParamsSchema json.RawMessage
+	// ReadOnly, Destructive and Idempotent become the MCP annotations
+	// readOnlyHint, destructiveHint and idempotentHint. A tool that only
+	// reads sets ReadOnly and nothing else.
+	ReadOnly    bool
+	Destructive bool
+	Idempotent  bool
 	// Call executes the tool. args is the raw JSON arguments from the
-	// tools/call params.arguments field; the returned bytes are placed
-	// verbatim in the JSON-RPC result. Implementations resolve callerID /
-	// callerRole via mcpserv.CallerID / mcpserv.CallerRole on the ctx.
+	// tools/call params.arguments field; the returned bytes are a JSON
+	// object and become the result's structuredContent and its text.
+	// Implementations resolve callerID / callerRole via mcpserv.CallerID /
+	// mcpserv.CallerRole on the ctx.
 	Call func(ctx context.Context, args json.RawMessage) (json.RawMessage, error)
 }
 
@@ -39,8 +50,8 @@ type Tool struct {
 // satisfies every method; tests supply an in-memory fake.
 //
 // The interface is intentionally read-heavy plus the three mutating tools
-// the spec requires (services.set_access_mode, api_keys.create/delete,
-// tokens.mint). No method here is async — all the listed REST surfaces are
+// the spec requires (services_set_access_mode, api_keys_create/delete,
+// tokens_mint). No method here is async — all the listed REST surfaces are
 // synchronous, so the MCP tool wrappers do not need a streaming protocol.
 type ToolStore interface {
 	// Tunnels
@@ -74,7 +85,7 @@ type ToolStore interface {
 	MetricsText() (string, error)
 }
 
-// TunnelInfo is the narrow tunnel view the tunnels.list tool returns. It
+// TunnelInfo is the narrow tunnel view the tunnels_list tool returns. It
 // mirrors api.TunnelView but lives in mcpserv so the package has no
 // dependency on api. cmd/server's adapter populates it from the registry.
 type TunnelInfo struct {
@@ -97,58 +108,59 @@ var schemaEmpty = json.RawMessage(`{"type":"object","properties":{},"additionalP
 // schemaServiceID is the schema for tools that take only a serviceID.
 var schemaServiceID = json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}`)
 
-// schemaSetAccessMode is the schema for services.set_access_mode.
+// schemaSetAccessMode is the schema for services_set_access_mode.
 var schemaSetAccessMode = json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"},"mode":{"type":"string","enum":["open","api_key","burrow_login","mtls"]},"api_key_header":{"type":"string"}},"required":["id","mode"],"additionalProperties":false}`)
 
-// schemaServiceIDOnly is the schema for api_keys.list / .create / .delete.
+// The schemas for api_keys_list / _create / _delete.
 var schemaAPIKeysList = json.RawMessage(`{"type":"object","properties":{"service_id":{"type":"string"}},"required":["service_id"],"additionalProperties":false}`)
 var schemaAPIKeysCreate = json.RawMessage(`{"type":"object","properties":{"service_id":{"type":"string"},"name":{"type":"string"}},"required":["service_id","name"],"additionalProperties":false}`)
 var schemaAPIKeysDelete = json.RawMessage(`{"type":"object","properties":{"service_id":{"type":"string"},"id":{"type":"string"}},"required":["service_id","id"],"additionalProperties":false}`)
 
-// schemaMintToken is the schema for tokens.mint — only `name` is required.
+// schemaMintToken is the schema for tokens_mint — only `name` is required.
 var schemaMintToken = json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}`)
 
-// schemaUsersList is the schema for users.list.
+// schemaUsersList is the schema for users_list.
 var schemaUsersList = json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":1000},"offset":{"type":"integer","minimum":0}},"additionalProperties":false}`)
 
-// schemaAuditSearch is the schema for audit.search.
+// schemaAuditSearch is the schema for audit_search.
 var schemaAuditSearch = json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"},"since":{"type":"string","format":"date-time"},"until":{"type":"string","format":"date-time"},"limit":{"type":"integer","minimum":1,"maximum":1000}},"additionalProperties":false}`)
 
-// schemaTunnelsList is the schema for tunnels.list — optional filter string.
+// schemaTunnelsList is the schema for tunnels_list — optional filter string.
 var schemaTunnelsList = json.RawMessage(`{"type":"object","properties":{"filter":{"type":"string"}},"additionalProperties":false}`)
 
 // ----- buildTools ----------------------------------------------------------
 
-// orderedTools is the stable declaration order — tools/list emits the
-// inventory in this order, and the api package's mcp/tools endpoint shares
-// it. Mirrors spec Part P.2.
+// orderedTools is the stable declaration order: Server.Tools() and with it
+// the api package's mcp/tools endpoint list the inventory in this order.
+// Mirrors spec Part P.2. (tools/list over MCP is sorted by name by the SDK.)
 var orderedTools = []string{
-	"tunnels.list",
-	"services.list",
-	"services.get",
-	"services.set_access_mode",
-	"api_keys.list",
-	"api_keys.create",
-	"api_keys.delete",
-	"tokens.list",
-	"tokens.mint",
-	"users.list",
-	"audit.search",
-	"metrics.snapshot",
+	"tunnels_list",
+	"services_list",
+	"services_get",
+	"services_set_access_mode",
+	"api_keys_list",
+	"api_keys_create",
+	"api_keys_delete",
+	"tokens_list",
+	"tokens_mint",
+	"users_list",
+	"audit_search",
+	"metrics_snapshot",
 }
 
 // buildTools returns the 12-tool registry, wrapping toolStore methods. Pass
-// nil for toolStore to get tools whose Call returns ErrForbidden — useful in
-// tests that exercise only the registry shape (tools/list, schema).
+// nil for toolStore to get tools whose Call returns errStoreUnavailable —
+// useful in tests that exercise only the registry shape (tools/list, schema).
 func buildTools(s ToolStore) map[string]Tool {
 	m := make(map[string]Tool, len(orderedTools))
 	add := func(t Tool) { m[t.Name] = t }
 
 	add(Tool{
-		Name:         "tunnels.list",
-		Description:  "List all live tunnels visible to the caller. Optional 'filter' parameter does a substring match on tunnel name (case-insensitive).",
+		Name:         "tunnels_list",
+		Description:  "List all live tunnels visible to the caller, as {tunnels: [...]}. Optional 'filter' parameter does a substring match on tunnel name (case-insensitive).",
 		Permission:   authz.PermTunnelsReadAny,
 		ParamsSchema: schemaTunnelsList,
+		ReadOnly:     true,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 			if s == nil {
 				return nil, errStoreUnavailable
@@ -172,15 +184,19 @@ func buildTools(s ToolStore) map[string]Tool {
 				}
 				rows = filtered
 			}
-			return marshalJSON(rows)
+			if rows == nil {
+				rows = []TunnelInfo{}
+			}
+			return wrapRows("tunnels", rows)
 		},
 	})
 
 	add(Tool{
-		Name:         "services.list",
-		Description:  "List services. Admin / services:configure:any callers see every service; others see only their own.",
+		Name:         "services_list",
+		Description:  "List services, as {services: [...]}. Admin / services:configure:any callers see every service; others see only their own.",
 		Permission:   authz.PermServicesConfigureOwn,
 		ParamsSchema: schemaEmpty,
+		ReadOnly:     true,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 			if s == nil {
 				return nil, errStoreUnavailable
@@ -216,15 +232,16 @@ func buildTools(s ToolStore) map[string]Tool {
 					CreatedAt: sv.CreatedAt,
 				})
 			}
-			return marshalJSON(out)
+			return wrapRows("services", out)
 		},
 	})
 
 	add(Tool{
-		Name:         "services.get",
+		Name:         "services_get",
 		Description:  "Get a single service by id. Includes api_key_count and access_policy. 'id' is required.",
 		Permission:   authz.PermServicesConfigureOwn,
 		ParamsSchema: schemaServiceID,
+		ReadOnly:     true,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 			if s == nil {
 				return nil, errStoreUnavailable
@@ -269,10 +286,11 @@ func buildTools(s ToolStore) map[string]Tool {
 	})
 
 	add(Tool{
-		Name:         "services.set_access_mode",
+		Name:         "services_set_access_mode",
 		Description:  "Set a service's access mode. mode is one of open / api_key / burrow_login / mtls. api_key_header is honored only for api_key mode.",
 		Permission:   authz.PermServicesConfigureOwn,
 		ParamsSchema: schemaSetAccessMode,
+		Idempotent:   true,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 			if s == nil {
 				return nil, errStoreUnavailable
@@ -307,10 +325,11 @@ func buildTools(s ToolStore) map[string]Tool {
 	})
 
 	add(Tool{
-		Name:         "api_keys.list",
-		Description:  "List the API keys provisioned for a service. service_id is required.",
+		Name:         "api_keys_list",
+		Description:  "List the API keys provisioned for a service, as {api_keys: [...]}; the keys themselves are never returned. service_id is required.",
 		Permission:   authz.PermServicesConfigureOwn,
 		ParamsSchema: schemaAPIKeysList,
+		ReadOnly:     true,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 			if s == nil {
 				return nil, errStoreUnavailable
@@ -344,13 +363,13 @@ func buildTools(s ToolStore) map[string]Tool {
 					LastUsed: k.LastUsed, CreatedAt: k.CreatedAt,
 				})
 			}
-			return marshalJSON(out)
+			return wrapRows("api_keys", out)
 		},
 	})
 
 	add(Tool{
-		Name:         "api_keys.create",
-		Description:  "Create a new API key for a service. service_id and name are required. The plaintext is returned EXACTLY ONCE in the response.",
+		Name:         "api_keys_create",
+		Description:  "Create a new API key for a service. service_id and name are required. Returns a secret: the result holds the key in plaintext exactly once, and it cannot be read again afterwards.",
 		Permission:   authz.PermServicesConfigureOwn,
 		ParamsSchema: schemaAPIKeysCreate,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
@@ -380,10 +399,11 @@ func buildTools(s ToolStore) map[string]Tool {
 	})
 
 	add(Tool{
-		Name:         "api_keys.delete",
+		Name:         "api_keys_delete",
 		Description:  "Delete an API key. service_id and id are required.",
 		Permission:   authz.PermServicesConfigureOwn,
 		ParamsSchema: schemaAPIKeysDelete,
+		Destructive:  true,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 			if s == nil {
 				return nil, errStoreUnavailable
@@ -406,10 +426,11 @@ func buildTools(s ToolStore) map[string]Tool {
 	})
 
 	add(Tool{
-		Name:         "tokens.list",
-		Description:  "List the caller's own client tokens (the burrow CLI's bearer).",
+		Name:         "tokens_list",
+		Description:  "List the caller's own client tokens (the burrow CLI's bearer), as {tokens: [...]}; the tokens themselves are never returned.",
 		Permission:   authz.PermTokensManageOwn,
 		ParamsSchema: schemaEmpty,
+		ReadOnly:     true,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 			if s == nil {
 				return nil, errStoreUnavailable
@@ -432,13 +453,13 @@ func buildTools(s ToolStore) map[string]Tool {
 					LastUsed: t.LastUsed, CreatedAt: t.CreatedAt,
 				})
 			}
-			return marshalJSON(out)
+			return wrapRows("tokens", out)
 		},
 	})
 
 	add(Tool{
-		Name:         "tokens.mint",
-		Description:  "Issue a new client token for the caller. name is required. The plaintext is returned EXACTLY ONCE.",
+		Name:         "tokens_mint",
+		Description:  "Issue a new client token for the caller. name is required. Returns a secret: the result holds the token in plaintext exactly once, and it cannot be read again afterwards.",
 		Permission:   authz.PermTokensManageOwn,
 		ParamsSchema: schemaMintToken,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
@@ -466,10 +487,11 @@ func buildTools(s ToolStore) map[string]Tool {
 	})
 
 	add(Tool{
-		Name:         "users.list",
+		Name:         "users_list",
 		Description:  "List users (admin / users:read). Optional q (substring), limit (1..1000, default 50), offset.",
 		Permission:   authz.PermUsersRead,
 		ParamsSchema: schemaUsersList,
+		ReadOnly:     true,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 			if s == nil {
 				return nil, errStoreUnavailable
@@ -523,10 +545,11 @@ func buildTools(s ToolStore) map[string]Tool {
 	})
 
 	add(Tool{
-		Name:         "audit.search",
-		Description:  "Search the audit log. q does a substring match (action / subject_label / actor_email); since/until are RFC3339; limit caps at 1000.",
+		Name:         "audit_search",
+		Description:  "Search the audit log, as {events: [...]}. q does a substring match (action / subject_label / actor_email); since/until are RFC3339; limit caps at 1000.",
 		Permission:   authz.PermAuditRead,
 		ParamsSchema: schemaAuditSearch,
+		ReadOnly:     true,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 			if s == nil {
 				return nil, errStoreUnavailable
@@ -591,15 +614,16 @@ func buildTools(s ToolStore) map[string]Tool {
 					PrevHash: e.PrevHash, Hash: e.Hash,
 				})
 			}
-			return marshalJSON(out)
+			return wrapRows("events", out)
 		},
 	})
 
 	add(Tool{
-		Name:         "metrics.snapshot",
+		Name:         "metrics_snapshot",
 		Description:  "Return the current Prometheus 0.0.4 text-format metrics body. Operators parse the response client-side.",
 		Permission:   authz.PermMetricsRead,
 		ParamsSchema: schemaEmpty,
+		ReadOnly:     true,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 			if s == nil {
 				return nil, errStoreUnavailable
@@ -636,6 +660,11 @@ func decodeArgs(args json.RawMessage, v any) error {
 	return json.Unmarshal(args, v)
 }
 
+// wrapRows wraps the rows of a list tool in an object under key.
+func wrapRows(key string, rows any) (json.RawMessage, error) {
+	return marshalJSON(map[string]any{key: rows})
+}
+
 // marshalJSON is a tiny helper that returns the JSON bytes of v as a
 // json.RawMessage so Tool.Call can compose results without each call site
 // type-asserting json.Marshal's []byte return.
@@ -648,8 +677,8 @@ func marshalJSON(v any) (json.RawMessage, error) {
 }
 
 // mapStoreErr translates the store sentinels into the in-package
-// ErrForbidden the JSON-RPC handler maps to -32603 "forbidden". Every
-// other error is passed through unchanged.
+// ErrForbidden, which the server audits as "denied". Every other error is
+// passed through unchanged.
 func mapStoreErr(err error) error {
 	switch {
 	case errors.Is(err, store.ErrForbidden):
@@ -661,7 +690,7 @@ func mapStoreErr(err error) error {
 }
 
 // containsFold returns true when needle is a case-insensitive substring of
-// hay. Used by tunnels.list's filter param. ASCII-only is fine for tunnel
+// hay. Used by tunnels_list's filter param. ASCII-only is fine for tunnel
 // names (the constraint is enforced upstream).
 func containsFold(hay, needle string) bool {
 	if needle == "" {

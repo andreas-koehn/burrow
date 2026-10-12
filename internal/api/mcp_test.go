@@ -67,9 +67,9 @@ func TestMCPStatus_Disabled(t *testing.T) {
 
 func TestMCPTools_AdminSeesInventory(t *testing.T) {
 	tools := []mcpserv.ToolDescriptor{
-		{Name: "tunnels.list", Description: "x", Permission: "tunnels:read:any",
+		{Name: "tunnels_list", Description: "x", Permission: "tunnels:read:any",
 			ParametersSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "services.list", Description: "y", Permission: "services:configure:own",
+		{Name: "services_list", Description: "y", Permission: "services:configure:own",
 			ParametersSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	_, c := newMCPTestServer(t, "admin", MCPInfo{Server: &fakeToolsLister{rows: tools}})
@@ -85,7 +85,7 @@ func TestMCPTools_AdminSeesInventory(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d tools, want 2", len(got))
 	}
-	if got[0].Name != "tunnels.list" || got[0].Permission != "tunnels:read:any" {
+	if got[0].Name != "tunnels_list" || got[0].Permission != "tunnels:read:any" {
 		t.Errorf("tool[0] mismatch: %+v", got[0])
 	}
 	if string(got[0].ParametersSchema) != `{"type":"object"}` {
