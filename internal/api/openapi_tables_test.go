@@ -177,7 +177,10 @@ var openAPIOperationIDs = map[string]string{
 // openAPIReservedOperationIDs are ids that belong to operations other plans
 // add, with the path they belong to. They are not rows of the table above.
 var openAPIReservedOperationIDs = map[string]string{
-	"mcpManagement": "/mcp/burrow", // plan mcp-server: the management MCP endpoint
+	// plan mcp-server: the management MCP endpoint, three operations
+	// (POST mcpManagement, GET mcpManagementGet, DELETE mcpManagementDelete).
+	// An id is reserved by prefix, so the one entry covers all three.
+	"mcpManagement": "/mcp/burrow",
 }
 
 // openAPIMCPDisabled is the complete set of management-API operations that
@@ -312,7 +315,7 @@ type openAPIResponseBody struct {
 	also     []string     // other 2xx statuses with a JSON body of their own
 	typ      reflect.Type // the handler's own struct (the element type of a list)
 	list     bool         // the handler writes a JSON array
-	keys     []string     // the handler's own closed key set (a map answer)
+	keys     []string     // the handler's own closed key set (a map answer): pins the document's property names only, not their types
 	optional []string     // fields left out of some answers although always tagged
 	except   string       // why there is no type to name
 }
@@ -324,7 +327,7 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"authLogin":            {status: "200", typ: oaType[userResp]()},
 	"meGet":                {status: "200", typ: oaType[userResp]()},
 	"sessionsList":         {status: "200", typ: oaType[sessionResp](), list: true},
-	"sessionsRevokeAll":    {status: "200", except: "RevokeAllSessions writes map[string]int64{\"revoked\": n}"},
+	"sessionsRevokeAll":    {status: "200", keys: []string{"revoked"}},
 	"clientTokensList":     {status: "200", typ: oaType[tokenResp](), list: true},
 	"clientTokenCreate":    {status: "201", typ: oaType[newTokenResp]()},
 	"clientsList":          {status: "200", typ: oaType[ClientView](), list: true},
@@ -348,17 +351,21 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"automationTokenCreate":     {status: "201", typ: oaType[createTokenWrap]()},
 
 	// services, tunnels, domains, upstream credentials, geo (O01, O02)
-	"tunnelsList":                 {status: "200", typ: oaType[TunnelView](), list: true},
-	"servicesList":                {status: "200", typ: oaType[serviceResp](), list: true},
-	"serviceCreate":               {status: "201", except: "PostService writes map[string]any{id, slug, created_at}"},
-	"serviceSlugSuggestionGet":    {status: "200", except: "GetSlugSuggestion writes map[string]string{\"slug\": slug}"},
-	"serviceGet":                  {status: "200", typ: oaType[serviceDetailResp]()},
-	"serviceSlugUpdate":           {status: "200", except: "PutServiceSlug writes map[string]string{slug, url}"},
-	"serviceGatewayOnlyUpdate":    {status: "200", except: "PutServiceGatewayOnly writes map[string]bool{\"gateway_only\": on}"},
-	"serviceApiKeysList":          {status: "200", typ: oaType[apiKeyResp](), list: true},
-	"serviceApiKeyCreate":         {status: "201", typ: oaType[createAPIKeyResp]()},
-	"serviceAccessPolicyGet":      {status: "200", typ: oaType[accessPolicyResp]()},
-	"serviceIpGeoGet":             {status: "200", typ: oaType[ipGeoResp]()},
+	"tunnelsList":              {status: "200", typ: oaType[TunnelView](), list: true},
+	"servicesList":             {status: "200", typ: oaType[serviceResp](), list: true},
+	"serviceCreate":            {status: "201", keys: []string{"id", "slug", "created_at"}},
+	"serviceSlugSuggestionGet": {status: "200", keys: []string{"slug"}},
+	"serviceGet":               {status: "200", typ: oaType[serviceDetailResp]()},
+	"serviceSlugUpdate":        {status: "200", keys: []string{"slug", "url"}},
+	"serviceGatewayOnlyUpdate": {status: "200", keys: []string{"gateway_only"}},
+	"serviceApiKeysList":       {status: "200", typ: oaType[apiKeyResp](), list: true},
+	"serviceApiKeyCreate":      {status: "201", typ: oaType[createAPIKeyResp]()},
+	"serviceAccessPolicyGet":   {status: "200", typ: oaType[accessPolicyResp]()},
+	"serviceIpGeoGet":          {status: "200", typ: oaType[ipGeoResp]()},
+	// The one answer that stays an exception: the handler writes the stored
+	// blob, a JSON object with no closed key set and no type to name. The nine
+	// other map-literal answers are pinned by keys, so that at least the
+	// document's property names cannot drift.
 	"serviceAiConfigGet":          {status: "200", except: "GetServiceAIConfig writes the stored JSON blob as it is"},
 	"geoStatusGet":                {status: "200", typ: oaType[geoStatusResp]()},
 	"upstreamCredentialSlotsList": {status: "200", typ: oaType[slotsResp]()},
@@ -375,9 +382,9 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"providerUpdate":         {status: "200", typ: oaType[aiProviderResp]()},
 	"providerUpstreamUpdate": {status: "200", typ: oaType[aiProviderResp]()},
 	"providerModelsList":     {status: "200", typ: oaType[aiProviderModelResp](), list: true},
-	"providerModelsSync":     {status: "200", except: "PostAIProviderModelsSync writes map[string]int{\"count\": n}"},
+	"providerModelsSync":     {status: "200", keys: []string{"count"}},
 	"providerMetricsGet":     {status: "200", typ: oaType[endpointMetricsResp]()},
-	"aiGatewayGet":           {status: "200", except: "GetAIGatewayInfo writes map[string][]aiGatewayEndpoint{\"endpoints\": ...}"},
+	"aiGatewayGet":           {status: "200", keys: []string{"endpoints"}},
 	"aiModelsList":           {status: "200", typ: oaType[aiModelResp](), list: true},
 	"aiModelCreate":          {status: "201", typ: oaType[aiModelResp]()},
 	"aiModelGet":             {status: "200", typ: oaType[aiModelResp]()},
@@ -408,8 +415,8 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"guardrailPatternsList":         {status: "200", typ: oaType[guardrailPatternResp](), list: true},
 	"inspectorRequestsList":         {status: "200", typ: oaType[inspectorEntryJSON](), list: true},
 	"inspectorRequestGet":           {status: "200", typ: oaType[inspectorEntryJSON]()},
-	"inspectorRequestReplay":        {status: "200", except: "ReplayInspectorRequest writes map[string]any{\"new_entry\": entry}"},
-	"inspectorRequestReplayCompare": {status: "200", except: "ReplayCompareInspectorRequest writes map[string]any{original, replayed, diff}"},
+	"inspectorRequestReplay":        {status: "200", keys: []string{"new_entry"}},
+	"inspectorRequestReplayCompare": {status: "200", keys: []string{"original", "replayed", "diff"}},
 
 	// audit, webhooks, connection logs (O07)
 	"auditEventsList":          {status: "200", typ: oaType[auditEventResp](), list: true},

@@ -141,23 +141,26 @@ func oaRefName(ref string) string {
 	return ref[strings.LastIndexByte(ref, '/')+1:]
 }
 
-// oaWalkRefs calls fn for every "$ref" value below v.
-func oaWalkRefs(v any, fn func(ref string)) {
+// oaWalkRefs calls fn for every "$ref" value below v, with the place it sits
+// in: where is the path of keys from the start (a path of the document is
+// "paths./api/v1/x.get.responses.200.content"), so a failure can say which
+// operation or schema holds the reference.
+func oaWalkRefs(where string, v any, fn func(where, ref string)) {
 	if m, ok := oaMap(v); ok {
-		for k, val := range m {
+		for _, k := range oaKeys(m) {
 			if k == "$ref" {
-				if s, ok := val.(string); ok {
-					fn(s)
+				if s, ok := m[k].(string); ok {
+					fn(where, s)
 				}
 				continue
 			}
-			oaWalkRefs(val, fn)
+			oaWalkRefs(where+"."+k, m[k], fn)
 		}
 		return
 	}
 	if list, ok := v.([]any); ok {
-		for _, val := range list {
-			oaWalkRefs(val, fn)
+		for i, val := range list {
+			oaWalkRefs(fmt.Sprintf("%s[%d]", where, i), val, fn)
 		}
 	}
 }
@@ -504,7 +507,7 @@ const oaEmptyRef = "#/components/schemas/Empty"
 
 func oaReferencesEmpty(v any) bool {
 	found := false
-	oaWalkRefs(v, func(ref string) {
+	oaWalkRefs("", v, func(_, ref string) {
 		if ref == oaEmptyRef {
 			found = true
 		}
@@ -568,13 +571,14 @@ var oaPathParamRe = regexp.MustCompile(`\{([^}]+)\}`)
 func TestOpenAPI_Structure(t *testing.T) {
 	doc := loadOpenAPIDoc(t)
 
-	oaWalkRefs(doc.Root, func(ref string) {
+	oaWalkRefs("document", doc.Root, func(where, ref string) {
 		if _, ok := doc.resolveRef(ref); !ok {
-			t.Errorf("$ref %q does not resolve", ref)
+			t.Errorf("%s: $ref %q does not resolve", where, ref)
 		}
 	})
 
 	pendingContent := oaSet(openAPIPendingResponseContent)
+	usedPendingContent := map[string]bool{}
 	for _, op := range doc.Ops {
 		// Path parameters.
 		declared := map[string]bool{}
@@ -643,8 +647,8 @@ func TestOpenAPI_Structure(t *testing.T) {
 				if !hasContent && !pendingContent[op.Key] {
 					t.Errorf("%s: response %s declares no content", op.Key, code)
 				}
-				if hasContent && pendingContent[op.Key] {
-					t.Errorf("openAPIPendingResponseContent has %q, which declares its content now: remove it", op.Key)
+				if !hasContent && pendingContent[op.Key] {
+					usedPendingContent[op.Key] = true
 				}
 			case "204":
 				if hasContent {
@@ -682,6 +686,11 @@ func TestOpenAPI_Structure(t *testing.T) {
 		}
 		if _, ok := rb["required"].(bool); !ok {
 			t.Errorf("%s: request body must say required: true or required: false", op.Key)
+		}
+	}
+	for _, key := range openAPIPendingResponseContent {
+		if !usedPendingContent[key] {
+			t.Errorf("openAPIPendingResponseContent has %q, which has no 200/201/202 without content (it declares its content now, or is no operation of the document): remove it", key)
 		}
 	}
 	for key := range openAPINonJSONBodies {
@@ -725,6 +734,22 @@ func (d openAPIDoc) checkSchemaPart(where string, node any, part bool) []string 
 	for _, key := range oaKeys(m) {
 		if !oaSchemaKeywords[key] && !strings.HasPrefix(key, "x-") {
 			errs = append(errs, fmt.Sprintf("%s: %q is not a schema keyword", where, key))
+		}
+	}
+	// OpenAPI 3.0 ignores every sibling of $ref: { $ref, nullable: true } is
+	// not nullable. Wrap the reference in allOf to add a keyword.
+	if _, isRef := m["$ref"]; isRef && len(m) > 1 {
+		errs = append(errs, fmt.Sprintf("%s: keys beside $ref are ignored by OpenAPI 3.0 (%v): use allOf", where, oaKeys(m)))
+	}
+	if req, has := m["required"]; has {
+		list, isList := req.([]any)
+		for _, r := range list {
+			if _, isString := r.(string); !isString {
+				isList = false
+			}
+		}
+		if !isList {
+			errs = append(errs, fmt.Sprintf("%s: `required` must be a list of property names, found %v", where, req))
 		}
 	}
 	if t, has := m["type"]; has {
@@ -830,6 +855,13 @@ func TestOpenAPI_Schemas(t *testing.T) {
 	bad := parseOpenAPIDoc(t, []byte("components:\n  schemas:\n    X:\n      type: object\n      required: [a, gone]\n      properties:\n        a: { type: string, description: one, two }\n        b: { type: text }\n"))
 	got := strings.Join(bad.checkSchemaNode("X", bad.Root["components"].(map[string]any)["schemas"].(map[string]any)["X"]), "\n")
 	for _, want := range []string{`"two" is not a schema keyword`, "type text is not a schema type", `names "gone"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("checkSchemaNode: want an error containing %q, got:\n%s", want, got)
+		}
+	}
+	bad2 := parseOpenAPIDoc(t, []byte("components:\n  schemas:\n    X:\n      type: object\n      properties:\n        a: { $ref: '#/components/schemas/Y', nullable: true }\n        b: { type: string, required: true }\n        c: { type: string, required: [d, 3] }\n    Y: { type: object }\n"))
+	got = strings.Join(bad2.checkSchemaNode("X", bad2.Root["components"].(map[string]any)["schemas"].(map[string]any)["X"]), "\n")
+	for _, want := range []string{"X.a: keys beside $ref are ignored", "X.b: `required` must be a list of property names, found true", "X.c: `required` must be a list of property names"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("checkSchemaNode: want an error containing %q, got:\n%s", want, got)
 		}

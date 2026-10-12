@@ -257,6 +257,7 @@ components:
           description: >
             Tunnel provider: whether its client is connected. Direct provider:
             Connected when the credential slot is set, Offline otherwise.
+            Degraded is reserved: the handler never sends it today.
         client_session_id: { type: string }
     AIProviderUpstream:
       type: object
@@ -545,8 +546,9 @@ components:
     EndpointMetrics:
       type: object
       description: >
-        Metering aggregates for one AI provider over the trailing 24 h.  All
-        numeric fields are zeroed pending usage_events aggregation.
+        Metering aggregates for one AI provider over the trailing 24 h, read
+        from the usage events. The fields are 0 when the provider had no
+        usage in that time or the store cannot be read.
       required: [requests_24h, tokens_in_24h, tokens_out_24h, cost_usd_24h, cache_hit_ratio_24h, requests_per_minute]
       properties:
         requests_24h: { type: integer }
@@ -1505,7 +1507,11 @@ components:
       type: object
       required: [name, url, events]
       properties:
-        name: { type: string, minLength: 1, maxLength: 200 }
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Not blank after trimming. maxLength counts bytes.
         url: { type: string, format: uri, description: An http or https URL. }
         events:
           type: array
@@ -2288,6 +2294,7 @@ paths:
           schema: { type: string, format: date-time }
         - name: limit
           in: query
+          description: At most this many requests. 0 or left out - no limit.
           schema: { type: integer, minimum: 0 }
       responses:
         '200':
@@ -3669,6 +3676,9 @@ paths:
           application/json:
             schema:
               type: object
+              description: >
+                Either field may be left out. A body with neither role nor
+                status is refused with 400.
               properties:
                 role: { type: string }
                 status: { type: string, enum: [active, suspended] }
@@ -3740,7 +3750,10 @@ paths:
               type: object
               required: [to]
               properties:
-                to: { type: string, format: email }
+                to:
+                  type: string
+                  format: email
+                  description: Recipient. The format is not checked; the handler only refuses an empty value.
       responses:
         '204': { description: Sent. Nothing is returned. }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -4510,9 +4523,11 @@ paths:
           schema: { type: string, enum: [control, http_proxy, tcp_proxy] }
         - name: since
           in: query
+          description: Only rows from this time on. RFC 3339, or a plain date YYYY-MM-DD.
           schema: { type: string, format: date-time }
         - name: until
           in: query
+          description: Only rows up to this time. RFC 3339, or a plain date YYYY-MM-DD.
           schema: { type: string, format: date-time }
       responses:
         '200':

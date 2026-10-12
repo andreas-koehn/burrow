@@ -53,7 +53,7 @@ The server always serves its own spec — no need to keep a local copy in sync:
 |-----|---------|
 | `/api/v1/openapi.yaml` | Machine-readable spec (YAML) |
 | `/api/v1/openapi.json` | Machine-readable spec (JSON) |
-| `/api/v1/openapi/viewer/` | Embedded browser viewer (needs the `metrics:read` permission) |
+| `/api/v1/openapi/viewer/` | Embedded browser viewer (needs `metrics:read`; the admin role holds it) |
 
 The repo also ships `docs/openapi.yaml` as a canonical reference. It is kept in sync with the router by `TestOpenAPI_RouteCoverage` — a build-time test that fails if any route is missing from the spec.
 
@@ -84,7 +84,7 @@ Two extension fields appear on operations:
 | `x-burrow-mcp` | `false` keeps the operation out of the tool list of the management MCP server. An operation without the field may become a tool. |
 | `x-burrow-permission` | Reserved for the permission the operation requires. No operation carries it yet. |
 
-`x-burrow-mcp: false` is set on login, logout and password change; on the client sign-in endpoints (discovery, start, poll, and the approval in the dashboard); on downloads and exports (backup archive, audit, cost and connection-log export); on the event streams; on backup restore; and on the OpenAPI viewer.
+`x-burrow-mcp: false` is set on login, logout and password change; on the client sign-in endpoints (discovery, start, poll, and the sign-in request lookup, approval and denial in the dashboard); on downloads and exports (backup archive, audit, cost and connection-log export); on the event streams; on backup restore and its status poll; and on the OpenAPI viewer.
 
 The schemas are checked against the server: tests compare every JSON request and response schema with the Go type the handler decodes or writes, so a field added to the API without the spec fails the build.
 
@@ -108,7 +108,7 @@ The table below lists the major resource groups, their path prefixes, and what t
 | **access-policy** | `/api/v1/services/{id}/access-policy` | Role allowlist of `burrow_login` mode |
 | **webhooks** | `/api/v1/webhooks/` | HMAC outbound webhooks: create, list, pause, resume, delivery log |
 | **audit** | `/api/v1/audit/` | Immutable audit event log; chain verify and export |
-| **backups** | `/api/v1/backups/` | Create and restore database backups |
+| **backups** | `/api/v1/backups/` | Create, list, verify, download, delete and restore database backups |
 | **clients** | `/api/v1/clients/` | Live control-session overview (which clients are connected) |
 | **settings** | `/api/v1/settings/` | Admin settings: SMTP, retention, config |
 | **events** | `/api/v1/events` | Server-sent event stream for dashboard live refresh |

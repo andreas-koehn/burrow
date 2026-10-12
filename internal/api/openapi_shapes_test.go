@@ -12,6 +12,7 @@ package api
 
 import (
 	"context"
+	"encoding"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -98,6 +99,7 @@ func oaStructElem(t reflect.Type) reflect.Type {
 type oaSchemaView struct {
 	Names      []string // component names the schema is made of
 	Type       string
+	Format     string
 	Properties map[string]any
 	Required   map[string]bool
 	Nullable   bool
@@ -122,6 +124,9 @@ func (d openAPIDoc) fold(node any, v *oaSchemaView, depth int) {
 		if target, ok := d.resolveRef(ref); ok {
 			d.fold(target, v, depth+1)
 		}
+		// OpenAPI 3.0 ignores every sibling of $ref (TestOpenAPI_Schemas
+		// refuses them): a nullable beside it does not count.
+		return
 	}
 	if parts, ok := m["allOf"].([]any); ok {
 		for _, part := range parts {
@@ -130,6 +135,9 @@ func (d openAPIDoc) fold(node any, v *oaSchemaView, depth int) {
 	}
 	if t, ok := m["type"].(string); ok {
 		v.Type = t
+	}
+	if f, ok := m["format"].(string); ok {
+		v.Format = f
 	}
 	if m["nullable"] == true {
 		v.Nullable = true
@@ -179,6 +187,7 @@ func (d openAPIDoc) checkRequestShape(where string, node any, t reflect.Type) []
 			errs = append(errs, fmt.Sprintf("%s: the handler decodes %q (%s), the spec does not have it", where, name, oaDeref(t)))
 			continue
 		}
+		errs = append(errs, d.checkKind(where, name, fields[name].Type, p)...)
 		if elem := oaStructElem(fields[name].Type); elem != nil {
 			child := p
 			if cv := d.view(p); cv.Type == "array" {
@@ -235,6 +244,7 @@ func (d openAPIDoc) checkResponseShape(where string, node any, t reflect.Type, o
 			errs = append(errs, fmt.Sprintf("%s: the handler writes %q (%s), the spec does not have it", where, f.Name, oaDeref(t)))
 			continue
 		}
+		errs = append(errs, d.checkKind(where, f.Name, f.Type, p)...)
 		always := !f.Omitted && !optional[f.Name]
 		if !lenient && always != v.Required[f.Name] {
 			if always {
@@ -267,6 +277,79 @@ func (d openAPIDoc) checkResponseShape(where string, node any, t reflect.Type, o
 		}
 	}
 	return errs
+}
+
+var (
+	oaMarshalerType     = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	oaTextMarshalerType = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
+)
+
+// oaWireKinds is the schema type each Go kind is written as.
+var oaWireKinds = map[reflect.Kind]string{
+	reflect.Bool:    "boolean",
+	reflect.Int:     "integer",
+	reflect.Int8:    "integer",
+	reflect.Int16:   "integer",
+	reflect.Int32:   "integer",
+	reflect.Int64:   "integer",
+	reflect.Uint:    "integer",
+	reflect.Uint8:   "integer",
+	reflect.Uint16:  "integer",
+	reflect.Uint32:  "integer",
+	reflect.Uint64:  "integer",
+	reflect.Uintptr: "integer",
+	reflect.Float32: "number",
+	reflect.Float64: "number",
+	reflect.String:  "string",
+	reflect.Slice:   "array",
+	reflect.Array:   "array",
+	reflect.Struct:  "object",
+	reflect.Map:     "object",
+}
+
+// checkKind compares the JSON type of a struct field with the schema of its
+// property. A field that writes itself (json.Marshaler, encoding.TextMarshaler,
+// json.RawMessage), []byte and interface-typed fields have no type that the
+// Go kind gives; time.Time is a string with format date-time, which is checked
+// instead. A $ref and the parts of an allOf are resolved first; a property
+// that has no type after that, and no oneOf or anyOf, is a failure (a skipped
+// field may be typeless: json.RawMessage is any JSON value).
+func (d openAPIDoc) checkKind(where, name string, ft reflect.Type, prop any) []string {
+	t := oaDeref(ft)
+	if t.Kind() == reflect.Interface {
+		return nil
+	}
+	pv := d.view(prop)
+	m, _ := oaMap(prop)
+	if t == oaTimeType {
+		if pv.Type != "string" || pv.Format != "date-time" {
+			return []string{fmt.Sprintf("%s: %q is a time.Time, written as a string with format date-time; the spec has type %q, format %q", where, name, pv.Type, pv.Format)}
+		}
+		return nil
+	}
+	if t.Implements(oaMarshalerType) || reflect.PointerTo(t).Implements(oaMarshalerType) ||
+		t.Implements(oaTextMarshalerType) || reflect.PointerTo(t).Implements(oaTextMarshalerType) {
+		return nil
+	}
+	if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
+		return nil
+	}
+	if pv.Type == "" {
+		_, oneOf := m["oneOf"]
+		_, anyOf := m["anyOf"]
+		if oneOf || anyOf {
+			return nil
+		}
+		return []string{fmt.Sprintf("%s: property %q has no type, no $ref that gives one and no allOf, oneOf or anyOf", where, name)}
+	}
+	want := oaWireKinds[t.Kind()]
+	if want == "" {
+		return nil // chan, func and the like are not written by encoding/json
+	}
+	if pv.Type != want {
+		return []string{fmt.Sprintf("%s: %q is a Go %s, written as a JSON %s; the spec has type %q", where, name, t, want, pv.Type)}
+	}
+	return nil
 }
 
 func oaScalarKind(k reflect.Kind) bool {
@@ -626,6 +709,9 @@ components:
       required: [a]
       properties:
         a: { type: string }
+    Stamp:
+      type: string
+      format: date-time
     Sample:
       type: object
       required: [e, name, seen, at, items, Free]
@@ -659,6 +745,11 @@ components:
 		{"struct has a field the spec lacks", "        note: { type: string }\n", "", `the handler decodes "note"`},
 		{"spec has a property the struct lacks", "        note: { type: string }\n", "        note: { type: string }\n        extra: { type: string }\n", `the spec has property "extra"`},
 		{"nested drift", "        a: { type: string }\n", "        b: { type: string }\n", `sample.items: the handler decodes "a"`},
+		{"wrong type", "        name: { type: string }", "        name: { type: integer }", `"name" is a Go string, written as a JSON string; the spec has type "integer"`},
+		{"missing type", "        e: { type: integer }", "        e: { description: no type }", `property "e" has no type`},
+		{"time without date-time", "        at: { type: string, format: date-time }", "        at: { type: string }", `"at" is a time.Time`},
+		{"object for a list", "          type: array\n          items: { $ref: '#/components/schemas/Inner' }", "          type: object", `"items" is a Go []api.inner, written as a JSON array; the spec has type "object"`},
+		{"nested wrong type", "        a: { type: string }\n", "        a: { type: boolean }\n", `sample.items: "a" is a Go string`},
 	}
 	for _, tc := range requestCases {
 		errs := edit(tc.old, tc.new).checkRequestShape("sample", ref, typ)
@@ -680,6 +771,11 @@ components:
 		{"omitted pointer marked nullable", "gone: { type: string, format: date-time }", "gone: { type: string, format: date-time, nullable: true }", `"gone" is left out when unset`},
 		{"plain value marked nullable", "name: { type: string }", "name: { type: string, nullable: true }", `"name" is never null`},
 		{"nested required", "      required: [a]\n", "", `sample.items: "a" is always written`},
+		{"wrong type", "        name: { type: string }", "        name: { type: integer }", `"name" is a Go string, written as a JSON string; the spec has type "integer"`},
+		{"missing type", "        e: { type: integer }", "        e: { description: no type }", `property "e" has no type`},
+		{"time without date-time", "        at: { type: string, format: date-time }", "        at: { type: string }", `"at" is a time.Time`},
+		{"pointer to time with the wrong format", "seen: { type: string, format: date-time, nullable: true }", "seen: { type: string, format: date, nullable: true }", `"seen" is a time.Time`},
+		{"nullable beside $ref is ignored", "seen: { type: string, format: date-time, nullable: true }", "seen: { $ref: '#/components/schemas/Stamp', nullable: true }", `"seen" is written as null`},
 	}
 	for _, tc := range responseCases {
 		doc := parseOpenAPIDoc(t, []byte(strings.Replace(respGood, tc.old, tc.new, 1)))

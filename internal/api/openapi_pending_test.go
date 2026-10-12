@@ -7,7 +7,7 @@ package api
 
 // openAPIConversionDone turns TestOpenAPI_NothingPending on. The verify task
 // sets it to true once the three lists below are empty.
-const openAPIConversionDone = false
+const openAPIConversionDone = true
 
 // openAPIPendingOperationIDs lists the operations that have no operationId
 // yet, as "METHOD path".
