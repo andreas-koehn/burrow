@@ -45,6 +45,5 @@ export type { SegmentedProps, SegmentedOption } from "./Segmented";
 export { SubmitHint } from "./SubmitHint";
 export type { SubmitHintProps } from "./SubmitHint";
 export { firstMissing } from "./firstMissing";
-export type { Missing } from "./firstMissing";
 export { Disclosure } from "./Disclosure";
 export type { DisclosureProps } from "./Disclosure";

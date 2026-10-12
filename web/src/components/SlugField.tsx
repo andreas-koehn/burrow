@@ -38,7 +38,7 @@ export function SlugField({ id, value, onChange, error, label = "URL slug", prev
   const previewId = `${id}-preview`;
   const preview = value && !message && !broken ? previewOf(value) : "";
   const helpId = `${id}-help`;
-  const shownHelp = !message && !preview && value === "" ? help : undefined;
+  const shownHelp = !message && value === "" ? help : undefined;
   return (
     <FormField
       label={label}

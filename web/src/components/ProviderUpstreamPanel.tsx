@@ -117,6 +117,8 @@ export interface ConcurrencyFieldProps {
   onChange: (value: string) => void;
   /** The server's refusal of the value, if any. A value that is not a whole number is reported here by itself. */
   error?: string | null;
+  /** The field's own rule is named only once the field was left; the server's refusal shows at once. */
+  errorAfterBlur?: boolean;
 }
 
 /**
@@ -124,8 +126,9 @@ export interface ConcurrencyFieldProps {
  * free place; when none comes free in time the next target of the model is
  * tried, or the caller gets 429 provider_busy.
  */
-export function ConcurrencyField({ id, value, onChange, error }: ConcurrencyFieldProps) {
-  const message = parseConcurrency(value) === null ? CONCURRENCY_FORMAT : error;
+export function ConcurrencyField({ id, value, onChange, error, errorAfterBlur = false }: ConcurrencyFieldProps) {
+  const [left, setLeft] = useState(false);
+  const message = parseConcurrency(value) === null ? (errorAfterBlur && !left ? null : CONCURRENCY_FORMAT) : error;
   return (
     <FormField
       label="Requests at once"
@@ -145,6 +148,7 @@ export function ConcurrencyField({ id, value, onChange, error }: ConcurrencyFiel
         spellCheck={false}
         aria-describedby={message ? `${id}-err` : `${id}-help`}
         onChange={(e) => onChange(e.target.value)}
+        onBlur={() => setLeft(true)}
       />
     </FormField>
   );

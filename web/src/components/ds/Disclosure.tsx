@@ -1,7 +1,6 @@
 import { useId } from "react";
 import type { ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { cx } from "./cx";
 
 export interface DisclosureProps {
   /** The button's words, e.g. "Advanced". */
@@ -9,7 +8,6 @@ export interface DisclosureProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   children: ReactNode;
-  className?: string;
 }
 
 /**
@@ -18,10 +16,10 @@ export interface DisclosureProps {
  * Closed, the content is not rendered: its fields keep their values in the
  * owner's state.
  */
-export function Disclosure({ label, open, onOpenChange, children, className }: DisclosureProps) {
+export function Disclosure({ label, open, onOpenChange, children }: DisclosureProps) {
   const bodyId = useId();
   return (
-    <div className={cx("disclosure", className)}>
+    <div className="disclosure">
       <button
         type="button"
         className="link small disclosure-toggle"

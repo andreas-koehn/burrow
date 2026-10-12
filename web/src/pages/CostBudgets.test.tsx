@@ -495,6 +495,43 @@ describe("Cost & budgets (§4.24)", () => {
     expect(within(dialog).queryByText(/can't be listed here/)).toBeNull();
   });
 
+  it("says beside Create which value is wrong, after what is missing", async () => {
+    server.use(http.get("/api/v1/users", () => HttpResponse.json({ error: "users:read required" }, { status: 403 })));
+    mount();
+    const dialog = await openDialog();
+    const create = within(dialog).getByRole("button", { name: "Create" });
+    await chooseOption(dialog, "Scope", "Global");
+    const usd = within(dialog).getByLabelText("Daily USD");
+    const tokens = within(dialog).getByLabelText("Daily tokens");
+
+    await userEvent.type(usd, "-1");
+    expect(create).toBeDisabled();
+    expect(create).toHaveAccessibleDescription("Check the daily amount.");
+    await userEvent.clear(usd);
+    await userEvent.type(usd, "5");
+    expect(create).toBeEnabled();
+
+    await userEvent.type(tokens, "1.5");
+    expect(create).toBeDisabled();
+    expect(create).toHaveAccessibleDescription("Check the token limit.");
+    await userEvent.clear(tokens);
+    expect(create).toBeEnabled();
+
+    await chooseOption(dialog, "Scope", "Model");
+    await chooseOption(dialog, "Model", "Other address…");
+    await userEvent.type(await within(dialog).findByLabelText("Model address"), "zai");
+    expect(create).toBeDisabled();
+    expect(create).toHaveAccessibleDescription("Check the model address.");
+
+    await chooseOption(dialog, "Scope", "User");
+    await userEvent.type(await within(dialog).findByLabelText("User id"), "bur_usr_bob0002 ");
+    expect(create).toBeDisabled();
+    expect(create).toHaveAccessibleDescription("Check the id.");
+    // Something missing is said before something wrong.
+    await userEvent.clear(usd);
+    expect(create).toHaveAccessibleDescription("Set a daily amount in USD, in tokens, or both.");
+  });
+
   it("says beside Create what is still missing: the subject of the scope first, then a limit", async () => {
     mount();
     const dialog = await openDialog();

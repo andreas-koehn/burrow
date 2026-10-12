@@ -353,10 +353,13 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
     .filter((t) => t.provider !== "" && t.model.trim() !== "")
     .map((t) => ({ dialect, provider: t.provider, model: t.model.trim() })));
   // An entry with a provider but no model id, or a fallback entry left empty,
-  // is unfinished: the first one, by the name its group carries.
+  // is unfinished: the first one, by the name its group carries. A format's
+  // only entry has no Remove button; it is switched off instead.
   const unfinished = FORMATS.flatMap(({ dialect, legend }) => choices[dialect]
-    .map((t, i, list) => ((t.provider === "" ? list.length > 1 : t.model.trim() === "") ? `${legend}, target ${i + 1}` : null)))
-    .find((name) => name !== null) ?? null;
+    .map((t, i, list) => ((t.provider === "" ? list.length > 1 : t.model.trim() === "")
+      ? { name: `${legend}, target ${i + 1}`, only: list.length === 1 }
+      : null)))
+    .find((entry) => entry !== null) ?? null;
   // The relay refuses the same provider and model twice in one format.
   const twice = targets.some((t, i) => targets.findIndex((x) => x.dialect === t.dialect && x.provider === t.provider && x.model === t.model) !== i);
   const nameErr = modelNameError(name)
@@ -423,7 +426,8 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
   const hint = firstMissing(missing);
   const change = <T,>(set: (v: T) => void) => (v: T) => { set(v); setFormErr(null); };
   // A field with an error is never left hidden.
-  const advancedOpen = advanced || !timeoutsOk;
+  const advancedForced = !timeoutsOk;
+  const advancedOpen = advanced || advancedForced;
   const shownNameErr = nameLeft ? nameErr : null;
   const shownAttemptErr = timeoutsLeft ? attemptErr : null;
   const shownTotalErr = timeoutsLeft ? totalErr : null;
@@ -497,7 +501,10 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
       {/* Moves and removals, for a screen reader. */}
       <p className="visually-hidden" role="status">{announcement}</p>
       {submitted && unfinished !== null && (
-        <ErrorNotice>{unfinished} needs a provider and a model. Remove it if you do not need it.</ErrorNotice>
+        <ErrorNotice>
+          {unfinished.name} needs a provider and a model.{" "}
+          {unfinished.only ? "Set it to Not served if you do not need it." : "Remove it if you do not need it."}
+        </ErrorNotice>
       )}
 
       <div className="model-translate">
@@ -526,7 +533,8 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
         </Disclosure>
       </div>
 
-      <Disclosure label="Advanced" open={advancedOpen} onOpenChange={setAdvanced}>
+      {/* Held open by a field in it: the toggle must not arm a close for the moment the value turns valid. */}
+      <Disclosure label="Advanced" open={advancedOpen} onOpenChange={(o) => setAdvanced(o || advancedForced)}>
         <FormFieldGroup>
           <FormField label="Description (optional)" htmlFor="model-description" w="md">
             <Input

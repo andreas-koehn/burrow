@@ -464,6 +464,29 @@ describe("ModelDialog", () => {
     await waitFor(() => expect(posted).toBe(1));
   });
 
+  it("a format's only entry that is unfinished is switched off, not removed", async () => {
+    let posted = 0;
+    server.use(http.post("/api/v1/ai/models", () => { posted++; return HttpResponse.json({ name: "burrow-one" }, { status: 201 }); }));
+    renderDialog();
+    await userEvent.type(screen.getByLabelText("Model name"), "burrow-one");
+    const anthropic = await group("Anthropic format");
+    await chooseOption("Provider", "zai-anthropic", anthropic);
+    await typeModel("glm-5.1", anthropic);
+    // A provider without its model, in a list of one: there is no Remove button to point at.
+    const openai = await group("OpenAI format");
+    await chooseOption("Provider", "ollama", openai);
+    await modelField(openai);
+    expect(screen.queryByRole("button", { name: "Remove OpenAI target 1" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Create model" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "OpenAI format, target 1 needs a provider and a model. Set it to Not served if you do not need it.",
+    );
+    expect(posted).toBe(0);
+    await chooseOption("Provider", "Not served", openai);
+    await userEvent.click(screen.getByRole("button", { name: "Create model" }));
+    await waitFor(() => expect(posted).toBe(1));
+  });
+
   it("editing an existing model opens Advanced when it holds a non-default value", async () => {
     const plain: AiModel = {
       ...fixtureModel("burrow-simple"), description: "", enabled: true, fallback_on_rate_limit: false,

@@ -3,7 +3,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Badge, Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, NotAuthorized, PageHeader, Segmented, Select, SkeletonRows, SubmitHint, TableEmptyRow } from "@/components/ds";
+import { Badge, Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, NotAuthorized, PageHeader, Segmented, Select, SkeletonRows, SubmitHint, TableEmptyRow, firstMissing } from "@/components/ds";
 import UsageBreakdown from "@/components/UsageBreakdown";
 import { useAuth } from "@/auth/useAuth";
 import { fmtCount, fmtUsd, shortId } from "@/lib/costFormat";
@@ -220,15 +220,21 @@ export default function CostBudgets() {
   const idErr = scope === "user" && typeUserId && subjectId !== subjectId.trim()
     ? "Remove the spaces before or after the ID."
     : undefined;
-  const canSubmit = !usdErr && !tokErr && !noLimit && !addrErr && !idErr && !subjectMissing;
-  // Said beside Create while it is disabled: the subject first, then the
-  // limit. A value that is wrong is reported at its own field.
+  // Said beside Create while it is disabled: what is missing first (the
+  // subject, then the limit), then a value that is wrong. Why it is wrong is
+  // said at its own field.
   const missingSubject = scope === "model" && subjectId === OTHER_MODEL ? "model_address"
     : scope === "user" && typeUserId ? "user_id"
     : scope;
-  const missing = subjectMissing ? SUBJECT_MISSING[missingSubject]
-    : noLimit ? "Set a daily amount in USD, in tokens, or both."
-    : undefined;
+  const missing = [
+    subjectMissing && SUBJECT_MISSING[missingSubject],
+    noLimit && "Set a daily amount in USD, in tokens, or both.",
+    usdErr && "Check the daily amount.",
+    tokErr && "Check the token limit.",
+    addrErr && "Check the model address.",
+    idErr && "Check the id.",
+  ];
+  const hint = firstMissing(missing);
 
   // Reveal-then-focus: the address field appears when "Other address…" is chosen.
   useEffect(() => {
@@ -266,7 +272,7 @@ export default function CostBudgets() {
   });
 
   function submit() {
-    if (!canSubmit) return;
+    if (hint !== undefined) return;
     create.mutate();
   }
 
@@ -376,9 +382,9 @@ export default function CostBudgets() {
         title="New budget"
         footer={
           <>
-            <SubmitHint id="budget-missing" missing={[missing]} />
+            <SubmitHint id="budget-missing" missing={missing} />
             <Button variant="secondary" onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button variant="primary" disabled={create.isPending || !canSubmit} aria-describedby={missing ? "budget-missing" : undefined} onClick={submit}>
+            <Button variant="primary" disabled={create.isPending || hint !== undefined} aria-describedby={hint !== undefined ? "budget-missing" : undefined} onClick={submit}>
               Create
             </Button>
           </>

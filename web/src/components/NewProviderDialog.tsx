@@ -198,7 +198,8 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
   ];
   const hint = firstMissing(missing);
   // A field that holds the button back is never left hidden.
-  const advancedOpen = advanced || slugProblem !== null || limit === null || (presetId !== "" && baseUrl.trim() === "");
+  const advancedForced = slugProblem !== null || limit === null || (presetId !== "" && baseUrl.trim() === "");
+  const advancedOpen = advanced || advancedForced;
 
   // The relay refused one field: it takes the focus. Where the field is under
   // Advanced, the same answer has opened it.
@@ -364,7 +365,8 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
             )}
           </FormFieldGroup>
           {direct && (
-            <Disclosure label="Advanced" open={advancedOpen} onOpenChange={setAdvanced}>
+            // Held open by a field in it: the toggle must not arm a close for the moment the value turns valid.
+            <Disclosure label="Advanced" open={advancedOpen} onOpenChange={(o) => setAdvanced(o || advancedForced)}>
               <FormFieldGroup>
                 {slugField}
                 <FormField
@@ -394,6 +396,7 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
                   id="np-concurrency"
                   value={concurrency}
                   error={concurrencyErr}
+                  errorAfterBlur
                   onChange={(v) => { setConcurrency(v); setConcurrencyErr(null); setFormErr(null); }}
                 />
                 {apiFormat === "openai" && (

@@ -1,5 +1,5 @@
 /** The relay's rule for a service id (serviceIDRe in internal/api/service_handlers.go). */
-export const SERVICE_ID_RE = /^[a-z0-9_-]{3,64}$/;
+const SERVICE_ID_RE = /^[a-z0-9_-]{3,64}$/;
 export const SERVICE_ID_HINT = "3–64 characters: lowercase letters, digits, hyphens and underscores.";
 
 /** Local validation message for a service id, or null when the relay takes it. */

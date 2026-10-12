@@ -643,26 +643,129 @@ describe("Services page", () => {
       expect(create).not.toHaveAttribute("aria-describedby");
     });
 
-    it("a taken slug is reported on the slug field, with Advanced opened", async () => {
-      server.use(http.post("/api/v1/services", () =>
-        HttpResponse.json({ error: "service id or slug already in use" }, { status: 409 })));
+    // The relay answers the same 409 for a taken id, slug or title.
+    const taken = () => server.use(http.post("/api/v1/services", () =>
+      HttpResponse.json({ error: "service id or slug already in use" }, { status: 409 })));
+
+    it("a taken name is reported on Name while the id, the slug and the title follow it", async () => {
+      taken();
       const dialog = await open();
-      await userEvent.type(within(dialog).getByLabelText("Name"), "Web Prod");
+      const name = within(dialog).getByLabelText("Name");
+      await userEvent.type(name, "Web Prod");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+
+      await waitFor(() => expect(name).toHaveAttribute("aria-invalid", "true"));
+      expect(name).toHaveAccessibleDescription("A service with this name exists already.");
+      await waitFor(() => expect(name).toHaveFocus());
+      // Another name is the way out: nothing under Advanced is shown.
+      expect(within(dialog).getByRole("button", { name: "Advanced" })).toHaveAttribute("aria-expanded", "false");
+      expect(within(dialog).queryByLabelText("URL slug")).toBeNull();
+
+      // Changing it takes the relay's verdict away.
+      await userEvent.type(name, " 2");
+      expect(name).not.toHaveAttribute("aria-invalid");
+      expect(within(dialog).getByText(address("web-prod-2"))).toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "Create" })).toBeEnabled();
+    });
+
+    it("a title of its own does not move the verdict off Name", async () => {
+      taken();
+      const dialog = await open();
+      const name = within(dialog).getByLabelText("Name");
+      await userEvent.type(name, "Web Prod");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Advanced" }));
+      await userEvent.type(within(dialog).getByLabelText("Title"), "uction");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+      await waitFor(() => expect(name).toHaveAccessibleDescription("A service with this name exists already."));
+      expect(within(dialog).getByLabelText("URL slug")).not.toHaveAttribute("aria-invalid");
+    });
+
+    it("a taken id or slug is reported on the slug field, with Advanced opened, once one of them was typed", async () => {
+      taken();
+      const dialog = await open();
+      const name = within(dialog).getByLabelText("Name");
+      await userEvent.type(name, "Web Prod");
+      const advanced = within(dialog).getByRole("button", { name: "Advanced" });
+      await userEvent.click(advanced);
+      await userEvent.clear(within(dialog).getByLabelText("URL slug"));
+      await userEvent.type(within(dialog).getByLabelText("URL slug"), "web");
+      // Closed again before it is sent.
+      await userEvent.click(advanced);
       expect(within(dialog).queryByLabelText("URL slug")).toBeNull();
       await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
 
       const slug = await within(dialog).findByLabelText("URL slug");
-      expect(within(dialog).getByRole("button", { name: "Advanced" })).toHaveAttribute("aria-expanded", "true");
+      expect(advanced).toHaveAttribute("aria-expanded", "true");
       expect(slug).toHaveAttribute("aria-invalid", "true");
       expect(slug).toHaveAccessibleDescription("service id or slug already in use");
       await waitFor(() => expect(slug).toHaveFocus());
+      expect(name).not.toHaveAttribute("aria-invalid");
 
       // Changing it takes the relay's verdict away, and the field stays where it is.
       await userEvent.type(slug, "-2");
       expect(slug).toBeInTheDocument();
-      expect(slug).toHaveValue("web-prod-2");
+      expect(slug).toHaveValue("web-2");
       expect(slug).not.toHaveAttribute("aria-invalid");
       expect(within(dialog).getByRole("button", { name: "Create" })).toBeEnabled();
+    });
+
+    it("a typed id alone also puts the verdict on the slug field", async () => {
+      taken();
+      const dialog = await open();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "Web Prod");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Advanced" }));
+      await userEvent.type(within(dialog).getByLabelText("Service ID"), "-1");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+      const slug = within(dialog).getByLabelText("URL slug");
+      await waitFor(() => expect(slug).toHaveAccessibleDescription("service id or slug already in use"));
+      expect(within(dialog).getByLabelText("Name")).not.toHaveAttribute("aria-invalid");
+    });
+
+    it("the slug that follows a short name is checked too, once the id is typed", async () => {
+      const sent = capturePost();
+      const dialog = await open();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "DB");
+      // Two characters give no id: the name is what is wrong, and Advanced stays closed.
+      const create = within(dialog).getByRole("button", { name: "Create" });
+      expect(create).toHaveAccessibleDescription("Use at least three letters or digits.");
+      expect(within(dialog).getByRole("button", { name: "Advanced" })).toHaveAttribute("aria-expanded", "false");
+
+      await userEvent.click(within(dialog).getByRole("button", { name: "Advanced" }));
+      await userEvent.type(within(dialog).getByLabelText("Service ID"), "-main");
+      // The id is fine now; the slug "db" that follows the name is one character short.
+      expect(within(dialog).getByLabelText("Service ID")).toHaveValue("db-main");
+      const slug = within(dialog).getByLabelText("URL slug");
+      expect(slug).toHaveValue("db");
+      expect(create).toBeDisabled();
+      expect(create).toHaveAccessibleDescription("Check the URL slug.");
+      expect(within(dialog).queryByText(address("db"))).toBeNull();
+
+      await userEvent.type(slug, "-main");
+      expect(create).toBeEnabled();
+      await userEvent.click(create);
+      await waitFor(() => expect(sent).toHaveLength(1));
+      expect(sent[0]).toEqual({ service_id: "db-main", slug: "db-main", title: "DB", access_mode: "open" });
+    });
+
+    it("Advanced does not close under the caret while a field in it is being corrected", async () => {
+      const dialog = await open();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "Web Prod");
+      const advanced = within(dialog).getByRole("button", { name: "Advanced" });
+      await userEvent.click(advanced);
+      const slug = within(dialog).getByLabelText("URL slug");
+      await userEvent.clear(slug);
+      await userEvent.type(slug, "-bad");
+      // Held open by the slug: a click on the toggle changes nothing, now or later.
+      await userEvent.click(advanced);
+      expect(advanced).toHaveAttribute("aria-expanded", "true");
+      await userEvent.clear(slug);
+      await userEvent.type(slug, "good");
+      expect(slug).toBeInTheDocument();
+      expect(slug).toHaveValue("good");
+      expect(advanced).toHaveAttribute("aria-expanded", "true");
+      // With nothing wrong it closes on request again.
+      await userEvent.click(advanced);
+      expect(advanced).toHaveAttribute("aria-expanded", "false");
     });
 
     it("a service id the relay refuses is reported on its field, with Advanced opened", async () => {

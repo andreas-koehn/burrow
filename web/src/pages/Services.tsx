@@ -237,6 +237,7 @@ export default function Services() {
   const [nsNameLeft, setNsNameLeft] = useState(false);
   const [nsIdLeft, setNsIdLeft] = useState(false);
   // What the relay said about one field; nsErr is everything else.
+  const [nsNameErr, setNsNameErr] = useState<string | null>(null);
   const [nsIdErr, setNsIdErr] = useState<string | null>(null);
   const [nsSlugErr, setNsSlugErr] = useState<string | null>(null);
   const [nsErr, setNsErr] = useState<string | null>(null);
@@ -283,7 +284,10 @@ export default function Services() {
     : derivedId.length < 3 ? "Use at least three letters or digits."
     : null;
   const nsIdProblem = nsServiceId ? serviceIdError(nsServiceId) : null;
-  const nsSlugProblem = slugError(nsSlug ?? "");
+  // The slug that will be sent, typed or not: with a typed id, a short name
+  // ("DB") still gives a slug the relay refuses. Where the name itself is
+  // what is wrong, the slug that follows it is not named a second time.
+  const nsSlugProblem = nsNameProblem !== null && !nsSlug ? null : slugError(nsUrlSlug);
   const nsMissing = [
     nsNameMissing && "Enter a name.",
     nsNameProblem,
@@ -291,16 +295,18 @@ export default function Services() {
     nsSlugProblem && "Check the URL slug.",
   ];
   const nsHint = firstMissing(nsMissing);
-  const nsNameError = nsNameLeft ? nsNameProblem : null;
+  const nsNameError = nsNameErr ?? (nsNameLeft ? nsNameProblem : null);
   const nsIdError = nsIdErr ?? (nsIdLeft ? nsIdProblem : null);
   // A field with an error is never left hidden.
-  const nsAdvancedOpen = nsAdvanced || nsIdProblem !== null || nsSlugProblem !== null;
+  const nsAdvancedForced = nsIdProblem !== null || nsSlugProblem !== null;
+  const nsAdvancedOpen = nsAdvanced || nsAdvancedForced;
 
-  // The relay refused a field under Advanced: the same answer has opened it, and it takes the focus here.
+  // The relay refused one field: it takes the focus. Where the field is under
+  // Advanced, the same answer has opened it.
   useEffect(() => {
-    const field = nsIdErr !== null ? "ns-service-id" : nsSlugErr !== null ? "ns-slug" : null;
+    const field = nsNameErr !== null ? "ns-name" : nsIdErr !== null ? "ns-service-id" : nsSlugErr !== null ? "ns-slug" : null;
     if (field) document.getElementById(field)?.focus();
-  }, [nsIdErr, nsSlugErr]);
+  }, [nsNameErr, nsIdErr, nsSlugErr]);
 
   function closeNew() {
     setNewOpen(false);
@@ -315,6 +321,7 @@ export default function Services() {
     clearNsErrors();
   }
   function clearNsErrors() {
+    setNsNameErr(null);
     setNsIdErr(null);
     setNsSlugErr(null);
     setNsErr(null);
@@ -343,10 +350,17 @@ export default function Services() {
       // field under Advanced is shown with what the relay said about it, and
       // stays shown while it is corrected.
       else if (e.status === 400 && e.message.startsWith("service_id")) { setNsIdErr(e.message); setNsAdvanced(true); }
-      // A taken name is "service id or slug already in use"; both follow the
-      // name, and the slug is the one a reader changes without a second thought.
-      // The relay's other 409 (Burrow login without an auth domain) is no field's.
-      else if ((e.status === 409 && e.message.includes("slug")) || (e.status === 400 && e.message.startsWith("slug"))) { setNsSlugErr(e.message); setNsAdvanced(true); }
+      else if (e.status === 400 && e.message.startsWith("slug")) { setNsSlugErr(e.message); setNsAdvanced(true); }
+      // The relay answers one 409 for a taken id, slug or title ("service id or
+      // slug already in use"). While the id and the slug follow the name,
+      // another name is the way out. Once one of them was typed it may be the
+      // one that is taken, and the slug is the one a reader changes without a
+      // second thought. The relay's other 409 (Burrow login without an auth
+      // domain) is no field's.
+      else if (e.status === 409 && e.message.includes("slug")) {
+        if (nsServiceId || nsSlug) { setNsSlugErr(e.message); setNsAdvanced(true); }
+        else setNsNameErr("A service with this name exists already.");
+      }
       else setNsErr(e.message);
     },
   });
@@ -614,7 +628,8 @@ export default function Services() {
             />
           </FormField>
         </FormFieldGroup>
-        <Disclosure label="Advanced" open={nsAdvancedOpen} onOpenChange={setNsAdvanced}>
+        {/* Held open by a field in it: the toggle must not arm a close for the moment the value turns valid. */}
+        <Disclosure label="Advanced" open={nsAdvancedOpen} onOpenChange={(o) => setNsAdvanced(o || nsAdvancedForced)}>
           <FormFieldGroup>
             <FormField
               label="Service ID"

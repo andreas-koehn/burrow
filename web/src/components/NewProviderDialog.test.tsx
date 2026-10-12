@@ -264,9 +264,15 @@ describe("New provider dialog", () => {
     // Not a whole number: Create is blocked before anything is sent.
     await userEvent.clear(field);
     await userEvent.type(field, "-1");
-    expect(screen.getByText("Enter a whole number, or leave empty for no limit.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Create" })).toHaveAccessibleDescription("Check the requests at once.");
+    // Like every field here, it names its rule once it is left.
+    expect(screen.queryByText("Enter a whole number, or leave empty for no limit.")).toBeNull();
+    expect(field).not.toBeInvalid();
+    await userEvent.tab();
+    expect(screen.getByText("Enter a whole number, or leave empty for no limit.")).toBeInTheDocument();
+    expect(field).toBeInvalid();
+    expect(field).toHaveAccessibleDescription("Enter a whole number, or leave empty for no limit.");
   });
 
   it("creates through the mock API and choosing another preset overwrites the fields", async () => {
