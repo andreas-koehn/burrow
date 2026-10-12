@@ -1,10 +1,12 @@
 package proxy_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -171,7 +173,7 @@ func TestObserver_NothingForAnUnknownHost(t *testing.T) {
 	if code := get(t, ts.URL, "nobody."+authDomain, "/"); code != http.StatusNotFound {
 		t.Fatalf("status %d", code)
 	}
-	time.Sleep(50 * time.Millisecond)
+	ts.Close() // waits for the handlers and their defers
 	obs.mu.Lock()
 	defer obs.mu.Unlock()
 	if len(obs.got) != 0 {
@@ -238,10 +240,221 @@ func TestObserver_NothingForAGatewayRequest(t *testing.T) {
 			t.Fatalf("%s: status %d", host, code)
 		}
 	}
-	time.Sleep(50 * time.Millisecond)
+	ts.Close()
 	obs.mu.Lock()
 	defer obs.mu.Unlock()
 	if len(obs.got) != 0 {
 		t.Fatalf("the proxy observed a gateway request: %+v", obs.got)
+	}
+}
+
+// An upgrade through the reverse proxy: the upstream echoes on the taken-over
+// connection. Nothing is told while it is open; when it has closed, one event
+// carries the bytes echoed and the lifetime of the connection. Under -race
+// this is the case in which the proxy returns while a copy still writes.
+func TestObserver_UpgradeThroughTheReverseProxy(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+		_, _ = io.Copy(conn, conn)
+	})
+	d := newFakeDialer(upstream)
+	d.register("abc123", &proxy.Resolved{ServiceID: "svc1", TunnelID: "tun1", AccessMode: "open", LocalHost: "127.0.0.1:3000"})
+	obs := &trafficObserver{}
+	ts := httptest.NewServer(proxy.New(d, openChecker{}, authDomain, testLog(), proxy.WithObserver(obs)))
+	defer ts.Close()
+
+	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	opened := time.Now()
+	_, _ = io.WriteString(conn, "GET /ws HTTP/1.1\r\nHost: abc123."+authDomain+"\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade: %v %+v", err, resp)
+	}
+	const msg = "hello through the proxy"
+	if _, err := io.WriteString(conn, msg); err != nil {
+		t.Fatal(err)
+	}
+	echo := make([]byte, len(msg))
+	if _, err := io.ReadFull(br, echo); err != nil || string(echo) != msg {
+		t.Fatalf("echo %q, %v", echo, err)
+	}
+	time.Sleep(100 * time.Millisecond) // the connection lives for a while
+	obs.mu.Lock()
+	open := len(obs.got)
+	obs.mu.Unlock()
+	if open != 0 {
+		t.Fatalf("an event while the connection is open: %+v", obs.got)
+	}
+	_ = conn.Close()
+	lived := time.Since(opened)
+
+	got := obs.one(t)
+	if got.Status != http.StatusSwitchingProtocols || got.BytesOut != int64(len(msg)) {
+		t.Errorf("status %d, bytes out %d, want 101 and %d", got.Status, got.BytesOut, len(msg))
+	}
+	if got.Duration < 100*time.Millisecond || got.Duration > lived+time.Second {
+		t.Errorf("duration %s does not cover the connection (open for at least 100ms, %s)", got.Duration, lived)
+	}
+}
+
+// The leftmost X-Forwarded-For entry of a trusted proxy is the visitor's
+// address, and a string the client chose: only an address reaches the observer.
+func TestObserver_SourceIPIsAnAddress(t *testing.T) {
+	cases := []struct{ xff, want string }{
+		{"203.0.113.7", "203.0.113.7"},
+		{"  2001:db8::1 ", "2001:db8::1"},
+		{"<script>alert(1)</script>", ""},
+		{"fe80::1%eth0", ""},
+		{"203.0.113.7:8080", ""},
+		{"internal.example", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.xff, func(t *testing.T) {
+			d := newFakeDialer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+			d.register("abc123", &proxy.Resolved{ServiceID: "svc1", TunnelID: "tun1", AccessMode: "open", LocalHost: "127.0.0.1:3000"})
+			obs := &trafficObserver{}
+			_, loop, _ := net.ParseCIDR("127.0.0.0/8")
+			_, loop6, _ := net.ParseCIDR("::1/128")
+			ts := httptest.NewServer(proxy.New(d, openChecker{}, authDomain, testLog(),
+				proxy.WithObserver(obs), proxy.WithTrustedProxies([]*net.IPNet{loop, loop6})))
+			defer ts.Close()
+			req, _ := http.NewRequest("GET", ts.URL+"/x", nil)
+			req.Host = "abc123." + authDomain
+			req.Header.Set("X-Forwarded-For", tc.xff)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if got := obs.one(t); got.SourceIP != tc.want {
+				t.Errorf("source ip %q, want %q", got.SourceIP, tc.want)
+			}
+		})
+	}
+}
+
+// A visitor who hangs up before the upstream answered is no upstream error:
+// the event says so. A refused upstream is one.
+func TestObserver_ClientGoneBeforeTheUpstreamAnswered(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	})
+	d := newFakeDialer(upstream)
+	d.register("abc123", &proxy.Resolved{ServiceID: "svc1", TunnelID: "tun1", AccessMode: "open", LocalHost: "127.0.0.1:3000", APIKeyHeader: "Authorization"})
+	obs := &trafficObserver{}
+	ts := httptest.NewServer(proxy.New(d, openChecker{}, authDomain, testLog(), proxy.WithObserver(obs)))
+	defer ts.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/slow", nil)
+	req.Host = "abc123." + authDomain
+	errc := make(chan error, 1)
+	go func() {
+		resp, err := (&http.Client{Transport: &http.Transport{DisableKeepAlives: true}}).Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		errc <- err
+	}()
+	<-started
+	cancel()
+	<-errc
+
+	got := obs.one(t)
+	if !got.ClientGone || got.Outcome != observe.OutcomeError || !got.KeyService {
+		t.Fatalf("event of a visitor who left: %+v", got)
+	}
+}
+
+func TestObserver_UpstreamFailureIsNotClientGone(t *testing.T) {
+	fd := newFakeDialer(http.NotFoundHandler())
+	fd.register("abc123", &proxy.Resolved{ServiceID: "svc1", TunnelID: "tun1", AccessMode: "open", LocalHost: "127.0.0.1:3000", APIKeyHeader: "Authorization"})
+	obs := &trafficObserver{}
+	ts := httptest.NewServer(proxy.New(brokenDialer{fd}, openChecker{}, authDomain, testLog(), proxy.WithObserver(obs)))
+	defer ts.Close()
+	if code := get(t, ts.URL, "abc123."+authDomain, "/"); code != http.StatusBadGateway {
+		t.Fatalf("status %d", code)
+	}
+	got := obs.one(t)
+	if got.ClientGone || got.Outcome != observe.OutcomeError || !got.KeyService {
+		t.Fatalf("event of a failed upstream: %+v", got)
+	}
+}
+
+// panicChain panics where the AI chain would, after the response began.
+type panicChain struct{}
+
+func (panicChain) Dispatch(w http.ResponseWriter, _ *http.Request, _, _, _, _ string, _ http.Handler) {
+	_, _ = io.WriteString(w, "partial")
+	panic("handler failed")
+}
+
+// A handler that panics did not answer: the visitor got a broken response,
+// the event says error, and the panic is still the server's to deal with.
+func TestObserver_HandlerPanicIsAnErrorAndPropagates(t *testing.T) {
+	d := newFakeDialer(http.NotFoundHandler())
+	d.register("abc123", &proxy.Resolved{ServiceID: "svc1", TunnelID: "tun1", AccessMode: "open", LocalHost: "127.0.0.1:3000"})
+	obs := &trafficObserver{}
+	h := proxy.New(d, openChecker{}, authDomain, testLog(), proxy.WithAIChain(panicChain{}), proxy.WithObserver(obs))
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Host = "abc123." + authDomain
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	if recovered != "handler failed" {
+		t.Fatalf("the panic did not propagate unchanged: %v", recovered)
+	}
+	if got := obs.one(t); got.Outcome != observe.OutcomeError {
+		t.Fatalf("outcome %q for a handler that panicked", got.Outcome)
+	}
+}
+
+// An upstream that dies in the middle of its body: the visitor gets a
+// truncated body, which the event must not call clean.
+func TestObserver_UpstreamDiesMidBody(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		_, _ = io.WriteString(w, "some of it")
+		w.(http.Flusher).Flush()
+		conn, _, _ := w.(http.Hijacker).Hijack()
+		_ = conn.Close()
+	})
+	d := newFakeDialer(upstream)
+	d.register("abc123", &proxy.Resolved{ServiceID: "svc1", TunnelID: "tun1", AccessMode: "open", LocalHost: "127.0.0.1:3000"})
+	obs := &trafficObserver{}
+	ts := httptest.NewServer(proxy.New(d, openChecker{}, authDomain, testLog(), proxy.WithObserver(obs)))
+	defer ts.Close()
+	req, _ := http.NewRequest("GET", ts.URL+"/big", nil)
+	req.Host = "abc123." + authDomain
+	resp, err := (&http.Client{Transport: &http.Transport{DisableKeepAlives: true}}).Do(req)
+	if err == nil {
+		_, err = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("the visitor got a complete body")
+	}
+	if got := obs.one(t); got.Outcome != observe.OutcomeError {
+		t.Fatalf("outcome %q for an upstream that died mid-body: %+v", got.Outcome, got)
 	}
 }

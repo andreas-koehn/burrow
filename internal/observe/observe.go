@@ -104,6 +104,9 @@ type Traffic struct {
 	// KeyService: the service has an API-key header, which is how the proxy
 	// tells a model service from a plain one (see emitAIUpstreamErrorAudit).
 	KeyService bool
+	// ClientGone: the visitor hung up before the upstream answered. The
+	// outcome may be an error, but the upstream did not fail.
+	ClientGone bool
 	// SourceIP is the visitor's address as the connection log stores it. It
 	// is for the IP field of the access.denied webhook payload only: never a
 	// metric label, never logged.

@@ -523,3 +523,49 @@ func TestObserver_SessionOutcome(t *testing.T) {
 		`burrow_connections_total{service="",kind="control",status="closed_clean"} 1`,
 		`burrow_connections_total{service="",kind="control",status="closed_error"} 1`)
 }
+
+// access.denied is for refusals: a 401 or a 403. The redirect of a first
+// visit to a login service and the 500 of a misconfigured service are
+// rejected requests, counted as traffic, and no event.
+func TestObserver_AccessDeniedIsForRefusals(t *testing.T) {
+	o, rec, em, _ := newTestObserver(t)
+	rej := func(service string, status int) observe.Traffic {
+		return observe.Traffic{Kind: observe.TrafficHTTP, ServiceID: service, Method: "GET", Status: status,
+			Outcome: observe.OutcomeRejected, RejectReason: observe.RejectedAccess, SourceIP: "203.0.113.7"}
+	}
+	o.ObserveTraffic(rej("svc-login", 302))
+	o.ObserveTraffic(rej("svc-broken", 500))
+	if got := em.named("access.denied"); len(got) != 0 {
+		t.Fatalf("access.denied for a redirect and a 500: %v", got)
+	}
+	wantLines(t, expo(t, rec),
+		`burrow_http_requests_total{service="svc-login",method="GET",status="3xx"} 1`,
+		`burrow_http_requests_total{service="svc-broken",method="GET",status="5xx"} 1`)
+	o.ObserveTraffic(rej("svc-401", 401))
+	o.ObserveTraffic(rej("svc-403", 403))
+	got := em.named("access.denied")
+	if len(got) != 2 || got[0]["ServiceID"] != "svc-401" || got[1]["ServiceID"] != "svc-403" {
+		t.Fatalf("access.denied events: %v", got)
+	}
+}
+
+// A visitor who hangs up before the upstream answered is no upstream error;
+// an upstream that failed still is.
+func TestObserver_ClientGoneIsNoUpstreamError(t *testing.T) {
+	o, rec, em, _ := newTestObserver(t)
+	o.ObserveTraffic(observe.Traffic{Kind: observe.TrafficHTTP, ServiceID: "svc-ai", Method: "POST", Status: 502,
+		Outcome: observe.OutcomeError, KeyService: true, ClientGone: true})
+	if strings.Contains(expo(t, rec), "burrow_ai_upstream_errors_total{") {
+		t.Fatalf("an upstream error counted for a visitor who left:\n%s", grepBurrow(expo(t, rec), "burrow_ai_upstream_errors_total"))
+	}
+	if up := em.named("ai.upstream_error"); len(up) != 0 {
+		t.Fatalf("ai.upstream_error for a visitor who left: %v", up)
+	}
+	wantLines(t, expo(t, rec), `burrow_connections_total{service="svc-ai",kind="http_proxy",status="closed_error"} 1`)
+	o.ObserveTraffic(observe.Traffic{Kind: observe.TrafficHTTP, ServiceID: "svc-ai", Method: "POST", Status: 502,
+		Outcome: observe.OutcomeError, KeyService: true})
+	wantLines(t, expo(t, rec), `burrow_ai_upstream_errors_total{service="svc-ai",status="5xx"} 1`)
+	if up := em.named("ai.upstream_error"); len(up) != 1 {
+		t.Fatalf("ai.upstream_error events: %v", up)
+	}
+}

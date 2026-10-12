@@ -14,6 +14,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ankoehn/burrow/internal/audit"
@@ -438,13 +439,13 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 		p.trustedProxies,
 	)
 
-	logStatus, rejected := StatusClosedClean, ""
-	defer p.recordOnClose(r, res, resolvedClientIP, started, rc, ww, &logStatus, &rejected)
+	logStatus, ost := StatusClosedClean, &obsState{}
+	defer p.recordOnClose(r, res, resolvedClientIP, started, rc, ww, &logStatus, ost)
 
 	// Step 1b: enforce ip-geo block/allow policy BEFORE access-mode check.
 	if denied, reason := p.ipGeoDenied(res, resolvedClientIP); denied {
 		p.log.Info("ip-geo deny", "service_id", res.ServiceID, "ip", resolvedClientIP, "reason", reason)
-		logStatus, rejected = StatusRejected, observe.RejectedIPGeo
+		logStatus, ost.rejected = StatusRejected, observe.RejectedIPGeo
 		http.Error(w, "forbidden: ip not allowed", http.StatusForbidden)
 		return
 	}
@@ -452,7 +453,7 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 	// Step 2: enforce access mode BEFORE opening a stream.
 	ok, status, body, hdr := p.checker.Allow(ctx, res, r)
 	if !ok {
-		logStatus, rejected = StatusRejected, observe.RejectedAccess
+		logStatus, ost.rejected = StatusRejected, observe.RejectedAccess
 		for k, vs := range hdr {
 			for _, v := range vs {
 				w.Header().Add(k, v)
@@ -543,8 +544,14 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 				logStatus = StatusClosedIdle
 			} else {
 				logStatus = StatusClosedError
-				// Emit audit row for AI-gateway upstream connection failures.
-				p.emitAIUpstreamErrorAudit(r.Context(), res.ServiceID, res.APIKeyHeader, upstreamHost, http.StatusBadGateway)
+				if visitorGone(r, err) {
+					// The visitor hung up before the upstream answered: the
+					// upstream did not fail.
+					ost.clientGone = true
+				} else {
+					// Emit audit row for AI-gateway upstream connection failures.
+					p.emitAIUpstreamErrorAudit(r.Context(), res.ServiceID, res.APIKeyHeader, upstreamHost, http.StatusBadGateway)
+				}
 			}
 			if errors.Is(err, ErrNotFound) {
 				p.notFound(w)
@@ -617,13 +624,13 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 	// return so the deferred call sees the correct terminal status. Detached
 	// context (context.WithoutCancel via SQLSink.Record's own machinery)
 	// keeps the row recordable even on client cancel.
-	logStatus, rejected := StatusClosedClean, ""
-	defer p.recordOnClose(r, res, resolvedClientIP, started, rc, ww, &logStatus, &rejected)
+	logStatus, ost := StatusClosedClean, &obsState{}
+	defer p.recordOnClose(r, res, resolvedClientIP, started, rc, ww, &logStatus, ost)
 
 	// Step 1b: enforce ip-geo block/allow policy BEFORE access-mode check.
 	if denied, reason := p.ipGeoDenied(res, resolvedClientIP); denied {
 		p.log.Info("ip-geo deny", "service_id", res.ServiceID, "ip", resolvedClientIP, "reason", reason)
-		logStatus, rejected = StatusRejected, observe.RejectedIPGeo
+		logStatus, ost.rejected = StatusRejected, observe.RejectedIPGeo
 		http.Error(w, "forbidden: ip not allowed", http.StatusForbidden)
 		return
 	}
@@ -631,7 +638,7 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 	// Step 2: enforce access mode BEFORE opening a stream.
 	ok, status, body, hdr := p.checker.Allow(ctx, res, r)
 	if !ok {
-		logStatus, rejected = StatusRejected, observe.RejectedAccess
+		logStatus, ost.rejected = StatusRejected, observe.RejectedAccess
 		for k, vs := range hdr {
 			for _, v := range vs {
 				w.Header().Add(k, v)
@@ -773,8 +780,14 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 				logStatus = StatusClosedIdle
 			} else {
 				logStatus = StatusClosedError
-				// Emit audit row for AI-gateway upstream connection failures.
-				p.emitAIUpstreamErrorAudit(r.Context(), res.ServiceID, res.APIKeyHeader, upstreamHost, http.StatusBadGateway)
+				if visitorGone(r, err) {
+					// The visitor hung up before the upstream answered: the
+					// upstream did not fail.
+					ost.clientGone = true
+				} else {
+					// Emit audit row for AI-gateway upstream connection failures.
+					p.emitAIUpstreamErrorAudit(r.Context(), res.ServiceID, res.APIKeyHeader, upstreamHost, http.StatusBadGateway)
+				}
 			}
 			if errors.Is(err, ErrNotFound) {
 				p.notFound(w)
@@ -1004,8 +1017,9 @@ func (p *Proxy) GetConfigForClient(hello *tls.ClientHelloInfo) (*tls.Config, err
 // here goes to the connection log and to the observer.
 
 // recordOnClose builds a ConnLogEntry from the captured per-request counters
-// and dispatches it through the registered ConnLogSink. Safe to call when
-// p.connLogSink is nil — recordOnClose returns immediately. Called from a
+// and dispatches it through the registered ConnLogSink. It first tells the
+// summary sink and the observer; with no ConnLogSink it returns after that.
+// Called from a
 // deferred closure in serveResolved / serveCustomDomain so it fires on every
 // terminal exit (happy path, access-deny, panics recovered by the stdlib).
 //
@@ -1027,10 +1041,19 @@ func (p *Proxy) recordOnClose(
 	rc *countingBody,
 	ww *countingResponseWriter,
 	status *string,
-	rejected *string,
+	ost *obsState,
 ) {
+	// A handler that panics (http.ErrAbortHandler ends a broken stream that
+	// way, e.g. an upstream that died in the middle of its body) did not
+	// return: the visitor got an EOF or a truncated body. The panic goes on
+	// unchanged once the request is told.
+	panicked := recover()
+	if panicked != nil {
+		*status = StatusClosedError
+		defer panic(panicked)
+	}
 	p.summarise(r, res, started, ww)
-	p.observe(r, res, sourceIP, started, rc, ww, *status, *rejected)
+	p.observe(r, res, sourceIP, started, rc, ww, *status, ost)
 	if p.connLogSink == nil {
 		return
 	}
@@ -1098,7 +1121,7 @@ func (p *Proxy) summarise(r *http.Request, res *Resolved, started time.Time, ww 
 // after its response. Nothing of the request's context is used: the visitor
 // may be gone already.
 func (p *Proxy) observe(r *http.Request, res *Resolved, sourceIP string, started time.Time,
-	rc *countingBody, ww *countingResponseWriter, outcome, rejected string) {
+	rc *countingBody, ww *countingResponseWriter, outcome string, ost *obsState) {
 	if p.observer == nil || res == nil {
 		return
 	}
@@ -1114,12 +1137,35 @@ func (p *Proxy) observe(r *http.Request, res *Resolved, sourceIP string, started
 		ServiceID: res.ServiceID, TunnelID: res.TunnelID,
 		UserID: res.UserID, SessionID: res.ClientSessionID,
 		Method: r.Method, Status: status,
-		Outcome: outcome, RejectReason: rejected,
+		Outcome: outcome, RejectReason: ost.rejected, ClientGone: ost.clientGone,
 		KeyService: res.APIKeyHeader != "",
-		SourceIP:   sourceIP,
+		SourceIP:   observedIP(sourceIP),
 		BytesIn:    rc.bytes(), BytesOut: ww.bytes(),
 		Started: started, Duration: time.Since(started),
 	})
+}
+
+// obsState is what the observer is told besides the connection-log status.
+type obsState struct {
+	rejected   string // an observe.Rejected… value when the request was refused
+	clientGone bool   // the visitor hung up before the upstream answered
+}
+
+// visitorGone reports whether err of the upstream round trip is the visitor's
+// doing: the request's context was cancelled (not timed out).
+func visitorGone(r *http.Request, err error) bool {
+	return errors.Is(r.Context().Err(), context.Canceled) || errors.Is(err, context.Canceled)
+}
+
+// observedIP is the visitor's address for the observer, or "" when it is not
+// one: the leftmost X-Forwarded-For entry of a trusted proxy is a string the
+// client chose, and the observer's consumers publish it.
+func observedIP(s string) string {
+	ip := net.ParseIP(strings.TrimSpace(s)) // nil for a zone, a name, anything else
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
 
 // countingBody wraps the inbound request body, counting bytes read into
@@ -1127,7 +1173,7 @@ func (p *Proxy) observe(r *http.Request, res *Resolved, sourceIP string, started
 // io.EOF / io.ErrUnexpectedEOF continue to behave correctly.
 type countingBody struct {
 	r io.ReadCloser
-	n int64
+	n atomic.Int64 // the transport reads the body from a goroutine of its own
 }
 
 func newCountingBody(r io.ReadCloser) *countingBody {
@@ -1140,14 +1186,14 @@ func newCountingBody(r io.ReadCloser) *countingBody {
 func (b *countingBody) Read(p []byte) (int, error) {
 	n, err := b.r.Read(p)
 	if n > 0 {
-		b.n += int64(n)
+		b.n.Add(int64(n))
 	}
 	return n, err
 }
 
 func (b *countingBody) Close() error { return b.r.Close() }
 
-func (b *countingBody) bytes() int64 { return b.n }
+func (b *countingBody) bytes() int64 { return b.n.Load() }
 
 // countingResponseWriter wraps the outbound writer, totalling every byte
 // that escapes through Write into BytesOut. Implements http.Flusher and
@@ -1166,9 +1212,9 @@ func (b *countingBody) bytes() int64 { return b.n }
 // post-ServeHTTP check skips the 5xx test.
 type countingResponseWriter struct {
 	http.ResponseWriter
-	n          int64
-	statusCode int  // set by WriteHeader; 0 = not yet called
-	hijacked   bool // the connection was taken over through Hijack
+	n          atomic.Int64 // a hijacked connection is written by two goroutines
+	statusCode int          // set by WriteHeader; 0 = not yet called
+	hijacked   bool         // the connection was taken over through Hijack
 }
 
 func newCountingResponseWriter(w http.ResponseWriter) *countingResponseWriter {
@@ -1185,12 +1231,12 @@ func (w *countingResponseWriter) WriteHeader(code int) {
 func (w *countingResponseWriter) Write(p []byte) (int, error) {
 	n, err := w.ResponseWriter.Write(p)
 	if n > 0 {
-		w.n += int64(n)
+		w.n.Add(int64(n))
 	}
 	return n, err
 }
 
-func (w *countingResponseWriter) bytes() int64 { return w.n }
+func (w *countingResponseWriter) bytes() int64 { return w.n.Load() }
 
 // Unwrap lets http.ResponseController reach the server's own writer for what
 // this wrapper does not do itself (full duplex, deadlines).
@@ -1228,13 +1274,13 @@ func (w *countingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // — so bytes_out remains accurate even when the response is hijacked.
 type countingConn struct {
 	net.Conn
-	n *int64
+	n *atomic.Int64
 }
 
 func (c *countingConn) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
 	if n > 0 {
-		*c.n += int64(n)
+		c.n.Add(int64(n))
 	}
 	return n, err
 }

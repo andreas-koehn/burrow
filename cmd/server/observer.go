@@ -16,6 +16,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
 	"reflect"
 	"strconv"
 	"sync"
@@ -268,11 +269,16 @@ func (o *observer) ObserveTraffic(e observe.Traffic) {
 	}
 	switch {
 	case e.Outcome == observe.OutcomeRejected:
+		// A refusal is a 401 or a 403: the redirect of a first visit to the
+		// login page and the 500 of a misconfigured service are not.
+		if e.Status != http.StatusUnauthorized && e.Status != http.StatusForbidden {
+			break
+		}
 		// One per service and reason per minute, however many are refused.
 		if o.perMinute.allow("access.denied\x00" + e.ServiceID + "\x00" + e.RejectReason) {
 			o.publish("access.denied", map[string]any{"ServiceID": e.ServiceID, "Reason": e.RejectReason, "IP": e.SourceIP})
 		}
-	case e.Outcome == observe.OutcomeError && e.KeyService:
+	case e.Outcome == observe.OutcomeError && e.KeyService && !e.ClientGone:
 		// Where the proxy writes its ai.upstream_error audit entry.
 		o.upstreamError(e.ServiceID, e.ServiceID, e.Status, 0)
 	}
