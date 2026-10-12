@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams, useLocation } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
@@ -41,7 +41,7 @@ export default function ServiceDetail() {
     enabled: !!id,
     retry: false,
     // Asked again until a client serves it, then no more. An answer that fails ends
-    // the asking too: the panel says so, and a reload starts it again.
+    // the asking too: the page says so, and a reload starts it again.
     refetchInterval: (query) => {
       if (query.state.status === "error") return false;
       const s = query.state.data;
@@ -77,6 +77,16 @@ export default function ServiceDetail() {
     onError: (e: unknown) => setGatewayErr(e instanceof ApiError ? e.message : "Couldn't change the setting."),
   });
 
+  // An answer that fails after the service was read says what happened to it.
+  // Gone: the page gives way to its error view. Signed out: the session is asked
+  // about, and whoever guards the routes takes over. This request is the first
+  // to meet an expired session, since it is the one that repeats.
+  const gone = error instanceof ApiError && error.status === 404;
+  const signedOut = error instanceof ApiError && error.status === 401;
+  useEffect(() => {
+    if (signedOut) void qc.invalidateQueries({ queryKey: ["me"] });
+  }, [signedOut, qc]);
+
   if (isLoading) {
     return (
       <div className="service-detail-page">
@@ -86,8 +96,9 @@ export default function ServiceDetail() {
     );
   }
 
-  // Only without a service to show: one that is on the page stays there when a later answer fails.
-  if (!svc) {
+  // Without a service to show, or once it is gone. Any other failure of a later
+  // answer leaves the service that was read on the page.
+  if (!svc || gone) {
     return (
       <div className="service-detail-page">
         <PageHeader back={BACK} title="Service" />
@@ -145,8 +156,15 @@ export default function ServiceDetail() {
         )}
       </div>
 
+      {/* For every service, whatever is shown below: the page and its controls stay, but may be out of date. */}
+      {error && (
+        <ErrorNotice variant="warn" role="status">
+          This service could not be read again: the page may be out of date and no longer updates by itself.
+        </ErrorNotice>
+      )}
+
       {/* Only what a client serves: the hidden service of a hosted provider has no machine behind it. */}
-      {svc.type !== "direct" && <ServiceClientPanel service={svc} unread={!!error} />}
+      {svc.type !== "direct" && <ServiceClientPanel service={svc} />}
 
       <Tabs
         value={tab}

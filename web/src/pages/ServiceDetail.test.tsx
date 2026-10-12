@@ -224,6 +224,8 @@ describe("ServiceDetail page", () => {
       expect(asks()).toBe(left);
     });
 
+    const NOTE = "This service could not be read again: the page may be out of date and no longer updates by itself.";
+
     it("an answer that fails leaves the page as it is, says so, and ends the asking", async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       mountAt("/services/svc_graf01");
@@ -231,7 +233,9 @@ describe("ServiceDetail page", () => {
       let failed = 0;
       server.use(http.get("/api/v1/services/:id", () => { failed++; return HttpResponse.json({ error: "boom" }, { status: 500 }); }));
       await act(() => vi.advanceTimersByTimeAsync(2_100));
-      expect(await within(panel).findByText("The status could not be read: this page no longer updates by itself.")).toBeInTheDocument();
+      const note = await screen.findByText(NOTE);
+      // A warning that is announced, not small print.
+      expect(note.closest("[role=status]")).toHaveClass("notice-inline", "warn");
       // The service read before stays on the page, with its tabs: no error page in its place.
       expect(screen.getByRole("heading", { level: 1, name: "grafana" })).toBeInTheDocument();
       expect(screen.getByRole("tab", { name: "Access" })).toBeInTheDocument();
@@ -239,6 +243,63 @@ describe("ServiceDetail page", () => {
       expect(within(panel).getAllByRole("status")[0]).toHaveTextContent(/^Offline/);
       await act(() => vi.advanceTimersByTimeAsync(10_000));
       expect(failed).toBe(1);
+    });
+
+    it("a service that is gone when asked again gives way to the error view", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      mountAt("/services/svc_graf01");
+      await screen.findByRole("region", { name: "Client" });
+      let asked = 0;
+      server.use(http.get("/api/v1/services/:id", () => { asked++; return HttpResponse.json({ error: "service not found" }, { status: 404 }); }));
+      await act(() => vi.advanceTimersByTimeAsync(2_100));
+      expect(await screen.findByRole("alert")).toHaveTextContent("service not found");
+      // Nothing of the service is left to act on.
+      expect(screen.queryByRole("region", { name: "Client" })).toBeNull();
+      expect(screen.queryByRole("tab", { name: "Access" })).toBeNull();
+      expect(screen.queryByRole("heading", { level: 1, name: "grafana" })).toBeNull();
+      expect(screen.queryByText(NOTE)).toBeNull();
+      expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(asked).toBe(1);
+    });
+
+    it("an expired session met when asking again has the session asked about", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const { qc } = mountAt("/services/svc_graf01");
+      await screen.findByRole("region", { name: "Client" });
+      const invalidate = vi.spyOn(qc, "invalidateQueries");
+      let asked = 0;
+      server.use(http.get("/api/v1/services/:id", () => { asked++; return HttpResponse.json({ error: "unauthorized" }, { status: 401 }); }));
+      await act(() => vi.advanceTimersByTimeAsync(2_100));
+      await waitFor(() => expect(invalidate).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["me"] })));
+      // Until the app's own handling takes over the page stays, and says that it is out of date.
+      expect(screen.getByRole("heading", { level: 1, name: "grafana" })).toBeInTheDocument();
+      expect(screen.getByText(NOTE)).toBeInTheDocument();
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(asked).toBe(1);
+    });
+
+    it("any other failure does not ask about the session", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const { qc } = mountAt("/services/svc_graf01");
+      await screen.findByRole("region", { name: "Client" });
+      const invalidate = vi.spyOn(qc, "invalidateQueries");
+      server.use(http.get("/api/v1/services/:id", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+      await act(() => vi.advanceTimersByTimeAsync(2_100));
+      await screen.findByText(NOTE);
+      expect(invalidate).not.toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["me"] }));
+    });
+
+    it("says so for the hidden service of a hosted provider too, which has no Client panel", async () => {
+      const { qc } = mountAt("/services/prov-zai");
+      await screen.findByRole("heading", { level: 1, name: "zai" });
+      expect(screen.queryByText(NOTE)).toBeNull();
+      server.use(http.get("/api/v1/services/:id", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+      // It is not asked for by itself; a change made on the page reads it again.
+      await act(() => qc.invalidateQueries({ queryKey: ["service", "prov-zai"] }));
+      expect(await screen.findByText(NOTE)).toBeInTheDocument();
+      expect(screen.getByRole("heading", { level: 1, name: "zai" })).toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "Client" })).toBeNull();
     });
   });
 

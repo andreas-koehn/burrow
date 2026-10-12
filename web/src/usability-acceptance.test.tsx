@@ -53,7 +53,7 @@ describe("INTUITIVE — navigation & mental-model alignment", () => {
     expect(await within(row).findByRole("link", { name: "ollama" })).toHaveAttribute("href", "/gateway/providers/ollama");
   });
 
-  it("In-4: Services on Online — http tunnel name links to the service detail view", async () => {
+  it("In-4: the Online view of Services — http tunnel name links to the service detail view", async () => {
     // Seed a non-empty tunnels list with an http tunnel that has a service_id
     server.use(
       http.get("/api/v1/tunnels", () =>
@@ -159,7 +159,7 @@ describe("EASY — onboarding & discoverability", () => {
   // Ea-5: empty states have a next action
   // ---------------------------------------------------------------------------
   describe("Ea-5 — empty states have a next action", () => {
-    it("Services on Online: the empty state has a 'Connect a client' CTA link", async () => {
+    it("the Online view of Services: the empty state has a 'Connect a client' CTA link", async () => {
       server.use(
         http.get("/api/v1/tunnels", () => HttpResponse.json([])),
       );

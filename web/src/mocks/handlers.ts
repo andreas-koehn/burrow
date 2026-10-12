@@ -246,7 +246,7 @@ function providerVisible(p: AiProviderRow): boolean {
 // A service as the relay returns it: the stored row without its owner, with
 // the status the relay works out. Online while a client serves it, offline
 // when one served it before, never connected otherwise.
-function serviceWire(svc: ServiceRow): Omit<Service, "type"> & { type: ServiceRow["type"] } {
+function serviceWire(svc: ServiceRow): Service {
   const { user_id: _u, last_seen, last_client, ...row } = svc;
   // The session that holds the tunnel of the same name, as the relay matches them.
   const holder = svc.connected

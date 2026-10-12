@@ -26,8 +26,7 @@ export interface CacheSettingsPayload {
 // work them out on every response (serviceWire), as the relay does. A row is
 // online while `connected`, offline when it has a last_seen, never connected
 // otherwise.
-export interface ServiceRow extends Omit<Service, "type" | "status" | "last_seen" | "last_client" | "client_session_id" | "provider_slug"> {
-  type: Service["type"] | "direct";
+export interface ServiceRow extends Omit<Service, "status" | "last_seen" | "last_client" | "client_session_id" | "provider_slug"> {
   user_id: string;
   /** When a client last served it; absent while none has. */
   last_seen?: string;

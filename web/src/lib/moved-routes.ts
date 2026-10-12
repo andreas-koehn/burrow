@@ -15,7 +15,7 @@ export const OLD_ROUTES: { from: string; to: string }[] = [
   { from: "/openapi", to: "/settings/api" },
   { from: "/account", to: "/settings/profile" },
   { from: "/account/automation", to: "/settings/automation" },
-  // Tunnels are the Live filter of Services; client tokens are a tab of Clients.
+  // Tunnels are the Online view of Services; client tokens are a tab of Clients.
   { from: "/tunnels", to: "/services?live=1" },
   { from: "/tokens", to: "/clients?tab=tokens" },
   // Connection logs are the Traffic view of the Services workspace.
