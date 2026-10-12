@@ -253,7 +253,7 @@ func buildTools(s ToolStore) map[string]Tool {
 				return nil, err
 			}
 			if in.ID == "" {
-				return nil, errors.New("id is required")
+				return nil, userError("id is required")
 			}
 			det, err := s.GetService(ctx, CallerID(ctx), CallerRole(ctx), in.ID)
 			if err != nil {
@@ -304,7 +304,7 @@ func buildTools(s ToolStore) map[string]Tool {
 				return nil, err
 			}
 			if in.ID == "" || in.Mode == "" {
-				return nil, errors.New("id and mode are required")
+				return nil, userError("id and mode are required")
 			}
 			header := ""
 			if in.Mode == "api_key" {
@@ -315,7 +315,7 @@ func buildTools(s ToolStore) map[string]Tool {
 			// in a JSON-RPC argument list; reject mtls here so callers do
 			// not accidentally clear the existing CA.
 			if in.Mode == "mtls" {
-				return nil, errors.New("mtls access mode requires the REST surface (mtls_ca_pem upload)")
+				return nil, userError("mtls access mode requires the REST surface (mtls_ca_pem upload)")
 			}
 			if err := s.SetServiceAccessMode(ctx, CallerID(ctx), CallerRole(ctx), in.ID, in.Mode, header, nil); err != nil {
 				return nil, mapStoreErr(err)
@@ -341,7 +341,7 @@ func buildTools(s ToolStore) map[string]Tool {
 				return nil, err
 			}
 			if in.ServiceID == "" {
-				return nil, errors.New("service_id is required")
+				return nil, userError("service_id is required")
 			}
 			rows, err := s.ListAPIKeys(ctx, CallerID(ctx), CallerRole(ctx), in.ServiceID)
 			if err != nil {
@@ -384,7 +384,7 @@ func buildTools(s ToolStore) map[string]Tool {
 				return nil, err
 			}
 			if in.ServiceID == "" || in.Name == "" {
-				return nil, errors.New("service_id and name are required")
+				return nil, userError("service_id and name are required")
 			}
 			id, plaintext, err := s.CreateAPIKey(ctx, CallerID(ctx), CallerRole(ctx), in.ServiceID, in.Name)
 			if err != nil {
@@ -416,7 +416,7 @@ func buildTools(s ToolStore) map[string]Tool {
 				return nil, err
 			}
 			if in.ServiceID == "" || in.ID == "" {
-				return nil, errors.New("service_id and id are required")
+				return nil, userError("service_id and id are required")
 			}
 			if err := s.DeleteAPIKey(ctx, CallerID(ctx), CallerRole(ctx), in.ServiceID, in.ID); err != nil {
 				return nil, mapStoreErr(err)
@@ -473,7 +473,7 @@ func buildTools(s ToolStore) map[string]Tool {
 				return nil, err
 			}
 			if in.Name == "" {
-				return nil, errors.New("name is required")
+				return nil, userError("name is required")
 			}
 			plaintext, err := s.IssueClientToken(ctx, CallerID(ctx), in.Name)
 			if err != nil {
@@ -657,8 +657,34 @@ func decodeArgs(args json.RawMessage, v any) error {
 	if len(args) == 0 {
 		return nil
 	}
-	return json.Unmarshal(args, v)
+	if err := json.Unmarshal(args, v); err != nil {
+		// The decoder's messages can quote the offending value; only the
+		// name of the parameter, when it is known, is kept.
+		var ute *json.UnmarshalTypeError
+		if errors.As(err, &ute) {
+			return &argError{param: ute.Field}
+		}
+		return &argError{}
+	}
+	return nil
 }
+
+// argError is a failure to decode a tool's arguments. It carries the name of
+// the parameter when the decoder knows it, never the value.
+type argError struct{ param string }
+
+func (e *argError) Error() string {
+	if e.param == "" {
+		return "invalid arguments"
+	}
+	return "invalid arguments: " + e.param
+}
+
+// userError is a tool's own validation or lookup message. Its text is fixed
+// and safe to show the caller.
+type userError string
+
+func (e userError) Error() string { return string(e) }
 
 // wrapRows wraps the rows of a list tool in an object under key.
 func wrapRows(key string, rows any) (json.RawMessage, error) {
@@ -684,7 +710,7 @@ func mapStoreErr(err error) error {
 	case errors.Is(err, store.ErrForbidden):
 		return ErrForbidden
 	case errors.Is(err, db.ErrNotFound):
-		return errors.New("not found")
+		return userError("not found")
 	}
 	return err
 }

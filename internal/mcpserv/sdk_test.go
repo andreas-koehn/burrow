@@ -523,3 +523,187 @@ func TestMCP_NoToken_NothingServed(t *testing.T) {
 		t.Fatalf("got %d %s", resp.StatusCode, body)
 	}
 }
+
+// ---------- review fixes ---------------------------------------------------
+
+// A JSON-RPC batch is refused before the SDK sees it: it would let one POST
+// run any number of calls past the per-request limits.
+func TestMCP_Batch_IsRefused(t *testing.T) {
+	batch := `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tunnels_list","arguments":{}}},` +
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tunnels_list","arguments":{}}}]`
+	for _, rev := range append([]string{""}, testRevisions...) {
+		for _, body := range []string{batch, " \n\t" + batch} {
+			hs, sink := newSDKTestServer(t, &fakeStore{}, allToolPerms, "admin")
+			hdr := map[string]string{}
+			if rev != "" {
+				hdr["MCP-Protocol-Version"] = rev
+			}
+			resp, got := rawPOST(t, hs.URL, "", hdr, body)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("revision %q: batch got %d %s, want 400", rev, resp.StatusCode, got)
+			}
+			if rows := sink.all(); len(rows) != 0 {
+				t.Errorf("revision %q: batch left audit rows: %+v", rev, rows)
+			}
+		}
+	}
+}
+
+// A single request object still works, also when it follows whitespace.
+func TestMCP_SingleRequest_StillServed(t *testing.T) {
+	for _, rev := range []string{"2025-11-25", "2025-06-18", "2025-03-26"} {
+		hs, _ := newSDKTestServer(t, &fakeStore{}, allToolPerms, "admin")
+		resp, body := rawPOST(t, hs.URL, "", map[string]string{"MCP-Protocol-Version": rev}, "  \n"+rawToolsList)
+		if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"tunnels_list"`) {
+			t.Errorf("%s: %d %s", rev, resp.StatusCode, body)
+		}
+	}
+}
+
+// panicAudit is an AuditAppender that panics.
+type panicAudit struct{}
+
+func (panicAudit) Append(context.Context, audit.Event) error { panic("audit sink is broken") }
+
+func TestMCP_AuditPanic_IsContained(t *testing.T) {
+	s := New(nil, nil, &fakeStore{}, quietLog())
+	s.SetAuditAppender(panicAudit{})
+	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: []string{"tunnels:read:any"}}
+	h := s.mcpHandler()
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
+	}))
+	t.Cleanup(hs.Close)
+	cs := connectMCP(t, hs.URL, "", "2025-11-25")
+
+	// An allowed tool, and a tool the token may not see.
+	for _, name := range []string{"tunnels_list", "users_list"} {
+		res, err := callTool(t, cs, name, nil)
+		if err != nil {
+			t.Fatalf("%s: protocol error: %v", name, err)
+		}
+		if !res.IsError || resultText(t, res) != "internal error" {
+			t.Errorf("%s: result = %+v", name, res)
+		}
+	}
+	// The process and the server are still there.
+	if _, err := cs.ListTools(context.Background(), nil); err != nil {
+		t.Fatalf("tools/list after the panics: %v", err)
+	}
+}
+
+// Argument values reach neither the caller nor the log.
+func TestMCP_BadArguments_DoNotEchoValues(t *testing.T) {
+	var logBuf strings.Builder
+	var mu sync.Mutex
+	log := slog.New(slog.NewTextHandler(lockedWriter{&mu, &logBuf}, nil))
+	s := New(nil, nil, &fakeStore{}, log)
+	s.SetAuditAppender(&auditSink{})
+	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: allToolPerms}
+	h := s.mcpHandler()
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
+	}))
+	t.Cleanup(hs.Close)
+	cs := connectMCP(t, hs.URL, "", "2025-11-25")
+
+	for _, args := range []map[string]any{
+		{"since": "SECRET-not-a-date"},
+		{"limit": "SECRET-not-a-number"},
+	} {
+		res, err := callTool(t, cs, "audit_search", args)
+		if err != nil {
+			t.Fatalf("protocol error: %v", err)
+		}
+		text := resultText(t, res)
+		if !res.IsError || !strings.HasPrefix(text, "invalid arguments") || strings.Contains(text, "SECRET") {
+			t.Errorf("args %v: result = %+v", args, res)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Contains(logBuf.String(), "SECRET") {
+		t.Errorf("log carries an argument value: %s", logBuf.String())
+	}
+}
+
+type lockedWriter struct {
+	mu *sync.Mutex
+	b  *strings.Builder
+}
+
+func (w lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+// A store error that is not the caller's business is answered with a fixed
+// text and logged.
+func TestMCP_StoreError_IsNotShownToTheCaller(t *testing.T) {
+	fs := &fakeStore{apiKeyErr: errors.New("pq: connection to 10.0.0.5 refused")}
+	hs, _ := newSDKTestServer(t, fs, allToolPerms, "admin")
+	cs := connectMCP(t, hs.URL, "", "2025-11-25")
+	res, err := callTool(t, cs, "api_keys_list", map[string]any{"service_id": "svc1"})
+	if err != nil || !res.IsError || resultText(t, res) != "internal error" {
+		t.Errorf("err=%v result=%+v", err, res)
+	}
+}
+
+// One handler serves tokens with different permissions; each request sees
+// only its own token's tools, interleaved and concurrent.
+func TestMCP_TwoTokensOneHandler(t *testing.T) {
+	s := New(nil, nil, &fakeStore{}, quietLog())
+	s.SetAuditAppender(&auditSink{})
+	toks := map[string]*authedToken{
+		"a": {tokenID: "ta", userID: "u1", role: "admin", perms: []string{"tunnels:read:any"}},
+		"b": {tokenID: "tb", userID: "u2", role: "admin", perms: []string{"audit:read", "metrics:read"}},
+	}
+	h := s.mcpHandler()
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := toks[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+		if tok == nil {
+			http.Error(w, "no token", http.StatusUnauthorized)
+			return
+		}
+		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
+	}))
+	t.Cleanup(hs.Close)
+	want := map[string]string{"a": "tunnels_list", "b": "audit_search,metrics_snapshot"}
+
+	var wg sync.WaitGroup
+	errs := make(chan string, 64)
+	for i := 0; i < 8; i++ {
+		for _, name := range []string{"a", "b"} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := 0; j < 5; j++ {
+					cs, err := dialMCP(hs.URL, name, "2025-11-25")
+					if err != nil {
+						errs <- "connect: " + err.Error()
+						return
+					}
+					res, err := cs.ListTools(context.Background(), nil)
+					_ = cs.Close()
+					if err != nil {
+						errs <- "list: " + err.Error()
+						return
+					}
+					m := map[string]*mcp.Tool{}
+					for _, tl := range res.Tools {
+						m[tl.Name] = tl
+					}
+					if got := sortedNames(m); got != want[name] {
+						errs <- "token " + name + " saw " + got
+					}
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Error(e)
+	}
+}

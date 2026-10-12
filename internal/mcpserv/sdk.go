@@ -11,10 +11,12 @@
 package mcpserv
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -59,6 +61,27 @@ func (s *Server) mcpHandler() http.Handler {
 		if tok == nil {
 			sdk.ServeHTTP(w, r)
 			return
+		}
+		// A JSON-RPC batch would let one POST run any number of calls past
+		// the limits that count requests. The 2025-03-26 revision allows
+		// batches and the SDK serves them, so they are refused here, before
+		// the SDK reads the body. At most MaxBodyBytes+1 bytes are read; the
+		// SDK gets the body back intact.
+		if r.Method == http.MethodPost && r.Body != nil {
+			body, err := io.ReadAll(io.LimitReader(r.Body, MaxBodyBytes+1))
+			if err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			if len(body) > MaxBodyBytes {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			if trimmed := bytes.TrimLeft(body, " \t\r\n"); len(trimmed) > 0 && trimmed[0] == '[' {
+				http.Error(w, "batch requests are not supported", http.StatusBadRequest)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
 		}
 		ctx := context.WithValue(r.Context(), ctxKeyMCPServer, s.serverFor(tok))
 		sdk.ServeHTTP(w, r.WithContext(ctx))
@@ -120,7 +143,9 @@ func (s *Server) callHandler(tok *authedToken, t Tool) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (res *mcp.CallToolResult, _ error) {
 		defer func() {
 			if p := recover(); p != nil {
-				s.emitToolAudit(ctx, tok, t.Name, "error")
+				// The deferred function must not panic again: a failing audit
+				// sink is contained here.
+				s.safeAudit(ctx, tok, t.Name, "error")
 				s.log.Error("mcp tool panicked", "tool", t.Name, "panic", fmt.Sprint(p))
 				res = errorResult(errors.New("internal error"))
 			}
@@ -136,12 +161,29 @@ func (s *Server) callHandler(tok *authedToken, t Tool) mcp.ToolHandler {
 				return errorResult(ErrForbidden), nil
 			}
 			s.emitToolAudit(ctx, tok, t.Name, "error")
+			var ae *argError
+			var ue userError
+			switch {
+			case errors.As(err, &ae):
+				// Never the value: the log gets the parameter's name only.
+				s.log.Warn("mcp tool call failed", "tool", t.Name, "reason", "invalid arguments", "param", ae.param)
+				return errorResult(ae), nil
+			case errors.As(err, &ue):
+				s.log.Warn("mcp tool call failed", "tool", t.Name, "reason", string(ue))
+				return errorResult(ue), nil
+			}
 			s.log.Warn("mcp tool call failed", "tool", t.Name, "err", err)
-			return errorResult(err), nil
+			return errorResult(errors.New("internal error")), nil
 		}
 		s.emitToolAudit(ctx, tok, t.Name, "ok")
 		return toolResult(payload), nil
 	}
+}
+
+// safeAudit writes an audit row and swallows a panic of the audit sink.
+func (s *Server) safeAudit(ctx context.Context, tok *authedToken, tool, result string) {
+	defer func() { _ = recover() }()
+	s.emitToolAudit(ctx, tok, tool, result)
 }
 
 // toolResult renders a tool's JSON object twice, as MCP asks: as
@@ -166,7 +208,19 @@ func errorResult(err error) *mcp.CallToolResult {
 // caller cannot tell a tool it may not see from one that does not exist.
 func (s *Server) auditHidden(tok *authedToken) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
-		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		return func(ctx context.Context, method string, req mcp.Request) (res mcp.Result, err error) {
+			// The audit sink runs on the SDK's goroutine too; its panic must
+			// not end the process.
+			defer func() {
+				if p := recover(); p != nil {
+					s.log.Error("mcp request panicked", "method", method, "panic", fmt.Sprint(p))
+					if method == "tools/call" {
+						res, err = errorResult(errors.New("internal error")), nil
+						return
+					}
+					res, err = nil, errors.New("internal error")
+				}
+			}()
 			if method == "tools/call" {
 				if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && p != nil {
 					if t, known := s.tools[p.Name]; known && !tok.can(t.Permission) {
