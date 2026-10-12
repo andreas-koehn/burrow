@@ -20,12 +20,12 @@ function Row({ e }: { e: AuditEvent }) {
       <tr className="clickable" onClick={() => setOpen((o) => !o)}>
         <td>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</td>
         {/* A record keeps its exact times; how long ago that was is on hover. */}
-        <td className="small"><RelativeTime value={e.ts} absolute /></td>
-        <td className="mono small">{e.actor_email}</td>
+        <td><RelativeTime value={e.ts} absolute /></td>
+        <td className="mono">{e.actor_email}</td>
         <td className="mono">{e.action}</td>
         <td className="mono">{e.subject_label}</td>
         <td><Badge kind={RESULT_BADGE[e.result]}>{e.result}</Badge></td>
-        <td className="mono small">{e.source_ip}</td>
+        <td className="mono">{e.source_ip}</td>
       </tr>
       {open && (
         <tr>

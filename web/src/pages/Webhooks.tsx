@@ -287,7 +287,7 @@ export default function Webhooks() {
               ) : (
                 deliveries.data.map((d) => (
                   <tr key={d.id}>
-                    <td className="mono small">{d.ts}</td>
+                    <td className="mono">{d.ts}</td>
                     <td className="mono">{d.event}</td>
                     <td className="mono">{d.status_code}</td>
                     <td className="mono">{d.latency_ms} ms</td>

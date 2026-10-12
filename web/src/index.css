@@ -930,7 +930,6 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
 .t-h2      { font-size: 16px; font-weight: 600; letter-spacing: -0.005em; }
 .t-body    { font-size: 14px; font-weight: 400; }
 .t-small   { font-size: 12.5px; font-weight: 400; }
-.t-micro   { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-foreground); }
 
 /* ──────────────────────────────────────────────────────────────
    Reduced motion
@@ -1394,9 +1393,14 @@ a.user-chip:focus-visible {
 
 /* Settings pages share one container: .settings-page on the page wrapper of
    each. It is the whole content column and never centred, so every settings
-   page starts at the same left edge. A page that shows a table (or the API
-   viewer) fills the column; a page of forms keeps the form width. */
-.settings-page:not(:has(.table-wrap, table, iframe)) {
+   page starts at the same left edge. A page of forms says so on its wrapper
+   (.settings-form) and keeps the form width; the width is the page's own, so
+   it does not change while a table loads or is empty. */
+.settings-page {
+  max-width: none;
+  margin-inline: 0;
+}
+.settings-page.settings-form {
   max-width: var(--page-w-narrow);
 }
 

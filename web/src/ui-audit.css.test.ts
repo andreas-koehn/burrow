@@ -1,6 +1,6 @@
 /// <reference types="node" />
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 
 // Text-level pins for the CSS contracts introduced by the 2026-10 UI audit
@@ -242,6 +242,11 @@ describe("settings pages share one container", () => {
       "Users", "Roles", "AuditLog", "Webhooks", "OpenApiViewer", "settings/Profile", "settings/Sessions", "AutomationTokens",
     ]));
   });
+  // The pages that hold forms only. Every other settings page shows a table (or the API viewer).
+  const FORM_PAGES = ["settings/GeneralSettings", "settings/EmailSettings", "Retention", "DatabaseBackend", "settings/Profile"];
+  const formPages = files.filter((f) => FORM_PAGES.includes(f));
+  const tablePages = files.filter((f) => !FORM_PAGES.includes(f));
+
   it.each(files)("%s carries the class on its root, in every state it renders", (name) => {
     const found = roots(name);
     expect(found.length).toBeGreaterThan(0);
@@ -249,14 +254,31 @@ describe("settings pages share one container", () => {
     // Not centred as well: the left edge is the same on every settings page.
     expect(page(name)).not.toContain("page-narrow");
   });
-  it("is the whole column; only a page without a table keeps the form width, at the same left edge", () => {
-    // Without the comments: the one above the rule names the class too.
-    const rules = css.replace(/\/\*[\s\S]*?\*\//g, "").match(/\.settings-page[^{]*\{[^}]*\}/g) ?? [];
-    expect(rules).toHaveLength(1);
-    expect(rules[0]).toMatch(/^\.settings-page:not\(:has\(\.table-wrap, table, iframe\)\)\s*\{/);
-    expect(rules[0]).toMatch(/max-width:\s*var\(--page-w-narrow\)/);
-    // Never centred: no auto margin moves the column away from the left edge.
-    expect(rules[0]).not.toMatch(/margin[^;]*auto/);
+  it("sorts every settings page into one of the two kinds by what it shows", () => {
+    expect(formPages).toHaveLength(FORM_PAGES.length);
+    for (const name of formPages) expect(page(name), name).not.toMatch(/<table\b|<iframe\b/);
+    for (const name of tablePages) expect(page(name), name).toMatch(/<table\b|<iframe\b/);
+  });
+  it.each(FORM_PAGES)("%s, a page of forms, says so on its root", (name) => {
+    for (const c of roots(name)) expect(c.split(" ")).toEqual(expect.arrayContaining(["settings-page", "settings-form"]));
+  });
+  // The width is the page's, written in its source: it cannot change while the
+  // table is loading, is empty or gave way to an error.
+  it.each(tablePages)("%s, a page with a table, keeps the whole column in every state", (name) => {
+    expect(roots(name).length).toBeGreaterThan(0);
+    expect(page(name)).not.toContain("settings-form");
+  });
+  it("gives the page the whole column and caps a page of forms, at the same left edge", () => {
+    // Without the comments: the one above the rules names the classes too.
+    const plain = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const rules = (plain.match(/[^{}]*\.settings-(?:page|form)[^{]*\{[^}]*\}/g) ?? []).map((r) => r.trim());
+    expect(rules.map((r) => r.slice(0, r.indexOf("{")).trim())).toEqual([".settings-page", ".settings-page.settings-form"]);
+    expect(rules[0]).toMatch(/max-width:\s*none/);
+    expect(rules[1]).toMatch(/max-width:\s*var\(--page-w-narrow\)/);
+    // Never centred: no auto margin moves either away from the left edge.
+    for (const r of rules) expect(r).not.toMatch(/margin[^;]*auto/);
+    // The width never depends on what the page holds at the moment.
+    expect(plain).not.toMatch(/settings-[a-z-]+[^{]*:has\(/);
   });
 });
 
@@ -279,14 +301,13 @@ describe("type size", () => {
     sizes.filter(([selector, px]) => px < min && !skip.includes(selector)).map(([selector, px]) => `${selector}: ${px}px`);
 
   // What may stay at 11px: uppercase labels set with letter spacing, and keyboard hints.
-  const SMALL_LABELS = [
+  const UPPERCASE_LABELS = [
     "table.data thead th",   // column headers
     ".section-label",        // group titles
     ".nav-group-title",
-    ".t-micro",
-    ".kbd-token",            // keyboard hints
-    ".menu-item .shortcut",
   ];
+  const KEY_HINTS = [".kbd-token", ".menu-item .shortcut"];
+  const SMALL_LABELS = [...UPPERCASE_LABELS, ...KEY_HINTS];
 
   it("reads every size the stylesheet sets", () => {
     // A size in another unit, or in the font shorthand, would pass unseen.
@@ -308,11 +329,14 @@ describe("type size", () => {
   it("keeps the small labels uppercase with letter spacing, or in the mono face of a key", () => {
     const rule = (selector: string) =>
       plain.match(new RegExp(`(?:^|\\n)${selector.replace(/[.[\]"=]/g, "\\$&")}\\s*\\{[^}]*\\}`))?.[0] ?? "";
-    for (const selector of SMALL_LABELS.slice(0, 4)) {
+    for (const selector of UPPERCASE_LABELS) {
       expect(rule(selector), selector).toMatch(/text-transform:\s*uppercase/);
       expect(rule(selector), selector).toMatch(/letter-spacing:/);
     }
-    for (const selector of SMALL_LABELS.slice(4)) expect(rule(selector), selector).toMatch(/font-family:\s*var\(--font-mono\)/);
+    for (const selector of KEY_HINTS) expect(rule(selector), selector).toMatch(/font-family:\s*var\(--font-mono\)/);
+  });
+  it("has no micro step in the type scale: nothing used it", () => {
+    expect(plain).not.toMatch(/\.t-micro\b/);
   });
   it("sets body text and table cells at 13px or more", () => {
     const of = (selector: string) => sizes.find(([s]) => s === selector)?.[1];
@@ -322,6 +346,38 @@ describe("type size", () => {
     const cells = sizes.filter(([selector]) => /\btd\b/.test(selector));
     expect(cells.length).toBeGreaterThan(0);
     expect(cells.filter(([, px]) => px < 13).map(([selector, px]) => `${selector}: ${px}px`)).toEqual([]);
+  });
+
+  // The stylesheet cannot see a class put on a cell: .small is 12px, on whatever carries it.
+  describe("no table cell is made small in the source", () => {
+    const walk = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
+      const p = join(dir, f);
+      return statSync(p).isDirectory() ? walk(p) : [p];
+    });
+    /** Every <td whose className, a literal or an expression, names the class small. */
+    const smallCells = (src: string) =>
+      [...src.matchAll(/<td\b[^>]*?\bclassName=(?:"([^"]*)"|\{([^}]*)\})/g)]
+        .filter((m) => /(?:^|[\s"'`])small(?:$|[\s"'`])/.test(m[1] ?? m[2] ?? ""))
+        .map((m) => m[0]);
+    const sources = walk(__dirname).filter((p) => /\.tsx$/.test(p) && !/\.test\.tsx$/.test(p));
+
+    it("looks at the pages and components", () => {
+      expect(sources.length).toBeGreaterThan(50);
+      expect(sources.some((p) => p.endsWith(join("pages", "AuditLog.tsx")))).toBe(true);
+    });
+    it("catches the class on a cell, and only there", () => {
+      expect(smallCells('<td className="mono small">x</td>')).toHaveLength(1);
+      expect(smallCells('<td className="small">x</td>')).toHaveLength(1);
+      expect(smallCells('<td\n  className="col-traffic small"\n>x</td>')).toHaveLength(1);
+      expect(smallCells('<td className={open ? "small" : "mono"}>x</td>')).toHaveLength(1);
+      expect(smallCells('<td className={cx("mono", dim && "small")}>x</td>')).toHaveLength(1);
+      // In a cell, on something else: help text under a value may be small.
+      expect(smallCells('<td className="mono"><span className="muted small">x</span></td>')).toEqual([]);
+      expect(smallCells('<td className="col-smallest">x</td><p className="small">y</p>')).toEqual([]);
+    });
+    it.each(sources.map((p) => relative(__dirname, p)))("%s", (file) => {
+      expect(smallCells(readFileSync(join(__dirname, file), "utf8"))).toEqual([]);
+    });
   });
 });
 

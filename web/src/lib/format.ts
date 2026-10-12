@@ -38,17 +38,6 @@ export function formatTimestamp(s: string | null | undefined): string {
   return TS_FORMAT.format(d);
 }
 
-/**
- * Returns both a display string and the original ISO timestamp, for use as
- * `<time dateTime={iso} title={iso}>{display}</time>`.
- */
-export function formatTimestampWithTooltip(s: string | null | undefined): { display: string; iso: string } {
-  if (!s) return { display: "—", iso: "" };
-  const d = new Date(s);
-  if (isNaN(d.getTime())) return { display: "—", iso: "" };
-  return { display: TS_FORMAT.format(d), iso: s };
-}
-
 const DATE_FORMAT = new Intl.DateTimeFormat("en-GB", {
   day: "2-digit",
   month: "short",

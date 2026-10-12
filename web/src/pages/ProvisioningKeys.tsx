@@ -107,11 +107,11 @@ export default function ProvisioningKeys() {
                 {(keys.data ?? []).map((k) => (
                   <tr key={k.id}>
                     <td>{k.name}</td>
-                    <td className="mono small">{k.prefix}</td>
+                    <td className="mono">{k.prefix}</td>
                     <td><Badge nodot kind={`scope-${k.scope}`}>{k.scope}</Badge></td>
                     <td>{k.default_role}</td>
-                    <td className="mono small">{k.created_at}</td>
-                    <td className="mono small">{k.last_used ?? "—"}</td>
+                    <td className="mono">{k.created_at}</td>
+                    <td className="mono">{k.last_used ?? "—"}</td>
                     <td className="col-actions">
                       <Button variant="destructive" size="sm" onClick={() => remove.mutate(k.id)}>Revoke</Button>
                     </td>
@@ -143,10 +143,10 @@ export default function ProvisioningKeys() {
                 {(pending.data ?? []).map((p) => (
                   <tr key={p.id}>
                     <td className="mono">{p.hostname}</td>
-                    <td className="mono small">{p.os}/{p.arch}</td>
-                    <td className="mono small">{p.remote_ip}</td>
-                    <td className="mono small">{p.provisioning_key_id}</td>
-                    <td className="mono small">{p.first_seen}</td>
+                    <td className="mono">{p.os}/{p.arch}</td>
+                    <td className="mono">{p.remote_ip}</td>
+                    <td className="mono">{p.provisioning_key_id}</td>
+                    <td className="mono">{p.first_seen}</td>
                     <td className="col-actions">
                       <Button variant="primary" size="sm" onClick={() => approve.mutate(p.id)}>Approve</Button>
                       {" "}

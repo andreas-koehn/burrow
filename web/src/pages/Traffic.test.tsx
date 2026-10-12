@@ -186,7 +186,8 @@ describe("Traffic page", () => {
       ["", "All"], ["control", "Client connection"], ["http_proxy", "HTTP proxy"], ["tcp_proxy", "TCP proxy"],
     ]);
     const hint = screen.getByRole("button", { name: "What is Client connection?" });
-    expect(hint).toHaveAccessibleDescription("The connection a client keeps open to the relay.");
+    // The hint stands beside "Protocol": what it shows names the one it explains.
+    expect(hint).toHaveAccessibleDescription("Client connection: the connection a client keeps open to the relay.");
     expect(picker.closest("label")).not.toContainElement(hint);
     // The same words in the table.
     await waitFor(() => expect(t.querySelector("[data-kind='control'] .badge")?.textContent).toBe("Client connection"));

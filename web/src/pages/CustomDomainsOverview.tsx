@@ -73,7 +73,7 @@ export default function CustomDomainsOverview() {
                   <td>
                     <Link to={`/services/${serviceId}/domains`}>{serviceName}</Link>
                   </td>
-                  <td className="mono small">{domain.hostname}</td>
+                  <td className="mono">{domain.hostname}</td>
                   <td>
                     <Badge kind={statusBadgeKind(domain.status)}>
                       {STATUS_LABEL[domain.status]}

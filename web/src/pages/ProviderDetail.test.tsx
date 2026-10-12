@@ -391,7 +391,7 @@ describe("Provider detail", () => {
     const table = await screen.findByRole("table", { name: "Recent requests" });
     const cell = (await within(table).findByText("No requests yet")).closest("td")!;
     expect(cell).toHaveClass("table-empty");
-    expect(cell.getAttribute("colspan")).toBe("6");
+    expect(cell.getAttribute("colspan")).toBe("5");
     expect(within(table).queryByRole("button")).toBeNull();
   });
 
@@ -421,7 +421,7 @@ describe("Provider detail", () => {
     expect(within(strip).getAllByRole("listitem")[3]!.querySelector(".value")).toHaveTextContent("0%");
   });
 
-  it("recent requests say how long ago, and a request without a measured duration has a dash", async () => {
+  it("recent requests say how long ago, and have no Latency column", async () => {
     const entry = db.inspectorEntries["svc_ai001"]![0]!;
     db.inspectorEntries["svc_ai001"] = [
       { ...entry, id: "req_a", ts: "2026-05-19T08:00:00Z", duration_ms: 0 },
@@ -433,9 +433,12 @@ describe("Provider detail", () => {
     const when = first!.querySelector("time")!;
     expect(when).toHaveTextContent("19 May 2026");
     expect(when).toHaveAttribute("title", "19 May 2026, 08:00:00 UTC");
-    const latency = (row: HTMLElement) => within(row).getAllByRole("cell")[4]!.textContent;
-    expect(latency(first!)).toBe("—");
-    expect(latency(second!)).toBe("812 ms");
+    // As on the Requests list: the relay sets no duration on a captured request.
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["When", "Method", "Path", "Status", "Cache"]);
+    for (const row of [first!, second!]) {
+      expect(within(row).getAllByRole("cell")).toHaveLength(5);
+      expect(row.textContent).not.toMatch(/\d ms\b/);
+    }
   });
 
   it("there is no line 'last seen —' and no bar without a label", async () => {

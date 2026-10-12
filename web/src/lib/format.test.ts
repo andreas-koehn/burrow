@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatBytes, formatLatency, formatRatio, formatRelativeTime, formatTimestamp, formatTimestampWithTooltip } from "./format";
+import { formatBytes, formatLatency, formatRatio, formatRelativeTime, formatTimestamp } from "./format";
 
 describe("formatBytes", () => {
   it("returns '0 B' for 0", () => {
@@ -63,18 +63,6 @@ describe("formatTimestamp locale", () => {
     expect(out).not.toMatch(/^\d{1,2}\/\d{1,2}\/\d{4}/);
     expect(out).not.toBe("—");
     expect(out).toContain("2026");
-  });
-});
-
-describe("formatTimestampWithTooltip", () => {
-  it("returns display + iso pair", () => {
-    const s = "2026-05-25T07:42:51.834Z";
-    const out = formatTimestampWithTooltip(s);
-    expect(out.iso).toBe("2026-05-25T07:42:51.834Z");
-    expect(out.display).toBe(formatTimestamp(s));
-  });
-  it("null input returns em-dash + empty iso", () => {
-    expect(formatTimestampWithTooltip(null)).toEqual({ display: "—", iso: "" });
   });
 });
 

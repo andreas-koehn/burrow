@@ -47,6 +47,23 @@ describe("Users list", () => {
     expect(screen.getByText("carol@acme.io")).toBeInTheDocument();
   });
 
+  // A page with a table has the whole column in every state: while it loads,
+  // with rows, and when a search matches nobody. The header must not jump.
+  it("keeps its width class while loading, with rows and with no match", async () => {
+    const { container } = renderApp(<Users />);
+    const root = () => container.querySelector(".settings-page");
+    const width = () => Array.from(root()!.classList).filter((c) => c.startsWith("settings-"));
+    // Loading: no table yet.
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(width()).toEqual(["settings-page"]);
+    await screen.findByRole("table", { name: "Users" });
+    expect(width()).toEqual(["settings-page"]);
+    await userEvent.type(screen.getByRole("searchbox", { name: /search/i }), "nobody-by-that-name");
+    expect(await screen.findByText("No users found")).toBeInTheDocument();
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(width()).toEqual(["settings-page"]);
+  });
+
   it("filter row has explicit gap so the Role select can't overlap the count (C1)", async () => {
     const { container } = renderApp(<Users />);
     await waitFor(() => screen.getByRole("heading", { name: "Users" }));

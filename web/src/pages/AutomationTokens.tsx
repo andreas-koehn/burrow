@@ -80,11 +80,11 @@ export default function AutomationTokens() {
               {tokens.data.map((t) => (
                 <tr key={t.id}>
                   <td>{t.name}</td>
-                  <td className="mono small">{t.prefix}</td>
+                  <td className="mono">{t.prefix}</td>
                   <td>{t.role_at_mint}</td>
-                  <td className="mono small">{t.permissions.length} grant(s)</td>
-                  <td className="mono small">{t.expires_at ?? "never"}</td>
-                  <td className="mono small">{t.last_used ?? "—"}</td>
+                  <td className="mono">{t.permissions.length} grant(s)</td>
+                  <td className="mono">{t.expires_at ?? "never"}</td>
+                  <td className="mono">{t.last_used ?? "—"}</td>
                   <td className="col-actions">
                     <Button variant="destructive" size="sm" onClick={() => revoke.mutate(t.id)}>Revoke</Button>
                   </td>

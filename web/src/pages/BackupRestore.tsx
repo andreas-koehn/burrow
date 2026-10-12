@@ -92,8 +92,8 @@ export default function BackupRestore() {
               <tbody>
                 {backups.data.map((b) => (
                   <tr key={b.id}>
-                    <td className="mono small">{b.taken_at}</td>
-                    <td className="mono small">{formatBytes(b.size_bytes)}</td>
+                    <td className="mono">{b.taken_at}</td>
+                    <td className="mono">{formatBytes(b.size_bytes)}</td>
                     <td>{b.version}</td>
                     <td>
                       <span className="row row-center gap-2">

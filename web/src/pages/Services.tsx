@@ -517,7 +517,7 @@ export default function Services() {
                         </span>
                       )}
                     </td>
-                    <td className="col-traffic small">
+                    <td className="col-traffic">
                       <span title={`In: ${t.bytes_in} bytes`}>↓ {formatBytes(t.bytes_in)}</span>
                       {"  "}
                       <span title={`Out: ${t.bytes_out} bytes`}>↑ {formatBytes(t.bytes_out)}</span>

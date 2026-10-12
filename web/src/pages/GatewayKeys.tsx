@@ -285,7 +285,7 @@ export default function GatewayKeys() {
               {list.map((k) => (
                 <tr key={k.id}>
                   <td className="col-name">{k.name}</td>
-                  <td className="mono small">{`${k.key_prefix}…`}</td>
+                  <td className="mono">{`${k.key_prefix}…`}</td>
                   <td>
                     {k.allowed_models.length === 0
                       ? "all"
@@ -298,7 +298,7 @@ export default function GatewayKeys() {
                         </span>
                       )}
                   </td>
-                  <td className="small">
+                  <td>
                     <RelativeTime value={k.last_used} empty="never" />
                   </td>
                   <td>

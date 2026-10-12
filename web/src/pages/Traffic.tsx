@@ -212,7 +212,8 @@ export default function Traffic() {
             {KINDS.map((k) => <option key={k} value={k}>{KIND_LABELS[k]}</option>)}
           </select>
         </label>
-        <InfoHint label={KIND_LABELS.control} content="The connection a client keeps open to the relay." />
+        {/* Beside "Protocol", so the text itself says which of the protocols it explains. */}
+        <InfoHint label={KIND_LABELS.control} content={`${KIND_LABELS.control}: the connection a client keeps open to the relay.`} />
       </span>
       <label className="filter-label">
         <span>Service</span>

@@ -156,14 +156,14 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
           <tbody>
             {domains.map((d) => (
               <tr key={d.id}>
-                <td className="mono small">{d.hostname}</td>
+                <td className="mono">{d.hostname}</td>
                 <td>
                   <Badge kind={statusBadgeKind(d.status)}>
                     {STATUS_LABEL[d.status]}
                   </Badge>
                 </td>
                 <td>{formatTimestamp(d.not_after)}</td>
-                <td className="mono small">{truncateFp(d.cert_sha256)}</td>
+                <td className="mono">{truncateFp(d.cert_sha256)}</td>
                 <td className="col-actions">
                   <Button
                     variant="destructive"

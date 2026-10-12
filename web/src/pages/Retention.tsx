@@ -90,7 +90,7 @@ export default function Retention() {
   });
 
   return (
-    <div className="account-page settings-page">
+    <div className="account-page settings-page settings-form">
       <PageHeader
         title="Retention & compliance"
         subtitle="Configure how long Burrow retains logs and ring-buffer entries."

@@ -21,7 +21,7 @@ function RedactedHeaders({ headers }: { headers: Record<string, string> }) {
         {entries.map(([k, v]) => (
           <tr key={k}>
             <td className="mono">{k}</td>
-            <td className="mono small">{v}</td>
+            <td className="mono">{v}</td>
           </tr>
         ))}
       </tbody>
@@ -240,7 +240,7 @@ export default function RequestInspector() {
                       className="clickable"
                       aria-selected={selected === r.id}
                     >
-                      <td className="mono small">{r.ts}</td>
+                      <td className="mono">{r.ts}</td>
                       <td className="mono">{r.method}</td>
                       <td className="mono">{r.path}</td>
                       <td>

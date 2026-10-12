@@ -15,7 +15,7 @@ import { ProviderConcurrencySetting, ProviderResponsesSetting, ProviderUpstreamP
 import { useAuth } from "@/auth/useAuth";
 import { providerBaseUrl } from "@/lib/serviceUrl";
 import { providerState } from "@/lib/status";
-import { formatLatency, formatRatio } from "@/lib/format";
+import { formatRatio } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { RelativeTime } from "@/components/RelativeTime";
 import type {
@@ -344,7 +344,7 @@ export default function ProviderDetail() {
                         <th>Method</th>
                         <th>Path</th>
                         <th>Status</th>
-                        <th>Latency</th>
+                        {/* No Latency, as on the Requests list: the relay sets no duration on a captured request. */}
                         <th>Cache</th>
                       </tr>
                     </thead>
@@ -362,18 +362,16 @@ export default function ProviderDetail() {
                           }}
                           className="clickable"
                         >
-                          <td className="small"><RelativeTime value={r.ts} /></td>
+                          <td><RelativeTime value={r.ts} /></td>
                           <td className="mono">{r.method}</td>
                           <td className="mono">{r.path}</td>
                           <td className="mono">{r.status}</td>
-                          {/* 0 is what a request without a measured duration carries. */}
-                          <td className="mono">{formatLatency(r.duration_ms, r.duration_ms > 0 ? 1 : 0)}</td>
                           <td className="mono">{r.cache}</td>
                         </tr>
                       ))}
                       {/* Only once the answer is there: an empty table is not yet a table without requests. */}
                       {recent.data && recent.data.length === 0 && (
-                        <TableEmptyRow colSpan={6} title="No requests yet" />
+                        <TableEmptyRow colSpan={5} title="No requests yet" />
                       )}
                     </tbody>
                   </table>
