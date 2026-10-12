@@ -12,23 +12,6 @@ const openAPIConversionDone = false
 // openAPIPendingOperationIDs lists the operations that have no operationId
 // yet, as "METHOD path".
 var openAPIPendingOperationIDs = []string{
-	// O07: audit, webhooks, connection logs
-	"GET /api/v1/audit/events",
-	"GET /api/v1/audit/export",
-	"GET /api/v1/audit/fingerprint",
-	"POST /api/v1/audit/verify",
-	"GET /api/v1/webhooks",
-	"POST /api/v1/webhooks",
-	"GET /api/v1/webhooks/deliveries",
-	"PUT /api/v1/webhooks/{id}",
-	"DELETE /api/v1/webhooks/{id}",
-	"POST /api/v1/webhooks/{id}/test",
-	"POST /api/v1/webhooks/{id}/pause",
-	"POST /api/v1/webhooks/{id}/resume",
-	"POST /api/v1/webhooks/{id}/preview",
-	"GET /api/v1/connection-logs",
-	"GET /api/v1/connection-logs/rollups",
-	"GET /api/v1/connection-logs/export",
 	// O08: settings, backups, MCP status, database, metrics, events, OpenAPI viewer
 	"GET /metrics",
 	"GET /api/v1/backups",
@@ -54,16 +37,6 @@ var openAPIPendingOperationIDs = []string{
 // openAPIPendingEmpty lists the operations that still reference the Empty
 // schema in a request body or a response.
 var openAPIPendingEmpty = []string{
-	// O07: audit, webhooks, connection logs
-	"GET /api/v1/audit/events",
-	"GET /api/v1/audit/fingerprint",
-	"POST /api/v1/audit/verify",
-	"GET /api/v1/webhooks",
-	"POST /api/v1/webhooks",
-	"GET /api/v1/webhooks/deliveries",
-	"PUT /api/v1/webhooks/{id}",
-	"POST /api/v1/webhooks/{id}/test",
-	"POST /api/v1/webhooks/{id}/preview",
 	// O08: settings, backups, MCP status, database, metrics, events, OpenAPI viewer
 	"GET /api/v1/backups",
 	"POST /api/v1/backups",
