@@ -1,0 +1,525 @@
+package mcpserv
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/store"
+)
+
+// The revisions a client may speak: the stateless one and the three with an
+// initialize handshake.
+var testRevisions = []string{"2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"}
+
+// allToolPerms is what a token needs to see the whole registry.
+var allToolPerms = []string{
+	"tunnels:read:any", "services:configure:own", "tokens:manage:own",
+	"users:read", "audit:read", "metrics:read",
+}
+
+// ---------- fakes ----------------------------------------------------------
+
+// auditSink satisfies AuditAppender and keeps what it was given.
+type auditSink struct {
+	mu   sync.Mutex
+	rows []audit.Event
+}
+
+func (a *auditSink) Append(_ context.Context, e audit.Event) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.rows = append(a.rows, e)
+	return nil
+}
+
+func (a *auditSink) all() []audit.Event {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]audit.Event(nil), a.rows...)
+}
+
+// panicStore is a ToolStore whose metrics call panics, as a nil dependency
+// in the wiring would.
+type panicStore struct{ fakeStore }
+
+func (*panicStore) MetricsText() (string, error) { panic("metrics recorder is nil") }
+
+// ---------- bootstrap ------------------------------------------------------
+
+func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// newSDKTestServer serves s.mcpHandler() for one fixed token, without the
+// HTTP checks in front of it.
+func newSDKTestServer(t *testing.T, ts ToolStore, perms []string, role string) (*httptest.Server, *auditSink) {
+	t.Helper()
+	s := New(nil, nil, ts, quietLog())
+	sink := &auditSink{}
+	s.SetAuditAppender(sink)
+	tok := &authedToken{tokenID: "tok1", userID: "u1", role: role, perms: perms}
+	h := s.mcpHandler()
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
+	}))
+	t.Cleanup(hs.Close)
+	return hs, sink
+}
+
+// bearerTransport sends the Authorization header a configured MCP client
+// sends with every request.
+type bearerTransport struct{ token string }
+
+func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	if b.token != "" {
+		r.Header.Set("Authorization", "Bearer "+b.token)
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// dialMCP connects the SDK's client, speaking the given revision.
+func dialMCP(url, bearer, revision string) (*mcp.ClientSession, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := mcp.NewClient(&mcp.Implementation{Name: "burrow-test", Version: "0"}, nil)
+	return client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:             url,
+		HTTPClient:           &http.Client{Transport: bearerTransport{token: bearer}},
+		DisableStandaloneSSE: true,
+		MaxRetries:           -1,
+	}, &mcp.ClientSessionOptions{ProtocolVersion: revision})
+}
+
+func connectMCP(t *testing.T, url, bearer, revision string) *mcp.ClientSession {
+	t.Helper()
+	cs, err := dialMCP(url, bearer, revision)
+	if err != nil {
+		t.Fatalf("connect with revision %s: %v", revision, err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	return cs
+}
+
+func listedTools(t *testing.T, cs *mcp.ClientSession) map[string]*mcp.Tool {
+	t.Helper()
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	out := make(map[string]*mcp.Tool, len(res.Tools))
+	for _, tl := range res.Tools {
+		out[tl.Name] = tl
+	}
+	return out
+}
+
+func sortedNames(m map[string]*mcp.Tool) string {
+	names := make([]string, 0, len(m))
+	for n := range m {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
+}
+
+func callTool(t *testing.T, cs *mcp.ClientSession, name string, args map[string]any) (*mcp.CallToolResult, error) {
+	t.Helper()
+	if args == nil {
+		args = map[string]any{}
+	}
+	return cs.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+}
+
+// resultText returns the single text block of a tool result.
+func resultText(t *testing.T, res *mcp.CallToolResult) string {
+	t.Helper()
+	if len(res.Content) != 1 {
+		t.Fatalf("result has %d content blocks, want 1", len(res.Content))
+	}
+	tc, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("content block is %T, want text", res.Content[0])
+	}
+	return tc.Text
+}
+
+// rawPOST sends one JSON-RPC message the way a client on a 2025 revision
+// does after its handshake.
+func rawPOST(t *testing.T, url, bearer string, hdr map[string]string, body string) (*http.Response, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp, string(b)
+}
+
+// sameJSON reports whether a and b are the same JSON value, whatever the
+// order of their keys.
+func sameJSON(t *testing.T, a, b string) bool {
+	t.Helper()
+	var x, y any
+	if err := json.Unmarshal([]byte(a), &x); err != nil {
+		t.Fatalf("not JSON: %s", a)
+	}
+	if err := json.Unmarshal([]byte(b), &y); err != nil {
+		t.Fatalf("not JSON: %s", b)
+	}
+	return reflect.DeepEqual(x, y)
+}
+
+const rawToolsList = `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
+
+// ---------- both revisions -------------------------------------------------
+
+func TestMCP_EveryRevision_ListAndCall(t *testing.T) {
+	for _, rev := range testRevisions {
+		t.Run(rev, func(t *testing.T) {
+			fs := &fakeStore{tunnels: []TunnelInfo{
+				{ID: "tun-a", Name: "alpha", Type: "http", Connected: true},
+				{ID: "tun-b", Name: "beta", Type: "tcp", RemotePort: 2222},
+			}}
+			hs, _ := newSDKTestServer(t, fs, allToolPerms, "admin")
+			cs := connectMCP(t, hs.URL, "", rev)
+
+			if got := cs.InitializeResult().ProtocolVersion; got != rev {
+				t.Fatalf("negotiated revision %q, want %q", got, rev)
+			}
+			if id := cs.ID(); id != "" {
+				t.Errorf("a stateless server handed out session id %q", id)
+			}
+			if info := cs.InitializeResult().ServerInfo; info == nil || info.Name != "burrow" {
+				t.Errorf("server info = %+v", info)
+			}
+
+			tools := listedTools(t, cs)
+			if len(tools) != len(orderedTools) {
+				t.Fatalf("listed %d tools, want %d: %s", len(tools), len(orderedTools), sortedNames(tools))
+			}
+			schema, _ := json.Marshal(tools["tunnels_list"].InputSchema)
+			if !strings.Contains(string(schema), `"filter"`) || !strings.Contains(string(schema), `"additionalProperties":false`) {
+				t.Errorf("tunnels_list inputSchema = %s", schema)
+			}
+
+			res, err := callTool(t, cs, "tunnels_list", map[string]any{"filter": "ALPHA"})
+			if err != nil {
+				t.Fatalf("tools/call: %v", err)
+			}
+			if res.IsError {
+				t.Fatalf("isError: %s", resultText(t, res))
+			}
+			const want = `{"tunnels":[{"id":"tun-a","name":"alpha","type":"http","remote_port":0,"local_addr":"","bytes_in":0,"bytes_out":0,"connected":true}]}`
+			if got := resultText(t, res); got != want {
+				t.Errorf("text content\n got %s\nwant %s", got, want)
+			}
+			// The client decodes structuredContent into a map; compare as JSON.
+			if structured, _ := json.Marshal(res.StructuredContent); !sameJSON(t, string(structured), want) {
+				t.Errorf("structuredContent\n got %s\nwant %s", structured, want)
+			}
+		})
+	}
+}
+
+// A client that only knows 2024-11-05 is answered with a revision the
+// server does offer; the client then decides.
+func TestMCP_Revision20241105_NotOffered(t *testing.T) {
+	hs, _ := newSDKTestServer(t, &fakeStore{}, allToolPerms, "admin")
+	resp, body := rawPOST(t, hs.URL, "", nil,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"old","version":"0"}}}`)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"protocolVersion":"2025-11-25"`) {
+		t.Fatalf("initialize: %d %s", resp.StatusCode, body)
+	}
+	resp, body = rawPOST(t, hs.URL, "", map[string]string{"MCP-Protocol-Version": "2024-11-05"}, rawToolsList)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("request on 2024-11-05: %d %s", resp.StatusCode, body)
+	}
+}
+
+// ---------- annotations ----------------------------------------------------
+
+func TestMCP_Annotations(t *testing.T) {
+	hs, _ := newSDKTestServer(t, &fakeStore{}, allToolPerms, "admin")
+	for _, rev := range []string{"2026-07-28", "2025-11-25"} {
+		tools := listedTools(t, connectMCP(t, hs.URL, "", rev))
+		for _, name := range orderedTools {
+			tl, a := New(nil, nil, nil, nil).tools[name], tools[name].Annotations
+			if a == nil || a.DestructiveHint == nil || a.OpenWorldHint == nil {
+				t.Fatalf("%s %s: annotations incomplete: %+v", rev, name, a)
+			}
+			if a.ReadOnlyHint != tl.ReadOnly || *a.DestructiveHint != tl.Destructive || a.IdempotentHint != tl.Idempotent {
+				t.Errorf("%s %s: hints %+v do not match the registry", rev, name, a)
+			}
+			if *a.OpenWorldHint {
+				t.Errorf("%s %s: openWorldHint is true", rev, name)
+			}
+		}
+		// The three that are not plain reads, spelled out.
+		if a := tools["api_keys_delete"].Annotations; !*a.DestructiveHint || a.ReadOnlyHint {
+			t.Errorf("%s api_keys_delete: %+v", rev, a)
+		}
+		if a := tools["services_set_access_mode"].Annotations; !a.IdempotentHint || *a.DestructiveHint || a.ReadOnlyHint {
+			t.Errorf("%s services_set_access_mode: %+v", rev, a)
+		}
+		if a := tools["api_keys_create"].Annotations; a.ReadOnlyHint || *a.DestructiveHint || a.IdempotentHint {
+			t.Errorf("%s api_keys_create: %+v", rev, a)
+		}
+	}
+}
+
+// ---------- what a token sees and may call ---------------------------------
+
+func TestMCP_ListShowsOnlyWhatTheTokenMayCall(t *testing.T) {
+	cases := []struct {
+		name  string
+		perms []string
+		role  string
+		want  string
+	}{
+		{"everything", allToolPerms, "admin",
+			"api_keys_create,api_keys_delete,api_keys_list,audit_search,metrics_snapshot,services_get,services_list,services_set_access_mode,tokens_list,tokens_mint,tunnels_list,users_list"},
+		{"one permission", []string{"tunnels:read:any"}, "admin", "tunnels_list"},
+		{"read-only operator", []string{"tunnels:read:any", "audit:read", "metrics:read"}, "admin",
+			"audit_search,metrics_snapshot,tunnels_list"},
+		// The token still declares everything; the role of its user no
+		// longer grants the :any and admin permissions.
+		{"minter demoted to user", allToolPerms, "user",
+			"api_keys_create,api_keys_delete,api_keys_list,services_get,services_list,services_set_access_mode,tokens_list,tokens_mint"},
+		{"no tool permission", []string{"webhooks:manage"}, "admin", ""},
+		// What the dashboard mints today: a token that declares nothing.
+		// It authenticates and is shown an empty list, not an error.
+		{"no permission declared", nil, "admin", ""},
+		{"unknown role", allToolPerms, "gone", ""},
+	}
+	for _, c := range cases {
+		for _, rev := range []string{"2026-07-28", "2025-11-25"} {
+			hs, _ := newSDKTestServer(t, &fakeStore{}, c.perms, c.role)
+			if got := sortedNames(listedTools(t, connectMCP(t, hs.URL, "", rev))); got != c.want {
+				t.Errorf("%s (%s):\n got %s\nwant %s", c.name, rev, got, c.want)
+			}
+		}
+	}
+}
+
+// A call on a tool the token may not use is refused exactly like a call on a
+// tool that does not exist, and it is the only one of the two that leaves an
+// audit row.
+func TestMCP_CallOutsideTheTokensTools(t *testing.T) {
+	for _, rev := range []string{"2026-07-28", "2025-11-25"} {
+		fs := &fakeStore{}
+		hs, sink := newSDKTestServer(t, fs, []string{"tunnels:read:any"}, "admin")
+		cs := connectMCP(t, hs.URL, "", rev)
+
+		_, errHidden := callTool(t, cs, "services_set_access_mode", map[string]any{"id": "svc1", "mode": "open"})
+		_, errUnknown := callTool(t, cs, "no_such_tool", nil)
+
+		var hidden, unknown *jsonrpc.Error
+		if !errors.As(errHidden, &hidden) || !errors.As(errUnknown, &unknown) {
+			t.Fatalf("%s: want two JSON-RPC errors, got %v and %v", rev, errHidden, errUnknown)
+		}
+		if hidden.Code != jsonrpc.CodeInvalidParams || hidden.Code != unknown.Code {
+			t.Errorf("%s: codes %d and %d, want %d twice", rev, hidden.Code, unknown.Code, jsonrpc.CodeInvalidParams)
+		}
+		a := strings.Replace(hidden.Message, "services_set_access_mode", "NAME", 1)
+		b := strings.Replace(unknown.Message, "no_such_tool", "NAME", 1)
+		if a != b || len(hidden.Data) != 0 || len(unknown.Data) != 0 {
+			t.Errorf("%s: the two refusals differ: %q / %q", rev, hidden.Message, unknown.Message)
+		}
+		if fs.lastSetMode != "" {
+			t.Errorf("%s: the refused call reached the store", rev)
+		}
+
+		rows := sink.all()
+		if len(rows) != 1 {
+			t.Fatalf("%s: %d audit rows, want 1: %+v", rev, len(rows), rows)
+		}
+		if r := rows[0]; r.Action != audit.ActionMCPToolCall || r.SubjectLabel != "services_set_access_mode" ||
+			r.Result != "denied" || r.ActorID != "u1" {
+			t.Errorf("%s: audit row = %+v", rev, r)
+		}
+	}
+}
+
+// ---------- results --------------------------------------------------------
+
+func TestMCP_CallAllowed_IsAudited(t *testing.T) {
+	fs := &fakeStore{}
+	hs, sink := newSDKTestServer(t, fs, allToolPerms, "admin")
+	cs := connectMCP(t, hs.URL, "", "2026-07-28")
+
+	res, err := callTool(t, cs, "services_set_access_mode", map[string]any{"id": "svc1", "mode": "api_key", "api_key_header": "X-Key"})
+	if err != nil || res.IsError {
+		t.Fatalf("call: err=%v result=%+v", err, res)
+	}
+	if got := resultText(t, res); got != `{"ok":true}` {
+		t.Errorf("text = %s", got)
+	}
+	if fs.lastSetMode != "api_key" || fs.lastSetHeader != "X-Key" {
+		t.Errorf("store saw mode=%q header=%q", fs.lastSetMode, fs.lastSetHeader)
+	}
+	rows := sink.all()
+	if len(rows) != 1 || rows[0].SubjectLabel != "services_set_access_mode" || rows[0].Result != "ok" {
+		t.Fatalf("audit rows = %+v", rows)
+	}
+}
+
+// A tool that fails answers with a result the model can read (isError), not
+// with a protocol error.
+func TestMCP_ToolFailure_IsAResult(t *testing.T) {
+	for _, rev := range []string{"2026-07-28", "2025-11-25"} {
+		fs := &fakeStore{apiKeyErr: store.ErrForbidden}
+		hs, sink := newSDKTestServer(t, fs, allToolPerms, "admin")
+		cs := connectMCP(t, hs.URL, "", rev)
+
+		// The tool's own validation.
+		res, err := callTool(t, cs, "services_get", nil)
+		if err != nil {
+			t.Fatalf("%s: protocol error for a failed tool: %v", rev, err)
+		}
+		if !res.IsError || resultText(t, res) != "id is required" {
+			t.Errorf("%s: result = %+v", rev, res)
+		}
+		// A row that does not exist.
+		res, err = callTool(t, cs, "services_get", map[string]any{"id": "nope"})
+		if err != nil || !res.IsError || resultText(t, res) != "not found" {
+			t.Errorf("%s: not found: err=%v result=%+v", rev, err, res)
+		}
+		// The store refuses on ownership: the token may use the tool, not
+		// on this service.
+		res, err = callTool(t, cs, "api_keys_list", map[string]any{"service_id": "someone-elses"})
+		if err != nil || !res.IsError || resultText(t, res) != "forbidden" {
+			t.Errorf("%s: forbidden: err=%v result=%+v", rev, err, res)
+		}
+
+		var got []string
+		for _, r := range sink.all() {
+			got = append(got, r.SubjectLabel+"="+r.Result)
+		}
+		if want := "services_get=error,services_get=error,api_keys_list=denied"; strings.Join(got, ",") != want {
+			t.Errorf("%s: audit rows %v, want %s", rev, got, want)
+		}
+	}
+}
+
+// The SDK runs a tool on a goroutine of its own. A panic there is not caught
+// by net/http or by the router; uncaught it ends the relay.
+func TestMCP_ToolPanic_IsContained(t *testing.T) {
+	hs, sink := newSDKTestServer(t, &panicStore{}, allToolPerms, "admin")
+	cs := connectMCP(t, hs.URL, "", "2025-11-25")
+
+	res, err := callTool(t, cs, "metrics_snapshot", nil)
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if !res.IsError || resultText(t, res) != "internal error" {
+		t.Errorf("result = %+v", res)
+	}
+	if rows := sink.all(); len(rows) != 1 || rows[0].Result != "error" {
+		t.Errorf("audit rows = %+v", rows)
+	}
+	// The server still answers.
+	if _, err := callTool(t, cs, "tunnels_list", nil); err != nil {
+		t.Fatalf("call after the panic: %v", err)
+	}
+}
+
+// ---------- secrets --------------------------------------------------------
+
+// The two tools that hand out a secret return it to the caller and to
+// nobody else: not to the audit log.
+func TestMCP_MintedSecrets_StayOutOfTheAuditLog(t *testing.T) {
+	fs := &fakeStore{}
+	hs, sink := newSDKTestServer(t, fs, allToolPerms, "admin")
+	cs := connectMCP(t, hs.URL, "", "2026-07-28")
+
+	res, err := callTool(t, cs, "api_keys_create", map[string]any{"service_id": "svc1", "name": "prod"})
+	if err != nil || res.IsError {
+		t.Fatalf("api_keys_create: err=%v result=%+v", err, res)
+	}
+	if !strings.Contains(resultText(t, res), fs.lastCreatedPT) {
+		t.Errorf("the caller did not get the key: %s", resultText(t, res))
+	}
+	res, err = callTool(t, cs, "tokens_mint", map[string]any{"name": "ci"})
+	if err != nil || res.IsError {
+		t.Fatalf("tokens_mint: err=%v result=%+v", err, res)
+	}
+	if !strings.Contains(resultText(t, res), fs.lastMintedPT) {
+		t.Errorf("the caller did not get the token: %s", resultText(t, res))
+	}
+
+	rows := sink.all()
+	if len(rows) != 2 {
+		t.Fatalf("%d audit rows, want 2", len(rows))
+	}
+	for _, r := range rows {
+		row, _ := json.Marshal(r)
+		for _, secret := range []string{fs.lastCreatedPT, fs.lastMintedPT} {
+			if strings.Contains(string(row), secret) {
+				t.Errorf("audit row carries a minted secret: %s", row)
+			}
+		}
+		if len(r.Payload) != 0 {
+			t.Errorf("audit row has a payload: %s", r.Payload)
+		}
+	}
+}
+
+// ---------- the wire -------------------------------------------------------
+
+// The list depends on the caller, so no shared cache may keep it.
+func TestMCP_ListIsMarkedPrivate(t *testing.T) {
+	hs, _ := newSDKTestServer(t, &fakeStore{}, []string{"tunnels:read:any"}, "admin")
+	resp, body := rawPOST(t, hs.URL, "", map[string]string{"MCP-Protocol-Version": "2025-06-18"}, rawToolsList)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("tools/list: %d %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, `"cacheScope":"private"`) || strings.Contains(body, `"public"`) {
+		t.Errorf("cache scope: %s", body)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("content type %q, want application/json", ct)
+	}
+	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+		t.Errorf("session id header %q on a stateless endpoint", sid)
+	}
+	if !strings.Contains(body, `"tunnels_list"`) || strings.Contains(body, `"users_list"`) {
+		t.Errorf("list: %s", body)
+	}
+}
+
+// Without a token in the request context nothing is served.
+func TestMCP_NoToken_NothingServed(t *testing.T) {
+	hs := httptest.NewServer(New(nil, nil, &fakeStore{}, nil).mcpHandler())
+	t.Cleanup(hs.Close)
+	resp, body := rawPOST(t, hs.URL, "", map[string]string{"MCP-Protocol-Version": "2025-06-18"}, rawToolsList)
+	if resp.StatusCode != http.StatusBadRequest || strings.Contains(body, "tunnels_list") {
+		t.Fatalf("got %d %s", resp.StatusCode, body)
+	}
+}

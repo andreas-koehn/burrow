@@ -104,6 +104,7 @@ type Server struct {
 	users    UserLookup
 	log      *slog.Logger
 	tools    map[string]Tool
+	ordered  []Tool           // declaration order, for the per-token MCP server
 	toolList []ToolDescriptor // stable order, for tools/list
 	audit    AuditAppender    // optional; nil = audit hook disabled
 }
@@ -150,9 +151,11 @@ func New(bearer BearerStore, users UserLookup, toolStore ToolStore, log *slog.Lo
 	}
 	tools := buildTools(toolStore)
 	// buildTools returns a map; orderedTools gives the list its order.
+	ordered := make([]Tool, 0, len(orderedTools))
 	list := make([]ToolDescriptor, 0, len(orderedTools))
 	for _, name := range orderedTools {
 		t := tools[name]
+		ordered = append(ordered, t)
 		list = append(list, ToolDescriptor{
 			Name:             t.Name,
 			Description:      t.Description,
@@ -165,6 +168,7 @@ func New(bearer BearerStore, users UserLookup, toolStore ToolStore, log *slog.Lo
 		users:    users,
 		log:      log,
 		tools:    tools,
+		ordered:  ordered,
 		toolList: list,
 	}
 }
@@ -478,7 +482,20 @@ type ctxKey int
 const (
 	ctxKeyCallerID ctxKey = iota
 	ctxKeyCallerRole
+	ctxKeyToken
+	ctxKeyMCPServer
 )
+
+// withToken stores the authenticated token of an HTTP request.
+func withToken(ctx context.Context, tok *authedToken) context.Context {
+	return context.WithValue(ctx, ctxKeyToken, tok)
+}
+
+// tokenFrom returns the token withToken stored, or nil.
+func tokenFrom(ctx context.Context) *authedToken {
+	tok, _ := ctx.Value(ctxKeyToken).(*authedToken)
+	return tok
+}
 
 func withCaller(ctx context.Context, uid, role string) context.Context {
 	ctx = context.WithValue(ctx, ctxKeyCallerID, uid)
