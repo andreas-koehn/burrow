@@ -46,6 +46,15 @@ describe("ProviderConnect", () => {
     expect(snippet).toContain("OPENAI_API_KEY=$BURROW_GATEWAY_KEY");
   });
 
+  it("says to set the variable its snippets read", () => {
+    render(<ProviderConnect baseUrl={BASE} />);
+    const line = screen.getByText(/in your shell\.$/);
+    expect(line.textContent).toBe("Set BURROW_GATEWAY_KEY in your shell.");
+    expect(line.querySelector("code")).toHaveTextContent("BURROW_GATEWAY_KEY");
+    const last = screen.getByRole("button", { name: "Copy environment variables" });
+    expect(last.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("uses a placeholder model when none is known", () => {
     render(<ProviderConnect baseUrl={BASE} />);
     expect(screen.getByText(/"model": "<model>"/)).toBeInTheDocument();
@@ -108,6 +117,8 @@ describe("ProviderConnect", () => {
       expect(screen.queryByRole("button", { name: "Copy curl example" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Copy environment variables" })).toBeNull();
       expect(document.body).not.toHaveTextContent(/OPENAI_|chat\/completions/);
+      // Its snippet carries a placeholder: there is no variable to set.
+      expect(document.body).not.toHaveTextContent(/BURROW_GATEWAY_KEY/);
     });
 
     it("without a gateway key: offers to create one for this provider", async () => {

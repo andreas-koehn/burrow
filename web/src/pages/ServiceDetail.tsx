@@ -171,15 +171,17 @@ export default function ServiceDetail() {
             value: "api-keys",
             label: "API keys",
             content: (
-              <>
-                <p className="muted small page-intro">
-                  Apps that call this service send one of these keys.
-                  {backsProvider && (
-                    <>{" "}For models, use a <Link className="link-inline" to="/gateway/keys">gateway key</Link> instead.</>
-                  )}
-                </p>
-                <ApiKeysPanel serviceId={svc.id} />
-              </>
+              <ApiKeysPanel
+                serviceId={svc.id}
+                intro={
+                  <p className="muted small page-intro">
+                    Apps that call this service send one of these keys.
+                    {backsProvider && (
+                      <>{" "}For models, use a <Link className="link-inline" to="/gateway/keys">gateway key</Link> instead.</>
+                    )}
+                  </p>
+                }
+              />
             ),
           },
           {

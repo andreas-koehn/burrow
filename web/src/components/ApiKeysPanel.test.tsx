@@ -75,6 +75,21 @@ describe("ApiKeysPanel", () => {
     expect(cell.getAttribute("colspan")).toBe("4");
   });
 
+  it("intro: stands over the keys once they are listed, and not over a list that could not be read", async () => {
+    const first = renderApp(<ApiKeysPanel serviceId={SVC} intro={<p>About these keys.</p>} />);
+    // Not before the answer: it would name keys that may never be shown.
+    expect(screen.queryByText("About these keys.")).toBeNull();
+    const intro = await screen.findByText("About these keys.");
+    const table = screen.getByRole("table", { name: /api keys/i });
+    expect(intro.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    first.unmount();
+
+    server.use(http.get("/api/v1/services/:id/api-keys", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
+    const { qc } = renderApp(<ApiKeysPanel serviceId={SVC} intro={<p>About these keys.</p>} />);
+    await waitFor(() => expect(qc.getQueryState(["service-api-keys", SVC])?.status).toBe("error"));
+    expect(screen.queryByText("About these keys.")).toBeNull();
+  });
+
   it("revokeOnly: lists the keys with Revoke and offers no new one", async () => {
     const onRevoked = vi.fn();
     renderApp(<ApiKeysPanel serviceId={SVC} revokeOnly onRevoked={onRevoked} />);

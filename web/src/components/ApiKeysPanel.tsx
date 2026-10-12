@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy } from "lucide-react";
 import { apiFetch } from "@/lib/api";
@@ -17,9 +17,11 @@ export interface ApiKeysPanelProps {
   revokeOnly?: boolean;
   /** Called after a key was revoked: whoever counts the keys reads the count again. */
   onRevoked?: () => void;
+  /** A line about the keys listed here; shown once the list was read, so it never stands over keys the reader may not see. */
+  intro?: ReactNode;
 }
 
-export function ApiKeysPanel({ serviceId, ownToaster = true, revokeOnly = false, onRevoked }: ApiKeysPanelProps) {
+export function ApiKeysPanel({ serviceId, ownToaster = true, revokeOnly = false, onRevoked, intro }: ApiKeysPanelProps) {
   const { user } = useAuth();
   const qc = useQueryClient();
   const keysKey = ["service-api-keys", serviceId];
@@ -63,6 +65,7 @@ export function ApiKeysPanel({ serviceId, ownToaster = true, revokeOnly = false,
 
   return (
     <div className="api-keys-panel">
+      {data !== undefined && intro}
       {!revokeOnly && (
         <div className="panel-head">
           <Button variant="primary" size="sm" className="ml-auto" onClick={() => setCreating(true)}>New key</Button>

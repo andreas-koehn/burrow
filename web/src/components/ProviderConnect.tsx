@@ -1,7 +1,7 @@
 import { useId } from "react";
 import { CopyButton, CopyableCode } from "@/components/CopyableCode";
 import { CreateKeyHint } from "@/components/CreateKeyHint";
-import { claudeCodeSettings, curlChat, openAiEnv, pickTier } from "@/lib/connectSnippets";
+import { claudeCodeSettings, curlChat, openAiEnv, pickTier, KEY_ENV } from "@/lib/connectSnippets";
 import type { AiProvider } from "@/lib/contract";
 
 export interface ProviderConnectProps {
@@ -52,6 +52,7 @@ export function ProviderConnect({ baseUrl, exampleModel, apiFormat = "openai", p
         <>
           <CopyableCode text={curlChat(baseUrl, model)} label="Copy curl example" wrap />
           <CopyableCode text={openAiEnv(baseUrl)} label="Copy environment variables" wrap />
+          <p className="muted small">Set <code>{KEY_ENV}</code> in your shell.</p>
         </>
       )}
       <CreateKeyHint provider={provider} />

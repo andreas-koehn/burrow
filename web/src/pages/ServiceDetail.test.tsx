@@ -140,6 +140,18 @@ describe("ServiceDetail page", () => {
     expect(screen.queryByRole("link", { name: "gateway key" })).toBeNull();
   });
 
+  it("API keys tab without the permission to read the keys: no sentence about keys that are not listed", async () => {
+    db.me = { ...db.me, role: "user" };
+    server.use(http.get("/api/v1/services/:id/api-keys", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
+    const { qc } = mountAt("/services/svc_ai001#api-keys");
+    await screen.findByRole("heading", { name: /ollama/i });
+    expect(await screen.findByText("Managing keys needs the services:configure permission.")).toBeInTheDocument();
+    await waitFor(() => expect(qc.getQueryState(["service-api-keys", "svc_ai001"])?.status).toBe("error"));
+    await waitFor(() => expect(qc.getQueryState(["ai", "providers"])?.status).toBe("success"));
+    expect(screen.queryByText(/send one of these keys/)).toBeNull();
+    expect(screen.queryByRole("link", { name: "gateway key" })).toBeNull();
+  });
+
   it("a fragment that names no tab opens Access", async () => {
     mountAt("/services/svc_ai001#nope");
     await screen.findByRole("heading", { name: /ollama/i });

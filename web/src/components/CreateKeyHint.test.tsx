@@ -5,13 +5,58 @@ import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
 import { CreateKeyHint } from "@/components/CreateKeyHint";
+import type { QueryClient } from "@tanstack/react-query";
+import type { AiGatewayKey } from "@/lib/contract";
+
+const key = (over: Partial<AiGatewayKey>): AiGatewayKey => ({ ...db.aiGatewayKeys[0]!, ...over });
+
+/** Both answers the hint reads are in, so "nothing shown" is not just "not yet". */
+async function settled(qc: QueryClient) {
+  await waitFor(() => {
+    expect(qc.getQueryState(["ai", "keys"])?.status).toBe("success");
+    expect(qc.getQueryState(["me"])?.status).toBe("success");
+  });
+}
 
 describe("CreateKeyHint", () => {
   it("shows nothing when a key exists", async () => {
-    const { qc } = renderApp(<CreateKeyHint provider="ollama" />);
-    await waitFor(() => expect(qc.getQueryState(["ai", "keys"])?.status).toBe("success"));
+    const { qc, container } = renderApp(<CreateKeyHint provider="ollama" />);
+    await settled(qc);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("another user's key is not the reader's: an admin who owns none is offered one", async () => {
+    // An admin is sent every user's keys.
+    db.aiGatewayKeys = [key({ id: "gk_bob", name: "bobs-ci", user_id: "bur_usr_bob0002" })];
+    renderApp(<CreateKeyHint provider="ollama" />);
+    expect(await screen.findByText("You have no gateway key yet.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Create a gateway key" })).toHaveAttribute("href", "/gateway/keys?new=1&provider=ollama");
+  });
+
+  it.each([
+    ["everything from another provider", ["llamacpp/*"]],
+    ["a model name", ["burrow-simple"]],
+    ["one model of this provider", ["ollama/qwen2.5:0.5b"]],
+  ])("a key limited to %s does not open the provider: says so, with the same link", async (_name, allowed_models) => {
+    db.aiGatewayKeys = [key({ allowed_models })];
+    renderApp(<CreateKeyHint provider="ollama" />);
+    expect(await screen.findByText("None of your gateway keys opens this provider.")).toBeInTheDocument();
     expect(screen.queryByText("You have no gateway key yet.")).toBeNull();
-    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByRole("link", { name: "Create a gateway key" })).toHaveAttribute("href", "/gateway/keys?new=1&provider=ollama");
+  });
+
+  it("a key limited to everything from this provider opens it: nothing shown", async () => {
+    db.aiGatewayKeys = [key({ allowed_models: ["burrow-simple", "ollama/*"] })];
+    const { qc, container } = renderApp(<CreateKeyHint provider="ollama" />);
+    await settled(qc);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("without a provider any key of the reader's counts, limited or not", async () => {
+    db.aiGatewayKeys = [key({ allowed_models: ["burrow-simple"] })];
+    const { qc, container } = renderApp(<CreateKeyHint />);
+    await settled(qc);
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("offers to create one when there is none", async () => {

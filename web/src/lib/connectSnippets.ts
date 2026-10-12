@@ -21,7 +21,7 @@
 
 /** What stands where the gateway key goes. */
 const KEY_PLACEHOLDER = "<your gateway key>";
-/** The one environment variable every example reads the gateway key from. */
+/** The one environment variable every example that can read a variable takes the gateway key from. */
 export const KEY_ENV = "BURROW_GATEWAY_KEY";
 
 export interface Tiers {
