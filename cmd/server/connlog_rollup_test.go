@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"github.com/ankoehn/burrow/internal/retention"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -112,5 +114,150 @@ func TestConnLogRoller(t *testing.T) {
 	}
 	if len(got.got) != 2 || len(au.actions()) != 1 {
 		t.Fatal("an empty day was announced")
+	}
+}
+
+// nextRollAt: the next 00:10 UTC strictly after now.
+func TestNextRollAt(t *testing.T) {
+	utc := func(y int, m time.Month, d, h, mi, s int) time.Time { return time.Date(y, m, d, h, mi, s, 0, time.UTC) }
+	for _, c := range []struct{ now, want time.Time }{
+		{utc(2026, 10, 12, 0, 9, 59), utc(2026, 10, 12, 0, 10, 0)},                                      // just before
+		{utc(2026, 10, 12, 0, 10, 0), utc(2026, 10, 13, 0, 10, 0)},                                      // at: today's is not after now
+		{utc(2026, 10, 12, 0, 10, 1), utc(2026, 10, 13, 0, 10, 0)},                                      // just after
+		{utc(2026, 10, 31, 23, 59, 0), utc(2026, 11, 1, 0, 10, 0)},                                      // month end
+		{utc(2026, 12, 31, 12, 0, 0), utc(2027, 1, 1, 0, 10, 0)},                                        // year end
+		{utc(2028, 2, 28, 1, 0, 0), utc(2028, 2, 29, 0, 10, 0)},                                         // leap day
+		{time.Date(2026, 10, 12, 2, 5, 0, 0, time.FixedZone("x", 2*3600)), utc(2026, 10, 12, 0, 10, 0)}, // other zone
+	} {
+		if got := nextRollAt(c.now); !got.Equal(c.want) {
+			t.Errorf("nextRollAt(%s) = %s, want %s", c.now.Format(time.RFC3339), got.Format(time.RFC3339), c.want.Format(time.RFC3339))
+		}
+	}
+}
+
+type fixedSettings struct{ days int }
+
+func (f fixedSettings) Load(context.Context) (retention.Settings, error) {
+	return retention.Settings{ConnectionLogsDays: f.days}, nil
+}
+
+// rollerFixture is a database with connection log rows on the given days
+// (one row each, on service svc1 and svc2: two groups a day).
+func rollerFixture(t *testing.T, days []time.Time) (*db.DB, *connlog.SQLSink) {
+	t.Helper()
+	sqldb, err := db.Open(filepath.Join(t.TempDir(), "catchup.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqldb.Close() })
+	if err := db.Migrate(sqldb); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqldb.Exec(`INSERT INTO users(id,email,password_hash,role) VALUES('u1','u1@test.invalid','hash','user')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"svc1", "svc2"} {
+		if _, err := sqldb.Exec(`INSERT INTO services(id,user_id,name,type,subdomain,access_mode,api_key_header)
+			VALUES(?,'u1',?,'http',?,'open','Authorization')`, id, id, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, d := range days {
+		for _, svc := range []string{"svc1", "svc2"} {
+			ts := d.Add(3 * time.Hour)
+			if _, err := sqldb.Exec(`INSERT INTO connection_logs
+				(id, kind, service_id, source_ip, started_at, ended_at, duration_ms, bytes_in, bytes_out, status)
+				VALUES(?,?,?,?,?,?,?,1,1,'closed_clean')`,
+				fmt.Sprintf("%s-%d", svc, i), "http_proxy", svc, "203.0.113.9", ts.UTC(), ts.Add(time.Second).UTC(), 1000); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	w := db.Wrap(sqldb)
+	return w, connlog.NewSQLSink(w, discardLog())
+}
+
+// A relay that missed two days rolls and announces both, oldest first; a
+// second run the same day does nothing; the current day is not rolled.
+func TestConnLogRoller_CatchesUpMissedDays(t *testing.T) {
+	today := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	d2, d1 := today.AddDate(0, 0, -2), today.AddDate(0, 0, -1)
+	w, sink := rollerFixture(t, []time.Time{d2, d1, today})
+	got, au := &summaries{}, &recAudit{}
+	roller := connLogRoller{sink: sink, db: w, events: got, audit: au, log: discardLog(), settings: fixedSettings{0},
+		sleep: func(context.Context, time.Duration) bool { return true }}
+
+	days, published, err := roller.catchUp(context.Background(), today.Add(time.Hour))
+	if err != nil || days != 2 || published != 4 {
+		t.Fatalf("catchUp: %d days, %d summaries, %v; want 2, 4", days, published, err)
+	}
+	if len(got.got) != 4 || !got.got[0].from.Equal(d2) || !got.got[1].from.Equal(d2) || !got.got[2].from.Equal(d1) || !got.got[3].from.Equal(d1) {
+		t.Fatalf("announced in the wrong order or window: %+v", got.got)
+	}
+	if len(au.actions()) != 2 {
+		t.Fatalf("audit entries: %v, want one per day", au.actions())
+	}
+	days, published, err = roller.catchUp(context.Background(), today.Add(2*time.Hour))
+	if err != nil || days != 0 || published != 0 || len(got.got) != 4 {
+		t.Fatalf("second run: %d days, %d summaries, %v, %d announced; want nothing", days, published, err, len(got.got))
+	}
+}
+
+// Days the connection log no longer keeps are not attempted.
+func TestConnLogRoller_StaysInsideRetention(t *testing.T) {
+	today := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	old, recent := today.AddDate(0, 0, -10), today.AddDate(0, 0, -2)
+	w, sink := rollerFixture(t, []time.Time{old, recent})
+	got := &summaries{}
+	roller := connLogRoller{sink: sink, db: w, events: got, log: discardLog(), settings: fixedSettings{3},
+		sleep: func(context.Context, time.Duration) bool { return true }}
+	days, _, err := roller.catchUp(context.Background(), today.Add(time.Hour))
+	if err != nil || days != 1 || len(got.got) != 2 || !got.got[0].from.Equal(recent) {
+		t.Fatalf("catchUp: %d days, %v, %+v; want only %s", days, err, got.got, recent)
+	}
+	rows, err := connlog.ListConnectionLogRollups(context.Background(), w, connlog.RollupQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Day[:10] == old.Format("2006-01-02") {
+			t.Fatalf("the day outside the window was rolled: %+v", r)
+		}
+	}
+}
+
+// Publishing pauses after every connLogBatch summaries, and a pause cut short
+// by shutdown ends the run's publishing.
+func TestConnLogRoller_PacesPublishing(t *testing.T) {
+	r := connLogRoller{}
+	var pauses int
+	r.sleep = func(_ context.Context, d time.Duration) bool {
+		if d != connLogPause {
+			t.Errorf("pause %v", d)
+		}
+		pauses++
+		return pauses < 3
+	}
+	st := &rollStats{}
+	stopped := -1
+	for i := 1; i <= 5*connLogBatch; i++ {
+		st.published++
+		if !r.pace(context.Background(), st) {
+			stopped = i
+			break
+		}
+	}
+	if pauses != 3 || stopped != 3*connLogBatch {
+		t.Fatalf("%d pauses, stopped at %d; want 3 pauses (one per batch) and a stop at %d", pauses, stopped, 3*connLogBatch)
+	}
+	// Fewer than a batch: no pause at all.
+	pauses = 0
+	st = &rollStats{}
+	for i := 1; i < connLogBatch; i++ {
+		st.published++
+		r.pace(context.Background(), st)
+	}
+	if pauses != 0 {
+		t.Fatalf("%d pauses for less than a batch", pauses)
 	}
 }

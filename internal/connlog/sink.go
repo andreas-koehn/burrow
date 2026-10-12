@@ -14,6 +14,8 @@ package connlog
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -466,12 +468,11 @@ func (s *SQLSink) Rollup(ctx context.Context, day time.Time) error {
 		return nil
 	}
 	dayStr := day.UTC().Format("2006-01-02")
+	dayStart, dayEnd := dayBounds(dayStr)
 
 	// Pull the aggregable groups.
-	// Note: modernc.org/sqlite stores time.Time as "2006-01-02T15:04:05Z"
-	// (ISO 8601 with T separator). SQLite's date() / strftime() do not parse
-	// this format — only the "YYYY-MM-DD HH:MM:SS" form. We use substr(ts,1,10)
-	// to extract the date prefix reliably across all driver versions.
+	// The day is selected by a range on started_at (see dayBounds): it uses
+	// the index and runs on SQLite and Postgres alike.
 	type group struct {
 		serviceID string
 		kind      string
@@ -481,9 +482,9 @@ func (s *SQLSink) Rollup(ctx context.Context, day time.Time) error {
 		        COUNT(*), SUM(bytes_in), SUM(bytes_out),
 		        AVG(duration_ms)
 		 FROM connection_logs
-		 WHERE substr(started_at,1,10) = ?
+		 WHERE started_at >= ? AND started_at < ?
 		 GROUP BY service_id, kind`,
-		dayStr,
+		dayStart, dayEnd,
 	)
 	if err != nil {
 		return fmt.Errorf("rollup groups: %w", err)
@@ -587,6 +588,29 @@ func (s *SQLSink) topIPsEnabled(ctx context.Context) bool {
 
 // topIPsLimit is the per-(day, service_id, kind) cap on top-source-IP rows
 // upserted by Rollup. Per the v0.5.1 plan / spec Q12.
+// dayBounds returns the half-open UTC interval [start, start+24h) of the day
+// "YYYY-MM-DD". The statements select by this range, bound as time.Time like
+// every other timestamp of the table: it uses the index on started_at and
+// runs on both backends.
+func dayBounds(dayStr string) (start, end time.Time) {
+	start, _ = time.ParseInLocation("2006-01-02", dayStr, time.UTC)
+	return start, start.Add(24 * time.Hour)
+}
+
+// EarliestStart returns the start time of the oldest connection log row;
+// ok is false when the table is empty.
+func EarliestStart(ctx context.Context, x *db.DB) (t time.Time, ok bool, err error) {
+	err = x.DB().QueryRowContext(ctx,
+		`SELECT started_at FROM connection_logs ORDER BY started_at ASC LIMIT 1`).Scan(&t)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return t, true, nil
+}
+
 const topIPsLimit = 10
 
 // upsertTopIPs computes the top 10 source IPs by session count for the given
@@ -596,16 +620,17 @@ const topIPsLimit = 10
 // stale low-count entries). Idempotent: re-running with the same underlying
 // connection_logs rows yields identical aux-table contents.
 func (s *SQLSink) upsertTopIPs(ctx context.Context, dayStr, serviceID, kind string) error {
+	dayStart, dayEnd := dayBounds(dayStr)
 	rows, err := s.b.DB().QueryContext(ctx,
 		`SELECT source_ip, COUNT(*) AS sessions
 		   FROM connection_logs
-		  WHERE substr(started_at,1,10) = ?
+		  WHERE started_at >= ? AND started_at < ?
 		    AND COALESCE(service_id,'') = ?
 		    AND kind = ?
 		  GROUP BY source_ip
 		  ORDER BY sessions DESC, source_ip ASC
 		  LIMIT ?`,
-		dayStr, serviceID, kind, topIPsLimit,
+		dayStart, dayEnd, serviceID, kind, topIPsLimit,
 	)
 	if err != nil {
 		return fmt.Errorf("top_ips query: %w", err)
@@ -668,13 +693,14 @@ func (s *SQLSink) upsertTopIPs(ctx context.Context, dayStr, serviceID, kind stri
 // computeP95 pulls all duration_ms values for (day, serviceID, kind), sorts
 // them ascending, and returns the value at index floor(0.95 * n).
 func (s *SQLSink) computeP95(ctx context.Context, dayStr, serviceID, kind string) (int64, error) {
+	dayStart, dayEnd := dayBounds(dayStr)
 	rows, err := s.b.DB().QueryContext(ctx,
 		`SELECT duration_ms FROM connection_logs
-		 WHERE substr(started_at,1,10) = ?
+		 WHERE started_at >= ? AND started_at < ?
 		   AND COALESCE(service_id,'') = ?
 		   AND kind = ?
 		 ORDER BY duration_ms ASC`,
-		dayStr, serviceID, kind,
+		dayStart, dayEnd, serviceID, kind,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("p95 query: %w", err)

@@ -3,13 +3,18 @@ package db
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// QueryObserver is told how long one statement took. op is the statement's
-// verb: "select", "insert", "update", "delete", or "other" for everything
+// QueryObserver is told how long one statement took. For ExecContext that is
+// the whole statement. For QueryContext and QueryRowContext it is the time
+// until the call returns: it includes the wait for a pool connection and the
+// execution up to the first row, and excludes iterating the rows and Scan. op
+// is the statement's verb: "select", "insert", "update", "delete", or "other" for everything
 // else (a pragma, a WITH, DDL). It is called on the goroutine of the query
 // and must return at once.
 type QueryObserver func(op string, d time.Duration)
@@ -18,9 +23,13 @@ type QueryObserver func(op string, d time.Duration)
 // typed DB is wanted, many times for one database, so the observer belongs to
 // the database and not to one wrapper of it.
 var (
-	queryObservers  sync.Map // *sql.DB → QueryObserver
+	queryObservers  sync.Map // *sql.DB → *observerEntry
 	queryObserversN atomic.Int32
 )
+
+// observerEntry gives each registration an identity, so a stop removes only
+// the registration it belongs to.
+type observerEntry struct{ fn QueryObserver }
 
 // ObserveQueries registers o for the statements the typed DB (every Wrap of
 // d) runs outside a transaction, and for those run through ObservedExec.
@@ -30,11 +39,12 @@ func ObserveQueries(d *sql.DB, o QueryObserver) (stop func()) {
 	if d == nil || o == nil {
 		return func() {}
 	}
-	if _, had := queryObservers.Swap(d, o); !had {
+	e := &observerEntry{fn: o}
+	if _, had := queryObservers.Swap(d, e); !had {
 		queryObserversN.Add(1)
 	}
 	return func() {
-		if _, had := queryObservers.LoadAndDelete(d); had {
+		if queryObservers.CompareAndDelete(d, e) {
 			queryObserversN.Add(-1)
 		}
 	}
@@ -53,7 +63,7 @@ func (t *timedDB) observer() QueryObserver {
 		return nil
 	}
 	if o, ok := queryObservers.Load(t.DB); ok {
-		return o.(QueryObserver)
+		return o.(*observerEntry).fn
 	}
 	return nil
 }
@@ -70,7 +80,8 @@ func (t *timedDB) ExecContext(ctx context.Context, query string, args ...any) (s
 	return res, err
 }
 
-// QueryContext is (*sql.DB).QueryContext, timed until the rows are there.
+// QueryContext is (*sql.DB).QueryContext, timed until the call returns (pool
+// wait and execution up to the rows; not their iteration).
 func (t *timedDB) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	o := t.observer()
 	if o == nil {
@@ -82,7 +93,8 @@ func (t *timedDB) QueryContext(ctx context.Context, query string, args ...any) (
 	return rows, err
 }
 
-// QueryRowContext is (*sql.DB).QueryRowContext, timed.
+// QueryRowContext is (*sql.DB).QueryRowContext, timed until the call returns;
+// Scan is not included.
 func (t *timedDB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	o := t.observer()
 	if o == nil {
@@ -94,9 +106,26 @@ func (t *timedDB) QueryRowContext(ctx context.Context, query string, args ...any
 	return row
 }
 
+// observerPanicLog and observerPanicOnce let the first panic of an observer
+// be logged once per process (variables for the test).
+var (
+	observerPanicOnce sync.Once
+	observerPanicLog  = defaultObserverPanicLog
+)
+
+func defaultObserverPanicLog(msg string, args ...any) { slog.Error(msg, args...) }
+
 // report tells the observer; a panicking observer must not fail the query.
+// The first panic is logged, once per process, with the panic value and
+// nothing of the statement.
 func report(o QueryObserver, query string, d time.Duration) {
-	defer func() { _ = recover() }()
+	defer func() {
+		if r := recover(); r != nil {
+			observerPanicOnce.Do(func() {
+				observerPanicLog("db: query observer panicked; further panics are not logged", "panic", fmt.Sprint(r))
+			})
+		}
+	}()
 	o(queryOp(query), d)
 }
 

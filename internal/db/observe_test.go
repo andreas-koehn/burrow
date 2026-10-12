@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -86,5 +88,75 @@ func TestObserveQueries(t *testing.T) {
 	defer mu.Unlock()
 	if ops["select"] != 1 {
 		t.Fatalf("observed after stop: %v", ops)
+	}
+}
+
+// A second observer for the same database replaces the first; the first one's
+// stop must not remove the second.
+func TestObserveQueries_StopRemovesOnlyItsOwn(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "a.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if err := Migrate(d); err != nil {
+		t.Fatal(err)
+	}
+	x := Wrap(d)
+	var first, second int
+	stop1 := ObserveQueries(d, func(string, time.Duration) { first++ })
+	stop2 := ObserveQueries(d, func(string, time.Duration) { second++ })
+	stop1() // not the registered one: no effect
+	if _, err := x.ListWebhooks(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if first != 0 || second != 1 {
+		t.Fatalf("first %d, second %d; want 0 and 1", first, second)
+	}
+	stop2()
+	if _, err := x.ListWebhooks(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if second != 1 || queryObserversN.Load() != 0 {
+		t.Fatalf("second %d after its stop, %d observers left", second, queryObserversN.Load())
+	}
+}
+
+// An observer that panics fails no query, and the first panic is logged
+// (once per process) without the statement's text or arguments.
+func TestObserveQueries_PanicIsContainedAndLoggedOnce(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if err := Migrate(d); err != nil {
+		t.Fatal(err)
+	}
+	var logged []string
+	var mu sync.Mutex
+	observerPanicLog = func(msg string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logged = append(logged, msg+" "+fmt.Sprint(args...))
+	}
+	observerPanicOnce = sync.Once{}
+	t.Cleanup(func() { observerPanicLog = defaultObserverPanicLog; observerPanicOnce = sync.Once{} })
+
+	stop := ObserveQueries(d, func(string, time.Duration) { panic("boom") })
+	defer stop()
+	x := Wrap(d)
+	for i := 0; i < 3; i++ {
+		if _, err := x.ObservedExec(context.Background(), `INSERT INTO settings(key, value) VALUES(?,?)`, "secret-key"+fmt.Sprint(i), "secret-value"); err != nil {
+			t.Fatalf("a panicking observer failed the statement: %v", err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(logged) != 1 {
+		t.Fatalf("logged %d times, want once: %v", len(logged), logged)
+	}
+	if strings.Contains(logged[0], "secret") || strings.Contains(strings.ToLower(logged[0]), "insert") {
+		t.Fatalf("the log line carries the statement: %s", logged[0])
 	}
 }

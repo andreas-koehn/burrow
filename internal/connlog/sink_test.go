@@ -548,3 +548,61 @@ func TestUpsertTopIPsIsTransactional(t *testing.T) {
 		t.Errorf("post-writes: want 10 aux rows, got %d", post)
 	}
 }
+
+// insertLogAt inserts one connection log row that started at ts.
+func insertLogAt(t *testing.T, x *db.DB, id, ip string, ts time.Time, durationMs int) {
+	t.Helper()
+	_, err := x.DB().Exec(
+		`INSERT INTO connection_logs
+		  (id, kind, service_id, source_ip, started_at, ended_at,
+		   duration_ms, bytes_in, bytes_out, status)
+		 VALUES (?,?,?,?,?,?,?,0,0,'closed_clean')`,
+		id, "http_proxy", "s1", ip, ts.UTC(), ts.Add(time.Second).UTC(), durationMs,
+	)
+	if err != nil {
+		t.Fatalf("insert %s: %v", id, err)
+	}
+}
+
+// A day is the half-open interval [00:00, 24:00) UTC: a row a nanosecond
+// before midnight belongs to the day before, one at midnight to the day that
+// starts, one just before the next midnight to the same day. The rollup, the
+// top source IPs and the p95 all use the same range.
+func TestRollup_DayBoundaries(t *testing.T) {
+	x := testDB(t)
+	ctx := context.Background()
+	seedUser(t, x, "u1")
+	seedService(t, x, "s1", "u1")
+
+	d1 := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)
+	d2 := d1.Add(24 * time.Hour)
+	insertLogAt(t, x, "a", "198.51.100.1", d1.Add(-time.Nanosecond), 1)      // d0
+	insertLogAt(t, x, "b", "198.51.100.2", d1, 10)                           // d1, at midnight
+	insertLogAt(t, x, "c", "198.51.100.2", d1.Add(500*time.Millisecond), 20) // d1, fraction
+	insertLogAt(t, x, "d", "198.51.100.3", d2.Add(-time.Nanosecond), 30)     // d1, last instant
+	insertLogAt(t, x, "e", "198.51.100.4", d2, 1000)                         // d2
+
+	sink := NewSQLSink(x, nil)
+	if err := sink.Rollup(ctx, d1.Add(5*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var sessions int
+	if err := x.DB().QueryRow(`SELECT sessions FROM connection_log_rollups WHERE day=? AND service_id='s1'`, "2026-03-16").Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 3 {
+		t.Fatalf("day sessions = %d, want 3 (midnight, midnight+500ms, last nanosecond)", sessions)
+	}
+	var n int
+	if err := x.DB().QueryRow(`SELECT COUNT(*) FROM connection_log_rollups WHERE day<>?`, "2026-03-16").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("rollup rows for other days: %d, %v", n, err)
+	}
+	var ips int
+	if err := x.DB().QueryRow(`SELECT COUNT(*) FROM connection_log_rollup_top_ips WHERE day=?`, "2026-03-16").Scan(&ips); err != nil || ips != 2 {
+		t.Fatalf("top ips for the day: %d (%v), want the 2 addresses of b, c and d", ips, err)
+	}
+	p95, err := sink.computeP95(ctx, "2026-03-16", "s1", "http_proxy")
+	if err != nil || p95 != 30 {
+		t.Fatalf("p95 = %d, %v; want 30 (rows 10, 20, 30 only)", p95, err)
+	}
+}
