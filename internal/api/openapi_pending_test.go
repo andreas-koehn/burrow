@@ -12,28 +12,6 @@ const openAPIConversionDone = false
 // openAPIPendingOperationIDs lists the operations that have no operationId
 // yet, as "METHOD path".
 var openAPIPendingOperationIDs = []string{
-	// O04: AI providers, synthetic models, gateway keys, request attempts
-	"GET /api/v1/ai/providers",
-	"POST /api/v1/ai/providers",
-	"GET /api/v1/ai/providers/{slug}",
-	"PUT /api/v1/ai/providers/{slug}",
-	"DELETE /api/v1/ai/providers/{slug}",
-	"PUT /api/v1/ai/providers/{slug}/upstream",
-	"GET /api/v1/ai/providers/{slug}/models",
-	"POST /api/v1/ai/providers/{slug}/models",
-	"DELETE /api/v1/ai/providers/{slug}/models",
-	"POST /api/v1/ai/providers/{slug}/models/sync",
-	"GET /api/v1/ai/providers/{slug}/metrics",
-	"GET /api/v1/ai/gateway",
-	"GET /api/v1/ai/models",
-	"POST /api/v1/ai/models",
-	"GET /api/v1/ai/models/{name}",
-	"PUT /api/v1/ai/models/{name}",
-	"DELETE /api/v1/ai/models/{name}",
-	"GET /api/v1/ai/keys",
-	"POST /api/v1/ai/keys",
-	"DELETE /api/v1/ai/keys/{id}",
-	"GET /api/v1/ai/requests/{requestID}/attempts",
 	// O05: cache, per-service AI configuration, rate limits, cost, budgets
 	"DELETE /api/v1/services/{serviceID}/cache/entries",
 	"GET /api/v1/services/{serviceID}/ai-config",

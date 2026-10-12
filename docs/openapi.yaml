@@ -112,6 +112,7 @@ components:
         base_url. Identity fields come from the providers table;
         api_key_count, status and the 24h counts are read live from the
         backing service. latency_p95_ms is always 0.
+      required: [slug, name, kind, api_format, service_id, base_url, upstream_base_url, credential_slot, credential_present, credential_slots, breaker_open, billing, supports_responses, max_concurrent, in_use, model_count, model_alias, concrete_model, backend_type, api_key_count, requests_24h, cache_hits_24h, latency_p95_ms, status, client_session_id]
       properties:
         slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$' }
         name: { type: string }
@@ -155,6 +156,7 @@ components:
             value. Empty for a tunnel provider.
           items:
             type: object
+            required: [slot, present]
             properties:
               slot: { type: string, example: ZAI }
               present: { type: boolean }
@@ -350,6 +352,7 @@ components:
       description: >
         One attempt of a gateway request, as the attempt log holds it. It
         carries no credential, slot name, header or upstream body.
+      required: [position, provider, model, status, error_code, duration_ms, ts]
       properties:
         position:
           type: integer
@@ -526,6 +529,7 @@ components:
       description: >
         A gateway key as every response but its creation shows it. The key
         itself is stored as a hash and is never returned again.
+      required: [id, name, key_prefix, user_id, allowed_models, last_used, created_at, revoked_at]
       properties:
         id: { type: string }
         name: { type: string, maxLength: 120 }
@@ -547,6 +551,7 @@ components:
     AIProviderModel:
       type: object
       description: One entry of a provider's stored model list.
+      required: [id, display_name, context_length, synced_at]
       properties:
         id: { type: string, maxLength: 200, example: google/gemini-x }
         display_name: { type: string, maxLength: 200 }
@@ -557,6 +562,7 @@ components:
       description: >
         Metering aggregates for one AI provider over the trailing 24 h.  All
         numeric fields are zeroed pending usage_events aggregation.
+      required: [requests_24h, tokens_in_24h, tokens_out_24h, cost_usd_24h, cache_hit_ratio_24h, requests_per_minute]
       properties:
         requests_24h: { type: integer }
         tokens_in_24h: { type: integer }
@@ -3710,6 +3716,7 @@ paths:
   /api/v1/ai/providers:
     get:
       tags: [models]
+      operationId: providersList
       summary: List AI providers
       description: |
         Returns one entry per row of the providers table, ordered by slug.
@@ -3730,6 +3737,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [models]
+      operationId: providerCreate
       summary: Create a provider (admin)
       description: |
         Kind "tunnel" registers an existing http service in API-key mode as
@@ -3804,6 +3812,7 @@ paths:
         schema: { type: string }
     get:
       tags: [models]
+      operationId: providerGet
       summary: Get one provider
       description: |
         Returns 404 when no provider has that slug or its backing service is
@@ -3822,6 +3831,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [models]
+      operationId: providerUpdate
       summary: Change a provider's slug and name (admin)
       description: |
         After a slug change the old base URL stops working immediately;
@@ -3876,6 +3886,7 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
     delete:
       tags: [models]
+      operationId: providerDelete
       summary: Delete a provider (admin)
       description: |
         Removes the provider; its base URL stops working immediately. For a
@@ -3906,6 +3917,7 @@ paths:
         schema: { type: string }
     put:
       tags: [models]
+      operationId: providerUpstreamUpdate
       summary: Change a direct provider's upstream settings (admin)
       description: |
         A field that is left out keeps its stored value, so the credential
@@ -3950,6 +3962,7 @@ paths:
         schema: { type: string }
     get:
       tags: [models]
+      operationId: providerModelsList
       summary: List a provider's stored models
       description: |
         The list GET /ai/<provider>/v1/models answers from. Returns 404 when
@@ -3971,6 +3984,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     post:
       tags: [models]
+      operationId: providerModelCreate
       summary: Add one model id by hand (admin)
       description: Works for either kind of provider. Adding an id that is already listed changes nothing.
       requestBody:
@@ -3995,6 +4009,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [models]
+      operationId: providerModelDelete
       summary: Remove one model id (admin)
       parameters:
         - name: id
@@ -4017,6 +4032,7 @@ paths:
         schema: { type: string }
     post:
       tags: [models]
+      operationId: providerModelsSync
       summary: Read the model list from a direct provider's upstream (admin)
       description: |
         Calls GET <upstream_base_url>/models with the provider's credential
@@ -4064,6 +4080,7 @@ paths:
   /api/v1/ai/providers/{slug}/metrics:
     get:
       tags: [models]
+      operationId: providerMetricsGet
       summary: Per-provider metrics over the trailing 24 h
       description: |
         Returns metering aggregates for one provider, read from usage_events
@@ -4090,6 +4107,7 @@ paths:
   /api/v1/ai/gateway:
     get:
       tags: [models]
+      operationId: aiGatewayGet
       summary: The gateway's endpoints
       description: |
         The base URL a client is given per dialect. base_url is "" when the
@@ -4105,11 +4123,13 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [endpoints]
                 properties:
                   endpoints:
                     type: array
                     items:
                       type: object
+                      required: [dialect, base_url]
                       properties:
                         dialect: { type: string, enum: [openai, anthropic] }
                         base_url: { type: string }
@@ -4122,6 +4142,7 @@ paths:
   /api/v1/ai/models:
     get:
       tags: [models]
+      operationId: aiModelsList
       summary: List synthetic models
       description: Every synthetic model, ordered by name. Any signed-in caller may read them.
       security:
@@ -4138,6 +4159,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [models]
+      operationId: aiModelCreate
       summary: Create a synthetic model (admin or ai:configure:any)
       description: |
         Allowed for a dashboard session of an admin or of a role with
@@ -4190,6 +4212,7 @@ paths:
         schema: { type: string }
     get:
       tags: [models]
+      operationId: aiModelGet
       summary: Get one synthetic model
       security:
         - CookieAuth: []
@@ -4204,6 +4227,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [models]
+      operationId: aiModelUpdate
       summary: Replace a synthetic model (admin or ai:configure:any)
       description: |
         The body replaces the model; targets is the new list. Three fields
@@ -4236,6 +4260,7 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
     delete:
       tags: [models]
+      operationId: aiModelDelete
       summary: Delete a synthetic model (admin or ai:configure:any)
       description: |
         Requests for the name are refused from then on. Gateway keys keep
@@ -4250,6 +4275,7 @@ paths:
   /api/v1/ai/keys:
     get:
       tags: [models]
+      operationId: gatewayKeysList
       summary: List gateway keys
       description: |
         The caller's gateway keys, newest first; an admin's dashboard
@@ -4270,6 +4296,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [models]
+      operationId: gatewayKeyCreate
       summary: Create a gateway key
       security:
         - CookieAuth: []
@@ -4316,6 +4343,7 @@ paths:
                 allOf:
                   - $ref: '#/components/schemas/AIGatewayKey'
                   - type: object
+                    required: [key]
                     properties:
                       key:
                         type: string
@@ -4337,6 +4365,7 @@ paths:
   /api/v1/ai/keys/{id}:
     delete:
       tags: [models]
+      operationId: gatewayKeyDelete
       summary: Revoke a gateway key
       description: |
         The key stops working at once. Its owner or an admin's dashboard
@@ -4353,6 +4382,7 @@ paths:
   /api/v1/ai/requests/{requestID}/attempts:
     get:
       tags: [models]
+      operationId: aiRequestAttemptsList
       summary: What a gateway request tried (admin, dashboard session)
       description: |
         The attempt log of one request to /openai/v1, /ai/v1 or /anthropic,
