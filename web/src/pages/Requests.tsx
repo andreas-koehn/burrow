@@ -9,7 +9,7 @@ import { useDebounced } from "@/lib/use-debounced";
 import { useUrlParams } from "@/lib/use-url-params";
 import { droppedNames, pairWords } from "@/lib/translation";
 import { InspectorOffHint } from "@/components/InspectorOffHint";
-import { Badge, Button, EmptyState, PageHeader, Select, type SelectOption } from "@/components/ds";
+import { Badge, Button, EmptyState, ErrorNotice, PageHeader, Select, type SelectOption } from "@/components/ds";
 import { LogView, type LogColumn } from "@/components/LogView";
 import type { AiCapturedRequest, AiGatewayKey, AiModel, AiProvider, InspectorEntry, Service, ServiceAIConfig } from "@/lib/contract";
 
@@ -17,12 +17,17 @@ import type { AiCapturedRequest, AiGatewayKey, AiModel, AiProvider, InspectorEnt
 const LIMIT = 100;
 /** No event stream carries captured requests across providers; the list is read again this often. */
 const POLL_MS = 5000;
+/** Answers that asking again would only repeat: not signed in, no permission, no such list (an older relay). */
+const FINAL = [401, 403, 404];
 /**
- * Read again while the answers are good. After a failure (no permission, an older
- * relay) asking again would only repeat it; Retry starts over. The query client
- * pauses the interval while the tab is hidden.
+ * Read again every few seconds, also after a failure that can pass (the network,
+ * a relay that restarts); only a final answer ends it. The query client pauses
+ * the interval while the tab is hidden.
  */
-const poll = (q: Query<AiCapturedRequest[]>) => (q.state.error ? false : POLL_MS);
+const poll = (q: Query<AiCapturedRequest[]>) => {
+  const e = q.state.error;
+  return e instanceof ApiError && FINAL.includes(e.status) ? false : POLL_MS;
+};
 
 const ALL: SelectOption = { value: "", label: "All" };
 
@@ -282,6 +287,12 @@ export default function Requests() {
     <div className="inspector-page">
       {header}
       {olderRelay && <p className="muted small">This relay lists requests one provider at a time.</p>}
+      {/* A failed refresh keeps what was loaded on screen; without this nothing would say it is no longer current. */}
+      {list.isError && list.data !== undefined && (
+        <ErrorNotice variant="warn" role="status">
+          The list could not be refreshed. It shows what was loaded last.
+        </ErrorNotice>
+      )}
       <LogView<AiCapturedRequest>
         label="Requests"
         rows={rows}

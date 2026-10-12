@@ -599,6 +599,33 @@ describe("Requests page", () => {
     });
   }
 
+  it("a refresh that fails says so above the rows, and the next one that works takes the note away", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const spy = vi.spyOn(globalThis, "fetch");
+    const note = "The list could not be refreshed. It shows what was loaded last.";
+    capture("svc_ai001", [1]);
+    mount();
+    expect(bodyRows(await table())).toHaveLength(1);
+    expect(screen.queryByText(note)).toBeNull();
+    const before = listCalls(spy).length;
+
+    // The relay restarts: one refresh is answered 502, the next one is fine again.
+    server.use(http.get("/api/v1/ai/requests", () => HttpResponse.json({ error: "bad gateway" }, { status: 502 }), { once: true }));
+    capture("svc_ai001", [1, 2]);
+    vi.advanceTimersByTime(5000);
+    expect(await screen.findByText(note)).toBeInTheDocument();
+    expect(screen.getByText(note).closest("[role='status']")).not.toBeNull();
+    // What was loaded stays; it is no error page.
+    expect(bodyRows(screen.getByRole("table", { name: "Requests" }))).toHaveLength(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(listCalls(spy)).toHaveLength(before + 1);
+
+    vi.advanceTimersByTime(5000);
+    await waitFor(() => expect(bodyRows(screen.getByRole("table", { name: "Requests" }))).toHaveLength(2));
+    expect(screen.queryByText(note)).toBeNull();
+    expect(listCalls(spy)).toHaveLength(before + 2);
+  });
+
   it("on an older relay the provider's own list is read again every 5 seconds", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const spy = vi.spyOn(globalThis, "fetch");
