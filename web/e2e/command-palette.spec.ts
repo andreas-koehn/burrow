@@ -113,23 +113,26 @@ test("palette: a provider is found by name, before the service of that name", as
     headers,
     data: { service_id: name, title: name, access_mode: "api_key" },
   });
-  expect(service.status()).toBe(201);
-  const provider = await page.request.post("/api/v1/ai/providers", {
-    headers,
-    data: { slug: name, name, kind: "tunnel", service_id: name },
-  });
-  expect(provider.status()).toBe(201);
+  try {
+    expect(service.status()).toBe(201);
+    const provider = await page.request.post("/api/v1/ai/providers", {
+      headers,
+      data: { slug: name, name, kind: "tunnel", service_id: name },
+    });
+    expect(provider.status()).toBe(201);
 
-  await page.getByRole("button", { name: "Search" }).first().click();
-  const dialog = page.getByRole("dialog", { name: "Jump to…" });
-  await dialog.getByRole("searchbox").fill(name);
-  await expect(dialog.getByRole("option")).toHaveText([`${name} — provider`, `${name} — service`]);
+    await page.getByRole("button", { name: "Search" }).first().click();
+    const dialog = page.getByRole("dialog", { name: "Jump to…" });
+    await dialog.getByRole("searchbox").fill(name);
+    await expect(dialog.getByRole("option")).toHaveText([`${name} — provider`, `${name} — service`]);
 
-  // Enter opens the first row: the provider.
-  await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(new RegExp(`/gateway/providers/${name}$`));
-
-  // Clean up: the provider first, then the service it stands on.
-  await page.request.delete(`/api/v1/ai/providers/${name}`, { headers }).catch(() => {});
-  await page.request.delete(`/api/v1/services/${name}`, { headers }).catch(() => {});
+    // Enter opens the first row: the provider.
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(new RegExp(`/gateway/providers/${name}$`));
+  } finally {
+    // Whatever failed above, nothing of this test stays behind: the provider first,
+    // then the service it stands on. A delete of what was never made answers 404.
+    await page.request.delete(`/api/v1/ai/providers/${name}`, { headers }).catch(() => {});
+    await page.request.delete(`/api/v1/services/${name}`, { headers }).catch(() => {});
+  }
 });

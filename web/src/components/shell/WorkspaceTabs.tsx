@@ -39,7 +39,9 @@ export function WorkspaceTabs({ current, workspaces, collapsed = false }: Worksp
               key={ws.workspace}
               to={ws.home}
               className={cx("workspace-tab", active && "is-active")}
-              aria-current={active ? "page" : undefined}
+              // "true", not "page": the link leads to the workspace's home, and the page shown
+              // is usually another one, which its own navigation entry marks.
+              aria-current={active ? "true" : undefined}
               aria-label={collapsed ? ws.label : undefined}
               title={collapsed ? ws.label : undefined}
             >

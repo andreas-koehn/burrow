@@ -46,8 +46,9 @@ describe("WorkspaceTabs", () => {
 
   it("marks the current workspace", () => {
     mount("/gateway/providers");
-    const current = tabs().filter((a) => a.getAttribute("aria-current") === "page");
-    expect(current.map((a) => a.textContent)).toEqual(["AI Gateway"]);
+    // "true", not "page": the tab leads to the workspace's home, which is rarely the page shown.
+    const current = tabs().filter((a) => a.hasAttribute("aria-current"));
+    expect(current.map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["AI Gateway", "true"]]);
     expect(current[0]).toHaveClass("is-active");
     expect(screen.getByRole("link", { name: "Services" })).not.toHaveAttribute("aria-current");
     expect(screen.getByRole("link", { name: "Services" })).not.toHaveClass("is-active");
@@ -57,7 +58,7 @@ describe("WorkspaceTabs", () => {
     mount("/services");
     await userEvent.click(screen.getByRole("link", { name: "AI Gateway" }));
     expect(screen.getByTestId("path")).toHaveTextContent(/^\/gateway$/);
-    expect(screen.getByRole("link", { name: "AI Gateway" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "AI Gateway" })).toHaveAttribute("aria-current", "true");
     expect(screen.getByRole("link", { name: "Services" })).not.toHaveAttribute("aria-current");
   });
 
@@ -91,7 +92,7 @@ describe("WorkspaceTabs", () => {
       ["", "Services", "Services"],
       ["", "AI Gateway", "AI Gateway"],
     ]);
-    expect(screen.getByRole("link", { name: "Services" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Services" })).toHaveAttribute("aria-current", "true");
     for (const tab of tabs()) expect(tab.querySelector("svg")).not.toBeNull();
   });
 

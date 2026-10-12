@@ -296,6 +296,60 @@ describe("CommandPalette — providers, models and gateway keys", () => {
     expect(screen.getByRole("option", { name: /ollama.*provider/i })).toBeInTheDocument();
   });
 
+  // The service is left out because its provider is listed: so the provider answers to the service's name too.
+  it("finds the provider of a gateway-only service by the service's name", async () => {
+    const service = db.services.find((s) => s.id === "svc_ai001")!;
+    service.gateway_only = true;
+    service.name = "gpu-box";
+    db.aiProviders.find((p) => p.service_id === "svc_ai001")!.name = "Office GPU";
+    renderPalette();
+    await userEvent.type(screen.getByRole("searchbox"), "gpu-box");
+    await waitFor(() => expect(results()).toEqual(["Office GPU — provider"]));
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByTestId("spy-location")).toHaveTextContent(/^\/gateway\/providers\/ollama$/);
+  });
+
+  it("does not answer to the name of a service that has a row of its own", async () => {
+    db.services.find((s) => s.id === "svc_ai001")!.name = "gpu-box";
+    db.aiProviders.find((p) => p.service_id === "svc_ai001")!.name = "Office GPU";
+    renderPalette();
+    await userEvent.type(screen.getByRole("searchbox"), "gpu-box");
+    expect(await screen.findByRole("option", { name: "gpu-box — service" })).toBeInTheDocument();
+    await userEvent.clear(screen.getByRole("searchbox"));
+    await userEvent.type(screen.getByRole("searchbox"), "office gpu");
+    expect(await screen.findByRole("option", { name: "Office GPU — provider" })).toBeInTheDocument();
+    await userEvent.clear(screen.getByRole("searchbox"));
+    await userEvent.type(screen.getByRole("searchbox"), "gpu-box");
+    expect(results()).toEqual(["gpu-box — service"]);
+  });
+
+  it("keeps a gateway-only service findable when the providers cannot be read", async () => {
+    db.services.find((s) => s.id === "svc_ai001")!.gateway_only = true;
+    server.use(http.get("/api/v1/ai/providers", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    renderPalette();
+    await userEvent.type(screen.getByRole("searchbox"), "ollama");
+    expect(await seenOllama()).toBeInTheDocument();
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    expect(results()).toEqual(["ollama — service"]);
+  });
+
+  it("keeps a gateway-only service findable for someone without the AI gateway", async () => {
+    db.services.find((s) => s.id === "svc_ai001")!.gateway_only = true;
+    renderPalette({ isAdmin: false, hasAiGateway: false });
+    await userEvent.type(screen.getByRole("searchbox"), "ollama");
+    expect(await seenOllama()).toBeInTheDocument();
+    expect(results()).toEqual(["ollama — service"]);
+  });
+
+  it("keeps a gateway-only service that no listed provider stands for", async () => {
+    db.services.find((s) => s.id === "svc_ai001")!.gateway_only = true;
+    server.use(http.get("/api/v1/ai/providers", () => HttpResponse.json([{ slug: "zai", name: "zai", service_id: "prov-zai" }])));
+    renderPalette();
+    await userEvent.type(screen.getByRole("searchbox"), "ollama");
+    expect(await seenOllama()).toBeInTheDocument();
+    expect(results()).toEqual(["ollama — service"]);
+  });
+
   it("opens the provider by its slug when the name differs", async () => {
     server.use(http.get("/api/v1/ai/providers", () => HttpResponse.json([{ slug: "local-llm", name: "Office GPU" }])));
     renderPalette();

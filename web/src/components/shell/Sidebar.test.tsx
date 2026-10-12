@@ -62,12 +62,14 @@ describe("Sidebar", () => {
     expect(entries("AI Gateway")).toEqual(["Overview", "Clients", "Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
     expect(screen.getByRole("link", { name: "Providers" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "Requests" })).toHaveAttribute("href", "/gateway/requests");
-    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "page"]]);
+    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "true"]]);
+    // One entry is the page shown; the tab says which workspace, not which page.
+    expect(document.querySelectorAll('.sidebar [aria-current="page"]')).toHaveLength(1);
   });
 
   it("the workspaces are two tabs at the head, not a menu behind a button", () => {
     mount("/services");
-    expect(tabs()).toEqual([["Services", "/", "page"], ["AI Gateway", "/gateway", null]]);
+    expect(tabs()).toEqual([["Services", "/", "true"], ["AI Gateway", "/gateway", null]]);
     expect(screen.queryByRole("button", { name: /^Workspace/ })).toBeNull();
     expect(screen.queryByRole("menu")).toBeNull();
     // Above the workspace's own navigation, in the head of the sidebar.
@@ -90,7 +92,7 @@ describe("Sidebar", () => {
     localStorage.setItem("burrow.lastWorkspace", "gateway");
     mount("/clients");
     expect(screen.getByRole("navigation", { name: "AI Gateway" })).toBeInTheDocument();
-    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "page"]]);
+    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "true"]]);
   });
 
   it("with one workspace there are no tabs: the mark and the workspace's name", () => {
@@ -175,7 +177,7 @@ describe("Sidebar", () => {
     // The tabs are icons too, each with its name and a tooltip.
     const workspaces = within(screen.getByRole("navigation", { name: "Workspace" })).getAllByRole("link");
     expect(workspaces.map((a) => [a.textContent, a.getAttribute("aria-label"), a.getAttribute("title"), a.getAttribute("aria-current")]))
-      .toEqual([["", "Services", "Services", "page"], ["", "AI Gateway", "AI Gateway", null]]);
+      .toEqual([["", "Services", "Services", "true"], ["", "AI Gateway", "AI Gateway", null]]);
     expect(screen.getByRole("link", { name: "Users & roles" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Your profile, alice@example.com" })).not.toHaveTextContent("alice");
     expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();

@@ -13,8 +13,8 @@ const pathOf = (page: Page) => { const u = new URL(page.url()); return u.pathnam
 
 /** The tab of `current` is the marked one, and the only one. */
 async function expectCurrent(page: Page, current: string) {
-  await expect(tab(page, current)).toHaveAttribute("aria-current", "page");
-  await expect(tabs(page).locator('[aria-current="page"]')).toHaveCount(1);
+  await expect(tab(page, current)).toHaveAttribute("aria-current", "true");
+  await expect(tabs(page).locator("[aria-current]")).toHaveCount(1);
 }
 
 test("the two tabs move between the workspaces and the sidebar follows", async ({ page }) => {

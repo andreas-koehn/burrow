@@ -103,10 +103,21 @@ export function CommandPalette({
 
     const entityItems: PaletteItem[] = [];
     if (q !== "") {
+      const providers = rows<AiProvider>(providersQuery.data);
+      const services = rows<Service>(servicesQuery.data);
+      // A service reachable through the AI gateway only is left to its provider, as in the
+      // services list — but only to a provider that is listed here. Without one (the providers
+      // not read, or not asked for) the service keeps its own row and stays findable.
+      const standsFor = new Map<string, Service>();
+      for (const svc of services) {
+        if (svc.gateway_only && providers.some((p) => p.service_id === svc.id)) standsFor.set(svc.id, svc);
+      }
+
       // Before the services: a provider and the service behind it often share a name,
-      // and the provider's page is the one that says how an app uses it.
-      for (const p of rows<AiProvider>(providersQuery.data)) {
-        if (has(p.name, q) || has(p.slug, q)) {
+      // and the provider's page is the one that says how an app uses it. A provider that
+      // stands for a service answers to that service's name as well.
+      for (const p of providers) {
+        if (has(p.name, q) || has(p.slug, q) || has(standsFor.get(p.service_id)?.name, q)) {
           entityItems.push({
             key: `prov-${p.slug}`,
             label: `${p.name} — provider`,
@@ -116,9 +127,8 @@ export function CommandPalette({
         }
       }
 
-      for (const svc of rows<Service>(servicesQuery.data)) {
-        // Reachable through the AI gateway only: its provider stands for it, as in the services list.
-        if (svc.gateway_only) continue;
+      for (const svc of services) {
+        if (standsFor.has(svc.id)) continue;
         if (has(svc.name, q)) {
           entityItems.push({
             key: `svc-${svc.id}`,

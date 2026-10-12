@@ -191,14 +191,14 @@ describe("Layout workspace shell", () => {
     expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
     expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
     await screen.findByRole("navigation", { name: "Workspace" });
-    expect(tabs()).toEqual([["Services", "/", "page"], ["AI Gateway", "/gateway", null]]);
+    expect(tabs()).toEqual([["Services", "/", "true"], ["AI Gateway", "/gateway", null]]);
     expect(screen.queryByRole("button", { name: /^Workspace/ })).toBeNull();
   });
 
   it("shows the AI Gateway sidebar on a gateway path", async () => {
     renderLayout("admin", { path: "/gateway" });
     await screen.findByRole("navigation", { name: "AI Gateway" });
-    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "page"]]);
+    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "true"]]);
     expect(sidebarLinks("AI Gateway")).toEqual(["Overview", "Clients", "Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
     expect(screen.getByRole("link", { name: /^Clients(,|$)/ })).toHaveAttribute("href", "/clients");
   });
@@ -213,9 +213,9 @@ describe("Layout workspace shell", () => {
     expect(nav.getByRole("link", { name: "Providers" })).not.toHaveAttribute("aria-current");
     expect(nav.getByRole("link", { name: "Models" })).toBeInTheDocument();
     expect(nav.getByRole("link", { name: "Clients, 1 online" })).toHaveAttribute("aria-current", "page");
-    expect(document.querySelectorAll('.sidebar-nav [aria-current="page"]')).toHaveLength(1);
+    expect(document.querySelectorAll('.sidebar [aria-current="page"]')).toHaveLength(1);
     // The tab follows the sidebar, not the URL: Clients has no workspace of its own.
-    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "page"]]);
+    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "true"]]);
     const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
     expect(within(crumbs).getByRole("link", { name: "AI Gateway" })).toHaveAttribute("href", "/gateway");
     expect(within(crumbs).getByText("Clients")).toHaveAttribute("aria-current", "page");
@@ -233,7 +233,7 @@ describe("Layout workspace shell", () => {
     expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
     expect(screen.getByRole("link", { name: /^Clients(,|$)/ })).toHaveAttribute("aria-current", "page");
     expect(screen.queryByRole("navigation", { name: "AI Gateway" })).toBeNull();
-    expect(tabs()).toEqual([["Services", "/", "page"], ["AI Gateway", "/gateway", null]]);
+    expect(tabs()).toEqual([["Services", "/", "true"], ["AI Gateway", "/gateway", null]]);
     expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(/^Services\W*Clients$/);
   });
 
@@ -390,7 +390,7 @@ describe("Layout workspace shell", () => {
   it("a non-admin with a connected http service gets the tabs", async () => {
     renderLayout("user", { services: [httpService("svc1", "ollama")] });
     await screen.findByRole("navigation", { name: "Workspace" });
-    expect(tabs()).toEqual([["Services", "/", "page"], ["AI Gateway", "/gateway", null]]);
+    expect(tabs()).toEqual([["Services", "/", "true"], ["AI Gateway", "/gateway", null]]);
   });
 
   it("a click on the AI Gateway tab opens the gateway and its navigation", async () => {
@@ -400,7 +400,7 @@ describe("Layout workspace shell", () => {
     expect(screen.getByTestId("where")).toHaveTextContent(/^\/gateway$/);
     expect(sidebarLinks("AI Gateway")).toEqual(["Overview", "Clients", "Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
     expect(screen.queryByRole("navigation", { name: "Services" })).toBeNull();
-    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "page"]]);
+    expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "true"]]);
     expect(within(screen.getByRole("navigation", { name: "AI Gateway" })).getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
     expect(localStorage.getItem("burrow.lastWorkspace")).toBe("gateway");
   });
@@ -412,7 +412,7 @@ describe("Layout workspace shell", () => {
     expect(screen.getByTestId("where")).toHaveTextContent(/^\/$/);
     expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
     expect(screen.queryByRole("navigation", { name: "AI Gateway" })).toBeNull();
-    expect(tabs()).toEqual([["Services", "/", "page"], ["AI Gateway", "/gateway", null]]);
+    expect(tabs()).toEqual([["Services", "/", "true"], ["AI Gateway", "/gateway", null]]);
   });
 
   it("the tabs come before the navigation in the tab order, and Enter follows one", async () => {
