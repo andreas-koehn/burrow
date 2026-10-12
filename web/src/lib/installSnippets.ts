@@ -46,6 +46,14 @@ export function isTarget(value: string): boolean {
   return port >= 1 && port <= 65535;
 }
 
+/** What the run line publishes for a service: the port it was last served from, when that is known. */
+export function targetOf(localAddr: string): string | undefined {
+  const m = /^(.*):(\d{1,5})$/.exec(localAddr);
+  if (!m) return undefined;
+  // On the machine itself the port says it all; another host is kept whole.
+  return ["", "127.0.0.1", "localhost", "[::1]"].includes(m[1]!) ? m[2] : localAddr;
+}
+
 /** What the run line publishes when it is given nothing it can use. */
 const EXAMPLE_TARGET = "3000";
 

@@ -47,6 +47,53 @@ describe("ProviderConnect", () => {
 
   it("labels its region with the heading", () => {
     render(<ProviderConnect baseUrl={BASE} />);
-    expect(screen.getByRole("region", { name: "Connect a client" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Use it in an app" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Use it in an app" })).toBeInTheDocument();
+  });
+
+  it("says what kind of app uses it, and with which key", () => {
+    render(<ProviderConnect baseUrl={BASE} />);
+    expect(screen.getByText("Use this as the base URL of any OpenAI-compatible app, with a gateway key.")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/this provider's API keys/);
+  });
+
+  describe("a provider of the Anthropic format", () => {
+    // An Anthropic app adds /v1/messages itself.
+    const ANTHROPIC_BASE = "https://b.example.com/ai/ollama";
+
+    it("names the Anthropic-compatible app and the base URL such an app takes", async () => {
+      const writeText = stubClipboard();
+      render(<ProviderConnect baseUrl={BASE} apiFormat="anthropic" exampleModel="claude-local" />);
+      expect(screen.getByText("Use this as the base URL of any Anthropic-compatible app, with a gateway key.")).toBeInTheDocument();
+      expect(screen.getByText(ANTHROPIC_BASE)).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: `Copy base URL ${ANTHROPIC_BASE}` }));
+      expect(writeText).toHaveBeenCalledWith(ANTHROPIC_BASE);
+    });
+
+    it("shows the Anthropic snippet of the connect card, not the OpenAI one", async () => {
+      const writeText = stubClipboard();
+      render(<ProviderConnect baseUrl={BASE} apiFormat="anthropic" exampleModel="claude-local" />);
+      await userEvent.click(screen.getByRole("button", { name: "Copy settings for Claude Code" }));
+      const settings = JSON.parse(writeText.mock.calls[0][0] as string) as { env: Record<string, string> };
+      expect(settings.env).toEqual({
+        ANTHROPIC_BASE_URL: ANTHROPIC_BASE,
+        // A placeholder: the card is never given a key.
+        ANTHROPIC_AUTH_TOKEN: "<your gateway key>",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-local",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-local",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-local",
+      });
+      expect(screen.queryByRole("button", { name: "Copy curl example" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Copy environment variables" })).toBeNull();
+      expect(document.body).not.toHaveTextContent(/OPENAI_|chat\/completions/);
+    });
+
+    it("pins no model while none is known", async () => {
+      const writeText = stubClipboard();
+      render(<ProviderConnect baseUrl={BASE} apiFormat="anthropic" />);
+      await userEvent.click(screen.getByRole("button", { name: "Copy settings for Claude Code" }));
+      const settings = JSON.parse(writeText.mock.calls[0][0] as string) as { env: Record<string, string> };
+      expect(Object.keys(settings.env)).toEqual(["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"]);
+    });
   });
 });

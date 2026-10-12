@@ -2213,8 +2213,8 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
    3. .page-section + .page-section — automatic vertical rhythm
       between top-level sections (replaces ad-hoc margin-top: 16px
       on individual .card elements).
-   4. .meta-strip / .sparkline-wrap — ProviderDetail layout
-      helpers that were used in JSX but had no CSS.
+   4. .meta-strip — detail-page layout helper that was used in
+      JSX but had no CSS.
    5. .stat-row / .semantic-stats — PromptCache SemanticStatsPanel
       rows had no layout rule.
    6. .exact-cache / .semantic-cache — PromptCache tab panels were
@@ -2360,7 +2360,6 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   .ai-endpoint-detail-page .def-row { flex-wrap: wrap; }
   .ai-endpoint-detail-page .def-row .def-val { min-width: 0; overflow-wrap: anywhere; }
   .ai-endpoint-detail-page .def-row .badge { white-space: normal; height: auto; min-height: 20px; }
-  .ai-endpoint-detail-page .sparkline-wrap svg { max-width: 100%; height: auto; }
   .ai-endpoint-detail-page .notice-inline .body { min-width: 0; overflow-wrap: anywhere; }
   .provider-connect > .row { flex-wrap: wrap; }
   .provider-connect .cmd-block { flex-basis: 100%; }
@@ -2375,13 +2374,6 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   font-size: 13px;
   color: var(--muted-foreground);
   margin-bottom: var(--space-md);
-}
-
-/* 4b. ProviderDetail sparkline container */
-.sparkline-wrap {
-  margin: var(--space-md) 0;
-  color: var(--primary);
-  opacity: 0.7;
 }
 
 /* 5. PromptCache → SemanticStatsPanel stat rows */

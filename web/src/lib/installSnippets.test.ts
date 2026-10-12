@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { CLIENT_OS_OPTIONS, downloadTargets, installLines, isCommandName, isTarget } from "./installSnippets";
+import { CLIENT_OS_OPTIONS, downloadTargets, installLines, isCommandName, isTarget, targetOf } from "./installSnippets";
 
 // Every operating system the lines are written for.
 const EVERY_OS = CLIENT_OS_OPTIONS.map((o) => o.value);
@@ -105,6 +105,23 @@ describe("installLines", () => {
       expect(Object.values(l).join("\n")).not.toMatch(/bur_/);
       expect(l.login).not.toMatch(/--token/);
     }
+  });
+});
+
+describe("targetOf", () => {
+  it.each([
+    ["127.0.0.1:11434", "11434"],
+    ["localhost:8000", "8000"],
+    ["[::1]:8000", "8000"],
+    [":8000", "8000"],
+    // Another host is kept whole: the port alone would name this machine.
+    ["192.168.1.5:8000", "192.168.1.5:8000"],
+  ])("%s gives %s", (addr, target) => {
+    expect(targetOf(addr)).toBe(target);
+  });
+
+  it.each(["", "ollama", "11434"])("%j gives nothing: no port is known", (addr) => {
+    expect(targetOf(addr)).toBeUndefined();
   });
 });
 

@@ -68,14 +68,17 @@ test("44-ai-gateway-pages: every AI-gateway page renders for an unconfigured api
     // 2) Provider detail — must render (was a blank-page crash on {}).
     await page.goto(`/gateway/providers/${slug}`);
     await expect(page.getByRole("heading", { name: /^Provider · /, level: 1 })).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByRole("heading", { name: "Connect a client" })).toBeVisible();
-    // A tunnel provider has no Upstream tab; every other tab must render.
-    await expect(page.getByRole("tab", { name: "Upstream" })).toHaveCount(0);
-    await page.getByRole("tab", { name: "API keys" }).click();
-    await expect(page.locator('table[aria-label="API keys"]')).toBeVisible();
-    await page.getByRole("tab", { name: "Models" }).click();
+    await expect(page.getByRole("heading", { name: "Use it in an app" })).toBeVisible();
+    // Three tabs, and every one must render. The key list of the backing
+    // service is on the service's page; routing sits under Advanced.
+    await expect(page.getByRole("tab")).toHaveText(["Overview", "Catalog", "Settings"]);
+    await expect(page.getByRole("region", { name: "Client", exact: true })).toBeVisible();
+    await page.getByRole("tab", { name: "Catalog" }).click();
     await expect(page.getByRole("region", { name: "Models" })).toBeVisible();
-    await page.getByRole("tab", { name: "Routing" }).click();
+    await page.getByRole("tab", { name: "Settings" }).click();
+    await expect(page.getByRole("region", { name: "Keys", exact: true })).toBeVisible();
+    await expect(page.locator('table[aria-label="API keys"]')).toHaveCount(0);
+    await page.getByRole("button", { name: "Advanced" }).click();
     await expect(page.getByRole("heading", { name: "Routing" })).toBeVisible();
 
     // 3) Prompt cache → Semantic tab — was a React TypeError ("reading 'semantic'").

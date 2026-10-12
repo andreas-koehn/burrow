@@ -1,16 +1,16 @@
-import { useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal } from "lucide-react";
+import { ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Dialog, DropdownMenu, ErrorNotice, FormField, Input, MetricStrip, MetricTile, PageHeader, Select, SkeletonRows, Switch, TableEmptyRow, Tabs } from "@/components/ds";
+import { ProviderClientPanel } from "@/components/ProviderClientPanel";
 import { ProviderConnect } from "@/components/ProviderConnect";
 import { RenameProviderDialog } from "@/components/RenameProviderDialog";
-import { ApiKeysPanel } from "@/components/ApiKeysPanel";
 import { ProviderModelsPanel } from "@/components/ProviderModelsPanel";
-import { ProviderConcurrencySetting, ProviderResponsesSetting, ProviderUpstreamPanel } from "@/components/ProviderUpstreamPanel";
+import { ProviderConcurrencySetting, ProviderResponsesSetting, ProviderUpstreamPanel, SlotsNotSet } from "@/components/ProviderUpstreamPanel";
 import { useAuth } from "@/auth/useAuth";
 import { providerBaseUrl } from "@/lib/serviceUrl";
 import { providerState } from "@/lib/status";
@@ -43,24 +43,6 @@ function fmtInt(n: number): string {
   return n.toLocaleString("en-US");
 }
 
-function Sparkline({ data }: { data: number[] }) {
-  const max = Math.max(1, ...data);
-  const step = data.length > 1 ? 240 / (data.length - 1) : 0;
-  const points = data.map((v, i) => `${(i * step).toFixed(2)},${(60 - (v / max) * 56 - 2).toFixed(2)}`).join(" ");
-  return (
-    <svg
-      viewBox="0 0 240 60"
-      role="img"
-      aria-label="requests per minute, last hour"
-      width="240"
-      height="60"
-    >
-      <polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
-
 const STRATEGY_OPTIONS = [
   { value: "single", label: "Single backend" },
   { value: "failover", label: "Failover" },
@@ -71,9 +53,17 @@ const STRATEGY_OPTIONS = [
 ];
 
 const BACK = { to: "/gateway/providers", label: "Providers" } as const;
-const SUBTITLE = "Connection details, traffic, API keys, models and routing for this provider.";
-// Tab values double as URL fragments, e.g. /gateway/providers/<slug>#api-keys.
-const TAB_VALUES = ["connect", "api-keys", "models", "routing", "upstream"];
+const SUBTITLE = "Status, use in apps, catalog and settings of this provider.";
+// Tab values double as URL fragments, e.g. /gateway/providers/<slug>#settings.
+const TAB_VALUES = ["overview", "catalog", "settings"];
+// Fragments of the tabs this page had before: links and bookmarks keep working.
+const OLD_FRAGMENT = new Map([
+  ["connect", "overview"],
+  ["models", "catalog"],
+  ["api-keys", "settings"],
+  ["routing", "settings"],
+  ["upstream", "settings"],
+]);
 
 export default function ProviderDetail() {
   const { slug = "" } = useParams<{ slug: string }>();
@@ -86,8 +76,11 @@ export default function ProviderDetail() {
   // The open tab lives in the URL fragment, so it can be linked to and the
   // back button returns to it.
   const fragment = useLocation().hash.slice(1);
-  const tab = TAB_VALUES.includes(fragment) ? fragment : "connect";
+  const tab = TAB_VALUES.includes(fragment) ? fragment : OLD_FRAGMENT.get(fragment) ?? "overview";
   const setTab = (next: string) => nav({ hash: `#${next}` }, { replace: true });
+  // The routing settings are collapsed until asked for; "#routing" asks for them.
+  const [advancedChoice, setAdvancedChoice] = useState<boolean | null>(null);
+  const advancedOpen = advancedChoice ?? fragment === "routing";
 
   const provider = useQuery({
     queryKey: ["ai", "provider", slug],
@@ -124,6 +117,11 @@ export default function ProviderDetail() {
     retry: false,
     enabled: Boolean(slug),
   });
+  // The client panel waited for a client and one came: read again what it changes.
+  const cameOnline = useCallback(() => {
+    void qc.invalidateQueries({ queryKey: ["ai", "provider", slug], exact: true });
+    void qc.invalidateQueries({ queryKey: ["service", id], exact: true });
+  }, [qc, slug, id]);
   // Same key as ProviderModelsPanel; the first model is used in the examples.
   const models = useQuery({
     queryKey: ["ai", "provider-models", slug],
@@ -186,13 +184,6 @@ export default function ProviderDetail() {
     },
   });
 
-  const aiRow = provider.data;
-  // The first model that targets this provider, as the relay reports it. A
-  // provider no model targets has no such line; " → " alone says nothing.
-  const resolvedAlias = aiRow && (aiRow.model_alias || aiRow.concrete_model)
-    ? `${aiRow.model_alias} → ${aiRow.concrete_model}`
-    : null;
-
   if (provider.error || svc.error || cfg.error || metrics.error) {
     const e = provider.error ?? svc.error ?? cfg.error ?? metrics.error;
     return (
@@ -250,6 +241,11 @@ export default function ProviderDetail() {
   };
 
   const sticky = routing.strategy === "sticky";
+  const state = providerState(provider.data);
+  // Keys of the backing service, from before gateway keys. A hosted provider's
+  // backing service is not one anyone manages, so its keys are not counted here.
+  const serviceKeys = direct ? 0 : provider.data.api_key_count ?? 0;
+  const missingSlots = provider.data.credential_slots?.filter((x) => !x.present).map((x) => x.slot) ?? [];
 
   return (
     <div className="ai-endpoint-detail-page">
@@ -259,25 +255,10 @@ export default function ProviderDetail() {
         subtitle={SUBTITLE}
         actions={
           <>
-            <StatusBadge state={providerState(provider.data)} />
-            {isAdmin && (
-              <Button variant="secondary" size="sm" onClick={() => setRenameOpen(true)}>
-                Rename
-              </Button>
-            )}
-            <Link className="btn btn-secondary btn-sm" to={`/gateway/requests/${id}`}>
-              Open request inspector
+            <StatusBadge state={state} />
+            <Link className="btn btn-secondary btn-sm" to={`/gateway/requests?provider=${encodeURIComponent(provider.data.slug)}`}>
+              View requests
             </Link>
-            {!direct && (
-              <label className="row row-center gap-2">
-                <span>Pause provider</span>
-                <Switch
-                  aria-label="Pause provider"
-                  checked={routing.paused}
-                  onChange={togglePause}
-                />
-              </label>
-            )}
             <DropdownMenu
               trigger={
                 <button type="button" className="icon-btn" aria-label="More actions">
@@ -287,9 +268,6 @@ export default function ProviderDetail() {
               items={[
                 { label: "Clear cache", onSelect: () => clearCache.mutate() },
                 { label: "Export logs (NDJSON)", onSelect: () => { void apiFetch(`/services/${id}/inspector/export?format=ndjson`); } },
-                ...(isAdmin
-                  ? [{ label: "Delete provider", danger: true, onSelect: () => { setDeleteErr(null); setDeleteOpen(true); } }]
-                  : []),
               ]}
             />
           </>
@@ -303,56 +281,41 @@ export default function ProviderDetail() {
       )}
 
       <Tabs
-        // "#upstream" on a tunnel provider names a tab it does not have.
-        value={tab === "upstream" && !direct ? "connect" : tab}
+        value={tab}
         onChange={setTab}
         tabs={[
           {
-            value: "connect",
-            label: "Connect",
+            value: "overview",
+            label: "Overview",
             content: (
               <>
+              {direct ? (
+                <section aria-labelledby={`${headingId}-credential`} className="card col gap-2">
+                  <h2 id={`${headingId}-credential`}>Credential</h2>
+                  <p>
+                    <StatusBadge state={state} />{" · "}
+                    {provider.data.credential_present
+                      ? "The credential is set on the relay."
+                      : <SlotsNotSet slots={missingSlots.length > 0 ? missingSlots : [provider.data.credential_slot]} orEmpty />}
+                  </p>
+                  {!provider.data.credential_present && (
+                    <p className="small">
+                      <Link className="link-inline" to={{ hash: "#settings" }} replace>Upstream settings</Link>
+                    </p>
+                  )}
+                </section>
+              ) : svc.data && (
+                <ProviderClientPanel provider={provider.data} service={svc.data} isAdmin={isAdmin} onOnline={cameOnline} />
+              )}
+
               <ProviderConnect
                 baseUrl={providerBaseUrl(provider.data.slug, provider.data.base_url)}
                 exampleModel={models.data?.[0]?.id || provider.data.concrete_model || undefined}
+                apiFormat={provider.data.api_format}
               />
-
-              {direct ? (
-                resolvedAlias && (
-                  <div className="meta-strip">
-                    <span className="mono">{resolvedAlias}</span>
-                  </div>
-                )
-              ) : (
-                <div className="meta-strip">
-                  {resolvedAlias && <span className="mono">{resolvedAlias}</span>}
-                  {aiRow?.client_session_id && (
-                    <Link to={`/clients/${aiRow.client_session_id}`} className="mono">
-                      {aiRow.client_session_id}
-                    </Link>
-                  )}
-                  <span className="muted">
-                    last seen {aiRow?.status === "Connected" ? "just now" : "—"}
-                  </span>
-                </div>
-              )}
 
               {flat && (
                 <p className="muted small">Flat-rate plan: usage is counted in tokens, not in USD.</p>
-              )}
-
-              {/* A direct provider has this among its upstream settings. */}
-              {!direct && provider.data.api_format === "openai" && (
-                <ProviderResponsesSetting provider={provider.data} isAdmin={isAdmin} />
-              )}
-              {!direct && (
-                // Keyed on the stored limit: a save or a refetch that brings
-                // another value starts the field from it.
-                <ProviderConcurrencySetting
-                  key={provider.data.max_concurrent}
-                  provider={provider.data}
-                  isAdmin={isAdmin}
-                />
               )}
 
               <MetricStrip ariaLabel="Provider metrics">
@@ -361,10 +324,6 @@ export default function ProviderDetail() {
                 <MetricTile label="Cost (24h)" value={flat ? "—" : `$${metrics.data.cost_usd_24h.toFixed(2)}`} />
                 <MetricTile label="Cache hit ratio" value={`${Math.round(metrics.data.cache_hit_ratio_24h * 100)}%`} />
               </MetricStrip>
-
-              <div className="sparkline-wrap">
-                <Sparkline data={metrics.data.requests_per_minute} />
-              </div>
 
               <section aria-labelledby={`${headingId}-recent`} className="card">
                 <h2 id={`${headingId}-recent`}>Recent requests</h2>
@@ -402,105 +361,9 @@ export default function ProviderDetail() {
                           <td className="mono">{r.cache}</td>
                         </tr>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-              </>
-            ),
-          },
-          {
-            value: "api-keys",
-            label: "API keys",
-            content: <ApiKeysPanel serviceId={id} ownToaster={false} />,
-          },
-          {
-            value: "models",
-            label: "Models",
-            content: <ProviderModelsPanel slug={provider.data.slug} kind={provider.data.kind} isAdmin={isAdmin} />,
-          },
-          {
-            value: "routing",
-            label: "Routing",
-            content: (
-              <>
-              <section aria-labelledby={`${headingId}-routing`} className="card">
-                <h2 id={`${headingId}-routing`}>Routing</h2>
-                <div className="form-grid">
-                  <div className="field">
-                    <label htmlFor={`${headingId}-strategy`}>Routing strategy</label>
-                    <Select
-                      id={`${headingId}-strategy`}
-                      value={routing.strategy}
-                      onChange={(v) =>
-                        setRouting({ strategy: v as ServiceAIConfig["routing"]["strategy"] })
-                      }
-                      options={STRATEGY_OPTIONS}
-                    />
-                  </div>
-                  {routing.strategy === "multi_provider" && (
-                    <p
-                      data-testid="multi-provider-banner"
-                      className="notice-inline info"
-                      style={{ gridColumn: "1 / -1" }}
-                    >
-                      Cross-provider failover is allowed only when <code>Idempotency-Key</code> is set and zero bytes have streamed. See routing docs.
-                    </p>
-                  )}
-                  <div className="field">
-                    <label className="row gap-2" htmlFor={`${headingId}-sticky`}>
-                      <Switch
-                        id={`${headingId}-sticky`}
-                        aria-label="Sticky session"
-                        checked={sticky}
-                        onChange={(v) => setRouting({ strategy: v ? "sticky" : "single" })}
-                      />
-                      <span>Sticky session</span>
-                    </label>
-                  </div>
-                  <FormField label="Circuit-breaker failure %" htmlFor={`${headingId}-fpct`} w="sm">
-                    <Input
-                      id={`${headingId}-fpct`}
-                      type="number"
-                      className="mono"
-                      min={0}
-                      max={100}
-                      value={routing.circuit_breaker.failure_pct}
-                      onChange={(e) => setCircuitBreaker({ failure_pct: Number(e.target.value) })}
-                    />
-                  </FormField>
-                </div>
-                <div className="actions">
-                  <Button variant="primary" size="sm" disabled={save.isPending} onClick={() => save.mutate(draft)}>
-                    {save.isPending ? "Saving…" : "Save routing"}
-                  </Button>
-                </div>
-              </section>
-
-              <section aria-labelledby={`${headingId}-backends`} className="card">
-                <h2 id={`${headingId}-backends`}>Backends</h2>
-                <div className="table-wrap">
-                  <table className="data" aria-label="Backends">
-                    <thead>
-                      <tr>
-                        <th>Service</th>
-                        <th>Concrete model</th>
-                        <th>Weight</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(routing.backends ?? []).map((b) => (
-                        <tr key={b.service_id}>
-                          {/* A direct provider's backing service is not a service anyone manages: no id. */}
-                          {direct && b.service_id === id
-                            ? <td>This provider</td>
-                            : <td className="mono">{b.service_id}</td>}
-                          <td className="mono">{b.concrete_model}</td>
-                          <td className="mono">{b.weight}</td>
-                        </tr>
-                      ))}
-                      {(routing.backends ?? []).length === 0 && (
-                        <TableEmptyRow colSpan={3} title="No backends configured." />
+                      {/* Only once the answer is there: an empty table is not yet a table without requests. */}
+                      {recent.data && recent.data.length === 0 && (
+                        <TableEmptyRow colSpan={6} title="No requests yet" />
                       )}
                     </tbody>
                   </table>
@@ -509,13 +372,184 @@ export default function ProviderDetail() {
               </>
             ),
           },
-          ...(direct
-            ? [{
-                value: "upstream",
-                label: "Upstream",
-                content: <ProviderUpstreamPanel provider={provider.data} isAdmin={isAdmin} />,
-              }]
-            : []),
+          {
+            value: "catalog",
+            label: "Catalog",
+            content: <ProviderModelsPanel slug={provider.data.slug} kind={provider.data.kind} isAdmin={isAdmin} />,
+          },
+          {
+            value: "settings",
+            label: "Settings",
+            content: (
+              <>
+              {/* A direct provider has these two among its upstream settings. */}
+              {!direct && provider.data.api_format === "openai" && (
+                <ProviderResponsesSetting provider={provider.data} isAdmin={isAdmin} />
+              )}
+              {!direct && (
+                // Keyed on the stored limit: a save or a refetch that brings
+                // another value starts the field from it.
+                <ProviderConcurrencySetting
+                  key={provider.data.max_concurrent}
+                  provider={provider.data}
+                  isAdmin={isAdmin}
+                />
+              )}
+              {direct && <ProviderUpstreamPanel provider={provider.data} isAdmin={isAdmin} />}
+
+              <section aria-labelledby={`${headingId}-keys`} className="card col gap-2">
+                <h2 id={`${headingId}-keys`}>Keys</h2>
+                <p>
+                  Apps use a gateway key. <Link className="link-inline" to="/gateway/keys">Manage gateway keys</Link>
+                </p>
+                {serviceKeys > 0 && (
+                  <p className="muted small">
+                    This provider's service also has {serviceKeys === 1 ? "1 API key" : `${fmtInt(serviceKeys)} API keys`} from
+                    before gateway keys. {serviceKeys === 1 ? "It keeps working." : "They keep working."}{" "}
+                    <Link className="link-inline" to={`/services/${id}#api-keys`}>
+                      {serviceKeys === 1 ? "Manage it" : "Manage them"}
+                    </Link>
+                  </p>
+                )}
+              </section>
+
+              {/* Set apart like the other sections a page keeps closed (Connect a client). */}
+              <section aria-labelledby={`${headingId}-advanced`} className="account-section">
+                <h2 id={`${headingId}-advanced`} className="connect-other-head">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-expanded={advancedOpen}
+                    aria-controls={`${headingId}-advanced-panel`}
+                    icon={advancedOpen ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+                    onClick={() => setAdvancedChoice(!advancedOpen)}
+                  >
+                    Advanced
+                  </Button>
+                </h2>
+                <div id={`${headingId}-advanced-panel`} hidden={!advancedOpen}>
+                  {advancedOpen && (
+                    <>
+                    <p className="muted small">
+                      Routing applies to requests on this provider's own address when backends are configured.
+                      Where a model's requests go is set by its targets.
+                    </p>
+                    <section aria-labelledby={`${headingId}-routing`} className="card">
+                      <h3 id={`${headingId}-routing`}>Routing</h3>
+                      <div className="form-grid">
+                        <div className="field">
+                          <label htmlFor={`${headingId}-strategy`}>Routing strategy</label>
+                          <Select
+                            id={`${headingId}-strategy`}
+                            value={routing.strategy}
+                            onChange={(v) =>
+                              setRouting({ strategy: v as ServiceAIConfig["routing"]["strategy"] })
+                            }
+                            options={STRATEGY_OPTIONS}
+                          />
+                        </div>
+                        {routing.strategy === "multi_provider" && (
+                          <p
+                            data-testid="multi-provider-banner"
+                            className="notice-inline info"
+                            style={{ gridColumn: "1 / -1" }}
+                          >
+                            Cross-provider failover is allowed only when <code>Idempotency-Key</code> is set and zero bytes have streamed. See routing docs.
+                          </p>
+                        )}
+                        <div className="field">
+                          <label className="row gap-2" htmlFor={`${headingId}-sticky`}>
+                            <Switch
+                              id={`${headingId}-sticky`}
+                              aria-label="Sticky session"
+                              checked={sticky}
+                              onChange={(v) => setRouting({ strategy: v ? "sticky" : "single" })}
+                            />
+                            <span>Sticky session</span>
+                          </label>
+                        </div>
+                        <FormField label="Circuit-breaker failure %" htmlFor={`${headingId}-fpct`} w="sm">
+                          <Input
+                            id={`${headingId}-fpct`}
+                            type="number"
+                            className="mono"
+                            min={0}
+                            max={100}
+                            value={routing.circuit_breaker.failure_pct}
+                            onChange={(e) => setCircuitBreaker({ failure_pct: Number(e.target.value) })}
+                          />
+                        </FormField>
+                      </div>
+                      <div className="actions">
+                        <Button variant="primary" size="sm" disabled={save.isPending} onClick={() => save.mutate(draft)}>
+                          {save.isPending ? "Saving…" : "Save routing"}
+                        </Button>
+                      </div>
+                    </section>
+
+                    <section aria-labelledby={`${headingId}-backends`} className="card">
+                      <h3 id={`${headingId}-backends`}>Backends</h3>
+                      <div className="table-wrap">
+                        <table className="data" aria-label="Backends">
+                          <thead>
+                            <tr>
+                              <th>Service</th>
+                              <th>Concrete model</th>
+                              <th>Weight</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(routing.backends ?? []).map((b) => (
+                              <tr key={b.service_id}>
+                                {/* A direct provider's backing service is not a service anyone manages: no id. */}
+                                {direct && b.service_id === id
+                                  ? <td>This provider</td>
+                                  : <td className="mono">{b.service_id}</td>}
+                                <td className="mono">{b.concrete_model}</td>
+                                <td className="mono">{b.weight}</td>
+                              </tr>
+                            ))}
+                            {(routing.backends ?? []).length === 0 && (
+                              <TableEmptyRow colSpan={3} title="No backends configured." />
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                    </>
+                  )}
+                </div>
+              </section>
+
+              {/* A hosted provider is not paused, and only an admin renames or deletes: nothing is left for anyone else. */}
+              {(!direct || isAdmin) && (
+                <section aria-labelledby={`${headingId}-manage`} className="card col gap-2">
+                  <h2 id={`${headingId}-manage`}>This provider</h2>
+                  {!direct && (
+                    <label className="row row-center gap-2">
+                      <Switch
+                        aria-label="Pause provider"
+                        checked={routing.paused}
+                        onChange={togglePause}
+                      />
+                      <span>Pause provider</span>
+                    </label>
+                  )}
+                  {isAdmin && (
+                    <div className="row row-center gap-2">
+                      <Button variant="secondary" size="sm" onClick={() => setRenameOpen(true)}>
+                        Rename
+                      </Button>
+                      <Button variant="destructive" size="sm" onClick={() => { setDeleteErr(null); setDeleteOpen(true); }}>
+                        Delete provider
+                      </Button>
+                    </div>
+                  )}
+                </section>
+              )}
+              </>
+            ),
+          },
         ]}
       />
 
@@ -552,14 +586,14 @@ export default function ProviderDetail() {
           onRenamed={(next) => {
             if (next.slug === slug) return;
             // Same backing service, so the numbers carry over: no skeleton, and
-            // the Rename button keeps the focus the dialog handed back.
+            // the Rename button on Settings keeps the focus the dialog handed back.
             qc.setQueryData(["ai", "provider", next.slug, "metrics"], metrics.data);
             nav(`/gateway/providers/${next.slug}#${tab}`, { replace: true });
           }}
         />
       )}
 
-      {/* The one toaster of the page; the API keys panel is told not to mount its own. */}
+      {/* The one toaster of the page. */}
       <Toaster />
     </div>
   );

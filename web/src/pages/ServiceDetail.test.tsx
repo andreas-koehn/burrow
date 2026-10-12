@@ -111,6 +111,21 @@ describe("ServiceDetail page", () => {
     expect(headerNameInput).toBeInTheDocument();
   });
 
+  // The provider page links here for the keys a service holds from before gateway keys.
+  it("#api-keys opens the API keys tab", async () => {
+    mountAt("/services/svc_ai001#api-keys");
+    await screen.findByRole("heading", { name: /ollama/i });
+    expect(screen.getByRole("tab", { name: "API keys" })).toHaveAttribute("aria-selected", "true");
+    const table = await screen.findByRole("table", { name: "API keys" });
+    expect(await within(table).findByText("prod")).toBeInTheDocument();
+  });
+
+  it("a fragment that names no tab opens Access", async () => {
+    mountAt("/services/svc_ai001#nope");
+    await screen.findByRole("heading", { name: /ollama/i });
+    expect(screen.getByRole("tab", { name: "Access" })).toHaveAttribute("aria-selected", "true");
+  });
+
   // P5.4 — explainer link to Providers in the Upstream-key tab
   it("P5.4: Upstream-key tab shows Providers explainer link", async () => {
     mount();

@@ -7,7 +7,7 @@ import { Button, PageHeader, ErrorNotice } from "@/components/ds";
 import { useAuth } from "@/auth/useAuth";
 import { InstallLines } from "@/components/InstallLines";
 import { WaitForProvider } from "@/components/WaitForProvider";
-import { CHECKSUMS_HREF, downloadTargets, isCommandName } from "@/lib/installSnippets";
+import { CHECKSUMS_HREF, downloadTargets, isCommandName, targetOf } from "@/lib/installSnippets";
 import { KNOWN_CLIENTS_KEY } from "@/lib/useKnownClients";
 import type { AiProvider, ClientView, ClientDiscovery, Service } from "@/lib/contract";
 
@@ -85,14 +85,6 @@ function WaitForClient() {
       )}
     </div>
   );
-}
-
-/** What the run line publishes for a service: the port it was last served from, when that is known. */
-function targetOf(localAddr: string): string | undefined {
-  const m = /^(.*):(\d{1,5})$/.exec(localAddr);
-  if (!m) return undefined;
-  // On the machine itself the port says it all; another host is kept whole.
-  return ["", "127.0.0.1", "localhost", "[::1]"].includes(m[1]!) ? m[2] : localAddr;
 }
 
 const isGone = (e: unknown) => e instanceof ApiError && e.status === 404;

@@ -56,10 +56,10 @@ test("Providers page mounts with heading + metric strip", async ({ page }) => {
   await expect(row.getByText("/ai/e2e-playwright-ai/v1", { exact: true })).toBeVisible();
   await expect(row.getByRole("button", { name: /^Copy base URL .*\/ai\/e2e-playwright-ai\/v1$/ })).toBeVisible();
 
-  // The detail page tells a client how to connect.
+  // The detail page says how an app uses the provider.
   await row.getByRole("link", { name: "Playwright AI gateway" }).click();
   await expect(page).toHaveURL(/\/gateway\/providers\/e2e-playwright-ai$/);
-  await expect(page.getByRole("heading", { name: "Connect a client" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Use it in an app" })).toBeVisible();
 });
 
 test("Providers page depends on /cost/summary contract", async ({ page }) => {

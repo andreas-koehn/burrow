@@ -20,13 +20,14 @@ const ACCESS_LABEL: Record<AccessMode, string> = {
 };
 
 const BACK = { to: "/services", label: "Services" } as const;
+const TAB_VALUES = ["access", "api-keys", "upstream-key"];
 
 export default function ServiceDetail() {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
-  const initialTab = location.hash === "#upstream-key"
-    ? "upstream-key"
-    : "access";
+  // A fragment that names a tab opens it: the provider page links to #api-keys.
+  const fragment = location.hash.slice(1);
+  const initialTab = TAB_VALUES.includes(fragment) ? fragment : "access";
   const [tab, setTab] = useState(initialTab);
   const [editSlug, setEditSlug] = useState(false);
   const qc = useQueryClient();
