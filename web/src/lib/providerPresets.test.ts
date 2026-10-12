@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PROVIDER_PRESETS, credentialSlotError, envVarForSlot } from "./providerPresets";
+import { PROVIDER_PRESETS, credentialSlotError, envVarForSlot, slotSuggestions } from "./providerPresets";
 
 describe("provider presets", () => {
   it("ships the three known providers and a blank custom entry", () => {
@@ -25,12 +25,28 @@ describe("provider presets", () => {
   });
   it("carries nothing but public endpoint data", () => {
     const keys = new Set(PROVIDER_PRESETS.flatMap((p) => Object.keys(p)));
-    expect([...keys].sort()).toEqual(["baseUrl", "billing", "credentialSlot", "id", "label", "name", "note", "slug", "supportsResponses"]);
+    expect([...keys].sort()).toEqual(["apiFormat", "baseUrl", "billing", "credentialSlot", "id", "label", "name", "note", "slug", "supportsResponses"]);
   });
   it("marks only OpenRouter as offering the Responses API", () => {
     expect(Object.fromEntries(PROVIDER_PRESETS.map((p) => [p.id, p.supportsResponses]))).toEqual({
       openrouter: true, "zai-coding": false, "zai-api": false, custom: false,
     });
+  });
+  it("every preset speaks the OpenAI format, and the blank entry names no format", () => {
+    expect(PROVIDER_PRESETS.map((p) => p.apiFormat)).toEqual(["openai", "openai", "openai", "openai"]);
+    expect(PROVIDER_PRESETS.find((p) => p.id === "custom")!.label).toBe("Other API");
+  });
+  it("suggests the slots set on the relay, completing what is typed after a comma", () => {
+    const known = ["OPENAI", "OPENROUTER", "ZAI"];
+    expect(slotSuggestions("", known)).toEqual([{ value: "OPENAI" }, { value: "OPENROUTER" }, { value: "ZAI" }]);
+    // The browser narrows the list to what matches the text.
+    expect(slotSuggestions("OP", known)).toEqual([{ value: "OPENAI" }, { value: "OPENROUTER" }, { value: "ZAI" }]);
+    // After a comma: the names not listed yet, each with what is there already and its spacing.
+    expect(slotSuggestions("ZAI, ", known)).toEqual([
+      { value: "ZAI, OPENAI", label: "OPENAI" }, { value: "ZAI, OPENROUTER", label: "OPENROUTER" },
+    ]);
+    expect(slotSuggestions("ZAI,OPENAI,O", known)).toEqual([{ value: "ZAI,OPENAI,OPENROUTER", label: "OPENROUTER" }]);
+    expect(slotSuggestions("ZAI", [])).toEqual([]);
   });
   it("accepts a slot name the relay accepts and rejects the rest", () => {
     expect(credentialSlotError("")).toBeNull(); // nothing typed yet

@@ -28,6 +28,16 @@ async function listOptions(label: string, container: HTMLElement) {
   return names;
 }
 const group = (name: string) => screen.findByRole("group", { name });
+// The target model is a text field that suggests the provider's catalog.
+const modelField = (container: HTMLElement) => within(container).findByLabelText("Target model id");
+async function typeModel(id: string, container: HTMLElement) {
+  await userEvent.type(await modelField(container), id);
+}
+/** What a field suggests: [value, label] of each option of its datalist. */
+function suggested(field: HTMLElement): [string, string | null][] {
+  const list = document.getElementById(field.getAttribute("list") ?? "");
+  return Array.from(list?.querySelectorAll("option") ?? []).map((o) => [o.value, o.getAttribute("label")]);
+}
 
 // OpenRouter next to the seeded providers: an OpenAI-format provider with a synced model list.
 function withOpenRouter() {
@@ -54,10 +64,10 @@ describe("ModelDialog", () => {
     await userEvent.type(screen.getByLabelText("Model name"), "burrow-medium");
     const openai = await group("OpenAI format");
     await chooseOption("Provider", "zai", openai);
-    await chooseOption("Target model", "glm-5.1", openai);
+    await typeModel("glm-5.1", openai);
     const anthropic = await group("Anthropic format");
     await chooseOption("Provider", "zai-anthropic", anthropic);
-    await chooseOption("Target model", "glm-5.1", anthropic);
+    await typeModel("glm-5.1", anthropic);
     await userEvent.click(screen.getByRole("button", { name: "Create model" }));
     await waitFor(() => expect(posted).toMatchObject({
       name: "burrow-medium", enabled: true,
@@ -84,19 +94,94 @@ describe("ModelDialog", () => {
     expect(screen.getByText("Choose a target for at least one format.")).toBeInTheDocument();
     const openai = await group("OpenAI format");
     await chooseOption("Provider", "ollama", openai);
-    await userEvent.click(await within(openai).findByRole("button", { name: "Enter a model id instead" }));
-    await userEvent.type(within(openai).getByLabelText("Target model id"), "qwen2.5:0.5b");
+    await typeModel("qwen2.5:0.5b", openai);
     expect(screen.getByRole("button", { name: "Create model" })).toBeEnabled();
     expect(screen.queryByText("Choose a target for at least one format.")).toBeNull();
   });
 
-  it("asks for the model id directly when the provider has no synced models", async () => {
-    db.aiProviderModels.zai = [];
+  it("suggests the provider's catalog: the id is taken, the display name is shown with it", async () => {
+    db.aiProviderModels.zai = [
+      { id: "glm-5.1", display_name: "GLM 5.1", context_length: 200000, synced_at: "2026-05-19T00:00:00Z" },
+      { id: "glm-4", display_name: "", context_length: 0, synced_at: "2026-05-19T00:00:00Z" },
+    ];
     renderDialog();
     const openai = await group("OpenAI format");
     await chooseOption("Provider", "zai", openai);
-    expect(await within(openai).findByLabelText("Target model id")).toBeInTheDocument();
-    expect(within(openai).getByText("This provider has no synced models. Type the model id.")).toBeInTheDocument();
+    const field = await modelField(openai);
+    expect(within(openai).getByRole("combobox", { name: "Target model id" })).toBe(field);
+    expect(suggested(field)).toEqual([["glm-4", null], ["glm-5.1", "GLM 5.1"]]);
+    expect(field).toHaveAccessibleDescription("The provider's own id for the model: one from its catalog, or typed.");
+    // Nothing to sync while the catalog has entries.
+    expect(within(openai).queryByRole("button", { name: "Sync catalog" })).toBeNull();
+  });
+
+  it("takes a model id the catalog does not have", async () => {
+    let posted: Record<string, unknown> | null = null;
+    server.use(http.post("/api/v1/ai/models", async ({ request }) => {
+      posted = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ name: "burrow-free" }, { status: 201 });
+    }));
+    renderDialog();
+    await userEvent.type(screen.getByLabelText("Model name"), "burrow-free");
+    const openai = await group("OpenAI format");
+    await chooseOption("Provider", "zai", openai);
+    await typeModel("glm-9-preview", openai);
+    await userEvent.click(screen.getByRole("button", { name: "Create model" }));
+    await waitFor(() => expect(posted).toMatchObject({ targets: [{ dialect: "openai", provider: "zai", model: "glm-9-preview" }] }));
+  });
+
+  it("shows a stored model id that is not in the catalog any more", async () => {
+    const model = fixtureModel("burrow-simple");
+    model.targets = [{ dialect: "openai", provider: "ollama", model: "gone:7b", available: false }];
+    renderDialog({ model });
+    expect(await modelField(await group("OpenAI format"))).toHaveValue("gone:7b");
+  });
+
+  it("an empty catalog says so; a hosted provider that is ready can be synced, and the list fills", async () => {
+    // openai-team is a hosted provider whose credential is set; nothing was synced yet.
+    renderDialog();
+    const openai = await group("OpenAI format");
+    await chooseOption("Provider", "openai-team", openai);
+    const field = await modelField(openai);
+    expect(field).toHaveAccessibleDescription("This provider's catalog is empty. Type the model id.");
+    expect(suggested(field)).toEqual([]);
+    await userEvent.click(within(openai).getByRole("button", { name: "Sync catalog" }));
+    await waitFor(() => expect(suggested(field)).toEqual([["acme/large-1", "Acme Large 1"], ["acme/small-1", "Acme Small 1"]]));
+    // The wait is over: said to a screen reader.
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Catalog synced: 2 models."));
+    expect(field).toHaveAccessibleDescription("The provider's own id for the model: one from its catalog, or typed.");
+    expect(within(openai).queryByRole("button", { name: "Sync catalog" })).toBeNull();
+  });
+
+  it("offers no sync where the relay cannot read a catalog: a tunnel provider, or a hosted one without its credential", async () => {
+    // The relay syncs from a hosted provider's upstream only; llamacpp is a tunnel provider that is offline.
+    db.aiProviderModels.ollama = [];
+    db.aiProviderModels.zai = [];
+    renderDialog();
+    const openai = await group("OpenAI format");
+    for (const slug of ["llamacpp", "ollama", "zai"]) {
+      await chooseOption("Provider", slug, openai);
+      expect(await modelField(openai)).toHaveAccessibleDescription("This provider's catalog is empty. Type the model id.");
+      expect(within(openai).queryByRole("button", { name: "Sync catalog" })).toBeNull();
+    }
+  });
+
+  it("a failed sync shows the relay's reason under the field and keeps what was typed", async () => {
+    server.use(http.post("/api/v1/ai/providers/openai-team/models/sync", () =>
+      HttpResponse.json({ error: "the upstream answered 401" }, { status: 502 })));
+    renderDialog();
+    const openai = await group("OpenAI format");
+    await chooseOption("Provider", "openai-team", openai);
+    await typeModel("gpt-x", openai);
+    await userEvent.click(within(openai).getByRole("button", { name: "Sync catalog" }));
+    expect(await within(openai).findByRole("alert")).toHaveTextContent("the upstream answered 401");
+    const field = await modelField(openai);
+    expect(field).toHaveValue("gpt-x");
+    expect(field).toHaveAccessibleDescription("the upstream answered 401");
+    // It can be tried again, and the field still takes what is typed.
+    expect(within(openai).getByRole("button", { name: "Sync catalog" })).toBeEnabled();
+    await userEvent.type(field, "y");
+    expect(field).toHaveValue("gpt-xy");
   });
 
   it("says so when no provider speaks a format", async () => {
@@ -120,7 +205,7 @@ describe("ModelDialog", () => {
     await userEvent.type(screen.getByLabelText("Model name"), "burrow-simple");
     const openai = await group("OpenAI format");
     await chooseOption("Provider", "zai", openai);
-    await chooseOption("Target model", "glm-5.1", openai);
+    await typeModel("glm-5.1", openai);
     await userEvent.click(screen.getByRole("button", { name: "Create model" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("model name already in use");
     expect(onOpenChange).not.toHaveBeenCalled();
@@ -132,7 +217,7 @@ describe("ModelDialog", () => {
     await userEvent.type(screen.getByLabelText("Model name"), "burrow-y");
     const openai = await group("OpenAI format");
     await chooseOption("Provider", "zai", openai);
-    await chooseOption("Target model", "glm-5.1", openai);
+    await typeModel("glm-5.1", openai);
     await userEvent.click(screen.getByRole("button", { name: "Create model" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("You don't have permission to change models.");
   });
@@ -144,8 +229,8 @@ describe("ModelDialog", () => {
     renderDialog({ model });
     const save = screen.getByRole("button", { name: "Save changes" });
     // Both provider lists and both model lists are in.
-    expect(await within(await group("Anthropic format")).findByLabelText("Target model")).toHaveTextContent("glm-5.1");
-    expect(await within(await group("OpenAI format")).findByLabelText("Target model")).toHaveTextContent("glm-5.1");
+    expect(await modelField(await group("Anthropic format"))).toHaveValue("glm-5.1");
+    expect(await modelField(await group("OpenAI format"))).toHaveValue("glm-5.1");
     expect(save).toBeDisabled();
     await userEvent.type(screen.getByLabelText("Description (optional)"), "x");
     expect(save).toBeEnabled();
@@ -223,7 +308,7 @@ describe("ModelDialog", () => {
     expect(screen.getByRole("switch", { name: "Translate for the other format" })).not.toBeChecked();
     await userEvent.type(screen.getByLabelText("Model name"), "burrow-new");
     await chooseOption("Provider", "ollama", await group("OpenAI format"));
-    await chooseOption("Target model", "mistral", await group("OpenAI format"));
+    await typeModel("mistral", await group("OpenAI format"));
     await userEvent.click(screen.getByRole("button", { name: "Create model" }));
     await waitFor(() => expect(post).not.toBeNull());
     expect(post!.translate).toBe(false);
@@ -242,8 +327,7 @@ describe("ModelDialog", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Add fallback target" }));
     const second = screen.getByRole("group", { name: "OpenAI format, target 2" });
     await chooseOption("Provider", "openrouter", second);
-    await userEvent.click(await within(second).findByRole("button", { name: "Enter a model id instead" }));
-    await userEvent.type(within(second).getByLabelText("Target model id"), "google/gemini-x");
+    await typeModel("google/gemini-x", second);
     await userEvent.click(within(second).getByRole("button", { name: "Move OpenAI target 2 up" }));
     await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(put).toMatchObject({
@@ -281,7 +365,7 @@ describe("ModelDialog", () => {
     within(first).getByRole("button", { name: "Move OpenAI target 1 down" }).focus();
     await userEvent.keyboard("{Enter}");
     const moved = within(openai).getByRole("group", { name: "OpenAI format, target 2" });
-    expect(await within(moved).findByLabelText("Target model")).toHaveTextContent("mistral");
+    expect(await modelField(moved)).toHaveValue("mistral");
     expect(moved).toHaveFocus();
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("ollama/mistral is now target 2 of 2 in the OpenAI format."));
   });
@@ -348,7 +432,7 @@ describe("ModelDialog", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Add fallback target" }));
     const second = screen.getByRole("group", { name: "OpenAI format, target 2" });
     await chooseOption("Provider", "ollama", second);
-    await chooseOption("Target model", "mistral", second);
+    await typeModel("mistral", second);
     expect(screen.getByRole("alert")).toHaveTextContent("A target is listed twice.");
     expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
   });

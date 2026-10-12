@@ -42,6 +42,16 @@ async function choosePreset(label: string) {
 
 const RESPONSES = "Offers the Responses API (needed by Codex)";
 
+/** The lines under the "Credential slot" field: one per name typed. */
+const slotLines = async () =>
+  within(await screen.findByRole("list", { name: "Credential slots on the relay" })).getAllByRole("listitem").map((li) => li.textContent);
+/** The names the "Credential slot" field suggests. */
+function slotsOffered(): string[] {
+  const list = document.getElementById(screen.getByLabelText("Credential slot").getAttribute("list") ?? "");
+  return Array.from(list?.querySelectorAll("option") ?? []).map((o) => o.value);
+}
+const notSet = (slot: string) => `${slot} is not set. Add BURROW_UPSTREAM_KEY_${slot} to the relay's environment and restart it.`;
+
 async function hosted() {
   await userEvent.click(screen.getByRole("radio", { name: /a hosted api/i }));
 }
@@ -154,7 +164,10 @@ describe("New provider dialog", () => {
     expect(screen.getByLabelText("Provider slug")).toHaveValue("openrouter");
     expect(screen.getByLabelText("Credential slot")).toHaveValue("OPENROUTER");
     expect(screen.getByText("Cost is taken from what OpenRouter reports per request.")).toBeInTheDocument();
-    expect(screen.queryByText(/BURROW_UPSTREAM_KEY_OPENROUTER/)).toBeNull(); // slot exists → no warning
+    // The slot is one of those set on the relay: nothing to add.
+    expect(await slotLines()).toEqual(["OPENROUTER is set on the relay."]);
+    expect(screen.queryByText(/BURROW_UPSTREAM_KEY_OPENROUTER/)).toBeNull();
+    expect(screen.getByLabelText("API format")).toHaveTextContent("OpenAI");
     // A slot that exists can still be empty; the field says what counts.
     expect(screen.getByLabelText("Credential slot")).toHaveAccessibleDescription(/must be set to a non-empty value/);
     // OpenRouter documents POST /responses: the preset ticks the box.
@@ -163,10 +176,10 @@ describe("New provider dialog", () => {
     await waitFor(() => expect(posted).toMatchObject({
       kind: "direct", slug: "openrouter", name: "OpenRouter",
       base_url: "https://openrouter.ai/api/v1", credential_slot: "OPENROUTER", billing: "metered",
-      supports_responses: true,
+      supports_responses: true, api_format: "openai",
     }));
     // Only what the API accepts; nothing that could carry a credential.
-    expect(Object.keys(posted!).sort()).toEqual(["base_url", "billing", "credential_slot", "kind", "max_concurrent", "name", "slug", "supports_responses"]);
+    expect(Object.keys(posted!).sort()).toEqual(["api_format", "base_url", "billing", "credential_slot", "kind", "max_concurrent", "name", "slug", "supports_responses"]);
     // No limit unless the operator sets one.
     expect(posted!.max_concurrent).toBe(0);
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
@@ -256,12 +269,12 @@ describe("New provider dialog", () => {
     renderDialog();
     await hosted();
     await choosePreset("z.ai — Coding Plan");
-    const note = await screen.findByRole("note");
-    expect(note).toHaveTextContent("BURROW_UPSTREAM_KEY_ZAI");
-    expect(note).toHaveTextContent(/restart/i);
-    // Same condition as the "not configured" badge later: set and non-empty.
-    expect(note).toHaveTextContent("Slot ZAI is not set on the relay.");
-    expect(note).toHaveTextContent(/to a non-empty value/);
+    expect(await slotLines()).toEqual([notSet("ZAI")]);
+    // The variable's name can be copied as it stands.
+    expect(screen.getByRole("button", { name: "Copy BURROW_UPSTREAM_KEY_ZAI" })).toBeInTheDocument();
+    // What the key has to be is said with the field.
+    expect(screen.getByLabelText("Credential slot")).toHaveAccessibleDescription(/must be set to a non-empty value/);
+    expect(screen.getByText("You can create the provider now. It shows as Not configured until the key is set.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create" })).toBeEnabled();
   });
 
@@ -280,10 +293,9 @@ describe("New provider dialog", () => {
     await userEvent.clear(slot);
     await userEvent.type(slot, "zai, zai2");
     expect(slot).toHaveValue("ZAI, ZAI2");
-    const note = await screen.findByRole("note");
-    expect(note).toHaveTextContent("Slot ZAI2 is not set on the relay.");
-    expect(note).toHaveTextContent("BURROW_UPSTREAM_KEY_ZAI2");
-    expect(note).not.toHaveTextContent(/BURROW_UPSTREAM_KEY_ZAI\b(?!2)/);
+    // One of each: the first is set, the second is not.
+    expect(await slotLines()).toEqual(["ZAI is set on the relay.", notSet("ZAI2")]);
+    expect(screen.getAllByRole("button", { name: /^Copy BURROW_UPSTREAM_KEY_/ })).toHaveLength(1);
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(posted).toMatchObject({ credential_slot: "ZAI,ZAI2" }));
   });
@@ -293,9 +305,7 @@ describe("New provider dialog", () => {
     await hosted();
     await choosePreset("z.ai — Coding Plan");
     await userEvent.type(screen.getByLabelText("Credential slot"), ",zai2");
-    const note = await screen.findByRole("note");
-    expect(note).toHaveTextContent("Slots ZAI and ZAI2 are not set on the relay.");
-    expect(note).toHaveTextContent("BURROW_UPSTREAM_KEY_ZAI and BURROW_UPSTREAM_KEY_ZAI2");
+    expect(await slotLines()).toEqual([notSet("ZAI"), notSet("ZAI2")]);
   });
 
   it("refuses more than four slots and a slot listed twice", async () => {
@@ -332,7 +342,7 @@ describe("New provider dialog", () => {
   it("shows the server's reason when the base URL is refused, on the base URL field", async () => {
     renderDialog();
     await hosted();
-    await choosePreset("Other OpenAI-compatible API");
+    await choosePreset("Other API");
     await userEvent.type(screen.getByLabelText("Name"), "LAN");
     await userEvent.type(screen.getByLabelText("Provider slug"), "lan");
     await userEvent.type(screen.getByLabelText("Base URL"), "http://10.0.0.5/v1");
@@ -391,6 +401,77 @@ describe("New provider dialog", () => {
     expect(slot).toHaveAttribute("aria-invalid", "true");
     expect(slot).toHaveAccessibleDescription(/cannot end in _FILE/);
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
-    expect(screen.queryByRole("note")).toBeNull();
+    // A name the relay cannot have is not looked up.
+    expect(screen.queryByRole("list", { name: "Credential slots on the relay" })).toBeNull();
+  });
+
+  it("offers the slots set on the relay, and after a comma those not named yet", async () => {
+    renderDialog();
+    await hosted();
+    const slot = screen.getByLabelText("Credential slot");
+    await waitFor(() => expect(slotsOffered()).toEqual(["ANTHROPIC_TEAM_A", "OPENAI", "OPENROUTER"]));
+    // Nothing typed, nothing to say about it.
+    expect(screen.queryByRole("list", { name: "Credential slots on the relay" })).toBeNull();
+    await userEvent.type(slot, "openai, ");
+    expect(slotsOffered()).toEqual(["OPENAI, ANTHROPIC_TEAM_A", "OPENAI, OPENROUTER"]);
+    // A name that is in no list can still be typed.
+    await userEvent.type(slot, "mine");
+    expect(await slotLines()).toEqual(["OPENAI is set on the relay.", notSet("MINE")]);
+  });
+
+  it("without a slot on the relay says so, and what to add for the name typed", async () => {
+    db.upstreamSlots = [];
+    renderDialog();
+    await hosted();
+    expect(await screen.findByText("No credential is set on the relay yet.")).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Credential slot"), "zai");
+    expect(await slotLines()).toEqual([notSet("ZAI")]);
+    expect(screen.getByText("No credential is set on the relay yet.")).toBeInTheDocument();
+  });
+
+  it("the preset sets the API format, and it stays the reader's to change", async () => {
+    renderDialog();
+    await hosted();
+    const format = screen.getByLabelText("API format");
+    expect(format).toHaveTextContent("OpenAI");
+    await userEvent.click(format);
+    expect((await screen.findAllByRole("option")).map((o) => o.textContent)).toEqual(["OpenAI", "Anthropic"]);
+    await userEvent.click(screen.getByRole("option", { name: "Anthropic" }));
+    expect(format).toHaveTextContent("Anthropic");
+    // Every preset there is speaks the OpenAI format: choosing one sets it back.
+    await choosePreset("z.ai — Coding Plan");
+    expect(format).toHaveTextContent("OpenAI");
+  });
+
+  it("Other API in the Anthropic format: sent as such, without the Responses API", async () => {
+    let posted: Record<string, unknown> | null = null;
+    server.use(http.post("/api/v1/ai/providers", async ({ request }) => {
+      posted = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ slug: "claude" }, { status: 201 });
+    }));
+    renderDialog();
+    await hosted();
+    // Ticked by the preset, then left behind with the format.
+    await choosePreset("OpenRouter");
+    expect(screen.getByRole("checkbox", { name: RESPONSES })).toBeChecked();
+    await choosePreset("Other API");
+    await userEvent.click(screen.getByRole("checkbox", { name: RESPONSES }));
+    await userEvent.click(screen.getByLabelText("API format"));
+    await userEvent.click(await screen.findByRole("option", { name: "Anthropic" }));
+    // The Responses API belongs to the OpenAI format.
+    expect(screen.queryByRole("checkbox", { name: RESPONSES })).toBeNull();
+    await userEvent.type(screen.getByLabelText("Name"), "Claude");
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.example.net/v1");
+    await userEvent.type(screen.getByLabelText("Credential slot"), "OPENAI");
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(posted).toMatchObject({ kind: "direct", api_format: "anthropic", supports_responses: false }));
+  });
+
+  it("describes a hosted API without naming one format", async () => {
+    renderDialog();
+    await hosted();
+    expect(within(screen.getByRole("dialog", { name: "New provider" })).getByText(
+      "Serve a hosted API under its own base URL. The relay calls it with a credential set on the relay.",
+    )).toBeInTheDocument();
   });
 });

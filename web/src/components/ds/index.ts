@@ -7,6 +7,8 @@ export { Input } from "./Input";
 export type { InputProps } from "./Input";
 export { Select } from "./Select";
 export type { SelectProps, SelectOption } from "./Select";
+export { Combobox } from "./Combobox";
+export type { ComboboxProps, ComboboxOption } from "./Combobox";
 export { Switch } from "./Switch";
 export type { SwitchProps } from "./Switch";
 export { Checkbox } from "./Checkbox";

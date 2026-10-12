@@ -7,7 +7,7 @@ import { Badge, Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, M
 import UsageBreakdown from "@/components/UsageBreakdown";
 import { useAuth } from "@/auth/useAuth";
 import { fmtCount, fmtUsd, shortId } from "@/lib/costFormat";
-import type { AiGatewayKey, AiModel, Budget, BudgetScope, CostSummary, Service } from "@/lib/contract";
+import type { AiGatewayKey, AiModel, Budget, BudgetScope, CostSummary, Service, ServiceApiKey, UsersPage } from "@/lib/contract";
 
 type Window = CostSummary["window"];
 
@@ -16,13 +16,14 @@ const WINDOW_LABEL: Record<Window, string> = {
   today: "Today", week: "Week", month: "Month", year: "Year",
 };
 
+// The scope the dialog opens on comes first.
 const SCOPE_OPTIONS = [
+  { value: "gateway_key", label: "Gateway key" },
+  { value: "model", label: "Model" },
   { value: "api_key", label: "API key" },
   { value: "service", label: "Service" },
   { value: "user", label: "User" },
   { value: "global", label: "Global" },
-  { value: "gateway_key", label: "Gateway key" },
-  { value: "model", label: "Model" },
 ];
 const SCOPE_LABEL: Record<BudgetScope, string> = {
   api_key: "API key", service: "Service", user: "User", global: "Global", gateway_key: "Gateway key", model: "Model",
@@ -56,6 +57,17 @@ function actionHelp(action: Budget["action_on_exceed"], scope: BudgetScope): str
 }
 
 const OTHER_MODEL = "__other__";
+
+// As many users as the picker asks for; with more than that the id is typed.
+const USER_LIMIT = 200;
+
+/** Same key and fetch as the keys panel of a service. */
+const serviceKeysQuery = (serviceId: string) => ({
+  queryKey: ["service-api-keys", serviceId],
+  queryFn: () => apiFetch<ServiceApiKey[]>(`/services/${serviceId}/api-keys`),
+  retry: false,
+  staleTime: 30_000,
+});
 
 function pctClass(pct: number | null): string {
   if (pct == null) return "ok";
@@ -107,22 +119,55 @@ export default function CostBudgets() {
 
   const [usageWindow, setUsageWindow] = useState<Window>("today");
   const [addOpen, setAddOpen] = useState(false);
-  const [scope, setScope] = useState<Budget["scope"]>("api_key");
+  const [scope, setScope] = useState<Budget["scope"]>("gateway_key");
   const [subjectId, setSubjectId] = useState("");
+  // API key scope: the service whose keys are offered.
+  const [keyService, setKeyService] = useState("");
   const [dailyUsd, setDailyUsd] = useState("");
   const [dailyTokens, setDailyTokens] = useState("");
   const [modelAddr, setModelAddr] = useState("");
   const [action, setAction] = useState<Budget["action_on_exceed"]>("alert_webhook");
   const [err, setErr] = useState<string | null>(null);
 
+  // A budget on an API key is listed by the key's name: that takes the key
+  // lists of the services, which are only asked for when there is such a budget.
+  const keyBudgets = isAdmin && Array.isArray(budgets.data) && budgets.data.some((b) => b.scope === "api_key");
   const services = useQuery({
     queryKey: ["services"],
     queryFn: () => apiFetch<Service[]>("/services"),
     retry: false,
-    enabled: addOpen,
+    enabled: addOpen || keyBudgets,
   });
-  const serviceOptions = (Array.isArray(services.data) ? services.data : [])
-    .map((s) => ({ value: s.id, label: s.name }));
+  const serviceList = Array.isArray(services.data) ? services.data : [];
+  const serviceOptions = serviceList.map((s) => ({ value: s.id, label: s.name }));
+  const keyLists = useQueries({
+    queries: (keyBudgets ? serviceList : []).map((s) => serviceKeysQuery(s.id)),
+  });
+  const apiKeyName = new Map(keyLists.flatMap((q) => (Array.isArray(q.data) ? q.data : []).map((k) => [k.id, k.name] as const)));
+  // Only with every list read is a key that is in none of them known to be gone.
+  const keyListsComplete = services.isSuccess && keyLists.every((q) => q.isSuccess);
+
+  // The keys of the service chosen in the dialog.
+  const serviceKeys = useQuery({
+    ...serviceKeysQuery(keyService),
+    enabled: addOpen && scope === "api_key" && keyService !== "",
+  });
+  const serviceKeyList = Array.isArray(serviceKeys.data) ? serviceKeys.data : [];
+  const serviceKeyOptions = serviceKeyList.map((k) => {
+    const dup = serviceKeyList.filter((o) => o.name === k.name).length > 1;
+    return { value: k.id, label: dup ? `${k.name} (${shortId(k.id)})` : k.name };
+  });
+
+  const users = useQuery({
+    queryKey: ["users", "budget-subject"],
+    queryFn: () => apiFetch<UsersPage>(`/users?limit=${USER_LIMIT}&offset=0`),
+    retry: false,
+    enabled: addOpen && scope === "user",
+  });
+  const userList = Array.isArray(users.data?.users) ? users.data.users : [];
+  // The id is typed when the users cannot be listed, or not all of them.
+  const typeUserId = users.isError || (users.isSuccess && (users.data?.total ?? 0) > userList.length);
+  const userOptions = userList.map((u) => ({ value: u.id, label: u.email }));
 
   const keys = useQuery({
     queryKey: ["ai", "keys"],
@@ -161,7 +206,7 @@ export default function CostBudgets() {
     : undefined;
   const subjectMissing = scope !== "global" && !subjectOf.trim();
   // The server refuses surrounding whitespace rather than trimming it; so does the form.
-  const idErr = (scope === "api_key" || scope === "user") && subjectId !== subjectId.trim()
+  const idErr = scope === "user" && typeUserId && subjectId !== subjectId.trim()
     ? "Remove the spaces before or after the ID."
     : undefined;
   const canSubmit = !usdErr && !tokErr && !noLimit && !addrErr && !idErr && !subjectMissing;
@@ -191,6 +236,7 @@ export default function CostBudgets() {
       qc.invalidateQueries({ queryKey: ["budgets"] });
       setAddOpen(false);
       setSubjectId("");
+      setKeyService("");
       setModelAddr("");
       setDailyUsd("");
       setDailyTokens("");
@@ -212,6 +258,12 @@ export default function CostBudgets() {
         <SkeletonRows n={4} />
       </div>
     );
+  }
+
+  function subjectLabel(b: Budget): string {
+    if (b.scope === "gateway_key") return keyName.get(b.subject_id) ?? `key ${shortId(b.subject_id)}`;
+    if (b.scope !== "api_key") return b.subject_id;
+    return apiKeyName.get(b.subject_id) ?? (keyListsComplete ? `${b.subject_id} (deleted)` : b.subject_id);
   }
 
   const forbidden = !isAdmin || (budgets.error instanceof ApiError && budgets.error.status === 403);
@@ -280,7 +332,7 @@ export default function CostBudgets() {
                   : budgetRows.map((b) => (
                       <tr key={b.id}>
                         <td>{SCOPE_LABEL[b.scope] ?? b.scope}</td>
-                        <td className="mono">{b.scope === "gateway_key" ? (keyName.get(b.subject_id) ?? `key ${shortId(b.subject_id)}`) : b.subject_id}</td>
+                        <td className="mono">{subjectLabel(b)}</td>
                         <td className="mono col-num">
                           {b.daily_usd > 0 && <div>{fmtUsd(b.daily_usd)}</div>}
                           {b.daily_tokens > 0 && <div>{fmtCount(b.daily_tokens)} tokens</div>}
@@ -314,7 +366,7 @@ export default function CostBudgets() {
       >
         <FormFieldGroup>
           <FormField label="Scope" htmlFor="budget-scope" w="md">
-            <Select id="budget-scope" value={scope} onChange={(v) => { setScope(v as Budget["scope"]); setSubjectId(""); }} options={SCOPE_OPTIONS} />
+            <Select id="budget-scope" value={scope} onChange={(v) => { setScope(v as Budget["scope"]); setSubjectId(""); setKeyService(""); }} options={SCOPE_OPTIONS} />
           </FormField>
           {scope === "service" ? (
             <FormField
@@ -363,16 +415,53 @@ export default function CostBudgets() {
                 </FormField>
               )}
             </>
-          ) : scope !== "global" ? (
+          ) : scope === "api_key" ? (
+            <>
+              <FormField
+                label="Service"
+                htmlFor="budget-key-service"
+                w="md"
+                descId="budget-key-service-desc"
+                help={services.isLoading ? "Loading services…" : "The service the key belongs to."}
+                error={services.isError && !services.data ? "Couldn't load services." : undefined}
+              >
+                <Select id="budget-key-service" aria-describedby="budget-key-service-desc" value={keyService} onChange={(v) => { setKeyService(v); setSubjectId(""); }} options={serviceOptions} placeholder="Select a service…" />
+              </FormField>
+              {keyService !== "" && (
+                <FormField
+                  label="Key"
+                  htmlFor="budget-subject"
+                  w="md"
+                  descId="budget-subject-desc"
+                  help={serviceKeys.isLoading ? "Loading keys…"
+                    : serviceKeys.isSuccess && serviceKeyList.length === 0 ? "This service has no API keys."
+                    : "Picked by name; the budget follows the key's id."}
+                  error={serviceKeys.isError && !serviceKeys.data ? "Couldn't load this service's keys." : undefined}
+                >
+                  <Select id="budget-subject" aria-describedby="budget-subject-desc" value={subjectId} onChange={setSubjectId} options={serviceKeyOptions} placeholder="Select a key…" />
+                </FormField>
+              )}
+            </>
+          ) : scope === "user" && typeUserId ? (
             <FormField
-              label="Subject"
+              label="User id"
               htmlFor="budget-subject"
               w="md"
               descId="budget-subject-desc"
-              help={scope === "api_key" ? "ID of the API key." : "ID of the user."}
+              help="The users can't be listed here. Type the user's id."
               error={idErr}
             >
               <Input id="budget-subject" className="mono" aria-describedby="budget-subject-desc" aria-invalid={idErr ? true : undefined} value={subjectId} onChange={(e) => setSubjectId(e.target.value)} />
+            </FormField>
+          ) : scope === "user" ? (
+            <FormField
+              label="User"
+              htmlFor="budget-subject"
+              w="md"
+              descId="budget-subject-desc"
+              help={users.isLoading ? "Loading users…" : "Picked by email; the budget follows the user's id."}
+            >
+              <Select id="budget-subject" aria-describedby="budget-subject-desc" value={subjectId} onChange={setSubjectId} options={userOptions} placeholder="Select a user…" />
             </FormField>
           ) : null}
           <FormField label="Daily USD" htmlFor="budget-daily" w="sm" error={usdErr} descId="budget-usd-desc">

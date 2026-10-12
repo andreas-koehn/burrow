@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, X } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Checkbox, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select, Switch } from "@/components/ds";
+import { Button, Checkbox, Combobox, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select, Switch } from "@/components/ds";
 import { modelNameError } from "@/lib/modelNames";
 import type { AiModel, AiModelTarget, AiProvider, AiProviderModel, Dialect } from "@/lib/contract";
 
@@ -35,9 +35,8 @@ interface TargetChoice {
   /** Stable across reorders, so a row keeps its fields and the focus. */
   key: number;
   provider: string;
+  /** The provider's own id for the model: one from its catalog, or typed. */
   model: string;
-  /** The model id is typed, not picked from the provider's list. */
-  manual: boolean;
 }
 
 interface TargetRowProps {
@@ -54,20 +53,42 @@ interface TargetRowProps {
   onChange: (next: TargetChoice) => void;
   onMove: (by: -1 | 1) => void;
   onRemove: () => void;
+  /** Said to a screen reader once a sync has filled the catalog. */
+  announce: (message: string) => void;
 }
 
-function TargetRow({ dialect, legend, short, n, count, providers, value, groupRef, onChange, onMove, onRemove }: TargetRowProps) {
+function TargetRow({ dialect, legend, short, n, count, providers, value, groupRef, onChange, onMove, onRemove, announce }: TargetRowProps) {
+  const qc = useQueryClient();
   const id = `model-target-${dialect}-${value.key}`;
-  // Same key as ProviderModelsPanel: the provider's stored model list.
+  // Same key as ProviderModelsPanel: the provider's catalog.
   const catalog = useQuery({
     queryKey: ["ai", "provider-models", value.provider],
     queryFn: () => apiFetch<AiProviderModel[]>(`/ai/providers/${value.provider}/models`),
     retry: false,
     enabled: value.provider !== "",
   });
-  const ids = Array.isArray(catalog.data) ? catalog.data.map((m) => m.id) : [];
-  // A model id the list does not have can only be shown in the text field.
-  const typed = value.manual || ids.length === 0 || (value.model !== "" && !ids.includes(value.model));
+  const entries = Array.isArray(catalog.data) ? catalog.data : [];
+  // The relay reads a catalog from a hosted provider's upstream, with its
+  // credential; for a tunnel provider it answers 409, whatever its state.
+  const provider = providers.find((p) => p.slug === value.provider);
+  const canSync = provider?.kind === "direct" && provider.state === "ready";
+  const [syncErr, setSyncErr] = useState<string | null>(null);
+  const sync = useMutation({
+    mutationFn: (slug: string) => apiFetch<{ count: number }>(`/ai/providers/${slug}/models/sync`, { method: "POST" }),
+    onMutate: () => setSyncErr(null),
+    onSuccess: async (r, slug) => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["ai", "provider-models", slug] }),
+        qc.invalidateQueries({ queryKey: ["ai", "provider", slug], exact: true }),
+        qc.invalidateQueries({ queryKey: ["ai", "providers"] }),
+      ]);
+      announce(`Catalog synced: ${r.count} ${r.count === 1 ? "model" : "models"}.`);
+    },
+    // The answer of a sync for a provider the row has left is not this row's to show.
+    onError: (e: unknown, slug) => {
+      if (slug === value.provider) setSyncErr(e instanceof ApiError ? e.message : "Couldn't sync the catalog.");
+    },
+  });
 
   return (
     // tabIndex -1: after a move the focus goes to the row, whose name says where it is now.
@@ -95,7 +116,7 @@ function TargetRow({ dialect, legend, short, n, count, providers, value, groupRe
           <Select
             id={`${id}-provider`}
             value={value.provider}
-            onChange={(v) => onChange({ ...value, provider: v, model: "", manual: false })}
+            onChange={(v) => { setSyncErr(null); onChange({ ...value, provider: v, model: "" }); }}
             placeholder="Select a provider…"
             options={[
               // A format is switched off on its only entry; a further one is removed instead.
@@ -109,43 +130,37 @@ function TargetRow({ dialect, legend, short, n, count, providers, value, groupRe
           />
         </FormField>
         {value.provider !== "" && (catalog.isLoading ? (
-          <p className="muted small">Loading models…</p>
-        ) : typed ? (
-          <FormField
-            label="Target model id"
-            htmlFor={`${id}-model-id`}
-            w="md"
-            help={ids.length === 0 ? "This provider has no synced models. Type the model id." : "The provider's own id for the model."}
-          >
-            <Input
-              id={`${id}-model-id`}
-              mono
-              value={value.model}
-              autoComplete="off"
-              autoCapitalize="none"
-              spellCheck={false}
-              maxLength={200}
-              onChange={(e) => onChange({ ...value, model: e.target.value })}
-            />
-            {ids.length > 0 && (
-              <button type="button" className="link small" onClick={() => onChange({ ...value, model: "", manual: false })}>
-                Choose from the list instead
-              </button>
-            )}
-          </FormField>
+          <p className="muted small">Loading the catalog…</p>
         ) : (
-          <FormField label="Target model" htmlFor={`${id}-model`} w="md">
-            <Select
-              id={`${id}-model`}
-              value={value.model}
-              onChange={(v) => onChange({ ...value, model: v })}
-              options={ids.map((m) => ({ value: m, label: m }))}
-              placeholder="Select a model…"
-            />
-            <button type="button" className="link small" onClick={() => onChange({ ...value, model: "", manual: true })}>
-              Enter a model id instead
-            </button>
-          </FormField>
+          <>
+            <FormField
+              label="Target model id"
+              htmlFor={`${id}-model-id`}
+              w="md"
+              descId={`${id}-model-desc`}
+              error={syncErr ?? undefined}
+              help={entries.length === 0
+                ? "This provider's catalog is empty. Type the model id."
+                : "The provider's own id for the model: one from its catalog, or typed."}
+            >
+              <Combobox
+                id={`${id}-model-id`}
+                mono
+                value={value.model}
+                options={entries.map((m) => ({ value: m.id, label: m.display_name || undefined }))}
+                maxLength={200}
+                aria-describedby={`${id}-model-desc`}
+                onChange={(v) => onChange({ ...value, model: v })}
+              />
+            </FormField>
+            {entries.length === 0 && canSync && (
+              <div>
+                <Button variant="secondary" size="sm" disabled={sync.isPending} onClick={() => sync.mutate(value.provider)}>
+                  {sync.isPending ? "Syncing…" : "Sync catalog"}
+                </Button>
+              </div>
+            )}
+          </>
         ))}
       </FormFieldGroup>
     </fieldset>
@@ -237,6 +252,7 @@ function TargetList({ dialect, legend, short, providers, value, onChange, announ
               onChange={(next) => onChange(value.map((x) => (x.key === t.key ? next : x)))}
               onMove={(by) => move(i, by)}
               onRemove={() => remove(i)}
+              announce={announce}
             />
           ))}
           {served && (
@@ -246,7 +262,7 @@ function TargetList({ dialect, legend, short, providers, value, onChange, announ
               disabled={value.length >= MAX_TARGETS}
               onClick={() => {
                 const key = newKey();
-                onChange([...value, { key, provider: "", model: "", manual: false }]);
+                onChange([...value, { key, provider: "", model: "" }]);
                 setFocusKey(key);
               }}
             >
@@ -288,7 +304,7 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
       // model can start on a provider: its model is still to be chosen.
       const first = !model && initialTarget?.dialect === dialect ? initialTarget.provider : "";
       const list = stored.length > 0 ? stored : [{ provider: first, model: "" }];
-      return list.map((t) => ({ key: newKey(), provider: t.provider, model: t.model, manual: false }));
+      return list.map((t) => ({ key: newKey(), provider: t.provider, model: t.model }));
     };
     return { openai: initial("openai"), anthropic: initial("anthropic") };
   });

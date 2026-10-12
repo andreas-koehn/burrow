@@ -6,6 +6,8 @@ export interface ProviderPreset {
   baseUrl: string;
   credentialSlot: string;
   billing: "metered" | "flat";
+  /** The API format the provider speaks. */
+  apiFormat: "openai" | "anthropic";
   /** Whether the provider documents POST /responses (the OpenAI Responses API). */
   supportsResponses: boolean;
   note?: string;
@@ -16,24 +18,24 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
     id: "openrouter", label: "OpenRouter", slug: "openrouter", name: "OpenRouter",
     baseUrl: "https://openrouter.ai/api/v1", credentialSlot: "OPENROUTER", billing: "metered",
-    supportsResponses: true,
+    apiFormat: "openai", supportsResponses: true,
     note: "Cost is taken from what OpenRouter reports per request.",
   },
   {
     id: "zai-coding", label: "z.ai — Coding Plan", slug: "zai", name: "z.ai",
     baseUrl: "https://api.z.ai/api/coding/paas/v4", credentialSlot: "ZAI", billing: "flat",
-    supportsResponses: false,
+    apiFormat: "openai", supportsResponses: false,
     note: "Subscription endpoint. The plan's quota is shared by everyone using this provider.",
   },
   {
     id: "zai-api", label: "z.ai — API (pay as you go)", slug: "zai", name: "z.ai",
     baseUrl: "https://api.z.ai/api/paas/v4", credentialSlot: "ZAI", billing: "metered",
-    supportsResponses: false,
+    apiFormat: "openai", supportsResponses: false,
   },
   {
-    id: "custom", label: "Other OpenAI-compatible API", slug: "", name: "",
+    id: "custom", label: "Other API", slug: "", name: "",
     baseUrl: "", credentialSlot: "", billing: "metered",
-    supportsResponses: false,
+    apiFormat: "openai", supportsResponses: false,
   },
 ];
 
@@ -72,6 +74,22 @@ export function credentialSlotsError(value: string): string | null {
   if (twice) return `Slot ${twice} is listed twice.`;
   return null;
 }
+
+/**
+ * What a "Credential slot" field suggests: the slots set on the relay. After a
+ * comma they are the slots not named yet, each as the whole value it would
+ * make, because the browser replaces the field's text with the suggestion.
+ */
+export function slotSuggestions(value: string, known: string[]): { value: string; label?: string }[] {
+  // What is typed up to and including the last comma, with the spacing after it.
+  const head = /^.*,\s*/s.exec(value)?.[0] ?? "";
+  if (head === "") return known.map((slot) => ({ value: slot }));
+  const named = splitSlots(head);
+  return known.filter((slot) => !named.includes(slot)).map((slot) => ({ value: head + slot, label: slot }));
+}
+
+/** Shown in a "Credential slot" field's list while the relay has no slot set. */
+export const NO_CREDENTIAL_SLOTS = "No credential is set on the relay yet.";
 
 /** Help text of every "Credential slot" field. */
 export const CREDENTIAL_SLOT_HELP =

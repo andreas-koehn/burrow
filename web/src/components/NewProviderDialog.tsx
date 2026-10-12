@@ -1,12 +1,14 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
+import { Button, Combobox, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
 import { SlugField } from "@/components/SlugField";
 import { useLocalProviderFlow } from "@/components/LocalProviderFlow";
-import { ConcurrencyField, ResponsesCheckbox, SlotsNotSet } from "@/components/ProviderUpstreamPanel";
+import { ConcurrencyField, ResponsesCheckbox, SlotStatus } from "@/components/ProviderUpstreamPanel";
 import { providerSlugError } from "@/lib/providerSlug";
-import { CREDENTIAL_SLOT_HELP, PROVIDER_PRESETS, credentialSlotsError, parseConcurrency, splitSlots } from "@/lib/providerPresets";
+import {
+  CREDENTIAL_SLOT_HELP, NO_CREDENTIAL_SLOTS, PROVIDER_PRESETS, credentialSlotsError, parseConcurrency, slotSuggestions, splitSlots,
+} from "@/lib/providerPresets";
 import { providerBaseUrl } from "@/lib/serviceUrl";
 import type { AiProvider, Service } from "@/lib/contract";
 
@@ -33,6 +35,11 @@ const BILLING_OPTIONS = [
   { value: "flat", label: "Flat rate" },
 ];
 const PRESET_OPTIONS = PROVIDER_PRESETS.map((p) => ({ value: p.id, label: p.label }));
+type ApiFormat = AiProvider["api_format"];
+const FORMAT_OPTIONS = [
+  { value: "openai", label: "OpenAI" },
+  { value: "anthropic", label: "Anthropic" },
+];
 
 function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenChange">) {
   const qc = useQueryClient();
@@ -45,6 +52,7 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
   const [serviceId, setServiceId] = useState("");
   // Hosted API only.
   const [presetId, setPresetId] = useState("");
+  const [apiFormat, setApiFormat] = useState<ApiFormat>("openai");
   const [baseUrl, setBaseUrl] = useState("");
   const [slot, setSlot] = useState("");
   const [billing, setBilling] = useState<"metered" | "flat">("metered");
@@ -117,6 +125,7 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
     setPresetId(p.id);
     setName(p.name);
     setSlug(p.slug);
+    setApiFormat(p.apiFormat);
     setBaseUrl(p.baseUrl);
     setSlot(p.credentialSlot);
     setBilling(p.billing);
@@ -128,12 +137,14 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
   }
 
   const limit = parseConcurrency(concurrency);
+  // The Responses API belongs to the OpenAI format: another format never claims it.
+  const offersResponses = apiFormat === "openai" && responses;
   const create = useMutation({
     mutationFn: () =>
       apiFetch<AiProvider>("/ai/providers", {
         method: "POST",
         body: JSON.stringify(direct
-          ? { kind: "direct", slug: slug || undefined, name: name.trim(), base_url: baseUrl.trim(), credential_slot: splitSlots(slot).join(","), billing, supports_responses: responses, max_concurrent: limit ?? 0 }
+          ? { kind: "direct", slug: slug || undefined, name: name.trim(), api_format: apiFormat, base_url: baseUrl.trim(), credential_slot: splitSlots(slot).join(","), billing, supports_responses: offersResponses, max_concurrent: limit ?? 0 }
           : { slug: slug || undefined, name: name.trim(), kind: "tunnel", service_id: chosen }),
       }),
     // Wait for the refetch so the list behind the dialog already shows the provider.
@@ -160,9 +171,6 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
   // The list names every slot that is set, also one set to an empty value, so
   // a listed slot is no proof of a usable key; an unlisted one is proof of none.
   const known = slots.data?.slots;
-  // Only the slots that are not set are named.
-  const slotsMissing = !direct || slotMessage !== null || known === undefined
-    ? [] : splitSlots(slot).filter((x) => !known.includes(x));
   const filled = direct
     ? baseUrl.trim() !== "" && splitSlots(slot).length > 0 && slotMessage === null && limit !== null
     : chosen !== "";
@@ -175,7 +183,7 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
       description={guided
         ? flow.description
         : direct
-          ? "Serve a hosted OpenAI-compatible API under its own base URL. The relay calls it with a credential set on the relay."
+          ? "Serve a hosted API under its own base URL. The relay calls it with a credential set on the relay."
           : "Serve a service in API-key mode as a model provider under its own base URL."}
       footer={guided ? flow.footer : (
         <>
@@ -242,6 +250,23 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
             {direct && (
               <>
                 <FormField
+                  label="API format"
+                  htmlFor="np-format"
+                  w="md"
+                  descId="np-format-desc"
+                  help={apiFormat === "anthropic"
+                    ? "The API the provider speaks. The credential is sent as Authorization: Bearer; another auth header is set on the provider's page."
+                    : "The API the provider speaks."}
+                >
+                  <Select
+                    id="np-format"
+                    aria-describedby="np-format-desc"
+                    value={apiFormat}
+                    onChange={(v) => { setApiFormat(v as ApiFormat); setFormErr(null); }}
+                    options={FORMAT_OPTIONS}
+                  />
+                </FormField>
+                <FormField
                   label="Base URL"
                   htmlFor="np-base-url"
                   error={urlErr ? <span id="np-base-url-err">{urlErr}</span> : undefined}
@@ -271,20 +296,28 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
                   error={slotMessage ? <span id="np-slot-err">{slotMessage}</span> : undefined}
                   help={<span id="np-slot-help">{CREDENTIAL_SLOT_HELP}</span>}
                 >
-                  <Input
+                  <Combobox
                     id="np-slot"
                     mono
                     value={slot}
+                    options={slotSuggestions(slot, known ?? [])}
+                    emptyText={known?.length === 0 ? NO_CREDENTIAL_SLOTS : undefined}
                     maxLength={140}
                     required
                     invalid={!!slotMessage}
-                    autoComplete="off"
                     autoCapitalize="characters"
-                    spellCheck={false}
                     aria-describedby={slotMessage ? "np-slot-err" : "np-slot-help"}
-                    onChange={(e) => { setSlot(e.target.value.toUpperCase()); setSlotErr(null); setFormErr(null); }}
+                    onChange={(v) => { setSlot(v.toUpperCase()); setSlotErr(null); setFormErr(null); }}
                   />
                 </FormField>
+                {/* A name the relay cannot have is not looked up. */}
+                {known !== undefined && slotMessage === null && (
+                  <SlotStatus
+                    slots={splitSlots(slot)}
+                    known={known}
+                    whileMissing="You can create the provider now. It shows as Not configured until the key is set."
+                  />
+                )}
                 <FormField label="Billing" htmlFor="np-billing" w="md">
                   <Select
                     id="np-billing"
@@ -299,7 +332,9 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
                   error={concurrencyErr}
                   onChange={(v) => { setConcurrency(v); setConcurrencyErr(null); setFormErr(null); }}
                 />
-                <ResponsesCheckbox id="np-responses" checked={responses} onChange={(v) => { setResponses(v); setFormErr(null); }} />
+                {apiFormat === "openai" && (
+                  <ResponsesCheckbox id="np-responses" checked={responses} onChange={(v) => { setResponses(v); setFormErr(null); }} />
+                )}
               </>
             )}
             {!direct && eligible.length > 0 && (
@@ -315,12 +350,6 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
             )}
           </FormFieldGroup>
           <p className="muted small">Leave the slug empty to derive it from the name.</p>
-          {slotsMissing.length > 0 && (
-            <ErrorNotice variant="info" role="note">
-              <SlotsNotSet slots={slotsMissing} /> You can create the provider now; it answers 503 until the
-              key is set.
-            </ErrorNotice>
-          )}
           {direct ? null : loadFailed ? (
             <ErrorNotice>Couldn't load the services to choose from.</ErrorNotice>
           ) : loaded && eligible.length === 0 ? (

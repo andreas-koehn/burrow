@@ -11,6 +11,27 @@ function mount() {
   return renderApp(<CostBudgets />, "/gateway/cost");
 }
 
+// The ds Select is a button with a listbox, not a native <select>.
+async function chooseOption(dialog: HTMLElement, label: string, option: string) {
+  await userEvent.click(within(dialog).getByLabelText(label));
+  await userEvent.click(await screen.findByRole("option", { name: option }));
+}
+
+/** The paths of the key lists asked for so far. */
+function keyListsAsked(): () => string[] {
+  const spy = vi.spyOn(globalThis, "fetch");
+  // The spy outlives a test; what earlier tests asked for does not count.
+  spy.mockClear();
+  return () => spy.mock.calls
+    .map(([input]) => new URL(input instanceof Request ? input.url : String(input), "http://localhost").pathname)
+    .filter((path) => path.endsWith("/api-keys"));
+}
+
+async function openDialog() {
+  await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
+  return screen.findByRole("dialog", { name: "New budget" });
+}
+
 describe("Cost & budgets (§4.24)", () => {
   it("renders the verbatim pricing disclosure", async () => {
     mount();
@@ -33,8 +54,7 @@ describe("Cost & budgets (§4.24)", () => {
   it("New budget posts /budgets and shows the server's 400 verbatim", async () => {
     server.use(http.post("/api/v1/budgets", () => HttpResponse.json({ error: "subject_id too long (max 256 chars)" }, { status: 400 })));
     mount();
-    await userEvent.click(await screen.findByRole("button", { name: /new budget/i }));
-    await userEvent.type(await screen.findByLabelText("Subject"), "ak_1");
+    await chooseOption(await openDialog(), "Gateway key", "laptop");
     const create = screen.getByRole("button", { name: /^create$/i });
     // Neither limit set: the form says why and does not send.
     expect(create).toBeDisabled();
@@ -46,8 +66,7 @@ describe("Cost & budgets (§4.24)", () => {
 
   it("mirrors the server's rule for negative limits", async () => {
     mount();
-    await userEvent.click(await screen.findByRole("button", { name: /new budget/i }));
-    await userEvent.type(await screen.findByLabelText("Subject"), "ak_1");
+    await openDialog();
     await userEvent.type(screen.getByLabelText(/daily usd/i), "-1");
     expect(screen.getByText("daily_usd must not be negative")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^create$/i })).toBeDisabled();
@@ -63,13 +82,9 @@ describe("Cost & budgets (§4.24)", () => {
     const dialog = await screen.findByRole("dialog", { name: "New budget" });
     const create = within(dialog).getByRole("button", { name: "Create" });
     await userEvent.type(within(dialog).getByLabelText(/daily usd/i), "25");
+    // The scope it opens on has a subject, and none is chosen yet.
     expect(create).toBeDisabled();
-    await userEvent.type(within(dialog).getByLabelText("Subject"), "   ");
-    expect(create).toBeDisabled();
-    // Surrounding spaces are refused, not trimmed (the server does the same).
-    expect(create).toBeDisabled();
-    await userEvent.clear(within(dialog).getByLabelText("Subject"));
-    await userEvent.type(within(dialog).getByLabelText("Subject"), "ak_1");
+    await chooseOption(dialog, "Gateway key", "laptop");
     expect(create).toBeEnabled();
     // Global has no subject, so nothing is missing.
     await userEvent.click(within(dialog).getByLabelText("Scope"));
@@ -139,8 +154,8 @@ describe("Cost & budgets (§4.24)", () => {
     await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
     const dialog = await screen.findByRole("dialog", { name: "New budget" });
 
-    // A subject typed for one scope must not survive a scope switch.
-    await userEvent.type(within(dialog).getByLabelText("Subject"), "ak_stale");
+    // A subject chosen for one scope must not survive a scope switch.
+    await chooseOption(dialog, "Gateway key", "laptop");
 
     await userEvent.click(within(dialog).getByLabelText("Scope"));
     await userEvent.click(await screen.findByRole("option", { name: "Service" }));
@@ -152,12 +167,13 @@ describe("Cost & budgets (§4.24)", () => {
 
     await userEvent.click(within(dialog).getByLabelText("Scope"));
     await userEvent.click(await screen.findByRole("option", { name: "User" }));
-    expect(within(dialog).getByLabelText("Subject")).toHaveValue("");
+    expect(within(dialog).getByLabelText("User")).toHaveTextContent("Select a user…");
 
     await userEvent.click(within(dialog).getByLabelText("Scope"));
     await userEvent.click(await screen.findByRole("option", { name: "Global" }));
     expect(within(dialog).queryByLabelText("Subject")).toBeNull();
     expect(within(dialog).queryByText("Subject")).toBeNull();
+    expect(within(dialog).queryByLabelText("User")).toBeNull();
   });
 
   // Records every POST /budgets body so the tests can assert what was sent.
@@ -189,12 +205,12 @@ describe("Cost & budgets (§4.24)", () => {
     expect(bodies[0]).toMatchObject({ scope: "service", subject_id: "svc-a", daily_usd: 5 });
   });
 
-  it("posts an empty subject_id for the Global scope even after a subject was typed (U4)", async () => {
+  it("posts an empty subject_id for the Global scope even after a subject was chosen (U4)", async () => {
     const bodies = captureBudgetPosts();
     mount();
     await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
     const dialog = await screen.findByRole("dialog", { name: "New budget" });
-    await userEvent.type(within(dialog).getByLabelText("Subject"), "ak_stale");
+    await chooseOption(dialog, "Gateway key", "laptop");
     await userEvent.click(within(dialog).getByLabelText("Scope"));
     await userEvent.click(await screen.findByRole("option", { name: "Global" }));
     await userEvent.type(within(dialog).getByLabelText("Daily USD"), "5");
@@ -213,11 +229,6 @@ describe("Cost & budgets (§4.24)", () => {
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("Couldn't load services.");
     expect(within(dialog).queryByText("The service this budget applies to.")).toBeNull();
   });
-
-  async function chooseOption(dialog: HTMLElement, label: string, option: string) {
-    await userEvent.click(within(dialog).getByLabelText(label));
-    await userEvent.click(await screen.findByRole("option", { name: option }));
-  }
 
   it("creates a token budget for a gateway key picked by name", async () => {
     const bodies = captureBudgetPosts();
@@ -364,17 +375,17 @@ describe("Cost & budgets (§4.24)", () => {
     mount();
     await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
     const dialog = await screen.findByRole("dialog", { name: "New budget" });
-    await userEvent.type(within(dialog).getByLabelText("Subject"), "ak_1");
     await userEvent.type(within(dialog).getByLabelText("Daily tokens"), "1.5");
     expect(within(dialog).getByText("daily_tokens must be a whole number")).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Create" })).toBeDisabled();
   });
 
-  it("refuses a subject with surrounding spaces instead of trimming it", async () => {
+  it("refuses a typed user id with surrounding spaces instead of trimming it", async () => {
+    server.use(http.get("/api/v1/users", () => HttpResponse.json({ error: "users:read required" }, { status: 403 })));
     mount();
-    await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
-    const dialog = await screen.findByRole("dialog", { name: "New budget" });
-    await userEvent.type(within(dialog).getByLabelText("Subject"), "ak_1 ");
+    const dialog = await openDialog();
+    await chooseOption(dialog, "Scope", "User");
+    await userEvent.type(await within(dialog).findByLabelText("User id"), "bur_usr_bob0002 ");
     await userEvent.type(within(dialog).getByLabelText("Daily USD"), "5");
     expect(within(dialog).getByText("Remove the spaces before or after the ID.")).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Create" })).toBeDisabled();
@@ -386,7 +397,7 @@ describe("Cost & budgets (§4.24)", () => {
     const dialog = await screen.findByRole("dialog", { name: "New budget" });
     await chooseOption(dialog, "Action on exceed", "Disable key");
     expect(within(dialog).getByLabelText("Action on exceed")).toHaveAttribute("aria-describedby", "budget-action-help");
-    // default scope is API key
+    // It opens on the gateway key scope.
     expect(within(dialog).getByText(/revokes the key permanently/i)).toBeInTheDocument();
     await chooseOption(dialog, "Scope", "Model");
     expect(within(dialog).getByText(/only blocks; no key is revoked/i)).toBeInTheDocument();
@@ -395,5 +406,118 @@ describe("Cost & budgets (§4.24)", () => {
     expect(within(dialog).queryByText(/revokes the key permanently/i)).toBeNull();
     await chooseOption(dialog, "Scope", "Gateway key");
     expect(within(dialog).getByText(/revokes the key permanently/i)).toBeInTheDocument();
+  });
+
+  it("opens on the gateway key scope", async () => {
+    mount();
+    const dialog = await openDialog();
+    expect(within(dialog).getByLabelText("Scope")).toHaveTextContent("Gateway key");
+    expect(within(dialog).getByLabelText("Gateway key")).toHaveTextContent("Select a key…");
+    // Nothing is wrong yet: no error before anything was entered.
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+  });
+
+  it("API key scope: choosing a service loads its keys, and the key's id is what is sent", async () => {
+    const asked = keyListsAsked();
+    const bodies = captureBudgetPosts();
+    db.budgets = [];
+    mount();
+    const dialog = await openDialog();
+    await chooseOption(dialog, "Scope", "API key");
+    // The key is chosen once its service is.
+    expect(within(dialog).queryByLabelText("Key")).toBeNull();
+    expect(asked()).toEqual([]);
+    await chooseOption(dialog, "Service", "ollama");
+    await userEvent.click(await within(dialog).findByLabelText("Key"));
+    expect((await screen.findAllByRole("option")).map((o) => o.textContent)).toEqual(["ci", "prod"]);
+    expect(asked()).toEqual(["/api/v1/services/svc_ai001/api-keys"]);
+    await userEvent.click(screen.getByRole("option", { name: "prod" }));
+    await userEvent.type(within(dialog).getByLabelText("Daily USD"), "4");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({ scope: "api_key", subject_id: "sak_prod1", daily_usd: 4 });
+  });
+
+  it("API key scope: another service drops the key chosen before, and a service without keys says so", async () => {
+    mount();
+    const dialog = await openDialog();
+    await chooseOption(dialog, "Scope", "API key");
+    await chooseOption(dialog, "Service", "ollama");
+    await chooseOption(dialog, "Key", "ci");
+    await userEvent.type(within(dialog).getByLabelText("Daily USD"), "4");
+    const create = within(dialog).getByRole("button", { name: "Create" });
+    expect(create).toBeEnabled();
+    await chooseOption(dialog, "Service", "web");
+    expect(await within(dialog).findByText("This service has no API keys.")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Key")).toHaveTextContent("Select a key…");
+    expect(create).toBeDisabled();
+  });
+
+  it("User scope: picks a user by email and sends the id", async () => {
+    const bodies = captureBudgetPosts();
+    mount();
+    const dialog = await openDialog();
+    await chooseOption(dialog, "Scope", "User");
+    await chooseOption(dialog, "User", "bob@acme.io");
+    await userEvent.type(within(dialog).getByLabelText("Daily USD"), "2");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({ scope: "user", subject_id: "bur_usr_bob0002", daily_usd: 2 });
+  });
+
+  it("User scope: a caller who may not list users types the user's id", async () => {
+    server.use(http.get("/api/v1/users", () => HttpResponse.json({ error: "users:read required" }, { status: 403 })));
+    const bodies = captureBudgetPosts();
+    mount();
+    const dialog = await openDialog();
+    await chooseOption(dialog, "Scope", "User");
+    const field = await within(dialog).findByLabelText("User id");
+    expect(field.tagName).toBe("INPUT");
+    expect(within(dialog).queryByLabelText("User")).toBeNull();
+    // The reason is help text, not an error.
+    expect(field).toHaveAccessibleDescription("The users can't be listed here. Type the user's id.");
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    await userEvent.type(field, "bur_usr_bob0002");
+    await userEvent.type(within(dialog).getByLabelText("Daily USD"), "2");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({ scope: "user", subject_id: "bur_usr_bob0002" });
+  });
+
+  it("User scope: with more users than one answer holds, the id is typed", async () => {
+    server.use(http.get("/api/v1/users", () => HttpResponse.json({ users: db.users.slice(0, 2), total: 250 })));
+    mount();
+    const dialog = await openDialog();
+    await chooseOption(dialog, "Scope", "User");
+    expect(await within(dialog).findByLabelText("User id")).toBeInTheDocument();
+  });
+
+  it("the budgets table names an API key, and says when the key is gone", async () => {
+    db.budgets.push({ id: "bdg_gone", scope: "api_key", subject_id: "sak_gone9", daily_usd: 1, daily_tokens: 0, action_on_exceed: "alert_webhook", alert_webhook_id: null, current_usd: 0, current_tokens: 0, exceeded: false });
+    mount();
+    const table = await screen.findByRole("table", { name: "Budgets" });
+    // bdg_ci is on sak_ci01, the key "ci" of the service ollama.
+    expect(await within(table).findByText("ci")).toBeInTheDocument();
+    expect(within(table).queryByText("sak_ci01")).toBeNull();
+    expect(await within(table).findByText("sak_gone9 (deleted)")).toBeInTheDocument();
+  });
+
+  it("the budgets table shows the id alone while a key list could not be read", async () => {
+    server.use(http.get("/api/v1/services/svc_web01/api-keys", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
+    db.budgets.push({ id: "bdg_gone", scope: "api_key", subject_id: "sak_gone9", daily_usd: 1, daily_tokens: 0, action_on_exceed: "alert_webhook", alert_webhook_id: null, current_usd: 0, current_tokens: 0, exceeded: false });
+    mount();
+    const table = await screen.findByRole("table", { name: "Budgets" });
+    expect(await within(table).findByText("ci")).toBeInTheDocument();
+    // The key may be one of the service that could not be read: not called deleted.
+    expect(within(table).getByText("sak_gone9")).toBeInTheDocument();
+    expect(within(table).queryByText(/\(deleted\)/)).toBeNull();
+  });
+
+  it("asks for no key list while no budget is on an API key", async () => {
+    const asked = keyListsAsked();
+    db.budgets = db.budgets.filter((b) => b.scope !== "api_key");
+    mount();
+    expect(await within(await screen.findByRole("table", { name: "Budgets" })).findByText("burrow-simple")).toBeInTheDocument();
+    expect(asked()).toEqual([]);
   });
 });

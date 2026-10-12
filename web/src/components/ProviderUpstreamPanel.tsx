@@ -2,9 +2,11 @@ import { Fragment, useState } from "react";
 import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Badge, Button, Checkbox, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
+import { Badge, Button, Checkbox, Combobox, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
+import { CopyButton } from "@/components/CopyableCode";
 import {
-  CONCURRENCY_FORMAT, CONCURRENCY_HELP, CREDENTIAL_SLOT_HELP, credentialSlotsError, envVarForSlot, parseConcurrency, splitSlots,
+  CONCURRENCY_FORMAT, CONCURRENCY_HELP, CREDENTIAL_SLOT_HELP, NO_CREDENTIAL_SLOTS, credentialSlotsError, envVarForSlot,
+  parseConcurrency, slotSuggestions, splitSlots,
 } from "@/lib/providerPresets";
 import type { AiProvider, AiProviderUpstreamInput } from "@/lib/contract";
 
@@ -252,6 +254,41 @@ export function SlotsNotSet({ slots, orEmpty = false }: { slots: string[]; orEmp
   );
 }
 
+export interface SlotStatusProps {
+  /** The names in the field, in the order typed. */
+  slots: string[];
+  /** The slots set on the relay. */
+  known: string[];
+  /** Said once below the lines while a slot is missing. */
+  whileMissing?: string;
+}
+
+/**
+ * Under a "Credential slot" field: for each name typed, whether the relay has
+ * it, and for one it does not have, the variable to add.
+ */
+export function SlotStatus({ slots, known, whileMissing }: SlotStatusProps) {
+  if (slots.length === 0) return null;
+  return (
+    <div className="col gap-2 small">
+      <ul className="slot-list" aria-label="Credential slots on the relay">
+        {slots.map((slot) => known.includes(slot) ? (
+          <li key={slot}><span><code>{slot}</code> is set on the relay.</span></li>
+        ) : (
+          <li key={slot}>
+            <span>
+              <code>{slot}</code> is not set. Add <code>{envVarForSlot(slot)}</code> to the relay's environment and
+              restart it.
+            </span>
+            <CopyButton text={envVarForSlot(slot)} label={`Copy ${envVarForSlot(slot)}`} />
+          </li>
+        ))}
+      </ul>
+      {whileMissing && slots.some((slot) => !known.includes(slot)) && <p className="muted">{whileMissing}</p>}
+    </div>
+  );
+}
+
 /**
  * Where the relay sends a direct provider's requests and whether its
  * credential is configured. The credential is set on the relay: this panel
@@ -464,9 +501,7 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
     setFieldErr({});
   }
 
-  // Only the slots that are not set are named.
   const known = slots.data?.slots;
-  const slotsMissing = errors.slot || known === undefined ? [] : splitSlots(slot).filter((x) => !known.includes(x));
   const blocked = unchanged || baseUrl.trim() === "" || slotValue === "" || authHeader.trim() === ""
     || Object.keys(invalid).length > 0 || save.isPending;
   const extraHelp = names.length > 0
@@ -516,20 +551,24 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
           error={err("slot", "eu-slot")}
           help={<span id="eu-slot-help">{CREDENTIAL_SLOT_HELP}</span>}
         >
-          <Input
+          <Combobox
             id="eu-slot"
             mono
             value={slot}
+            options={slotSuggestions(slot, known ?? [])}
+            emptyText={known?.length === 0 ? NO_CREDENTIAL_SLOTS : undefined}
             maxLength={140}
             required
             invalid={!!errors.slot}
-            autoComplete="off"
             autoCapitalize="characters"
-            spellCheck={false}
             aria-describedby={errors.slot ? "eu-slot-err" : "eu-slot-help"}
-            onChange={(e) => { setSlot(e.target.value.toUpperCase()); edited(); }}
+            onChange={(v) => { setSlot(v.toUpperCase()); edited(); }}
           />
         </FormField>
+        {/* A name the relay cannot have is not looked up. */}
+        {known !== undefined && !errors.slot && (
+          <SlotStatus slots={splitSlots(slot)} known={known} whileMissing="The provider answers 503 until the key is set." />
+        )}
         <FormField label="Billing" htmlFor="eu-billing" w="md">
           <Select
             id="eu-billing"
@@ -608,11 +647,6 @@ function EditUpstreamForm({ provider, onOpenChange }: Omit<EditUpstreamDialogPro
           <ResponsesCheckbox id="eu-responses" checked={responses} onChange={(v) => { setResponses(v); edited(); }} />
         )}
       </FormFieldGroup>
-      {slotsMissing.length > 0 && (
-        <ErrorNotice variant="info" role="note">
-          <SlotsNotSet slots={slotsMissing} /> The provider answers 503 until the key is set.
-        </ErrorNotice>
-      )}
       {formErr && <ErrorNotice>{formErr}</ErrorNotice>}
     </Dialog>
   );

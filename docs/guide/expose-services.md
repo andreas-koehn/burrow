@@ -352,10 +352,11 @@ or switched to API-key mode later has no provider until you add one.
    [Configuration](/guide/configuration#advanced) for the slot naming rule
    and for who can use a slot.
 2. Choose **New provider → A hosted API**, pick a preset (OpenRouter, z.ai) or
-   **Other OpenAI-compatible API**, and check the name, the slug, the base URL
+   **Other API**, and check the name, the slug, the API format, the base URL
    and the credential slot. The base URL must be an `https` URL up to and
    including the API's version path, for example
-   `https://openrouter.ai/api/v1`.
+   `https://openrouter.ai/api/v1`. The slot field lists the slots that are
+   set on the relay; for a name that is not set it shows the variable to add.
 3. Open the provider. Its **Overview** tab shows the base URL and an example
    under **Use it in an app**. Apps send a gateway key: create one under
    **AI Gateway → Gateway keys**.

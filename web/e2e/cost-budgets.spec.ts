@@ -24,8 +24,14 @@ test("v0.4.0: cost page renders zeroed tiles + add-budget flow lists the row", a
   await page.getByRole("button", { name: "New budget" }).click();
   const dlg = page.getByRole("dialog", { name: "New budget" });
   await expect(dlg).toBeVisible();
-  const subject = `ak_e2e_${Date.now()}`;
-  await dlg.getByLabel("Subject").fill(subject);
+  // The dialog opens on the gateway key scope, and a fresh relay has no key
+  // to pick. A model address is the one subject that is typed.
+  const subject = `e2e/model-${Date.now()}`;
+  await dlg.getByLabel("Scope").click();
+  await page.getByRole("option", { name: "Model", exact: true }).click();
+  await dlg.getByLabel("Model", { exact: true }).click();
+  await page.getByRole("option", { name: "Other address…" }).click();
+  await dlg.getByLabel("Model address").fill(subject);
   await dlg.getByLabel("Daily USD").fill("5");
   await dlg.getByRole("button", { name: "Create" }).click();
   await expect(dlg).not.toBeVisible();

@@ -906,9 +906,17 @@ describe("Provider detail", () => {
       expect(slot).toHaveAccessibleDescription(/One slot, or up to four separated by commas — tried in order\./);
       await userEvent.type(slot, ", backup");
       expect(slot).toHaveValue("OPENROUTER, BACKUP");
-      const note = within(dialog).getByRole("note");
-      expect(note).toHaveTextContent("Slot BACKUP is not set on the relay.");
-      expect(note).not.toHaveTextContent("BURROW_UPSTREAM_KEY_OPENROUTER");
+      // Under the field, one line per name: the first is set on the relay, the second is not.
+      const lines = within(await within(dialog).findByRole("list", { name: "Credential slots on the relay" })).getAllByRole("listitem");
+      expect(lines.map((li) => li.textContent)).toEqual([
+        "OPENROUTER is set on the relay.",
+        "BACKUP is not set. Add BURROW_UPSTREAM_KEY_BACKUP to the relay's environment and restart it.",
+      ]);
+      expect(within(dialog).getByRole("button", { name: "Copy BURROW_UPSTREAM_KEY_BACKUP" })).toBeInTheDocument();
+      expect(within(dialog).queryByText(/BURROW_UPSTREAM_KEY_OPENROUTER/)).toBeNull();
+      // The names set on the relay that the field does not hold yet are offered.
+      const offered = document.getElementById(slot.getAttribute("list") ?? "")!.querySelectorAll("option");
+      expect(Array.from(offered).map((o) => o.value)).toEqual(["OPENROUTER, ANTHROPIC_TEAM_A", "OPENROUTER, OPENAI"]);
       await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
       await waitFor(() => expect(put).toEqual({ credential_slot: "OPENROUTER,BACKUP" }));
     });
