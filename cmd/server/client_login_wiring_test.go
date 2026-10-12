@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -49,6 +51,10 @@ func TestServe_ClientLoginIsWired(t *testing.T) {
 		"BURROW_MCP_LISTEN":    "",
 		// A retired setting must not stop the relay, even a path that does not exist.
 		"BURROW_MCP_TOKEN_FILE": filepath.Join(dir, "no-such-token-file"),
+		// An auth domain and an admin, for the MCP check below.
+		"BURROW_AUTH_DOMAIN":    "relay.test",
+		"BURROW_ADMIN_EMAIL":    serveTestAdminEmail,
+		"BURROW_ADMIN_PASSWORD": serveTestAdminPassword,
 	} {
 		t.Setenv(k, v)
 	}
@@ -101,11 +107,90 @@ func TestServe_ClientLoginIsWired(t *testing.T) {
 				t.Fatalf("POST /mcp/burrow without a token: status %d, WWW-Authenticate %q; want 401 \"Bearer\" (the MCP handler is not wired into the router)",
 					mresp.StatusCode, mresp.Header.Get("WWW-Authenticate"))
 			}
+			assertMCPKnowsTheAuthDomain(t, "http://"+httpAddr)
 			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the dashboard listener never answered: %v", err)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+const (
+	serveTestAdminEmail    = "admin@relay.test"
+	serveTestAdminPassword = "serve-test-password-1"
+)
+
+// assertMCPKnowsTheAuthDomain checks, on the relay `serve` started with an
+// auth domain, that the MCP server was built with it: services_set_access_mode
+// accepts burrow_login, which it refuses on a relay without one. main.go hands
+// the domain to BuildMCPServer as a plain string; an empty or wrong one there
+// would otherwise go unnoticed. Everything is done as an operator does it:
+// log in, create a service and an automation token over the JSON API, then
+// call the tool at /mcp/burrow.
+func assertMCPKnowsTheAuthDomain(t *testing.T, base string) {
+	t.Helper()
+	var cookies []*http.Cookie
+	csrf := ""
+	do := func(path string, body any, want int) map[string]any {
+		t.Helper()
+		raw, _ := json.Marshal(body)
+		req, err := http.NewRequest(http.MethodPost, base+path, strings.NewReader(string(raw)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		if csrf != "" {
+			req.Header.Set("X-CSRF-Token", csrf)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != want {
+			t.Fatalf("POST %s: status %d, want %d: %s", path, resp.StatusCode, want, out)
+		}
+		if len(resp.Cookies()) > 0 {
+			cookies = resp.Cookies()
+			for _, c := range cookies {
+				if c.Name == "burrow_csrf" {
+					csrf = c.Value
+				}
+			}
+		}
+		var decoded map[string]any
+		_ = json.Unmarshal(out, &decoded)
+		return decoded
+	}
+
+	do("/api/v1/auth/login", map[string]string{"email": serveTestAdminEmail, "password": serveTestAdminPassword}, http.StatusOK)
+	if csrf == "" {
+		t.Fatal("login set no burrow_csrf cookie")
+	}
+	const serviceID = "mcp-auth-domain"
+	do("/api/v1/services", map[string]string{"service_id": serviceID, "title": "wiring"}, http.StatusCreated)
+	minted := do("/api/v1/automation/tokens", map[string]any{
+		"name": "mcp-auth-domain", "permissions": []string{"services:configure:own"},
+	}, http.StatusCreated)
+	bearer, _ := minted["plaintext"].(string)
+	if bearer == "" {
+		t.Fatalf("no automation token in the answer: %v", minted)
+	}
+
+	cs := mcpConnect(t, base+"/mcp/burrow", bearer, "2026-07-28")
+	if got := mcpCall(t, cs, false, "services_set_access_mode", map[string]any{"id": serviceID, "mode": "burrow_login"}); got != `{"ok":true}` {
+		t.Fatalf("services_set_access_mode burrow_login on a relay with an auth domain: %s", got)
+	}
+	var svc struct {
+		AccessMode string `json:"access_mode"`
+	}
+	if err := json.Unmarshal([]byte(mcpCall(t, cs, false, "services_get", map[string]any{"id": serviceID})), &svc); err != nil || svc.AccessMode != "burrow_login" {
+		t.Fatalf("services_get after the change: access_mode %q, err %v", svc.AccessMode, err)
 	}
 }

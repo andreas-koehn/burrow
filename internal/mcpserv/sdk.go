@@ -111,7 +111,7 @@ func (s *Server) serverFor(tok *authedToken) *mcp.Server {
 		},
 	})
 	for _, t := range s.ordered {
-		if tok.can(t.Permission) {
+		if tok.mayCall(t) {
 			srv.AddTool(sdkTool(t), s.callHandler(tok, t))
 		}
 	}
@@ -247,7 +247,7 @@ func (s *Server) auditHidden(tok *authedToken) mcp.Middleware {
 			}()
 			if method == "tools/call" {
 				if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && p != nil {
-					if t, known := s.tools[p.Name]; known && !tok.can(t.Permission) {
+					if t, known := s.tools[p.Name]; known && !tok.mayCall(t) {
 						s.emitToolAudit(ctx, tok, t.Name, "denied")
 					}
 				}

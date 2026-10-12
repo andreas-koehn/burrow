@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -773,4 +774,86 @@ func TestHTTP_SetAccessMode_RefusedInput_ValueStaysOut(t *testing.T) {
 	if want := "services_set_access_mode=error,services_set_access_mode=error"; strings.Join(got, ",") != want {
 		t.Errorf("audit rows %v, want %s", got, want)
 	}
+}
+
+// ---------- what a caller can put into an audit row ------------------------
+
+// The user agent, the request id and the address in an audit row are text the
+// caller supplies, and a row is written for every call, reads and refused
+// calls included. Each is cut to maxAuditTextBytes, between two characters,
+// and is valid UTF-8 afterwards (a database that stores text as UTF-8 refuses
+// the row otherwise, and the call would leave no trace).
+func TestAuditText_IsBoundedAndValid(t *testing.T) {
+	if maxAuditTextBytes != 256 {
+		t.Fatalf("maxAuditTextBytes = %d, want 256", maxAuditTextBytes)
+	}
+	for _, c := range []struct {
+		name, in, want string
+	}{
+		{"short", "curl/8.5.0", "curl/8.5.0"},
+		{"empty", "", ""},
+		{"exactly the limit", strings.Repeat("a", 256), strings.Repeat("a", 256)},
+		{"one over", strings.Repeat("a", 257), strings.Repeat("a", 256)},
+		{"900 KB", strings.Repeat("a", 900<<10), strings.Repeat("a", 256)},
+		{"two-byte characters", strings.Repeat("é", 200), strings.Repeat("é", 128)},
+		// The limit falls inside a character: the whole character goes.
+		{"cut inside two bytes", "a" + strings.Repeat("é", 200), "a" + strings.Repeat("é", 127)},
+		{"cut inside three bytes", "a" + strings.Repeat("€", 200), "a" + strings.Repeat("€", 85)},
+		{"cut inside four bytes", "ab" + strings.Repeat("😀", 200), "ab" + strings.Repeat("😀", 63)},
+		{"not UTF-8", "agent/\xff\xfe1", "agent/\uFFFD1"},
+		// A run of bytes that are no UTF-8 becomes one replacement character.
+		{"not UTF-8, long", strings.Repeat("\xff", 1000), "\uFFFD"},
+		{"only continuation bytes", strings.Repeat("\x80", 1000), "\uFFFD"},
+		// Replacing makes the text longer; it is cut again.
+		{"every other byte is no UTF-8", strings.Repeat("a\xff", 500), strings.Repeat("a\uFFFD", 64)},
+	} {
+		got := auditText(c.in)
+		if got != c.want {
+			t.Errorf("%s: got %d bytes %.40q, want %d bytes %.40q", c.name, len(got), got, len(c.want), c.want)
+		}
+		if len(got) > maxAuditTextBytes || !utf8.ValidString(got) {
+			t.Errorf("%s: %d bytes, valid UTF-8: %v", c.name, len(got), utf8.ValidString(got))
+		}
+	}
+}
+
+// Through the handler: a huge user agent and a huge request id reach neither
+// the row of a refused call nor the row of a call that ran nor the store.
+func TestHTTP_AuditRow_CallerSuppliedTextIsBounded(t *testing.T) {
+	env := newTestEnv(t, []string{"tokens:manage:own"}, "admin")
+	hs := httptest.NewServer(middleware.RequestID(env.srv))
+	t.Cleanup(hs.Close)
+	hdr := map[string]string{
+		"MCP-Protocol-Version": "2025-06-18",
+		"User-Agent":           "agent/" + strings.Repeat("A", 600<<10),
+		"X-Request-Id":         "req-" + strings.Repeat("R", 200<<10),
+	}
+	for _, call := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"users_list","arguments":{}}}`, // not this token's tool
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tokens_mint","arguments":{"name":"ci"}}}`,
+	} {
+		if resp, body := rawPOST(t, hs.URL, testBearer, hdr, call); resp.StatusCode != http.StatusOK {
+			t.Fatalf("status %d: %.200s", resp.StatusCode, body)
+		}
+	}
+	rows := env.audit.all()
+	if len(rows) != 2 || rows[0].Result != "denied" || rows[1].Result != "ok" {
+		t.Fatalf("audit rows = %d, want a denied and an ok row", len(rows))
+	}
+	check := func(what, ua, id string) {
+		t.Helper()
+		if ua != "agent/"+strings.Repeat("A", 250) {
+			t.Errorf("%s: user agent has %d bytes: %.40q…", what, len(ua), ua)
+		}
+		if id != "req-"+strings.Repeat("R", 252) {
+			t.Errorf("%s: request id has %d bytes: %.40q…", what, len(id), id)
+		}
+	}
+	for _, r := range rows {
+		check("the "+r.SubjectLabel+" row", r.UserAgent, r.RequestID)
+		if raw, _ := json.Marshal(r); len(raw) > 2048 {
+			t.Errorf("the %s row is %d bytes", r.SubjectLabel, len(raw))
+		}
+	}
+	check("the store call of tokens_mint", env.store.lastLC.UserAgent, env.store.lastLC.RequestID)
 }

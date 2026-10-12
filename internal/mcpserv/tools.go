@@ -31,6 +31,13 @@ type Tool struct {
 	Description  string
 	Permission   authz.Permission
 	ParamsSchema json.RawMessage
+	// AlsoOpenedBy lists further permissions that open the tool exactly as
+	// Permission does (authedToken.mayCall). Permission stays the one that
+	// is shown: in Tools(), in the status endpoint and in the guide. Set for
+	// the tools that act only on what belongs to the caller: there the :any
+	// twin of the :own permission asks for more, not for something else, and
+	// the JSON API accepts either for the same read or write.
+	AlsoOpenedBy []authz.Permission
 	// ReadOnly, Destructive and Idempotent become the MCP annotations
 	// readOnlyHint, destructiveHint and idempotentHint. A tool that only
 	// reads sets ReadOnly and nothing else.
@@ -191,6 +198,7 @@ func buildTools(s ToolStore, env toolEnv) map[string]Tool {
 		Name:         "tunnels_list",
 		Description:  "List the caller's own live tunnels (those of the token's user), as {tunnels: [...]}. Optional 'filter' parameter does a substring match on tunnel name (case-insensitive).",
 		Permission:   authz.PermTunnelsReadOwn,
+		AlsoOpenedBy: []authz.Permission{authz.PermTunnelsReadAny},
 		ParamsSchema: schemaTunnelsList,
 		ReadOnly:     true,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
@@ -470,6 +478,7 @@ func buildTools(s ToolStore, env toolEnv) map[string]Tool {
 		Name:         "tokens_list",
 		Description:  "List the caller's own client tokens (the burrow CLI's bearer), as {tokens: [...]}; the tokens themselves are never returned.",
 		Permission:   authz.PermTokensManageOwn,
+		AlsoOpenedBy: []authz.Permission{authz.PermTokensManageAny},
 		ParamsSchema: schemaEmpty,
 		ReadOnly:     true,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
@@ -502,6 +511,7 @@ func buildTools(s ToolStore, env toolEnv) map[string]Tool {
 		Name:         "tokens_mint",
 		Description:  "Issue a new client token for the caller. name is required. Returns a secret: the result holds the token in plaintext exactly once, and it cannot be read again afterwards.",
 		Permission:   authz.PermTokensManageOwn,
+		AlsoOpenedBy: []authz.Permission{authz.PermTokensManageAny},
 		ParamsSchema: schemaMintToken,
 		Call: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 			if s == nil {

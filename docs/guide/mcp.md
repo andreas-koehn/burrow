@@ -177,9 +177,12 @@ The "Kind" column is sent to the client as MCP tool annotations
 before it runs a tool that changes or deletes something.
 
 A tool with `:own` in its permission acts on what belongs to the token's user.
-For services an admin's token reaches every service; `tunnels_list` shows the
-tunnels of the token's user, also for an admin, and `tunnels:read:any` does not
-open it.
+For services an admin's token reaches every service. `tunnels_list`,
+`tokens_list` and `tokens_mint` act on the tunnels and client tokens of the
+token's user only, also for an admin. The wider permission opens these three
+as well: `tunnels:read:any` opens `tunnels_list`, and `tokens:manage:any` opens
+`tokens_list` and `tokens_mint`. The table shows the narrower one. The tools
+for services and API keys need `services:configure:own` itself.
 
 `services_set_access_mode` applies the rules of the REST API: `burrow_login`
 needs an auth domain on the relay, and `api_key_header` must be an HTTP header
@@ -195,7 +198,7 @@ acceptable, or leave their permission off the token.
 
 Every call is written to the audit log as `mcp.tool.call` with the tool and the
 outcome (`ok`, `error` or `denied`), under the user the token belongs to, with
-the client's address and user agent. A tool that changes something also leaves
+the client's address and user agent (each cut to 256 bytes). A tool that changes something also leaves
 the row the same change leaves through the dashboard (`token.mint`,
 `service.access_mode.update`, `service.api_key.create`,
 `service.api_key.revoke`), under the same user. Arguments and results are not

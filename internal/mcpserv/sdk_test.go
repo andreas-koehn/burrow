@@ -20,6 +20,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -314,9 +315,10 @@ func TestMCP_ListShowsOnlyWhatTheTokenMayCall(t *testing.T) {
 		// longer grants the admin permissions.
 		{"minter demoted to user", allToolPerms, "user",
 			"api_keys_create,api_keys_delete,api_keys_list,services_get,services_list,services_set_access_mode,tokens_list,tokens_mint,tunnels_list"},
-		// The permission for every user's tunnels does not open the tool
-		// that lists the caller's own.
-		{"tunnels of anyone", []string{"tunnels:read:any"}, "admin", ""},
+		// The permission for everyone's opens the tools that act on the
+		// caller's own, as it does on the JSON API.
+		{"tunnels of anyone", []string{"tunnels:read:any"}, "admin", "tunnels_list"},
+		{"client tokens of anyone", []string{"tokens:manage:any"}, "admin", "tokens_list,tokens_mint"},
 		{"no tool permission", []string{"webhooks:manage"}, "admin", ""},
 		// What the dashboard mints today: a token that declares nothing.
 		// It authenticates and is shown an empty list, not an error.
@@ -368,6 +370,75 @@ func TestMCP_CallOutsideTheTokensTools(t *testing.T) {
 		if r := rows[0]; r.Action != audit.ActionMCPToolCall || r.SubjectLabel != "services_set_access_mode" ||
 			r.Result != "denied" || r.ActorID != "u1" {
 			t.Errorf("%s: audit row = %+v", rev, r)
+		}
+	}
+}
+
+// A tool that acts only on what belongs to the caller is opened by the :own
+// permission and by the :any one, each on the usual terms: the token declares
+// it AND the role of its user grants it. Two halves of different permissions
+// (declared :any, granted :own) open nothing. What tools/list shows and what
+// tools/call accepts is decided in one place, so the two always agree.
+func TestMCP_EitherScopeOpensAToolForTheCallersOwn(t *testing.T) {
+	authz.SetRoles(map[string][]authz.Permission{
+		"reads-any":   {authz.PermTunnelsReadAny, authz.PermTokensManageAny},
+		"reads-own":   {authz.PermTunnelsReadOwn, authz.PermTokensManageOwn},
+		"reads-audit": {authz.PermAuditRead},
+	})
+	t.Cleanup(func() { authz.SetRoles(nil) })
+
+	type scope struct{ own, any string }
+	tools := map[string]scope{
+		"tunnels_list": {"tunnels:read:own", "tunnels:read:any"},
+		"tokens_list":  {"tokens:manage:own", "tokens:manage:any"},
+		"tokens_mint":  {"tokens:manage:own", "tokens:manage:any"},
+	}
+	args := map[string]map[string]any{"tokens_mint": {"name": "ci"}}
+	for tool, sc := range tools {
+		for _, c := range []struct {
+			name  string
+			perms []string
+			role  string
+			open  bool
+		}{
+			{"only :own", []string{sc.own}, "admin", true},
+			{"only :any", []string{sc.any}, "admin", true},
+			{"both", []string{sc.own, sc.any}, "admin", true},
+			{"neither", []string{"audit:read"}, "admin", false},
+			{"nothing declared", nil, "admin", false},
+			{":own, the built-in user", []string{sc.own}, "user", true},
+			// The token declares one, the role grants the other.
+			{":any declared, the role grants only :own", []string{sc.any}, "user", false},
+			{":own declared, the role grants only :any", []string{sc.own}, "reads-any", false},
+			// A custom role with :any and without :own.
+			{":any, a role with only :any", []string{sc.any}, "reads-any", true},
+			{"both declared, a role with only :any", []string{sc.own, sc.any}, "reads-any", true},
+			{"both declared, a role with only :own", []string{sc.own, sc.any}, "reads-own", true},
+			{"both declared, a role with neither", []string{sc.own, sc.any, "audit:read"}, "reads-audit", false},
+		} {
+			for _, rev := range []string{"2026-07-28", "2025-11-25"} {
+				what := fmt.Sprintf("%s, %s (%s)", tool, c.name, rev)
+				hs, sink := newSDKTestServer(t, &fakeStore{}, c.perms, c.role)
+				cs := connectMCP(t, hs.URL, "", rev)
+				if _, listed := listedTools(t, cs)[tool]; listed != c.open {
+					t.Errorf("%s: listed = %v, want %v", what, listed, c.open)
+				}
+				res, err := callTool(t, cs, tool, args[tool])
+				var rpcErr *jsonrpc.Error
+				switch {
+				case c.open && (err != nil || res.IsError):
+					t.Errorf("%s: the call failed: err=%v result=%+v", what, err, res)
+				case !c.open && (!errors.As(err, &rpcErr) || rpcErr.Code != jsonrpc.CodeInvalidParams):
+					t.Errorf("%s: the call was not refused like an unknown tool: err=%v result=%+v", what, err, res)
+				}
+				wantRow := "ok"
+				if !c.open {
+					wantRow = "denied"
+				}
+				if rows := sink.all(); len(rows) != 1 || rows[0].SubjectLabel != tool || rows[0].Result != wantRow {
+					t.Errorf("%s: audit rows %+v, want one %s row", what, rows, wantRow)
+				}
+			}
 		}
 	}
 }

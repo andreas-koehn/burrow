@@ -260,6 +260,29 @@ func TestTunnelsList_AsksForWhatItLists(t *testing.T) {
 	}
 }
 
+// Which tools a second permission opens is a decision, not an accident: the
+// three that act only on what belongs to the caller, each by the :any twin of
+// its :own permission. The services tools reach other users' services with a
+// role that may; they stay on their one permission.
+func TestTools_FurtherPermissions(t *testing.T) {
+	want := map[string]authz.Permission{
+		"tunnels_list": authz.PermTunnelsReadAny,
+		"tokens_list":  authz.PermTokensManageAny,
+		"tokens_mint":  authz.PermTokensManageAny,
+	}
+	for name, tl := range buildTools(&fakeStore{}, toolEnv{}) {
+		twin, widened := want[name]
+		switch {
+		case !widened && len(tl.AlsoOpenedBy) != 0:
+			t.Errorf("%s is also opened by %v", name, tl.AlsoOpenedBy)
+		case widened && (len(tl.AlsoOpenedBy) != 1 || tl.AlsoOpenedBy[0] != twin):
+			t.Errorf("%s is also opened by %v, want %s", name, tl.AlsoOpenedBy, twin)
+		case widened && string(tl.Permission) != strings.TrimSuffix(string(twin), ":any")+":own":
+			t.Errorf("%s: the permission shown is %s, want the :own twin of %s", name, tl.Permission, twin)
+		}
+	}
+}
+
 // ---------- services_set_access_mode: the rules of the REST route -----------
 
 // What PUT /api/v1/services/{id}/access-mode refuses, the tool refuses: with

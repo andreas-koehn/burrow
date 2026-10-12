@@ -17,7 +17,9 @@
 // audit_search → audit:read). Cookie/admin shortcuts are NOT applied;
 // the bearer token's permission set is the source of truth, intersected
 // with the minter user's CURRENT role (matches Task 18 effectivePerms). A
-// token sees and can call exactly the tools that rule allows.
+// token sees and can call exactly the tools that rule allows. A tool that
+// acts only on what belongs to the caller is opened by the :any twin of its
+// :own permission as well (Tool.AlsoOpenedBy), on the same rule.
 //
 // What a request passes, in order:
 //
@@ -46,6 +48,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/httprate"
@@ -294,6 +297,11 @@ func (s *Server) requireBearer(next http.Handler) http.Handler {
 // router's request-id middleware, empty when the handler is served without
 // it. The audit model has no field for the token, so the row does not name
 // it.
+//
+// Address, user agent and request id are text the caller supplies (the
+// request id is taken from an X-Request-Id header when one is sent, the
+// address from a forwarding header behind a trusted proxy): each goes
+// through auditText.
 func auditContext(r *http.Request, tok *authedToken) audit.LogContext {
 	ip := r.RemoteAddr
 	if h, _, err := net.SplitHostPort(ip); err == nil {
@@ -302,10 +310,38 @@ func auditContext(r *http.Request, tok *authedToken) audit.LogContext {
 	return audit.LogContext{
 		ActorID:    tok.userID,
 		ActorEmail: tok.email,
-		SourceIP:   ip,
-		UserAgent:  r.UserAgent(),
-		RequestID:  middleware.GetReqID(r.Context()),
+		SourceIP:   auditText(ip),
+		UserAgent:  auditText(r.UserAgent()),
+		RequestID:  auditText(middleware.GetReqID(r.Context())),
 	}
+}
+
+// maxAuditTextBytes bounds each piece of text a caller can put into an audit
+// row. A row is written for every tools/call, reads and refused calls
+// included, so without a bound one token could add a megabyte per call.
+const maxAuditTextBytes = 256
+
+// auditText cuts s to maxAuditTextBytes, between two characters, and makes
+// it valid UTF-8: a header value may hold any bytes, and a database that
+// stores text as UTF-8 refuses a row that is not, which would let a caller
+// keep its calls out of the audit log.
+func auditText(s string) string {
+	if len(s) > maxAuditTextBytes {
+		cut := maxAuditTextBytes
+		for i := 1; i < utf8.UTFMax && !utf8.RuneStart(s[cut]); i++ {
+			cut--
+		}
+		s = s[:cut]
+	}
+	if utf8.ValidString(s) {
+		return s
+	}
+	s = strings.ToValidUTF8(s, string(utf8.RuneError))
+	for len(s) > maxAuditTextBytes {
+		_, size := utf8.DecodeLastRuneInString(s)
+		s = s[:len(s)-size]
+	}
+	return s
 }
 
 // touchBearer records last_used. It sits behind the rate limit, so a request
@@ -330,6 +366,22 @@ type authedToken struct {
 	email   string // for the audit trail
 	role    string
 	perms   []string
+}
+
+// mayCall reports whether the token lists and may call tool: by the tool's
+// permission or by one of those that open it as well, each on the terms of
+// can. It is the only place that decides it; the list of a request and the
+// check of a call both ask here, so they cannot disagree.
+func (t *authedToken) mayCall(tool Tool) bool {
+	if t.can(tool.Permission) {
+		return true
+	}
+	for _, p := range tool.AlsoOpenedBy {
+		if t.can(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // can returns true when the requested permission is in BOTH the bearer's

@@ -40,6 +40,13 @@ func TestGuide_MatchesTheServer(t *testing.T) {
 		if doc[0] != string(tl.Permission) {
 			t.Errorf("%s: the guide names permission %s, the registry %s", name, doc[0], tl.Permission)
 		}
+		// The table shows one permission per tool; one that opens the tool as
+		// well is named in the text.
+		for _, also := range tl.AlsoOpenedBy {
+			if !strings.Contains(guide, "`"+string(also)+"`") {
+				t.Errorf("%s is also opened by %s; the guide does not say so", name, also)
+			}
+		}
 		kind := doc[1]
 		if tl.ReadOnly != (kind == "read") || tl.Destructive != strings.Contains(kind, "destructive") ||
 			tl.Idempotent != strings.Contains(kind, "repeatable") {

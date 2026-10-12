@@ -431,12 +431,15 @@ func mcpCall(t *testing.T, cs *mcp.ClientSession, wantError bool, name string, a
 	if err != nil {
 		t.Fatalf("tools/call %s: %v", name, err)
 	}
-	if res.IsError != wantError || len(res.Content) != 1 {
-		t.Fatalf("tools/call %s: isError=%v, want %v: %+v", name, res.IsError, wantError, res)
+	if len(res.Content) != 1 {
+		t.Fatalf("tools/call %s: %d content blocks, want 1", name, len(res.Content))
 	}
 	text, ok := res.Content[0].(*mcp.TextContent)
 	if !ok {
 		t.Fatalf("tools/call %s: content is %T, want text", name, res.Content[0])
+	}
+	if res.IsError != wantError {
+		t.Fatalf("tools/call %s: isError=%v, want %v: %s", name, res.IsError, wantError, text.Text)
 	}
 	return text.Text
 }
