@@ -12,40 +12,6 @@ const openAPIConversionDone = false
 // openAPIPendingOperationIDs lists the operations that have no operationId
 // yet, as "METHOD path".
 var openAPIPendingOperationIDs = []string{
-	// O03: auth, sessions, client tokens, clients, client sign-in, users, roles, automation tokens
-	"POST /api/v1/auth/login",
-	"POST /api/v1/auth/logout",
-	"POST /api/v1/auth/change-password",
-	"GET /api/v1/me",
-	"GET /api/v1/sessions",
-	"DELETE /api/v1/sessions/{id}",
-	"POST /api/v1/sessions/revoke-all",
-	"GET /api/v1/tokens",
-	"POST /api/v1/tokens",
-	"DELETE /api/v1/tokens/{id}",
-	"GET /api/v1/automation/tokens",
-	"POST /api/v1/automation/tokens",
-	"DELETE /api/v1/automation/tokens/{id}",
-	"GET /api/v1/roles",
-	"POST /api/v1/roles",
-	"GET /api/v1/roles/permissions",
-	"GET /api/v1/roles/{name}",
-	"PUT /api/v1/roles/{name}",
-	"DELETE /api/v1/roles/{name}",
-	"GET /api/v1/users",
-	"POST /api/v1/users",
-	"PATCH /api/v1/users/{id}",
-	"DELETE /api/v1/users/{id}",
-	"GET /api/v1/clients",
-	"GET /api/v1/clients/known",
-	"GET /api/v1/clients/{sessionID}",
-	"GET /api/v1/clients/connect-info",
-	"GET /api/v1/client/discovery",
-	"POST /api/v1/client/login/start",
-	"POST /api/v1/client/login/poll",
-	"GET /api/v1/client/login/requests/{user_code}",
-	"POST /api/v1/client/login/requests/{user_code}/approve",
-	"POST /api/v1/client/login/requests/{user_code}/deny",
 	// O04: AI providers, synthetic models, gateway keys, request attempts
 	"GET /api/v1/ai/providers",
 	"POST /api/v1/ai/providers",
@@ -148,16 +114,6 @@ var openAPIPendingOperationIDs = []string{
 // openAPIPendingEmpty lists the operations that still reference the Empty
 // schema in a request body or a response.
 var openAPIPendingEmpty = []string{
-	// O03: auth, sessions, client tokens, clients, client sign-in, users, roles, automation tokens
-	"GET /api/v1/automation/tokens",
-	"POST /api/v1/automation/tokens",
-	"GET /api/v1/roles",
-	"POST /api/v1/roles",
-	"GET /api/v1/roles/permissions",
-	"GET /api/v1/roles/{name}",
-	"PUT /api/v1/roles/{name}",
-	"GET /api/v1/clients",
-	"GET /api/v1/clients/{sessionID}",
 	// O05: cache, per-service AI configuration, rate limits, cost, budgets
 	"GET /api/v1/services/{serviceID}/ai-config",
 	"PUT /api/v1/services/{serviceID}/ai-config",

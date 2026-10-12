@@ -617,19 +617,7 @@ components:
           description: >
             The live sessions of the token, newest first, each as
             `GET /api/v1/clients` lists it. Empty unless `status` is `online`.
-          items:
-            type: object
-            properties:
-              session_id: { type: string }
-              user_id: { type: string }
-              token_name: { type: string }
-              remote_addr: { type: string }
-              os: { type: string }
-              arch: { type: string }
-              client_version: { type: string }
-              service_count: { type: integer }
-              total_bytes_in: { type: integer, format: int64 }
-              total_bytes_out: { type: integer, format: int64 }
+          items: { $ref: '#/components/schemas/Client' }
     Error:
       type: object
       required: [error]
@@ -647,13 +635,15 @@ components:
           type: boolean
     User:
       type: object
+      description: A user account as the admin endpoints return it.
+      required: [id, email, role, status, last_login, created_at]
       properties:
         id: { type: string }
         email: { type: string, format: email }
         role: { type: string }
         status: { type: string, enum: [active, suspended] }
+        last_login: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
-        last_login_at: { type: string, format: date-time, nullable: true }
     Service:
       type: object
       required: [id, name, type, slug, url, access_mode, api_key_header, gateway_only, connected, remote_port, local_addr]
@@ -714,16 +704,24 @@ components:
           description: The access mode in effect; omitted for tcp.
     Session:
       type: object
+      required: [id, ip, user_agent, created_at, expires_at, current]
       properties:
         id: { type: string }
-        user_agent: { type: string }
         ip: { type: string }
+        user_agent: { type: string }
         created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        current:
+          type: boolean
+          description: Whether the request was made with this session.
     Token:
       type: object
+      description: A client token as it is listed. The token itself is returned once, when it is created.
+      required: [id, name, last_used, created_at]
       properties:
         id: { type: string }
         name: { type: string }
+        last_used: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
     ClientLoginRequest:
       type: object
@@ -878,6 +876,128 @@ components:
         updated_at: { type: string, format: date-time }
         status: { type: string, enum: [pending, active, cert_expiring, cert_expired] }
         status_updated_at: { type: string, format: date-time }
+    SessionUser:
+      type: object
+      description: The signed-in user as login and /me return it.
+      required: [id, email, role]
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        role: { type: string }
+    Client:
+      type: object
+      description: One live client, that is one control session of a connected burrow client.
+      required: [session_id, user_id, token_name, remote_addr, os, arch, client_version, service_count, total_bytes_in, total_bytes_out]
+      properties:
+        session_id: { type: string }
+        user_id: { type: string }
+        token_name: { type: string }
+        remote_addr: { type: string }
+        os: { type: string }
+        arch: { type: string }
+        client_version: { type: string }
+        service_count: { type: integer }
+        total_bytes_in: { type: integer, format: int64 }
+        total_bytes_out: { type: integer, format: int64 }
+    ClientService:
+      type: object
+      description: One service (tunnel) of a live client.
+      required: [id, name, type, remote_port, local_addr, access_mode, bytes_in, bytes_out, total_bytes_in, total_bytes_out]
+      properties:
+        id: { type: string, description: Id of the live tunnel. }
+        name: { type: string }
+        type: { type: string, enum: [http, tcp] }
+        service_id:
+          type: string
+          description: Id of the durable service of an http tunnel; omitted for tcp.
+        remote_port: { type: integer }
+        local_addr: { type: string }
+        access_mode: { type: string }
+        bytes_in: { type: integer, format: int64, description: Since this connect. }
+        bytes_out: { type: integer, format: int64, description: Since this connect. }
+        total_bytes_in: { type: integer, format: int64, description: Stored total; survives a reconnect. }
+        total_bytes_out: { type: integer, format: int64, description: Stored total; survives a reconnect. }
+    ClientDetail:
+      description: A live client with its services.
+      allOf:
+        - $ref: '#/components/schemas/Client'
+        - type: object
+          required: [services]
+          properties:
+            services:
+              type: array
+              items: { $ref: '#/components/schemas/ClientService' }
+    Role:
+      type: object
+      description: A role as the list returns it.
+      required: [name, description, created_at, builtin, default_for_new_users]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+        builtin:
+          type: boolean
+          description: A built-in role cannot be changed or deleted.
+        default_for_new_users: { type: boolean }
+    RoleDetail:
+      description: A role with its permissions.
+      allOf:
+        - $ref: '#/components/schemas/Role'
+        - type: object
+          required: [permissions]
+          properties:
+            permissions:
+              type: array
+              description: Permission keys, see GET /api/v1/roles/permissions. Those of a built-in role are fixed in code.
+              items: { type: string }
+    RoleInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$'
+          description: Lower-case letters, digits and dashes, 1 to 64 characters, no dash at either end.
+        description: { type: string }
+        permissions:
+          type: array
+          description: Permission keys; an unknown key is refused with 400.
+          items: { type: string }
+        default_for_new_users: { type: boolean }
+    Permission:
+      type: object
+      description: One entry of the permission catalog.
+      required: [key, group, description]
+      properties:
+        key: { type: string, example: 'tokens:manage:own' }
+        group: { type: string, description: Section label for display., example: Client tokens }
+        description: { type: string }
+    AutomationToken:
+      type: object
+      description: An automation token as it is listed. The token itself is returned once, when it is created.
+      required: [id, name, prefix, user_id, role_at_mint, permissions, created_at]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        prefix:
+          type: string
+          description: The first 10 characters of the token, for display.
+          example: bua_Ab3xYz
+        user_id: { type: string }
+        role_at_mint: { type: string, description: The role of the user when the token was created. }
+        permissions:
+          type: array
+          description: The permission keys the token declares.
+          items: { type: string }
+        expires_at:
+          type: string
+          format: date-time
+          description: Left out for a token that does not expire.
+        last_used:
+          type: string
+          format: date-time
+          description: Left out until the token is used.
+        created_at: { type: string, format: date-time }
 
   responses:
     Unauthorized:
@@ -946,6 +1066,8 @@ paths:
   /api/v1/auth/login:
     post:
       tags: [auth]
+      operationId: authLogin
+      x-burrow-mcp: false
       summary: Password login
       security: []
       requestBody:
@@ -963,7 +1085,7 @@ paths:
           description: Session cookie issued.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/User' }
+              schema: { $ref: '#/components/schemas/SessionUser' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429':
@@ -975,6 +1097,8 @@ paths:
   /api/v1/auth/logout:
     post:
       tags: [auth]
+      operationId: authLogout
+      x-burrow-mcp: false
       summary: Clear the session cookie
       responses:
         '204': { description: Session cleared. }
@@ -983,6 +1107,8 @@ paths:
   /api/v1/auth/change-password:
     post:
       tags: [auth]
+      operationId: authChangePassword
+      x-burrow-mcp: false
       summary: Change the caller's password
       requestBody:
         required: true
@@ -1002,13 +1128,14 @@ paths:
   /api/v1/me:
     get:
       tags: [auth]
+      operationId: meGet
       summary: Current authenticated principal
       responses:
         '200':
           description: The signed-in user.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/User' }
+              schema: { $ref: '#/components/schemas/SessionUser' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ────────────────────────────────────────────────────────────────────────
@@ -1017,6 +1144,7 @@ paths:
   /api/v1/sessions:
     get:
       tags: [sessions]
+      operationId: sessionsList
       summary: List the caller's active sessions
       responses:
         '200':
@@ -1031,6 +1159,7 @@ paths:
   /api/v1/sessions/{id}:
     delete:
       tags: [sessions]
+      operationId: sessionDelete
       summary: Revoke one of the caller's sessions
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -1040,6 +1169,7 @@ paths:
   /api/v1/sessions/revoke-all:
     post:
       tags: [sessions]
+      operationId: sessionsRevokeAll
       summary: Revoke every session except the current one
       responses:
         '200':
@@ -1048,8 +1178,9 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [revoked]
                 properties:
-                  revoked: { type: integer }
+                  revoked: { type: integer, format: int64 }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ────────────────────────────────────────────────────────────────────────
@@ -1058,6 +1189,7 @@ paths:
   /api/v1/tokens:
     get:
       tags: [tokens]
+      operationId: clientTokensList
       summary: List the caller's client tokens
       responses:
         '200':
@@ -1070,6 +1202,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [tokens]
+      operationId: clientTokenCreate
       summary: Issue a new client token (plaintext returned ONCE)
       requestBody:
         required: true
@@ -1081,21 +1214,23 @@ paths:
               properties:
                 name: { type: string }
       responses:
-        '200':
+        '201':
           description: Token created.
           content:
             application/json:
               schema:
                 type: object
+                required: [name, token]
                 properties:
-                  id: { type: string }
                   name: { type: string }
-                  token: { type: string }
+                  token: { type: string, description: The client token. Shown this once. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/tokens/{id}:
     delete:
       tags: [tokens]
+      operationId: clientTokenDelete
       summary: Revoke a client token
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2289,6 +2424,7 @@ paths:
   /api/v1/automation/tokens:
     get:
       tags: [automation]
+      operationId: automationTokensList
       summary: List automation bearer tokens
       responses:
         '200':
@@ -2297,17 +2433,33 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/AutomationToken' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [automation]
+      operationId: automationTokenCreate
       summary: Mint an automation bearer token (plaintext returned ONCE)
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema:
+              type: object
+              description: No other field is accepted.
+              required: [name]
+              properties:
+                name: { type: string }
+                permissions:
+                  type: array
+                  description: >
+                    The permission keys the token declares. Each must be
+                    granted by the caller's role (403 otherwise).
+                  items: { type: string }
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: Left out, the token does not expire.
       responses:
         '201':
           description: Token minted.
@@ -2315,15 +2467,19 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [token, plaintext]
                 properties:
-                  id: { type: string }
-                  token: { type: string }
+                  token: { $ref: '#/components/schemas/AutomationToken' }
+                  plaintext:
+                    type: string
+                    description: The bearer token ("bua_" and the secret). Shown this once.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/automation/tokens/{id}:
     delete:
       tags: [automation]
+      operationId: automationTokenDelete
       summary: Revoke an automation bearer token
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2442,6 +2598,7 @@ paths:
   /api/v1/roles:
     get:
       tags: [roles]
+      operationId: rolesList
       summary: List roles (admin)
       responses:
         '200':
@@ -2450,29 +2607,31 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/Role' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [roles]
+      operationId: roleCreate
       summary: Create a custom role
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/RoleInput' }
       responses:
         '201':
           description: Created.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RoleDetail' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/roles/permissions:
     get:
       tags: [roles]
+      operationId: rolePermissionsList
       summary: List the permission catalog (every signed-in user)
       responses:
         '200':
@@ -2481,12 +2640,13 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/Permission' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/roles/{name}:
     get:
       tags: [roles]
+      operationId: roleGet
       summary: Get a role (admin)
       parameters:
         - name: name
@@ -2498,12 +2658,13 @@ paths:
           description: Role detail.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RoleDetail' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [roles]
+      operationId: roleUpdate
       summary: Update a custom role
       parameters:
         - name: name
@@ -2514,13 +2675,23 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema:
+              type: object
+              description: A field that is left out keeps its stored value.
+              properties:
+                description: { type: string }
+                permissions:
+                  type: array
+                  description: Replaces the whole set. An unknown key is refused with 400.
+                  items: { type: string }
+                default_for_new_users: { type: boolean }
       responses:
         '204': { description: Updated. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [roles]
+      operationId: roleDelete
       summary: Delete a custom role
       parameters:
         - name: name
@@ -2538,16 +2709,29 @@ paths:
   /api/v1/users:
     get:
       tags: [users]
+      operationId: usersList
       summary: List users (admin)
+      parameters:
+        - name: q
+          in: query
+          description: Only users whose email contains this text.
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
       responses:
         '200':
-          description: Paginated list of users.
+          description: One page of users and the number of users that match.
           content:
             application/json:
               schema:
                 type: object
+                required: [users, total]
                 properties:
-                  items:
+                  users:
                     type: array
                     items: { $ref: '#/components/schemas/User' }
                   total: { type: integer }
@@ -2555,6 +2739,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [users]
+      operationId: userCreate
       summary: Create a user (admin)
       requestBody:
         required: true
@@ -2579,6 +2764,7 @@ paths:
   /api/v1/users/{id}:
     patch:
       tags: [users]
+      operationId: userUpdate
       summary: Update a user (role / status) — admin
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
@@ -2591,15 +2777,14 @@ paths:
                 role: { type: string }
                 status: { type: string, enum: [active, suspended] }
       responses:
-        '200':
-          description: Updated user.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/User' }
+        '204': { description: Updated. Nothing is returned. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [users]
+      operationId: userDelete
       summary: Delete a user (admin)
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2702,6 +2887,7 @@ paths:
   /api/v1/clients:
     get:
       tags: [clients]
+      operationId: clientsList
       summary: List live clients (admin)
       responses:
         '200':
@@ -2710,13 +2896,14 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/Client' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/clients/known:
     get:
       tags: [clients]
+      operationId: knownClientsList
       summary: List every client that has a token (admin)
       description: >
         One row per client token of every user: a client that is online with
@@ -2739,6 +2926,7 @@ paths:
   /api/v1/clients/{sessionID}:
     get:
       tags: [clients]
+      operationId: clientGet
       summary: Get one live client (admin)
       parameters:
         - name: sessionID
@@ -2750,13 +2938,14 @@ paths:
           description: Client detail.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/ClientDetail' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/clients/connect-info:
     get:
       tags: [clients]
+      operationId: clientConnectInfoGet
       summary: Get the control-plane endpoint clients should dial
       description: >
         Returns the host:port a `burrow connect` invocation must point at
@@ -2777,6 +2966,8 @@ paths:
   /api/v1/client/discovery:
     get:
       tags: [clients]
+      operationId: clientDiscoveryGet
+      x-burrow-mcp: false
       summary: Tell a client where the control endpoint is and which version the relay runs
       description: >
         Public (no authentication): `burrow login <relay>` asks here before it
@@ -2823,6 +3014,8 @@ paths:
   /api/v1/client/login/start:
     post:
       tags: [clients]
+      operationId: clientLoginStart
+      x-burrow-mcp: false
       summary: Start a browser-approved client sign-in
       description: >
         Public (no authentication): `burrow login <relay>` asks here before it
@@ -2892,6 +3085,8 @@ paths:
   /api/v1/client/login/poll:
     post:
       tags: [clients]
+      operationId: clientLoginPoll
+      x-burrow-mcp: false
       summary: Collect the outcome of a client sign-in
       description: >
         Public (no authentication): `device_code` is the credential. Once the
@@ -2956,6 +3151,8 @@ paths:
   /api/v1/client/login/requests/{user_code}:
     get:
       tags: [clients]
+      operationId: clientLoginRequestGet
+      x-burrow-mcp: false
       summary: Show a client sign-in request to the signed-in user
       description: >
         Dashboard session only (automation bearer tokens are refused). The
@@ -2983,6 +3180,8 @@ paths:
   /api/v1/client/login/requests/{user_code}/approve:
     post:
       tags: [clients]
+      operationId: clientLoginRequestApprove
+      x-burrow-mcp: false
       summary: Approve a client sign-in request
       description: >
         Dashboard session with the permission to manage client tokens
@@ -3030,6 +3229,8 @@ paths:
   /api/v1/client/login/requests/{user_code}/deny:
     post:
       tags: [clients]
+      operationId: clientLoginRequestDeny
+      x-burrow-mcp: false
       summary: Deny a client sign-in request
       description: >
         Dashboard session, CSRF-protected. Marks the pending request denied;
