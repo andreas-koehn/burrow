@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Layers, MoreHorizontal } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
@@ -98,6 +98,26 @@ export default function GatewayModels() {
 
   // undefined: closed. null: a new model.
   const [editing, setEditing] = useState<AiModel | null | undefined>(undefined);
+  // /gateway/models?new=1&provider=<slug> opens "New model" on that provider,
+  // in the format the provider speaks. The parameters stay while the dialog is
+  // open and go when it closes. The form reads its start once, so the dialog
+  // waits for the providers when one is named.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const wanted = searchParams.get("provider");
+  const linked = searchParams.get("new") === "1"
+    && (wanted === null || providers.data !== undefined || providers.isError);
+  const from = linked && Array.isArray(providers.data) ? providers.data.find((p) => p.slug === wanted) : undefined;
+  function closeDialog() {
+    setEditing(undefined);
+    if (searchParams.has("new") || searchParams.has("provider")) {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("new");
+        next.delete("provider");
+        return next;
+      }, { replace: true });
+    }
+  }
   const [deleting, setDeleting] = useState<AiModel | null>(null);
   const [deleteErr, setDeleteErr] = useState<string | null>(null);
   const remove = useMutation({
@@ -220,9 +240,10 @@ export default function GatewayModels() {
 
       {canWrite && (
         <ModelDialog
-          open={editing !== undefined}
-          onOpenChange={(o) => { if (!o) setEditing(undefined); }}
+          open={editing !== undefined || linked}
+          onOpenChange={(o) => { if (!o) closeDialog(); }}
           model={editing ?? undefined}
+          initialTarget={from && { dialect: from.api_format, provider: from.slug }}
         />
       )}
 

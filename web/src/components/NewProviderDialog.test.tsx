@@ -1,19 +1,38 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
+import { Route, Routes, useLocation } from "react-router-dom";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { addDirectProvider, db, removeProvider } from "@/mocks/db";
 import { NewProviderDialog } from "@/components/NewProviderDialog";
 
+function Where() {
+  const l = useLocation();
+  return <div data-testid="where">{l.pathname + l.search}</div>;
+}
+
 function renderDialog() {
   // The presets for z.ai create the slug "zai": the seeded provider of that name is not there yet.
   removeProvider("zai");
   const onOpenChange = vi.fn();
-  renderApp(<NewProviderDialog open onOpenChange={onOpenChange} />, "/gateway/providers");
+  renderApp(
+    <>
+      <Routes>
+        <Route path="/gateway/providers" element={<NewProviderDialog open onOpenChange={onOpenChange} />} />
+        <Route path="*" element={null} />
+      </Routes>
+      <Where />
+    </>,
+    "/gateway/providers",
+  );
   return { onOpenChange };
 }
+
+const LOCAL = "A model server on one of my machines";
+const HOSTED = "A hosted API";
+const useExisting = () => userEvent.click(screen.getByRole("button", { name: "Use a service that already exists" }));
 
 // The ds Select is a button with a listbox, not a native <select>.
 async function choosePreset(label: string) {
@@ -28,12 +47,97 @@ async function hosted() {
 }
 
 describe("New provider dialog", () => {
-  it("starts on a choice between a local service and a hosted API", async () => {
+  it("starts on a choice between a model server on one's own machine and a hosted API", async () => {
     renderDialog();
     const group = screen.getByRole("radiogroup", { name: "What the provider serves" });
-    expect(group).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /a service behind a burrow client/i })).toBeChecked();
-    expect(screen.getByRole("radio", { name: /a hosted api/i })).not.toBeChecked();
+    // The two choices are named by what the reader has, not by a kind of provider.
+    expect(within(group).getAllByRole("radio").map((r) => r.closest("label")!.textContent)).toEqual([LOCAL, HOSTED]);
+    expect(screen.getByRole("radio", { name: LOCAL })).toBeChecked();
+    expect(screen.getByRole("radio", { name: HOSTED })).not.toBeChecked();
+    // The first choice opens the guided steps, in this dialog.
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(screen.getByLabelText("Model server")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(screen.queryByLabelText("Provider")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create" })).toBeNull();
+  });
+
+  it("choosing a hosted API shows the preset field and keeps the focus on the choice", async () => {
+    renderDialog();
+    const hostedRadio = screen.getByRole("radio", { name: HOSTED });
+    await userEvent.click(hostedRadio);
+    expect(hostedRadio).toBeChecked();
+    expect(screen.getByLabelText("Provider")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Model server")).toBeNull();
+    // One dialog all along: the radio that was chosen is still the one in focus.
+    await new Promise((r) => setTimeout(r, 120));
+    expect(hostedRadio).toHaveFocus();
+  });
+
+  it("keeps what was typed into the guided steps while the other choice is looked at", async () => {
+    renderDialog();
+    await userEvent.type(screen.getByLabelText("Name"), "Ollama box");
+    await hosted();
+    expect(screen.getByLabelText("Name")).toHaveValue("");
+    await userEvent.click(screen.getByRole("radio", { name: LOCAL }));
+    expect(screen.getByLabelText("Name")).toHaveValue("Ollama box");
+  });
+
+  it("runs the guided steps to the command and Done opens the provider's page", async () => {
+    const { onOpenChange } = renderDialog();
+    await userEvent.type(screen.getByLabelText("Name"), "Gemma");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    const heading = await screen.findByRole("heading", { name: "Run this on the machine" });
+    const dialog = screen.getByRole("dialog", { name: "New provider" });
+    expect(dialog).toContainElement(heading);
+    expect(within(dialog).getByRole("group", { name: "Run command" })).toHaveTextContent("burrow http 11434 --name gemma");
+    // The provider exists: there is nothing left to choose, and nothing to cancel.
+    expect(screen.queryByRole("radiogroup", { name: "What the provider serves" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    expect(db.aiProviders.at(-1)).toMatchObject({ slug: "gemma", kind: "tunnel", service_id: "gemma" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(screen.getByTestId("where")).toHaveTextContent("/gateway/providers/gemma");
+  });
+
+  it("Cancel in the guided steps closes the dialog and creates nothing", async () => {
+    const { onOpenChange } = renderDialog();
+    const before = db.services.length;
+    await userEvent.type(screen.getByLabelText("Name"), "Gemma");
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(db.services).toHaveLength(before);
+  });
+
+  it("a service that already exists is chosen below the two choices, and the way back is there", async () => {
+    // A second API-key service that backs no provider yet.
+    db.services.push({ ...db.services.find((x) => x.id === "svc_ai001")!, id: "svc_ai002", name: "vllm", slug: "vl9k2p" });
+    renderDialog();
+    await useExisting();
+    // The first choice stays chosen; its other form takes the place of the guided steps.
+    expect(screen.getByRole("radio", { name: LOCAL })).toBeChecked();
+    const name = screen.getByLabelText("Name");
+    await waitFor(() => expect(name).toHaveFocus());
+    expect(screen.getByLabelText("Provider slug")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Service")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Model server")).toBeNull();
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Set up a model server step by step" }));
+    expect(screen.getByLabelText("Model server")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Service")).toBeNull();
+    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveFocus());
+  });
+
+  it("without a service to choose says which one could be, and sends nobody to the Services page", async () => {
+    renderDialog();
+    await useExisting();
+    const note = await screen.findByText("No service can be used: it has to be an HTTP service in API-key mode that is not a provider yet.");
+    expect(note.closest("[role=status]")).not.toBeNull();
+    const dialog = screen.getByRole("dialog", { name: "New provider" });
+    expect(within(dialog).queryByRole("link")).toBeNull();
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Set up a model server step by step" })).toBeInTheDocument();
   });
 
   it("prefills from the OpenRouter preset and posts a direct provider", async () => {
@@ -265,12 +369,15 @@ describe("New provider dialog", () => {
     expect(screen.getByLabelText("Provider slug")).not.toHaveAttribute("aria-invalid");
   });
 
-  it("switching back to a local service restores the service form", async () => {
+  it("switching back from a hosted API restores the form that was left", async () => {
     renderDialog();
+    await useExisting();
+    await screen.findByText(/No service can be used/);
     await hosted();
-    expect(screen.queryByText(/no eligible service/i)).toBeNull();
-    await userEvent.click(screen.getByRole("radio", { name: /a service behind a burrow client/i }));
-    expect(await screen.findByText(/no eligible service/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No service can be used/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Set up a model server step by step" })).toBeNull();
+    await userEvent.click(screen.getByRole("radio", { name: LOCAL }));
+    expect(await screen.findByText(/No service can be used/)).toBeInTheDocument();
     expect(screen.queryByLabelText("Base URL")).toBeNull();
   });
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, MoreHorizontal, Sparkles } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
@@ -33,6 +33,20 @@ export default function Providers() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [newOpen, setNewOpen] = useState(false);
+  // /gateway/providers?new=local opens the dialog too. The parameter stays
+  // while the dialog is open, so a reload opens it again, and goes when it closes.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const linked = searchParams.get("new") === "local";
+  function setDialogOpen(open: boolean) {
+    setNewOpen(open);
+    if (!open && linked) {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("new");
+        return next;
+      }, { replace: true });
+    }
+  }
   const providers = useQuery({
     queryKey: ["ai", "providers"],
     queryFn: () => apiFetch<AiProvider[]>("/ai/providers"),
@@ -91,14 +105,9 @@ export default function Providers() {
         title="Providers"
         subtitle="Model backends served through this relay, each under its own base URL — with cache, cost, and traffic at a glance."
         actions={isAdmin ? (
-          <>
-            <Button variant="secondary" size="sm" onClick={() => nav("/services?new=ai")}>
-              New service and provider
-            </Button>
-            <Button variant="primary" size="sm" onClick={() => setNewOpen(true)}>
-              New provider
-            </Button>
-          </>
+          <Button variant="primary" size="sm" onClick={() => setNewOpen(true)}>
+            New provider
+          </Button>
         ) : undefined}
       />
       <p className="muted small" style={{ marginBottom: "var(--space-3, 12px)" }}>
@@ -254,7 +263,7 @@ export default function Providers() {
           </table>
         </div>
       )}
-      {isAdmin && <NewProviderDialog open={newOpen} onOpenChange={setNewOpen} />}
+      {isAdmin && <NewProviderDialog open={newOpen || linked} onOpenChange={setDialogOpen} />}
       <Toaster />
     </div>
   );

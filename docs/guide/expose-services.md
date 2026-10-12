@@ -320,9 +320,22 @@ is the upstream's own status, headers and body, with `Burrow-Request-Id` and
 
 ### Tunnel providers
 
-Follow section (C) to expose the model server with the `api_key` access mode,
-then choose **New provider → A service behind a Burrow client** and pick the
-service.
+Choose **New provider → A model server on one of my machines**. Give the
+provider a name, pick the model server (Ollama on 11434, LM Studio on 1234, or
+another port or address) and the API format it speaks. **Continue** creates a
+service that only the AI gateway reaches and the provider on top of it, and
+shows the command to run on the machine:
+
+```sh
+burrow http 11434 --name <name>
+```
+
+The dialog waits and turns to **Online** once a client serves the provider. It
+can be closed before that; the provider's page shows the state.
+
+To use a service that already exists, follow section (C) to expose the model
+server with the `api_key` access mode, then choose **Use a service that already
+exists** in the same dialog and pick the service.
 
 ::: warning Switching a service to API-key mode does not create a provider
 Services that were already in API-key mode when the relay was upgraded were

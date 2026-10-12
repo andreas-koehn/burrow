@@ -18,20 +18,19 @@ test("22-clients: all 3 seeded clients visible + connected", async ({ page }) =>
   }
 });
 
-test("22-clients: Connect-a-client wizard mints a token", async ({ page }) => {
+test("22-clients: Connect a client shows the lines to run and leads to Tokens for a token", async ({ page }) => {
   await loginAsAdmin(page);
   await page.goto("/clients/connect");
-  // The form lives behind "Other ways to connect" since the page leads with the three lines.
+
+  // The lines to run on the machine; none of them holds a token.
+  await expect(page.locator(".install-line pre code")).toHaveText([
+    /\/install\.(sh \| sh|ps1 \| iex)$/, /^burrow login \S+$/, "burrow http 3000",
+  ]);
+
+  // The page mints no token itself (spec 04 covers minting): it says where one is made.
   await page.getByRole("button", { name: "Other ways to connect" }).click();
-
-  await page.getByLabel("Client name").fill(`spec-22-${Date.now()}`);
-  await page.getByRole("button", { name: /generate token/i }).click();
-
-  // Click Reveal to unmask the token (default is masked as bur_••••••••).
-  await page.getByRole("button", { name: /reveal token/i }).click();
-
-  // Reveal dialog should expose a bur_ prefixed plaintext at least once.
-  // Find the code element with the token (not the command block).
-  const tokenCode = page.locator('code.mono', { hasText: /^bur_[A-Za-z0-9_-]{20,}$/ });
-  await expect(tokenCode).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: /generate token/i })).toHaveCount(0);
+  await page.getByRole("link", { name: "Clients → Tokens" }).click();
+  await expect(page.getByRole("tab", { name: "Tokens", selected: true })).toBeVisible();
+  await expect(page.locator("#token-name")).toBeVisible();
 });

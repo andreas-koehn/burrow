@@ -1,7 +1,7 @@
 // test-only — never deploy this shape.
 //
 // Spec 33 — a UI-minted token connects a REAL client end-to-end.
-// Mints a client token via the Connect-a-client wizard UI, docker-runs a
+// Mints a client token under Clients → Tokens, docker-runs a
 // throwaway burrow client with that exact token tunneling to mockoai:8081,
 // then proves the tunnel registers connected and a proxied request reaches
 // the upstream. Cleans up the container in finally.
@@ -20,32 +20,30 @@ const EPHEMERAL = `burrow-e2e-ephemeral-${Date.now().toString().slice(-6)}`;
 const TUNNEL_NAME = `ephem-${Date.now().toString().slice(-6)}`;
 
 test("33-token-connect: UI-minted token connects a real client + traffic flows", async ({ page, request }) => {
-  // 1. Mint a token via the Connect-a-client wizard UI (reuse spec 22 selectors).
+  // 1. Mint a token under Clients → Tokens, where the Connect page sends the
+  //    reader for one (reuse spec 04 selectors).
   await page.goto("/clients/connect");
-  // The form lives behind "Other ways to connect" since the page leads with the three lines.
   await page.getByRole("button", { name: "Other ways to connect" }).click();
+  await page.getByRole("link", { name: "Clients → Tokens" }).click();
+  await expect(page.getByRole("tab", { name: "Tokens", selected: true })).toBeVisible();
 
-  // Fill the client name and generate a token.
-  await page.getByLabel("Client name").fill(TUNNEL_NAME);
-  await page.getByRole("button", { name: /generate token/i }).click();
+  await page.fill("#token-name", TUNNEL_NAME);
+  await page.getByRole("button", { name: "Create", exact: true }).click();
 
-  // Click Reveal to unmask the token (default is masked as bur_••••••••).
-  await page.getByRole("button", { name: /reveal token/i }).click();
-
-  // Find the code element with the plaintext bur_ token (not the command block).
-  const tokenCode = page.locator("code.mono", { hasText: /^bur_[A-Za-z0-9_-]{20,}$/ });
-  await expect(tokenCode).toBeVisible({ timeout: 10_000 });
-  const token = (await tokenCode.textContent()) ?? "";
+  // The token is shown once, in the dialog that follows.
+  const dialog = page.getByRole("dialog", { name: "Copy your token now" });
+  await expect(dialog).toBeVisible({ timeout: 10_000 });
+  const token = (await dialog.locator(".reveal-once .key-row .v").innerText()).trim();
   expect(token).toMatch(/^bur_/);
+  await dialog.getByRole("button", { name: "Done" }).click();
 
   let started = false;
   try {
     // 2. docker run the ephemeral client with that exact token.
-    // The wizard token is generic (POST /tokens with just a name) — not service-scoped.
-    // The wizard example command uses --local 127.0.0.1:3000 --remote 9000 as
-    // placeholders; we override --local to mockoai:8081 (reachable in-network)
-    // and --remote 0 (auto-assign) so the relay creates the tunnel entry with
-    // the TUNNEL_NAME we can discover via /api/v1/services.
+    // The token is generic (POST /tokens with just a name) — not service-scoped.
+    // --local is mockoai:8081 (reachable in-network) and --remote 0
+    // (auto-assign), so the relay creates the tunnel entry with the
+    // TUNNEL_NAME we can discover via /api/v1/services.
     // Override the entrypoint (which normally waits for a token file) so we can
     // pass the token directly on the command line.
     const run = spawnSync(

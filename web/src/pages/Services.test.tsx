@@ -8,10 +8,6 @@ import { db } from "@/mocks/db";
 import { Route, Routes, useLocation } from "react-router-dom";
 import Services from "@/pages/Services";
 
-function PathProbe() {
-  return <div data-testid="path">{useLocation().pathname}</div>;
-}
-
 function LocationProbe() {
   const { pathname, search } = useLocation();
   return <div data-testid="location">{pathname + search}</div>;
@@ -261,46 +257,57 @@ describe("Services page", () => {
     expect(captured).toMatchObject({ access_mode: "api_key" });
   });
 
-  // P5.2 — ?new=ai auto-opens the dialog; access mode is fixed to API key, no picker
-  it("P5.2: ?new=ai auto-opens the New service and provider dialog without an access-mode picker", async () => {
-    renderApp(<Services />, "/services?new=ai");
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /new service and provider/i })).toBeInTheDocument();
-    // Access mode is fixed to API key for AI services: no picker is offered.
-    expect(screen.queryByRole("combobox", { name: /access mode/i })).toBeNull();
-  });
-
-  it("P5.2: ?new=ai still POSTs access_mode api_key", async () => {
-    let captured: Record<string, unknown> | null = null;
-    server.use(
-      http.post("/api/v1/services", async ({ request }) => {
-        captured = await request.json() as Record<string, unknown>;
-        return HttpResponse.json({ id: "svc-ai", created_at: "2026-05-31T00:00:00Z" }, { status: 201 });
-      }),
+  // The flow that made a service and its provider from here lives in "New provider" now.
+  it("/services?new=ai leads to the guided steps under Providers, in place of this entry", async () => {
+    let posted = 0;
+    server.use(http.post("/api/v1/services", () => { posted++; return HttpResponse.json({ id: "x" }, { status: 201 }); }));
+    renderApp(
+      <>
+        <Routes>
+          <Route path="/services" element={<Services />} />
+          <Route path="/gateway/providers" element={<div>PROVIDERS_PAGE</div>} />
+        </Routes>
+        <LocationProbe />
+      </>,
+      "/services?new=ai",
     );
-    renderApp(<Services />, "/services?new=ai");
-    const dialog = await screen.findByRole("dialog", { name: "New service and provider" });
-    await userEvent.type(within(dialog).getByLabelText(/service id/i), "ai-svc-2");
-    await userEvent.click(within(dialog).getByRole("button", { name: "Create and continue" }));
-    await waitFor(() => expect(captured).not.toBeNull());
-    expect(captured).toMatchObject({ access_mode: "api_key" });
+    expect(await screen.findByText("PROVIDERS_PAGE")).toBeInTheDocument();
+    expect(currentLocation()).toBe("/gateway/providers?new=local");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(posted).toBe(0);
   });
 
-  it("explains the AI flow when opened via ?new=ai (F8)", async () => {
-    renderApp(<Services />, "/services?new=ai");
-    const dialog = await screen.findByRole("dialog", { name: "New service and provider" });
-    expect(within(dialog).getByText("Creates a service with API-key access and registers it as a model provider, reachable through the AI gateway only.")).toBeInTheDocument();
-    // Access mode is fixed for AI services, so the picker is not offered.
-    expect(within(dialog).queryByLabelText("Access mode")).toBeNull();
-    expect(within(dialog).getByRole("button", { name: "Create and continue" })).toBeInTheDocument();
+  it("/services?new=ai keeps nothing of the old address behind: the redirect is not undone", async () => {
+    renderApp(
+      <>
+        <Routes>
+          <Route path="/services" element={<Services />} />
+          <Route path="/gateway/providers" element={<div>PROVIDERS_PAGE</div>} />
+        </Routes>
+        <LocationProbe />
+      </>,
+      "/services?new=ai&live=1",
+    );
+    await screen.findByText("PROVIDERS_PAGE");
+    // The page's own handling of ?new must not run after the redirect and bring the reader back.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(currentLocation()).toBe("/gateway/providers?new=local");
   });
 
-  it("the New service and provider dialog advertises no /svc/ address", async () => {
-    renderApp(<Services />, "/services?new=ai");
-    const dialog = await screen.findByRole("dialog", { name: "New service and provider" });
-    expect(within(dialog).queryByLabelText(/url slug/i)).toBeNull();
-    expect(dialog.textContent).not.toMatch(/\/svc\//);
+  it("offers one dialog only: a service is created without a provider", async () => {
+    let providerCalls = 0;
+    server.use(http.post("/api/v1/ai/providers", () => { providerCalls++; return HttpResponse.json({ slug: "x" }, { status: 201 }); }));
+    mount();
+    await screen.findByRole("table", { name: /services/i });
+    expect(screen.getAllByRole("button", { name: /^new /i }).map((b) => b.textContent)).toEqual(["New service"]);
+    await userEvent.click(screen.getByRole("button", { name: "New service" }));
+    const dialog = await screen.findByRole("dialog", { name: "New service" });
+    expect(within(dialog).getByLabelText("Access mode")).toBeInTheDocument();
+    await userEvent.type(within(dialog).getByLabelText("Service ID"), "plain-svc");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await screen.findByText("Service plain-svc created.");
+    expect(providerCalls).toBe(0);
+    expect(db.services.find((x) => x.id === "plain-svc")?.gateway_only).toBe(false);
   });
 
   it("the plain New service dialog still shows the slug field and the /svc/ hint", async () => {
@@ -308,62 +315,6 @@ describe("Services page", () => {
     const dialog = await screen.findByRole("dialog", { name: "New service" });
     expect(within(dialog).getByLabelText(/url slug/i)).toBeInTheDocument();
     expect(dialog.textContent).toMatch(/\/svc\//);
-  });
-
-  it("?new=ai registers the new service as a provider and opens its page", async () => {
-    renderApp(
-      <Routes>
-        <Route path="/services" element={<Services />} />
-        <Route path="/gateway/providers/:slug" element={<PathProbe />} />
-        <Route path="/services/:id" element={<PathProbe />} />
-      </Routes>,
-      "/services?new=ai",
-    );
-    const dialog = await screen.findByRole("dialog", { name: "New service and provider" });
-    await userEvent.type(within(dialog).getByLabelText(/service id/i), "local-llm");
-    await userEvent.type(within(dialog).getByLabelText("Title"), "Local LLM");
-    await userEvent.click(within(dialog).getByRole("button", { name: "Create and continue" }));
-    // The mock derives the slug from the name, as the server does.
-    expect(await screen.findByTestId("path")).toHaveTextContent(/^\/gateway\/providers\/local-llm$/);
-    expect(db.aiProviders.at(-1)).toMatchObject({ slug: "local-llm", name: "Local LLM", service_id: "local-llm" });
-    // The AI flow closes the direct address.
-    expect(db.services.find((x) => x.id === "local-llm")?.gateway_only).toBe(true);
-  });
-
-  it("?new=ai falls back to the services list and says why when the provider cannot be created", async () => {
-    // The title "AI" derives a slug the server rejects (too short): the
-    // service exists afterwards, the provider does not.
-    renderApp(
-      <>
-        <Routes>
-          <Route path="/services" element={<Services />} />
-          <Route path="/gateway/providers" element={<div>PROVIDERS_PAGE</div>} />
-          <Route path="/gateway/providers/:slug" element={<div>PROVIDER_PAGE</div>} />
-          <Route path="/services/:id" element={<div>SERVICE_PAGE</div>} />
-        </Routes>
-        <PathProbe />
-      </>,
-      "/services?new=ai",
-    );
-    const dialog = await screen.findByRole("dialog", { name: "New service and provider" });
-    await userEvent.type(within(dialog).getByLabelText(/service id/i), "local-llm");
-    await userEvent.type(within(dialog).getByLabelText("Title"), "AI");
-    await userEvent.click(within(dialog).getByRole("button", { name: "Create and continue" }));
-    // The message names the server's reason and where to finish the job. It
-    // stays on the Services page: its toaster would not survive a navigation.
-    const toastText = await screen.findByText(/created, but it was not registered as a provider/i);
-    expect(toastText).toHaveTextContent(/slug must be 3-40 characters/);
-    expect(toastText).toHaveTextContent(/add it under Providers/i);
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByTestId("path")).toHaveTextContent(/^\/services$/);
-    expect(db.services.some((s) => s.id === "local-llm")).toBe(true);
-    expect(db.aiProviders.some((p) => p.service_id === "local-llm")).toBe(false);
-    // The service that was created is in the list behind the closed dialog.
-    const table = screen.getByRole("table", { name: /services/i });
-    expect(await within(table).findByRole("link", { name: "AI" })).toHaveAttribute("href", "/services/local-llm");
-    // The toast is the only pointer to the next step, so it carries the way there.
-    await userEvent.click(screen.getByRole("button", { name: "Open Providers" }));
-    expect(await screen.findByText("PROVIDERS_PAGE")).toBeInTheDocument();
   });
 
   it("keeps the generic dialog for the normal flow", async () => {

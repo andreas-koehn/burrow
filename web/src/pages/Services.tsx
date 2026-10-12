@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Copy } from "lucide-react";
 import { toast } from "sonner";
@@ -61,7 +61,6 @@ function ShowFilter({ live, onChange }: { live: boolean; onChange: (live: boolea
 
 export default function Services() {
   const qc = useQueryClient();
-  const nav = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   // All | Live lives in the URL, so a reload or a shared link keeps the choice.
   const live = searchParams.get("live") === "1";
@@ -206,19 +205,18 @@ export default function Services() {
   const [nsTitle, setNsTitle] = useState("");
   const [nsSlug, setNsSlug] = useState("");
   const [nsAccessMode, setNsAccessMode] = useState("open");
-  const [aiFlow, setAiFlow] = useState(false);
   const [nsErr, setNsErr] = useState<string | null>(null);
 
-  // P5.2 — ?new=ai or ?new=1 auto-opens the dialog pre-filled.
+  // A service with its provider is made under Providers; ?new=ai, the old way
+  // in, is sent there (see the return below).
+  const toGuidedProvider = searchParams.get("new") === "ai";
+
+  // ?new=1 auto-opens the dialog.
   useEffect(() => {
+    // The redirect is on its way: taking the parameter out here would undo it.
+    if (toGuidedProvider) return;
     const newParam = searchParams.get("new");
-    if (newParam === "ai") {
-      setNewOpen(true);
-      setNsAccessMode("api_key");
-      setAiFlow(true);
-    } else if (newParam === "1") {
-      setNewOpen(true);
-    }
+    if (newParam === "1") setNewOpen(true);
     if (newParam !== null) {
       // Only `new` is consumed; the rest of the query (the Live filter) stays.
       setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete("new"); return next; }, { replace: true });
@@ -246,7 +244,6 @@ export default function Services() {
     setNsTitle("");
     setNsSlug("");
     setNsAccessMode("open");
-    setAiFlow(false);
     setNsErr(null);
   }
 
@@ -261,33 +258,10 @@ export default function Services() {
           access_mode: nsAccessMode,
         }),
       }),
-    onSuccess: async (resp) => {
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["services"] });
-      if (aiFlow && resp?.id) {
-        // The service only becomes reachable under /ai/ once it has a provider.
-        try {
-          const p = await apiFetch<{ slug: string }>("/ai/providers", {
-            method: "POST",
-            body: JSON.stringify({ name: nsTitle || nsServiceId, kind: "tunnel", service_id: resp.id, gateway_only: true }),
-          });
-          qc.invalidateQueries({ queryKey: ["ai", "providers"] });
-          closeNew();
-          nav(`/gateway/providers/${p.slug}`);
-        } catch (e) {
-          // The service exists, the provider does not. Say why and stay here:
-          // this page's toaster would not survive a navigation.
-          const why = e instanceof ApiError ? e.message : "the request failed";
-          // The only pointer to the next step: keep it up longer and make it the way there.
-          toast.error(`Service ${resp.id} created, but it was not registered as a provider: ${why}. Add it under Providers.`, {
-            duration: 20_000,
-            action: { label: "Open Providers", onClick: () => nav("/gateway/providers") },
-          });
-          closeNew();
-        }
-      } else {
-        toast.success(`Service ${nsServiceId} created.`);
-        closeNew();
-      }
+      toast.success(`Service ${nsServiceId} created.`);
+      closeNew();
     },
     onError: (e: unknown) => {
       if (e instanceof ApiError && e.status === 403) {
@@ -302,6 +276,8 @@ export default function Services() {
 
   // Live lists tunnels and only decorates them with the saved service: it fails on its own query alone.
   const failure = live ? tunnels.error : error;
+
+  if (toGuidedProvider) return <Navigate to="/gateway/providers?new=local" replace />;
 
   return (
     <div className="services-page">
@@ -482,10 +458,8 @@ export default function Services() {
       <Dialog
         open={newOpen}
         onOpenChange={(o) => { if (!o) closeNew(); }}
-        title={aiFlow ? "New service and provider" : "New service"}
-        description={aiFlow
-          ? "Creates a service with API-key access and registers it as a model provider, reachable through the AI gateway only."
-          : "Pre-provision a service so a connecting client adopts the same id."}
+        title="New service"
+        description="Pre-provision a service so a connecting client adopts the same id."
         footer={
           <>
             <Button variant="secondary" onClick={closeNew}>Cancel</Button>
@@ -494,7 +468,7 @@ export default function Services() {
               disabled={!nsServiceId || slugError(nsSlug) !== null || createService.isPending}
               onClick={() => createService.mutate()}
             >
-              {createService.isPending ? "Creating…" : aiFlow ? "Create and continue" : "Create"}
+              {createService.isPending ? "Creating…" : "Create"}
             </Button>
           </>
         }
@@ -506,22 +480,17 @@ export default function Services() {
           <FormField label="Title" htmlFor="ns-title" w="md">
             <Input id="ns-title" placeholder="optional display name" value={nsTitle} onChange={(e) => setNsTitle(e.target.value)} />
           </FormField>
-          {/* A model service has no /svc/ address: the AI flow shows no slug or URL. */}
-          {!aiFlow && <SlugField id="ns-slug" value={nsSlug} onChange={setNsSlug} />}
-          {!aiFlow && (
-            <FormField label="Access mode" htmlFor="ns-access-mode" w="md">
-              <Select
-                id="ns-access-mode"
-                options={ACCESS_MODE_OPTIONS}
-                value={nsAccessMode}
-                onChange={setNsAccessMode}
-              />
-            </FormField>
-          )}
+          <SlugField id="ns-slug" value={nsSlug} onChange={setNsSlug} />
+          <FormField label="Access mode" htmlFor="ns-access-mode" w="md">
+            <Select
+              id="ns-access-mode"
+              options={ACCESS_MODE_OPTIONS}
+              value={nsAccessMode}
+              onChange={setNsAccessMode}
+            />
+          </FormField>
         </FormFieldGroup>
-        {!aiFlow && (
-          <p className="muted small">Apps that load assets from absolute paths (/assets/…) need base-path support to work under a /svc/ URL.</p>
-        )}
+        <p className="muted small">Apps that load assets from absolute paths (/assets/…) need base-path support to work under a /svc/ URL.</p>
         {nsErr && <p role="alert" className="notice-inline error">{nsErr}</p>}
       </Dialog>
       <Toaster />

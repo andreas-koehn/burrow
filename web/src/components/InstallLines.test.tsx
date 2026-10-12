@@ -130,6 +130,32 @@ describe("InstallLines", () => {
     expect(screen.getByRole("button", { name: "Copy run command" })).toBeInTheDocument();
   });
 
+  it("with a name the run line serves the service of that name, and its copy button gives the same", async () => {
+    const user = userEvent.setup();
+    renderApp(<InstallLines relayOrigin={ORIGIN} target="11434" name="ollama" />);
+    expect(lineTexts()[2]).toBe("burrow http 11434 --name ollama");
+    expect(screen.getByRole("group", { name: "Run command" })).toHaveTextContent("burrow http 11434 --name ollama");
+    await user.click(screen.getByRole("button", { name: "Copy run command" }));
+    expect(await navigator.clipboard.readText()).toBe("burrow http 11434 --name ollama");
+    // The hint under the line says what the name is for.
+    expect(screen.getByText(/with what listens on that port/)).toHaveTextContent(
+      "Serves ollama with what listens on that port of the machine; put your own port, or host:port, in its place.",
+    );
+    // The other two lines do not change.
+    expect(lineTexts().slice(0, 2)).toEqual(["curl -fsSL https://b.example.com/install.sh | sh", "burrow login b.example.com"]);
+  });
+
+  it("without a name the run line is as before", () => {
+    renderApp(<InstallLines relayOrigin={ORIGIN} target="11434" />);
+    expect(lineTexts()[2]).toBe("burrow http 11434");
+  });
+
+  it.each(["x; rm -rf", "Ollama", "a b", "$(id)", ""])("a name that is not safe in a shell (%j) never reaches the command", (name) => {
+    renderApp(<InstallLines relayOrigin={ORIGIN} target="11434" name={name} />);
+    expect(lineTexts()[2]).toBe("burrow http 11434");
+    expect(document.querySelector(".install-lines")!.textContent).not.toContain("--name");
+  });
+
   it("warns when the dashboard is not served over https", () => {
     renderApp(<InstallLines relayOrigin="http://localhost:8080" />);
     expect(screen.getByText(/not served over HTTPS/)).toBeInTheDocument();

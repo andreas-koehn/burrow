@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
+import { Route, Routes, useLocation } from "react-router-dom";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
@@ -9,6 +10,21 @@ import GatewayKeys from "@/pages/GatewayKeys";
 
 function mount() {
   return renderApp(<GatewayKeys />, "/gateway/keys");
+}
+
+function Where() {
+  const l = useLocation();
+  return <div data-testid="location">{l.pathname + l.search}</div>;
+}
+
+function mountAt(route: string) {
+  return renderApp(
+    <>
+      <Routes><Route path="/gateway/keys" element={<GatewayKeys />} /></Routes>
+      <Where />
+    </>,
+    route,
+  );
 }
 
 function mountAs(role: "admin" | "user") {
@@ -107,6 +123,51 @@ describe("Gateway keys page", () => {
     await userEvent.click(within(dialog).getByRole("checkbox", { name: "Everything from ollama" }));
     await userEvent.click(within(dialog).getByRole("button", { name: "Create key" }));
     await waitFor(() => expect(posted).toMatchObject({ name: "ci", allowed_models: ["burrow-simple", "ollama/*"] }));
+  });
+
+  it("?new=1&provider=<slug> opens the dialog limited to everything from that provider", async () => {
+    let posted: Record<string, unknown> | null = null;
+    server.use(http.post("/api/v1/ai/keys", async ({ request }) => {
+      posted = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ id: "gk9", name: "laptop", key: "bgw_" + "y".repeat(43), allowed_models: ["llamacpp/*"] }, { status: 201 });
+    }));
+    mountAt("/gateway/keys?new=1&provider=llamacpp");
+    const dialog = await screen.findByRole("dialog", { name: "New gateway key" });
+    expect(within(dialog).getByRole("radio", { name: "Only these models" })).toBeChecked();
+    expect(await within(dialog).findByRole("checkbox", { name: "Everything from llamacpp" })).toBeChecked();
+    // Nothing else is ticked.
+    expect(within(dialog).getAllByRole("checkbox").filter((c) => (c as HTMLInputElement).checked || c.getAttribute("aria-checked") === "true")).toHaveLength(1);
+    expect(screen.getByTestId("location").textContent).toBe("/gateway/keys?new=1&provider=llamacpp");
+    await userEvent.type(within(dialog).getByLabelText("Name"), "laptop");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create key" }));
+    await waitFor(() => expect(posted).toEqual({ name: "laptop", allowed_models: ["llamacpp/*"] }));
+    // The key is shown; the link is used up when that dialog closes.
+    await userEvent.click(await screen.findByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByTestId("location").textContent).toBe("/gateway/keys");
+  });
+
+  it.each(["Cancel", "Close dialog"])("?new=1&provider=<slug>: closing with %s takes both parameters out of the address", async (name) => {
+    mountAt("/gateway/keys?new=1&provider=ollama");
+    const dialog = await screen.findByRole("dialog", { name: "New gateway key" });
+    await userEvent.click(within(dialog).getByRole("button", { name }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByTestId("location").textContent).toBe("/gateway/keys");
+    // The button opens the usual dialog afterwards.
+    await userEvent.click(screen.getByRole("button", { name: "New key" }));
+    expect(within(await screen.findByRole("dialog", { name: "New gateway key" })).getByRole("radio", { name: "All models" })).toBeChecked();
+  });
+
+  it("?new=1 alone opens the dialog for all models; a provider that is not there leaves nothing ticked", async () => {
+    const first = mountAt("/gateway/keys?new=1");
+    expect(within(await screen.findByRole("dialog", { name: "New gateway key" })).getByRole("radio", { name: "All models" })).toBeChecked();
+    first.unmount();
+    mountAt("/gateway/keys?new=1&provider=gone");
+    const dialog = await screen.findByRole("dialog", { name: "New gateway key" });
+    expect(within(dialog).getByRole("radio", { name: "Only these models" })).toBeChecked();
+    expect(await within(dialog).findByText("Choose at least one.")).toBeInTheDocument();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "laptop");
+    expect(within(dialog).getByRole("button", { name: "Create key" })).toBeDisabled();
   });
 
   it("an unrestricted key sends no list", async () => {

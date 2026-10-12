@@ -1,9 +1,9 @@
-import { useId, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
 import { SlugField } from "@/components/SlugField";
+import { useLocalProviderFlow } from "@/components/LocalProviderFlow";
 import { ConcurrencyField, ResponsesCheckbox, SlotsNotSet } from "@/components/ProviderUpstreamPanel";
 import { providerSlugError } from "@/lib/providerSlug";
 import { CREDENTIAL_SLOT_HELP, PROVIDER_PRESETS, credentialSlotsError, parseConcurrency, splitSlots } from "@/lib/providerPresets";
@@ -16,16 +16,17 @@ export interface NewProviderDialogProps {
 }
 
 /**
- * Adds a model provider: an existing http service in API-key mode (kind
- * "tunnel"), or a hosted API the relay calls itself (kind "direct"). A hosted
- * API's credential is set on the relay; this dialog only names its slot.
+ * Adds a model provider: a model server on one of the reader's machines, in
+ * guided steps or from an http service in API-key mode that exists already, or
+ * a hosted API the relay calls itself (kind "direct"). A hosted API's
+ * credential is set on the relay; this dialog only names its slot.
  */
 export function NewProviderDialog({ open, onOpenChange }: NewProviderDialogProps) {
   // Mounted per opening, so every opening starts from an empty form.
   return open ? <NewProviderForm onOpenChange={onOpenChange} /> : null;
 }
 
-type Kind = "tunnel" | "direct";
+type Kind = "local" | "direct";
 
 const BILLING_OPTIONS = [
   { value: "metered", label: "Metered" },
@@ -36,7 +37,9 @@ const PRESET_OPTIONS = PROVIDER_PRESETS.map((p) => ({ value: p.id, label: p.labe
 function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenChange">) {
   const qc = useQueryClient();
   const kindId = useId();
-  const [kind, setKind] = useState<Kind>("tunnel");
+  const [kind, setKind] = useState<Kind>("local");
+  // A model server is set up in guided steps, unless its service is there already.
+  const [existing, setExisting] = useState(false);
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [serviceId, setServiceId] = useState("");
@@ -57,6 +60,27 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
   const [slotErr, setSlotErr] = useState<string | null>(null);
   const [formErr, setFormErr] = useState<string | null>(null);
   const direct = kind === "direct";
+  const guided = kind === "local" && !existing;
+
+  // The button that leads from one form to the other goes away with its form:
+  // the focus moves on to the name field of the form that takes its place.
+  const moved = useRef(false);
+  function showExisting(on: boolean) {
+    moved.current = true;
+    setExisting(on);
+    clearErrors();
+  }
+  useEffect(() => {
+    if (!moved.current) return;
+    moved.current = false;
+    document.getElementById(existing ? "np-name" : "lp-name")?.focus();
+  }, [existing]);
+  // Called in every state, so what was typed into the guided steps is still
+  // there after a look at the other choice.
+  const flow = useLocalProviderFlow({
+    onDone: () => onOpenChange(false),
+    onUseExisting: () => showExisting(true),
+  });
 
   const services = useQuery({
     queryKey: ["services"],
@@ -148,157 +172,170 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
       open
       onOpenChange={onOpenChange}
       title="New provider"
-      description={direct
-        ? "Serve a hosted OpenAI-compatible API under its own base URL. The relay calls it with a credential set on the relay."
-        : "Serve a service in API-key mode as a model provider under its own base URL."}
-      footer={
+      description={guided
+        ? flow.description
+        : direct
+          ? "Serve a hosted OpenAI-compatible API under its own base URL. The relay calls it with a credential set on the relay."
+          : "Serve a service in API-key mode as a model provider under its own base URL."}
+      footer={guided ? flow.footer : (
         <>
           <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button variant="primary" disabled={!canCreate} onClick={() => create.mutate()}>
             {create.isPending ? "Creating…" : "Create"}
           </Button>
         </>
-      }
-    >
-      <div role="radiogroup" aria-labelledby={kindId} className="col gap-2">
-        <span id={kindId} className="muted small">What the provider serves</span>
-        {([
-          ["tunnel", "A service behind a Burrow client"],
-          ["direct", "A hosted API"],
-        ] as const).map(([value, label]) => (
-          <label key={value} className="row row-center gap-2">
-            <input
-              type="radio"
-              name={kindId}
-              value={value}
-              checked={kind === value}
-              onChange={() => { setKind(value); clearErrors(); }}
-            />
-            <span>{label}</span>
-          </label>
-        ))}
-      </div>
-      <FormFieldGroup>
-        {direct && (
-          <FormField label="Provider" htmlFor="np-preset" w="md" help={preset?.note}>
-            <Select
-              id="np-preset"
-              value={presetId}
-              onChange={choosePreset}
-              options={PRESET_OPTIONS}
-              placeholder="Choose a provider…"
-            />
-          </FormField>
-        )}
-        <FormField label="Name" htmlFor="np-name" w="md">
-          <Input
-            id="np-name"
-            value={name}
-            maxLength={120}
-            required
-            autoComplete="off"
-            onChange={(e) => { setName(e.target.value); setFormErr(null); }}
-          />
-        </FormField>
-        <SlugField
-          id="np-slug"
-          label="Provider slug"
-          value={slug}
-          onChange={(v) => { setSlug(v); setSlugErr(null); setFormErr(null); }}
-          error={slugMessage}
-          preview={(s) => providerBaseUrl(s)}
-        />
-        {direct && (
-          <>
-            <FormField
-              label="Base URL"
-              htmlFor="np-base-url"
-              error={urlErr ? <span id="np-base-url-err">{urlErr}</span> : undefined}
-              help={<span id="np-base-url-help">The https URL of the API, up to and including its version path.</span>}
-            >
-              <Input
-                id="np-base-url"
-                mono
-                type="url"
-                inputMode="url"
-                value={baseUrl}
-                maxLength={2048}
-                required
-                invalid={!!urlErr}
-                autoComplete="off"
-                autoCapitalize="none"
-                spellCheck={false}
-                placeholder="https://"
-                aria-describedby={urlErr ? "np-base-url-err" : "np-base-url-help"}
-                onChange={(e) => { setBaseUrl(e.target.value); setUrlErr(null); setFormErr(null); }}
-              />
-            </FormField>
-            <FormField
-              label="Credential slot"
-              htmlFor="np-slot"
-              w="md"
-              error={slotMessage ? <span id="np-slot-err">{slotMessage}</span> : undefined}
-              help={<span id="np-slot-help">{CREDENTIAL_SLOT_HELP}</span>}
-            >
-              <Input
-                id="np-slot"
-                mono
-                value={slot}
-                maxLength={140}
-                required
-                invalid={!!slotMessage}
-                autoComplete="off"
-                autoCapitalize="characters"
-                spellCheck={false}
-                aria-describedby={slotMessage ? "np-slot-err" : "np-slot-help"}
-                onChange={(e) => { setSlot(e.target.value.toUpperCase()); setSlotErr(null); setFormErr(null); }}
-              />
-            </FormField>
-            <FormField label="Billing" htmlFor="np-billing" w="md">
-              <Select
-                id="np-billing"
-                value={billing}
-                onChange={(v) => { setBilling(v as "metered" | "flat"); setFormErr(null); }}
-                options={BILLING_OPTIONS}
-              />
-            </FormField>
-            <ConcurrencyField
-              id="np-concurrency"
-              value={concurrency}
-              error={concurrencyErr}
-              onChange={(v) => { setConcurrency(v); setConcurrencyErr(null); setFormErr(null); }}
-            />
-            <ResponsesCheckbox id="np-responses" checked={responses} onChange={(v) => { setResponses(v); setFormErr(null); }} />
-          </>
-        )}
-        {!direct && eligible.length > 0 && (
-          <FormField label="Service" htmlFor="np-service" w="md">
-            <Select
-              id="np-service"
-              value={chosen}
-              onChange={(v) => { setServiceId(v); setFormErr(null); }}
-              options={eligible.map((s) => ({ value: s.id, label: s.name || s.id }))}
-              placeholder="Select a service…"
-            />
-          </FormField>
-        )}
-      </FormFieldGroup>
-      <p className="muted small">Leave the slug empty to derive it from the name.</p>
-      {slotsMissing.length > 0 && (
-        <ErrorNotice variant="info" role="note">
-          <SlotsNotSet slots={slotsMissing} /> You can create the provider now; it answers 503 until the
-          key is set.
-        </ErrorNotice>
       )}
-      {direct ? null : loadFailed ? (
-        <ErrorNotice>Couldn't load the services to choose from.</ErrorNotice>
-      ) : loaded && eligible.length === 0 ? (
-        <ErrorNotice variant="info" role="status">
-          No eligible service.{" "}
-          <Link to="/services?new=ai">Create a service in API-key mode first.</Link>
-        </ErrorNotice>
-      ) : null}
-      {formErr && <ErrorNotice>{formErr}</ErrorNotice>}
+    >
+      {/* Once the provider exists there is nothing left to choose. */}
+      {!(guided && flow.step === "run") && (
+        <div role="radiogroup" aria-labelledby={kindId} className="col gap-2">
+          <span id={kindId} className="muted small">What the provider serves</span>
+          {([
+            ["local", "A model server on one of my machines"],
+            ["direct", "A hosted API"],
+          ] as const).map(([value, label]) => (
+            <label key={value} className="row row-center gap-2">
+              <input
+                type="radio"
+                name={kindId}
+                value={value}
+                checked={kind === value}
+                onChange={() => { setKind(value); clearErrors(); }}
+              />
+              <span>{label}</span>
+            </label>
+          ))}
+        </div>
+      )}
+      {guided ? flow.body : (
+        <>
+          <FormFieldGroup>
+            {direct && (
+              <FormField label="Provider" htmlFor="np-preset" w="md" help={preset?.note}>
+                <Select
+                  id="np-preset"
+                  value={presetId}
+                  onChange={choosePreset}
+                  options={PRESET_OPTIONS}
+                  placeholder="Choose a provider…"
+                />
+              </FormField>
+            )}
+            <FormField label="Name" htmlFor="np-name" w="md">
+              <Input
+                id="np-name"
+                value={name}
+                maxLength={120}
+                required
+                autoComplete="off"
+                onChange={(e) => { setName(e.target.value); setFormErr(null); }}
+              />
+            </FormField>
+            <SlugField
+              id="np-slug"
+              label="Provider slug"
+              value={slug}
+              onChange={(v) => { setSlug(v); setSlugErr(null); setFormErr(null); }}
+              error={slugMessage}
+              preview={(s) => providerBaseUrl(s)}
+            />
+            {direct && (
+              <>
+                <FormField
+                  label="Base URL"
+                  htmlFor="np-base-url"
+                  error={urlErr ? <span id="np-base-url-err">{urlErr}</span> : undefined}
+                  help={<span id="np-base-url-help">The https URL of the API, up to and including its version path.</span>}
+                >
+                  <Input
+                    id="np-base-url"
+                    mono
+                    type="url"
+                    inputMode="url"
+                    value={baseUrl}
+                    maxLength={2048}
+                    required
+                    invalid={!!urlErr}
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    placeholder="https://"
+                    aria-describedby={urlErr ? "np-base-url-err" : "np-base-url-help"}
+                    onChange={(e) => { setBaseUrl(e.target.value); setUrlErr(null); setFormErr(null); }}
+                  />
+                </FormField>
+                <FormField
+                  label="Credential slot"
+                  htmlFor="np-slot"
+                  w="md"
+                  error={slotMessage ? <span id="np-slot-err">{slotMessage}</span> : undefined}
+                  help={<span id="np-slot-help">{CREDENTIAL_SLOT_HELP}</span>}
+                >
+                  <Input
+                    id="np-slot"
+                    mono
+                    value={slot}
+                    maxLength={140}
+                    required
+                    invalid={!!slotMessage}
+                    autoComplete="off"
+                    autoCapitalize="characters"
+                    spellCheck={false}
+                    aria-describedby={slotMessage ? "np-slot-err" : "np-slot-help"}
+                    onChange={(e) => { setSlot(e.target.value.toUpperCase()); setSlotErr(null); setFormErr(null); }}
+                  />
+                </FormField>
+                <FormField label="Billing" htmlFor="np-billing" w="md">
+                  <Select
+                    id="np-billing"
+                    value={billing}
+                    onChange={(v) => { setBilling(v as "metered" | "flat"); setFormErr(null); }}
+                    options={BILLING_OPTIONS}
+                  />
+                </FormField>
+                <ConcurrencyField
+                  id="np-concurrency"
+                  value={concurrency}
+                  error={concurrencyErr}
+                  onChange={(v) => { setConcurrency(v); setConcurrencyErr(null); setFormErr(null); }}
+                />
+                <ResponsesCheckbox id="np-responses" checked={responses} onChange={(v) => { setResponses(v); setFormErr(null); }} />
+              </>
+            )}
+            {!direct && eligible.length > 0 && (
+              <FormField label="Service" htmlFor="np-service" w="md">
+                <Select
+                  id="np-service"
+                  value={chosen}
+                  onChange={(v) => { setServiceId(v); setFormErr(null); }}
+                  options={eligible.map((s) => ({ value: s.id, label: s.name || s.id }))}
+                  placeholder="Select a service…"
+                />
+              </FormField>
+            )}
+          </FormFieldGroup>
+          <p className="muted small">Leave the slug empty to derive it from the name.</p>
+          {slotsMissing.length > 0 && (
+            <ErrorNotice variant="info" role="note">
+              <SlotsNotSet slots={slotsMissing} /> You can create the provider now; it answers 503 until the
+              key is set.
+            </ErrorNotice>
+          )}
+          {direct ? null : loadFailed ? (
+            <ErrorNotice>Couldn't load the services to choose from.</ErrorNotice>
+          ) : loaded && eligible.length === 0 ? (
+            <ErrorNotice variant="info" role="status">
+              No service can be used: it has to be an HTTP service in API-key mode that is not a provider yet.
+            </ErrorNotice>
+          ) : null}
+          {!direct && (
+            <div>
+              <Button variant="ghost" size="sm" onClick={() => showExisting(false)}>Set up a model server step by step</Button>
+            </div>
+          )}
+          {formErr && <ErrorNotice>{formErr}</ErrorNotice>}
+        </>
+      )}
     </Dialog>
   );
 }

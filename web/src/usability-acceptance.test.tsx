@@ -7,7 +7,7 @@
 // In-2, In-6, Ea-1, Ea-2, Ea-3 → Playwright-only (see comments below).
 
 import { describe, it, expect } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { server } from "@/mocks/server";
 import { renderApp } from "@/mocks/test-utils";
@@ -117,15 +117,16 @@ describe("CLEAR — information architecture & labelling", () => {
     expect((await screen.findByRole("note")).textContent).toContain("saved configuration");
   });
 
-  it("Clr-4: Providers page with no providers renders a 'New service and provider' CTA button (admin)", async () => {
+  it("Clr-4: Providers page with no providers renders a 'New provider' CTA button (admin)", async () => {
     // Override /ai/providers to return an empty list
     server.use(
       http.get("/api/v1/ai/providers", () => HttpResponse.json([])),
     );
     renderApp(<Providers />, "/gateway/providers");
-    // The PageHeader renders the button for admin.
-    const btns = await screen.findAllByRole("button", { name: "New service and provider" });
+    // One way in: the PageHeader and the empty state both open "New provider".
+    const btns = await screen.findAllByRole("button", { name: "New provider" });
     expect(btns.length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByRole("button", { name: /new .*service/i })).toBeNull();
   });
 
 });
@@ -183,14 +184,17 @@ describe("EASY — onboarding & discoverability", () => {
       expect(btn).toBeDefined();
     });
 
-    it("Providers page with no providers (admin) has a 'New service and provider' button", async () => {
+    it("Providers page with no providers (admin): 'New provider' opens on the guided steps for a model server", async () => {
       server.use(
         http.get("/api/v1/ai/providers", () => HttpResponse.json([])),
       );
       renderApp(<Providers />, "/gateway/providers");
-      // The PageHeader renders the button for admin.
-      const btns = await screen.findAllByRole("button", { name: /^New service and provider$/i });
+      const btns = await screen.findAllByRole("button", { name: /^New provider$/i });
       expect(btns.length).toBeGreaterThanOrEqual(1);
+      fireEvent.click(btns[0]!);
+      const dialog = await screen.findByRole("dialog", { name: "New provider" });
+      expect(within(dialog).getByRole("radio", { name: "A model server on one of my machines" })).toBeChecked();
+      expect(within(dialog).getByRole("button", { name: "Continue" })).toBeDisabled();
     });
 
     it("Tokens tab: the empty state has a 'Connect a client' CTA in the page header", async () => {

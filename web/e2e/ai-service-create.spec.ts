@@ -1,73 +1,84 @@
 import { test, expect } from "@playwright/test";
 
-// Phase 5: AI gateway actionable — guided create-service flow.
+// Phase 5: AI gateway actionable — the guided provider for a local model server.
 //
-// Flow: /gateway/providers → click "New service and provider" → the Services
-// page opens the dialog of that name (access mode fixed to API key, no picker) → fill
-// service_id → "Create and continue" → the service is created and registered
-// as a provider → navigate to /gateway/providers/<slug>.
+// Flow: /gateway/providers → "New provider" → "A model server on one of my
+// machines" → name it → "Continue" creates a service that only the gateway
+// reaches and the provider on top of it → the dialog shows the command to run
+// on the machine and waits → "Done" opens /gateway/providers/<slug>.
 //
-// This spec runs against the REAL built burrowd (no MSW). It navigates
-// directly to /services?new=ai to exercise the auto-open flow on its own; the
-// "New service and provider" button on the Providers page is covered by RTL.
+// This spec runs against the REAL built burrowd (no MSW). It opens the dialog
+// through /gateway/providers?new=local; the button on the Providers page and
+// every branch of the steps are covered by RTL.
 
 test.use({ storageState: "playwright-auth.json" });
 
-// Per-test sequence suffix: guarantees unique service ids across tests in the
+// Per-test sequence suffix: guarantees unique names across tests in the
 // shared embedded-burrowd session even if two POSTs land in the same millisecond.
 let svcSeq = 0;
 
-test("P5: ?new=ai auto-opens the New service and provider dialog without an access-mode picker", async ({ page }) => {
+test("P5: /services?new=ai, the old way in, leads to New provider on the guided steps", async ({ page }) => {
   await page.goto("/services?new=ai");
 
-  // The create dialog should auto-open
-  const dialog = page.getByRole("dialog");
+  await expect(page).toHaveURL(/\/gateway\/providers\?new=local$/);
+  const dialog = page.getByRole("dialog", { name: "New provider" });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("heading", { name: "New service and provider" })).toBeVisible();
+  await expect(dialog.getByRole("radio", { name: "A model server on one of my machines" })).toBeChecked();
+  await expect(dialog.getByLabel("Model server")).toBeVisible();
 
-  // Access mode is fixed to API key for AI services: no picker is offered
+  // Nothing about a service's access is asked: the dialog sets it.
   await expect(dialog.getByRole("combobox", { name: /access mode/i })).toHaveCount(0);
 
-  // URL param is cleared (dialog is open but the ?new=ai is gone)
-  await expect(page).not.toHaveURL(/new=ai/);
+  // Closing the dialog takes the parameter out of the address.
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page).toHaveURL(/\/gateway\/providers$/);
 });
 
-test("P5: create AI service via dialog registers a provider and opens its page", async ({ page }) => {
-  // Pre-create step: ensure a unique service id.
-  const uniqueId = `svc-e2e-ai-${Date.now()}-${++svcSeq}`;
+test("P5: the guided steps create the provider and show the command that serves it", async ({ page }) => {
+  // A unique name: the service is named after it, and services.name carries a
+  // UNIQUE(user_id, name) constraint.
+  const name = `E2E Model ${Date.now()}-${++svcSeq}`;
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 
   const cookies = await page.context().cookies();
   const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 
-  await page.goto("/services?new=ai");
+  await page.goto("/gateway/providers?new=local");
 
-  const dialog = page.getByRole("dialog");
+  const dialog = page.getByRole("dialog", { name: "New provider" });
   await expect(dialog).toBeVisible();
 
-  // Fill in a unique service ID and a matching Title. The Title maps to the
-  // services.name column, which carries a UNIQUE(user_id, name) constraint;
-  // the real binary exposes no DELETE /services route, so leaving the name
-  // blank would collide with any other blank-named service this suite creates
-  // (POST → 409). A unique title keeps each created service independent.
-  await dialog.getByLabel(/service id/i).fill(uniqueId);
-  await dialog.getByLabel(/^title$/i).fill(uniqueId);
+  // Step 1: the name. Continue says what is missing until there is one.
+  const proceed = dialog.getByRole("button", { name: "Continue" });
+  await expect(proceed).toBeDisabled();
+  await expect(dialog.getByText("Enter a name.")).toBeVisible();
+  await dialog.getByLabel("Name").fill(name);
+  await expect(dialog.getByText(`/ai/${slug}/v1`)).toBeVisible();
+  await proceed.click();
 
-  // Click Create and continue — POST /services with {service_id, access_mode:"api_key"}
-  await dialog.getByRole("button", { name: "Create and continue" }).click();
+  // Step 2: the command for the machine, serving the service that was just made.
+  await expect(dialog.getByRole("heading", { name: "Run this on the machine" })).toBeVisible({ timeout: 10_000 });
+  await expect(dialog.getByRole("group", { name: "Run command" })).toHaveText(`burrow http 11434 --name ${slug}`);
+  // No client serves it in this stack: the dialog waits, and says so.
+  await expect(dialog.locator("[role=status]").filter({ hasText: "Waiting for the client…" })).toBeVisible();
 
-  // After success the dialog closes and we land on the new provider's page.
-  // The server derives the provider slug from the title.
-  await expect(dialog).not.toBeVisible({ timeout: 10_000 });
-  await expect(page).toHaveURL(/\/gateway\/providers\/[a-z0-9-]+$/, { timeout: 10_000 });
-  await expect(page.getByRole("heading", { name: `Provider · ${uniqueId}`, level: 1 })).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole("heading", { name: "Connect a client" })).toBeVisible();
+  // The service exists under that name, reachable through the gateway only.
+  const svc = await page.request.get(`/api/v1/services/${slug}`, { headers });
+  expect(svc.status()).toBe(200);
+  expect(await svc.json()).toMatchObject({ id: slug, name: slug, access_mode: "api_key", gateway_only: true });
+
+  // Done closes the dialog and opens the new provider's page.
+  await dialog.getByRole("button", { name: "Done" }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/gateway/providers/${slug}$`), { timeout: 10_000 });
+  await expect(page.getByRole("heading", { name: `Provider · ${name}`, level: 1 })).toBeVisible({ timeout: 10_000 });
 
   // Clean up: the provider, then the service. Await both so the deletions
   // complete before the next test runs in the shared session.
-  const slug = new URL(page.url()).pathname.split("/").pop();
   await page.request.delete(`/api/v1/ai/providers/${slug}`, { headers }).catch(() => {});
-  await page.request.delete(`/api/v1/services/${uniqueId}`, { headers }).catch(() => {});
+  await page.request.delete(`/api/v1/services/${slug}`, { headers }).catch(() => {});
 });
 
 test("P5: ServiceDetail #upstream-key hash makes Upstream-key tab active", async ({ page }) => {

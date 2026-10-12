@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, KeyRound } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
@@ -15,6 +15,8 @@ const KEYS = ["ai", "keys"] as const;
 
 interface NewKeyDialogProps {
   onClose: () => void;
+  /** Slug of a provider the key starts limited to: "Everything from <slug>" is ticked. */
+  provider?: string;
 }
 
 /**
@@ -22,12 +24,12 @@ interface NewKeyDialogProps {
  * component's state only: it is taken out of the answer before the mutation
  * keeps its result, and it is gone when the dialog closes.
  */
-function NewKeyDialog({ onClose }: NewKeyDialogProps) {
+function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
   const qc = useQueryClient();
   const scopeId = useId();
   const [name, setName] = useState("");
-  const [restricted, setRestricted] = useState(false);
-  const [allowed, setAllowed] = useState<string[]>([]);
+  const [restricted, setRestricted] = useState(provider !== undefined);
+  const [allowed, setAllowed] = useState<string[]>(provider !== undefined ? [`${provider}/*`] : []);
   const [secret, setSecret] = useState<string | null>(null);
   const [formErr, setFormErr] = useState<string | null>(null);
 
@@ -198,6 +200,21 @@ export default function GatewayKeys() {
   });
 
   const [newOpen, setNewOpen] = useState(false);
+  // /gateway/keys?new=1&provider=<slug> opens "New gateway key" limited to that
+  // provider. The parameters stay while the dialog is open and go when it closes.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const linked = searchParams.get("new") === "1";
+  function closeNew() {
+    setNewOpen(false);
+    if (searchParams.has("new") || searchParams.has("provider")) {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("new");
+        next.delete("provider");
+        return next;
+      }, { replace: true });
+    }
+  }
   const [revoking, setRevoking] = useState<AiGatewayKey | null>(null);
   const [revokeErr, setRevokeErr] = useState<string | null>(null);
   const revoke = useMutation({
@@ -303,7 +320,9 @@ export default function GatewayKeys() {
       )}
 
       {/* Mounted only while open: closing it drops the form and the key it showed. */}
-      {newOpen && <NewKeyDialog onClose={() => setNewOpen(false)} />}
+      {(newOpen || linked) && (
+        <NewKeyDialog onClose={closeNew} provider={linked ? searchParams.get("provider") ?? undefined : undefined} />
+      )}
 
       <Dialog
         open={revoking !== null}

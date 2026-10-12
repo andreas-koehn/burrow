@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
+import { Route, Routes, useLocation } from "react-router-dom";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { addDirectProvider, db } from "@/mocks/db";
@@ -10,6 +11,25 @@ import GatewayModels from "@/pages/GatewayModels";
 function mount() {
   return renderApp(<GatewayModels />, "/gateway/models");
 }
+
+function Where() {
+  const l = useLocation();
+  return <div data-testid="location">{l.pathname + l.search}</div>;
+}
+
+function mountAt(route: string) {
+  return renderApp(
+    <>
+      <Routes><Route path="/gateway/models" element={<GatewayModels />} /></Routes>
+      <Where />
+    </>,
+    route,
+  );
+}
+
+// The provider chosen in the first entry of a format's list.
+const providerOf = (dialog: HTMLElement, format: "OpenAI" | "Anthropic") =>
+  within(within(dialog).getByRole("group", { name: `${format} format, target 1` })).getByLabelText("Provider");
 
 function mountAs(role: "admin" | "user") {
   db.me = { ...db.me, role };
@@ -119,6 +139,72 @@ describe("Models page", () => {
     await userEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
     const dialog = await screen.findByRole("dialog", { name: "Edit burrow-simple" });
     expect(within(dialog).getByLabelText("Model name")).toHaveValue("burrow-simple");
+  });
+
+  it("?new=1&provider=<slug> opens the dialog with that provider chosen for the format it speaks", async () => {
+    mountAt("/gateway/models?new=1&provider=ollama");
+    const dialog = await screen.findByRole("dialog", { name: "New model" });
+    expect(providerOf(dialog, "OpenAI")).toHaveTextContent("ollama");
+    expect(providerOf(dialog, "Anthropic")).toHaveTextContent("Not served");
+    // The model itself is still the reader's to choose.
+    expect(within(dialog).getByLabelText("Model name")).toHaveValue("");
+    expect(within(within(dialog).getByRole("group", { name: "OpenAI format, target 1" })).getByLabelText(/^Target model/)).toBeInTheDocument();
+    // The link stays while the dialog is open.
+    expect(screen.getByTestId("location").textContent).toBe("/gateway/models?new=1&provider=ollama");
+  });
+
+  it("?new=1&provider=<slug>: a provider that speaks the Anthropic format is chosen there", async () => {
+    mountAt("/gateway/models?new=1&provider=zai-anthropic");
+    const dialog = await screen.findByRole("dialog", { name: "New model" });
+    expect(providerOf(dialog, "Anthropic")).toHaveTextContent("zai-anthropic");
+    expect(providerOf(dialog, "OpenAI")).toHaveTextContent("Not served");
+  });
+
+  it("?new=1 alone, or with a provider that is not there, opens the empty dialog", async () => {
+    const first = mountAt("/gateway/models?new=1");
+    let dialog = await screen.findByRole("dialog", { name: "New model" });
+    expect(providerOf(dialog, "OpenAI")).toHaveTextContent("Not served");
+    first.unmount();
+    mountAt("/gateway/models?new=1&provider=gone");
+    dialog = await screen.findByRole("dialog", { name: "New model" });
+    expect(providerOf(dialog, "OpenAI")).toHaveTextContent("Not served");
+    expect(providerOf(dialog, "Anthropic")).toHaveTextContent("Not served");
+  });
+
+  it.each(["Cancel", "Close dialog"])("?new=1&provider=<slug>: closing with %s takes both parameters out of the address", async (name) => {
+    mountAt("/gateway/models?new=1&provider=ollama");
+    const dialog = await screen.findByRole("dialog", { name: "New model" });
+    await userEvent.click(within(dialog).getByRole("button", { name }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByTestId("location").textContent).toBe("/gateway/models");
+    // The button opens an empty dialog afterwards: the link is used up.
+    await userEvent.click(screen.getByRole("button", { name: "New model" }));
+    expect(providerOf(await screen.findByRole("dialog", { name: "New model" }), "OpenAI")).toHaveTextContent("Not served");
+  });
+
+  it("?new=1&provider=<slug>: creating the model takes the parameters out as well", async () => {
+    mountAt("/gateway/models?new=1&provider=ollama");
+    const dialog = await screen.findByRole("dialog", { name: "New model" });
+    await userEvent.type(within(dialog).getByLabelText("Model name"), "burrow-local");
+    const row = within(dialog).getByRole("group", { name: "OpenAI format, target 1" });
+    const target = await within(row).findByLabelText(/^Target model/);
+    if (target.tagName === "INPUT") await userEvent.type(target, "llama3.2");
+    else {
+      await userEvent.click(target);
+      await userEvent.click((await screen.findAllByRole("option"))[0]!);
+    }
+    await userEvent.click(within(dialog).getByRole("button", { name: /^(Create|Create model|Save)$/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(db.aiModels.at(-1)).toMatchObject({ name: "burrow-local" });
+    expect(db.aiModels.at(-1)!.targets[0]).toMatchObject({ dialect: "openai", provider: "ollama" });
+    expect(screen.getByTestId("location").textContent).toBe("/gateway/models");
+  });
+
+  it("?new=1 opens nothing for someone who may not write models", async () => {
+    db.me = { ...db.me, role: "user" };
+    mountAt("/gateway/models?new=1&provider=ollama");
+    await screen.findByRole("table", { name: "Models" });
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("asks before deleting and removes the row", async () => {

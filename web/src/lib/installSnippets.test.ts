@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { downloadTargets, installLines } from "./installSnippets";
+import { downloadTargets, installLines, isCommandName } from "./installSnippets";
 
 describe("installLines", () => {
   it.each(["linux", "macos"] as const)("%s: curl installer, sign-in and run", (os) => {
@@ -31,6 +31,25 @@ describe("installLines", () => {
   it("a target replaces 3000, quoted when the shell needs it", () => {
     expect(installLines("linux", "https://b.example.com", "8080").run).toBe("burrow http 8080");
     expect(installLines("linux", "https://b.example.com", "my host:3000").run).toBe("burrow http 'my host:3000'");
+  });
+
+  it("with a name the run line serves the service of that name", () => {
+    expect(installLines("linux", "https://b.example.com", "11434", "ollama").run).toBe("burrow http 11434 --name ollama");
+    expect(installLines("windows", "https://b.example.com", "11434", "my_svc-2").run).toBe("burrow http 11434 --name my_svc-2");
+    // The other two lines are the same with and without one.
+    const { run: _a, ...withName } = installLines("linux", "https://b.example.com", "11434", "ollama");
+    const { run: _b, ...without } = installLines("linux", "https://b.example.com", "11434");
+    expect(withName).toEqual(without);
+  });
+
+  it.each(["x; rm -rf", "Ollama", "a b", "$(id)", "`id`", "a'b", "ä", "", "a\nb"])("a name that is not safe in a shell (%j) never reaches the command", (name) => {
+    expect(isCommandName(name)).toBe(false);
+    expect(installLines("linux", "https://b.example.com", "11434", name).run).toBe("burrow http 11434");
+  });
+
+  it("takes lower-case letters, digits, hyphen and underscore as a name", () => {
+    expect(isCommandName("ollama-2_b")).toBe(true);
+    expect(isCommandName(undefined)).toBe(false);
   });
 
   it("passes an origin that is not https through, scheme included", () => {

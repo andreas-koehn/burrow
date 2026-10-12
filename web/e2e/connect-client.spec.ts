@@ -1,19 +1,19 @@
 import { test, expect } from "@playwright/test";
 
-// P2.7 — Connect a client guided flow (real-stack Playwright spec).
+// P2.7 — Connect a client (real-stack Playwright spec).
 //
-// Exercises the rebuilt ConnectClient page against the live burrowd:
+// Exercises the ConnectClient page against the live burrowd:
 //   1. Navigate to /clients/connect
-//   2. Fill the name + local + remote + protocol fields
-//   3. Mint a token
-//   4. Assert the generated command shows the real relay endpoint
-//   5. Assert the command is NOT clipped (scrollWidth ≤ clientWidth on .cmd-block)
-//   6. Assert the "Waiting…" indicator appears in role=status
+//   2. Assert the three lines, none of which holds a token
+//   3. Assert the "Waiting…" indicator appears in role=status
+//   4. Assert "Other ways to connect" holds the downloads, the burrow.yaml
+//      example and the way to a token, and no form
+//   5. Assert /clients/connect?service=<id> shows the command that serves that service
 
 // Use the globalSetup-cached admin session (web/e2e/global-setup.ts).
 test.use({ storageState: "playwright-auth.json" });
 
-test("connect-client: fill fields, mint, check command and waiting indicator", async ({ page }) => {
+test("connect-client: three lines, the waiting indicator, and other ways without a form", async ({ page }) => {
   // ── 1. Navigate ──────────────────────────────────────────────────────────
   await page.goto("/clients/connect");
   await expect(page.getByRole("heading", { name: "Connect a client" })).toBeVisible();
@@ -29,90 +29,55 @@ test("connect-client: fill fields, mint, check command and waiting indicator", a
     /\/install\.(sh \| sh|ps1 \| iex)$/, /^burrow login \S+$/, "burrow http 3000",
   ]);
 
-  // The form lives behind "Other ways to connect" since the page leads with the three lines.
-  await page.getByRole("button", { name: "Other ways to connect" }).click();
+  // ── 3. Waiting indicator ─────────────────────────────────────────────────
+  // No burrow client connects in the e2e test environment.
+  await expect(page.locator("[role=status]").filter({ hasText: "Waiting for your client…" })).toBeVisible();
 
-  // ── 3. Fill in the What to expose section ────────────────────────────────
-  // The "Local address" field defaults to 127.0.0.1:3000; override it.
-  const localInput = page.getByLabel("Local address");
-  await localInput.clear();
-  await localInput.fill("127.0.0.1:4000");
+  // ── 4. Other ways to connect: downloads, burrow.yaml, the way to a token ──
+  const other = page.getByRole("button", { name: "Other ways to connect" });
+  await expect(other).toHaveAttribute("aria-expanded", "false");
+  await other.click();
+  await expect(other).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByRole("heading", { name: "Download by hand" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "burrow.yaml" })).toBeVisible();
 
-  // Set TCP remote port
-  const remoteInput = page.getByLabel("Public port");
-  await remoteInput.fill("7500");
+  // The form that minted a token for a `burrow connect` line is gone.
+  for (const label of ["Local address", "Public port", "Client name"]) {
+    await expect(page.getByLabel(label)).toHaveCount(0);
+  }
+  await expect(page.getByRole("button", { name: /generate token/i })).toHaveCount(0);
+  await expect(page.locator("pre#connect-command")).toHaveCount(0);
+  await expect(page.getByText(/bur_/)).toHaveCount(0);
 
-  // Protocol is TCP by default; leave it as TCP for this test.
-
-  // ── 4. Mint a token ──────────────────────────────────────────────────────
-  const clientName = `pw-test-${Date.now()}`;
-  await page.getByLabel("Client name").fill(clientName);
-  await page.getByRole("button", { name: /generate token/i }).click();
-
-  // Wait for the "Run on the client" heading to appear
-  await expect(page.getByRole("heading", { name: /run on the client/i })).toBeVisible();
-
-  // ── 5. Assert command shows the real relay endpoint ───────────────────────
-  // The /clients/connect-info endpoint returns the server's actual listen addr.
-  // We assert the command contains the connect-info server value (not hardcoded).
-  const cmdBlock = page.locator("pre#connect-command code");
-  await expect(cmdBlock).toBeVisible();
-  const cmdText = await cmdBlock.textContent() ?? "";
-  expect(cmdText).toContain("--server ");
-  expect(cmdText).toContain("--local 127.0.0.1:4000");
-  expect(cmdText).toContain("--remote 7500");
-  expect(cmdText).toContain(`--name ${clientName}`);
-  // Must not include --type http for TCP mode
-  expect(cmdText).not.toContain("--type http");
-
-  // ── 6. Assert command block is not clipped (scrollWidth ≤ clientWidth) ───
-  // The .cmd-block.wrap variant allows the pre to wrap rather than overflow.
-  // In a standard viewport it may still scroll if truly long, but the CSS
-  // class must be applied (pre-wrap / break-all) so overflow is visual only.
-  const preEl = page.locator("pre#connect-command.cmd-block.wrap");
-  await expect(preEl).toBeVisible();
-  // Verify the wrap class is present (compile-check that CSS is applied)
-  await expect(preEl).toHaveClass(/wrap/);
-
-  // ── 7. Waiting indicator ──────────────────────────────────────────────────
-  // Since no burrow client is running in the e2e test environment, the
-  // success-loop poller shows "Waiting for <name> to connect…".
-  await expect(page.locator("[role=status]").filter({ hasText: /to connect…/ })).toBeVisible();
-
-  // ── 8. Relay endpoint explainer is visible ────────────────────────────────
-  await expect(page.getByText(/reachable address/i)).toBeVisible();
-
-  // ── 9. The token is shown masked; Copy connect command button is present ──
-  expect(cmdText).toContain("--token bur_••••••••");
-  await expect(
-    page.getByRole("button", { name: /copy connect command/i }),
-  ).toBeVisible();
+  // A token is made under Clients → Tokens.
+  await expect(page.getByText(/Need a token for a machine without a browser\?/)).toBeVisible();
+  await page.getByRole("link", { name: "Clients → Tokens" }).click();
+  await expect(page).toHaveURL(/\/clients\?tab=tokens$/);
+  await expect(page.getByRole("tab", { name: "Tokens", selected: true })).toBeVisible();
 });
 
-test("connect-client: HTTP mode omits --remote and adds --type http", async ({ page }) => {
-  await page.goto("/clients/connect");
-  await expect(page.getByRole("heading", { name: "Connect a client" })).toBeVisible();
-  // The form lives behind "Other ways to connect" since the page leads with the three lines.
-  await page.getByRole("button", { name: "Other ways to connect" }).click();
+test("connect-client: ?service=<id> shows the command that serves that service", async ({ page }) => {
+  const cookies = await page.context().cookies();
+  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 
-  // Switch protocol to HTTP — target the Select trigger by its id
-  const protocolTrigger = page.locator("#ob-protocol");
-  await protocolTrigger.click();
-  await page.getByRole("option", { name: "HTTP" }).click();
+  // A client finds its service by name: the title is what the command names.
+  const svcId = `pw-connect-${Date.now()}`;
+  const created = await page.request.post("/api/v1/services", {
+    headers,
+    data: { service_id: svcId, title: svcId, access_mode: "api_key" },
+  });
+  expect([201, 409]).toContain(created.status());
 
-  // Public port field should be disabled
-  await expect(page.getByLabel("Public port")).toBeDisabled();
+  await page.goto(`/clients/connect?service=${svcId}`);
+  await expect(page.getByText(`Serve ${svcId} from this machine.`)).toBeVisible();
+  // Never served, so the port is the example one; the name is the service's.
+  await expect(page.locator(".install-line pre code").last()).toHaveText(`burrow http 3000 --name ${svcId}`);
 
-  // Mint a token
-  const clientName = `pw-http-${Date.now()}`;
-  await page.getByLabel("Client name").fill(clientName);
-  await page.getByRole("button", { name: /generate token/i }).click();
-
-  await expect(page.getByRole("heading", { name: /run on the client/i })).toBeVisible();
-
-  const cmdText = (await page.locator("pre#connect-command code").textContent()) ?? "";
-  expect(cmdText).toContain("--type http");
-  expect(cmdText).not.toContain("--remote");
+  // A service that is gone leaves the plain page, and says so.
+  await page.goto("/clients/connect?service=pw-connect-gone");
+  await expect(page.getByText("That service no longer exists.")).toBeVisible();
+  await expect(page.locator(".install-line pre code").last()).toHaveText("burrow http 3000");
 });
 
 test("connect-client: on a phone the three lines are readable and nothing leaves the page", async ({ page }) => {

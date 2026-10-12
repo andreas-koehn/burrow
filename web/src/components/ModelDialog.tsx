@@ -13,6 +13,8 @@ export interface ModelDialogProps {
   onOpenChange: (open: boolean) => void;
   /** The model to edit; left out, the dialog creates one. */
   model?: AiModel;
+  /** A new model only: the provider its first target starts on, in the format that provider speaks. */
+  initialTarget?: { dialect: Dialect; provider: string };
 }
 
 // short names the format in a button's label: both lists are on screen at once.
@@ -272,7 +274,7 @@ function parseTimeout(text: string): number | null {
 
 const TIMEOUT_RANGE = "Between 1 and 600 seconds.";
 
-function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
+function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps, "open">) {
   const qc = useQueryClient();
   const editing = model !== undefined;
   const advancedId = useId();
@@ -282,8 +284,10 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
   const [choices, setChoices] = useState<Record<Dialect, TargetChoice[]>>(() => {
     const initial = (dialect: Dialect): TargetChoice[] => {
       const stored = (model?.targets ?? []).filter((t) => t.dialect === dialect);
-      // A format always shows one entry; unset, it reads "Not served".
-      const list = stored.length > 0 ? stored : [{ provider: "", model: "" }];
+      // A format always shows one entry; unset, it reads "Not served". A new
+      // model can start on a provider: its model is still to be chosen.
+      const first = !model && initialTarget?.dialect === dialect ? initialTarget.provider : "";
+      const list = stored.length > 0 ? stored : [{ provider: first, model: "" }];
       return list.map((t) => ({ key: newKey(), provider: t.provider, model: t.model, manual: false }));
     };
     return { openai: initial("openai"), anthropic: initial("anthropic") };
@@ -550,7 +554,7 @@ function ModelForm({ onOpenChange, model }: Omit<ModelDialogProps, "open">) {
  * Create or edit a synthetic model: its name, per API format the ordered list
  * of targets, and how it falls back. The form starts fresh every time it opens.
  */
-export function ModelDialog({ open, onOpenChange, model }: ModelDialogProps) {
+export function ModelDialog({ open, onOpenChange, model, initialTarget }: ModelDialogProps) {
   if (!open) return null;
-  return <ModelForm onOpenChange={onOpenChange} model={model} />;
+  return <ModelForm onOpenChange={onOpenChange} model={model} initialTarget={initialTarget} />;
 }

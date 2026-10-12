@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Copy } from "lucide-react";
 import { Segmented } from "@/components/ds";
 import { detectOs } from "@/lib/platform";
-import { CLIENT_OS_OPTIONS, installLines, isHttpsOrigin, type ClientOs } from "@/lib/installSnippets";
+import { CLIENT_OS_OPTIONS, installLines, isCommandName, isHttpsOrigin, type ClientOs } from "@/lib/installSnippets";
 
 export type InstallLineId = "install" | "login" | "run";
 
@@ -12,6 +12,12 @@ export interface InstallLinesProps {
   relayOrigin: string;
   /** What `burrow http` publishes in the example; a port or host:port. */
   target?: string;
+  /**
+   * The service the run line serves: `burrow http <target> --name <name>`.
+   * Left out, or not a name that is safe in a shell, the line publishes the
+   * port as a service of its own.
+   */
+  name?: string;
   /** Which lines to show. All three by default, and then they are numbered. */
   lines?: readonly InstallLineId[];
 }
@@ -29,13 +35,14 @@ const BOX_NAME: Record<InstallLineId, string> = { install: "Install command", lo
  * relay, sign it in, publish a port. No line ever holds a token; the sign-in
  * is approved in the browser, on /link.
  */
-export function InstallLines({ relayOrigin, target, lines = ALL_LINES }: InstallLinesProps) {
+export function InstallLines({ relayOrigin, target, name, lines = ALL_LINES }: InstallLinesProps) {
   const [os, setOs] = useState<ClientOs>(() => detectOs());
   const [said, setSaid] = useState("");
   const clear = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(clear.current), []);
 
-  const text = installLines(os, relayOrigin, target);
+  const text = installLines(os, relayOrigin, target, name);
+  const served = isCommandName(name) ? name : null;
   const numbered = lines.length === ALL_LINES.length;
 
   async function copy(id: InstallLineId) {
@@ -89,7 +96,9 @@ export function InstallLines({ relayOrigin, target, lines = ALL_LINES }: Install
             )}
             {id === "run" && (
               <p className="muted small">
-                Publishes what listens on that port of the machine; put your own port, or host:port, in its place.
+                {served
+                  ? <>Serves <code>{served}</code> with what listens on that port of the machine; put your own port, or host:port, in its place.</>
+                  : "Publishes what listens on that port of the machine; put your own port, or host:port, in its place."}
               </p>
             )}
           </li>

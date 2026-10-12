@@ -6,7 +6,7 @@ import { test, expect } from "@playwright/test";
 //   1. "Home is default"          — In-1, In-3, metric tiles, quick-action links
 //   2. "Onboarding success loop"  — Ea-1 (connect-client form, command, Waiting indicator)
 //   3. "Command palette"          — In-6, Ea-2 (Ctrl+K opens, type, Enter navigates)
-//   4. "Cross-feature wiring"     — Clr-4 (Providers → "New service and provider" dialog prefilled)
+//   4. "Cross-feature wiring"     — Clr-4 (/services?new=ai → "New provider" on the guided steps)
 //                                  Ea-4 (Overview email notice → /settings/email)
 //
 // This spec runs against the REAL built burrowd (no MSW mocks).
@@ -50,37 +50,19 @@ test.describe("Home is default", () => {
 // 2. Onboarding success loop  (Ea-1)
 // ---------------------------------------------------------------------------
 test.describe("Onboarding success loop", () => {
-  test("connect-client: fill fields → command shows real endpoint + not clipped → Waiting indicator", async ({ page }) => {
+  test("connect-client: three lines to copy → Waiting indicator", async ({ page }) => {
     await page.goto("/clients/connect");
     await expect(page.getByRole("heading", { name: "Connect a client" })).toBeVisible();
 
-    // The form lives behind "Other ways to connect" since the page leads with the three lines.
-    await page.getByRole("button", { name: "Other ways to connect" }).click();
-
-    // Fill form fields
-    const localInput = page.getByLabel("Local address");
-    await localInput.clear();
-    await localInput.fill("127.0.0.1:5000");
-
-    const clientName = `usability-${Date.now()}`;
-    await page.getByLabel("Client name").fill(clientName);
-    await page.getByRole("button", { name: /generate token/i }).click();
-
-    // "Run on the client" section appears after token is minted
-    await expect(page.getByRole("heading", { name: /run on the client/i })).toBeVisible();
-
-    // Command shows the real relay endpoint (not a hardcoded placeholder)
-    const cmdBlock = page.locator("pre#connect-command code");
-    await expect(cmdBlock).toBeVisible();
-    const cmdText = (await cmdBlock.textContent()) ?? "";
-    expect(cmdText).toContain("--server ");
-    expect(cmdText).toContain(`--name ${clientName}`);
-
-    // Command block uses the .wrap class — pre-wrap / break-all applied
-    await expect(page.locator("pre#connect-command.cmd-block.wrap")).toBeVisible();
+    // Nothing to fill in: the page leads with the lines to run on the machine.
+    await expect(page.locator(".install-line pre code")).toHaveText([
+      /\/install\.(sh \| sh|ps1 \| iex)$/, /^burrow login \S+$/, "burrow http 3000",
+    ]);
+    await expect(page.getByRole("button", { name: "Copy run command" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /generate token/i })).toHaveCount(0);
 
     // Waiting indicator (D9 honest state) — no real client connecting in CI
-    await expect(page.locator("[role=status]").filter({ hasText: /to connect…/ })).toBeVisible();
+    await expect(page.locator("[role=status]").filter({ hasText: "Waiting for your client…" })).toBeVisible();
   });
 });
 
@@ -118,17 +100,18 @@ test.describe("Command palette", () => {
 // 4. Cross-feature wiring
 // ---------------------------------------------------------------------------
 test.describe("Cross-feature wiring", () => {
-  test("Providers page: 'New service and provider' button opens dialog prefilled with API-key", async ({ page }) => {
-    // Navigate directly to /services?new=ai, where the button on
-    // /gateway/providers leads; the button itself is tested via RTL (Clr-4)
-    // against MSW. Here we verify the guided create flow works end-to-end.
+  test("Services → Providers: the old link to a service with its provider opens New provider on the guided steps", async ({ page }) => {
+    // /services?new=ai is where the Providers page used to send the reader;
+    // links to it now lead to the dialog under Providers. The dialog itself
+    // is tested via RTL against MSW and end-to-end in ai-service-create.spec.ts.
     await page.goto("/services?new=ai");
 
-    const dialog = page.getByRole("dialog");
+    await expect(page).toHaveURL(/\/gateway\/providers\?new=local$/);
+    const dialog = page.getByRole("dialog", { name: "New provider" });
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("heading", { name: "New service and provider" })).toBeVisible();
+    await expect(dialog.getByRole("radio", { name: "A model server on one of my machines" })).toBeChecked();
 
-    // Access mode is fixed to API key for AI services: no picker is offered
+    // Nothing about a service's access is asked: the dialog sets it.
     await expect(dialog.getByRole("combobox", { name: /access mode/i })).toHaveCount(0);
   });
 

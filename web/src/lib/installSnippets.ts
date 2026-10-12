@@ -24,18 +24,29 @@ export function isHttpsOrigin(relayOrigin: string): boolean {
 }
 
 /**
+ * Whether a service name can stand in a command as it is. The line is copied
+ * into a shell, so nothing else is let through: a name outside these
+ * characters is left out, never quoted.
+ */
+export function isCommandName(name: string | undefined): name is string {
+  return name !== undefined && /^[a-z0-9_-]+$/.test(name);
+}
+
+/**
  * The three lines that bring a machine online. `relayOrigin` is the address
  * this dashboard is served from (scheme, host, port), which is also where the
  * relay serves its install scripts. An origin that is not https is passed on
- * as it is: the client then says what it needs.
+ * as it is: the client then says what it needs. With `name` the run line
+ * serves the service of that name instead of publishing one of its own; a
+ * name that is not safe in a shell is left out.
  */
-export function installLines(os: ClientOs, relayOrigin: string, target = "3000"): InstallLineSet {
+export function installLines(os: ClientOs, relayOrigin: string, target = "3000", name?: string): InstallLineSet {
   const origin = relayOrigin.replace(/\/+$/, "");
   const relay = isHttpsOrigin(origin) ? origin.slice("https://".length) : origin;
   return {
     install: os === "windows" ? `irm ${origin}/install.ps1 | iex` : `curl -fsSL ${origin}/install.sh | sh`,
     login: `burrow login ${relay}`,
-    run: `burrow http ${shellQuote(target)}`,
+    run: `burrow http ${shellQuote(target)}${isCommandName(name) ? ` --name ${name}` : ""}`,
   };
 }
 

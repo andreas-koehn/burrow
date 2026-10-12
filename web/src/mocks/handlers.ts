@@ -745,9 +745,13 @@ export const handlers = [
     const modeMap: Record<string, string> = { "": "open", public: "open", open: "open", api_key: "api_key", burrow_login: "burrow_login" };
     const stored = modeMap[b?.access_mode ?? ""];
     if (stored === undefined) return err(400, `unknown access mode "${b?.access_mode}"`);
-    if (db.services.some((s) => s.id === id)) return err(409, "service already exists");
+    // The relay keeps ids unique, and names per owner: a client finds its service by name.
+    const title = b?.title ?? "";
+    if (db.services.some((s) => s.id === id || (title !== "" && s.user_id === db.me.id && s.name === title))) {
+      return err(409, "service id or slug already in use");
+    }
     const slug = b?.slug ?? "";
-    db.services.push({ id, user_id: db.me.id, name: b?.title ?? "", type: "http", slug, url: slug ? `https://tunnels.example.com/svc/${slug}/` : "", access_mode: stored as AccessMode, api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "" });
+    db.services.push({ id, user_id: db.me.id, name: title, type: "http", slug, url: slug ? `https://tunnels.example.com/svc/${slug}/` : "", access_mode: stored as AccessMode, api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: 0, local_addr: "" });
     return json({ id, created_at: new Date().toISOString() }, 201);
   }),
 
@@ -928,6 +932,9 @@ export const handlers = [
     if (b.max_concurrent != null) {
       return err(400, "max_concurrent of a tunnel provider is set with PUT /api/v1/ai/providers/{slug}");
     }
+    // The format the model server behind the client speaks; OpenAI when left out.
+    const format = b.api_format || "openai";
+    if (format !== "openai" && format !== "anthropic") return err(400, "api_format must be 'openai' or 'anthropic'");
     // An unknown service is the same conflict as one in the wrong mode.
     const svc = db.services.find((s) => s.id === b.service_id);
     if (!svc || svc.type !== "http" || svc.access_mode !== "api_key") {
@@ -936,7 +943,7 @@ export const handlers = [
     if (db.aiProviders.some((p) => p.slug === slug || p.service_id === svc.id)) {
       return err(409, "provider slug or service already in use");
     }
-    const row: AiProviderRow = { slug, name, kind: "tunnel", api_format: "openai", service_id: svc.id };
+    const row: AiProviderRow = { slug, name, kind: "tunnel", api_format: format, service_id: svc.id };
     db.aiProviders.push(row);
     if (b.gateway_only === true) svc.gateway_only = true;
     return json(providerView(row), 201);

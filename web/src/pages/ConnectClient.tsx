@@ -1,311 +1,17 @@
-import { useEffect, useId, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, CircleCheck, Copy } from "lucide-react";
-import { Link } from "react-router-dom";
-import { toast } from "sonner";
+import { useEffect, useId, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronDown, ChevronRight, CircleCheck } from "lucide-react";
+import { Link, useSearchParams } from "react-router-dom";
 import { apiFetch, ApiError } from "@/lib/api";
-import { clientNameError } from "@/lib/clientName";
-import { shellQuote } from "@/lib/shell";
-import { Button, FormField, FormFieldGroup, Input, Select, PageHeader, ErrorNotice } from "@/components/ds";
-import { StatusBadge } from "@/components/StatusBadge";
-import { Toaster } from "@/components/ui/sonner";
+import { Button, PageHeader, ErrorNotice } from "@/components/ds";
 import { useAuth } from "@/auth/useAuth";
 import { InstallLines } from "@/components/InstallLines";
-import { CHECKSUMS_HREF, downloadTargets } from "@/lib/installSnippets";
+import { WaitForProvider } from "@/components/LocalProviderFlow";
+import { CHECKSUMS_HREF, downloadTargets, isCommandName } from "@/lib/installSnippets";
 import { KNOWN_CLIENTS_KEY } from "@/lib/useKnownClients";
-import type { NewToken, ClientView, ClientDiscovery } from "@/lib/contract";
+import type { AiProvider, ClientView, ClientDiscovery, Service } from "@/lib/contract";
 
 interface ConnectInfo { server: string }
-
-const PROTOCOL_OPTIONS = [
-  { value: "tcp", label: "TCP" },
-  { value: "http", label: "HTTP" },
-];
-
-function copy(text: string) {
-  void navigator.clipboard?.writeText(text);
-  toast.success("Copied.");
-}
-
-// Build the CLI command from real field values.
-// tcp:  burrow connect --server <ep> --token <tok> --local <local> [--remote <n>] --name <name>
-// http: burrow connect --server <ep> --token <tok> --local <local> --type http --name <name>
-function buildCmd(opts: {
-  endpoint: string;
-  token: string;
-  local: string;
-  remote: string;
-  protocol: string;
-  name: string;
-}): string {
-  const { endpoint, token, local, remote, protocol, name } = opts;
-  const parts = [
-    "burrow connect",
-    `--server ${shellQuote(endpoint)}`,
-    `--token ${token}`,
-    `--local ${shellQuote(local)}`,
-  ];
-  if (protocol === "tcp" && remote.trim() !== "") {
-    parts.push(`--remote ${shellQuote(remote.trim())}`);
-  }
-  if (protocol === "http") {
-    parts.push("--type http");
-  }
-  parts.push(`--name ${shellQuote(name)}`);
-  return parts.join(" ");
-}
-
-/**
- * The form this page used to be: choose what to expose, name the client, get
- * a freshly minted token and a `burrow connect` command with it.
- */
-function ConnectForm({ endpoint }: { endpoint: string }) {
-  const [name, setName] = useState("");
-  const [reveal, setReveal] = useState(false);
-  const [error, setError] = useState("");
-  // P2.2 — expose fields
-  const [local, setLocal] = useState("127.0.0.1:3000");
-  const [remote, setRemote] = useState("");
-  const [protocol, setProtocol] = useState("tcp");
-  const [nameError, setNameError] = useState<string | null>(null);
-  const credsRef = useRef<HTMLHeadingElement>(null);
-  const nameRef = useRef<HTMLInputElement>(null);
-  const restartedRef = useRef(false);
-
-  const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
-
-  const mint = useMutation({
-    mutationFn: () => apiFetch<NewToken>("/tokens", { method: "POST", body: JSON.stringify({ name }) }),
-    onError: (e: unknown) => setError(e instanceof ApiError ? e.message : "Failed to mint token"),
-  });
-
-  const tok = mint.data;
-
-  // Bring the result into view: it renders below the form and was easy to miss.
-  useEffect(() => {
-    if (!tok) return;
-    credsRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
-    // preventScroll: a plain focus() jumps instantly and cancels the smooth scroll.
-    credsRef.current?.focus({ preventScroll: true });
-  }, [tok]);
-
-  // Starting over unmounts the focused button; hand focus to the name field
-  // once it is enabled again (it is still disabled during the click).
-  useEffect(() => {
-    if (tok || !restartedRef.current) return;
-    restartedRef.current = false;
-    nameRef.current?.focus();
-  }, [tok]);
-
-  function generate() {
-    const problem = clientNameError(name);
-    setNameError(problem);
-    if (problem) return;
-    setError("");
-    mint.mutate();
-  }
-
-  function startOver() {
-    restartedRef.current = true;
-    mint.reset();
-    setName("");
-    setReveal(false);
-    setNameError(null);
-    setError("");
-  }
-
-  // P2.3 — command built from real fields; masked vs unmasked
-  const maskedToken = tok ? "bur_••••••••" : "";
-  const realToken = tok?.token ?? "";
-
-  const cmd = tok
-    ? buildCmd({ endpoint, token: reveal ? realToken : maskedToken, local, remote, protocol, name })
-    : "";
-  const cmdToCopy = tok
-    ? buildCmd({ endpoint, token: realToken, local, remote, protocol, name })
-    : "";
-
-  // P2.5 — success-loop poller (admin only)
-  const { data: clientsData } = useQuery({
-    queryKey: ["clients"],
-    queryFn: () => apiFetch<ClientView[]>("/clients"),
-    enabled: !!tok && isAdmin,
-    refetchInterval: (query) => {
-      const d = query.state.data as ClientView[] | undefined;
-      const alreadyConnected = d?.some((c) => c.token_name === name) ?? false;
-      return alreadyConnected ? false : 3000;
-    },
-    retry: false,
-  });
-
-  const matched = clientsData?.find((c) => c.token_name === name);
-  const connected = !!matched;
-
-  return (
-    <>
-      {/* P2.2 — What to expose section */}
-      <section className="account-section" aria-labelledby="ob-expose">
-        <div className="section-head"><div className="left"><h3 id="ob-expose">1. What to expose</h3></div></div>
-        <FormFieldGroup>
-          <FormField
-            label="Local address"
-            htmlFor="ob-local"
-            w="md"
-            help="host:port of the app on the client machine"
-          >
-            <Input
-              id="ob-local"
-              aria-label="Local address"
-              value={local}
-              onChange={(e) => setLocal(e.target.value)}
-              placeholder="127.0.0.1:3000"
-            />
-          </FormField>
-          <FormField
-            label="Public port"
-            htmlFor="ob-remote"
-            w="sm"
-            help="requested public port — leave blank for auto; ignored for HTTP"
-          >
-            <Input
-              id="ob-remote"
-              aria-label="Public port"
-              type="number"
-              value={remote}
-              onChange={(e) => setRemote(e.target.value)}
-              placeholder="auto"
-              disabled={protocol === "http"}
-            />
-          </FormField>
-          <FormField
-            label="Protocol"
-            htmlFor="ob-protocol"
-            w="sm"
-            help="TCP for raw ports, HTTP for web apps"
-          >
-            <Select
-              id="ob-protocol"
-              options={PROTOCOL_OPTIONS}
-              value={protocol}
-              onChange={(v) => {
-                setProtocol(v);
-                if (v === "http") setRemote("");
-              }}
-            />
-          </FormField>
-        </FormFieldGroup>
-      </section>
-
-      <section className="account-section" aria-labelledby="ob-1">
-        <div className="section-head"><div className="left"><h3 id="ob-1">2. Name this client</h3></div></div>
-        <FormFieldGroup>
-          <FormField
-            label="Client name"
-            htmlFor="ob-name"
-            w="md"
-            help="Lowercase letters, digits, and hyphens. Once issued, the name lives with the token."
-            error={nameError ?? undefined}
-          >
-            <Input
-              id="ob-name"
-              ref={nameRef}
-              aria-label="Client name"
-              aria-invalid={nameError ? true : undefined}
-              value={name}
-              disabled={!!tok}
-              onChange={(e) => { setName(e.target.value); if (nameError) setNameError(null); }}
-              placeholder="e.g. office-box-1"
-            />
-          </FormField>
-        </FormFieldGroup>
-        <div className="actions">
-          {tok ? (
-            <Button variant="secondary" size="sm" onClick={startOver}>Connect another client</Button>
-          ) : (
-            <Button variant="primary" size="sm" disabled={mint.isPending} onClick={generate}>
-              {mint.isPending ? "Generating…" : "Generate token"}
-            </Button>
-          )}
-        </div>
-        {error && <p role="alert" className="field-error">{error}</p>}
-      </section>
-
-      {tok && (
-        <>
-          <section className="account-section" aria-labelledby="ob-2">
-            <div className="section-head"><div className="left"><h3 id="ob-2" ref={credsRef} tabIndex={-1}>3. Credentials</h3></div></div>
-            <ErrorNotice variant="warn" role="status">
-              Store this token now. Burrow doesn't keep a copy you can retrieve later — if you lose it, mint a new one for this client.
-            </ErrorNotice>
-            <div className="stack-md">
-              <div className="field">
-                <label>Server endpoint</label>
-                {/* P2.6 — inline endpoint explainer */}
-                <span className="row row-center gap-2">
-                  <code className="mono">{endpoint}</code>
-                  <span className="muted" style={{ fontSize: "0.8em" }}>
-                    This is the relay's reachable address — a client on another machine must be able to reach it.
-                  </span>
-                </span>
-              </div>
-              <div className="field">
-                <label>Client token</label>
-                <span className="row row-center gap-2">
-                  <code className="mono">{reveal ? tok.token : "bur_••••••••"}</code>
-                  <Button variant="ghost" size="sm" aria-label={reveal ? "Hide token" : "Reveal token"} onClick={() => setReveal((r) => !r)}>
-                    {reveal ? "Hide" : "Reveal"}
-                  </Button>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    aria-label="Copy client token"
-                    onClick={() => copy(tok.token)}
-                  >
-                    <Copy size={13} aria-hidden="true" />
-                  </button>
-                </span>
-              </div>
-            </div>
-          </section>
-
-          <section className="account-section" aria-labelledby="ob-3">
-            <div className="section-head"><div className="left"><h3 id="ob-3">4. Run on the client</h3></div></div>
-            {/* P2.4 — wrapped command + copy */}
-            <div className="row gap-2">
-              <pre id="connect-command" className="cmd-block wrap fill-rest"><code>{cmd}</code></pre>
-              <button
-                type="button"
-                className="icon-btn"
-                aria-label="Copy connect command"
-                onClick={() => copy(cmdToCopy)}
-              >
-                <Copy size={13} aria-hidden="true" />
-              </button>
-            </div>
-
-            {/* P2.5 — success loop status region */}
-            <div role="status" style={{ marginTop: "var(--space-4)" }}>
-              {isAdmin ? (
-                connected && matched ? (
-                  <span className="row row-center gap-2">
-                    <StatusBadge state="online" />
-                    <span>✓ <strong>{name}</strong> connected</span>
-                    <Link to={`/clients/${matched.session_id}`}>View client</Link>
-                  </span>
-                ) : (
-                  <span className="muted">Waiting for <strong>{name}</strong> to connect…</span>
-                )
-              ) : (
-                <span className="muted">Your client will appear under Clients once it connects.</span>
-              )}
-            </div>
-          </section>
-        </>
-      )}
-    </>
-  );
-}
 
 const BACK = { to: "/clients", label: "Clients" } as const;
 
@@ -381,8 +87,70 @@ function WaitForClient() {
   );
 }
 
+/** What the run line publishes for a service: the port it was last served from, when that is known. */
+function targetOf(localAddr: string): string | undefined {
+  const m = /^(.*):(\d{1,5})$/.exec(localAddr);
+  if (!m) return undefined;
+  // On the machine itself the port says it all; another host is kept whole.
+  return ["", "127.0.0.1", "localhost", "[::1]"].includes(m[1]!) ? m[2] : localAddr;
+}
+
+const isGone = (e: unknown) => e instanceof ApiError && e.status === 404;
+
+/** What the page is asked to bring online, from ?service=<id> or ?provider=<slug>. */
+type Served =
+  | { state: "none" | "loading" }
+  /** Nothing to serve after all: the plain page, and why. */
+  | { state: "plain"; note: string }
+  | { state: "service"; name: string; target?: string; providerSlug?: string };
+
+function useServed(): Served {
+  const [params] = useSearchParams();
+  const serviceParam = params.get("service");
+  const providerParam = serviceParam === null ? params.get("provider") : null;
+  const provider = useQuery({
+    queryKey: ["connect", "provider", providerParam],
+    queryFn: () => apiFetch<AiProvider>(`/ai/providers/${encodeURIComponent(providerParam ?? "")}`),
+    retry: false,
+    enabled: providerParam !== null,
+  });
+  // A hosted API has a service row too, but no machine behind it.
+  const hosted = provider.data !== undefined && provider.data.kind !== "tunnel";
+  const serviceId = serviceParam ?? (hosted ? null : provider.data?.service_id ?? null);
+  const service = useQuery({
+    queryKey: ["connect", "service", serviceId],
+    queryFn: () => apiFetch<Service>(`/services/${encodeURIComponent(serviceId ?? "")}`),
+    retry: false,
+    enabled: serviceId !== null,
+  });
+
+  if (serviceParam === null && providerParam === null) return { state: "none" };
+  if (hosted) return { state: "plain", note: "That provider is a hosted API: no machine serves it." };
+  if (isGone(provider.error)) return { state: "plain", note: "That provider no longer exists." };
+  if (isGone(service.error)) return { state: "plain", note: "That service no longer exists." };
+  // Any other failure: the plain page serves as well as it did before.
+  if (provider.isError || service.isError) return { state: "none" };
+  const svc = service.data;
+  if (svc === undefined) return { state: "loading" };
+  // `burrow http` serves HTTP services only.
+  if (svc.type !== "http") {
+    return { state: "plain", note: "That service is not an HTTP service: the lines below do not serve it." };
+  }
+  // A client finds the service it serves by its name.
+  if (!isCommandName(svc.name)) {
+    return { state: "plain", note: "The name of that service cannot stand in a command: the lines below publish a new service." };
+  }
+  return {
+    state: "service",
+    name: svc.name,
+    target: targetOf(svc.local_addr ?? ""),
+    providerSlug: providerParam ?? undefined,
+  };
+}
+
 export default function ConnectClient() {
   const otherId = useId();
+  const served = useServed();
   // What the reader chose; until then the section follows the relay's age.
   const [otherChoice, setOtherChoice] = useState<boolean | null>(null);
 
@@ -417,6 +185,9 @@ export default function ConnectClient() {
         subtitle="Bring a machine online so it can expose a local service through this Burrow relay."
       />
 
+      {served.state === "service" && (
+        <p className="page-intro">Serve <strong>{served.name}</strong> from this machine.</p>
+      )}
       <p className="muted page-intro">
         A client is a machine running <code>burrow</code>. Run these three lines on it: they install the
         client from this relay, sign the machine in and publish a local port. Already connected?{" "}
@@ -429,8 +200,20 @@ export default function ConnectClient() {
         </ErrorNotice>
       )}
 
-      <InstallLines relayOrigin={origin} />
-      <WaitForClient />
+      {served.state === "plain" && <p className="muted small">{served.note}</p>}
+      {/* While the answer is out no command is shown: it would be the one for some other service. */}
+      {served.state !== "loading" && (
+        <>
+          <InstallLines
+            relayOrigin={origin}
+            target={served.state === "service" ? served.target : undefined}
+            name={served.state === "service" ? served.name : undefined}
+          />
+          {served.state === "service" && served.providerSlug
+            ? <WaitForProvider slug={served.providerSlug} />
+            : <WaitForClient />}
+        </>
+      )}
 
       <section className="account-section" aria-labelledby={`${otherId}-head`}>
         <h2 id={`${otherId}-head`} className="connect-other-head">
@@ -488,8 +271,6 @@ export default function ConnectClient() {
                 )}
               </section>
 
-              <ConnectForm endpoint={endpoint} />
-
               <section className="account-section" aria-labelledby="ob-yaml">
                 <div className="section-head"><div className="left"><h3 id="ob-yaml">burrow.yaml</h3></div></div>
                 <p className="muted small">
@@ -498,11 +279,15 @@ export default function ConnectClient() {
                 </p>
                 <pre className="cmd-block"><code>{yamlExample(endpoint)}</code></pre>
               </section>
+
+              <p className="muted small">
+                Need a token for a machine without a browser? Create one under{" "}
+                <Link className="link-inline" to="/clients?tab=tokens">Clients → Tokens</Link>.
+              </p>
             </>
           )}
         </div>
       </section>
-      <Toaster />
     </div>
   );
 }

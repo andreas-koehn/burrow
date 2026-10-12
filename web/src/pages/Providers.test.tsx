@@ -17,6 +17,28 @@ function HashProbe() {
   return <div data-testid="where">{l.pathname + l.hash}</div>;
 }
 
+function Where() {
+  const l = useLocation();
+  return <div data-testid="location">{l.pathname + l.search}</div>;
+}
+
+// The page under a router that also knows where a link leads.
+function mountAt(route: string) {
+  return renderApp(
+    <>
+      <Routes>
+        <Route path="/gateway/providers" element={<Providers />} />
+        <Route path="*" element={null} />
+      </Routes>
+      <Where />
+    </>,
+    route,
+  );
+}
+
+const useExisting = (dialog: HTMLElement) =>
+  userEvent.click(within(dialog).getByRole("button", { name: "Use a service that already exists" }));
+
 function mountAs(role: "admin" | "user") {
   db.me = { ...db.me, role };
   return mount();
@@ -112,19 +134,74 @@ describe("Providers page", () => {
       "An administrator can add one from a service in API-key mode, or add a hosted API. Switching a service to API-key mode does not create a provider.",
     )).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New provider" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "New service and provider" })).toBeNull();
   });
 
   // P5.5 — admin empty-state CTA + concept explainer
-  it("P5.5: admin sees 'New service and provider' and 'New provider' with an empty list", async () => {
+  it("P5.5: with an empty list an admin has 'New provider' twice and no second way in", async () => {
     // db.me is admin by default. A service whose provider is gone, or that was
     // switched to API-key mode later, has no provider until an admin adds one.
     db.services = db.services.filter((s) => s.access_mode !== "api_key");
     mount();
     expect(await screen.findByRole("heading", { name: "No providers yet" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "New service and provider" })).toBeInTheDocument();
     // One in the page header, one in the empty state.
     expect(screen.getAllByRole("button", { name: "New provider" })).toHaveLength(2);
+    // The old second flow is gone: the dialog's first choice does what it did.
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).not.toContain("New service and provider");
+    expect(screen.queryByRole("button", { name: /new .*service/i })).toBeNull();
+  });
+
+  it("the header has one button to add a provider", async () => {
+    mount();
+    await screen.findByRole("table", { name: /providers/i });
+    const header = screen.getByRole("heading", { name: "Providers" }).closest("header, .page-header") ?? document.body;
+    expect(within(header as HTMLElement).getAllByRole("button").map((b) => b.textContent)).toEqual(["New provider"]);
+  });
+
+  it("?new=local opens the dialog on the guided steps", async () => {
+    mountAt("/gateway/providers?new=local");
+    const dialog = await screen.findByRole("dialog", { name: "New provider" });
+    expect(within(dialog).getByRole("radio", { name: "A model server on one of my machines" })).toBeChecked();
+    expect(within(dialog).getByLabelText("Model server")).toBeInTheDocument();
+    // The link stays in the address while the dialog is open: a reload opens it again.
+    expect(screen.getByTestId("location")).toHaveTextContent("/gateway/providers?new=local");
+  });
+
+  it.each(["Cancel", "Close dialog"])("?new=local: closing the dialog with %s takes the parameter out of the address", async (name) => {
+    mountAt("/gateway/providers?new=local");
+    const dialog = await screen.findByRole("dialog", { name: "New provider" });
+    await userEvent.click(within(dialog).getByRole("button", { name }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByTestId("location").textContent).toBe("/gateway/providers");
+  });
+
+  it("?new=local: Done leaves for the provider's page", async () => {
+    mountAt("/gateway/providers?new=local");
+    const dialog = await screen.findByRole("dialog", { name: "New provider" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Gemma");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Continue" }));
+    await within(dialog).findByRole("heading", { name: "Run this on the machine" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/gateway/providers/gemma"));
+  });
+
+  it("the provider that the guided steps created is in the list behind the dialog", async () => {
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New provider" }));
+    const dialog = await screen.findByRole("dialog", { name: "New provider" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Gemma");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Continue" }));
+    await within(dialog).findByRole("heading", { name: "Run this on the machine" });
+    const table = screen.getByRole("table", { name: /providers/i });
+    expect(await within(table).findByRole("link", { name: "Gemma" })).toHaveAttribute("href", "/gateway/providers/gemma");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close dialog" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("?new=local opens nothing for someone who may not add a provider", async () => {
+    db.me = { ...db.me, role: "user" };
+    mountAt("/gateway/providers?new=local");
+    await screen.findByRole("table", { name: /providers/i });
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("P5.5: concept explainer link to /services is always visible", async () => {
@@ -134,7 +211,7 @@ describe("Providers page", () => {
     expect(link).toHaveAttribute("href", "/services");
   });
 
-  it("P5.5: featureAbsent branch has NO 'New service and provider' button", async () => {
+  it("P5.5: featureAbsent branch has no button to add anything", async () => {
     server.use(
       http.get("/api/v1/ai/providers", () =>
         HttpResponse.json({ error: "not found" }, { status: 404 }),
@@ -142,7 +219,7 @@ describe("Providers page", () => {
     );
     mount();
     await screen.findByRole("heading", { name: /ai gateway isn't available/i });
-    expect(screen.queryByRole("button", { name: /new ai service/i })).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
   });
 
   it("does not show cost-summary tokens when there are no providers (L-6)", async () => {
@@ -225,7 +302,8 @@ describe("Providers page", () => {
     await userEvent.click(opener);
     const dialog = await screen.findByRole("dialog", { name: "New provider" });
     // Focus lands on the first control: the choice of what the provider serves.
-    await waitFor(() => expect(within(dialog).getByRole("radio", { name: /a service behind a burrow client/i })).toHaveFocus());
+    await waitFor(() => expect(within(dialog).getByRole("radio", { name: "A model server on one of my machines" })).toHaveFocus());
+    await useExisting(dialog);
     await userEvent.type(within(dialog).getByLabelText("Name"), "Local");
     // Only http services in API-key mode that back no provider yet are offered.
     await userEvent.click(within(dialog).getByLabelText("Service"));
@@ -243,9 +321,11 @@ describe("Providers page", () => {
     mount();
     await userEvent.click(await screen.findByRole("button", { name: "New provider" }));
     const dialog = await screen.findByRole("dialog", { name: "New provider" });
-    expect(await within(dialog).findByText(/no eligible service/i)).toBeInTheDocument();
-    expect(within(dialog).getByRole("link", { name: /create a service in api-key mode/i }))
-      .toHaveAttribute("href", "/services?new=ai");
+    await useExisting(dialog);
+    expect(await within(dialog).findByText(/No service can be used/)).toBeInTheDocument();
+    // The guided steps are the way to a new one: nothing leads to the Services page.
+    expect(within(dialog).queryByRole("link")).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Set up a model server step by step" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Create" })).toBeDisabled();
   });
 
@@ -254,6 +334,7 @@ describe("Providers page", () => {
     mount();
     await userEvent.click(await screen.findByRole("button", { name: "New provider" }));
     const dialog = await screen.findByRole("dialog", { name: "New provider" });
+    await useExisting(dialog);
     await userEvent.type(within(dialog).getByLabelText("Name"), "Local");
     const slug = within(dialog).getByLabelText("Provider slug");
     await userEvent.type(slug, "v1");
@@ -270,6 +351,7 @@ describe("Providers page", () => {
     mount();
     await userEvent.click(await screen.findByRole("button", { name: "New provider" }));
     const dialog = await screen.findByRole("dialog", { name: "New provider" });
+    await useExisting(dialog);
     await userEvent.type(within(dialog).getByLabelText("Name"), "Other");
     await userEvent.type(within(dialog).getByLabelText("Provider slug"), "ollama"); // taken
     await userEvent.click(within(dialog).getByLabelText("Service"));
@@ -285,6 +367,7 @@ describe("Providers page", () => {
     mount();
     await userEvent.click(await screen.findByRole("button", { name: "New provider" }));
     const dialog = await screen.findByRole("dialog", { name: "New provider" });
+    await useExisting(dialog);
     await userEvent.type(within(dialog).getByLabelText("Name"), "Local");
     await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("kind must be 'tunnel'");
@@ -296,6 +379,7 @@ describe("Providers page", () => {
     mount();
     await userEvent.click(await screen.findByRole("button", { name: "New provider" }));
     const dialog = await screen.findByRole("dialog", { name: "New provider" });
+    await useExisting(dialog);
     // "AI" derives a slug that is too short; the server says so.
     await userEvent.type(within(dialog).getByLabelText("Name"), "AI");
     await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
