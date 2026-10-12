@@ -134,7 +134,15 @@ export default function ServiceDetail() {
       <PageHeader
         back={BACK}
         title={label}
-        actions={<Link className="btn btn-secondary btn-sm" to={`/traffic?service=${encodeURIComponent(svc.id)}`}>View traffic</Link>}
+        actions={
+          <>
+            {/* A provider's requests are on the Requests page; these have no other way in. */}
+            {svc.type === "http" && !providerSlug && !backsProvider && (
+              <Link className="btn btn-secondary btn-sm" to={`/gateway/requests/${encodeURIComponent(svc.id)}`}>Captured requests</Link>
+            )}
+            <Link className="btn btn-secondary btn-sm" to={`/traffic?service=${encodeURIComponent(svc.id)}`}>View traffic</Link>
+          </>
+        }
       />
 
       {/* Meta strip */}

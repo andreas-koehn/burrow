@@ -64,6 +64,25 @@ describe("ServiceDetail page", () => {
     expect(await screen.findByRole("link", { name: "View traffic" })).toHaveAttribute("href", "/traffic?service=svc_ai001");
   });
 
+  it("an HTTP service that backs no provider links to its captured requests", async () => {
+    mountAt("/services/svc_web01");
+    expect(await screen.findByRole("link", { name: "Captured requests" })).toHaveAttribute("href", "/gateway/requests/svc_web01");
+    expect(screen.getByRole("link", { name: "View traffic" })).toBeInTheDocument();
+  });
+
+  it("a provider's service has no such link: its requests are on the Requests page", async () => {
+    mount();
+    await screen.findByRole("link", { name: "View traffic" });
+    await waitFor(() => expect(screen.queryByRole("link", { name: "Captured requests" })).toBeNull());
+  });
+
+  it("a service that is not HTTP has no captured requests to link to", async () => {
+    const tcp = db.services.find((s) => s.type !== "http" && s.type !== "direct")!;
+    mountAt(`/services/${tcp.id}`);
+    await screen.findByRole("link", { name: "View traffic" });
+    expect(screen.queryByRole("link", { name: "Captured requests" })).toBeNull();
+  });
+
   it("the title is the service name", async () => {
     mount();
     expect(await screen.findByRole("heading", { level: 1, name: "ollama" })).toBeInTheDocument();

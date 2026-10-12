@@ -55,6 +55,8 @@ async function optionsOf(label: string) {
   return names;
 }
 
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 /** An older relay: no list across providers. */
 const olderRelay = () => server.use(http.get("/api/v1/ai/requests", () => new HttpResponse(null, { status: 404 })));
 
@@ -82,7 +84,7 @@ describe("Requests page", () => {
     mount();
     const t = await table();
     expect(within(t).getAllByRole("columnheader").map((h) => h.textContent))
-      .toEqual(["When", "Provider", "Model", "Path", "Status", "Latency", "Cache", "Guardrail", "Translation"]);
+      .toEqual(["When", "Provider", "Model", "Path", "Status", "Cache", "Guardrail", "Translation"]);
     for (const h of within(t).getAllByRole("columnheader")) expect(h).toHaveAttribute("scope", "col");
   });
 
@@ -225,13 +227,28 @@ describe("Requests page", () => {
     await waitFor(async () => expect(column(await table(), PROVIDER)).toEqual(["ollama", "ollama"]));
   });
 
-  it("an old link to a service that is no provider shows everything, without an error", async () => {
+  it("an old link to a service that does not exist shows everything, without an error", async () => {
     capture("svc_ai001", [1, 2]);
     capture("prov-zai", [1]);
     mount("/gateway/requests?service=svc_gone");
     expect(bodyRows(await table())).toHaveLength(3);
     expect(picker("Provider")).toHaveTextContent("All");
     expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByTestId("path")).toHaveTextContent("/gateway/requests?service=svc_gone");
+  });
+
+  it("an old link to a service that backs no provider goes to that service's own inspector", async () => {
+    // svc_web01 is an HTTP service without a provider; its requests are not in the list across providers.
+    capture("svc_ai001", [1]);
+    mount("/gateway/requests?service=svc_web01&range=7d");
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent(/\/gateway\/requests\/svc_web01$/));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("with no provider at all such a link still goes to the service's inspector", async () => {
+    db.aiProviders = [];
+    mount("/gateway/requests?service=svc_web01");
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent(/\/gateway\/requests\/svc_web01$/));
   });
 
   it("says when filters hide everything and offers to clear them", async () => {
@@ -306,13 +323,6 @@ describe("Requests page", () => {
     const sent = new URL(urls(spy).filter((u) => u.includes("/services/prov-zai/inspector/requests?")).at(-1)!, "http://x").searchParams;
     expect(sent.get("q")).toBe("embed");
     expect(sent.has("since")).toBe(true);
-  });
-
-  it("shows the latency, and a dash when none was measured", async () => {
-    capture("svc_ai001", [1, 2], { duration_ms: 120 });
-    db.inspectorEntries.svc_ai001![1] = { ...db.inspectorEntries.svc_ai001![1]!, duration_ms: 0 };
-    mount();
-    expect(column(await table(), 5)).toEqual(["120 ms", "—"]);
   });
 
   it("shows status, cache and the number of redactions", async () => {
@@ -438,8 +448,10 @@ describe("Requests page", () => {
     captureOff(...db.aiProviders.map((p) => p.slug));
     mount();
     expect(await screen.findByText("Request inspector is off for every provider")).toBeInTheDocument();
-    expect(screen.getByText(/The dashboard has no switch for this yet/)).toHaveTextContent("inspector.enabled");
-    expect(screen.getByText("Choose a provider to see the call for it.")).toBeInTheDocument();
+    expect(screen.getByText("Choose a provider to see how to turn it on.")).toBeInTheDocument();
+    // The call that turns it on names one service; none is named here.
+    expect(screen.queryByText(/The dashboard has no switch for this yet/)).toBeNull();
+    expect(document.body.textContent).not.toMatch(/ai-config/);
   });
 
   it("typing quickly sends one request, with the final q", async () => {
@@ -523,10 +535,16 @@ describe("Requests page", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("a caller who may not inspect requests is told so", async () => {
+  it("a caller who may not inspect requests is told so, and is not asked for again", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const spy = vi.spyOn(globalThis, "fetch");
     server.use(http.get("/api/v1/ai/requests", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
     mount();
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load requests: forbidden");
+    expect(listCalls(spy)).toHaveLength(1);
+    vi.advanceTimersByTime(3 * 5000);
+    await pause(50);
+    expect(listCalls(spy)).toHaveLength(1);
   });
 
   it("shows a skeleton while the requests are loading", async () => {
@@ -542,69 +560,61 @@ describe("Requests page", () => {
     expect(container.querySelector(".skel")).toBeNull();
   });
 
-  /** Stands in for the browser's EventSource, which jsdom does not have. */
-  function stubEventSource() {
-    const opened: { url: string; closed: boolean; emit: (type: string) => void }[] = [];
-    vi.stubGlobal("EventSource", class {
-      private listeners = new Map<string, Set<() => void>>();
-      private self = { url: "", closed: false, emit: (type: string) => this.listeners.get(type)?.forEach((fn) => fn()) };
-      constructor(url: string) { this.self.url = url; opened.push(this.self); }
-      addEventListener(type: string, fn: () => void) {
-        if (!this.listeners.has(type)) this.listeners.set(type, new Set());
-        this.listeners.get(type)!.add(fn);
-      }
-      removeEventListener(type: string, fn: () => void) { this.listeners.get(type)?.delete(fn); }
-      close() { this.self.closed = true; }
-    });
-    return opened;
-  }
-  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  for (const [scope, route] of [["all providers", "/gateway/requests"], ["one provider chosen", "/gateway/requests?provider=ollama"]] as const) {
+    it(`with ${scope} the list is read again every 5 seconds, while the tab is visible and the page is open`, async () => {
+      // No event stream carries captured requests across providers: the page opens none.
+      const streams = vi.fn();
+      vi.stubGlobal("EventSource", class { constructor(url: string) { streams(url); } addEventListener() {} removeEventListener() {} close() {} });
+      // Only the interval is faked: the page's debounce and the test's own waits keep real time.
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      const spy = vi.spyOn(globalThis, "fetch");
+      capture("svc_ai001", [1]);
+      const view = mount(route);
+      expect(bodyRows(await table())).toHaveLength(1);
+      const before = listCalls(spy).length;
 
-  it("with all providers the list is read again every 5 seconds, while the tab is visible", async () => {
-    const opened = stubEventSource();
-    // Only the interval is faked: the page's debounce and the test's own waits keep real time.
+      vi.advanceTimersByTime(4900);
+      await pause(50);
+      expect(listCalls(spy)).toHaveLength(before);
+      capture("svc_ai001", [1, 2]);
+      vi.advanceTimersByTime(200);
+      await pause(50);
+      expect(listCalls(spy)).toHaveLength(before + 1);
+      await waitFor(() => expect(bodyRows(screen.getByRole("table", { name: "Requests" }))).toHaveLength(2));
+
+      const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+      vi.advanceTimersByTime(2 * 5000);
+      await pause(50);
+      expect(listCalls(spy)).toHaveLength(before + 1);
+      visibility.mockRestore();
+      vi.advanceTimersByTime(5000);
+      await pause(50);
+      expect(listCalls(spy)).toHaveLength(before + 2);
+
+      view.unmount();
+      vi.advanceTimersByTime(2 * 5000);
+      await pause(50);
+      expect(listCalls(spy)).toHaveLength(before + 2);
+      expect(streams).not.toHaveBeenCalled();
+    });
+  }
+
+  it("on an older relay the provider's own list is read again every 5 seconds", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const spy = vi.spyOn(globalThis, "fetch");
+    const ownCalls = () => urls(spy).filter((u) => u.includes("/services/svc_ai001/inspector/requests?"));
+    olderRelay();
     capture("svc_ai001", [1]);
     mount();
     expect(bodyRows(await table())).toHaveLength(1);
-    expect(opened).toEqual([]);
-    const before = listCalls(spy).length;
-
-    vi.advanceTimersByTime(4900);
-    await pause(50);
-    expect(listCalls(spy)).toHaveLength(before);
+    const before = ownCalls().length;
+    const asked = listCalls(spy).length;
     capture("svc_ai001", [1, 2]);
-    vi.advanceTimersByTime(200);
-    await pause(50);
-    expect(listCalls(spy)).toHaveLength(before + 1);
-    expect(bodyRows(await table())).toHaveLength(2);
-
-    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     vi.advanceTimersByTime(5000);
     await pause(50);
-    expect(listCalls(spy)).toHaveLength(before + 1);
-    visibility.mockRestore();
-  });
-
-  it("with one provider chosen the list follows the event stream instead", async () => {
-    const opened = stubEventSource();
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    const spy = vi.spyOn(globalThis, "fetch");
-    capture("svc_ai001", [1]);
-    const view = mount("/gateway/requests?provider=ollama");
-    expect(bodyRows(await table())).toHaveLength(1);
-    expect(opened.map((es) => es.url)).toEqual(["/api/v1/events"]);
-    const before = listCalls(spy).length;
-
-    vi.advanceTimersByTime(6000);
-    await pause(50);
-    expect(listCalls(spy)).toHaveLength(before);
-
-    capture("svc_ai001", [1, 2]);
-    opened[0]!.emit("request");
+    expect(ownCalls()).toHaveLength(before + 1);
     await waitFor(() => expect(bodyRows(screen.getByRole("table", { name: "Requests" }))).toHaveLength(2));
-    view.unmount();
-    expect(opened[0]!.closed).toBe(true);
+    // The list the relay does not have is not asked for again.
+    expect(listCalls(spy)).toHaveLength(asked);
   });
 });

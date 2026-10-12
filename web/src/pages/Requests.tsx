@@ -1,6 +1,6 @@
-import { useEffect, useId, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { keepPreviousData, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useId, useMemo, useState } from "react";
+import { Link, Navigate } from "react-router-dom";
+import { keepPreviousData, useQueries, useQuery, type Query } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
 import { parseTimeRange, timeRangeMs, widerRange, type TimeRange } from "@/lib/time-range";
@@ -11,12 +11,18 @@ import { droppedNames, pairWords } from "@/lib/translation";
 import { InspectorOffHint } from "@/components/InspectorOffHint";
 import { Badge, Button, EmptyState, PageHeader, Select, type SelectOption } from "@/components/ds";
 import { LogView, type LogColumn } from "@/components/LogView";
-import type { AiCapturedRequest, AiGatewayKey, AiModel, AiProvider, InspectorEntry, ServiceAIConfig } from "@/lib/contract";
+import type { AiCapturedRequest, AiGatewayKey, AiModel, AiProvider, InspectorEntry, Service, ServiceAIConfig } from "@/lib/contract";
 
-/** The relay returns at most this many requests per call, newest first. */
+/** How many requests the page asks for, newest first; the relay would give 200 unasked and at most 1000. */
 const LIMIT = 100;
-/** With all providers there is no event stream to follow; the list is read again this often. */
+/** No event stream carries captured requests across providers; the list is read again this often. */
 const POLL_MS = 5000;
+/**
+ * Read again while the answers are good. After a failure (no permission, an older
+ * relay) asking again would only repeat it; Retry starts over. The query client
+ * pauses the interval while the tab is hidden.
+ */
+const poll = (q: Query<AiCapturedRequest[]>) => (q.state.error ? false : POLL_MS);
 
 const ALL: SelectOption = { value: "", label: "All" };
 
@@ -53,7 +59,6 @@ function Picker({ label, value, options, onChange }: {
  * and gateway key. A row opens the request inspector, where a request is read and replayed.
  */
 export default function Requests() {
-  const qc = useQueryClient();
   // Period, search and the pickers live in the URL, so a link reproduces the view.
   const [params, setParam] = useUrlParams();
   const range = parseTimeRange(params.get("range"));
@@ -83,12 +88,21 @@ export default function Requests() {
   });
 
   // Links from before the pickers name a service: ?service=<id> means its provider.
-  // An id that belongs to no provider narrows nothing.
-  const linkedService = params.get("service") ?? "";
-  const provider = params.get("provider")
-    || (linkedService ? providerList.find((p) => p.service_id === linkedService)?.slug ?? "" : "");
-  // Until the providers are in, such a link does not say which provider it means.
-  const resolving = !params.get("provider") && linkedService !== "" && providers.isLoading;
+  const linkedService = params.get("provider") ? "" : params.get("service") ?? "";
+  const linkedProvider = linkedService ? providerList.find((p) => p.service_id === linkedService)?.slug ?? "" : "";
+  const provider = params.get("provider") || linkedProvider;
+  // A service that backs no provider keeps its requests in its own inspector; the
+  // link is sent on there. An id that is no service at all narrows nothing.
+  const noProvider = linkedService !== "" && Array.isArray(providers.data) && !linkedProvider;
+  const services = useQuery({
+    queryKey: ["services"],
+    queryFn: () => apiFetch<Service[]>("/services"),
+    retry: false,
+    enabled: noProvider,
+  });
+  const ownInspector = noProvider && Array.isArray(services.data) && services.data.some((s) => s.id === linkedService);
+  // Until both are in, such a link does not say what it means.
+  const resolving = linkedService !== "" && (providers.isLoading || (noProvider && services.isLoading));
   const setProvider = (slug: string) => {
     setParam("service", "");
     setParam("provider", slug);
@@ -107,8 +121,7 @@ export default function Requests() {
     // A changed period or picker keeps the rows on screen until the new ones arrive;
     // every row names its provider and model, so none shows under a wrong heading.
     placeholderData: keepPreviousData,
-    // Paused by the query client while the tab is hidden.
-    refetchInterval: provider ? false : POLL_MS,
+    refetchInterval: poll,
   });
   if (!olderRelay && across.error instanceof ApiError && across.error.status === 404) setOlderRelay(true);
 
@@ -126,6 +139,7 @@ export default function Requests() {
     retry: false,
     enabled: Boolean(single),
     placeholderData: keepPreviousData,
+    refetchInterval: poll,
   });
 
   const list = olderRelay ? ofOne : across;
@@ -133,16 +147,6 @@ export default function Requests() {
   const rows = olderRelay && !single ? (providers.data ? [] : undefined) : list.data;
   const failed = olderRelay && !single && providers.isError ? providers : list;
   const shownProvider = single?.slug ?? provider;
-
-  // One provider's new requests arrive over the event stream; the list follows them.
-  const followed = olderRelay ? single?.service_id ?? "" : provider && "across";
-  useEffect(() => {
-    if (typeof EventSource === "undefined" || !followed) return;
-    const es = new EventSource("/api/v1/events");
-    const onReq = () => qc.invalidateQueries({ queryKey: ["inspector", followed] });
-    es.addEventListener("request", onReq);
-    return () => { es.removeEventListener("request", onReq); es.close(); };
-  }, [qc, followed]);
 
   // Why a list is empty: capture may be switched off. Asked only when there is nothing to show.
   const inScope = shownProvider ? providerList.filter((p) => p.slug === shownProvider) : providerList;
@@ -166,9 +170,11 @@ export default function Requests() {
     />
   );
 
+  if (ownInspector) return <Navigate replace to={`/gateway/requests/${encodeURIComponent(linkedService)}`} />;
+
   // The page is always there; with nothing to list it says what is missing.
   // Known to be empty; a provider list that failed to load is not "no providers".
-  if (Array.isArray(providers.data) && providers.data.length === 0) {
+  if (Array.isArray(providers.data) && providers.data.length === 0 && !resolving) {
     return (
       <div className="inspector-page">
         {header}
@@ -184,7 +190,7 @@ export default function Requests() {
 
   const providerName = new Map(providerList.map((p) => [p.slug, p.name || p.slug]));
 
-  // Tokens and cost are left out: a captured request does not carry them.
+  // Tokens, cost and latency are left out: the relay records none of them on a captured request.
   const columns: LogColumn<AiCapturedRequest>[] = [
     { id: "time", header: "When", cell: (r) => <span className="mono small" title={r.ts}>{formatTimestamp(r.ts)}</span> },
     // A provider renamed since keeps its old slug here.
@@ -193,8 +199,6 @@ export default function Requests() {
     { id: "model", header: "Model", cell: (r) => r.model || "—" },
     { id: "path", header: "Path", cell: (r) => <Link className="mono" to={`/gateway/requests/${r.service_id}/${r.id}`}>{r.path}</Link> },
     { id: "status", header: "Status", cell: (r) => <Badge nodot kind={`status-${Math.floor(r.status / 100)}xx`}>{r.status}</Badge> },
-    // 0 means no time was measured, not an instant answer.
-    { id: "latency", header: "Latency", numeric: true, cell: (r) => (r.duration_ms > 0 ? `${r.duration_ms} ms` : "—") },
     { id: "cache", header: "Cache", cell: (r) => <span className="mono">{r.cache}</span> },
     {
       id: "guardrail",
@@ -240,7 +244,7 @@ export default function Requests() {
   } else if (captureOff) {
     empty = (
       <EmptyState title="Request inspector is off for every provider">
-        <InspectorOffHint serviceId="{service_id}" /> <span>Choose a provider to see the call for it.</span>
+        Choose a provider to see how to turn it on.
       </EmptyState>
     );
   } else if (filtered) {
