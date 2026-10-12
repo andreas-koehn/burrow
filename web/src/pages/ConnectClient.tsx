@@ -6,7 +6,7 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { Button, PageHeader, ErrorNotice } from "@/components/ds";
 import { useAuth } from "@/auth/useAuth";
 import { InstallLines } from "@/components/InstallLines";
-import { WaitForProvider } from "@/components/LocalProviderFlow";
+import { WaitForProvider } from "@/components/WaitForProvider";
 import { CHECKSUMS_HREF, downloadTargets, isCommandName } from "@/lib/installSnippets";
 import { KNOWN_CLIENTS_KEY } from "@/lib/useKnownClients";
 import type { AiProvider, ClientView, ClientDiscovery, Service } from "@/lib/contract";

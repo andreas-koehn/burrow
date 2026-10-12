@@ -1,12 +1,29 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { Route, Routes, useLocation } from "react-router-dom";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
-import { LocalProviderFlow } from "@/components/LocalProviderFlow";
+import { Dialog } from "@/components/ds";
+import { useLocalProviderFlow, type LocalProviderFlowProps } from "@/components/LocalProviderFlow";
+
+// The steps as "New provider" shows them: the parts of the flow in one dialog.
+function LocalProviderFlow(props: LocalProviderFlowProps) {
+  const flow = useLocalProviderFlow(props);
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => { if (!open) props.onDone(); }}
+      title="New provider"
+      description={flow.description}
+      footer={flow.footer}
+    >
+      {flow.body}
+    </Dialog>
+  );
+}
 
 function Where() {
   const l = useLocation();
@@ -137,13 +154,13 @@ describe("Guided provider — step Name", () => {
   it("a taken name is reported on the name field and creates nothing more", async () => {
     const seen = recordRequests();
     try {
-      // The seed has a service of that name.
+      // The seed has a service of that name, and it is no provider.
       mount({ keepSeed: true });
-      await nameIt("Ollama");
+      await nameIt("Grafana");
       await proceed();
       const field = screen.getByLabelText("Name");
       await waitFor(() => expect(field).toHaveAttribute("aria-invalid", "true"));
-      expect(field).toHaveAccessibleDescription("A service named ollama already exists. Choose another name, or use that service.");
+      expect(field).toHaveAccessibleDescription("A service named grafana already exists. Choose another name, or use that service.");
       expect(seen.posts().map((p) => p.path)).toEqual(["/services"]);
       expect(screen.queryByRole("heading", { name: "Run this on the machine" })).toBeNull();
       // Typing takes the server's verdict away.
@@ -152,6 +169,84 @@ describe("Guided provider — step Name", () => {
     } finally {
       seen.stop();
     }
+  });
+
+  // The dialog can be closed while it waits. Opened again with the same name,
+  // "use that service" would lead nowhere: the service is a provider already.
+  it("the name of a provider these steps made before leads to where its wait goes on", async () => {
+    const seen = recordRequests();
+    try {
+      const first = mount();
+      await nameIt("Gemma");
+      await proceed();
+      await screen.findByRole("heading", { name: "Run this on the machine" });
+      await userEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+      first.unmount();
+
+      const { onDone } = mount();
+      await nameIt("Gemma");
+      await proceed();
+      const field = screen.getByLabelText("Name");
+      await waitFor(() => expect(field).toHaveAttribute("aria-invalid", "true"));
+      expect(field).toHaveAccessibleDescription("There already is a provider gemma. Bring it online, or choose another name.");
+      expect(screen.queryByText(/use that service/)).toBeNull();
+      // Nothing was created the second time.
+      expect(seen.posts().map((p) => p.path)).toEqual(["/services", "/ai/providers"]);
+      expect(screen.queryByRole("heading", { name: "Run this on the machine" })).toBeNull();
+      const link = screen.getByRole("link", { name: "Bring it online" });
+      expect(link).toHaveAttribute("href", "/clients/connect?provider=gemma");
+      // The dialog closes on the way there.
+      await userEvent.click(link);
+      expect(onDone).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("where")).toHaveTextContent("/clients/connect?provider=gemma");
+    } finally {
+      seen.stop();
+    }
+  });
+
+  it("the name of a service that has a provider under another slug names that provider", async () => {
+    const seen = recordRequests();
+    try {
+      mount({ keepSeed: true });
+      db.aiProviders.find((p) => p.slug === "llamacpp")!.slug = "llama-box";
+      await nameIt("llamacpp");
+      await proceed();
+      const field = screen.getByLabelText("Name");
+      await waitFor(() => expect(field).toHaveAttribute("aria-invalid", "true"));
+      expect(field).toHaveAccessibleDescription("The service llamacpp already has a provider, llama-box. Bring it online, or choose another name.");
+      expect(screen.getByRole("link", { name: "Bring it online" })).toHaveAttribute("href", "/clients/connect?provider=llama-box");
+      expect(seen.posts()).toEqual([]);
+    } finally {
+      seen.stop();
+    }
+  });
+
+  it("the name of a hosted provider is taken too, and no machine brings that one online", async () => {
+    const seen = recordRequests();
+    try {
+      mount({ keepSeed: true });
+      await nameIt("zai");
+      await proceed();
+      const field = screen.getByLabelText("Name");
+      await waitFor(() => expect(field).toHaveAttribute("aria-invalid", "true"));
+      expect(field).toHaveAccessibleDescription("There already is a provider zai. Choose another name.");
+      expect(screen.queryByRole("link", { name: "Bring it online" })).toBeNull();
+      expect(seen.posts()).toEqual([]);
+      // Another name takes the verdict away.
+      await userEvent.type(field, " local");
+      expect(field).not.toHaveAttribute("aria-invalid");
+    } finally {
+      seen.stop();
+    }
+  });
+
+  it("goes on when the lists cannot be read: the requests say what is wrong", async () => {
+    server.use(http.get("/api/v1/services", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    mount();
+    await nameIt("Gemma");
+    await proceed();
+    await screen.findByRole("heading", { name: "Run this on the machine" });
+    expect(db.aiProviders.at(-1)).toMatchObject({ slug: "gemma" });
   });
 
   it("when the provider cannot be created the service is named and the step can be retried", async () => {
@@ -301,70 +396,6 @@ describe("Guided provider — step Run this on the machine", () => {
     await toRunStep();
     expect(lineTexts()).toHaveLength(3);
   });
-
-  it("turns Online when the provider reports it", async () => {
-    const feed = statusFeed("ollama", [{ state: "never_connected" }, { state: "never_connected" }, { state: "online", model_count: 3 }]);
-    mount();
-    await toRunStep();
-    const waiting = await screen.findByText("Waiting for the client…");
-    const status = waiting.closest("[role=status]")!;
-    expect(status).not.toBeNull();
-    expect(screen.queryByRole("link", { name: "Create a model" })).toBeNull();
-    await waitFor(() => expect(within(status as HTMLElement).getByText("Online")).toBeInTheDocument(), { timeout: 8000 });
-    expect(status).toHaveTextContent("3 models found");
-    expect(screen.queryByText("Waiting for the client…")).toBeNull();
-    expect(feed.asked).toBe(3);
-    // Nothing is left to ask.
-    await pause(2500);
-    expect(feed.asked).toBe(3);
-  }, 20000);
-
-  it("is Online at once when the client was already serving it", async () => {
-    const feed = statusFeed("ollama", [{ state: "online", model_count: 1 }]);
-    mount();
-    await toRunStep();
-    const online = await screen.findByText("Online");
-    expect(online.closest("[role=status]")).toHaveTextContent("1 model found");
-    expect(feed.asked).toBe(1);
-  });
-
-  it("asks a little longer for the catalog of a provider that came online without one, then stops", async () => {
-    const feed = statusFeed("ollama", [{ state: "online" }, { state: "online" }, { state: "online", model_count: 2 }]);
-    mount();
-    await toRunStep();
-    const status = (await screen.findByText("Online")).closest("[role=status]")!;
-    expect(status).not.toHaveTextContent(/found/);
-    await waitFor(() => expect(status).toHaveTextContent("2 models found"), { timeout: 8000 });
-    const asked = feed.asked;
-    await pause(2500);
-    expect(feed.asked).toBe(asked);
-  }, 20000);
-
-  it("tells the list of known clients once when the provider turns online", async () => {
-    statusFeed("ollama", [{ state: "never_connected" }, { state: "online", model_count: 1 }]);
-    mount();
-    await toRunStep();
-    await screen.findByText("Waiting for the client…");
-    const asked: string[] = [];
-    server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
-    try {
-      await screen.findByText("Online", undefined, { timeout: 6000 });
-      await pause(2500);
-      expect(asked.filter((p) => p === "/api/v1/clients/known")).toHaveLength(1);
-    } finally {
-      server.events.removeAllListeners();
-    }
-  }, 20000);
-
-  it("stops asking when the status cannot be read, and says where it shows", async () => {
-    let asked = 0;
-    server.use(http.get("/api/v1/ai/providers/ollama", () => { asked++; return HttpResponse.json({ error: "boom" }, { status: 500 }); }));
-    mount();
-    await toRunStep();
-    expect(await screen.findByText("The status could not be read. The provider's page shows it.")).toBeInTheDocument();
-    await pause(2500);
-    expect(asked).toBe(1);
-  }, 15000);
 
   it("closing while waiting keeps the provider and stops polling", async () => {
     const feed = statusFeed("ollama", [{ state: "never_connected" }]);

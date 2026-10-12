@@ -367,6 +367,32 @@ describe("Connect a client — for a service or a provider", () => {
     expect(lineTexts()[2]).toBe("burrow http 192.168.1.20:8000 --name ollama");
   });
 
+  // The address is what the client reported; the relay does not check it. In
+  // PowerShell a POSIX-quoted `x'\'';calc;'\''y:80` would run calc.
+  it.each([
+    "x';calc;'y:80", "x;calc:80", "$(calc):80", "x`calc`:80", "x|calc:80", "x & calc:80", "127.0.0.1;calc:80", "http://x:80", "x:99999",
+  ])("?service=<id>: an address that is no host:port (%j) reaches no command, on any operating system", async (hostile) => {
+    db.services.find((x) => x.id === "svc_ai001")!.local_addr = hostile;
+    mount("/clients/connect?service=svc_ai001");
+    await screen.findByText(/from this machine\./);
+    for (const os of ["Linux", "macOS", "Windows"]) {
+      await userEvent.click(screen.getByRole("radio", { name: os }));
+      expect(screen.getByRole("radio", { name: os })).toHaveAttribute("aria-checked", "true");
+      const run = lineTexts()[2]!;
+      expect(run, os).toBe("burrow http 3000 --name ollama");
+      // Nothing a shell would act on: no quote, separator, pipe, substitution or blank beyond the plain words.
+      expect(run, os).toMatch(/^burrow http [A-Za-z0-9.:-]+ --name [a-z0-9][a-z0-9_-]*$/);
+      expect(document.querySelector(".install-lines")!.textContent, os).not.toContain("calc");
+    }
+  });
+
+  it("?service=<id>: a name that begins with a hyphen is not put into the command as a flag", async () => {
+    db.services.find((x) => x.id === "svc_ai001")!.name = "--config";
+    mount("/clients/connect?service=svc_ai001");
+    expect(await screen.findByText("The name of that service cannot stand in a command: the lines below publish a new service.")).toBeInTheDocument();
+    expect(lineTexts()[2]).toBe("burrow http 3000");
+  });
+
   it("?service=<id>: a name that cannot stand in a command is not claimed to be served", async () => {
     db.services.find((x) => x.id === "svc_ai001")!.name = "My model; rm -rf";
     mount("/clients/connect?service=svc_ai001");

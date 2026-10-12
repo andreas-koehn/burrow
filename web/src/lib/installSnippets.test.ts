@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { downloadTargets, installLines, isCommandName } from "./installSnippets";
+import { CLIENT_OS_OPTIONS, downloadTargets, installLines, isCommandName, isTarget } from "./installSnippets";
+
+// Every operating system the lines are written for.
+const EVERY_OS = CLIENT_OS_OPTIONS.map((o) => o.value);
+// What a command may consist of when everything in it was let through on purpose.
+const PLAIN_RUN = /^burrow http (?:[A-Za-z0-9.:-]+|'[A-Za-z0-9.:[\]-]+')(?: --name [a-z0-9][a-z0-9_-]*)?$/;
 
 describe("installLines", () => {
   it.each(["linux", "macos"] as const)("%s: curl installer, sign-in and run", (os) => {
@@ -28,9 +33,35 @@ describe("installLines", () => {
     expect(installLines("linux", "https://b.example.com/").install).toBe("curl -fsSL https://b.example.com/install.sh | sh");
   });
 
-  it("a target replaces 3000, quoted when the shell needs it", () => {
+  it("a target replaces 3000: a port, or host:port", () => {
     expect(installLines("linux", "https://b.example.com", "8080").run).toBe("burrow http 8080");
-    expect(installLines("linux", "https://b.example.com", "my host:3000").run).toBe("burrow http 'my host:3000'");
+    expect(installLines("linux", "https://b.example.com", "192.168.1.20:8000").run).toBe("burrow http 192.168.1.20:8000");
+    expect(installLines("windows", "https://b.example.com", "gpu-box.lan:11434").run).toBe("burrow http gpu-box.lan:11434");
+  });
+
+  // The brackets would be a pattern to a POSIX shell; single quotes are
+  // literal there and in PowerShell alike, and a target holds no quote.
+  it.each(EVERY_OS)("%s: an IPv6 address is quoted", (os) => {
+    expect(installLines(os, "https://b.example.com", "[::1]:8000").run).toBe("burrow http '[::1]:8000'");
+  });
+
+  it.each(["8080", "1", "65535", "localhost:8000", "127.0.0.1:11434", "gpu-box.lan:1234", "[::1]:8000", "[fe80::1]:80"])(
+    "takes %j as a target", (target) => {
+      expect(isTarget(target)).toBe(true);
+    });
+
+  // The address a service was last served from is what its client reported:
+  // the relay does not check it, and the line is pasted into a shell.
+  describe.each(EVERY_OS)("%s: a target that is not a port or host:port", (os) => {
+    it.each([
+      "x';calc;'y:80", "x;calc:80", "x`calc`:80", "$(calc):80", "x|calc:80", "x&calc:80", "a b:80", "x\"y:80", "x\ny:80",
+      "http://x:80", "x:80/path", "-x:80", "x-:80", "[::1;calc]:80", "[::1]", "x:", ":80", "x:0", "x:65536", "x:123456", "0", "", "host",
+    ])("%j never reaches the command", (target) => {
+      expect(isTarget(target)).toBe(false);
+      const { run } = installLines(os, "https://b.example.com", target, "ollama");
+      expect(run).toBe("burrow http 3000 --name ollama");
+      expect(run).toMatch(PLAIN_RUN);
+    });
   });
 
   it("with a name the run line serves the service of that name", () => {
@@ -47,8 +78,18 @@ describe("installLines", () => {
     expect(installLines("linux", "https://b.example.com", "11434", name).run).toBe("burrow http 11434");
   });
 
+  // A name that begins with a hyphen would be read as a flag of its own.
+  it.each(["--config", "-x", "-", "--name", "_x"])("a name that does not begin with a letter or digit (%j) never reaches the command", (name) => {
+    expect(isCommandName(name)).toBe(false);
+    for (const os of EVERY_OS) {
+      expect(installLines(os, "https://b.example.com", "11434", name).run).toBe("burrow http 11434");
+    }
+  });
+
   it("takes lower-case letters, digits, hyphen and underscore as a name", () => {
     expect(isCommandName("ollama-2_b")).toBe(true);
+    expect(isCommandName("2nd-box")).toBe(true);
+    expect(isCommandName("a")).toBe(true);
     expect(isCommandName(undefined)).toBe(false);
   });
 

@@ -122,7 +122,7 @@ describe("Providers page", () => {
     mount();
     expect(await screen.findByRole("heading", { name: "No providers yet" })).toBeInTheDocument();
     expect(screen.getByText(
-      "Add one from a service in API-key mode, or add a hosted API. Switching a service to API-key mode does not create a provider.",
+      "Add a model server on one of your machines, or a hosted API. Switching a service to API-key mode does not create a provider.",
     )).toBeInTheDocument();
   });
 
@@ -131,7 +131,7 @@ describe("Providers page", () => {
     mountAs("user");
     expect(await screen.findByRole("heading", { name: "No providers yet" })).toBeInTheDocument();
     expect(screen.getByText(
-      "An administrator can add one from a service in API-key mode, or add a hosted API. Switching a service to API-key mode does not create a provider.",
+      "An admin can add a model server on one of their machines, or a hosted API. Switching a service to API-key mode does not create a provider.",
     )).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New provider" })).toBeNull();
   });
@@ -197,11 +197,28 @@ describe("Providers page", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
-  it("?new=local opens nothing for someone who may not add a provider", async () => {
+  it("?new=local tells someone who may not add a provider who can, and uses the link up", async () => {
     db.me = { ...db.me, role: "user" };
     mountAt("/gateway/providers?new=local");
     await screen.findByRole("table", { name: /providers/i });
+    const notice = await screen.findByText("Adding a provider needs an admin.");
+    expect(notice.closest("[role=status]")).not.toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/gateway/providers"));
+    // It stays, though the parameter that asked is gone.
+    expect(screen.getByText("Adding a provider needs an admin.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New provider" })).toBeNull();
+  });
+
+  it("says nothing of the kind to a non-admin who only opens the page, nor to an admin with the link", async () => {
+    const first = mountAs("user");
+    await screen.findByRole("table", { name: /providers/i });
+    expect(screen.queryByText("Adding a provider needs an admin.")).toBeNull();
+    first.unmount();
+    db.me = { ...db.me, role: "admin" };
+    mountAt("/gateway/providers?new=local");
+    await screen.findByRole("dialog", { name: "New provider" });
+    expect(screen.queryByText("Adding a provider needs an admin.")).toBeNull();
   });
 
   it("P5.5: concept explainer link to /services is always visible", async () => {

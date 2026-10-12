@@ -1,17 +1,17 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/auth/useAuth";
-import { Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
+import { Button, ErrorNotice, FormField, FormFieldGroup, Input, Select } from "@/components/ds";
 import { InstallLines } from "@/components/InstallLines";
-import { StatusBadge } from "@/components/StatusBadge";
+import { WaitForProvider } from "@/components/WaitForProvider";
+import { isTarget } from "@/lib/installSnippets";
 import { providerSlugError } from "@/lib/providerSlug";
 import { providerBaseUrl } from "@/lib/serviceUrl";
-import { providerState } from "@/lib/status";
-import { KNOWN_CLIENTS_KEY, useKnownClients } from "@/lib/useKnownClients";
-import type { AiProvider } from "@/lib/contract";
+import { useKnownClients } from "@/lib/useKnownClients";
+import type { AiProvider, Service } from "@/lib/contract";
 
 export interface LocalProviderFlowProps {
   /** The dialog is closed: by Cancel, by Done, or any other way. */
@@ -20,7 +20,7 @@ export interface LocalProviderFlowProps {
   onUseExisting: () => void;
 }
 
-/** What the flow shows right now, for a dialog that is not the flow's own. */
+/** What the flow shows right now, for the dialog that holds it. */
 export interface LocalProviderFlowParts {
   step: "name" | "run";
   description: string;
@@ -53,84 +53,6 @@ function slugFromName(name: string): string {
   return slug;
 }
 
-/** What `burrow http` publishes: a port, or host:port. */
-function isTarget(value: string): boolean {
-  const m = /^(?:(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\]):)?(\d{1,5})$/.exec(value);
-  if (!m) return false;
-  const port = Number(m[1]);
-  return port >= 1 && port <= 65535;
-}
-
-// How often a provider that is online is asked again for a catalog it does not have yet.
-const CATALOG_ANSWERS = 5;
-
-export interface WaitForProviderProps {
-  slug: string;
-  /** Shown below the line once the provider is online: what to do next. */
-  children?: ReactNode;
-}
-
-/**
- * The line a reader waits on after the command: it asks for the provider
- * every two seconds until a client serves it, then says Online and how many
- * models the catalog has. An answer that fails ends the asking.
- */
-export function WaitForProvider({ slug, children }: WaitForProviderProps) {
-  const qc = useQueryClient();
-  // The number of the answer that first said online.
-  const onlineSince = useRef<number | null>(null);
-  const provider = useQuery({
-    // Not below ["ai", "providers"]: refreshing the list must not ask here again.
-    queryKey: ["ai", "provider-status", slug],
-    queryFn: () => apiFetch<AiProvider>(`/ai/providers/${encodeURIComponent(slug)}`),
-    retry: false,
-    // An answer from an earlier wait says nothing about now.
-    gcTime: 0,
-    refetchInterval: (query) => {
-      if (query.state.status === "error") return false;
-      const p = query.state.data;
-      if (!p || providerState(p) !== "online") {
-        onlineSince.current = null;
-        return 2000;
-      }
-      if (p.model_count > 0) return false;
-      // The catalog is read after the client has connected: ask a little longer for it.
-      onlineSince.current ??= query.state.dataUpdateCount;
-      return query.state.dataUpdateCount - onlineSince.current < CATALOG_ANSWERS ? 2000 : false;
-    },
-  });
-  const p = provider.data;
-  const online = p !== undefined && providerState(p) === "online";
-
-  // The lists behind this line are not asked every two seconds: tell them once.
-  useEffect(() => {
-    if (!online) return;
-    void qc.invalidateQueries({ queryKey: KNOWN_CLIENTS_KEY });
-    void qc.invalidateQueries({ queryKey: ["ai", "providers"] });
-  }, [online, qc]);
-
-  return (
-    <>
-      <div role="status" className="connect-wait">
-        {online ? (
-          <>
-            <StatusBadge state="online" />
-            {p.model_count > 0 && <span>{p.model_count === 1 ? "1 model found" : `${p.model_count} models found`}</span>}
-          </>
-        ) : provider.isError ? (
-          <span className="muted">The status could not be read. The provider's page shows it.</span>
-        ) : (
-          <>
-            <span className="spinner" aria-hidden="true" />
-            <span className="muted">Waiting for the client…</span>
-          </>
-        )}
-      </div>
-      {online && children}
-    </>
-  );
-}
-
 /**
  * Puts a model server that runs on one of the reader's machines behind the
  * gateway, in two steps: name it, then run one command on the machine. The
@@ -156,7 +78,7 @@ export function useLocalProviderFlow({ onDone, onUseExisting }: LocalProviderFlo
   const [addressLeft, setAddressLeft] = useState(false);
   const [format, setFormat] = useState<Format>("openai");
   // nameErr is the relay's verdict on the name; formErr is everything else.
-  const [nameErr, setNameErr] = useState<string | null>(null);
+  const [nameErr, setNameErr] = useState<ReactNode>(null);
   const [formErr, setFormErr] = useState<string | null>(null);
   // What exists already: the service after the first request, the provider after the second.
   const [service, setService] = useState<{ id: string; name: string } | null>(null);
@@ -172,10 +94,48 @@ export function useLocalProviderFlow({ onDone, onUseExisting }: LocalProviderFlo
   const addressProblem = isTarget(target) ? null : "Enter host:port or a port.";
   const missing = nameProblem ?? addressProblem;
 
+  /**
+   * The provider that goes by this slug already, or that the service of this
+   * name already has: the one these steps made before, when the dialog was
+   * closed while it waited. Asked for when the steps are sent off, from the
+   * lists the pages behind the dialog show.
+   */
+  async function providerFor(wanted: string): Promise<AiProvider | undefined> {
+    try {
+      const [providers, services] = await Promise.all([
+        qc.fetchQuery({ queryKey: ["ai", "providers"], queryFn: () => apiFetch<AiProvider[]>("/ai/providers") }),
+        qc.fetchQuery({ queryKey: ["services"], queryFn: () => apiFetch<Service[]>("/services") }),
+      ]);
+      const backing = (Array.isArray(services) ? services : []).find((s) => s.id === wanted || s.name === wanted);
+      return (Array.isArray(providers) ? providers : [])
+        .find((p) => p.slug === wanted || (backing !== undefined && p.service_id === backing.id));
+    } catch {
+      // The requests that follow say what is wrong.
+      return undefined;
+    }
+  }
+
   const create = useMutation({
     mutationFn: async (v: { slug: string; name: string; format: Format }) => {
       let made = service;
       if (made === null) {
+        // Nothing is created next to a provider that is there already.
+        const taken = await providerFor(v.slug);
+        if (taken) {
+          const what = taken.slug === v.slug
+            ? `There already is a provider ${taken.slug}.`
+            : `The service ${v.slug} already has a provider, ${taken.slug}.`;
+          setNameErr(taken.kind === "tunnel" ? (
+            <>
+              {what}{" "}
+              {/* Where its command is, and where the wait for its client goes on. */}
+              <Link className="link-inline" to={`/clients/connect?provider=${encodeURIComponent(taken.slug)}`} onClick={onDone}>
+                Bring it online
+              </Link>, or choose another name.
+            </>
+          ) : `${what} Choose another name.`);
+          return null;
+        }
         try {
           // A client finds the service it serves by name, so the service is
           // named as the command will name it. Only the gateway reaches it.
@@ -345,21 +305,4 @@ export function useLocalProviderFlow({ onDone, onUseExisting }: LocalProviderFlo
       </>
     ),
   };
-}
-
-/** The guided steps in a dialog of their own. */
-export function LocalProviderFlow(props: LocalProviderFlowProps) {
-  const flow = useLocalProviderFlow(props);
-  const { onDone } = props;
-  return (
-    <Dialog
-      open
-      onOpenChange={(open) => { if (!open) onDone(); }}
-      title="New provider"
-      description={flow.description}
-      footer={flow.footer}
-    >
-      {flow.body}
-    </Dialog>
-  );
 }

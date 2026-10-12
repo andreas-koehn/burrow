@@ -30,13 +30,26 @@ function hitRatio(hits: number, requests: number): string {
 export default function Providers() {
   const qc = useQueryClient();
   const nav = useNavigate();
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const isAdmin = user?.role === "admin";
   const [newOpen, setNewOpen] = useState(false);
   // /gateway/providers?new=local opens the dialog too. The parameter stays
   // while the dialog is open, so a reload opens it again, and goes when it closes.
   const [searchParams, setSearchParams] = useSearchParams();
   const linked = searchParams.get("new") === "local";
+  // The link is no use to someone who may not add a provider: the page says
+  // who can, and keeps saying it once the parameter is taken out.
+  const refused = linked && !loading && !isAdmin;
+  const [needsAdmin, setNeedsAdmin] = useState(false);
+  if (refused && !needsAdmin) setNeedsAdmin(true);
+  useEffect(() => {
+    if (!refused) return;
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("new");
+      return next;
+    }, { replace: true });
+  }, [refused, setSearchParams]);
   function setDialogOpen(open: boolean) {
     setNewOpen(open);
     if (!open && linked) {
@@ -115,6 +128,10 @@ export default function Providers() {
         or a hosted API that the relay calls itself.
       </p>
 
+      {needsAdmin && (
+        <ErrorNotice variant="info" role="status">Adding a provider needs an admin.</ErrorNotice>
+      )}
+
       <MetricStrip ariaLabel="Provider metrics">
         <MetricTile label="Requests (24h)" value={fmtInt(totalRequests)} />
         <MetricTile
@@ -159,8 +176,8 @@ export default function Providers() {
           ) : undefined}
         >
           {isAdmin
-            ? "Add one from a service in API-key mode, or add a hosted API."
-            : "An administrator can add one from a service in API-key mode, or add a hosted API."}
+            ? "Add a model server on one of your machines, or a hosted API."
+            : "An admin can add a model server on one of their machines, or a hosted API."}
           {" Switching a service to API-key mode does not create a provider."}
         </EmptyState>
       ) : (
