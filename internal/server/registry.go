@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
+	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/proto"
 )
 
@@ -46,6 +47,10 @@ type Tunnel struct {
 	Subdomain string // assigned subdomain; "" for tcp tunnels
 	ServiceID string // stable service identity from ServiceResolver; "" for tcp tunnels
 	IsHTTP    bool   // true for http-mode tunnels (no TCP port allocated)
+
+	// What the registration reported, for the observer's TunnelOpened event.
+	accessMode string
+	created    bool
 }
 
 // ClientSession is one authenticated client connection.
@@ -141,6 +146,24 @@ type Registry struct {
 	mu          sync.RWMutex
 	sessions    map[string]*ClientSession
 	tunnelIndex map[string]*ClientSession
+	obs         Observer // nil: nobody is told
+}
+
+// SetObserver registers the observer of this registry's sessions and tunnels.
+func (r *Registry) SetObserver(o Observer) {
+	r.mu.Lock()
+	r.obs = o
+	r.mu.Unlock()
+}
+
+// observer returns the registered observer, or one that does nothing.
+func (r *Registry) observer() Observer {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.obs == nil {
+		return noopObserver{}
+	}
+	return r.obs
 }
 
 // NewRegistry returns an empty Registry.
@@ -159,6 +182,7 @@ func (r *Registry) AddSession(cs *ClientSession) {
 	r.mu.Lock()
 	r.sessions[cs.SessionID] = cs
 	r.mu.Unlock()
+	r.observer().ObserveSession(sessionEvent(observe.SessionOpened, cs))
 }
 
 // RemoveSession drops a session and clears its tunnel-index entries.
@@ -167,12 +191,15 @@ func (r *Registry) RemoveSession(cs *ClientSession) {
 	// the registry-level tunnelIndex without holding two locks in nested order.
 	cs.mu.Lock()
 	ids := make([]string, 0, len(cs.Tunnels))
-	for id := range cs.Tunnels {
+	open := make([]*Tunnel, 0, len(cs.Tunnels))
+	for id, t := range cs.Tunnels {
 		ids = append(ids, id)
+		open = append(open, t)
 	}
 	cs.mu.Unlock()
 
 	r.mu.Lock()
+	_, registered := r.sessions[cs.SessionID]
 	delete(r.sessions, cs.SessionID)
 	for _, id := range ids {
 		// Only clear if the index still points at THIS session (a fast
@@ -182,6 +209,20 @@ func (r *Registry) RemoveSession(cs *ClientSession) {
 		}
 	}
 	r.mu.Unlock()
+
+	// Told once: a session that is not registered (any more) ends nothing.
+	if !registered {
+		return
+	}
+	obs := r.observer()
+	for _, t := range open {
+		obs.ObserveSession(tunnelEvent(observe.TunnelClosed, cs, t))
+	}
+	ev := sessionEvent(observe.SessionClosed, cs)
+	if !cs.ConnectedAt.IsZero() {
+		ev.Duration = time.Since(cs.ConnectedAt)
+	}
+	obs.ObserveSession(ev)
 }
 
 // AddTunnel records a tunnel under a session and indexes it on the registry.
@@ -196,11 +237,13 @@ func (r *Registry) AddTunnel(cs *ClientSession, t *Tunnel) {
 	r.mu.Lock()
 	r.tunnelIndex[t.ID] = cs
 	r.mu.Unlock()
+	r.observer().ObserveSession(tunnelEvent(observe.TunnelOpened, cs, t))
 }
 
 // RemoveTunnel drops a tunnel from a session and from the registry index.
 func (r *Registry) RemoveTunnel(cs *ClientSession, tunnelID string) {
 	cs.mu.Lock()
+	t := cs.Tunnels[tunnelID]
 	delete(cs.Tunnels, tunnelID)
 	cs.mu.Unlock()
 
@@ -209,6 +252,9 @@ func (r *Registry) RemoveTunnel(cs *ClientSession, tunnelID string) {
 		delete(r.tunnelIndex, tunnelID)
 	}
 	r.mu.Unlock()
+	if t != nil {
+		r.observer().ObserveSession(tunnelEvent(observe.TunnelClosed, cs, t))
+	}
 }
 
 // SessionByTunnelID probes the tunnel-ID index. Returns (cs, true) when the

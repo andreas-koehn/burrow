@@ -584,7 +584,9 @@ func (r *obsRelay) obsTraffic() {
 			Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		}).Run(refusedCtx)
 	}()
-	time.Sleep(time.Second) // long enough for one handshake and one refusal
+	// The refusal is visible once the relay has told the observer: tunnel.failed
+	// reaches the recording endpoint.
+	r.eventually("the relay refuses the taken tcp port (tunnel.failed delivered)", func() bool { return r.hook.seen("tunnel.failed") })
 	cancelRefused()
 	<-refusedDone
 
@@ -660,32 +662,24 @@ func familiesAndSamples(text string) (declared []string, sampled map[string]bool
 // give a sample, each with the reason. Everything else must have one.
 var metricFamiliesWithoutSamples = map[string]string{
 	// --- Not wired yet. A task takes its lines out when it wires them. ---
-	"burrow_client_session_count":            "W03",
-	"burrow_client_session_duration_seconds": "W03",
-	"burrow_client_bytes_in_total":           "W03",
-	"burrow_client_bytes_out_total":          "W03",
-	"burrow_control_reconnects_total":        "W03",
-	"burrow_connections_total":               "W03",
-	"burrow_connection_bytes_in_total":       "W03",
-	"burrow_connection_bytes_out_total":      "W03",
-	"burrow_http_requests_total":             "W04",
-	"burrow_http_request_duration_seconds":   "W04",
-	"burrow_http_request_bytes_in_total":     "W04",
-	"burrow_http_request_bytes_out_total":    "W04",
-	"burrow_ai_tokens_in_total":              "W05",
-	"burrow_ai_tokens_out_total":             "W05",
-	"burrow_ai_cost_usd_total":               "W05",
-	"burrow_ai_cache_hits_total":             "W05",
-	"burrow_ai_cache_misses_total":           "W05",
-	"burrow_ai_failover_events_total":        "W06",
-	"burrow_ai_upstream_errors_total":        "W06",
-	"burrow_db_query_duration_seconds":       "W07",
-	"burrow_audit_chain_length":              "W07",
-	"burrow_audit_chain_last_hash":           "W07",
-	"burrow_custom_domain_count":             "W07",
-	"burrow_db_backend":                      "W07",
-	"burrow_db_pool_active":                  "W07",
-	"burrow_db_pool_idle":                    "W07",
+	"burrow_http_requests_total":           "W04",
+	"burrow_http_request_duration_seconds": "W04",
+	"burrow_http_request_bytes_in_total":   "W04",
+	"burrow_http_request_bytes_out_total":  "W04",
+	"burrow_ai_tokens_in_total":            "W05",
+	"burrow_ai_tokens_out_total":           "W05",
+	"burrow_ai_cost_usd_total":             "W05",
+	"burrow_ai_cache_hits_total":           "W05",
+	"burrow_ai_cache_misses_total":         "W05",
+	"burrow_ai_failover_events_total":      "W06",
+	"burrow_ai_upstream_errors_total":      "W06",
+	"burrow_db_query_duration_seconds":     "W07",
+	"burrow_audit_chain_length":            "W07",
+	"burrow_audit_chain_last_hash":         "W07",
+	"burrow_custom_domain_count":           "W07",
+	"burrow_db_backend":                    "W07",
+	"burrow_db_pool_active":                "W07",
+	"burrow_db_pool_idle":                  "W07",
 
 	// --- Stays: this test cannot produce them. ---
 	// The semantic cache is compiled in with -tags semantic_cache only, and
@@ -760,18 +754,18 @@ const (
 // webhookEventProof says, for every subscribable event, how this test shows
 // its publisher, and why it is not shown by a delivery.
 var webhookEventProof = map[string]struct{ how, why string }{
-	"webhook.test":  {proofDelivered, ""},
-	"cert.expiring": {proofDelivered, ""},
+	"webhook.test":        {proofDelivered, ""},
+	"cert.expiring":       {proofDelivered, ""},
+	"tunnel.connected":    {proofDelivered, ""},
+	"tunnel.disconnected": {proofDelivered, ""},
+	"tunnel.failed":       {proofDelivered, ""},
+	"service.created":     {proofDelivered, ""},
 	// Published by the observer (cmd/server/observer.go), which is not
 	// handed these events yet. The task named makes it "delivered".
-	"tunnel.connected":    {proofSource, "W03 hands the observer the sessions"},
-	"tunnel.disconnected": {proofSource, "W03 hands the observer the sessions"},
-	"tunnel.failed":       {proofSource, "W03 hands the observer the sessions"},
-	"service.created":     {proofSource, "W03 hands the observer the sessions"},
-	"access.denied":       {proofSource, "W04 hands the observer the proxied requests"},
-	"redaction.applied":   {proofSource, "W05 hands the observer the model requests"},
-	"guardrail.refused":   {proofSource, "W05 hands the observer the model requests"},
-	"ai.upstream_error":   {proofSource, "W06 hands the observer the gateway's attempts"},
+	"access.denied":     {proofSource, "W04 hands the observer the proxied requests"},
+	"redaction.applied": {proofSource, "W05 hands the observer the model requests"},
+	"guardrail.refused": {proofSource, "W05 hands the observer the model requests"},
+	"ai.upstream_error": {proofSource, "W06 hands the observer the gateway's attempts"},
 	// Published by code one run of this test does not reach.
 	"quota.exceeded":              {proofSource, "needs a rate limit and a burst of requests: cmd/server/quota_events_test.go"},
 	"budget.exceeded":             {proofSource, "needs a budget and usage over it: internal/cost/engine_test.go"},
@@ -953,4 +947,31 @@ func publishedInSource(t *testing.T) map[string]bool {
 		t.Fatal("no publisher found in the source: the scan is broken")
 	}
 	return out
+}
+
+// An http tunnel counts what passes through it: the API showed zero for it
+// before, whatever it carried.
+func TestServe_HTTPTunnelCountsBytes(t *testing.T) {
+	r := bootObsRelay(t)
+	app := newObsApp(t)
+	var token struct {
+		Token string `json:"token"`
+	}
+	r.mustAdmin(http.MethodPost, "/api/v1/tokens", map[string]string{"name": "bytes"}, http.StatusCreated, &token)
+	r.connectWith(token.Token, client.TunnelSpec{Name: "bytes-web", Type: "http", LocalAddr: app.addr()})
+	tn := r.tunnels()["bytes-web"]
+	if tn.BytesIn != 0 || tn.BytesOut != 0 {
+		t.Fatalf("a tunnel nobody used counts %d in, %d out", tn.BytesIn, tn.BytesOut)
+	}
+	path := strings.TrimPrefix(tn.URL, "https://"+obsAuthDomain)
+	const body = `{"some":"request body of a known size"}`
+	if code, b := r.data(http.MethodPost, path+"x", body); code != http.StatusOK {
+		t.Fatalf("proxied request: %d %s", code, b)
+	}
+	r.eventually("the tunnel counts the request and the answer", func() bool {
+		tn := r.tunnels()["bytes-web"]
+		// At least the body one way and the answer's body the other; the
+		// request line and the headers come on top.
+		return tn.BytesIn >= uint64(len(body)) && tn.BytesOut > 100
+	})
 }

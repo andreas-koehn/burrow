@@ -213,6 +213,7 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 			case "http":
 				if s.opts.Services == nil {
 					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: "http tunnels not configured", Code: proto.CodeInternal})
+					s.refused(cs, tr, proto.CodeInternal)
 					continue
 				}
 				res, rerr := s.resolveHTTP(cs, tr)
@@ -225,12 +226,14 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 						refused.Error, refused.Code = re.Message, re.Code
 					}
 					_ = cs.SendControl(proto.MsgTunnelRegisterResp, refused)
+					s.refused(cs, tr, refused.Code)
 					continue
 				}
 				serviceID, subdomain := res.ServiceID, res.Slug
 				tn := &Tunnel{
 					ID: uuid.NewString(), Name: tr.Name, Type: tr.Type, LocalAddr: tr.LocalAddr, sess: cs,
 					IsHTTP: true, Subdomain: subdomain, ServiceID: serviceID,
+					accessMode: res.AccessMode, created: res.Created,
 				}
 				reg.AddTunnel(cs, tn)
 				if err := s.opts.Tunnels.SaveTunnel(context.Background(), cs.UserID, tn); err != nil {
@@ -255,12 +258,14 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 				port, perr := s.ports.Allocate(tr.RemotePort)
 				if perr != nil {
 					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: perr.Error(), Code: proto.CodePortUnavailable})
+					s.refused(cs, tr, proto.CodePortUnavailable)
 					continue
 				}
 				tn := &Tunnel{ID: uuid.NewString(), Name: tr.Name, Type: tr.Type, RemotePort: port, LocalAddr: tr.LocalAddr, sess: cs}
 				if lerr := s.startPublicListener(tn); lerr != nil {
 					s.ports.Release(port)
 					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: lerr.Error(), Code: proto.CodePortUnavailable})
+					s.refused(cs, tr, proto.CodePortUnavailable)
 					continue
 				}
 				reg.AddTunnel(cs, tn)
@@ -281,6 +286,7 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 				})
 			default:
 				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: "unknown tunnel type \"" + tr.Type + "\"", Code: proto.CodeUnknownTunnelType})
+				s.refused(cs, tr, proto.CodeUnknownTunnelType)
 				continue
 			}
 		case proto.MsgTunnelUnregister:

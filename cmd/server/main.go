@@ -609,6 +609,9 @@ func newRootCmd() *cobra.Command {
 				return err
 			}
 			v04.WebhookDispatcher.Start()
+			// Sessions, tunnels and tcp connections are told to the observer;
+			// no client is served yet.
+			srv.SetObserver(v04.Observer)
 			// Defer ordering matters here: WebhookDispatcher.Close MUST run
 			// AFTER reaperWg.Wait so that any goroutine tracked by reaperWg
 			// (e.g. the v0.5.2 custom-domain status tick) that may call

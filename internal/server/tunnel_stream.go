@@ -42,5 +42,8 @@ func (s *Server) OpenTunnelStream(_ context.Context, tn *Tunnel) (net.Conn, erro
 	if err != nil {
 		return nil, err
 	}
-	return stream, nil
+	// Everything that goes through an http tunnel goes through this stream:
+	// the proxy's requests and the AI gateway's. Counting here is what makes
+	// the tunnel's bytes_in/bytes_out real for http tunnels.
+	return &countingStream{Conn: stream, in: &tn.BytesIn, out: &tn.BytesOut}, nil
 }
