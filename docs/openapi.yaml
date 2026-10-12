@@ -11,10 +11,18 @@ info:
     `/readyz`) and the doc-serving endpoints (`/api/v1/openapi.{yaml,json}`)
     are excluded by convention.
 
-    Schemas are intentionally minimal — the goal is shape coverage for SDK
-    code-generators (TypeScript-fetch, Go), not exhaustive validation. Full
-    schemas can be filled in incrementally without invalidating downstream
-    SDKs (additive only).
+    Every operation has an `operationId`: lowerCamelCase, resource first,
+    then action (`servicesList`, `serviceGet`, `providerCreate`). An id is a
+    public name. Tools and generated clients are named after it, so an id is
+    added and never changed. Request and response schemas are compared with
+    the Go types of the handlers by the tests in
+    `internal/api/openapi_shapes_test.go`.
+
+    Two extension fields are used on operations. `x-burrow-mcp: false` keeps
+    an operation out of the tool list of the management MCP server; an
+    operation without the field may become a tool. `x-burrow-permission` is
+    reserved for the permission an operation requires; no operation carries
+    it yet.
   version: 0.4.0
   license:
     name: MIT
@@ -1548,6 +1556,72 @@ components:
         latency_ms: { type: integer }
         request_body_preview: { type: string }
         response_body_preview: { type: string }
+    Settings:
+      type: object
+      description: >
+        The non-secret settings; every value is a string. A key that was
+        never set is left out of an answer. On write a key that is not
+        listed here is ignored and a listed key that is left out keeps its
+        value. The SMTP password is not a setting: the relay reads it from
+        its environment.
+      properties:
+        smtp.host: { type: string }
+        smtp.port: { type: string, example: '587' }
+        smtp.username: { type: string }
+        smtp.from: { type: string }
+        smtp.tls: { type: string, enum: [none, starttls, implicit] }
+        connection_logs.rollup_include_top_ips:
+          type: string
+          description: >
+            "false" turns the top_source_ips lists of the connection-log
+            rollups off and removes the stored ones; any other value, or
+            none, leaves them on.
+          example: 'true'
+    RetentionSettingsInput:
+      type: object
+      description: How long the relay keeps its records. A field that is left out keeps its stored value.
+      properties:
+        audit_retention_days:
+          type: integer
+          minimum: 0
+          maximum: 3650
+          description: 0 keeps every entry forever.
+        inspector_retention_count: { type: integer, minimum: 1, maximum: 1000 }
+        usage_retention_days: { type: integer, minimum: 1, maximum: 3650 }
+        redaction_retention_days: { type: integer, minimum: 1, maximum: 3650 }
+        connection_logs_retention_days: { type: integer, minimum: 1, maximum: 3650 }
+        connection_logs_rollups_retention_days:
+          type: integer
+          minimum: 0
+          maximum: 3650
+          description: 0 keeps every rollup forever.
+        webhook_deliveries_retention_days: { type: integer, minimum: 1, maximum: 365 }
+    RetentionSettings:
+      type: object
+      description: The stored retention settings. A value that was never set reads as 0.
+      required: [audit_retention_days, inspector_retention_count, usage_retention_days, redaction_retention_days, connection_logs_retention_days, connection_logs_rollups_retention_days, webhook_deliveries_retention_days, audit_retention_note]
+      properties:
+        audit_retention_days: { type: integer }
+        inspector_retention_count: { type: integer }
+        usage_retention_days: { type: integer }
+        redaction_retention_days: { type: integer }
+        connection_logs_retention_days: { type: integer }
+        connection_logs_rollups_retention_days: { type: integer }
+        webhook_deliveries_retention_days: { type: integer }
+        audit_retention_note:
+          type: string
+          description: Fixed text that says which audit entries the retention removes and which it keeps.
+    Backup:
+      type: object
+      description: One backup archive in the relay's backup directory.
+      required: [id, path, taken_at, version, size_bytes, db_sha256]
+      properties:
+        id: { type: string, description: The archive's file name without ".tar.gz". }
+        path: { type: string, description: Path of the archive on the relay. }
+        taken_at: { type: string, format: date-time }
+        version: { type: string, description: The relay version that wrote the archive. }
+        size_bytes: { type: integer, format: int64 }
+        db_sha256: { type: string }
 
   responses:
     Unauthorized:
@@ -1597,6 +1671,7 @@ paths:
   /metrics:
     get:
       tags: [metrics]
+      operationId: metricsGet
       summary: Prometheus 0.0.4 scrape (closed metric set)
       description: |
         Returns the Burrow closed-metric set in Prometheus text exposition
@@ -3272,6 +3347,7 @@ paths:
   /api/v1/backups:
     get:
       tags: [backups]
+      operationId: backupsList
       summary: List backup archives on disk
       responses:
         '200':
@@ -3280,24 +3356,31 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/Backup' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [backups]
+      operationId: backupCreate
       summary: Trigger a new backup
       responses:
-        '200':
-          description: New backup metadata.
+        '202':
+          description: The archive was written; it is listed by GET /api/v1/backups under this id.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [id, started_at]
+                properties:
+                  id: { type: string }
+                  started_at: { type: string, format: date-time }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/backups/{id}:
     delete:
       tags: [backups]
+      operationId: backupDelete
       summary: Delete a backup archive
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -3308,6 +3391,8 @@ paths:
   /api/v1/backups/{id}/download:
     get:
       tags: [backups]
+      operationId: backupDownload
+      x-burrow-mcp: false
       summary: Stream a backup archive
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -3321,6 +3406,7 @@ paths:
   /api/v1/backups/{id}/verify:
     post:
       tags: [backups]
+      operationId: backupVerify
       summary: Verify a backup archive
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -3328,12 +3414,26 @@ paths:
           description: Verification result.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [ok, sha256_match]
+                properties:
+                  ok: { type: boolean }
+                  sha256_match: { type: boolean }
+                  expected_sha256: { type: string, description: The digest the archive's manifest states. }
+                  actual_sha256: { type: string, description: The digest of the database in the archive. }
+                  error:
+                    type: string
+                    description: Why the archive could not be read; then ok is false and the digests are left out.
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/backups/restore:
     post:
       tags: [backups]
+      operationId: backupRestore
+      x-burrow-mcp: false
       summary: Upload + restore an archive
       requestBody:
         required: true
@@ -3341,10 +3441,12 @@ paths:
           multipart/form-data:
             schema:
               type: object
+              required: [archive]
               properties:
-                file:
+                archive:
                   type: string
                   format: binary
+                  description: The backup archive (.tar.gz), at most 64 MiB.
       responses:
         '202':
           description: Restore accepted (poll status endpoint).
@@ -3352,14 +3454,18 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [restore_id]
                 properties:
                   restore_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/backups/restores/{id}:
     get:
       tags: [backups]
+      operationId: backupRestoreGet
+      x-burrow-mcp: false
       summary: Poll restore status
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -3367,7 +3473,18 @@ paths:
           description: Status envelope.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [id, status, started_at, ended_at]
+                properties:
+                  id: { type: string }
+                  status: { type: string, enum: [running, done, failed] }
+                  error: { type: string, description: Set when status is failed. }
+                  started_at: { type: string, format: date-time }
+                  ended_at:
+                    type: string
+                    format: date-time
+                    description: 0001-01-01T00:00:00Z while the restore is running.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -3585,31 +3702,35 @@ paths:
   /api/v1/settings:
     get:
       tags: [settings]
+      operationId: settingsGet
       summary: Get admin settings (admin)
       responses:
         '200':
           description: Settings.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/Settings' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     put:
       tags: [settings]
+      operationId: settingsUpdate
       summary: Replace admin settings (admin)
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/Settings' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/settings/test-email:
     post:
       tags: [settings]
+      operationId: settingsTestEmail
       summary: Send a test SMTP email
       requestBody:
         required: true
@@ -3621,16 +3742,25 @@ paths:
               properties:
                 to: { type: string, format: email }
       responses:
-        '200':
-          description: Sent.
+        '204': { description: Sent. Nothing is returned. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: SMTP is not configured.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/OK' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: The mail server refused or could not be reached; the message says why.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/settings/retention:
     get:
       tags: [settings]
+      operationId: retentionSettingsGet
       summary: Get retention settings (admin)
       description: >
         Returns the seven retention configuration knobs plus an advisory note
@@ -3640,11 +3770,12 @@ paths:
           description: Retention settings.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RetentionSettings' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     put:
       tags: [settings]
+      operationId: retentionSettingsUpdate
       summary: Replace retention settings (admin)
       description: >
         Validates and persists one or more retention settings. Omitted fields
@@ -3653,7 +3784,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/RetentionSettingsInput' }
       responses:
         '204': { description: Updated. }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -4068,6 +4199,7 @@ paths:
   /api/v1/mcp/status:
     get:
       tags: [mcp]
+      operationId: mcpStatusGet
       summary: burrowd mcp listener status (enabled, listen, token_id)
       responses:
         '200':
@@ -4076,6 +4208,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [enabled, listen, token_id]
                 properties:
                   enabled: { type: boolean }
                   listen: { type: string }
@@ -4086,6 +4219,7 @@ paths:
   /api/v1/mcp/tools:
     get:
       tags: [mcp]
+      operationId: mcpToolsList
       summary: Closed inventory of MCP tools (name, description, parameters_schema, permission)
       responses:
         '200':
@@ -4096,6 +4230,7 @@ paths:
                 type: array
                 items:
                   type: object
+                  required: [name, description, parameters_schema, permission]
                   properties:
                     name: { type: string }
                     description: { type: string }
@@ -4433,6 +4568,8 @@ paths:
   /api/v1/events:
     get:
       tags: [events]
+      operationId: eventsStream
+      x-burrow-mcp: false
       summary: Server-sent events stream (dashboard refresh)
       responses:
         '200':
@@ -4448,6 +4585,8 @@ paths:
   /api/v1/openapi/viewer/:
     get:
       tags: [openapi]
+      operationId: openapiViewerGet
+      x-burrow-mcp: false
       summary: Embedded hand-rolled OpenAPI browser (metrics:read or admin)
       description: >
         Serves the embedded single-page OpenAPI viewer. Fetches
@@ -4466,6 +4605,8 @@ paths:
   /api/v1/openapi/viewer/static/{file}:
     get:
       tags: [openapi]
+      operationId: openapiViewerStaticGet
+      x-burrow-mcp: false
       summary: Viewer static assets (closed allowlist — viewer.css, viewer.js only)
       description: >
         Serves viewer.css or viewer.js from the embedded FS. Any other path
@@ -5203,6 +5344,7 @@ paths:
   /api/v1/database:
     get:
       tags: [database]
+      operationId: databaseGet
       summary: Database backend status (driver, URL, alpha flag)
       description: |
         Returns the active database driver ("sqlite" or "postgres"), a
