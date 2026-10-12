@@ -27,10 +27,12 @@ export function CreateKeyHint({ provider }: CreateKeyHintProps) {
 
   // An admin is sent every user's keys; only the reader's own can go into their app.
   const mine = keys.data.filter((k) => k.user_id === user.id && !k.revoked_at);
-  // A provider's own address /ai/<provider>/… takes a key for every model or
-  // for everything from that provider, not one limited to model names.
+  // The relay's rule on a provider's own address /ai/<provider>/…: a key for
+  // every model or with <provider>/* has the whole path; one with an entry
+  // <provider>/<model> is accepted for requests that name that model and for
+  // the filtered model list; one limited to bare model names is always refused.
   const opens = (k: AiGatewayKey) =>
-    provider === undefined || k.allowed_models.length === 0 || k.allowed_models.includes(`${provider}/*`);
+    provider === undefined || k.allowed_models.length === 0 || k.allowed_models.some((e) => e.startsWith(`${provider}/`));
   if (mine.some(opens)) return null;
 
   const query = new URLSearchParams({ new: "1", ...(provider ? { provider } : {}) });

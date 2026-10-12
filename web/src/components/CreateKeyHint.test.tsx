@@ -35,8 +35,8 @@ describe("CreateKeyHint", () => {
 
   it.each([
     ["everything from another provider", ["llamacpp/*"]],
-    ["a model name", ["burrow-simple"]],
-    ["one model of this provider", ["ollama/qwen2.5:0.5b"]],
+    ["one model of another provider", ["llamacpp/qwen2.5:0.5b"]],
+    ["model names only", ["burrow-simple", "burrow-medium"]],
   ])("a key limited to %s does not open the provider: says so, with the same link", async (_name, allowed_models) => {
     db.aiGatewayKeys = [key({ allowed_models })];
     renderApp(<CreateKeyHint provider="ollama" />);
@@ -45,11 +45,21 @@ describe("CreateKeyHint", () => {
     expect(screen.getByRole("link", { name: "Create a gateway key" })).toHaveAttribute("href", "/gateway/keys?new=1&provider=ollama");
   });
 
-  it("a key limited to everything from this provider opens it: nothing shown", async () => {
-    db.aiGatewayKeys = [key({ allowed_models: ["burrow-simple", "ollama/*"] })];
+  it.each([
+    ["everything from this provider", ["burrow-simple", "ollama/*"]],
+    // Accepted on the provider's address for requests that name that model.
+    ["one model of this provider", ["ollama/qwen2.5:0.5b"]],
+  ])("a key limited to %s opens the provider: nothing shown", async (_name, allowed_models) => {
+    db.aiGatewayKeys = [key({ allowed_models })];
     const { qc, container } = renderApp(<CreateKeyHint provider="ollama" />);
     await settled(qc);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("a provider whose slug only begins like this one's does not count", async () => {
+    db.aiGatewayKeys = [key({ allowed_models: ["ollama2/*"] })];
+    renderApp(<CreateKeyHint provider="ollama" />);
+    expect(await screen.findByText("None of your gateway keys opens this provider.")).toBeInTheDocument();
   });
 
   it("without a provider any key of the reader's counts, limited or not", async () => {
