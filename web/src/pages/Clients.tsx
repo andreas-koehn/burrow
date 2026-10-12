@@ -4,9 +4,9 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/auth/useAuth";
-import { formatRelativeTime, formatTimestamp } from "@/lib/format";
 import { Input, Badge, Button, EmptyState, PageHeader, SkeletonRows, Tabs } from "@/components/ds";
 import { StatusBadge } from "@/components/StatusBadge";
+import { RelativeTime } from "@/components/RelativeTime";
 import { ClientTokensPanel } from "@/components/ClientTokensPanel";
 import { InstallLines } from "@/components/InstallLines";
 import { useKnownClients } from "@/lib/useKnownClients";
@@ -66,9 +66,7 @@ function Serves({ client, services }: { client: KnownClient; services: Service[]
 
 function LastSeen({ client }: { client: KnownClient }) {
   if (client.status === "online") return <>now</>;
-  if (!client.last_seen) return <>—</>;
-  // Relative as the value, the exact UTC time on hover: as "Last used" on the Tokens tab.
-  return <time dateTime={client.last_seen} title={formatTimestamp(client.last_seen)}>{formatRelativeTime(client.last_seen)}</time>;
+  return <RelativeTime value={client.last_seen} />;
 }
 
 /** The live sessions of a token that is connected more than once. */

@@ -6,7 +6,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import {
-  Button, Dialog, FormField, Input, PageHeader, Select, SkeletonRows, Switch, TableEmptyRow,
+  Button, Dialog, Disclosure, FormField, Input, PageHeader, Select, SkeletonRows, Switch, TableEmptyRow,
 } from "@/components/ds";
 import { RedactionRuleDialog } from "@/components/RedactionRuleDialog";
 import type {
@@ -47,14 +47,43 @@ function Accordion({ id, title, subtitle, children, defaultOpen = false }: {
   );
 }
 
+// What a rule does and what it applies to, in words; the wire's values are not shown.
+const RULE_ACTION: Record<RedactionRule["action"], string> = {
+  mask: "Replaces the match with a placeholder",
+  drop: "Refuses the request",
+  hash: "Replaces the match with its hash",
+};
+const RULE_SCOPE: Record<RedactionRule["scope"], string> = {
+  both: "Requests and responses",
+  request_body: "Requests",
+  response_body: "Responses",
+};
+
+/** A rule's name, with its pattern behind it: a regular expression is for whoever asks for it. */
+function RuleName({ rule }: { rule: RedactionRule }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      {rule.name}
+      <Disclosure
+        label={<>{open ? "Hide pattern" : "Show pattern"}{" "}<span className="visually-hidden">of {rule.name}</span></>}
+        open={open}
+        onOpenChange={setOpen}
+      >
+        <code className="mono small">{rule.pattern}</code>
+      </Disclosure>
+    </>
+  );
+}
+
 function RulesTable({ name, rules, onDelete }: { name: string; rules: RedactionRule[]; onDelete?: (r: RedactionRule) => void }) {
-  const cols = onDelete ? 5 : 4;
+  const cols = onDelete ? 4 : 3;
   return (
     <div className="table-wrap">
-      <table className="data" aria-label={name}>
+      <table className="data rules-table" aria-label={name}>
         <thead>
           <tr>
-            <th>Name</th><th>Pattern</th><th>Action</th><th>Scope</th>
+            <th>Name</th><th>What it does</th><th>Applies to</th>
             {onDelete && <th className="col-actions"></th>}
           </tr>
         </thead>
@@ -63,10 +92,9 @@ function RulesTable({ name, rules, onDelete }: { name: string; rules: RedactionR
             ? <TableEmptyRow colSpan={cols} title="No rules yet." />
             : rules.map((r) => (
                 <tr key={r.id}>
-                  <td>{r.name}</td>
-                  <td className="mono small cell-wrap">{r.pattern}</td>
-                  <td>{r.action}</td>
-                  <td>{r.scope}</td>
+                  <td className="cell-wrap"><RuleName rule={r} /></td>
+                  <td>{RULE_ACTION[r.action] ?? r.action}</td>
+                  <td>{RULE_SCOPE[r.scope] ?? r.scope}</td>
                   {onDelete && (
                     <td className="col-actions">
                       <button type="button" className="icon-btn" aria-label={`Delete rule ${r.name}`} onClick={() => onDelete(r)}>

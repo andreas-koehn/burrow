@@ -76,8 +76,9 @@ describe("Clients — every client the relay knows", () => {
     expect(within(row).queryByRole("link", { name: "View" })).toBeNull();
     expect(cell(row, "Platform")).toHaveTextContent("darwin · arm64");
     expect(cell(row, "Version")).toHaveTextContent("0.6.0");
-    // Relative for the eye, the exact UTC time on hover.
-    const seen = within(cell(row, "Last seen")).getByText(/ago$|^last |^yesterday$/);
+    // How long ago for the eye (the date, once that is over 30 days), the exact UTC time on hover.
+    const seen = within(cell(row, "Last seen")).getByText("16 May 2026");
+    expect(seen.tagName).toBe("TIME");
     expect(seen).toHaveAttribute("title", "16 May 2026, 17:30:00 UTC");
     // The address it connected from last, under its name.
     expect(within(cell(row, "Client")).getByText("198.51.100.23:40112")).toHaveClass("muted", "mono");

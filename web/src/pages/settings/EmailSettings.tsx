@@ -32,7 +32,7 @@ export default function EmailSettings() {
   });
 
   return (
-    <div className="account-page page-narrow">
+    <div className="account-page settings-page">
       <PageHeader title="Email" subtitle="Outgoing mail for invitations and notifications." />
 
       <section className="account-section" aria-labelledby="sec-smtp">

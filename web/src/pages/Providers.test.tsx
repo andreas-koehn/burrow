@@ -64,27 +64,59 @@ describe("Providers page", () => {
     );
   });
 
-  it("renders one row per provider with name, mono model line, backend, key count, requests, cache, latency, status", async () => {
+  it("renders one row per provider with name, mono model line, kind, base URL, requests, latency, status", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /providers/i });
-    // Anchor by the unique mono model line (the name "ollama" also appears in
-    // the backend badge, so it isn't a safe anchor on its own).
+    // Keys are gateway keys now, the backend is part of the kind, and cache hits are on the provider's page.
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(
+      ["Name", "Kind", "Base URL", "Requests (24h)", "Latency p95", "Status", ""],
+    );
     const alias = within(table).getByText("burrow-simple → mistral");
     expect(alias.className).toContain("mono");
     const ollama = alias.closest("tr")!;
+    expect(within(ollama).getAllByRole("cell")).toHaveLength(7);
     // Name cell value.
     expect(within(ollama).getByText("ollama", { selector: "td.col-name a" }))
       .toBeInTheDocument();
-    // Backend type badge.
-    expect(within(ollama).getByText("ollama", { selector: "span.badge" }))
-      .toBeInTheDocument();
-    // Spec metrics — key count, requests/24h, cache hits with mono ratio,
-    // latency p95.
-    expect(within(ollama).getByText("2")).toBeInTheDocument(); // api_key_count fixture
+    // No backend badge beside the kind, no key count and no cache hits.
+    expect(within(ollama).queryByText("ollama", { selector: "span.badge" })).toBeNull();
+    expect(within(ollama).queryByText("2")).toBeNull(); // api_key_count fixture
+    expect(within(ollama).queryByText("200")).toBeNull(); // cache_hits_24h
     expect(within(ollama).getByText("1,024")).toBeInTheDocument(); // requests_24h
-    expect(within(ollama).getByText("200")).toBeInTheDocument(); // cache_hits_24h
     expect(within(ollama).getByText("1,200 ms")).toBeInTheDocument(); // latency_p95_ms
     expect(within(ollama).getByText("Online", { selector: "span.badge" })).toHaveClass("status-online");
+  });
+
+  it("a provider with no requests shows a dash for its latency, not 0 ms", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: /providers/i });
+    const zai = within(table).getByRole("link", { name: "zai" }).closest("tr")!;
+    const cells = within(zai).getAllByRole("cell").map((c) => c.textContent);
+    // Requests (24h) is a count: none is 0. A latency of nothing is not a number.
+    expect(cells[3]).toBe("0");
+    expect(cells[4]).toBe("—");
+    expect(table.textContent).not.toMatch(/\b0 ms\b/);
+  });
+
+  it("the cache hit ratio is a dash without requests, and 0% with requests and no hit", async () => {
+    const one = (requests_24h: number, cache_hits_24h: number) => server.use(http.get("/api/v1/ai/providers", () => HttpResponse.json([{
+      slug: "ollama", name: "ollama", kind: "tunnel", api_format: "openai", service_id: "svc_ai001", base_url: "",
+      upstream_base_url: "", credential_slot: "", credential_present: false, credential_slots: [], breaker_open: false,
+      billing: "metered", supports_responses: false, max_concurrent: 0, in_use: 0, model_count: 0, model_alias: "", concrete_model: "",
+      backend_type: "ollama", api_key_count: 0, requests_24h, cache_hits_24h, latency_p95_ms: 0, status: "Connected", client_session_id: "", state: "online",
+    }])));
+    const ratio = async () => {
+      const strip = await screen.findByRole("list", { name: "Provider metrics" });
+      await screen.findByRole("table", { name: /providers/i });
+      return within(strip).getAllByRole("listitem")[3]!.querySelector(".value")?.textContent;
+    };
+    one(0, 0);
+    const first = mount();
+    expect(await ratio()).toBe("—");
+    first.unmount();
+    one(10, 0);
+    mount();
+    expect(await ratio()).toBe("0%");
   });
 
   it("writes the state of every provider out in the same five words", async () => {
@@ -287,12 +319,14 @@ describe("Providers page", () => {
     );
   });
 
-  it("lists providers with their base URL path and links to the detail page", async () => {
+  it("lists providers with their base URL in full and links to the detail page", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /providers/i });
     const link = within(table).getByRole("link", { name: "ollama" });
     expect(link).toHaveAttribute("href", "/gateway/providers/ollama");
-    expect(within(table).getByText("/ai/ollama/v1")).toBeInTheDocument();
+    // What is shown is what the button beside it copies.
+    expect(within(table).getByText("https://tunnels.example.com/ai/ollama/v1")).toHaveClass("mono");
+    expect(within(table).queryByText("/ai/ollama/v1")).toBeNull();
   });
 
   it("copies the full base URL from the row", async () => {
@@ -447,17 +481,21 @@ describe("Providers page", () => {
   });
 
   it("shows the kind of each provider, and for a direct one whether its credential is configured", async () => {
-    addDirectProvider("openrouter", { name: "OpenRouter", credential_slot: "OPENROUTER" });
+    // One at a preset's base URL, one somewhere else.
+    addDirectProvider("openrouter", { name: "my-router", credential_slot: "OPENROUTER", upstream_base_url: "https://openrouter.ai/api/v1" });
     addDirectProvider("zai", { name: "z.ai", credential_slot: "ZAI" }); // slot not set in the fixtures
     mount();
     const table = await screen.findByRole("table", { name: /providers/i });
     expect(within(table).getByRole("columnheader", { name: "Kind" })).toBeInTheDocument();
+    expect(within(table).queryByRole("columnheader", { name: "Backend" })).toBeNull();
     const row = (name: string) => within(table).getByRole("link", { name }).closest("tr")!;
-    expect(within(row("ollama")).getByText("tunnel", { selector: "span.badge" })).toBeInTheDocument();
+    // One column says what the provider is: served by a client, or which hosted API.
+    expect(within(row("ollama")).getByText("Client", { selector: "span.badge" })).toBeInTheDocument();
     expect(within(row("ollama")).getByText("Online", { selector: "span.badge" })).toBeInTheDocument();
-    expect(within(row("OpenRouter")).getByText("direct", { selector: "span.badge" })).toBeInTheDocument();
-    expect(within(row("OpenRouter")).getByText("Ready", { selector: "span.badge" })).toBeInTheDocument();
-    expect(within(row("z.ai")).getByText("direct", { selector: "span.badge" })).toBeInTheDocument();
+    expect(within(row("my-router")).getByText("OpenRouter", { selector: "span.badge" })).toBeInTheDocument();
+    expect(within(row("my-router")).getByText("Ready", { selector: "span.badge" })).toBeInTheDocument();
+    expect(within(row("z.ai")).getByText("Hosted API", { selector: "span.badge" })).toBeInTheDocument();
+    expect(within(table).queryByText(/^(tunnel|direct)$/)).toBeNull();
     expect(within(row("z.ai")).getByText("Not configured", { selector: "span.badge" })).toBeInTheDocument();
     // A direct provider has no client that could be offline.
     expect(within(row("z.ai")).queryByText(/offline/i)).toBeNull();

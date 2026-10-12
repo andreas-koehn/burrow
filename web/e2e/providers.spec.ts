@@ -48,12 +48,12 @@ test("Providers page mounts with heading + metric strip", async ({ page }) => {
   await expect(strip.getByText("Cache hit ratio (24h)", { exact: true })).toBeVisible();
 
   // The provider registered above is a row of the "Providers" table (no error
-  // banner), with its base URL path and a button that copies the full URL.
+  // banner), with its base URL in full and a button that copies it.
   const providersTable = page.getByRole("table", { name: "Providers" });
   await expect(providersTable).toBeVisible();
   const row = providersTable.getByRole("row").filter({ hasText: "Playwright AI gateway" });
   await expect(row).toBeVisible();
-  await expect(row.getByText("/ai/e2e-playwright-ai/v1", { exact: true })).toBeVisible();
+  await expect(row.getByText(/^https?:\/\/.+\/ai\/e2e-playwright-ai\/v1$/)).toBeVisible();
   await expect(row.getByRole("button", { name: /^Copy base URL .*\/ai\/e2e-playwright-ai\/v1$/ })).toBeVisible();
 
   // The detail page says how an app uses the provider.

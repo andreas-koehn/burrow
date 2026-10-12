@@ -110,12 +110,21 @@ function ExactPanel({
   );
 }
 
+/**
+ * The relay sends the rate without the number of lookups behind it. An empty
+ * cache that hit nothing has measured nothing, so it gets a dash, not 0.0%.
+ */
+function semanticHitRate(stats: CacheStatsV5): string {
+  if (!(stats.semantic_entries > 0) && !(stats.semantic_hit_rate_24h > 0)) return "—";
+  return `${(stats.semantic_hit_rate_24h * 100).toFixed(1)}%`;
+}
+
 function SemanticStatsPanel({ stats }: { stats: CacheStatsV5 }) {
   return (
     <div className="semantic-stats">
       <div className="stat-row"><span>Semantic entries</span><span>{stats.semantic_entries}</span></div>
       <div className="stat-row"><span>Semantic disk</span><span>{formatBytes(stats.semantic_disk_bytes)}</span></div>
-      <div className="stat-row"><span>Semantic hit rate (24h)</span><span>{(stats.semantic_hit_rate_24h * 100).toFixed(1)}%</span></div>
+      <div className="stat-row"><span>Semantic hit rate (24h)</span><span>{semanticHitRate(stats)}</span></div>
       <div className="stat-row"><span>Similar returned (24h)</span><span>{stats.semantic_similar_returned_24h}</span></div>
       <div className="stat-row"><span>Promotions (24h)</span><span>{stats.semantic_promotions_24h}</span></div>
     </div>

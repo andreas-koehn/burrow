@@ -178,7 +178,7 @@ describe("Provider detail", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Delete provider" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete provider · ollama" });
     expect(dialog).toHaveTextContent("https://tunnels.example.com/ai/ollama/v1 stops working at once.");
-    expect(dialog).toHaveTextContent("The service, its API keys and its tunnel are kept.");
+    expect(dialog).toHaveTextContent("The service, its API keys and its client connection are kept.");
     expect(within(dialog).getByRole("button", { name: "Delete provider" })).toHaveClass("btn-destructive");
     fetchSpy.mockClear();
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete provider" }));
@@ -265,7 +265,8 @@ describe("Provider detail", () => {
     it("offline: says who served it last and shows the command that starts it", async () => {
       mountAt("/gateway/providers/llamacpp");
       const client = await panel();
-      expect(client).toHaveTextContent(/Offline · last served by office-box-1 \d+ (months?|years?) ago/);
+      // Seeded months ago: past 30 days the date stands for "how long ago".
+      expect(client).toHaveTextContent("Offline · last served by office-box-1 12 May 2026");
       // By the name of the backing service; no address is known, so the usual port.
       expect(run()).toHaveTextContent(/^burrow http 11434 --name llamacpp$/);
       expect(screen.queryByRole("group", { name: "Install command" })).toBeNull();
@@ -399,6 +400,42 @@ describe("Provider detail", () => {
     const table = await screen.findByRole("table", { name: "Recent requests" });
     await within(table).findAllByRole("button");
     expect(within(table).queryByText("No requests yet")).toBeNull();
+  });
+
+  it("a provider without requests has a dash for its cache hit ratio, not 0%", async () => {
+    mountAt("/gateway/providers/llamacpp");
+    const strip = await screen.findByRole("list", { name: "Provider metrics" });
+    const ratio = within(strip).getAllByRole("listitem")[3]!;
+    expect(ratio.querySelector(".label")).toHaveTextContent("Cache hit ratio");
+    expect(ratio.querySelector(".value")).toHaveTextContent("—");
+    expect(strip.textContent).not.toMatch(/\b0%/);
+  });
+
+  it("with requests and no cache hit the ratio is 0%", async () => {
+    server.use(http.get("/api/v1/ai/providers/:slug/metrics", () => HttpResponse.json({
+      requests_24h: 10, tokens_in_24h: 0, tokens_out_24h: 0, cost_usd_24h: 0, cache_hit_ratio_24h: 0,
+      requests_by_minute: [],
+    })));
+    mount();
+    const strip = await screen.findByRole("list", { name: "Provider metrics" });
+    expect(within(strip).getAllByRole("listitem")[3]!.querySelector(".value")).toHaveTextContent("0%");
+  });
+
+  it("recent requests say how long ago, and a request without a measured duration has a dash", async () => {
+    const entry = db.inspectorEntries["svc_ai001"]![0]!;
+    db.inspectorEntries["svc_ai001"] = [
+      { ...entry, id: "req_a", ts: "2026-05-19T08:00:00Z", duration_ms: 0 },
+      { ...entry, id: "req_b", ts: "2026-05-19T07:00:00Z", duration_ms: 812 },
+    ];
+    mount();
+    const table = await screen.findByRole("table", { name: "Recent requests" });
+    const [first, second] = await within(table).findAllByRole("button");
+    const when = first!.querySelector("time")!;
+    expect(when).toHaveTextContent("19 May 2026");
+    expect(when).toHaveAttribute("title", "19 May 2026, 08:00:00 UTC");
+    const latency = (row: HTMLElement) => within(row).getAllByRole("cell")[4]!.textContent;
+    expect(latency(first!)).toBe("—");
+    expect(latency(second!)).toBe("812 ms");
   });
 
   it("there is no line 'last seen —' and no bar without a label", async () => {

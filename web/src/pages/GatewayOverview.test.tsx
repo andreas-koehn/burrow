@@ -147,6 +147,36 @@ describe("GatewayOverview", () => {
     ]);
   });
 
+  it("a relay notice sits above the page title, a budget notice with it", async () => {
+    withBudgets([{ daily_usd: 1, current_usd: 5, exceeded: true }]);
+    renderApp(<GatewayOverview />);
+    const title = await screen.findByRole("heading", { name: "AI Gateway", level: 1 });
+    const relay = (await screen.findByText(EMAIL_NOT_CONFIGURED)).closest('[role="status"]') as HTMLElement;
+    const budget = (await screen.findByText("A budget is over its daily limit.")).closest('[role="status"]') as HTMLElement;
+    for (const notice of [relay, budget]) {
+      expect(notice.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    expect(title.compareDocumentPosition(await strip()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("the checklist comes before the provider table while steps are open", async () => {
+    withCost(0, 0);
+    withProviders([provider({ requests_24h: 0 })]);
+    renderApp(<GatewayOverview />);
+    const list = await checklist();
+    const table = screen.getByRole("table", { name: "Providers" });
+    expect(list.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect((await strip()).compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("provider rows link to their provider", async () => {
+    withProviders([provider({ slug: "ollama", name: "ollama" }), provider({ slug: "zai", name: "z.ai", kind: "direct" })]);
+    renderApp(<GatewayOverview />);
+    const table = await screen.findByRole("table", { name: "Providers" });
+    const links = within(table).getAllByRole("row").slice(1).map((r) => within(r).getByRole("link").getAttribute("href"));
+    expect(links).toEqual(["/gateway/providers/ollama", "/gateway/providers/zai"]);
+  });
+
   it("has no checklist once there is a provider, a model, a key and a served request", async () => {
     const { qc } = renderApp(<GatewayOverview />);
     await screen.findByRole("table", { name: "Providers" });
@@ -167,7 +197,10 @@ describe("GatewayOverview", () => {
       ["Create a gateway key", "to do", "false"],
       ["Send the first request", "to do", "false"],
     ]);
-    expect(within(list).getByRole("link", { name: "Add a provider" })).toHaveAttribute("href", "/gateway/providers");
+    // The first step opens the guided flow, and names the two kinds in its order.
+    expect(within(list).getByRole("link", { name: "Add a provider" })).toHaveAttribute("href", "/gateway/providers?new=local");
+    expect(within(list).getByText(/a model server on one of your machines, or a hosted API/)).toBeInTheDocument();
+    expect(list.textContent).not.toMatch(/API-key (mode|access)/);
     expect(tiles(await strip())[0]).toEqual(["Requests 24h", "0", "/gateway/requests"]);
     // Nothing to configure yet: the last step says what comes first instead of showing a snippet.
     const { default: userEvent } = await import("@testing-library/user-event");
@@ -301,7 +334,8 @@ describe("GatewayOverview", () => {
     db.me = { ...db.me, role: "user" };
     withProviders([]);
     renderApp(<GatewayOverview />);
-    expect(await screen.findByText(/An administrator can add one/)).toBeInTheDocument();
+    expect(await screen.findByText("An administrator can add a model server on one of their machines, or a hosted API.")).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/API-key mode/);
     expect(screen.queryByRole("list", { name: "Set up the AI Gateway" })).toBeNull();
   });
 

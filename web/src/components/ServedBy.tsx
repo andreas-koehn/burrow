@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { StatusBadge } from "@/components/StatusBadge";
-import { formatRelativeTime, formatTimestamp } from "@/lib/format";
+import { RelativeTime } from "@/components/RelativeTime";
 import type { ServedState } from "@/lib/status";
 
 export interface ServedByProps {
@@ -11,15 +11,6 @@ export interface ServedByProps {
   sessionId: string;
   /** When a client last served it. */
   lastSeen: string | null | undefined;
-}
-
-/** "3 days ago", with the moment itself on hover; nothing when the relay names no time. */
-function Ago({ at }: { at: string | null | undefined }) {
-  if (!at) return null;
-  const said = formatRelativeTime(at);
-  if (said === "—") return null;
-  // Mid-sentence: "Just now" is written small.
-  return <time dateTime={at} title={formatTimestamp(at)}>{said.charAt(0).toLowerCase() + said.slice(1)}</time>;
 }
 
 /**
@@ -42,7 +33,8 @@ export function ServedBy({ state, client, sessionId, lastSeen }: ServedByProps) 
       )}
       {state === "offline" && (client || lastSeen) && (
         <>
-          {" · "}last served{client ? ` by ${client}` : ""} <Ago at={lastSeen} />
+          {/* Nothing after the name when the relay names no time. */}
+          {" · "}last served{client ? ` by ${client}` : ""} <RelativeTime value={lastSeen} empty="" />
         </>
       )}
     </p>

@@ -337,10 +337,10 @@ body {
   color: var(--foreground);
 }
 .field .help {
-  font-size: 11.5px; color: var(--muted-foreground);
+  font-size: 12px; color: var(--muted-foreground);
 }
 .field .error {
-  font-size: 11.5px; color: var(--destructive);
+  font-size: 12px; color: var(--destructive);
   display: inline-flex; align-items: center; gap: 4px;
 }
 
@@ -460,7 +460,7 @@ select.input { height: 32px; padding-right: 8px; cursor: pointer; }
 .badge {
   display: inline-flex; align-items: center; gap: 6px;
   height: 20px; padding: 0 7px;
-  font-size: 11.5px; font-weight: 500;
+  font-size: 12px; font-weight: 500;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--card);
@@ -640,7 +640,7 @@ table.data tbody tr[aria-current="true"] td:first-child { box-shadow: inset 3px 
 
 table.data td.col-id, table.data td.col-endpoint, table.data td.col-time {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 table.data td.col-actions { width: 40px; text-align: right; padding-right: 8px; }
@@ -864,7 +864,7 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
 .state-error .icon { color: var(--destructive); margin-top: 2px; flex-shrink: 0; }
 .state-error h4 { margin: 0; font-size: 13px; font-weight: 600; color: var(--destructive); }
 .state-error p  { margin: 4px 0 0; font-size: 12.5px; color: var(--foreground); }
-.state-error .mono { margin-top: 8px; font-size: 11.5px; color: var(--muted-foreground); display: block; }
+.state-error .mono { margin-top: 8px; font-size: 12px; color: var(--muted-foreground); display: block; }
 
 /* Left-bordered inline notice — the canonical cross-page error pattern */
 .notice-inline {
@@ -895,7 +895,7 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
 .notice-inline .body .mono {
   display: block;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--foreground);
   background: var(--background);
   border: 1px solid var(--border);
@@ -1084,7 +1084,7 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
 
 .nav-group-title {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted-foreground);
@@ -1144,7 +1144,7 @@ table.data tbody tr:hover td.table-empty { background: transparent; }
 
 .nav-item .nav-label { flex: 1; }
 .nav-item .nav-count {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted-foreground);
   padding: 1px 6px;
   border-radius: 4px;
@@ -1235,7 +1235,7 @@ a.user-chip:focus-visible {
   white-space: nowrap;
 }
 .user-chip .user-role {
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--muted-foreground);
   font-family: var(--font-mono);
   letter-spacing: 0.04em;
@@ -1392,6 +1392,14 @@ a.user-chip:focus-visible {
   margin-inline: auto;
 }
 
+/* Settings pages share one container: .settings-page on the page wrapper of
+   each. It is the whole content column and never centred, so every settings
+   page starts at the same left edge. A page that shows a table (or the API
+   viewer) fills the column; a page of forms keeps the form width. */
+.settings-page:not(:has(.table-wrap, table, iframe)) {
+  max-width: var(--page-w-narrow);
+}
+
 .skip-link {
   position: absolute;
   left: 12px;
@@ -1465,7 +1473,7 @@ a.user-chip:focus-visible {
 .count-pill {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--muted-foreground);
 }
 
@@ -1473,8 +1481,8 @@ a.user-chip:focus-visible {
   display: flex; align-items: center; gap: 10px;
 }
 .user-cell .name { font-weight: 500; }
-.user-cell .email { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted-foreground); }
-.user-cell .avatar { width: 24px; height: 24px; font-size: 11px; }
+.user-cell .email { font-family: var(--font-mono); font-size: 12px; color: var(--muted-foreground); }
+.user-cell .avatar { width: 24px; height: 24px; font-size: 12px; }
 
 .callout {
   display: flex; align-items: center; gap: 10px;
@@ -1486,7 +1494,7 @@ a.user-chip:focus-visible {
   color: var(--foreground);
   margin-bottom: 18px;
 }
-.callout .mono { color: var(--muted-foreground); font-size: 11.5px; }
+.callout .mono { color: var(--muted-foreground); font-size: 12px; }
 .callout-icon {
   color: var(--muted-foreground);
   flex-shrink: 0;
@@ -1571,7 +1579,7 @@ a.user-chip:focus-visible {
   margin-top: 32px;
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.02em;
   color: var(--muted-foreground);
 }
@@ -1608,7 +1616,7 @@ a.user-chip:focus-visible {
 
 .linkpage-facts-title {
   margin: 0 0 6px;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--muted-foreground);
 }
@@ -1659,7 +1667,7 @@ a.user-chip:focus-visible {
 .services-page table.data td.col-remote,
 .services-page table.data td.col-local {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1709,7 +1717,7 @@ a.user-chip:focus-visible {
 .tokens-page table.data td.col-created,
 .tokens-page table.data td.col-lastused {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
   color: var(--foreground);
 }
@@ -1744,7 +1752,7 @@ a.user-chip:focus-visible {
 }
 .reveal-once .footnote {
   margin-top: 8px;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--muted-foreground);
 }
 .reveal-once .footnote strong { color: var(--foreground); font-weight: 500; }
@@ -1857,7 +1865,7 @@ p.small + .state-card { margin-top: var(--space-md); }
 .profile-card .meta {
   display: flex; gap: 18px; flex-wrap: wrap;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
 }
@@ -1888,7 +1896,7 @@ p.small + .state-card { margin-top: var(--space-md); }
    ────────────────────────────────────────────────────────────── */
 .users-page table.data td.col-created {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
   color: var(--foreground);
 }
@@ -1930,7 +1938,7 @@ p.small + .state-card { margin-top: var(--space-md); }
 .notice-block .mono-detail {
   margin-top: 8px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted-foreground);
 }
 .notice-block .actions { margin-top: 12px; display: flex; gap: 8px; }
@@ -2033,6 +2041,19 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
 /* What follows the link keeps the tile's inset. */
 .metric-tile.is-link > :not(.metric-tile-link) { margin: 0 var(--space-lg) var(--space-md); }
 .metric-tile-link:hover { background: var(--hover); }
+/* A tile that is one of a set of choices (a toggle button): the chosen one has the heavier, accent border. */
+button.metric-tile-link {
+  width: 100%;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.metric-tile.is-selected {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
 .metric-tile-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .metric-tile .label {
   font-size: 12px;
@@ -2369,6 +2390,9 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
 .disclosure-toggle { display: inline-flex; align-items: center; gap: var(--space-xs); min-height: 24px; }
 .disclosure-body { margin-top: var(--space-sm); min-width: 0; }
 .disclosure-body > * + * { margin-top: var(--space-sm); }
+/* Guardrails: a rule's pattern behind its name, close under it. */
+.rules-table .disclosure { margin-top: 0; }
+.rules-table .disclosure-body { margin-top: 0; }
 /* What the relay answered stands clear of the form above it. */
 .disclosure + .notice-inline,
 .target-group ~ .notice-inline { margin-top: var(--space-md); }
@@ -2580,7 +2604,7 @@ a.link-inline:hover { text-decoration-thickness: 2px; }
   display: inline-flex;
   align-items: center;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -2893,8 +2917,14 @@ td.empty-cell { text-align: center; padding: 1rem 0; }
   align-items: center;
 }
 
-/* Notices of an overview, between its figures and what follows. */
+/* Notices of an overview, above its title. */
 .alerts-strip { margin-bottom: var(--space-lg); }
+
+/* Services overview: the services under the figures, and where the rest are. */
+.home-services { margin-top: var(--space-lg); }
+.home-services-more { margin: var(--space-sm) 0 0; color: var(--muted-foreground); }
+/* AI Gateway overview: the provider table under a checklist with open steps. */
+.setup-checklist + .table-wrap { margin-top: var(--space-lg); }
 
 /* Setup checklist — what is left to do, one disclosure per step. */
 .setup-checklist { margin-top: var(--space-lg); }

@@ -8,7 +8,7 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Checkbox, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
 import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/auth/useAuth";
-import { formatRelativeTime } from "@/lib/format";
+import { RelativeTime } from "@/components/RelativeTime";
 import type { AiGatewayKey, AiModel, AiProvider, CreatedAiGatewayKey } from "@/lib/contract";
 
 const KEYS = ["ai", "keys"] as const;
@@ -299,7 +299,7 @@ export default function GatewayKeys() {
                       )}
                   </td>
                   <td className="small">
-                    {k.last_used ? <span title={k.last_used}>{formatRelativeTime(k.last_used)}</span> : "never"}
+                    <RelativeTime value={k.last_used} empty="never" />
                   </td>
                   <td>
                     <Badge kind={k.revoked_at ? "status-offline" : "status-connected"}>

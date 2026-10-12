@@ -163,6 +163,17 @@ describe("Audit log (§4.25)", () => {
     });
   });
 
+  // A record: the exact time stays the text, how long ago it was is on hover.
+  it("keeps the absolute time and puts the relative one in the title", async () => {
+    mount();
+    const row = (await screen.findByText("services.create")).closest("tr")!;
+    const time = row.querySelector("time")!;
+    expect(time).toHaveTextContent("19 May 2026, 08:00:00 UTC");
+    expect(time).toHaveAttribute("datetime", "2026-05-19T08:00:00Z");
+    // Seeded months ago: past 30 days "how long ago" is the date.
+    expect(time).toHaveAttribute("title", "19 May 2026");
+  });
+
   function mockEvents(payload: Record<string, unknown>) {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       if (String(url).includes("/audit/events")) {

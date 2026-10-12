@@ -137,6 +137,65 @@ describe("Cost & budgets (§4.24)", () => {
     }
   });
 
+  describe("the period tiles are the period selector", () => {
+    const periods = async () => within(await screen.findByRole("list", { name: /spend by window/i })).getAllByRole("button");
+    /** The window and grouping of every usage request the page made. */
+    function usageAsked(): string[] {
+      const asked: string[] = [];
+      server.use(http.get("/api/v1/cost/summary", ({ request }) => {
+        const q = new URL(request.url).searchParams;
+        if (q.get("group_by")) asked.push(`${q.get("window")}/${q.get("group_by")}`);
+        return HttpResponse.json({ window: q.get("window"), total_usd: 0, tokens_in: 0, tokens_out: 0, top_consumers: [], pct_of_budget: null, groups: [] });
+      }));
+      return asked;
+    }
+
+    it("exactly one control per period exists, and Today is the selected one", async () => {
+      mount();
+      const tiles = await periods();
+      expect(tiles.map((b) => b.querySelector(".label")?.textContent)).toEqual(["Today", "Week", "Month", "Year"]);
+      expect(tiles.map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false", "false", "false"]);
+      // The separate row of period buttons is gone.
+      expect(screen.queryByRole("radiogroup", { name: "Usage period" })).toBeNull();
+      for (const name of ["Today", "Week", "Month", "Year"]) {
+        expect(screen.queryByRole("radio", { name })).toBeNull();
+        expect(screen.getAllByRole("button", { name: new RegExp(`^${name}`) })).toHaveLength(1);
+      }
+    });
+
+    it("clicking Month selects it and loads its usage", async () => {
+      const asked = usageAsked();
+      mount();
+      await waitFor(() => expect(asked).toEqual(["today/model"]));
+      await userEvent.click(screen.getByRole("button", { name: /^Month/ }));
+      expect((await periods()).map((b) => b.getAttribute("aria-pressed"))).toEqual(["false", "false", "true", "false"]);
+      await waitFor(() => expect(asked).toEqual(["today/model", "month/model"]));
+      // The selected tile is marked for the eye as well.
+      expect(screen.getByRole("button", { name: /^Month/ }).closest(".metric-tile")).toHaveClass("is-selected");
+      expect(screen.getByRole("button", { name: /^Today/ }).closest(".metric-tile")).not.toHaveClass("is-selected");
+    });
+
+    it("the selected period lives in the URL", async () => {
+      const asked = usageAsked();
+      renderApp(<CostBudgets />, "/gateway/cost?period=year");
+      expect((await periods()).map((b) => b.getAttribute("aria-pressed"))).toEqual(["false", "false", "false", "true"]);
+      await waitFor(() => expect(asked).toEqual(["year/model"]));
+    });
+
+    it("a period the page does not know falls back to Today", async () => {
+      renderApp(<CostBudgets />, "/gateway/cost?period=decade");
+      expect((await periods()).map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false", "false", "false"]);
+    });
+
+    it("keeps the spend bar of each tile outside its button", async () => {
+      mount();
+      for (const tile of await periods()) {
+        expect(tile.querySelector(".pct-bar")).toBeNull();
+        expect(tile.closest(".metric-tile")!.querySelector(".pct-bar")).not.toBeNull();
+      }
+    });
+  });
+
   it("labels the token counts on the spend tiles (L6)", async () => {
     mount();
     const strip = await screen.findByRole("list", { name: /spend by window/i });

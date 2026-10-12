@@ -110,9 +110,10 @@ export default function GatewayOverview() {
     ...(isAdmin ? [{
       id: "provider",
       title: "Add a provider",
-      description: "A provider is a model backend under its own base URL: a service with API-key access, or a hosted API the relay calls itself.",
+      description: "A provider is a model backend under its own base URL: a model server on one of your machines, or a hosted API the relay calls itself.",
       done: list.length > 0,
-      action: { label: "Add a provider", to: "/gateway/providers" },
+      // Opens the guided flow, not just the page it is on.
+      action: { label: "Add a provider", to: "/gateway/providers?new=local" },
     }] : []),
     // Only an admin can create a model.
     ...(isAdmin ? [{
@@ -147,6 +148,22 @@ export default function GatewayOverview() {
 
   return (
     <div className="gateway-overview-page">
+      {/* Above the title: a notice is about the relay or the gateway, not about one of the page's parts. */}
+      {(relayNotices.length > 0 || notices.length > 0) && (
+        <div className="alerts-strip">
+          {relayNotices.map((n) => (
+            <ErrorNotice key={n.id} variant="warn" role="status" action={<Link to={n.action.to}>{n.action.label} →</Link>}>
+              {n.message}
+            </ErrorNotice>
+          ))}
+          {notices.map((n) => (
+            <ErrorNotice key={n.id} variant={n.variant} role="status" action={<Link to="/gateway/cost">View budgets →</Link>}>
+              {n.message}
+            </ErrorNotice>
+          ))}
+        </div>
+      )}
+
       {header}
       {/* In full: on this page the addresses say where the gateway is, the job the sidebar's "/ai/…" had. */}
       <GatewayAddresses endpoints={endpoints} full />
@@ -176,19 +193,23 @@ export default function GatewayOverview() {
             )}
           </MetricStrip>
 
-          {(relayNotices.length > 0 || notices.length > 0) && (
-            <div className="alerts-strip">
-              {relayNotices.map((n) => (
-                <ErrorNotice key={n.id} variant="warn" role="status" action={<Link to={n.action.to}>{n.action.label} →</Link>}>
-                  {n.message}
-                </ErrorNotice>
-              ))}
-              {notices.map((n) => (
-                <ErrorNotice key={n.id} variant={n.variant} role="status" action={<Link to="/gateway/cost">View budgets →</Link>}>
-                  {n.message}
-                </ErrorNotice>
-              ))}
-            </div>
+          {/* Before the table while it has open steps: what is still to do comes first. */}
+          {list.length === 0 && !isAdmin ? (
+            <EmptyState icon={<Sparkles size={18} />} title="No providers yet">
+              An administrator can add a model server on one of their machines, or a hosted API.
+            </EmptyState>
+          ) : setupFailed ? (
+            // Without the models or the keys the list would call existing ones missing.
+            <ErrorNotice
+              action={<Button variant="secondary" size="sm" onClick={() => { void models.refetch(); void keys.refetch(); }}>Retry</Button>}
+            >
+              {models.error ? "Couldn't load models: " : "Couldn't load gateway keys: "}
+              {setupFailed instanceof ApiError ? setupFailed.message : "Unknown error"}
+            </ErrorNotice>
+          ) : (
+            // The steps read the cost summary, the models and the keys, so the list waits for those answers.
+            !cost.isPending && !models.isPending && !keys.isPending
+              && <SetupChecklist title="Set up the AI Gateway" steps={steps} />
           )}
 
           {list.length > 0 && (
@@ -215,24 +236,6 @@ export default function GatewayOverview() {
                 </tbody>
               </table>
             </div>
-          )}
-
-          {list.length === 0 && !isAdmin ? (
-            <EmptyState icon={<Sparkles size={18} />} title="No providers yet">
-              An administrator can add one from a service in API-key mode, or add a hosted API.
-            </EmptyState>
-          ) : setupFailed ? (
-            // Without the models or the keys the list would call existing ones missing.
-            <ErrorNotice
-              action={<Button variant="secondary" size="sm" onClick={() => { void models.refetch(); void keys.refetch(); }}>Retry</Button>}
-            >
-              {models.error ? "Couldn't load models: " : "Couldn't load gateway keys: "}
-              {setupFailed instanceof ApiError ? setupFailed.message : "Unknown error"}
-            </ErrorNotice>
-          ) : (
-            // The steps read the cost summary, the models and the keys, so the list waits for those answers.
-            !cost.isPending && !models.isPending && !keys.isPending
-              && <SetupChecklist title="Set up the AI Gateway" steps={steps} />
           )}
         </>
       )}

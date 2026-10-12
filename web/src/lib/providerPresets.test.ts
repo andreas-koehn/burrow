@@ -1,5 +1,26 @@
 import { describe, it, expect } from "vitest";
-import { PROVIDER_PRESETS, credentialSlotError, envVarForSlot, slotSuggestions } from "./providerPresets";
+import { PROVIDER_PRESETS, credentialSlotError, envVarForSlot, providerKindLabel, slotSuggestions } from "./providerPresets";
+
+describe("providerKindLabel", () => {
+  const hosted = (upstream_base_url: string) => ({ kind: "direct" as const, upstream_base_url });
+  it("is Client for a provider a client serves", () => {
+    expect(providerKindLabel({ kind: "tunnel", upstream_base_url: "" })).toBe("Client");
+  });
+  it("is the preset's name for a hosted API at a preset's base URL", () => {
+    expect(providerKindLabel(hosted("https://openrouter.ai/api/v1"))).toBe("OpenRouter");
+    expect(providerKindLabel(hosted("https://api.z.ai/api/coding/paas/v4"))).toBe("z.ai");
+    expect(providerKindLabel(hosted("https://api.z.ai/api/paas/v4"))).toBe("z.ai");
+  });
+  it("does not mind a trailing slash or the case of the host", () => {
+    expect(providerKindLabel(hosted("https://OpenRouter.ai/api/v1/"))).toBe("OpenRouter");
+  });
+  it("is Hosted API for any other base URL, and for none", () => {
+    expect(providerKindLabel(hosted("https://api.example.net/v1"))).toBe("Hosted API");
+    expect(providerKindLabel(hosted(""))).toBe("Hosted API");
+    // The blank "Other API" preset matches nothing.
+    expect(providerKindLabel(hosted("https://openrouter.ai/api/v1/other"))).toBe("Hosted API");
+  });
+});
 
 describe("provider presets", () => {
   it("ships the three known providers and a blank custom entry", () => {

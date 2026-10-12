@@ -49,41 +49,51 @@ export function formatTimestampWithTooltip(s: string | null | undefined): { disp
   return { display: TS_FORMAT.format(d), iso: s };
 }
 
+const DATE_FORMAT = new Intl.DateTimeFormat("en-GB", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+function ago(n: number, unit: string): string {
+  return `${n} ${unit}${n === 1 ? "" : "s"} ago`;
+}
+
 /**
- * Format a timestamp as a relative-time string ("Just now", "2 hours ago",
- * "3 days ago"). Returns "—" for null/undefined/empty/unparseable input.
+ * How long ago a timestamp was: "just now" under a minute, then minutes,
+ * hours and days, rounded down ("3 days ago"), and the UTC date for anything
+ * older than 30 days. A time in the future is a clock that runs ahead, so it
+ * is written out as formatTimestamp() writes it. Returns "—" for
+ * null/undefined/empty/unparseable input.
  *
- * Uses Intl.RelativeTimeFormat when available; falls back to a simple
- * en-US formatter that matches Intl's "long" style on the few units we
- * care about. Always rounds toward the larger unit for readability
- * (90 minutes → "1 hour ago", not "90 minutes ago").
- *
- * P1-13 — primarily used on Tokens "Last used" with the full timestamp on
- * the `title` attribute so hover still reveals the exact moment.
+ * Called by components/RelativeTime only, which puts the exact time beside it.
  */
 export function formatRelativeTime(s: string | null | undefined, now: number = Date.now()): string {
   if (!s) return "—";
   const d = new Date(s);
   if (isNaN(d.getTime())) return "—";
   const diffMs = now - d.getTime();
-  const past = diffMs >= 0;
-  const seconds = Math.abs(diffMs) / 1000;
-  if (seconds < 45) return "Just now";
+  if (diffMs < 0) return TS_FORMAT.format(d);
+  if (diffMs < MINUTE_MS) return "just now";
+  if (diffMs < HOUR_MS) return ago(Math.floor(diffMs / MINUTE_MS), "minute");
+  if (diffMs < DAY_MS) return ago(Math.floor(diffMs / HOUR_MS), "hour");
+  if (diffMs <= 30 * DAY_MS) return ago(Math.floor(diffMs / DAY_MS), "day");
+  return DATE_FORMAT.format(d);
+}
 
-  const units: { unit: Intl.RelativeTimeFormatUnit; in_seconds: number }[] = [
-    { unit: "year",   in_seconds: 365 * 24 * 3600 },
-    { unit: "month",  in_seconds: 30  * 24 * 3600 },
-    { unit: "week",   in_seconds: 7   * 24 * 3600 },
-    { unit: "day",    in_seconds:      24 * 3600 },
-    { unit: "hour",   in_seconds:           3600 },
-    { unit: "minute", in_seconds:             60 },
-  ];
-  for (const { unit, in_seconds } of units) {
-    if (seconds >= in_seconds) {
-      const value = Math.round(seconds / in_seconds);
-      const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
-      return rtf.format(past ? -value : value, unit);
-    }
-  }
-  return "Just now";
+/** A latency in whole milliseconds; "—" when there is nothing to measure. */
+export function formatLatency(ms: number, samples: number): string {
+  if (!Number.isFinite(ms) || !(samples > 0)) return "—";
+  return `${Math.round(ms).toLocaleString("en-US")} ms`;
+}
+
+/** A share in whole percent; "—" when the whole is nothing. A measured zero is "0%". */
+export function formatRatio(part: number, whole: number): string {
+  if (!Number.isFinite(part) || !Number.isFinite(whole) || !(whole > 0)) return "—";
+  return `${Math.round((part / whole) * 100)}%`;
 }

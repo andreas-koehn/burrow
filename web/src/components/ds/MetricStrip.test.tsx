@@ -79,4 +79,25 @@ describe("MetricStrip", () => {
     expect(tile).toContainElement(button);
     expect(screen.getByRole("link")).not.toContainElement(button);
   });
+
+  it("MetricTile with `onPress` is a toggle button around the figure, marked when pressed", () => {
+    const pressed: string[] = [];
+    render(
+      <MetricStrip ariaLabel="x">
+        <MetricTile label="Today" value="$1" pressed onPress={() => pressed.push("today")}><span>bar</span></MetricTile>
+        <MetricTile label="Week" value="$7" onPress={() => pressed.push("week")} />
+      </MetricStrip>,
+    );
+    const [today, week] = screen.getAllByRole("button");
+    expect(today).toHaveAttribute("aria-pressed", "true");
+    expect(week).toHaveAttribute("aria-pressed", "false");
+    expect(today).toHaveAttribute("type", "button");
+    expect(today!.querySelector(".value")?.textContent).toBe("$1");
+    expect(today!.closest(".metric-tile")).toHaveClass("is-selected");
+    expect(week!.closest(".metric-tile")).not.toHaveClass("is-selected");
+    // What is not the figure stays outside the button.
+    expect(today).not.toContainElement(screen.getByText("bar"));
+    week!.click();
+    expect(pressed).toEqual(["week"]);
+  });
 });

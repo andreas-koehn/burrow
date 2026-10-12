@@ -63,7 +63,7 @@ export function EditUserDialog({ user, selfId, onClose }: { user: UserAdmin | nu
           </div>
         </div>
         <div className="danger-zone row row-center gap-2">
-          <span>Danger zone — removes the user, their tokens, and tunnel ACLs.</span>
+          <span>Danger zone — removes the user, their tokens, and their access to services.</span>
           <Button
             variant="destructive" size="sm" className="ml-auto"
             disabled={isSelf || del.isPending}

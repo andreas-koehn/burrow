@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Badge, Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, NotAuthorized, PageHeader, Segmented, Select, SkeletonRows, SubmitHint, TableEmptyRow, firstMissing } from "@/components/ds";
+import { Badge, Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, NotAuthorized, PageHeader, Select, SkeletonRows, SubmitHint, TableEmptyRow, firstMissing } from "@/components/ds";
 import UsageBreakdown from "@/components/UsageBreakdown";
 import { useAuth } from "@/auth/useAuth";
 import { fmtCount, fmtUsd, shortId } from "@/lib/costFormat";
@@ -87,12 +88,15 @@ function pctClass(pct: number | null): string {
   return "ok";
 }
 
-function SpendTile({ w, summary }: { w: Window; summary: CostSummary | undefined }) {
+/** A period's spend, and the control that selects the period for the usage below. */
+function SpendTile({ w, summary, selected, onSelect }: { w: Window; summary: CostSummary | undefined; selected: boolean; onSelect: () => void }) {
   return (
     <MetricTile
       label={WINDOW_LABEL[w]}
       value={summary ? fmtUsd(summary.total_usd) : "—"}
       sub={summary ? `${fmtCount(summary.tokens_in)} tokens in · ${fmtCount(summary.tokens_out)} out` : "—"}
+      pressed={selected}
+      onPress={onSelect}
     >
       <div className="pct-bar">
         <span
@@ -128,7 +132,15 @@ export default function CostBudgets() {
   // budgets).
   const featureAbsent = budgets.error instanceof ApiError && budgets.error.status === 404;
 
-  const [usageWindow, setUsageWindow] = useState<Window>("today");
+  // The period lives in the URL, so a reload or a shared link keeps it. Today is the page without a parameter.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const asked = searchParams.get("period");
+  const usageWindow: Window = WINDOWS.includes(asked as Window) ? (asked as Window) : "today";
+  const setUsageWindow = (w: Window) => setSearchParams((prev) => {
+    const next = new URLSearchParams(prev);
+    if (w === "today") next.delete("period"); else next.set("period", w);
+    return next;
+  }, { replace: true });
   const [addOpen, setAddOpen] = useState(false);
   const [scope, setScope] = useState<Budget["scope"]>("gateway_key");
   const [subjectId, setSubjectId] = useState("");
@@ -306,7 +318,7 @@ export default function CostBudgets() {
 
       <MetricStrip ariaLabel="Spend by window">
         {WINDOWS.map((w, i) => (
-          <SpendTile key={w} w={w} summary={cost[i]!.data} />
+          <SpendTile key={w} w={w} summary={cost[i]!.data} selected={w === usageWindow} onSelect={() => setUsageWindow(w)} />
         ))}
       </MetricStrip>
       {costForbidden && (
@@ -315,9 +327,6 @@ export default function CostBudgets() {
         </p>
       )}
 
-      <div className="toolbar-row">
-        <Segmented aria-label="Usage period" options={WINDOWS.map((w) => ({ value: w, label: WINDOW_LABEL[w] }))} value={usageWindow} onChange={setUsageWindow} />
-      </div>
       <UsageBreakdown window={usageWindow} />
 
       {forbidden ? (

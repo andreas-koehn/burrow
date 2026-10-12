@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
-import { formatTimestamp } from "@/lib/format";
+import { RelativeTime } from "@/components/RelativeTime";
 import { Button, PageHeader } from "@/components/ds";
 import type { Session } from "@/lib/contract";
 import { Toaster } from "@/components/ui/sonner";
@@ -37,8 +37,9 @@ function ActiveSessions() {
                     <span title={s.user_agent}>{ua.browser} · {ua.os}</span>
                     {s.current && <span className="tag"> THIS DEVICE</span>}
                   </td>
-                  <td className="col-created">{formatTimestamp(s.created_at)}</td>
-                  <td className="col-created">{formatTimestamp(s.expires_at)}</td>
+                  <td className="col-created"><RelativeTime value={s.created_at} /></td>
+                  {/* A time ahead is written out: "Expires" reads as the moment itself. */}
+                  <td className="col-created"><RelativeTime value={s.expires_at} /></td>
                   <td className="col-created">{s.ip}</td>
                   <td className="col-actions">
                     {s.current ? <span className="muted">Current session</span> :
@@ -57,7 +58,7 @@ function ActiveSessions() {
 
 export default function Sessions() {
   return (
-    <div className="account-page">
+    <div className="account-page settings-page">
       <PageHeader title="Sessions" />
       <ActiveSessions />
       <Toaster />

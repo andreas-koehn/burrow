@@ -23,11 +23,17 @@ export interface MetricTileProps {
   tooltip?: string;
   /** Where the figure is broken down; makes label, value and sub one link. */
   to?: string;
+  /**
+   * Makes label, value and sub one toggle button: the tile is one of a set of
+   * choices and `pressed` says whether it is the chosen one. Not with `to`.
+   */
+  onPress?: () => void;
+  pressed?: boolean;
   children?: ReactNode;
   className?: string;
 }
 
-export function MetricTile({ label, value, sub, tooltip, to, children, className }: MetricTileProps) {
+export function MetricTile({ label, value, sub, tooltip, to, onPress, pressed = false, children, className }: MetricTileProps) {
   const figure = (
     <>
       <span className="label">{label}</span>
@@ -36,9 +42,11 @@ export function MetricTile({ label, value, sub, tooltip, to, children, className
     </>
   );
   return (
-    <div role="listitem" title={tooltip} className={cx("metric-tile", to && "is-link", className)}>
-      {to ? <Link to={to} className="metric-tile-link">{figure}</Link> : figure}
-      {/* Outside the link, so a control among them never nests inside it. */}
+    <div role="listitem" title={tooltip} className={cx("metric-tile", (to || onPress) && "is-link", onPress && pressed && "is-selected", className)}>
+      {to ? <Link to={to} className="metric-tile-link">{figure}</Link>
+        : onPress ? <button type="button" className="metric-tile-link" aria-pressed={pressed} onClick={onPress}>{figure}</button>
+        : figure}
+      {/* Outside the link or button, so a control among them never nests inside it. */}
       {children}
     </div>
   );

@@ -3,11 +3,14 @@ import { Link } from "react-router-dom";
 import { PageHeader, MetricStrip, MetricTile, ErrorNotice, Button, SkeletonRows } from "@/components/ds";
 import { SetupChecklist, type ChecklistStep } from "@/components/SetupChecklist";
 import { InstallLines } from "@/components/InstallLines";
+import { RelativeTime } from "@/components/RelativeTime";
+import { StatusBadge } from "@/components/StatusBadge";
 import { useAuth } from "@/auth/useAuth";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { GLOSSARY } from "@/lib/glossary";
 import { NAVIGATIONS } from "@/lib/navigation";
+import { serviceState } from "@/lib/status";
 import { clientsOnline, useKnownClients } from "@/lib/useKnownClients";
 import { useRelayNotices } from "@/lib/useRelayNotices";
 import type { ConnectionLog, Service } from "@/lib/contract";
@@ -15,6 +18,16 @@ import type { ConnectionLog, Service } from "@/lib/contract";
 // The three lines of the Connect page, split over the first two steps.
 const SIGN_IN_LINES = ["install", "login"] as const;
 const RUN_LINE = ["run"] as const;
+
+/** As many services as the Overview lists; the Services page has them all. */
+const LISTED = 8;
+
+/** Online first, then whoever was served last; a service no client ever served comes last. */
+function byLastServed(a: Service, b: Service): number {
+  const online = Number(serviceState(b) === "online") - Number(serviceState(a) === "online");
+  if (online !== 0) return online;
+  return (b.last_seen ?? "").localeCompare(a.last_seen ?? "");
+}
 
 /** A client token as GET /tokens lists it. */
 interface Token { id: string; name: string; last_used: string | null; created_at: string; }
@@ -57,6 +70,10 @@ export default function ServicesOverview() {
   const cls = known.flatMap((c) => c.sessions);
   const toks = Array.isArray(tokens.data) ? tokens.data : [];
   const liveNow = svc.filter((s) => s.connected).length;
+  // As on the Services page: a service that is reachable through the AI gateway only is a provider's business.
+  const own = svc.filter((s) => !s.gateway_only);
+  const gatewayOnly = svc.length - own.length;
+  const listed = [...own].sort(byLastServed).slice(0, LISTED);
 
   const trafficValue = isAdmin && clients.rows
     ? `${formatBytes(cls.reduce((a, c) => a + c.total_bytes_in, 0))} / ${formatBytes(cls.reduce((a, c) => a + c.total_bytes_out, 0))}`
@@ -116,6 +133,17 @@ export default function ServicesOverview() {
 
   return (
     <div className="home-page">
+      {/* Above the title: a notice is about the relay, not about one of the page's parts. */}
+      {notices.length > 0 && (
+        <div className="alerts-strip">
+          {notices.map((n) => (
+            <ErrorNotice key={n.id} variant="warn" role="status" action={<Link to={n.action.to}>{n.action.label} →</Link>}>
+              {n.message}
+            </ErrorNotice>
+          ))}
+        </div>
+      )}
+
       <PageHeader title="Overview" subtitle="Machines, services and traffic on this relay." actions={quickActions} />
       {/* A pattern, not an address anybody can open: muted, and without a copy button. */}
       <p className="address-pattern">
@@ -160,17 +188,42 @@ export default function ServicesOverview() {
         </MetricStrip>
       )}
 
-      {notices.length > 0 && (
-        <div className="alerts-strip">
-          {notices.map((n) => (
-            <ErrorNotice key={n.id} variant="warn" role="status" action={<Link to={n.action.to}>{n.action.label} →</Link>}>
-              {n.message}
-            </ErrorNotice>
-          ))}
+      {checklistReady && <SetupChecklist title="Set up Services" steps={steps} />}
+
+      {svc.length > 0 && (
+        <div className="home-services">
+          {listed.length > 0 && (
+            <div className="table-wrap">
+              <table className="data" aria-label="Services">
+                <thead><tr><th>Name</th><th>Status</th><th>Last served</th></tr></thead>
+                <tbody>
+                  {listed.map((s) => {
+                    const state = serviceState(s);
+                    return (
+                      <tr key={s.id}>
+                        <td className="col-name"><Link to={`/services/${s.id}`}>{s.name || s.id}</Link></td>
+                        <td><StatusBadge state={state} /></td>
+                        <td>{state === "online" ? "now" : <RelativeTime value={s.last_seen} />}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="home-services-more small">
+            <Link className="link-inline" to="/services">All services</Link>
+            {gatewayOnly > 0 && (
+              <>
+                {" · "}
+                <Link className="link-inline" to="/gateway/providers">
+                  {gatewayOnly}{listed.length > 0 ? " more" : ""} {gatewayOnly === 1 ? "belongs" : "belong"} to the AI gateway
+                </Link>
+              </>
+            )}
+          </p>
         </div>
       )}
-
-      {checklistReady && <SetupChecklist title="Set up Services" steps={steps} />}
     </div>
   );
 }

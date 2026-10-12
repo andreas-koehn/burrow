@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatBytes, formatTimestamp, formatTimestampWithTooltip } from "./format";
+import { formatBytes, formatLatency, formatRatio, formatRelativeTime, formatTimestamp, formatTimestampWithTooltip } from "./format";
 
 describe("formatBytes", () => {
   it("returns '0 B' for 0", () => {
@@ -75,5 +75,63 @@ describe("formatTimestampWithTooltip", () => {
   });
   it("null input returns em-dash + empty iso", () => {
     expect(formatTimestampWithTooltip(null)).toEqual({ display: "—", iso: "" });
+  });
+});
+
+describe("formatLatency and formatRatio", () => {
+  it("no samples is a dash", () => {
+    expect(formatLatency(0, 0)).toBe("—");
+    expect(formatRatio(0, 0)).toBe("—");
+  });
+  it("a measured zero is a zero", () => expect(formatRatio(0, 10)).toBe("0%"));
+  it("writes a measured latency in whole milliseconds, with thousands grouped", () => {
+    expect(formatLatency(123, 4)).toBe("123 ms");
+    expect(formatLatency(1234.4, 1)).toBe("1,234 ms");
+    // A measured zero is a zero here too.
+    expect(formatLatency(0, 3)).toBe("0 ms");
+  });
+  it("rounds a share to whole percent", () => {
+    expect(formatRatio(42, 100)).toBe("42%");
+    expect(formatRatio(1, 3)).toBe("33%");
+    expect(formatRatio(10, 10)).toBe("100%");
+  });
+  it("is a dash for a count or a figure that is no number", () => {
+    expect(formatLatency(NaN, 3)).toBe("—");
+    expect(formatLatency(12, -1)).toBe("—");
+    expect(formatRatio(NaN, 10)).toBe("—");
+    expect(formatRatio(1, NaN)).toBe("—");
+  });
+});
+
+describe("formatRelativeTime", () => {
+  const now = Date.parse("2026-10-06T19:46:56Z");
+  const ago = (ms: number) => new Date(now - ms).toISOString();
+  const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
+
+  it("is 'just now' under a minute", () => {
+    expect(formatRelativeTime(ago(0), now)).toBe("just now");
+    expect(formatRelativeTime(ago(59_000), now)).toBe("just now");
+  });
+  it("counts minutes, hours and days, rounded down", () => {
+    expect(formatRelativeTime(ago(MIN), now)).toBe("1 minute ago");
+    expect(formatRelativeTime(ago(59 * MIN + 59_000), now)).toBe("59 minutes ago");
+    expect(formatRelativeTime(ago(90 * MIN), now)).toBe("1 hour ago");
+    expect(formatRelativeTime(ago(23 * HOUR), now)).toBe("23 hours ago");
+    expect(formatRelativeTime(ago(3 * DAY), now)).toBe("3 days ago");
+    expect(formatRelativeTime(ago(30 * DAY), now)).toBe("30 days ago");
+  });
+  it("is the date for anything older than 30 days", () => {
+    // The short name of the month is the runtime's: "Sep" or "Sept".
+    expect(formatRelativeTime(ago(30 * DAY + 1000), now)).toMatch(/^06 Sept? 2026$/);
+    expect(formatRelativeTime("2025-01-02T03:04:05Z", now)).toBe("02 Jan 2025");
+  });
+  it("is the absolute time for a time in the future (clock skew)", () => {
+    const soon = new Date(now + 5 * MIN).toISOString();
+    expect(formatRelativeTime(soon, now)).toBe(formatTimestamp(soon));
+  });
+  it("returns '—' for nothing and for what is no time", () => {
+    expect(formatRelativeTime(null, now)).toBe("—");
+    expect(formatRelativeTime("", now)).toBe("—");
+    expect(formatRelativeTime("not-a-date", now)).toBe("—");
   });
 });

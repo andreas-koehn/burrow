@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
+import { db, resetDb } from "@/mocks/db";
 import PromptCache from "@/pages/PromptCache";
 
 function mount() {
@@ -148,5 +149,36 @@ describe("Prompt cache settings (§4.21)", () => {
     expect(await screen.findByText(/semantic hit rate/i)).toBeInTheDocument();
     expect(await screen.findByText(/similar returned/i)).toBeInTheDocument();
     expect(await screen.findByText(/promotions/i)).toBeInTheDocument();
+  });
+
+  describe("semantic hit rate", () => {
+    const rate = async () => {
+      mount();
+      await userEvent.click(await screen.findByRole("tab", { name: /semantic/i }));
+      return (await screen.findByText("Semantic hit rate (24h)")).nextElementSibling?.textContent;
+    };
+
+    it("is the share the relay measured", async () => {
+      // Seed: 0.04 over a cache that holds entries.
+      expect(await rate()).toBe("4.0%");
+    });
+
+    it("is a dash while the semantic cache is empty and nothing was hit: there is nothing to measure", async () => {
+      db.cacheStats = { ...db.cacheStats, semantic_entries: 0, semantic_hit_rate_24h: 0 };
+      try {
+        expect(await rate()).toBe("—");
+      } finally {
+        resetDb();
+      }
+    });
+
+    it("is 0.0% when the cache holds entries and none was hit", async () => {
+      db.cacheStats = { ...db.cacheStats, semantic_hit_rate_24h: 0 };
+      try {
+        expect(await rate()).toBe("0.0%");
+      } finally {
+        resetDb();
+      }
+    });
   });
 });

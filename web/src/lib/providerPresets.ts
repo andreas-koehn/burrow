@@ -39,6 +39,19 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
 ];
 
+const sameUrl = (url: string) => url.trim().replace(/\/+$/, "").toLowerCase();
+
+/**
+ * What a provider is, in one word for a table: "Client" when a client serves
+ * it; for a hosted API the name of the preset at its base URL, else "Hosted API".
+ */
+export function providerKindLabel(p: { kind: "tunnel" | "direct"; upstream_base_url: string }): string {
+  if (p.kind === "tunnel") return "Client";
+  const url = sameUrl(p.upstream_base_url ?? "");
+  const preset = url === "" ? undefined : PROVIDER_PRESETS.find((x) => x.baseUrl !== "" && sameUrl(x.baseUrl) === url);
+  return preset?.name ?? "Hosted API";
+}
+
 // Same rule as the relay's vault slots.
 const CREDENTIAL_SLOT_RE = /^[A-Z0-9_]{1,32}$/;
 

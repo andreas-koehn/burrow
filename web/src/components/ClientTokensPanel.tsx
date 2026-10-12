@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy } from "lucide-react";
 import { Link } from "react-router-dom";
 import { apiFetch } from "@/lib/api";
-import { formatTimestamp, formatRelativeTime } from "@/lib/format";
+import { RelativeTime } from "@/components/RelativeTime";
 import { Button, FormField, FormFieldGroup, Input, Dialog, TableEmptyRow } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
@@ -68,14 +68,9 @@ export function ClientTokensPanel() {
               : (data ?? []).map((t) => (
               <tr key={t.id}>
                 <td className="col-name">{t.name}</td>
-                <td className="col-created">{formatTimestamp(t.created_at)}</td>
-                <td
-                  className={t.last_used ? "col-lastused" : "col-lastused null"}
-                  // P1-13 — relative time as the primary value, absolute
-                  // timestamp on hover so power users keep the precision.
-                  title={t.last_used ? formatTimestamp(t.last_used) : undefined}
-                >
-                  {t.last_used ? formatRelativeTime(t.last_used) : "never"}
+                <td className="col-created"><RelativeTime value={t.created_at} /></td>
+                <td className={t.last_used ? "col-lastused" : "col-lastused null"}>
+                  <RelativeTime value={t.last_used} empty="never" />
                 </td>
                 <td className="col-actions">
                   <Button

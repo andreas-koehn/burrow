@@ -242,6 +242,10 @@ describe("Gateway keys page", () => {
     expect(within(mine).getByText("all")).toBeInTheDocument();
     expect(within(mine).getByText("active")).toBeInTheDocument();
     expect(within(mine).getByText("you")).toBeInTheDocument();
+    // Last used: how long ago (the date, past 30 days), the exact UTC time on hover.
+    const used = mine.querySelector("time")!;
+    expect(used).toHaveTextContent("18 May 2026");
+    expect(used).toHaveAttribute("title", "18 May 2026, 09:00:00 UTC");
     const bobs = within(table).getByRole("row", { name: /bobs-ci/ });
     // The names are a tooltip for a pointer and text for a screen reader.
     const entries = within(bobs).getByTitle("burrow-simple, ollama/*");

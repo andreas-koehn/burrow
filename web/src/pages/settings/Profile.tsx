@@ -63,7 +63,7 @@ export default function Profile() {
   const avatarInitial = (user?.email?.[0] ?? "U").toUpperCase();
 
   return (
-    <div className="account-page page-narrow">
+    <div className="account-page settings-page">
       <PageHeader title="Profile & password" />
 
       <section className="account-section" aria-labelledby="sec-profile">

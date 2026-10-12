@@ -5,7 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { apiFetch, downloadFile, ApiError } from "@/lib/api";
 import { Badge, Button, Input, PageHeader, SkeletonRows, TableEmptyRow } from "@/components/ds";
 import type { AuditEvent } from "@/lib/contract";
-import { formatTimestampWithTooltip } from "@/lib/format";
+import { RelativeTime } from "@/components/RelativeTime";
 
 const RESULT_BADGE: Record<AuditEvent["result"], string> = {
   ok: "status-connected",
@@ -19,10 +19,8 @@ function Row({ e }: { e: AuditEvent }) {
     <>
       <tr className="clickable" onClick={() => setOpen((o) => !o)}>
         <td>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</td>
-        {(() => {
-          const t = formatTimestampWithTooltip(e.ts);
-          return <td className="small"><time dateTime={t.iso} title={t.iso}>{t.display}</time></td>;
-        })()}
+        {/* A record keeps its exact times; how long ago that was is on hover. */}
+        <td className="small"><RelativeTime value={e.ts} absolute /></td>
         <td className="mono small">{e.actor_email}</td>
         <td className="mono">{e.action}</td>
         <td className="mono">{e.subject_label}</td>
@@ -62,7 +60,7 @@ export default function AuditLog() {
   });
 
   return (
-    <div className="audit-page">
+    <div className="audit-page settings-page">
       <PageHeader
         title="Audit log"
         subtitle={<>Hash-chained — each entry includes the SHA-256 of the previous one. Click <strong>Verify chain</strong> to confirm integrity.</>}

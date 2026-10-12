@@ -15,7 +15,9 @@ import { ProviderConcurrencySetting, ProviderResponsesSetting, ProviderUpstreamP
 import { useAuth } from "@/auth/useAuth";
 import { providerBaseUrl } from "@/lib/serviceUrl";
 import { providerState } from "@/lib/status";
+import { formatLatency, formatRatio } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
+import { RelativeTime } from "@/components/RelativeTime";
 import type {
   AiProvider, AiProviderModel, Service, ServiceAIConfig,
 } from "@/lib/contract";
@@ -328,7 +330,8 @@ export default function ProviderDetail() {
                 <MetricTile label="Requests (24h)" value={fmtInt(metrics.data.requests_24h)} />
                 <MetricTile label="Tokens (24h)" value={`${fmtInt(metrics.data.tokens_in_24h)} → ${fmtInt(metrics.data.tokens_out_24h)}`} />
                 <MetricTile label="Cost (24h)" value={flat ? "—" : `$${metrics.data.cost_usd_24h.toFixed(2)}`} />
-                <MetricTile label="Cache hit ratio" value={`${Math.round(metrics.data.cache_hit_ratio_24h * 100)}%`} />
+                {/* The relay sends the ratio; without a request there is none to state. */}
+                <MetricTile label="Cache hit ratio" value={formatRatio(metrics.data.cache_hit_ratio_24h * metrics.data.requests_24h, metrics.data.requests_24h)} />
               </MetricStrip>
 
               <section aria-labelledby={`${headingId}-recent`} className="card">
@@ -359,11 +362,12 @@ export default function ProviderDetail() {
                           }}
                           className="clickable"
                         >
-                          <td className="mono small">{r.ts}</td>
+                          <td className="small"><RelativeTime value={r.ts} /></td>
                           <td className="mono">{r.method}</td>
                           <td className="mono">{r.path}</td>
                           <td className="mono">{r.status}</td>
-                          <td className="mono">{r.duration_ms} ms</td>
+                          {/* 0 is what a request without a measured duration carries. */}
+                          <td className="mono">{formatLatency(r.duration_ms, r.duration_ms > 0 ? 1 : 0)}</td>
                           <td className="mono">{r.cache}</td>
                         </tr>
                       ))}
@@ -590,7 +594,7 @@ export default function ProviderDetail() {
             Apps that use this base URL will start receiving errors.{" "}
             {direct
               ? `Its API keys, its AI configuration and its model list are deleted with it. The credential slot ${provider.data.credential_slot} on the relay is not touched.`
-              : "The service, its API keys and its tunnel are kept."}
+              : "The service, its API keys and its client connection are kept."}
           </p>
           {deleteErr && <ErrorNotice>{deleteErr}</ErrorNotice>}
         </Dialog>

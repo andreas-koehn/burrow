@@ -316,7 +316,9 @@ describe("ServiceDetail page", () => {
       server.use(http.get("/api/v1/services/:id", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
       // It is not asked for by itself; a change made on the page reads it again.
       await act(() => qc.invalidateQueries({ queryKey: ["service", "prov-zai"] }));
-      expect(await screen.findByText(NOTE)).toBeInTheDocument();
+      // It never updated by itself, so the note does not say that this has stopped.
+      expect(await screen.findByText("This service could not be read again: the page may be out of date.")).toBeInTheDocument();
+      expect(screen.queryByText(/no longer updates by itself/)).toBeNull();
       expect(screen.getByRole("heading", { level: 1, name: "zai" })).toBeInTheDocument();
       expect(screen.queryByRole("region", { name: "Client" })).toBeNull();
     });

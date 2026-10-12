@@ -166,6 +166,48 @@ describe("Traffic page", () => {
     });
   });
 
+  it("Rollups has a line of help beside it", async () => {
+    mount();
+    await table();
+    const hint = screen.getByRole("button", { name: "What is Rollups?" });
+    expect(hint).toHaveAccessibleDescription("Daily totals instead of single connections.");
+    // Beside the checkbox, not inside its label: a click on the help does not switch the view.
+    expect(screen.getByRole("checkbox", { name: /rollups/i }).closest("label")).not.toContainElement(hint);
+    await userEvent.click(hint);
+    expect(screen.getByRole("checkbox", { name: /rollups/i })).not.toBeChecked();
+  });
+
+  it("the protocol of a client's own connection is called Client connection, with a line of help", async () => {
+    db.connectionLogs = [{ ...db.connectionLogs[0]!, kind: "control" }];
+    mount();
+    const t = await table();
+    const picker = screen.getByRole("combobox", { name: "Protocol" });
+    expect(within(picker).getAllByRole("option").map((o) => [o.getAttribute("value"), o.textContent])).toEqual([
+      ["", "All"], ["control", "Client connection"], ["http_proxy", "HTTP proxy"], ["tcp_proxy", "TCP proxy"],
+    ]);
+    const hint = screen.getByRole("button", { name: "What is Client connection?" });
+    expect(hint).toHaveAccessibleDescription("The connection a client keeps open to the relay.");
+    expect(picker.closest("label")).not.toContainElement(hint);
+    // The same words in the table.
+    await waitFor(() => expect(t.querySelector("[data-kind='control'] .badge")?.textContent).toBe("Client connection"));
+    expect(document.body.textContent).not.toMatch(/\bControl\b/);
+  });
+
+  it("writes the time of a connection out, with how long ago it was on hover", async () => {
+    db.connectionLogs = [{ ...db.connectionLogs[0]!, started_at: "2026-05-19T08:00:00Z" }];
+    mount("/traffic?range=all");
+    const t = await table();
+    const time = await waitFor(() => {
+      const el = bodyRows(t)[0]!.querySelector("time");
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    // A log is a record: the exact time is the text.
+    expect(time).toHaveTextContent("19 May 2026, 08:00:00 UTC");
+    expect(time).toHaveAttribute("title", "19 May 2026");
+    expect(time).toHaveAttribute("datetime", "2026-05-19T08:00:00Z");
+  });
+
   it("the Protocol filter and the Rollups switch are kept in the URL too", async () => {
     mount();
     await table();
@@ -234,6 +276,9 @@ describe("Traffic page", () => {
     expect(panel).toHaveTextContent("ip not allowed");
     expect(panel).toHaveTextContent("burrow-client/0.5.0");
     expect(panel).toHaveTextContent("sess_001");
+    // The connection through which the service was served, in the dashboard's words.
+    expect(within(panel).getByText("Service connection")).toBeInTheDocument();
+    expect(within(panel).queryByText("Tunnel")).toBeNull();
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("region", { name: "Traffic details" })).toBeNull();
   });

@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import { formatTimestamp } from "@/lib/format";
+import { RelativeTime } from "@/components/RelativeTime";
 import { Button, Input, Dialog, TableEmptyRow } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
@@ -86,9 +86,9 @@ export function ApiKeysPanel({ serviceId, ownToaster = true, revokeOnly = false,
             {(data ?? []).map((k) => (
               <tr key={k.id}>
                 <td className="col-name">{k.name}</td>
-                <td className="col-created">{formatTimestamp(k.created_at)}</td>
+                <td className="col-created"><RelativeTime value={k.created_at} /></td>
                 <td className={k.last_used ? "col-lastused" : "col-lastused null"}>
-                  {k.last_used ? formatTimestamp(k.last_used) : "Never"}
+                  <RelativeTime value={k.last_used} empty="Never" />
                 </td>
                 <td className="col-actions">
                   <Button

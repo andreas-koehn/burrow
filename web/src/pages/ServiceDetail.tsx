@@ -167,7 +167,8 @@ export default function ServiceDetail() {
       {/* For every service, whatever is shown below: the page and its controls stay, but may be out of date. */}
       {error && (
         <ErrorNotice variant="warn" role="status">
-          This service could not be read again: the page may be out of date and no longer updates by itself.
+          {/* Only what a client serves was being asked for again by itself. */}
+          This service could not be read again: the page may be out of date{svc.type !== "direct" && " and no longer updates by itself"}.
         </ErrorNotice>
       )}
 

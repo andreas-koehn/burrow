@@ -21,6 +21,17 @@ describe("Sessions", () => {
     expect(within(table).getByText("198.51.100.4")).toBeInTheDocument();
   });
 
+  it("writes Created and Expires as times with the exact UTC time on hover", async () => {
+    renderApp(<Sessions />);
+    const table = await screen.findByRole("table", { name: /active sessions/i });
+    const row = (await within(table).findByText("198.51.100.4")).closest("tr")!;
+    const [created, expires] = Array.from(row.querySelectorAll("time"));
+    expect(created).toHaveTextContent("10 May 2026");
+    expect(created).toHaveAttribute("title", "10 May 2026, 09:00:00 UTC");
+    expect(expires).toHaveAttribute("title", "17 May 2026, 09:00:00 UTC");
+    expect(expires).toHaveAttribute("datetime", "2026-05-17T09:00:00Z");
+  });
+
   it("actions column has a header and current session shows label (D-16)", async () => {
     renderApp(<Sessions />);
     const table = await screen.findByRole("table", { name: /active sessions/i });

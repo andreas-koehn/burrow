@@ -213,7 +213,8 @@ describe("narrow page column — form-only pages", () => {
     expect(px("--page-w-narrow")).toBeGreaterThan(px("--input-w-lg"));
     expect(px("--page-w-narrow")).toBeLessThan(1440);
   });
-  it.each(["settings/GeneralSettings", "settings/EmailSettings", "settings/Profile", "Retention", "DatabaseBackend", "ConnectClient"])("%s is a narrow page", (name) => {
+  // The settings pages have a container of their own (see below): a form there starts at the left edge.
+  it.each(["ConnectClient"])("%s is a narrow page", (name) => {
     const w = wrappers(name);
     expect(w.length).toBeGreaterThan(0);
     for (const c of w) expect(c.split(" ")).toContain("page-narrow");
@@ -224,6 +225,104 @@ describe("narrow page column — form-only pages", () => {
       expect(page(name)).not.toContain("page-narrow");
     },
   );
+});
+
+describe("settings pages share one container", () => {
+  const app = readFileSync(resolve(__dirname, "App.tsx"), "utf8");
+  // Every page routed under /settings, as the file it is imported from.
+  const components = [...app.matchAll(/<Route path="\/settings\/[^"]+" element=\{(?:<RequireAdmin>)?<(\w+) \/>/g)].map((m) => m[1]!);
+  const files = components.map((c) => app.match(new RegExp(`import ${c} from "@/pages/([^"]+)"`))?.[1] ?? `no import of ${c}`);
+  const page = (name: string) => readFileSync(resolve(__dirname, "pages", `${name}.tsx`), "utf8");
+  // className of every element that directly wraps a <PageHeader> in a page: its root, in each of its states.
+  const roots = (name: string) => [...page(name).matchAll(/<div className="([^"]*)">\s*<PageHeader\b/g)].map((m) => m[1]!);
+
+  it("looks at every settings page", () => {
+    expect(files).toEqual(expect.arrayContaining([
+      "settings/GeneralSettings", "settings/EmailSettings", "Retention", "DatabaseBackend", "BackupRestore",
+      "Users", "Roles", "AuditLog", "Webhooks", "OpenApiViewer", "settings/Profile", "settings/Sessions", "AutomationTokens",
+    ]));
+  });
+  it.each(files)("%s carries the class on its root, in every state it renders", (name) => {
+    const found = roots(name);
+    expect(found.length).toBeGreaterThan(0);
+    for (const c of found) expect(c.split(" ")).toContain("settings-page");
+    // Not centred as well: the left edge is the same on every settings page.
+    expect(page(name)).not.toContain("page-narrow");
+  });
+  it("is the whole column; only a page without a table keeps the form width, at the same left edge", () => {
+    // Without the comments: the one above the rule names the class too.
+    const rules = css.replace(/\/\*[\s\S]*?\*\//g, "").match(/\.settings-page[^{]*\{[^}]*\}/g) ?? [];
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toMatch(/^\.settings-page:not\(:has\(\.table-wrap, table, iframe\)\)\s*\{/);
+    expect(rules[0]).toMatch(/max-width:\s*var\(--page-w-narrow\)/);
+    // Never centred: no auto margin moves the column away from the left edge.
+    expect(rules[0]).not.toMatch(/margin[^;]*auto/);
+  });
+});
+
+describe("type size", () => {
+  // Every rule that sets a size, as [selector, size in px]. Comments are dropped first.
+  const plain = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const sizes: [string, number][] = [];
+  const unread: string[] = [];
+  for (const m of plain.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selector = m[1]!.trim().replace(/\s+/g, " ");
+    for (const d of m[2]!.matchAll(/(?:^|[;\s])font(-size)?\s*:\s*([^;]+)/g)) {
+      const value = d[2]!.trim();
+      if (value === "inherit") continue;
+      const px = d[1] ? value.match(/^(\d+(?:\.\d+)?)(px|rem)$/) : null;
+      if (!px) { unread.push(`${selector} { ${d[0].trim()} }`); continue; }
+      sizes.push([selector, px[2] === "px" ? Number(px[1]) : Number(px[1]) * 16]);
+    }
+  }
+  const below = (min: number, skip: readonly string[] = []) =>
+    sizes.filter(([selector, px]) => px < min && !skip.includes(selector)).map(([selector, px]) => `${selector}: ${px}px`);
+
+  // What may stay at 11px: uppercase labels set with letter spacing, and keyboard hints.
+  const SMALL_LABELS = [
+    "table.data thead th",   // column headers
+    ".section-label",        // group titles
+    ".nav-group-title",
+    ".t-micro",
+    ".kbd-token",            // keyboard hints
+    ".menu-item .shortcut",
+  ];
+
+  it("reads every size the stylesheet sets", () => {
+    // A size in another unit, or in the font shorthand, would pass unseen.
+    expect(unread).toEqual([]);
+    expect(sizes.length).toBeGreaterThan(100);
+  });
+  it("sets no size below 11px anywhere", () => {
+    expect(below(11)).toEqual([]);
+  });
+  it("sets none below 12px outside headers, group titles and keyboard hints", () => {
+    expect(below(12, SMALL_LABELS)).toEqual([]);
+    // The list names rules that exist, and nothing that needs no exception.
+    for (const selector of SMALL_LABELS) {
+      const px = sizes.find(([s]) => s === selector)?.[1];
+      expect(px, selector).toBeGreaterThanOrEqual(11);
+      expect(px, selector).toBeLessThan(12);
+    }
+  });
+  it("keeps the small labels uppercase with letter spacing, or in the mono face of a key", () => {
+    const rule = (selector: string) =>
+      plain.match(new RegExp(`(?:^|\\n)${selector.replace(/[.[\]"=]/g, "\\$&")}\\s*\\{[^}]*\\}`))?.[0] ?? "";
+    for (const selector of SMALL_LABELS.slice(0, 4)) {
+      expect(rule(selector), selector).toMatch(/text-transform:\s*uppercase/);
+      expect(rule(selector), selector).toMatch(/letter-spacing:/);
+    }
+    for (const selector of SMALL_LABELS.slice(4)) expect(rule(selector), selector).toMatch(/font-family:\s*var\(--font-mono\)/);
+  });
+  it("sets body text and table cells at 13px or more", () => {
+    const of = (selector: string) => sizes.find(([s]) => s === selector)?.[1];
+    expect(of("body")).toBeGreaterThanOrEqual(13);
+    expect(of("table.data")).toBeGreaterThanOrEqual(13);
+    // No rule makes a cell smaller than the table it is in.
+    const cells = sizes.filter(([selector]) => /\btd\b/.test(selector));
+    expect(cells.length).toBeGreaterThan(0);
+    expect(cells.filter(([, px]) => px < 13).map(([selector, px]) => `${selector}: ${px}px`)).toEqual([]);
+  });
 });
 
 describe("workspace shell", () => {

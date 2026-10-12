@@ -5,8 +5,8 @@ import { join, relative } from "node:path";
 // Words that may not appear in what the user reads. Checked in string literals
 // and JSX text only: comments and import lines are stripped first, so a
 // component named ClientTokensPanel or a type ClientView does not count.
-// Every rule ignores case and is matched with whitespace runs collapsed, so a
-// phrase wrapped over two JSX lines counts as well.
+// Every rule is matched with whitespace runs collapsed, so a phrase wrapped
+// over two JSX lines counts as well, and every rule but one ignores case.
 const RETIRED: [RegExp, string][] = [
   [/tunnell?ing agents?/i, "say client"],
   [/\bAI services?\b/i, "say provider"],
@@ -15,6 +15,13 @@ const RETIRED: [RegExp, string][] = [
   // What is published is a service. Only with the word that makes it copy: on its own
   // "tunnel" is also a provider kind, a query key, an event and a route of the relay.
   [/\b(TCP|HTTP|live) tunnels?\b/i, "say service"],
+  // What a user is given, and what a service keeps: named, not called a tunnel.
+  [/\btunnel ACLs?\b/i, "say access to services"],
+  [/\bits tunnels?\b/i, "say its client connection"],
+  // The word alone as a label: a literal of its own or the whole text of an
+  // element. With its capital only, which is what tells the label from the
+  // provider kind "tunnel", the query key "tunnels" and a type in angle brackets.
+  [/["'`]Tunnels?["'`]|>\s*Tunnels?\s*<\//, "say Service connection"],
   // As JSX text, or as a literal of its own ({x ? "connected" : "idle"}). A
   // value that only contains the word (closed_idle, the badge kind status-idle) is not a status label.
   [/>\s*idle\s*<|["'`]idle["'`]/i, "say Offline or Never connected"],
@@ -146,6 +153,15 @@ describe("the guard itself", () => {
     ["TCP tunnels, wrapped", "<p>Raw TCP\n  tunnel — only Open applies.</p>"],
     ["live tunnel", "const label = `Online: view live tunnel for ${name}`;"],
     ["HTTP tunnels, other case", "<p>needs http Tunnels</p>"],
+    ["tunnel ACLs", "<span>removes the user, their tokens, and tunnel ACLs.</span>"],
+    ["tunnel ACLs, wrapped", "<span>their tokens, and tunnel\n  ACLs.</span>"],
+    ["tunnel ACLs, other case", 'const t = "Tunnel ACL";'],
+    ["its tunnel", 'const kept = "The service, its API keys and its tunnel are kept.";'],
+    ["its tunnel, wrapped", "<p>The service and its\n  tunnels are kept.</p>"],
+    ["its tunnel, other case", "<p>Its Tunnel is kept.</p>"],
+    ["Tunnel as a label", '["Tunnel", row.tunnel_id],'],
+    ["Tunnel as a column header", "<th>Tunnel</th>"],
+    ["Tunnels as a column header, wrapped", "<th>\n  Tunnels\n</th>"],
     ["idle", "<Badge>idle</Badge>"],
     ["idle, wrapped", "<Badge>\n  idle\n</Badge>"],
     ["idle, other case", "<Badge>Idle</Badge>"],
@@ -207,6 +223,9 @@ describe("the guard itself", () => {
     ["tunnel as an event of the relay", 'const EVENTS = ["tunnel.connected", "tunnel.failed"]; es.addEventListener("tunnels", onTunnels);'],
     ["tunnel in a type and its fields", "interface Tunnel { id: string } const live = tunnels.data ?? []; const t: Tunnel | undefined = row.tunnel;"],
     ["a host name", 'const host = "tunnels.example.com";'],
+    ["tunnel as a type argument", "const [row, setRow] = useState<Tunnel | null>(null); const m = new Map<string, Tunnel>(); const p: Promise<Tunnel> = load();"],
+    ["tunnel as a field of the wire", '["Service connection", row.tunnel_id],'],
+    ["a client connection", "<p>The service, its API keys and its client connection are kept.</p>"],
     ["a live tunnel in a comment", "// A live tunnel is held by a client right now.\nconst a = 1; /** One live tunnel: what a client holds. */"],
     ["retired words in a comment", "// an AI service, idle, client offline\nconst a = 1; /* Rotate cache */"],
     ["the new words", "<p>Names apps ask for. Global (cache shared across providers). Online, Offline, Never connected.</p>"],

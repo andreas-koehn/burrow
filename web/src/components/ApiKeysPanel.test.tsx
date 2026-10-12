@@ -17,7 +17,13 @@ describe("ApiKeysPanel", () => {
     // 'ci' has last_used null → "Never"
     expect(within(ci).getByText("Never")).toBeInTheDocument();
     expect(within(ci).getByRole("button", { name: /revoke key ci/i })).toBeInTheDocument();
-    expect(within(table).getByText("prod")).toBeInTheDocument();
+    const prod = within(table).getByText("prod").closest("tr")!;
+    // Created and Last used: how long ago (the date, past 30 days), the exact UTC time on hover.
+    const [created, lastUsed] = Array.from(prod.querySelectorAll("time"));
+    expect(created).toHaveTextContent("01 May 2026");
+    expect(created).toHaveAttribute("title", "01 May 2026, 08:00:00 UTC");
+    expect(lastUsed).toHaveTextContent("18 May 2026");
+    expect(lastUsed).toHaveAttribute("title", "18 May 2026, 09:00:00 UTC");
   });
 
   // P1-5: the services:configure hint is shown ONLY to non-admin viewers.

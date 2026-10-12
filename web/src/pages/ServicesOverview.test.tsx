@@ -94,6 +94,80 @@ describe("ServicesOverview", () => {
     expect(el.textContent).not.toContain("`");
   });
 
+  it("a relay notice sits above the page title", async () => {
+    renderApp(<ServicesOverview />);
+    const notice = (await screen.findByText(EMAIL_NOT_CONFIGURED)).closest('[role="status"]') as HTMLElement;
+    const title = screen.getByRole("heading", { name: "Overview", level: 1 });
+    expect(notice.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Still below the figures would be between them and the list.
+    expect(title.compareDocumentPosition(await strip()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("lists the services with status and when each was last served", async () => {
+    renderApp(<ServicesOverview />);
+    const table = await screen.findByRole("table", { name: "Services" });
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Name", "Status", "Last served"]);
+    const rows = within(table).getAllByRole("row").slice(1).map((r) => within(r).getAllByRole("cell").map((c) => c.textContent));
+    // Online first, then whoever was served last; a service no client ever served closes the list.
+    expect(rows).toEqual([
+      ["web", "Online", "now"],
+      ["ollama", "Online", "now"],
+      ["postgres", "Online", "now"],
+      ["grafana", "Offline", "16 May 2026"],
+      ["llamacpp", "Offline", "12 May 2026"],
+      ["lmstudio", "Never connected", "—"],
+    ]);
+    // Each row links to its service; the exact time is on hover.
+    expect(within(table).getByRole("link", { name: "grafana" })).toHaveAttribute("href", "/services/svc_graf01");
+    expect(within(table).getByText("16 May 2026")).toHaveAttribute("title", "16 May 2026, 17:30:00 UTC");
+    expect(screen.getByRole("link", { name: "All services" })).toHaveAttribute("href", "/services");
+    expect(screen.queryByText(/belongs? to the AI gateway/)).toBeNull();
+  });
+
+  it("shows at most 8 services and leads to all of them", async () => {
+    const base = db.services[0]!;
+    db.services = Array.from({ length: 11 }, (_, i) => ({ ...base, id: `svc_${i}`, name: `svc-${i}`, connected: i === 10 }));
+    renderApp(<ServicesOverview />);
+    const table = await screen.findByRole("table", { name: "Services" });
+    const names = within(table).getAllByRole("row").slice(1).map((r) => within(r).getAllByRole("cell")[0]!.textContent);
+    expect(names).toHaveLength(8);
+    // The one that is online is not cut off.
+    expect(names[0]).toBe("svc-10");
+    expect(screen.getByRole("link", { name: "All services" })).toHaveAttribute("href", "/services");
+  });
+
+  it("leaves gateway-only services out and says how many there are", async () => {
+    db.services = db.services.map((s) => (s.name === "llamacpp" || s.name === "lmstudio" ? { ...s, gateway_only: true } : s));
+    renderApp(<ServicesOverview />);
+    const table = await screen.findByRole("table", { name: "Services" });
+    expect(within(table).queryByText("llamacpp")).toBeNull();
+    expect(within(table).queryByText("lmstudio")).toBeNull();
+    expect(within(table).getAllByRole("row")).toHaveLength(1 + 4);
+    expect(screen.getByRole("link", { name: "2 more belong to the AI gateway" })).toHaveAttribute("href", "/gateway/providers");
+  });
+
+  it("one gateway-only service: the sentence is in the singular", async () => {
+    db.services = db.services.map((s) => (s.name === "lmstudio" ? { ...s, gateway_only: true } : s));
+    renderApp(<ServicesOverview />);
+    expect(await screen.findByRole("link", { name: "1 more belongs to the AI gateway" })).toHaveAttribute("href", "/gateway/providers");
+  });
+
+  it("without a service there is no list", async () => {
+    db.services = [];
+    renderApp(<ServicesOverview />);
+    await checklist();
+    expect(screen.queryByRole("table", { name: "Services" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "All services" })).toBeNull();
+  });
+
+  it("the checklist comes before the list of services while steps are open", async () => {
+    db.connectionLogs = [];
+    renderApp(<ServicesOverview />);
+    const list = await checklist();
+    const table = screen.getByRole("table", { name: "Services" });
+    expect(list.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("has no checklist once everything is set up; the strip stays", async () => {
     const { qc } = renderApp(<ServicesOverview />);
     const el = await strip();

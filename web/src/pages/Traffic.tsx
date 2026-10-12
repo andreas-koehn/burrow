@@ -6,8 +6,9 @@ import { apiFetch, downloadFile } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
 import { statusLabel } from "@/lib/status";
 import { parseTimeRange, timeRangeMs, widerRange, type TimeRange } from "@/lib/time-range";
-import { Button, Badge, EmptyState, PageHeader } from "@/components/ds";
+import { Button, Badge, EmptyState, InfoHint, PageHeader } from "@/components/ds";
 import { LogView, type LogColumn } from "@/components/LogView";
+import { RelativeTime } from "@/components/RelativeTime";
 import type { ConnectionLog, ConnectionLogRollup, ConnectionLogKind, ConnectionLogStatus, Service } from "@/lib/contract";
 
 const PAGE_SIZE = 50;
@@ -28,10 +29,12 @@ function kindClass(kind: ConnectionLogKind): string {
   }
 }
 
+// In the order of the Protocol picker.
 const KIND_LABELS: Record<ConnectionLogKind, string> = {
+  // The wire calls it "control": the connection a client keeps open to the relay.
+  control: "Client connection",
   http_proxy: "HTTP proxy",
   tcp_proxy: "TCP proxy",
-  control: "Control",
 };
 const KINDS = Object.keys(KIND_LABELS) as ConnectionLogKind[];
 
@@ -69,7 +72,8 @@ function LogDetail({ row, service }: { row: ConnectionLog; service: string }) {
     ["Reason", row.reason],
     ["User agent", row.user_agent],
     ["Client session", row.client_session_id],
-    ["Tunnel", row.tunnel_id],
+    // The id of the live connection the service was served through.
+    ["Service connection", row.tunnel_id],
     ["User", row.user_id],
     ["Bytes in", String(row.bytes_in)],
     ["Bytes out", String(row.bytes_out)],
@@ -155,7 +159,8 @@ export default function Traffic() {
     `${r.day} ${r.kind} ${KIND_LABELS[r.kind] ?? ""} ${r.service_id} ${serviceName.get(r.service_id) ?? ""}`.toLowerCase().includes(needle));
 
   const logColumns: LogColumn<ConnectionLog>[] = [
-    { id: "time", header: "Time", cell: (r) => <span className="mono small" title={r.started_at}>{formatTimestamp(r.started_at)}</span> },
+    { id: "time", header: "Time", // A log is a record: the exact time is the text, how long ago it was is on hover.
+      cell: (r) => <span className="mono small"><RelativeTime value={r.started_at} absolute /></span> },
     { id: "service", header: "Service", cell: (r) => serviceCell(r.service_id) },
     { id: "ip", header: "Client IP", cell: (r) => <span className="mono small">{r.source_ip}</span> },
     { id: "kind", header: "Protocol", cell: (r) => <span data-kind={r.kind}><Badge kind={kindClass(r.kind)}>{KIND_LABELS[r.kind]}</Badge></span> },
@@ -193,20 +198,22 @@ export default function Traffic() {
 
   const filters = (
     <>
-      <label className="filter-label">
-        <span>Protocol</span>
-        <select
-          aria-label="Protocol"
-          value={kindFilter}
-          onChange={(e) => setParam("kind", e.target.value)}
-          className="input"
-        >
-          <option value="">All</option>
-          <option value="control">Control</option>
-          <option value="http_proxy">HTTP proxy</option>
-          <option value="tcp_proxy">TCP proxy</option>
-        </select>
-      </label>
+      {/* The help stands beside the label, not in it: a click on it must not open the picker. */}
+      <span className="row row-center gap-2">
+        <label className="filter-label">
+          <span>Protocol</span>
+          <select
+            aria-label="Protocol"
+            value={kindFilter}
+            onChange={(e) => setParam("kind", e.target.value)}
+            className="input"
+          >
+            <option value="">All</option>
+            {KINDS.map((k) => <option key={k} value={k}>{KIND_LABELS[k]}</option>)}
+          </select>
+        </label>
+        <InfoHint label={KIND_LABELS.control} content="The connection a client keeps open to the relay." />
+      </span>
       <label className="filter-label">
         <span>Service</span>
         <select
@@ -221,10 +228,13 @@ export default function Traffic() {
           {services.map((s) => <option key={s.id} value={s.id}>{s.name || s.id}</option>)}
         </select>
       </label>
-      <label className="checkbox-row small">
-        <input type="checkbox" aria-label="Rollups" checked={rollups} onChange={(e) => setParam("rollups", e.target.checked ? "1" : "")} />
-        <span>Rollups</span>
-      </label>
+      <span className="row row-center gap-2">
+        <label className="checkbox-row small">
+          <input type="checkbox" aria-label="Rollups" checked={rollups} onChange={(e) => setParam("rollups", e.target.checked ? "1" : "")} />
+          <span>Rollups</span>
+        </label>
+        <InfoHint label="Rollups" content="Daily totals instead of single connections." />
+      </span>
     </>
   );
 

@@ -11,6 +11,8 @@ import { Badge, Button, DropdownMenu, EmptyState, ErrorNotice, MetricStrip, Metr
 import { useAuth } from "@/auth/useAuth";
 import { NewProviderDialog } from "@/components/NewProviderDialog";
 import { providerBaseUrl } from "@/lib/serviceUrl";
+import { formatLatency, formatRatio } from "@/lib/format";
+import { providerKindLabel } from "@/lib/providerPresets";
 import type { AiProvider, CostSummary } from "@/lib/contract";
 
 function fmtInt(n: number): string {
@@ -19,11 +21,6 @@ function fmtInt(n: number): string {
 
 function fmtUsd(n: number): string {
   return `$${n.toFixed(2)}`;
-}
-
-function hitRatio(hits: number, requests: number): string {
-  if (requests <= 0) return "0%";
-  return `${Math.round((hits / requests) * 100)}%`;
 }
 
 
@@ -145,7 +142,7 @@ export default function Providers() {
         />
         <MetricTile
           label="Cache hit ratio (24h)"
-          value={hitRatio(totalCacheHits, totalRequests)}
+          value={formatRatio(totalCacheHits, totalRequests)}
           sub={`${fmtInt(totalCacheHits)} / ${fmtInt(totalRequests)}`}
         />
       </MetricStrip>
@@ -188,10 +185,7 @@ export default function Providers() {
                 <th>Name</th>
                 <th>Kind</th>
                 <th>Base URL</th>
-                <th>Backend</th>
-                <th>Keys</th>
                 <th>Requests (24h)</th>
-                <th>Cache hits</th>
                 <th>Latency p95</th>
                 <th>Status</th>
                 <th className="col-actions" aria-label="Actions"></th>
@@ -211,10 +205,12 @@ export default function Providers() {
                       </div>
                     )}
                   </td>
-                  <td><Badge kind={`type-${e.kind}`} nodot>{e.kind}</Badge></td>
+                  {/* Served by a client, or which hosted API: the one thing a "backend" beside it used to repeat. */}
+                  <td><Badge kind={`type-${e.kind}`} nodot>{providerKindLabel(e)}</Badge></td>
                   <td>
                     <span className="row row-center gap-2 service-url">
-                      <span className="mono service-url-path" title={baseUrl}>{`/ai/${e.slug}/v1`}</span>
+                      {/* In full: what is shown is what the button copies. */}
+                      <span className="mono service-url-path">{baseUrl}</span>
                       <button
                         type="button"
                         className="icon-btn"
@@ -225,26 +221,9 @@ export default function Providers() {
                       </button>
                     </span>
                   </td>
-                  <td>
-                    {/* The backend is what a local service runs; a hosted API has none. */}
-                    {direct && e.backend_type === "other" ? (
-                      <span className="muted">—</span>
-                    ) : (
-                      <Badge kind={`backend-${e.backend_type}`} nodot>
-                        {e.backend_type}
-                      </Badge>
-                    )}
-                  </td>
-                  <td className="mono">{fmtInt(e.api_key_count)}</td>
                   <td className="mono">{fmtInt(e.requests_24h)}</td>
-                  <td>
-                    <span className="mono">{fmtInt(e.cache_hits_24h)}</span>
-                    <span className="muted small">
-                      {" "}
-                      ({hitRatio(e.cache_hits_24h, e.requests_24h)})
-                    </span>
-                  </td>
-                  <td className="mono">{fmtInt(e.latency_p95_ms)} ms</td>
+                  {/* Without a request there is no latency to state. */}
+                  <td className="mono">{formatLatency(e.latency_p95_ms, e.requests_24h)}</td>
                   <td>
                     <StatusBadge state={providerState(e)} />
                   </td>

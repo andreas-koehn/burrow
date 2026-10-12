@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ShieldAlert } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
-import { formatTimestamp } from "@/lib/format";
+import { RelativeTime } from "@/components/RelativeTime";
 import { useAuth } from "@/auth/useAuth";
 import { Button, EmptyState, Input, Select, Badge, Dialog, PageHeader, SkeletonRows } from "@/components/ds";
 import type { UserAdmin, UsersPage, UserRole } from "@/lib/contract";
@@ -37,7 +37,7 @@ export default function Users() {
 
   if (error instanceof ApiError && error.status === 403) {
     return (
-      <div className="users-page">
+      <div className="users-page settings-page">
         <PageHeader title="Users" />
         <div className="notice-block warn">
           <div className="icon-bubble"><ShieldAlert size={18} /></div>
@@ -48,7 +48,7 @@ export default function Users() {
   }
   if (error) {
     return (
-      <div className="users-page">
+      <div className="users-page settings-page">
         <PageHeader title="Users" />
         <div className="notice-block error">
           <div className="icon-bubble"><AlertTriangle size={18} /></div>
@@ -62,7 +62,7 @@ export default function Users() {
   const total = data?.total ?? 0;
 
   return (
-    <div className="users-page">
+    <div className="users-page settings-page">
       <PageHeader
         title="Users"
         subtitle="People who can sign in to this Burrow relay."
@@ -108,8 +108,8 @@ export default function Users() {
                   <td>{u.email}{u.id === me?.id && <span className="tag" aria-label="this is you"> YOU</span>}</td>
                   <td><Badge kind={u.role === "admin" ? "role-admin-teal" : "role-user"}>{u.role === "admin" ? "Admin" : "User"}</Badge></td>
                   <td><Badge kind={u.status === "active" ? "status-connected" : "status-suspended-muted"}>{u.status === "active" ? "Active" : "Suspended"}</Badge></td>
-                  <td className="col-created">{formatTimestamp(u.created_at)}</td>
-                  <td className="col-created">{u.last_login ? formatTimestamp(u.last_login) : <span className="muted">—</span>}</td>
+                  <td className="col-created"><RelativeTime value={u.created_at} /></td>
+                  <td className="col-created">{u.last_login ? <RelativeTime value={u.last_login} /> : <span className="muted">—</span>}</td>
                   <td className="col-actions">
                     <Button variant="secondary" size="sm" onClick={() => setEditing(u)}>Edit</Button>{" "}
                     <Button

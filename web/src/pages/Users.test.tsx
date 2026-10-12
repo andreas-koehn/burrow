@@ -16,6 +16,29 @@ describe("Users list", () => {
     expect(within(bobRow).getByText("—")).toBeInTheDocument(); // null last_login
   });
 
+  it("writes Created and Last login as how long ago, with the exact UTC time on hover", async () => {
+    renderApp(<Users />);
+    const carolRow = (await screen.findByText("carol@acme.io")).closest("tr")!;
+    // Seeded months ago: past 30 days the date stands for "how long ago".
+    const [created, lastLogin] = Array.from(carolRow.querySelectorAll("time"));
+    expect(created).toHaveTextContent("01 Mar 2026");
+    expect(created).toHaveAttribute("title", "01 Mar 2026, 08:00:00 UTC");
+    expect(created).toHaveAttribute("datetime", "2026-03-01T08:00:00Z");
+    expect(lastLogin).toHaveTextContent("10 Apr 2026");
+    expect(lastLogin).toHaveAttribute("title", "10 Apr 2026, 12:00:00 UTC");
+  });
+
+  it("a login a moment ago reads as relative time", async () => {
+    server.use(http.get("/api/v1/users", () => HttpResponse.json({
+      users: [{ id: "u1", email: "dora@acme.io", role: "user", status: "active", last_login: new Date(Date.now() - 3 * 3_600_000 - 5_000).toISOString(), created_at: new Date(Date.now() - 3 * 86_400_000 - 5_000).toISOString() }],
+      next_cursor: "",
+    })));
+    renderApp(<Users />);
+    const row = (await screen.findByText("dora@acme.io")).closest("tr")!;
+    expect(within(row).getByText("3 days ago")).toHaveAttribute("title", expect.stringMatching(/ UTC$/));
+    expect(within(row).getByText("3 hours ago")).toHaveAttribute("title", expect.stringMatching(/ UTC$/));
+  });
+
   it("filters by email search", async () => {
     renderApp(<Users />);
     await screen.findByText("bob@acme.io");

@@ -38,7 +38,7 @@ export default function GeneralSettings() {
   });
 
   return (
-    <div className="account-page page-narrow">
+    <div className="account-page settings-page">
       <PageHeader title="General" subtitle="Settings that apply to the whole relay." />
 
       {/* ---- v0.5.2 Privacy section (Q12 toggle for connection-log top-source-IPs) ---- */}

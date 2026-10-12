@@ -55,7 +55,7 @@ export default function AutomationTokens() {
   });
 
   return (
-    <div className="automation-page">
+    <div className="automation-page settings-page">
       <PageHeader
         title="Automation tokens"
         subtitle="Long-lived bearer tokens for CI / CLI / bots — scoped to your own permissions."

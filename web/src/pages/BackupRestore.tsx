@@ -68,7 +68,7 @@ export default function BackupRestore() {
   });
 
   return (
-    <div className="backup-page">
+    <div className="backup-page settings-page">
       <PageHeader
         title="Backup & restore"
         subtitle={<>Backups include the database, the relay&apos;s TLS cert state, and config — but<strong> not</strong> ephemeral session/audit-chain pointers reset on restore.</>}

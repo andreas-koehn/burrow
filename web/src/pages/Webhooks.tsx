@@ -203,7 +203,7 @@ export default function Webhooks() {
   }
 
   return (
-    <div className="webhooks-page">
+    <div className="webhooks-page settings-page">
       <PageHeader
         title="Webhooks"
         subtitle={<>Burrow signs every webhook with an HMAC-SHA256 signature in the{" "}<code className="mono">Burrow-Signature</code> header. Verify on receipt.{" "}<a href="/docs/webhooks" className="link-inline">Docs</a></>}

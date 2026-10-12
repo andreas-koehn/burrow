@@ -50,7 +50,7 @@ export default function Roles() {
 
   if (error) {
     return (
-      <div className="users-page">
+      <div className="users-page settings-page">
         <PageHeader title="Roles" />
         <div className="notice-block error">
           <div className="icon-bubble"><AlertTriangle size={18} /></div>
@@ -61,7 +61,7 @@ export default function Roles() {
   }
 
   return (
-    <div className="users-page roles-page">
+    <div className="users-page roles-page settings-page">
       <PageHeader
         title="Roles"
         subtitle="What each role is allowed to do."

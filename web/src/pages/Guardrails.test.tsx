@@ -80,6 +80,8 @@ describe("Guardrails custom rules (F9)", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
     const table = await screen.findByRole("table", { name: "Custom rules" });
     expect(await within(table).findByText("internal-id")).toBeInTheDocument();
+    // The pattern is behind the rule's name.
+    await userEvent.click(within(table).getByRole("button", { name: "Show pattern of internal-id" }));
     expect(within(table).getByText("ID-\\d{6}")).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "New redaction rule" })).toBeNull());
   });
@@ -186,6 +188,55 @@ describe("Guardrails custom rules (F9)", () => {
     await userEvent.type(within(dialog).getByLabelText("Pattern"), "abc");
     await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
     expect(await screen.findByText("Rule server-name added.")).toBeInTheDocument();
+  });
+
+  it("the rules table says what a rule does and what it applies to, in plain words", async () => {
+    db.redactionRules.custom.push(
+      { id: "r1", name: "internal-id", pattern: "ID-\\d+", action: "mask", scope: "both" },
+      { id: "r2", name: "secrets", pattern: "sk-[a-z0-9]+", action: "drop", scope: "request_body" },
+      { id: "r3", name: "answers", pattern: "answer-[0-9]+", action: "hash", scope: "response_body" },
+    );
+    await openRegex();
+    const table = await screen.findByRole("table", { name: "Custom rules" });
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Name", "What it does", "Applies to", ""]);
+    const cells = (name: string) => within(within(table).getByText(name).closest("tr")!).getAllByRole("cell").slice(1, 3).map((c) => c.textContent);
+    expect(cells("internal-id")).toEqual(["Replaces the match with a placeholder", "Requests and responses"]);
+    expect(cells("secrets")).toEqual(["Refuses the request", "Requests"]);
+    expect(cells("answers")).toEqual(["Replaces the match with its hash", "Responses"]);
+    // The words of the wire are not shown.
+    expect(table.textContent).not.toMatch(/\b(mask|drop|both|request_body|response_body)\b/);
+    expect(within(screen.getByRole("table", { name: "Built-in rules" })).getAllByRole("columnheader").map((h) => h.textContent))
+      .toEqual(["Name", "What it does", "Applies to"]);
+  });
+
+  it("a pattern is not in the document until its row is expanded", async () => {
+    db.redactionRules.custom.push(
+      { id: "r1", name: "internal-id", pattern: "ID-\\d+", action: "mask", scope: "both" },
+      { id: "r2", name: "secrets", pattern: "sk-[a-z0-9]+", action: "drop", scope: "request_body" },
+    );
+    await openRegex();
+    const table = await screen.findByRole("table", { name: "Custom rules" });
+    expect(within(table).queryByText("ID-\\d+")).toBeNull();
+    expect(within(table).queryByText("sk-[a-z0-9]+")).toBeNull();
+    const toggle = within(table).getByRole("button", { name: "Show pattern of internal-id" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveTextContent("Show pattern");
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    // Its own row only, in the mono face, in the cell that wraps a long pattern.
+    const pattern = within(table).getByText("ID-\\d+");
+    expect(pattern).toHaveClass("mono");
+    expect(pattern.closest("td")).toHaveClass("cell-wrap");
+    expect(pattern.closest("tr")).toHaveTextContent("internal-id");
+    expect(within(table).queryByText("sk-[a-z0-9]+")).toBeNull();
+    expect(toggle).toHaveAccessibleName("Hide pattern of internal-id");
+    await userEvent.click(toggle);
+    expect(within(table).queryByText("ID-\\d+")).toBeNull();
+    // The built-in rules keep theirs closed too.
+    const builtIn = screen.getByRole("table", { name: "Built-in rules" });
+    expect(builtIn.textContent).not.toContain("[A-Za-z0-9._%+-]+@");
+    await userEvent.click(within(builtIn).getByRole("button", { name: "Show pattern of Email address" }));
+    expect(builtIn.textContent).toContain("[A-Za-z0-9._%+-]+@");
   });
 
   it("offers no delete button on built-in rules", async () => {
