@@ -55,7 +55,10 @@ import (
 // serve command receives a stop signal. It must be strictly greater than
 // api.JSONHandlerTimeout (the chi middleware.Timeout applied to JSON routes)
 // so that every in-flight handler has time to complete (or be chi-cancelled)
-// before Shutdown returns and the deferred database.Close() runs.
+// before Shutdown returns and the deferred database.Close() runs. The five
+// seconds on top also cover the audit rows a store mutation writes after its
+// handler's deadline: they share one deadline of store.auditWriteTimeout (5s)
+// per mutation, so a stuck audit log delays a handler by at most that.
 const apiShutdownGrace = api.JSONHandlerTimeout + 5*time.Second
 
 func versionLine() string {

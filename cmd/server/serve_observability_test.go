@@ -1067,14 +1067,46 @@ func TestOperationsGuideIsComplete(t *testing.T) {
 	if len(declared) < 30 {
 		t.Fatalf("%d families declared", len(declared))
 	}
+	// row is the guide's table row that starts with the given name.
+	row := func(name string) (string, bool) {
+		for _, line := range strings.Split(guide, "\n") {
+			if strings.HasPrefix(line, "| `"+name+"`") {
+				return line, true
+			}
+		}
+		return "", false
+	}
+	labels := metrics.Labels()
 	for _, name := range declared {
 		if !strings.Contains(guide, "`"+name+"`") {
 			t.Errorf("docs/guide/operations.md does not name the metric family %s", name)
+			continue
+		}
+		line, ok := row(name)
+		if !ok {
+			t.Errorf("docs/guide/operations.md has no table row for the metric family %s", name)
+			continue
+		}
+		for _, label := range labels[name] {
+			if !strings.Contains(line, "`"+label+"`") {
+				t.Errorf("the row of %s does not name its label %s", name, label)
+			}
 		}
 	}
 	for _, event := range webhook.ClosedEvents {
 		if !strings.Contains(guide, "`"+event+"`") {
 			t.Errorf("docs/guide/operations.md does not name the webhook event %s", event)
+			continue
+		}
+		line, ok := row(event)
+		if !ok {
+			t.Errorf("docs/guide/operations.md has no table row for the webhook event %s", event)
+			continue
+		}
+		for _, field := range wtemplate.Fields(event) {
+			if !strings.Contains(line, "`"+field+"`") {
+				t.Errorf("the row of %s does not name its field %s", event, field)
+			}
 		}
 	}
 }

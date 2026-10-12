@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -153,6 +154,23 @@ func (s *Store) SetEvents(e EventSink) { s.events = e }
 // auditWriteTimeout bounds one audit write of the store.
 const auditWriteTimeout = 5 * time.Second
 
+// auditWarn logs an audit write the store had to drop (a variable for tests).
+var auditWarn = func(msg string, args ...any) { slog.Warn(msg, args...) }
+
+// auditDeadlineKey carries, in a context, the one deadline of all the audit
+// rows of a mutation.
+type auditDeadlineKey struct{}
+
+// withAuditDeadline fixes the deadline for the audit rows of one mutation that
+// writes several: the first call decides, so n rows take at most
+// auditWriteTimeout together and not n times that.
+func withAuditDeadline(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(auditDeadlineKey{}).(time.Time); ok {
+		return ctx
+	}
+	return context.WithValue(ctx, auditDeadlineKey{}, time.Now().Add(auditWriteTimeout))
+}
+
 // emitAudit is the nil-safe, panic-safe trampoline every store mutation
 // uses to append a typed audit row. Mutations call it AFTER their DB write
 // succeeds: a failing mutation never produces a misleading audit row, and a
@@ -188,11 +206,19 @@ func (s *Store) emitAudit(ctx context.Context, action string, fill func(*audit.E
 	}
 	// Detached from the caller's cancellation, with a limit of its own: the
 	// mutation is done, and a caller that hangs up right after it must not
-	// take the entry with it. The context's values (the actor) stay. A failed
-	// write is dropped, as before; it never fails the mutation.
-	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), auditWriteTimeout)
+	// take the entry with it. The context's values (the actor) stay. The
+	// deadline is one per mutation (withAuditDeadline), auditWriteTimeout from
+	// its first row. A failed or dropped write is logged by action and never
+	// fails the mutation.
+	deadline, ok := ctx.Value(auditDeadlineKey{}).(time.Time)
+	if !ok {
+		deadline = time.Now().Add(auditWriteTimeout)
+	}
+	actx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
 	defer cancel()
-	_ = s.auditLogger.Append(actx, ev)
+	if err := s.auditLogger.Append(actx, ev); err != nil {
+		auditWarn("store: audit entry dropped", "action", action)
+	}
 }
 
 // SeedAdmin ensures the bootstrap admin user exists.
@@ -804,6 +830,7 @@ func (s *Store) SaveSettings(ctx context.Context, kv map[string]string) error {
 	if err := s.q.SetSettings(ctx, kv); err != nil {
 		return err
 	}
+	ctx = withAuditDeadline(ctx) // one deadline for the rows of this write
 	for key := range kv {
 		if action, ok := auditedSettings[key]; ok {
 			k := key

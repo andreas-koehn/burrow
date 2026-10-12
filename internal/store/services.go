@@ -194,6 +194,7 @@ func (s *Store) SetServiceAccessMode(ctx context.Context, callerID, callerRole, 
 			return err
 		}
 	}
+	ctx = withAuditDeadline(ctx) // one deadline for the rows of this mutation
 	s.emitAudit(ctx, audit.ActionServiceAccessModeUpdate, func(e *audit.Event) {
 		e.SubjectID = serviceID
 		e.SubjectLabel = svc.Name

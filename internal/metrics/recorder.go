@@ -947,3 +947,14 @@ func (we *writeErr) printf(format string, args ...any) {
 	}
 	_, we.err = fmt.Fprintf(we.w, format, args...)
 }
+
+// Labels returns, for every declared metric family, the names of the labels
+// its series carry (none for an unlabeled family). It is the registry the
+// exporter writes from; the operations guide is checked against it.
+func Labels() map[string][]string {
+	out := make(map[string][]string, len(closedSet))
+	for _, def := range closedSet {
+		out[def.name] = append([]string(nil), def.labels...)
+	}
+	return out
+}
