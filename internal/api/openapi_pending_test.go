@@ -12,28 +12,6 @@ const openAPIConversionDone = false
 // openAPIPendingOperationIDs lists the operations that have no operationId
 // yet, as "METHOD path".
 var openAPIPendingOperationIDs = []string{
-	// O05: cache, per-service AI configuration, rate limits, cost, budgets
-	"DELETE /api/v1/services/{serviceID}/cache/entries",
-	"GET /api/v1/services/{serviceID}/ai-config",
-	"PUT /api/v1/services/{serviceID}/ai-config",
-	"GET /api/v1/cache/settings",
-	"PUT /api/v1/cache/settings",
-	"GET /api/v1/cache/stats",
-	"DELETE /api/v1/cache/entries",
-	"DELETE /api/v1/cache/semantic/entries",
-	"GET /api/v1/rate-limits",
-	"POST /api/v1/rate-limits",
-	"GET /api/v1/rate-limits/usage",
-	"PUT /api/v1/rate-limits/{id}",
-	"DELETE /api/v1/rate-limits/{id}",
-	"GET /api/v1/cost/pricing",
-	"PUT /api/v1/cost/pricing",
-	"GET /api/v1/cost/summary",
-	"GET /api/v1/cost/export",
-	"GET /api/v1/budgets",
-	"POST /api/v1/budgets",
-	"PUT /api/v1/budgets/{id}",
-	"DELETE /api/v1/budgets/{id}",
 	// O06: redaction, guardrails, inspector
 	"GET /api/v1/services/{serviceID}/inspector/requests",
 	"GET /api/v1/services/{serviceID}/inspector/requests/{rid}",
@@ -92,22 +70,6 @@ var openAPIPendingOperationIDs = []string{
 // openAPIPendingEmpty lists the operations that still reference the Empty
 // schema in a request body or a response.
 var openAPIPendingEmpty = []string{
-	// O05: cache, per-service AI configuration, rate limits, cost, budgets
-	"GET /api/v1/services/{serviceID}/ai-config",
-	"PUT /api/v1/services/{serviceID}/ai-config",
-	"GET /api/v1/cache/settings",
-	"PUT /api/v1/cache/settings",
-	"GET /api/v1/cache/stats",
-	"GET /api/v1/rate-limits",
-	"POST /api/v1/rate-limits",
-	"GET /api/v1/rate-limits/usage",
-	"PUT /api/v1/rate-limits/{id}",
-	"GET /api/v1/cost/pricing",
-	"PUT /api/v1/cost/pricing",
-	"GET /api/v1/cost/summary",
-	"GET /api/v1/budgets",
-	"POST /api/v1/budgets",
-	"PUT /api/v1/budgets/{id}",
 	// O06: redaction, guardrails, inspector
 	"POST /api/v1/services/{serviceID}/inspector/requests/{rid}/replay",
 	"POST /api/v1/services/{serviceID}/inspector/requests/{rid}/replay-compare",

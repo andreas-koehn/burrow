@@ -1004,6 +1004,271 @@ components:
           format: date-time
           description: Left out until the token is used.
         created_at: { type: string, format: date-time }
+    CacheSettingsInput:
+      type: object
+      description: >
+        Settings of the exact-match prompt cache. A field that is left out
+        is false or 0; applies_per left out is global.
+      properties:
+        enabled: { type: boolean }
+        applies_per: { type: string, enum: [global, per_endpoint, per_api_key], default: global }
+        ttl_seconds: { type: integer }
+        max_entries: { type: integer }
+        max_per_entry_kb: { type: integer }
+    CacheSettings:
+      description: Stored cache settings; every field is present.
+      allOf:
+        - $ref: '#/components/schemas/CacheSettingsInput'
+        - type: object
+          required: [enabled, applies_per, ttl_seconds, max_entries, max_per_entry_kb]
+    CacheSemanticSettingsInput:
+      type: object
+      description: Settings of the semantic (similarity) tier of the cache.
+      properties:
+        enabled: { type: boolean }
+        min_similarity: { type: number, format: double, minimum: 0, maximum: 1 }
+        embedding_mode: { type: string, enum: [local, none] }
+        embedding_url: { type: string }
+        embedding_model: { type: string }
+        fallback_policy: { type: string, enum: [treat_as_miss, return_cached_marked] }
+        promote_on_miss: { type: boolean }
+        max_index_entries: { type: integer }
+    CacheSemanticSettings:
+      description: Semantic-tier settings; every field is present.
+      allOf:
+        - $ref: '#/components/schemas/CacheSemanticSettingsInput'
+        - type: object
+          required: [enabled, min_similarity, embedding_mode, embedding_url, embedding_model, fallback_policy, promote_on_miss, max_index_entries]
+    CacheSettingsView:
+      type: object
+      description: What GET /api/v1/cache/settings returns.
+      required: [global, semantic, per_service]
+      properties:
+        global: { $ref: '#/components/schemas/CacheSettings' }
+        semantic:
+          description: >
+            The built-in defaults of the semantic tier. A service sets its
+            own values in the cache.semantic section of its AI configuration.
+          allOf: [ { $ref: '#/components/schemas/CacheSemanticSettings' } ]
+        per_service:
+          type: array
+          description: One entry per service that has an AI configuration.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/CacheSettings'
+              - type: object
+                required: [service_id, override]
+                properties:
+                  service_id: { type: string }
+                  override:
+                    type: boolean
+                    description: >
+                      Whether the service's AI configuration has a cache
+                      section. Without one the entry shows the built-in
+                      defaults.
+    CacheStats:
+      type: object
+      description: >
+        Counters of both cache tiers. The hit rates are kept in memory and
+        start at 0 after a restart.
+      required: [entries, on_disk_bytes, hit_rate_24h, semantic_entries, semantic_disk_bytes, semantic_hit_rate_24h, semantic_similar_returned_24h, semantic_promotions_24h]
+      properties:
+        entries: { type: integer }
+        on_disk_bytes: { type: integer, format: int64 }
+        hit_rate_24h: { type: number, format: double }
+        semantic_entries: { type: integer }
+        semantic_disk_bytes: { type: integer, format: int64 }
+        semantic_hit_rate_24h: { type: number, format: double }
+        semantic_similar_returned_24h: { type: integer }
+        semantic_promotions_24h: { type: integer }
+    ServiceAiConfig:
+      type: object
+      description: >
+        The AI configuration of one service: one JSON object, stored and
+        returned as it was written ({} while none was written). The sections
+        below are the ones the relay reads; a section that is left out or
+        null is off. Any other key is stored and ignored. On write only
+        cache.semantic.min_similarity (0 to 1) and
+        cache.semantic.embedding_mode (local or none) are checked.
+      additionalProperties: true
+      properties:
+        cache:
+          description: Exact-match cache of this service, with its semantic tier.
+          allOf:
+            - $ref: '#/components/schemas/CacheSettingsInput'
+            - type: object
+              properties:
+                semantic: { $ref: '#/components/schemas/CacheSemanticSettingsInput' }
+        redaction:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            for_logs_only: { type: boolean }
+        guardrails:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            action: { type: string, enum: [log_only, refuse_403, refuse_safe] }
+        inspector:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            max_requests: { type: integer }
+        anthropic:
+          type: object
+          description: Keeps the service's traffic on the metering chain; requests are not rewritten.
+          properties:
+            enabled: { type: boolean }
+    RateLimitInput:
+      type: object
+      required: [scope, dimension, limit, burst]
+      properties:
+        scope: { type: string, enum: [api_key, gateway_key, model, role, service, global] }
+        subject:
+          type: string
+          maxLength: 256
+          description: >
+            Whom the rule applies to. Required for every scope but global,
+            which must not have one. For gateway_key the key's id, for model
+            the model's name on the gateway endpoints.
+        dimension:
+          type: string
+          enum: [rpm, bpm]
+          description: rpm counts requests, bpm estimated bytes / 4.
+        limit: { type: integer, minimum: 1 }
+        burst: { type: integer, minimum: 1 }
+        window:
+          type: string
+          enum: [minute, day]
+          default: minute
+          description: A day runs from UTC midnight.
+    RateLimit:
+      description: A stored rate-limit rule.
+      allOf:
+        - $ref: '#/components/schemas/RateLimitInput'
+        - type: object
+          required: [id, subject, window]
+          properties:
+            id: { type: string }
+    RateLimitUsage:
+      type: object
+      required: [limits]
+      properties:
+        limits:
+          type: array
+          description: The rules that apply to the subject, each with its live counters.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/RateLimit'
+              - type: object
+                required: [used, reset_seconds]
+                properties:
+                  used: { type: integer, format: int64 }
+                  reset_seconds: { type: integer }
+    CostPricingEntryInput:
+      type: object
+      required: [model]
+      properties:
+        provider:
+          type: string
+          description: Provider slug. Left out, the price applies to the model under any provider.
+        model: { type: string }
+        input_per_million: { type: number, format: double, minimum: 0 }
+        output_per_million: { type: number, format: double, minimum: 0 }
+    CostPricingInput:
+      type: object
+      description: A whole price table; it replaces the one in use.
+      required: [version, entries]
+      properties:
+        version: { type: string, minLength: 1 }
+        entries:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/CostPricingEntryInput' }
+    CostPricing:
+      type: object
+      description: The price table in use. Only entries that name a provider are listed.
+      required: [version, entries]
+      properties:
+        version: { type: string }
+        entries:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/CostPricingEntryInput'
+              - type: object
+                required: [provider, model, input_per_million, output_per_million]
+    CostSummary:
+      type: object
+      required: [window, total_usd, tokens_in, tokens_out, top_consumers, pct_of_budget]
+      properties:
+        window: { type: string, enum: [today, week, month, year] }
+        total_usd: { type: number, format: double }
+        tokens_in: { type: integer, format: int64 }
+        tokens_out: { type: integer, format: int64 }
+        top_consumers:
+          type: array
+          items:
+            type: object
+            required: [api_key_id, service_id, tokens_in, tokens_out, usd]
+            properties:
+              api_key_id: { type: string }
+              service_id: { type: string }
+              tokens_in: { type: integer, format: int64 }
+              tokens_out: { type: integer, format: int64 }
+              usd: { type: number, format: double }
+        pct_of_budget:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            For window today, the highest ratio of today's spend to daily_usd
+            over the budgets. Null for the other windows and whenever there
+            is no such ratio.
+        group_by:
+          type: string
+          enum: [gateway_key, model, provider, target_model, dialect]
+          description: Present only when the group_by parameter was sent.
+        groups:
+          type: array
+          description: Present only when the group_by parameter was sent.
+          items:
+            type: object
+            required: [key, requests, tokens_in, tokens_out, usd]
+            properties:
+              key: { type: string }
+              requests: { type: integer, format: int64 }
+              tokens_in: { type: integer, format: int64 }
+              tokens_out: { type: integer, format: int64 }
+              usd: { type: number, format: double }
+    BudgetInput:
+      type: object
+      required: [scope, action_on_exceed]
+      properties:
+        scope: { type: string, enum: [api_key, service, user, global, gateway_key, model] }
+        subject_id:
+          type: string
+          maxLength: 256
+          description: Required for every scope but global, which must not have one. Taken as sent, never trimmed.
+        daily_usd:
+          type: number
+          format: double
+          minimum: 0
+          description: At least one of daily_usd and daily_tokens must be above 0.
+        daily_tokens: { type: integer, format: int64, minimum: 0 }
+        action_on_exceed: { type: string, enum: [alert_webhook, throttle_zero, disable_key] }
+        alert_webhook_id: { type: string, nullable: true }
+    Budget:
+      description: A stored budget with today's usage.
+      allOf:
+        - $ref: '#/components/schemas/BudgetInput'
+        - type: object
+          required: [id, subject_id, daily_usd, daily_tokens, alert_webhook_id, current_usd, current_tokens, exceeded]
+          properties:
+            id: { type: string }
+            current_usd: { type: number, format: double }
+            current_tokens: { type: integer, format: int64 }
+            exceeded: { type: boolean }
 
   responses:
     Unauthorized:
@@ -1596,22 +1861,17 @@ paths:
   /api/v1/services/{serviceID}/cache/entries:
     delete:
       tags: [services, cache]
+      operationId: serviceCacheEntriesDelete
       summary: Purge per-service exact-cache entries
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
-        '200':
-          description: Count purged.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  deleted: { type: integer }
+        '204': { description: Purged. Nothing is returned. }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/services/{serviceID}/ai-config:
     get:
       tags: [services, cache]
+      operationId: serviceAiConfigGet
       summary: Read per-service AI gateway configuration
       description: >
         Returns the stored service-level AI config blob, or an empty object
@@ -1623,12 +1883,13 @@ paths:
           description: The stored AI config blob (or {} if unset).
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/ServiceAiConfig' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [services, cache]
+      operationId: serviceAiConfigUpdate
       summary: Store per-service AI gateway configuration
       description: >
         Persists the service-level AI config blob. Validates
@@ -1641,7 +1902,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/ServiceAiConfig' }
       responses:
         '204': { description: Saved. }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -1750,58 +2011,57 @@ paths:
   /api/v1/cache/settings:
     get:
       tags: [cache]
+      operationId: cacheSettingsGet
       summary: Get prompt-cache settings
       responses:
         '200':
           description: Cache settings.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/CacheSettingsView' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     put:
       tags: [cache]
+      operationId: cacheSettingsUpdate
       summary: Replace prompt-cache settings
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/CacheSettingsInput' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/cache/stats:
     get:
       tags: [cache]
+      operationId: cacheStatsGet
       summary: Cache hit / miss / size counters
       responses:
         '200':
           description: Stats.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/CacheStats' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/cache/entries:
     delete:
       tags: [cache]
+      operationId: cacheEntriesDelete
       summary: Purge ALL cache entries (admin / ai:configure:any)
       responses:
-        '200':
-          description: Count purged.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  deleted: { type: integer }
+        '204': { description: Purged, the exact-match and the semantic tier. Nothing is returned. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/cache/semantic/entries:
     delete:
       tags: [cache]
+      operationId: cacheSemanticEntriesDelete
       summary: Purge ALL semantic cache entries (admin / ai:configure:any)
       description: >
         Clears the semantic similarity tier only; the exact-match cache is
@@ -1957,6 +2217,7 @@ paths:
   /api/v1/rate-limits:
     get:
       tags: [rate-limits]
+      operationId: rateLimitsList
       summary: List configured rate-limit rules
       description: >
         Each rule is {id, scope, subject, dimension, limit, burst, window}.
@@ -1975,10 +2236,11 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/RateLimit' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [rate-limits]
+      operationId: rateLimitCreate
       summary: Create a rate-limit rule
       description: >
         Body {scope, subject, dimension, limit, burst, window}. scope is one
@@ -1990,13 +2252,13 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/RateLimitInput' }
       responses:
         '201':
           description: Created.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RateLimit' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -2004,6 +2266,7 @@ paths:
   /api/v1/rate-limits/usage:
     get:
       tags: [rate-limits]
+      operationId: rateLimitUsageGet
       summary: Current rate-limit consumption per rule
       description: >
         The rules that apply to one subject, each with used and
@@ -2022,12 +2285,10 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: Usage rows.
+          description: The rules that apply, each with used and reset_seconds.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RateLimitUsage' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -2035,19 +2296,23 @@ paths:
   /api/v1/rate-limits/{id}:
     put:
       tags: [rate-limits]
+      operationId: rateLimitUpdate
       summary: Update a rate-limit rule
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/RateLimitInput' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [rate-limits]
+      operationId: rateLimitDelete
       summary: Delete a rate-limit rule
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2061,30 +2326,34 @@ paths:
   /api/v1/cost/pricing:
     get:
       tags: [cost]
+      operationId: costPricingGet
       summary: Get the model-pricing table
       responses:
         '200':
           description: Pricing rows.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/CostPricing' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     put:
       tags: [cost]
+      operationId: costPricingUpdate
       summary: Replace the pricing table (admin)
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/CostPricingInput' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/cost/summary:
     get:
       tags: [cost]
+      operationId: costSummaryGet
       summary: Aggregated cost summary
       description: >
         Admin, or a role with quotas:read:any. The body is {window,
@@ -2120,7 +2389,7 @@ paths:
           description: Summary rows.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/CostSummary' }
         '400':
           description: >
             "window must be one of today|week|month|year" or "group_by must be
@@ -2134,6 +2403,8 @@ paths:
   /api/v1/cost/export:
     get:
       tags: [cost]
+      operationId: costExport
+      x-burrow-mcp: false
       summary: CSV export of cost data
       description: >
         One row per (service, service key, kind, gateway key, dialect,
@@ -2142,17 +2413,29 @@ paths:
         gateway_key_id, dialect, provider, requested_model, target_model and
         requests follow the token and byte columns; they are empty for
         traffic that did not come through a gateway key.
+      parameters:
+        - name: format
+          in: query
+          schema: { type: string, enum: [ndjson, csv], default: ndjson }
+        - name: window
+          in: query
+          schema: { type: string, enum: [today, week, month, year], default: today }
       responses:
         '200':
-          description: CSV.
+          description: A file download in the chosen format.
           content:
+            application/x-ndjson:
+              schema: { type: string }
             text/csv:
               schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/budgets:
     get:
       tags: [cost]
+      operationId: budgetsList
       summary: List budgets (admin)
       description: >
         Each budget is {id, scope, subject_id, daily_usd, daily_tokens,
@@ -2179,11 +2462,12 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/Budget' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [cost]
+      operationId: budgetCreate
       summary: Create a budget
       description: >
         Body {scope, subject_id, daily_usd, daily_tokens, action_on_exceed,
@@ -2201,13 +2485,13 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/BudgetInput' }
       responses:
         '201':
           description: Created.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/Budget' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -2215,6 +2499,7 @@ paths:
   /api/v1/budgets/{id}:
     put:
       tags: [cost]
+      operationId: budgetUpdate
       summary: Update a budget
       description: Same body and rules as creating one; every field is replaced.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
@@ -2222,7 +2507,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/BudgetInput' }
       responses:
         '204': { description: Updated. }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -2230,6 +2515,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [cost]
+      operationId: budgetDelete
       summary: Delete a budget
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
