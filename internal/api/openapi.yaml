@@ -498,29 +498,6 @@ components:
               items: { type: string, enum: [responses-chat, responses-messages] }
         created_at: { type: string, format: date-time, readOnly: true }
         updated_at: { type: string, format: date-time, readOnly: true }
-    InspectorTranslation:
-      type: object
-      additionalProperties: true
-      description: >
-        The translation fields of a captured request; the envelope has
-        further fields (id, ts, method, path, status, headers, bodies).
-      required: [translated, dropped]
-      properties:
-        translated:
-          type: string
-          enum: ['', messages-chat, responses-chat, chat-messages, responses-messages]
-          description: >
-            The pair that translated the request, as in the response header
-            Burrow-Translated. Empty for a request served in its own format.
-        dropped:
-          type: array
-          items: { type: string }
-          description: >
-            What the translation left out, as in the response header
-            Burrow-Dropped: sorted names, never null, empty when nothing
-            was left out. A final "more" says the list was cut; it is not a
-            name. A name can end in text the client chose (after a prefix
-            such as "unknown:"); treat every name as plain text.
     AIModelMode:
       type: string
       enum: [native, translated, not_served]
@@ -1269,6 +1246,192 @@ components:
             current_usd: { type: number, format: double }
             current_tokens: { type: integer, format: int64 }
             exceeded: { type: boolean }
+    RedactionRuleInput:
+      type: object
+      required: [name, pattern, action, scope]
+      properties:
+        name: { type: string }
+        pattern: { type: string, description: A regular expression in Go (RE2) syntax. }
+        action: { type: string, enum: [mask, drop, hash] }
+        scope: { type: string, enum: [request_body, response_body, both] }
+    RedactionRule:
+      description: A redaction rule, built-in or custom.
+      allOf:
+        - $ref: '#/components/schemas/RedactionRuleInput'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string }
+    RedactionRules:
+      type: object
+      required: [built_in, custom]
+      properties:
+        built_in:
+          type: array
+          description: The bundled rules. They cannot be changed or deleted (409).
+          items: { $ref: '#/components/schemas/RedactionRule' }
+        custom:
+          type: array
+          items: { $ref: '#/components/schemas/RedactionRule' }
+    RedactionSettingsInput:
+      type: object
+      description: Global redaction settings. A field that is left out is false or empty.
+      properties:
+        enabled: { type: boolean }
+        redact_for_logs_only: { type: boolean }
+        rule_ids:
+          type: array
+          description: Ids of the selected rules.
+          items: { type: string }
+        presidio_enabled: { type: boolean }
+        presidio_url:
+          type: string
+          description: Left out of an answer while it is empty.
+    RedactionSettings:
+      description: Stored redaction settings.
+      allOf:
+        - $ref: '#/components/schemas/RedactionSettingsInput'
+        - type: object
+          required: [enabled, redact_for_logs_only, rule_ids, presidio_enabled]
+    RedactionSettingsView:
+      type: object
+      description: What GET /api/v1/redaction/settings returns.
+      required: [global, per_service]
+      properties:
+        global: { $ref: '#/components/schemas/RedactionSettings' }
+        per_service:
+          type: array
+          description: One entry per service that has an AI configuration.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/RedactionSettings'
+              - type: object
+                required: [service_id, override]
+                properties:
+                  service_id: { type: string }
+                  override:
+                    type: boolean
+                    description: >
+                      Whether the service's AI configuration has a redaction
+                      section. Without one the entry shows the defaults.
+    GuardrailSettingsInput:
+      type: object
+      required: [action]
+      properties:
+        enabled: { type: boolean }
+        action: { type: string, enum: [log_only, refuse_403, refuse_safe] }
+    GuardrailSettings:
+      description: Stored guardrail settings.
+      allOf:
+        - $ref: '#/components/schemas/GuardrailSettingsInput'
+        - type: object
+          required: [enabled]
+    GuardrailSettingsView:
+      type: object
+      description: What GET /api/v1/guardrails/settings returns.
+      required: [global, per_service]
+      properties:
+        global: { $ref: '#/components/schemas/GuardrailSettings' }
+        per_service:
+          type: array
+          description: One entry per service that has an AI configuration.
+          items:
+            type: object
+            required: [service_id, enabled, action]
+            properties:
+              service_id: { type: string }
+              enabled:
+                type: boolean
+                nullable: true
+                description: Null while the service has no guardrails section of its own.
+              action:
+                type: string
+                nullable: true
+                description: log_only, refuse_403 or refuse_safe; null while the service has no guardrails section of its own.
+    InspectorEntry:
+      type: object
+      description: >
+        One captured request with its response. A body is a string: the
+        text itself when it is valid UTF-8, else base64; the matching
+        *_encoding field says which. Fields that are empty are left out,
+        except the ones listed as required.
+      required: [id, service_id, ts, method, path, status, duration_ms, bytes_in, bytes_out, translated, dropped]
+      properties:
+        id: { type: string }
+        service_id: { type: string }
+        api_key_id: { type: string }
+        ts: { type: string, format: date-time }
+        method: { type: string }
+        path: { type: string }
+        status: { type: integer }
+        duration_ms: { type: integer, format: int64 }
+        bytes_in: { type: integer, format: int64 }
+        bytes_out: { type: integer, format: int64 }
+        req_headers:
+          type: object
+          additionalProperties: { type: string }
+        req_body: { type: string }
+        req_body_encoding: { type: string, enum: [utf8, base64] }
+        resp_headers:
+          type: object
+          additionalProperties: { type: string }
+        resp_body: { type: string }
+        resp_body_encoding: { type: string, enum: [utf8, base64] }
+        truncated: { type: boolean }
+        bytes_omitted: { type: integer, format: int64 }
+        cache: { type: string, enum: [HIT, MISS, SKIP] }
+        redactions:
+          type: array
+          items:
+            type: object
+            required: [rule, count]
+            properties:
+              rule: { type: string }
+              count: { type: integer }
+        trace_id: { type: string }
+        remote_ip: { type: string }
+        mcp:
+          type: object
+          description: Set when the request is a recognised MCP (JSON-RPC) call.
+          required: [method]
+          properties:
+            method: { type: string }
+            tool: { type: string }
+            params:
+              description: The call's params as they were sent; any JSON value.
+        adapter_lossy: { type: boolean }
+        translated:
+          type: string
+          enum: ['', messages-chat, responses-chat, chat-messages, responses-messages]
+          description: >
+            The pair that translated the request, as in the response header
+            Burrow-Translated. Empty for a request served in its own format.
+        dropped:
+          type: array
+          items: { type: string }
+          description: >
+            What the translation left out, as in the response header
+            Burrow-Dropped: sorted names, never null, empty when nothing
+            was left out. A final "more" says the list was cut; it is not a
+            name. A name can end in text the client chose (after a prefix
+            such as "unknown:"); treat every name as plain text.
+    InspectorReplayRequest:
+      type: object
+      description: >
+        Optional overrides for a replay. Without a body the captured request
+        is sent again as it was.
+      properties:
+        headers:
+          type: object
+          description: Set on top of the captured request headers.
+          additionalProperties: { type: string }
+        body:
+          type: string
+          description: Replaces the captured request body when it is not empty.
+        body_encoding: { type: string, enum: [utf8, base64], default: utf8 }
+        follow_routing:
+          type: boolean
+          description: Accepted; the relay does not act on it.
 
   responses:
     Unauthorized:
@@ -1916,23 +2079,40 @@ paths:
   /api/v1/services/{serviceID}/inspector/requests:
     get:
       tags: [inspector]
+      operationId: inspectorRequestsList
       summary: List captured requests
-      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      parameters:
+        - { $ref: '#/components/parameters/PathServiceID' }
+        - name: status
+          in: query
+          description: Only requests answered with this status.
+          schema: { type: integer, minimum: 100, maximum: 599 }
+        - name: q
+          in: query
+          description: Only requests whose method and path contain this text.
+          schema: { type: string }
+        - name: since
+          in: query
+          description: Only requests captured at or after this time.
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 0 }
       responses:
         '200':
-          description: >
-            List of request envelopes. Each one carries translated and
-            dropped, see InspectorTranslation.
+          description: The captured requests, newest first.
           content:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/InspectorTranslation' }
+                items: { $ref: '#/components/schemas/InspectorEntry' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/services/{serviceID}/inspector/requests/{rid}:
     get:
       tags: [inspector]
+      operationId: inspectorRequestGet
       summary: Get a captured request envelope
       parameters:
         - { $ref: '#/components/parameters/PathServiceID' }
@@ -1942,18 +2122,17 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: >
-            Request envelope. It carries translated and dropped, see
-            InspectorTranslation.
+          description: The captured request.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/InspectorTranslation' }
+              schema: { $ref: '#/components/schemas/InspectorEntry' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/services/{serviceID}/inspector/requests/{rid}/replay:
     post:
       tags: [inspector]
+      operationId: inspectorRequestReplay
       summary: Re-fire the captured request through the proxy chain
       parameters:
         - { $ref: '#/components/parameters/PathServiceID' }
@@ -1961,13 +2140,29 @@ paths:
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InspectorReplayRequest' }
       responses:
         '200':
-          description: Replay result envelope.
+          description: The request was sent again; new_entry is what the inspector captured of it.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [new_entry]
+                properties:
+                  new_entry: { $ref: '#/components/schemas/InspectorEntry' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502':
+          description: The replay failed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '503':
           description: Replay engine unavailable.
           content:
@@ -1977,6 +2172,7 @@ paths:
   /api/v1/services/{serviceID}/inspector/requests/{rid}/replay-compare:
     post:
       tags: [inspector]
+      operationId: inspectorRequestReplayCompare
       summary: Replay and diff against the original response
       parameters:
         - { $ref: '#/components/parameters/PathServiceID' }
@@ -1984,17 +2180,52 @@ paths:
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InspectorReplayRequest' }
       responses:
         '200':
-          description: Diff envelope.
+          description: The captured request, its replay (sent past the cache) and what differs between the two responses.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [original, replayed, diff]
+                properties:
+                  original: { $ref: '#/components/schemas/InspectorEntry' }
+                  replayed: { $ref: '#/components/schemas/InspectorEntry' }
+                  diff:
+                    type: object
+                    required: [headers, body]
+                    properties:
+                      headers:
+                        type: array
+                        description: One line per response header that differs.
+                        items: { type: string }
+                      body:
+                        type: string
+                        description: A unified diff of the response bodies; for a binary response a summary of the sizes.
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502':
+          description: The replay failed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: Replay engine unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/services/{serviceID}/inspector/stream:
     get:
       tags: [inspector]
+      operationId: inspectorStream
+      x-burrow-mcp: false
       summary: SSE stream of newly-captured requests (no timeout, no CSRF)
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -2078,50 +2309,55 @@ paths:
   /api/v1/redaction/rules:
     get:
       tags: [redaction]
+      operationId: redactionRulesList
       summary: List redaction rules
       responses:
         '200':
-          description: List of rules.
+          description: The built-in and the custom rules.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RedactionRules' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [redaction]
+      operationId: redactionRuleCreate
       summary: Create a new redaction rule
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/RedactionRuleInput' }
       responses:
         '201':
           description: Rule created.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RedactionRule' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/redaction/rules/{id}:
     put:
       tags: [redaction]
+      operationId: redactionRuleUpdate
       summary: Update a redaction rule
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/RedactionRuleInput' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Built-in rules are read-only. }
     delete:
       tags: [redaction]
+      operationId: redactionRuleDelete
       summary: Delete a redaction rule
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2132,22 +2368,24 @@ paths:
   /api/v1/redaction/settings:
     get:
       tags: [redaction]
+      operationId: redactionSettingsGet
       summary: Get redaction settings
       responses:
         '200':
           description: Settings.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RedactionSettingsView' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     put:
       tags: [redaction]
+      operationId: redactionSettingsUpdate
       summary: Replace redaction settings
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/RedactionSettingsInput' }
       responses:
         '204': { description: Updated. }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -2156,18 +2394,38 @@ paths:
   /api/v1/redaction/preview:
     post:
       tags: [redaction]
+      operationId: redactionPreview
       summary: Preview redaction of a sample payload
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema:
+              type: object
+              properties:
+                body:
+                  type: string
+                  description: The text to scan, at most 1 MiB. An empty text has no match.
+                scope: { type: string, enum: [request_body, response_body, both], default: request_body }
       responses:
         '200':
           description: Preview result.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [matches]
+                properties:
+                  matches:
+                    type: array
+                    items:
+                      type: object
+                      required: [rule, start, end, value]
+                      properties:
+                        rule: { type: string, description: Name of the rule that matched. }
+                        start: { type: integer, description: Byte offset of the match in body. }
+                        end: { type: integer, description: Byte offset after the match. }
+                        value: { type: string, description: The matched text. }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ────────────────────────────────────────────────────────────────────────
@@ -2176,30 +2434,34 @@ paths:
   /api/v1/guardrails/settings:
     get:
       tags: [guardrails]
+      operationId: guardrailSettingsGet
       summary: Get prompt-injection guardrail settings
       responses:
         '200':
           description: Settings.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/GuardrailSettingsView' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     put:
       tags: [guardrails]
+      operationId: guardrailSettingsUpdate
       summary: Replace guardrail settings
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/GuardrailSettingsInput' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/guardrails/patterns:
     get:
       tags: [guardrails]
+      operationId: guardrailPatternsList
       summary: List bundled guardrail pattern names + descriptions
       responses:
         '200':
@@ -2208,7 +2470,12 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items:
+                  type: object
+                  required: [id, description]
+                  properties:
+                    id: { type: string }
+                    description: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ────────────────────────────────────────────────────────────────────────

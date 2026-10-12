@@ -12,22 +12,6 @@ const openAPIConversionDone = false
 // openAPIPendingOperationIDs lists the operations that have no operationId
 // yet, as "METHOD path".
 var openAPIPendingOperationIDs = []string{
-	// O06: redaction, guardrails, inspector
-	"GET /api/v1/services/{serviceID}/inspector/requests",
-	"GET /api/v1/services/{serviceID}/inspector/requests/{rid}",
-	"POST /api/v1/services/{serviceID}/inspector/requests/{rid}/replay",
-	"POST /api/v1/services/{serviceID}/inspector/requests/{rid}/replay-compare",
-	"GET /api/v1/services/{serviceID}/inspector/stream",
-	"GET /api/v1/redaction/rules",
-	"POST /api/v1/redaction/rules",
-	"PUT /api/v1/redaction/rules/{id}",
-	"DELETE /api/v1/redaction/rules/{id}",
-	"GET /api/v1/redaction/settings",
-	"PUT /api/v1/redaction/settings",
-	"POST /api/v1/redaction/preview",
-	"GET /api/v1/guardrails/settings",
-	"PUT /api/v1/guardrails/settings",
-	"GET /api/v1/guardrails/patterns",
 	// O07: audit, webhooks, connection logs
 	"GET /api/v1/audit/events",
 	"GET /api/v1/audit/export",
@@ -70,18 +54,6 @@ var openAPIPendingOperationIDs = []string{
 // openAPIPendingEmpty lists the operations that still reference the Empty
 // schema in a request body or a response.
 var openAPIPendingEmpty = []string{
-	// O06: redaction, guardrails, inspector
-	"POST /api/v1/services/{serviceID}/inspector/requests/{rid}/replay",
-	"POST /api/v1/services/{serviceID}/inspector/requests/{rid}/replay-compare",
-	"GET /api/v1/redaction/rules",
-	"POST /api/v1/redaction/rules",
-	"PUT /api/v1/redaction/rules/{id}",
-	"GET /api/v1/redaction/settings",
-	"PUT /api/v1/redaction/settings",
-	"POST /api/v1/redaction/preview",
-	"GET /api/v1/guardrails/settings",
-	"PUT /api/v1/guardrails/settings",
-	"GET /api/v1/guardrails/patterns",
 	// O07: audit, webhooks, connection logs
 	"GET /api/v1/audit/events",
 	"GET /api/v1/audit/fingerprint",
