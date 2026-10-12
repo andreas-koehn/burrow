@@ -794,3 +794,103 @@ func TestMCP_ObjectResult_IsStructuredAndText(t *testing.T) {
 		}
 	}
 }
+
+// The caller's wrong input is answered as such, not as an internal error.
+func TestMCP_AccessModeInputErrors_AreUserErrors(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{store.ErrInvalidAccessMode, "invalid access mode"},
+		{store.ErrServiceNotHTTP, "api_key and burrow_login require an http service"},
+		{store.ErrDirectService, "service backs a direct AI provider"},
+	} {
+		fs := &fakeStore{setModeErr: c.err}
+		hs, _ := newSDKTestServer(t, fs, allToolPerms, "admin")
+		cs := connectMCP(t, hs.URL, "", "2025-11-25")
+		res, err := callTool(t, cs, "services_set_access_mode", map[string]any{"id": "svc1", "mode": "bogus"})
+		if err != nil || !res.IsError || resultText(t, res) != c.want {
+			t.Errorf("%v: err=%v result=%+v, want %q", c.err, err, res, c.want)
+		}
+	}
+}
+
+// fakeDriverErr has the method of a sqlite driver error.
+type fakeDriverErr struct{ msg string }
+
+func (e *fakeDriverErr) Error() string { return e.msg }
+func (*fakeDriverErr) Code() int       { return 2067 }
+
+type chainStore struct{ fakeStore }
+
+func (*chainStore) ListAPIKeys(_ context.Context, _, _, serviceID string) ([]db.ServiceAPIKey, error) {
+	switch serviceID {
+	case "sentinel":
+		return nil, fmt.Errorf("create key %q: %w", marker, store.ErrTokenNameRequired)
+	default:
+		return nil, fmt.Errorf("insert %q: %w", marker, &fakeDriverErr{msg: "UNIQUE constraint failed: " + marker})
+	}
+}
+
+// The log says why a tool failed without quoting argument values: the types
+// along the chain, the text of a known sentinel, the code of a driver error.
+func TestMCP_FailureLog_NamesTheCauseNotTheText(t *testing.T) {
+	var logBuf strings.Builder
+	var mu sync.Mutex
+	log := slog.New(slog.NewTextHandler(lockedWriter{&mu, &logBuf}, nil))
+	s := New(nil, nil, &chainStore{}, log)
+	s.SetAuditAppender(&auditSink{})
+	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: allToolPerms}
+	h := s.mcpHandler()
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
+	}))
+	t.Cleanup(hs.Close)
+	cs := connectMCP(t, hs.URL, "", "2025-11-25")
+	for _, id := range []string{"sentinel", "driver"} {
+		if res, err := callTool(t, cs, "api_keys_list", map[string]any{"service_id": id}); err != nil || !res.IsError {
+			t.Fatalf("%s: err=%v result=%+v", id, err, res)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	logs := logBuf.String()
+	if strings.Contains(logs, marker) {
+		t.Errorf("a log line carries the marker: %s", logs)
+	}
+	for _, want := range []string{
+		"*fmt.wrapError > *errors.errorString", // the chain of the sentinel case
+		store.ErrTokenNameRequired.Error(),     // its fixed text
+		"*fmt.wrapError > *mcpserv.fakeDriverErr",
+		"sqlite 2067", // the driver code
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("the log lacks %q: %s", want, logs)
+		}
+	}
+}
+
+// A panic is logged with its type and a stack, not its value.
+func TestMCP_PanicLog_HasTypeAndStack(t *testing.T) {
+	var logBuf strings.Builder
+	var mu sync.Mutex
+	log := slog.New(slog.NewTextHandler(lockedWriter{&mu, &logBuf}, nil))
+	s := New(nil, nil, &markerStore{}, log)
+	s.SetAuditAppender(&auditSink{})
+	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: allToolPerms}
+	h := s.mcpHandler()
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
+	}))
+	t.Cleanup(hs.Close)
+	cs := connectMCP(t, hs.URL, "", "2025-11-25")
+	if _, err := callTool(t, cs, "metrics_snapshot", nil); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	logs := logBuf.String()
+	if strings.Contains(logs, marker) || !strings.Contains(logs, "panic_type=string") || !strings.Contains(logs, "goroutine") {
+		t.Errorf("panic log: %s", logs)
+	}
+}

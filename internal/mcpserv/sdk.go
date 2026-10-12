@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime/debug"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -46,7 +47,9 @@ func (s *Server) mcpHandler() http.Handler {
 		Stateless: true,
 		// One JSON body per POST. No tool streams, and a reverse proxy in
 		// front of the relay does not have to pass an event stream through.
-		JSONResponse:        true,
+		JSONResponse: true,
+		// A backstop only: the handler below reads at most MaxBodyBytes+1
+		// bytes itself and answers 413 first, so the SDK never sees more.
 		MaxRequestBodyBytes: MaxBodyBytes,
 		// The SDK refuses a request that arrives on a loopback address with
 		// another Host header, to protect unauthenticated servers on a
@@ -146,8 +149,9 @@ func (s *Server) callHandler(tok *authedToken, t Tool) mcp.ToolHandler {
 				// The deferred function must not panic again: a failing audit
 				// sink is contained here.
 				s.safeAudit(ctx, tok, t.Name, "error")
-				// The panic value can quote data (an index, a key): its type only.
-				s.log.Error("mcp tool panicked", "tool", t.Name, "panic_type", fmt.Sprintf("%T", p))
+				// The panic value can quote data (an index, a key): its type
+				// and the stack, which holds no argument values.
+				s.log.Error("mcp tool panicked", "tool", t.Name, "panic_type", fmt.Sprintf("%T", p), "stack", string(debug.Stack()))
 				res = errorResult(errors.New("internal error"))
 			}
 		}()
@@ -173,14 +177,7 @@ func (s *Server) callHandler(tok *authedToken, t Tool) mcp.ToolHandler {
 				s.log.Warn("mcp tool call failed", "tool", t.Name, "reason", string(ue))
 				return errorResult(ue), nil
 			}
-			if errors.Is(err, errStoreUnavailable) {
-				// The package's own fixed text.
-				s.log.Warn("mcp tool call failed", "tool", t.Name, "err", err.Error())
-			} else {
-				// A store error can quote argument values (a duplicate-key
-				// detail): the log gets its type, not its text.
-				s.log.Warn("mcp tool call failed", "tool", t.Name, "err_type", fmt.Sprintf("%T", err))
-			}
+			s.log.Warn("mcp tool call failed", append([]any{"tool", t.Name}, errAttrs(err)...)...)
 			return errorResult(errors.New("internal error")), nil
 		}
 		s.emitToolAudit(ctx, tok, t.Name, "ok")
@@ -221,7 +218,7 @@ func (s *Server) auditHidden(tok *authedToken) mcp.Middleware {
 			// not end the process.
 			defer func() {
 				if p := recover(); p != nil {
-					s.log.Error("mcp request panicked", "method", method, "panic_type", fmt.Sprintf("%T", p))
+					s.log.Error("mcp request panicked", "method", method, "panic_type", fmt.Sprintf("%T", p), "stack", string(debug.Stack()))
 					if method == "tools/call" {
 						res, err = errorResult(errors.New("internal error")), nil
 						return

@@ -25,7 +25,8 @@
 //	requireBearer  401  missing, unknown or expired token, suspended user
 //	               500  the token store failed
 //	rate limit     429  more than the token's share per minute
-//	the SDK        413  body over 1 MiB
+//	the SDK        413  body over 1 MiB (checked by mcpHandler)
+//	               400  a JSON-RPC batch (mcpHandler)
 //	               405  anything but POST
 //	               200  JSON-RPC, errors included
 //
@@ -198,7 +199,7 @@ func New(bearer BearerStore, users UserLookup, toolStore ToolStore, log *slog.Lo
 			writeHTTPError(w, http.StatusTooManyRequests, "rate limit exceeded")
 		}),
 	)
-	s.handler = checkOrigin(s.requireBearer(limit(s.mcpHandler())))
+	s.handler = checkOrigin(s.requireBearer(limit(s.touchBearer(s.mcpHandler()))))
 	return s
 }
 
@@ -255,6 +256,17 @@ func (s *Server) requireBearer(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
+	})
+}
+
+// touchBearer records last_used. It sits behind the rate limit, so a request
+// that is refused with 429 costs no write.
+func (s *Server) touchBearer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tok := tokenFrom(r.Context()); tok != nil {
+			_ = s.bearer.TouchBearer(r.Context(), tok.tokenID)
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -323,7 +335,6 @@ func (s *Server) authenticate(r *http.Request) (*authedToken, error) {
 	if u.Status == "suspended" {
 		return nil, errAuthInvalid
 	}
-	_ = s.bearer.TouchBearer(r.Context(), info.ID)
 	return &authedToken{
 		tokenID: info.ID,
 		userID:  u.ID,

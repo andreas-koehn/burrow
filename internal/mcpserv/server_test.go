@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,6 +52,12 @@ func (f *fakeBearer) LookupBearer(_ context.Context, hash string) (TokenInfo, er
 	return info, nil
 }
 
+func (f *fakeBearer) touchCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.touched)
+}
+
 func (f *fakeBearer) TouchBearer(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -78,6 +85,8 @@ type fakeStore struct {
 	serviceDetail store.ServiceDetail
 	apiKeys       []db.ServiceAPIKey
 	apiKeyErr     error
+	setModeErr    error
+	tunnelCalls   atomic.Int64
 	clientTokens  []db.ClientToken
 	users         []db.User
 	userTotal     int
@@ -94,6 +103,7 @@ type fakeStore struct {
 }
 
 func (f *fakeStore) ListUserTunnels(_ context.Context, _, _ string) ([]TunnelInfo, error) {
+	f.tunnelCalls.Add(1)
 	return append([]TunnelInfo(nil), f.tunnels...), nil
 }
 func (f *fakeStore) ListServices(_ context.Context, _, _ string) ([]store.ServiceView, error) {
@@ -108,6 +118,9 @@ func (f *fakeStore) GetService(_ context.Context, _, _, id string) (store.Servic
 func (f *fakeStore) SetServiceAccessMode(_ context.Context, _, _, id, mode, header string, _ []byte) error {
 	if id == "missing" {
 		return db.ErrNotFound
+	}
+	if f.setModeErr != nil {
+		return f.setModeErr
 	}
 	f.lastSetMode = mode
 	f.lastSetHeader = header
@@ -380,6 +393,35 @@ func TestHTTP_RateLimit_PerToken(t *testing.T) {
 	// Requests without a valid token do not use anybody's budget.
 	if resp, _ := rawPOST(t, env.url, "bua_wrongtoken12345", legacyHeader, rawToolsList); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("wrong token: %d", resp.StatusCode)
+	}
+}
+
+// A request over the limit costs nothing: no last_used write, no audit row,
+// no tool run.
+func TestHTTP_OverTheLimit_NoTouchNoAuditNoTool(t *testing.T) {
+	env := newTestEnv(t, []string{"tunnels:read:any"}, "admin", WithRateLimit(2, time.Minute))
+	call := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tunnels_list","arguments":{}}}`
+	for i := 1; i <= 2; i++ {
+		if resp, body := rawPOST(t, env.url, testBearer, legacyHeader, call); resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d: %d %s", i, resp.StatusCode, body)
+		}
+	}
+	touches, rows, calls := env.bearer.touchCount(), len(env.audit.all()), env.store.tunnelCalls.Load()
+	if touches != 2 || rows != 2 || calls != 2 {
+		t.Fatalf("within the limit: touches=%d audit rows=%d tool runs=%d, want 2 each", touches, rows, calls)
+	}
+	resp, _ := rawPOST(t, env.url, testBearer, legacyHeader, call)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("3rd request: %d, want 429", resp.StatusCode)
+	}
+	if got := env.bearer.touchCount(); got != touches {
+		t.Errorf("a 429 touched last_used: %d -> %d", touches, got)
+	}
+	if got := len(env.audit.all()); got != rows {
+		t.Errorf("a 429 wrote an audit row: %d -> %d", rows, got)
+	}
+	if got := env.store.tunnelCalls.Load(); got != calls {
+		t.Errorf("a 429 ran the tool: %d -> %d", calls, got)
 	}
 }
 

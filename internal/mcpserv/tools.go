@@ -711,6 +711,14 @@ func mapStoreErr(err error) error {
 		return ErrForbidden
 	case errors.Is(err, db.ErrNotFound):
 		return userError("not found")
+	// The caller's own wrong input, answered 400/409 by the REST API too.
+	// Fixed texts: no argument value.
+	case errors.Is(err, store.ErrInvalidAccessMode):
+		return userError("invalid access mode")
+	case errors.Is(err, store.ErrServiceNotHTTP):
+		return userError("api_key and burrow_login require an http service")
+	case errors.Is(err, store.ErrDirectService):
+		return userError("service backs a direct AI provider")
 	}
 	return err
 }
