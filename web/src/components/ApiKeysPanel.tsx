@@ -13,9 +13,13 @@ export interface ApiKeysPanelProps {
   serviceId: string;
   /** False when the page around the panel already mounts a toaster. */
   ownToaster?: boolean;
+  /** Lists the keys with Revoke and offers no new one: where new keys are of another kind. */
+  revokeOnly?: boolean;
+  /** Called after a key was revoked: whoever counts the keys reads the count again. */
+  onRevoked?: () => void;
 }
 
-export function ApiKeysPanel({ serviceId, ownToaster = true }: ApiKeysPanelProps) {
+export function ApiKeysPanel({ serviceId, ownToaster = true, revokeOnly = false, onRevoked }: ApiKeysPanelProps) {
   const { user } = useAuth();
   const qc = useQueryClient();
   const keysKey = ["service-api-keys", serviceId];
@@ -52,15 +56,18 @@ export function ApiKeysPanel({ serviceId, ownToaster = true }: ApiKeysPanelProps
     onSuccess: () => {
       setRevokeTarget(null);
       qc.invalidateQueries({ queryKey: keysKey });
+      onRevoked?.();
     },
     onError: () => toast.error("Couldn't revoke the API key."),
   });
 
   return (
     <div className="api-keys-panel">
-      <div className="panel-head">
-        <Button variant="primary" size="sm" className="ml-auto" onClick={() => setCreating(true)}>New key</Button>
-      </div>
+      {!revokeOnly && (
+        <div className="panel-head">
+          <Button variant="primary" size="sm" className="ml-auto" onClick={() => setCreating(true)}>New key</Button>
+        </div>
+      )}
 
       <div className="table-wrap">
         <table className="data" aria-label="API keys">

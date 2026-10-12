@@ -356,8 +356,9 @@ or switched to API-key mode later has no provider until you add one.
    and the credential slot. The base URL must be an `https` URL up to and
    including the API's version path, for example
    `https://openrouter.ai/api/v1`.
-3. Open the provider, add an API key on its **API keys** tab, and use the base
-   URL and the example on its **Connect** tab.
+3. Open the provider. Its **Overview** tab shows the base URL and an example
+   under **Use it in an app**. Apps send a gateway key: create one under
+   **AI Gateway → Gateway keys**.
 
 ::: details Alternatively, use the REST API
 ```sh
@@ -395,7 +396,7 @@ What the relay does with a direct provider's traffic:
   that figure is recorded and used on the cost pages. A cost stated by a
   tunnel provider is ignored, because whoever runs the tunnel controls it;
   its cost is always computed from the pricing table.
-- **Models.** **Sync models** on the provider's **Models** tab reads the
+- **Models.** **Sync models** on the provider's **Catalog** tab reads the
   upstream's model list; `GET /ai/<provider>/v1/models` is answered from the
   stored list. A tunnel provider's `/v1/models` is forwarded to the local
   server unless models were added by hand.

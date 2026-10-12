@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
@@ -79,7 +80,7 @@ describe("ProviderClientPanel", () => {
   it("offline: says since when and shows the command that starts it", async () => {
     const lastSeen = new Date(Date.now() - 3 * DAY).toISOString();
     const p = provider({ state: "offline", last_client: "koehn-laptop", last_seen: lastSeen });
-    relaySays(p);
+    const feed = relaySays(p);
     const known = knownClients([]);
     mount(p, service({ last_seen: lastSeen, last_client: "koehn-laptop" }));
     const line = screen.getByRole("region", { name: "Client" }).querySelector("[role=status]") as HTMLElement;
@@ -90,10 +91,48 @@ describe("ProviderClientPanel", () => {
     expect(command("Install")).toBeNull();
     expect(command("Sign-in")).toBeNull();
     expect(screen.getByRole("link", { name: "Connect another machine" })).toHaveAttribute("href", "/clients/connect?provider=ollama");
-    expect(await screen.findByText("Waiting for the client…")).toBeInTheDocument();
+    // It may have been offline for days: the relay is asked, but nothing spins.
+    await waitFor(() => expect(feed.asked).toBeGreaterThanOrEqual(1));
+    expect(screen.queryByText("Waiting for the client…")).toBeNull();
+    expect(document.querySelector(".spinner")).toBeNull();
     // Whether a client is known does not matter here.
     expect(known.asked).toBe(0);
   });
+
+  it("offline: keeps asking, so the page can turn Online when the client returns", async () => {
+    const p = provider({ state: "offline", last_client: "koehn-laptop" });
+    const feed = relaySays(p);
+    mount(p, service());
+    await waitFor(() => expect(feed.asked).toBeGreaterThanOrEqual(2), { timeout: 6000 });
+  }, 15000);
+
+  it("never connected: says that it waits for the client", async () => {
+    const p = provider({ state: "never_connected" });
+    relaySays(p);
+    knownClients([]);
+    mount(p, service({ status: "never_connected" }));
+    const waiting = await screen.findByText("Waiting for the client…");
+    expect(waiting.closest("[role=status]")).not.toBeNull();
+  });
+
+  it.each(["offline", "never_connected"] as const)("%s: a failed question is said in the panel's own words, and Try again asks on", async (state) => {
+    const p = provider({ state });
+    let asked = 0;
+    server.use(http.get("/api/v1/ai/providers/ollama", () => {
+      asked++;
+      return asked === 1 ? HttpResponse.json({ error: "boom" }, { status: 500 }) : HttpResponse.json(p);
+    }));
+    knownClients([]);
+    mount(p, service());
+    expect(await screen.findByText("The status could not be read: this page no longer updates by itself.")).toBeInTheDocument();
+    // Not the words for a dialog: this is the provider's page.
+    expect(screen.queryByText(/provider's page shows it/)).toBeNull();
+    // The command stays: the failure is about the status only.
+    expect(screen.getByRole("group", { name: "Run command" })).toHaveTextContent("burrow http 11434 --name ollama");
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(screen.queryByText(/could not be read/)).toBeNull());
+    await waitFor(() => expect(asked).toBeGreaterThanOrEqual(3), { timeout: 6000 });
+  }, 15000);
 
   it("never connected: shows all three lines when no client is known", async () => {
     const p = provider({ state: "never_connected" });

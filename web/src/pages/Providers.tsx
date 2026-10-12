@@ -259,15 +259,21 @@ export default function Providers() {
                           <MoreHorizontal size={14} aria-hidden="true" />
                         </button>
                       }
-                      // A direct provider's backing service is not on the Services
-                      // page: its keys live on the provider's own page.
+                      // "Keys" are the API keys the backing service holds from before
+                      // gateway keys; without any there is nothing to lead to. A direct
+                      // provider's service has no page of its own: its keys are listed on
+                      // the provider's Settings tab. A tunnel provider's are on its service.
                       items={direct ? [
                         { label: "Inspect", onSelect: () => nav(`/gateway/providers/${e.slug}`) },
-                        { label: "Keys", onSelect: () => nav(`/gateway/providers/${e.slug}#api-keys`) },
+                        ...(e.api_key_count > 0
+                          ? [{ label: "Keys", onSelect: () => nav(`/gateway/providers/${e.slug}#settings`) }]
+                          : []),
                         { label: "Cost", onSelect: () => nav(`/gateway/cost`) },
                       ] : [
                         { label: "Inspect", onSelect: () => nav(`/gateway/providers/${e.slug}`) },
-                        { label: "Keys", onSelect: () => nav(`/services?focus=${e.service_id}&panel=api-keys`) },
+                        ...(e.api_key_count > 0
+                          ? [{ label: "Keys", onSelect: () => nav(`/services/${e.service_id}#api-keys`) }]
+                          : []),
                         { label: "Access settings", onSelect: () => nav(`/services?focus=${e.service_id}`) },
                         { label: "Cost", onSelect: () => nav(`/gateway/cost`) },
                       ]}

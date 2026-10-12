@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
@@ -88,6 +89,54 @@ describe("WaitForProvider", () => {
     await pause(2500);
     expect(asked).toBe(1);
   }, 15000);
+
+  it("Try again asks again after a failure, and the asking goes on", async () => {
+    let asked = 0;
+    server.use(http.get("/api/v1/ai/providers/ollama", () => {
+      asked++;
+      if (asked === 1) return HttpResponse.json({ error: "boom" }, { status: 500 });
+      return HttpResponse.json({ slug: "ollama", name: "Ollama", kind: "tunnel", api_format: "openai", service_id: "ollama", status: "Offline", state: asked >= 3 ? "online" : "offline", model_count: 1 });
+    }));
+    mount();
+    await screen.findByText("The status could not be read. The provider's page shows it.");
+    // Outside what is announced: a button is not part of the message.
+    const again = screen.getByRole("button", { name: "Try again" });
+    expect(again.closest("[role=status]")).toBeNull();
+    await userEvent.click(again);
+    expect(await screen.findByText("Waiting for the client…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    // Not one answer only: the next one comes by itself.
+    await screen.findByText("Online", undefined, { timeout: 6000 });
+    expect(asked).toBe(3);
+  }, 15000);
+
+  it("says what it is given when the status cannot be read", async () => {
+    server.use(http.get("/api/v1/ai/providers/ollama", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    renderApp(<WaitForProvider slug="ollama" failureText="The status could not be read." />, "/gateway/providers/ollama");
+    expect(await screen.findByText("The status could not be read.")).toBeInTheDocument();
+    expect(screen.queryByText(/provider's page shows it/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
+  it("quiet: asks without a waiting line, and hands over once the provider is online", async () => {
+    const feed = statusFeed("ollama", [{ state: "offline" }, { state: "online", model_count: 3 }]);
+    renderApp(<WaitForProvider slug="ollama" quiet><p>NEXT_STEPS</p></WaitForProvider>, "/gateway/providers/ollama");
+    await waitFor(() => expect(feed.asked).toBe(1));
+    expect(screen.queryByText("Waiting for the client…")).toBeNull();
+    expect(document.querySelector(".spinner")).toBeNull();
+    expect(await screen.findByText("NEXT_STEPS", undefined, { timeout: 6000 })).toBeInTheDocument();
+    // Whoever is handed over to says that it is online: no second line here.
+    expect(screen.queryByText("Online")).toBeNull();
+    expect(screen.queryByText(/models found/)).toBeNull();
+  }, 15000);
+
+  it("quiet: a failure is still said, with Try again", async () => {
+    server.use(http.get("/api/v1/ai/providers/ollama", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    renderApp(<WaitForProvider slug="ollama" quiet failureText="The status could not be read." />, "/gateway/providers/ollama");
+    const said = await screen.findByText("The status could not be read.");
+    expect(said.closest("[role=status]")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
 
   it("stops asking when it is taken off the page", async () => {
     const feed = statusFeed("ollama", [{ state: "never_connected" }]);

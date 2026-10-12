@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Dialog, DropdownMenu, ErrorNotice, FormField, Input, MetricStrip, MetricTile, PageHeader, Select, SkeletonRows, Switch, TableEmptyRow, Tabs } from "@/components/ds";
+import { ApiKeysPanel } from "@/components/ApiKeysPanel";
 import { ProviderClientPanel } from "@/components/ProviderClientPanel";
 import { ProviderConnect } from "@/components/ProviderConnect";
 import { RenameProviderDialog } from "@/components/RenameProviderDialog";
@@ -122,6 +123,11 @@ export default function ProviderDetail() {
     void qc.invalidateQueries({ queryKey: ["ai", "provider", slug], exact: true });
     void qc.invalidateQueries({ queryKey: ["service", id], exact: true });
   }, [qc, slug, id]);
+  // A service key was revoked on this page: the provider counts them.
+  const keyRevoked = useCallback(() => {
+    void qc.invalidateQueries({ queryKey: ["ai", "provider", slug], exact: true });
+    void qc.invalidateQueries({ queryKey: ["ai", "providers"] });
+  }, [qc, slug]);
   // Same key as ProviderModelsPanel; the first model is used in the examples.
   const models = useQuery({
     queryKey: ["ai", "provider-models", slug],
@@ -242,9 +248,8 @@ export default function ProviderDetail() {
 
   const sticky = routing.strategy === "sticky";
   const state = providerState(provider.data);
-  // Keys of the backing service, from before gateway keys. A hosted provider's
-  // backing service is not one anyone manages, so its keys are not counted here.
-  const serviceKeys = direct ? 0 : provider.data.api_key_count ?? 0;
+  // Keys of the backing service, from before gateway keys: they still authenticate.
+  const serviceKeys = provider.data.api_key_count ?? 0;
   const missingSlots = provider.data.credential_slots?.filter((x) => !x.present).map((x) => x.slot) ?? [];
 
   return (
@@ -402,7 +407,7 @@ export default function ProviderDetail() {
                 <p>
                   Apps use a gateway key. <Link className="link-inline" to="/gateway/keys">Manage gateway keys</Link>
                 </p>
-                {serviceKeys > 0 && (
+                {serviceKeys > 0 && !direct && (
                   <p className="muted small">
                     This provider's service also has {serviceKeys === 1 ? "1 API key" : `${fmtInt(serviceKeys)} API keys`} from
                     before gateway keys. {serviceKeys === 1 ? "It keeps working." : "They keep working."}{" "}
@@ -410,6 +415,18 @@ export default function ProviderDetail() {
                       {serviceKeys === 1 ? "Manage it" : "Manage them"}
                     </Link>
                   </p>
+                )}
+                {/* A hosted provider's backing service has no page of its own: its keys are
+                    listed here, to revoke only. A new key for a model is a gateway key. */}
+                {serviceKeys > 0 && direct && (
+                  <>
+                    <p className="muted small">
+                      This provider also has {serviceKeys === 1 ? "1 API key" : `${fmtInt(serviceKeys)} API keys`} from
+                      before gateway keys.{" "}
+                      {serviceKeys === 1 ? "It keeps working until you revoke it." : "They keep working until you revoke them."}
+                    </p>
+                    <ApiKeysPanel serviceId={id} ownToaster={false} revokeOnly onRevoked={keyRevoked} />
+                  </>
                 )}
               </section>
 
@@ -593,7 +610,7 @@ export default function ProviderDetail() {
         />
       )}
 
-      {/* The one toaster of the page. */}
+      {/* The one toaster of the page; the key list of a hosted provider is told not to mount its own. */}
       <Toaster />
     </div>
   );

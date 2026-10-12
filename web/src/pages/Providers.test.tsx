@@ -117,6 +117,28 @@ describe("Providers page", () => {
     expect(labels).toEqual(["Inspect", "Keys", "Access settings", "Cost"]);
   });
 
+  it("Keys of a tunnel provider leads to the API keys of its service", async () => {
+    renderApp(
+      <Routes>
+        <Route path="/gateway/providers" element={<Providers />} />
+        <Route path="/services/:id" element={<HashProbe />} />
+      </Routes>,
+      "/gateway/providers",
+    );
+    const table = await screen.findByRole("table", { name: /providers/i });
+    await userEvent.click(within(table).getByRole("button", { name: "More actions for ollama" }));
+    await userEvent.click(within(await screen.findByRole("menu")).getByRole("menuitem", { name: "Keys" }));
+    expect(await screen.findByTestId("where")).toHaveTextContent("/services/svc_ai001#api-keys");
+  });
+
+  it("a provider whose service holds no API key has no Keys item", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: /providers/i });
+    await userEvent.click(within(table).getByRole("button", { name: "More actions for llamacpp" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getAllByRole("menuitem").map((n) => n.textContent)).toEqual(["Inspect", "Access settings", "Cost"]);
+  });
+
   it("renders the empty state when there are no providers", async () => {
     db.aiProviders = [];
     mount();
@@ -438,7 +460,9 @@ describe("Providers page", () => {
   });
 
   it("a direct provider's row menu stays on the provider: no link to its hidden service", async () => {
-    addDirectProvider("openrouter", { name: "OpenRouter", credential_slot: "OPENROUTER" });
+    const p = addDirectProvider("openrouter", { name: "OpenRouter", credential_slot: "OPENROUTER" });
+    // A key from before gateway keys: it is listed on the provider's Settings tab.
+    db.serviceApiKeys[p.service_id] = [{ id: "sak_old", name: "old", last_used: null, created_at: "2026-05-01T08:00:00Z" }];
     renderApp(
       <Routes>
         <Route path="/gateway/providers" element={<Providers />} />
@@ -451,7 +475,16 @@ describe("Providers page", () => {
     const menu = await screen.findByRole("menu");
     expect(within(menu).getAllByRole("menuitem").map((n) => n.textContent)).toEqual(["Inspect", "Keys", "Cost"]);
     await userEvent.click(within(menu).getByRole("menuitem", { name: "Keys" }));
-    expect(await screen.findByTestId("where")).toHaveTextContent("/gateway/providers/openrouter#api-keys");
+    expect(await screen.findByTestId("where")).toHaveTextContent("/gateway/providers/openrouter#settings");
+  });
+
+  it("a direct provider without such keys has no Keys item", async () => {
+    addDirectProvider("openrouter", { name: "OpenRouter", credential_slot: "OPENROUTER" });
+    mount();
+    const table = await screen.findByRole("table", { name: /providers/i });
+    await userEvent.click(within(table).getByRole("button", { name: "More actions for OpenRouter" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getAllByRole("menuitem").map((n) => n.textContent)).toEqual(["Inspect", "Cost"]);
   });
 
   it("lets an admin add a hosted API from a preset", async () => {

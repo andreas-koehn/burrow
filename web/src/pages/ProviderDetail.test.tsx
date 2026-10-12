@@ -281,6 +281,30 @@ describe("Provider detail", () => {
       expect(screen.queryByRole("group", { name: "Install command" })).toBeNull();
     });
 
+    it("never connected: says that it waits for the client", async () => {
+      mountAt("/gateway/providers/lmstudio");
+      const client = await panel();
+      expect(await within(client).findByText("Waiting for the client…")).toBeInTheDocument();
+    });
+
+    it("stops asking for the status when Overview is left", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      fetchSpy.mockClear();
+      const asked = () => fetchSpy.mock.calls.filter(([url, init]) =>
+        String(url).endsWith("/api/v1/ai/providers/llamacpp") && ((init as RequestInit | undefined)?.method ?? "GET") === "GET").length;
+      mountAt("/gateway/providers/llamacpp");
+      await panel();
+      // The page asks once, the panel once and then again every two seconds.
+      await waitFor(() => expect(asked()).toBeGreaterThanOrEqual(3), { timeout: 6000 });
+      await openTab("Settings");
+      const then = asked();
+      await new Promise((r) => setTimeout(r, 2600));
+      expect(asked()).toBe(then);
+      // And it starts again with the panel.
+      await openTab("Overview");
+      await waitFor(() => expect(asked()).toBeGreaterThan(then), { timeout: 6000 });
+    }, 20000);
+
     it("never connected: all three lines while the relay knows no client", async () => {
       db.tokens = [];
       db.clients = [];
@@ -301,13 +325,20 @@ describe("Provider detail", () => {
     it("turns Online by itself once the client is started", async () => {
       mountAt("/gateway/providers/llamacpp");
       const client = await panel();
-      expect(await within(client).findByText("Waiting for the client…")).toBeInTheDocument();
+      const line = client.querySelector("[role=status]") as HTMLElement;
+      expect(line).toHaveTextContent(/^Offline · last served by office-box-1/);
+      // It has been offline for long: nothing says that it waits, and nothing spins.
+      await screen.findByRole("group", { name: "Run command" });
+      expect(screen.queryByText("Waiting for the client…")).toBeNull();
+      expect(client.querySelector(".spinner")).toBeNull();
       // The command was run: office-box-1 now serves the backing service.
       const svc = db.services.find((x) => x.id === "svc_llama01")!;
       svc.connected = true;
       db.clients[0]!.services.push({ ...db.clients[0]!.services[1]!, id: "tnl_llama", name: svc.name });
       db.aiMeta[svc.id] = { ...db.aiMeta["svc_ai001"]!, status: "Connected", client_session_id: "" };
-      await waitFor(() => expect(client).toHaveTextContent("Online · Served by office-box-1"), { timeout: 8000 });
+      // The same line, so the change is announced.
+      await waitFor(() => expect(line).toHaveTextContent("Online · Served by office-box-1"), { timeout: 8000 });
+      expect(line).toBeInTheDocument();
       expect(within(client).getByRole("link", { name: "office-box-1" })).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
       expect(run()).toBeNull();
       // The header says the same.
@@ -374,10 +405,9 @@ describe("Provider detail", () => {
     mountAt("/gateway/providers/llamacpp");
     await screen.findByRole("table", { name: "Recent requests" });
     expect(document.body).not.toHaveTextContent(/last seen/i);
-    expect(document.querySelector(".meta-strip")).toBeNull();
-    // The chart above the table had no visible label; nothing unnamed is drawn in its place.
-    expect(document.querySelector(".sparkline-wrap")).toBeNull();
+    // The chart above the table had no visible label; no picture stands in its place.
     expect(screen.queryByLabelText("requests per minute, last hour")).toBeNull();
+    expect(screen.queryByRole("img")).toBeNull();
   });
 
   it("editing routing strategy + failure_pct + Save issues PUT /services/:id/ai-config", async () => {
@@ -678,14 +708,63 @@ describe("Provider detail", () => {
       expect(document.querySelector('a[href^="/services"]')).toBeNull();
     });
 
-    it("a hosted provider shows no service-key line", async () => {
+    // The keys of a hosted provider still authenticate, and its service has no page of its own.
+    function hostedWithKeys(names: string[]) {
       const p = addDirectProvider("openrouter", { name: "OpenRouter", credential_slot: "OPENROUTER" });
-      // Its backing service is not one anyone manages, whatever keys it holds.
-      db.serviceApiKeys[p.service_id] = [{ id: "sak_x", name: "old", last_used: null, created_at: "2026-05-01T08:00:00Z" }];
+      db.serviceApiKeys[p.service_id] = names.map((name) => (
+        { id: `sak_${name}`, name, last_used: null, created_at: "2026-05-01T08:00:00Z" }
+      ));
+      return p;
+    }
+
+    it("a hosted provider lists its service keys here, to revoke only", async () => {
+      hostedWithKeys(["old", "older"]);
       mountSettings("openrouter");
       const section = await keys();
       expect(section).toHaveTextContent("Apps use a gateway key.");
+      expect(section).toHaveTextContent("This provider also has 2 API keys from before gateway keys. They keep working until you revoke them.");
+      const table = await within(section).findByRole("table", { name: "API keys" });
+      expect(await within(table).findByText("old")).toBeInTheDocument();
+      expect(within(table).getByRole("button", { name: "Revoke key older" })).toBeInTheDocument();
+      // New keys for models are gateway keys.
+      expect(within(section).queryByRole("button", { name: "New key" })).toBeNull();
+      // No link to the hidden backing service.
+      expect(document.querySelector('a[href^="/services"]')).toBeNull();
+    });
+
+    it("a hosted provider: a service key is revoked here, and the count follows", async () => {
+      const p = hostedWithKeys(["old", "older"]);
+      mountSettings("openrouter");
+      const section = await keys();
+      const table = await within(section).findByRole("table", { name: "API keys" });
+      await userEvent.click(await within(table).findByRole("button", { name: "Revoke key old" }));
+      const dialog = await screen.findByRole("dialog", { name: "Revoke API key" });
+      await userEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
+      await waitFor(() => expect(db.serviceApiKeys[p.service_id]!.map((k) => k.name)).toEqual(["older"]));
+      await waitFor(() => expect(section).toHaveTextContent("This provider also has 1 API key from before gateway keys. It keeps working until you revoke it."));
+      expect(within(table).queryByText("old")).toBeNull();
+      expect(within(table).getByText("older")).toBeInTheDocument();
+      // One toaster on the page, with the key list on it too.
+      expect(document.querySelectorAll("section[aria-label^='Notifications']").length).toBe(1);
+    });
+
+    it("a hosted provider: revoking the last service key leaves the gateway-key line only", async () => {
+      hostedWithKeys(["old"]);
+      mountSettings("openrouter");
+      const section = await keys();
+      await userEvent.click(await within(section).findByRole("button", { name: "Revoke key old" }));
+      await userEvent.click(within(await screen.findByRole("dialog", { name: "Revoke API key" })).getByRole("button", { name: "Revoke" }));
+      await waitFor(() => expect(section).not.toHaveTextContent(/API keys?/));
+      expect(within(section).queryByRole("table")).toBeNull();
+      expect(section).toHaveTextContent("Apps use a gateway key.");
+    });
+
+    it("a hosted provider without service keys shows the gateway-key line only", async () => {
+      mountSettings("openai-team");
+      const section = await keys();
+      expect(section).toHaveTextContent("Apps use a gateway key.");
       expect(section).not.toHaveTextContent(/API keys?/);
+      expect(within(section).queryByRole("table")).toBeNull();
       expect(document.querySelector('a[href^="/services"]')).toBeNull();
     });
   });

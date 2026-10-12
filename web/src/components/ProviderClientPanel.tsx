@@ -111,7 +111,13 @@ export function ProviderClientPanel({ provider, service, isAdmin, onOnline }: Pr
           {!known.isLoading && (
             <InstallLines relayOrigin={origin} target={target} name={service.name} lines={allLines ? undefined : RUN_ONLY} />
           )}
-          <WaitForProvider slug={provider.slug}>
+          {/* It may have been offline for days: the relay is still asked, but only a provider nobody served yet
+              says that it waits. The line above turns Online either way. */}
+          <WaitForProvider
+            slug={provider.slug}
+            quiet={!never}
+            failureText="The status could not be read: this page no longer updates by itself."
+          >
             <Arrived onArrive={onOnline} />
           </WaitForProvider>
           {!known.isLoading && !allLines && (

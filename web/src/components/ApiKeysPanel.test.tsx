@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
@@ -73,6 +73,20 @@ describe("ApiKeysPanel", () => {
     const cell = (await screen.findByText("No keys yet.")).closest("td")!;
     expect(cell).toHaveClass("table-empty");
     expect(cell.getAttribute("colspan")).toBe("4");
+  });
+
+  it("revokeOnly: lists the keys with Revoke and offers no new one", async () => {
+    const onRevoked = vi.fn();
+    renderApp(<ApiKeysPanel serviceId={SVC} revokeOnly onRevoked={onRevoked} />);
+    const table = await screen.findByRole("table", { name: /api keys/i });
+    expect(await within(table).findByText("ci")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New key" })).toBeNull();
+    await userEvent.click(within(table).getByRole("button", { name: /revoke key prod/i }));
+    expect(onRevoked).not.toHaveBeenCalled();
+    await userEvent.click(await screen.findByRole("button", { name: /^revoke$/i }));
+    await waitFor(() => expect(within(table).queryByText("prod")).toBeNull());
+    expect(onRevoked).toHaveBeenCalledTimes(1);
+    expect(db.serviceApiKeys[SVC]!.map((k) => k.name)).toEqual(["ci"]);
   });
 
   it("revokes a key after confirmation", async () => {
