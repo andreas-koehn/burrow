@@ -477,6 +477,7 @@ describe("Cost & budgets (§4.24)", () => {
     // The reason is help text, not an error.
     expect(field).toHaveAccessibleDescription("The users can't be listed here. Type the user's id.");
     expect(within(dialog).queryByRole("alert")).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Create" })).toHaveAccessibleDescription("Type the user's id.");
     await userEvent.type(field, "bur_usr_bob0002");
     await userEvent.type(within(dialog).getByLabelText("Daily USD"), "2");
     await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
@@ -489,7 +490,46 @@ describe("Cost & budgets (§4.24)", () => {
     mount();
     const dialog = await openDialog();
     await chooseOption(dialog, "Scope", "User");
-    expect(await within(dialog).findByLabelText("User id")).toBeInTheDocument();
+    // They can be listed, only not all of them: the help says which it is.
+    expect(await within(dialog).findByLabelText("User id")).toHaveAccessibleDescription("Too many users to list. Type the user's id.");
+    expect(within(dialog).queryByText(/can't be listed here/)).toBeNull();
+  });
+
+  it("says beside Create what is still missing: the subject of the scope first, then a limit", async () => {
+    mount();
+    const dialog = await openDialog();
+    const create = within(dialog).getByRole("button", { name: "Create" });
+    // A limit alone is not enough on the scope the dialog opens on.
+    await userEvent.type(within(dialog).getByLabelText("Daily USD"), "5");
+    expect(create).toBeDisabled();
+    expect(create).toHaveAccessibleDescription("Choose a gateway key.");
+    expect(within(dialog).getByText("Choose a gateway key.")).toBeVisible();
+
+    await chooseOption(dialog, "Scope", "API key");
+    expect(create).toHaveAccessibleDescription("Choose a service and a key.");
+    await chooseOption(dialog, "Service", "ollama");
+    expect(create).toHaveAccessibleDescription("Choose a service and a key.");
+    await chooseOption(dialog, "Key", "ci");
+    expect(create).toBeEnabled();
+    expect(create).not.toHaveAttribute("aria-describedby");
+
+    await chooseOption(dialog, "Scope", "Model");
+    expect(create).toHaveAccessibleDescription("Choose a model.");
+    await chooseOption(dialog, "Model", "Other address…");
+    expect(create).toHaveAccessibleDescription("Enter a model address.");
+    await chooseOption(dialog, "Scope", "Service");
+    expect(create).toHaveAccessibleDescription("Choose a service.");
+    await chooseOption(dialog, "Scope", "User");
+    expect(create).toHaveAccessibleDescription("Choose a user.");
+
+    // Nothing is missing for the global scope but the limit, once it is taken out.
+    await chooseOption(dialog, "Scope", "Global");
+    expect(create).toBeEnabled();
+    await userEvent.clear(within(dialog).getByLabelText("Daily USD"));
+    expect(create).toBeDisabled();
+    expect(create).toHaveAccessibleDescription("Set a daily amount in USD, in tokens, or both.");
+    // Said once, beside the button.
+    expect(within(dialog).getAllByText("Set a daily amount in USD, in tokens, or both.")).toHaveLength(1);
   });
 
   it("the budgets table names an API key, and says when the key is gone", async () => {

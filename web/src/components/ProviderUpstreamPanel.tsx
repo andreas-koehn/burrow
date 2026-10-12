@@ -236,7 +236,7 @@ export interface ProviderUpstreamPanelProps {
  * The first sentences of every "slot not set" note: which slots are missing
  * and which variables to set. Only the missing slots are passed in.
  */
-export function SlotsNotSet({ slots, orEmpty = false }: { slots: string[]; orEmpty?: boolean }) {
+export function SlotsNotSet({ slots }: { slots: string[] }) {
   const many = slots.length > 1;
   const list = (render: (slot: string) => ReactNode) => slots.map((slot, i) => (
     <Fragment key={slot}>
@@ -247,7 +247,7 @@ export function SlotsNotSet({ slots, orEmpty = false }: { slots: string[]; orEmp
   return (
     <>
       {many ? "Slots " : "Slot "}{list((slot) => slot)} {many ? "are" : "is"} not set on the relay
-      {orEmpty ? (many ? ", or are set to an empty value" : ", or is set to an empty value") : ""}. Set{" "}
+      {many ? ", or are set to an empty value" : ", or is set to an empty value"}. Set{" "}
       {list((slot) => <code>{envVarForSlot(slot)}</code>)} to {many ? "non-empty values" : "a non-empty value"} in
       the relay's environment and restart it.
     </>
@@ -383,7 +383,7 @@ export function ProviderUpstreamPanel({ provider, isAdmin }: ProviderUpstreamPan
         <p className="muted small">The credential itself is set on the relay and is never shown here.</p>
       ) : (
         <ErrorNotice variant="warn" role="note">
-          <SlotsNotSet slots={missing.length > 0 ? missing : [provider.credential_slot]} orEmpty />{" "}
+          <SlotsNotSet slots={missing.length > 0 ? missing : [provider.credential_slot]} />{" "}
           {missing.length > 0 && missing.length < slots.length
             ? "Until then requests that reach a missing slot fail."
             : "Until then this provider answers 503."}

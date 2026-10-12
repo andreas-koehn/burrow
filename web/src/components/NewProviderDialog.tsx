@@ -255,7 +255,7 @@ function NewProviderForm({ onOpenChange }: Pick<NewProviderDialogProps, "onOpenC
                   w="md"
                   descId="np-format-desc"
                   help={apiFormat === "anthropic"
-                    ? "The API the provider speaks. The credential is sent as Authorization: Bearer; another auth header is set on the provider's page."
+                    ? "The API the provider speaks. The credential is sent as Authorization: Bearer. For an API that expects x-api-key, set Auth header and Auth format ({key}) under Edit upstream after creating."
                     : "The API the provider speaks."}
                 >
                   <Select

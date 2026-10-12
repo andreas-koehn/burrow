@@ -99,7 +99,7 @@ describe("ModelDialog", () => {
     expect(screen.queryByText("Choose a target for at least one format.")).toBeNull();
   });
 
-  it("suggests the provider's catalog: the id is taken, the display name is shown with it", async () => {
+  it("suggests the provider's catalog: the id is taken, and the display name is shown after it", async () => {
     db.aiProviderModels.zai = [
       { id: "glm-5.1", display_name: "GLM 5.1", context_length: 200000, synced_at: "2026-05-19T00:00:00Z" },
       { id: "glm-4", display_name: "", context_length: 0, synced_at: "2026-05-19T00:00:00Z" },
@@ -109,7 +109,8 @@ describe("ModelDialog", () => {
     await chooseOption("Provider", "zai", openai);
     const field = await modelField(openai);
     expect(within(openai).getByRole("combobox", { name: "Target model id" })).toBe(field);
-    expect(suggested(field)).toEqual([["glm-4", null], ["glm-5.1", "GLM 5.1"]]);
+    // The label starts with the id: Firefox matches what is typed against the label.
+    expect(suggested(field)).toEqual([["glm-4", "glm-4"], ["glm-5.1", "glm-5.1 · GLM 5.1"]]);
     expect(field).toHaveAccessibleDescription("The provider's own id for the model: one from its catalog, or typed.");
     // Nothing to sync while the catalog has entries.
     expect(within(openai).queryByRole("button", { name: "Sync catalog" })).toBeNull();
@@ -146,7 +147,9 @@ describe("ModelDialog", () => {
     expect(field).toHaveAccessibleDescription("This provider's catalog is empty. Type the model id.");
     expect(suggested(field)).toEqual([]);
     await userEvent.click(within(openai).getByRole("button", { name: "Sync catalog" }));
-    await waitFor(() => expect(suggested(field)).toEqual([["acme/large-1", "Acme Large 1"], ["acme/small-1", "Acme Small 1"]]));
+    await waitFor(() => expect(suggested(field)).toEqual([
+      ["acme/large-1", "acme/large-1 · Acme Large 1"], ["acme/small-1", "acme/small-1 · Acme Small 1"],
+    ]));
     // The wait is over: said to a screen reader.
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Catalog synced: 2 models."));
     expect(field).toHaveAccessibleDescription("The provider's own id for the model: one from its catalog, or typed.");
@@ -164,6 +167,24 @@ describe("ModelDialog", () => {
       expect(await modelField(openai)).toHaveAccessibleDescription("This provider's catalog is empty. Type the model id.");
       expect(within(openai).queryByRole("button", { name: "Sync catalog" })).toBeNull();
     }
+  });
+
+  it("offers the sync on a relay that does not send a provider's state yet", async () => {
+    // Before `state`: a hosted provider is ready when its credential is present.
+    const old = (slug: string, credential_present: boolean) => ({
+      slug, name: slug, kind: "direct", api_format: "openai", service_id: `prov-${slug}`, status: credential_present ? "Connected" : "Offline",
+      credential_present, credential_slot: "X", credential_slots: [{ slot: "X", present: credential_present }],
+    });
+    server.use(http.get("/api/v1/ai/providers", () => HttpResponse.json([old("openai-team", true), old("zai", false)])));
+    db.aiProviderModels.zai = [];
+    renderDialog();
+    const openai = await group("OpenAI format");
+    await chooseOption("Provider", "openai-team", openai);
+    await modelField(openai);
+    expect(within(openai).getByRole("button", { name: "Sync catalog" })).toBeInTheDocument();
+    await chooseOption("Provider", "zai", openai);
+    await modelField(openai);
+    expect(within(openai).queryByRole("button", { name: "Sync catalog" })).toBeNull();
   });
 
   it("a failed sync shows the relay's reason under the field and keeps what was typed", async () => {

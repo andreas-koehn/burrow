@@ -80,12 +80,13 @@ export function credentialSlotsError(value: string): string | null {
  * comma they are the slots not named yet, each as the whole value it would
  * make, because the browser replaces the field's text with the suggestion.
  */
-export function slotSuggestions(value: string, known: string[]): { value: string; label?: string }[] {
+export function slotSuggestions(value: string, known: string[]): { value: string }[] {
   // What is typed up to and including the last comma, with the spacing after it.
   const head = /^.*,\s*/s.exec(value)?.[0] ?? "";
   if (head === "") return known.map((slot) => ({ value: slot }));
   const named = splitSlots(head);
-  return known.filter((slot) => !named.includes(slot)).map((slot) => ({ value: head + slot, label: slot }));
+  // No label: Firefox matches the text against a label when there is one, and the head is not in it.
+  return known.filter((slot) => !named.includes(slot)).map((slot) => ({ value: head + slot }));
 }
 
 /** Shown in a "Credential slot" field's list while the relay has no slot set. */

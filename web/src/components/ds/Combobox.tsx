@@ -3,7 +3,11 @@ import { cx } from "./cx";
 export interface ComboboxOption {
   /** What the input takes when the option is picked. */
   value: string;
-  /** A readable name, shown next to the value. */
+  /**
+   * A readable name, shown with the value. It should contain the value:
+   * Firefox matches what is typed against the label when there is one, and
+   * shows the label alone.
+   */
   label?: string;
   /** A short remark after the label. */
   hint?: string;

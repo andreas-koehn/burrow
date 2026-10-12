@@ -306,7 +306,7 @@ There are two kinds:
 - **Tunnel** — an HTTP service in API-key mode behind a Burrow client (a local
   Ollama or vLLM, for example).
 - **Direct** — a hosted API that the relay calls itself (OpenRouter, z.ai, or
-  any other OpenAI-compatible HTTPS endpoint).
+  any other OpenAI- or Anthropic-format HTTPS API).
 
 Errors that Burrow produces under `/ai/` are JSON of the form
 `{"error":{"message":"…","type":"burrow_error","code":"…"}}`. Everything else

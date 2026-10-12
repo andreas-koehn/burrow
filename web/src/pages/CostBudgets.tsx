@@ -58,6 +58,17 @@ function actionHelp(action: Budget["action_on_exceed"], scope: BudgetScope): str
 
 const OTHER_MODEL = "__other__";
 
+// What a scope still needs before a budget can be created. Global needs nothing.
+const SUBJECT_MISSING: Partial<Record<BudgetScope | "model_address" | "user_id", string>> = {
+  gateway_key: "Choose a gateway key.",
+  api_key: "Choose a service and a key.",
+  model: "Choose a model.",
+  model_address: "Enter a model address.",
+  service: "Choose a service.",
+  user: "Choose a user.",
+  user_id: "Type the user's id.",
+};
+
 // As many users as the picker asks for; with more than that the id is typed.
 const USER_LIMIT = 200;
 
@@ -210,6 +221,14 @@ export default function CostBudgets() {
     ? "Remove the spaces before or after the ID."
     : undefined;
   const canSubmit = !usdErr && !tokErr && !noLimit && !addrErr && !idErr && !subjectMissing;
+  // Said beside Create while it is disabled: the subject first, then the
+  // limit. A value that is wrong is reported at its own field.
+  const missingSubject = scope === "model" && subjectId === OTHER_MODEL ? "model_address"
+    : scope === "user" && typeUserId ? "user_id"
+    : scope;
+  const missing = subjectMissing ? SUBJECT_MISSING[missingSubject]
+    : noLimit ? "Set a daily amount in USD, in tokens, or both."
+    : undefined;
 
   // Reveal-then-focus: the address field appears when "Other address…" is chosen.
   useEffect(() => {
@@ -357,8 +376,9 @@ export default function CostBudgets() {
         title="New budget"
         footer={
           <>
+            {missing && <span id="budget-missing" className="muted small" style={{ alignSelf: "center" }}>{missing}</span>}
             <Button variant="secondary" onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button variant="primary" disabled={create.isPending || !canSubmit} onClick={submit}>
+            <Button variant="primary" disabled={create.isPending || !canSubmit} aria-describedby={missing ? "budget-missing" : undefined} onClick={submit}>
               Create
             </Button>
           </>
@@ -448,7 +468,7 @@ export default function CostBudgets() {
               htmlFor="budget-subject"
               w="md"
               descId="budget-subject-desc"
-              help="The users can't be listed here. Type the user's id."
+              help={users.isError ? "The users can't be listed here. Type the user's id." : "Too many users to list. Type the user's id."}
               error={idErr}
             >
               <Input id="budget-subject" className="mono" aria-describedby="budget-subject-desc" aria-invalid={idErr ? true : undefined} value={subjectId} onChange={(e) => setSubjectId(e.target.value)} />
@@ -470,9 +490,7 @@ export default function CostBudgets() {
           <FormField label="Daily tokens" htmlFor="budget-tokens" w="sm" error={tokErr} descId="budget-tokens-desc">
             <Input id="budget-tokens" type="number" min="0" step="1" className="mono" value={dailyTokens} aria-invalid={tokErr ? true : undefined} aria-describedby={tokErr ? "budget-limit-hint budget-tokens-desc" : "budget-limit-hint"} onChange={(e) => setDailyTokens(e.target.value)} />
           </FormField>
-          <p id="budget-limit-hint" className="muted small">
-            {noLimit ? "Set a daily amount in USD, in tokens, or both." : "Either limit alone is enough. Budgets reset at midnight UTC."}
-          </p>
+          <p id="budget-limit-hint" className="muted small">Either limit alone is enough. Budgets reset at midnight UTC.</p>
           <FormField label="Action on exceed" htmlFor="budget-action" w="md">
             <Select id="budget-action" aria-describedby="budget-action-help" value={action} onChange={(v) => setAction(v as Budget["action_on_exceed"])} options={ACTION_OPTIONS} />
           </FormField>

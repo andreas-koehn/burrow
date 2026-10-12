@@ -434,6 +434,7 @@ describe("New provider dialog", () => {
     await hosted();
     const format = screen.getByLabelText("API format");
     expect(format).toHaveTextContent("OpenAI");
+    expect(format).toHaveAccessibleDescription("The API the provider speaks.");
     await userEvent.click(format);
     expect((await screen.findAllByRole("option")).map((o) => o.textContent)).toEqual(["OpenAI", "Anthropic"]);
     await userEvent.click(screen.getByRole("option", { name: "Anthropic" }));
@@ -460,6 +461,10 @@ describe("New provider dialog", () => {
     await userEvent.click(await screen.findByRole("option", { name: "Anthropic" }));
     // The Responses API belongs to the OpenAI format.
     expect(screen.queryByRole("checkbox", { name: RESPONSES })).toBeNull();
+    // The form sends no auth header: the relay's default is said, and where another one is set.
+    expect(screen.getByLabelText("API format")).toHaveAccessibleDescription(
+      "The API the provider speaks. The credential is sent as Authorization: Bearer. For an API that expects x-api-key, set Auth header and Auth format ({key}) under Edit upstream after creating.",
+    );
     await userEvent.type(screen.getByLabelText("Name"), "Claude");
     await userEvent.type(screen.getByLabelText("Base URL"), "https://api.example.net/v1");
     await userEvent.type(screen.getByLabelText("Credential slot"), "OPENAI");

@@ -42,10 +42,9 @@ describe("provider presets", () => {
     // The browser narrows the list to what matches the text.
     expect(slotSuggestions("OP", known)).toEqual([{ value: "OPENAI" }, { value: "OPENROUTER" }, { value: "ZAI" }]);
     // After a comma: the names not listed yet, each with what is there already and its spacing.
-    expect(slotSuggestions("ZAI, ", known)).toEqual([
-      { value: "ZAI, OPENAI", label: "OPENAI" }, { value: "ZAI, OPENROUTER", label: "OPENROUTER" },
-    ]);
-    expect(slotSuggestions("ZAI,OPENAI,O", known)).toEqual([{ value: "ZAI,OPENAI,OPENROUTER", label: "OPENROUTER" }]);
+    // No label: Firefox matches what is typed against a label when there is one, and "ZAI, " is in none.
+    expect(slotSuggestions("ZAI, ", known)).toEqual([{ value: "ZAI, OPENAI" }, { value: "ZAI, OPENROUTER" }]);
+    expect(slotSuggestions("ZAI,OPENAI,O", known)).toEqual([{ value: "ZAI,OPENAI,OPENROUTER" }]);
     expect(slotSuggestions("ZAI", [])).toEqual([]);
   });
   it("accepts a slot name the relay accepts and rejects the rest", () => {

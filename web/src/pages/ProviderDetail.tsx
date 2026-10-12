@@ -301,7 +301,7 @@ export default function ProviderDetail() {
                     <StatusBadge state={state} />{" · "}
                     {provider.data.credential_present
                       ? "The credential is set on the relay."
-                      : <SlotsNotSet slots={missingSlots.length > 0 ? missingSlots : [provider.data.credential_slot]} orEmpty />}
+                      : <SlotsNotSet slots={missingSlots.length > 0 ? missingSlots : [provider.data.credential_slot]} />}
                   </p>
                   {!provider.data.credential_present && (
                     <p className="small">

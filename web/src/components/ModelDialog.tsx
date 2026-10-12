@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Checkbox, Combobox, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, Select, Switch } from "@/components/ds";
 import { modelNameError } from "@/lib/modelNames";
+import { providerState } from "@/lib/status";
 import type { AiModel, AiModelTarget, AiProvider, AiProviderModel, Dialect } from "@/lib/contract";
 
 export interface ModelDialogProps {
@@ -71,7 +72,7 @@ function TargetRow({ dialect, legend, short, n, count, providers, value, groupRe
   // The relay reads a catalog from a hosted provider's upstream, with its
   // credential; for a tunnel provider it answers 409, whatever its state.
   const provider = providers.find((p) => p.slug === value.provider);
-  const canSync = provider?.kind === "direct" && provider.state === "ready";
+  const canSync = provider?.kind === "direct" && providerState(provider) === "ready";
   const [syncErr, setSyncErr] = useState<string | null>(null);
   const sync = useMutation({
     mutationFn: (slug: string) => apiFetch<{ count: number }>(`/ai/providers/${slug}/models/sync`, { method: "POST" }),
@@ -147,7 +148,8 @@ function TargetRow({ dialect, legend, short, n, count, providers, value, groupRe
                 id={`${id}-model-id`}
                 mono
                 value={value.model}
-                options={entries.map((m) => ({ value: m.id, label: m.display_name || undefined }))}
+                // The label starts with the id: Firefox matches the text against the label and shows only that.
+                options={entries.map((m) => ({ value: m.id, label: m.display_name ? `${m.id} · ${m.display_name}` : m.id }))}
                 maxLength={200}
                 aria-describedby={`${id}-model-desc`}
                 onChange={(v) => onChange({ ...value, model: v })}
