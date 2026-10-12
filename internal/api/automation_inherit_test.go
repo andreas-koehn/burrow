@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ankoehn/burrow/internal/authz"
@@ -121,6 +123,56 @@ func TestMintStillRefusesUnknownFields(t *testing.T) {
 	h := newAuthzHarness(t)
 	if code, _, _ := h.mint(t, `{"name":"d","bogus":1}`, h.session(t, "admin")); code != http.StatusBadRequest {
 		t.Errorf("unknown field: %d, want 400", code)
+	}
+}
+
+func (h *authzHarness) tokenCount(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := h.sqldb.QueryRow(`SELECT COUNT(*) FROM automation_tokens`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A role without a mint permission is refused by the gate; nothing is written.
+func TestMintWithoutPermissionsRefusedForRoleWithoutAny(t *testing.T) {
+	h := newAuthzHarness(t)
+	before := h.tokenCount(t)
+	if code, _, _ := h.mint(t, `{"name":"d"}`, h.session(t, "cr-none")); code != http.StatusForbidden {
+		t.Errorf("cr-none: %d, want 403", code)
+	}
+	if n := h.tokenCount(t); n != before {
+		t.Errorf("a refused mint wrote %d token(s)", n-before)
+	}
+}
+
+// A role that cannot be resolved inherits nothing: 403, nothing written. An
+// explicit empty list still mints.
+func TestMintInheritingAnUnresolvedRoleIsRefused(t *testing.T) {
+	h := newAuthzHarness(t)
+	if _, err := h.sqldb.Exec(`INSERT INTO users(id, email, password_hash, role) VALUES('u-ghost','g@x','x','ghost')`); err != nil {
+		t.Fatal(err)
+	}
+	// Straight at the handler: the router's check would refuse an unknown role first.
+	var d Deps
+	d.Users, d.Automation = h.st, h.st
+	post := func(body string) int {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), userIDKey, "u-ghost"))
+		rec := httptest.NewRecorder()
+		d.PostAutomationToken(rec, req)
+		return rec.Code
+	}
+	before := h.tokenCount(t)
+	if code := post(`{"name":"d"}`); code != http.StatusForbidden {
+		t.Errorf("unresolved role, no list: %d, want 403", code)
+	}
+	if n := h.tokenCount(t); n != before {
+		t.Errorf("a refused mint wrote %d token(s)", n-before)
+	}
+	if code := post(`{"name":"d","permissions":[]}`); code != http.StatusCreated {
+		t.Errorf("explicit empty list: %d, want 201", code)
 	}
 }
 

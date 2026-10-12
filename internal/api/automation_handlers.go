@@ -178,10 +178,18 @@ func (d Deps) PostAutomationToken(w http.ResponseWriter, r *http.Request) {
 	var perms []string
 	if in.Permissions != nil {
 		perms = *in.Permissions
-	} else if perms, err = d.inheritedPerms(r.Context(), role, isToken); err != nil {
+	} else {
 		// No list: the token inherits its minter's permissions at this moment.
-		writeErr(w, http.StatusInternalServerError, "lookup failed")
-		return
+		if perms, err = d.inheritedPerms(r.Context(), role, isToken); err != nil {
+			writeErr(w, http.StatusInternalServerError, "lookup failed")
+			return
+		}
+		// Whoever passes the gate holds an automation:tokens:manage
+		// permission, so an empty result means the role was not resolved.
+		if len(perms) == 0 {
+			writeErr(w, http.StatusForbidden, "no permissions to inherit")
+			return
+		}
 	}
 	// A token mints nothing wider than itself: each permission it asks for
 	// must be one it declares (and its user's role still grants). For a

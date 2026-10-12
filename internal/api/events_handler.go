@@ -6,7 +6,8 @@ import (
 	"time"
 )
 
-// EventsStream is a Server-Sent Events stream of "tunnels changed" pings.
+// EventsStream is a Server-Sent Events stream of content-free "refetch"
+// notifications, the refresh channel of the dashboard pages.
 func (d Deps) EventsStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok || d.Events == nil {

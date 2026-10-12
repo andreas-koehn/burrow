@@ -351,7 +351,7 @@ role of that person needs the permission all the same:
 | create a gateway key | `ai:configure:own` or `ai:configure:any` |
 | look at, approve or deny a client sign-in (`burrow login`) | `tokens:manage:own` or `tokens:manage:any` |
 | read the attempt log of a gateway request | `ai:read:any` |
-| the live stream of tunnel changes | `tunnels:read:own` or `tunnels:read:any` |
+| the refresh stream of the dashboard pages (`GET /api/v1/events`, sessions only) | `tunnels:read:own`/`:any`, `services:configure:own`/`:any`, `ai:read:own`/`:any` or `inspector:read:own`/`:any` |
 | the live stream of a service's request inspector | `inspector:read:own` or `inspector:read:any` |
 
 Setting `gateway_only` when creating an AI provider (`POST /api/v1/ai/providers`)

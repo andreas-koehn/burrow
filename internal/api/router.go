@@ -471,7 +471,8 @@ func NewRouter(d Deps) http.Handler {
 		// SSE: a dashboard session only, NO timeout (long-lived stream). The
 		// bearer middleware runs so that an automation token is recognised
 		// and refused by the gate (403) like on every other route. The
-		// session's role needs tunnels:read for /events and inspector:read
+		// session's role needs one of the read permissions of eventsRead
+		// (tunnels, services, ai, inspector) for /events and inspector:read
 		// for the inspector stream.
 		// CSRF is not applied here: GET is a safe method and SSE clients cannot
 		// send custom headers after the connection is upgraded.
