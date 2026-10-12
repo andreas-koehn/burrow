@@ -199,6 +199,7 @@ func buildV04Stack(
 		Recorder: metricsRec, Events: dispatcher, Audit: auditLogger,
 		Cost: costEngine, Chain: aiChain, Log: log,
 	})
+	aiChain.Observer = obs
 
 	// --- geo lookup (default build = noop; geo build tag = real MMDB) ------
 	geoLookup, err := proxy.OpenGeoDB(cfg.GeoDBPath)

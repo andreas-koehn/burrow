@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/ankoehn/burrow/internal/aimeter"
+	"github.com/ankoehn/burrow/internal/observe"
 )
 
 // GatewayKeySubjectPrefix marks a gateway key in a per-key subject (cache
@@ -32,6 +33,7 @@ type Route struct {
 	upstreamUsage  bool
 	tokensIn       int
 	tokensOut      int
+	attempts       []observe.Attempt
 }
 
 // RouteInfo is an immutable copy of a Route.
@@ -99,6 +101,31 @@ func (r *Route) SetUpstreamUsage(tokensIn, tokensOut int) {
 	r.mu.Lock()
 	r.upstreamUsage, r.tokensIn, r.tokensOut = true, tokensIn, tokensOut
 	r.mu.Unlock()
+}
+
+// SetAttempts records what the gateway sent to upstreams for the request,
+// when it is done trying. The chain hands it to its observer with the
+// finished request.
+func (r *Route) SetAttempts(attempts []observe.Attempt) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.attempts = append([]observe.Attempt(nil), attempts...)
+	r.mu.Unlock()
+}
+
+// AttemptsFrom returns what the gateway sent to upstreams for the request of
+// ctx (see SetAttempts): nil without a route, and until the gateway is done.
+// It is not part of RouteInfo, which stays a comparable value.
+func AttemptsFrom(ctx context.Context) []observe.Attempt {
+	r, ok := ctx.Value(routeKey{}).(*Route)
+	if !ok || r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]observe.Attempt(nil), r.attempts...)
 }
 
 // Snapshot returns the route as it is now.

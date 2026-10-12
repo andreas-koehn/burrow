@@ -623,6 +623,27 @@ func (r *obsRelay) metricsText() string {
 	return string(body)
 }
 
+// familySum adds up the values of every sample of one family in an
+// exposition, whatever its labels; ok is false when the family has none.
+func familySum(text, family string) (sum float64, ok bool) {
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.HasPrefix(line, family) {
+			continue
+		}
+		rest := line[len(family):]
+		if rest == "" || (rest[0] != '{' && rest[0] != ' ') {
+			continue // another family that starts with this name
+		}
+		f := strings.Fields(line)
+		v, err := strconv.ParseFloat(f[len(f)-1], 64)
+		if err != nil {
+			continue
+		}
+		sum, ok = sum+v, true
+	}
+	return sum, ok
+}
+
 // familiesAndSamples reads an exposition: the declared families (their TYPE
 // lines) and, for each, whether a sample line belongs to it. A summary's
 // samples are the quantile lines and <name>_count / <name>_sum.
@@ -662,11 +683,6 @@ func familiesAndSamples(text string) (declared []string, sampled map[string]bool
 // give a sample, each with the reason. Everything else must have one.
 var metricFamiliesWithoutSamples = map[string]string{
 	// --- Not wired yet. A task takes its lines out when it wires them. ---
-	"burrow_ai_tokens_in_total":        "W05",
-	"burrow_ai_tokens_out_total":       "W05",
-	"burrow_ai_cost_usd_total":         "W05",
-	"burrow_ai_cache_hits_total":       "W05",
-	"burrow_ai_cache_misses_total":     "W05",
 	"burrow_ai_failover_events_total":  "W06",
 	"burrow_ai_upstream_errors_total":  "W06",
 	"burrow_db_query_duration_seconds": "W07",
@@ -719,6 +735,31 @@ func TestServe_MetricFamiliesHaveSamples(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	// What the driven traffic makes certain: one model request is answered
+	// from the cache, and the others that reach a provider carry usage
+	// (prompt 2, completion 3 tokens).
+	// The observer is told after the response, so the last request's figures
+	// may land a moment after the visitor has its answer.
+	text := r.metricsText()
+	for wait := time.Now().Add(obsWait); time.Now().Before(wait); text = r.metricsText() {
+		hits, _ := familySum(text, "burrow_ai_cache_hits_total")
+		out, _ := familySum(text, "burrow_ai_tokens_out_total")
+		if hits >= 1 && out > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if hits, _ := familySum(text, "burrow_ai_cache_hits_total"); hits != 1 {
+		t.Errorf("burrow_ai_cache_hits_total = %v, want 1 (one request was answered from the cache)", hits)
+	}
+	if misses, _ := familySum(text, "burrow_ai_cache_misses_total"); misses < 1 {
+		t.Errorf("burrow_ai_cache_misses_total = %v, want at least 1", misses)
+	}
+	for _, name := range []string{"burrow_ai_tokens_in_total", "burrow_ai_tokens_out_total"} {
+		if v, _ := familySum(text, name); v <= 0 {
+			t.Errorf("%s = %v, want more than 0 after answered model requests", name, v)
+		}
+	}
 	if len(declared) < 30 {
 		t.Fatalf("the exporter declares %d families; the TYPE lines were not read", len(declared))
 	}
@@ -757,10 +798,10 @@ var webhookEventProof = map[string]struct{ how, why string }{
 	"tunnel.failed":       {proofDelivered, ""},
 	"service.created":     {proofDelivered, ""},
 	"access.denied":       {proofDelivered, ""},
+	"redaction.applied":   {proofDelivered, ""},
+	"guardrail.refused":   {proofDelivered, ""},
 	// Published by the observer (cmd/server/observer.go), which is not
-	// handed these events yet. The task named makes it "delivered".
-	"redaction.applied": {proofSource, "W05 hands the observer the model requests"},
-	"guardrail.refused": {proofSource, "W05 hands the observer the model requests"},
+	// handed this event yet. The task named makes it "delivered".
 	"ai.upstream_error": {proofSource, "W06 hands the observer the gateway's attempts"},
 	// Published by code one run of this test does not reach.
 	"quota.exceeded":              {proofSource, "needs a rate limit and a burst of requests: cmd/server/quota_events_test.go"},
