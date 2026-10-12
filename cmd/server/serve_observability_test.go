@@ -1110,3 +1110,68 @@ func TestOperationsGuideIsComplete(t *testing.T) {
 		}
 	}
 }
+
+// The traffic of obsTraffic is known, so what the samples must say is known
+// too: who was counted under which labels. Each line is a series that must
+// exist with a value of at least 1.
+func TestServe_SamplesSayWhatHappened(t *testing.T) {
+	r := bootObsRelay(t)
+	r.obsTraffic()
+	tns := r.tunnels() // the tunnels of the reconnected client; their services are the same
+	web, llm := tns["obs-web"].ServiceID, tns["obs-llm"].ServiceID
+	if web == "" || llm == "" {
+		t.Fatalf("service ids: %+v", tns)
+	}
+	want := []string{
+		// The proxied request, and the one the api_key service refused.
+		`burrow_http_requests_total{service="` + web + `",method="POST",status="2xx"}`,
+		`burrow_http_requests_total{service="` + llm + `",method="GET",status="4xx"}`,
+		`burrow_connections_total{service="` + llm + `",kind="http_proxy",status="rejected"}`,
+		// The tcp round trip, and the client's two sessions (the first ended).
+		`burrow_connections_total{service="",kind="tcp_proxy",status="closed_clean"}`,
+		`burrow_connections_total{service="",kind="control",status="closed_clean"}`,
+		// The model requests: tokens, a cache hit and misses, one failover
+		// from the first provider to the second, one failed upstream.
+		`burrow_ai_cache_hits_total{service="` + llm + `"}`,
+		`burrow_ai_cache_misses_total{service="` + llm + `"}`,
+		`burrow_ai_failover_events_total{service="` + llm + `",from="obs-llm",to="obs-llm2",cross_provider="true"}`,
+		`burrow_ai_upstream_errors_total{service="` + llm + `",status="5xx"}`,
+		`burrow_ai_credential_injections_total{service="` + llm + `",slot="OBS"}`,
+		// What a scrape reads.
+		`burrow_db_backend{driver="sqlite"}`,
+	}
+	atLeastOne := func(text, series string) bool {
+		re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(series) + ` ([0-9.e+]+)$`)
+		m := re.FindStringSubmatch(text)
+		if m == nil {
+			return false
+		}
+		v, err := strconv.ParseFloat(m[1], 64)
+		return err == nil && v >= 1
+	}
+	var text string
+	r.eventually("the samples of the run are there", func() bool {
+		text = r.metricsText()
+		for _, series := range want {
+			if !atLeastOne(text, series) {
+				return false
+			}
+		}
+		return true
+	})
+
+	// Tokens are counted under the gateway key's id, never under the key itself.
+	if !regexp.MustCompile(`(?m)^burrow_ai_tokens_in_total\{service="` + regexp.QuoteMeta(llm) + `",api_key="gw:[^"]+"\} [1-9]`).MatchString(text) {
+		t.Errorf("no token count under a gateway key id:\n%s", grepBurrow(text, "burrow_ai_tokens_in_total"))
+	}
+	// The custom domain's certificate has less than a day left.
+	if !strings.Contains(text, `burrow_cert_expiry_days{cert="`+obsCustomDomain+`"} 0.`) {
+		t.Errorf("no expiry of the custom domain's certificate:\n%s", grepBurrow(text, "burrow_cert_expiry_days"))
+	}
+	// Nothing a caller chose is a label value, and no address is.
+	for _, forbidden := range []string{"alice@example.com", "obs-model", "obs-client", "127.0.0.1", "sk-upstream-obs", "bgw_", "/hello"} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("the exposition contains %q", forbidden)
+		}
+	}
+}
