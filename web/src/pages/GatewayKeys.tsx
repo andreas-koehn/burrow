@@ -175,10 +175,9 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
                 );
               })}
               {chosen.length === 0 && <p className="muted small">Choose at least one.</p>}
+              <p className="muted small">A model allows that name on <code>/openai/v1</code> and <code>/anthropic</code>.</p>
               <p className="muted small">
-                A model name allows that model on the gateway's endpoints (<code>/openai/v1</code>, <code>/anthropic</code>),
-                not on a provider's own address <code>/ai/&lt;provider&gt;/…</code>. "Everything from" a provider allows both:
-                its models by their direct address, e.g. provider/model, and the provider's own address.
+                Everything from a provider also allows the provider's own address <code>/ai/&lt;provider&gt;/…</code>.
               </p>
             </>
           )}
@@ -238,9 +237,9 @@ export default function GatewayKeys() {
         actions={newKey}
       />
       <p className="muted small page-intro">
-        Gateway keys let a program call the AI gateway. For connecting a machine use{" "}
-        <Link className="link-inline" to="/clients?tab=tokens">Client tokens</Link>; for scripting the management API use{" "}
-        <Link className="link-inline" to="/settings/automation">Automation tokens</Link>.
+        An app sends a gateway key to the AI gateway. To connect a machine, use a{" "}
+        <Link className="link-inline" to="/clients?tab=tokens">client token</Link>; to script the management API, use an{" "}
+        <Link className="link-inline" to="/settings/automation">automation token</Link>.
       </p>
 
       {keys.error ? (

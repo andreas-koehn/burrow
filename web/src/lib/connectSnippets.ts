@@ -1,6 +1,7 @@
 // Ready configurations for the clients the connect card offers. Pure text
 // builders: the card only renders what these return, and none of them ever
-// takes a key — the key is a placeholder or an environment variable.
+// takes a key. What a shell or a program runs reads it from KEY_ENV; a settings
+// file or a form field, which cannot read a variable, carries a placeholder.
 //
 // Checked against the vendors' documentation (2026-10):
 // - Claude Code reads ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN (sent as
@@ -20,7 +21,7 @@
 
 /** What stands where the gateway key goes. */
 const KEY_PLACEHOLDER = "<your gateway key>";
-/** Environment variable the Codex and SDK examples read the key from. */
+/** The one environment variable every example reads the gateway key from. */
 export const KEY_ENV = "BURROW_GATEWAY_KEY";
 
 export interface Tiers {
@@ -101,6 +102,24 @@ export function openAiSdkTypeScript(baseUrl: string, model: string): string {
     '  messages: [{ role: "user", content: "Hello" }],',
     "});",
     "console.log(reply.choices[0].message.content);",
+  ].join("\n");
+}
+
+/** A chat completion on a base URL that ends in /v1, for a shell that has the key in KEY_ENV. */
+export function curlChat(baseUrl: string, model: string): string {
+  return [
+    `curl ${baseUrl}/chat/completions \\`,
+    `  -H "Authorization: Bearer $${KEY_ENV}" \\`,
+    '  -H "Content-Type: application/json" \\',
+    `  -d '{"model": "${model}", "messages": [{"role": "user", "content": "Hello"}]}'`,
+  ].join("\n");
+}
+
+/** The two variables an OpenAI SDK reads itself; its key is set from KEY_ENV, never to a value. */
+export function openAiEnv(baseUrl: string): string {
+  return [
+    `export OPENAI_BASE_URL=${baseUrl}`,
+    `export OPENAI_API_KEY=$${KEY_ENV}`,
   ].join("\n");
 }
 

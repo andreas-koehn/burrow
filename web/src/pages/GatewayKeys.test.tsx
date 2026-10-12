@@ -115,10 +115,19 @@ describe("Gateway keys page", () => {
     await userEvent.click(within(dialog).getByRole("radio", { name: "Only these models" }));
     // An empty list would mean every model: nothing chosen is not a restriction.
     expect(within(dialog).getByRole("button", { name: "Create key" })).toBeDisabled();
-    // What each kind of entry opens.
-    expect(await within(dialog).findByText(/A model name allows that model/)).toHaveTextContent(
-      "A model name allows that model on the gateway's endpoints (/openai/v1, /anthropic), not on a provider's own address /ai/<provider>/…. \"Everything from\" a provider allows both",
-    );
+    // What each kind of entry opens: two short lines.
+    const lines = [
+      "A model allows that name on /openai/v1 and /anthropic.",
+      "Everything from a provider also allows the provider's own address /ai/<provider>/….",
+    ];
+    const first = await within(dialog).findByText(/^A model allows that name on/);
+    expect(first.tagName).toBe("P");
+    expect(first.textContent).toBe(lines[0]);
+    const second = within(dialog).getByText(/^Everything from a provider also allows/);
+    expect(second.tagName).toBe("P");
+    expect(second.textContent).toBe(lines[1]);
+    expect(second).not.toBe(first);
+    expect(within(dialog).queryByText(/A model name allows that model/)).toBeNull();
     await userEvent.click(await within(dialog).findByRole("checkbox", { name: "burrow-simple" }));
     await userEvent.click(within(dialog).getByRole("checkbox", { name: "Everything from ollama" }));
     await userEvent.click(within(dialog).getByRole("button", { name: "Create key" }));
@@ -135,6 +144,8 @@ describe("Gateway keys page", () => {
     const dialog = await screen.findByRole("dialog", { name: "New gateway key" });
     expect(within(dialog).getByRole("radio", { name: "Only these models" })).toBeChecked();
     expect(await within(dialog).findByRole("checkbox", { name: "Everything from llamacpp" })).toBeChecked();
+    // The limit is named where it is chosen.
+    expect(within(dialog).getByText(/^Everything from a provider also allows/)).toHaveTextContent("the provider's own address /ai/<provider>/…");
     // Nothing else is ticked.
     expect(within(dialog).getAllByRole("checkbox").filter((c) => (c as HTMLInputElement).checked || c.getAttribute("aria-checked") === "true")).toHaveLength(1);
     expect(screen.getByTestId("location").textContent).toBe("/gateway/keys?new=1&provider=llamacpp");
@@ -239,8 +250,12 @@ describe("Gateway keys page", () => {
   it("names the other two kinds of credential with a link", async () => {
     mount();
     await screen.findByRole("heading", { name: "Gateway keys" });
-    expect(screen.getByRole("link", { name: "Client tokens" })).toHaveAttribute("href", "/clients?tab=tokens");
-    expect(screen.getByRole("link", { name: "Automation tokens" })).toHaveAttribute("href", "/settings/automation");
+    const line = screen.getByText(/An app sends a gateway key/);
+    expect(line).toHaveTextContent(
+      "An app sends a gateway key to the AI gateway. To connect a machine, use a client token; to script the management API, use an automation token.",
+    );
+    expect(within(line).getByRole("link", { name: "client token" })).toHaveAttribute("href", "/clients?tab=tokens");
+    expect(within(line).getByRole("link", { name: "automation token" })).toHaveAttribute("href", "/settings/automation");
   });
 
   it("without a key: says what a key is for and offers to create one", async () => {

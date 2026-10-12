@@ -2,6 +2,7 @@ import { useId, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Tabs } from "@/components/ds";
 import { CopyButton, CopyableCode } from "@/components/CopyableCode";
+import { CreateKeyHint } from "@/components/CreateKeyHint";
 import {
   claudeCodeSettings, codexConfig, genericProvider, openAiSdkPython, openAiSdkTypeScript, pickTier, KEY_ENV,
 } from "@/lib/connectSnippets";
@@ -244,6 +245,8 @@ export function ConnectCard({ endpoints, models, canCreate = true }: ConnectCard
           ]}
         />
       )}
+      {/* Under the tabs, so it stands below whichever snippet is open; without a model there is none. */}
+      {models.length > 0 && <CreateKeyHint />}
     </section>
   );
 }

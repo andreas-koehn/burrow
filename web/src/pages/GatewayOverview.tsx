@@ -125,7 +125,7 @@ export default function GatewayOverview() {
     {
       id: "key",
       title: "Create a gateway key",
-      description: "Programs sign in to the gateway with a gateway key.",
+      description: "Apps sign in to the gateway with a gateway key.",
       // A non-admin sees their own keys: the step is about a key they can use.
       done: keyList.some((k) => !k.revoked_at),
       action: { label: "Create a gateway key", to: "/gateway/keys" },

@@ -298,7 +298,7 @@ For a full description of all access modes (`open`, `api_key`, `burrow_login`,
 
 A provider is a model backend with its own base URL,
 `https://<auth_domain>/ai/<provider>/v1`, which any OpenAI-compatible app
-can use with a Burrow API key. Providers are managed in the dashboard under
+can use with a gateway key. Providers are managed in the dashboard under
 **AI Gateway → Providers**.
 
 There are two kinds:
@@ -316,7 +316,7 @@ is the upstream's own status, headers and body, with `Burrow-Request-Id` and
 - Requests under `/ai/` are recorded as usage events and in the inspector.
   They write no connection-log rows.
 - The IP / geo policy of the provider's backing service applies to `/ai/`
-  requests and is checked before the API key.
+  requests and is checked before the gateway key.
 
 ### Tunnel providers
 
@@ -376,7 +376,7 @@ as **not configured** and answers `503` with the code
 
 What the relay does with a direct provider's traffic:
 
-- **Credentials.** The caller's Burrow API key and cookies stop at the relay.
+- **Credentials.** The caller's gateway key and cookies stop at the relay.
   The upstream receives the slot's value in the configured header
   (`Authorization: Bearer <key>` by default).
 - **Rejected credential.** An upstream `401` or `403` is answered as `502`

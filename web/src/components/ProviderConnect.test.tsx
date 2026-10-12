@@ -1,9 +1,15 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
+import { renderApp } from "@/mocks/test-utils";
+import { db } from "@/mocks/db";
 import { ProviderConnect } from "./ProviderConnect";
 
 const BASE = "https://b.example.com/ai/ollama/v1";
+
+// The card asks for the reader's gateway keys, so it needs the app around it.
+const render = (ui: ReactElement) => renderApp(ui, "/gateway/providers/ollama");
 
 function stubClipboard() {
   const writeText = vi.fn().mockResolvedValue(undefined);
@@ -27,7 +33,7 @@ describe("ProviderConnect", () => {
     await userEvent.click(screen.getByRole("button", { name: "Copy curl example" }));
     const snippet = writeText.mock.calls[0][0] as string;
     expect(snippet).toContain(`${BASE}/chat/completions`);
-    expect(snippet).toContain("Authorization: Bearer $BURROW_API_KEY");
+    expect(snippet).toContain("Authorization: Bearer $BURROW_GATEWAY_KEY");
     expect(snippet).toContain('"model": "qwen2.5:0.5b"');
   });
 
@@ -37,7 +43,7 @@ describe("ProviderConnect", () => {
     await userEvent.click(screen.getByRole("button", { name: "Copy environment variables" }));
     const snippet = writeText.mock.calls[0][0] as string;
     expect(snippet).toContain(`OPENAI_BASE_URL=${BASE}`);
-    expect(snippet).toContain("OPENAI_API_KEY=$BURROW_API_KEY");
+    expect(snippet).toContain("OPENAI_API_KEY=$BURROW_GATEWAY_KEY");
   });
 
   it("uses a placeholder model when none is known", () => {
@@ -55,6 +61,22 @@ describe("ProviderConnect", () => {
     render(<ProviderConnect baseUrl={BASE} />);
     expect(screen.getByText("Use this as the base URL of any OpenAI-compatible app, with a gateway key.")).toBeInTheDocument();
     expect(document.body).not.toHaveTextContent(/this provider's API keys/);
+  });
+
+  it("without a gateway key: offers to create one for this provider, under the snippets", async () => {
+    db.aiGatewayKeys = [];
+    render(<ProviderConnect baseUrl={BASE} provider="ollama" />);
+    const link = await screen.findByRole("link", { name: "Create a gateway key" });
+    expect(link).toHaveAttribute("href", "/gateway/keys?new=1&provider=ollama");
+    expect(screen.getByText("You have no gateway key yet.")).toBeInTheDocument();
+    const last = screen.getByRole("button", { name: "Copy environment variables" });
+    expect(last.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("with a gateway key: offers none", async () => {
+    const { qc } = render(<ProviderConnect baseUrl={BASE} provider="ollama" />);
+    await waitFor(() => expect(qc.getQueryState(["ai", "keys"])?.status).toBe("success"));
+    expect(screen.queryByRole("link", { name: "Create a gateway key" })).toBeNull();
   });
 
   describe("a provider of the Anthropic format", () => {
@@ -86,6 +108,13 @@ describe("ProviderConnect", () => {
       expect(screen.queryByRole("button", { name: "Copy curl example" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Copy environment variables" })).toBeNull();
       expect(document.body).not.toHaveTextContent(/OPENAI_|chat\/completions/);
+    });
+
+    it("without a gateway key: offers to create one for this provider", async () => {
+      db.aiGatewayKeys = [];
+      render(<ProviderConnect baseUrl={BASE} apiFormat="anthropic" provider="claude-local" />);
+      expect(await screen.findByRole("link", { name: "Create a gateway key" }))
+        .toHaveAttribute("href", "/gateway/keys?new=1&provider=claude-local");
     });
 
     it("pins no model while none is known", async () => {

@@ -22,6 +22,8 @@ const RETIRED: [RegExp, string][] = [
   [/OpenAI-compatible client|Anthropic-compatible client|\b(use|paste|set) (it |this )?in a client\b/i, "say app"],
   [/Rotate cache/i, "removed"],
   [/edit this table in Settings/i, "no such page"],
+  // One variable for the key an app sends to the AI gateway.
+  [/BURROW_API_KEY/i, "say BURROW_GATEWAY_KEY"],
 ];
 
 /** The retired wordings in a source text, each with what to say instead. */
@@ -170,6 +172,9 @@ describe("the guard itself", () => {
     ["edit this table in Settings", "<p>Operators can edit this table in Settings.</p>"],
     ["edit this table in Settings, wrapped", "<p>Operators can edit this table\n  in Settings.</p>"],
     ["edit this table in Settings, other case", 'const s = "Edit This Table In settings";'],
+    ["BURROW_API_KEY", "const env = `export OPENAI_API_KEY=$BURROW_API_KEY`;"],
+    ["BURROW_API_KEY in text", "<p>Set <code>BURROW_API_KEY</code> in your shell.</p>"],
+    ["BURROW_API_KEY, other case", 'const name = "burrow_api_key";'],
   ];
   it.each(CAUGHT)("catches %s", (_name, src) => {
     expect(retiredIn(src)).toHaveLength(1);
@@ -192,6 +197,8 @@ describe("the guard itself", () => {
     ["other clients that are connected", "<p>No other clients are connected.</p>"],
     ["retired words in a comment", "// an AI service, idle, client offline\nconst a = 1; /* Rotate cache */"],
     ["the new words", "<p>Names apps ask for. Global (cache shared across providers). Online, Offline, Never connected.</p>"],
+    ["the gateway key's variable", "const env = `export OPENAI_API_KEY=$BURROW_GATEWAY_KEY`;"],
+    ["a neutral key variable for a service", 'const curl = `curl -H "Authorization: Bearer $API_KEY" https://example.com/svc/k7p2qx/`;'],
   ];
   it.each(ALLOWED)("lets %s pass", (_name, src) => {
     expect(retiredIn(src)).toEqual([]);

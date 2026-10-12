@@ -62,7 +62,7 @@ export default function AutomationTokens() {
         actions={<Button variant="primary" size="sm" onClick={() => setAddOpen(true)}>New token</Button>}
       />
 
-      <p className="muted small">These authenticate scripts, not clients. To connect a machine that runs burrow, use <Link className="link-inline" to="/clients?tab=tokens">Client tokens</Link>.</p>
+      <p className="muted small">These authenticate scripts, not clients. To connect a machine that runs burrow, use <Link className="link-inline" to="/clients?tab=tokens">Client tokens</Link>. Apps that call a model use a <Link className="link-inline" to="/gateway/keys">gateway key</Link>.</p>
 
       {!tokens.data ? (
         <SkeletonRows n={2} />

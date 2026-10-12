@@ -182,6 +182,8 @@ describe("GatewayOverview", () => {
       ["Send the first request", "to do", "false"],
     ]);
     expect(within(list).getByRole("link", { name: "Create a gateway key" })).toHaveAttribute("href", "/gateway/keys");
+    expect(within(list).getByText("Apps sign in to the gateway with a gateway key.")).toBeInTheDocument();
+    expect(within(list).queryByText(/Programs sign in/)).toBeNull();
   });
 
   it("everything but a request: the last step shows the connect card with the gateway's base URL", async () => {

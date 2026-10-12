@@ -1,6 +1,7 @@
 import { useId } from "react";
 import { CopyButton, CopyableCode } from "@/components/CopyableCode";
-import { claudeCodeSettings, pickTier } from "@/lib/connectSnippets";
+import { CreateKeyHint } from "@/components/CreateKeyHint";
+import { claudeCodeSettings, curlChat, openAiEnv, pickTier } from "@/lib/connectSnippets";
 import type { AiProvider } from "@/lib/contract";
 
 export interface ProviderConnectProps {
@@ -10,29 +11,21 @@ export interface ProviderConnectProps {
   exampleModel?: string;
   /** The format the provider speaks; OpenAI when left out. */
   apiFormat?: AiProvider["api_format"];
+  /** The provider's slug: a key created from here starts limited to it. */
+  provider?: string;
 }
 
 /**
  * What an app needs to use a provider: base URL plus ready examples in the
  * format the provider speaks. Where the key goes there is a placeholder or the
- * $BURROW_API_KEY variable; a real key is never shown.
+ * $BURROW_GATEWAY_KEY variable; a real key is never shown.
  */
-export function ProviderConnect({ baseUrl, exampleModel, apiFormat = "openai" }: ProviderConnectProps) {
+export function ProviderConnect({ baseUrl, exampleModel, apiFormat = "openai", provider }: ProviderConnectProps) {
   const titleId = useId();
   const anthropic = apiFormat === "anthropic";
   // An Anthropic app adds /v1/messages to its base URL itself.
   const shown = anthropic ? baseUrl.replace(/\/v1\/?$/, "") : baseUrl;
   const model = exampleModel || "<model>";
-  const curl = [
-    `curl ${baseUrl}/chat/completions \\`,
-    `  -H "Authorization: Bearer $BURROW_API_KEY" \\`,
-    `  -H "Content-Type: application/json" \\`,
-    `  -d '{"model": "${model}", "messages": [{"role": "user", "content": "Hello"}]}'`,
-  ].join("\n");
-  const env = [
-    `export OPENAI_BASE_URL=${baseUrl}`,
-    `export OPENAI_API_KEY=$BURROW_API_KEY`,
-  ].join("\n");
 
   return (
     <section className="card provider-connect" aria-labelledby={titleId}>
@@ -57,10 +50,11 @@ export function ProviderConnect({ baseUrl, exampleModel, apiFormat = "openai" }:
         </>
       ) : (
         <>
-          <CopyableCode text={curl} label="Copy curl example" wrap />
-          <CopyableCode text={env} label="Copy environment variables" wrap />
+          <CopyableCode text={curlChat(baseUrl, model)} label="Copy curl example" wrap />
+          <CopyableCode text={openAiEnv(baseUrl)} label="Copy environment variables" wrap />
         </>
       )}
+      <CreateKeyHint provider={provider} />
     </section>
   );
 }

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
+import { db } from "@/mocks/db";
 import { ConnectCard, type ConnectModel } from "@/components/ConnectCard";
 
 const endpoints = [
@@ -192,6 +193,32 @@ describe("ConnectCard", () => {
     mount([]);
     expect(screen.getByText(/create a model first/i)).toBeInTheDocument();
     expect(screen.queryByRole("tab")).toBeNull();
+  });
+
+  it("without a gateway key: offers to create one, on every tab", async () => {
+    db.aiGatewayKeys = [];
+    mount();
+    const link = await screen.findByRole("link", { name: "Create a gateway key" });
+    // Not limited to a provider: the card is about the gateway's own endpoints.
+    expect(link).toHaveAttribute("href", "/gateway/keys?new=1");
+    expect(screen.getByText("You have no gateway key yet.")).toBeInTheDocument();
+    const snippet = screen.getByRole("button", { name: "Copy settings for Claude Code" });
+    expect(snippet.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await userEvent.click(screen.getByRole("tab", { name: "OpenAI SDK" }));
+    expect(screen.getByRole("link", { name: "Create a gateway key" })).toHaveAttribute("href", "/gateway/keys?new=1");
+  });
+
+  it("with a gateway key: offers none", async () => {
+    const { qc } = mount();
+    await waitFor(() => expect(qc.getQueryState(["ai", "keys"])?.status).toBe("success"));
+    expect(screen.queryByRole("link", { name: "Create a gateway key" })).toBeNull();
+  });
+
+  it("without a model there is no snippet, so no key is asked for", async () => {
+    db.aiGatewayKeys = [];
+    const { qc } = mount([]);
+    expect(qc.getQueryState(["ai", "keys"])).toBeUndefined();
+    expect(screen.queryByRole("link", { name: "Create a gateway key" })).toBeNull();
   });
 
   it("falls back to this origin when the relay reports no base URL", () => {

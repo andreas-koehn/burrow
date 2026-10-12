@@ -1,8 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { claudeCodeSettings, codexConfig, openAiSdkPython, openAiSdkTypeScript, genericProvider, pickTier } from "./connectSnippets";
+import {
+  claudeCodeSettings, codexConfig, curlChat, openAiEnv, openAiSdkPython, openAiSdkTypeScript, genericProvider, pickTier, KEY_ENV,
+} from "./connectSnippets";
 
 const ANTHROPIC = "https://b.example.com/anthropic";
 const OPENAI = "https://b.example.com/openai/v1";
+const PROVIDER = "https://b.example.com/ai/ollama/v1";
 
 describe("claudeCodeSettings", () => {
   it("is a settings.json env block with the base URL, a key placeholder and three pinned models", () => {
@@ -80,11 +83,63 @@ describe("SDK and generic snippets", () => {
       { label: "Models", value: "a, b" },
     ]);
   });
-  it("no snippet contains something that looks like a real key", () => {
-    const all = [
-      claudeCodeSettings(ANTHROPIC, pickTier(["a"])), codexConfig(OPENAI, "a"),
-      openAiSdkPython(OPENAI, "a"), openAiSdkTypeScript(OPENAI, "a"),
-    ].join("\n");
-    expect(all).not.toMatch(/bgw_[A-Za-z0-9_-]{8,}/);
+});
+
+describe("curlChat", () => {
+  it("is a chat completion that sends the key as a bearer token", () => {
+    expect(curlChat(PROVIDER, "qwen2.5:0.5b")).toBe(
+      [
+        `curl ${PROVIDER}/chat/completions \\`,
+        '  -H "Authorization: Bearer $BURROW_GATEWAY_KEY" \\',
+        '  -H "Content-Type: application/json" \\',
+        `  -d '{"model": "qwen2.5:0.5b", "messages": [{"role": "user", "content": "Hello"}]}'`,
+      ].join("\n"),
+    );
+  });
+});
+
+describe("openAiEnv", () => {
+  it("sets the two variables an OpenAI SDK reads, the key from the gateway key's variable", () => {
+    expect(openAiEnv(PROVIDER)).toBe(
+      [`export OPENAI_BASE_URL=${PROVIDER}`, "export OPENAI_API_KEY=$BURROW_GATEWAY_KEY"].join("\n"),
+    );
+  });
+});
+
+describe("where the key comes from", () => {
+  // What a shell or a program runs: it can read a variable.
+  const reading: [string, string][] = [
+    ["Codex config", codexConfig(OPENAI, "a")],
+    ["Python", openAiSdkPython(OPENAI, "a")],
+    ["TypeScript", openAiSdkTypeScript(OPENAI, "a")],
+    ["curl", curlChat(PROVIDER, "a")],
+    ["environment variables", openAiEnv(PROVIDER)],
+  ];
+  // A settings file and a form field cannot: they name the key in a placeholder.
+  const placeholder: [string, string][] = [
+    ["Claude Code settings", claudeCodeSettings(ANTHROPIC, pickTier(["a"]))],
+    ["generic form values", genericProvider(OPENAI, ["a"]).map((r) => r.value).join("\n")],
+  ];
+
+  it("the variable is BURROW_GATEWAY_KEY", () => {
+    expect(KEY_ENV).toBe("BURROW_GATEWAY_KEY");
+  });
+  it.each(reading)("%s reads the key from BURROW_GATEWAY_KEY", (_name, text) => {
+    expect(text).toContain("BURROW_GATEWAY_KEY");
+    expect(text).not.toContain("<your gateway key>");
+  });
+  it.each(placeholder)("%s cannot read a variable and names the gateway key in a placeholder", (_name, text) => {
+    expect(text).toContain("<your gateway key>");
+    expect(text).not.toContain("BURROW_GATEWAY_KEY");
+  });
+  it.each([...reading, ...placeholder])("%s names no other Burrow variable and no real key", (_name, text) => {
+    expect(text).not.toContain("BURROW_API_KEY");
+    // The only variable that starts with BURROW_ is the gateway key's.
+    expect(text.replace(/BURROW_GATEWAY_KEY/g, "")).not.toMatch(/BURROW_[A-Z_]+/);
+    expect(text).not.toMatch(/\b(bgw|buk|bua)_[A-Za-z0-9_-]{8,}/);
+  });
+  it("a variable the app reads itself is set from it, never to a value", () => {
+    const assigned = openAiEnv(PROVIDER).split("\n").find((l) => l.includes("OPENAI_API_KEY"));
+    expect(assigned).toBe("export OPENAI_API_KEY=$BURROW_GATEWAY_KEY");
   });
 });

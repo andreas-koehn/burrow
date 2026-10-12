@@ -30,7 +30,10 @@ export function ClientTokensPanel() {
   return (
     <div className="tokens-page">
       <p className="muted small">
-        Tokens that let a machine running burrow connect to this relay. This list includes tokens minted here and via Connect a client.
+        A client token lets a machine running <code>burrow</code> connect to this relay. Apps that call a model use a{" "}
+        <Link className="link-inline" to="/gateway/keys">gateway key</Link>; apps that call one service use that{" "}
+        <Link className="link-inline" to="/services">service</Link>'s API key; scripts use an{" "}
+        <Link className="link-inline" to="/settings/automation">automation token</Link>.
       </p>
 
       <form
@@ -47,10 +50,7 @@ export function ClientTokensPanel() {
         </div>
       </form>
 
-      <p className="muted small">
-        Need a token for CI, the CLI, or bots? <Link className="link-inline" to="/settings/automation">Automation tokens</Link>.
-        {" "}Keys for callers of one service are on that service's page, under <Link className="link-inline" to="/services">Services</Link>.
-      </p>
+      <p className="muted small">This list includes tokens minted here and via Connect a client.</p>
 
       <div className="table-wrap">
         <table className="data" aria-label="Tokens">

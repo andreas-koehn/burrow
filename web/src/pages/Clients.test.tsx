@@ -428,10 +428,11 @@ describe("Clients — Clients | Tokens tabs", () => {
     expect(await screen.findByRole("tab", { name: "Clients" })).toHaveAttribute("aria-selected", "true");
   });
 
-  it("names the other two kinds of credential on the Tokens tab", async () => {
+  it("names the other kinds of credential on the Tokens tab", async () => {
     mountAt("/clients?tab=tokens");
-    expect(await screen.findByRole("link", { name: /automation tokens/i })).toHaveAttribute("href", "/settings/automation");
-    expect(screen.getByRole("link", { name: "Services" })).toHaveAttribute("href", "/services");
+    expect(await screen.findByRole("link", { name: "gateway key" })).toHaveAttribute("href", "/gateway/keys");
+    expect(screen.getByRole("link", { name: "service" })).toHaveAttribute("href", "/services");
+    expect(screen.getByRole("link", { name: "automation token" })).toHaveAttribute("href", "/settings/automation");
   });
 
   it("keeps one page header, with Connect a client as its action, on both tabs", async () => {

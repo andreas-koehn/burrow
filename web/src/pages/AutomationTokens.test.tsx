@@ -40,7 +40,15 @@ describe("Automation tokens", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }) as Response);
     mount();
     const hint = screen.getByText(/These authenticate scripts, not clients\./);
-    expect(hint).toHaveTextContent("These authenticate scripts, not clients. To connect a machine that runs burrow, use Client tokens.");
+    expect(hint).toHaveTextContent(
+      "These authenticate scripts, not clients. To connect a machine that runs burrow, use Client tokens. Apps that call a model use a gateway key.",
+    );
+  });
+
+  it("points apps that call a model to gateway keys", () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }) as Response);
+    mount();
+    expect(screen.getByRole("link", { name: "gateway key" })).toHaveAttribute("href", "/gateway/keys");
   });
 
   it("renders Client tokens cross-link pointing to the Tokens tab of Clients (P4.3)", () => {

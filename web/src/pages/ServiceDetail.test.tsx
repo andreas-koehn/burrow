@@ -120,6 +120,26 @@ describe("ServiceDetail page", () => {
     expect(await within(table).findByText("prod")).toBeInTheDocument();
   });
 
+  it("API keys tab of a service that backs a provider: says what the keys are for and points models to a gateway key", async () => {
+    mountAt("/services/svc_ai001#api-keys");
+    await screen.findByRole("heading", { name: /ollama/i });
+    const link = await screen.findByRole("link", { name: "gateway key" });
+    expect(link).toHaveAttribute("href", "/gateway/keys");
+    expect(link.closest("p")).toHaveTextContent(
+      "Apps that call this service send one of these keys. For models, use a gateway key instead.",
+    );
+  });
+
+  it("API keys tab of any other service: only what the keys are for", async () => {
+    const { qc } = mountAt("/services/svc_graf01#api-keys");
+    await screen.findByRole("heading", { name: /grafana/i });
+    // The providers are known, so the second sentence is not just late.
+    await waitFor(() => expect(qc.getQueryState(["ai", "providers"])?.status).toBe("success"));
+    expect(screen.getByText(/Apps that call this service send one of these keys\./).textContent)
+      .toBe("Apps that call this service send one of these keys.");
+    expect(screen.queryByRole("link", { name: "gateway key" })).toBeNull();
+  });
+
   it("a fragment that names no tab opens Access", async () => {
     mountAt("/services/svc_ai001#nope");
     await screen.findByRole("heading", { name: /ollama/i });

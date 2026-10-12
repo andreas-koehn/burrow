@@ -317,6 +317,7 @@ export default function ProviderDetail() {
                 baseUrl={providerBaseUrl(provider.data.slug, provider.data.base_url)}
                 exampleModel={models.data?.[0]?.id || provider.data.concrete_model || undefined}
                 apiFormat={provider.data.api_format}
+                provider={provider.data.slug}
               />
 
               {flat && (

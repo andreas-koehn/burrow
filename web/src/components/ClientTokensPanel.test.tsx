@@ -182,17 +182,17 @@ describe("ClientTokensPanel", () => {
     expect(screen.getByText(/this list includes tokens minted here and via connect a client/i)).toBeInTheDocument();
   });
 
-  // P4.2 — automation cross-link hint
-  it("renders the Automation tokens cross-link hint (P4.2)", () => {
+  it("says what a client token is for and names the three other kinds of credential, each with a link", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }) as any);
     setup();
-    const link = screen.getByRole("link", { name: /automation tokens/i });
-    expect(link).toHaveAttribute("href", "/settings/automation");
-  });
-
-  it("says where the keys of a single service are", () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }) as any);
-    setup();
-    expect(screen.getByRole("link", { name: "Services" })).toHaveAttribute("href", "/services");
+    const line = screen.getByText(/A client token lets a machine/);
+    expect(line).toHaveTextContent(
+      "A client token lets a machine running burrow connect to this relay. Apps that call a model use a gateway key; apps that call one service use that service's API key; scripts use an automation token.",
+    );
+    // The command is set as code.
+    expect(within(line).getByText("burrow").tagName).toBe("CODE");
+    expect(within(line).getByRole("link", { name: "gateway key" })).toHaveAttribute("href", "/gateway/keys");
+    expect(within(line).getByRole("link", { name: "service" })).toHaveAttribute("href", "/services");
+    expect(within(line).getByRole("link", { name: "automation token" })).toHaveAttribute("href", "/settings/automation");
   });
 });

@@ -89,8 +89,8 @@ describe("INTUITIVE — navigation & mental-model alignment", () => {
 
   it("In-5: the Tokens tab of Clients includes a cross-link to /settings/automation", async () => {
     renderApp(<Clients />, "/clients?tab=tokens");
-    // "Automation tokens" link in the muted helper text
-    const link = await screen.findByRole("link", { name: /Automation tokens/i });
+    // The "automation token" link in the muted helper text
+    const link = await screen.findByRole("link", { name: "automation token" });
     expect((link as HTMLAnchorElement).href).toContain("/settings/automation");
   });
 
