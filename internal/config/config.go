@@ -104,6 +104,10 @@ type ServerConfig struct {
 	// trip the linter.)
 	MCPListen      string `koanf:"mcp_listen"`
 	BurrowMCPToken string `koanf:"mcp_token"`
+	// RetiredMCPFileVars names the retired _FILE variables that are set
+	// (BURROW_MCP_LISTEN_FILE, BURROW_MCP_TOKEN_FILE). Their files are never
+	// read and need not exist; only the names are kept, for the warning.
+	RetiredMCPFileVars []string `koanf:"-"`
 	// GeoDBPath is the on-disk path to a MaxMind GeoLite2 database file used
 	// by the geo-restriction access mode (spec Q11). Empty (default) selects
 	// the NoopGeoLookup — geo features are inert. Env: BURROW_GEO_DB_PATH.
@@ -241,6 +245,22 @@ func normalizeEnvKey(rawSuffix string) string {
 	return strings.ReplaceAll(strings.ToLower(rawSuffix), "__", ".")
 }
 
+// retiredFileKeys are the _FILE keys of settings that no longer do anything.
+// applyFileSecrets skips them (no read, no error); LoadServer records which
+// are set in ServerConfig.RetiredMCPFileVars.
+var retiredFileKeys = map[string]struct{}{"MCP_LISTEN": {}, "MCP_TOKEN": {}}
+
+// retiredMCPFileVars lists the retired _FILE variables that are set.
+func retiredMCPFileVars() []string {
+	var out []string
+	for _, n := range []string{"BURROW_MCP_LISTEN_FILE", "BURROW_MCP_TOKEN_FILE"} {
+		if _, ok := os.LookupEnv(n); ok {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // applyFileSecrets scans the process environment for variables of the form
 // BURROW_<KEY>_FILE. For each one it reads the file at the referenced path,
 // trims a single trailing newline (Docker/Swarm secrets conventionally append
@@ -249,7 +269,7 @@ func normalizeEnvKey(rawSuffix string) string {
 // Precedence: this layer sits AFTER the literal env provider, so a _FILE value
 // WINS over a literal BURROW_<KEY> set in the environment. A missing or
 // unreadable file returns a hard error (fail-fast; silent fallback would leave
-// the server unseeded).
+// the server unseeded). The retired keys (retiredFileKeys) are skipped.
 func applyFileSecrets(k *koanf.Koanf) error {
 	const prefix = "BURROW_"
 	const fileSuffix = "_FILE"
@@ -271,6 +291,12 @@ func applyFileSecrets(k *koanf.Koanf) error {
 		rawSuffix := strings.TrimSuffix(strings.TrimPrefix(name, prefix), fileSuffix)
 		if rawSuffix == "" {
 			// Edge-case: "BURROW__FILE" — no meaningful key; skip.
+			continue
+		}
+
+		// Retired keys are never read: a relay that still mounts the file
+		// of the removed MCP listener must start, whether or not it exists.
+		if _, retired := retiredFileKeys[rawSuffix]; retired {
 			continue
 		}
 
@@ -375,7 +401,7 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 		// BackupDir defaults to empty here and is derived after unmarshalling —
 		// once DatabasePath has been resolved through env+_FILE+overrides — so
 		// the derivation rule sees the final post-merge value.
-		"mcp_listen": "", "burrow_mcp_token": "", "geo_db_path": "", "pricing_path": "",
+		"mcp_listen": "", "geo_db_path": "", "pricing_path": "",
 		"ai_allow_private_upstreams": false,
 		"backup_dir":                 "",
 		// v0.5.0 (Task 15): Postgres backend defaults — both off by default.
@@ -421,6 +447,7 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 	}
 	// v0.4.0 (Task 24): derive BackupDir from the already-merged DatabasePath.
 	deriveV04Fields(&c)
+	c.RetiredMCPFileVars = retiredMCPFileVars()
 	// A minimum that clients cannot compare with would be ignored by them
 	// without a word, so it is refused here.
 	c.MinClientVersion = strings.TrimSpace(c.MinClientVersion)

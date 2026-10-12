@@ -698,19 +698,42 @@ func TestMCPListenEmptyHostValid(t *testing.T) {
 	}
 }
 
-// TestMCPTokenFile asserts that BURROW_MCP_TOKEN_FILE is still read via the
-// generic applyFileSecrets mechanism into BurrowMCPToken (a deployment that
-// mounts the secret keeps starting).
-func TestMCPTokenFile(t *testing.T) {
-	path := writeSecret(t, "bua_some_token_value\n")
-	t.Setenv("BURROW_MCP_TOKEN_FILE", path)
-	c, err := LoadServer(nil)
-	if err != nil {
-		t.Fatalf("LoadServer: %v", err)
-	}
-	if c.BurrowMCPToken != "bua_some_token_value" {
-		t.Fatalf("burrow_mcp_token from _FILE = %q, want bua_some_token_value", c.BurrowMCPToken)
-	}
+// TestRetiredMCPFileVariables_AreNotRead: BURROW_MCP_TOKEN_FILE and
+// BURROW_MCP_LISTEN_FILE belong to the retired listener. The file is not
+// read (it need not exist, its content is never loaded) and the variable is
+// recorded so that cmd/server can name it in its one warning.
+func TestRetiredMCPFileVariables_AreNotRead(t *testing.T) {
+	t.Run("missing file", func(t *testing.T) {
+		t.Setenv("BURROW_MCP_TOKEN_FILE", filepath.Join(t.TempDir(), "no-such-file"))
+		t.Setenv("BURROW_MCP_LISTEN_FILE", filepath.Join(t.TempDir(), "no-such-file"))
+		c, err := LoadServer(nil)
+		if err != nil {
+			t.Fatalf("LoadServer: %v", err)
+		}
+		got := strings.Join(c.RetiredMCPFileVars, ",")
+		if got != "BURROW_MCP_LISTEN_FILE,BURROW_MCP_TOKEN_FILE" {
+			t.Fatalf("RetiredMCPFileVars = %q", got)
+		}
+	})
+	t.Run("readable file", func(t *testing.T) {
+		t.Setenv("BURROW_MCP_TOKEN_FILE", writeSecret(t, "bua_some_token_value\n"))
+		c, err := LoadServer(nil)
+		if err != nil {
+			t.Fatalf("LoadServer: %v", err)
+		}
+		if c.BurrowMCPToken != "" || c.MCPListen != "" {
+			t.Fatalf("content of a retired _FILE was loaded: %q / %q", c.BurrowMCPToken, c.MCPListen)
+		}
+		if len(c.RetiredMCPFileVars) != 1 || c.RetiredMCPFileVars[0] != "BURROW_MCP_TOKEN_FILE" {
+			t.Fatalf("RetiredMCPFileVars = %v", c.RetiredMCPFileVars)
+		}
+	})
+	t.Run("other _FILE keys stay hard errors", func(t *testing.T) {
+		t.Setenv("BURROW_ADMIN_PASSWORD_FILE", filepath.Join(t.TempDir(), "no-such-file"))
+		if _, err := LoadServer(nil); err == nil {
+			t.Fatal("a missing BURROW_ADMIN_PASSWORD_FILE must still be an error")
+		}
+	})
 }
 
 // TestPricingPathFile asserts that BURROW_PRICING_PATH_FILE is resolved.

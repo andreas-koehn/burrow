@@ -15,6 +15,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/aimeter"
@@ -478,15 +479,24 @@ func BuildMCPServer(
 }
 
 // warnRetiredMCPConfig says once, at start, that the variables of the
-// removed MCP listener do nothing any more. They are still parsed, so that a
-// relay deployed with them keeps starting; neither value is logged, one of
-// them is a secret. It reports whether there was anything to say.
+// removed MCP listener do nothing any more. They are still parsed (the _FILE
+// forms are not even read), so that a relay deployed with them keeps starting.
+// Only the names of the variables that are set are logged, never a value or a
+// path: one of them is a secret. It reports whether there was anything to say.
 func warnRetiredMCPConfig(cfg *config.ServerConfig, log *slog.Logger) bool {
-	if cfg.MCPListen == "" && cfg.BurrowMCPToken == "" {
+	var set []string
+	if cfg.MCPListen != "" {
+		set = append(set, "BURROW_MCP_LISTEN")
+	}
+	if cfg.BurrowMCPToken != "" {
+		set = append(set, "BURROW_MCP_TOKEN")
+	}
+	set = append(set, cfg.RetiredMCPFileVars...)
+	if len(set) == 0 {
 		return false
 	}
-	log.Warn("BURROW_MCP_LISTEN and BURROW_MCP_TOKEN are no longer used; the MCP endpoint is " +
-		mcpserv.EndpointPath + " on the main address")
+	log.Warn("BURROW_MCP_LISTEN and BURROW_MCP_TOKEN are no longer used; the MCP endpoint is "+
+		mcpserv.EndpointPath+" on the main address", "set", strings.Join(set, ","))
 	return true
 }
 

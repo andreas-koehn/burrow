@@ -185,8 +185,14 @@ func TestWarnRetiredMCPConfig(t *testing.T) {
 		{"listen set", config.ServerConfig{MCPListen: ":7800"}, true},
 		{"token set", config.ServerConfig{BurrowMCPToken: "bua_secret_value_1234"}, true},
 		{"both set", config.ServerConfig{MCPListen: "0.0.0.0:7800", BurrowMCPToken: "bua_secret_value_1234"}, true},
+		{"token file set", config.ServerConfig{RetiredMCPFileVars: []string{"BURROW_MCP_TOKEN_FILE"}}, true},
 	}
 	for _, c := range cases {
+		wantNames := map[string]string{
+			"listen set":     "BURROW_MCP_LISTEN",
+			"token set":      "BURROW_MCP_TOKEN",
+			"token file set": "BURROW_MCP_TOKEN_FILE",
+		}[c.name]
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 		if got := warnRetiredMCPConfig(&c.cfg, log); got != c.warn {
@@ -196,6 +202,9 @@ func TestWarnRetiredMCPConfig(t *testing.T) {
 		if c.warn {
 			if strings.Count(out, "\n") != 1 || !strings.Contains(out, "level=WARN") || !strings.Contains(out, want) {
 				t.Errorf("%s: log = %q", c.name, out)
+			}
+			if !strings.Contains(out, wantNames) {
+				t.Errorf("%s: the warning does not name %s: %q", c.name, wantNames, out)
 			}
 		} else if out != "" {
 			t.Errorf("%s: unexpected log %q", c.name, out)

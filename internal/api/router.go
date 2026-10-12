@@ -456,8 +456,8 @@ func NewRouter(d Deps) http.Handler {
 			// Two read-only endpoints expose the listener config + closed
 			// tool inventory. Both are gated by admin OR mcp:tools:read so
 			// non-admin operators with the perm can render the page. The
-			// actual MCP listener (port :7800) is wired by cmd/server in
-			// Task 25; these endpoints have zero behavioural coupling to it.
+			// MCP endpoint itself is mounted at /mcp/burrow on this router
+			// (MCPInfo.Handler); these two endpoints only describe it.
 			r.With(d.requireMCPRead).Get("/mcp/status", d.GetMCPStatus)
 			r.With(d.requireMCPRead).Get("/mcp/tools", d.GetMCPTools)
 			// v0.4.0 Task 16: per-service IP/Geo CRUD + global geo status

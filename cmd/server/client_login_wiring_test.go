@@ -47,6 +47,8 @@ func TestServe_ClientLoginIsWired(t *testing.T) {
 		"BURROW_DATABASE_URL":  "",
 		"BURROW_ACME_DOMAIN":   "",
 		"BURROW_MCP_LISTEN":    "",
+		// A retired setting must not stop the relay, even a path that does not exist.
+		"BURROW_MCP_TOKEN_FILE": filepath.Join(dir, "no-such-token-file"),
 	} {
 		t.Setenv(k, v)
 	}
@@ -87,6 +89,17 @@ func TestServe_ClientLoginIsWired(t *testing.T) {
 			}
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("POST /api/v1/client/login/start: status %d, want 200", resp.StatusCode)
+			}
+			// The MCP server is mounted on the same address: a POST without a
+			// token is challenged. 503 would mean MCPInfo.Handler is not wired.
+			mresp, merr := http.Post("http://"+httpAddr+"/mcp/burrow", "application/json", strings.NewReader("{}"))
+			if merr != nil {
+				t.Fatalf("POST /mcp/burrow: %v", merr)
+			}
+			_ = mresp.Body.Close()
+			if mresp.StatusCode != http.StatusUnauthorized || mresp.Header.Get("WWW-Authenticate") != "Bearer" {
+				t.Fatalf("POST /mcp/burrow without a token: status %d, WWW-Authenticate %q; want 401 \"Bearer\" (the MCP handler is not wired into the router)",
+					mresp.StatusCode, mresp.Header.Get("WWW-Authenticate"))
 			}
 			return
 		}
