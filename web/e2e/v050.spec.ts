@@ -171,7 +171,8 @@ test("v0.5.0: upstream key tab shows env-only disclosure text", async ({ page })
   }
 
   await page.goto(`/services/${serviceId}`);
-  await expect(page.getByRole("heading", { name: /Service/ })).toBeVisible();
+  // The title is the service's own name, which differs between the two branches above.
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
 
   // Click the "Upstream key" tab (value="upstream-key", label="Upstream key")
   const upstreamTab = page.getByRole("tab", { name: "Upstream key" });

@@ -1,8 +1,10 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { cx } from "./cx";
 
 export interface AccessModeCardProps {
+  /** The radio's accessible name: the one or two words that say which choice this is. */
   title: ReactNode;
+  /** What the choice does; read after the name, as its description. */
   description: ReactNode;
   selected: boolean;
   onSelect: () => void;
@@ -16,16 +18,19 @@ export function AccessModeCard({
   onSelect,
   className,
 }: AccessModeCardProps) {
+  const id = useId();
   return (
     <button
       type="button"
       role="radio"
       aria-checked={selected}
+      aria-labelledby={`${id}-title`}
+      aria-describedby={`${id}-desc`}
       onClick={onSelect}
       className={cx("access-mode-card", className)}
     >
-      <p className="title">{title}</p>
-      <p className="desc">{description}</p>
+      <p id={`${id}-title`} className="title">{title}</p>
+      <p id={`${id}-desc`} className="desc">{description}</p>
     </button>
   );
 }

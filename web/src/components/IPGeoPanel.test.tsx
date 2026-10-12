@@ -38,14 +38,24 @@ describe("IPGeoPanel", () => {
   });
 
   // P1-4 — copy softened: no developer language ("compiled", "build flag").
-  it("surfaces the user-facing banner when /geo/status reports enabled:false (P1-4)", async () => {
+  it("says in a muted line under the heading that geo restrictions are not available, not as an error", async () => {
     server.use(
       http.get("/api/v1/geo/status", () =>
         HttpResponse.json({ enabled: false, db_path: "", db_age_seconds: 0 })),
     );
     renderApp(<IPGeoPanel serviceId="svc_ai001" />);
-    expect(
-      await screen.findByText("Geo restrictions aren't available on this relay."),
-    ).toBeInTheDocument();
+    const line = await screen.findByText("Geo restrictions aren't available on this relay.");
+    expect(line).toHaveClass("muted");
+    expect(line).not.toHaveClass("notice-inline");
+    expect(line.previousElementSibling).toBe(screen.getByRole("heading", { name: "IP / geo restrictions" }));
+    // Nothing went wrong: no alert, and no notice box of any kind.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(document.querySelector(".notice-inline")).toBeNull();
+  });
+
+  it("says nothing about it where geo restrictions are available", async () => {
+    renderApp(<IPGeoPanel serviceId="svc_ai001" />);
+    await screen.findByText("Allow everywhere.");
+    expect(screen.queryByText(/Geo restrictions aren't available/)).toBeNull();
   });
 });

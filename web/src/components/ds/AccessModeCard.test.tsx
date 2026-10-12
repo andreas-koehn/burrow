@@ -27,6 +27,15 @@ describe("AccessModeCard", () => {
     expect(el.getAttribute("aria-checked")).toBe("true");
   });
 
+  it("is named by its title alone; the description describes it", () => {
+    render(
+      <AccessModeCard title="API key" description="Burrow verifies an API key header before proxying." selected onSelect={() => {}} />,
+    );
+    const radio = screen.getByRole("radio", { name: "API key" });
+    expect(radio).toBeChecked();
+    expect(radio).toHaveAccessibleDescription("Burrow verifies an API key header before proxying.");
+  });
+
   it("fires onSelect on click", () => {
     const fn = vi.fn();
     render(<AccessModeCard title="x" description="y" selected={false} onSelect={fn} />);

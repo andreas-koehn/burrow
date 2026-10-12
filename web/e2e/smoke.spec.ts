@@ -24,14 +24,14 @@ test("smoke: full happy-path", async ({ page }) => {
   await expect(page).toHaveURL(/\//);
   await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
 
-  // An old /tunnels bookmark opens Services on Live; verify its empty-state.
+  // An old /tunnels bookmark opens Services on Online; verify its empty-state.
   await page.goto("/tunnels");
   await expect(page).toHaveURL(/\/services\?live=1$/);
   await expect(page.getByRole("heading", { name: "Services", level: 1 })).toBeVisible();
-  await expect(page.getByRole("radio", { name: "Live" })).toBeChecked();
+  await expect(page.getByRole("radio", { name: "Online" })).toBeChecked();
   // Empty-state message (no burrow clients connected in CI)
   await expect(
-    page.getByText("Nothing is live right now", { exact: false }),
+    page.getByText("Nothing is online right now", { exact: false }),
   ).toBeVisible();
 
   // ── 3. Tokens: create → one-time dialog → revoke ─────────────────────────

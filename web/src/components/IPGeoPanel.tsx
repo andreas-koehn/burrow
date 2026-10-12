@@ -70,8 +70,9 @@ export function IPGeoPanel({ serviceId }: { serviceId: string }) {
   return (
     <div className="ipgeo-panel">
       <h3>IP / geo restrictions</h3>
+      {/* The relay was built without it: a fact about the relay, not something that went wrong. */}
       {status.data && !status.data.enabled && (
-        <p className="muted notice-inline">
+        <p className="muted small">
           Geo restrictions aren&apos;t available on this relay.
         </p>
       )}

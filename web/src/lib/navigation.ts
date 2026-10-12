@@ -186,6 +186,9 @@ export function breadcrumbFor(
   const crumbs: { label: string; to?: string }[] = [{ label: nav.label, to: nav.home }];
   const entry = activeEntry(pathname, nav);
   if (!entry) return crumbs;
+  // The workspace and its entry of the same name would read "Services / Services":
+  // the entry is kept, since it is the page an object below it goes back to.
+  if (entry.label === nav.label) crumbs.pop();
   const rest = pathname.slice(entry.to.length).split("/").filter(Boolean);
   if (rest.length === 0 || entry.to === nav.home) {
     crumbs.push({ label: entry.label });

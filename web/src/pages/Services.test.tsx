@@ -40,29 +40,103 @@ describe("Services page", () => {
     }
   });
 
-  it("shows a gateway-only service as a badge instead of a path", async () => {
-    const svc = db.services.find((x) => x.id === "svc_ai001")!;
-    svc.gateway_only = true;
-    try {
-      mount();
-      const table = await screen.findByRole("table", { name: "Services" });
-      const row = within(table).getByRole("link", { name: "ollama" }).closest("tr")!;
-      expect(within(row).getByText("gateway only")).toBeInTheDocument();
-      expect(within(row).queryByText(/\/svc\//)).toBeNull();
-      expect(within(row).queryByRole("button", { name: /copy url/i })).toBeNull();
-    } finally {
-      svc.gateway_only = false;
-    }
+  it("leaves gateway-only services out by default", async () => {
+    db.services.find((x) => x.id === "svc_ai001")!.gateway_only = true;
+    mount();
+    const table = await screen.findByRole("table", { name: "Services" });
+    expect(within(table).getByRole("link", { name: "web" })).toBeInTheDocument();
+    expect(within(table).queryByRole("link", { name: "ollama" })).toBeNull();
+    expect(screen.getByRole("button", { name: "AI" })).toHaveAttribute("aria-pressed", "false");
+    // Not every service is hidden, so nothing is said about the filter.
+    expect(screen.queryByText("All services here belong to the AI gateway.")).toBeNull();
   });
 
-  it("shows each http service's path and copies the full URL", async () => {
+  it("the AI filter shows them with a link to their provider", async () => {
+    db.services.find((x) => x.id === "svc_ai001")!.gateway_only = true;
+    mount();
+    const table = await screen.findByRole("table", { name: "Services" });
+    const before = within(table).getAllByRole("row").length;
+    await userEvent.click(screen.getByRole("button", { name: "AI" }));
+    expect(screen.getByRole("button", { name: "AI" })).toHaveAttribute("aria-pressed", "true");
+    // The choice is in the URL, so a reload or a shared link keeps it.
+    expect(currentLocation()).toBe("/services?ai=1");
+    // The others stay listed: the filter adds rows, it does not swap the list.
+    expect(within(table).getAllByRole("row")).toHaveLength(before + 1);
+    const row = within(table).getByRole("link", { name: "ollama" }).closest("tr")!;
+    expect(within(row).getByRole("link", { name: "Provider: ollama" })).toHaveAttribute("href", "/gateway/providers/ollama");
+    // It has no address of its own to show or copy.
+    expect(within(row).getByText("gateway only")).toBeInTheDocument();
+    expect(within(row).queryByText(/\/svc\//)).toBeNull();
+    expect(within(row).queryByRole("button", { name: /copy url/i })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "AI" }));
+    expect(currentLocation()).toBe("/services");
+    expect(within(table).queryByRole("link", { name: "ollama" })).toBeNull();
+  });
+
+  it("opens with the AI filter on when the URL says so", async () => {
+    db.services.find((x) => x.id === "svc_ai001")!.gateway_only = true;
+    mountAt("/services?ai=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    expect(screen.getByRole("button", { name: "AI" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(table).getByRole("link", { name: "ollama" })).toBeInTheDocument();
+  });
+
+  it("a gateway-only service whose provider is gone is shown without a provider link", async () => {
+    const svc = db.services.find((x) => x.id === "svc_web01")!;
+    svc.gateway_only = true;
+    mountAt("/services?ai=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    const row = within(table).getByRole("link", { name: "web" }).closest("tr")!;
+    expect(within(row).getByText("gateway only")).toBeInTheDocument();
+    expect(within(row).queryByRole("link", { name: /^Provider:/ })).toBeNull();
+  });
+
+  it("says when the filter hides everything", async () => {
+    db.services = db.services.filter((x) => x.id === "svc_ai001");
+    db.services[0]!.gateway_only = true;
+    mount();
+    expect(await screen.findByText("All services here belong to the AI gateway.")).toBeInTheDocument();
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByText("No services yet")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Show gateway-only services" }));
+    const table = await screen.findByRole("table", { name: "Services" });
+    expect(within(table).getByRole("link", { name: "ollama" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "AI" })).toHaveAttribute("aria-pressed", "true");
+    expect(currentLocation()).toBe("/services?ai=1");
+  });
+
+  it("the filter reads All | Online and there is no banner explaining it", async () => {
+    mount();
+    const filter = await screen.findByRole("radiogroup", { name: "Show" });
+    expect(within(filter).getAllByRole("radio").map((r) => r.textContent)).toEqual(["All", "Online"]);
+    await screen.findByRole("table", { name: "Services" });
+    expect(screen.queryByRole("note")).toBeNull();
+    expect(screen.queryByText(/saved configuration/)).toBeNull();
+    expect(screen.queryByRole("radio", { name: "Live" })).toBeNull();
+  });
+
+  it("old links keep working", async () => {
+    mountAt("/services?live=1");
+    expect(await screen.findByRole("radio", { name: "Online" })).toBeChecked();
+    const table = await screen.findByRole("table", { name: "Services" });
+    expect(within(table).getByRole("columnheader", { name: "Client" })).toBeInTheDocument();
+  });
+
+  it("shows the full URL", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: "Services" });
+    const row = within(table).getByRole("link", { name: "grafana" }).closest("tr")!;
+    expect(within(row).getByText("https://tunnels.example.com/svc/gf7x1p/")).toBeInTheDocument();
+  });
+
+  it("copies each http service's full URL", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     mount();
     const table = await screen.findByRole("table", { name: "Services" });
     expect(within(table).getByRole("columnheader", { name: "URL" })).toBeInTheDocument();
     expect(within(table).queryByRole("columnheader", { name: "Hostname" })).toBeNull();
-    expect(within(table).getByText("/svc/k7p2qx/")).toBeInTheDocument();
+    expect(within(table).getByText("https://tunnels.example.com/svc/k7p2qx/")).toBeInTheDocument();
     await userEvent.click(
       within(table).getByRole("button", { name: "Copy URL https://tunnels.example.com/svc/k7p2qx/" }),
     );
@@ -100,7 +174,7 @@ describe("Services page", () => {
     const web = within(table).getByText("web").closest("tr")!;
     expect(within(web).getByText("http")).toBeInTheDocument();
     // http row: URL path shown mono with an aria-labelled copy button
-    expect(within(web).getByText("/svc/k7p2qx/")).toBeInTheDocument();
+    expect(within(web).getByText("https://tunnels.example.com/svc/k7p2qx/")).toBeInTheDocument();
     expect(
       within(web).getByRole("button", { name: /copy url https:\/\/tunnels\.example\.com\/svc\/k7p2qx\//i }),
     ).toBeInTheDocument();
@@ -165,13 +239,88 @@ describe("Services page", () => {
     await waitFor(() => expect(screen.getByRole("table", { name: /services/i })).toBeInTheDocument());
   });
 
-  // P3A.2 — Services explainer
-  it("explains saved configuration against Live (role=note, NOT alert)", async () => {
-    mount();
-    const note = await screen.findByRole("note");
-    expect(note).toHaveTextContent("Services are the saved configuration. Switch to Live to see what is connected right now.");
-    expect(note.querySelector("a")).toBeNull();
-    expect(screen.queryByRole("alert")).toBeNull();
+  describe("a click anywhere in a row", () => {
+    function mountWithDetail() {
+      return renderApp(
+        <>
+          <Routes>
+            <Route path="/services" element={<Services />} />
+            <Route path="/services/:id" element={<div>SERVICE_PAGE</div>} />
+          </Routes>
+          <LocationProbe />
+        </>,
+        "/services",
+      );
+    }
+    const webRow = async () =>
+      within(await screen.findByRole("table", { name: "Services" })).getByRole("link", { name: "web" }).closest("tr")!;
+
+    it("opens the service", async () => {
+      mountWithDetail();
+      const row = await webRow();
+      expect(row).toHaveClass("clickable");
+      // The type cell: no control of its own.
+      await userEvent.click(within(row).getByText("http"));
+      expect(await screen.findByText("SERVICE_PAGE")).toBeInTheDocument();
+      expect(currentLocation()).toBe("/services/svc_web01");
+    });
+
+    it("the name stays a real link, the target of the keyboard", async () => {
+      mountWithDetail();
+      const row = await webRow();
+      // The row itself takes no focus and claims no role: one stop per row, the link.
+      expect(row).not.toHaveAttribute("tabindex");
+      expect(row).not.toHaveAttribute("role");
+      const link = within(row).getByRole("link", { name: "web" });
+      expect(link).toHaveAttribute("href", "/services/svc_web01");
+      link.focus();
+      await userEvent.keyboard("{Enter}");
+      expect(await screen.findByText("SERVICE_PAGE")).toBeInTheDocument();
+    });
+
+    it("the copy button and Configure do not navigate", async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+      mountWithDetail();
+      const row = await webRow();
+      await userEvent.click(within(row).getByRole("button", { name: /^Copy URL/ }));
+      expect(writeText).toHaveBeenCalledWith("https://tunnels.example.com/svc/k7p2qx/");
+      expect(currentLocation()).toBe("/services");
+      await userEvent.click(within(row).getByRole("button", { name: "Configure" }));
+      expect(await screen.findByRole("dialog", { name: "Access · web" })).toBeInTheDocument();
+      expect(currentLocation()).toBe("/services");
+      // Nor does a click inside the dialog that Configure opened.
+      await userEvent.click(within(screen.getByRole("dialog")).getByRole("radio", { name: "API key" }));
+      expect(currentLocation()).toBe("/services");
+    });
+
+    it("the status link of an online service leads to the Online filter, not to the service", async () => {
+      mountWithDetail();
+      const row = await webRow();
+      await userEvent.click(within(row).getByRole("link", { name: /^Online/ }));
+      expect(currentLocation()).toBe("/services?live=1");
+    });
+
+    it("a selection made in the row is not taken for a click", async () => {
+      mountWithDetail();
+      const row = await webRow();
+      const selection = vi.spyOn(window, "getSelection").mockReturnValue({ toString: () => "tunnels.example.com" } as Selection);
+      try {
+        await userEvent.click(within(row).getByText("http"));
+        expect(currentLocation()).toBe("/services");
+      } finally {
+        selection.mockRestore();
+      }
+    });
+
+    it("a connection without a service has nothing to open", async () => {
+      renderApp(<><Services /><LocationProbe /></>, "/services?live=1");
+      const table = await screen.findByRole("table", { name: "Services" });
+      const row = within(table).getByText("web-staging").closest("tr")!;
+      expect(row).not.toHaveClass("clickable");
+      await userEvent.click(within(row).getByText("tcp"));
+      expect(currentLocation()).toBe("/services?live=1");
+    });
   });
 
   it("online service status badge links to the Live filter (P3B.2)", async () => {
@@ -370,7 +519,7 @@ class FakeES {
   emit(t: string) { (this.listeners[t] || []).forEach((fn) => fn({})); }
 }
 
-describe("Services page — All | Live", () => {
+describe("Services page — All | Online", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     FakeES.last = undefined;
@@ -410,13 +559,13 @@ describe("Services page — All | Live", () => {
     expect(header("name")).toHaveAttribute("aria-sort", "descending");
   });
 
-  it("has an All | Live filter that follows the URL", async () => {
+  it("has an All | Online filter that follows the URL", async () => {
     mount();
     const filter = await screen.findByRole("radiogroup", { name: "Show" });
     expect(within(filter).getByRole("radio", { name: "All" })).toBeChecked();
     await screen.findByRole("table", { name: "Services" });
     const all = rowCount();
-    await userEvent.click(within(filter).getByRole("radio", { name: "Live" }));
+    await userEvent.click(within(filter).getByRole("radio", { name: "Online" }));
     await waitFor(() => expect(within(screen.getByRole("table", { name: "Services" })).getByRole("columnheader", { name: "Client" })).toBeInTheDocument());
     expect(rowCount()).toBeLessThan(all); // the fixtures contain services no client serves
     // the choice is in the URL, so a reload or a shared link keeps it
@@ -431,7 +580,7 @@ describe("Services page — All | Live", () => {
     const all = await screen.findByRole("radio", { name: "All" });
     all.focus();
     await userEvent.keyboard("{ArrowRight}");
-    const live = screen.getByRole("radio", { name: "Live" });
+    const live = screen.getByRole("radio", { name: "Online" });
     expect(live).toBeChecked();
     expect(live).toHaveFocus();
     expect(live).toHaveAttribute("tabindex", "0");
@@ -441,7 +590,7 @@ describe("Services page — All | Live", () => {
   it("opens on Live when the URL says so and shows who holds each connection", async () => {
     mountAt("/services?live=1");
     const table = await screen.findByRole("table", { name: "Services" });
-    expect(screen.getByRole("radio", { name: "Live" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Online" })).toBeChecked();
     expect(within(table).getByRole("columnheader", { name: "Client" })).toBeInTheDocument();
     const holders = await within(table).findAllByRole("link", { name: /office-box-1/ });
     expect(holders).toHaveLength(2);
@@ -472,7 +621,7 @@ describe("Services page — All | Live", () => {
     const table = await screen.findByRole("table", { name: "Services" });
     const row = within(table).getByRole("link", { name: "ollama" }).closest("tr")!;
     expect(within(table).getByRole("link", { name: "ollama" })).toHaveAttribute("href", "/services/svc_ai001");
-    expect(within(row).getByText("/svc/ai4m2q/")).toBeInTheDocument();
+    expect(within(row).getByText("https://tunnels.example.com/svc/ai4m2q/")).toBeInTheDocument();
     expect(within(row).getByText("API key")).toBeInTheDocument();
     expect(within(row).getByText("127.0.0.1:11434")).toBeInTheDocument();
     expect(within(row).queryByText(":0")).toBeNull(); // an http tunnel has no remote port
@@ -515,7 +664,7 @@ describe("Services page — All | Live", () => {
     const box = screen.getByRole("searchbox", { name: "Filter services" });
     await userEvent.type(box, "ollama");
     expect(rowCount()).toBe(2); // header + ollama
-    await userEvent.click(screen.getByRole("radio", { name: "Live" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Online" }));
     await waitFor(() => expect(within(screen.getByRole("table", { name: "Services" })).getByRole("columnheader", { name: "Client" })).toBeInTheDocument());
     expect(screen.getByRole("searchbox", { name: "Filter services" })).toHaveValue("ollama");
     expect(rowCount()).toBe(2); // header + the ollama tunnel
@@ -536,10 +685,22 @@ describe("Services page — All | Live", () => {
     expect(names()).toEqual(["web-staging"]);
   });
 
+  it("leaves the connection of a gateway-only service out of Online too, until AI is on", async () => {
+    db.services.find((x) => x.id === "svc_ai001")!.gateway_only = true;
+    mountAt("/services?live=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    expect(within(table).getByText("web-staging")).toBeInTheDocument();
+    expect(within(table).queryByRole("link", { name: "ollama" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "AI" }));
+    expect(currentLocation()).toBe("/services?live=1&ai=1");
+    const row = within(table).getByRole("link", { name: "ollama" }).closest("tr")!;
+    expect(within(row).getByRole("link", { name: "Provider: ollama" })).toHaveAttribute("href", "/gateway/providers/ollama");
+  });
+
   it("says so when nothing is live", async () => {
     server.use(http.get("/api/v1/tunnels", () => HttpResponse.json([])));
     mountAt("/services?live=1");
-    expect(await screen.findByText("Nothing is live right now")).toBeInTheDocument();
+    expect(await screen.findByText("Nothing is online right now")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Connect a client" })).toHaveAttribute("href", "/clients/connect");
     expect(screen.queryByRole("table")).toBeNull();
     // The way back to the saved services stays on the page.
@@ -636,7 +797,7 @@ describe("Services page — All | Live", () => {
     // Without the join the row falls back to what the tunnel itself says.
     const row = within(table).getByText("ollama").closest("tr")!;
     expect(within(row).getByRole("link", { name: "ollama" })).toHaveAttribute("href", "/services/svc_ai001");
-    expect(within(row).getByText("/svc/ai4m2q/")).toBeInTheDocument();
+    expect(within(row).getByText("https://tunnels.example.com/svc/ai4m2q/")).toBeInTheDocument();
     expect(within(row).getByText("API key")).toBeInTheDocument();
     // All still reports the failure.
     await userEvent.click(screen.getByRole("radio", { name: "All" }));
@@ -675,7 +836,7 @@ describe("Services page — All | Live", () => {
     let calls = 0;
     server.use(http.get("/api/v1/tunnels", () => { calls++; return HttpResponse.json([]); }));
     mountAt("/services?live=1");
-    await screen.findByText("Nothing is live right now");
+    await screen.findByText("Nothing is online right now");
     const before = calls;
     act(() => FakeES.last!.emit("tunnels"));
     await waitFor(() => expect(calls).toBeGreaterThan(before));

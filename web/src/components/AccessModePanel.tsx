@@ -14,11 +14,13 @@ const SELECTABLE = ["open", "api_key", "burrow_login"] as const;
 // User-facing mode explainers. P1-3: dropped the "v0.2.0" leak — the help
 // text no longer references internal version numbers. Visitors are described
 // in terms of what Burrow does to their requests, not the codebase history.
+// The title is the radio's name, so it is the mode and nothing else; what kind of
+// check that is opens the description.
 const META: Record<AccessMode, { title: string; help: string }> = {
-  open: { title: "Open — raw passthrough", help: "Burrow adds no auth — visitor traffic flows straight through. The safe default for TCP tunnels." },
-  api_key: { title: "API key — header check", help: "Burrow verifies an API key header before proxying." },
-  burrow_login: { title: "Burrow login — role-based", help: "Visitors sign in with their Burrow account at a hosted gate." },
-  mtls: { title: "mTLS — client certificate", help: "Burrow terminates TLS and requires a client certificate chained to a CA you upload." },
+  open: { title: "Open", help: "Raw passthrough: Burrow adds no auth — visitor traffic flows straight through. The safe default for TCP tunnels." },
+  api_key: { title: "API key", help: "Header check: Burrow verifies an API key header before proxying." },
+  burrow_login: { title: "Burrow login", help: "Role-based: visitors sign in with their Burrow account at a hosted gate." },
+  mtls: { title: "mTLS", help: "Client certificate: Burrow terminates TLS and requires a client certificate chained to a CA you upload." },
 };
 
 // AccessModePanelHandle is the imperative handle exposed via panelRef so the

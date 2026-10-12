@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, Navigate, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Copy } from "lucide-react";
 import { toast } from "sonner";
@@ -39,7 +39,7 @@ interface Tunnel {
   service_id?: string;
 }
 
-/** A table row: a saved service (All), or a live tunnel joined to its service (Live). */
+/** A table row: a saved service (All), or a live tunnel joined to its service (Online). */
 interface Row {
   key: string;
   name: string;
@@ -53,7 +53,10 @@ interface Row {
 /** Sorting by status: what is served now comes first. */
 const STATE_ORDER: Record<ServedState, number> = { online: 0, offline: 1, never_connected: 2 };
 
-const SHOW = [{ value: "all", label: "All" }, { value: "live", label: "Live" }] as const;
+const SHOW = [{ value: "all", label: "All" }, { value: "live", label: "Online" }] as const;
+
+// A row opens its service on a click anywhere, except on what has a click of its own.
+const OWN_CLICK = "a, button, input, select, textarea, [role='button']";
 
 function ShowFilter({ live, onChange }: { live: boolean; onChange: (live: boolean) => void }) {
   return <Segmented aria-label="Show" options={SHOW} value={live ? "live" : "all"} onChange={(v) => onChange(v === "live")} />;
@@ -62,13 +65,20 @@ function ShowFilter({ live, onChange }: { live: boolean; onChange: (live: boolea
 export default function Services() {
   const qc = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
-  // All | Live lives in the URL, so a reload or a shared link keeps the choice.
+  const navigate = useNavigate();
+  // All | Online lives in the URL, so a reload or a shared link keeps the choice.
+  // The parameter kept its name from when the choice read "Live": old links still work.
   const live = searchParams.get("live") === "1";
-  const setLive = (on: boolean) => setSearchParams((prev) => {
+  // Services that answer through the AI gateway only are listed on request: they
+  // have no address here, and their page is the provider's.
+  const ai = searchParams.get("ai") === "1";
+  const setFlag = (name: "live" | "ai", on: boolean) => setSearchParams((prev) => {
     const next = new URLSearchParams(prev);
-    if (on) next.set("live", "1"); else next.delete("live");
+    if (on) next.set(name, "1"); else next.delete(name);
     return next;
   }, { replace: true });
+  const setLive = (on: boolean) => setFlag("live", on);
+  const setAi = (on: boolean) => setFlag("ai", on);
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["services"],
     queryFn: () => apiFetch<Service[]>("/services"),
@@ -155,7 +165,7 @@ export default function Services() {
   const [configure, setConfigure] = useState<Pick<Service, "id" | "name" | "access_mode"> & { type: string } | null>(null);
   const panelRef = useRef<AccessModePanelHandle>(null);
 
-  // P2-2 — filter + sort for the Services table, in both All and Live.
+  // P2-2 — filter + sort for the Services table, in both All and Online.
   // Default sort: type asc, name asc.
   const [q, setQ] = useState("");
   type SortKey = "name" | "type" | "status";
@@ -170,7 +180,7 @@ export default function Services() {
     ? sortDir === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} />
     : null;
   const tunnelList = tunnels.data;
-  const filtered = useMemo(() => {
+  const { filtered, onlyGateway } = useMemo(() => {
     const services = data ?? [];
     const byId = new Map(services.map((s) => [s.id, s]));
     const rows: Row[] = live
@@ -187,16 +197,26 @@ export default function Services() {
           key: s.id, name: s.name || s.id, type: s.type, state: serviceState(s), service: s,
           haystack: `${s.name} ${s.type} ${s.slug ?? ""} ${s.url ?? ""}`,
         }));
-    const f = q ? rows.filter((r) => r.haystack.toLowerCase().includes(q.toLowerCase())) : rows;
+    const listed = ai ? rows : rows.filter((r) => !r.service?.gateway_only);
+    const f = q ? listed.filter((r) => r.haystack.toLowerCase().includes(q.toLowerCase())) : listed;
     const sgn = sortDir === "asc" ? 1 : -1;
-    return [...f].sort((a, b) => {
+    const sorted = [...f].sort((a, b) => {
       let cmp = 0;
       if (sortKey === "type") cmp = a.type.localeCompare(b.type);
       else if (sortKey === "status") cmp = STATE_ORDER[a.state] - STATE_ORDER[b.state];
       if (cmp === 0) cmp = a.name.localeCompare(b.name);
       return cmp * sgn;
     });
-  }, [data, tunnelList, live, q, sortKey, sortDir]);
+    // There are rows, and the AI filter alone keeps every one of them back.
+    return { filtered: sorted, onlyGateway: rows.length > 0 && listed.length === 0 };
+  }, [data, tunnelList, live, ai, q, sortKey, sortDir]);
+
+  function openRow(e: MouseEvent<HTMLTableRowElement>, serviceId: string) {
+    if ((e.target as Element).closest(OWN_CLICK)) return;
+    // Marking a URL to copy it ends in a click too.
+    if (window.getSelection()?.toString()) return;
+    navigate(`/services/${encodeURIComponent(serviceId)}`);
+  }
 
   // P2-1: minimal "New service" dialog. POST /services is admin-only on the
   // backend (v0.5.2 P3.6); 403 here surfaces a friendly message.
@@ -218,7 +238,7 @@ export default function Services() {
     const newParam = searchParams.get("new");
     if (newParam === "1") setNewOpen(true);
     if (newParam !== null) {
-      // Only `new` is consumed; the rest of the query (the Live filter) stays.
+      // Only `new` is consumed; the rest of the query (the filters) stays.
       setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete("new"); return next; }, { replace: true });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -274,7 +294,7 @@ export default function Services() {
     },
   });
 
-  // Live lists tunnels and only decorates them with the saved service: it fails on its own query alone.
+  // Online lists tunnels and only decorates them with the saved service: it fails on its own query alone.
   const failure = live ? tunnels.error : error;
 
   if (toGuidedProvider) return <Navigate to="/gateway/providers?new=local" replace />;
@@ -286,13 +306,18 @@ export default function Services() {
         subtitle="Durable services exposed through this relay, with their access configuration."
         actions={<Button variant="primary" size="sm" onClick={() => { setNewOpen(true); setNsErr(null); }}>New service</Button>}
       />
-      <ErrorNotice variant="info" role="note">
-        Services are the saved configuration. Switch to Live to see what is connected right now.
-      </ErrorNotice>
-
-      {/* Always there, also while Live loads or fails: it is the way back to All. */}
+      {/* Always there, also while Online loads or fails: it is the way back to All. */}
       <div className="toolbar-row">
         <ShowFilter live={live} onChange={setLive} />
+        <Button
+          variant="secondary"
+          size="sm"
+          aria-pressed={ai}
+          title="Also list services that answer through the AI gateway only"
+          onClick={() => setAi(!ai)}
+        >
+          AI
+        </Button>
         <Input
           type="search"
           aria-label="Filter services"
@@ -313,14 +338,21 @@ export default function Services() {
         </div>
       ) : live && (tunnelList ?? []).length === 0 ? (
         <EmptyState
-          title="Nothing is live right now"
+          title="Nothing is online right now"
           action={<Link className="btn btn-primary btn-sm" to="/clients/connect">Connect a client</Link>}
         >
-          A service goes live when a client runs <code>burrow connect</code> for it.
+          A service comes online when a client runs <code>burrow connect</code> for it.
         </EmptyState>
       ) : !live && (data ?? []).length === 0 ? (
         <EmptyState title="No services yet">
           Run <code>burrow connect</code> with <code>--type http</code> to expose a service.
+        </EmptyState>
+      ) : onlyGateway ? (
+        <EmptyState
+          title="All services here belong to the AI gateway."
+          action={<Button variant="primary" size="sm" onClick={() => setAi(true)}>Show gateway-only services</Button>}
+        >
+          They have no address of their own, so they are left out until the AI filter is on.
         </EmptyState>
       ) : (
         <div className="table-wrap">
@@ -363,7 +395,12 @@ export default function Services() {
                   ? { id: t.service_id, name, type, access_mode: access }
                   : undefined);
                 return (
-              <tr key={key}>
+              <tr
+                key={key}
+                // The name below stays the link, and the one stop for the keyboard: the row adds a bigger target only.
+                className={serviceId ? "clickable" : undefined}
+                onClick={serviceId ? (e) => openRow(e, serviceId) : undefined}
+              >
                 <td className="col-name link-row">
                   {serviceId ? <Link to={`/services/${serviceId}`}>{name}</Link> : name || "—"}
                 </td>
@@ -372,7 +409,16 @@ export default function Services() {
                   {type !== "http"
                     ? <span className="muted">—</span>
                     : s?.gateway_only
-                      ? <Badge kind="status-idle" nodot>gateway only</Badge>
+                      ? (
+                        <span className="row row-center gap-2">
+                          <Badge kind="status-idle" nodot>gateway only</Badge>
+                          {s.provider_slug && (
+                            <Link className="link-inline" to={`/gateway/providers/${encodeURIComponent(s.provider_slug)}`}>
+                              Provider: {s.provider_slug}
+                            </Link>
+                          )}
+                        </span>
+                      )
                       : <ServiceUrl slug={s?.slug ?? ""} url={s?.url || t?.url} />}
                 </td>
                 <td><Badge kind={`access-${access}`} nodot>{ACCESS_LABEL[access]}</Badge></td>

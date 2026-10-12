@@ -40,7 +40,7 @@ test("29-ipgeo: CIDR block enforces 403; remove restores 200", async ({ page, re
   // render + service-detail API call. Without this gate, the 5s isVisible
   // timeout fires during cold-start JS bundle evaluation before any React
   // content appears. Same pattern as spec 08 (toBeVisible default = 15s).
-  await expect(page.getByRole("heading", { name: /Service.*\bai\b/i })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "ai", exact: true })).toBeVisible();
 
   const addCidr = page.getByRole("button", { name: /Add CIDR/i }).first();
   if (!(await addCidr.isVisible({ timeout: 10_000 }).catch(() => false))) {

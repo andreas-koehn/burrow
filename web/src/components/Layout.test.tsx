@@ -503,6 +503,14 @@ describe("Layout workspace shell", () => {
       .toHaveAttribute("aria-current", "page");
   });
 
+  it("the breadcrumb of a service reads Services / its name, with one Services link", async () => {
+    renderLayout("admin", { path: "/services/svc1", services: [httpService("svc1", "ollama")] });
+    const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(await within(crumbs).findByText("ollama")).toHaveAttribute("aria-current", "page");
+    expect(crumbs).toHaveTextContent(/^Services\W*ollama$/);
+    expect(within(crumbs).getByRole("link", { name: "Services" })).toHaveAttribute("href", "/services");
+  });
+
   it("the breadcrumb says where the connect page is", async () => {
     renderLayout("admin", { path: "/clients/connect" });
     await chip();

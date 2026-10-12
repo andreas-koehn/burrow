@@ -108,13 +108,17 @@ describe("INTUITIVE — navigation & mental-model alignment", () => {
 // CLEAR — information architecture & labelling
 // ---------------------------------------------------------------------------
 describe("CLEAR — information architecture & labelling", () => {
-  it("Clr-1/Clr-2: Services explains saved configuration against Live, in both views", async () => {
-    // ErrorNotice variant="info" role="note" in Services.tsx
+  it("Clr-1/Clr-2: the Services filter explains itself, All | Online, without a banner, in both views", async () => {
     const first = renderApp(<Services />, "/services");
-    expect((await screen.findByRole("note")).textContent).toContain("Switch to Live");
+    expect(await screen.findByRole("radio", { name: "All" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Online" })).not.toBeChecked();
+    await screen.findByRole("table", { name: "Services" });
+    expect(screen.queryByRole("note")).toBeNull();
     first.unmount();
     renderApp(<Services />, "/services?live=1");
-    expect((await screen.findByRole("note")).textContent).toContain("saved configuration");
+    expect(await screen.findByRole("radio", { name: "Online" })).toBeChecked();
+    await screen.findByRole("table", { name: "Services" });
+    expect(screen.queryByRole("note")).toBeNull();
   });
 
   it("Clr-4: Providers page with no providers renders a 'New provider' CTA button (admin)", async () => {

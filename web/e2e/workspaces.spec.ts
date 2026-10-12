@@ -88,7 +88,7 @@ test("old bookmarks land on their new page with their detail intact", async ({ p
   await page.goto("/tunnels");
   await expect(page.getByRole("heading", { name: "Services", level: 1 })).toBeVisible();
   expect(pathOf(page)).toBe("/services?live=1");
-  await expect(page.getByRole("radio", { name: "Live" })).toBeChecked();
+  await expect(page.getByRole("radio", { name: "Online" })).toBeChecked();
   await expect(page.getByRole("navigation", { name: "Services" }).getByRole("link", { name: /^Services/ }))
     .toHaveAttribute("aria-current", "page");
 

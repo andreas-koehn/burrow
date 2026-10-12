@@ -1,8 +1,8 @@
 // test-only — never deploy this shape.
 //
-// Plan-fidelity note: the AccessModePanel radio labels are full strings
-// like "Open — raw passthrough" (not just "Open") and the save button is
-// "Save changes" (not "Save"). The plan's selectors didn't match.
+// Plan-fidelity note: the AccessModePanel radios are named by their title
+// alone ("Open", "API key", "Burrow login") and the save button is
+// "Save changes" (not "Save").
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
 import { HTTPS_INGRESS, aiHost } from "../../fixtures/env";

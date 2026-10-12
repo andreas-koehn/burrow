@@ -1,10 +1,9 @@
 import { useEffect, useId, useRef } from "react";
 import { Link } from "react-router-dom";
 import { InstallLines, type InstallLineId } from "@/components/InstallLines";
-import { StatusBadge } from "@/components/StatusBadge";
+import { ServedBy } from "@/components/ServedBy";
 import { WaitForProvider } from "@/components/WaitForProvider";
-import { formatRelativeTime, formatTimestamp } from "@/lib/format";
-import { isCommandName, isTarget, targetOf } from "@/lib/installSnippets";
+import { MODEL_SERVER_PORT, isCommandName, runTarget } from "@/lib/installSnippets";
 import { providerState } from "@/lib/status";
 import { useKnownClients } from "@/lib/useKnownClients";
 import type { AiProvider, Service } from "@/lib/contract";
@@ -21,8 +20,6 @@ export interface ProviderClientPanelProps {
 }
 
 const RUN_ONLY: readonly InstallLineId[] = ["run"];
-// Where a local model server listens when the relay knows no address: Ollama's port.
-const DEFAULT_TARGET = "11434";
 
 /** Rendered once the provider is online: tells whoever holds the provider to read it again. */
 function Arrived({ onArrive }: { onArrive?: () => void }) {
@@ -35,15 +32,6 @@ function Arrived({ onArrive }: { onArrive?: () => void }) {
     latest.current?.();
   }, []);
   return null;
-}
-
-/** "3 days ago", with the moment itself on hover; nothing when the relay names no time. */
-function Ago({ at }: { at: string | null | undefined }) {
-  if (!at) return null;
-  const said = formatRelativeTime(at);
-  if (said === "—") return null;
-  // Mid-sentence: "Just now" is written small.
-  return <time dateTime={at} title={formatTimestamp(at)}>{said.charAt(0).toLowerCase() + said.slice(1)}</time>;
 }
 
 /**
@@ -66,8 +54,7 @@ export function ProviderClientPanel({ provider, service, isAdmin, onOnline }: Pr
   const lastSeen = provider.last_seen ?? service.last_seen ?? null;
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const listens = targetOf(service.local_addr ?? "");
-  const target = listens !== undefined && isTarget(listens) ? listens : DEFAULT_TARGET;
+  const target = runTarget(service.local_addr, MODEL_SERVER_PORT);
   const hasClient = (known.rows?.length ?? 0) > 0;
   const allLines = never && !hasClient;
   const connect = `/clients/connect?provider=${encodeURIComponent(provider.slug)}`;
@@ -75,23 +62,7 @@ export function ProviderClientPanel({ provider, service, isAdmin, onOnline }: Pr
   return (
     <section className="card col gap-2" aria-labelledby={titleId}>
       <h2 id={titleId}>Client</h2>
-      {/* Always there, so a change is announced: the reader may be waiting for it with a terminal open. */}
-      <p role="status">
-        <StatusBadge state={online ? "online" : never ? "never_connected" : "offline"} />
-        {online && (
-          <>
-            {" · "}Served by{" "}
-            {session
-              ? <Link className="link-inline" to={`/clients/${encodeURIComponent(session)}`}>{client || "a client"}</Link>
-              : client || "a client"}
-          </>
-        )}
-        {!online && !never && (client || lastSeen) && (
-          <>
-            {" · "}last served{client ? ` by ${client}` : ""} <Ago at={lastSeen} />
-          </>
-        )}
-      </p>
+      <ServedBy state={online ? "online" : never ? "never_connected" : "offline"} client={client} sessionId={session} lastSeen={lastSeen} />
       {!online && !isCommandName(service.name) && (
         <p className="muted small">
           The name of its service cannot stand in a command.{" "}

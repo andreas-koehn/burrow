@@ -15,7 +15,7 @@ test("13-custom-domains: no Custom domains tab, /domains redirects", async ({ pa
   const ai = services.find((s) => s.name === "ai");
   if (!ai) throw new Error("ai service not found");
   await page.goto(`/services/${ai.id}`);
-  await expect(page.getByRole("heading", { name: /Service.*\bai\b/ })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "ai", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Access" })).toBeVisible();
   await expect(page.getByRole("tab", { name: /Custom domains/i })).toHaveCount(0);
 

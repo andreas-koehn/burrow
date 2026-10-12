@@ -4,11 +4,11 @@ import userEvent from "@testing-library/user-event";
 import { ServiceUrl } from "./ServiceUrl";
 
 describe("ServiceUrl", () => {
-  it("shows the path and copies the full URL", async () => {
+  it("shows the full URL and copies it", async () => {
     const user = userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
     render(<ServiceUrl slug="k7p2qx" url="https://tunnels.example.com/svc/k7p2qx/" />);
-    expect(screen.getByText("/svc/k7p2qx/")).toBeInTheDocument();
+    expect(screen.getByText("https://tunnels.example.com/svc/k7p2qx/")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Copy URL https://tunnels.example.com/svc/k7p2qx/" }));
     expect(writeText).toHaveBeenCalledWith("https://tunnels.example.com/svc/k7p2qx/");
     writeText.mockRestore();
@@ -16,13 +16,13 @@ describe("ServiceUrl", () => {
 
   it("falls back to the dashboard origin when the relay reports no URL", () => {
     render(<ServiceUrl slug="k7p2qx" />);
-    expect(screen.getByText("/svc/k7p2qx/")).toHaveAttribute("title", `${window.location.origin}/svc/k7p2qx/`);
+    expect(screen.getByText(`${window.location.origin}/svc/k7p2qx/`)).toBeInTheDocument();
   });
 
-  it("shows the path of the reported URL when the slug is empty", () => {
+  it("shows the reported URL when the slug is empty", () => {
     render(<ServiceUrl slug="" url="https://tunnels.example.com/svc/k7p2qx/" />);
-    expect(screen.getByText("/svc/k7p2qx/")).toBeInTheDocument();
-    expect(screen.queryByText("/svc//")).toBeNull();
+    expect(screen.getByText("https://tunnels.example.com/svc/k7p2qx/")).toBeInTheDocument();
+    expect(screen.queryByText(/\/svc\/\/$/)).toBeNull();
   });
 
   it("renders a dash when there is neither slug nor URL", () => {

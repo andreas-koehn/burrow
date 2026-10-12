@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { CLIENT_OS_OPTIONS, downloadTargets, installLines, isCommandName, isTarget, targetOf } from "./installSnippets";
+import { CLIENT_OS_OPTIONS, MODEL_SERVER_PORT, downloadTargets, installLines, isCommandName, isTarget, runTarget, targetOf } from "./installSnippets";
 
 // Every operating system the lines are written for.
 const EVERY_OS = CLIENT_OS_OPTIONS.map((o) => o.value);
@@ -149,5 +149,18 @@ describe("downloadTargets", () => {
     expect(downloadTargets("0.6.0").map((g) => [g.os, g.label])).toEqual([
       ["linux", "Linux"], ["macos", "macOS"], ["windows", "Windows"],
     ]);
+  });
+});
+
+describe("runTarget", () => {
+  it("is the port a service was last served from, else what the caller falls back to", () => {
+    expect(runTarget("127.0.0.1:3001")).toBe("3001");
+    expect(runTarget("gpu-box:8080", MODEL_SERVER_PORT)).toBe("gpu-box:8080");
+    expect(runTarget("", MODEL_SERVER_PORT)).toBe("11434");
+    expect(runTarget(undefined)).toBeUndefined();
+  });
+  it("lets nothing into a command that is not a port or host:port", () => {
+    expect(runTarget("$(reboot):80")).toBeUndefined();
+    expect(runTarget("$(reboot):80", MODEL_SERVER_PORT)).toBe("11434");
   });
 });

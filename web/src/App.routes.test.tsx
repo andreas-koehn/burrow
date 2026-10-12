@@ -179,9 +179,9 @@ describe("App routes", () => {
     if (current) expect(nav.getByRole("link", { name: current })).toHaveAttribute("aria-current", "page");
   });
 
-  it("/tunnels opens Services on Live, /tokens opens the Tokens tab of Clients", async () => {
+  it("/tunnels opens Services on Online, /tokens opens the Tokens tab of Clients", async () => {
     const first = renderAt("/tunnels");
-    expect(await screen.findByRole("radio", { name: "Live" })).toBeChecked();
+    expect(await screen.findByRole("radio", { name: "Online" })).toBeChecked();
     first.unmount();
     renderAt("/tokens");
     expect(await screen.findByRole("tab", { name: "Tokens" })).toHaveAttribute("aria-selected", "true");

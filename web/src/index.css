@@ -308,6 +308,13 @@ body {
 
 .btn.is-active.btn-primary { background: color-mix(in oklch, var(--primary) 78%, black); }
 .btn.is-active.btn-secondary { background: var(--muted); }
+/* A toggle that is on (aria-pressed): held down, as the chosen option of a segmented control is. */
+.btn-secondary[aria-pressed="true"],
+.btn-secondary[aria-pressed="true"]:hover:not([disabled]) {
+  background: var(--muted);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  font-weight: 600;
+}
 .btn.is-active.btn-ghost { background: var(--muted); }
 
 .btn.is-focus { outline: 2px solid var(--ring); outline-offset: 2px; }

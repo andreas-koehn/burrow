@@ -102,9 +102,28 @@ describe("AccessModePanel (v0.3.0)", () => {
   it("does not offer mTLS", () => {
     renderApp(<AccessModePanel serviceId="svc_web01" serviceName="web" mode="open" />);
     expect(screen.queryByText(/mTLS/i)).toBeNull();
-    expect(screen.getByText(/Open — raw passthrough/)).toBeInTheDocument();
-    expect(screen.getByText(/API key — header check/)).toBeInTheDocument();
-    expect(screen.getByText(/Burrow login — role-based/)).toBeInTheDocument();
+    expect(screen.getAllByRole("radio").map((r) => r.querySelector(".title")?.textContent)).toEqual(["Open", "API key", "Burrow login"]);
+  });
+
+  it("names each radio by its visible title and checks the one the service is set to", () => {
+    renderApp(<AccessModePanel serviceId="svc_ai001" serviceName="ollama" mode="api_key" />);
+    expect(screen.getByRole("radio", { name: "API key" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Open" })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: "Burrow login" })).not.toBeChecked();
+  });
+
+  it("says what a title used to say after its dash in the description line", () => {
+    renderApp(<AccessModePanel serviceId="svc_web01" serviceName="web" mode="open" />);
+    expect(screen.getByRole("radio", { name: "Open" })).toHaveAccessibleDescription(
+      "Raw passthrough: Burrow adds no auth — visitor traffic flows straight through. The safe default for TCP tunnels.",
+    );
+    expect(screen.getByRole("radio", { name: "API key" })).toHaveAccessibleDescription(
+      "Header check: Burrow verifies an API key header before proxying.",
+    );
+    expect(screen.getByRole("radio", { name: "Burrow login" })).toHaveAccessibleDescription(
+      "Role-based: visitors sign in with their Burrow account at a hosted gate.",
+    );
+    expect(document.body.textContent).not.toMatch(/Open —|API key —|Burrow login —/);
   });
 
   it("tells the operator when a service is still set to mTLS", () => {

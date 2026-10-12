@@ -49,10 +49,10 @@ describe("ServiceDetail page", () => {
     expect(await screen.findByText("Offline")).toHaveClass("badge", "status-offline");
   });
 
-  it("shows the path URL in the meta strip with a copy button, no subdomain host", async () => {
+  it("shows the full URL in the meta strip with a copy button, no subdomain host", async () => {
     mount();
     await screen.findByRole("heading", { name: /ollama/i });
-    expect(screen.getByText("/svc/ai4m2q/")).toBeInTheDocument();
+    expect(screen.getByText("https://tunnels.example.com/svc/ai4m2q/")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Copy URL https://tunnels.example.com/svc/ai4m2q/" }),
     ).toBeInTheDocument();
@@ -64,10 +64,102 @@ describe("ServiceDetail page", () => {
     expect(await screen.findByRole("link", { name: "View traffic" })).toHaveAttribute("href", "/traffic?service=svc_ai001");
   });
 
-  it("renders service name in the heading", async () => {
+  it("the title is the service name", async () => {
     mount();
-    const heading = await screen.findByRole("heading", { name: /ollama/i });
-    expect(heading.textContent).toMatch(/ollama/i);
+    expect(await screen.findByRole("heading", { level: 1, name: "ollama" })).toBeInTheDocument();
+    expect(screen.queryByText(/Service ·/)).toBeNull();
+  });
+
+  it("a service that backs a provider links to it", async () => {
+    mount();
+    expect(await screen.findByRole("link", { name: "Provider: ollama" })).toHaveAttribute("href", "/gateway/providers/ollama");
+  });
+
+  it("names the provider as the gateway does, not by its slug", async () => {
+    const provider = db.aiProviders.find((p) => p.slug === "ollama")!;
+    provider.name = "Ollama on the GPU box";
+    mount();
+    expect(await screen.findByRole("link", { name: "Provider: Ollama on the GPU box" }))
+      .toHaveAttribute("href", "/gateway/providers/ollama");
+  });
+
+  it("falls back to the slug where the providers cannot be listed", async () => {
+    server.use(http.get("/api/v1/ai/providers", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
+    mount();
+    expect(await screen.findByRole("link", { name: "Provider: ollama" })).toHaveAttribute("href", "/gateway/providers/ollama");
+  });
+
+  it("a service that backs no provider names none", async () => {
+    const { qc } = mountAt("/services/svc_web01");
+    await screen.findByRole("heading", { level: 1, name: "web" });
+    await waitFor(() => expect(qc.getQueryState(["ai", "providers"])?.status).toBe("success"));
+    expect(screen.queryByRole("link", { name: /^Provider:/ })).toBeNull();
+  });
+
+  it("shows who serves it: the client of the live session, linked", async () => {
+    mount();
+    const panel = await screen.findByRole("region", { name: "Client" });
+    expect(within(panel).getByRole("status")).toHaveTextContent("Online · Served by office-box-1");
+    expect(within(panel).getByRole("link", { name: "office-box-1" })).toHaveAttribute("href", "/clients/sess_4f7a9c0b2e81");
+  });
+
+  it("offline: says who served it last and since when", async () => {
+    const svc = db.services.find((x) => x.id === "svc_graf01")!;
+    svc.last_seen = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
+    svc.last_client = "koehn-laptop";
+    mountAt("/services/svc_graf01");
+    const panel = await screen.findByRole("region", { name: "Client" });
+    // The first status line of the panel; the commands below have one of their own, for what was copied.
+    expect(within(panel).getAllByRole("status")[0]).toHaveTextContent("Offline · last served by koehn-laptop 3 days ago");
+    // Nobody serves it now: there is no session to link.
+    expect(within(panel).queryByRole("link", { name: "koehn-laptop" })).toBeNull();
+  });
+
+  it("offline: shows the command that starts it, with the port it was last served from", async () => {
+    mountAt("/services/svc_graf01");
+    const panel = await screen.findByRole("region", { name: "Client" });
+    expect(within(panel).getByRole("group", { name: "Run command" })).toHaveTextContent(/^burrow http 3001 --name grafana$/);
+    // The one line: installing and signing in are on the page the link opens.
+    expect(within(panel).queryByRole("group", { name: "Install command" })).toBeNull();
+    expect(within(panel).queryByRole("group", { name: "Sign-in command" })).toBeNull();
+    expect(within(panel).getByRole("link", { name: "Connect a client" })).toHaveAttribute("href", "/clients/connect?service=svc_graf01");
+  });
+
+  it("never connected: shows the command too, without a client to name", async () => {
+    mountAt("/services/svc_lms001");
+    const panel = await screen.findByRole("region", { name: "Client" });
+    expect(within(panel).getAllByRole("status")[0]).toHaveTextContent(/^Never connected$/);
+    // It backs a provider and no address is known: the port a model server listens on, as the provider page says.
+    expect(within(panel).getByRole("group", { name: "Run command" })).toHaveTextContent(/^burrow http 11434 --name lmstudio$/);
+    expect(within(panel).getByRole("link", { name: "Connect a client" })).toHaveAttribute("href", "/clients/connect?service=svc_lms001");
+  });
+
+  it("an online service shows no command", async () => {
+    mount();
+    const panel = await screen.findByRole("region", { name: "Client" });
+    expect(within(panel).queryByRole("group", { name: "Run command" })).toBeNull();
+    expect(within(panel).queryByRole("link", { name: "Connect a client" })).toBeNull();
+    expect(panel).not.toHaveTextContent("burrow http");
+  });
+
+  it("a TCP service that is offline gets no burrow http command, and says why", async () => {
+    const svc = db.services.find((x) => x.id === "svc_pg001")!;
+    svc.connected = false;
+    mountAt("/services/svc_pg001");
+    const panel = await screen.findByRole("region", { name: "Client" });
+    expect(within(panel).queryByRole("group", { name: "Run command" })).toBeNull();
+    expect(panel).toHaveTextContent("This is not an HTTP service: burrow http does not serve it.");
+    expect(within(panel).getByRole("link", { name: "Connect a client" })).toHaveAttribute("href", "/clients/connect?service=svc_pg001");
+  });
+
+  it("a name that cannot stand in a command is never put into one", async () => {
+    const svc = db.services.find((x) => x.id === "svc_graf01")!;
+    svc.name = "My Grafana; reboot";
+    mountAt("/services/svc_graf01");
+    const panel = await screen.findByRole("region", { name: "Client" });
+    expect(within(panel).queryByRole("group", { name: "Run command" })).toBeNull();
+    expect(panel).not.toHaveTextContent("reboot");
+    expect(within(panel).getByRole("link", { name: "Connect a client" })).toHaveAttribute("href", "/clients/connect?service=svc_graf01");
   });
 
   it("shows three tabs: Access, API keys, Upstream key", async () => {
@@ -158,25 +250,31 @@ describe("ServiceDetail page", () => {
     expect(screen.getByRole("tab", { name: "Access" })).toHaveAttribute("aria-selected", "true");
   });
 
-  // P5.4 — explainer link to Providers in the Upstream-key tab
-  it("P5.4: Upstream-key tab shows Providers explainer link", async () => {
-    mount();
-    await screen.findByRole("heading", { name: /ollama/i });
-    const upstreamTab = screen.getByRole("tab", { name: /upstream key/i });
-    await userEvent.click(upstreamTab);
-    // Explainer text + link to /gateway/providers
+  it("Upstream key tab of a service that backs no provider: Providers leads to the steps that make one", async () => {
+    mountAt("/services/svc_web01#upstream-key");
+    await screen.findByRole("heading", { name: "web" });
     const link = await screen.findByRole("link", { name: "Providers" });
-    expect(link).toHaveAttribute("href", "/gateway/providers");
+    expect(link).toHaveAttribute("href", "/gateway/providers?new=local");
     // It does not claim the service is listed there already.
     expect(link.closest("p")).toHaveTextContent(
       "This service can be used as a model provider — an admin can register it under Providers.",
     );
   });
 
+  it("Upstream key tab of a service that backs a provider: nothing about registering it", async () => {
+    mountAt("/services/svc_ai001#upstream-key");
+    await screen.findByRole("heading", { name: "ollama" });
+    const panel = screen.getByRole("tabpanel");
+    await within(panel).findByLabelText(/header name/i);
+    expect(panel).not.toHaveTextContent(/can be used as a model provider/);
+    expect(within(panel).queryByRole("link", { name: "Providers" })).toBeNull();
+  });
+
   it("renders the API keys table only in the API keys tab (C7)", async () => {
     mount();
     // svc_ai001 is in api_key mode, the mode that used to embed the key list.
     await screen.findByRole("radiogroup", { name: "Access mode" });
+    expect(screen.getByRole("radio", { name: "API key" })).toBeChecked();
     expect(screen.getByLabelText("API key header")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New key" })).toBeNull();
     await userEvent.click(screen.getByRole("tab", { name: "API keys" }));
@@ -189,7 +287,7 @@ describe("ServiceDetail page", () => {
     svc.name = "";
     try {
       mountAt("/services/svc_graf01");
-      expect(await screen.findByRole("heading", { name: "Service · svc_graf01" })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { level: 1, name: "svc_graf01" })).toBeInTheDocument();
       await userEvent.click(screen.getByRole("button", { name: "Edit URL" }));
       expect(screen.getByRole("dialog", { name: "Change URL · svc_graf01" })).toBeInTheDocument();
     } finally {
@@ -207,7 +305,7 @@ describe("ServiceDetail page", () => {
     await userEvent.type(slug, "web");
     await userEvent.click(within(dialog).getByRole("button", { name: "Change URL" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(await screen.findByText("/svc/web/")).toBeInTheDocument();
+    expect(await screen.findByText("https://tunnels.example.com/svc/web/")).toBeInTheDocument();
   });
 
   it("keeps the dialog open and shows the server error when the slug is taken", async () => {
@@ -227,9 +325,48 @@ describe("ServiceDetail page", () => {
     expect(screen.queryByRole("tab", { name: /custom domains/i })).toBeNull();
   });
 
-  it("warns that path-routed apps share the dashboard origin", async () => {
+  it.each([
+    ["svc_web01", "Open"],
+    ["svc_graf01", "Burrow login"],
+  ])("warns in a notice of its own that %s (%s) shares the dashboard's address", async (id) => {
+    mountAt(`/services/${id}`);
+    const note = await within(await screen.findByRole("tabpanel")).findByRole("note");
+    expect(note).toHaveTextContent(
+      /^This service shares the dashboard's address\. A page it serves can act as the signed-in dashboard user\. Only publish apps you trust\.$/,
+    );
+    // The warning style of the email notice, not grey small print.
+    expect(note).toHaveClass("notice-inline", "warn");
+    expect(note).not.toHaveClass("muted");
+  });
+
+  it("does not warn about the shared address for an API-key service", async () => {
+    mount();
+    await screen.findByRole("radiogroup", { name: "Access mode" });
+    expect(screen.queryByText(/shares the dashboard's address/)).toBeNull();
+  });
+
+  it("does not warn about the shared address for a service without a public URL", async () => {
+    const svc = db.services.find((x) => x.id === "svc_web01")!;
+    svc.gateway_only = true;
     mountAt("/services/svc_web01");
-    expect(await screen.findByText(/can act as the signed-in dashboard user/)).toBeInTheDocument();
+    await screen.findByRole("radiogroup", { name: "Access mode" });
+    expect(screen.queryByText(/shares the dashboard's address/)).toBeNull();
+  });
+
+  it("the gateway-only switch is the first block of the Access tab", async () => {
+    mountAt("/services/svc_ai001");
+    const panel = await screen.findByRole("tabpanel");
+    const toggle = await within(panel).findByRole("switch", { name: "Reachable through the AI gateway only" });
+    const modes = within(panel).getByRole("radiogroup", { name: "Access mode" });
+    expect(toggle.compareDocumentPosition(modes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(panel).getByText(/Closes the direct address and custom domains/)).toBeInTheDocument();
+  });
+
+  it("the gateway-only switch is not shown on the other tabs", async () => {
+    const { qc } = mountAt("/services/svc_ai001#api-keys");
+    await screen.findByRole("heading", { name: "ollama" });
+    await waitFor(() => expect(qc.getQueryState(["ai", "providers"])?.status).toBe("success"));
+    expect(screen.queryByRole("switch", { name: /gateway only/i })).toBeNull();
   });
 
   it("lets the owner close a service to everything but the AI gateway", async () => {

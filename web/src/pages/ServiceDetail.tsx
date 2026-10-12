@@ -8,8 +8,7 @@ import { EditSlugDialog } from "@/components/EditSlugDialog";
 import { AccessModePanel } from "@/components/AccessModePanel";
 import { ApiKeysPanel } from "@/components/ApiKeysPanel";
 import { UpstreamCredentialsPanel } from "@/pages/UpstreamCredentials";
-import { StatusBadge } from "@/components/StatusBadge";
-import { serviceState } from "@/lib/status";
+import { ServiceClientPanel } from "@/components/ServiceClientPanel";
 import type { ServiceDetail as ServiceDetailType, AccessMode, AiProvider } from "@/lib/contract";
 
 const ACCESS_LABEL: Record<AccessMode, string> = {
@@ -98,12 +97,19 @@ export default function ServiceDetail() {
   // can be turned off again.
   const backsProvider = (providers.data ?? []).some((p) => p.service_id === svc.id);
   const showGatewaySwitch = svc.type === "http" && (backsProvider || svc.gateway_only);
+  // The provider is named as the gateway names it; its slug stands in where the list is not readable.
+  const providerSlug = svc.provider_slug ?? "";
+  const providerName = (providers.data ?? []).find((p) => p.slug === providerSlug)?.name || providerSlug;
+  const hasPublicUrl = svc.type === "http" && !svc.gateway_only && !!(svc.slug || svc.url);
+  // Under /svc/ a service is on the dashboard's own origin. Behind an API key no
+  // browser gets a page from it; in the other two modes one does.
+  const sharesOrigin = hasPublicUrl && (svc.access_mode === "open" || svc.access_mode === "burrow_login");
 
   return (
     <div className="service-detail-page">
       <PageHeader
         back={BACK}
-        title={`Service · ${label}`}
+        title={label}
         actions={<Link className="btn btn-secondary btn-sm" to={`/traffic?service=${encodeURIComponent(svc.id)}`}>View traffic</Link>}
       />
 
@@ -112,43 +118,22 @@ export default function ServiceDetail() {
         {svc.type === "http" && svc.gateway_only && (
           <span className="muted">No public URL: this service answers through the AI gateway only.</span>
         )}
-        {svc.type === "http" && !svc.gateway_only && (svc.slug || svc.url) && <ServiceUrl slug={svc.slug} url={svc.url} />}
+        {hasPublicUrl && <ServiceUrl slug={svc.slug} url={svc.url} />}
         {svc.type === "http" && !svc.gateway_only && (
           <Button variant="secondary" size="sm" onClick={() => setEditSlug(true)}>Edit URL</Button>
         )}
         <Badge kind={`access-${svc.access_mode}`} nodot>
           {ACCESS_LABEL[svc.access_mode]}
         </Badge>
-        <StatusBadge state={serviceState(svc)} />
+        {providerSlug && (
+          <Link className="link-inline" to={`/gateway/providers/${encodeURIComponent(providerSlug)}`}>
+            Provider: {providerName}
+          </Link>
+        )}
       </div>
 
-      {showGatewaySwitch && (
-        <div className="stack gap-2">
-          <label className="row row-center gap-2">
-            <Switch
-              aria-label="Reachable through the AI gateway only"
-              aria-describedby="gateway-only-help"
-              checked={svc.gateway_only}
-              disabled={setGatewayOnly.isPending}
-              onChange={(on) => setGatewayOnly.mutate(on)}
-            />
-            <span>Reachable through the AI gateway only</span>
-          </label>
-          <p id="gateway-only-help" className="muted small">
-            Closes the direct address and custom domains: they answer as if the
-            service did not exist. Models stay available under <span className="mono">/ai/</span>, <span className="mono">/openai/v1</span> and{" "}
-            <span className="mono">/anthropic</span>.
-          </p>
-          {gatewayErr && <ErrorNotice role="alert">{gatewayErr}</ErrorNotice>}
-        </div>
-      )}
-
-      {svc.type === "http" && !svc.gateway_only && (svc.slug || svc.url) && (
-        <p className="muted small">
-          Reached at the URL above, on the same origin as this dashboard. Only expose apps you trust:
-          a page served here can act as the signed-in dashboard user.
-        </p>
-      )}
+      {/* Only what a client serves: the hidden service of a hosted provider has no machine behind it. */}
+      {(svc.type === "http" || svc.type === "tcp") && <ServiceClientPanel service={svc} />}
 
       <Tabs
         value={tab}
@@ -158,13 +143,41 @@ export default function ServiceDetail() {
             value: "access",
             label: "Access",
             content: (
-              <AccessModePanel
-                serviceId={svc.id}
-                serviceName={label}
-                mode={svc.access_mode}
-                clientId={`svc:${svc.id}`}
-                hideApiKeys
-              />
+              <div className="col gap-4">
+                {showGatewaySwitch && (
+                  <div className="col gap-2">
+                    <label className="row row-center gap-2">
+                      <Switch
+                        aria-label="Reachable through the AI gateway only"
+                        aria-describedby="gateway-only-help"
+                        checked={svc.gateway_only}
+                        disabled={setGatewayOnly.isPending}
+                        onChange={(on) => setGatewayOnly.mutate(on)}
+                      />
+                      <span>Reachable through the AI gateway only</span>
+                    </label>
+                    <p id="gateway-only-help" className="muted small">
+                      Closes the direct address and custom domains: they answer as if the
+                      service did not exist. Models stay available under <span className="mono">/ai/</span>, <span className="mono">/openai/v1</span> and{" "}
+                      <span className="mono">/anthropic</span>.
+                    </p>
+                    {gatewayErr && <ErrorNotice role="alert">{gatewayErr}</ErrorNotice>}
+                  </div>
+                )}
+                {sharesOrigin && (
+                  <ErrorNotice variant="warn" role="note">
+                    This service shares the dashboard&apos;s address. A page it serves can act as the
+                    signed-in dashboard user. Only publish apps you trust.
+                  </ErrorNotice>
+                )}
+                <AccessModePanel
+                  serviceId={svc.id}
+                  serviceName={label}
+                  mode={svc.access_mode}
+                  clientId={`svc:${svc.id}`}
+                  hideApiKeys
+                />
+              </div>
             ),
           },
           {
@@ -189,10 +202,13 @@ export default function ServiceDetail() {
             label: "Upstream key",
             content: (
               <>
-                <p className="muted small" style={{ marginBottom: "var(--space-3, 12px)" }}>
-                  This service can be used as a model provider — an admin can register it under{" "}
-                  <Link to="/gateway/providers">Providers</Link>.
-                </p>
+                {/* Said only while it is not one yet; the link opens the steps that make it one. */}
+                {!providerSlug && (
+                  <p className="muted small" style={{ marginBottom: "var(--space-3, 12px)" }}>
+                    This service can be used as a model provider — an admin can register it under{" "}
+                    <Link to="/gateway/providers?new=local">Providers</Link>.
+                  </p>
+                )}
                 <UpstreamCredentialsPanel
                   serviceId={svc.id}
                   serviceName={svc.name}

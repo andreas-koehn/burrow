@@ -115,11 +115,19 @@ describe("breadcrumbFor", () => {
     expect(breadcrumbFor("/gateway/providers/zai", admin)).toEqual([
       { label: "AI Gateway", to: "/gateway" }, { label: "Providers", to: "/gateway/providers" }, { label: "zai" },
     ]);
-    expect(breadcrumbFor("/services", admin)).toEqual([{ label: "Services", to: "/" }, { label: "Services" }]);
     expect(breadcrumbFor("/", admin)).toEqual([{ label: "Services", to: "/" }, { label: "Overview" }]);
     expect(breadcrumbFor("/settings/email", admin)).toEqual([{ label: "Settings", to: "/settings" }, { label: "Email" }]);
     expect(breadcrumbFor("/gateway/models", admin)).toEqual([{ label: "AI Gateway", to: "/gateway" }, { label: "Models" }]);
     expect(breadcrumbFor("/gateway/keys", admin)).toEqual([{ label: "AI Gateway", to: "/gateway" }, { label: "Gateway keys" }]);
+  });
+  it("says a word once where the workspace and its entry share it", () => {
+    // Not "Services / Services / ollama": the entry stands for both, and leads to the list.
+    expect(breadcrumbFor("/services", admin)).toEqual([{ label: "Services" }]);
+    expect(breadcrumbFor("/services/svc1", admin, { svc1: "ollama" })).toEqual([
+      { label: "Services", to: "/services" }, { label: "ollama" },
+    ]);
+    // Every other page of the workspace keeps both crumbs.
+    expect(breadcrumbFor("/traffic", admin)).toEqual([{ label: "Services", to: "/" }, { label: "Traffic" }]);
   });
   it("names a page under an entry that is not an object", () => {
     expect(breadcrumbFor("/clients/connect", admin)).toEqual([
@@ -138,7 +146,7 @@ describe("breadcrumbFor", () => {
     localStorage.setItem("burrow.lastWorkspace", "gateway");
     expect(breadcrumbFor("/clients", admin)[0]).toEqual({ label: "AI Gateway", to: "/gateway" });
     // Every other page follows its URL.
-    expect(breadcrumbFor("/services", admin, {}, "gateway")[0]).toEqual({ label: "Services", to: "/" });
+    expect(breadcrumbFor("/traffic", admin, {}, "gateway")[0]).toEqual({ label: "Services", to: "/" });
     expect(breadcrumbFor("/gateway/models", admin, {}, "services")[0]).toEqual({ label: "AI Gateway", to: "/gateway" });
   });
   it("links the service and ends on the request", () => {

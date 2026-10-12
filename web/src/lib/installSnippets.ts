@@ -54,6 +54,18 @@ export function targetOf(localAddr: string): string | undefined {
   return ["", "127.0.0.1", "localhost", "[::1]"].includes(m[1]!) ? m[2] : localAddr;
 }
 
+/** Where a local model server listens when the relay knows no address: Ollama's port. */
+export const MODEL_SERVER_PORT = "11434";
+
+/**
+ * What the run line of a service publishes: the port it was last served from
+ * when the relay knows it and it may stand in a command, else `fallback`.
+ */
+export function runTarget(localAddr: string | undefined, fallback?: string): string | undefined {
+  const listens = targetOf(localAddr ?? "");
+  return listens !== undefined && isTarget(listens) ? listens : fallback;
+}
+
 /** What the run line publishes when it is given nothing it can use. */
 const EXAMPLE_TARGET = "3000";
 
