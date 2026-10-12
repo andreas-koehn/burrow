@@ -146,7 +146,8 @@ func (s *Server) callHandler(tok *authedToken, t Tool) mcp.ToolHandler {
 				// The deferred function must not panic again: a failing audit
 				// sink is contained here.
 				s.safeAudit(ctx, tok, t.Name, "error")
-				s.log.Error("mcp tool panicked", "tool", t.Name, "panic", fmt.Sprint(p))
+				// The panic value can quote data (an index, a key): its type only.
+				s.log.Error("mcp tool panicked", "tool", t.Name, "panic_type", fmt.Sprintf("%T", p))
 				res = errorResult(errors.New("internal error"))
 			}
 		}()
@@ -172,7 +173,14 @@ func (s *Server) callHandler(tok *authedToken, t Tool) mcp.ToolHandler {
 				s.log.Warn("mcp tool call failed", "tool", t.Name, "reason", string(ue))
 				return errorResult(ue), nil
 			}
-			s.log.Warn("mcp tool call failed", "tool", t.Name, "err", err)
+			if errors.Is(err, errStoreUnavailable) {
+				// The package's own fixed text.
+				s.log.Warn("mcp tool call failed", "tool", t.Name, "err", err.Error())
+			} else {
+				// A store error can quote argument values (a duplicate-key
+				// detail): the log gets its type, not its text.
+				s.log.Warn("mcp tool call failed", "tool", t.Name, "err_type", fmt.Sprintf("%T", err))
+			}
 			return errorResult(errors.New("internal error")), nil
 		}
 		s.emitToolAudit(ctx, tok, t.Name, "ok")
@@ -213,7 +221,7 @@ func (s *Server) auditHidden(tok *authedToken) mcp.Middleware {
 			// not end the process.
 			defer func() {
 				if p := recover(); p != nil {
-					s.log.Error("mcp request panicked", "method", method, "panic", fmt.Sprint(p))
+					s.log.Error("mcp request panicked", "method", method, "panic_type", fmt.Sprintf("%T", p))
 					if method == "tools/call" {
 						res, err = errorResult(errors.New("internal error")), nil
 						return

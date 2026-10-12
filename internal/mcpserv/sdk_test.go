@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -705,5 +707,90 @@ func TestMCP_TwoTokensOneHandler(t *testing.T) {
 	close(errs)
 	for e := range errs {
 		t.Error(e)
+	}
+}
+
+// markerStore fails with texts that quote a caller-supplied value, as a
+// database duplicate-key detail does, and panics the same way.
+type markerStore struct{ fakeStore }
+
+const marker = "MARKER-7f3a-secret-value"
+
+func (*markerStore) ListAPIKeys(context.Context, string, string, string) ([]db.ServiceAPIKey, error) {
+	return nil, fmt.Errorf("duplicate key value violates unique constraint: Key (name)=(%s) already exists", marker)
+}
+
+func (*markerStore) MetricsText() (string, error) { panic("index out of range near " + marker) }
+
+func TestMCP_ErrorAndPanicText_StayOutOfLogsAndResults(t *testing.T) {
+	var logBuf strings.Builder
+	var mu sync.Mutex
+	log := slog.New(slog.NewTextHandler(lockedWriter{&mu, &logBuf}, nil))
+	s := New(nil, nil, &markerStore{}, log)
+	s.SetAuditAppender(&auditSink{})
+	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: allToolPerms}
+	h := s.mcpHandler()
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
+	}))
+	t.Cleanup(hs.Close)
+	cs := connectMCP(t, hs.URL, "", "2025-11-25")
+
+	for _, c := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"api_keys_list", map[string]any{"service_id": "svc1"}},
+		{"metrics_snapshot", nil},
+	} {
+		res, err := callTool(t, cs, c.tool, c.args)
+		if err != nil || !res.IsError {
+			t.Fatalf("%s: err=%v result=%+v", c.tool, err, res)
+		}
+		raw, _ := json.Marshal(res)
+		if strings.Contains(string(raw), marker) || resultText(t, res) != "internal error" {
+			t.Errorf("%s: result = %s", c.tool, raw)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	logs := logBuf.String()
+	if strings.Contains(logs, marker) {
+		t.Errorf("a log line carries the marker: %s", logs)
+	}
+	if !strings.Contains(logs, "api_keys_list") || !strings.Contains(logs, "metrics_snapshot") {
+		t.Errorf("the failures were not logged; the test would prove nothing: %s", logs)
+	}
+}
+
+// Every object result goes out twice: as structuredContent and as the text
+// of one content block, the same JSON.
+func TestMCP_ObjectResult_IsStructuredAndText(t *testing.T) {
+	fs := &fakeStore{
+		tunnels:     []TunnelInfo{{ID: "tun-a", Name: "alpha", Type: "http"}},
+		metricsBody: "burrow_x 1\n",
+	}
+	for _, rev := range testRevisions {
+		hs, _ := newSDKTestServer(t, fs, allToolPerms, "admin")
+		cs := connectMCP(t, hs.URL, "", rev)
+		for _, tool := range []string{"tunnels_list", "services_list", "tokens_list", "users_list", "audit_search", "metrics_snapshot"} {
+			res, err := callTool(t, cs, tool, nil)
+			if err != nil || res.IsError {
+				t.Fatalf("%s %s: err=%v result=%+v", rev, tool, err, res)
+			}
+			structured, ok := res.StructuredContent.(map[string]any)
+			if !ok {
+				t.Fatalf("%s %s: structuredContent is %T, want an object", rev, tool, res.StructuredContent)
+			}
+			var fromText map[string]any
+			if err := json.Unmarshal([]byte(resultText(t, res)), &fromText); err != nil {
+				t.Fatalf("%s %s: text is not a JSON object: %v", rev, tool, err)
+			}
+			a, _ := json.Marshal(structured)
+			b, _ := json.Marshal(fromText)
+			if string(a) != string(b) {
+				t.Errorf("%s %s: structuredContent %s != text %s", rev, tool, a, b)
+			}
+		}
 	}
 }

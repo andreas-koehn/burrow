@@ -1,33 +1,37 @@
 package main
 
-// e2e_mcp_test.go — Task 15: real-stack e2e for the `burrowd mcp` server.
+// e2e_mcp_test.go — real-stack e2e for Burrow's management MCP server.
 //
 // Boots a full e2e stack, constructs an mcpserv.Server bound to the same
 // *store.Store + the live tunnel registry (via the same adapters cmd/server
-// uses in main.go), and exercises three closed-set surfaces over HTTP:
+// uses in main.go), and drives it with the SDK's own MCP client, once per
+// protocol revision (2026-07-28 without a handshake, 2025-11-25 with one):
 //
-//   1. JSON-RPC `tools/list` with a bearer that has every permission the
-//      12-tool inventory needs → response lists exactly the 12 tool names
-//      from spec Part P.2 in the canonical declaration order.
-//   2. JSON-RPC `tools/call` for services_list with the same bearer → the
-//      shape mirrors GET /api/v1/services (sub-set of fields compared).
-//   3. JSON-RPC `tools/call` for services_set_access_mode with a SECOND
-//      bearer that has only `tunnels:read:any` (NOT services:configure:any)
-//      → JSON-RPC error -32603 "forbidden" AND one audit_events row with
-//      action=mcp.tool.call result=denied.
+//   1. `tools/list` with a bearer that has every permission the 12-tool
+//      inventory needs → exactly the 12 tool names of spec Part P.2; with a
+//      bearer that has one permission → that one tool.
+//   2. `tools/call` for services_list with the full bearer → the shape
+//      mirrors GET /api/v1/services (sub-set of fields compared).
+//   3. `tools/call` for services_set_access_mode with the SECOND bearer
+//      that has only `tunnels:read:any` → refused like an unknown tool AND
+//      one audit_events row with action=mcp.tool.call result=denied.
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	cryptoRand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"io"
-	"net"
+	"errors"
 	"net/http"
+	"net/http/httptest"
+	"sort"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/db"
@@ -51,29 +55,6 @@ var closedMCPTools = []string{
 	"users_list",
 	"audit_search",
 	"metrics_snapshot",
-}
-
-// mcpRPCEnvelope is the JSON-RPC 2.0 response shape — defined here so the
-// test file does not depend on internal/mcpserv unexported types.
-type mcpRPCEnvelope struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *mcpRPCError    `json:"error,omitempty"`
-}
-
-type mcpRPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-// mcpRPCToolsList is the wire shape of a tools/list response.
-type mcpRPCToolsList struct {
-	Tools []struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Permission  string `json:"permission"`
-	} `json:"tools"`
 }
 
 // mcpToolStoreForTest is a thin local adapter that satisfies
@@ -190,60 +171,60 @@ func installAuditLoggerOnStoreForMCP(t *testing.T, s *e2eStack) *audit.Logger {
 	return logger
 }
 
-// mcpRPC fires a JSON-RPC request at the MCP listener and returns the
-// decoded envelope. method may be tools/list or tools/call. params is
-// embedded verbatim into the request — pass nil for an empty params object.
-func mcpRPC(t *testing.T, addr, bearer, method string, params any) mcpRPCEnvelope {
-	t.Helper()
-	body := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  method,
-	}
-	if params != nil {
-		body["params"] = params
-	} else {
-		body["params"] = map[string]any{}
-	}
-	buf, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("marshal rpc: %v", err)
-	}
-	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/", bytes.NewReader(buf))
-	if err != nil {
-		t.Fatalf("new rpc request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+bearer)
-	}
-	hc := &http.Client{Timeout: 10 * time.Second}
-	resp, err := hc.Do(req)
-	if err != nil {
-		t.Fatalf("rpc do: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		t.Fatalf("rpc HTTP status=%d body=%s", resp.StatusCode, string(b))
-	}
-	var env mcpRPCEnvelope
-	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-		t.Fatalf("decode rpc envelope: %v", err)
-	}
-	if env.JSONRPC != "2.0" {
-		t.Fatalf("rpc envelope jsonrpc=%q want 2.0", env.JSONRPC)
-	}
-	return env
+// mcpBearerTransport sends the Authorization header a configured MCP client
+// sends with every request.
+type mcpBearerTransport struct{ token string }
+
+func (b mcpBearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+b.token)
+	return http.DefaultTransport.RoundTrip(r)
 }
 
-// TestE2EMCP_ToolsListAndCall is the Task 15 acceptance test. It covers:
-//   - tools/list returns exactly the 12 closed-set tools.
-//   - tools/call services_list with the right bearer returns a list whose
-//     shape matches what the store's ListServices yields.
-//   - tools/call services_set_access_mode with a token lacking the required
-//     permission returns JSON-RPC -32603 "forbidden" AND emits one
-//     mcp.tool.call audit row with result=denied.
+// mcpConnect connects the SDK's MCP client to url with an automation token,
+// speaking the given protocol revision.
+func mcpConnect(t *testing.T, url, bearer, revision string) *mcp.ClientSession {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := mcp.NewClient(&mcp.Implementation{Name: "burrow-e2e", Version: "0"}, nil)
+	cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:             url,
+		HTTPClient:           &http.Client{Transport: mcpBearerTransport{token: bearer}, Timeout: 10 * time.Second},
+		DisableStandaloneSSE: true,
+		MaxRetries:           -1,
+	}, &mcp.ClientSessionOptions{ProtocolVersion: revision})
+	if err != nil {
+		t.Fatalf("mcp connect (revision %s): %v", revision, err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	return cs
+}
+
+// mcpToolNames returns what tools/list shows the session, sorted.
+func mcpToolNames(t *testing.T, cs *mcp.ClientSession) []string {
+	t.Helper()
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	names := make([]string, 0, len(res.Tools))
+	for _, tl := range res.Tools {
+		names = append(names, tl.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// TestE2EMCP_ToolsListAndCall is the acceptance test of the management MCP
+// server against the real store. For both protocol revisions it covers:
+//   - tools/list with a token that holds every tool permission returns
+//     exactly the 12 closed-set tools; a narrow token sees only its own.
+//   - tools/call services_list returns the service the stack registered,
+//     as structuredContent and as text.
+//   - tools/call services_set_access_mode with the narrow token is refused
+//     like an unknown tool AND emits one mcp.tool.call audit row with
+//     result=denied.
 func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip e2e in -short")
@@ -255,9 +236,8 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 
 	// Build the MCP server manually with the same adapter shape cmd/server
 	// uses in v04_wiring.go. The test does NOT use BuildMCPServer because
-	// that function reads cfg.MCPListen and constructs a metricsRecorder-
-	// scoped adapter; we want a tighter wiring focused on the closed tool
-	// set + audit hook.
+	// that constructs a metricsRecorder-scoped adapter; we want a tighter
+	// wiring focused on the closed tool set + audit hook.
 	bearerAdapter := mcpBearerAdapter{s: stack.store}
 	toolStore := mcpToolStoreForTest{
 		st:      stack.store,
@@ -267,20 +247,9 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 	mcpSrv := mcpserv.New(bearerAdapter, stack.store, toolStore, stack.log)
 	mcpSrv.SetAuditAppender(auditLogger)
 
-	// Bind to an ephemeral loopback listener — the test client will dial
-	// 127.0.0.1:<port> directly (no TLS; the MCP listener inside cmd/server
-	// also defaults to plaintext bearer-only auth).
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("mcp listen: %v", err)
-	}
-	mcpAddr := ln.Addr().String()
-	mcpHTTPSrv := &http.Server{
-		Handler:           mcpSrv,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	go func() { _ = mcpHTTPSrv.Serve(ln) }()
-	t.Cleanup(func() { _ = mcpHTTPSrv.Shutdown(context.Background()) })
+	hs := httptest.NewServer(mcpSrv)
+	t.Cleanup(hs.Close)
+	mcpURL := hs.URL
 
 	// Mint a "full-perm" automation token covering every tool's required
 	// permission. The seeded admin trivially has every permission, so the
@@ -304,95 +273,6 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mint full-perm token: %v", err)
 	}
-
-	// --- 1. tools/list returns exactly the 12 closed-set tools -------------
-	listEnv := mcpRPC(t, mcpAddr, fullPlaintext, "tools/list", nil)
-	if listEnv.Error != nil {
-		t.Fatalf("tools/list err=%+v", listEnv.Error)
-	}
-	var listResult mcpRPCToolsList
-	if err := json.Unmarshal(listEnv.Result, &listResult); err != nil {
-		t.Fatalf("decode tools/list result: %v body=%s", err, listEnv.Result)
-	}
-	if len(listResult.Tools) != len(closedMCPTools) {
-		t.Fatalf("tools/list: got %d tools, want %d (closed set)",
-			len(listResult.Tools), len(closedMCPTools))
-	}
-	// tools/list order is intentionally NOT pinned here — the live
-	// implementation iterates a map, so the wire order is unstable across
-	// process restarts. The closed-set test is on the SET of names.
-	gotNames := make(map[string]bool, len(listResult.Tools))
-	for _, td := range listResult.Tools {
-		gotNames[td.Name] = true
-	}
-	for _, want := range closedMCPTools {
-		if !gotNames[want] {
-			t.Errorf("tools/list missing %q; got=%+v", want, gotNames)
-		}
-		delete(gotNames, want)
-	}
-	for extra := range gotNames {
-		t.Errorf("tools/list unexpected tool %q (not in spec Part P.2)", extra)
-	}
-
-	// --- 2. tools/call services_list returns the same shape as REST -------
-	callEnv := mcpRPC(t, mcpAddr, fullPlaintext, "tools/call", map[string]any{
-		"name":      "services_list",
-		"arguments": map[string]any{},
-	})
-	if callEnv.Error != nil {
-		t.Fatalf("tools/call services_list err=%+v", callEnv.Error)
-	}
-	// services_list returns []svcOut (id, user_id, name, type, slug,
-	// access_mode, api_key_header, created_at). The closed-set wire shape.
-	var svcList struct {
-		Services []struct {
-			ID         string `json:"id"`
-			UserID     string `json:"user_id"`
-			Name       string `json:"name"`
-			Type       string `json:"type"`
-			Subdomain  string `json:"slug"`
-			AccessMode string `json:"access_mode"`
-		} `json:"services"`
-	}
-	if err := json.Unmarshal(callEnv.Result, &svcList); err != nil {
-		t.Fatalf("decode services_list result: %v body=%s", err, callEnv.Result)
-	}
-	svcOut := svcList.Services
-	// The bootE2EStack registered the "echo" tunnel which produces an HTTP
-	// service row. Find it.
-	foundSvc := false
-	for _, sv := range svcOut {
-		if sv.ID == stack.serviceID {
-			foundSvc = true
-			if sv.Type != "http" {
-				t.Errorf("services_list svc.type=%q want http", sv.Type)
-			}
-			if sv.UserID != stack.userID {
-				t.Errorf("services_list svc.user_id=%q want %q", sv.UserID, stack.userID)
-			}
-			if sv.Subdomain != stack.subdomain {
-				t.Errorf("services_list svc.slug=%q want %q", sv.Subdomain, stack.subdomain)
-			}
-		}
-	}
-	if !foundSvc {
-		t.Fatalf("services_list did not include serviceID=%q got=%+v",
-			stack.serviceID, svcOut)
-	}
-
-	// --- 3. Permission gate: a token with ONLY tunnels:read:any cannot ---
-	// drive services_set_access_mode. Returns -32603 "forbidden" + emits one
-	// mcp.tool.call audit row with result=denied.
-
-	// Baseline: capture pre-test audit row count to count denied delta.
-	preRows, err := wrapped.ListAuditEvents(context.Background(),
-		db.AuditQuery{Action: audit.ActionMCPToolCall, Limit: 1000})
-	if err != nil {
-		t.Fatalf("list audit (pre): %v", err)
-	}
-	preCount := len(preRows)
-
 	_, narrowPlaintext, err := stack.store.MintAutomationToken(
 		context.Background(),
 		stack.userID, "admin",
@@ -404,54 +284,122 @@ func TestE2EMCP_ToolsListAndCall(t *testing.T) {
 		t.Fatalf("mint narrow-perm token: %v", err)
 	}
 
-	denyEnv := mcpRPC(t, mcpAddr, narrowPlaintext, "tools/call", map[string]any{
-		"name": "services_set_access_mode",
-		"arguments": map[string]any{
-			"id":   stack.serviceID,
-			"mode": "open",
-		},
-	})
-	if denyEnv.Error == nil {
-		t.Fatalf("tools/call services_set_access_mode: want error, got result=%s",
-			denyEnv.Result)
-	}
-	if denyEnv.Error.Code != -32603 {
-		t.Fatalf("rpc error code=%d want -32603", denyEnv.Error.Code)
-	}
-	if denyEnv.Error.Message != "forbidden" {
-		t.Fatalf("rpc error message=%q want %q", denyEnv.Error.Message, "forbidden")
-	}
+	for _, revision := range []string{"2026-07-28", "2025-11-25"} {
+		t.Run(revision, func(t *testing.T) {
+			full := mcpConnect(t, mcpURL, fullPlaintext, revision)
+			narrow := mcpConnect(t, mcpURL, narrowPlaintext, revision)
 
-	// The audit append is fire-and-forget from the handler's perspective,
-	// but the audit.Logger.Append is synchronous against the SAME DB
-	// transaction the request handler holds (no async indirection in this
-	// path). Even so, allow a brief settling window for the test scheduler.
-	deadline := time.Now().Add(2 * time.Second)
-	var denied db.AuditEvent
-	for time.Now().Before(deadline) {
-		rows, err := wrapped.ListAuditEvents(context.Background(),
-			db.AuditQuery{Action: audit.ActionMCPToolCall, Limit: 1000})
-		if err != nil {
-			t.Fatalf("list audit (post): %v", err)
-		}
-		if len(rows) > preCount {
-			// Find the newest denied row for set_access_mode.
-			for _, r := range rows {
-				if r.SubjectLabel == "services_set_access_mode" && r.Result == "denied" {
-					denied = r
-					break
+			// --- 1. tools/list: the closed set, and only what a token may call ---
+			want := append([]string(nil), closedMCPTools...)
+			sort.Strings(want)
+			if got := mcpToolNames(t, full); strings.Join(got, ",") != strings.Join(want, ",") {
+				t.Fatalf("tools/list (full token):\n got %v\nwant %v", got, want)
+			}
+			if got := mcpToolNames(t, narrow); len(got) != 1 || got[0] != "tunnels_list" {
+				t.Fatalf("tools/list (narrow token) = %v, want [tunnels_list]", got)
+			}
+
+			// --- 2. tools/call services_list returns the registered service ------
+			res, err := full.CallTool(context.Background(), &mcp.CallToolParams{
+				Name: "services_list", Arguments: map[string]any{},
+			})
+			if err != nil {
+				t.Fatalf("tools/call services_list: %v", err)
+			}
+			if res.IsError || len(res.Content) != 1 {
+				t.Fatalf("services_list result: %+v", res)
+			}
+			text, ok := res.Content[0].(*mcp.TextContent)
+			if !ok {
+				t.Fatalf("services_list content is %T, want text", res.Content[0])
+			}
+			// services_list returns {services: [...]} (id, user_id, name, type,
+			// slug, access_mode, api_key_header, created_at).
+			var svcList struct {
+				Services []struct {
+					ID         string `json:"id"`
+					UserID     string `json:"user_id"`
+					Name       string `json:"name"`
+					Type       string `json:"type"`
+					Subdomain  string `json:"slug"`
+					AccessMode string `json:"access_mode"`
+				} `json:"services"`
+			}
+			if err := json.Unmarshal([]byte(text.Text), &svcList); err != nil {
+				t.Fatalf("decode services_list text: %v body=%s", err, text.Text)
+			}
+			structured, err := json.Marshal(res.StructuredContent)
+			if err != nil || !strings.Contains(string(structured), stack.serviceID) {
+				t.Errorf("services_list structuredContent lacks the service: %s", structured)
+			}
+			// The bootE2EStack registered the "echo" tunnel which produces an
+			// HTTP service row. Find it.
+			foundSvc := false
+			for _, sv := range svcList.Services {
+				if sv.ID == stack.serviceID {
+					foundSvc = true
+					if sv.Type != "http" {
+						t.Errorf("services_list svc.type=%q want http", sv.Type)
+					}
+					if sv.UserID != stack.userID {
+						t.Errorf("services_list svc.user_id=%q want %q", sv.UserID, stack.userID)
+					}
+					if sv.Subdomain != stack.subdomain {
+						t.Errorf("services_list svc.slug=%q want %q", sv.Subdomain, stack.subdomain)
+					}
 				}
 			}
-			if denied.ID != "" {
-				break
+			if !foundSvc {
+				t.Fatalf("services_list did not include serviceID=%q got=%+v",
+					stack.serviceID, svcList.Services)
 			}
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if denied.ID == "" {
-		t.Fatalf("no mcp.tool.call audit row with subject=services_set_access_mode result=denied")
-	}
-	if denied.ActorID != stack.userID {
-		t.Errorf("audit row actor_id=%q want %q", denied.ActorID, stack.userID)
+
+			// --- 3. Permission gate: a token with ONLY tunnels:read:any cannot ---
+			// drive services_set_access_mode. The call is refused like a call on
+			// a tool that does not exist, and one mcp.tool.call audit row with
+			// result=denied is written.
+			deniedRows := func() int {
+				rows, err := wrapped.ListAuditEvents(context.Background(),
+					db.AuditQuery{Action: audit.ActionMCPToolCall, Limit: 1000})
+				if err != nil {
+					t.Fatalf("list audit: %v", err)
+				}
+				n := 0
+				for _, r := range rows {
+					if r.SubjectLabel == "services_set_access_mode" && r.Result == "denied" && r.ActorID == stack.userID {
+						n++
+					}
+				}
+				return n
+			}
+			before := deniedRows()
+
+			_, err = narrow.CallTool(context.Background(), &mcp.CallToolParams{
+				Name:      "services_set_access_mode",
+				Arguments: map[string]any{"id": stack.serviceID, "mode": "open"},
+			})
+			var rpcErr *jsonrpc.Error
+			if !errors.As(err, &rpcErr) || rpcErr.Code != jsonrpc.CodeInvalidParams {
+				t.Fatalf("tools/call services_set_access_mode with the narrow token: err=%v, want JSON-RPC %d",
+					err, jsonrpc.CodeInvalidParams)
+			}
+			_, errUnknown := narrow.CallTool(context.Background(), &mcp.CallToolParams{
+				Name: "no_such_tool", Arguments: map[string]any{},
+			})
+			var rpcUnknown *jsonrpc.Error
+			if !errors.As(errUnknown, &rpcUnknown) || rpcUnknown.Code != rpcErr.Code {
+				t.Fatalf("unknown tool: err=%v, want the same code %d", errUnknown, rpcErr.Code)
+			}
+
+			// The audit append is synchronous in this path; allow a brief
+			// settling window for the test scheduler all the same.
+			deadline := time.Now().Add(2 * time.Second)
+			for deniedRows() != before+1 && time.Now().Before(deadline) {
+				time.Sleep(20 * time.Millisecond)
+			}
+			if got := deniedRows(); got != before+1 {
+				t.Fatalf("denied audit rows for services_set_access_mode: %d, want %d", got, before+1)
+			}
+		})
 	}
 }

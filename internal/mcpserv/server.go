@@ -1,61 +1,62 @@
-// Package mcpserv implements Burrow's `burrowd mcp` server (spec Part P).
+// Package mcpserv is Burrow's management MCP server: the relay's own
+// management surface as a closed set of tools for MCP clients.
 //
-// The MCP server exposes Burrow's management surface as a closed set of
-// JSON-RPC 2.0 tools over HTTP. v0.4.0 supports the "tools/list" and
-// "tools/call" methods only; "tools/streamable" SSE is deferred to v0.5 (Q2).
+// Protocol: the official Go SDK serves the Streamable HTTP transport,
+// stateless, for the MCP revisions 2026-07-28, 2025-11-25, 2025-06-18 and
+// 2025-03-26 (sdk.go). The package is an http.Handler; the API router mounts
+// it at /mcp/burrow on the main address.
 //
 // Auth: every request MUST carry "Authorization: Bearer bua_<token>" where
-// the token is an automation bearer minted via Task 18. Sessions / cookies
-// are NOT honored here — the MCP listener is intended for non-browser
-// (LLM-client) automation and binds to a dedicated port (default :7800,
-// OFF unless configured).
+// the token is an automation bearer. Sessions / cookies are NOT honored
+// here — the endpoint is for non-browser (LLM-client) automation, and a
+// request a browser sends from another origin is refused before the token
+// is looked at.
 //
 // Permissions: every tool declares an authz.Permission string that maps to
 // the SAME permission the equivalent REST endpoint enforces (e.g.
 // tunnels_list → tunnels:read:any). Cookie/admin shortcuts are NOT applied;
 // the bearer token's permission set is the source of truth, intersected
-// with the minter user's CURRENT role (matches Task 18 effectivePerms).
+// with the minter user's CURRENT role (matches Task 18 effectivePerms). A
+// token sees and can call exactly the tools that rule allows.
 //
-// Wire format (request):
+// What a request passes, in order:
 //
-//	POST / HTTP/1.1
-//	Content-Type: application/json
-//	Authorization: Bearer bua_xxx
-//	{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}
+//	checkOrigin    403  a browser on another origin
+//	requireBearer  401  missing, unknown or expired token, suspended user
+//	               500  the token store failed
+//	rate limit     429  more than the token's share per minute
+//	the SDK        413  body over 1 MiB
+//	               405  anything but POST
+//	               200  JSON-RPC, errors included
 //
-// Wire format (response):
-//
-//	200 OK
-//	Content-Type: application/json
-//	{"jsonrpc":"2.0","id":1,"result":{"tools":[...]}}
-//
-// Errors follow JSON-RPC 2.0:
-//
-//	-32700 parse error           (malformed JSON)
-//	-32600 invalid request       (missing jsonrpc/method, etc.)
-//	-32601 method not found
-//	-32602 invalid params        (unknown tool name in tools/call)
-//	-32603 internal error        (also used for "forbidden")
-//
-// Authentication failures (missing/invalid bearer) return HTTP 401 with a
-// JSON body — they happen BEFORE JSON-RPC parsing so they cannot embed an
-// rpc id.
+// One audit row (mcp.tool.call) is written per tools/call on a tool of the
+// registry: ok, error, or denied.
 package mcpserv
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/go-chi/httprate"
+
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
+)
+
+// EndpointPath is where the API router mounts the server on the main address.
+const EndpointPath = "/mcp/burrow"
+
+// The default rate limit: requests per automation token per window. A client
+// on a 2025 revision spends three requests before its first tool call.
+const (
+	DefaultRateLimit  = 300
+	DefaultRateWindow = time.Minute
 )
 
 // AuditAppender is the narrow append surface the MCP server uses to record
@@ -97,16 +98,29 @@ type UserLookup interface {
 
 // ----- Server --------------------------------------------------------------
 
-// Server is the MCP JSON-RPC 2.0 HTTP handler. The zero value is NOT
-// usable — call New().
+// Server is the management MCP server, an http.Handler. The zero value is
+// NOT usable — call New().
 type Server struct {
 	bearer   BearerStore
 	users    UserLookup
 	log      *slog.Logger
 	tools    map[string]Tool
-	ordered  []Tool           // declaration order, for the per-token MCP server
-	toolList []ToolDescriptor // stable order, for tools/list
+	ordered  []Tool           // declaration order
+	toolList []ToolDescriptor // the same order, for Tools()
 	audit    AuditAppender    // optional; nil = audit hook disabled
+
+	rateLimit  int
+	rateWindow time.Duration
+	handler    http.Handler
+}
+
+// Option adjusts a Server at construction.
+type Option func(*Server)
+
+// WithRateLimit replaces the default rate limit: at most requests per
+// automation token per window.
+func WithRateLimit(requests int, window time.Duration) Option {
+	return func(s *Server) { s.rateLimit, s.rateWindow = requests, window }
 }
 
 // SetAuditAppender installs an audit appender. The MCP server emits one
@@ -125,7 +139,8 @@ func (s *Server) SetAuditAppender(a AuditAppender) {
 
 // emitToolAudit appends one mcp.tool.call row recording the (tool, result)
 // pair under the bearer's user as actor. Nil-safe — best-effort on writes;
-// the JSON-RPC response is never blocked on the audit append.
+// the answer is never blocked on the audit append. The row names the tool
+// and the outcome and nothing else: no arguments, no result.
 func (s *Server) emitToolAudit(ctx context.Context, tok *authedToken, toolName, result string) {
 	if s == nil || s.audit == nil || tok == nil {
 		return
@@ -139,18 +154,17 @@ func (s *Server) emitToolAudit(ctx context.Context, tok *authedToken, toolName, 
 }
 
 // New returns a Server with the closed 12-tool inventory installed. Pass nil
-// for bearer/users in tests that only exercise the registry; the JSON-RPC
-// handler will still 401 every authed request, which is the correct shape.
+// for bearer/users in tests that only exercise the registry; every request
+// is then answered 500, never served.
 //
-// The toolStore parameter is the production wiring seam — cmd/server (Task
-// 25) constructs a single *store.Store and passes it here. Tests provide a
-// fake.
-func New(bearer BearerStore, users UserLookup, toolStore ToolStore, log *slog.Logger) *Server {
+// The toolStore parameter is the production wiring seam — cmd/server
+// constructs a single adapter over *store.Store and passes it here. Tests
+// provide a fake.
+func New(bearer BearerStore, users UserLookup, toolStore ToolStore, log *slog.Logger, opts ...Option) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
 	tools := buildTools(toolStore)
-	// buildTools returns a map; orderedTools gives the list its order.
 	ordered := make([]Tool, 0, len(orderedTools))
 	list := make([]ToolDescriptor, 0, len(orderedTools))
 	for _, name := range orderedTools {
@@ -163,14 +177,29 @@ func New(bearer BearerStore, users UserLookup, toolStore ToolStore, log *slog.Lo
 			Permission:       string(t.Permission),
 		})
 	}
-	return &Server{
-		bearer:   bearer,
-		users:    users,
-		log:      log,
-		tools:    tools,
-		ordered:  ordered,
-		toolList: list,
+	s := &Server{
+		bearer:     bearer,
+		users:      users,
+		log:        log,
+		tools:      tools,
+		ordered:    ordered,
+		toolList:   list,
+		rateLimit:  DefaultRateLimit,
+		rateWindow: DefaultRateWindow,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	limit := httprate.Limit(s.rateLimit, s.rateWindow,
+		httprate.WithKeyFuncs(func(r *http.Request) (string, error) {
+			return tokenFrom(r.Context()).tokenID, nil
+		}),
+		httprate.WithLimitHandler(func(w http.ResponseWriter, _ *http.Request) {
+			writeHTTPError(w, http.StatusTooManyRequests, "rate limit exceeded")
+		}),
+	)
+	s.handler = checkOrigin(s.requireBearer(limit(s.mcpHandler())))
+	return s
 }
 
 // ToolDescriptor is the read-only view of a Tool exposed via the JSON API's
@@ -189,151 +218,44 @@ type ToolDescriptor struct {
 // RPC. The returned slice is shared — callers MUST NOT mutate it.
 func (s *Server) Tools() []ToolDescriptor { return s.toolList }
 
-// ----- JSON-RPC plumbing ---------------------------------------------------
-
-// JSON-RPC 2.0 error codes (per the spec).
-const (
-	codeParseError     = -32700
-	codeInvalidRequest = -32600
-	codeMethodNotFound = -32601
-	codeInvalidParams  = -32602
-	codeInternalError  = -32603
-)
-
-// rpcRequest is the wire shape of an incoming JSON-RPC 2.0 request.
-type rpcRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params"`
-}
-
-// rpcResponse is the wire shape of a JSON-RPC 2.0 response. Exactly one of
-// Result / Error is populated on success / failure respectively.
-type rpcResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *rpcError       `json:"error,omitempty"`
-}
-
-// rpcError is the JSON-RPC error object.
-type rpcError struct {
-	Code    int             `json:"code"`
-	Message string          `json:"message"`
-	Data    json.RawMessage `json:"data,omitempty"`
-}
-
-// callRequest is the params shape of a tools/call request.
-type callRequest struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
-}
-
-// listResult is the result shape of a tools/list response.
-type listResult struct {
-	Tools []ToolDescriptor `json:"tools"`
-}
-
 // ----- HTTP entry point ----------------------------------------------------
 
-// ServeHTTP implements http.Handler. The MCP server only answers a single
-// route (POST /); every other method/path returns 405 / 404. Bearer auth
-// runs BEFORE JSON-RPC parsing so malformed body without a valid token
-// still surfaces as 401 (not a JSON-RPC parse error).
+// ServeHTTP implements http.Handler: origin check, bearer auth, the rate
+// limit of the token, then the SDK.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", "POST")
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
-	// Auth FIRST: HTTP-level failure cannot embed a JSON-RPC id.
-	tok, err := s.authenticate(r)
-	if err != nil {
-		writeAuthErr(w, err)
-		return
-	}
-
-	// Bound body to 1 MiB — JSON-RPC requests are small even with
-	// tool arguments; anything larger is almost certainly an attack.
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeRPCError(w, nil, codeParseError, "request body read failed", nil)
-		return
-	}
-	body = bytes.TrimSpace(body)
-	if len(body) == 0 {
-		writeRPCError(w, nil, codeInvalidRequest, "empty request body", nil)
-		return
-	}
-
-	var req rpcRequest
-	dec := json.NewDecoder(bytes.NewReader(body))
-	if err := dec.Decode(&req); err != nil {
-		writeRPCError(w, nil, codeParseError, "parse error", nil)
-		return
-	}
-	if req.JSONRPC != "2.0" || req.Method == "" {
-		writeRPCError(w, req.ID, codeInvalidRequest, "invalid request", nil)
-		return
-	}
-
-	switch req.Method {
-	case "tools/list":
-		writeRPCResult(w, req.ID, listResult{Tools: s.toolList})
-	case "tools/call":
-		s.handleToolCall(w, r.Context(), req, tok)
-	default:
-		writeRPCError(w, req.ID, codeMethodNotFound, "method not found", nil)
-	}
+	s.handler.ServeHTTP(w, r)
 }
 
-// handleToolCall validates the requested tool, checks the permission gate,
-// and invokes the Call func. Errors map to JSON-RPC -32603 with a clear
-// message — "forbidden" for permission failures, "internal error" for
-// implementation faults.
-func (s *Server) handleToolCall(w http.ResponseWriter, ctx context.Context, req rpcRequest, tok *authedToken) {
-	var p callRequest
-	if len(req.Params) > 0 {
-		if err := json.Unmarshal(req.Params, &p); err != nil {
-			writeRPCError(w, req.ID, codeInvalidParams, "invalid params", nil)
+// checkOrigin refuses what a browser sends from another origin, before the
+// token is looked at. The check is the standard library's: a request with
+// neither Origin nor Sec-Fetch-Site passes (that is every CLI client), a
+// same-origin request passes, a cross-origin or cross-site one is refused.
+// GET, HEAD and OPTIONS pass too and change nothing here: the endpoint
+// answers POST only, and a preflight gets no CORS header back, so the
+// browser never sends the request it asked about.
+func checkOrigin(next http.Handler) http.Handler {
+	cop := http.NewCrossOriginProtection()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := cop.Check(r); err != nil {
+			writeHTTPError(w, http.StatusForbidden, "cross-origin request refused")
 			return
 		}
-	}
-	if p.Name == "" {
-		writeRPCError(w, req.ID, codeInvalidParams, "name is required", nil)
-		return
-	}
-	tool, ok := s.tools[p.Name]
-	if !ok {
-		writeRPCError(w, req.ID, codeInvalidParams, "unknown tool: "+p.Name, nil)
-		return
-	}
-	if !tok.can(tool.Permission) {
-		s.emitToolAudit(ctx, tok, tool.Name, "denied")
-		writeRPCError(w, req.ID, codeInternalError, "forbidden", nil)
-		return
-	}
-	// Inject caller identity into the context so tools can resolve
-	// "owned by" semantics without re-fetching the bearer row.
-	callCtx := withCaller(ctx, tok.userID, tok.role)
-	result, err := tool.Call(callCtx, p.Arguments)
-	if err != nil {
-		// Surface the forbidden sentinel as "forbidden" (-32603) — store-
-		// layer permission failures hit this path when a token granted
-		// only :own scope tries to read :any data.
-		if errors.Is(err, ErrForbidden) {
-			s.emitToolAudit(ctx, tok, tool.Name, "denied")
-			writeRPCError(w, req.ID, codeInternalError, "forbidden", nil)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireBearer authenticates the request and hands the token on in the
+// request context. Bearer auth runs BEFORE any JSON-RPC parsing, so a
+// malformed body without a valid token is a 401, not a parse error.
+func (s *Server) requireBearer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok, err := s.authenticate(r)
+		if err != nil {
+			writeAuthErr(w, err)
 			return
 		}
-		s.emitToolAudit(ctx, tok, tool.Name, "error")
-		s.log.Warn("mcp tool call failed", "tool", tool.Name, "err", err)
-		writeRPCError(w, req.ID, codeInternalError, err.Error(), nil)
-		return
-	}
-	s.emitToolAudit(ctx, tok, tool.Name, "ok")
-	writeRPCResult(w, req.ID, json.RawMessage(result))
+		next.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
+	})
 }
 
 // ----- Auth ----------------------------------------------------------------
@@ -418,61 +340,32 @@ var (
 )
 
 // ErrForbidden is the sentinel a Tool.Call returns when the underlying
-// store rejects the request on permission grounds. The handler maps it to
-// the JSON-RPC -32603 "forbidden" response.
+// store rejects the request on permission grounds. The call is audited as
+// "denied" and answered with an isError result.
 var ErrForbidden = errors.New("forbidden")
 
-// writeAuthErr renders a bearer-auth failure as HTTP 401 with a JSON body.
-// 500 is used only for internal lookup faults; the standard 401 shape
-// matches the rest of the API (writeErr in api/middleware.go).
+// writeAuthErr renders a bearer-auth failure as HTTP 401 with a JSON body
+// and the challenge an MCP client expects. 500 is used only for internal
+// lookup faults.
 func writeAuthErr(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, errAuthInternal):
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
-	default:
-		// Missing OR invalid bearer both render identically — never tell
-		// an unauthenticated caller whether the token "would" have been
-		// valid.
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":"invalid bearer token"}`))
+	if errors.Is(err, errAuthInternal) {
+		writeHTTPError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
+	// Missing OR invalid bearer both render identically — never tell
+	// an unauthenticated caller whether the token "would" have been
+	// valid.
+	w.Header().Set("WWW-Authenticate", "Bearer")
+	writeHTTPError(w, http.StatusUnauthorized, "invalid bearer token")
 }
 
-// writeRPCResult writes a successful JSON-RPC response. The result is the
-// already-marshaled JSON for the tool's payload (or any other Marshal-able
-// value when produced by tools/list internally).
-func writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
-	var raw json.RawMessage
-	if rm, ok := result.(json.RawMessage); ok {
-		raw = rm
-	} else {
-		buf, err := json.Marshal(result)
-		if err != nil {
-			writeRPCError(w, id, codeInternalError, "marshal failed", nil)
-			return
-		}
-		raw = buf
-	}
-	resp := rpcResponse{JSONRPC: "2.0", ID: id, Result: raw}
+// writeHTTPError writes {"error": msg} with the given status: the shape of
+// the rest of the API (writeErr in api/middleware.go) for everything that
+// is refused before the MCP layer.
+func writeHTTPError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
-}
-
-// writeRPCError writes a JSON-RPC 2.0 error response. id may be nil for
-// failures that occur before the request id was parsed (parse errors).
-func writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, msg string, data json.RawMessage) {
-	resp := rpcResponse{
-		JSONRPC: "2.0",
-		ID:      id,
-		Error:   &rpcError{Code: code, Message: msg, Data: data},
-	}
-	w.Header().Set("Content-Type", "application/json")
-	// JSON-RPC errors are still HTTP 200 — the JSON-RPC error object IS
-	// the response. Only the HTTP-level auth check returns 401/405.
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 // ----- ctx plumbing --------------------------------------------------------
@@ -486,6 +379,12 @@ const (
 	ctxKeyMCPServer
 )
 
+func withCaller(ctx context.Context, uid, role string) context.Context {
+	ctx = context.WithValue(ctx, ctxKeyCallerID, uid)
+	ctx = context.WithValue(ctx, ctxKeyCallerRole, role)
+	return ctx
+}
+
 // withToken stores the authenticated token of an HTTP request.
 func withToken(ctx context.Context, tok *authedToken) context.Context {
 	return context.WithValue(ctx, ctxKeyToken, tok)
@@ -495,12 +394,6 @@ func withToken(ctx context.Context, tok *authedToken) context.Context {
 func tokenFrom(ctx context.Context) *authedToken {
 	tok, _ := ctx.Value(ctxKeyToken).(*authedToken)
 	return tok
-}
-
-func withCaller(ctx context.Context, uid, role string) context.Context {
-	ctx = context.WithValue(ctx, ctxKeyCallerID, uid)
-	ctx = context.WithValue(ctx, ctxKeyCallerRole, role)
-	return ctx
 }
 
 // CallerID returns the bearer-authed user id for the current MCP request,
@@ -524,5 +417,4 @@ func CallerRole(ctx context.Context) string {
 // trivial and the helper is hot-path private. The bytes hashed are the
 // "bua_…" plaintext exactly as the user supplies them — matches the
 // AutomationTokenView.Hash that the store wrote at mint time.
-// Implementation lives in token_hash.go to keep this file focused on the
-// JSON-RPC plumbing.
+// Implementation lives in token_hash.go.
