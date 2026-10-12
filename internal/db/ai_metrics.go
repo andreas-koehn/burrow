@@ -8,7 +8,6 @@ package db
 import (
 	"context"
 	"fmt"
-	"sort"
 	"time"
 )
 
@@ -22,9 +21,10 @@ import (
 type AIEndpointCount struct {
 	Requests  int
 	CacheHits int
-	// LatencyP95Ms is the 95th percentile of latency_ms over the requests an
-	// upstream answered (no cache hits, no rows from before the column
-	// existed); 0 when there is none.
+	// LatencyP95Ms is the nearest-rank 95th percentile of latency_ms over the
+	// requests of the last 24h that an upstream answered (upstream_status
+	// 200-499; no cache hits, no 5xx or gateway-made failures, no rows from
+	// before the column existed); 0 when there is none.
 	LatencyP95Ms int
 }
 
@@ -84,45 +84,40 @@ func (x *DB) AIEndpointCounts24h(ctx context.Context) (map[string]AIEndpointCoun
 	}
 	_ = rows.Close()
 
-	// p95 latency per service, computed here: the two databases share no
-	// percentile function. Index idx_usage_events_ts serves the range.
+	// p95 latency per service: the nearest-rank percentile, the row at rank
+	// ceil(0.95 n) of the service's latencies in ascending order. A window
+	// function does it in the database (SQLite 3.25+ and Postgres both have
+	// ROW_NUMBER and COUNT OVER; the integer division is exact on both). Only
+	// requests an upstream answered count: the row carries the status of the
+	// answer, 200-499. A 5xx is a failure of the upstream, or the gateway's
+	// own 502/504 when none answered, and its latency is the whole chain's;
+	// 0 is a request that got no status. Cache hits and rows from before the
+	// latency column (0 ms) are left out. Index idx_usage_events_ts serves
+	// the range.
 	lrows, err := x.sqlDB.QueryContext(ctx, `
 		SELECT service_id, latency_ms
-		  FROM usage_events
-		 WHERE ts >= ? AND latency_ms > 0 AND NOT cache_hit`, since)
+		  FROM (SELECT service_id, latency_ms,
+		               ROW_NUMBER() OVER (PARTITION BY service_id ORDER BY latency_ms) AS rn,
+		               COUNT(*)     OVER (PARTITION BY service_id) AS n
+		          FROM usage_events
+		         WHERE ts >= ? AND latency_ms > 0 AND NOT cache_hit
+		           AND upstream_status BETWEEN 200 AND 499) ranked
+		 WHERE rn = (95 * n + 99) / 100`, since)
 	if err != nil {
 		return nil, fmt.Errorf("ai endpoint latency 24h: %w", err)
 	}
 	defer lrows.Close()
-	latencies := map[string][]int64{}
 	for lrows.Next() {
 		var sid string
 		var ms int64
 		if err := lrows.Scan(&sid, &ms); err != nil {
 			return nil, fmt.Errorf("scan ai endpoint latency: %w", err)
 		}
-		latencies[sid] = append(latencies[sid], ms)
-	}
-	if err := lrows.Err(); err != nil {
-		return nil, err
-	}
-	for sid, ms := range latencies {
 		c := out[sid]
-		c.LatencyP95Ms = int(percentile95(ms))
+		c.LatencyP95Ms = int(ms)
 		out[sid] = c
 	}
-	return out, nil
-}
-
-// percentile95 is the nearest-rank 95th percentile of values, 0 for none.
-// It sorts values in place.
-func percentile95(values []int64) int64 {
-	if len(values) == 0 {
-		return 0
-	}
-	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
-	rank := (95*len(values) + 99) / 100 // ceil(0.95 n), 1-based
-	return values[rank-1]
+	return out, lrows.Err()
 }
 
 // AIEndpointMetrics24h returns the trailing-24h aggregate for one service plus a

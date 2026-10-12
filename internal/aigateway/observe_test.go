@@ -3,9 +3,11 @@ package aigateway
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/ankoehn/burrow/internal/aigw"
+	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/observe"
 )
 
@@ -35,6 +37,8 @@ func TestFailover_AttemptsReachTheRoute(t *testing.T) {
 		name     string
 		slots    string
 		handlers map[string]http.HandlerFunc
+		mut      func(*db.AIModel)
+		offline  bool // no tunnel client is connected
 		status   int
 		want     []observe.Attempt
 	}{
@@ -62,9 +66,60 @@ func TestFailover_AttemptsReachTheRoute(t *testing.T) {
 			status:   502,
 			want:     []observe.Attempt{with(zai, 500, true), with(or, 502, true)},
 		},
+		{
+			// Refused by the gateway before the upstream was called, with a
+			// 5xx: the breaker hears of it, so the observer does.
+			name: "the credential is not configured, the second answers", slots: "ZAI",
+			handlers: map[string]http.HandlerFunc{"openrouter#OR": status(200, `{"ok":true}`)},
+			status:   200,
+			want: []observe.Attempt{
+				{ProviderSlug: "zai", ServiceID: "prov-zai", Status: 503, Failed: true},
+				with(or, 200, false),
+			},
+		},
+		{
+			name: "the tunnel client is offline, the second answers", slots: "ZAI",
+			handlers: map[string]http.HandlerFunc{"openrouter#OR": status(200, `{"ok":true}`)},
+			mut: func(m *db.AIModel) {
+				m.Targets = []db.AIModelTarget{
+					{Dialect: "openai", Position: 0, ProviderSlug: "ollama", TargetModel: "mistral"},
+					{Dialect: "openai", Position: 1, ProviderSlug: "openrouter", TargetModel: "google/gemini-x"},
+				}
+			},
+			offline: true,
+			status:  200,
+			want: []observe.Attempt{
+				{ProviderSlug: "ollama", ServiceID: "svc1", Status: 502, Failed: true},
+				with(or, 200, false),
+			},
+		},
+		{
+			// A 429 is not the provider's failure (the breaker is not told):
+			// no upstream error, and the move to the next target is a failover.
+			name: "a rate limit with the flag off is the answer", slots: "ZAI",
+			handlers: map[string]http.HandlerFunc{"zai#ZAI": status(429, "slow"), "openrouter#OR": status(200, "{}")},
+			status:   429,
+			want:     []observe.Attempt{with(zai, 429, false)},
+		},
+		{
+			name: "a rate limit with the flag on moves to the next target", slots: "ZAI",
+			handlers: map[string]http.HandlerFunc{"zai#ZAI": status(429, "slow"), "openrouter#OR": status(200, "{}")},
+			mut:      func(m *db.AIModel) { m.FallbackOnRateLimit = true },
+			status:   200,
+			want:     []observe.Attempt{with(zai, 429, false), with(or, 200, false)},
+		},
+		{
+			name: "a rate limit on one key moves to the next key of the provider", slots: "ZAI,ZAI2",
+			handlers: map[string]http.HandlerFunc{"zai#ZAI": status(429, "slow"), "zai#ZAI2": status(200, "{}")},
+			status:   200,
+			want:     []observe.Attempt{with(zai, 429, false), with(zai, 200, false)},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			g, _ := failoverGateway(script(tc.handlers), tc.slots, nil)
+			g, _ := failoverGateway(script(tc.handlers), tc.slots, tc.mut)
+			if tc.offline {
+				g.Tunnels = fakeTunnels{}
+			}
 			spy := &attemptSpy{}
 			g.Chain = spy
 			rec := call(g, smartBody)
@@ -104,6 +159,63 @@ func TestFailover_ClientGoneIsNoFailedAttempt(t *testing.T) {
 	if len(spy.got) != 1 || spy.got[0].Failed || !spy.got[0].Sent || spy.got[0].ProviderSlug != "zai" {
 		t.Fatalf("attempts %+v, want one sent, not failed attempt at zai", spy.got)
 	}
+}
+
+// serveOwnPath sends an inference request to the provider's own path
+// (/ai/<slug>/v1/...) with a gateway key and returns what the chain's
+// observer is handed.
+func serveOwnPath(t *testing.T, g *Gateway, ctx context.Context) []observe.Attempt {
+	t.Helper()
+	spy := &attemptSpy{}
+	g.Chain = spy
+	req := post("/v1/chat/completions", "bgw_all", `{"model":"glm-5.1","messages":[{"role":"user","content":"hi"}]}`).WithContext(ctx)
+	g.Serve(httptest.NewRecorder(), req, "zai")
+	drained(g)
+	return spy.got
+}
+
+// The provider's own path has no fallback: one attempt, which counts against
+// the provider as a 5xx does on a dialect endpoint, and is no failure when the
+// caller hung up.
+func TestOwnPath_AttemptIsReported(t *testing.T) {
+	zai := observe.Attempt{ProviderSlug: "zai", ServiceID: "prov-zai", Sent: true}
+	with := func(status int, failed bool) []observe.Attempt {
+		a := zai
+		a.Status, a.Failed = status, failed
+		return []observe.Attempt{a}
+	}
+	run := func(h http.HandlerFunc, ctx context.Context) []observe.Attempt {
+		g, _ := failoverGateway(script(map[string]http.HandlerFunc{"zai#ZAI": h}), "ZAI", nil)
+		return serveOwnPath(t, g, ctx)
+	}
+	for name, tc := range map[string]struct {
+		h    http.HandlerFunc
+		want []observe.Attempt
+	}{
+		"an answer":                  {status(200, `{"ok":true}`), with(200, false)},
+		"the request's own fault":    {status(400, `{"error":"bad"}`), with(400, false)},
+		"a rate limit":               {status(429, "slow"), with(429, false)},
+		"an upstream failure":        {status(503, "down"), with(503, true)},
+		"a handler that writes none": {func(http.ResponseWriter, *http.Request) {}, with(200, false)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := run(tc.h, context.Background())
+			if len(got) != 1 || got[0] != tc.want[0] {
+				t.Fatalf("attempts %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+	t.Run("the caller hangs up", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		got := run(func(w http.ResponseWriter, _ *http.Request) {
+			cancel()
+			w.WriteHeader(500)
+		}, ctx)
+		if len(got) != 1 || got[0].Failed {
+			t.Fatalf("attempts %+v, want one that is not failed", got)
+		}
+	})
 }
 
 // A request without a route has no attempts, and a nil route takes none.

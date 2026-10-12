@@ -267,12 +267,15 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		res := f.attempt(w, r, c, next, attemptBody, tr, deadline, sent, atCommit)
 		rows = append(rows, res.row)
-		if res.sent {
-			// A wait in vain for a place, or a refusal before the upstream
-			// was called, sent nothing.
+		if !res.busy && (res.sent || res.row.Status != 0 || res.outcome == outcomeFailed) {
+			// What the breaker is told about is an attempt, whether or not
+			// the upstream was called: a refusal of the gateway's own with a
+			// 5xx (the tunnel is offline, no credential, a failed lookup)
+			// counts against the provider. A wait in vain for a place, and
+			// time that ran out before the upstream was reached, are none.
 			tried = append(tried, observe.Attempt{
 				ProviderSlug: c.provider.Slug, ServiceID: c.provider.ServiceID,
-				Status: res.row.Status, Failed: res.outcome == outcomeFailed, Sent: true,
+				Status: res.row.Status, Failed: res.outcome == outcomeFailed, Sent: res.sent,
 			})
 		}
 		f.report(c, order[i+1:], res.outcome, adm)

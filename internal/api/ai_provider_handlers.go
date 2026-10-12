@@ -9,7 +9,7 @@ package api
 // status, trailing-24h request counts) and the first synthetic model that
 // targets it.  latency_p95_ms is
 // the 95th percentile of the latency of the requests of the last 24h that an
-// upstream answered.
+// upstream answered (a status of 200-499; not cache hits, not failures).
 
 import (
 	"context"

@@ -107,9 +107,7 @@ func TestGatewayAttempts_FailoverIsObservedOnce(t *testing.T) {
 	if n, _ := familySum(text, "burrow_ai_upstream_errors_total"); n != 1 {
 		t.Errorf("upstream errors counted: %v, want 1 for the one failed attempt:\n%s", n, grepBurrow(text, "burrow_ai_upstream_errors_total"))
 	}
-	if !strings.Contains(text, `status="5xx"`) {
-		t.Errorf("the upstream error is not labelled with its status class:\n%s", grepBurrow(text, "burrow_ai_upstream_errors_total"))
-	}
+	wantLines(t, text, `burrow_ai_upstream_errors_total{service="`+serviceOfProvider(t, e, "alpha")+`",status="5xx"} 1`)
 	if up := events.named("ai.upstream_error"); len(up) != 1 {
 		t.Errorf("ai.upstream_error events: %v, want 1", up)
 	}
@@ -182,4 +180,92 @@ func TestGatewayAttempts_CallerGoneIsNoUpstreamError(t *testing.T) {
 	if e.up.calls("beta") != 0 {
 		t.Error("the chain went on after the caller was gone")
 	}
+}
+
+// A provider's own path (/ai/<slug>/v1/...) has no fallback chain: its one
+// attempt counts one upstream error when the upstream fails, no failover, and
+// nothing for an answer or for a caller who hung up.
+func TestGatewayAttempts_ProviderPathIsObserved(t *testing.T) {
+	e, key, rec, events, taps := gatewayAttemptsEnv(t)
+	const body = `{"model":"m-a","messages":[{"role":"user","content":"hi"}]}`
+	const path = "/ai/alpha/v1/chat/completions"
+	count := func(family string) float64 { n, _ := familySum(expo(t, rec), family); return n }
+
+	// An answer counts nothing.
+	if r := e.call(t, "POST", path, body, bearer(key)...); r.Status != 200 {
+		t.Fatalf("status %d body %s", r.Status, r.Body)
+	}
+	if ev := awaitModelRequest(t, taps); len(ev.Attempts) != 1 || ev.Attempts[0].Failed {
+		t.Fatalf("attempts %+v, want one answered", ev.Attempts)
+	}
+	if n := count("burrow_ai_upstream_errors_total") + count("burrow_ai_failover_events_total"); n != 0 {
+		t.Fatalf("an answer counted %v", n)
+	}
+
+	// A failing upstream: one upstream error, no failover, one event.
+	e.up.set("alpha", func(w http.ResponseWriter, _ *http.Request, _ []byte) bool {
+		gwJSON(w, 500, map[string]any{"error": map[string]string{"message": "boom"}})
+		return true
+	})
+	if r := e.call(t, "POST", path, body, bearer(key)...); r.Status != 500 {
+		t.Fatalf("status %d body %s", r.Status, r.Body)
+	}
+	awaitModelRequest(t, taps)
+	text := expo(t, rec)
+	wantLines(t, text, `burrow_ai_upstream_errors_total{service="`+serviceOfProvider(t, e, "alpha")+`",status="5xx"} 1`)
+	if n := count("burrow_ai_failover_events_total"); n != 0 {
+		t.Errorf("failovers counted on a path without fallback: %v", n)
+	}
+	if up := events.named("ai.upstream_error"); len(up) != 1 {
+		t.Errorf("ai.upstream_error events: %v, want 1", up)
+	}
+
+	// A caller who hangs up while the upstream works counts nothing more.
+	inFlight := make(chan struct{}, 1)
+	e.up.set("alpha", func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		inFlight <- struct{}{}
+		<-r.Context().Done()
+		w.WriteHeader(http.StatusInternalServerError)
+		return true
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, e.srv.URL+path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+	errc := make(chan error, 1)
+	go func() {
+		resp, err := e.plain.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		errc <- err
+	}()
+	select {
+	case <-inFlight:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the request never reached the provider")
+	}
+	cancel()
+	<-errc
+	awaitModelRequest(t, taps)
+	if n := count("burrow_ai_upstream_errors_total"); n != 1 {
+		t.Errorf("upstream errors after a caller hung up: %v, want still 1", n)
+	}
+	if up := events.named("ai.upstream_error"); len(up) != 1 {
+		t.Errorf("ai.upstream_error events: %v, want still 1", up)
+	}
+}
+
+// serviceOfProvider is the id of the service behind a provider.
+func serviceOfProvider(t *testing.T, e *gwEnv, slug string) string {
+	t.Helper()
+	code, b := e.admin(t, "GET", "/api/v1/ai/providers/"+slug, nil)
+	var out struct {
+		ServiceID string `json:"service_id"`
+	}
+	if code != http.StatusOK || json.Unmarshal(b, &out) != nil || out.ServiceID == "" {
+		t.Fatalf("provider %s: %d %s", slug, code, b)
+	}
+	return out.ServiceID
 }

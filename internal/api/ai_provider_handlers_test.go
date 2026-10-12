@@ -467,8 +467,6 @@ func TestProviderMetrics(t *testing.T) {
 	wantStatus(t, c.get(t, "/api/v1/ai/providers/nope/metrics"), http.StatusNotFound)
 }
 
-// A provider that exists but whose service belongs to someone else answers
-// 404 like an unknown slug, so slugs cannot be enumerated through the status.
 // latency_p95_ms is what the metrics store measured for the provider's
 // service; it was a constant 0.
 func TestProvider_ReportsLatencyP95(t *testing.T) {
@@ -496,6 +494,8 @@ func TestProvider_ReportsLatencyP95(t *testing.T) {
 	}
 }
 
+// A provider that exists but whose service belongs to someone else answers
+// 404 like an unknown slug, so slugs cannot be enumerated through the status.
 func TestProviderMetrics_404WhenServiceNotVisible(t *testing.T) {
 	ss, ps := oneProviderFixture()
 	ss.getSvcErr = store.ErrForbidden

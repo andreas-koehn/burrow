@@ -16,6 +16,7 @@ import (
 	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/httpduplex"
+	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -196,7 +197,7 @@ func (g *Gateway) Serve(w http.ResponseWriter, r *http.Request, slug string) {
 		// Inference takes a place at the provider, the same places the
 		// dialect endpoints use. It is taken where the upstream is called, so
 		// an answer from the cache or a refusal by the chain takes none.
-		upstream = g.limited(upstream, p)
+		upstream = g.limited(g.attempted(upstream, p), p)
 	}
 	// Tell the caller which provider answered; set only once the caller is
 	// known to hold a valid key.
@@ -269,6 +270,57 @@ func (g *Gateway) admit(ctx context.Context, p db.AIProvider, wait time.Duration
 	defer cancel()
 	return g.Limiter.Acquire(waitCtx, p.Slug, p.MaxConcurrent)
 }
+
+// attempted tells the chain's observer that the request was sent to the
+// provider (see aigw.SetAttemptsIn): the provider's own path has no fallback,
+// so there is one attempt. It counts against the provider as a 5xx or no
+// answer does on a dialect endpoint, and not when the caller left.
+func (g *Gateway) attempted(next http.Handler, p db.AIProvider) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sw := &statusWriter{ResponseWriter: w}
+		normal := false
+		defer func() {
+			failed := r.Context().Err() == nil && (sw.status >= 500 || (sw.status == 0 && !normal))
+			status := sw.status
+			if status == 0 && normal {
+				status = http.StatusOK // as under net/http: no write is an empty 200
+			}
+			aigw.SetAttemptsIn(r.Context(), []observe.Attempt{{
+				ProviderSlug: p.Slug, ServiceID: p.ServiceID, Status: status, Failed: failed, Sent: true,
+			}})
+		}()
+		next.ServeHTTP(sw, r)
+		normal = true
+	})
+}
+
+// statusWriter remembers the first status written.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	if s.status == 0 && code >= 200 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *statusWriter) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 // limited wraps the upstream of a provider path so that each call holds a
 // place at the provider for as long as it runs. A call that finds none in

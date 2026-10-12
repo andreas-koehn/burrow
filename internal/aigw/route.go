@@ -115,6 +115,13 @@ func (r *Route) SetAttempts(attempts []observe.Attempt) {
 	r.mu.Unlock()
 }
 
+// SetAttemptsIn is SetAttempts on the route attached to ctx; it does nothing
+// without one. For code that serves a request but does not hold the route.
+func SetAttemptsIn(ctx context.Context, attempts []observe.Attempt) {
+	r, _ := ctx.Value(routeKey{}).(*Route)
+	r.SetAttempts(attempts)
+}
+
 // AttemptsFrom returns what the gateway sent to upstreams for the request of
 // ctx (see SetAttempts): nil without a route, and until the gateway is done.
 // It is not part of RouteInfo, which stays a comparable value.
