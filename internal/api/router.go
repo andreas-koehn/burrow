@@ -49,6 +49,29 @@ func (d Deps) loginRateLimiters() (perIP, global func(http.Handler) http.Handler
 	return perIP, global
 }
 
+// MCPRateLimitPerIP is the number of requests per minute one client address
+// may send to /mcp/burrow, authenticated or not. It is four times the
+// per-token limit of mcpserv (300), so several busy clients behind one
+// address fit.
+const MCPRateLimitPerIP = 1200
+
+// mcpAddressLimiter builds the per-address limit in front of /mcp/burrow. It
+// keys on the client address after TrustedProxyMiddleware, like the login
+// limiter.
+func (d Deps) mcpAddressLimiter() func(http.Handler) http.Handler {
+	limit := d.MCP.RateLimitPerIP
+	if limit <= 0 {
+		limit = MCPRateLimitPerIP
+	}
+	return httprate.Limit(limit, time.Minute,
+		httprate.WithKeyFuncs(httprate.KeyByIP),
+		httprate.WithLimitHandler(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Retry-After", "60")
+			writeErr(w, http.StatusTooManyRequests, "too many requests")
+		}),
+	)
+}
+
 // NewRouter builds the /api/v1 HTTP handler.
 func NewRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
@@ -487,6 +510,28 @@ func NewRouter(d Deps) http.Handler {
 	// middleware does not apply to its form POST.
 	if d.Gate != nil {
 		r.Handle("/__burrow/*", d.Gate)
+	}
+
+	// Burrow's own management tools for MCP clients. Control plane, but none
+	// of the /api/v1 chain applies: the handler takes automation tokens only,
+	// never the session cookie, and brings its own origin check, rate limit
+	// and body limit. Registered before the SPA catch-all, and whatever Deps
+	// holds, so the route is always part of the documented surface. POST is
+	// the transport; GET and DELETE are its other two methods, routed here so
+	// that an MCP client is told 405 instead of being served the dashboard.
+	// A per-address limit sits in front of the handler: its per-token limit
+	// only sees requests that already authenticated, and a bad bearer costs a
+	// hash and a store lookup. The address is the one TrustedProxyMiddleware
+	// decided on.
+	mcpHandler := d.MCP.Handler
+	if mcpHandler == nil {
+		mcpHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeErr(w, http.StatusServiceUnavailable, "mcp endpoint is not configured")
+		})
+	}
+	mcpHandler = d.mcpAddressLimiter()(mcpHandler)
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
+		r.Method(method, mcpEndpointPath, mcpHandler)
 	}
 
 	// AI data plane. Registered before the SPA catch-all. The dashboard's own

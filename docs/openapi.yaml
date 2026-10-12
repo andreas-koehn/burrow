@@ -818,6 +818,116 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
 
   # ────────────────────────────────────────────────────────────────────────
+  # Management MCP server (outside /api/v1; automation tokens only)
+  # ────────────────────────────────────────────────────────────────────────
+  /mcp/burrow:
+    post:
+      tags: [mcp]
+      operationId: mcpManagement
+      x-burrow-mcp: false
+      summary: Management MCP endpoint (Streamable HTTP, stateless)
+      description: |
+        Burrow's own management tools for MCP clients. Each request carries
+        one JSON-RPC 2.0 message as defined by the Model Context Protocol
+        and is answered with one JSON body. The MCP revisions 2026-07-28,
+        2025-11-25, 2025-06-18 and 2025-03-26 are served; no session is kept
+        and no `Mcp-Session-Id` is issued.
+
+        `tools/list` returns only the tools the token may call. `tools/call`
+        on any other name is answered like a call on a tool that does not
+        exist. The session cookie is not accepted. At most 300 requests per
+        token and minute and 1200 per client address and minute (the address
+        limit applies before the token is looked at); bodies up to 1 MiB.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: MCP-Protocol-Version
+          in: header
+          required: false
+          schema: { type: string }
+          description: The MCP revision of the request, as the client negotiated it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: A JSON-RPC 2.0 request or notification.
+      responses:
+        '200':
+          description: The JSON-RPC response; protocol errors are responses too.
+          content:
+            application/json:
+              schema: { type: object }
+        '202': { description: A notification was accepted. No body. }
+        '400': { description: Not an MCP request (malformed JSON, a JSON-RPC batch, missing Accept, unsupported revision). Plain text. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Sent by a browser from another origin.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413': { description: Body over 1 MiB. Plain text. }
+        '415': { description: Content-Type is not application/json. Plain text. }
+        '429':
+          description: Rate-limited, per token or per client address.
+          headers:
+            Retry-After:
+              description: Seconds until the request may be retried.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      tags: [mcp]
+      operationId: mcpManagementGet
+      x-burrow-mcp: false
+      summary: Not offered (the endpoint opens no server-to-client stream)
+      security:
+        - BearerAuth: []
+      responses:
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Sent by a browser from another origin.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '405': { description: 'Always. `Allow: POST`.' }
+        '429':
+          description: Rate-limited, per token or per client address.
+          headers:
+            Retry-After:
+              description: Seconds until the request may be retried.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [mcp]
+      operationId: mcpManagementDelete
+      x-burrow-mcp: false
+      summary: Not offered (the endpoint keeps no session to end)
+      security:
+        - BearerAuth: []
+      responses:
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Sent by a browser from another origin.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '405': { description: 'Always. `Allow: POST`.' }
+        '429':
+          description: Rate-limited, per token or per client address.
+          headers:
+            Retry-After:
+              description: Seconds until the request may be retried.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ────────────────────────────────────────────────────────────────────────
   # Auth (login is public; everything else requires a session)
   # ────────────────────────────────────────────────────────────────────────
   /api/v1/auth/login:
