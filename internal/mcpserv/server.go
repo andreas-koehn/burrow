@@ -110,9 +110,11 @@ type Server struct {
 	toolList []ToolDescriptor // the same order, for Tools()
 	audit    AuditAppender    // optional; nil = audit hook disabled
 
-	rateLimit  int
-	rateWindow time.Duration
-	handler    http.Handler
+	rateLimit int
+	// toolTimeout overrides the package constant of that name; tests only.
+	toolTimeout time.Duration
+	rateWindow  time.Duration
+	handler     http.Handler
 }
 
 // Option adjusts a Server at construction.

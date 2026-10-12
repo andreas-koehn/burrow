@@ -410,3 +410,142 @@ func TestMCPMount_PerAddressLimit(t *testing.T) {
 		t.Fatalf("lookups = %d, want %d", got, limit+1)
 	}
 }
+
+// mcpLimitServer serves the router with the given allowance, a counting
+// token store and the given trusted proxies.
+func mcpLimitServer(t *testing.T, limit int, proxies []string) (*httptest.Server, *countingTokens, string) {
+	t.Helper()
+	const token = "bua_limitservertoken01"
+	store := &countingTokens{mcpTokens: mcpTokens{plaintext: token, perms: []string{"tunnels:read:any"}}}
+	srv := mcpserv.New(store, mcpTokens{}, nil, discardLog())
+	hs := httptest.NewServer(NewRouter(Deps{
+		Log:            discardLog(),
+		TrustedProxies: proxies,
+		MCP:            MCPInfo{Enabled: true, Server: srv, Handler: srv, RateLimitPerIP: limit},
+	}))
+	t.Cleanup(hs.Close)
+	return hs, store, token
+}
+
+func mcpDo(t *testing.T, method, url string, hdr map[string]string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(method, url, strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+// Requests the perimeter refuses anyway, or that carry no bearer, do not use
+// up the allowance of the address; requests with a bearer do.
+func TestMCPMount_LimitCountsOnlyBearerRequests(t *testing.T) {
+	const limit = 3
+	hs, store, token := mcpLimitServer(t, limit, nil)
+	url := hs.URL + "/mcp/burrow"
+
+	for i := 0; i < 3*limit; i++ {
+		r := mcpDo(t, http.MethodPost, url, map[string]string{
+			"Origin": "http://evil.example", "Sec-Fetch-Site": "cross-site",
+			"Authorization": "Basic Zm9vOmJhcg==",
+		})
+		if r.StatusCode != http.StatusForbidden {
+			t.Fatalf("cross-origin: %d, want 403", r.StatusCode)
+		}
+		if r := mcpDo(t, http.MethodPost, url, nil); r.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("no bearer: %d, want 401", r.StatusCode)
+		}
+	}
+	if store.lookups() != 0 {
+		t.Fatalf("lookups = %d, want 0", store.lookups())
+	}
+	// The allowance is intact: limit bearer requests (valid or not) count.
+	for i := 0; i < limit; i++ {
+		b := token
+		if i%2 == 1 {
+			b = "bua_nosuchtoken"
+		}
+		if r := mcpDo(t, http.MethodPost, url, map[string]string{"Authorization": "Bearer " + b}); r.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("bearer request %d refused with 429 too early", i)
+		}
+	}
+	r := mcpDo(t, http.MethodPost, url, map[string]string{"Authorization": "Bearer " + token})
+	if r.StatusCode != http.StatusTooManyRequests || r.Header.Get("Retry-After") == "" {
+		t.Fatalf("after the limit: %d Retry-After=%q", r.StatusCode, r.Header.Get("Retry-After"))
+	}
+	if len(r.Header.Values("Retry-After")) != 1 {
+		t.Errorf("Retry-After set %d times", len(r.Header.Values("Retry-After")))
+	}
+	if store.lookups() != limit {
+		t.Errorf("lookups = %d, want %d", store.lookups(), limit)
+	}
+}
+
+// With no trusted proxy configured the key is the TCP peer: forged address
+// headers neither avoid the limit nor give a request its own allowance.
+func TestMCPMount_LimitKeyIsNotCallerControlled(t *testing.T) {
+	const limit = 3
+	hs, store, _ := mcpLimitServer(t, limit, nil)
+	var codes []int
+	for i := 0; i < limit+3; i++ {
+		ip := "203.0.113." + string(rune('1'+i))
+		r := mcpDo(t, http.MethodPost, hs.URL+"/mcp/burrow", map[string]string{
+			"Authorization":   "Bearer bua_nosuchtoken",
+			"X-Forwarded-For": ip, "X-Real-IP": ip, "True-Client-IP": ip,
+		})
+		codes = append(codes, r.StatusCode)
+	}
+	for i, c := range codes {
+		want := http.StatusUnauthorized
+		if i >= limit {
+			want = http.StatusTooManyRequests
+		}
+		if c != want {
+			t.Fatalf("codes = %v, want the first %d to be 401 and the rest 429", codes, limit)
+		}
+	}
+	if store.lookups() != limit {
+		t.Errorf("lookups = %d, want %d", store.lookups(), limit)
+	}
+}
+
+// What each method answers, per case, with the real handler behind the router.
+func TestMCPMount_StatusPerMethodAndCase(t *testing.T) {
+	hs, _, token := mcpLimitServer(t, 1000, nil)
+	url := hs.URL + "/mcp/burrow"
+	cross := map[string]string{"Origin": "http://evil.example", "Sec-Fetch-Site": "cross-site"}
+	with := func(h map[string]string, bearer string) map[string]string {
+		m := map[string]string{}
+		for k, v := range h {
+			m[k] = v
+		}
+		if bearer != "" {
+			m["Authorization"] = "Bearer " + bearer
+		}
+		return m
+	}
+	cases := []struct {
+		name, method string
+		hdr          map[string]string
+		want         int
+	}{
+		{"get, no bearer", http.MethodGet, nil, 401},
+		{"get, bearer", http.MethodGet, with(nil, token), 405},
+		{"get, cross-origin, no bearer", http.MethodGet, cross, 401},
+		{"delete, no bearer", http.MethodDelete, nil, 401},
+		{"delete, bearer", http.MethodDelete, with(nil, token), 405},
+		{"delete, cross-origin", http.MethodDelete, cross, 403},
+		{"post, cross-origin", http.MethodPost, cross, 403},
+		{"post, no bearer", http.MethodPost, nil, 401},
+	}
+	for _, c := range cases {
+		if r := mcpDo(t, c.method, url, c.hdr); r.StatusCode != c.want {
+			t.Errorf("%s: %d, want %d", c.name, r.StatusCode, c.want)
+		}
+	}
+}

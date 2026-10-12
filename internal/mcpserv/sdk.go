@@ -19,6 +19,7 @@ import (
 	"io"
 	"net/http"
 	"runtime/debug"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -136,6 +137,10 @@ func sdkTool(t Tool) *mcp.Tool {
 	}
 }
 
+// toolTimeout bounds one tool call; the JSON API uses the same bound
+// (api.JSONHandlerTimeout).
+const toolTimeout = 30 * time.Second
+
 // callHandler adapts a registry Call to the SDK's raw tool handler and writes
 // the audit row. A tool that fails answers with an isError result, which the
 // model can read and act on; it is not a protocol error.
@@ -157,7 +162,21 @@ func (s *Server) callHandler(tok *authedToken, t Tool) mcp.ToolHandler {
 		}()
 		// Inject caller identity into the context so tools can resolve
 		// "owned by" semantics without re-fetching the bearer row.
-		payload, err := t.Call(withCaller(ctx, tok.userID, tok.role), req.Params.Arguments)
+		// A tool whose store call hangs must end: neither a client that went
+		// away nor a deadline in front of the handler reaches it otherwise.
+		limit := s.toolTimeout
+		if limit <= 0 {
+			limit = toolTimeout
+		}
+		callCtx, cancel := context.WithTimeout(withCaller(ctx, tok.userID, tok.role), limit)
+		defer cancel()
+		payload, err := t.Call(callCtx, req.Params.Arguments)
+		if err != nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			// The log names the tool and the deadline, never an argument.
+			s.emitToolAudit(ctx, tok, t.Name, "error")
+			s.log.Warn("mcp tool call failed", "tool", t.Name, "reason", "deadline exceeded", "deadline", limit.String())
+			return errorResult(errors.New("timed out")), nil
+		}
 		if err != nil {
 			// Store-layer permission failures hit this path when a token
 			// granted only :own scope reaches for another user's data.

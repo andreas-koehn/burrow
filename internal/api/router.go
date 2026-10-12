@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ankoehn/burrow/internal/aigateway"
@@ -63,13 +64,29 @@ func (d Deps) mcpAddressLimiter() func(http.Handler) http.Handler {
 	if limit <= 0 {
 		limit = MCPRateLimitPerIP
 	}
-	return httprate.Limit(limit, time.Minute,
+	limiter := httprate.Limit(limit, time.Minute,
 		httprate.WithKeyFuncs(httprate.KeyByIP),
+		// httprate has set Retry-After by the time this runs.
 		httprate.WithLimitHandler(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Retry-After", "60")
 			writeErr(w, http.StatusTooManyRequests, "too many requests")
 		}),
 	)
+	// Only a request that carries a bearer token is counted: it is the one
+	// that costs a hash and a store lookup. Everything else is refused by the
+	// handler's own perimeter without touching the store, and must not use up
+	// the allowance of an address (a page in any browser behind the same NAT
+	// can send cross-origin requests, but not with an Authorization header
+	// without a preflight, which gets no CORS answer).
+	return func(next http.Handler) http.Handler {
+		counted := limiter(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+				counted.ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // NewRouter builds the /api/v1 HTTP handler.

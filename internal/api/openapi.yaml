@@ -887,11 +887,6 @@ paths:
         - BearerAuth: []
       responses:
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403':
-          description: Sent by a browser from another origin.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
         '405': { description: 'Always. `Allow: POST`.' }
         '429':
           description: Rate-limited, per token or per client address.

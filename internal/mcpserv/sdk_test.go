@@ -894,3 +894,66 @@ func TestMCP_PanicLog_HasTypeAndStack(t *testing.T) {
 		t.Errorf("panic log: %s", logs)
 	}
 }
+
+// ---------- tool deadline ---------------------------------------------------
+
+// hangStore blocks ListAPIKeys until its context is done, as a store call
+// that hangs would, and says when it has returned.
+type hangStore struct {
+	fakeStore
+	entered  chan struct{}
+	returned chan struct{}
+}
+
+func (h *hangStore) ListAPIKeys(ctx context.Context, _, _, _ string) ([]db.ServiceAPIKey, error) {
+	defer close(h.returned)
+	close(h.entered)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestMCP_HangingTool_EndsAtTheDeadline(t *testing.T) {
+	hs := &hangStore{entered: make(chan struct{}), returned: make(chan struct{})}
+	var logs strings.Builder
+	var logMu sync.Mutex
+	s := New(nil, nil, hs, slog.New(slog.NewTextHandler(lockedWriter{&logMu, &logs}, nil)))
+	s.toolTimeout = 100 * time.Millisecond
+	sink := &auditSink{}
+	s.SetAuditAppender(sink)
+	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: allToolPerms}
+	h := s.mcpHandler()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
+	}))
+	t.Cleanup(srv.Close)
+	cs := connectMCP(t, srv.URL, "", "2025-11-25")
+
+	start := time.Now()
+	res, err := callTool(t, cs, "api_keys_list", map[string]any{"service_id": "secret-service-id"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("call took %v", d)
+	}
+	if !res.IsError || resultText(t, res) != "timed out" {
+		t.Errorf("result = %+v", res)
+	}
+	select {
+	case <-hs.returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the tool call is still running after the deadline")
+	}
+	if rows := sink.all(); len(rows) != 1 || rows[0].Result != "error" {
+		t.Errorf("audit rows = %+v", rows)
+	}
+	logMu.Lock()
+	out := logs.String()
+	logMu.Unlock()
+	if !strings.Contains(out, "api_keys_list") || !strings.Contains(out, "deadline=100ms") {
+		t.Errorf("log lacks the tool or the deadline: %s", out)
+	}
+	if strings.Contains(out, "secret-service-id") {
+		t.Errorf("log carries an argument value: %s", out)
+	}
+}
