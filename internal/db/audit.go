@@ -84,7 +84,7 @@ func (x *DB) LatestAuditRow(ctx context.Context, tx *sql.Tx) (id, hash string, o
 // until tx ends, across every process that shares the database. It must be
 // the first statement of tx. See lockAuditChain.
 func (x *DB) LockAuditChain(ctx context.Context, tx *sql.Tx) error {
-	return lockAuditChain(ctx, x.sqlDB, tx)
+	return lockAuditChain(ctx, x.sqlDB.DB, tx)
 }
 
 // AuditQuery is the filter shape consumed by ListAuditEvents.

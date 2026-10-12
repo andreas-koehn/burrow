@@ -67,6 +67,12 @@ type Compactor struct {
 	settings Loader
 	audit    AuditLogger
 	log      *slog.Logger
+
+	// OnRun, when set, is called at the end of every RunOnce that got as far
+	// as deleting, with the rows deleted per table (a table that was looked
+	// at and had nothing to delete is there with 0) and the time the run
+	// ended. cmd/server feeds the retention metrics from it.
+	OnRun func(counts map[string]int, at time.Time)
 }
 
 // New constructs a Compactor.  All parameters are required; log may be a
@@ -163,7 +169,20 @@ func (c *Compactor) RunOnce(ctx context.Context) (map[string]int, error) {
 		}
 	}
 
+	if c.OnRun != nil {
+		c.runHook(counts)
+	}
 	return counts, nil
+}
+
+// runHook calls OnRun; a hook that panics does not fail the run.
+func (c *Compactor) runHook(counts map[string]int) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.log.Error("retention: OnRun panicked", "panic", r)
+		}
+	}()
+	c.OnRun(counts, time.Now().UTC())
 }
 
 // deleteAuditRows deletes rows from audit_events where action is in the

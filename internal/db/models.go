@@ -368,17 +368,19 @@ type ConnectionLogRollup struct {
 
 // DB wraps *sql.DB and exposes typed CRUD methods for Burrow's tables.
 type DB struct {
-	sqlDB *sql.DB
+	// sqlDB is the database with its statements timed for the query
+	// observer (see ObserveQueries); x.sqlDB.DB is the bare *sql.DB.
+	sqlDB *timedDB
 }
 
 // Wrap wraps an existing *sql.DB (already opened and migrated) in the typed DB.
 func Wrap(d *sql.DB) *DB {
-	return &DB{sqlDB: d}
+	return &DB{sqlDB: &timedDB{DB: d}}
 }
 
 // DB returns the underlying *sql.DB.
 func (x *DB) DB() *sql.DB {
-	return x.sqlDB
+	return x.sqlDB.DB
 }
 
 // Close closes the underlying database connection.

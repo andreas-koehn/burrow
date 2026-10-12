@@ -612,6 +612,9 @@ func newRootCmd() *cobra.Command {
 			// Sessions, tunnels and tcp connections are told to the observer;
 			// no client is served yet.
 			srv.SetObserver(v04.Observer)
+			// The gauges a scrape reads, and the statement durations. Stopped
+			// before the database closes (LIFO defers).
+			defer registerGauges(v04.Metrics, database, backend.Driver(), log)()
 			// Defer ordering matters here: WebhookDispatcher.Close MUST run
 			// AFTER reaperWg.Wait so that any goroutine tracked by reaperWg
 			// (e.g. the v0.5.2 custom-domain status tick) that may call
@@ -658,6 +661,7 @@ func newRootCmd() *cobra.Command {
 				loader := retention.NewDBLoader(dbWrapped)
 				auditAdapter := retention.NewAuditLoggerAdapter(v04.AuditLogger)
 				compactor := retention.New(dbWrapped, loader, auditAdapter, log)
+				compactor.OnRun = retentionCompacted(v04.Metrics)
 				compactor.Tick(ctx, "00:30")
 			}()
 
@@ -726,6 +730,17 @@ func newRootCmd() *cobra.Command {
 			// settings reader is only consulted on the daily rollup
 			// compaction path, NOT the per-connection Record hot path.
 			connLogSink := connlog.NewSQLSink(db.Wrap(database), log).WithSettings(st)
+			// The daily rollup of the connection log, announced per service
+			// as connection.session_summary. Ends with ctx, before the
+			// dispatcher closes (reaperWg).
+			reaperWg.Add(1)
+			go func() {
+				defer reaperWg.Done()
+				connLogRoller{
+					sink: connLogSink, db: db.Wrap(database),
+					events: v04.WebhookDispatcher, audit: v04.AuditLogger, log: log,
+				}.tick(ctx)
+			}()
 			// v0.5.0 F-14: wire the custom-domain routing hook. The proxy
 			// invokes this closure when the inbound Host header does NOT
 			// end with ".<authDomain>" (proxy.go:285 — the dead-code

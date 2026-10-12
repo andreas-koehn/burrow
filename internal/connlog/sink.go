@@ -141,7 +141,7 @@ func (s *SQLSink) Record(ctx context.Context, e Entry) error {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		_, err := s.b.DB().ExecContext(ctx,
+		_, err := s.b.ObservedExec(ctx,
 			`INSERT INTO connection_logs
 			  (id, kind, service_id, tunnel_id, user_id, client_session_id,
 			   source_ip, user_agent, started_at, ended_at, duration_ms,

@@ -263,3 +263,24 @@ func TestCompactorSweepsExpiredClientLogins(t *testing.T) {
 		t.Fatalf("audit calls = %v", al.calls)
 	}
 }
+
+// OnRun is told what a run deleted, per table, also where it deleted nothing.
+func TestRunOnce_OnRun(t *testing.T) {
+	x := testDB(t)
+	c := New(x, &staticLoader{s: Settings{UsageDays: 30, WebhookDeliveriesDays: 30}}, nil, discardLog())
+	var got map[string]int
+	var at time.Time
+	c.OnRun = func(counts map[string]int, when time.Time) { got, at = counts, when }
+	if _, err := c.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["usage_events"]; !ok || got["usage_events"] != 0 {
+		t.Fatalf("OnRun counts: %v, want usage_events present with 0", got)
+	}
+	if _, ok := got["audit_events"]; ok {
+		t.Fatalf("OnRun names a table the settings leave alone: %v", got)
+	}
+	if time.Since(at) > time.Minute || at.IsZero() {
+		t.Fatalf("OnRun time: %v", at)
+	}
+}

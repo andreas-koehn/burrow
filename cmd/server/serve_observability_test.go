@@ -41,6 +41,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -682,15 +683,6 @@ func familiesAndSamples(text string) (declared []string, sampled map[string]bool
 // metricFamiliesWithoutSamples lists the declared families this test cannot
 // give a sample, each with the reason. Everything else must have one.
 var metricFamiliesWithoutSamples = map[string]string{
-	// --- Not wired yet. A task takes its lines out when it wires them. ---
-	"burrow_db_query_duration_seconds": "W07",
-	"burrow_audit_chain_length":        "W07",
-	"burrow_audit_chain_last_hash":     "W07",
-	"burrow_custom_domain_count":       "W07",
-	"burrow_db_backend":                "W07",
-	"burrow_db_pool_active":            "W07",
-	"burrow_db_pool_idle":              "W07",
-
 	// --- Stays: this test cannot produce them. ---
 	// The semantic cache is compiled in with -tags semantic_cache only, and
 	// needs an embedding endpoint. internal/aigw's TestObserver_SemanticTier
@@ -706,7 +698,10 @@ var metricFamiliesWithoutSamples = map[string]string{
 	// at start: it takes a restart without the variable.
 	"burrow_ai_credential_misses_total": "needs a restart without a bound slot's variable",
 	// Fed by the retention compaction, which runs once a day at 00:30 UTC.
-	// cmd/server's TestRetentionCompacted covers the hook.
+	// The test boots the whole relay and the run has no seam from outside
+	// (Compactor.OnRun is set inside serve); cmd/server's
+	// TestRetentionCompacted covers the hook, internal/retention's
+	// TestRunOnce_OnRun the call.
 	"burrow_retention_compact_rows_deleted_total": "fed by the daily compaction run",
 	"burrow_retention_compact_last_run_seconds":   "fed by the daily compaction run",
 }
@@ -768,6 +763,36 @@ func TestServe_MetricFamiliesHaveSamples(t *testing.T) {
 			t.Errorf("%s = %v, want more than 0 after answered model requests", name, v)
 		}
 	}
+	// The audit chain: its length is at least the number of audited
+	// mutations this test made (the entries the audit export lists), and its head
+	// is a 64-hex hash. The gauges are read at most every ten seconds, so wait
+	// for the scrape that has them.
+	code, export := r.admin(http.MethodGet, "/api/v1/audit/export", nil)
+	if code != http.StatusOK {
+		t.Fatalf("GET /api/v1/audit/export: %d %s", code, export)
+	}
+	audited := 0
+	for _, line := range strings.Split(string(export), "\n") {
+		if strings.TrimSpace(line) != "" {
+			audited++
+		}
+	}
+	audited-- // the last line is the signature trailer, not an entry
+	if audited < 5 {
+		t.Fatalf("the audit export lists %d entries after this test's mutations, want at least 5", audited)
+	}
+	hashRe := regexp.MustCompile(`(?m)^burrow_audit_chain_last_hash\{hash="[0-9a-f]{64}"\} 1$`)
+	for wait := time.Now().Add(obsWait); ; text = r.metricsText() {
+		length, ok := familySum(text, "burrow_audit_chain_length")
+		if ok && length >= float64(audited) && hashRe.MatchString(text) {
+			break
+		}
+		if time.Now().After(wait) {
+			t.Fatalf("burrow_audit_chain_length = %v (found: %v), want at least %d, and a last hash of 64 hex digits (matched: %v)",
+				length, ok, audited, hashRe.MatchString(text))
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 	if len(declared) < 30 {
 		t.Fatalf("the exporter declares %d families; the TYPE lines were not read", len(declared))
 	}
@@ -814,12 +839,12 @@ var webhookEventProof = map[string]struct{ how, why string }{
 	"budget.exceeded":             {proofSource, "needs a budget and usage over it: internal/cost/engine_test.go"},
 	"custom_domain.cert.expiring": {proofSource, "fires on the daily status tick: internal/proxy/customdomain/tick_test.go"},
 	"ai.cache_promotion":          {proofSource, "needs -tags semantic_cache: cmd/server TestObserver_ModelRequest"},
+	"connection.session_summary":  {proofSource, "fires on the daily rollup: cmd/server TestConnLogRoller"},
 	// Nothing publishes these: the first group until the task named, the last for good.
-	"connection.session_summary": {proofNone, "W07"},
-	"audit.exported":             {proofNone, "W08"},
-	"backup.completed":           {proofNone, "W08"},
-	"audit.policy_change":        {proofNone, "W08"},
-	"service.deleted":            {proofNone, "no code path deletes a service (db.DeleteService has no caller)"},
+	"audit.exported":      {proofNone, "W08"},
+	"backup.completed":    {proofNone, "W08"},
+	"audit.policy_change": {proofNone, "W08"},
+	"service.deleted":     {proofNone, "no code path deletes a service (db.DeleteService has no caller)"},
 }
 
 func TestServe_WebhookEventsArePublished(t *testing.T) {

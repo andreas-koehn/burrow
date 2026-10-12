@@ -104,7 +104,7 @@ func (x *DB) InsertClientLogin(ctx context.Context, r ClientLoginRequest, maxPen
 		return false, fmt.Errorf("insert client login request: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := lockClientLoginStart(ctx, x.sqlDB, tx); err != nil {
+	if err := lockClientLoginStart(ctx, x.sqlDB.DB, tx); err != nil {
 		return false, fmt.Errorf("insert client login request: lock: %w", err)
 	}
 	created := r.CreatedAt.UTC()
