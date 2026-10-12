@@ -79,6 +79,13 @@ func TestRollup_Postgres(t *testing.T) {
 	if err := x.DB().QueryRow(`SELECT COUNT(*) FROM connection_log_rollup_top_ips WHERE service_id=? AND day=?`, svc, "2026-03-16").Scan(&ips); err != nil || ips != 2 {
 		t.Fatalf("top ips = %d, %v; want 2", ips, err)
 	}
+	// The announcement looks the top IPs up by the short day: Postgres hands
+	// the DATE column back as a timestamp, the batch must key it as 2006-01-02.
+	g := TopIPsGroup{Day: "2026-03-16", ServiceID: svc, Kind: "http_proxy"}
+	top, err := ListConnectionLogRollupTopIPsBatch(ctx, x, []TopIPsGroup{g})
+	if err != nil || len(top[g]) != 2 {
+		t.Fatalf("top ips by the short day: %v, %v; want 2", top, err)
+	}
 	if p95, err := sink.computeP95(ctx, "2026-03-16", svc, "http_proxy"); err != nil || p95 != 30 {
 		t.Fatalf("p95 = %d, %v; want 30", p95, err)
 	}

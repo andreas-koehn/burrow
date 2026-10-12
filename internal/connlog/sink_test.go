@@ -606,3 +606,36 @@ func TestRollup_DayBoundaries(t *testing.T) {
 		t.Fatalf("p95 = %d, %v; want 30 (rows 10, 20, 30 only)", p95, err)
 	}
 }
+
+// A day comes back from a DATE column as a timestamp on Postgres and as text
+// on SQLite; the batch of top source IPs is keyed by the short form either way.
+func TestDayKey(t *testing.T) {
+	for in, want := range map[string]string{
+		"2026-10-10":                    "2026-10-10",
+		"2026-10-10T00:00:00Z":          "2026-10-10",
+		"2026-10-10 00:00:00 +0000 UTC": "2026-10-10",
+		"":                              "",
+	} {
+		if got := dayKey(in); got != want {
+			t.Errorf("dayKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The batch finds the top IPs of a rolled day by the day's short form.
+func TestListTopIPsBatch_KeyedByShortDay(t *testing.T) {
+	x := testDB(t)
+	ctx := context.Background()
+	seedUser(t, x, "u1")
+	seedService(t, x, "s1", "u1")
+	d := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)
+	insertLogAt(t, x, "a", "198.51.100.2", d.Add(time.Hour), 1)
+	if err := NewSQLSink(x, nil).Rollup(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	g := TopIPsGroup{Day: "2026-03-16", ServiceID: "s1", Kind: "http_proxy"}
+	got, err := ListConnectionLogRollupTopIPsBatch(ctx, x, []TopIPsGroup{g})
+	if err != nil || len(got[g]) != 1 || got[g][0].IP != "198.51.100.2" {
+		t.Fatalf("batch: %v, %v", got, err)
+	}
+}

@@ -414,6 +414,7 @@ func ListConnectionLogRollupTopIPsBatch(ctx context.Context, x *db.DB, groups []
 		if err := rows.Scan(&g.Day, &g.ServiceID, &g.Kind, &ip.IP, &ip.Sessions); err != nil {
 			return nil, fmt.Errorf("scan top_ip batch row: %w", err)
 		}
+		g.Day = dayKey(g.Day)
 		out[g] = append(out[g], ip)
 	}
 	if err := rows.Err(); err != nil {
@@ -519,15 +520,37 @@ func (s *SQLSink) Rollup(ctx context.Context, day time.Time) error {
 	// enabled. Only an explicit "false" disables the aggregation.
 	topIPsEnabled := s.topIPsEnabled(ctx)
 
-	// For each group, compute p95 from raw durations.
+	// Everything is read first (the pool may hold a single connection, which
+	// a transaction would then occupy), then every row of the day is written
+	// in ONE transaction: the day is rolled completely or not at all, and
+	// "the day has rollup rows" is a sound marker that it is done.
+	type rolled struct {
+		g    group
+		d    groupData
+		p95  int64
+		tops []topIPRow
+	}
+	all := make([]rolled, 0, len(groupOrder))
 	for _, g := range groupOrder {
 		p95, err := s.computeP95(ctx, dayStr, g.serviceID, g.kind)
 		if err != nil {
 			return fmt.Errorf("rollup p95 %s/%s: %w", g.serviceID, g.kind, err)
 		}
-		d := groups[g]
-		avg := int64(d.avgDurationMs)
-		_, err = s.b.DB().ExecContext(ctx,
+		r := rolled{g: g, d: groups[g], p95: p95}
+		if topIPsEnabled {
+			if r.tops, err = s.topIPs(ctx, dayStr, g.serviceID, g.kind); err != nil {
+				return fmt.Errorf("rollup top_ips %s/%s: %w", g.serviceID, g.kind, err)
+			}
+		}
+		all = append(all, r)
+	}
+	tx, err := s.b.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("rollup begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+	for _, r := range all {
+		_, err = tx.ExecContext(ctx,
 			`INSERT INTO connection_log_rollups
 			  (day, service_id, kind, sessions, bytes_in, bytes_out, avg_duration_ms, p95_duration_ms)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -537,30 +560,21 @@ func (s *SQLSink) Rollup(ctx context.Context, day time.Time) error {
 			   bytes_out       = excluded.bytes_out,
 			   avg_duration_ms = excluded.avg_duration_ms,
 			   p95_duration_ms = excluded.p95_duration_ms`,
-			dayStr, g.serviceID, g.kind,
-			d.sessions, d.bytesIn, d.bytesOut, avg, p95,
+			dayStr, r.g.serviceID, r.g.kind,
+			r.d.sessions, r.d.bytesIn, r.d.bytesOut, int64(r.d.avgDurationMs), r.p95,
 		)
 		if err != nil {
-			return fmt.Errorf("rollup upsert %s/%s: %w", g.serviceID, g.kind, err)
+			return fmt.Errorf("rollup upsert %s/%s: %w", r.g.serviceID, r.g.kind, err)
 		}
-
-		// Top source IPs sub-step (Q12).
-		if topIPsEnabled {
-			if err := s.upsertTopIPs(ctx, dayStr, g.serviceID, g.kind); err != nil {
-				return fmt.Errorf("rollup top_ips %s/%s: %w", g.serviceID, g.kind, err)
-			}
-		} else {
-			// Setting flipped off: scrub any pre-existing aux rows for this
-			// (day, service_id, kind) so the read path no longer surfaces
-			// stale top-IP data.
-			if _, err := s.b.DB().ExecContext(ctx,
-				`DELETE FROM connection_log_rollup_top_ips
-				  WHERE day = ? AND service_id = ? AND kind = ?`,
-				dayStr, g.serviceID, g.kind,
-			); err != nil {
-				return fmt.Errorf("rollup top_ips delete %s/%s: %w", g.serviceID, g.kind, err)
-			}
+		// Top source IPs (Q12). With the toggle off r.tops is empty and the
+		// delete scrubs any pre-existing aux rows of the group, so the read
+		// path no longer surfaces stale top-IP data.
+		if err := writeTopIPs(ctx, tx, dayStr, r.g.serviceID, r.g.kind, r.tops); err != nil {
+			return fmt.Errorf("rollup top_ips %s/%s: %w", r.g.serviceID, r.g.kind, err)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rollup commit: %w", err)
 	}
 	return nil
 }
@@ -586,8 +600,16 @@ func (s *SQLSink) topIPsEnabled(ctx context.Context) bool {
 	return v != "false"
 }
 
-// topIPsLimit is the per-(day, service_id, kind) cap on top-source-IP rows
-// upserted by Rollup. Per the v0.5.1 plan / spec Q12.
+// dayKey is a day as "2006-01-02". Postgres hands a DATE column back as a
+// timestamp ("2026-10-10T00:00:00Z"), SQLite as the text it was stored as;
+// callers look groups up by the short form.
+func dayKey(day string) string {
+	if len(day) > 10 {
+		return day[:10]
+	}
+	return day
+}
+
 // dayBounds returns the half-open UTC interval [start, start+24h) of the day
 // "YYYY-MM-DD". The statements select by this range, bound as time.Time like
 // every other timestamp of the table: it uses the index on started_at and
@@ -611,6 +633,8 @@ func EarliestStart(ctx context.Context, x *db.DB) (t time.Time, ok bool, err err
 	return t, true, nil
 }
 
+// topIPsLimit is the per-(day, service_id, kind) cap on top-source-IP rows
+// upserted by Rollup. Per the v0.5.1 plan / spec Q12.
 const topIPsLimit = 10
 
 // upsertTopIPs computes the top 10 source IPs by session count for the given
@@ -620,6 +644,35 @@ const topIPsLimit = 10
 // stale low-count entries). Idempotent: re-running with the same underlying
 // connection_logs rows yields identical aux-table contents.
 func (s *SQLSink) upsertTopIPs(ctx context.Context, dayStr, serviceID, kind string) error {
+	top, err := s.topIPs(ctx, dayStr, serviceID, kind)
+	if err != nil {
+		return err
+	}
+	// Two-phase: delete prior aux rows for this group, then insert the new
+	// top-N — wrapped in a single transaction so concurrent readers never
+	// observe an empty top-IPs window during the DELETE->INSERT gap (v0.5.2
+	// BACKLOG #3).
+	tx, err := s.b.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("top_ips begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+	if err := writeTopIPs(ctx, tx, dayStr, serviceID, kind, top); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("top_ips commit: %w", err)
+	}
+	return nil
+}
+
+type topIPRow struct {
+	ip       string
+	sessions int64
+}
+
+// topIPs reads the top source IPs of one (day, service_id, kind) group.
+func (s *SQLSink) topIPs(ctx context.Context, dayStr, serviceID, kind string) ([]topIPRow, error) {
 	dayStart, dayEnd := dayBounds(dayStr)
 	rows, err := s.b.DB().QueryContext(ctx,
 		`SELECT source_ip, COUNT(*) AS sessions
@@ -633,37 +686,27 @@ func (s *SQLSink) upsertTopIPs(ctx context.Context, dayStr, serviceID, kind stri
 		dayStart, dayEnd, serviceID, kind, topIPsLimit,
 	)
 	if err != nil {
-		return fmt.Errorf("top_ips query: %w", err)
+		return nil, fmt.Errorf("top_ips query: %w", err)
 	}
-	type ipRow struct {
-		ip       string
-		sessions int64
-	}
-	var top []ipRow
+	defer rows.Close()
+	var top []topIPRow
 	for rows.Next() {
-		var r ipRow
+		var r topIPRow
 		if err := rows.Scan(&r.ip, &r.sessions); err != nil {
-			rows.Close()
-			return fmt.Errorf("top_ips scan: %w", err)
+			return nil, fmt.Errorf("top_ips scan: %w", err)
 		}
 		top = append(top, r)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("top_ips rows: %w", err)
+		return nil, fmt.Errorf("top_ips rows: %w", err)
 	}
-	rows.Close()
+	return top, nil
+}
 
-	// Two-phase: delete prior aux rows for this group, then insert the new
-	// top-N — wrapped in a single transaction so concurrent readers never
-	// observe an empty top-IPs window during the DELETE->INSERT gap (v0.5.2
-	// BACKLOG #3). The delete is unconditional so a previously larger top-N
-	// (or a previously different set of IPs) does not leak rows.
-	tx, err := s.b.DB().BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("top_ips begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // no-op after Commit
+// writeTopIPs replaces the aux rows of a group by top, on tx. The delete is
+// unconditional so a previously larger top-N (or a previously different set
+// of IPs) does not leak rows; after it the inserts cannot conflict.
+func writeTopIPs(ctx context.Context, tx *sql.Tx, dayStr, serviceID, kind string, top []topIPRow) error {
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM connection_log_rollup_top_ips
 		  WHERE day = ? AND service_id = ? AND kind = ?`,
@@ -671,9 +714,6 @@ func (s *SQLSink) upsertTopIPs(ctx context.Context, dayStr, serviceID, kind stri
 	); err != nil {
 		return fmt.Errorf("top_ips clear: %w", err)
 	}
-	// Post-DELETE the INSERTs cannot conflict on (day, service_id, kind, ip),
-	// so the ON CONFLICT DO UPDATE clause from v0.5.1 was dead code; dropped
-	// here for clarity (v0.5.2 BACKLOG #3 second half).
 	for _, r := range top {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO connection_log_rollup_top_ips
@@ -683,9 +723,6 @@ func (s *SQLSink) upsertTopIPs(ctx context.Context, dayStr, serviceID, kind stri
 		); err != nil {
 			return fmt.Errorf("top_ips insert: %w", err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("top_ips commit: %w", err)
 	}
 	return nil
 }

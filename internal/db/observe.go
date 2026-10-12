@@ -11,7 +11,7 @@ import (
 )
 
 // QueryObserver is told how long one statement took. For ExecContext that is
-// the whole statement. For QueryContext and QueryRowContext it is the time
+// the whole statement, including the wait for a pool connection. For QueryContext and QueryRowContext it is the time
 // until the call returns: it includes the wait for a pool connection and the
 // execution up to the first row, and excludes iterating the rows and Scan. op
 // is the statement's verb: "select", "insert", "update", "delete", or "other" for everything

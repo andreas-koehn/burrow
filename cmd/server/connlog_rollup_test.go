@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"github.com/ankoehn/burrow/internal/retention"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -226,8 +229,8 @@ func TestConnLogRoller_StaysInsideRetention(t *testing.T) {
 	}
 }
 
-// Publishing pauses after every connLogBatch summaries, and a pause cut short
-// by shutdown ends the run's publishing.
+// Publishing pauses before the summary that follows every connLogBatch, never
+// after the last one, and a pause cut short by shutdown stops it.
 func TestConnLogRoller_PacesPublishing(t *testing.T) {
 	r := connLogRoller{}
 	var pauses int
@@ -239,25 +242,123 @@ func TestConnLogRoller_PacesPublishing(t *testing.T) {
 		return pauses < 3
 	}
 	st := &rollStats{}
-	stopped := -1
 	for i := 1; i <= 5*connLogBatch; i++ {
-		st.published++
 		if !r.pace(context.Background(), st) {
-			stopped = i
 			break
 		}
+		st.published++
 	}
-	if pauses != 3 || stopped != 3*connLogBatch {
-		t.Fatalf("%d pauses, stopped at %d; want 3 pauses (one per batch) and a stop at %d", pauses, stopped, 3*connLogBatch)
+	if pauses != 3 || st.published != 3*connLogBatch {
+		t.Fatalf("%d pauses, %d published; want 3 pauses and %d published", pauses, st.published, 3*connLogBatch)
 	}
-	// Fewer than a batch: no pause at all.
+	// Exactly one batch: no pause at all.
 	pauses = 0
 	st = &rollStats{}
-	for i := 1; i < connLogBatch; i++ {
+	for i := 1; i <= connLogBatch; i++ {
+		if !r.pace(context.Background(), st) {
+			t.Fatal("stopped")
+		}
 		st.published++
-		r.pace(context.Background(), st)
 	}
 	if pauses != 0 {
-		t.Fatalf("%d pauses for less than a batch", pauses)
+		t.Fatalf("%d pauses for one batch", pauses)
+	}
+}
+
+// With the rollups kept for fewer days than the log, the days the compaction
+// would delete are neither rolled nor announced, run after run.
+func TestConnLogRoller_BothRetentionWindowsBound(t *testing.T) {
+	today := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	var days []time.Time
+	for i := 1; i <= 20; i++ {
+		days = append(days, today.AddDate(0, 0, -i))
+	}
+	w, sink := rollerFixture(t, days)
+	got := &summaries{}
+	roller := connLogRoller{sink: sink, db: w, events: got, log: discardLog(),
+		settings: bothSettings{logDays: 30, rollupDays: 7},
+		sleep:    func(context.Context, time.Duration) bool { return true }}
+	d, _, err := roller.catchUp(context.Background(), today.Add(time.Hour))
+	if err != nil || d != 7 || len(got.got) != 14 {
+		t.Fatalf("first run: %d days, %d summaries, %v; want 7 days, 14 summaries", d, len(got.got), err)
+	}
+	for _, s := range got.got {
+		if s.from.Before(today.AddDate(0, 0, -7)) {
+			t.Fatalf("announced a day older than the rollup retention: %s", s.from)
+		}
+	}
+	d, _, err = roller.catchUp(context.Background(), today.Add(2*time.Hour))
+	if err != nil || d != 0 || len(got.got) != 14 {
+		t.Fatalf("second run: %d days, %d announced in all, %v; want nothing new", d, len(got.got), err)
+	}
+}
+
+type bothSettings struct{ logDays, rollupDays int }
+
+func (b bothSettings) Load(context.Context) (retention.Settings, error) {
+	return retention.Settings{ConnectionLogsDays: b.logDays, ConnectionLogRollupsDays: b.rollupDays}, nil
+}
+
+// A failure while writing the second group leaves no rollup row of the day
+// (the day is written in one transaction), and the next run rolls it whole.
+func TestConnLogRoller_DayIsAtomic(t *testing.T) {
+	today := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	d1 := today.AddDate(0, 0, -1)
+	w, sink := rollerFixture(t, []time.Time{d1})
+	if _, err := w.DB().Exec(`CREATE TRIGGER fail_second BEFORE INSERT ON connection_log_rollups
+		WHEN NEW.service_id = 'svc2' BEGIN SELECT RAISE(ABORT, 'injected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	got := &summaries{}
+	roller := connLogRoller{sink: sink, db: w, events: got, log: discardLog(), settings: fixedSettings{0},
+		sleep: func(context.Context, time.Duration) bool { return true }}
+	if _, _, err := roller.catchUp(context.Background(), today.Add(time.Hour)); err == nil {
+		t.Fatal("the injected failure was not reported")
+	}
+	var n int
+	if err := w.DB().QueryRow(`SELECT COUNT(*) FROM connection_log_rollups`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("%d rollup rows after a failed day, %v; want none", n, err)
+	}
+	if len(got.got) != 0 {
+		t.Fatalf("announced after a failed day: %+v", got.got)
+	}
+	if _, err := w.DB().Exec(`DROP TRIGGER fail_second`); err != nil {
+		t.Fatal(err)
+	}
+	days, published, err := roller.catchUp(context.Background(), today.Add(2*time.Hour))
+	if err != nil || days != 1 || published != 2 {
+		t.Fatalf("next run: %d days, %d summaries, %v; want 1, 2", days, published, err)
+	}
+}
+
+// A shutdown between two batches leaves the day rolled, announces no more,
+// reports the error, writes no audit entry for the day, and the log line of
+// the run says how many summaries went out.
+func TestConnLogRoller_CancelMidAnnouncement(t *testing.T) {
+	today := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	d1 := today.AddDate(0, 0, -1)
+	w, sink := rollerFixture(t, []time.Time{d1})
+	got, au := &summaries{}, &recAudit{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var buf bytes.Buffer
+	roller := connLogRoller{sink: sink, db: w, events: got, audit: au, settings: fixedSettings{0},
+		log: slog.New(slog.NewTextHandler(&buf, nil)), batch: 1,
+		// The pause after the first summary is cut short by the shutdown.
+		sleep: func(context.Context, time.Duration) bool { cancel(); return false }}
+
+	roller.runAt(ctx, today.Add(time.Hour))
+	if len(got.got) != 1 {
+		t.Fatalf("%d announced, want exactly the one before the pause", len(got.got))
+	}
+	if len(au.actions()) != 0 {
+		t.Fatalf("audit entry written for an incomplete announcement: %v", au.actions())
+	}
+	var rolled int
+	if err := w.DB().QueryRow(`SELECT COUNT(*) FROM connection_log_rollups`).Scan(&rolled); err != nil || rolled != 2 {
+		t.Fatalf("%d rollup rows, %v; want the day rolled", rolled, err)
+	}
+	if !strings.Contains(buf.String(), "summaries=1") || !strings.Contains(buf.String(), "failed") {
+		t.Fatalf("the log line does not say what was published: %s", buf.String())
 	}
 }

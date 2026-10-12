@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -45,6 +46,7 @@ type connLogRoller struct {
 	// Optional; the zero value is right for production.
 	settings retention.Loader                                // default: the settings table
 	sleep    func(ctx context.Context, d time.Duration) bool // default: a timer; false when ctx ended
+	batch    int                                             // default: connLogBatch
 }
 
 // rollStats is what one run has published so far.
@@ -78,8 +80,10 @@ func (r connLogRoller) tick(ctx context.Context) {
 }
 
 // run rolls up what is missing as of now and logs the outcome once.
-func (r connLogRoller) run(ctx context.Context) {
-	days, published, err := r.catchUp(ctx, time.Now().UTC())
+func (r connLogRoller) run(ctx context.Context) { r.runAt(ctx, time.Now().UTC()) }
+
+func (r connLogRoller) runAt(ctx context.Context, now time.Time) {
+	days, published, err := r.catchUp(ctx, now)
 	switch {
 	case err != nil:
 		r.log.Warn("connection log rollup failed", "days", days, "summaries", published, "err", err)
@@ -107,9 +111,15 @@ func (r connLogRoller) catchUp(ctx context.Context, now time.Time) (days, publis
 		return 0, 0, err
 	}
 	from := time.Date(first.UTC().Year(), first.UTC().Month(), first.UTC().Day(), 0, 0, 0, 0, time.UTC)
-	if set.ConnectionLogsDays > 0 {
-		if oldest := today.AddDate(0, 0, -set.ConnectionLogsDays); from.Before(oldest) {
-			from = oldest
+	// Both windows bound it (0 keeps forever): a day older than the log is
+	// kept has no rows to roll, and a day older than the rollups are kept
+	// would be deleted by the compaction and then rolled and announced again
+	// on every run.
+	for _, keep := range []int{set.ConnectionLogsDays, set.ConnectionLogRollupsDays} {
+		if keep > 0 {
+			if oldest := today.AddDate(0, 0, -keep); from.Before(oldest) {
+				from = oldest
+			}
 		}
 	}
 	st := &rollStats{}
@@ -141,10 +151,15 @@ func (r connLogRoller) runOnce(ctx context.Context, day time.Time) (int, error) 
 	return r.rollDay(ctx, day, &rollStats{})
 }
 
-// pace pauses after every connLogBatch summaries; it reports false when ctx
-// ended during the pause.
+// pace is called before each summary is published. It pauses once
+// connLogBatch summaries have gone out since the last pause, and reports false
+// when the pause was cut short by shutdown.
 func (r connLogRoller) pace(ctx context.Context, st *rollStats) bool {
-	if st.published == 0 || st.published%connLogBatch != 0 {
+	batch := r.batch
+	if batch <= 0 {
+		batch = connLogBatch
+	}
+	if st.published == 0 || st.published%batch != 0 {
 		return true
 	}
 	if r.sleep != nil {
@@ -160,6 +175,22 @@ func (r connLogRoller) pace(ctx context.Context, st *rollStats) bool {
 	}
 }
 
+// interrupted is the error of an announcement cut short.
+func interrupted(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return errors.New("announcement interrupted")
+}
+
+// rollDay rolls up one day and announces its groups, paced; st counts them.
+//
+// The rollup rows of the day are written in one transaction (Rollup), so a
+// day is rolled completely or not at all. The announcements come after the
+// commit and are best-effort: if the relay shuts down in a pause between two
+// batches, the remaining summaries of the day are not announced later (the
+// day has rollup rows by then and is not rolled again), and no audit entry is
+// written for it; rollDay returns the number announced and the error.
 func (r connLogRoller) rollDay(ctx context.Context, day time.Time, st *rollStats) (int, error) {
 	start := time.Date(day.UTC().Year(), day.UTC().Month(), day.UTC().Day(), 0, 0, 0, 0, time.UTC)
 	if err := r.sink.Rollup(ctx, start); err != nil {
@@ -193,11 +224,11 @@ func (r connLogRoller) rollDay(ctx context.Context, day time.Time, st *rollStats
 			data.TopSourceIPs = append(data.TopSourceIPs, webhook.TopSourceIP{IP: ip.IP, Sessions: int(ip.Sessions)})
 		}
 		if r.events != nil {
+			if !r.pace(ctx, st) {
+				return i, interrupted(ctx)
+			}
 			r.events.EmitConnectionSessionSummary(row.ServiceID, row.Kind, start, start.Add(24*time.Hour), data)
 			st.published++
-			if !r.pace(ctx, st) {
-				break
-			}
 		}
 	}
 	if r.audit != nil && len(rows) > 0 {
