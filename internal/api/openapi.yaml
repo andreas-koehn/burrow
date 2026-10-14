@@ -4403,11 +4403,19 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [enabled, listen, token_id]
+                required: [enabled, listen, token_id, endpoint]
                 properties:
                   enabled: { type: boolean }
-                  listen: { type: string }
-                  token_id: { type: string }
+                  listen:
+                    type: string
+                    description: Always empty; the endpoint is served on the main address.
+                  token_id:
+                    type: string
+                    description: Always empty; the endpoint takes any automation token.
+                  endpoint:
+                    type: string
+                    description: The path of the management MCP endpoint on the relay's main address.
+                    example: /mcp/burrow
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 

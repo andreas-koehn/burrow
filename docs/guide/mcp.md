@@ -34,10 +34,13 @@ tools whose permission is **on that list and granted by your current role**. A
 tool outside that set is not shown, and calling it is answered as if it did not
 exist.
 
-::: warning Mint the token through the API
-A token created on the dashboard page **Settings → Automation tokens** declares no permission, so it has an
-empty permission list. It is accepted, and it sees no tools. Until the page
-lets you pick permissions, mint the token with the call below.
+::: warning Mint a narrow token through the API
+A token created on the dashboard page **Settings → Automation tokens** posts no
+permission list, so it inherits every permission of the user who mints it: it
+sees every tool that user's role grants. Until the page lets you pick
+permissions, mint a token that holds only what the agent needs with the call
+below. An explicit empty list (`"permissions": []`) declares nothing and sees
+no tools.
 :::
 
 Log in, then create the token with the permissions the agent should have:
@@ -269,7 +272,7 @@ that no MCP client could connect to. It is gone; nothing listens on 7800.
 | What you see | Why | What to do |
 |--------------|-----|------------|
 | `401` with `WWW-Authenticate: Bearer` | No token, a mistyped or revoked token, an expired token, or the token's user is suspended. The client token of `burrow connect` and a gateway key do not work here. | Mint a new automation token. |
-| Connected, but no tools | The token has no permission list (it was created in the dashboard), or your role no longer grants what is on it. | Mint a token [with permissions](#token). |
+| Connected, but no tools | The token was minted with an empty permission list, or your role no longer grants what is on it. | Mint a token [with permissions](#token). |
 | `unknown tool` for a tool from the table | The token may not call it. | Add its permission to a new token. |
 | `400 batch requests are not supported` | The body is a JSON-RPC array. | Send one request per POST. |
 | `413` | The body is larger than 1 MiB. | Send less. |

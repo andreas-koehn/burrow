@@ -462,6 +462,7 @@ func TestE2EMCP_WritesLeaveTheAuditTrailOfTheAPI(t *testing.T) {
 		t.Fatalf("buildV04Stack: %v", err)
 	}
 	t.Cleanup(stack.GuardrailAudit.stop)
+	t.Cleanup(stack.Observer.stop)
 	t.Cleanup(func() { stack.WebhookDispatcher.Close() })
 
 	admin, err := st.GetUserByEmail(ctx, "admin@x")
