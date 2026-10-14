@@ -119,7 +119,7 @@ components:
         One model provider: a slug under which a model backend is served at
         base_url. Identity fields come from the providers table;
         api_key_count, status and the 24h counts are read live from the
-        backing service. latency_p95_ms is always 0.
+        backing service.
       required: [slug, name, kind, api_format, service_id, base_url, upstream_base_url, credential_slot, credential_present, credential_slots, breaker_open, billing, supports_responses, max_concurrent, in_use, model_count, model_alias, concrete_model, backend_type, api_key_count, requests_24h, cache_hits_24h, latency_p95_ms, status, client_session_id, state, last_seen, last_client]
       properties:
         slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$' }
@@ -250,7 +250,12 @@ components:
         api_key_count: { type: integer }
         requests_24h: { type: integer }
         cache_hits_24h: { type: integer }
-        latency_p95_ms: { type: integer }
+        latency_p95_ms:
+          type: integer
+          description: >
+            The 95th percentile of the time the upstream took to answer, over
+            the last 24 h's requests it answered with a 2xx (cache hits left
+            out); 0 when there is none.
         status:
           type: string
           enum: [Connected, Degraded, Offline]
