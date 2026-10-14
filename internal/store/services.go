@@ -198,6 +198,7 @@ func (s *Store) SetServiceAccessMode(ctx context.Context, callerID, callerRole, 
 			return err
 		}
 	}
+	ctx = withAuditDeadline(ctx) // one deadline for the rows of this mutation
 	s.emitAudit(ctx, audit.ActionServiceAccessModeUpdate, func(e *audit.Event) {
 		e.SubjectID = serviceID
 		e.SubjectLabel = svc.Name
@@ -504,7 +505,13 @@ func (s *Store) TouchServiceLastSeen(ctx context.Context, serviceID, tokenName s
 // the API entirely call it on *db.DB directly. Returns db.ErrDuplicateService
 // on UNIQUE-constraint violations, mapped to HTTP 409 by the handler.
 func (s *Store) CreateService(ctx context.Context, svc db.Service) error {
-	return s.q.CreateService(ctx, svc)
+	if err := s.q.CreateService(ctx, svc); err != nil {
+		return err
+	}
+	if s.events != nil {
+		s.events.EmitServiceCreated(svc.ID, svc.Name, svc.Type, svc.AccessMode)
+	}
+	return nil
 }
 
 // ServiceAccessMode returns the durable access mode of a service. It is the

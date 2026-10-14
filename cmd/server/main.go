@@ -55,7 +55,10 @@ import (
 // serve command receives a stop signal. It must be strictly greater than
 // api.JSONHandlerTimeout (the chi middleware.Timeout applied to JSON routes)
 // so that every in-flight handler has time to complete (or be chi-cancelled)
-// before Shutdown returns and the deferred database.Close() runs.
+// before Shutdown returns and the deferred database.Close() runs. The five
+// seconds on top also cover the audit rows a store mutation writes after its
+// handler's deadline: they share one deadline of store.auditWriteTimeout (5s)
+// per mutation, so a stuck audit log delays a handler by at most that.
 const apiShutdownGrace = api.JSONHandlerTimeout + 5*time.Second
 
 func versionLine() string {
@@ -278,16 +281,33 @@ func (a clientsAdapter) ListKnownClients(ctx context.Context) ([]api.KnownClient
 	return api.KnownClients(tokens, live), nil
 }
 
+// trafficFinalFlushTimeout bounds the traffic flusher's last flush, the one
+// at shutdown.
+const trafficFinalFlushTimeout = 5 * time.Second
+
+// liveTunnelSource is the control server as the traffic flusher needs it
+// (*server.Server), tunnelTotalsWriter the store (*store.Store). Interfaces
+// make the flusher testable without either.
+type liveTunnelSource interface {
+	SnapshotSessions() []server.SessionSnapshot
+}
+
+type tunnelTotalsWriter interface {
+	FlushTunnelTotals(ctx context.Context, id string, addIn, addOut int64) error
+}
+
 // runTrafficFlusher periodically persists the delta of each live tunnel's
 // in-memory byte counters into tunnels.total_bytes_*, so traffic survives
 // reconnects. WaitGroup-tracked + ctx-cancelled like runSessionReaper; a final
-// flush runs on ctx cancellation before the DB is closed.
-func runTrafficFlusher(ctx context.Context, wg *sync.WaitGroup, srv *server.Server, st *store.Store, log *slog.Logger, interval time.Duration) {
+// flush runs on ctx cancellation before the DB is closed. That one cannot use
+// ctx, which is over by then and would fail every write: it runs on a context
+// detached from it, bounded by trafficFinalFlushTimeout as a whole.
+func runTrafficFlusher(ctx context.Context, wg *sync.WaitGroup, srv liveTunnelSource, st tunnelTotalsWriter, log *slog.Logger, interval time.Duration) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		last := map[string][2]uint64{} // tunnelID -> {in,out} already persisted
-		flush := func() {
+		flush := func(ctx context.Context) {
 			seen := map[string]struct{}{}
 			for _, ss := range srv.SnapshotSessions() {
 				for _, tn := range ss.Tunnels {
@@ -322,10 +342,13 @@ func runTrafficFlusher(ctx context.Context, wg *sync.WaitGroup, srv *server.Serv
 		for {
 			select {
 			case <-ctx.Done():
-				flush() // final flush before shutdown / DB close
+				// final flush before shutdown / DB close
+				fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), trafficFinalFlushTimeout)
+				flush(fctx)
+				cancel()
 				return
 			case <-t.C:
-				flush()
+				flush(ctx)
 			}
 		}
 	}()
@@ -610,6 +633,12 @@ func newRootCmd() *cobra.Command {
 				return err
 			}
 			v04.WebhookDispatcher.Start()
+			// Sessions, tunnels and tcp connections are told to the observer;
+			// no client is served yet.
+			srv.SetObserver(v04.Observer)
+			// The gauges a scrape reads, and the statement durations. Stopped
+			// before the database closes (LIFO defers).
+			defer registerGauges(v04.Metrics, database, backend.Driver(), log)()
 			// Defer ordering matters here: WebhookDispatcher.Close MUST run
 			// AFTER reaperWg.Wait so that any goroutine tracked by reaperWg
 			// (e.g. the v0.5.2 custom-domain status tick) that may call
@@ -656,6 +685,7 @@ func newRootCmd() *cobra.Command {
 				loader := retention.NewDBLoader(dbWrapped)
 				auditAdapter := retention.NewAuditLoggerAdapter(v04.AuditLogger)
 				compactor := retention.New(dbWrapped, loader, auditAdapter, log)
+				compactor.OnRun = retentionCompacted(v04.Metrics)
 				compactor.Tick(ctx, "00:30")
 			}()
 
@@ -724,6 +754,17 @@ func newRootCmd() *cobra.Command {
 			// settings reader is only consulted on the daily rollup
 			// compaction path, NOT the per-connection Record hot path.
 			connLogSink := connlog.NewSQLSink(db.Wrap(database), log).WithSettings(st)
+			// The daily rollup of the connection log, announced per service
+			// as connection.session_summary. Ends with ctx, before the
+			// dispatcher closes (reaperWg).
+			reaperWg.Add(1)
+			go func() {
+				defer reaperWg.Done()
+				connLogRoller{
+					sink: connLogSink, db: db.Wrap(database),
+					events: v04.WebhookDispatcher, audit: v04.AuditLogger, log: log,
+				}.tick(ctx)
+			}()
 			// v0.5.0 F-14: wire the custom-domain routing hook. The proxy
 			// invokes this closure when the inbound Host header does NOT
 			// end with ".<authDomain>" (proxy.go:285 — the dead-code
@@ -761,6 +802,9 @@ func newRootCmd() *cobra.Command {
 				// client that serves it, when that client asked (the status
 				// view of `burrow http`). The control server never waits.
 				proxy.WithSummarySink(srv),
+				// Each finished request is told to the observer: metrics,
+				// webhook events.
+				proxy.WithObserver(v04.Observer),
 			}
 			if ingressPort != "" {
 				proxyOpts = append(proxyOpts, proxy.WithIngressPort(ingressPort))
@@ -915,7 +959,7 @@ func newRootCmd() *cobra.Command {
 					ClientDownloadDir:  cfg.ClientDownloadDir,
 					// v0.4.0 Task 20: backup / restore wiring.
 					BackupDir:      backupDir,
-					BackupRunner:   backupRunnerAdapter{cfg: cfg},
+					BackupRunner:   backupRunnerAdapter{cfg: cfg, events: v04.WebhookDispatcher},
 					RestoreRunner:  restoreRunnerAdapter{cfg: cfg},
 					RestoreTracker: restoreTracker,
 					AuditAppender:  v04.AuditAppender,
@@ -937,7 +981,7 @@ func newRootCmd() *cobra.Command {
 					RateLimits:        v04.QuotaEngine,
 					Budgets:           db.Wrap(database),
 					CostEngine:        v04.CostEngine,
-					AIMetrics:         db.Wrap(database),
+					AIMetrics:         newAIMetricsStore(db.Wrap(database), log),
 					CacheEngine:       v04.CacheEngine,
 					CacheServices:     cacheServiceLookupAdapter{db: db.Wrap(database)},
 					InspectorRings:    v04.InspectorMgr,
@@ -1054,7 +1098,19 @@ func newRootCmd() *cobra.Command {
 			}
 
 			errc := make(chan error, senderCount)
-			go func() { errc <- srv.Serve(ctx) }()
+			// The control listener ends every session when its context ends,
+			// and each tunnel of a session is then told to the observer as
+			// closed. Its context therefore ends after the observer has
+			// stopped publishing: a shutdown announces no tunnel.disconnected
+			// for the tunnels it closes itself, and does not wait on webhook
+			// receivers for them.
+			srvCtx, stopSrv := context.WithCancel(context.WithoutCancel(ctx))
+			defer stopSrv()
+			context.AfterFunc(ctx, func() {
+				v04.Observer.stopPublishing()
+				stopSrv()
+			})
+			go func() { errc <- srv.Serve(srvCtx) }()
 			go func() {
 				if acmeMgr != nil {
 					// Certs come from apiSrv.TLSConfig.GetCertificate (ACME),
@@ -1181,6 +1237,10 @@ func newRootCmd() *cobra.Command {
 				log.Warn("guardrail audit: entries not fully written", "err", err)
 			}
 			v04.GuardrailAudit.stop()
+			if err := v04.Observer.Flush(shutCtx); err != nil {
+				log.Warn("observer: work not fully done", "err", err)
+			}
+			v04.Observer.stop()
 			if challengeSrv != nil {
 				_ = challengeSrv.Shutdown(shutCtx)
 			}

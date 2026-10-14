@@ -265,3 +265,24 @@ func TestRender_TitleFunc(t *testing.T) {
 		t.Errorf("got %q want Hello World", out)
 	}
 }
+
+// Fields names the documented payload fields of an event, sorted; every
+// subscribable event has an entry.
+func TestFields(t *testing.T) {
+	if got := wt.Fields("tunnel.connected"); len(got) != 3 || got[0] != "Kind" || got[1] != "ServiceID" || got[2] != "TunnelID" {
+		t.Errorf("Fields(tunnel.connected) = %v", got)
+	}
+	if got := wt.Fields("no.such.event"); got != nil {
+		t.Errorf("Fields of an unknown event = %v, want nil", got)
+	}
+	for _, event := range []string{
+		"webhook.test", "tunnel.connected", "tunnel.disconnected", "tunnel.failed", "access.denied",
+		"quota.exceeded", "budget.exceeded", "redaction.applied", "guardrail.refused", "cert.expiring",
+		"audit.exported", "backup.completed", "ai.upstream_error", "ai.cache_promotion", "audit.policy_change",
+		"service.created", "service.deleted", "connection.session_summary", "custom_domain.cert.expiring",
+	} {
+		if len(wt.Fields(event)) == 0 {
+			t.Errorf("event %s has no documented fields", event)
+		}
+	}
+}

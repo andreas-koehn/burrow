@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/yamux"
 
 	"github.com/ankoehn/burrow/internal/bridge"
+	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/proto"
 )
 
@@ -143,6 +145,7 @@ func (s *Server) startPublicListener(tun *Tunnel) error {
 
 func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn) {
 	defer visitor.Close()
+	started := time.Now()
 	streamID := uuid.NewString()
 	stream, err := tun.sess.Pending().Await(streamID, 10*time.Second, func() error {
 		return tun.sess.SendControl(proto.MsgNewConnection, proto.NewConnection{
@@ -151,10 +154,17 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn) {
 	})
 	if err != nil {
 		s.log.Warn("client did not open stream", "tunnel_id", tun.ID, "err", err)
+		s.tcpTraffic(tun, visitor, started, 0, 0, observe.OutcomeError)
 		return
 	}
 	defer stream.Close()
-	bridge.Pipe(visitor, stream, &tun.BytesIn, &tun.BytesOut)
+	// The connection's own totals, added to the tunnel's when it ends: the
+	// copy itself counts nothing (see bridge.Pipe).
+	var in, out atomic.Uint64
+	bridge.Pipe(visitor, stream, &in, &out)
+	tun.BytesIn.Add(in.Load())
+	tun.BytesOut.Add(out.Load())
+	s.tcpTraffic(tun, visitor, started, in.Load(), out.Load(), observe.OutcomeClean)
 }
 
 // handleDataStream reads a freshly-accepted client stream's StreamHeader and

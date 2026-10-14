@@ -11,6 +11,8 @@ package main
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 
 	"github.com/ankoehn/burrow/internal/config"
 )
@@ -21,6 +23,9 @@ import (
 // CLI does).
 type backupRunnerAdapter struct {
 	cfg *config.ServerConfig
+	// events announces a finished backup as "backup.completed". nil =
+	// nobody is told.
+	events eventPublisher
 }
 
 func (a backupRunnerAdapter) RunBackup(ctx context.Context, outPath string) error {
@@ -31,7 +36,20 @@ func (a backupRunnerAdapter) RunBackup(ctx context.Context, outPath string) erro
 		TLSKey:  a.cfg.HTTPTLSKey,
 	}
 	// stdout is unused on the dashboard path; pass io.Discard.
-	return runBackup(ctx, opts, io.Discard)
+	if err := runBackup(ctx, opts, io.Discard); err != nil {
+		return err
+	}
+	if a.events != nil {
+		var size int64
+		if fi, err := os.Stat(outPath); err == nil {
+			size = fi.Size()
+		}
+		// The archive's name, not where the relay keeps it.
+		a.events.Publish(context.Background(), "backup.completed", map[string]any{
+			"Path": filepath.Base(outPath), "SizeBytes": size,
+		})
+	}
+	return nil
 }
 
 // restoreRunnerAdapter satisfies api.RestoreRunner. The destination DB path

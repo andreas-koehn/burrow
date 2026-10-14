@@ -67,6 +67,7 @@ import (
 	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/httpduplex"
 	"github.com/ankoehn/burrow/internal/inspector"
+	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/quota"
 	"github.com/ankoehn/burrow/internal/redact"
 	"github.com/ankoehn/burrow/internal/route"
@@ -271,10 +272,27 @@ type Chain struct {
 	// is the request's. nil = not reported.
 	OnGuardrailRefuse func(ctx context.Context, serviceID, pattern, action string)
 
+	// Observer is told of every request that ran through the chain, whoever
+	// answered it: an upstream, a cache, or the chain itself with a refusal
+	// (a guardrail, a redaction rule, the size limit). A request the rate
+	// limit or a budget turned away never reaches the chain and is not told,
+	// and neither is a replay from the inspector: it is not traffic. It is
+	// called once per request, on the request's goroutine, after the response
+	// and after the usage row was handed to Meter; it must return at once
+	// (see package observe). nil = nobody is told.
+	Observer RequestObserver
+
 	// MaxRequestBodyBytes bounds how much of an inbound request body the
 	// chain will buffer before short-circuiting with 413. 0 selects
 	// DefaultMaxRequestBodyBytes. Tests override this to small values.
 	MaxRequestBodyBytes int64
+}
+
+// RequestObserver receives one observe.ModelRequest per request the chain
+// finished. cmd/server implements it, for metrics, webhook events and audit
+// entries.
+type RequestObserver interface {
+	ObserveModelRequest(observe.ModelRequest)
 }
 
 // NewChain returns a Chain with the given dependencies. Any nil dep is
@@ -509,6 +527,13 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	started := time.Now()
 	cfg := svc.AIConfig
 
+	// What the observer is told when this function returns, by whichever way
+	// it does: every step below notes what it decided.
+	ev := observe.ModelRequest{ServiceID: svc.ID, APIKeyID: svc.APIKeyID, Outcome: observe.ModelAnswered}
+	if !fromReplay { // an inspector replay is not traffic
+		defer c.report(r, &ev, started)
+	}
+
 	// ---------------------------------------------------------------
 	// Step 0: cap inbound body so a multi-GB POST cannot OOM the
 	// process. v0.3.0 streamed bodies untouched; once any AI feature
@@ -522,6 +547,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	}
 	body, overflow, _ := readBodyLimited(r, maxReqBody)
 	if overflow {
+		ev.Outcome, ev.Status = observe.ModelTooLarge, http.StatusRequestEntityTooLarge
 		writeError(w, r, http.StatusRequestEntityTooLarge, "request body too large", "request_too_large", "request body too large")
 		c.Log.Info("aigw: request body exceeds limit",
 			slog.String("service_id", svc.ID),
@@ -538,6 +564,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	if kindForced {
 		kind = forcedKind // the entry point knows; detection is a guess
 	}
+	ev.Kind = string(kind)
 
 	// ---------------------------------------------------------------
 	// Step 2: ipgeo — STUB. Task 16 swaps in the real impl.
@@ -566,10 +593,14 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 			// never break the proxy.
 			redactedBody = body
 		}
+		for _, h := range redactHits {
+			ev.Redactions = append(ev.Redactions, observe.Redaction{Rule: h.Rule.Name, Count: h.Count})
+		}
 		if redactDrop != nil {
 			// Drop-action rule fired — short-circuit with 400 redaction.drop.
+			ev.Outcome, ev.Status = observe.ModelRedactionDropped, http.StatusBadRequest
 			writeError(w, r, http.StatusBadRequest, "redaction.drop", "invalid_request", "the request was refused by a redaction rule")
-			c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusBadRequest, nil, nil, 0, false, "MISS", fromReplay)
+			c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusBadRequest, nil, nil, 0, false, "MISS", fromReplay)
 			return
 		}
 	}
@@ -590,15 +621,21 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		if hit {
 			switch cfg.Guardrails.Action {
 			case guardrails.ActionRefuse403, "":
+				ev.Outcome, ev.Status = observe.ModelGuardrailRefused, http.StatusForbidden
+				ev.GuardrailPattern, ev.GuardrailAction = pattern, guardrails.ActionRefuse403
 				c.guardrailRefused(r, svc, pattern, guardrails.ActionRefuse403)
 				writeError(w, r, http.StatusForbidden, "guardrail.refuse", "forbidden", "the request was refused by a guardrail")
 				c.Log.Info("aigw: guardrail refuse",
 					slog.String("service_id", svc.ID),
 					slog.String("pattern", pattern),
 				)
-				c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
+				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
 				return
 			case guardrails.ActionRefuseSafe:
+				// 403 where the endpoint has no well-formed refusal; the safe
+				// answer below is a 200.
+				ev.Outcome, ev.Status = observe.ModelGuardrailRefused, http.StatusForbidden
+				ev.GuardrailPattern, ev.GuardrailAction = pattern, guardrails.ActionRefuseSafe
 				c.guardrailRefused(r, svc, pattern, guardrails.ActionRefuseSafe)
 				ew := ErrorWriterFrom(r.Context())
 				streamed := false
@@ -616,7 +653,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 					refusalBody, hdr, streamed, ok = dialectRefusal(kind, r, body)
 					if !ok && ew != nil {
 						ew(w, http.StatusForbidden, "forbidden", "the request was refused by a guardrail")
-						c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
+						c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
 						return
 					}
 					if !ok {
@@ -627,7 +664,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 					// not recognise: an entry point with its own error shape
 					// gets a plain refusal instead of the generic envelope.
 					ew(w, http.StatusForbidden, "forbidden", "the request was refused by a guardrail")
-					c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
+					c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
 					return
 				default:
 					refusalBody, hdr = safeRefusalBody(kind)
@@ -637,12 +674,13 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 						w.Header().Add(k, v)
 					}
 				}
+				ev.Status = http.StatusOK
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write(refusalBody)
 				// Pass the ORIGINAL + redacted request bodies so operators
 				// investigating refusals can see what was sent.
 				// TruncateRequest will cap whatever we pass.
-				c.captureEntry(svc, r, body, redactedBody, redactHits, kind, http.StatusOK, refusalBody, hdr, 0, streamed, "MISS", fromReplay)
+				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusOK, refusalBody, hdr, 0, streamed, "MISS", fromReplay)
 				return
 			case guardrails.ActionLogOnly:
 				// Fall through; just record the hit in logs.
@@ -673,6 +711,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		}
 		if hit {
 			cacheStatus = "HIT"
+			ev.Outcome, ev.Cache = observe.ModelCacheHit, observe.CacheHit
 			c.serveCacheHit(w, entry)
 			elapsed := time.Since(started)
 			// Convert the cached entry's flat header map to http.Header so
@@ -682,11 +721,12 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 			for k, v := range entry.Headers {
 				cacheHdr.Set(k, v)
 			}
-			c.captureEntry(svc, r, body, redactedBody, redactHits, kind, entry.Status, entry.Body, cacheHdr, 0, false, cacheStatus, fromReplay)
-			c.recordMeter(r.Context(), svc, kind, 0, 0, int64(len(redactedBody)), int64(len(entry.Body)), false, true, entry.Status, cachedCost(), elapsed)
+			c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, entry.Status, entry.Body, cacheHdr, 0, false, cacheStatus, fromReplay)
+			c.recordMeter(r.Context(), &ev, svc, kind, 0, 0, int64(len(redactedBody)), int64(len(entry.Body)), false, true, entry.Status, cachedCost(), elapsed)
 			return
 		}
 		cacheStatus = "MISS"
+		ev.Cache = observe.CacheMiss
 	}
 
 	// ---------------------------------------------------------------
@@ -700,6 +740,16 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// ---------------------------------------------------------------
 	if cacheStatus == "MISS" && cfg.Semantic != nil && cfg.Semantic.Enabled && c.Semantic != nil {
 		candidate, semHit, semErr := c.Semantic.Lookup(r.Context(), svc.ID, redactedBody, *cfg.Semantic)
+		// A tier that is not compiled in (the no-op) was not asked anything.
+		if semantic.Available(c.Semantic) {
+			ev.SemanticAsked, ev.SemanticHit = true, semHit
+			if semHit {
+				ev.SemanticPolicy = cfg.Semantic.FallbackPolicy
+			}
+			if semErr != nil {
+				ev.SemanticErr = semanticErrKind(semErr)
+			}
+		}
 		if semErr != nil {
 			c.Log.Warn("aigw: semantic cache lookup failed",
 				slog.String("service_id", svc.ID),
@@ -730,6 +780,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				if status == 0 {
 					status = http.StatusOK
 				}
+				ev.Outcome = observe.ModelSemanticHit
 				w.WriteHeader(status)
 				_, _ = w.Write(exactEntry.Body)
 				elapsed := time.Since(started)
@@ -737,8 +788,8 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				for k, v := range exactEntry.Headers {
 					cacheHdr.Set(k, v)
 				}
-				c.captureEntry(svc, r, body, redactedBody, redactHits, kind, status, exactEntry.Body, cacheHdr, 0, false, "similar", fromReplay)
-				c.recordMeter(r.Context(), svc, kind, 0, 0, int64(len(redactedBody)), int64(len(exactEntry.Body)), false, true, status, cachedCost(), elapsed)
+				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, status, exactEntry.Body, cacheHdr, 0, false, "similar", fromReplay)
+				c.recordMeter(r.Context(), &ev, svc, kind, 0, 0, int64(len(redactedBody)), int64(len(exactEntry.Body)), false, true, status, cachedCost(), elapsed)
 				return
 			}
 		}
@@ -919,6 +970,8 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 						c.Log.Warn("aigw: semantic promote failed",
 							slog.String("service_id", svc.ID),
 							slog.String("err", err.Error()))
+					} else if semantic.Available(c.Semantic) {
+						ev.SemanticPromoted, ev.PromotedKey = true, key
 					}
 				}
 			}
@@ -927,13 +980,13 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 
 	// Inspector capture: only when this service has the feature enabled.
 	// An aborted response is captured too, with the bytes that were sent.
-	c.captureEntry(svc, r, body, redactedBody, redactHits, kind,
+	c.captureEntry(svc, r, elapsed, body, redactedBody, redactHits, kind,
 		wrapped.statusCode, capw.bytes(), wrapped.Header(), bytesIn, isStreamedResponse(wrapped.Header()), cacheStatus, fromReplay)
 
 	// Meter the request — always, even on non-2xx or after an abort, so
 	// quota usage reflects reality. cache_hit is false on this MISS path; cacheStatus tells the
 	// inspector "MISS" while still recording the bytes/tokens.
-	c.recordMeter(r.Context(), svc, kind,
+	c.recordMeter(r.Context(), &ev, svc, kind,
 		tokens.In, tokens.Out,
 		int64(len(redactedBody)), bytesOut,
 		isStreamedResponse(wrapped.Header()), false,
@@ -1059,7 +1112,7 @@ func detached(ctx context.Context) (context.Context, context.CancelFunc) {
 // replay-compare diff path consults RespHeaders["Content-Type"] to decide
 // between a textual unified diff and a binary metadata-only summary, and
 // without these the diff always falls back to binary.
-func (c *Chain) captureEntry(svc Service, r *http.Request,
+func (c *Chain) captureEntry(svc Service, r *http.Request, took time.Duration,
 	origBody, redactedBody []byte, redactHits []redact.RuleHit,
 	kind Kind, status int, respBody []byte, respHeaders http.Header,
 	bytesIn int64, streamed bool, cacheStatus string, fromReplay bool) {
@@ -1092,6 +1145,7 @@ func (c *Chain) captureEntry(svc Service, r *http.Request,
 		Method:       r.Method,
 		Path:         r.URL.Path,
 		Status:       status,
+		DurationMs:   took.Milliseconds(),
 		BytesIn:      int64(len(origBody)),
 		BytesOut:     int64(len(respBody)),
 		ReqHeaders:   inspectorHeaders(r.Header, svc.APIKeyHeader),
@@ -1118,7 +1172,7 @@ func (c *Chain) captureEntry(svc Service, r *http.Request,
 		}
 	}
 	ring.Capture(entry)
-	_ = bytesIn // future: include in DurationMs / metering
+	_ = bytesIn
 	_ = streamed
 	_ = fromReplay
 }
@@ -1130,12 +1184,18 @@ func (c *Chain) captureEntry(svc Service, r *http.Request,
 // the response; the caller takes it before any post-response bookkeeping.
 // The route is read here, not earlier, so the row names the target that
 // answered even when the gateway switched target while serving.
-func (c *Chain) recordMeter(ctx context.Context, svc Service, kind Kind,
+//
+// ev is the request's event for the observer: the figures of the usage row
+// are noted on it here, whether or not a row is written.
+func (c *Chain) recordMeter(ctx context.Context, ev *observe.ModelRequest, svc Service, kind Kind,
 	tokensIn, tokensOut int, bytesIn, bytesOut int64, streamed, cacheHit bool, status int, costUSD *float64,
 	latency time.Duration) {
+	ev.Status, ev.Streamed, ev.Latency = status, streamed, latency
+	ev.TokensIn, ev.TokensOut, ev.ReportedCostUSD = tokensIn, tokensOut, costUSD
 	if c.Meter == nil || withoutUsage(ctx) {
 		return
 	}
+	ev.Metered = true
 	ctx, cancel := detached(ctx)
 	defer cancel()
 	sample := aimeter.Sample{
@@ -1159,6 +1219,41 @@ func (c *Chain) recordMeter(ctx context.Context, svc Service, kind Kind,
 		sample.Translated, sample.Dropped = ri.Translated, ri.Dropped
 	}
 	_ = c.Meter.Record(ctx, sample)
+}
+
+// report hands the finished request to the observer. It runs deferred, so on
+// every way out of run, an aborted response included. The route is read here
+// for the same reason recordMeter reads it late: it names who answered.
+// Nothing of the request's context is waited for: the caller may be gone.
+func (c *Chain) report(r *http.Request, ev *observe.ModelRequest, started time.Time) {
+	if c.Observer == nil {
+		return
+	}
+	if ev.Latency == 0 {
+		ev.Latency = time.Since(started) // a refusal: recordMeter did not run
+	}
+	if ri, ok := RouteFrom(r.Context()); ok {
+		ev.GatewayKeyID, ev.ProviderSlug = ri.GatewayKeyID, ri.ProviderSlug
+		ev.RequestedModel, ev.TargetModel = ri.RequestedModel, ri.TargetModel
+	}
+	// Not part of the route: a request without one has attempts as well.
+	ev.Attempts = AttemptsFrom(r.Context())
+	defer func() {
+		if rec := recover(); rec != nil {
+			c.Log.Error("aigw: request observer panicked",
+				slog.String("service_id", ev.ServiceID), slog.Any("panic", rec))
+		}
+	}()
+	c.Observer.ObserveModelRequest(*ev)
+}
+
+// semanticErrKind names a semantic-cache error for the observer: "timeout"
+// when the lookup ran out of time, "index" for everything else.
+func semanticErrKind(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "index"
 }
 
 // serveCacheHit writes a cache entry back to the visitor with the spec

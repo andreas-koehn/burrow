@@ -14,6 +14,8 @@ package connlog
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -141,7 +143,7 @@ func (s *SQLSink) Record(ctx context.Context, e Entry) error {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		_, err := s.b.DB().ExecContext(ctx,
+		_, err := s.b.ObservedExec(ctx,
 			`INSERT INTO connection_logs
 			  (id, kind, service_id, tunnel_id, user_id, client_session_id,
 			   source_ip, user_agent, started_at, ended_at, duration_ms,
@@ -346,6 +348,7 @@ func ListConnectionLogRollups(ctx context.Context, x *db.DB, q RollupQuery) ([]d
 		); err != nil {
 			return nil, fmt.Errorf("scan connection_log_rollup: %w", err)
 		}
+		r.Day = dayKey(r.Day) // a date, whatever the driver hands a DATE column back as
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -412,6 +415,7 @@ func ListConnectionLogRollupTopIPsBatch(ctx context.Context, x *db.DB, groups []
 		if err := rows.Scan(&g.Day, &g.ServiceID, &g.Kind, &ip.IP, &ip.Sessions); err != nil {
 			return nil, fmt.Errorf("scan top_ip batch row: %w", err)
 		}
+		g.Day = dayKey(g.Day)
 		out[g] = append(out[g], ip)
 	}
 	if err := rows.Err(); err != nil {
@@ -462,16 +466,29 @@ func ListConnectionLogRollupTopIPs(ctx context.Context, x *db.DB, day, serviceID
 // P95 is computed in Go: SELECT all duration_ms values for the day+service+kind
 // group, sort ascending, take index floor(0.95 * n).
 func (s *SQLSink) Rollup(ctx context.Context, day time.Time) error {
+	_, err := s.RollupDay(ctx, day)
+	return err
+}
+
+// RolledGroup is one (service, kind) group of a rolled-up day, as written.
+type RolledGroup struct {
+	ServiceID, Kind                                           string
+	Sessions, BytesIn, BytesOut, AvgDurationMs, P95DurationMs int64
+	TopIPs                                                    []TopIP // empty when the top-IP aggregation is off
+}
+
+// RollupDay is Rollup that also returns what it wrote, from what it computed
+// before the transaction, so a caller needs no read after the commit.
+func (s *SQLSink) RollupDay(ctx context.Context, day time.Time) ([]RolledGroup, error) {
 	if s == nil || s.b == nil {
-		return nil
+		return nil, nil
 	}
 	dayStr := day.UTC().Format("2006-01-02")
+	dayStart, dayEnd := dayBounds(dayStr)
 
 	// Pull the aggregable groups.
-	// Note: modernc.org/sqlite stores time.Time as "2006-01-02T15:04:05Z"
-	// (ISO 8601 with T separator). SQLite's date() / strftime() do not parse
-	// this format — only the "YYYY-MM-DD HH:MM:SS" form. We use substr(ts,1,10)
-	// to extract the date prefix reliably across all driver versions.
+	// The day is selected by a range on started_at (see dayBounds): it uses
+	// the index and runs on SQLite and Postgres alike.
 	type group struct {
 		serviceID string
 		kind      string
@@ -481,12 +498,12 @@ func (s *SQLSink) Rollup(ctx context.Context, day time.Time) error {
 		        COUNT(*), SUM(bytes_in), SUM(bytes_out),
 		        AVG(duration_ms)
 		 FROM connection_logs
-		 WHERE substr(started_at,1,10) = ?
+		 WHERE started_at >= ? AND started_at < ?
 		 GROUP BY service_id, kind`,
-		dayStr,
+		dayStart, dayEnd,
 	)
 	if err != nil {
-		return fmt.Errorf("rollup groups: %w", err)
+		return nil, fmt.Errorf("rollup groups: %w", err)
 	}
 	defer groupRows.Close()
 
@@ -502,13 +519,13 @@ func (s *SQLSink) Rollup(ctx context.Context, day time.Time) error {
 		var g group
 		var d groupData
 		if err := groupRows.Scan(&g.serviceID, &g.kind, &d.sessions, &d.bytesIn, &d.bytesOut, &d.avgDurationMs); err != nil {
-			return fmt.Errorf("rollup scan: %w", err)
+			return nil, fmt.Errorf("rollup scan: %w", err)
 		}
 		groups[g] = d
 		groupOrder = append(groupOrder, g)
 	}
 	if err := groupRows.Err(); err != nil {
-		return fmt.Errorf("rollup groups rows: %w", err)
+		return nil, fmt.Errorf("rollup groups rows: %w", err)
 	}
 	// We need to close before re-querying.
 	groupRows.Close()
@@ -518,15 +535,37 @@ func (s *SQLSink) Rollup(ctx context.Context, day time.Time) error {
 	// enabled. Only an explicit "false" disables the aggregation.
 	topIPsEnabled := s.topIPsEnabled(ctx)
 
-	// For each group, compute p95 from raw durations.
+	// Everything is read first (the pool may hold a single connection, which
+	// a transaction would then occupy), then every row of the day is written
+	// in ONE transaction: the day is rolled completely or not at all, and
+	// "the day has rollup rows" is a sound marker that it is done.
+	type rolled struct {
+		g    group
+		d    groupData
+		p95  int64
+		tops []topIPRow
+	}
+	all := make([]rolled, 0, len(groupOrder))
 	for _, g := range groupOrder {
 		p95, err := s.computeP95(ctx, dayStr, g.serviceID, g.kind)
 		if err != nil {
-			return fmt.Errorf("rollup p95 %s/%s: %w", g.serviceID, g.kind, err)
+			return nil, fmt.Errorf("rollup p95 %s/%s: %w", g.serviceID, g.kind, err)
 		}
-		d := groups[g]
-		avg := int64(d.avgDurationMs)
-		_, err = s.b.DB().ExecContext(ctx,
+		r := rolled{g: g, d: groups[g], p95: p95}
+		if topIPsEnabled {
+			if r.tops, err = s.topIPs(ctx, dayStr, g.serviceID, g.kind); err != nil {
+				return nil, fmt.Errorf("rollup top_ips %s/%s: %w", g.serviceID, g.kind, err)
+			}
+		}
+		all = append(all, r)
+	}
+	tx, err := s.b.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("rollup begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+	for _, r := range all {
+		_, err = tx.ExecContext(ctx,
 			`INSERT INTO connection_log_rollups
 			  (day, service_id, kind, sessions, bytes_in, bytes_out, avg_duration_ms, p95_duration_ms)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -536,32 +575,35 @@ func (s *SQLSink) Rollup(ctx context.Context, day time.Time) error {
 			   bytes_out       = excluded.bytes_out,
 			   avg_duration_ms = excluded.avg_duration_ms,
 			   p95_duration_ms = excluded.p95_duration_ms`,
-			dayStr, g.serviceID, g.kind,
-			d.sessions, d.bytesIn, d.bytesOut, avg, p95,
+			dayStr, r.g.serviceID, r.g.kind,
+			r.d.sessions, r.d.bytesIn, r.d.bytesOut, int64(r.d.avgDurationMs), r.p95,
 		)
 		if err != nil {
-			return fmt.Errorf("rollup upsert %s/%s: %w", g.serviceID, g.kind, err)
+			return nil, fmt.Errorf("rollup upsert %s/%s: %w", r.g.serviceID, r.g.kind, err)
 		}
-
-		// Top source IPs sub-step (Q12).
-		if topIPsEnabled {
-			if err := s.upsertTopIPs(ctx, dayStr, g.serviceID, g.kind); err != nil {
-				return fmt.Errorf("rollup top_ips %s/%s: %w", g.serviceID, g.kind, err)
-			}
-		} else {
-			// Setting flipped off: scrub any pre-existing aux rows for this
-			// (day, service_id, kind) so the read path no longer surfaces
-			// stale top-IP data.
-			if _, err := s.b.DB().ExecContext(ctx,
-				`DELETE FROM connection_log_rollup_top_ips
-				  WHERE day = ? AND service_id = ? AND kind = ?`,
-				dayStr, g.serviceID, g.kind,
-			); err != nil {
-				return fmt.Errorf("rollup top_ips delete %s/%s: %w", g.serviceID, g.kind, err)
-			}
+		// Top source IPs (Q12). With the toggle off r.tops is empty and the
+		// delete scrubs any pre-existing aux rows of the group, so the read
+		// path no longer surfaces stale top-IP data.
+		if err := writeTopIPs(ctx, tx, dayStr, r.g.serviceID, r.g.kind, r.tops); err != nil {
+			return nil, fmt.Errorf("rollup top_ips %s/%s: %w", r.g.serviceID, r.g.kind, err)
 		}
 	}
-	return nil
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("rollup commit: %w", err)
+	}
+	out := make([]RolledGroup, 0, len(all))
+	for _, r := range all {
+		g := RolledGroup{
+			ServiceID: r.g.serviceID, Kind: r.g.kind,
+			Sessions: r.d.sessions, BytesIn: r.d.bytesIn, BytesOut: r.d.bytesOut,
+			AvgDurationMs: int64(r.d.avgDurationMs), P95DurationMs: r.p95,
+		}
+		for _, t := range r.tops {
+			g.TopIPs = append(g.TopIPs, TopIP{IP: t.ip, Sessions: t.sessions})
+		}
+		out = append(out, g)
+	}
+	return out, nil
 }
 
 // topIPsEnabled returns the effective value of the
@@ -585,6 +627,39 @@ func (s *SQLSink) topIPsEnabled(ctx context.Context) bool {
 	return v != "false"
 }
 
+// dayKey is a day as "2006-01-02". Postgres hands a DATE column back as a
+// timestamp ("2026-10-10T00:00:00Z"), SQLite as the text it was stored as;
+// callers look groups up by the short form.
+func dayKey(day string) string {
+	if len(day) > 10 {
+		return day[:10]
+	}
+	return day
+}
+
+// dayBounds returns the half-open UTC interval [start, start+24h) of the day
+// "YYYY-MM-DD". The statements select by this range, bound as time.Time like
+// every other timestamp of the table: it uses the index on started_at and
+// runs on both backends.
+func dayBounds(dayStr string) (start, end time.Time) {
+	start, _ = time.ParseInLocation("2006-01-02", dayStr, time.UTC)
+	return start, start.Add(24 * time.Hour)
+}
+
+// EarliestStart returns the start time of the oldest connection log row;
+// ok is false when the table is empty.
+func EarliestStart(ctx context.Context, x *db.DB) (t time.Time, ok bool, err error) {
+	err = x.DB().QueryRowContext(ctx,
+		`SELECT started_at FROM connection_logs ORDER BY started_at ASC LIMIT 1`).Scan(&t)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return t, true, nil
+}
+
 // topIPsLimit is the per-(day, service_id, kind) cap on top-source-IP rows
 // upserted by Rollup. Per the v0.5.1 plan / spec Q12.
 const topIPsLimit = 10
@@ -596,49 +671,69 @@ const topIPsLimit = 10
 // stale low-count entries). Idempotent: re-running with the same underlying
 // connection_logs rows yields identical aux-table contents.
 func (s *SQLSink) upsertTopIPs(ctx context.Context, dayStr, serviceID, kind string) error {
-	rows, err := s.b.DB().QueryContext(ctx,
-		`SELECT source_ip, COUNT(*) AS sessions
-		   FROM connection_logs
-		  WHERE substr(started_at,1,10) = ?
-		    AND COALESCE(service_id,'') = ?
-		    AND kind = ?
-		  GROUP BY source_ip
-		  ORDER BY sessions DESC, source_ip ASC
-		  LIMIT ?`,
-		dayStr, serviceID, kind, topIPsLimit,
-	)
+	top, err := s.topIPs(ctx, dayStr, serviceID, kind)
 	if err != nil {
-		return fmt.Errorf("top_ips query: %w", err)
+		return err
 	}
-	type ipRow struct {
-		ip       string
-		sessions int64
-	}
-	var top []ipRow
-	for rows.Next() {
-		var r ipRow
-		if err := rows.Scan(&r.ip, &r.sessions); err != nil {
-			rows.Close()
-			return fmt.Errorf("top_ips scan: %w", err)
-		}
-		top = append(top, r)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("top_ips rows: %w", err)
-	}
-	rows.Close()
-
 	// Two-phase: delete prior aux rows for this group, then insert the new
 	// top-N — wrapped in a single transaction so concurrent readers never
 	// observe an empty top-IPs window during the DELETE->INSERT gap (v0.5.2
-	// BACKLOG #3). The delete is unconditional so a previously larger top-N
-	// (or a previously different set of IPs) does not leak rows.
+	// BACKLOG #3).
 	tx, err := s.b.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("top_ips begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op after Commit
+	if err := writeTopIPs(ctx, tx, dayStr, serviceID, kind, top); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("top_ips commit: %w", err)
+	}
+	return nil
+}
+
+type topIPRow struct {
+	ip       string
+	sessions int64
+}
+
+// topIPs reads the top source IPs of one (day, service_id, kind) group.
+func (s *SQLSink) topIPs(ctx context.Context, dayStr, serviceID, kind string) ([]topIPRow, error) {
+	dayStart, dayEnd := dayBounds(dayStr)
+	rows, err := s.b.DB().QueryContext(ctx,
+		`SELECT source_ip, COUNT(*) AS sessions
+		   FROM connection_logs
+		  WHERE started_at >= ? AND started_at < ?
+		    AND COALESCE(service_id,'') = ?
+		    AND kind = ?
+		  GROUP BY source_ip
+		  ORDER BY sessions DESC, source_ip ASC
+		  LIMIT ?`,
+		dayStart, dayEnd, serviceID, kind, topIPsLimit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("top_ips query: %w", err)
+	}
+	defer rows.Close()
+	var top []topIPRow
+	for rows.Next() {
+		var r topIPRow
+		if err := rows.Scan(&r.ip, &r.sessions); err != nil {
+			return nil, fmt.Errorf("top_ips scan: %w", err)
+		}
+		top = append(top, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("top_ips rows: %w", err)
+	}
+	return top, nil
+}
+
+// writeTopIPs replaces the aux rows of a group by top, on tx. The delete is
+// unconditional so a previously larger top-N (or a previously different set
+// of IPs) does not leak rows; after it the inserts cannot conflict.
+func writeTopIPs(ctx context.Context, tx *sql.Tx, dayStr, serviceID, kind string, top []topIPRow) error {
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM connection_log_rollup_top_ips
 		  WHERE day = ? AND service_id = ? AND kind = ?`,
@@ -646,9 +741,6 @@ func (s *SQLSink) upsertTopIPs(ctx context.Context, dayStr, serviceID, kind stri
 	); err != nil {
 		return fmt.Errorf("top_ips clear: %w", err)
 	}
-	// Post-DELETE the INSERTs cannot conflict on (day, service_id, kind, ip),
-	// so the ON CONFLICT DO UPDATE clause from v0.5.1 was dead code; dropped
-	// here for clarity (v0.5.2 BACKLOG #3 second half).
 	for _, r := range top {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO connection_log_rollup_top_ips
@@ -659,22 +751,20 @@ func (s *SQLSink) upsertTopIPs(ctx context.Context, dayStr, serviceID, kind stri
 			return fmt.Errorf("top_ips insert: %w", err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("top_ips commit: %w", err)
-	}
 	return nil
 }
 
 // computeP95 pulls all duration_ms values for (day, serviceID, kind), sorts
 // them ascending, and returns the value at index floor(0.95 * n).
 func (s *SQLSink) computeP95(ctx context.Context, dayStr, serviceID, kind string) (int64, error) {
+	dayStart, dayEnd := dayBounds(dayStr)
 	rows, err := s.b.DB().QueryContext(ctx,
 		`SELECT duration_ms FROM connection_logs
-		 WHERE substr(started_at,1,10) = ?
+		 WHERE started_at >= ? AND started_at < ?
 		   AND COALESCE(service_id,'') = ?
 		   AND kind = ?
 		 ORDER BY duration_ms ASC`,
-		dayStr, serviceID, kind,
+		dayStart, dayEnd, serviceID, kind,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("p95 query: %w", err)

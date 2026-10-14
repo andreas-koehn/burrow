@@ -3,6 +3,7 @@ package metrics
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -367,8 +368,8 @@ func TestIncHTTPRequestTwoLabelSetsTwoSeries(t *testing.T) {
 	}
 	// Find both series by their label triple.
 	want := map[string]string{
-		"svc-a|GET|200":  "2",
-		"svc-b|POST|500": "1",
+		"svc-a|GET|2xx":  "2",
+		"svc-b|POST|5xx": "1",
 	}
 	for _, s := range reqs.Samples {
 		k := s.Labels["service"] + "|" + s.Labels["method"] + "|" + s.Labels["status"]
@@ -406,7 +407,7 @@ func TestConcurrentIncCounter(t *testing.T) {
 	}
 	wg.Wait()
 
-	v, ok := r.counters.Load(`burrow_http_requests_total{service="svc",method="GET",status="200"}`)
+	v, ok := r.counters.Load(`burrow_http_requests_total{service="svc",method="GET",status="2xx"}`)
 	if !ok {
 		t.Fatal("series missing after concurrent Inc")
 	}
@@ -643,5 +644,75 @@ func TestLabelEscaping(t *testing.T) {
 	wantSvc := `svc with "quote" \ and ` + "\n"
 	if m.Samples[0].Labels["service"] != wantSvc {
 		t.Errorf("escaped service mismatch: got %q want %q", m.Samples[0].Labels["service"], wantSvc)
+	}
+}
+
+// TestLabelValuesAreBounded feeds every recording method that takes a value
+// a visitor, a client or an upstream chooses a thousand different ones, and
+// asserts the families stay at a handful of series: the label values come
+// from fixed vocabularies, whatever is passed in.
+func TestLabelValuesAreBounded(t *testing.T) {
+	r := New()
+	for i := 0; i < 1000; i++ {
+		junk := "x" + strconv.Itoa(i)
+		r.IncHTTPRequest("svc", junk, 100+i)
+		r.ObserveHTTPDuration("svc", junk, 0.01)
+		r.IncAIUpstreamError("svc", 100+i)
+		r.IncAISemanticHits("svc", junk)
+		r.IncAISemanticErrors("svc", junk)
+		r.IncConnections("svc", junk, junk)
+		r.AddConnectionBytesIn("svc", junk, 1)
+		r.AddConnectionBytesOut("svc", junk, 1)
+		r.IncAIFailover("svc", "a", "b", junk)
+	}
+	var buf bytes.Buffer
+	if err := r.WriteText(&buf); err != nil {
+		t.Fatal(err)
+	}
+	got := parseExposition(t, buf.String())
+	for name, max := range map[string]int{
+		"burrow_http_requests_total":           6, // one method ("other") × five classes and "none"
+		"burrow_http_request_duration_seconds": 5, // one series: three quantiles, _count, _sum
+		"burrow_ai_upstream_errors_total":      6,
+		"burrow_ai_semantic_hits_total":        1,
+		"burrow_ai_semantic_errors_total":      1,
+		"burrow_connections_total":             1,
+		"burrow_connection_bytes_in_total":     1,
+		"burrow_connection_bytes_out_total":    1,
+		"burrow_ai_failover_events_total":      1,
+	} {
+		if n := len(got[name].Samples); n == 0 || n > max {
+			t.Errorf("%s has %d series after 1000 different values, want 1..%d", name, n, max)
+		}
+	}
+	for in, want := range map[int]string{0: "none", 99: "none", 100: "1xx", 204: "2xx", 302: "3xx", 404: "4xx", 503: "5xx", 600: "none", -1: "none"} {
+		if got := StatusClass(in); got != want {
+			t.Errorf("StatusClass(%d) = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]string{"GET": "GET", "PATCH": "PATCH", "get": "other", "": "other", "PROPFIND": "other", "GET\n": "other"} {
+		if got := Method(in); got != want {
+			t.Errorf("Method(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestCollectorsRunOnWriteText: a collector runs on every scrape, before the
+// text is rendered; one that panics does not break the scrape or the others.
+func TestCollectorsRunOnWriteText(t *testing.T) {
+	r := New()
+	n := 0
+	r.AddCollector(func() { panic("broken collector") })
+	r.AddCollector(func() { n++; r.SetCustomDomainCount(int64(n)) })
+	r.AddCollector(nil)
+	for want := 1; want <= 2; want++ {
+		var buf bytes.Buffer
+		if err := r.WriteText(&buf); err != nil {
+			t.Fatal(err)
+		}
+		got := parseExposition(t, buf.String())["burrow_custom_domain_count"]
+		if got == nil || len(got.Samples) != 1 || got.Samples[0].Value != strconv.Itoa(want) {
+			t.Fatalf("scrape %d: burrow_custom_domain_count = %+v", want, got)
+		}
 	}
 }

@@ -97,7 +97,7 @@ func (s *SQLSink) Record(ctx context.Context, sm Sample) error {
 	// streamed and cache_hit are bound as Go bools: the columns are BOOLEAN
 	// on Postgres, which refuses an integer for them, and INTEGER on SQLite,
 	// whose driver stores a bool as 0/1.
-	_, err := s.DB.DB().ExecContext(ctx, `
+	_, err := s.DB.ObservedExec(ctx, `
 		INSERT INTO usage_events
 		  (id, service_id, api_key_id, ts, kind,
 		   tokens_in, tokens_out, bytes_in, bytes_out,

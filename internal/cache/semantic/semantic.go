@@ -58,6 +58,16 @@ type Cache interface {
 	Stats(ctx context.Context, serviceID string) (Stats, error)
 }
 
+// Available reports whether c is a semantic tier that does something: false
+// for nil and for the NoopCache of a build without the semantic_cache tag.
+func Available(c Cache) bool {
+	if c == nil {
+		return false
+	}
+	_, noop := c.(NoopCache)
+	return !noop
+}
+
 // NoopCache is the zero-allocation implementation used when the semantic
 // tier is disabled or not compiled in. All methods are safe to call; none
 // ever return an error.

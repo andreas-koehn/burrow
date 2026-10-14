@@ -130,6 +130,10 @@ const (
 	// ActionTokenMint row of its own.
 	ActionClientLoginApproved = "client.login.approved"
 	ActionClientLoginDenied   = "client.login.denied"
+
+	// A write of the global redaction settings (the rules have actions of
+	// their own). The entry names the settings key, never its value.
+	ActionRedactionSettingsUpdate = "redaction.settings.update"
 )
 
 // AllActions is the closed set of every audit action Burrow defines, in a
@@ -166,6 +170,7 @@ var AllActions = []string{
 	ActionRetentionCompact,
 	ActionConnectionSessionSummary, ActionAICachePromoted, ActionAIUpstreamError,
 	ActionClientLoginApproved, ActionClientLoginDenied,
+	ActionRedactionSettingsUpdate,
 }
 
 // aggregatedActions is the set of actions that are sample-rated at 1/hour

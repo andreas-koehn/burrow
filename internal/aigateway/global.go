@@ -145,7 +145,7 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 	// Until an attempt answers, the route names the first target: an answer
 	// that comes from the chain itself (a cached one) is accounted to it.
 	route.SetTarget(first.Provider.Slug, first.Model)
-	r = r.WithContext(aigw.WithRoute(r.Context(), route))
+	r = r.WithContext(aigw.WithAttempts(aigw.WithRoute(r.Context(), route)))
 
 	// The chain runs under the first target's service: its AI config, its
 	// limits, its cache. That service's policy is therefore checked before

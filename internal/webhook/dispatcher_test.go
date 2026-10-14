@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -681,7 +682,8 @@ func TestDispatcherFiresAiUpstreamErrorEvent(t *testing.T) {
 	d.Start()
 	defer d.Close()
 
-	d.EmitAIUpstreamError("svc-1", "be-1", 502, "upstream timeout", 3)
+	svcID := fmt.Sprintf("svc-fires-%d", time.Now().UnixNano())
+	d.EmitAIUpstreamError(svcID, "be-1", 502, "upstream timeout", 3)
 
 	select {
 	case body := <-got:
@@ -697,8 +699,8 @@ func TestDispatcherFiresAiUpstreamErrorEvent(t *testing.T) {
 			t.Fatalf("body.data not a map: %T", env["data"])
 		}
 		// Keys must be snake_case per spec H.2/E.3.
-		if data["service_id"] != "svc-1" {
-			t.Errorf("service_id = %v want svc-1", data["service_id"])
+		if data["service_id"] != svcID {
+			t.Errorf("service_id = %v want %s", data["service_id"], svcID)
 		}
 		if data["backend_service_id"] != "be-1" {
 			t.Errorf("backend_service_id = %v want be-1", data["backend_service_id"])
@@ -733,9 +735,9 @@ func TestDispatcherRateLimit_AIUpstreamError(t *testing.T) {
 	d.Start()
 	defer d.Close()
 
-	// The rate limiter uses a package-level singleton. We emit to a unique
-	// serviceID so previous test runs don't interfere.
-	const svcID = "rl-test-svc"
+	// The rate limiter is a process-wide singleton (one event per service and
+	// hour): a service id of its own keeps -count=N runs apart.
+	svcID := fmt.Sprintf("rl-test-svc-%d", time.Now().UnixNano())
 	d.EmitAIUpstreamError(svcID, "be", 502, "err", 0)
 	waitFor(t, 2*time.Second, func() bool { return atomic.LoadInt32(&hits) >= 1 })
 	d.EmitAIUpstreamError(svcID, "be", 502, "err", 1) // within 1h window → suppressed

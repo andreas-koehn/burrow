@@ -67,6 +67,10 @@ type v04Stack struct {
 	AIChain           *aigw.Chain
 	// GuardrailAudit writes the guardrail.refused entries; flushed at shutdown.
 	GuardrailAudit *guardrailAuditor
+	// Observer receives the events of the observation points (sessions,
+	// traffic, model requests) and turns them into metrics, webhook events
+	// and audit entries. Flushed at shutdown.
+	Observer *observer
 }
 
 // buildV04Stack wires every v0.4.0 engine in dependency order. The order
@@ -123,6 +127,9 @@ func buildV04Stack(
 	webhookSecrets := webhook.NewInMemorySecrets()
 	dispatcher := webhook.New(wrapped, webhookSecrets, auditLogger, log)
 	costEngine.SetDispatcher(dispatcher)
+	// The store announces a service an admin created and a change of the
+	// retention settings.
+	st.SetEvents(dispatcher)
 
 	// --- quota.Engine ------------------------------------------------------
 	quotaEngine := quota.New(wrapped)
@@ -178,7 +185,7 @@ func buildV04Stack(
 	// 4-9 run. On denial Charge returns Allow=false; the middleware writes 429
 	// and emits a ratelimit.enforced audit row (sampled: one per limit per
 	// hour) without calling next.
-	aiChain.RateLimit = buildQuotaMiddleware(quotaEngine, auditLogger, newQuotaEvents(dispatcher, nil))
+	aiChain.RateLimit = buildQuotaMiddleware(quotaEngine, auditLogger, newQuotaEvents(dispatcher, nil, log))
 
 	// A guardrail refusal leaves an audit entry (guardrail.refused, sampled
 	// by the audit logger), written off the request path.
@@ -187,6 +194,15 @@ func buildV04Stack(
 
 	// --- metrics recorder --------------------------------------------------
 	metricsRec := metrics.New()
+
+	// --- observer ------------------------------------------------------------
+	// One value for all observation points: the chain, the control server
+	// and the proxy hand it their events.
+	obs := newObserver(observerParts{
+		Recorder: metricsRec, Events: dispatcher, Audit: auditLogger,
+		Cost: costEngine, Chain: aiChain, Log: log,
+	})
+	aiChain.Observer = obs
 
 	// --- geo lookup (default build = noop; geo build tag = real MMDB) ------
 	geoLookup, err := proxy.OpenGeoDB(cfg.GeoDBPath)
@@ -209,7 +225,7 @@ func buildV04Stack(
 		AuditLogger:       auditLogger,
 		AuditAppender:     auditLogger,
 		AuditEvents:       wrapped,
-		AuditChain:        api.NewAuditChainAdapter(auditLogger),
+		AuditChain:        exportAnnouncingChain{AuditChain: api.NewAuditChainAdapter(auditLogger), events: dispatcher},
 		WebhookDispatcher: dispatcher,
 		WebhookSecrets:    webhookSecrets,
 		CostEngine:        costEngine,
@@ -225,6 +241,7 @@ func buildV04Stack(
 		MCPServer:         mcpServer,
 		AIChain:           aiChain,
 		GuardrailAudit:    guardrailAudit,
+		Observer:          obs,
 	}, nil
 }
 

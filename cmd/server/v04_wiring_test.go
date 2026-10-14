@@ -55,6 +55,7 @@ func TestBuildV04Stack_DefaultsCarryNonNilAIChain(t *testing.T) {
 		t.Fatalf("buildV04Stack: %v", err)
 	}
 	t.Cleanup(stack.GuardrailAudit.stop)
+	t.Cleanup(stack.Observer.stop)
 	t.Cleanup(func() { stack.WebhookDispatcher.Close() })
 
 	if stack.AIChain == nil {
@@ -105,6 +106,7 @@ func TestAIChain_PassThroughWhenNoServiceConfig(t *testing.T) {
 		t.Fatalf("buildV04Stack: %v", err)
 	}
 	t.Cleanup(stack.GuardrailAudit.stop)
+	t.Cleanup(stack.Observer.stop)
 	t.Cleanup(func() { stack.WebhookDispatcher.Close() })
 
 	// Count hits on the downstream handler — exactly one means pure pass-
@@ -147,6 +149,7 @@ func TestBuildMCPServer_BuiltWhenMCPListenSet(t *testing.T) {
 		t.Fatalf("buildV04Stack: %v", err)
 	}
 	t.Cleanup(stack.GuardrailAudit.stop)
+	t.Cleanup(stack.Observer.stop)
 	t.Cleanup(func() { stack.WebhookDispatcher.Close() })
 
 	mcp := BuildMCPServer(cfg, st, stack, nil, wrapped, discardLog())
@@ -171,6 +174,7 @@ func TestBuildMCPServer_NilWhenMCPListenEmpty(t *testing.T) {
 		t.Fatalf("buildV04Stack: %v", err)
 	}
 	t.Cleanup(stack.GuardrailAudit.stop)
+	t.Cleanup(stack.Observer.stop)
 	t.Cleanup(func() { stack.WebhookDispatcher.Close() })
 
 	mcp := BuildMCPServer(cfg, st, stack, nil, wrapped, discardLog())
