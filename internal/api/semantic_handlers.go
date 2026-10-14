@@ -70,8 +70,8 @@ var semanticDefaultSettings = SemanticSettings{
 }
 
 // DeleteSemanticCacheEntries handles DELETE /api/v1/cache/semantic/entries.
-// Admin or ai:configure:any only — gating is enforced by the router via
-// requireAdminOrAIConfigureAny (same guard as DELETE /cache/entries). 204
+// Needs ai:configure:any (routeAccess in access.go), like
+// DELETE /cache/entries. 204
 // on success. This endpoint clears only the semantic tier; the exact-match
 // tier is unaffected.
 func (d Deps) DeleteSemanticCacheEntries(w http.ResponseWriter, r *http.Request) {
@@ -114,9 +114,9 @@ func (d Deps) PutServiceAIConfig(w http.ResponseWriter, r *http.Request) {
 	uid := userID(r.Context())
 
 	// :any short-circuits ownership.
-	if !authz.Can(role, authz.PermAIConfigureAny) {
+	if !effectivePerms(r.Context(), role, authz.PermAIConfigureAny) {
 		// Must be an :own caller and own the service.
-		if !authz.Can(role, authz.PermAIConfigureOwn) {
+		if !effectivePerms(r.Context(), role, authz.PermAIConfigureOwn) {
 			writeErr(w, http.StatusForbidden, "forbidden")
 			return
 		}
@@ -240,8 +240,8 @@ func (d Deps) GetServiceAIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	uid := userID(r.Context())
 
-	if !authz.Can(role, authz.PermAIConfigureAny) {
-		if !authz.Can(role, authz.PermAIConfigureOwn) {
+	if !effectivePerms(r.Context(), role, authz.PermAIConfigureAny) {
+		if !effectivePerms(r.Context(), role, authz.PermAIConfigureOwn) {
 			writeErr(w, http.StatusForbidden, "forbidden")
 			return
 		}

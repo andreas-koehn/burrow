@@ -470,7 +470,7 @@ func TestRoleNonAdminForbiddenWithoutRolesManage(t *testing.T) {
 	// prove the roles:manage gate honours the cache. Set the user's role
 	// to "curator" and grant it roles:manage.
 	authz.SetRoles(map[string][]authz.Permission{
-		"curator": {authz.PermRolesManage},
+		"curator": {authz.PermRolesManage, authz.PermAIReadAny},
 	})
 	d.Users = &fakeUserStore{role: "curator"}
 	srv2 := httptest.NewServer(NewRouter(d))

@@ -16,37 +16,14 @@ import (
 
 // Spec Part I (v0.4.0 Task 15): editable custom roles + permission matrix.
 //
-// Permission gating: admin OR authz.PermRolesManage for POST/PUT/DELETE
-// mutations; the existing /roles GET routes (registered in router.go under
-// the admin-only Group) keep their stricter admin-only stance for v0.4.0 so
-// the list/detail wire shape stays consistent across reads. The mutation
-// routes accept rolesm:manage so a custom role can be granted curator
-// privileges without admin escalation.
+// Permission gating (routeAccess in access.go): roles:manage for the
+// POST/PUT/DELETE mutations, so a custom role can be granted curator
+// privileges without admin escalation; roles:read or roles:manage for the
+// /roles GET routes.
 //
 // All four routes consult the closed authz.AllPermissions() catalog when
 // validating role payloads — an unknown key short-circuits with
 // 400 {"error":"unknown permission \"<key>\""}.
-
-// requireRolesManage gates the POST/PUT/DELETE routes on admin OR the
-// role:manage permission. Mirrors requireWebhooksManage in shape.
-func (d Deps) requireRolesManage(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		role, err := d.callerRole(r)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if role == "admin" || authz.Can(role, authz.PermRolesManage) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "roles:manage required")
-	})
-}
 
 // --- Wire shapes -----------------------------------------------------------
 
@@ -90,6 +67,9 @@ func (d Deps) PostRole(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name must be a slug (lowercase letters, digits, dashes; 1..64 chars)")
 		return
 	}
+	if !d.mayGrant(w, r, in.Permissions) {
+		return
+	}
 	if err := d.Roles.CreateRole(r.Context(), in.Name, in.Description, in.Permissions, in.DefaultForNewUsers); err != nil {
 		if writeRoleErr(w, err) {
 			return
@@ -119,6 +99,18 @@ func (d Deps) PostRole(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// mayChangeRole reports whether the caller may edit or delete the named role:
+// the caller must hold every permission the role holds now (mayGrant), or
+// emptying a role would open its users to anyone who manages roles. A
+// built-in role keeps its own refusal from the store, and a role that does
+// not exist its 404.
+func (d Deps) mayChangeRole(w http.ResponseWriter, r *http.Request, name string) bool {
+	if _, builtin := authz.Get(name); builtin {
+		return true
+	}
+	return d.mayAssignRole(w, r, name)
+}
+
 // PutRole patches an existing non-builtin role. 204 on success, 404 if no
 // row matches, 409 for built-in rows, 400 on an unknown perm key.
 func (d Deps) PutRole(w http.ResponseWriter, r *http.Request) {
@@ -131,6 +123,12 @@ func (d Deps) PutRole(w http.ResponseWriter, r *http.Request) {
 	var in updateRoleReq
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if !d.mayChangeRole(w, r, name) {
+		return
+	}
+	if in.Permissions != nil && !d.mayGrant(w, r, *in.Permissions) {
 		return
 	}
 	if err := d.Roles.UpdateRole(r.Context(), name, store.RoleUpdate{
@@ -147,20 +145,23 @@ func (d Deps) PutRole(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DeleteRole removes a non-builtin role. Users on the role are re-assigned
-// to the current default-for-new-users role (single tx). 204 on success,
-// 404 if no row matches, 409 for built-in rows.
+// DeleteRole removes a non-builtin role that nobody uses. 204 on success, 404
+// if no row matches, 409 for a built-in role and for a role that a user holds
+// or an access policy names (the store counts both; nobody is moved to
+// another role). The caller must hold what the role holds (mayChangeRole).
 //
-// TODO(Task 25): wire audit Logger so we emit one "role.delete" event
-// followed by one "user.update" event per affected user (the affected list
-// is already plumbed back from the store). Until the Logger is injected
-// into Deps the handler simply discards the list.
+// The store hands back the users the database moved off the role, which is
+// empty unless a user was given the role between its check and the delete;
+// the handler discards the list.
 func (d Deps) DeleteRole(w http.ResponseWriter, r *http.Request) {
 	if d.Roles == nil {
 		writeErr(w, http.StatusInternalServerError, "role store unavailable")
 		return
 	}
 	name := chi.URLParam(r, "name")
+	if !d.mayChangeRole(w, r, name) {
+		return
+	}
 	if _, err := d.Roles.DeleteRole(r.Context(), name); err != nil {
 		if writeRoleErr(w, err) {
 			return
@@ -232,16 +233,19 @@ var permissionInfoTable = map[authz.Permission]permissionInfo{
 	authz.PermUsersManage:    {Group: "Users", Description: "Manage users"},
 	authz.PermRolesRead:      {Group: "Roles", Description: "Read roles"},
 	authz.PermRolesManage:    {Group: "Roles", Description: "Create, edit, delete custom roles"},
-	authz.PermSettingsManage: {Group: "Settings", Description: "Manage server settings"},
+	authz.PermSettingsManage: {Group: "Settings", Description: "Manage server settings. Reaches the SMTP password (a test email goes to the host the settings name): give it like admin rights"},
 	// AI
-	authz.PermAIReadOwn:      {Group: "AI", Description: "Read own AI traffic + settings"},
-	authz.PermAIReadAny:      {Group: "AI", Description: "Read all AI traffic + settings"},
-	authz.PermAIConfigureOwn: {Group: "AI", Description: "Configure own AI service settings"},
-	authz.PermAIConfigureAny: {Group: "AI", Description: "Configure all AI service settings"},
+	authz.PermAIReadOwn:         {Group: "AI", Description: "Read own AI traffic + settings"},
+	authz.PermAIReadAny:         {Group: "AI", Description: "Read all AI traffic + settings"},
+	authz.PermAIConfigureOwn:    {Group: "AI", Description: "Configure own AI service settings"},
+	authz.PermAIConfigureAny:    {Group: "AI", Description: "Configure all AI service settings"},
+	authz.PermAIProvidersManage: {Group: "AI", Description: "Create, change and delete AI providers and their model catalogs. Reaches the stored upstream credentials (a provider sends one to the address it names): give it like admin rights"},
 	// Quotas + cost
-	authz.PermQuotasReadOwn:   {Group: "Quotas", Description: "Read own usage + limits"},
-	authz.PermQuotasReadAny:   {Group: "Quotas", Description: "Read all usage + limits"},
-	authz.PermQuotasManageAny: {Group: "Quotas", Description: "Manage rate-limits + budgets"},
+	authz.PermQuotasReadOwn:     {Group: "Quotas", Description: "Read own usage + limits"},
+	authz.PermQuotasReadAny:     {Group: "Quotas", Description: "Read all usage + limits"},
+	authz.PermQuotasManageAny:   {Group: "Quotas", Description: "Manage rate limits"},
+	authz.PermBudgetsManage:     {Group: "Quotas", Description: "Read and manage budgets"},
+	authz.PermCostPricingManage: {Group: "Quotas", Description: "Change the pricing table"},
 	// Inspector
 	authz.PermInspectorReadOwn:   {Group: "Inspector", Description: "Read own request inspector"},
 	authz.PermInspectorReadAny:   {Group: "Inspector", Description: "Read all request inspectors"},
@@ -255,7 +259,7 @@ var permissionInfoTable = map[authz.Permission]permissionInfo{
 	authz.PermAutomationTokensManageOwn: {Group: "Automation tokens", Description: "Manage own automation tokens"},
 	authz.PermAutomationTokensManageAny: {Group: "Automation tokens", Description: "Manage all automation tokens"},
 	// Backup / metrics / MCP
-	authz.PermBackupRun:    {Group: "Backup", Description: "Run on-demand backups"},
+	authz.PermBackupRun:    {Group: "Backup", Description: "Run, download, verify and delete backups. A download is the whole database: give it like admin rights. Restoring takes every permission"},
 	authz.PermMetricsRead:  {Group: "Metrics", Description: "Read Prometheus metrics + dashboards"},
 	authz.PermMcpToolsRead: {Group: "MCP", Description: "Read MCP tool catalog"},
 	// mTLS / IP-geo
@@ -319,6 +323,10 @@ func writeRoleErr(w http.ResponseWriter, err error) bool {
 		return true
 	case errors.Is(err, store.ErrRoleBuiltin):
 		writeErr(w, http.StatusConflict, "role is built-in")
+		return true
+	case errors.Is(err, store.ErrRoleInUse):
+		// "role is in use: 2 user(s), 1 access policy(ies)"
+		writeErr(w, http.StatusConflict, strings.TrimPrefix(err.Error(), "store: "))
 		return true
 	case errors.Is(err, store.ErrRoleExists):
 		writeErr(w, http.StatusConflict, "role already exists")

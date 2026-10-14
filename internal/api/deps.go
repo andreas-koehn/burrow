@@ -349,6 +349,10 @@ type Deps struct {
 	Clients     ClientLister
 	AccessModes AccessModeSetter
 	DB          Pinger
+	// ClientSessions ends the live sessions of a client token. The handlers
+	// call it when a token is revoked and when its user is suspended or
+	// deleted. *server.Server satisfies it. nil: nothing is closed.
+	ClientSessions interface{ CloseByToken(tokenID string) int }
 	// v0.3.0 surfaces.
 	// Services is the durable service store (api keys, access mode, policy).
 	Services ServiceStore
@@ -577,8 +581,8 @@ type Deps struct {
 	// (Task 25) constructs *metrics.Recorder, wraps it via
 	// NewMetricsRecorderAdapter and assigns it here. Nil disables /metrics
 	// (the handler returns 500 "metrics recorder unavailable"); the gate
-	// (admin OR metrics:read) still runs first so unauthenticated callers
-	// still get 401 / 403 — never a leak of internal state.
+	// (metrics:read) still runs first, so a caller without credentials or
+	// without the permission gets 401 / 403 — never a leak of internal state.
 	Metrics MetricsRecorder
 
 	// v0.4.0 Task 23: `burrowd mcp` configuration + tool registry surface.
@@ -683,6 +687,9 @@ const (
 	// Set by RequireBearerOrSession so the request hot path does not need
 	// a second GetUserByID; the bearer middleware already did one.
 	callerRoleKey
+	// bearerExpiresKey carries the expiry (a time.Time) of a bearer token
+	// that has one; absent for a token that never expires.
+	bearerExpiresKey
 )
 
 // userID returns the authenticated user id stored by RequireSession (or
@@ -709,6 +716,13 @@ func bearerTokenID(ctx context.Context) string {
 func bearerPerms(ctx context.Context) []string {
 	v, _ := ctx.Value(bearerPermsKey).([]string)
 	return v
+}
+
+// bearerExpiry returns the expiry of the authenticated bearer token, and false
+// for a token that never expires and for a cookie-authed request.
+func bearerExpiry(ctx context.Context) (time.Time, bool) {
+	v, ok := ctx.Value(bearerExpiresKey).(time.Time)
+	return v, ok
 }
 
 // callerRole returns the role attached to the request context by the

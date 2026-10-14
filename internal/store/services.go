@@ -387,7 +387,7 @@ func (s *Store) GetAccessPolicy(ctx context.Context, callerID, callerRole, servi
 
 // SetAccessPolicy replaces the full access policy for the given service.
 // Gate: configure:own (owner) or configure:any (admin).
-// Each role is validated against the built-in authz role set; unknown roles
+// Each role must be a built-in role or a stored custom role; unknown roles
 // return ErrUnknownRole (maps to HTTP 400). An empty roles slice means
 // deny-all.
 func (s *Store) SetAccessPolicy(ctx context.Context, callerID, callerRole, serviceID string, roles []string) error {
@@ -396,7 +396,9 @@ func (s *Store) SetAccessPolicy(ctx context.Context, callerID, callerRole, servi
 		return err
 	}
 	for _, r := range roles {
-		if _, ok := authz.Get(r); !ok {
+		if ok, err := s.roleExists(ctx, r); err != nil {
+			return err
+		} else if !ok {
 			return ErrUnknownRole
 		}
 	}
@@ -497,7 +499,7 @@ func (s *Store) TouchServiceLastSeen(ctx context.Context, serviceID, tokenName s
 
 // CreateService is the admin-only pre-provisioning surface exposed via
 // POST /api/v1/services (v0.5.2 P3.6). It delegates straight to the DB layer
-// — permission checking happens in the API handler (RequireAdmin) so this
+// — permission checking happens in the API (services:configure:any) so this
 // method intentionally has no per-caller authz; tests that want to bypass
 // the API entirely call it on *db.DB directly. Returns db.ErrDuplicateService
 // on UNIQUE-constraint violations, mapped to HTTP 409 by the handler.

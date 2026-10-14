@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -65,7 +67,7 @@ type usersPageResp struct {
 	Total int             `json:"total"`
 }
 
-// AdminListUsers returns a filtered page of users (admin only).
+// AdminListUsers returns a filtered page of users (users:read or users:manage).
 // GET /api/v1/users?q=&limit=&offset=
 func (d Deps) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
@@ -98,12 +100,91 @@ func atoiDefault(s string, def int) int {
 	return n
 }
 
+// msgUnknownUserRole is the 400 for a role that is neither built-in nor a
+// stored custom role.
+const msgUnknownUserRole = "role must be a built-in role or an existing custom role"
+
+// mayGrant reports whether the caller holds every one of perms, and answers
+// 403 itself when not: nobody hands out a permission they lack. A session
+// holds what its role holds; a token only what it declares and its user's
+// role grants (effectivePerms), so a token hands out no more than it can use.
+func (d Deps) mayGrant(w http.ResponseWriter, r *http.Request, perms []string) bool {
+	role, err := d.callerRoleForAuth(r)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "lookup failed")
+		return false
+	}
+	if p := firstNotHeld(r.Context(), role, perms); p != "" {
+		who := "your role"
+		if bearerTokenID(r.Context()) != "" {
+			who = "this token"
+		}
+		writeErr(w, http.StatusForbidden, who+" does not hold "+p+" and cannot grant it")
+		return false
+	}
+	return true
+}
+
+// rolePerms returns the permissions of a role: a built-in role from authz
+// (it may have no row in the roles table), any other from the role store.
+func (d Deps) rolePerms(ctx context.Context, name string) ([]string, error) {
+	if ar, ok := authz.Get(name); ok {
+		var perms []string
+		for _, p := range ar.Permissions {
+			perms = append(perms, string(p))
+		}
+		return perms, nil
+	}
+	if d.Roles == nil {
+		return nil, nil
+	}
+	rd, err := d.Roles.GetRole(ctx, name)
+	if errors.Is(err, db.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return rd.Permissions, nil
+}
+
+// mayAssignRole reports whether the caller may give a user the named role
+// (mayGrant over the role's permissions). A role that does not exist passes:
+// the store refuses it with ErrInvalidRole.
+func (d Deps) mayAssignRole(w http.ResponseWriter, r *http.Request, name string) bool {
+	perms, err := d.rolePerms(r.Context(), name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "lookup failed")
+		return false
+	}
+	return d.mayGrant(w, r, perms)
+}
+
+// mayManageUser reports whether the caller may change or delete the target
+// user: the caller must hold every permission of the role the target holds
+// now, so that users:manage alone does not reach the admins. A target that
+// does not exist is a 404.
+func (d Deps) mayManageUser(w http.ResponseWriter, r *http.Request, targetID string) bool {
+	target, err := d.Users.GetUserByID(r.Context(), targetID)
+	if errors.Is(err, db.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "user not found")
+		return false
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "lookup failed")
+		return false
+	}
+	return d.mayAssignRole(w, r, target.Role)
+}
+
 type updateUserReq struct {
 	Role   *string `json:"role"`
 	Status *string `json:"status"`
 }
 
-// AdminUpdateUser changes a user's role and/or status (admin only).
+// AdminUpdateUser changes a user's role and/or status (users:manage). The
+// role is a built-in role or a stored custom role, and one whose permissions
+// the caller's own role holds (mayAssignRole).
 // PATCH /api/v1/users/{id}. An admin cannot change their own status (lockout
 // guard, mirrors the self-delete guard).
 func (d Deps) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +193,12 @@ func (d Deps) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	var in updateUserReq
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || (in.Role == nil && in.Status == nil) {
 		writeErr(w, http.StatusBadRequest, "role and/or status required")
+		return
+	}
+	if !d.mayManageUser(w, r, targetID) {
+		return
+	}
+	if in.Role != nil && !d.mayAssignRole(w, r, *in.Role) {
 		return
 	}
 	if in.Status != nil {
@@ -123,6 +210,18 @@ func (d Deps) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "cannot change your own status")
 			return
 		}
+		// Read the tokens before anything changes: a failing list answers
+		// 500 and leaves the user as it was.
+		var tokenIDs []string
+		if *in.Status == "suspended" {
+			ids, err := d.clientTokenIDs(r, targetID)
+			if err != nil {
+				d.Log.Error("list client tokens failed", "user_id", targetID, "err", err)
+				writeErr(w, http.StatusInternalServerError, "update status failed")
+				return
+			}
+			tokenIDs = ids
+		}
 		if err := d.Users.SetUserStatus(r.Context(), targetID, *in.Status); err != nil {
 			if errors.Is(err, db.ErrNotFound) {
 				writeErr(w, http.StatusNotFound, "user not found")
@@ -131,15 +230,18 @@ func (d Deps) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "update status failed")
 			return
 		}
+		// The store ended the user's dashboard sessions; the clients that
+		// are connected with the user's tokens go too.
+		d.closeClientSessions(tokenIDs...)
 	}
 	if in.Role != nil {
-		if *in.Role != "admin" && *in.Role != "user" {
-			writeErr(w, http.StatusBadRequest, "role must be 'admin' or 'user'")
-			return
-		}
 		if err := d.Users.UpdateUserRole(r.Context(), targetID, *in.Role); err != nil {
 			if errors.Is(err, db.ErrNotFound) {
 				writeErr(w, http.StatusNotFound, "user not found")
+				return
+			}
+			if errors.Is(err, store.ErrInvalidRole) {
+				writeErr(w, http.StatusBadRequest, msgUnknownUserRole)
 				return
 			}
 			writeErr(w, http.StatusInternalServerError, "update role failed")
@@ -156,7 +258,7 @@ type createUserReq struct {
 	Role     string `json:"role"`
 }
 
-// AdminCreateUser creates a new user account (admin only).
+// AdminCreateUser creates a new user account (users:manage).
 // POST /api/v1/users
 func (d Deps) AdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
@@ -173,6 +275,9 @@ func (d Deps) AdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "email, password, and role are required")
 		return
 	}
+	if !d.mayAssignRole(w, r, in.Role) {
+		return
+	}
 	u, err := d.Users.CreateUser(r.Context(), in.Email, in.Password, in.Role)
 	if errors.Is(err, store.ErrEmailConflict) {
 		writeErr(w, http.StatusConflict, "email already in use")
@@ -183,7 +288,7 @@ func (d Deps) AdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errors.Is(err, store.ErrInvalidRole) {
-		writeErr(w, http.StatusBadRequest, "role must be 'admin' or 'user'")
+		writeErr(w, http.StatusBadRequest, msgUnknownUserRole)
 		return
 	}
 	if err != nil {
@@ -193,7 +298,7 @@ func (d Deps) AdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toUserAdminResp(u))
 }
 
-// AdminDeleteUser removes a user (admin only).
+// AdminDeleteUser removes a user (users:manage).
 // DELETE /api/v1/users/{id}
 // Returns 400 if the admin attempts to delete themselves (lockout guard).
 func (d Deps) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
@@ -202,7 +307,16 @@ func (d Deps) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "cannot delete yourself")
 		return
 	}
-	err := d.Users.DeleteUser(r.Context(), targetID)
+	if !d.mayManageUser(w, r, targetID) {
+		return
+	}
+	// Read before the delete: the tokens go with the user.
+	tokenIDs, err := d.clientTokenIDs(r, targetID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "delete user failed")
+		return
+	}
+	err = d.Users.DeleteUser(r.Context(), targetID)
 	if errors.Is(err, db.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "user not found")
 		return
@@ -217,5 +331,6 @@ func (d Deps) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "delete user failed")
 		return
 	}
+	d.closeClientSessions(tokenIDs...)
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -25,7 +25,7 @@ type userMgmtStore struct {
 	createUserErr error
 	// delete user control
 	deleteUserErr error
-	// role for GetUserByID (controls RequireAdmin)
+	// role for GetUserByID (what the permission gate measures a session by)
 	role string
 }
 

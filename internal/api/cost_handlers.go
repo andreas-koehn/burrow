@@ -14,7 +14,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/cost"
 	"github.com/ankoehn/burrow/internal/db"
 )
@@ -50,38 +49,16 @@ type BudgetStore interface {
 	ListUsageForWindow(ctx context.Context, window string) ([]db.UsageRow, error)
 }
 
-// --- Permission gates --------------------------------------------------------
+// --- Permissions --------------------------------------------------------------
 //
-// Spec Part F mapping:
-//   - GET  /cost/pricing   — session-authed (any user may read)
-//   - PUT  /cost/pricing   — admin only
-//   - GET  /cost/summary   — admin OR quotas:read:any
-//   - GET  /cost/export    — admin OR quotas:read:any
-//   - GET  /budgets        — admin only (matches the spec note that
-//     quotas:manage:any is admin-only — read of the same surface is gated
-//     the same way to keep the contract simple)
-//   - POST/PUT/DELETE /budgets — admin only
-
-// requireQuotasReadAnyOrAdmin is the read-gate for /cost/summary and
-// /cost/export. Admin always passes; non-admin requires quotas:read:any.
-func (d Deps) requireQuotasReadAnyOrAdmin(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		role, err := d.callerRole(r)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if role == "admin" || authz.Can(role, authz.PermQuotasReadAny) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "quotas:read:any required")
-	})
-}
+// Spec Part F mapping (routeAccess in access.go):
+//   - GET  /cost/pricing   — quotas:read:own / :any or cost:pricing:manage
+//   - PUT  /cost/pricing   — cost:pricing:manage
+//   - GET  /cost/summary   — quotas:read:any
+//   - GET  /cost/export    — quotas:read:any
+//   - GET  /budgets        — budgets:manage (the read of the same surface is
+//     gated the same way to keep the contract simple)
+//   - POST/PUT/DELETE /budgets — budgets:manage
 
 // --- GET /cost/pricing -------------------------------------------------------
 
@@ -135,7 +112,7 @@ func (d Deps) GetCostPricing(w http.ResponseWriter, r *http.Request) {
 }
 
 // PutCostPricing handles PUT /api/v1/cost/pricing — replaces the in-memory
-// pricing table. Admin-only. The request body MUST match the GET response
+// pricing table. Needs cost:pricing:manage. The request body MUST match the GET response
 // shape (version + entries). On success the engine swaps the table
 // atomically and returns 204.
 func (d Deps) PutCostPricing(w http.ResponseWriter, r *http.Request) {
@@ -471,7 +448,7 @@ const msgUnknownGatewayKey = "unknown gateway key"
 // checkBudgetSubject checks what validateBudget cannot: that the subject of a
 // gateway_key budget is the id of a key that exists (revoked or not). It
 // writes the error itself and reports whether the budget may be stored.
-// Budgets are an admin's to set, so the key may be anyone's.
+// Who may set budgets (budgets:manage) sets them for anyone's key.
 func (d Deps) checkBudgetSubject(w http.ResponseWriter, r *http.Request, in budgetReq) bool {
 	if in.Scope != "gateway_key" {
 		return true
@@ -493,7 +470,7 @@ func (d Deps) checkBudgetSubject(w http.ResponseWriter, r *http.Request, in budg
 	return false
 }
 
-// GetBudgets handles GET /api/v1/budgets — admin-only. Live current_usd +
+// GetBudgets handles GET /api/v1/budgets — budgets:manage. Live current_usd +
 // exceeded are computed for every row.
 func (d Deps) GetBudgets(w http.ResponseWriter, r *http.Request) {
 	if d.Budgets == nil {
@@ -513,7 +490,7 @@ func (d Deps) GetBudgets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// PostBudget handles POST /api/v1/budgets — admin-only.
+// PostBudget handles POST /api/v1/budgets — budgets:manage.
 func (d Deps) PostBudget(w http.ResponseWriter, r *http.Request) {
 	if d.Budgets == nil {
 		writeErr(w, http.StatusInternalServerError, "budget store unavailable")
@@ -561,7 +538,7 @@ func (d Deps) PostBudget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toBudgetResp(created, d.budgetUsages(r.Context(), []db.Budget{created})[0]))
 }
 
-// PutBudget handles PUT /api/v1/budgets/{id} — admin-only.
+// PutBudget handles PUT /api/v1/budgets/{id} — budgets:manage.
 func (d Deps) PutBudget(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
@@ -612,7 +589,7 @@ func (d Deps) PutBudget(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DeleteBudget handles DELETE /api/v1/budgets/{id} — admin-only.
+// DeleteBudget handles DELETE /api/v1/budgets/{id} — budgets:manage.
 func (d Deps) DeleteBudget(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {

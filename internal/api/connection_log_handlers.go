@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/connlog"
 	"github.com/ankoehn/burrow/internal/db"
 )
@@ -63,30 +62,6 @@ const connLogLimitDefault = 100
 
 // connLogLimitMax is the hard cap applied even when ?limit= is given.
 const connLogLimitMax = 1000
-
-// requireAdminOrAuditRead is shared with audit_handlers.go but re-declared
-// here as requireConnLogRead since it uses the same PermAuditRead — both the
-// audit log and connection log are "audit:read"-gated per spec E.2.
-// The method is on Deps so the middleware signature is consistent.
-func (d Deps) requireConnLogRead(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		uid := userID(r.Context())
-		u, err := d.Users.GetUserByID(r.Context(), uid)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if u.Role == "admin" || authz.Can(u.Role, authz.PermAuditRead) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "audit:read required")
-	})
-}
 
 // connectionLogResp is the JSON wire shape for one connection_logs row (spec E.2).
 type connectionLogResp struct {

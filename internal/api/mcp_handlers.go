@@ -5,7 +5,8 @@
 //	GET /api/v1/mcp/status  → { enabled, listen, token_id }
 //	GET /api/v1/mcp/tools   → [ { name, description, parameters_schema, permission } ]
 //
-// Both routes are gated by admin OR mcp:tools:read. The actual MCP listener
+// Both routes need mcp:tools:read (routeAccess in access.go), from a session
+// through its role and from a token that declares it. The actual MCP listener
 // (port :7800) is wired by cmd/server (Task 25); these endpoints just
 // surface its configuration + the closed tool inventory so the dashboard
 // can render a "burrowd mcp" page without speaking JSON-RPC.
@@ -14,11 +15,8 @@ package api
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 
-	"github.com/ankoehn/burrow/internal/authz"
-	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/mcpserv"
 )
 
@@ -64,28 +62,6 @@ type mcpToolResp struct {
 	Description      string          `json:"description"`
 	ParametersSchema json.RawMessage `json:"parameters_schema"`
 	Permission       string          `json:"permission"`
-}
-
-// requireMCPRead is the admin OR mcp:tools:read gate. Cookie callers
-// resolve their role via callerRoleForAuth (bearer-set ctx wins;
-// otherwise fresh GetUserByID). Same shape as requireMetricsRead.
-func (d Deps) requireMCPRead(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		role, err := d.callerRoleForAuth(r)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if role == "admin" || effectivePerms(r.Context(), role, authz.PermMcpToolsRead) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "mcp:tools:read required")
-	})
 }
 
 // GetMCPStatus handles GET /api/v1/mcp/status.

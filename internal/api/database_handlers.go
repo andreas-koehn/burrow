@@ -2,20 +2,17 @@
 //
 // GET /api/v1/database → 200 {driver, postgres_alpha, url_redacted}
 //
-// Permission: admin OR metrics:read (same gate as /metrics and /openapi/viewer).
+// Permission: metrics:read, as for /metrics and /openapi/viewer (routeAccess
+// in access.go).
 // url_redacted is the database URL with user:password replaced by ****:****;
 // for SQLite it is the on-disk file path (no credentials to redact).
 package api
 
 import (
-	"errors"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
-
-	"github.com/ankoehn/burrow/internal/authz"
-	"github.com/ankoehn/burrow/internal/db"
 )
 
 // DBInfo carries the database backend metadata surfaced by
@@ -38,27 +35,6 @@ type dbStatusResp struct {
 	Driver        string `json:"driver"`
 	PostgresAlpha bool   `json:"postgres_alpha"`
 	URLRedacted   string `json:"url_redacted"`
-}
-
-// requireDatabaseRead is the admin OR metrics:read gate for
-// GET /api/v1/database. Mirrors requireMetricsRead and requireMCPRead.
-func (d Deps) requireDatabaseRead(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		role, err := d.callerRoleForAuth(r)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if role == "admin" || effectivePerms(r.Context(), role, authz.PermMetricsRead) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "metrics:read required")
-	})
 }
 
 // GetDatabaseStatus handles GET /api/v1/database.

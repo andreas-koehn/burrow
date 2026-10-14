@@ -16,8 +16,6 @@ import (
 
 	"github.com/ankoehn/burrow/internal/api/install"
 	"github.com/ankoehn/burrow/internal/audit"
-	"github.com/ankoehn/burrow/internal/authz"
-	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -25,9 +23,9 @@ import (
 //
 //	POST /client/login/start                         client, no authentication
 //	POST /client/login/poll                          client, no authentication
-//	GET  /client/login/requests/{user_code}          dashboard session
-//	POST /client/login/requests/{user_code}/approve  dashboard session + client-token permission
-//	POST /client/login/requests/{user_code}/deny     dashboard session
+//	GET  /client/login/requests/{user_code}          dashboard session with tokens:manage:own or :any
+//	POST /client/login/requests/{user_code}/approve  the same permission
+//	POST /client/login/requests/{user_code}/deny     the same permission
 //
 // start and poll are public because a client has no token yet; they are
 // rate-limited per source IP and say nothing about users. The other three sit
@@ -271,37 +269,6 @@ func (d Deps) requireDashboardSession(next http.Handler) http.Handler {
 	})
 }
 
-// requireClientTokensManage gates the approval on the permission to manage
-// client tokens (tokens:manage:own or :any; admin always passes): approving
-// a sign-in creates a client token for the approver.
-//
-// POST /tokens itself has no permission gate: any session may create a token
-// there. The gate here is still not a new restriction for the defaults — the
-// built-in "user" role holds tokens:manage:own, so everyone who can create a
-// token today can approve a sign-in. It differs only for a custom role
-// without that permission, which is what the permission is for; the spec asks
-// for it on this route ("tokens:write" there is tokens:manage in the code).
-func (d Deps) requireClientTokensManage(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		role, err := d.callerRoleForAuth(r)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if role == "admin" ||
-			effectivePerms(r.Context(), role, authz.PermTokensManageAny) ||
-			effectivePerms(r.Context(), role, authz.PermTokensManageOwn) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "tokens:manage required")
-	})
-}
-
 // writeClientLoginErr maps a store error of the three request endpoints. A
 // wrong code and an expired one are the same 404, and each counts against the
 // caller's allowance of wrong codes.
@@ -321,7 +288,8 @@ func (d Deps) writeClientLoginErr(w http.ResponseWriter, r *http.Request, err er
 	}
 }
 
-// GetClientLoginRequest shows a sign-in request to a signed-in user.
+// GetClientLoginRequest shows a sign-in request to a user who may decide it
+// (the three request endpoints need tokens:manage:own or :any).
 // GET /client/login/requests/{user_code}.
 func (d Deps) GetClientLoginRequest(w http.ResponseWriter, r *http.Request) {
 	v, err := d.ClientLogins.GetClientLogin(r.Context(), chi.URLParam(r, "user_code"))

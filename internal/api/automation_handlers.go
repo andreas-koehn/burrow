@@ -73,8 +73,10 @@ type createTokenWrap struct {
 
 // postAutomationTokenReq is the POST request body.
 type postAutomationTokenReq struct {
-	Name        string     `json:"name"`
-	Permissions []string   `json:"permissions"`
+	Name string `json:"name"`
+	// Permissions is a pointer so that an absent field (or null) differs from
+	// an explicit empty list: absent means "inherit the minter's".
+	Permissions *[]string  `json:"permissions"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 }
 
@@ -96,32 +98,11 @@ func toAutomationTokenResp(v store.AutomationTokenView) automationTokenResp {
 	}
 }
 
-// --- Permission gate ------------------------------------------------------
+// --- Permission ------------------------------------------------------------
 //
-// All three routes require admin OR automation:tokens:manage:own (anyone with
-// the :own perm may at least try — the store narrows what they see/revoke).
-// :any callers and admin pass trivially; everyone else gets 403.
-
-func (d Deps) requireAutomationTokensManage(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		role, err := d.callerRoleForAuth(r)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if role == "admin" ||
-			effectivePerms(r.Context(), role, authz.PermAutomationTokensManageAny) ||
-			effectivePerms(r.Context(), role, authz.PermAutomationTokensManageOwn) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "automation:tokens:manage required")
-	})
-}
+// All three routes need automation:tokens:manage:own or :any (routeAccess in
+// access.go). Anyone with the :own perm may at least try — the store narrows
+// what they see/revoke.
 
 // callerRoleForAuth returns the role attached to the request. For bearer-
 // authed calls the role lives in ctx (set by RequireBearerOrSession); for
@@ -145,7 +126,7 @@ func (d Deps) GetAutomationTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := userID(r.Context())
-	role, err := d.callerRoleForAuth(r)
+	role, err := d.actingRole(r, authz.PermAutomationTokensManageOwn, authz.PermAutomationTokensManageAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "lookup failed")
 		return
@@ -193,8 +174,42 @@ func (d Deps) PostAutomationToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "lookup failed")
 		return
 	}
+	isToken := bearerTokenID(r.Context()) != ""
+	var perms []string
+	if in.Permissions != nil {
+		perms = *in.Permissions
+	} else {
+		// No list: the token inherits its minter's permissions at this moment.
+		if perms, err = d.inheritedPerms(r.Context(), role, isToken); err != nil {
+			writeErr(w, http.StatusInternalServerError, "lookup failed")
+			return
+		}
+		// Whoever passes the gate holds an automation:tokens:manage
+		// permission, so an empty result means the role was not resolved.
+		if len(perms) == 0 {
+			writeErr(w, http.StatusForbidden, "no permissions to inherit")
+			return
+		}
+	}
+	// A token mints nothing wider than itself: each permission it asks for
+	// must be one it declares (and its user's role still grants). For a
+	// session the store checks the role, as before.
+	if isToken {
+		for _, p := range perms {
+			if !effectivePerms(r.Context(), role, authz.Permission(p)) {
+				writeErr(w, http.StatusForbidden, "requested permission not granted by the calling token")
+				return
+			}
+		}
+		// ... and outlives nothing: a token that expires mints one that
+		// expires, no later than itself.
+		if exp, ok := bearerExpiry(r.Context()); ok && (in.ExpiresAt == nil || in.ExpiresAt.After(exp)) {
+			writeErr(w, http.StatusForbidden, "requested expiry is later than the calling token's")
+			return
+		}
+	}
 
-	view, plaintext, err := d.Automation.MintAutomationToken(r.Context(), uid, role, in.Name, in.Permissions, in.ExpiresAt)
+	view, plaintext, err := d.Automation.MintAutomationToken(r.Context(), uid, role, in.Name, perms, in.ExpiresAt)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrPermissionNotInRole):
@@ -212,6 +227,24 @@ func (d Deps) PostAutomationToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// inheritedPerms is the permission list of a token minted without one: for a
+// dashboard session everything the caller's role holds now, for a token
+// exactly what it declares and its user's role still grants. The result is
+// never nil.
+func (d Deps) inheritedPerms(ctx context.Context, role string, isToken bool) ([]string, error) {
+	held, err := d.rolePerms(ctx, role)
+	if err != nil {
+		return nil, err
+	}
+	out := []string{}
+	for _, p := range held {
+		if !isToken || effectivePerms(ctx, role, authz.Permission(p)) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
 // DeleteAutomationToken handles DELETE /api/v1/automation/tokens/{id}.
 // 204 on success, 404 if the row does not exist or the caller may not
 // see it, 403 if the caller lacks any manage permission at all.
@@ -226,7 +259,7 @@ func (d Deps) DeleteAutomationToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := userID(r.Context())
-	role, err := d.callerRoleForAuth(r)
+	role, err := d.actingRole(r, authz.PermAutomationTokensManageOwn, authz.PermAutomationTokensManageAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "lookup failed")
 		return

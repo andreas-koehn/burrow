@@ -858,7 +858,10 @@ func newRootCmd() *cobra.Command {
 					LoginRateLimitPerIPOverride: cfg.LoginRateLimitPerIP,
 					Roles:                       st, Sessions: st, Settings: st,
 					Clients: clientsAdapter{srv: srv, st: st, services: st, tokens: st}, AccessModes: st,
-					DB: database,
+					// Revoking a client token, suspending or deleting its user
+					// ends the sessions that are connected with it.
+					ClientSessions: srv,
+					DB:             database,
 					// v0.3.0: service API + live tunnel lookup + auth domain.
 					Services:    st,
 					AIProviders: st,

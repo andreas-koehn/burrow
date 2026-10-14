@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/ankoehn/burrow/internal/audit"
-	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 )
 
@@ -88,29 +87,6 @@ const auditEventsLimit = 100
 
 // auditEventsLimitMax is the hard cap applied even when ?limit= is given.
 const auditEventsLimitMax = 1000
-
-// requireAdminOrAuditRead is the middleware that gates every /audit route.
-// Allows: role admin OR holds authz.PermAuditRead. Must run AFTER
-// RequireSession (so 401 wins over 403 for unauthed requests).
-func (d Deps) requireAdminOrAuditRead(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		uid := userID(r.Context())
-		u, err := d.Users.GetUserByID(r.Context(), uid)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if u.Role == "admin" || authz.Can(u.Role, authz.PermAuditRead) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusForbidden, "audit:read required")
-	})
-}
 
 // parseAuditQuery extracts the shared GET /audit/events + /audit/export
 // query parameters.

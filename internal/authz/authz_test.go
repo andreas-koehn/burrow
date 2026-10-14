@@ -119,13 +119,9 @@ func TestCanScopes(t *testing.T) {
 	}
 }
 
-// TestPermissionSetUnchangedFromV040 is a golden-list guard: v0.5.0 must NOT
-// add new permission strings (every new endpoint maps to an existing v0.4.0
-// perm — see plan Part 0). If AllPermissions() grows, this test fails loudly
-// so the integration plan can be updated deliberately rather than silently
-// accepting drift.
-func TestPermissionSetUnchangedFromV040(t *testing.T) {
-	// Hard-coded v0.4.0 permission list in declaration order (authz.go:158-177).
+// TestPermissionSetIsClosed is a golden-list guard: a permission is added on
+// purpose, here and in AllPermissions, never by accident.
+func TestPermissionSetIsClosed(t *testing.T) {
 	// Do NOT replace the literal with AllPermissions() — that would be tautological.
 	expected := []Permission{
 		// v0.2.0 / v0.3.0
@@ -147,10 +143,47 @@ func TestPermissionSetUnchangedFromV040(t *testing.T) {
 		PermBackupRun, PermMetricsRead, PermMcpToolsRead,
 		PermMtlsManageOwn, PermMtlsManageAny,
 		PermIPGeoManageOwn, PermIPGeoManageAny,
+		// v0.10.0
+		PermAIProvidersManage, PermBudgetsManage, PermCostPricingManage,
 	}
 	got := AllPermissions()
 	if !slices.Equal(got, expected) {
-		t.Errorf("v0.5.0 must not add or reorder permissions\n  got  (%d): %v\n  want (%d): %v",
+		t.Errorf("permissions were added, removed or reordered\n  got  (%d): %v\n  want (%d): %v",
 			len(got), got, len(expected), expected)
+	}
+}
+
+// The admin role holds every permission, and each exactly once: the gate of
+// the API relies on it (a route that only an admin could call now asks for a
+// permission, and the admin must still pass).
+func TestAdminHoldsEveryPermission(t *testing.T) {
+	admin, _ := Get("admin")
+	seen := map[Permission]int{}
+	for _, p := range admin.Permissions {
+		seen[p]++
+	}
+	for _, p := range AllPermissions() {
+		if seen[p] != 1 {
+			t.Errorf("admin holds %s %d times, want once", p, seen[p])
+		}
+		if !Can("admin", p) {
+			t.Errorf("Can(admin, %s) = false", p)
+		}
+	}
+	if len(admin.Permissions) != len(AllPermissions()) {
+		t.Errorf("admin holds %d permissions, AllPermissions has %d", len(admin.Permissions), len(AllPermissions()))
+	}
+}
+
+// What only an admin could do before v0.10 stays out of the user role.
+func TestUserRoleLacksTheAdminOnlyPermissions(t *testing.T) {
+	for _, p := range []Permission{
+		PermAIProvidersManage, PermBudgetsManage, PermCostPricingManage,
+		PermUsersRead, PermUsersManage, PermRolesRead, PermRolesManage, PermSettingsManage,
+		PermTunnelsReadAny, PermServicesConfigureAny, PermAIReadAny,
+	} {
+		if Can("user", p) {
+			t.Errorf("the user role holds %s", p)
+		}
 	}
 }

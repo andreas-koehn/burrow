@@ -724,12 +724,16 @@ func TestClientLoginApprove_NeedsTokenPermission(t *testing.T) {
 		if want := map[bool]int{true: 1, false: 0}[tc.wantApprove == http.StatusOK]; logins.approved != want {
 			t.Fatalf("role %s: the store was asked to approve %d times, want %d", tc.role, logins.approved, want)
 		}
-		// Looking at a request and denying it need the session only.
-		if resp := c.get(t, "/api/v1/client/login/requests/ABCD-EFGH"); resp.StatusCode != http.StatusOK {
-			t.Fatalf("role %s: get status %d", tc.role, resp.StatusCode)
+		// Looking at a request and denying it take the same permission: a
+		// role that may not decide a sign-in does not see or end one.
+		if resp := c.get(t, "/api/v1/client/login/requests/ABCD-EFGH"); resp.StatusCode != tc.wantApprove {
+			t.Fatalf("role %s: get status %d, want %d", tc.role, resp.StatusCode, tc.wantApprove)
 		}
-		if resp := c.post(t, "/api/v1/client/login/requests/ABCD-EFGH/deny", nil); resp.StatusCode != http.StatusOK {
-			t.Fatalf("role %s: deny status %d", tc.role, resp.StatusCode)
+		if resp := c.post(t, "/api/v1/client/login/requests/ABCD-EFGH/deny", nil); resp.StatusCode != tc.wantApprove {
+			t.Fatalf("role %s: deny status %d, want %d", tc.role, resp.StatusCode, tc.wantApprove)
+		}
+		if tc.wantApprove != http.StatusOK && logins.got+logins.denied != 0 {
+			t.Fatalf("role %s: the store was asked %d times to show and %d times to deny", tc.role, logins.got, logins.denied)
 		}
 		srv.Close()
 	}

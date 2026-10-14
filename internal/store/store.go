@@ -6,7 +6,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,8 +32,9 @@ var ErrPasswordTooShort = errors.New("store: password too short (minimum 8 chara
 // ErrEmailConflict is returned by CreateUser when the email already exists.
 var ErrEmailConflict = errors.New("store: email already in use")
 
-// ErrInvalidRole is returned by CreateUser when the role is not 'admin' or 'user'.
-var ErrInvalidRole = errors.New("store: role must be 'admin' or 'user'")
+// ErrInvalidRole is returned by CreateUser and UpdateUserRole when the role is
+// neither a built-in role nor a stored custom role.
+var ErrInvalidRole = errors.New("store: role must be a built-in role or an existing custom role")
 
 // ErrInvalidStatus is returned by SetUserStatus for a status other than
 // 'active' or 'suspended'.
@@ -64,8 +67,8 @@ var ErrServiceNotHTTP = errors.New("store: api_key and burrow_login require an h
 // (maps to HTTP 400 in the API layer).
 var ErrNameRequired = errors.New("store: name is required")
 
-// ErrUnknownRole is returned by SetAccessPolicy when a role is not a built-in
-// authz role (maps to HTTP 400 in the API layer).
+// ErrUnknownRole is returned by SetAccessPolicy when a role is neither a
+// built-in role nor a stored custom role (maps to HTTP 400 in the API layer).
 var ErrUnknownRole = errors.New("store: unknown role")
 
 // minPasswordLen is the minimum required password length.
@@ -269,20 +272,12 @@ func (s *Store) RevokeClientToken(ctx context.Context, id, userID string) error 
 }
 
 // Authenticate validates a plaintext client token and returns the owning user's ID.
-// Returns ErrUnauthorized for unknown or invalid tokens.
+// Returns ErrUnauthorized for unknown or invalid tokens and for the token of
+// a suspended user.
 // The last-used timestamp update is best-effort and does not fail authentication.
 func (s *Store) Authenticate(ctx context.Context, plaintext string) (userID string, err error) {
-	hash := auth.HashToken(plaintext)
-	ct, err := s.q.GetClientTokenByHash(ctx, hash)
-	if errors.Is(err, db.ErrNotFound) {
-		return "", ErrUnauthorized
-	}
-	if err != nil {
-		return "", err
-	}
-	// Best-effort: update last_used without failing auth on error.
-	_ = s.q.TouchClientTokenLastUsed(ctx, ct.ID)
-	return ct.UserID, nil
+	userID, _, _, err = s.AuthenticateToken(ctx, plaintext)
+	return userID, err
 }
 
 // AuthenticateNamed is like Authenticate but also returns the client-token's
@@ -295,7 +290,8 @@ func (s *Store) AuthenticateNamed(ctx context.Context, plaintext string) (userID
 
 // AuthenticateToken is like AuthenticateNamed but also returns the id of the
 // client token, which the server needs to record the session on the token
-// (RecordClientSession). Returns ErrUnauthorized for unknown/invalid tokens.
+// (RecordClientSession). Returns ErrUnauthorized for unknown/invalid tokens
+// and for the token of a suspended user.
 func (s *Store) AuthenticateToken(ctx context.Context, plaintext string) (userID, tokenID, tokenName string, err error) {
 	hash := auth.HashToken(plaintext)
 	ct, err := s.q.GetClientTokenByHash(ctx, hash)
@@ -305,6 +301,19 @@ func (s *Store) AuthenticateToken(ctx context.Context, plaintext string) (userID
 	if err != nil {
 		return "", "", "", err
 	}
+	// The token of a suspended user opens no session: suspending closes the
+	// live ones, and this keeps the client from coming straight back.
+	u, err := s.q.GetUserByID(ctx, ct.UserID)
+	if errors.Is(err, db.ErrNotFound) {
+		return "", "", "", ErrUnauthorized
+	}
+	if err != nil {
+		return "", "", "", err
+	}
+	if u.Status == "suspended" {
+		return "", "", "", ErrUnauthorized
+	}
+	// Best-effort: update last_used without failing auth on error.
 	_ = s.q.TouchClientTokenLastUsed(ctx, ct.ID)
 	return ct.UserID, ct.ID, ct.Name, nil
 }
@@ -438,9 +447,12 @@ func (s *Store) ListUsersPage(ctx context.Context, q string, limit, offset int) 
 	return s.q.ListUsersPage(ctx, q, limit, offset)
 }
 
-// UpdateUserRole validates and sets a user's role.
+// UpdateUserRole validates and sets a user's role: a built-in role or a
+// stored custom role.
 func (s *Store) UpdateUserRole(ctx context.Context, id, role string) error {
-	if role != "admin" && role != "user" {
+	if ok, err := s.roleExists(ctx, role); err != nil {
+		return err
+	} else if !ok {
 		return ErrInvalidRole
 	}
 	if err := s.q.UpdateUserRole(ctx, id, role); err != nil {
@@ -523,6 +535,39 @@ func (e ErrUnknownPermission) Error() string {
 // ErrRoleExists is returned by CreateRole on a duplicate name.
 var ErrRoleExists = errors.New("store: role already exists")
 
+// ErrRoleInUse is returned by DeleteRole while a user holds the role or a
+// service's access policy names it. Mapped to HTTP 409 by the API.
+var ErrRoleInUse = errors.New("store: role is in use")
+
+// roleExists reports whether name is a role a user can hold and an access
+// policy can name: a built-in role or a row of the roles table.
+func (s *Store) roleExists(ctx context.Context, name string) (bool, error) {
+	if _, ok := authz.Get(name); ok {
+		return true, nil
+	}
+	if _, err := s.q.GetRole(ctx, name); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// RoleUses counts the users who hold the role and the service access
+// policies that name it.
+func (s *Store) RoleUses(ctx context.Context, name string) (users, policies int, err error) {
+	if err = s.q.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM users WHERE role=?`, name).Scan(&users); err != nil {
+		return 0, 0, fmt.Errorf("count users of role: %w", err)
+	}
+	if err = s.q.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM service_access_policy WHERE role=?`, name).Scan(&policies); err != nil {
+		return 0, 0, fmt.Errorf("count access policies of role: %w", err)
+	}
+	return users, policies, nil
+}
+
 // ListRoles returns every roles row, builtin first then custom (alphabetical
 // within each group — the underlying db.ListRoles orders by name, so the
 // "admin" row will naturally precede "user" and any custom role whose name
@@ -567,6 +612,11 @@ func (s *Store) GetRole(ctx context.Context, name string) (RoleDetail, error) {
 // process-wide authz custom-roles cache is refreshed so the new role's
 // permissions become visible to every Can() lookup.
 func (s *Store) CreateRole(ctx context.Context, name, description string, permissions []string, defaultForNewUsers bool) error {
+	// "" must never name a role: authz.Can("", …) is what a caller without a
+	// role is measured by, and a stored "" role would hand it permissions.
+	if strings.TrimSpace(name) == "" {
+		return ErrInvalidRole
+	}
 	if err := validateRolePermissions(permissions); err != nil {
 		return err
 	}
@@ -622,13 +672,25 @@ func (s *Store) UpdateRole(ctx context.Context, name string, u RoleUpdate) error
 	return s.refreshRolesCache(ctx)
 }
 
-// DeleteRole removes a non-builtin role in one transaction. Users on the
-// deleted role are re-assigned to the current default-for-new-users role.
-// The list of affected user IDs is returned so the caller (handler) can
-// log audit events once the v0.4.0 Task 25 wiring lands; in this stage the
-// handler simply discards the list (TODO Task 25). Returns ErrRoleBuiltin
-// or db.ErrNotFound as appropriate. Refreshes the authz cache on success.
+// DeleteRole removes a non-builtin role that nobody uses. While a user holds
+// the role or a service's access policy names it, the role stays and the
+// error wraps ErrRoleInUse with both counts: moving its users to another role
+// would change what they may do without anyone deciding it, and a policy
+// would keep the name of a role that is gone. Returns ErrRoleBuiltin or
+// db.ErrNotFound as appropriate. Refreshes the authz cache on success.
+//
+// The first result is the list of users the database moved off the role. It
+// is empty unless a user was given the role between the check and the delete.
 func (s *Store) DeleteRole(ctx context.Context, name string) (affectedUserIDs []string, err error) {
+	if _, isBuiltin := authz.Get(name); !isBuiltin {
+		users, policies, err := s.RoleUses(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		if users > 0 || policies > 0 {
+			return nil, fmt.Errorf("%w: %d user(s), %d access policy(ies)", ErrRoleInUse, users, policies)
+		}
+	}
 	fallback, err := s.q.DefaultRoleName(ctx)
 	if err != nil {
 		// No default role configured — fall back to the builtin "user" so
@@ -841,7 +903,9 @@ func (s *Store) SendTestEmail(ctx context.Context, to string) error {
 // CreateUser creates a new user account. Returns ErrEmailConflict on duplicate email,
 // ErrPasswordTooShort on a short password, ErrInvalidRole on an unknown role.
 func (s *Store) CreateUser(ctx context.Context, email, password, role string) (db.User, error) {
-	if role != "admin" && role != "user" {
+	if ok, err := s.roleExists(ctx, role); err != nil {
+		return db.User{}, err
+	} else if !ok {
 		return db.User{}, ErrInvalidRole
 	}
 	if len(password) < minPasswordLen {

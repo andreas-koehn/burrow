@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ankoehn/burrow/internal/aigateway"
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/openapi/viewer"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -77,14 +78,14 @@ func NewRouter(d Deps) http.Handler {
 
 	// v0.4.0 Task 21: Prometheus /metrics endpoint (spec Part O). Lives
 	// OUTSIDE /api/v1 (k8s/prometheus convention) but is NOT public —
-	// gated by RequireBearerOrSession + RequireSession + requireMetricsRead
-	// (admin OR authz.PermMetricsRead). The handler emits the closed metric
+	// gated by RequireBearerOrSession + RequireSession + the metrics:read
+	// permission. The handler emits the closed metric
 	// set in 0.0.4 text format; CSRF does not apply (GET is a safe method).
 	// Registered before the SPA catch-all so /metrics is not shadowed.
 	r.Group(func(r chi.Router) {
 		r.Use(RequireBearerOrSession(d.Bearer, d.Users))
 		r.Use(d.RequireSession)
-		r.Use(d.requireMetricsRead)
+		r.Use(d.require(authz.PermMetricsRead))
 		r.Get("/metrics", d.GetMetrics)
 	})
 
@@ -119,6 +120,13 @@ func NewRouter(d Deps) http.Handler {
 		// is the security boundary; release binaries never see this route.
 		registerIntegrationRoutes(r, d)
 
+		// From here on every route needs an entry in routeAccess (access.go),
+		// which says who may call it; registering a route without one panics.
+		// The gate of the entry runs after the middlewares of the route's
+		// group and before those of r.With. The comments below say what a
+		// route is for; the table decides.
+		r = d.declared(r, "/api/v1")
+
 		// v0.4.0 Task 22: OpenAPI spec discovery. Both routes are public
 		// (no auth) so SDK code-generators can curl the canonical doc
 		// without bootstrapping a session. They are excluded from
@@ -129,26 +137,24 @@ func NewRouter(d Deps) http.Handler {
 		r.Get("/openapi.json", d.GetOpenAPIJSON)
 
 		// v0.5.0 Task 11: embedded OpenAPI browser (spec J.2).
-		// Gated by admin OR metrics:read — the same gate as /metrics —
-		// so any operator with the metrics:read permission can access the
-		// API docs viewer without full admin escalation.
+		// Needs metrics:read — the same permission as /metrics — so any
+		// operator who holds it can access the API docs viewer without full
+		// admin escalation.
 		// RequireBearerOrSession + RequireSession run first (outer group
 		// above) so unauthenticated callers get 401 before the perm check.
 		r.Group(func(r chi.Router) {
 			r.Use(RequireBearerOrSession(d.Bearer, d.Users))
 			r.Use(d.RequireSession)
-			r.Use(d.requireMetricsRead)
 			vh := viewer.New(d.Log)
 			r.Route("/openapi/viewer", vh.Routes)
 		})
 
 		// v0.5.0 Task 15: database-backend status endpoint.
-		// Gated by admin OR metrics:read (same as /metrics and /openapi/viewer).
+		// Needs metrics:read (same as /metrics and /openapi/viewer).
 		// Returns driver name, redacted URL, and postgres_alpha flag.
 		r.Group(func(r chi.Router) {
 			r.Use(RequireBearerOrSession(d.Bearer, d.Users))
 			r.Use(d.RequireSession)
-			r.Use(d.requireDatabaseRead)
 			r.Get("/database", d.GetDatabaseStatus)
 		})
 
@@ -191,21 +197,21 @@ func NewRouter(d Deps) http.Handler {
 			r.Post("/auth/logout", d.Logout)
 			r.Post("/auth/change-password", d.ChangePassword)
 			// v0.4.0 Task 20: backup / restore JSON API (spec Part L.3).
-			// All routes are gated by requireBackupRun (admin OR
-			// authz.PermBackupRun). The download streams application/x-gzip;
-			// every other route is JSON. POST /backups/restore is multipart.
-			r.With(d.requireBackupRun).Get("/backups", d.GetBackups)
-			r.With(d.requireBackupRun).Post("/backups", d.PostBackup)
-			r.With(d.requireBackupRun).Get("/backups/{id}/download", d.GetBackupDownload)
-			r.With(d.requireBackupRun).Post("/backups/{id}/verify", d.PostBackupVerify)
-			r.With(d.requireBackupRun).Delete("/backups/{id}", d.DeleteBackup)
-			r.With(d.requireBackupRun).Post("/backups/restore", d.PostBackupRestore)
-			r.With(d.requireBackupRun).Get("/backups/restores/{id}", d.GetBackupRestoreStatus)
+			// All routes need backup:run. The download streams application/x-gzip;
+			// every other route is JSON. POST /backups/restore is multipart and
+			// takes every permission: it swaps the database.
+			r.Get("/backups", d.GetBackups)
+			r.Post("/backups", d.PostBackup)
+			r.Get("/backups/{id}/download", d.GetBackupDownload)
+			r.Post("/backups/{id}/verify", d.PostBackupVerify)
+			r.Delete("/backups/{id}", d.DeleteBackup)
+			r.Post("/backups/restore", d.PostBackupRestore)
+			r.Get("/backups/restores/{id}", d.GetBackupRestoreStatus)
 			r.Get("/me", d.Me)
-			// /clients/connect-info is session-authed (NOT admin-gated like
-			// the rest of /clients/*) so the "Connect a client" wizard works
-			// for any user with the tokens:write permission to mint a
-			// connect token.
+			// /clients/connect-info needs the permission to manage client
+			// tokens (not tunnels:read:any like the rest of /clients/*), so
+			// the "Connect a client" wizard works for every user who may
+			// mint the token it hands out.
 			r.Get("/clients/connect-info", d.GetConnectInfo)
 			r.Get("/tokens", d.ListTokens)
 			r.Post("/tokens", d.CreateToken)
@@ -213,11 +219,11 @@ func NewRouter(d Deps) http.Handler {
 			// Client sign-in, the dashboard's side. State-changing session
 			// requests like any other here: session, then CSRF. A cookie
 			// session is required (no automation bearer token), and wrong
-			// user codes are counted per user. Approving needs the permission
-			// to manage client tokens, because it creates one.
+			// user codes are counted per user. All three need the permission
+			// to manage client tokens, because approving creates one.
 			r.With(d.requireDashboardSession).
 				Get("/client/login/requests/{user_code}", d.GetClientLoginRequest)
-			r.With(d.requireClientTokensManage, d.requireDashboardSession).
+			r.With(d.requireDashboardSession).
 				Post("/client/login/requests/{user_code}/approve", d.PostClientLoginApprove)
 			r.With(d.requireDashboardSession).
 				Post("/client/login/requests/{user_code}/deny", d.PostClientLoginDeny)
@@ -233,20 +239,20 @@ func NewRouter(d Deps) http.Handler {
 			r.Put("/services/{serviceID}/slug", d.PutServiceSlug)
 			// AI providers: the providers table joined with live data of each
 			// provider's backing service. Reads follow service visibility;
-			// writes are admin-only.
+			// writes need ai:providers:manage.
 			r.Get("/ai/providers", d.GetAIProviders)
 			r.Get("/ai/providers/{slug}", d.GetAIProvider)
 			r.Get("/ai/providers/{slug}/metrics", d.GetAIProviderMetrics)
-			r.With(d.RequireAdmin).Post("/ai/providers", d.PostAIProvider)
-			r.With(d.RequireAdmin).Put("/ai/providers/{slug}", d.PutAIProvider)
-			r.With(d.RequireAdmin).Delete("/ai/providers/{slug}", d.DeleteAIProvider)
+			r.Post("/ai/providers", d.PostAIProvider)
+			r.Put("/ai/providers/{slug}", d.PutAIProvider)
+			r.Delete("/ai/providers/{slug}", d.DeleteAIProvider)
 			// Direct providers: upstream settings and the model catalog.
-			// The sync makes an outbound call, so it is admin-only too.
-			r.With(d.RequireAdmin).Put("/ai/providers/{slug}/upstream", d.PutAIProviderUpstream)
+			// The sync makes an outbound call, so it needs the same permission.
+			r.Put("/ai/providers/{slug}/upstream", d.PutAIProviderUpstream)
 			r.Get("/ai/providers/{slug}/models", d.GetAIProviderModels)
-			r.With(d.RequireAdmin).Post("/ai/providers/{slug}/models/sync", d.PostAIProviderModelsSync)
-			r.With(d.RequireAdmin).Post("/ai/providers/{slug}/models", d.PostAIProviderModel)
-			r.With(d.RequireAdmin).Delete("/ai/providers/{slug}/models", d.DeleteAIProviderModel)
+			r.Post("/ai/providers/{slug}/models/sync", d.PostAIProviderModelsSync)
+			r.Post("/ai/providers/{slug}/models", d.PostAIProviderModel)
+			r.Delete("/ai/providers/{slug}/models", d.DeleteAIProviderModel)
 			r.Put("/services/{serviceID}/access-mode", d.SetServiceAccessMode)
 			r.Put("/services/{serviceID}/gateway-only", d.PutServiceGatewayOnly)
 			r.Get("/services/{serviceID}/api-keys", d.ListAPIKeys)
@@ -255,36 +261,34 @@ func NewRouter(d Deps) http.Handler {
 			r.Get("/services/{serviceID}/access-policy", d.GetAccessPolicy)
 			r.Put("/services/{serviceID}/access-policy", d.SetAccessPolicy)
 			// v0.4.0 Task 4: exact-match prompt cache JSON API.
-			// GET endpoints are session-authed only (any user may read
-			// settings/stats); the PUT and global DELETE are gated by
-			// requireAdminOrAIConfigureAny (admin OR ai:configure:any);
-			// the per-service DELETE handler does its own ownership
-			// check (owner OR ai:configure:own/any).
+			// The GET endpoints need ai:read or ai:configure, :own or
+			// :any; the PUT and global DELETE need ai:configure:any; the
+			// per-service DELETE needs ai:configure:own or :any, and its
+			// handler checks the owner for :own.
 			r.Get("/cache/settings", d.GetCacheSettings)
 			r.Get("/cache/stats", d.GetCacheStats)
-			r.With(d.requireAdminOrAIConfigureAny).Put("/cache/settings", d.PutCacheSettings)
-			r.With(d.requireAdminOrAIConfigureAny).Delete("/cache/entries", d.DeleteCacheEntries)
+			r.Put("/cache/settings", d.PutCacheSettings)
+			r.Delete("/cache/entries", d.DeleteCacheEntries)
 			r.Delete("/services/{serviceID}/cache/entries", d.DeleteServiceCacheEntries)
 			// v0.5.0 Task 4: semantic cache JSON API (spec Part A.4).
 			// DELETE /cache/semantic/entries clears only the semantic tier
-			// (exact-match tier unaffected). Gated by
-			// requireAdminOrAIConfigureAny (admin OR ai:configure:any).
+			// (exact-match tier unaffected) and needs ai:configure:any.
 			// PUT /services/{id}/ai-config stores the per-service AI config
 			// blob, validating cache.semantic.{min_similarity,embedding_mode}.
-			r.With(d.requireAdminOrAIConfigureAny).Delete("/cache/semantic/entries", d.DeleteSemanticCacheEntries)
+			r.Delete("/cache/semantic/entries", d.DeleteSemanticCacheEntries)
 			r.Get("/services/{serviceID}/ai-config", d.GetServiceAIConfig)
 			r.Put("/services/{serviceID}/ai-config", d.PutServiceAIConfig)
 			// v0.5.0 Task 5: upstream-credential injection (spec Part B.2).
-			// GET slots is gated by admin OR ai:configure:any (global resource).
-			// Per-service GET/PUT/DELETE gate on admin OR ai:configure:any OR
+			// GET slots needs ai:configure:any (global resource).
+			// Per-service GET/PUT/DELETE gate on ai:configure:any OR
 			// (owner AND ai:configure:own) — enforced inside the handlers via
 			// ensureCredentialAccess.
-			r.With(d.requireSlotsRead).Get("/upstream-credentials/slots", d.GetUpstreamCredentialSlots)
+			r.Get("/upstream-credentials/slots", d.GetUpstreamCredentialSlots)
 			r.Get("/services/{serviceID}/upstream-credential", d.GetServiceUpstreamCredential)
 			r.Put("/services/{serviceID}/upstream-credential", d.PutServiceUpstreamCredential)
 			r.Delete("/services/{serviceID}/upstream-credential", d.DeleteServiceUpstreamCredential)
 			// v0.5.0 Task 7: custom domain CRUD (spec D.2 / D.3).
-			// Permission: admin OR services:configure:any OR (owner AND
+			// Permission: services:configure:any OR (owner AND
 			// services:configure:own). Enforced inside handlers via
 			// ensureCustomDomainAccess.
 			r.Get("/services/{serviceID}/domains", d.ListCustomDomains)
@@ -293,48 +297,45 @@ func NewRouter(d Deps) http.Handler {
 			r.Put("/services/{serviceID}/domains/{did}", d.PutCustomDomain)
 			r.Delete("/services/{serviceID}/domains/{did}", d.DeleteCustomDomain)
 			// v0.5.0 Task 8: per-tunnel connection logs (spec E.2).
-			// All three routes are gated by requireConnLogRead (admin OR
-			// audit:read). /export streams ndjson or csv; no CSRF needed
+			// All three routes need audit:read. /export streams ndjson or csv; no CSRF needed
 			// for GET. No pagination cursor on /rollups (full result set
 			// per filter window). /export uses a fixed max-limit (1000
 			// rows); full streaming is deferred to Task 17.
-			r.With(d.requireConnLogRead).Get("/connection-logs", d.GetConnectionLogs)
-			r.With(d.requireConnLogRead).Get("/connection-logs/rollups", d.GetConnectionLogRollups)
-			r.With(d.requireConnLogRead).Get("/connection-logs/export", d.GetConnectionLogsExport)
+			r.Get("/connection-logs", d.GetConnectionLogs)
+			r.Get("/connection-logs/rollups", d.GetConnectionLogRollups)
+			r.Get("/connection-logs/export", d.GetConnectionLogsExport)
 			// v0.4.0 Task 5: redaction rules + settings + preview JSON API.
-			// GET endpoints are session-authed (any user may read); mutations
-			// (POST/PUT/DELETE rules, PUT settings, POST preview) are gated
-			// by requireAdminOrAIConfigureAny (admin OR ai:configure:any),
-			// same pattern as the cache mutation routes.
+			// GET endpoints need ai:read or ai:configure, :own or :any;
+			// mutations (POST/PUT/DELETE rules, PUT settings, POST preview)
+			// need ai:configure:any, same pattern as the cache routes.
 			r.Get("/redaction/rules", d.GetRedactionRules)
-			r.With(d.requireAdminOrAIConfigureAny).Post("/redaction/rules", d.PostRedactionRule)
-			r.With(d.requireAdminOrAIConfigureAny).Put("/redaction/rules/{id}", d.PutRedactionRule)
-			r.With(d.requireAdminOrAIConfigureAny).Delete("/redaction/rules/{id}", d.DeleteRedactionRule)
+			r.Post("/redaction/rules", d.PostRedactionRule)
+			r.Put("/redaction/rules/{id}", d.PutRedactionRule)
+			r.Delete("/redaction/rules/{id}", d.DeleteRedactionRule)
 			r.Get("/redaction/settings", d.GetRedactionSettings)
-			r.With(d.requireAdminOrAIConfigureAny).Put("/redaction/settings", d.PutRedactionSettings)
-			r.With(d.requireAdminOrAIConfigureAny).Post("/redaction/preview", d.PostRedactionPreview)
+			r.Put("/redaction/settings", d.PutRedactionSettings)
+			r.Post("/redaction/preview", d.PostRedactionPreview)
 			// v0.4.0 Task 6: prompt-injection guardrails JSON API.
-			// GET endpoints are session-authed (any user may read settings
-			// and the bundled-pattern list); PUT settings is gated by
-			// requireAdminOrAIConfigureAny (admin OR ai:configure:any),
-			// same pattern as the cache/redaction mutation routes.
+			// GET endpoints (settings and the bundled-pattern list) need
+			// ai:read or ai:configure, :own or :any; PUT settings needs
+			// ai:configure:any, same pattern as the cache/redaction
+			// routes.
 			r.Get("/guardrails/settings", d.GetGuardrailSettings)
-			r.With(d.requireAdminOrAIConfigureAny).Put("/guardrails/settings", d.PutGuardrailSettings)
+			r.Put("/guardrails/settings", d.PutGuardrailSettings)
 			r.Get("/guardrails/patterns", d.GetGuardrailPatterns)
-			// Synthetic models and gateway keys. Any signed-in caller may
-			// read the models and the gateway's endpoints. Model writes:
-			// a session of an admin or of a role with ai:configure:any, or
-			// an automation token that declares ai:configure:any
-			// (requireAIModelWrite). A gateway key belongs to the user who
-			// creates it, which takes a dashboard session; own keys are
-			// listed and revoked, every key by an admin's session. The
-			// handlers enforce the key rules.
+			// Synthetic models and gateway keys. Reading the models and the
+			// gateway's endpoints needs ai:read or ai:configure, :own or
+			// :any; model writes need ai:configure:any. A gateway key
+			// belongs to the user who creates it, which takes a dashboard
+			// session of a role with ai:configure; own keys are listed
+			// (ai:read or ai:configure) and revoked (ai:configure), every
+			// key by an admin's session. The handlers scope the keys.
 			r.Get("/ai/gateway", d.GetAIGatewayInfo)
 			r.Get("/ai/models", d.GetAIModels)
 			r.Get("/ai/models/{name}", d.GetAIModel)
-			r.With(d.requireAIModelWrite).Post("/ai/models", d.PostAIModel)
-			r.With(d.requireAIModelWrite).Put("/ai/models/{name}", d.PutAIModel)
-			r.With(d.requireAIModelWrite).Delete("/ai/models/{name}", d.DeleteAIModel)
+			r.Post("/ai/models", d.PostAIModel)
+			r.Put("/ai/models/{name}", d.PutAIModel)
+			r.Delete("/ai/models/{name}", d.DeleteAIModel)
 			r.Get("/ai/keys", d.GetAIKeys)
 			r.Post("/ai/keys", d.PostAIKey)
 			r.Delete("/ai/keys/{id}", d.DeleteAIKey)
@@ -344,36 +345,36 @@ func NewRouter(d Deps) http.Handler {
 			// own providers.
 			r.Get("/ai/requests", d.GetAIRequests)
 			// What one gateway request tried: provider slugs, native model
-			// ids and failure codes of any user's request, so an admin's
-			// dashboard session only (the handler refuses a token).
-			r.With(d.RequireAdmin).Get("/ai/requests/{requestID}/attempts", d.GetAIRequestAttempts)
+			// ids and failure codes of any user's request, so a dashboard
+			// session of a role with ai:read:any only (no token opens it).
+			r.Get("/ai/requests/{requestID}/attempts", d.GetAIRequestAttempts)
 			// v0.4.0 Task 11: rate-limit + quota CRUD (spec Part D.2).
-			// Reads are gated by quotas:read:own/:any (admin always passes);
-			// mutations require admin OR quotas:manage:any. The /usage
+			// Reads need quotas:read:own/:any; mutations need
+			// quotas:manage:any. The /usage
 			// endpoint also reads — same gate as the list endpoint.
-			r.With(d.requireQuotasReadOwnOrAny).Get("/rate-limits", d.GetRateLimits)
-			r.With(d.requireQuotasReadOwnOrAny).Get("/rate-limits/usage", d.GetRateLimitUsage)
-			r.With(d.requireQuotasManageAny).Post("/rate-limits", d.PostRateLimit)
-			r.With(d.requireQuotasManageAny).Put("/rate-limits/{id}", d.PutRateLimit)
-			r.With(d.requireQuotasManageAny).Delete("/rate-limits/{id}", d.DeleteRateLimit)
+			r.Get("/rate-limits", d.GetRateLimits)
+			r.Get("/rate-limits/usage", d.GetRateLimitUsage)
+			r.Post("/rate-limits", d.PostRateLimit)
+			r.Put("/rate-limits/{id}", d.PutRateLimit)
+			r.Delete("/rate-limits/{id}", d.DeleteRateLimit)
 			// v0.4.0 Task 12: cost pricing + budgets + summary/export
 			// (spec Part F). Permission tiers:
-			//   - GET /cost/pricing — session-authed (every signed-in
-			//     user may read the table; same as cache/redaction
-			//     settings).
-			//   - PUT /cost/pricing, POST/PUT/DELETE /budgets, GET
-			//     /budgets — admin-only.
-			//   - GET /cost/summary, GET /cost/export — admin OR
+			//   - GET /cost/pricing — quotas:read:own / :any, or
+			//     cost:pricing:manage (who may change the table may
+			//     read it).
+			//   - PUT /cost/pricing — cost:pricing:manage; POST/PUT/DELETE
+			//     /budgets, GET /budgets — budgets:manage.
+			//   - GET /cost/summary, GET /cost/export —
 			//     quotas:read:any (matches the spec note that summary +
 			//     export are a "cost dashboard" read surface).
 			r.Get("/cost/pricing", d.GetCostPricing)
-			r.With(d.RequireAdmin).Put("/cost/pricing", d.PutCostPricing)
-			r.With(d.requireQuotasReadAnyOrAdmin).Get("/cost/summary", d.GetCostSummary)
-			r.With(d.requireQuotasReadAnyOrAdmin).Get("/cost/export", d.GetCostExport)
-			r.With(d.RequireAdmin).Get("/budgets", d.GetBudgets)
-			r.With(d.RequireAdmin).Post("/budgets", d.PostBudget)
-			r.With(d.RequireAdmin).Put("/budgets/{id}", d.PutBudget)
-			r.With(d.RequireAdmin).Delete("/budgets/{id}", d.DeleteBudget)
+			r.Put("/cost/pricing", d.PutCostPricing)
+			r.Get("/cost/summary", d.GetCostSummary)
+			r.Get("/cost/export", d.GetCostExport)
+			r.Get("/budgets", d.GetBudgets)
+			r.Post("/budgets", d.PostBudget)
+			r.Put("/budgets/{id}", d.PutBudget)
+			r.Delete("/budgets/{id}", d.DeleteBudget)
 			// v0.4.0 Task 8: request inspector ring buffer (spec Part E).
 			// Read endpoints (list, get) are gated by inspector:read:own
 			// (owner) or inspector:read:any (admin) — enforced inside the
@@ -385,70 +386,68 @@ func NewRouter(d Deps) http.Handler {
 			r.Post("/services/{serviceID}/inspector/requests/{rid}/replay", d.ReplayInspectorRequest)
 			r.Post("/services/{serviceID}/inspector/requests/{rid}/replay-compare", d.ReplayCompareInspectorRequest)
 			// v0.4.0 Task 13: audit log JSON API (spec Part G.2).
-			// Every audit route is gated by requireAdminOrAuditRead
-			// (admin OR holds authz.PermAuditRead). The fingerprint
+			// Every audit route needs audit:read. The fingerprint
 			// endpoint returns the public key only — the private signing
 			// key lives in settings.audit.signing_key and is never
 			// surfaced.
-			r.With(d.requireAdminOrAuditRead).Get("/audit/events", d.GetAuditEvents)
-			r.With(d.requireAdminOrAuditRead).Get("/audit/fingerprint", d.GetAuditFingerprint)
-			r.With(d.requireAdminOrAuditRead).Get("/audit/export", d.GetAuditExport)
-			r.With(d.requireAdminOrAuditRead).Post("/audit/verify", d.PostAuditVerify)
+			r.Get("/audit/events", d.GetAuditEvents)
+			r.Get("/audit/fingerprint", d.GetAuditFingerprint)
+			r.Get("/audit/export", d.GetAuditExport)
+			r.Post("/audit/verify", d.PostAuditVerify)
 			// v0.4.0 Task 14: outbound HMAC webhook delivery JSON API
-			// (spec Part H.1). Every route is gated by
-			// requireWebhooksManage (admin OR webhooks:manage). The
+			// (spec Part H.1). Every route needs webhooks:manage. The
 			// signing_secret plaintext is returned exactly once in the
 			// POST response — never in GET / list responses.
-			r.With(d.requireWebhooksManage).Get("/webhooks", d.GetWebhooks)
-			r.With(d.requireWebhooksManage).Post("/webhooks", d.PostWebhook)
-			r.With(d.requireWebhooksManage).Put("/webhooks/{id}", d.PutWebhook)
-			r.With(d.requireWebhooksManage).Delete("/webhooks/{id}", d.DeleteWebhook)
-			r.With(d.requireWebhooksManage).Post("/webhooks/{id}/test", d.PostWebhookTest)
-			r.With(d.requireWebhooksManage).Post("/webhooks/{id}/pause", d.PostWebhookPause)
-			r.With(d.requireWebhooksManage).Post("/webhooks/{id}/resume", d.PostWebhookResume)
-			r.With(d.requireWebhooksManage).Get("/webhooks/deliveries", d.GetWebhookDeliveries)
+			r.Get("/webhooks", d.GetWebhooks)
+			r.Post("/webhooks", d.PostWebhook)
+			r.Put("/webhooks/{id}", d.PutWebhook)
+			r.Delete("/webhooks/{id}", d.DeleteWebhook)
+			r.Post("/webhooks/{id}/test", d.PostWebhookTest)
+			r.Post("/webhooks/{id}/pause", d.PostWebhookPause)
+			r.Post("/webhooks/{id}/resume", d.PostWebhookResume)
+			r.Get("/webhooks/deliveries", d.GetWebhookDeliveries)
 			// v0.5.0 Task 10: payload-template preview endpoint.
-			r.With(d.requireWebhooksManage).Post("/webhooks/{id}/preview", d.PostWebhookPreview)
+			r.Post("/webhooks/{id}/preview", d.PostWebhookPreview)
 			// v0.4.0 Task 18: automation API + bearer-tokens (spec Part M).
-			// Every route gates on admin OR
+			// Every route needs
 			// automation:tokens:manage:own / :any (the store narrows what
 			// :own callers may list/revoke). The POST response carries the
 			// plaintext bearer secret EXACTLY ONCE; GET responses redact it.
-			r.With(d.requireAutomationTokensManage).Get("/automation/tokens", d.GetAutomationTokens)
-			r.With(d.requireAutomationTokensManage).Post("/automation/tokens", d.PostAutomationToken)
-			r.With(d.requireAutomationTokensManage).Delete("/automation/tokens/{id}", d.DeleteAutomationToken)
+			r.Get("/automation/tokens", d.GetAutomationTokens)
+			r.Post("/automation/tokens", d.PostAutomationToken)
+			r.Delete("/automation/tokens/{id}", d.DeleteAutomationToken)
 			// v0.4.0 Task 23: `burrowd mcp` dashboard surface (spec Part P).
 			// Two read-only endpoints expose the listener config + closed
-			// tool inventory. Both are gated by admin OR mcp:tools:read so
+			// tool inventory. Both need mcp:tools:read, so
 			// non-admin operators with the perm can render the page. The
 			// actual MCP listener (port :7800) is wired by cmd/server in
 			// Task 25; these endpoints have zero behavioural coupling to it.
-			r.With(d.requireMCPRead).Get("/mcp/status", d.GetMCPStatus)
-			r.With(d.requireMCPRead).Get("/mcp/tools", d.GetMCPTools)
+			r.Get("/mcp/status", d.GetMCPStatus)
+			r.Get("/mcp/tools", d.GetMCPTools)
 			// v0.4.0 Task 16: per-service IP/Geo CRUD + global geo status
-			// (spec Part J). The per-service routes gate on owner OR
-			// ipgeo:manage:any (admin always passes via the role check
-			// inside ensureIPGeoServiceAccess); /geo/status is session-
-			// authed only (any signed-in user may read the global flag).
+			// (spec Part J). All three need ipgeo:manage:own or :any; for
+			// the per-service routes ensureIPGeoServiceAccess checks the
+			// owner for :own. /geo/status is the global flag.
 			r.Get("/services/{serviceID}/ip-geo", d.GetServiceIPGeo)
 			r.Put("/services/{serviceID}/ip-geo", d.PutServiceIPGeo)
 			r.Get("/geo/status", d.GetGeoStatus)
 			// v0.4.0 Task 15: editable custom roles + permission matrix
-			// (spec Part I). The permission catalog read is session-authed
-			// (every signed-in user may see the list of capabilities); the
-			// list / detail reads stay admin-only (registered below); the
-			// POST/PUT/DELETE writes are gated by admin OR roles:manage so
-			// a curator role can edit non-builtin definitions without full
-			// admin escalation.
+			// (spec Part I). The permission catalog is open to who reads or
+			// manages roles and to who manages automation tokens (a token
+			// is minted from the catalog); the
+			// list / detail reads need roles:read or roles:manage
+			// (registered below); the POST/PUT/DELETE writes need
+			// roles:manage so a curator role can edit non-builtin
+			// definitions without full admin escalation.
 			r.Get("/roles/permissions", d.GetRolePermissions)
-			r.With(d.requireRolesManage).Post("/roles", d.PostRole)
-			r.With(d.requireRolesManage).Put("/roles/{name}", d.PutRole)
-			r.With(d.requireRolesManage).Delete("/roles/{name}", d.DeleteRole)
-			// Admin-only user management: RequireAdmin runs after RequireSession
-			// (already applied by the outer Group), so unauthenticated requests
-			// get 401 before RequireAdmin's 403 check runs.
+			r.Post("/roles", d.PostRole)
+			r.Put("/roles/{name}", d.PutRole)
+			r.Delete("/roles/{name}", d.DeleteRole)
+			// What only the admin role could call before the permission
+			// gate: users (users:read / users:manage), role reads, settings
+			// (settings:manage), live clients (tunnels:read:any) and service
+			// pre-provisioning (services:configure:any).
 			r.Group(func(r chi.Router) {
-				r.Use(d.RequireAdmin)
 				r.Get("/users", d.AdminListUsers)
 				r.Post("/users", d.AdminCreateUser)
 				r.Patch("/users/{id}", d.AdminUpdateUser)
@@ -458,14 +457,14 @@ func NewRouter(d Deps) http.Handler {
 				r.Get("/settings", d.GetSettings)
 				r.Put("/settings", d.SaveSettings)
 				r.Post("/settings/test-email", d.SendTestEmail)
-				// v0.5.0 Task 9: retention settings (admin only).
+				// v0.5.0 Task 9: retention settings (settings:manage).
 				r.Get("/settings/retention", d.GetRetentionSettings)
 				r.Put("/settings/retention", d.PutRetentionSettings)
 				r.Get("/clients", d.ListClients)
 				// Before /clients/{sessionID}: "known" is no session id.
 				r.Get("/clients/known", d.ListKnownClients)
 				r.Get("/clients/{sessionID}", d.GetClient)
-				// v0.5.2 P3.6 / Task 9: admin-only service pre-provisioning.
+				// v0.5.2 P3.6 / Task 9: service pre-provisioning.
 				// Lets dashboard / e2e flows POST a known service_id before any
 				// client connects; client-side GetOrCreateService continues to
 				// upsert against the same row when the client later connects
@@ -474,15 +473,21 @@ func NewRouter(d Deps) http.Handler {
 			})
 		})
 
-		// SSE: session-protected, NO timeout (long-lived stream).
+		// SSE: a dashboard session only, NO timeout (long-lived stream). The
+		// bearer middleware runs so that an automation token is recognised
+		// and refused by the gate (403) like on every other route. The
+		// session's role needs one of the read permissions of eventsRead
+		// (tunnels, services, ai, inspector) for /events and inspector:read
+		// for the inspector stream.
 		// CSRF is not applied here: GET is a safe method and SSE clients cannot
 		// send custom headers after the connection is upgraded.
 		r.Group(func(r chi.Router) {
+			r.Use(RequireBearerOrSession(d.Bearer, d.Users))
 			r.Use(d.RequireSession)
 			r.Get("/events", d.EventsStream)
-			// v0.4.0 Task 8: per-service inspector SSE stream. Permission
-			// gating (inspector:read:own/:any + ownership) is enforced
-			// inside the handler before headers are written.
+			// v0.4.0 Task 8: per-service inspector SSE stream. The handler
+			// checks the owner for inspector:read:own before headers are
+			// written.
 			r.Get("/services/{serviceID}/inspector/stream", d.InspectorStream)
 		})
 	})

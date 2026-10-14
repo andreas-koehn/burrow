@@ -6,7 +6,7 @@
 // PUT validates each field's range per spec F.1 and persists the updated
 // keys via the existing SettingsStore.SaveSettings call.
 //
-// Permission: admin only (same gate as GET/PUT /api/v1/settings).
+// Permission: settings:manage (as GET/PUT /api/v1/settings).
 package api
 
 import (
@@ -52,7 +52,7 @@ type retentionSettingsPutReq struct {
 }
 
 // GetRetentionSettings returns all seven retention settings with their
-// current values.  GET /api/v1/settings/retention (admin).
+// current values.  GET /api/v1/settings/retention (settings:manage).
 func (d Deps) GetRetentionSettings(w http.ResponseWriter, r *http.Request) {
 	m, err := d.Settings.GetSettings(r.Context())
 	if err != nil {
@@ -73,7 +73,7 @@ func (d Deps) GetRetentionSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // PutRetentionSettings validates and persists retention settings.
-// PUT /api/v1/settings/retention (admin).
+// PUT /api/v1/settings/retention (settings:manage).
 func (d Deps) PutRetentionSettings(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var in retentionSettingsPutReq

@@ -206,8 +206,8 @@ func loadRedactionGlobal(m map[string]string) redactionGlobalJSON {
 }
 
 // GetRedactionRules handles GET /api/v1/redaction/rules.
-// Returns the built-in rule set + persisted custom rules. Session-authed
-// (any logged-in user may read); no admin gate. The JSON response is
+// Returns the built-in rule set + persisted custom rules. The route needs
+// ai:read:own or :any, or ai:configure:own or :any (routeAccess). The JSON response is
 // stable across calls (built-in pack is hard-coded, custom rules come
 // straight from the settings table).
 func (d Deps) GetRedactionRules(w http.ResponseWriter, r *http.Request) {

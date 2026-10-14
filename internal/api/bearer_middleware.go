@@ -26,6 +26,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -158,6 +159,9 @@ func RequireBearerOrSession(bs BearerStore, us UserStore) func(http.Handler) htt
 			ctx = context.WithValue(ctx, bearerTokenIDKey, info.ID)
 			ctx = context.WithValue(ctx, bearerPermsKey, info.Permissions)
 			ctx = context.WithValue(ctx, callerRoleKey, u.Role)
+			if info.ExpiresAt != nil {
+				ctx = context.WithValue(ctx, bearerExpiresKey, *info.ExpiresAt)
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -169,15 +173,53 @@ func RequireBearerOrSession(bs BearerStore, us UserStore) func(http.Handler) htt
 // declared permission set (snapshot at mint) and the user's CURRENT role:
 // the token must declare p AND the role must still grant p. This is the rule
 // that makes role demotion immediately revoke a token's :any reach.
+//
+// A request is a token's when it carries a token id, whatever the token
+// declares: one that declares nothing (or whose store hands back no list at
+// all) is still a token and holds nothing.
 func effectivePerms(ctx context.Context, role string, p authz.Permission) bool {
-	bperms := bearerPerms(ctx)
-	if bperms == nil {
+	if bearerTokenID(ctx) == "" {
 		return authz.Can(role, p)
 	}
-	for _, bp := range bperms {
-		if bp == string(p) {
-			return authz.Can(role, p)
+	return slices.Contains(bearerPerms(ctx), string(p)) && authz.Can(role, p)
+}
+
+// firstNotHeld returns the first of perms that the caller does not hold (a
+// session: its role; a token: declared and granted, see effectivePerms), or ""
+// when it holds them all. A key that is no permission at all is skipped: the
+// store answers that one.
+func firstNotHeld(ctx context.Context, role string, perms []string) string {
+	known := authz.AllPermissions()
+	for _, p := range perms {
+		if slices.Contains(known, authz.Permission(p)) && !effectivePerms(ctx, role, authz.Permission(p)) {
+			return p
 		}
 	}
-	return false
+	return ""
+}
+
+// actingRole is the role a handler hands to a store that scopes by role: the
+// caller's own rows, or everyone's. own is the :own permission that store is
+// going to check. A dashboard session acts with its user's role. An
+// automation token acts with it only where it has one of anyPerms (the :any
+// half of what the route needs, by effectivePerms); otherwise it acts as the
+// built-in "user", whose reach ends at the caller's own rows, but only when
+// the caller's real role grants own. A token never gets more than its user's
+// role, so a role without own acts as "", which holds nothing. An admin's
+// token that declares services:configure:own does not configure the services
+// of other users.
+func (d Deps) actingRole(r *http.Request, own authz.Permission, anyPerms ...authz.Permission) (string, error) {
+	role, err := d.callerRoleForAuth(r)
+	if err != nil || bearerTokenID(r.Context()) == "" {
+		return role, err
+	}
+	for _, p := range anyPerms {
+		if effectivePerms(r.Context(), role, p) {
+			return role, nil
+		}
+	}
+	if authz.Can(role, own) {
+		return "user", nil
+	}
+	return "", nil
 }

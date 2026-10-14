@@ -15,7 +15,6 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/ankoehn/burrow/internal/audit"
-	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -138,29 +137,6 @@ func (d Deps) withAuditContext(next http.Handler) http.Handler {
 			RequestID:  middleware.GetReqID(r.Context()),
 		}
 		next.ServeHTTP(w, r.WithContext(audit.WithLogContext(r.Context(), lc)))
-	})
-}
-
-// RequireAdmin is a middleware that must run AFTER RequireSession (so that
-// unauthenticated requests get 401 before this 403 check runs). It loads the
-// authed user and rejects with 403 if their role is not "admin".
-func (d Deps) RequireAdmin(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		uid := userID(r.Context())
-		u, err := d.Users.GetUserByID(r.Context(), uid)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "lookup failed")
-			return
-		}
-		if u.Role != "admin" {
-			writeErr(w, http.StatusForbidden, "admin required")
-			return
-		}
-		next.ServeHTTP(w, r)
 	})
 }
 

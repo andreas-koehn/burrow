@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -24,7 +25,8 @@ type ConnectInfo struct {
 }
 
 // GetConnectInfo returns the relay control-plane endpoint clients should
-// dial. Session-authed (any signed-in user can render the wizard).
+// dial, for the "Connect a client" wizard: whoever may manage client tokens
+// (tokens:manage:own or :any) may read it.
 //
 // The value is Deps.controlEndpoint's, which the public discovery endpoint
 // returns too.
@@ -32,7 +34,7 @@ func (d Deps) GetConnectInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ConnectInfo{Server: d.controlEndpoint(r)})
 }
 
-// ListClients returns live clients grouped with aggregate traffic (admin only).
+// ListClients returns live clients grouped with aggregate traffic (tunnels:read:any).
 // GET /api/v1/clients
 func (d Deps) ListClients(w http.ResponseWriter, r *http.Request) {
 	var out []ClientView
@@ -45,7 +47,7 @@ func (d Deps) ListClients(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// GetClient returns one client + its services (admin only).
+// GetClient returns one client + its services (tunnels:read:any).
 // GET /api/v1/clients/{sessionID}
 func (d Deps) GetClient(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "sessionID")
@@ -66,7 +68,7 @@ func (d Deps) GetClient(w http.ResponseWriter, r *http.Request) {
 
 // ListKnownClients returns every client token with its status: online with
 // its live sessions, offline with the last session the relay remembers, or
-// never connected (admin only, like ListClients).
+// never connected (tunnels:read:any, like ListClients).
 // GET /api/v1/clients/known
 func (d Deps) ListKnownClients(w http.ResponseWriter, r *http.Request) {
 	out := []KnownClient{}
@@ -226,7 +228,7 @@ func (d Deps) SetAccessMode(w http.ResponseWriter, r *http.Request) {
 	// v0.3 delegation path: resolve tunnelID → serviceID via live registry.
 	if d.LiveTunnels != nil {
 		if loc, ok := d.LiveTunnels.LookupByTunnelID(id); ok {
-			callerRole, err := d.callerRole(r)
+			callerRole, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
 			if err != nil {
 				writeErr(w, http.StatusInternalServerError, "internal error")
 				return

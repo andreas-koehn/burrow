@@ -198,7 +198,7 @@ func (d Deps) requireInspectorPerm(w http.ResponseWriter, r *http.Request, servi
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
-	if authz.Can(role, any) {
+	if effectivePerms(r.Context(), role, any) {
 		// :any short-circuits ownership. We still want a 404 for unknown
 		// services so the UI gets a meaningful error.
 		if d.InspectorServices != nil {
@@ -209,7 +209,7 @@ func (d Deps) requireInspectorPerm(w http.ResponseWriter, r *http.Request, servi
 		}
 		return true
 	}
-	if !authz.Can(role, own) {
+	if !effectivePerms(r.Context(), role, own) {
 		writeErr(w, http.StatusForbidden, "forbidden")
 		return false
 	}

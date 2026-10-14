@@ -244,8 +244,8 @@ func TestEffectivePermsIntersection(t *testing.T) {
 	}
 
 	// Bearer-authed, token declares perm AND role grants it → allow.
-	ctxAdminAny := context.WithValue(context.Background(), bearerPermsKey,
-		[]string{"tunnels:read:any"})
+	asToken := context.WithValue(context.Background(), bearerTokenIDKey, "tok1")
+	ctxAdminAny := context.WithValue(asToken, bearerPermsKey, []string{"tunnels:read:any"})
 	if !effectivePerms(ctxAdminAny, "admin", authz.PermTunnelsReadAny) {
 		t.Fatal("admin+bearer-declares: must hold")
 	}
@@ -257,7 +257,12 @@ func TestEffectivePermsIntersection(t *testing.T) {
 	}
 
 	// Bearer-authed, token does NOT declare perm → deny even if role grants it.
-	ctxNoDecl := context.WithValue(context.Background(), bearerPermsKey, []string{})
+	// A token is told by its id: one whose permission list is nil (a store
+	// that hands back no slice for "none") is still a token.
+	if effectivePerms(asToken, "admin", authz.PermTunnelsReadAny) {
+		t.Fatal("a token with a nil permission list must not be taken for a session")
+	}
+	ctxNoDecl := context.WithValue(asToken, bearerPermsKey, []string{})
 	if effectivePerms(ctxNoDecl, "admin", authz.PermTunnelsReadAny) {
 		t.Fatal("intersection: token must declare the perm")
 	}

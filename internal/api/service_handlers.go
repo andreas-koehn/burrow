@@ -226,7 +226,7 @@ func mapServiceErr(w http.ResponseWriter, err error, notFoundMsg string) bool {
 
 // ListServices handles GET /api/v1/services.
 func (d Deps) ListServices(w http.ResponseWriter, r *http.Request) {
-	role, err := d.callerRole(r)
+	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
@@ -253,7 +253,7 @@ func (d Deps) ListServices(w http.ResponseWriter, r *http.Request) {
 // GetService handles GET /api/v1/services/{serviceID}.
 func (d Deps) GetService(w http.ResponseWriter, r *http.Request) {
 	serviceID := chi.URLParam(r, "serviceID")
-	role, err := d.callerRole(r)
+	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
@@ -329,7 +329,7 @@ func (d Deps) SetServiceAccessMode(w http.ResponseWriter, r *http.Request) {
 	if in.AccessMode == "mtls" {
 		caPEM = []byte(in.MTLSCAPEM)
 	}
-	role, err := d.callerRole(r)
+	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
@@ -347,7 +347,7 @@ func (d Deps) SetServiceAccessMode(w http.ResponseWriter, r *http.Request) {
 // ListAPIKeys handles GET /api/v1/services/{serviceID}/api-keys.
 func (d Deps) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	serviceID := chi.URLParam(r, "serviceID")
-	role, err := d.callerRole(r)
+	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
@@ -385,7 +385,7 @@ func (d Deps) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	role, err := d.callerRole(r)
+	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
@@ -409,7 +409,7 @@ func (d Deps) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 func (d Deps) DeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	serviceID := chi.URLParam(r, "serviceID")
 	keyID := chi.URLParam(r, "id")
-	role, err := d.callerRole(r)
+	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
@@ -427,7 +427,7 @@ func (d Deps) DeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 // GetAccessPolicy handles GET /api/v1/services/{serviceID}/access-policy.
 func (d Deps) GetAccessPolicy(w http.ResponseWriter, r *http.Request) {
 	serviceID := chi.URLParam(r, "serviceID")
-	role, err := d.callerRole(r)
+	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
@@ -486,8 +486,8 @@ var postServiceAccessModes = map[string]string{
 }
 
 // PostService handles POST /api/v1/services — admin pre-provisioning of a
-// service row (v0.5.2 P3.6 / Task 9). Permission: admin (gated by
-// RequireAdmin in router.go; the handler does no second check).
+// service row (v0.5.2 P3.6 / Task 9). Permission: services:configure:any
+// (routeAccess in access.go; the handler does no second check).
 //
 // Body: { service_id (req), title?, access_mode?, slug? }.
 //   - service_id matches ^[a-z0-9_-]{3,64}$.
@@ -595,6 +595,24 @@ func (d Deps) PostService(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// roleKnown reports whether name is a role: a built-in one or a stored custom
+// role.
+func (d Deps) roleKnown(ctx context.Context, name string) (bool, error) {
+	if _, ok := authz.Get(name); ok {
+		return true, nil
+	}
+	if d.Roles == nil {
+		return false, nil
+	}
+	if _, err := d.Roles.GetRole(ctx, name); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // SetAccessPolicy handles PUT /api/v1/services/{serviceID}/access-policy.
 func (d Deps) SetAccessPolicy(w http.ResponseWriter, r *http.Request) {
 	serviceID := chi.URLParam(r, "serviceID")
@@ -610,12 +628,17 @@ func (d Deps) SetAccessPolicy(w http.ResponseWriter, r *http.Request) {
 	// Spec Part D: pre-validate each role before calling the store so the error
 	// body can include the offending role name: {"error":"unknown role \"<r>\""}
 	for _, roleName := range in.Roles {
-		if _, ok := authz.Get(roleName); !ok {
+		known, err := d.roleKnown(r.Context(), roleName)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if !known {
 			writeErr(w, http.StatusBadRequest, fmt.Sprintf("unknown role %q", roleName))
 			return
 		}
 	}
-	role, err := d.callerRole(r)
+	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
@@ -671,7 +694,7 @@ func (d Deps) PutServiceSlug(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	role, err := d.callerRole(r)
+	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
@@ -716,7 +739,7 @@ func (d Deps) PutServiceGatewayOnly(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "gateway_only (boolean) is required")
 		return
 	}
-	role, err := d.callerRole(r)
+	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return

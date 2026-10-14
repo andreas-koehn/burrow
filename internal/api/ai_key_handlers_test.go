@@ -354,7 +354,7 @@ func TestKeyRoutes_BearerTokenActsForOwnKeysOnly(t *testing.T) {
 	}
 	auto := newFakeAutomationStore()
 	f.d.Automation, f.d.Bearer = auto, auto
-	_, token, err := auto.MintAutomationToken(context.Background(), "u-self", "admin", "ci", []string{"tunnels:read:any"}, nil)
+	_, token, err := auto.MintAutomationToken(context.Background(), "u-self", "admin", "ci", []string{"ai:configure:own"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

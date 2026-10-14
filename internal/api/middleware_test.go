@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -205,17 +206,18 @@ func (d deletedUserFake) GetUserByID(_ context.Context, _ string) (db.User, erro
 	return db.User{}, db.ErrNotFound
 }
 
-// TestRequireAdminDeletedUserIs401 asserts that when RequireAdmin calls
-// GetUserByID and the user row no longer exists (db.ErrNotFound), the response
-// is 401 — not 500 (wrong status) and not 403 (wrong semantics).
-func TestRequireAdminDeletedUserIs401(t *testing.T) {
+// TestPermissionGateDeletedUserIs401 asserts that when the permission gate
+// looks up the role of a session's user and the user row no longer exists
+// (db.ErrNotFound), the response is 401 — not 500 (wrong status) and not 403
+// (wrong semantics).
+func TestPermissionGateDeletedUserIs401(t *testing.T) {
 	fake := deletedUserFake{fakeUsers: fakeUsers{validate: func(string) (string, error) { return "u1", nil }}}
 	d := Deps{Users: fake, Log: slog.Default()}
-	// Wrap: RequireSession injects uid into ctx, then RequireAdmin checks it.
+	// Wrap: RequireSession injects uid into ctx, then the gate asks for its role.
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	h := d.RequireSession(d.RequireAdmin(inner))
+	h := d.RequireSession(d.require(authz.PermUsersManage)(inner))
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/admin", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "any"})

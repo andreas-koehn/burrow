@@ -59,16 +59,13 @@ func attemptRequestID(r *http.Request) (string, bool) {
 }
 
 // GetAIRequestAttempts handles GET /api/v1/ai/requests/{requestID}/attempts
-// (an admin's dashboard session).  The log covers the requests of every user
-// and gateway key, so an automation token does not open it, whatever it
-// declares.  An id without a log answers an empty list: a log is kept only
-// for requests that needed more than one attempt or failed.
+// (a dashboard session of a role with ai:read:any).  The log covers the
+// requests of every user and gateway key, so an automation token does not
+// open it, whatever it declares: the gate of the route refuses it.  An id
+// without a log answers an empty list: a log is kept only for requests that
+// needed more than one attempt or failed.
 func (d Deps) GetAIRequestAttempts(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if bearerTokenID(r.Context()) != "" {
-		writeErr(w, http.StatusForbidden, "a dashboard session is required")
-		return
-	}
 	id, ok := attemptRequestID(r)
 	if !ok {
 		writeErr(w, http.StatusBadRequest, msgAttemptRequestID)

@@ -28,6 +28,7 @@ import (
 	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/auth"
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -83,11 +84,11 @@ type aiProviderResp struct {
 	ModelCount        int                  `json:"model_count"`
 
 	// How the relay presents the credential upstream, for callers who may
-	// change it (admins): PUT …/upstream keeps what a body leaves out, and
-	// these fields show what that is. auth_format holds the literal {key}
-	// placeholder, never the credential. Of the extra headers only the names
-	// are shown, sorted: a value is free text and may be a secret. Left out
-	// for other callers and for tunnel providers.
+	// change it (ai:providers:manage): PUT …/upstream keeps what a body
+	// leaves out, and these fields show what that is. auth_format holds the
+	// literal {key} placeholder, never the credential. Of the extra headers
+	// only the names are shown, sorted: a value is free text and may be a
+	// secret. Left out for other callers and for tunnel providers.
 	AuthHeader       string   `json:"auth_header,omitempty"`
 	AuthFormat       string   `json:"auth_format,omitempty"`
 	ExtraHeaderNames []string `json:"extra_header_names,omitzero"`
@@ -239,16 +240,26 @@ func (d Deps) firstModelByProvider(ctx context.Context) map[string]providerModel
 	return out
 }
 
+// providerRole is the role the provider reads ask the service store with (a
+// provider is seen by who sees its backing service). An automation token
+// sees other users' providers with ai:read:any, ai:providers:manage or
+// services:configure:any; with ai:read:own it sees its user's own.
+func (d Deps) providerRole(r *http.Request) (string, error) {
+	return d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermAIReadAny, authz.PermAIProvidersManage, authz.PermServicesConfigureAny)
+}
+
 // providerViews returns the response item for every provider whose backing
 // service the caller may see (same visibility as ListServices), ordered by
 // slug.  Identity fields come from the provider row; api_key_count, status
 // and the 24h counts are read live from the backing service; model_alias and
 // concrete_model name the first synthetic model that targets the provider.
 func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
-	role, err := d.callerRole(r)
+	role, err := d.providerRole(r)
 	if err != nil {
 		return nil, err
 	}
+	// Who may change a provider's upstream is shown how it is presented.
+	manages := effectivePerms(r.Context(), role, authz.PermAIProvidersManage)
 	uid := userID(r.Context())
 
 	svcs, err := d.Services.ListServices(r.Context(), uid, role)
@@ -342,8 +353,8 @@ func (d Deps) providerViews(r *http.Request) ([]aiProviderResp, error) {
 			Billing:           p.Billing,
 			ModelCount:        d.modelCount(r.Context(), p.Slug),
 		}
-		// The upstream routes are admin only.
-		if role == "admin" {
+		// The upstream routes need ai:providers:manage.
+		if manages {
 			upstreamAuthView(&v, p)
 		}
 		out = append(out, v)
@@ -398,7 +409,7 @@ func (d Deps) writeProviderView(w http.ResponseWriter, r *http.Request, status i
 			MaxConcurrent:     p.MaxConcurrent, InUse: d.providerInUse(p),
 			BreakerOpen: d.breakerOpen(p.Slug),
 		}
-		// Only the admin-only write handlers answer through here.
+		// Only the write handlers (ai:providers:manage) answer through here.
 		upstreamAuthView(&v, p)
 	}
 	writeJSON(w, status, v)
@@ -446,7 +457,7 @@ func (d Deps) GetAIProviderMetrics(w http.ResponseWriter, r *http.Request) {
 	serviceID := p.ServiceID
 
 	// Validate the backing service is accessible to the caller.
-	role, err := d.callerRole(r)
+	role, err := d.providerRole(r)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
@@ -745,7 +756,7 @@ func upstreamAudit(p db.AIProvider) map[string]any {
 	}
 }
 
-// PostAIProvider handles POST /api/v1/ai/providers (admin only).  Kind
+// PostAIProvider handles POST /api/v1/ai/providers (ai:providers:manage).  Kind
 // "tunnel" registers an existing http service in API-key mode as a provider;
 // kind "direct" adds a provider the relay calls itself.  An empty slug is
 // derived from the name.  api_format says which format the provider speaks,
@@ -815,6 +826,21 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// gateway_only is set with the caller's right to configure the service.
+	// Without it the flag would stay off behind a 201, so refuse first.
+	if in.GatewayOnly {
+		role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
+		if err == nil {
+			_, err = d.Services.GetService(r.Context(), userID(r.Context()), role, in.ServiceID)
+		}
+		// The route's gate is ai:providers:manage; a token must also declare
+		// that it configures services.
+		if errors.Is(err, store.ErrForbidden) || (err == nil && !mayConfigureServices(r, role)) {
+			writeErr(w, http.StatusForbidden, "gateway_only needs the right to configure the service")
+			return
+		}
+	}
+
 	p, err := d.AIProviders.CreateTunnelProvider(r.Context(), slug, name, in.ServiceID, apiFormat)
 	if err != nil {
 		if !mapProviderErr(w, err) {
@@ -834,11 +860,21 @@ func (d Deps) PostAIProvider(w http.ResponseWriter, r *http.Request) {
 	d.writeProviderView(w, r, http.StatusCreated, p)
 }
 
+// mayConfigureServices reports whether the caller holds a permission to
+// configure services (a token: declares it and its role grants it).
+func mayConfigureServices(r *http.Request, role string) bool {
+	return effectivePerms(r.Context(), role, authz.PermServicesConfigureOwn) ||
+		effectivePerms(r.Context(), role, authz.PermServicesConfigureAny)
+}
+
 // closeDirectDoors sets gateway-only on the backing service of a provider that
 // was just created. A failure is logged and does not undo the provider: the
 // switch can be set from the service page.
 func (d Deps) closeDirectDoors(r *http.Request, p db.AIProvider) {
-	role, err := d.callerRole(r)
+	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
+	if err == nil && !mayConfigureServices(r, role) {
+		err = store.ErrForbidden
+	}
 	if err == nil {
 		err = d.Services.SetServiceGatewayOnly(r.Context(), userID(r.Context()), role, p.ServiceID, true)
 	}
@@ -878,7 +914,7 @@ func (d Deps) postDirectProvider(w http.ResponseWriter, r *http.Request, slug, n
 	d.writeProviderView(w, r, http.StatusCreated, p)
 }
 
-// PutAIProvider handles PUT /api/v1/ai/providers/{slug} (admin only).  Slug
+// PutAIProvider handles PUT /api/v1/ai/providers/{slug} (ai:providers:manage).  Slug
 // and name are both required.  After a slug change the old base URL stops
 // working at once.  supports_responses is optional and states whether the
 // provider offers POST /responses, max_concurrent is optional and sets how
@@ -945,7 +981,7 @@ func (d Deps) PutAIProvider(w http.ResponseWriter, r *http.Request) {
 	d.writeProviderView(w, r, http.StatusOK, p)
 }
 
-// DeleteAIProvider handles DELETE /api/v1/ai/providers/{slug} (admin only).
+// DeleteAIProvider handles DELETE /api/v1/ai/providers/{slug} (ai:providers:manage).
 // A tunnel provider's service is kept.  A direct provider's backing service
 // is removed with it, and with that its API keys and model list; the vault
 // slot is configured on the relay and is not touched.  A provider that a
@@ -967,7 +1003,7 @@ func (d Deps) DeleteAIProvider(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// providerForWrite loads the provider named in the path for an admin-only
+// providerForWrite loads the provider named in the path for a write
 // handler and writes the 404 / 500 itself.
 func (d Deps) providerForWrite(w http.ResponseWriter, r *http.Request) (db.AIProvider, bool) {
 	p, err := d.AIProviders.ProviderBySlug(r.Context(), chi.URLParam(r, "slug"))
@@ -983,7 +1019,7 @@ func (d Deps) providerForWrite(w http.ResponseWriter, r *http.Request) (db.AIPro
 }
 
 // PutAIProviderUpstream handles PUT /api/v1/ai/providers/{slug}/upstream
-// (admin only).  It changes the upstream settings of a direct provider; a
+// (ai:providers:manage).  It changes the upstream settings of a direct provider; a
 // field that is left out keeps its stored value, so the credential slot stays
 // unless the body names another one.  extra_headers {} removes all headers.
 // The change applies to the next request.
@@ -1070,7 +1106,7 @@ var modelSyncTimeout = 25 * time.Second
 var modelSyncs sync.Map
 
 // PostAIProviderModelsSync handles POST /api/v1/ai/providers/{slug}/models/sync
-// (admin only).  It reads the model list from a direct provider's upstream
+// (ai:providers:manage).  It reads the model list from a direct provider's upstream
 // and replaces the stored list with it.  The call leaves the relay through
 // the guarded upstream transport; nothing the upstream sent is returned
 // except the number of models.
@@ -1145,8 +1181,8 @@ func (d Deps) PostAIProviderModelsSync(w http.ResponseWriter, r *http.Request) {
 // msgModelID is the 400 message for a model id that cannot be stored.
 const msgModelID = "id must be 1-200 characters without control characters"
 
-// PostAIProviderModel handles POST /api/v1/ai/providers/{slug}/models (admin
-// only): adds one model id by hand, for either kind of provider.
+// PostAIProviderModel handles POST /api/v1/ai/providers/{slug}/models
+// (ai:providers:manage): adds one model id by hand, for either kind of provider.
 func (d Deps) PostAIProviderModel(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	var in struct {
@@ -1175,7 +1211,7 @@ func (d Deps) PostAIProviderModel(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteAIProviderModel handles DELETE /api/v1/ai/providers/{slug}/models?id=…
-// (admin only).  The id is a query parameter because model ids contain "/".
+// (ai:providers:manage).  The id is a query parameter because model ids contain "/".
 func (d Deps) DeleteAIProviderModel(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if !aiprovider.ValidModelID(id) {

@@ -27,7 +27,7 @@ var allowedSettingKeys = map[string]bool{
 	"connection_logs.rollup_include_top_ips": true,
 }
 
-// GetSettings returns the non-secret settings map (admin only). GET /api/v1/settings
+// GetSettings returns the non-secret settings map (settings:manage). GET /api/v1/settings
 func (d Deps) GetSettings(w http.ResponseWriter, r *http.Request) {
 	m, err := d.Settings.GetSettings(r.Context())
 	if err != nil {
@@ -43,7 +43,7 @@ func (d Deps) GetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// SaveSettings upserts only whitelisted non-secret keys (admin only).
+// SaveSettings upserts only whitelisted non-secret keys (settings:manage).
 // PUT /api/v1/settings
 func (d Deps) SaveSettings(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 8192)
@@ -73,7 +73,7 @@ type testEmailReq struct {
 	To string `json:"to"`
 }
 
-// SendTestEmail sends an SMTP connection-test message (admin only).
+// SendTestEmail sends an SMTP connection-test message (settings:manage).
 // POST /api/v1/settings/test-email — 204 ok, 409 unconfigured, 502 send error.
 func (d Deps) SendTestEmail(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1024)
