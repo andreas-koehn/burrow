@@ -88,11 +88,18 @@ func (g *mxGate) release() {
 	}
 }
 
+// hold is called by the provider before it writes its first piece: the caller
+// may read that piece before the provider reaches wait, and must find it held.
+func (g *mxGate) hold() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.held = g.ch != nil
+}
+
 // wait is called by the provider after its first piece is flushed.
 func (g *mxGate) wait() {
 	g.mu.Lock()
 	ch := g.ch
-	g.held = ch != nil
 	g.mu.Unlock()
 	if ch == nil {
 		return
@@ -266,6 +273,7 @@ func mxStream(w http.ResponseWriter, gate *mxGate, first, rest []string, frame f
 			fl.Flush()
 		}
 	}
+	gate.hold()
 	for _, s := range first {
 		write(s)
 	}
