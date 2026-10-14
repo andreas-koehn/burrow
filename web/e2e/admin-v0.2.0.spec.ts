@@ -103,7 +103,7 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   // ── Clients: empty state (GET /clients/known → []) ───────────────────────
   await sidebar.getByRole("link", { name: /^Back to / }).click();
   await sidebar.getByRole("link", { name: /^Clients/ }).click();
-  await expect(page.getByRole("heading", { name: "Clients" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Clients", level: 1 })).toBeVisible();
   await expect(page.getByText("No clients yet", { exact: false })).toBeVisible();
 
   // ── Access-mode endpoint contract ─────────────────────────────────────────

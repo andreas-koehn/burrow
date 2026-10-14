@@ -25,7 +25,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     id: "zai-coding", label: "z.ai — Coding Plan", slug: "zai", name: "z.ai",
     baseUrl: "https://api.z.ai/api/coding/paas/v4", credentialSlot: "ZAI", billing: "flat",
     apiFormat: "openai", supportsResponses: false,
-    note: "Subscription endpoint. The plan's quota is shared by everyone using this provider.",
+    note: "Subscription plan. Its quota is shared by everyone using this provider.",
   },
   {
     id: "zai-api", label: "z.ai — API (pay as you go)", slug: "zai", name: "z.ai",
@@ -107,7 +107,7 @@ export const NO_CREDENTIAL_SLOTS = "No credential is set on the relay yet.";
 
 /** Help text of every "Credential slot" field. */
 export const CREDENTIAL_SLOT_HELP =
-  "One slot, or up to four separated by commas — tried in order. The name of the slot, not the key. The key is set on the relay and must be set to a non-empty value.";
+  "The slot's name, not the key. Up to four, separated by commas, are tried in order; each must hold a non-empty key.";
 
 /** Environment variable the relay reads a credential slot from. */
 export function envVarForSlot(slot: string): string {

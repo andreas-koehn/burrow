@@ -35,6 +35,18 @@ describe("Automation tokens", () => {
     expect(within(table).getByText(/bua_/)).toBeInTheDocument();
   });
 
+  it("writes when a token was last used as every table does, and never for one that does not expire", async () => {
+    mount();
+    const row = within(await screen.findByRole("table", { name: /automation tokens/i })).getByText("ci-runner").closest("tr")!;
+    const used = row.querySelector("time")!;
+    // Long ago: the date, with the exact time on hover; not the relay's raw timestamp.
+    expect(used).toHaveTextContent("18 May 2026");
+    expect(used).toHaveAttribute("datetime", "2026-05-18T09:00:00Z");
+    expect(used.getAttribute("title")).toMatch(/09:00:00/);
+    expect(row).not.toHaveTextContent("2026-05-18T09:00:00Z");
+    expect(within(row).getByText("never")).toBeInTheDocument();
+  });
+
   // P4.3 — reciprocal hint
   it("says these tokens are for scripts, not clients (P4.3)", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }) as Response);

@@ -19,7 +19,8 @@ test("08-access-mode-burrow-login: anonymous visitor gets redirected to the auth
   const ai = services.find((s) => s.name === "ai");
   if (!ai) throw new Error("ai service not found");
   await page.goto(`/services/${ai.id}`);
-  await expect(page.getByRole("heading", { name: /Service.*\bai\b/ })).toBeVisible();
+  // The page is titled with the service's name alone.
+  await expect(page.getByRole("heading", { name: "ai", level: 1 })).toBeVisible();
 
   await page.getByRole("radio", { name: /Burrow login/ }).click();
   await page.getByRole("button", { name: "Save changes" }).click();

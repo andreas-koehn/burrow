@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
@@ -61,6 +61,13 @@ export function WaitForProvider({
       return query.state.dataUpdateCount - onlineSince.current < CATALOG_ANSWERS ? 2000 : false;
     },
   });
+  // "Try again" goes away with the failure it answers: the line it stood beside takes the focus.
+  const line = useRef<HTMLDivElement>(null);
+  // Asked again by the reader: even a quiet line then says what came of it, so the line the
+  // keyboard is on is never hidden. When the last answer came as they asked: until the next one
+  // the line says it asks; the asking that goes on by itself afterwards changes nothing in it.
+  const [retriedAt, setRetriedAt] = useState<number | null>(null);
+  const answers = Math.max(provider.dataUpdatedAt, provider.errorUpdatedAt);
   const p = provider.data;
   const online = p !== undefined && providerState(p) === "online";
   // Not while the question is asked again: then it waits, as before the failure.
@@ -75,7 +82,12 @@ export function WaitForProvider({
 
   const said = failed ? (
     <span className="muted">{failureText}</span>
-  ) : quiet ? null : online ? (
+  ) : quiet ? (
+    retriedAt === null ? null
+      : answers === retriedAt ? <span className="muted">Asking again…</span>
+      : online ? <StatusBadge state="online" />
+      : <span className="muted">Still offline.</span>
+  ) : online ? (
     <>
       <StatusBadge state="online" />
       {p.model_count > 0 && <span>{p.model_count === 1 ? "1 model found" : `${p.model_count} models found`}</span>}
@@ -91,10 +103,21 @@ export function WaitForProvider({
     <>
       {/* With nothing to say the line takes no room, but stays: what arrives in it later is announced. */}
       <div className={said === null ? "visually-hidden" : "connect-wait"}>
-        <div role="status" className="row row-center gap-2">{said}</div>
+        <div ref={line} role="status" tabIndex={-1} className="row row-center gap-2">{said}</div>
         {/* Beside the message, not in it: a button is not part of what is announced. */}
         {failed && (
-          <Button variant="secondary" size="sm" onClick={() => void provider.refetch()}>Try again</Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              // Before the button is gone: the keyboard stays where it was, on the line that now waits.
+              line.current?.focus();
+              setRetriedAt(answers);
+              void provider.refetch();
+            }}
+          >
+            Try again
+          </Button>
         )}
       </div>
       {online && children}

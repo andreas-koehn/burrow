@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
@@ -94,7 +94,8 @@ describe("ProviderClientPanel", () => {
     // It may have been offline for days: the relay is asked, but nothing spins.
     await waitFor(() => expect(feed.asked).toBeGreaterThanOrEqual(1));
     expect(screen.queryByText("Waiting for the client…")).toBeNull();
-    expect(document.querySelector(".spinner")).toBeNull();
+    // The second line of the panel is where Online will arrive; until then it holds nothing.
+    expect(within(screen.getByRole("region", { name: "Client" })).getAllByRole("status")[1]).toBeEmptyDOMElement();
     // Whether a client is known does not matter here.
     expect(known.asked).toBe(0);
   });

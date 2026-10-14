@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type MouseEvent } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
@@ -56,6 +56,9 @@ const STRATEGY_OPTIONS = [
 ];
 
 const BACK = { to: "/gateway/providers", label: "Providers" } as const;
+// How often a provider a client serves is asked again, so the page says Offline by itself
+// when the client stops. While none serves it, the client panel asks (WaitForProvider).
+const ONLINE_POLL_MS = 3000;
 const SUBTITLE = "Status, use in apps, catalog and settings of this provider.";
 // Tab values double as URL fragments, e.g. /gateway/providers/<slug>#settings.
 const TAB_VALUES = ["overview", "catalog", "settings"];
@@ -90,6 +93,10 @@ export default function ProviderDetail() {
     queryFn: () => apiFetch<AiProvider>(`/ai/providers/${slug}`),
     retry: false,
     enabled: Boolean(slug),
+    refetchInterval: (q) => {
+      const p = q.state.data;
+      return q.state.status !== "error" && p?.kind === "tunnel" && providerState(p) === "online" ? ONLINE_POLL_MS : false;
+    },
   });
   // Everything below is per service; the provider names the service.
   const id = provider.data?.service_id ?? "";
@@ -125,6 +132,13 @@ export default function ProviderDetail() {
     void qc.invalidateQueries({ queryKey: ["ai", "provider", slug], exact: true });
     void qc.invalidateQueries({ queryKey: ["service", id], exact: true });
   }, [qc, slug, id]);
+  // The client stopped: what the backing service says about it is read again too.
+  const wasOnline = useRef(false);
+  const onlineNow = provider.data !== undefined && providerState(provider.data) === "online";
+  useEffect(() => {
+    if (wasOnline.current && !onlineNow && id) void qc.invalidateQueries({ queryKey: ["service", id], exact: true });
+    wasOnline.current = onlineNow;
+  }, [onlineNow, id, qc]);
   // A service key was revoked on this page: the provider counts them.
   const keyRevoked = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ["ai", "provider", slug], exact: true });
@@ -143,6 +157,16 @@ export default function ProviderDetail() {
     retry: false,
     enabled: Boolean(id),
   });
+
+  // A recent request opens on a click anywhere in its row, as a service does on the Services list.
+  function openRequest(e: MouseEvent<HTMLTableRowElement>, requestId: string) {
+    if ((e.target as Element).closest("a")) return;
+    // A click with a key held asks for a new tab or window, which only the path's link can open.
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    // Marking a path to copy it ends in a click too.
+    if (window.getSelection()?.toString()) return;
+    nav(`/gateway/requests/${id}/${requestId}`);
+  }
 
   // Local draft of the routing tab — synced from cfg.data on first arrival.
   const [draft, setDraft] = useState<ServiceAIConfig | null>(null);
@@ -350,21 +374,11 @@ export default function ProviderDetail() {
                     </thead>
                     <tbody>
                       {(recent.data ?? []).map((r) => (
-                        <tr
-                          key={r.id}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => nav(`/gateway/requests/${id}/${r.id}`)}
-                          onKeyDown={(e) => {
-                            if (e.key !== "Enter" && e.key !== " ") return;
-                            e.preventDefault();
-                            nav(`/gateway/requests/${id}/${r.id}`);
-                          }}
-                          className="clickable"
-                        >
+                        // The path stays the link, and the one stop for the keyboard: the row adds a bigger target only.
+                        <tr key={r.id} className="clickable" onClick={(e) => openRequest(e, r.id)}>
                           <td><RelativeTime value={r.ts} /></td>
                           <td className="mono">{r.method}</td>
-                          <td className="mono">{r.path}</td>
+                          <td><Link className="mono" to={`/gateway/requests/${id}/${r.id}`}>{r.path}</Link></td>
                           <td className="mono">{r.status}</td>
                           <td className="mono">{r.cache}</td>
                         </tr>

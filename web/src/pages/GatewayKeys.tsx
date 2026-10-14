@@ -15,7 +15,10 @@ const KEYS = ["ai", "keys"] as const;
 
 interface NewKeyDialogProps {
   onClose: () => void;
-  /** Slug of a provider the key starts limited to: "Everything from <slug>" is ticked. */
+  /**
+   * Slug of a provider the key starts limited to: "Everything from <slug>" is
+   * ticked, and every model that sends its requests to that provider alone.
+   */
   provider?: string;
 }
 
@@ -29,7 +32,8 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
   const scopeId = useId();
   const [name, setName] = useState("");
   const [restricted, setRestricted] = useState(provider !== undefined);
-  const [allowed, setAllowed] = useState<string[]>(provider !== undefined ? [`${provider}/*`] : []);
+  // What the reader ticked; null until they tick or untick something.
+  const [picked, setPicked] = useState<string[] | null>(provider !== undefined ? null : []);
   const [secret, setSecret] = useState<string | null>(null);
   const [formErr, setFormErr] = useState<string | null>(null);
 
@@ -49,6 +53,13 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
     ...(Array.isArray(models.data) ? models.data : []).map((m) => ({ value: m.name, label: m.name })),
     ...(Array.isArray(providers.data) ? providers.data : []).map((p) => ({ value: `${p.slug}/*`, label: `Everything from ${p.slug}` })),
   ];
+  // Opened for a provider, the key also allows the models that provider serves alone: "Everything
+  // from" a provider allows its catalog ids, not the names of models, and a model made a step
+  // earlier in the guided flow would otherwise be refused with this key.
+  const servedAlone = (Array.isArray(models.data) ? models.data : [])
+    .filter((m) => m.targets.length > 0 && m.targets.every((t) => t.provider === provider))
+    .map((m) => m.name);
+  const allowed = picked ?? (provider !== undefined ? [...servedAlone, `${provider}/*`] : []);
   const chosen = entries.filter((e) => allowed.includes(e.value)).map((e) => e.value);
 
   const create = useMutation({
@@ -177,7 +188,7 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
                       id={id}
                       checked={allowed.includes(e.value)}
                       onChange={(on) => {
-                        setAllowed((a) => (on ? [...a, e.value] : a.filter((v) => v !== e.value)));
+                        setPicked(on ? [...allowed, e.value] : allowed.filter((v) => v !== e.value));
                         setFormErr(null);
                       }}
                     />

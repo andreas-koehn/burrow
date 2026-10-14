@@ -110,7 +110,7 @@ export default function GatewayOverview() {
     ...(isAdmin ? [{
       id: "provider",
       title: "Add a provider",
-      description: "A provider is a model backend under its own base URL: a model server on one of your machines, or a hosted API the relay calls itself.",
+      description: "A provider serves models under its own base URL: a model server on one of your machines, or a hosted API the relay calls itself.",
       done: list.length > 0,
       // Opens the guided flow, not just the page it is on.
       action: { label: "Add a provider", to: "/gateway/providers?new=local" },

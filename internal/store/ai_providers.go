@@ -138,8 +138,8 @@ func (s *Store) ListProviders(ctx context.Context) ([]db.AIProvider, error) {
 }
 
 // CreateTunnelProvider registers an existing http service in api_key mode as
-// a model provider. apiFormat is the format the server behind the tunnel
-// speaks, "openai" or "anthropic"; "" means "openai". Callers gate on admin;
+// a model provider. apiFormat is the format the model server behind the
+// client speaks, "openai" or "anthropic"; "" means "openai". Callers gate on admin;
 // the store only validates the data.
 func (s *Store) CreateTunnelProvider(ctx context.Context, slug, name, serviceID, apiFormat string) (db.AIProvider, error) {
 	if !ValidProviderSlug(slug) {

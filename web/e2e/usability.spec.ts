@@ -8,6 +8,7 @@ import { test, expect } from "@playwright/test";
 //   3. "Command palette"          — In-6, Ea-2 (Ctrl+K opens, type, Enter navigates)
 //   4. "Cross-feature wiring"     — Clr-4 (/services?new=ai → "New provider" on the guided steps)
 //                                  Ea-4 (Overview email notice → /settings/email)
+//   5. "Dialogs at 720 px"        — the default state of each "New …" dialog fits without scrolling
 //
 // This spec runs against the REAL built burrowd (no MSW mocks).
 // Use `playwright-auth.json` for the admin session so the login rate-limit
@@ -138,4 +139,40 @@ test.describe("Cross-feature wiring", () => {
       await expect(page.getByRole("heading", { name: "Email", exact: true })).toBeVisible();
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// 5. Dialogs at 720 px
+// ---------------------------------------------------------------------------
+test.describe("Dialogs at 720 px", () => {
+  test.use({ viewport: { width: 1440, height: 720 } });
+
+  // What each dialog shows before anything is typed. This relay has no credential slot set,
+  // so the hosted form also carries its "No credential is set" line: its tallest default.
+  const DIALOGS: { name: string; page: string; open: string; then?: string }[] = [
+    { name: "New service", page: "/services", open: "New service" },
+    { name: "New provider", page: "/gateway/providers", open: "New provider" },
+    { name: "New provider", page: "/gateway/providers", open: "New provider", then: "A hosted API" },
+    { name: "New model", page: "/gateway/models", open: "New model" },
+    { name: "New gateway key", page: "/gateway/keys", open: "New key" },
+  ];
+
+  for (const d of DIALOGS) {
+    test(`${d.name}${d.then ? ` (${d.then})` : ""} fits without the dialog scrolling`, async ({ page }) => {
+      await page.goto(d.page);
+      await page.getByRole("button", { name: d.open }).first().click();
+      const dialog = page.getByRole("dialog", { name: d.name });
+      await expect(dialog).toBeVisible();
+      if (d.then) {
+        await dialog.getByRole("radio", { name: d.then }).check();
+        // The list of slots arrives a moment later, and with it this line under the field.
+        await expect(dialog.getByText("No credential is set on the relay yet.")).toBeVisible();
+      }
+      const box = (await dialog.boundingBox())!;
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.y + box.height).toBeLessThanOrEqual(720);
+      const body = dialog.locator(".dialog-body");
+      expect(await body.evaluate((b) => b.scrollHeight - b.clientHeight)).toBeLessThanOrEqual(1);
+    });
+  }
 });

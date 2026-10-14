@@ -18,6 +18,7 @@ import { test, expect } from "@playwright/test";
 import type { BrowserContext } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
 import { adminHeaders } from "../../fixtures/api";
+import { DASHBOARD_URL } from "../../fixtures/env";
 
 // `request` carries the admin session so we can create/delete the throwaway
 // user. The browser contexts below log in fresh as that user.
@@ -46,8 +47,8 @@ test("50-session-management: revoke a non-current session + sign out everywhere"
   expect(userId).toBeTruthy();
 
   // Two independent contexts → two distinct sessions for the throwaway user.
-  const ctx1 = await browser.newContext({ baseURL: "http://localhost:8080" });
-  const ctx2 = await browser.newContext({ baseURL: "http://localhost:8080" });
+  const ctx1 = await browser.newContext({ baseURL: DASHBOARD_URL });
+  const ctx2 = await browser.newContext({ baseURL: DASHBOARD_URL });
 
   try {
     const p1 = await loginUser(ctx1, email, password);
@@ -88,7 +89,7 @@ test("50-session-management: revoke a non-current session + sign out everywhere"
 
     // --- Step 4: "Sign out everywhere" revokes OTHER sessions, keeps current.
     // To assert it has something to revoke, log in a THIRD time first.
-    const ctx3 = await browser.newContext({ baseURL: "http://localhost:8080" });
+    const ctx3 = await browser.newContext({ baseURL: DASHBOARD_URL });
     await loginUser(ctx3, email, password);
 
     // Re-fetch the list in context 1 so it sees the new session, then sign out

@@ -64,17 +64,18 @@ describe("Providers page", () => {
     );
   });
 
-  it("renders one row per provider with name, mono model line, kind, base URL, requests, latency, status", async () => {
+  it("renders one row per provider with name, mono model line, kind, base URL, requests, status", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /providers/i });
     // Keys are gateway keys now, the backend is part of the kind, and cache hits are on the provider's page.
+    // No latency: the relay does not measure it (latency_p95_ms is always 0), as on Requests.
     expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(
-      ["Name", "Kind", "Base URL", "Requests (24h)", "Latency p95", "Status", ""],
+      ["Name", "Kind", "Base URL", "Requests (24h)", "Status", ""],
     );
     const alias = within(table).getByText("burrow-simple → mistral");
     expect(alias.className).toContain("mono");
     const ollama = alias.closest("tr")!;
-    expect(within(ollama).getAllByRole("cell")).toHaveLength(7);
+    expect(within(ollama).getAllByRole("cell")).toHaveLength(6);
     // Name cell value.
     expect(within(ollama).getByText("ollama", { selector: "td.col-name a" }))
       .toBeInTheDocument();
@@ -83,19 +84,23 @@ describe("Providers page", () => {
     expect(within(ollama).queryByText("2")).toBeNull(); // api_key_count fixture
     expect(within(ollama).queryByText("200")).toBeNull(); // cache_hits_24h
     expect(within(ollama).getByText("1,024")).toBeInTheDocument(); // requests_24h
-    expect(within(ollama).getByText("1,200 ms")).toBeInTheDocument(); // latency_p95_ms
     expect(within(ollama).getByText("Online", { selector: "span.badge" })).toHaveClass("status-online");
   });
 
-  it("a provider with no requests shows a dash for its latency, not 0 ms", async () => {
+  it("a provider with requests shows no latency the relay never measured", async () => {
+    server.use(http.get("/api/v1/ai/providers", () => HttpResponse.json([{
+      slug: "ollama", name: "ollama", kind: "tunnel", api_format: "openai", service_id: "svc_ai001", base_url: "",
+      upstream_base_url: "", credential_slot: "", credential_present: false, credential_slots: [], breaker_open: false,
+      billing: "metered", supports_responses: false, max_concurrent: 0, in_use: 0, model_count: 0, model_alias: "", concrete_model: "",
+      backend_type: "ollama", api_key_count: 0, requests_24h: 3, cache_hits_24h: 0, latency_p95_ms: 0, status: "Connected", client_session_id: "", state: "online",
+    }])));
     mount();
     const table = await screen.findByRole("table", { name: /providers/i });
-    const zai = within(table).getByRole("link", { name: "zai" }).closest("tr")!;
-    const cells = within(zai).getAllByRole("cell").map((c) => c.textContent);
-    // Requests (24h) is a count: none is 0. A latency of nothing is not a number.
-    expect(cells[3]).toBe("0");
-    expect(cells[4]).toBe("—");
-    expect(table.textContent).not.toMatch(/\b0 ms\b/);
+    const row = within(table).getByRole("link", { name: "ollama" }).closest("tr")!;
+    const cells = within(row).getAllByRole("cell").map((c) => c.textContent ?? "");
+    // Requests (24h) is a count, and it is counted.
+    expect(cells[3]).toBe("3");
+    for (const cell of cells) expect(cell).not.toMatch(/\bms\b/);
   });
 
   it("the cache hit ratio is a dash without requests, and 0% with requests and no hit", async () => {
@@ -161,6 +166,22 @@ describe("Providers page", () => {
     await userEvent.click(within(table).getByRole("button", { name: "More actions for ollama" }));
     await userEvent.click(within(await screen.findByRole("menu")).getByRole("menuitem", { name: "Keys" }));
     expect(await screen.findByTestId("where")).toHaveTextContent("/services/svc_ai001#api-keys");
+  });
+
+  it("Access settings of a tunnel provider leads to the page of its service", async () => {
+    renderApp(
+      <Routes>
+        <Route path="/gateway/providers" element={<Providers />} />
+        <Route path="/services" element={<HashProbe />} />
+        <Route path="/services/:id" element={<HashProbe />} />
+      </Routes>,
+      "/gateway/providers",
+    );
+    const table = await screen.findByRole("table", { name: /providers/i });
+    await userEvent.click(within(table).getByRole("button", { name: "More actions for ollama" }));
+    await userEvent.click(within(await screen.findByRole("menu")).getByRole("menuitem", { name: "Access settings" }));
+    // The page itself, which opens on Access: not the list with a parameter nothing reads.
+    expect(await screen.findByTestId("where")).toHaveTextContent(/^\/services\/svc_ai001$/);
   });
 
   it("a provider whose service holds no API key has no Keys item", async () => {

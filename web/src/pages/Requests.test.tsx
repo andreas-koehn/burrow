@@ -88,6 +88,16 @@ describe("Requests page", () => {
     for (const h of within(t).getAllByRole("columnheader")) expect(h).toHaveAttribute("scope", "col");
   });
 
+  it("says how long ago a request came in, with the exact time on hover", async () => {
+    capture("svc_ai001", [3]);
+    mount();
+    const when = within(await table()).getByText("3 minutes ago");
+    expect(when.tagName).toBe("TIME");
+    expect(new Date(when.getAttribute("datetime")!).getTime()).toBeLessThan(Date.now());
+    // The exact time, in UTC, as every other table writes it.
+    expect(when).toHaveAttribute("title", expect.stringMatching(/^\d{2} \w{3}.*\d{2}:\d{2}/));
+  });
+
   it("opens on all providers", async () => {
     const spy = vi.spyOn(globalThis, "fetch");
     capture("svc_ai001", [1, 3]);
@@ -253,6 +263,8 @@ describe("Requests page", () => {
 
   it("says when filters hide everything and offers to clear them", async () => {
     capture("svc_ai001", [1, 2]);
+    // Capture is on for zai: its list is empty because of the filters, not because nothing is captured.
+    db.aiConfigs["prov-zai"] = { inspector: { enabled: true, max_requests: 100 } } as never;
     mount("/gateway/requests?provider=zai&model=burrow-simple&q=chat");
     expect(await screen.findByText("No requests match these filters.")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Clear filters" }));
@@ -277,6 +289,8 @@ describe("Requests page", () => {
     mount();
     expect(await screen.findByText("No providers yet")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Add a provider" })).toHaveAttribute("href", "/gateway/providers");
+    // Traffic alone does not fill the list: capture is switched on per provider.
+    expect(screen.getByText(/once a provider is set up, receives traffic and has its request inspector switched on\./)).toBeInTheDocument();
     // The page itself stays: heading and all.
     expect(screen.getByRole("heading", { name: /^requests$/i, level: 1 })).toBeInTheDocument();
   });
@@ -402,7 +416,8 @@ describe("Requests page", () => {
     db.inspectorEntries = {};
     mount("/gateway/requests?range=all");
     expect(await screen.findByText("No requests yet")).toBeInTheDocument();
-    expect(screen.getByText("Requests appear here as soon as traffic reaches a provider.")).toBeInTheDocument();
+    // Capture is per provider and off until switched on: the text says so.
+    expect(screen.getByText("Requests appear here as soon as traffic reaches a provider whose request inspector is on.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Show/ })).toBeNull();
   });
 
@@ -438,6 +453,10 @@ describe("Requests page", () => {
 
   it("with all providers, capture that is off for some of them is not the reason given", async () => {
     captureOff("ollama", "zai");
+    // A service without a stored config captures nothing, as on the relay: switched on for the others.
+    for (const p of db.aiProviders) {
+      if (!["ollama", "zai"].includes(p.slug)) db.aiConfigs[p.service_id] = { inspector: { enabled: true, max_requests: 100 } } as never;
+    }
     mount();
     expect(await screen.findByText("No requests in this period")).toBeInTheDocument();
     expect(screen.queryByText(/Request inspector is off/)).toBeNull();

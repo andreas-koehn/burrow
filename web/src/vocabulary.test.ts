@@ -30,6 +30,12 @@ const RETIRED: [RegExp, string][] = [
   // for a model, sending one, using a URL or a key.
   [/\bclients? (can )?asks? for\b|\bclients? sends? as the model\b|\bclients that (ask for|use (it|this (base )?URL))\b|\bmodels for other clients\b|\bclients using this key\b/i, "say app"],
   [/OpenAI-compatible client|Anthropic-compatible client|\b(use|paste|set) (it |this )?in a client\b/i, "say app"],
+  // Calling is what an app does; a client serves. "The client requests …" stays
+  // free: a machine asks the relay for things too.
+  [/\bclients? (calling|that calls?)\b|\brequests? (from|of|by) (a |the |your )?clients?\b/i, "say app"],
+  // An address, a base URL, a provider or a service: each has its own word.
+  // Only as copy: the word is also a field of the gateway's answer and a type.
+  [/\b(copy|same|gateway|subscription|this|an|the|per) endpoints?\b|<endpoint>/i, "say address, base URL, provider or service"],
   [/Rotate cache/i, "removed"],
   [/edit this table in Settings/i, "no such page"],
   // One variable for the key an app sends to the AI gateway.
@@ -189,6 +195,17 @@ describe("the guard itself", () => {
     ["Anthropic-compatible client", "<p>an Anthropic-compatible client</p>"],
     ["use it in a client", "<p>Copy the key and use it in a client.</p>"],
     ["paste this in a client, wrapped", "<p>Paste this in\n  a client.</p>"],
+    ["clients calling", "<p>Clients calling this model get an error.</p>"],
+    ["clients that call, wrapped", "<p>For clients that\n  call the gateway.</p>"],
+    ["a client that calls", 'const s = "A client that calls /openai/v1";'],
+    ["requests from clients", "<p>Requests from clients are counted here.</p>"],
+    ["requests of a client, other case", 'const s = "Requests Of A Client";'],
+    ["copy endpoint", 'aria-label={`Copy endpoint ${host}:${port}`}'],
+    ["the same endpoint", "<p>This replays the captured request through the same endpoint.</p>"],
+    ["gateway endpoints, wrapped", "<p>Covers the gateway\n  endpoints.</p>"],
+    ["subscription endpoint", 'note: "Subscription endpoint. The quota is shared.",'],
+    ["an endpoint as a placeholder", "const cmd = `burrow connect --server <endpoint>`;"],
+    ["this endpoint", "<p>Delete this endpoint?</p>"],
     ["Rotate cache", '{ label: "Rotate cache" }'],
     ["Rotate cache, wrapped", "<button>\n  Rotate\n  cache\n</button>"],
     ["Rotate cache, other case", '{ label: "rotate Cache" }'],
@@ -218,6 +235,10 @@ describe("the guard itself", () => {
     ["the name a client sends", "<p>The name the client sends when it signs in.</p>"],
     ["what a client asks its local server", "<p>Here the client asks the local server for its model list.</p>"],
     ["other clients that are connected", "<p>No other clients are connected.</p>"],
+    ["what a client requests", "<p>The client requests a sign-in, and you approve it here.</p>"],
+    ["endpoints as a field of the gateway's answer", 'const endpoints = gateway.data?.endpoints ?? []; base(endpoints.find((e) => e.dialect === d)); type E = GatewayInfo["endpoints"];'],
+    ["per_endpoint as a value of the wire", '{ value: "per_endpoint", label: "Per-provider" }'],
+    ["endpoint in a class name and a variable", 'const endpoint = ci.data?.server; <div className="ai-endpoint-detail-page">{yamlExample(endpoint)}</div>'],
     ["tunnel as a provider kind", 'const hosted = provider.kind !== "tunnel";'],
     ["tunnels as a query key and a route", 'useQuery({ queryKey: ["tunnels"], queryFn: () => apiFetch<Tunnel[]>("/tunnels") });'],
     ["tunnel as an event of the relay", 'const EVENTS = ["tunnel.connected", "tunnel.failed"]; es.addEventListener("tunnels", onTunnels);'],

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
@@ -10,6 +10,7 @@ import {
 import type { InspectorEntry, Service, ServiceAIConfig } from "@/lib/contract";
 import { withAIConfigDefaults } from "@/lib/aiConfig";
 import { InspectorOffHint } from "@/components/InspectorOffHint";
+import { RelativeTime } from "@/components/RelativeTime";
 import { droppedNames, pairWords } from "@/lib/translation";
 
 function RedactedHeaders({ headers }: { headers: Record<string, string> }) {
@@ -76,6 +77,17 @@ export default function RequestInspector() {
   useEffect(() => {
     if (requestId) setSelected(requestId);
   }, [requestId]);
+
+  // A request opens on a click anywhere in its row, as a service does on the Services list.
+  function openRow(e: MouseEvent<HTMLTableRowElement>, id: string) {
+    if ((e.target as Element).closest("a")) return;
+    // A click with a key held asks for a new tab or window, which only the path's link can open.
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    // Marking a path to copy it ends in a click too.
+    if (window.getSelection()?.toString()) return;
+    setSelected(id);
+    nav(`/gateway/requests/${serviceId}/${id}`);
+  }
 
   const cfg = useQuery({
     queryKey: ["service", serviceId, "ai-config"],
@@ -234,15 +246,19 @@ export default function RequestInspector() {
                   ? <TableEmptyRow colSpan={5} title="No requests yet.">Requests appear here as soon as traffic reaches this service.</TableEmptyRow>
                   : <TableEmptyRow colSpan={5} title="No requests match your search." />)
                 : rows.map((r) => (
-                    <tr
-                      key={r.id}
-                      onClick={() => { setSelected(r.id); nav(`/gateway/requests/${serviceId}/${r.id}`); }}
-                      className="clickable"
-                      aria-selected={selected === r.id}
-                    >
-                      <td className="mono">{r.ts}</td>
+                    // The path is the link, and the one stop for the keyboard: the row adds a bigger target only.
+                    <tr key={r.id} className="clickable" onClick={(e) => openRow(e, r.id)}>
+                      <td><RelativeTime value={r.ts} /></td>
                       <td className="mono">{r.method}</td>
-                      <td className="mono">{r.path}</td>
+                      <td>
+                        <Link
+                          className="mono"
+                          to={`/gateway/requests/${serviceId}/${r.id}`}
+                          aria-current={selected === r.id ? "true" : undefined}
+                        >
+                          {r.path}
+                        </Link>
+                      </td>
                       <td>
                         <Badge nodot kind={`status-${Math.floor(r.status / 100)}xx`}>{r.status}</Badge>
                         {r.translated && <>{" "}<Badge nodot kind="status-idle">translated</Badge></>}
@@ -319,7 +335,7 @@ export default function RequestInspector() {
           </>
         }
       >
-        <p>This replays the captured request through the same endpoint.</p>
+        <p>This sends the captured request again.</p>
       </Dialog>
 
       <Dialog

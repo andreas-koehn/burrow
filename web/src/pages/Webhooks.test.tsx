@@ -9,6 +9,20 @@ function mount() {
 }
 
 describe("Webhooks (§4.26)", () => {
+  it("says how long ago a delivery was made, with the exact time on hover", async () => {
+    mount();
+    const deliveries = await screen.findByRole("table", { name: /webhook deliveries/i });
+    // The rows arrive after the table: until then it holds a loading row.
+    const when = await waitFor(() => {
+      const t = deliveries.querySelector("tbody time");
+      expect(t).not.toBeNull();
+      return t!;
+    });
+    expect(when).toHaveAttribute("datetime", expect.stringMatching(/^2026-05-19T07:00/));
+    expect(when.getAttribute("title")).toMatch(/07:00/);
+    expect(deliveries).not.toHaveTextContent("2026-05-19T07:00");
+  });
+
   beforeEach(() => vi.restoreAllMocks());
 
   it("renders the verbatim HMAC preamble", async () => {

@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { apiFetch, downloadFile, ApiError } from "@/lib/api";
 import { Button, Dialog, EmptyState, PageHeader, SkeletonRows } from "@/components/ds";
 import { formatBytes } from "@/lib/format";
+import { RelativeTime } from "@/components/RelativeTime";
 import type { BackupRow } from "@/lib/contract";
 
 function copy(text: string) {
@@ -92,7 +93,7 @@ export default function BackupRestore() {
               <tbody>
                 {backups.data.map((b) => (
                   <tr key={b.id}>
-                    <td className="mono">{b.taken_at}</td>
+                    <td><RelativeTime value={b.taken_at} /></td>
                     <td className="mono">{formatBytes(b.size_bytes)}</td>
                     <td>{b.version}</td>
                     <td>

@@ -11,7 +11,7 @@ import { Badge, Button, DropdownMenu, EmptyState, ErrorNotice, MetricStrip, Metr
 import { useAuth } from "@/auth/useAuth";
 import { NewProviderDialog } from "@/components/NewProviderDialog";
 import { providerBaseUrl } from "@/lib/serviceUrl";
-import { formatLatency, formatRatio } from "@/lib/format";
+import { formatRatio } from "@/lib/format";
 import { providerKindLabel } from "@/lib/providerPresets";
 import type { AiProvider, CostSummary } from "@/lib/contract";
 
@@ -113,7 +113,7 @@ export default function Providers() {
     <div className="ai-endpoints-page">
       <PageHeader
         title="Providers"
-        subtitle="Model backends served through this relay, each under its own base URL — with cache, cost, and traffic at a glance."
+        subtitle="Model providers served through this relay, each under its own base URL — with cache, cost, and traffic at a glance."
         actions={isAdmin ? (
           <Button variant="primary" size="sm" onClick={() => setNewOpen(true)}>
             New provider
@@ -186,7 +186,6 @@ export default function Providers() {
                 <th>Kind</th>
                 <th>Base URL</th>
                 <th>Requests (24h)</th>
-                <th>Latency p95</th>
                 <th>Status</th>
                 <th className="col-actions" aria-label="Actions"></th>
               </tr>
@@ -222,8 +221,7 @@ export default function Providers() {
                     </span>
                   </td>
                   <td className="mono">{fmtInt(e.requests_24h)}</td>
-                  {/* Without a request there is no latency to state. */}
-                  <td className="mono">{formatLatency(e.latency_p95_ms, e.requests_24h)}</td>
+                  {/* No latency: the relay does not measure it (latency_p95_ms is always 0), as on Requests. */}
                   <td>
                     <StatusBadge state={providerState(e)} />
                   </td>
@@ -253,7 +251,8 @@ export default function Providers() {
                         ...(e.api_key_count > 0
                           ? [{ label: "Keys", onSelect: () => nav(`/services/${e.service_id}#api-keys`) }]
                           : []),
-                        { label: "Access settings", onSelect: () => nav(`/services?focus=${e.service_id}`) },
+                        // The service's page opens on its Access tab.
+                        { label: "Access settings", onSelect: () => nav(`/services/${e.service_id}`) },
                         { label: "Cost", onSelect: () => nav(`/gateway/cost`) },
                       ]}
                     />

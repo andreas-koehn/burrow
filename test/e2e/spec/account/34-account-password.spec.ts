@@ -2,6 +2,7 @@
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
 import { adminHeaders } from "../../fixtures/api";
+import { DASHBOARD_URL } from "../../fixtures/env";
 
 // The `request` fixture carries the admin session (storageState) so we can
 // create/delete the throwaway user via the admin API. The browser logins below
@@ -23,7 +24,7 @@ test("34-account-password: user changes own password via /settings/profile, then
 
   try {
     // --- Context 1: log in as the throwaway user and change the password. ---
-    const ctx1 = await browser.newContext({ baseURL: "http://localhost:8080" });
+    const ctx1 = await browser.newContext({ baseURL: DASHBOARD_URL });
     const p1 = await ctx1.newPage();
     await p1.goto("/login");
     await p1.fill("#login-email", email);
@@ -40,7 +41,7 @@ test("34-account-password: user changes own password via /settings/profile, then
     await ctx1.close();
 
     // --- Context 2: a fresh login must succeed with the NEW password. ---
-    const ctx2 = await browser.newContext({ baseURL: "http://localhost:8080" });
+    const ctx2 = await browser.newContext({ baseURL: DASHBOARD_URL });
     const p2 = await ctx2.newPage();
     await p2.goto("/login");
     await p2.fill("#login-email", email);

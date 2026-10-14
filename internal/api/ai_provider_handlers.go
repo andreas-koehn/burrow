@@ -615,7 +615,7 @@ type putProviderReq struct {
 	// This is how a tunnel provider gets a limit.
 	MaxConcurrent *int `json:"max_concurrent"`
 	// Optional, tunnel providers only: "openai" or "anthropic", the format
-	// the server behind the tunnel speaks. A direct provider has its format
+	// the model server behind the client speaks. A direct provider has its format
 	// among its upstream settings (PUT …/upstream).
 	APIFormat *string `json:"api_format"`
 }

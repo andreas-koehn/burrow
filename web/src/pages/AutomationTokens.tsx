@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Dialog, EmptyState, FormField, FormFieldGroup, Input, PageHeader, Select, SkeletonRows } from "@/components/ds";
+import { RelativeTime } from "@/components/RelativeTime";
 import type { AutomationToken, CreatedAutomationToken } from "@/lib/contract";
 
 const EXPIRY_OPTIONS = [
@@ -83,8 +84,9 @@ export default function AutomationTokens() {
                   <td className="mono">{t.prefix}</td>
                   <td>{t.role_at_mint}</td>
                   <td className="mono">{t.permissions.length} grant(s)</td>
-                  <td className="mono">{t.expires_at ?? "never"}</td>
-                  <td className="mono">{t.last_used ?? "—"}</td>
+                  {/* A day to come is written out; one that has passed says how long ago. */}
+                  <td><RelativeTime value={t.expires_at} empty="never" /></td>
+                  <td><RelativeTime value={t.last_used} /></td>
                   <td className="col-actions">
                     <Button variant="destructive" size="sm" onClick={() => revoke.mutate(t.id)}>Revoke</Button>
                   </td>

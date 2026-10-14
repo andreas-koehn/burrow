@@ -242,8 +242,8 @@ export default function Services() {
   const [nsSlugErr, setNsSlugErr] = useState<string | null>(null);
   const [nsErr, setNsErr] = useState<string | null>(null);
 
-  // A service with its provider is made under Providers; ?new=ai, the old way
-  // in, is sent there (see the return below).
+  // A service with its provider is made under Providers; the old way in, the
+  // parameter new with the value "ai", is sent there (see the return below).
   const toGuidedProvider = searchParams.get("new") === "ai";
 
   // ?new=1 auto-opens the dialog.
@@ -506,7 +506,7 @@ export default function Services() {
                           <button
                             type="button"
                             className="icon-btn"
-                            aria-label={`Copy endpoint ${relayHost}:${t.remote_port}`}
+                            aria-label={`Copy address ${relayHost}:${t.remote_port}`}
                             onClick={() => {
                               void navigator.clipboard?.writeText(`${relayHost}:${t.remote_port}`);
                               toast.success("Copied.");

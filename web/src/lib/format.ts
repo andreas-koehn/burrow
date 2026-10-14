@@ -75,12 +75,6 @@ export function formatRelativeTime(s: string | null | undefined, now: number = D
   return DATE_FORMAT.format(d);
 }
 
-/** A latency in whole milliseconds; "—" when there is nothing to measure. */
-export function formatLatency(ms: number, samples: number): string {
-  if (!Number.isFinite(ms) || !(samples > 0)) return "—";
-  return `${Math.round(ms).toLocaleString("en-US")} ms`;
-}
-
 /** A share in whole percent; "—" when the whole is nothing. A measured zero is "0%". */
 export function formatRatio(part: number, whole: number): string {
   if (!Number.isFinite(part) || !Number.isFinite(whole) || !(whole > 0)) return "—";

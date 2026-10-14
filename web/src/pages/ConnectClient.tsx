@@ -7,7 +7,7 @@ import { Button, PageHeader, ErrorNotice } from "@/components/ds";
 import { useAuth } from "@/auth/useAuth";
 import { InstallLines } from "@/components/InstallLines";
 import { WaitForProvider } from "@/components/WaitForProvider";
-import { CHECKSUMS_HREF, downloadTargets, isCommandName, targetOf } from "@/lib/installSnippets";
+import { CHECKSUMS_HREF, EXAMPLE_TARGET, MODEL_SERVER_PORT, downloadTargets, isCommandName, runTarget } from "@/lib/installSnippets";
 import { KNOWN_CLIENTS_KEY } from "@/lib/useKnownClients";
 import type { AiProvider, ClientView, ClientDiscovery, Service } from "@/lib/contract";
 
@@ -94,7 +94,11 @@ type Served =
   | { state: "none" | "loading" }
   /** Nothing to serve after all: the plain page, and why. */
   | { state: "plain"; note: string }
-  | { state: "service"; name: string; target?: string; providerSlug?: string };
+  /**
+   * `target` is where the run line points; `leftOut` says that the service was
+   * last served from an address that may not stand in a command.
+   */
+  | { state: "service"; name: string; target: string; leftOut: boolean; providerSlug?: string };
 
 function useServed(): Served {
   const [params] = useSearchParams();
@@ -132,10 +136,16 @@ function useServed(): Served {
   if (!isCommandName(svc.name)) {
     return { state: "plain", note: "The name of that service cannot stand in a command: the lines below publish a new service." };
   }
+  // Where it was last served from, when that may stand in a command. Without it a
+  // model server gets the port its provider's page shows, anything else the example.
+  const reported = (svc.local_addr ?? "").trim();
+  const listens = runTarget(reported);
+  const fallback = providerParam !== null || svc.provider_slug ? MODEL_SERVER_PORT : EXAMPLE_TARGET;
   return {
     state: "service",
     name: svc.name,
-    target: targetOf(svc.local_addr ?? ""),
+    target: listens ?? fallback,
+    leftOut: reported !== "" && listens === undefined,
     providerSlug: providerParam ?? undefined,
   };
 }
@@ -193,6 +203,13 @@ export default function ConnectClient() {
       )}
 
       {served.state === "plain" && <p className="muted small">{served.note}</p>}
+      {/* Said, not passed over: the port in the run line is then not where the service was last served from. */}
+      {served.state === "service" && served.leftOut && (
+        <p className="muted small">
+          The address this service was last served from cannot stand in a command. The run line
+          shows port {served.target} instead: put in where the server listens.
+        </p>
+      )}
       {/* While the answer is out no command is shown: it would be the one for some other service. */}
       {served.state !== "loading" && (
         <>

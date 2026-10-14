@@ -28,7 +28,10 @@ export const DEFAULT_AI_CONFIG: ServiceAIConfig = {
   },
   redaction: { enabled: false, redact_for_logs_only: false, rule_ids: [], presidio_enabled: false },
   guardrails: { enabled: false, action: "log_only" },
-  inspector: { enabled: true, max_requests: 100 },
+  // Off, as on the relay: it captures a request only when the stored config
+  // switches the inspector on (internal/aigw/chain.go, captureEntry). A page
+  // that saves this config whole must not switch capture on by the way.
+  inspector: { enabled: false, max_requests: 100 },
   routing: {
     strategy: "single",
     model_alias: "",

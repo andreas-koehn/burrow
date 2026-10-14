@@ -26,6 +26,21 @@ describe("Backup & restore", () => {
     });
   });
 
+  it("says how long ago a backup was taken, with the exact time on hover", async () => {
+    const taken = new Date(Date.now() - 3 * 3_600_000).toISOString();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify([
+        { id: "bk_1", taken_at: taken, version: "v0.9.0", size_bytes: 1024, db_sha256: "ab".repeat(32), path: "/b/bk_1.tar.gz" },
+      ]), { status: 200 }) as Response);
+    mount();
+    const when = within(await screen.findByRole("table", { name: "Backup history" })).getByText("3 hours ago");
+    expect(when.tagName).toBe("TIME");
+    expect(when).toHaveAttribute("datetime", taken);
+    expect(when.getAttribute("title")).not.toBe("3 hours ago");
+    // Not the raw timestamp of the relay.
+    expect(screen.queryByText(taken)).toBeNull();
+  });
+
   it("renders the verbatim disclaimer", async () => {
     mount();
     expect(

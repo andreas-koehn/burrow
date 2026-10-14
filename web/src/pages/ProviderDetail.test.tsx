@@ -331,7 +331,8 @@ describe("Provider detail", () => {
       // It has been offline for long: nothing says that it waits, and nothing spins.
       await screen.findByRole("group", { name: "Run command" });
       expect(screen.queryByText("Waiting for the client…")).toBeNull();
-      expect(client.querySelector(".spinner")).toBeNull();
+      // The second line of the panel is where Online will arrive; until then it holds nothing.
+      expect(within(client).getAllByRole("status")[1]).toBeEmptyDOMElement();
       // The command was run: office-box-1 now serves the backing service.
       const svc = db.services.find((x) => x.id === "svc_llama01")!;
       svc.connected = true;
@@ -345,6 +346,49 @@ describe("Provider detail", () => {
       // The header says the same.
       const header = document.querySelector(".page-header") as HTMLElement;
       expect(within(header).getByText("Online")).toHaveClass("badge", "status-online");
+    }, 15000);
+
+    it("keeps the keyboard in the panel when the provider comes online after Try again", async () => {
+      // The page reads the provider, then the panel asks for its status: that second answer fails.
+      let asked = 0;
+      server.use(http.get("/api/v1/ai/providers/llamacpp", () => {
+        asked++;
+        if (asked === 2) return HttpResponse.json({ error: "boom" }, { status: 500 });
+        return undefined;
+      }));
+      mountAt("/gateway/providers/llamacpp");
+      const client = await panel();
+      const again = await within(client).findByRole("button", { name: "Try again" });
+      // The command was run meanwhile: office-box-1 now serves the backing service.
+      const svc = db.services.find((x) => x.id === "svc_llama01")!;
+      svc.connected = true;
+      db.clients[0]!.services.push({ ...db.clients[0]!.services[1]!, id: "tnl_llama", name: svc.name });
+      db.aiMeta[svc.id] = { ...db.aiMeta["svc_ai001"]!, status: "Connected", client_session_id: "" };
+      await userEvent.click(again);
+      const line = client.querySelector("[role=status]") as HTMLElement;
+      await waitFor(() => expect(line).toHaveTextContent("Online · Served by office-box-1"), { timeout: 8000 });
+      // The lines that held the focus are gone with the command: the panel takes it, not the page.
+      expect(document.body).not.toHaveFocus();
+      expect(within(client).getByRole("heading", { name: "Client" })).toHaveFocus();
+    }, 15000);
+
+    it("turns Offline by itself once the client stops, and shows the command again", async () => {
+      mountAt("/gateway/providers/ollama");
+      const client = await panel();
+      const line = client.querySelector("[role=status]") as HTMLElement;
+      await waitFor(() => expect(line).toHaveTextContent(/^Online · Served by/));
+      expect(run()).toBeNull();
+      // The client was stopped: the relay says so at the next answer.
+      const svc = db.services.find((x) => x.id === "svc_ai001")!;
+      svc.connected = false;
+      svc.last_seen = new Date().toISOString();
+      db.aiMeta[svc.id] = { ...db.aiMeta[svc.id]!, status: "Offline", client_session_id: "" };
+      // The same line, so the change is announced.
+      await waitFor(() => expect(line).toHaveTextContent(/^Offline · last served by office-box-1/), { timeout: 8000 });
+      expect(line).toHaveTextContent("just now");
+      expect(await screen.findByRole("group", { name: "Run command" })).toHaveTextContent(/^burrow http /);
+      const header = document.querySelector(".page-header") as HTMLElement;
+      expect(within(header).getByText("Offline")).toHaveClass("badge", "status-offline");
     }, 15000);
 
     it("a hosted provider has no client panel: Overview says whether its credential is set", async () => {
@@ -392,13 +436,13 @@ describe("Provider detail", () => {
     const cell = (await within(table).findByText("No requests yet")).closest("td")!;
     expect(cell).toHaveClass("table-empty");
     expect(cell.getAttribute("colspan")).toBe("5");
-    expect(within(table).queryByRole("button")).toBeNull();
+    expect(within(table).queryByRole("link")).toBeNull();
   });
 
   it("a table with requests has no empty row", async () => {
     mount();
     const table = await screen.findByRole("table", { name: "Recent requests" });
-    await within(table).findAllByRole("button");
+    await within(table).findAllByRole("link");
     expect(within(table).queryByText("No requests yet")).toBeNull();
   });
 
@@ -429,7 +473,7 @@ describe("Provider detail", () => {
     ];
     mount();
     const table = await screen.findByRole("table", { name: "Recent requests" });
-    const [first, second] = await within(table).findAllByRole("button");
+    const [first, second] = (await within(table).findAllByRole("link")).map((a) => a.closest("tr"));
     const when = first!.querySelector("time")!;
     expect(when).toHaveTextContent("19 May 2026");
     expect(when).toHaveAttribute("title", "19 May 2026, 08:00:00 UTC");
@@ -532,22 +576,45 @@ describe("Provider detail", () => {
     });
   });
 
-  it("recent requests row click navigates to /gateway/requests/:serviceId/:requestId", async () => {
+  it("a recent request is a link to its inspector page, in a row that stays a row", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /recent requests/i });
     // Wait for the rows to populate from the inspector query (the table renders
     // immediately with just a thead row, then fills in).
-    const rows = await within(table).findAllByRole("button");
-    await userEvent.click(rows[0]!);
+    const links = await within(table).findAllByRole("link");
+    expect(links[0]).toHaveAttribute("href", expect.stringMatching(/^\/gateway\/requests\/svc_ai001\/.+/));
+    // A row that was a button hid its cells from a screen reader: it is a row of cells, and nothing in the table is a button.
+    const row = links[0]!.closest("tr")!;
+    expect(row).not.toHaveAttribute("role");
+    expect(row).not.toHaveAttribute("tabindex");
+    expect(within(row).getAllByRole("cell")).toHaveLength(5);
+    expect(within(table).queryByRole("button")).toBeNull();
+    await userEvent.click(links[0]!);
     expect(await screen.findByText("INSPECTOR_PAGE")).toBeInTheDocument();
   });
 
-  it("recent requests row opens with the Space key too", async () => {
+  it("a click anywhere in a recent request's row opens it, a click with a key held does not", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /recent requests/i });
-    const rows = await within(table).findAllByRole("button");
-    rows[0]!.focus();
-    await userEvent.keyboard(" ");
+    const row = (await within(table).findAllByRole("link"))[0]!.closest("tr")!;
+    const status = within(row).getAllByRole("cell")[3]!;
+    // With a key held the click asks for a new tab, which only the link can open.
+    // One user for the three steps: the key that is held belongs to it.
+    const user = userEvent.setup();
+    await user.keyboard("{Control>}");
+    await user.click(status);
+    await user.keyboard("{/Control}");
+    expect(screen.queryByText("INSPECTOR_PAGE")).toBeNull();
+    await user.click(status);
+    expect(await screen.findByText("INSPECTOR_PAGE")).toBeInTheDocument();
+  });
+
+  it("a recent request opens from the keyboard: the link is the stop, Enter follows it", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: /recent requests/i });
+    const links = await within(table).findAllByRole("link");
+    links[0]!.focus();
+    await userEvent.keyboard("{Enter}");
     expect(await screen.findByText("INSPECTOR_PAGE")).toBeInTheDocument();
   });
 
@@ -943,7 +1010,7 @@ describe("Provider detail", () => {
       await userEvent.click(within(screen.getByRole("tabpanel")).getByRole("button", { name: "Edit" }));
       const dialog = await screen.findByRole("dialog");
       const slot = within(dialog).getByLabelText("Credential slot");
-      expect(slot).toHaveAccessibleDescription(/One slot, or up to four separated by commas — tried in order\./);
+      expect(slot).toHaveAccessibleDescription(/Up to four, separated by commas, are tried in order;/);
       await userEvent.type(slot, ", backup");
       expect(slot).toHaveValue("OPENROUTER, BACKUP");
       // Under the field, one line per name: the first is set on the relay, the second is not.

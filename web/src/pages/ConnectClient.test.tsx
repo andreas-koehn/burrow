@@ -355,9 +355,33 @@ describe("Connect a client — for a service or a provider", () => {
   });
 
   it("?service=<id>: a service that was never served gets the example port", async () => {
+    db.services.find((x) => x.id === "svc_graf01")!.local_addr = "";
+    mount("/clients/connect?service=svc_graf01");
+    await screen.findByText(/from this machine\./);
+    expect(lineTexts()[2]).toBe("burrow http 3000 --name grafana");
+    // Nothing was reported, so nothing was left out.
+    expect(screen.queryByText(/cannot stand in a command/)).toBeNull();
+  });
+
+  // The provider's page and the service's page show this port for the same service.
+  it("?service=<id>: a model server that was never served gets the port its provider's page shows", async () => {
     mount("/clients/connect?service=svc_lms001");
     await screen.findByText(/from this machine\./);
-    expect(lineTexts()[2]).toBe("burrow http 3000 --name lmstudio");
+    expect(lineTexts()[2]).toBe("burrow http 11434 --name lmstudio");
+    expect(screen.queryByText(/cannot stand in a command/)).toBeNull();
+  });
+
+  // Real addresses the command does not take: the reader is told that the port shown is not theirs.
+  it.each(["my_host:8000", "[fe80::1%eth0]:8000"])("?service=<id>: says so when the reported address %j is not used", async (reported) => {
+    db.services.find((x) => x.id === "svc_graf01")!.local_addr = reported;
+    mount("/clients/connect?service=svc_graf01");
+    await screen.findByText(/from this machine\./);
+    expect(lineTexts()[2]).toBe("burrow http 3000 --name grafana");
+    expect(screen.getByText(/cannot stand in a command/)).toHaveTextContent(
+      "The address this service was last served from cannot stand in a command. The run line shows port 3000 instead: put in where the server listens.",
+    );
+    // What was reported is not repeated on the page.
+    expect(document.body.textContent).not.toContain(reported);
   });
 
   it("?service=<id>: an address on another host is kept whole", async () => {
@@ -379,11 +403,13 @@ describe("Connect a client — for a service or a provider", () => {
       await userEvent.click(screen.getByRole("radio", { name: os }));
       expect(screen.getByRole("radio", { name: os })).toHaveAttribute("aria-checked", "true");
       const run = lineTexts()[2]!;
-      expect(run, os).toBe("burrow http 3000 --name ollama");
+      // ollama backs a provider: the port of a model server stands in for the address.
+      expect(run, os).toBe("burrow http 11434 --name ollama");
       // Nothing a shell would act on: no quote, separator, pipe, substitution or blank beyond the plain words.
       expect(run, os).toMatch(/^burrow http [A-Za-z0-9.:-]+ --name [a-z0-9][a-z0-9_-]*$/);
       expect(document.querySelector(".install-lines")!.textContent, os).not.toContain("calc");
     }
+    expect(screen.getByText(/cannot stand in a command/)).toHaveTextContent("The run line shows port 11434 instead");
   });
 
   it("?service=<id>: a name that begins with a hyphen is not put into the command as a flag", async () => {
@@ -428,7 +454,8 @@ describe("Connect a client — for a service or a provider", () => {
     mount("/clients/connect?provider=llamacpp");
     const intro = await screen.findByText(/from this machine\./);
     expect(intro).toHaveTextContent("Serve llamacpp from this machine.");
-    expect(lineTexts()[2]).toBe("burrow http 3000 --name llamacpp");
+    // The same line as on the provider's page, which links here.
+    expect(lineTexts()[2]).toBe("burrow http 11434 --name llamacpp");
     const waiting = await screen.findByText("Waiting for the client…");
     const status = waiting.closest("[role=status]") as HTMLElement;
     expect(status).not.toBeNull();

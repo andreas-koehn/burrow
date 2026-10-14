@@ -178,7 +178,7 @@ describe("New provider dialog", () => {
     expect(screen.queryByText(/BURROW_UPSTREAM_KEY_OPENROUTER/)).toBeNull();
     expect(screen.getByLabelText("API format")).toHaveTextContent("OpenAI");
     // A slot that exists can still be empty; the field says what counts.
-    expect(screen.getByLabelText("Credential slot")).toHaveAccessibleDescription(/must be set to a non-empty value/);
+    expect(screen.getByLabelText("Credential slot")).toHaveAccessibleDescription(/each must hold a non-empty key/);
     // OpenRouter documents POST /responses: the preset ticks the box.
     expect(screen.getByRole("checkbox", { name: RESPONSES })).toBeChecked();
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
@@ -299,7 +299,7 @@ describe("New provider dialog", () => {
     // The variable's name can be copied as it stands.
     expect(screen.getByRole("button", { name: "Copy BURROW_UPSTREAM_KEY_ZAI" })).toBeInTheDocument();
     // What the key has to be is said with the field.
-    expect(screen.getByLabelText("Credential slot")).toHaveAccessibleDescription(/must be set to a non-empty value/);
+    expect(screen.getByLabelText("Credential slot")).toHaveAccessibleDescription(/each must hold a non-empty key/);
     expect(screen.getByText("You can create the provider now. It shows as Not configured until the key is set.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create" })).toBeEnabled();
   });
@@ -315,7 +315,7 @@ describe("New provider dialog", () => {
     await hosted();
     await choosePreset("z.ai — Coding Plan");
     const slot = screen.getByLabelText("Credential slot");
-    expect(slot).toHaveAccessibleDescription(/One slot, or up to four separated by commas — tried in order\./);
+    expect(slot).toHaveAccessibleDescription(/Up to four, separated by commas, are tried in order;/);
     await userEvent.clear(slot);
     await userEvent.type(slot, "zai, zai2");
     expect(slot).toHaveValue("ZAI, ZAI2");

@@ -50,12 +50,24 @@ describe("installLines", () => {
       expect(isTarget(target)).toBe(true);
     });
 
+  it("takes a host name of the greatest length there is, and none beyond it", () => {
+    expect(isTarget(`${"a".repeat(253)}:80`)).toBe(true);
+    expect(isTarget(`${"a".repeat(254)}:80`)).toBe(false);
+    // Brackets and all: 253 characters, then 255.
+    expect(isTarget(`[${"1:".repeat(125)}1]:80`)).toBe(true);
+    expect(isTarget(`[${"1:".repeat(126)}1]:80`)).toBe(false);
+  });
+
   // The address a service was last served from is what its client reported:
   // the relay does not check it, and the line is pasted into a shell.
   describe.each(EVERY_OS)("%s: a target that is not a port or host:port", (os) => {
     it.each([
       "x';calc;'y:80", "x;calc:80", "x`calc`:80", "$(calc):80", "x|calc:80", "x&calc:80", "a b:80", "x\"y:80", "x\ny:80",
       "http://x:80", "x:80/path", "-x:80", "x-:80", "[::1;calc]:80", "[::1]", "x:", ":80", "x:0", "x:65536", "x:123456", "0", "", "host",
+      // A host with an underscore and an IPv6 zone id are real addresses, and still not let through.
+      "my_host:80", "[fe80::1%eth0]:80",
+      // Longer than any host name.
+      `${"a".repeat(254)}:80`,
     ])("%j never reaches the command", (target) => {
       expect(isTarget(target)).toBe(false);
       const { run } = installLines(os, "https://b.example.com", target, "ollama");

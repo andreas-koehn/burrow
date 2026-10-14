@@ -39,10 +39,14 @@ export function isCommandName(name: string | undefined): name is string {
  * may reach a command: the value can come from a client's own report, and the
  * line is pasted into a POSIX shell or into PowerShell, which quote differently.
  */
+const MAX_HOST_LENGTH = 253;
+
 export function isTarget(value: string): boolean {
-  const m = /^(?:(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\]):)?(\d{1,5})$/.exec(value);
+  const m = /^(?:([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\]):)?(\d{1,5})$/.exec(value);
   if (!m) return false;
-  const port = Number(m[1]);
+  // No host name is longer than this (RFC 1035): what is longer is not one.
+  if ((m[1]?.length ?? 0) > MAX_HOST_LENGTH) return false;
+  const port = Number(m[2]);
   return port >= 1 && port <= 65535;
 }
 
@@ -67,7 +71,7 @@ export function runTarget(localAddr: string | undefined, fallback?: string): str
 }
 
 /** What the run line publishes when it is given nothing it can use. */
-const EXAMPLE_TARGET = "3000";
+export const EXAMPLE_TARGET = "3000";
 
 /**
  * The three lines that bring a machine online. `relayOrigin` is the address

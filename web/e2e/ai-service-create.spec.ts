@@ -24,7 +24,8 @@ test("P5: /services?new=ai, the old way in, leads to New provider on the guided 
   const dialog = page.getByRole("dialog", { name: "New provider" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("radio", { name: "A model server on one of my machines" })).toBeChecked();
-  await expect(dialog.getByLabel("Model server")).toBeVisible();
+  // Exact: the choice above it is named "A model server on one of my machines".
+  await expect(dialog.getByLabel("Model server", { exact: true })).toBeVisible();
 
   // Nothing about a service's access is asked: the dialog sets it.
   await expect(dialog.getByRole("combobox", { name: /access mode/i })).toHaveCount(0);

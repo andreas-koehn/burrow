@@ -19,7 +19,10 @@ services:
       - ./certs:/certs:ro
     ports:
       - "9001-9004:9001-9004"      # tcp tunnels (ai=9001, tcp=9002, multi-a=9003, multi-b=9004)
-      - "8080:8080"                # dashboard (plain HTTP under --dev-certs)
+      # dashboard (plain HTTP under --dev-certs). The host port can be moved
+      # with BURROW_E2E_DASHBOARD_PORT where 8080 is taken; test/e2e reads the
+      # same variable (fixtures/env.ts).
+      - "${BURROW_E2E_DASHBOARD_PORT:-8080}:8080"
       - "8443:8443"                # HTTPS proxy ingress (wildcard cert)
       - "7800:7800"                # MCP (v0.4)
     networks:

@@ -296,7 +296,7 @@ For a full description of all access modes (`open`, `api_key`, `burrow_login`,
 
 ## (D) Model providers at `/ai/<provider>/v1`
 
-A provider is a model backend with its own base URL,
+A provider serves models under its own base URL,
 `https://<auth_domain>/ai/<provider>/v1`, which any OpenAI-compatible app
 can use with a gateway key. Providers are managed in the dashboard under
 **AI Gateway → Providers**.
@@ -313,8 +313,12 @@ Errors that Burrow produces under `/ai/` are JSON of the form
 is the upstream's own status, headers and body, with `Burrow-Request-Id` and
 `Burrow-Provider` added.
 
-- Requests under `/ai/` are recorded as usage events and in the inspector.
-  They write no connection-log rows.
+- Requests under `/ai/` are recorded as usage events. The request inspector
+  (**AI Gateway → Requests**) captures them only for a provider whose service
+  has it switched on: the dashboard has no switch for this yet, so set
+  `inspector.enabled` to `true` with `PUT /api/v1/services/<id>/ai-config`,
+  sending the current configuration with that field changed. They write no
+  connection-log rows.
 - The IP / geo policy of the provider's backing service applies to `/ai/`
   requests and is checked before the gateway key.
 
@@ -332,6 +336,12 @@ burrow http 11434 --name <name>
 
 The dialog waits and turns to **Online** once a client serves the provider. It
 can be closed before that; the provider's page shows the state.
+
+Once it is online the dialog offers **Create a model** and **Create a gateway
+key**, both filled in for this provider. Apps send the gateway key. A model
+is a name of your own that apps ask for on the gateway's base URLs
+(`/openai/v1` and `/anthropic`, shown in full on the **AI Gateway** overview)
+instead of the provider's.
 
 To use a service that already exists, follow section (C) to expose the model
 server with the `api_key` access mode, then choose **Use a service that already

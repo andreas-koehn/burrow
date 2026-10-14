@@ -8,6 +8,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"   # test/e2e -> repo root
 cd "$REPO_ROOT"
 COMPOSE="test/harness/compose.full.yml"
 DIR="test/e2e"
+# Where the dashboard is published on this host; the compose file and
+# test/e2e/fixtures/env.ts read the same variable.
+export BURROW_E2E_DASHBOARD_PORT="${BURROW_E2E_DASHBOARD_PORT:-8080}"
 
 teardown() { echo "[e2e:run] tearing down"; cd "$REPO_ROOT"; docker compose -f "$COMPOSE" down --volumes || true; }
 trap teardown EXIT
@@ -16,7 +19,7 @@ echo "[e2e:run] building + starting full stack (--wait)"
 docker compose -f "$COMPOSE" up -d --build --wait
 
 echo "[e2e:run] sanity: dashboard + 3 TCP tunnels"
-curl -fsS http://localhost:8080/healthz >/dev/null
+curl -fsS "http://localhost:${BURROW_E2E_DASHBOARD_PORT}/healthz" >/dev/null
 for port in 9002 9003 9004; do
   for attempt in $(seq 1 60); do
     if curl -fsS -m 2 -o /dev/null "http://localhost:${port}/healthz"; then break; fi

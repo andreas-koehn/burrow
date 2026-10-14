@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { KNOWN_CLIENTS_KEY } from "@/lib/useKnownClients";
@@ -31,7 +31,11 @@ describe("WaitForProvider", () => {
     const waiting = await screen.findByText("Waiting for the client…");
     const status = waiting.closest("[role=status]") as HTMLElement;
     expect(status).not.toBeNull();
-    expect(status.querySelector(".spinner")).toHaveAttribute("aria-hidden", "true");
+    // What turns beside the words is decoration: the words alone are announced.
+    expect(status).toHaveTextContent(/^Waiting for the client…$/);
+    for (const el of status.querySelectorAll("*")) {
+      if (el.textContent === "") expect(el).toHaveAttribute("aria-hidden", "true");
+    }
     // What comes next is not offered before there is something to use.
     expect(screen.queryByText("NEXT_STEPS")).toBeNull();
     await waitFor(() => expect(within(status).getByText("Online")).toBeInTheDocument(), { timeout: 8000 });
@@ -103,11 +107,64 @@ describe("WaitForProvider", () => {
     const again = screen.getByRole("button", { name: "Try again" });
     expect(again.closest("[role=status]")).toBeNull();
     await userEvent.click(again);
-    expect(await screen.findByText("Waiting for the client…")).toBeInTheDocument();
+    const waiting = await screen.findByText("Waiting for the client…");
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    // The button is gone with the failure: the keyboard is on the line that now waits, not on the page.
+    expect(waiting.closest("[role=status]")).toHaveFocus();
+    expect(document.body).not.toHaveFocus();
     // Not one answer only: the next one comes by itself.
     await screen.findByText("Online", undefined, { timeout: 6000 });
     expect(asked).toBe(3);
+  }, 15000);
+
+  it("quiet: after Try again the line that took the focus stays in sight and gives the answer", async () => {
+    let asked = 0;
+    server.use(http.get("/api/v1/ai/providers/ollama", async () => {
+      asked++;
+      if (asked === 1) return HttpResponse.json({ error: "boom" }, { status: 500 });
+      // As over a network: an answer takes a moment, so a question asked again is seen to be out.
+      if (asked > 2) await delay(150);
+      return HttpResponse.json({ slug: "ollama", name: "Ollama", kind: "tunnel", api_format: "openai", service_id: "ollama", status: "Offline", state: "offline", model_count: 0 });
+    }));
+    renderApp(<WaitForProvider slug="ollama" quiet><p>NEXT_STEPS</p></WaitForProvider>, "/gateway/providers/ollama");
+    await userEvent.click(await screen.findByRole("button", { name: "Try again" }));
+    const line = screen.getByRole("status");
+    expect(line).toHaveFocus();
+    // Asked for, so answered: the line the keyboard is on is not hidden.
+    await waitFor(() => expect(line).toHaveTextContent("Still offline."));
+    expect(line.closest(".visually-hidden")).toBeNull();
+    expect(line).toHaveFocus();
+    // The asking goes on every two seconds; what the line says does not change with it.
+    const said: string[] = [];
+    // Every text that was put into the line, not what it holds by the time the observer runs.
+    const seen = new MutationObserver((records) => {
+      for (const r of records) {
+        // A text node changed in place: what it held before is the one thing that is certain.
+        if (r.type === "characterData") said.push(r.oldValue ?? "");
+        for (const n of r.addedNodes) said.push(n.textContent ?? "");
+      }
+    });
+    seen.observe(line, { childList: true, subtree: true, characterData: true, characterDataOldValue: true });
+    const before = asked;
+    await waitFor(() => expect(asked).toBeGreaterThanOrEqual(before + 2), { timeout: 6000 });
+    seen.disconnect();
+    expect(said.filter((t) => t !== "Still offline.")).toEqual([]);
+  }, 15000);
+
+  it("quiet: when the provider comes online after Try again, the focused line says so instead of hiding", async () => {
+    let asked = 0;
+    server.use(http.get("/api/v1/ai/providers/ollama", () => {
+      asked++;
+      if (asked === 1) return HttpResponse.json({ error: "boom" }, { status: 500 });
+      return HttpResponse.json({ slug: "ollama", name: "Ollama", kind: "tunnel", api_format: "openai", service_id: "ollama", status: "Offline", state: asked >= 3 ? "online" : "offline", model_count: 1 });
+    }));
+    renderApp(<WaitForProvider slug="ollama" quiet><p>NEXT_STEPS</p></WaitForProvider>, "/gateway/providers/ollama");
+    await userEvent.click(await screen.findByRole("button", { name: "Try again" }));
+    const line = screen.getByRole("status");
+    await waitFor(() => expect(line).toHaveTextContent("Online"), { timeout: 6000 });
+    expect(line.closest(".visually-hidden")).toBeNull();
+    expect(line).toHaveFocus();
+    expect(screen.getByText("NEXT_STEPS")).toBeInTheDocument();
   }, 15000);
 
   it("says what it is given when the status cannot be read", async () => {
@@ -122,8 +179,8 @@ describe("WaitForProvider", () => {
     const feed = statusFeed("ollama", [{ state: "offline" }, { state: "online", model_count: 3 }]);
     renderApp(<WaitForProvider slug="ollama" quiet><p>NEXT_STEPS</p></WaitForProvider>, "/gateway/providers/ollama");
     await waitFor(() => expect(feed.asked).toBe(1));
-    expect(screen.queryByText("Waiting for the client…")).toBeNull();
-    expect(document.querySelector(".spinner")).toBeNull();
+    // The line is there for what may arrive in it, and holds nothing: no words, nothing that turns.
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
     expect(await screen.findByText("NEXT_STEPS", undefined, { timeout: 6000 })).toBeInTheDocument();
     // Whoever is handed over to says that it is online: no second line here.
     expect(screen.queryByText("Online")).toBeNull();

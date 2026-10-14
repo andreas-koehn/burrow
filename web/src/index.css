@@ -2791,6 +2791,12 @@ button.metric-tile-link {
 .filter-label select.input {
   font-size: 13px;
 }
+/* The search box keeps a width it can be typed in: with less room the row
+   wraps and the box takes a line of its own. Without this a picker made wide
+   by one long name squeezed it down to its padding. */
+.filter-row > .fill-rest { min-width: 12rem; }
+/* A picker is as wide as its longest name, up to a point; its list shows every name in full. */
+.filter-label select.input { max-width: 16rem; text-overflow: ellipsis; }
 
 /* ──────────────────────────────────────────────────────────────
    Load-more row — centered pagination / load-more button row

@@ -104,9 +104,9 @@ export default function ServiceDetail() {
         <PageHeader back={BACK} title="Service" />
         <ErrorNotice
           action={
-            <button type="button" onClick={() => void refetch()}>
+            <Button variant="secondary" size="sm" onClick={() => void refetch()}>
               Retry
-            </button>
+            </Button>
           }
         >
           {error instanceof ApiError ? error.message : "Couldn't load service."}

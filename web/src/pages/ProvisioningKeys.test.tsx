@@ -9,6 +9,18 @@ function mount() {
 }
 
 describe("Provisioning keys (§4.28)", () => {
+  it("writes when a key was made and last used, and when a machine was first seen, as every table does", async () => {
+    mount();
+    const active = await screen.findByRole("table", { name: /active provisioning keys/i });
+    const row = within(active).getByText("fleet").closest("tr")!;
+    const times = [...row.querySelectorAll("time")];
+    expect(times.map((t) => t.getAttribute("datetime"))).toEqual(["2026-04-01T08:00:00Z", "2026-05-15T09:00:00Z"]);
+    for (const t of times) expect(t.getAttribute("title")).toMatch(/\d{2}:\d{2}:\d{2}/);
+    const pending = screen.getByRole("table", { name: /pending approvals/i });
+    expect(within(pending).getByText("node-1.lan").closest("tr")!.querySelector("time")).toHaveAttribute("datetime", "2026-05-19T07:30:00Z");
+    expect(document.body).not.toHaveTextContent("2026-04-01T08:00:00Z");
+  });
+
   it("renders Active provisioning keys + Pending approvals sections", async () => {
     mount();
     expect(await screen.findByRole("table", { name: /active provisioning keys/i })).toBeInTheDocument();

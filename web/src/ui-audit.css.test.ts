@@ -69,6 +69,16 @@ describe("T10 — type hierarchy and rhythm", () => {
   });
 });
 
+describe("filter bar", () => {
+  // A service picker made wide by one long name left the Filter box of Traffic 31px wide at 1280px.
+  it("the search box keeps a width it can be typed in, and a picker does not grow without end", () => {
+    expect(css).toMatch(/\.filter-row > \.fill-rest\s*\{[^}]*min-width:\s*12rem/);
+    expect(css).toMatch(/\.filter-label select\.input\s*\{[^}]*max-width:\s*16rem/);
+    // Wrapping is what gives the box its line when the row is full.
+    expect(css).toMatch(/\.filter-row\s*\{[^}]*flex-wrap:\s*wrap/);
+  });
+});
+
 describe("T11 — shell", () => {
   it("content area may grow to 1440px", () => {
     expect(css).toMatch(/\.shell-content\s*\{[^}]*max-width:\s*1440px/);
@@ -356,7 +366,8 @@ describe("type size", () => {
     });
     /** Every <td whose className, a literal or an expression, names the class small. */
     const smallCells = (src: string) =>
-      [...src.matchAll(/<td\b[^>]*?\bclassName=(?:"([^"]*)"|\{([^}]*)\})/g)]
+      // The arrow of a handler in the tag (onClick={() => …}) does not end the tag.
+      [...src.matchAll(/<td\b(?:=>|[^>])*?\bclassName=(?:"([^"]*)"|\{([^}]*)\})/g)]
         .filter((m) => /(?:^|[\s"'`])small(?:$|[\s"'`])/.test(m[1] ?? m[2] ?? ""))
         .map((m) => m[0]);
     const sources = walk(__dirname).filter((p) => /\.tsx$/.test(p) && !/\.test\.tsx$/.test(p));
@@ -371,6 +382,11 @@ describe("type size", () => {
       expect(smallCells('<td\n  className="col-traffic small"\n>x</td>')).toHaveLength(1);
       expect(smallCells('<td className={open ? "small" : "mono"}>x</td>')).toHaveLength(1);
       expect(smallCells('<td className={cx("mono", dim && "small")}>x</td>')).toHaveLength(1);
+      // Behind a handler written as an arrow function.
+      expect(smallCells('<td onClick={() => open(row)} className="small">x</td>')).toHaveLength(1);
+      expect(smallCells('<td onClick={(e) => { if (a) b(e); }} className={on ? "small" : ""}>x</td>')).toHaveLength(1);
+      // The arrow does not carry the search into the next cell.
+      expect(smallCells('<td onClick={() => open(row)}>x</td><td className="mono">y</td>')).toEqual([]);
       // In a cell, on something else: help text under a value may be small.
       expect(smallCells('<td className="mono"><span className="muted small">x</span></td>')).toEqual([]);
       expect(smallCells('<td className="col-smallest">x</td><p className="small">y</p>')).toEqual([]);

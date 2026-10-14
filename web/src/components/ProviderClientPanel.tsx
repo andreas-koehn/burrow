@@ -59,9 +59,24 @@ export function ProviderClientPanel({ provider, service, isAdmin, onOnline }: Pr
   const allLines = never && !hasClient;
   const connect = `/clients/connect?provider=${encodeURIComponent(provider.slug)}`;
 
+  // Online, the command and the line that waited go away. Where the keyboard was in them
+  // (on "Try again", or the line it handed the focus to), the panel's heading takes it.
+  const heading = useRef<HTMLHeadingElement>(null);
+  const focusInside = useRef(false);
+  useEffect(() => {
+    if (online && focusInside.current && document.activeElement === document.body) heading.current?.focus();
+  }, [online]);
+
   return (
-    <section className="card col gap-2" aria-labelledby={titleId}>
-      <h2 id={titleId}>Client</h2>
+    <section
+      className="card col gap-2"
+      aria-labelledby={titleId}
+      // A focused element that is removed sends no blur, so the panel still counts as holding the
+      // keyboard then; a blur to anywhere else, also to nowhere (a click on the page), does not.
+      onFocus={() => { focusInside.current = true; }}
+      onBlur={(e) => { focusInside.current = e.relatedTarget !== null && e.currentTarget.contains(e.relatedTarget); }}
+    >
+      <h2 id={titleId} ref={heading} tabIndex={-1}>Client</h2>
       <ServedBy state={online ? "online" : never ? "never_connected" : "offline"} client={client} sessionId={session} lastSeen={lastSeen} />
       {!online && !isCommandName(service.name) && (
         <p className="muted small">

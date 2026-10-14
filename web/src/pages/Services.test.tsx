@@ -993,7 +993,7 @@ describe("Services page — All | Online", () => {
     expect(within(row).getByText("127.0.0.1:3000")).toBeInTheDocument();
     expect(within(row).queryByRole("button", { name: /copy url/i })).toBeNull();
     expect(within(row).queryByRole("button", { name: /configure/i })).toBeNull();
-    await userEvent.click(await within(row).findByRole("button", { name: "Copy endpoint relay.example.com:9000" }));
+    await userEvent.click(await within(row).findByRole("button", { name: "Copy address relay.example.com:9000" }));
     expect(writeText).toHaveBeenCalledWith("relay.example.com:9000");
   });
 

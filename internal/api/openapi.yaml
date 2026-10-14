@@ -3642,7 +3642,7 @@ paths:
                 api_format:
                   type: string
                   enum: [openai, anthropic]
-                  description: Optional, tunnel providers only. The API format the server behind the tunnel speaks.
+                  description: Optional, tunnel providers only. The API format the model server behind the client speaks.
       responses:
         '200':
           description: Provider updated.

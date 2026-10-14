@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatBytes, formatLatency, formatRatio, formatRelativeTime, formatTimestamp } from "./format";
+import { formatBytes, formatRatio, formatRelativeTime, formatTimestamp } from "./format";
 
 describe("formatBytes", () => {
   it("returns '0 B' for 0", () => {
@@ -66,26 +66,17 @@ describe("formatTimestamp locale", () => {
   });
 });
 
-describe("formatLatency and formatRatio", () => {
+describe("formatRatio", () => {
   it("no samples is a dash", () => {
-    expect(formatLatency(0, 0)).toBe("—");
     expect(formatRatio(0, 0)).toBe("—");
   });
   it("a measured zero is a zero", () => expect(formatRatio(0, 10)).toBe("0%"));
-  it("writes a measured latency in whole milliseconds, with thousands grouped", () => {
-    expect(formatLatency(123, 4)).toBe("123 ms");
-    expect(formatLatency(1234.4, 1)).toBe("1,234 ms");
-    // A measured zero is a zero here too.
-    expect(formatLatency(0, 3)).toBe("0 ms");
-  });
   it("rounds a share to whole percent", () => {
     expect(formatRatio(42, 100)).toBe("42%");
     expect(formatRatio(1, 3)).toBe("33%");
     expect(formatRatio(10, 10)).toBe("100%");
   });
   it("is a dash for a count or a figure that is no number", () => {
-    expect(formatLatency(NaN, 3)).toBe("—");
-    expect(formatLatency(12, -1)).toBe("—");
     expect(formatRatio(NaN, 10)).toBe("—");
     expect(formatRatio(1, NaN)).toBe("—");
   });

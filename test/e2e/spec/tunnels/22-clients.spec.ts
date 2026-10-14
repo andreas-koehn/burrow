@@ -7,12 +7,15 @@ test("22-clients: all 3 seeded clients visible + connected", async ({ page }) =>
   await page.goto("/clients");
   await expect(page.getByRole("heading", { name: "Clients" })).toBeVisible();
 
-  const table = page.locator('table[aria-label="Clients"]');
+  // Clients lists every token, also one that never connected. The relay's entrypoint mints
+  // e2e-ai, e2e-multi and e2e-tcp at every start, so after spec 20 restarted it each name
+  // has a second row, Never connected, beside the one the running client uses.
+  const table = page.getByRole("table", { name: "Clients" });
   for (const name of ["e2e-ai", "e2e-multi", "e2e-tcp"]) {
-    const row = table.locator("tr").filter({ hasText: name });
-    await expect(row, `${name} row visible`).toBeVisible({ timeout: 10_000 });
+    const rows = table.getByRole("row").filter({ hasText: name });
+    await expect(rows.first(), `${name} row visible`).toBeVisible({ timeout: 10_000 });
     await expect(
-      row.getByText("Online", { exact: true }),
+      rows.filter({ hasText: "Online" }).getByText("Online", { exact: true }),
       `${name} online`,
     ).toBeVisible({ timeout: 10_000 });
   }

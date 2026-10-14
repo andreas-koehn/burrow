@@ -206,6 +206,14 @@ func bootGatewayE2E(t *testing.T) *gwEnv {
 // control server's tunnel registry.
 func bootGatewayE2EWith(t *testing.T, tunnels tunnelStreamOpener) *gwEnv {
 	t.Helper()
+	return bootGatewayE2EDeps(t, tunnels, nil)
+}
+
+// bootGatewayE2EDeps is bootGatewayE2EWith with a say in the wiring: more runs
+// just before the router is built and may change what it is built from (a
+// test with a real control server hands its client list in here).
+func bootGatewayE2EDeps(t *testing.T, tunnels tunnelStreamOpener, more func(st *store.Store, v04 *v04Stack, deps *api.Deps)) *gwEnv {
+	t.Helper()
 	// The vault reads the environment once, when it is built.
 	t.Setenv("BURROW_UPSTREAM_KEY_ALPHA", gwAlphaSecret)
 	t.Setenv("BURROW_UPSTREAM_KEY_BETA", gwBetaSecret)
@@ -260,7 +268,7 @@ func bootGatewayE2EWith(t *testing.T, tunnels tunnelStreamOpener) *gwEnv {
 		Log:        log,
 	})
 
-	srv := httptest.NewServer(api.NewRouter(api.Deps{
+	deps := api.Deps{
 		Users: st, Roles: st, Sessions: st, Settings: st,
 		Clients: noopClientLister{}, AccessModes: st, DB: sqldb, Services: st, Log: log,
 		AuditEvents: wrapped, AuditChain: api.NewAuditChainAdapter(v04.AuditLogger), AuditAppender: v04.AuditAppender,
@@ -273,7 +281,11 @@ func bootGatewayE2EWith(t *testing.T, tunnels tunnelStreamOpener) *gwEnv {
 		Budgets: wrapped, CostEngine: v04.CostEngine, AIMetrics: wrapped,
 		Bearer: api.NewStoreBearerStore(st), Automation: st,
 		ServiceAIConfigs: wrapped, CredentialVault: v05.CredVault, CredentialDB: wrapped, CredentialServices: wrapped,
-	}))
+	}
+	if more != nil {
+		more(st, v04, &deps)
+	}
+	srv := httptest.NewServer(api.NewRouter(deps))
 	t.Cleanup(srv.Close)
 
 	jar, _ := cookiejar.New(nil)

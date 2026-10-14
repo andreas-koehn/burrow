@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Checkbox, Dialog, DropdownMenu, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows, TableEmptyRow } from "@/components/ds";
+import { RelativeTime } from "@/components/RelativeTime";
 import { WebhookTemplateEditor } from "@/components/WebhookTemplateEditor";
 import type { WebhookTemplateEditorValue } from "@/components/WebhookTemplateEditor";
 import type { CreatedWebhook, Webhook, WebhookDelivery } from "@/lib/contract";
@@ -287,7 +288,7 @@ export default function Webhooks() {
               ) : (
                 deliveries.data.map((d) => (
                   <tr key={d.id}>
-                    <td className="mono">{d.ts}</td>
+                    <td><RelativeTime value={d.ts} /></td>
                     <td className="mono">{d.event}</td>
                     <td className="mono">{d.status_code}</td>
                     <td className="mono">{d.latency_ms} ms</td>

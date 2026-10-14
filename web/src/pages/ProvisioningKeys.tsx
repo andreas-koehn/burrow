@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Dialog, EmptyState, ErrorNotice, Input, PageHeader, Select, SkeletonRows } from "@/components/ds";
+import { RelativeTime } from "@/components/RelativeTime";
 import type { ProvisioningKey, ProvisioningPending } from "@/lib/contract";
 
 interface CreatedProvisioningKey {
@@ -110,8 +111,8 @@ export default function ProvisioningKeys() {
                     <td className="mono">{k.prefix}</td>
                     <td><Badge nodot kind={`scope-${k.scope}`}>{k.scope}</Badge></td>
                     <td>{k.default_role}</td>
-                    <td className="mono">{k.created_at}</td>
-                    <td className="mono">{k.last_used ?? "—"}</td>
+                    <td><RelativeTime value={k.created_at} /></td>
+                    <td><RelativeTime value={k.last_used} empty="never" /></td>
                     <td className="col-actions">
                       <Button variant="destructive" size="sm" onClick={() => remove.mutate(k.id)}>Revoke</Button>
                     </td>
@@ -146,7 +147,7 @@ export default function ProvisioningKeys() {
                     <td className="mono">{p.os}/{p.arch}</td>
                     <td className="mono">{p.remote_ip}</td>
                     <td className="mono">{p.provisioning_key_id}</td>
-                    <td className="mono">{p.first_seen}</td>
+                    <td><RelativeTime value={p.first_seen} /></td>
                     <td className="col-actions">
                       <Button variant="primary" size="sm" onClick={() => approve.mutate(p.id)}>Approve</Button>
                       {" "}
@@ -205,7 +206,7 @@ export default function ProvisioningKeys() {
           </button>
         </div>
         <h4>Install on a new client</h4>
-        <pre className="mono small">{`burrow connect --server <endpoint> --provisioning-key ${created?.plaintext ?? ""}`}</pre>
+        <pre className="mono small">{`burrow connect --server <relay-host:port> --provisioning-key ${created?.plaintext ?? ""}`}</pre>
       </Dialog>
       <Toaster />
     </div>

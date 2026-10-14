@@ -159,6 +159,39 @@ describe("Gateway keys page", () => {
     expect(screen.getByTestId("location").textContent).toBe("/gateway/keys");
   });
 
+  // The guided provider offers "Create a model", then "Create a gateway key": the key must work with that model on /openai/v1.
+  it("?new=1&provider=<slug> also ticks the models that are served by that provider alone", async () => {
+    let posted: Record<string, unknown> | null = null;
+    server.use(http.post("/api/v1/ai/keys", async ({ request }) => {
+      posted = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ id: "gk9", name: "app", key: "bgw_" + "y".repeat(43), allowed_models: [] }, { status: 201 });
+    }));
+    mountAt("/gateway/keys?new=1&provider=ollama");
+    const dialog = await screen.findByRole("dialog", { name: "New gateway key" });
+    // burrow-simple sends every request to ollama; burrow-intelligence goes elsewhere.
+    expect(await within(dialog).findByRole("checkbox", { name: "burrow-simple" })).toBeChecked();
+    expect(within(dialog).getByRole("checkbox", { name: "Everything from ollama" })).toBeChecked();
+    expect(within(dialog).getByRole("checkbox", { name: "burrow-intelligence" })).not.toBeChecked();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "app");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create key" }));
+    await waitFor(() => expect(posted).toEqual({ name: "app", allowed_models: ["burrow-simple", "ollama/*"] }));
+  });
+
+  it("?new=1&provider=<slug>: a model the reader unticks stays unticked", async () => {
+    let posted: Record<string, unknown> | null = null;
+    server.use(http.post("/api/v1/ai/keys", async ({ request }) => {
+      posted = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ id: "gk9", name: "app", key: "bgw_" + "y".repeat(43), allowed_models: [] }, { status: 201 });
+    }));
+    mountAt("/gateway/keys?new=1&provider=ollama");
+    const dialog = await screen.findByRole("dialog", { name: "New gateway key" });
+    await userEvent.click(await within(dialog).findByRole("checkbox", { name: "burrow-simple" }));
+    expect(within(dialog).getByRole("checkbox", { name: "burrow-simple" })).not.toBeChecked();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "app");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create key" }));
+    await waitFor(() => expect(posted).toEqual({ name: "app", allowed_models: ["ollama/*"] }));
+  });
+
   it.each(["Cancel", "Close dialog"])("?new=1&provider=<slug>: closing with %s takes both parameters out of the address", async (name) => {
     mountAt("/gateway/keys?new=1&provider=ollama");
     const dialog = await screen.findByRole("dialog", { name: "New gateway key" });

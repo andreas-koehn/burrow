@@ -6,7 +6,9 @@ import { spawnSync } from "node:child_process";
 export const ADMIN_EMAIL = "admin@e2e.local";
 export const ADMIN_PASSWORD = "e2e-pass";
 
-export const DASHBOARD_URL = "http://localhost:8080";
+// The host port the harness publishes the dashboard on: 8080 unless
+// BURROW_E2E_DASHBOARD_PORT moves it (test/e2e/run.sh passes it on to compose).
+export const DASHBOARD_URL = `http://localhost:${process.env.BURROW_E2E_DASHBOARD_PORT || "8080"}`;
 
 // HTTPS proxy listener (wildcard cert). HTTP tunnels are HOST-ROUTED here — they
 // have NO fixed --remote port. To target a specific http tunnel, send a request
@@ -55,7 +57,7 @@ export function aiSubdomain(): string {
     if (sessionCookie) {
       const result = spawnSync(
         "curl",
-        ["-sk", "http://localhost:8080/api/v1/services", "-H", `Cookie: burrow_session=${sessionCookie}`],
+        ["-sk", `${DASHBOARD_URL}/api/v1/services`, "-H", `Cookie: burrow_session=${sessionCookie}`],
         { encoding: "utf8" },
       );
       if (result.status === 0 && result.stdout) {

@@ -127,6 +127,39 @@ describe("Request inspector (§4.23)", () => {
     });
   });
 
+  it("a request is a link in its row, says how long ago it came in, and opens from the keyboard", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: /requests/i });
+    const links = await within(table).findAllByRole("link");
+    expect(links[0]).toHaveAttribute("href", expect.stringMatching(/^\/gateway\/requests\/svc_ai001\/.+/));
+    const row = links[0]!.closest("tr")!;
+    // A plain row: aria-selected belongs to grid rows, which this table has none of.
+    expect(row).not.toHaveAttribute("aria-selected");
+    const when = row.querySelector("time")!;
+    expect(when).toHaveAttribute("datetime");
+    expect(when.getAttribute("title")).toMatch(/\d{2}:\d{2}/);
+    links[0]!.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(await screen.findByRole("tab", { name: /^request$/i })).toBeInTheDocument();
+    // The open one is marked on its link.
+    expect(within(table).getAllByRole("link")[0]).toHaveAttribute("aria-current", "true");
+  });
+
+  it("a request opened in a new tab with a key held leaves this tab's request as it is", async () => {
+    const first = db.inspectorEntries.svc_ai001![0]!.id;
+    mount(`/gateway/requests/svc_ai001/${first}`);
+    const table = await screen.findByRole("table", { name: /requests/i });
+    const links = await within(table).findAllByRole("link");
+    await waitFor(() => expect(links[0]).toHaveAttribute("aria-current", "true"));
+    const user = userEvent.setup();
+    await user.keyboard("{Control>}");
+    await user.click(links[1]!);
+    await user.keyboard("{/Control}");
+    // Still the request this tab shows: Replay here must not send the other one.
+    expect(links[0]).toHaveAttribute("aria-current", "true");
+    expect(links[1]).not.toHaveAttribute("aria-current");
+  });
+
   it("inspector rows are reachable via table[aria-label=Requests] tbody tr.clickable (capture-harness guard)", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /requests/i });
@@ -172,6 +205,8 @@ describe("Request inspector (§4.23)", () => {
   it("clears the search filter when switching service (F7)", async () => {
     db.services.push({ ...db.services.find((s) => s.id === "svc_ai001")!, id: "svc_other", name: "other" });
     db.inspectorEntries.svc_other = db.inspectorEntries.svc_ai001!;
+    // Captured requests mean capture is on for it: a service without a stored config captures nothing.
+    db.aiConfigs.svc_other = db.aiConfigs.svc_ai001!;
     mount();
     const search = await screen.findByRole("searchbox", { name: /search requests/i });
     await userEvent.type(search, "zzz-no-match");

@@ -11,6 +11,13 @@ const tabs = (page: Page) => sidebar(page).getByRole("navigation", { name: "Work
 const tab = (page: Page, workspace: string) => tabs(page).getByRole("link", { name: workspace, exact: true });
 const pathOf = (page: Page) => { const u = new URL(page.url()); return u.pathname + u.search + u.hash; };
 
+/** What a request that changes something has to carry. The page must have loaded once: the cookie comes with it. */
+async function csrfHeaders(page: Page) {
+  const cookies = await page.context().cookies();
+  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  return { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
+}
+
 /** The tab of `current` is the marked one, and the only one. */
 async function expectCurrent(page: Page, current: string) {
   await expect(tab(page, current)).toHaveAttribute("aria-current", "true");
@@ -154,10 +161,45 @@ test("the collapsed sidebar survives a reload and keeps a name on every icon", a
   await expect(sidebar(page).locator(".nav-label").first()).toBeVisible();
 });
 
+test("the Filter box on /traffic stays wide enough to type in beside a service with a long name", async ({ page }) => {
+  // The Service picker is as wide as its longest name. At this width a name of some forty characters
+  // once left the box about 30px: a click on it then landed on its clear button and emptied it.
+  await page.goto("/traffic");
+  const id = "e2e-a-service-with-a-long-name-0001";
+  const created = await page.request.post("/api/v1/services", {
+    headers: await csrfHeaders(page),
+    data: { service_id: id, title: id, access_mode: "api_key" },
+  });
+  expect([201, 409]).toContain(created.status());
+
+  await page.reload();
+  await expect(page.getByRole("combobox", { name: "Service" }).locator("option", { hasText: id })).toHaveCount(1);
+  const box = page.getByRole("searchbox", { name: "Filter" });
+  expect((await box.boundingBox())!.width).toBeGreaterThanOrEqual(190);
+  // Nothing of the bar is pushed out of the page.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
 // Traffic and Requests share one filter bar. Its search text lives in the URL, which the
 // router updates a moment after the key: the box must not lose the caret or a key to that.
 for (const path of ["/traffic", "/gateway/requests"]) {
   test(`the Filter box on ${path} keeps the caret where you type and every key typed fast`, async ({ page }) => {
+    if (path === "/gateway/requests") {
+      // Without a provider Requests has no list and no Filter box: one that is there for sure,
+      // also when this file runs alone on a fresh database.
+      await page.goto("/gateway");
+      const headers = await csrfHeaders(page);
+      const service = await page.request.post("/api/v1/services", {
+        headers,
+        data: { service_id: "e2e-filter-svc", title: "e2e-filter-svc", access_mode: "api_key" },
+      });
+      expect([201, 409]).toContain(service.status());
+      const provider = await page.request.post("/api/v1/ai/providers", {
+        headers,
+        data: { slug: "e2e-filter", name: "E2E filter", kind: "tunnel", service_id: "e2e-filter-svc", gateway_only: true },
+      });
+      expect([201, 409]).toContain(provider.status());
+    }
     await page.goto(`${path}?q=abcdef`);
     const box = page.getByRole("searchbox", { name: "Filter" });
     await expect(box).toHaveValue("abcdef");

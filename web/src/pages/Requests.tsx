@@ -2,7 +2,6 @@ import { useId, useMemo, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { keepPreviousData, useQueries, useQuery, type Query } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "@/lib/api";
-import { formatTimestamp } from "@/lib/format";
 import { parseTimeRange, timeRangeMs, widerRange, type TimeRange } from "@/lib/time-range";
 import { withAIConfigDefaults } from "@/lib/aiConfig";
 import { useDebounced } from "@/lib/use-debounced";
@@ -10,6 +9,7 @@ import { useUrlParams } from "@/lib/use-url-params";
 import { droppedNames, pairWords } from "@/lib/translation";
 import { InspectorOffHint } from "@/components/InspectorOffHint";
 import { Badge, Button, EmptyState, ErrorNotice, PageHeader, Select, type SelectOption } from "@/components/ds";
+import { RelativeTime } from "@/components/RelativeTime";
 import { LogView, type LogColumn } from "@/components/LogView";
 import type { AiCapturedRequest, AiGatewayKey, AiModel, AiProvider, InspectorEntry, Service, ServiceAIConfig } from "@/lib/contract";
 
@@ -187,7 +187,7 @@ export default function Requests() {
           title="No providers yet"
           action={<Link className="btn btn-primary btn-sm" to="/gateway/providers">Add a provider</Link>}
         >
-          Requests appear here once a provider is set up and receives traffic.
+          Requests appear here once a provider is set up, receives traffic and has its request inspector switched on.
         </EmptyState>
       </div>
     );
@@ -197,7 +197,7 @@ export default function Requests() {
 
   // Tokens, cost and latency are left out: the relay records none of them on a captured request.
   const columns: LogColumn<AiCapturedRequest>[] = [
-    { id: "time", header: "When", cell: (r) => <span className="mono small" title={r.ts}>{formatTimestamp(r.ts)}</span> },
+    { id: "time", header: "When", cell: (r) => <RelativeTime value={r.ts} /> },
     // A provider renamed since keeps its old slug here.
     { id: "provider", header: "Provider", cell: (r) => (r.provider ? providerName.get(r.provider) ?? r.provider : "—") },
     // Only a request made with a gateway key names a model.
@@ -265,7 +265,7 @@ export default function Requests() {
   } else {
     empty = (
       <EmptyState title="No requests yet">
-        Requests appear here as soon as traffic reaches a provider.
+        Requests appear here as soon as traffic reaches a provider whose request inspector is on.
       </EmptyState>
     );
   }

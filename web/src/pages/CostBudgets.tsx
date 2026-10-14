@@ -443,7 +443,7 @@ export default function CostBudgets() {
                   htmlFor="budget-model-addr"
                   w="md"
                   descId="budget-model-addr-desc"
-                  help="<provider>/<model>, for example zai/glm-5.1. Covers the gateway endpoints and /ai/<provider>/."
+                  help="<provider>/<model>, for example zai/glm-5.1. Covers both gateway base URLs and /ai/<provider>/."
                   error={addrErr}
                 >
                   <Input id="budget-model-addr" className="mono" value={modelAddr} aria-invalid={addrErr ? true : undefined} aria-describedby="budget-model-addr-desc" onChange={(e) => setModelAddr(e.target.value)} />

@@ -11,7 +11,8 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   reporter: process.env.CI ? "github" : "list",
   use: {
-    baseURL: "http://localhost:8080",
+    // Kept in step with fixtures/env.ts (DASHBOARD_URL).
+    baseURL: `http://localhost:${process.env.BURROW_E2E_DASHBOARD_PORT || "8080"}`,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "retain-on-failure",
