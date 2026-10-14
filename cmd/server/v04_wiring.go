@@ -1,7 +1,7 @@
 // v04_wiring.go — Task 25: compose every v0.4.0 engine (audit, webhook
 // dispatcher, quota, cost, cache, redact, guardrails, route, inspector,
 // aimeter) into a single aigw.Chain wired into the proxy via
-// proxy.WithAIChain. GeoDB lookup, MCP listener, and every API-layer
+// proxy.WithAIChain. GeoDB lookup, MCP server, and every API-layer
 // Deps field follow the same constructor seam.
 //
 // Everything in this file is additive over the v0.3.0 main.go: the build
@@ -15,6 +15,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/aimeter"
@@ -41,7 +42,7 @@ import (
 //   - the AI chain (via aigw.NewChain),
 //   - the proxy (via proxy.WithAIChain),
 //   - the API Deps (every field listed in Task 25 of the plan),
-//   - the optional MCP listener.
+//   - the management MCP server.
 //
 // Every field is non-nil when a working configuration was passed in. The
 // inspector replayer is a thin closure that reuses the chain's Replay seam
@@ -213,9 +214,9 @@ func buildV04Stack(
 		geoLookup = proxy.NoopGeoLookup()
 	}
 
-	// --- mcp listener (deferred until caller supplies the live tunnel
-	// registry; see BuildMCPServer below). When MCPListen is empty the
-	// listener is disabled; main.go wires it after constructing *server.Server.
+	// --- mcp server (deferred until caller supplies the live tunnel
+	// registry; see BuildMCPServer below). main.go wires it after
+	// constructing *server.Server.
 	var mcpServer *mcpserv.Server
 	_ = mcpServer
 	// We construct MCPServer lazily in main.go via BuildMCPServer so the
@@ -286,7 +287,7 @@ func (routeLookupNoop) GetBackend(_ context.Context, _ string) (route.BackendRec
 
 // mcpBearerAdapter narrows *store.Store's AutomationTokenView surface
 // (LookupBearer/TouchBearer return store.AutomationTokenView) to the
-// mcpserv.TokenInfo shape the MCP listener consumes.
+// mcpserv.TokenInfo shape the MCP server consumes.
 type mcpBearerAdapter struct{ s *store.Store }
 
 func (a mcpBearerAdapter) LookupBearer(ctx context.Context, hash string) (mcpserv.TokenInfo, error) {
@@ -461,25 +462,26 @@ func (m *metricsBuf) String() string              { return string(m.b) }
 // Inspector replayer adapter
 // ---------------------------------------------------------------------------
 
-// BuildMCPServer constructs the *mcpserv.Server for the optional :7800
-// listener. It is called from main.go after the live tunnel registry has
-// been constructed (so the ToolStore adapter can reach into it). Returns
-// nil when MCPListen is empty (disabled).
+// BuildMCPServer constructs the *mcpserv.Server the API router mounts at
+// /mcp/burrow. It is called from main.go after the live tunnel registry has
+// been constructed (so the ToolStore adapter can reach into it). Every relay
+// has one; there is nothing to configure.
 //
 // The audit logger is wired into the server so every tools/call dispatch
 // emits one mcp.tool.call audit row (Task 15 — closes spec Part P's audit
 // contract).
+//
+// authDomain is the resolved auth domain the API router gets as
+// api.Deps.AuthDomain: without one the access-mode tool refuses burrow_login,
+// as the JSON API does.
 func BuildMCPServer(
-	cfg *config.ServerConfig,
 	st *store.Store,
 	stack *v04Stack,
 	tunnels mcpTunnelSource,
 	wrapped *db.DB,
+	authDomain string,
 	log *slog.Logger,
 ) *mcpserv.Server {
-	if cfg.MCPListen == "" {
-		return nil
-	}
 	toolStore := mcpToolStoreAdapter{
 		st:      st,
 		tunnels: tunnels,
@@ -491,11 +493,34 @@ func BuildMCPServer(
 		st,
 		toolStore,
 		log,
+		mcpserv.WithAuthDomain(authDomain),
 	)
 	if stack.AuditLogger != nil {
 		srv.SetAuditAppender(stack.AuditLogger)
 	}
 	return srv
+}
+
+// warnRetiredMCPConfig says once, at start, that the variables of the
+// removed MCP listener do nothing any more. They are still parsed (the _FILE
+// forms are not even read), so that a relay deployed with them keeps starting.
+// Only the names of the variables that are set are logged, never a value or a
+// path: one of them is a secret. It reports whether there was anything to say.
+func warnRetiredMCPConfig(cfg *config.ServerConfig, log *slog.Logger) bool {
+	var set []string
+	if cfg.MCPListen != "" {
+		set = append(set, "BURROW_MCP_LISTEN")
+	}
+	if cfg.BurrowMCPToken != "" {
+		set = append(set, "BURROW_MCP_TOKEN")
+	}
+	set = append(set, cfg.RetiredMCPFileVars...)
+	if len(set) == 0 {
+		return false
+	}
+	log.Warn("BURROW_MCP_LISTEN and BURROW_MCP_TOKEN are no longer used; the MCP endpoint is "+
+		mcpserv.EndpointPath+" on the main address", "set", strings.Join(set, ","))
+	return true
 }
 
 // inspectorReplayerAdapter satisfies api.InspectorReplayer by re-dispatching

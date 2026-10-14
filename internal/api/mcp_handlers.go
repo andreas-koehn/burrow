@@ -1,15 +1,16 @@
-// mcp_handlers.go — `burrowd mcp` dashboard surface (spec Part P).
+// mcp_handlers.go — the dashboard's view of the management MCP server
+// (spec Part P).
 //
 // Two read-only JSON endpoints:
 //
-//	GET /api/v1/mcp/status  → { enabled, listen, token_id }
+//	GET /api/v1/mcp/status  → { enabled, listen, token_id, endpoint }
 //	GET /api/v1/mcp/tools   → [ { name, description, parameters_schema, permission } ]
 //
 // Both routes need mcp:tools:read (routeAccess in access.go), from a session
-// through its role and from a token that declares it. The actual MCP listener
-// (port :7800) is wired by cmd/server (Task 25); these endpoints just
-// surface its configuration + the closed tool inventory so the dashboard
-// can render a "burrowd mcp" page without speaking JSON-RPC.
+// through its role and from a token that declares it. The MCP server itself
+// (internal/mcpserv) is mounted at /mcp/burrow by NewRouter; these endpoints
+// tell the dashboard where it is and list the closed tool inventory, so that
+// it can render a page without speaking MCP.
 
 package api
 
@@ -20,25 +21,35 @@ import (
 	"github.com/ankoehn/burrow/internal/mcpserv"
 )
 
-// MCPInfo is the configuration surface the dashboard endpoints render. All
-// fields are inert (no behaviour); cmd/server (Task 25) populates them
-// after parsing BURROW_MCP_LISTEN / BURROW_MCP_TOKEN.
+// mcpEndpointPath is where NewRouter mounts MCPInfo.Handler.
+const mcpEndpointPath = mcpserv.EndpointPath
+
+// MCPInfo is what the router needs of the management MCP server: the
+// handler it mounts at /mcp/burrow and the metadata the two dashboard
+// endpoints render. cmd/server populates it.
 type MCPInfo struct {
-	// Enabled is true when burrowd mcp is wired (Task 25 has read a non-
-	// empty BURROW_MCP_LISTEN). When false, Listen and TokenID are empty.
+	// Enabled is rendered as "enabled" by GET /api/v1/mcp/status. cmd/server
+	// sets it to true: the endpoint is part of every relay.
 	Enabled bool
-	// Listen is the configured listen address (e.g. ":7800"). Empty when
-	// disabled.
-	Listen string
-	// TokenID is the automation_tokens.id of the bearer token configured
-	// via BURROW_MCP_TOKEN. Empty when disabled. The PLAINTEXT secret is
-	// NEVER returned here — operators set it server-side, not via the API.
+	// Listen and TokenID are rendered as "listen" and "token_id". Both
+	// described the separate MCP listener (BURROW_MCP_LISTEN,
+	// BURROW_MCP_TOKEN), which is gone; cmd/server leaves them empty. The
+	// keys stay in the status body for clients written against them.
+	Listen  string
 	TokenID string
 	// Server is the configured *mcpserv.Server (or anything that can
 	// enumerate tools). When non-nil, GET /api/v1/mcp/tools renders its
 	// inventory; when nil, the endpoint returns an empty array so the
 	// dashboard can degrade gracefully.
 	Server MCPToolsLister
+	// Handler serves /mcp/burrow: the same *mcpserv.Server. It brings its
+	// own authentication (automation tokens), origin check and limits. Nil
+	// leaves the route answering 503.
+	Handler http.Handler
+	// RateLimitPerIP overrides MCPRateLimitPerIP, the requests per minute
+	// and client address the router admits before the handler sees them.
+	// Zero or negative means the default.
+	RateLimitPerIP int
 }
 
 // MCPToolsLister is the narrow Tools() seam the api package consumes. The
@@ -47,16 +58,18 @@ type MCPToolsLister interface {
 	Tools() []mcpserv.ToolDescriptor
 }
 
-// mcpStatusResp is the JSON shape of GET /api/v1/mcp/status.
+// mcpStatusResp is the JSON shape of GET /api/v1/mcp/status. Endpoint is
+// the path of the MCP endpoint on this origin.
 type mcpStatusResp struct {
-	Enabled bool   `json:"enabled"`
-	Listen  string `json:"listen"`
-	TokenID string `json:"token_id"`
+	Enabled  bool   `json:"enabled"`
+	Listen   string `json:"listen"`
+	TokenID  string `json:"token_id"`
+	Endpoint string `json:"endpoint"`
 }
 
 // mcpToolResp is the wire shape of one tool inventory entry. Mirrors
-// mcpserv.ToolDescriptor; the json tags are identical so the body is
-// byte-equivalent to what the JSON-RPC tools/list response produces.
+// mcpserv.ToolDescriptor. It is Burrow's own shape, not MCP's: an MCP
+// client reads the tools from /mcp/burrow, filtered by its token.
 type mcpToolResp struct {
 	Name             string          `json:"name"`
 	Description      string          `json:"description"`
@@ -66,26 +79,24 @@ type mcpToolResp struct {
 
 // GetMCPStatus handles GET /api/v1/mcp/status.
 //
-// Returns the configured MCP listener address + the configured automation
-// token's id. The plaintext bearer is NEVER returned — operators set it
-// server-side via BURROW_MCP_TOKEN. When the listener is disabled (Task 25
-// did not wire it), enabled=false and the listen/token_id fields are empty.
+// Returns where the MCP endpoint is: "endpoint" is its path on this origin.
+// "listen" and "token_id" are kept for older clients and are empty on a
+// relay started by cmd/server.
 func (d Deps) GetMCPStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, mcpStatusResp{
-		Enabled: d.MCP.Enabled,
-		Listen:  d.MCP.Listen,
-		TokenID: d.MCP.TokenID,
+		Enabled:  d.MCP.Enabled,
+		Listen:   d.MCP.Listen,
+		TokenID:  d.MCP.TokenID,
+		Endpoint: mcpEndpointPath,
 	})
 }
 
 // GetMCPTools handles GET /api/v1/mcp/tools.
 //
-// Returns the closed inventory the JSON-RPC tools/list call exposes. Each
-// entry includes the parameters_schema JSON Schema and the permission
-// string a caller must hold (transitively via the bearer token) to invoke
-// the tool. A nil MCP.Server (Task 25 not yet wired) yields an empty array
-// rather than 500 — the dashboard renders a "burrowd mcp not configured"
-// notice in that state.
+// Returns the whole closed inventory, unfiltered. Each entry includes the
+// parameters_schema JSON Schema and the permission string a caller must
+// hold (transitively via the bearer token) to see and invoke the tool. A
+// nil MCP.Server yields an empty array rather than 500.
 func (d Deps) GetMCPTools(w http.ResponseWriter, r *http.Request) {
 	var out []mcpToolResp
 	if d.MCP.Server != nil {
