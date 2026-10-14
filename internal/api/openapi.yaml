@@ -120,7 +120,7 @@ components:
         base_url. Identity fields come from the providers table;
         api_key_count, status and the 24h counts are read live from the
         backing service. latency_p95_ms is always 0.
-      required: [slug, name, kind, api_format, service_id, base_url, upstream_base_url, credential_slot, credential_present, credential_slots, breaker_open, billing, supports_responses, max_concurrent, in_use, model_count, model_alias, concrete_model, backend_type, api_key_count, requests_24h, cache_hits_24h, latency_p95_ms, status, client_session_id]
+      required: [slug, name, kind, api_format, service_id, base_url, upstream_base_url, credential_slot, credential_present, credential_slots, breaker_open, billing, supports_responses, max_concurrent, in_use, model_count, model_alias, concrete_model, backend_type, api_key_count, requests_24h, cache_hits_24h, latency_p95_ms, status, client_session_id, state, last_seen, last_client]
       properties:
         slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$' }
         name: { type: string }
@@ -538,63 +538,6 @@ components:
               items: { type: string, enum: [responses-chat, responses-messages] }
         created_at: { type: string, format: date-time, readOnly: true }
         updated_at: { type: string, format: date-time, readOnly: true }
-    AICapturedRequest:
-      type: object
-      description: >
-        A captured request as the list across providers shows it: the
-        envelope of the per-service inspector list without headers and
-        bodies. Read those from
-        /api/v1/services/{service_id}/inspector/requests/{id}.
-      required: [id, service_id, ts, method, path, status, duration_ms, bytes_in, bytes_out, translated, dropped, provider, model, gateway_key_id]
-      properties:
-        id: { type: string }
-        service_id: { type: string, description: The service behind the provider. }
-        api_key_id: { type: string, description: Id of the service API key, when one was presented. }
-        ts: { type: string, format: date-time }
-        method: { type: string }
-        path: { type: string }
-        status: { type: integer }
-        duration_ms: { type: integer }
-        bytes_in: { type: integer }
-        bytes_out: { type: integer }
-        truncated: { type: boolean }
-        bytes_omitted: { type: integer }
-        cache: { type: string }
-        redactions:
-          type: array
-          items:
-            type: object
-            properties:
-              rule: { type: string }
-              count: { type: integer }
-        trace_id: { type: string }
-        remote_ip: { type: string }
-        mcp:
-          type: object
-          description: >
-            The MCP call the request carried, when the inspector recognised
-            one.
-          properties:
-            method: { type: string, description: The JSON-RPC method, for example tools/call. }
-            tool: { type: string }
-            params: { description: The call's params, as sent. }
-        adapter_lossy: { type: boolean }
-        translated: { type: string, description: See InspectorEntry. }
-        dropped:
-          type: array
-          items: { type: string }
-          description: See InspectorEntry.
-        provider:
-          type: string
-          description: >
-            Slug of the provider that answered. Never empty here: an entry
-            that names none is given the provider whose buffer holds it.
-        model:
-          type: string
-          description: The model the caller asked for; empty for a request without a gateway key.
-        gateway_key_id:
-          type: string
-          description: Id of the gateway key the caller presented, or empty.
     AIModelMode:
       type: string
       enum: [native, translated, not_served]
@@ -5468,6 +5411,7 @@ paths:
   /api/v1/ai/requests:
     get:
       tags: [models]
+      operationId: aiRequestsList
       summary: List captured requests across providers
       description: |
         The requests the inspector captured for every provider, as one list,
@@ -5526,7 +5470,7 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/AICapturedRequest' }
+                items: { $ref: '#/components/schemas/InspectorEntry' }
               example:
                 - { id: ins_ab12cd, service_id: 9f1c2a, ts: '2026-10-11T09:30:01Z', method: POST, path: /v1/chat/completions, status: 200, duration_ms: 0, bytes_in: 182, bytes_out: 941, cache: MISS, translated: '', dropped: [], provider: zai, model: burrow-smart, gateway_key_id: 4c9d1e7a }
         '400': { $ref: '#/components/responses/BadRequest' }

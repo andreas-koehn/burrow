@@ -170,6 +170,7 @@ var openAPIOperationIDs = map[string]string{
 	"GET /api/v1/ai/keys":                                                       "gatewayKeysList",
 	"POST /api/v1/ai/keys":                                                      "gatewayKeyCreate",
 	"DELETE /api/v1/ai/keys/{id}":                                               "gatewayKeyDelete",
+	"GET /api/v1/ai/requests":                                                   "aiRequestsList",
 	"GET /api/v1/ai/requests/{requestID}/attempts":                              "aiRequestAttemptsList",
 	"GET /api/v1/database":                                                      "databaseGet",
 }
@@ -392,6 +393,7 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"gatewayKeysList":        {status: "200", typ: oaType[aiKeyResp](), list: true},
 	"gatewayKeyCreate":       {status: "201", typ: oaType[aiKeyCreatedResp]()},
 	"aiRequestAttemptsList":  {status: "200", typ: oaType[aiAttemptResp](), list: true},
+	"aiRequestsList":         {status: "200", typ: oaType[inspectorEntryJSON](), list: true},
 
 	// cache, rate limits, cost, budgets (O05)
 	"cacheSettingsGet":  {status: "200", typ: oaType[cacheSettingsResp]()},
