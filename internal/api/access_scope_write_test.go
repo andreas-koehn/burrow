@@ -145,7 +145,7 @@ func (h *authzHarness) providerFixture(t *testing.T, owner, serviceID, slug stri
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.st.CreateTunnelProvider(ctx, slug, slug, serviceID); err != nil {
+	if _, err := h.st.CreateTunnelProvider(ctx, slug, slug, serviceID, "openai"); err != nil {
 		t.Fatal(err)
 	}
 }

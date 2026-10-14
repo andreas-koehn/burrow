@@ -178,6 +178,7 @@ var routeAccess = map[string]access{
 	"DELETE /api/v1/services/{serviceID}/upstream-credential":                   needs(aiConfigure...),
 	"GET /api/v1/upstream-credentials/slots":                                    needs(authz.PermAIConfigureAny),
 	"GET /api/v1/services/{serviceID}/inspector/requests":                       needs(inspectorRead...),
+	"GET /api/v1/ai/requests":                                                   needs(inspectorRead...), // :own lists the caller's own providers only
 	"GET /api/v1/services/{serviceID}/inspector/requests/{rid}":                 needs(inspectorRead...),
 	"POST /api/v1/services/{serviceID}/inspector/requests/{rid}/replay":         needs(inspectorReplay...),
 	"POST /api/v1/services/{serviceID}/inspector/requests/{rid}/replay-compare": needs(inspectorReplay...),

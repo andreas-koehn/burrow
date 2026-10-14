@@ -26,6 +26,7 @@ admin GET /api/v1/ai/providers 200
 admin GET /api/v1/ai/providers/{slug} 404
 admin GET /api/v1/ai/providers/{slug}/metrics 404
 admin GET /api/v1/ai/providers/{slug}/models 404
+admin GET /api/v1/ai/requests 200
 admin GET /api/v1/ai/requests/{requestID}/attempts 200
 admin GET /api/v1/audit/events 200
 admin GET /api/v1/audit/export 500
@@ -178,6 +179,7 @@ user GET /api/v1/ai/providers 200
 user GET /api/v1/ai/providers/{slug} 404
 user GET /api/v1/ai/providers/{slug}/metrics 404
 user GET /api/v1/ai/providers/{slug}/models 404
+user GET /api/v1/ai/requests 200
 user GET /api/v1/ai/requests/{requestID}/attempts 403
 user GET /api/v1/audit/events 403
 user GET /api/v1/audit/export 403
@@ -330,6 +332,7 @@ cr-none GET /api/v1/ai/providers 200
 cr-none GET /api/v1/ai/providers/{slug} 404
 cr-none GET /api/v1/ai/providers/{slug}/metrics 404
 cr-none GET /api/v1/ai/providers/{slug}/models 404
+cr-none GET /api/v1/ai/requests 403
 cr-none GET /api/v1/ai/requests/{requestID}/attempts 403
 cr-none GET /api/v1/audit/events 403
 cr-none GET /api/v1/audit/export 403
@@ -482,6 +485,7 @@ cr-legacy GET /api/v1/ai/providers 200
 cr-legacy GET /api/v1/ai/providers/{slug} 404
 cr-legacy GET /api/v1/ai/providers/{slug}/metrics 404
 cr-legacy GET /api/v1/ai/providers/{slug}/models 404
+cr-legacy GET /api/v1/ai/requests 200
 cr-legacy GET /api/v1/ai/requests/{requestID}/attempts 403
 cr-legacy GET /api/v1/audit/events 200
 cr-legacy GET /api/v1/audit/export 500

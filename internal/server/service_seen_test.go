@@ -77,17 +77,6 @@ func connectStamped(t *testing.T, rec ServiceRecorder, set func(*Options)) *reco
 	})
 }
 
-func waitNoSessions(t *testing.T, srv *Server) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for len(srv.SnapshotSessions()) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the session never left the registry")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
 func TestServiceStampedOnRegister(t *testing.T) {
 	rec := &serviceRecorderFake{}
 	c := connectStamped(t, rec, nil)

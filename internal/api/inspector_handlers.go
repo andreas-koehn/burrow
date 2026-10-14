@@ -337,8 +337,9 @@ func (d Deps) GetAIRequests(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	readAny := authz.Can(role, authz.PermInspectorReadAny)
-	if !readAny && !authz.Can(role, authz.PermInspectorReadOwn) {
+	// As requireInspectorPerm: a token counts what it declares.
+	readAny := effectivePerms(r.Context(), role, authz.PermInspectorReadAny)
+	if !readAny && !effectivePerms(r.Context(), role, authz.PermInspectorReadOwn) {
 		writeErr(w, http.StatusForbidden, "forbidden")
 		return
 	}
