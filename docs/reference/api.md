@@ -30,7 +30,7 @@ curl -b cookies.txt \
 
 ### Bearer token (automation)
 
-Mint an automation token from the dashboard (Settings → Tokens) or via `POST /api/v1/tokens`. Use it as a standard `Authorization` header — no CSRF header needed:
+Mint an automation token from the dashboard (Settings → Tokens) or via `POST /api/v1/automation/tokens`. Use it as a standard `Authorization` header — no CSRF header needed:
 
 ```sh
 curl -H "Authorization: Bearer bua_YOUR_TOKEN_HERE" \
@@ -53,7 +53,7 @@ The server always serves its own spec — no need to keep a local copy in sync:
 |-----|---------|
 | `/api/v1/openapi.yaml` | Machine-readable spec (YAML) |
 | `/api/v1/openapi.json` | Machine-readable spec (JSON) |
-| `/api/v1/openapi` | Embedded browser viewer (Swagger UI) |
+| `/api/v1/openapi/viewer/` | Embedded browser viewer (needs `metrics:read`; the admin role holds it) |
 
 The repo also ships `docs/openapi.yaml` as a canonical reference. It is kept in sync with the router by `TestOpenAPI_RouteCoverage` — a build-time test that fails if any route is missing from the spec.
 
@@ -63,9 +63,36 @@ Health probes (`/healthz`, `/readyz`) and the OpenAPI doc-serving endpoints them
 
 ---
 
+## Operation ids and extension fields
+
+Every operation in the spec has an `operationId`. Generated clients name their methods after it, and the management MCP server names its tools after it (`serviceApiKeysList` becomes the tool `service_api_keys_list`).
+
+| Rule | Example |
+|------|---------|
+| lowerCamelCase, the resource first, then the action | `servicesList`, `serviceGet`, `providerCreate`, `aiModelUpdate` |
+| A list is plural, one item singular | `webhooksList`, `webhookUpdate` |
+| A sub-resource carries its parent | `serviceApiKeysList`, `providerModelsSync` |
+| An action is the last path segment | `webhookPause`, `backupVerify` |
+| Acronyms are written as words | `serviceIpGeoGet`, `mcpToolsList` |
+
+An id is a public name: it is added and never changed. `TestOpenAPI_OperationIDs` holds the list and fails on a rename.
+
+Two extension fields appear on operations:
+
+| Field | Meaning |
+|-------|---------|
+| `x-burrow-mcp` | `false` keeps the operation out of the tool list of the management MCP server. An operation without the field may become a tool. |
+| `x-burrow-permission` | Reserved for the permission the operation requires. No operation carries it yet. |
+
+`x-burrow-mcp: false` is set on login, logout and password change; on the client sign-in endpoints (discovery, start, poll, and the sign-in request lookup, approval and denial in the dashboard); on downloads and exports (backup archive, audit, cost and connection-log export); on the event streams; on backup restore and its status poll; and on the OpenAPI viewer.
+
+The schemas are checked against the server: tests compare every JSON request and response schema with the Go type the handler decodes or writes, so a field added to the API without the spec fails the build.
+
+---
+
 ## Resource groups
 
-The table below lists the major resource groups, their path prefixes, and what they cover. See the OpenAPI viewer at `/api/v1/openapi` or `docs/openapi.yaml` for the full endpoint list, request bodies, and response schemas.
+The table below lists the major resource groups, their path prefixes, and what they cover. See the OpenAPI viewer at `/api/v1/openapi/viewer/` or `docs/openapi.yaml` for the full endpoint list, request bodies, and response schemas.
 
 | Group | Prefix | What it covers |
 |-------|--------|----------------|
@@ -77,10 +104,11 @@ The table below lists the major resource groups, their path prefixes, and what t
 | **tunnels** | `/api/v1/tunnels/` | Live tunnel view — what is connected right now |
 | **services** | `/api/v1/services/` | Durable service config: access mode, API keys, policy, AI config, inspector, cache |
 | **api-keys** | `/api/v1/services/{id}/api-keys/` | Mint and revoke per-service API keys |
-| **access-policy** | `/api/v1/services/{id}/access-policy` | Set access mode (`open`, `api_key`, `burrow_login`, `mtls`) |
+| **access-mode** | `/api/v1/services/{id}/access-mode` | Set access mode (`open`, `api_key`, `burrow_login`, `mtls`) |
+| **access-policy** | `/api/v1/services/{id}/access-policy` | Role allowlist of `burrow_login` mode |
 | **webhooks** | `/api/v1/webhooks/` | HMAC outbound webhooks: create, list, pause, resume, delivery log |
 | **audit** | `/api/v1/audit/` | Immutable audit event log; chain verify and export |
-| **backups** | `/api/v1/backups/` | Create and restore database backups |
+| **backups** | `/api/v1/backups/` | Create, list, verify, download, delete and restore database backups |
 | **clients** | `/api/v1/clients/` | Live control-session overview (which clients are connected) |
 | **settings** | `/api/v1/settings/` | Admin settings: SMTP, retention, config |
 | **events** | `/api/v1/events` | Server-sent event stream for dashboard live refresh |
@@ -96,7 +124,7 @@ All responses use `Content-Type: application/json`. Errors always carry an `erro
 {"error": "invalid api key"}
 ```
 
-Successful state-changing requests that have nothing to return respond with `204 No Content` or `{"ok": true}`.
+Successful state-changing requests that have nothing to return respond with `204 No Content`.
 
 ### Service object
 
@@ -162,7 +190,7 @@ curl -H "Authorization: Bearer bua_YOUR_TOKEN_HERE" \
 ```sh
 curl -H "Authorization: Bearer bua_YOUR_TOKEN_HERE" \
   -H "Content-Type: application/json" \
-  -X PUT https://burrow.insingo.com/api/v1/services/abc123/access-policy \
+  -X PUT https://burrow.insingo.com/api/v1/services/abc123/access-mode \
   -d '{"access_mode":"api_key"}'
 ```
 
@@ -178,7 +206,9 @@ See [Access control](/guide/access-control) for the full header-semantics rules.
 
 ```sh
 curl -H "Authorization: Bearer bua_YOUR_TOKEN_HERE" \
-  -X POST https://burrow.insingo.com/api/v1/services/abc123/api-keys
+  -H "Content-Type: application/json" \
+  -X POST https://burrow.insingo.com/api/v1/services/abc123/api-keys \
+  -d '{"name":"ci"}'
 ```
 
 ### Mint a client token
@@ -203,8 +233,8 @@ curl -H "Authorization: Bearer bua_YOUR_TOKEN_HERE" \
 
 ```sh
 curl -H "Authorization: Bearer bua_YOUR_TOKEN_HERE" \
-  "https://burrow.insingo.com/api/v1/audit?limit=1000" \
-  -o audit-export.json
+  https://burrow.insingo.com/api/v1/audit/export \
+  -o audit.ndjson
 ```
 
 ---

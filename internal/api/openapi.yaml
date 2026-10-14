@@ -11,10 +11,18 @@ info:
     `/readyz`) and the doc-serving endpoints (`/api/v1/openapi.{yaml,json}`)
     are excluded by convention.
 
-    Schemas are intentionally minimal — the goal is shape coverage for SDK
-    code-generators (TypeScript-fetch, Go), not exhaustive validation. Full
-    schemas can be filled in incrementally without invalidating downstream
-    SDKs (additive only).
+    Every operation has an `operationId`: lowerCamelCase, resource first,
+    then action (`servicesList`, `serviceGet`, `providerCreate`). An id is a
+    public name. Tools and generated clients are named after it, so an id is
+    added and never changed. Request and response schemas are compared with
+    the Go types of the handlers by the tests in
+    `internal/api/openapi_shapes_test.go`.
+
+    Two extension fields are used on operations. `x-burrow-mcp: false` keeps
+    an operation out of the tool list of the management MCP server; an
+    operation without the field may become a tool. `x-burrow-permission` is
+    reserved for the permission an operation requires; no operation carries
+    it yet.
   version: 0.4.0
   license:
     name: MIT
@@ -112,6 +120,7 @@ components:
         base_url. Identity fields come from the providers table;
         api_key_count, status and the 24h counts are read live from the
         backing service. latency_p95_ms is always 0.
+      required: [slug, name, kind, api_format, service_id, base_url, upstream_base_url, credential_slot, credential_present, credential_slots, breaker_open, billing, supports_responses, max_concurrent, in_use, model_count, model_alias, concrete_model, backend_type, api_key_count, requests_24h, cache_hits_24h, latency_p95_ms, status, client_session_id]
       properties:
         slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$' }
         name: { type: string }
@@ -155,6 +164,7 @@ components:
             value. Empty for a tunnel provider.
           items:
             type: object
+            required: [slot, present]
             properties:
               slot: { type: string, example: ZAI }
               present: { type: boolean }
@@ -247,6 +257,7 @@ components:
           description: >
             Tunnel provider: whether its client is connected. Direct provider:
             Connected when the credential slot is set, Offline otherwise.
+            Degraded is reserved: the handler never sends it today.
         client_session_id: { type: string }
         state:
           type: string
@@ -381,6 +392,7 @@ components:
       description: >
         One attempt of a gateway request, as the attempt log holds it. It
         carries no credential, slot name, header or upstream body.
+      required: [position, provider, model, status, error_code, duration_ms, ts]
       properties:
         position:
           type: integer
@@ -526,44 +538,6 @@ components:
               items: { type: string, enum: [responses-chat, responses-messages] }
         created_at: { type: string, format: date-time, readOnly: true }
         updated_at: { type: string, format: date-time, readOnly: true }
-    InspectorTranslation:
-      type: object
-      additionalProperties: true
-      description: >
-        The translation and route fields of a captured request; the envelope
-        has further fields (id, ts, method, path, status, headers, bodies).
-      required: [translated, dropped, provider, model, gateway_key_id]
-      properties:
-        provider:
-          type: string
-          description: >
-            Slug of the provider that answered. Empty for a request that came
-            without a gateway key (a service's own address, or a service API
-            key on /ai/<provider>/).
-        model:
-          type: string
-          description: >
-            The model the caller asked for, under the name it has on the
-            gateway endpoints ("<provider>/<id>" on a provider's own path).
-            Empty where provider is, and for a request that names no model.
-        gateway_key_id:
-          type: string
-          description: Id of the gateway key the caller presented, or empty.
-        translated:
-          type: string
-          enum: ['', messages-chat, responses-chat, chat-messages, responses-messages]
-          description: >
-            The pair that translated the request, as in the response header
-            Burrow-Translated. Empty for a request served in its own format.
-        dropped:
-          type: array
-          items: { type: string }
-          description: >
-            What the translation left out, as in the response header
-            Burrow-Dropped: sorted names, never null, empty when nothing
-            was left out. A final "more" says the list was cut; it is not a
-            name. A name can end in text the client chose (after a prefix
-            such as "unknown:"); treat every name as plain text.
     AICapturedRequest:
       type: object
       description: >
@@ -605,11 +579,11 @@ components:
             tool: { type: string }
             params: { description: The call's params, as sent. }
         adapter_lossy: { type: boolean }
-        translated: { type: string, description: See InspectorTranslation. }
+        translated: { type: string, description: See InspectorEntry. }
         dropped:
           type: array
           items: { type: string }
-          description: See InspectorTranslation.
+          description: See InspectorEntry.
         provider:
           type: string
           description: >
@@ -629,6 +603,7 @@ components:
       description: >
         A gateway key as every response but its creation shows it. The key
         itself is stored as a hash and is never returned again.
+      required: [id, name, key_prefix, user_id, allowed_models, last_used, created_at, revoked_at]
       properties:
         id: { type: string }
         name: { type: string, maxLength: 120 }
@@ -650,6 +625,7 @@ components:
     AIProviderModel:
       type: object
       description: One entry of a provider's stored model list.
+      required: [id, display_name, context_length, synced_at]
       properties:
         id: { type: string, maxLength: 200, example: google/gemini-x }
         display_name: { type: string, maxLength: 200 }
@@ -658,8 +634,10 @@ components:
     EndpointMetrics:
       type: object
       description: >
-        Metering aggregates for one AI provider over the trailing 24 h.  All
-        numeric fields are zeroed pending usage_events aggregation.
+        Metering aggregates for one AI provider over the trailing 24 h, read
+        from the usage events. The fields are 0 when the provider had no
+        usage in that time or the store cannot be read.
+      required: [requests_24h, tokens_in_24h, tokens_out_24h, cost_usd_24h, cache_hit_ratio_24h, requests_per_minute]
       properties:
         requests_24h: { type: integer }
         tokens_in_24h: { type: integer }
@@ -721,19 +699,7 @@ components:
           description: >
             The live sessions of the token, newest first, each as
             `GET /api/v1/clients` lists it. Empty unless `status` is `online`.
-          items:
-            type: object
-            properties:
-              session_id: { type: string }
-              user_id: { type: string }
-              token_name: { type: string }
-              remote_addr: { type: string }
-              os: { type: string }
-              arch: { type: string }
-              client_version: { type: string }
-              service_count: { type: integer }
-              total_bytes_in: { type: integer, format: int64 }
-              total_bytes_out: { type: integer, format: int64 }
+          items: { $ref: '#/components/schemas/Client' }
     Error:
       type: object
       required: [error]
@@ -751,32 +717,48 @@ components:
           type: boolean
     User:
       type: object
+      description: A user account as the admin endpoints return it.
+      required: [id, email, role, status, last_login, created_at]
       properties:
         id: { type: string }
         email: { type: string, format: email }
         role: { type: string }
         status: { type: string, enum: [active, suspended] }
+        last_login: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
-        last_login_at: { type: string, format: date-time, nullable: true }
     Service:
       type: object
+      required: [id, name, type, slug, url, access_mode, api_key_header, gateway_only, connected, remote_port, local_addr, status, last_seen, last_client, client_session_id, provider_slug]
       properties:
         id: { type: string }
         name: { type: string }
-        type: { type: string, enum: [http, tcp] }
+        type:
+          type: string
+          enum: [http, tcp, direct]
+          description: >
+            direct is the backing row of a direct AI provider. It is never
+            listed; GET /api/v1/services/{serviceID} returns it by id.
         slug:
           type: string
           description: URL segment of an http service; empty for tcp or until one is assigned.
         url:
           type: string
           description: Public address, `https://<auth_domain>/svc/<slug>/`; empty without a slug or auth domain, and empty while `gateway_only` is true.
-        access_mode: { type: string }
+        access_mode: { type: string, enum: [open, api_key, burrow_login, mtls] }
+        api_key_header:
+          type: string
+          description: The request header that carries the key in api_key mode.
+          example: Authorization
         gateway_only:
           type: boolean
           description: When true the service is reachable through the AI gateway only; its `/svc/<slug>/` address and custom domains answer 404.
-        remote_port: { type: integer }
-        local_addr: { type: string }
         connected: { type: boolean }
+        remote_port:
+          type: integer
+          description: Public port of a connected tcp service; 0 for http and while not connected.
+        local_addr:
+          type: string
+          description: Address the client forwards to; empty while not connected.
         status:
           type: string
           enum: [online, offline, never_connected]
@@ -805,8 +787,12 @@ components:
           description: The slug of the tunnel provider this service backs; empty when it backs none.
     Tunnel:
       type: object
+      description: One live tunnel of the caller.
+      required: [id, name, type, remote_port, local_addr, bytes_in, bytes_out, connected]
       properties:
-        id: { type: string }
+        id:
+          type: string
+          description: Id of the live tunnel; a new one with every connect.
         name: { type: string }
         type: { type: string, enum: [http, tcp] }
         remote_port: { type: integer }
@@ -814,21 +800,36 @@ components:
         bytes_in: { type: integer, format: int64 }
         bytes_out: { type: integer, format: int64 }
         connected: { type: boolean }
+        service_id:
+          type: string
+          description: Id of the durable service of an http tunnel, for the /api/v1/services/{serviceID} routes; omitted for tcp.
         url:
           type: string
           description: Public address of an http tunnel, `https://<auth_domain>/svc/<slug>/`; omitted for tcp and for a gateway-only service.
+        access_mode:
+          type: string
+          enum: [open, api_key, burrow_login, mtls]
+          description: The access mode in effect; omitted for tcp.
     Session:
       type: object
+      required: [id, ip, user_agent, created_at, expires_at, current]
       properties:
         id: { type: string }
-        user_agent: { type: string }
         ip: { type: string }
+        user_agent: { type: string }
         created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        current:
+          type: boolean
+          description: Whether the request was made with this session.
     Token:
       type: object
+      description: A client token as it is listed. The token itself is returned once, when it is created.
+      required: [id, name, last_used, created_at]
       properties:
         id: { type: string }
         name: { type: string }
+        last_used: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
     ClientLoginRequest:
       type: object
@@ -843,21 +844,38 @@ components:
         os: { type: string }
         arch: { type: string }
         client_version: { type: string }
-        source_ip: { type: string, description: Address the client started the request from, as the relay saw it. }
+        source_ip:
+          type: string
+          description: Address the client started the request from, as the relay saw it.
         status: { type: string, enum: [pending, approved, denied] }
-        suggested_token_name: { type: string, description: The client's suggestion, else its hostname. }
-        age_seconds: { type: integer, description: Seconds since the request was started, by the relay's clock. }
+        suggested_token_name:
+          type: string
+          description: The client's suggestion, else its hostname.
+        age_seconds:
+          type: integer
+          description: Seconds since the request was started, by the relay's clock.
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
     AccessModeReq:
       type: object
-      required: [mode]
+      required: [access_mode]
       properties:
-        mode: { type: string }
-        header: { type: string }
-        mtls_ca_pem: { type: string }
+        access_mode: { type: string, enum: [open, api_key, burrow_login, mtls] }
+        api_key_header:
+          type: string
+          description: >
+            api_key mode only, ignored for the other modes. The request
+            header that carries the key; an RFC 7230 token.
+          example: X-Api-Key
+        mtls_ca_pem:
+          type: string
+          description: >
+            mtls mode only, where it is required; ignored for the other
+            modes. A PEM bundle with at least one CERTIFICATE block: the
+            trust anchor client certificates are verified against.
     ConnectionLog:
       type: object
+      required: [id, kind, service_id, tunnel_id, user_id, client_session_id, source_ip, user_agent, started_at, ended_at, duration_ms, bytes_in, bytes_out, status, reason]
       properties:
         id: { type: string }
         kind: { type: string, enum: [control, http_proxy, tcp_proxy] }
@@ -876,6 +894,7 @@ components:
         reason: { type: string }
     ConnectionLogRollup:
       type: object
+      required: [day, service_id, kind, sessions, bytes_in, bytes_out, avg_duration_ms, p95_duration_ms]
       properties:
         day: { type: string, format: date }
         service_id: { type: string }
@@ -885,6 +904,860 @@ components:
         bytes_out: { type: integer, format: int64 }
         avg_duration_ms: { type: integer, format: int64 }
         p95_duration_ms: { type: integer, format: int64 }
+        top_source_ips:
+          type: array
+          description: >
+            The source addresses with the most sessions of the group. Left
+            out while the setting connection_logs.rollup_include_top_ips is
+            "false"; an empty list when it is on and the group has none.
+          items:
+            type: object
+            required: [ip, sessions]
+            properties:
+              ip: { type: string }
+              sessions: { type: integer, format: int64 }
+    ServiceDetail:
+      description: One service with what only the detail view has.
+      allOf:
+        - $ref: '#/components/schemas/Service'
+        - type: object
+          required: [api_key_count, access_policy]
+          properties:
+            api_key_count: { type: integer }
+            access_policy:
+              type: array
+              description: The role allowlist of burrow_login mode, as GET .../access-policy returns it.
+              items: { type: string }
+    ServiceApiKey:
+      type: object
+      description: >
+        A per-service API key as it is listed. The key itself is stored as a
+        hash and is never returned again.
+      required: [id, name, last_used, created_at]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        last_used: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+    ServiceIpGeoInput:
+      type: object
+      description: >
+        IP and country rules of one service. A list that is left out is
+        stored as empty; enabled left out is false.
+      properties:
+        enabled: { type: boolean }
+        allow_cidrs:
+          type: array
+          description: Checked when stored; a malformed entry is refused with 400.
+          items: { type: string, example: 203.0.113.0/24 }
+        block_cidrs:
+          type: array
+          items: { type: string, example: 198.51.100.7/32 }
+        allow_countries:
+          type: array
+          description: ISO 3166-1 alpha-2 codes.
+          items: { type: string, example: DE }
+        block_countries:
+          type: array
+          description: ISO 3166-1 alpha-2 codes.
+          items: { type: string, example: US }
+    ServiceIpGeo:
+      description: The stored rules; every list is present, empty when unset.
+      allOf:
+        - $ref: '#/components/schemas/ServiceIpGeoInput'
+        - type: object
+          required: [enabled, allow_cidrs, block_cidrs, allow_countries, block_countries]
+    UpstreamCredentialBinding:
+      type: object
+      description: >
+        The upstream credential bound to a service. While none is bound the
+        object holds slot_present false and nothing else. The credential
+        itself is configured on the relay and is never returned.
+      required: [slot_present]
+      properties:
+        slot: { type: string, description: Name of the vault slot., example: OPENAI }
+        header_name: { type: string, example: Authorization }
+        header_format: { type: string, example: 'Bearer {key}' }
+        slot_present:
+          type: boolean
+          description: Whether the vault holds a value for the slot.
+    CustomDomain:
+      type: object
+      description: >
+        A custom domain of a service with the data of its certificate. The
+        private key is never returned.
+      required: [id, service_id, hostname, cert_sha256, not_before, not_after, created_at, updated_at, status, status_updated_at]
+      properties:
+        id: { type: string }
+        service_id: { type: string }
+        hostname: { type: string, description: Lower case. }
+        cert_sha256: { type: string, description: Fingerprint of the stored certificate. }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        status: { type: string, enum: [pending, active, cert_expiring, cert_expired] }
+        status_updated_at: { type: string, format: date-time }
+    SessionUser:
+      type: object
+      description: The signed-in user as login and /me return it.
+      required: [id, email, role]
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        role: { type: string }
+    Client:
+      type: object
+      description: One live client, that is one control session of a connected burrow client.
+      required: [session_id, user_id, token_name, remote_addr, os, arch, client_version, service_count, total_bytes_in, total_bytes_out]
+      properties:
+        session_id: { type: string }
+        user_id: { type: string }
+        token_name: { type: string }
+        remote_addr: { type: string }
+        os: { type: string }
+        arch: { type: string }
+        client_version: { type: string }
+        service_count: { type: integer }
+        total_bytes_in: { type: integer, format: int64 }
+        total_bytes_out: { type: integer, format: int64 }
+    ClientService:
+      type: object
+      description: One service (tunnel) of a live client.
+      required: [id, name, type, remote_port, local_addr, access_mode, bytes_in, bytes_out, total_bytes_in, total_bytes_out]
+      properties:
+        id: { type: string, description: Id of the live tunnel. }
+        name: { type: string }
+        type: { type: string, enum: [http, tcp] }
+        service_id:
+          type: string
+          description: Id of the durable service of an http tunnel; omitted for tcp.
+        remote_port: { type: integer }
+        local_addr: { type: string }
+        access_mode: { type: string }
+        bytes_in: { type: integer, format: int64, description: Since this connect. }
+        bytes_out: { type: integer, format: int64, description: Since this connect. }
+        total_bytes_in: { type: integer, format: int64, description: Stored total; survives a reconnect. }
+        total_bytes_out: { type: integer, format: int64, description: Stored total; survives a reconnect. }
+    ClientDetail:
+      description: A live client with its services.
+      allOf:
+        - $ref: '#/components/schemas/Client'
+        - type: object
+          required: [services]
+          properties:
+            services:
+              type: array
+              items: { $ref: '#/components/schemas/ClientService' }
+    Role:
+      type: object
+      description: A role as the list returns it.
+      required: [name, description, created_at, builtin, default_for_new_users]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+        builtin:
+          type: boolean
+          description: A built-in role cannot be changed or deleted.
+        default_for_new_users: { type: boolean }
+    RoleDetail:
+      description: A role with its permissions.
+      allOf:
+        - $ref: '#/components/schemas/Role'
+        - type: object
+          required: [permissions]
+          properties:
+            permissions:
+              type: array
+              description: Permission keys, see GET /api/v1/roles/permissions. Those of a built-in role are fixed in code.
+              items: { type: string }
+    RoleInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$'
+          description: Lower-case letters, digits and dashes, 1 to 64 characters, no dash at either end.
+        description: { type: string }
+        permissions:
+          type: array
+          description: Permission keys; an unknown key is refused with 400.
+          items: { type: string }
+        default_for_new_users: { type: boolean }
+    Permission:
+      type: object
+      description: One entry of the permission catalog.
+      required: [key, group, description]
+      properties:
+        key: { type: string, example: 'tokens:manage:own' }
+        group: { type: string, description: Section label for display., example: Client tokens }
+        description: { type: string }
+    AutomationToken:
+      type: object
+      description: An automation token as it is listed. The token itself is returned once, when it is created.
+      required: [id, name, prefix, user_id, role_at_mint, permissions, created_at]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        prefix:
+          type: string
+          description: The first 10 characters of the token, for display.
+          example: bua_Ab3xYz
+        user_id: { type: string }
+        role_at_mint: { type: string, description: The role of the user when the token was created. }
+        permissions:
+          type: array
+          description: The permission keys the token declares.
+          items: { type: string }
+        expires_at:
+          type: string
+          format: date-time
+          description: Left out for a token that does not expire.
+        last_used:
+          type: string
+          format: date-time
+          description: Left out until the token is used.
+        created_at: { type: string, format: date-time }
+    CacheSettingsInput:
+      type: object
+      description: >
+        Settings of the exact-match prompt cache. A field that is left out
+        is false or 0; applies_per left out is global.
+      properties:
+        enabled: { type: boolean }
+        applies_per: { type: string, enum: [global, per_endpoint, per_api_key], default: global }
+        ttl_seconds: { type: integer }
+        max_entries: { type: integer }
+        max_per_entry_kb: { type: integer }
+    CacheSettings:
+      description: Stored cache settings; every field is present.
+      allOf:
+        - $ref: '#/components/schemas/CacheSettingsInput'
+        - type: object
+          required: [enabled, applies_per, ttl_seconds, max_entries, max_per_entry_kb]
+    CacheSemanticSettingsInput:
+      type: object
+      description: Settings of the semantic (similarity) tier of the cache.
+      properties:
+        enabled: { type: boolean }
+        min_similarity: { type: number, format: double, minimum: 0, maximum: 1 }
+        embedding_mode: { type: string, enum: [local, none] }
+        embedding_url: { type: string }
+        embedding_model: { type: string }
+        fallback_policy: { type: string, enum: [treat_as_miss, return_cached_marked] }
+        promote_on_miss: { type: boolean }
+        max_index_entries: { type: integer }
+    CacheSemanticSettings:
+      description: Semantic-tier settings; every field is present.
+      allOf:
+        - $ref: '#/components/schemas/CacheSemanticSettingsInput'
+        - type: object
+          required: [enabled, min_similarity, embedding_mode, embedding_url, embedding_model, fallback_policy, promote_on_miss, max_index_entries]
+    CacheSettingsView:
+      type: object
+      description: What GET /api/v1/cache/settings returns.
+      required: [global, semantic, per_service]
+      properties:
+        global: { $ref: '#/components/schemas/CacheSettings' }
+        semantic:
+          description: >
+            The built-in defaults of the semantic tier. A service sets its
+            own values in the cache.semantic section of its AI configuration.
+          allOf: [ { $ref: '#/components/schemas/CacheSemanticSettings' } ]
+        per_service:
+          type: array
+          description: One entry per service that has an AI configuration.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/CacheSettings'
+              - type: object
+                required: [service_id, override]
+                properties:
+                  service_id: { type: string }
+                  override:
+                    type: boolean
+                    description: >
+                      Whether the service's AI configuration has a cache
+                      section. Without one the entry shows the built-in
+                      defaults.
+    CacheStats:
+      type: object
+      description: >
+        Counters of both cache tiers. The hit rates are kept in memory and
+        start at 0 after a restart.
+      required: [entries, on_disk_bytes, hit_rate_24h, semantic_entries, semantic_disk_bytes, semantic_hit_rate_24h, semantic_similar_returned_24h, semantic_promotions_24h]
+      properties:
+        entries: { type: integer }
+        on_disk_bytes: { type: integer, format: int64 }
+        hit_rate_24h: { type: number, format: double }
+        semantic_entries: { type: integer }
+        semantic_disk_bytes: { type: integer, format: int64 }
+        semantic_hit_rate_24h: { type: number, format: double }
+        semantic_similar_returned_24h: { type: integer }
+        semantic_promotions_24h: { type: integer }
+    ServiceAiConfig:
+      type: object
+      description: >
+        The AI configuration of one service: one JSON object, stored and
+        returned as it was written ({} while none was written). The sections
+        below are the ones the relay reads; a section that is left out or
+        null is off. Any other key is stored and ignored. On write only
+        cache.semantic.min_similarity (0 to 1) and
+        cache.semantic.embedding_mode (local or none) are checked.
+      additionalProperties: true
+      properties:
+        cache:
+          description: Exact-match cache of this service, with its semantic tier.
+          allOf:
+            - $ref: '#/components/schemas/CacheSettingsInput'
+            - type: object
+              properties:
+                semantic: { $ref: '#/components/schemas/CacheSemanticSettingsInput' }
+        redaction:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            for_logs_only: { type: boolean }
+        guardrails:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            action: { type: string, enum: [log_only, refuse_403, refuse_safe] }
+        inspector:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            max_requests: { type: integer }
+        anthropic:
+          type: object
+          description: Keeps the service's traffic on the metering chain; requests are not rewritten.
+          properties:
+            enabled: { type: boolean }
+    RateLimitInput:
+      type: object
+      required: [scope, dimension, limit, burst]
+      properties:
+        scope: { type: string, enum: [api_key, gateway_key, model, role, service, global] }
+        subject:
+          type: string
+          maxLength: 256
+          description: >
+            Whom the rule applies to. Required for every scope but global,
+            which must not have one. For gateway_key the key's id, for model
+            the model's name on the gateway endpoints.
+        dimension:
+          type: string
+          enum: [rpm, bpm]
+          description: rpm counts requests, bpm estimated bytes / 4.
+        limit: { type: integer, minimum: 1 }
+        burst: { type: integer, minimum: 1 }
+        window:
+          type: string
+          enum: [minute, day]
+          default: minute
+          description: A day runs from UTC midnight.
+    RateLimit:
+      description: A stored rate-limit rule.
+      allOf:
+        - $ref: '#/components/schemas/RateLimitInput'
+        - type: object
+          required: [id, subject, window]
+          properties:
+            id: { type: string }
+    RateLimitUsage:
+      type: object
+      required: [limits]
+      properties:
+        limits:
+          type: array
+          description: The rules that apply to the subject, each with its live counters.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/RateLimit'
+              - type: object
+                required: [used, reset_seconds]
+                properties:
+                  used: { type: integer, format: int64 }
+                  reset_seconds: { type: integer }
+    CostPricingEntryInput:
+      type: object
+      required: [model]
+      properties:
+        provider:
+          type: string
+          description: Provider slug. Left out, the price applies to the model under any provider.
+        model: { type: string }
+        input_per_million: { type: number, format: double, minimum: 0 }
+        output_per_million: { type: number, format: double, minimum: 0 }
+    CostPricingInput:
+      type: object
+      description: A whole price table; it replaces the one in use.
+      required: [version, entries]
+      properties:
+        version: { type: string, minLength: 1 }
+        entries:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/CostPricingEntryInput' }
+    CostPricing:
+      type: object
+      description: The price table in use. Only entries that name a provider are listed.
+      required: [version, entries]
+      properties:
+        version: { type: string }
+        entries:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/CostPricingEntryInput'
+              - type: object
+                required: [provider, model, input_per_million, output_per_million]
+    CostSummary:
+      type: object
+      required: [window, total_usd, tokens_in, tokens_out, top_consumers, pct_of_budget]
+      properties:
+        window: { type: string, enum: [today, week, month, year] }
+        total_usd: { type: number, format: double }
+        tokens_in: { type: integer, format: int64 }
+        tokens_out: { type: integer, format: int64 }
+        top_consumers:
+          type: array
+          items:
+            type: object
+            required: [api_key_id, service_id, tokens_in, tokens_out, usd]
+            properties:
+              api_key_id: { type: string }
+              service_id: { type: string }
+              tokens_in: { type: integer, format: int64 }
+              tokens_out: { type: integer, format: int64 }
+              usd: { type: number, format: double }
+        pct_of_budget:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            For window today, the highest ratio of today's spend to daily_usd
+            over the budgets. Null for the other windows and whenever there
+            is no such ratio.
+        group_by:
+          type: string
+          enum: [gateway_key, model, provider, target_model, dialect]
+          description: Present only when the group_by parameter was sent.
+        groups:
+          type: array
+          description: Present only when the group_by parameter was sent.
+          items:
+            type: object
+            required: [key, requests, tokens_in, tokens_out, usd]
+            properties:
+              key: { type: string }
+              requests: { type: integer, format: int64 }
+              tokens_in: { type: integer, format: int64 }
+              tokens_out: { type: integer, format: int64 }
+              usd: { type: number, format: double }
+    BudgetInput:
+      type: object
+      required: [scope, action_on_exceed]
+      properties:
+        scope: { type: string, enum: [api_key, service, user, global, gateway_key, model] }
+        subject_id:
+          type: string
+          maxLength: 256
+          description: Required for every scope but global, which must not have one. Taken as sent, never trimmed.
+        daily_usd:
+          type: number
+          format: double
+          minimum: 0
+          description: At least one of daily_usd and daily_tokens must be above 0.
+        daily_tokens: { type: integer, format: int64, minimum: 0 }
+        action_on_exceed: { type: string, enum: [alert_webhook, throttle_zero, disable_key] }
+        alert_webhook_id: { type: string, nullable: true }
+    Budget:
+      description: A stored budget with today's usage.
+      allOf:
+        - $ref: '#/components/schemas/BudgetInput'
+        - type: object
+          required: [id, subject_id, daily_usd, daily_tokens, alert_webhook_id, current_usd, current_tokens, exceeded]
+          properties:
+            id: { type: string }
+            current_usd: { type: number, format: double }
+            current_tokens: { type: integer, format: int64 }
+            exceeded: { type: boolean }
+    RedactionRuleInput:
+      type: object
+      required: [name, pattern, action, scope]
+      properties:
+        name: { type: string }
+        pattern: { type: string, description: A regular expression in Go (RE2) syntax. }
+        action: { type: string, enum: [mask, drop, hash] }
+        scope: { type: string, enum: [request_body, response_body, both] }
+    RedactionRule:
+      description: A redaction rule, built-in or custom.
+      allOf:
+        - $ref: '#/components/schemas/RedactionRuleInput'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string }
+    RedactionRules:
+      type: object
+      required: [built_in, custom]
+      properties:
+        built_in:
+          type: array
+          description: The bundled rules. They cannot be changed or deleted (409).
+          items: { $ref: '#/components/schemas/RedactionRule' }
+        custom:
+          type: array
+          items: { $ref: '#/components/schemas/RedactionRule' }
+    RedactionSettingsInput:
+      type: object
+      description: Global redaction settings. A field that is left out is false or empty.
+      properties:
+        enabled: { type: boolean }
+        redact_for_logs_only: { type: boolean }
+        rule_ids:
+          type: array
+          description: Ids of the selected rules.
+          items: { type: string }
+        presidio_enabled: { type: boolean }
+        presidio_url:
+          type: string
+          description: Left out of an answer while it is empty.
+    RedactionSettings:
+      description: Stored redaction settings.
+      allOf:
+        - $ref: '#/components/schemas/RedactionSettingsInput'
+        - type: object
+          required: [enabled, redact_for_logs_only, rule_ids, presidio_enabled]
+    RedactionSettingsView:
+      type: object
+      description: What GET /api/v1/redaction/settings returns.
+      required: [global, per_service]
+      properties:
+        global: { $ref: '#/components/schemas/RedactionSettings' }
+        per_service:
+          type: array
+          description: One entry per service that has an AI configuration.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/RedactionSettings'
+              - type: object
+                required: [service_id, override]
+                properties:
+                  service_id: { type: string }
+                  override:
+                    type: boolean
+                    description: >
+                      Whether the service's AI configuration has a redaction
+                      section. Without one the entry shows the defaults.
+    GuardrailSettingsInput:
+      type: object
+      required: [action]
+      properties:
+        enabled: { type: boolean }
+        action: { type: string, enum: [log_only, refuse_403, refuse_safe] }
+    GuardrailSettings:
+      description: Stored guardrail settings.
+      allOf:
+        - $ref: '#/components/schemas/GuardrailSettingsInput'
+        - type: object
+          required: [enabled]
+    GuardrailSettingsView:
+      type: object
+      description: What GET /api/v1/guardrails/settings returns.
+      required: [global, per_service]
+      properties:
+        global: { $ref: '#/components/schemas/GuardrailSettings' }
+        per_service:
+          type: array
+          description: One entry per service that has an AI configuration.
+          items:
+            type: object
+            required: [service_id, enabled, action]
+            properties:
+              service_id: { type: string }
+              enabled:
+                type: boolean
+                nullable: true
+                description: Null while the service has no guardrails section of its own.
+              action:
+                type: string
+                nullable: true
+                description: log_only, refuse_403 or refuse_safe; null while the service has no guardrails section of its own.
+    InspectorEntry:
+      type: object
+      description: >
+        One captured request with its response. A body is a string: the
+        text itself when it is valid UTF-8, else base64; the matching
+        *_encoding field says which. Fields that are empty are left out,
+        except the ones listed as required.
+      required: [id, service_id, ts, method, path, status, duration_ms, bytes_in, bytes_out, translated, dropped, provider, model, gateway_key_id]
+      properties:
+        id: { type: string }
+        service_id: { type: string }
+        api_key_id: { type: string }
+        ts: { type: string, format: date-time }
+        method: { type: string }
+        path: { type: string }
+        status: { type: integer }
+        duration_ms: { type: integer, format: int64 }
+        bytes_in: { type: integer, format: int64 }
+        bytes_out: { type: integer, format: int64 }
+        req_headers:
+          type: object
+          additionalProperties: { type: string }
+        req_body: { type: string }
+        req_body_encoding: { type: string, enum: [utf8, base64] }
+        resp_headers:
+          type: object
+          additionalProperties: { type: string }
+        resp_body: { type: string }
+        resp_body_encoding: { type: string, enum: [utf8, base64] }
+        truncated: { type: boolean }
+        bytes_omitted: { type: integer, format: int64 }
+        cache: { type: string, enum: [HIT, MISS, SKIP] }
+        redactions:
+          type: array
+          items:
+            type: object
+            required: [rule, count]
+            properties:
+              rule: { type: string }
+              count: { type: integer }
+        trace_id: { type: string }
+        remote_ip: { type: string }
+        mcp:
+          type: object
+          description: Set when the request is a recognised MCP (JSON-RPC) call.
+          required: [method]
+          properties:
+            method: { type: string }
+            tool: { type: string }
+            params:
+              description: The call's params as they were sent; any JSON value.
+        adapter_lossy: { type: boolean }
+        translated:
+          type: string
+          enum: ['', messages-chat, responses-chat, chat-messages, responses-messages]
+          description: >
+            The pair that translated the request, as in the response header
+            Burrow-Translated. Empty for a request served in its own format.
+        dropped:
+          type: array
+          items: { type: string }
+          description: >
+            What the translation left out, as in the response header
+            Burrow-Dropped: sorted names, never null, empty when nothing
+            was left out. A final "more" says the list was cut; it is not a
+            name. A name can end in text the client chose (after a prefix
+            such as "unknown:"); treat every name as plain text.
+        provider:
+          type: string
+          description: >
+            Slug of the provider that answered. Empty for a request that came
+            without a gateway key (a service's own address, or a service API
+            key on /ai/<provider>/).
+        model:
+          type: string
+          description: >
+            The model the caller asked for, under the name it has on the
+            gateway endpoints ("<provider>/<id>" on a provider's own path).
+            Empty where provider is, and for a request that names no model.
+        gateway_key_id:
+          type: string
+          description: Id of the gateway key the caller presented, or empty.
+    InspectorReplayRequest:
+      type: object
+      description: >
+        Optional overrides for a replay. Without a body the captured request
+        is sent again as it was.
+      properties:
+        headers:
+          type: object
+          description: Set on top of the captured request headers.
+          additionalProperties: { type: string }
+        body:
+          type: string
+          description: Replaces the captured request body when it is not empty.
+        body_encoding: { type: string, enum: [utf8, base64], default: utf8 }
+        follow_routing:
+          type: boolean
+          description: Accepted; the relay does not act on it.
+    AuditEvent:
+      type: object
+      description: One row of the audit log. Rows are chained by hash.
+      required: [id, ts, actor_id, actor_email, action, subject_id, subject_label, result, source_ip, user_agent, request_id, payload, prev_hash, hash]
+      properties:
+        id:
+          type: string
+          description: The id of the last row of a page is the before_id of the next, older page.
+        ts: { type: string, format: date-time }
+        actor_id: { type: string }
+        actor_email: { type: string }
+        action: { type: string, example: service.create }
+        subject_id: { type: string }
+        subject_label: { type: string }
+        result: { type: string, example: ok }
+        source_ip: { type: string }
+        user_agent: { type: string }
+        request_id: { type: string }
+        payload:
+          type: object
+          description: Details of the action; {} when there are none.
+          additionalProperties: true
+        prev_hash: { type: string }
+        hash: { type: string }
+    WebhookEvent:
+      type: string
+      description: The closed set of events a webhook can subscribe to.
+      enum:
+        - webhook.test
+        - tunnel.connected
+        - tunnel.disconnected
+        - tunnel.failed
+        - access.denied
+        - quota.exceeded
+        - budget.exceeded
+        - redaction.applied
+        - guardrail.refused
+        - cert.expiring
+        - audit.exported
+        - backup.completed
+        - ai.upstream_error
+        - ai.cache_promotion
+        - audit.policy_change
+        - service.created
+        - service.deleted
+        - connection.session_summary
+        - custom_domain.cert.expiring
+    WebhookInput:
+      type: object
+      required: [name, url, events]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Not blank after trimming. maxLength counts bytes.
+        url: { type: string, format: uri, description: An http or https URL. }
+        events:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/WebhookEvent' }
+        paused: { type: boolean }
+        payload_template:
+          type: string
+          description: >
+            Optional Go template of the request body, checked against the
+            first event when it is stored. Left out or empty, the body is
+            {"event": ..., "data": ...}.
+    Webhook:
+      type: object
+      description: >
+        A webhook as it is listed. The signing secret is stored as a hash and
+        is returned once, in the answer to the creation.
+      required: [id, name, url, events, paused, status, consecutive_failures, created_at]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        url: { type: string }
+        events:
+          type: array
+          items: { type: string }
+        paused: { type: boolean }
+        status: { type: string, enum: [ok, failing] }
+        consecutive_failures: { type: integer }
+        first_failure_at:
+          type: string
+          format: date-time
+          description: Left out while the webhook is not failing.
+        created_at: { type: string, format: date-time }
+        signing_secret:
+          type: string
+          description: Only in the answer to the creation ("whsec_" and 64 hex characters). Shown this once.
+    WebhookDelivery:
+      type: object
+      description: One delivery attempt.
+      required: [id, webhook_id, event, ts, status_code, attempt, latency_ms, request_body_preview, response_body_preview]
+      properties:
+        id: { type: string }
+        webhook_id: { type: string }
+        event: { type: string }
+        ts: { type: string, format: date-time }
+        status_code: { type: integer }
+        attempt: { type: integer }
+        latency_ms: { type: integer }
+        request_body_preview: { type: string }
+        response_body_preview: { type: string }
+    Settings:
+      type: object
+      description: >
+        The non-secret settings; every value is a string. A key that was
+        never set is left out of an answer. On write a key that is not
+        listed here is ignored and a listed key that is left out keeps its
+        value. The SMTP password is not a setting: the relay reads it from
+        its environment.
+      properties:
+        smtp.host: { type: string }
+        smtp.port: { type: string, example: '587' }
+        smtp.username: { type: string }
+        smtp.from: { type: string }
+        smtp.tls: { type: string, enum: [none, starttls, implicit] }
+        connection_logs.rollup_include_top_ips:
+          type: string
+          description: >
+            "false" turns the top_source_ips lists of the connection-log
+            rollups off and removes the stored ones; any other value, or
+            none, leaves them on.
+          example: 'true'
+    RetentionSettingsInput:
+      type: object
+      description: How long the relay keeps its records. A field that is left out keeps its stored value.
+      properties:
+        audit_retention_days:
+          type: integer
+          minimum: 0
+          maximum: 3650
+          description: 0 keeps every entry forever.
+        inspector_retention_count: { type: integer, minimum: 1, maximum: 1000 }
+        usage_retention_days: { type: integer, minimum: 1, maximum: 3650 }
+        redaction_retention_days: { type: integer, minimum: 1, maximum: 3650 }
+        connection_logs_retention_days: { type: integer, minimum: 1, maximum: 3650 }
+        connection_logs_rollups_retention_days:
+          type: integer
+          minimum: 0
+          maximum: 3650
+          description: 0 keeps every rollup forever.
+        webhook_deliveries_retention_days: { type: integer, minimum: 1, maximum: 365 }
+    RetentionSettings:
+      type: object
+      description: The stored retention settings. A value that was never set reads as 0.
+      required: [audit_retention_days, inspector_retention_count, usage_retention_days, redaction_retention_days, connection_logs_retention_days, connection_logs_rollups_retention_days, webhook_deliveries_retention_days, audit_retention_note]
+      properties:
+        audit_retention_days: { type: integer }
+        inspector_retention_count: { type: integer }
+        usage_retention_days: { type: integer }
+        redaction_retention_days: { type: integer }
+        connection_logs_retention_days: { type: integer }
+        connection_logs_rollups_retention_days: { type: integer }
+        webhook_deliveries_retention_days: { type: integer }
+        audit_retention_note:
+          type: string
+          description: Fixed text that says which audit entries the retention removes and which it keeps.
+    Backup:
+      type: object
+      description: One backup archive in the relay's backup directory.
+      required: [id, path, taken_at, version, size_bytes, db_sha256]
+      properties:
+        id: { type: string, description: The archive's file name without ".tar.gz". }
+        path: { type: string, description: Path of the archive on the relay. }
+        taken_at: { type: string, format: date-time }
+        version: { type: string, description: The relay version that wrote the archive. }
+        size_bytes: { type: integer, format: int64 }
+        db_sha256: { type: string }
 
   responses:
     Unauthorized:
@@ -934,6 +1807,7 @@ paths:
   /metrics:
     get:
       tags: [metrics]
+      operationId: metricsGet
       summary: Prometheus 0.0.4 scrape (closed metric set)
       description: |
         Returns the Burrow closed-metric set in Prometheus text exposition
@@ -953,6 +1827,8 @@ paths:
   /api/v1/auth/login:
     post:
       tags: [auth]
+      operationId: authLogin
+      x-burrow-mcp: false
       summary: Password login
       security: []
       requestBody:
@@ -970,7 +1846,7 @@ paths:
           description: Session cookie issued.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/User' }
+              schema: { $ref: '#/components/schemas/SessionUser' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429':
@@ -982,6 +1858,8 @@ paths:
   /api/v1/auth/logout:
     post:
       tags: [auth]
+      operationId: authLogout
+      x-burrow-mcp: false
       summary: Clear the session cookie
       responses:
         '204': { description: Session cleared. }
@@ -990,6 +1868,8 @@ paths:
   /api/v1/auth/change-password:
     post:
       tags: [auth]
+      operationId: authChangePassword
+      x-burrow-mcp: false
       summary: Change the caller's password
       requestBody:
         required: true
@@ -1009,13 +1889,14 @@ paths:
   /api/v1/me:
     get:
       tags: [auth]
+      operationId: meGet
       summary: Current authenticated principal
       responses:
         '200':
           description: The signed-in user.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/User' }
+              schema: { $ref: '#/components/schemas/SessionUser' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ────────────────────────────────────────────────────────────────────────
@@ -1024,6 +1905,7 @@ paths:
   /api/v1/sessions:
     get:
       tags: [sessions]
+      operationId: sessionsList
       summary: List the caller's active sessions
       responses:
         '200':
@@ -1038,6 +1920,7 @@ paths:
   /api/v1/sessions/{id}:
     delete:
       tags: [sessions]
+      operationId: sessionDelete
       summary: Revoke one of the caller's sessions
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -1047,6 +1930,7 @@ paths:
   /api/v1/sessions/revoke-all:
     post:
       tags: [sessions]
+      operationId: sessionsRevokeAll
       summary: Revoke every session except the current one
       responses:
         '200':
@@ -1055,8 +1939,9 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [revoked]
                 properties:
-                  revoked: { type: integer }
+                  revoked: { type: integer, format: int64 }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ────────────────────────────────────────────────────────────────────────
@@ -1065,6 +1950,7 @@ paths:
   /api/v1/tokens:
     get:
       tags: [tokens]
+      operationId: clientTokensList
       summary: List the caller's client tokens
       responses:
         '200':
@@ -1077,6 +1963,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [tokens]
+      operationId: clientTokenCreate
       summary: Issue a new client token (plaintext returned ONCE)
       requestBody:
         required: true
@@ -1088,21 +1975,23 @@ paths:
               properties:
                 name: { type: string }
       responses:
-        '200':
+        '201':
           description: Token created.
           content:
             application/json:
               schema:
                 type: object
+                required: [name, token]
                 properties:
-                  id: { type: string }
                   name: { type: string }
-                  token: { type: string }
+                  token: { type: string, description: The client token. Shown this once. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/tokens/{id}:
     delete:
       tags: [tokens]
+      operationId: clientTokenDelete
       summary: Revoke a client token
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -1116,6 +2005,7 @@ paths:
   /api/v1/tunnels:
     get:
       tags: [tunnels]
+      operationId: tunnelsList
       summary: List the caller's live tunnels
       responses:
         '200':
@@ -1130,13 +2020,21 @@ paths:
   /api/v1/tunnels/{id}/access-mode:
     put:
       tags: [tunnels]
+      operationId: tunnelAccessModeUpdate
       summary: Set tunnel access mode (v0.2 back-compat — delegates to services)
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/AccessModeReq' }
+            schema:
+              type: object
+              required: [access_mode]
+              properties:
+                access_mode:
+                  type: string
+                  enum: [open, api_key, burrow_login]
+                  description: mtls needs a CA bundle and is set with PUT /api/v1/services/{serviceID}/access-mode.
       responses:
         '204': { description: Access mode set. }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -1150,6 +2048,7 @@ paths:
   /api/v1/services:
     get:
       tags: [services]
+      operationId: servicesList
       summary: List services visible to the caller
       description: |
         The backing rows of direct AI providers (type "direct") are not
@@ -1167,6 +2066,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [services]
+      operationId: serviceCreate
       summary: Admin pre-provisions a service row (v0.5.2)
       description: |
         Inserts a services row exactly as supplied so dashboard / e2e flows
@@ -1174,7 +2074,6 @@ paths:
         admin. Audit: `service.create` with payload `{by_admin: true}`.
         Client-side `RegisterService` continues to upsert against the same
         row when the client subsequently connects with the same `service_id`.
-      operationId: postService
       requestBody:
         required: true
         content:
@@ -1197,6 +2096,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [id, slug, created_at]
                 properties:
                   id:         { type: string }
                   slug:       { type: string }
@@ -1209,6 +2109,7 @@ paths:
   /api/v1/services/slug-suggestion:
     get:
       tags: [services]
+      operationId: serviceSlugSuggestionGet
       summary: Suggest a slug no service uses
       description: A suggestion only; uniqueness is enforced when the slug is saved.
       responses:
@@ -1218,6 +2119,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [slug]
                 properties:
                   slug: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1225,6 +2127,7 @@ paths:
   /api/v1/services/{serviceID}:
     get:
       tags: [services]
+      operationId: serviceGet
       summary: Service detail (config + live state)
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -1232,13 +2135,14 @@ paths:
           description: Service detail.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Service' }
+              schema: { $ref: '#/components/schemas/ServiceDetail' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/services/{serviceID}/access-mode:
     put:
       tags: [services]
+      operationId: serviceAccessModeUpdate
       summary: Set the service's access mode
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
@@ -1256,6 +2160,7 @@ paths:
   /api/v1/services/{serviceID}/slug:
     put:
       tags: [services]
+      operationId: serviceSlugUpdate
       summary: Change the service's slug
       description: The old URL stops working immediately; there is no redirect.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
@@ -1275,6 +2180,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [slug, url]
                 properties:
                   slug: { type: string }
                   url:  { type: string }
@@ -1286,6 +2192,7 @@ paths:
   /api/v1/services/{serviceID}/gateway-only:
     put:
       tags: [services]
+      operationId: serviceGatewayOnlyUpdate
       summary: Reach the service through the AI gateway only
       description: |
         With `gateway_only` true the service answers 404 at `/svc/<slug>/`, on
@@ -1311,6 +2218,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [gateway_only]
                 properties:
                   gateway_only: { type: boolean }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -1322,6 +2230,7 @@ paths:
   /api/v1/services/{serviceID}/api-keys:
     get:
       tags: [services]
+      operationId: serviceApiKeysList
       summary: List per-service API keys
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -1331,10 +2240,11 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/ServiceApiKey' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [services]
+      operationId: serviceApiKeyCreate
       summary: Mint a new per-service API key (plaintext returned ONCE)
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
@@ -1347,21 +2257,23 @@ paths:
               properties:
                 name: { type: string }
       responses:
-        '200':
+        '201':
           description: Key created.
           content:
             application/json:
               schema:
                 type: object
+                required: [id, name, key]
                 properties:
                   id: { type: string }
                   name: { type: string }
-                  key: { type: string }
+                  key: { type: string, description: The key. Shown this once. }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/services/{serviceID}/api-keys/{id}:
     delete:
       tags: [services]
+      operationId: serviceApiKeyDelete
       summary: Revoke a per-service API key
       parameters:
         - { $ref: '#/components/parameters/PathServiceID' }
@@ -1374,6 +2286,7 @@ paths:
   /api/v1/services/{serviceID}/access-policy:
     get:
       tags: [services]
+      operationId: serviceAccessPolicyGet
       summary: Get the role allowlist for burrow_login access
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -1383,6 +2296,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [roles]
                 properties:
                   roles:
                     type: array
@@ -1390,6 +2304,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
     put:
       tags: [services]
+      operationId: serviceAccessPolicyUpdate
       summary: Replace the role allowlist
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
@@ -1409,6 +2324,7 @@ paths:
   /api/v1/services/{serviceID}/ip-geo:
     get:
       tags: [services]
+      operationId: serviceIpGeoGet
       summary: Get per-service IP / Geo allow / deny rules
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -1416,17 +2332,18 @@ paths:
           description: IP/Geo configuration.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/ServiceIpGeo' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     put:
       tags: [services]
+      operationId: serviceIpGeoUpdate
       summary: Replace per-service IP / Geo rules
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/ServiceIpGeoInput' }
       responses:
         '204': { description: Updated. }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1434,22 +2351,17 @@ paths:
   /api/v1/services/{serviceID}/cache/entries:
     delete:
       tags: [services, cache]
+      operationId: serviceCacheEntriesDelete
       summary: Purge per-service exact-cache entries
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
-        '200':
-          description: Count purged.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  deleted: { type: integer }
+        '204': { description: Purged. Nothing is returned. }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/services/{serviceID}/ai-config:
     get:
       tags: [services, cache]
+      operationId: serviceAiConfigGet
       summary: Read per-service AI gateway configuration
       description: >
         Returns the stored service-level AI config blob, or an empty object
@@ -1461,12 +2373,13 @@ paths:
           description: The stored AI config blob (or {} if unset).
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/ServiceAiConfig' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [services, cache]
+      operationId: serviceAiConfigUpdate
       summary: Store per-service AI gateway configuration
       description: >
         Persists the service-level AI config blob. Validates
@@ -1479,7 +2392,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/ServiceAiConfig' }
       responses:
         '204': { description: Saved. }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -1493,44 +2406,45 @@ paths:
   /api/v1/services/{serviceID}/inspector/requests:
     get:
       tags: [inspector]
+      operationId: inspectorRequestsList
       summary: List captured requests
       parameters:
         - { $ref: '#/components/parameters/PathServiceID' }
-        - name: q
-          in: query
-          description: Text the method, path, provider or model contains (case-sensitive).
-          schema: { type: string }
         - name: status
           in: query
+          description: Only requests answered with this status.
           schema: { type: integer, minimum: 100, maximum: 599 }
+        - name: q
+          in: query
+          description: Only requests whose method, path, provider or model contains this text (case-sensitive).
+          schema: { type: string }
         - name: since
           in: query
-          description: Only requests at or after this time.
+          description: Only requests captured at or after this time.
           schema: { type: string, format: date-time }
         - name: until
           in: query
-          description: Only requests at or before this time.
+          description: Only requests captured at or before this time.
           schema: { type: string, format: date-time }
         - name: limit
           in: query
-          description: At most this many, newest first; 0 or absent for all.
+          description: At most this many requests. 0 or left out - no limit.
           schema: { type: integer, minimum: 0 }
       responses:
         '200':
-          description: >
-            List of request envelopes, newest first. Each one carries
-            translated and dropped, provider, model and gateway_key_id, see
-            InspectorTranslation.
+          description: The captured requests, newest first.
           content:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/InspectorTranslation' }
+                items: { $ref: '#/components/schemas/InspectorEntry' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/services/{serviceID}/inspector/requests/{rid}:
     get:
       tags: [inspector]
+      operationId: inspectorRequestGet
       summary: Get a captured request envelope
       parameters:
         - { $ref: '#/components/parameters/PathServiceID' }
@@ -1540,18 +2454,17 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: >
-            Request envelope. It carries translated and dropped, provider,
-            model and gateway_key_id, see InspectorTranslation.
+          description: The captured request.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/InspectorTranslation' }
+              schema: { $ref: '#/components/schemas/InspectorEntry' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/services/{serviceID}/inspector/requests/{rid}/replay:
     post:
       tags: [inspector]
+      operationId: inspectorRequestReplay
       summary: Re-fire the captured request through the proxy chain
       parameters:
         - { $ref: '#/components/parameters/PathServiceID' }
@@ -1559,13 +2472,29 @@ paths:
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InspectorReplayRequest' }
       responses:
         '200':
-          description: Replay result envelope.
+          description: The request was sent again; new_entry is what the inspector captured of it.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [new_entry]
+                properties:
+                  new_entry: { $ref: '#/components/schemas/InspectorEntry' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502':
+          description: The replay failed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '503':
           description: Replay engine unavailable.
           content:
@@ -1575,6 +2504,7 @@ paths:
   /api/v1/services/{serviceID}/inspector/requests/{rid}/replay-compare:
     post:
       tags: [inspector]
+      operationId: inspectorRequestReplayCompare
       summary: Replay and diff against the original response
       parameters:
         - { $ref: '#/components/parameters/PathServiceID' }
@@ -1582,17 +2512,52 @@ paths:
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InspectorReplayRequest' }
       responses:
         '200':
-          description: Diff envelope.
+          description: The captured request, its replay (sent past the cache) and what differs between the two responses.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [original, replayed, diff]
+                properties:
+                  original: { $ref: '#/components/schemas/InspectorEntry' }
+                  replayed: { $ref: '#/components/schemas/InspectorEntry' }
+                  diff:
+                    type: object
+                    required: [headers, body]
+                    properties:
+                      headers:
+                        type: array
+                        description: One line per response header that differs.
+                        items: { type: string }
+                      body:
+                        type: string
+                        description: A unified diff of the response bodies; for a binary response a summary of the sizes.
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502':
+          description: The replay failed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: Replay engine unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/services/{serviceID}/inspector/stream:
     get:
       tags: [inspector]
+      operationId: inspectorStream
+      x-burrow-mcp: false
       summary: SSE stream of newly-captured requests (no timeout, no CSRF)
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -1609,58 +2574,57 @@ paths:
   /api/v1/cache/settings:
     get:
       tags: [cache]
+      operationId: cacheSettingsGet
       summary: Get prompt-cache settings
       responses:
         '200':
           description: Cache settings.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/CacheSettingsView' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     put:
       tags: [cache]
+      operationId: cacheSettingsUpdate
       summary: Replace prompt-cache settings
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/CacheSettingsInput' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/cache/stats:
     get:
       tags: [cache]
+      operationId: cacheStatsGet
       summary: Cache hit / miss / size counters
       responses:
         '200':
           description: Stats.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/CacheStats' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/cache/entries:
     delete:
       tags: [cache]
+      operationId: cacheEntriesDelete
       summary: Purge ALL cache entries (admin / ai:configure:any)
       responses:
-        '200':
-          description: Count purged.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  deleted: { type: integer }
+        '204': { description: Purged, the exact-match and the semantic tier. Nothing is returned. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/cache/semantic/entries:
     delete:
       tags: [cache]
+      operationId: cacheSemanticEntriesDelete
       summary: Purge ALL semantic cache entries (admin / ai:configure:any)
       description: >
         Clears the semantic similarity tier only; the exact-match cache is
@@ -1677,50 +2641,55 @@ paths:
   /api/v1/redaction/rules:
     get:
       tags: [redaction]
+      operationId: redactionRulesList
       summary: List redaction rules
       responses:
         '200':
-          description: List of rules.
+          description: The built-in and the custom rules.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RedactionRules' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [redaction]
+      operationId: redactionRuleCreate
       summary: Create a new redaction rule
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/RedactionRuleInput' }
       responses:
         '201':
           description: Rule created.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RedactionRule' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/redaction/rules/{id}:
     put:
       tags: [redaction]
+      operationId: redactionRuleUpdate
       summary: Update a redaction rule
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/RedactionRuleInput' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Built-in rules are read-only. }
     delete:
       tags: [redaction]
+      operationId: redactionRuleDelete
       summary: Delete a redaction rule
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -1731,22 +2700,24 @@ paths:
   /api/v1/redaction/settings:
     get:
       tags: [redaction]
+      operationId: redactionSettingsGet
       summary: Get redaction settings
       responses:
         '200':
           description: Settings.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RedactionSettingsView' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     put:
       tags: [redaction]
+      operationId: redactionSettingsUpdate
       summary: Replace redaction settings
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/RedactionSettingsInput' }
       responses:
         '204': { description: Updated. }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1755,18 +2726,38 @@ paths:
   /api/v1/redaction/preview:
     post:
       tags: [redaction]
+      operationId: redactionPreview
       summary: Preview redaction of a sample payload
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema:
+              type: object
+              properties:
+                body:
+                  type: string
+                  description: The text to scan, at most 1 MiB. An empty text has no match.
+                scope: { type: string, enum: [request_body, response_body, both], default: request_body }
       responses:
         '200':
           description: Preview result.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [matches]
+                properties:
+                  matches:
+                    type: array
+                    items:
+                      type: object
+                      required: [rule, start, end, value]
+                      properties:
+                        rule: { type: string, description: Name of the rule that matched. }
+                        start: { type: integer, description: Byte offset of the match in body. }
+                        end: { type: integer, description: Byte offset after the match. }
+                        value: { type: string, description: The matched text. }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ────────────────────────────────────────────────────────────────────────
@@ -1775,30 +2766,34 @@ paths:
   /api/v1/guardrails/settings:
     get:
       tags: [guardrails]
+      operationId: guardrailSettingsGet
       summary: Get prompt-injection guardrail settings
       responses:
         '200':
           description: Settings.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/GuardrailSettingsView' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     put:
       tags: [guardrails]
+      operationId: guardrailSettingsUpdate
       summary: Replace guardrail settings
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/GuardrailSettingsInput' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/guardrails/patterns:
     get:
       tags: [guardrails]
+      operationId: guardrailPatternsList
       summary: List bundled guardrail pattern names + descriptions
       responses:
         '200':
@@ -1807,7 +2802,12 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items:
+                  type: object
+                  required: [id, description]
+                  properties:
+                    id: { type: string }
+                    description: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ────────────────────────────────────────────────────────────────────────
@@ -1816,6 +2816,7 @@ paths:
   /api/v1/rate-limits:
     get:
       tags: [rate-limits]
+      operationId: rateLimitsList
       summary: List configured rate-limit rules
       description: >
         Each rule is {id, scope, subject, dimension, limit, burst, window}.
@@ -1834,10 +2835,11 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/RateLimit' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [rate-limits]
+      operationId: rateLimitCreate
       summary: Create a rate-limit rule
       description: >
         Body {scope, subject, dimension, limit, burst, window}. scope is one
@@ -1849,13 +2851,13 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/RateLimitInput' }
       responses:
         '201':
           description: Created.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RateLimit' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1863,6 +2865,7 @@ paths:
   /api/v1/rate-limits/usage:
     get:
       tags: [rate-limits]
+      operationId: rateLimitUsageGet
       summary: Current rate-limit consumption per rule
       description: >
         The rules that apply to one subject, each with used and
@@ -1881,12 +2884,10 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: Usage rows.
+          description: The rules that apply, each with used and reset_seconds.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RateLimitUsage' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1894,19 +2895,23 @@ paths:
   /api/v1/rate-limits/{id}:
     put:
       tags: [rate-limits]
+      operationId: rateLimitUpdate
       summary: Update a rate-limit rule
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/RateLimitInput' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [rate-limits]
+      operationId: rateLimitDelete
       summary: Delete a rate-limit rule
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -1920,30 +2925,34 @@ paths:
   /api/v1/cost/pricing:
     get:
       tags: [cost]
+      operationId: costPricingGet
       summary: Get the model-pricing table
       responses:
         '200':
           description: Pricing rows.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/CostPricing' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     put:
       tags: [cost]
+      operationId: costPricingUpdate
       summary: Replace the pricing table (admin)
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/CostPricingInput' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/cost/summary:
     get:
       tags: [cost]
+      operationId: costSummaryGet
       summary: Aggregated cost summary
       description: >
         Admin, or a role with quotas:read:any. The body is {window,
@@ -1979,7 +2988,7 @@ paths:
           description: Summary rows.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/CostSummary' }
         '400':
           description: >
             "window must be one of today|week|month|year" or "group_by must be
@@ -1993,6 +3002,8 @@ paths:
   /api/v1/cost/export:
     get:
       tags: [cost]
+      operationId: costExport
+      x-burrow-mcp: false
       summary: CSV export of cost data
       description: >
         One row per (service, service key, kind, gateway key, dialect,
@@ -2001,17 +3012,29 @@ paths:
         gateway_key_id, dialect, provider, requested_model, target_model and
         requests follow the token and byte columns; they are empty for
         traffic that did not come through a gateway key.
+      parameters:
+        - name: format
+          in: query
+          schema: { type: string, enum: [ndjson, csv], default: ndjson }
+        - name: window
+          in: query
+          schema: { type: string, enum: [today, week, month, year], default: today }
       responses:
         '200':
-          description: CSV.
+          description: A file download in the chosen format.
           content:
+            application/x-ndjson:
+              schema: { type: string }
             text/csv:
               schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/budgets:
     get:
       tags: [cost]
+      operationId: budgetsList
       summary: List budgets (admin)
       description: >
         Each budget is {id, scope, subject_id, daily_usd, daily_tokens,
@@ -2038,11 +3061,12 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/Budget' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [cost]
+      operationId: budgetCreate
       summary: Create a budget
       description: >
         Body {scope, subject_id, daily_usd, daily_tokens, action_on_exceed,
@@ -2060,13 +3084,13 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/BudgetInput' }
       responses:
         '201':
           description: Created.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/Budget' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -2074,6 +3098,7 @@ paths:
   /api/v1/budgets/{id}:
     put:
       tags: [cost]
+      operationId: budgetUpdate
       summary: Update a budget
       description: Same body and rules as creating one; every field is replaced.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
@@ -2081,7 +3106,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/BudgetInput' }
       responses:
         '204': { description: Updated. }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -2089,6 +3114,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [cost]
+      operationId: budgetDelete
       summary: Delete a budget
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2102,22 +3128,65 @@ paths:
   /api/v1/audit/events:
     get:
       tags: [audit]
+      operationId: auditEventsList
       summary: Query audit events
+      parameters:
+        - name: action
+          in: query
+          description: Only events with exactly this action.
+          schema: { type: string }
+        - name: actor
+          in: query
+          description: Only events of this actor, by id or email.
+          schema: { type: string }
+        - name: q
+          in: query
+          description: Only events whose action, subject label or actor email contains this text.
+          schema: { type: string }
+        - name: since
+          in: query
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        - name: before_id
+          in: query
+          description: Only events older than the one with this id (the last id of the page before).
+          schema: { type: string }
       responses:
         '200':
-          description: List of audit rows.
+          description: One page of audit rows, newest first; an empty list when there are no more.
           content:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/AuditEvent' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/audit/export:
     get:
       tags: [audit]
+      operationId: auditExport
+      x-burrow-mcp: false
       summary: Export audit chain (signed JSONL)
+      parameters:
+        - name: action
+          in: query
+          schema: { type: string }
+        - name: actor
+          in: query
+          schema: { type: string }
+        - name: since
+          in: query
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          schema: { type: string, format: date-time }
       responses:
         '200':
           description: JSONL stream.
@@ -2130,31 +3199,56 @@ paths:
   /api/v1/audit/fingerprint:
     get:
       tags: [audit]
+      operationId: auditFingerprintGet
       summary: Audit signing-key public fingerprint
       responses:
         '200':
           description: Fingerprint.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [public_key, fingerprint]
+                properties:
+                  public_key:
+                    type: string
+                    description: The audit signing key's public half, base64. The private key is never returned.
+                  fingerprint:
+                    type: string
+                    description: SHA-256 of the public key, lower-case hex.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/audit/verify:
     post:
       tags: [audit]
+      operationId: auditVerify
       summary: Verify a range of audit chain entries
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema:
+              type: object
+              description: Narrows the range; without a body the whole chain is verified.
+              properties:
+                from_id: { type: string }
+                to_id: { type: string }
       responses:
         '200':
           description: Verification result.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+                  first_id: { type: string, description: Oldest row of the range; left out when the range is empty. }
+                  last_id: { type: string, description: Newest row of the range; left out when the range is empty. }
+                  mismatched_id:
+                    type: string
+                    description: The first row whose hash does not match; left out when ok is true.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -2164,6 +3258,7 @@ paths:
   /api/v1/webhooks:
     get:
       tags: [webhooks]
+      operationId: webhooksList
       summary: List webhooks
       responses:
         '200':
@@ -2172,57 +3267,72 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/Webhook' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [webhooks]
+      operationId: webhookCreate
       summary: Create a webhook (signing_secret returned ONCE)
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/WebhookInput' }
       responses:
         '201':
           description: Webhook created.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/Webhook' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/webhooks/deliveries:
     get:
       tags: [webhooks]
+      operationId: webhookDeliveriesList
       summary: List delivery attempts (recent)
+      parameters:
+        - name: webhook_id
+          in: query
+          description: Only the deliveries of this webhook.
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 1000 }
       responses:
         '200':
-          description: Delivery rows.
+          description: Delivery rows, newest first.
           content:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/WebhookDelivery' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/webhooks/{id}:
     put:
       tags: [webhooks]
+      operationId: webhookUpdate
       summary: Update a webhook
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/WebhookInput' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [webhooks]
+      operationId: webhookDelete
       summary: Delete a webhook
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2233,20 +3343,24 @@ paths:
   /api/v1/webhooks/{id}/test:
     post:
       tags: [webhooks]
+      operationId: webhookTest
       summary: Trigger a synchronous test delivery
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
-        '200':
-          description: Delivery result.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+        '204': { description: A webhook.test event went through the delivery cycle. GET /api/v1/webhooks/deliveries shows the outcome. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500':
+          description: The delivery failed; the message says why.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/webhooks/{id}/pause:
     post:
       tags: [webhooks]
+      operationId: webhookPause
       summary: Pause webhook deliveries
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2256,6 +3370,7 @@ paths:
   /api/v1/webhooks/{id}/resume:
     post:
       tags: [webhooks]
+      operationId: webhookResume
       summary: Resume webhook deliveries
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2265,19 +3380,34 @@ paths:
   /api/v1/webhooks/{id}/preview:
     post:
       tags: [webhooks]
+      operationId: webhookPreview
       summary: Preview a payload template with caller-supplied fields
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema:
+              type: object
+              properties:
+                event:
+                  type: string
+                  description: Event name for the default body; not used when the webhook has a payload template.
+                fields:
+                  type: object
+                  description: The values the template (or the default body's "data") is rendered with.
+                  additionalProperties: true
       responses:
         '200':
           description: Rendered template body and byte count.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [rendered, size_bytes]
+                properties:
+                  rendered: { type: string, description: The request body as it would be sent. }
+                  size_bytes: { type: integer }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -2289,6 +3419,7 @@ paths:
   /api/v1/automation/tokens:
     get:
       tags: [automation]
+      operationId: automationTokensList
       summary: List automation bearer tokens
       responses:
         '200':
@@ -2297,17 +3428,33 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/AutomationToken' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [automation]
+      operationId: automationTokenCreate
       summary: Mint an automation bearer token (plaintext returned ONCE)
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema:
+              type: object
+              description: No other field is accepted.
+              required: [name]
+              properties:
+                name: { type: string }
+                permissions:
+                  type: array
+                  description: >
+                    The permission keys the token declares. Each must be
+                    granted by the caller's role (403 otherwise).
+                  items: { type: string }
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: Left out, the token does not expire.
       responses:
         '201':
           description: Token minted.
@@ -2315,15 +3462,19 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [token, plaintext]
                 properties:
-                  id: { type: string }
-                  token: { type: string }
+                  token: { $ref: '#/components/schemas/AutomationToken' }
+                  plaintext:
+                    type: string
+                    description: The bearer token ("bua_" and the secret). Shown this once.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/automation/tokens/{id}:
     delete:
       tags: [automation]
+      operationId: automationTokenDelete
       summary: Revoke an automation bearer token
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2337,6 +3488,7 @@ paths:
   /api/v1/backups:
     get:
       tags: [backups]
+      operationId: backupsList
       summary: List backup archives on disk
       responses:
         '200':
@@ -2345,24 +3497,31 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/Backup' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [backups]
+      operationId: backupCreate
       summary: Trigger a new backup
       responses:
-        '200':
-          description: New backup metadata.
+        '202':
+          description: The archive was written; it is listed by GET /api/v1/backups under this id.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [id, started_at]
+                properties:
+                  id: { type: string }
+                  started_at: { type: string, format: date-time }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/backups/{id}:
     delete:
       tags: [backups]
+      operationId: backupDelete
       summary: Delete a backup archive
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2373,6 +3532,8 @@ paths:
   /api/v1/backups/{id}/download:
     get:
       tags: [backups]
+      operationId: backupDownload
+      x-burrow-mcp: false
       summary: Stream a backup archive
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2386,6 +3547,7 @@ paths:
   /api/v1/backups/{id}/verify:
     post:
       tags: [backups]
+      operationId: backupVerify
       summary: Verify a backup archive
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2393,12 +3555,26 @@ paths:
           description: Verification result.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [ok, sha256_match]
+                properties:
+                  ok: { type: boolean }
+                  sha256_match: { type: boolean }
+                  expected_sha256: { type: string, description: The digest the archive's manifest states. }
+                  actual_sha256: { type: string, description: The digest of the database in the archive. }
+                  error:
+                    type: string
+                    description: Why the archive could not be read; then ok is false and the digests are left out.
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/backups/restore:
     post:
       tags: [backups]
+      operationId: backupRestore
+      x-burrow-mcp: false
       summary: Upload + restore an archive
       requestBody:
         required: true
@@ -2406,10 +3582,12 @@ paths:
           multipart/form-data:
             schema:
               type: object
+              required: [archive]
               properties:
-                file:
+                archive:
                   type: string
                   format: binary
+                  description: The backup archive (.tar.gz), at most 64 MiB.
       responses:
         '202':
           description: Restore accepted (poll status endpoint).
@@ -2417,14 +3595,18 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [restore_id]
                 properties:
                   restore_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/backups/restores/{id}:
     get:
       tags: [backups]
+      operationId: backupRestoreGet
+      x-burrow-mcp: false
       summary: Poll restore status
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2432,7 +3614,18 @@ paths:
           description: Status envelope.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema:
+                type: object
+                required: [id, status, started_at, ended_at]
+                properties:
+                  id: { type: string }
+                  status: { type: string, enum: [running, done, failed] }
+                  error: { type: string, description: Set when status is failed. }
+                  started_at: { type: string, format: date-time }
+                  ended_at:
+                    type: string
+                    format: date-time
+                    description: 0001-01-01T00:00:00Z while the restore is running.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -2442,6 +3635,7 @@ paths:
   /api/v1/roles:
     get:
       tags: [roles]
+      operationId: rolesList
       summary: List roles (admin)
       responses:
         '200':
@@ -2450,29 +3644,31 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/Role' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [roles]
+      operationId: roleCreate
       summary: Create a custom role
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/RoleInput' }
       responses:
         '201':
           description: Created.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RoleDetail' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/roles/permissions:
     get:
       tags: [roles]
+      operationId: rolePermissionsList
       summary: List the permission catalog (every signed-in user)
       responses:
         '200':
@@ -2481,12 +3677,13 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/Permission' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/roles/{name}:
     get:
       tags: [roles]
+      operationId: roleGet
       summary: Get a role (admin)
       parameters:
         - name: name
@@ -2498,12 +3695,13 @@ paths:
           description: Role detail.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RoleDetail' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [roles]
+      operationId: roleUpdate
       summary: Update a custom role
       parameters:
         - name: name
@@ -2514,13 +3712,23 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema:
+              type: object
+              description: A field that is left out keeps its stored value.
+              properties:
+                description: { type: string }
+                permissions:
+                  type: array
+                  description: Replaces the whole set. An unknown key is refused with 400.
+                  items: { type: string }
+                default_for_new_users: { type: boolean }
       responses:
         '204': { description: Updated. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [roles]
+      operationId: roleDelete
       summary: Delete a custom role
       parameters:
         - name: name
@@ -2538,16 +3746,29 @@ paths:
   /api/v1/users:
     get:
       tags: [users]
+      operationId: usersList
       summary: List users (admin)
+      parameters:
+        - name: q
+          in: query
+          description: Only users whose email contains this text.
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
       responses:
         '200':
-          description: Paginated list of users.
+          description: One page of users and the number of users that match.
           content:
             application/json:
               schema:
                 type: object
+                required: [users, total]
                 properties:
-                  items:
+                  users:
                     type: array
                     items: { $ref: '#/components/schemas/User' }
                   total: { type: integer }
@@ -2555,6 +3776,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [users]
+      operationId: userCreate
       summary: Create a user (admin)
       requestBody:
         required: true
@@ -2579,6 +3801,7 @@ paths:
   /api/v1/users/{id}:
     patch:
       tags: [users]
+      operationId: userUpdate
       summary: Update a user (role / status) — admin
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
@@ -2587,19 +3810,21 @@ paths:
           application/json:
             schema:
               type: object
+              description: >
+                Either field may be left out. A body with neither role nor
+                status is refused with 400.
               properties:
                 role: { type: string }
                 status: { type: string, enum: [active, suspended] }
       responses:
-        '200':
-          description: Updated user.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/User' }
+        '204': { description: Updated. Nothing is returned. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [users]
+      operationId: userDelete
       summary: Delete a user (admin)
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2621,31 +3846,35 @@ paths:
   /api/v1/settings:
     get:
       tags: [settings]
+      operationId: settingsGet
       summary: Get admin settings (admin)
       responses:
         '200':
           description: Settings.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/Settings' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     put:
       tags: [settings]
+      operationId: settingsUpdate
       summary: Replace admin settings (admin)
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/Settings' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/settings/test-email:
     post:
       tags: [settings]
+      operationId: settingsTestEmail
       summary: Send a test SMTP email
       requestBody:
         required: true
@@ -2655,18 +3884,30 @@ paths:
               type: object
               required: [to]
               properties:
-                to: { type: string, format: email }
+                to:
+                  type: string
+                  format: email
+                  description: Recipient. The format is not checked; the handler only refuses an empty value.
       responses:
-        '200':
-          description: Sent.
+        '204': { description: Sent. Nothing is returned. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: SMTP is not configured.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/OK' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: The mail server refused or could not be reached; the message says why.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/settings/retention:
     get:
       tags: [settings]
+      operationId: retentionSettingsGet
       summary: Get retention settings (admin)
       description: >
         Returns the seven retention configuration knobs plus an advisory note
@@ -2676,11 +3917,12 @@ paths:
           description: Retention settings.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/RetentionSettings' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     put:
       tags: [settings]
+      operationId: retentionSettingsUpdate
       summary: Replace retention settings (admin)
       description: >
         Validates and persists one or more retention settings. Omitted fields
@@ -2689,7 +3931,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Empty' }
+            schema: { $ref: '#/components/schemas/RetentionSettingsInput' }
       responses:
         '204': { description: Updated. }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -2702,6 +3944,7 @@ paths:
   /api/v1/clients:
     get:
       tags: [clients]
+      operationId: clientsList
       summary: List live clients (admin)
       responses:
         '200':
@@ -2710,13 +3953,14 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Empty' }
+                items: { $ref: '#/components/schemas/Client' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/clients/known:
     get:
       tags: [clients]
+      operationId: knownClientsList
       summary: List every client that has a token (admin)
       description: >
         One row per client token of every user: a client that is online with
@@ -2739,6 +3983,7 @@ paths:
   /api/v1/clients/{sessionID}:
     get:
       tags: [clients]
+      operationId: clientGet
       summary: Get one live client (admin)
       parameters:
         - name: sessionID
@@ -2750,13 +3995,14 @@ paths:
           description: Client detail.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/ClientDetail' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/clients/connect-info:
     get:
       tags: [clients]
+      operationId: clientConnectInfoGet
       summary: Get the control-plane endpoint clients should dial
       description: >
         Returns the host:port a `burrow connect` invocation must point at
@@ -2777,6 +4023,8 @@ paths:
   /api/v1/client/discovery:
     get:
       tags: [clients]
+      operationId: clientDiscoveryGet
+      x-burrow-mcp: false
       summary: Tell a client where the control endpoint is and which version the relay runs
       description: >
         Public (no authentication): `burrow login <relay>` asks here before it
@@ -2823,6 +4071,8 @@ paths:
   /api/v1/client/login/start:
     post:
       tags: [clients]
+      operationId: clientLoginStart
+      x-burrow-mcp: false
       summary: Start a browser-approved client sign-in
       description: >
         Public (no authentication): `burrow login <relay>` asks here before it
@@ -2892,6 +4142,8 @@ paths:
   /api/v1/client/login/poll:
     post:
       tags: [clients]
+      operationId: clientLoginPoll
+      x-burrow-mcp: false
       summary: Collect the outcome of a client sign-in
       description: >
         Public (no authentication): `device_code` is the credential. Once the
@@ -2956,6 +4208,8 @@ paths:
   /api/v1/client/login/requests/{user_code}:
     get:
       tags: [clients]
+      operationId: clientLoginRequestGet
+      x-burrow-mcp: false
       summary: Show a client sign-in request to the signed-in user
       description: >
         Dashboard session only (automation bearer tokens are refused). The
@@ -2983,6 +4237,8 @@ paths:
   /api/v1/client/login/requests/{user_code}/approve:
     post:
       tags: [clients]
+      operationId: clientLoginRequestApprove
+      x-burrow-mcp: false
       summary: Approve a client sign-in request
       description: >
         Dashboard session with the permission to manage client tokens
@@ -3030,6 +4286,8 @@ paths:
   /api/v1/client/login/requests/{user_code}/deny:
     post:
       tags: [clients]
+      operationId: clientLoginRequestDeny
+      x-burrow-mcp: false
       summary: Deny a client sign-in request
       description: >
         Dashboard session, CSRF-protected. Marks the pending request denied;
@@ -3062,6 +4320,7 @@ paths:
   /api/v1/geo/status:
     get:
       tags: [geo]
+      operationId: geoStatusGet
       summary: Global geo-lookup status (enabled, db path, age)
       responses:
         '200':
@@ -3070,10 +4329,15 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [enabled, db_path, db_age_seconds]
                 properties:
                   enabled: { type: boolean }
                   db_path: { type: string }
-                  db_age_seconds: { type: integer, format: int64 }
+                  db_age_seconds:
+                    type: integer
+                    format: int64
+                    nullable: true
+                    description: Null while geo lookup is disabled.
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ────────────────────────────────────────────────────────────────────────
@@ -3082,6 +4346,7 @@ paths:
   /api/v1/mcp/status:
     get:
       tags: [mcp]
+      operationId: mcpStatusGet
       summary: burrowd mcp listener status (enabled, listen, token_id)
       responses:
         '200':
@@ -3090,6 +4355,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [enabled, listen, token_id]
                 properties:
                   enabled: { type: boolean }
                   listen: { type: string }
@@ -3100,6 +4366,7 @@ paths:
   /api/v1/mcp/tools:
     get:
       tags: [mcp]
+      operationId: mcpToolsList
       summary: Closed inventory of MCP tools (name, description, parameters_schema, permission)
       responses:
         '200':
@@ -3110,6 +4377,7 @@ paths:
                 type: array
                 items:
                   type: object
+                  required: [name, description, parameters_schema, permission]
                   properties:
                     name: { type: string }
                     description: { type: string }
@@ -3124,6 +4392,7 @@ paths:
   /api/v1/upstream-credentials/slots:
     get:
       tags: [services]
+      operationId: upstreamCredentialSlotsList
       summary: List available vault slot handles (admin or ai:configure:any)
       responses:
         '200':
@@ -3132,6 +4401,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [slots]
                 properties:
                   slots:
                     type: array
@@ -3142,6 +4412,7 @@ paths:
   /api/v1/services/{serviceID}/upstream-credential:
     get:
       tags: [services]
+      operationId: serviceUpstreamCredentialGet
       summary: Read the upstream-credential binding for a service
       parameters:
         - name: serviceID
@@ -3153,12 +4424,13 @@ paths:
           description: Binding (when bound) or {slot_present:false} (when unbound).
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Empty' }
+              schema: { $ref: '#/components/schemas/UpstreamCredentialBinding' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [services]
+      operationId: serviceUpstreamCredentialUpdate
       summary: Bind an upstream credential slot to a service
       parameters:
         - name: serviceID
@@ -3184,6 +4456,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [services]
+      operationId: serviceUpstreamCredentialDelete
       summary: Unbind the upstream credential from a service
       parameters:
         - name: serviceID
@@ -3202,6 +4475,7 @@ paths:
   /api/v1/services/{serviceID}/domains:
     get:
       tags: [services]
+      operationId: serviceDomainsList
       summary: List custom domains bound to a service
       parameters:
         - name: serviceID
@@ -3210,12 +4484,18 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: Array of custom domain objects (no key_pem).
+          description: The custom domains of the service (no key_pem).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CustomDomain' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     post:
       tags: [services]
+      operationId: serviceDomainCreate
       summary: Add a custom domain to a service
       parameters:
         - name: serviceID
@@ -3236,6 +4516,9 @@ paths:
       responses:
         '201':
           description: Domain created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomDomain' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -3243,6 +4526,7 @@ paths:
   /api/v1/services/{serviceID}/domains/{did}:
     get:
       tags: [services]
+      operationId: serviceDomainGet
       summary: Get a single custom domain by ID
       parameters:
         - name: serviceID
@@ -3255,12 +4539,16 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: Domain object (no key_pem).
+          description: The custom domain (no key_pem).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomDomain' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [services]
+      operationId: serviceDomainUpdate
       summary: Replace the cert/key for a custom domain
       parameters:
         - name: serviceID
@@ -3291,6 +4579,7 @@ paths:
         '409': { description: Hostname already bound. }
     delete:
       tags: [services]
+      operationId: serviceDomainDelete
       summary: Remove a custom domain
       parameters:
         - name: serviceID
@@ -3312,6 +4601,7 @@ paths:
   /api/v1/connection-logs:
     get:
       tags: [audit]
+      operationId: connectionLogsList
       summary: List per-tunnel connection log entries (newest first)
       description: |
         Returns connection_logs rows with cursor pagination. Permission:
@@ -3353,6 +4643,7 @@ paths:
   /api/v1/connection-logs/rollups:
     get:
       tags: [audit]
+      operationId: connectionLogRollupsList
       summary: List daily connection log rollup rows
       description: |
         Returns connection_log_rollups rows (daily aggregates). Permission:
@@ -3366,9 +4657,11 @@ paths:
           schema: { type: string, enum: [control, http_proxy, tcp_proxy] }
         - name: since
           in: query
+          description: Only rows from this time on. RFC 3339, or a plain date YYYY-MM-DD.
           schema: { type: string, format: date-time }
         - name: until
           in: query
+          description: Only rows up to this time. RFC 3339, or a plain date YYYY-MM-DD.
           schema: { type: string, format: date-time }
       responses:
         '200':
@@ -3383,6 +4676,8 @@ paths:
   /api/v1/connection-logs/export:
     get:
       tags: [audit]
+      operationId: connectionLogsExport
+      x-burrow-mcp: false
       summary: Export connection logs as NDJSON or CSV
       description: |
         Streams all matching connection log rows as NDJSON (default) or
@@ -3422,6 +4717,8 @@ paths:
   /api/v1/events:
     get:
       tags: [events]
+      operationId: eventsStream
+      x-burrow-mcp: false
       summary: Server-sent events stream (dashboard refresh)
       responses:
         '200':
@@ -3437,6 +4734,8 @@ paths:
   /api/v1/openapi/viewer/:
     get:
       tags: [openapi]
+      operationId: openapiViewerGet
+      x-burrow-mcp: false
       summary: Embedded hand-rolled OpenAPI browser (metrics:read or admin)
       description: >
         Serves the embedded single-page OpenAPI viewer. Fetches
@@ -3455,6 +4754,8 @@ paths:
   /api/v1/openapi/viewer/static/{file}:
     get:
       tags: [openapi]
+      operationId: openapiViewerStaticGet
+      x-burrow-mcp: false
       summary: Viewer static assets (closed allowlist — viewer.css, viewer.js only)
       description: >
         Serves viewer.css or viewer.js from the embedded FS. Any other path
@@ -3482,6 +4783,7 @@ paths:
   /api/v1/ai/providers:
     get:
       tags: [models]
+      operationId: providersList
       summary: List AI providers
       description: |
         Returns one entry per row of the providers table, ordered by slug.
@@ -3502,6 +4804,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [models]
+      operationId: providerCreate
       summary: Create a provider (admin)
       description: |
         Kind "tunnel" registers an existing http service in API-key mode as
@@ -3580,6 +4883,7 @@ paths:
         schema: { type: string }
     get:
       tags: [models]
+      operationId: providerGet
       summary: Get one provider
       description: |
         Returns 404 when no provider has that slug or its backing service is
@@ -3598,6 +4902,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [models]
+      operationId: providerUpdate
       summary: Change a provider's slug and name (admin)
       description: |
         After a slug change the old base URL stops working immediately;
@@ -3667,6 +4972,7 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
     delete:
       tags: [models]
+      operationId: providerDelete
       summary: Delete a provider (admin)
       description: |
         Removes the provider; its base URL stops working immediately. For a
@@ -3697,6 +5003,7 @@ paths:
         schema: { type: string }
     put:
       tags: [models]
+      operationId: providerUpstreamUpdate
       summary: Change a direct provider's upstream settings (admin)
       description: |
         A field that is left out keeps its stored value, so the credential
@@ -3741,6 +5048,7 @@ paths:
         schema: { type: string }
     get:
       tags: [models]
+      operationId: providerModelsList
       summary: List a provider's stored models
       description: |
         The list GET /ai/<provider>/v1/models answers from. Returns 404 when
@@ -3762,6 +5070,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     post:
       tags: [models]
+      operationId: providerModelCreate
       summary: Add one model id by hand (admin)
       description: Works for either kind of provider. Adding an id that is already listed changes nothing.
       requestBody:
@@ -3786,6 +5095,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [models]
+      operationId: providerModelDelete
       summary: Remove one model id (admin)
       parameters:
         - name: id
@@ -3808,6 +5118,7 @@ paths:
         schema: { type: string }
     post:
       tags: [models]
+      operationId: providerModelsSync
       summary: Read the model list from a direct provider's upstream (admin)
       description: |
         Calls GET <upstream_base_url>/models with the provider's credential
@@ -3855,6 +5166,7 @@ paths:
   /api/v1/ai/providers/{slug}/metrics:
     get:
       tags: [models]
+      operationId: providerMetricsGet
       summary: Per-provider metrics over the trailing 24 h
       description: |
         Returns metering aggregates for one provider, read from usage_events
@@ -3881,6 +5193,7 @@ paths:
   /api/v1/ai/gateway:
     get:
       tags: [models]
+      operationId: aiGatewayGet
       summary: The gateway's endpoints
       description: |
         The base URL a client is given per dialect. base_url is "" when the
@@ -3896,11 +5209,13 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [endpoints]
                 properties:
                   endpoints:
                     type: array
                     items:
                       type: object
+                      required: [dialect, base_url]
                       properties:
                         dialect: { type: string, enum: [openai, anthropic] }
                         base_url: { type: string }
@@ -3913,6 +5228,7 @@ paths:
   /api/v1/ai/models:
     get:
       tags: [models]
+      operationId: aiModelsList
       summary: List synthetic models
       description: Every synthetic model, ordered by name. Any signed-in caller may read them.
       security:
@@ -3929,6 +5245,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [models]
+      operationId: aiModelCreate
       summary: Create a synthetic model (admin or ai:configure:any)
       description: |
         Allowed for a dashboard session of an admin or of a role with
@@ -3981,6 +5298,7 @@ paths:
         schema: { type: string }
     get:
       tags: [models]
+      operationId: aiModelGet
       summary: Get one synthetic model
       security:
         - CookieAuth: []
@@ -3995,6 +5313,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [models]
+      operationId: aiModelUpdate
       summary: Replace a synthetic model (admin or ai:configure:any)
       description: |
         The body replaces the model; targets is the new list. Three fields
@@ -4027,6 +5346,7 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
     delete:
       tags: [models]
+      operationId: aiModelDelete
       summary: Delete a synthetic model (admin or ai:configure:any)
       description: |
         Requests for the name are refused from then on. Gateway keys keep
@@ -4041,6 +5361,7 @@ paths:
   /api/v1/ai/keys:
     get:
       tags: [models]
+      operationId: gatewayKeysList
       summary: List gateway keys
       description: |
         The caller's gateway keys, newest first; an admin's dashboard
@@ -4061,6 +5382,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [models]
+      operationId: gatewayKeyCreate
       summary: Create a gateway key
       security:
         - CookieAuth: []
@@ -4107,6 +5429,7 @@ paths:
                 allOf:
                   - $ref: '#/components/schemas/AIGatewayKey'
                   - type: object
+                    required: [key]
                     properties:
                       key:
                         type: string
@@ -4128,6 +5451,7 @@ paths:
   /api/v1/ai/keys/{id}:
     delete:
       tags: [models]
+      operationId: gatewayKeyDelete
       summary: Revoke a gateway key
       description: |
         The key stops working at once. Its owner or an admin's dashboard
@@ -4212,6 +5536,7 @@ paths:
   /api/v1/ai/requests/{requestID}/attempts:
     get:
       tags: [models]
+      operationId: aiRequestAttemptsList
       summary: What a gateway request tried (admin, dashboard session)
       description: |
         The attempt log of one request to /openai/v1, /ai/v1 or /anthropic,
@@ -4255,6 +5580,7 @@ paths:
   /api/v1/database:
     get:
       tags: [database]
+      operationId: databaseGet
       summary: Database backend status (driver, URL, alpha flag)
       description: |
         Returns the active database driver ("sqlite" or "postgres"), a
