@@ -80,4 +80,3 @@ func TestMePermissionsOfADemotedMinter(t *testing.T) {
 		t.Errorf("token permissions = %v, want [ai:read:own]", perms)
 	}
 }
-

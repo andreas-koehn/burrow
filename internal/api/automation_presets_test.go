@@ -101,4 +101,3 @@ func TestAutomationPresetsOfADemotedMinter(t *testing.T) {
 		t.Errorf("full = %v, want it to keep ai:read:own", full)
 	}
 }
-
