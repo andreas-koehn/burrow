@@ -2,9 +2,8 @@
 
 Burrow has a built-in [Model Context Protocol](https://modelcontextprotocol.io)
 server. An MCP client such as Claude Code, Cursor or VS Code connects to it and
-can then list tunnels and services, change a service's access mode, create and
-delete API keys, mint client tokens, read users, search the audit log and read
-the metrics.
+can then read and change what its token allows: services, AI providers and
+models, gateway keys, budgets, the audit log, users and the rest of the API.
 
 The endpoint is part of every relay. There is nothing to switch on.
 
@@ -29,21 +28,27 @@ method.
 The endpoint takes an **automation token** (`bua_…`) in the `Authorization`
 header. The session cookie of the dashboard is not accepted.
 
-A token carries a list of permissions. Over MCP it can see and call exactly the
-tools whose permission is **on that list and granted by your current role**. A
-tool outside that set is not shown, and calling it is answered as if it did not
-exist.
+A token carries a list of permissions. Over MCP it sees exactly the tools its
+permissions open, and never more than its owner's role allows: a permission
+counts only when it is on the token's list **and** granted by the owner's
+current role. A tool or operation outside that set is not listed, and calling
+it is answered as if it did not exist. If the role is later reduced, the token
+is reduced with it at once.
 
-::: warning Mint a narrow token through the API
-A token created on the dashboard page **Settings → Automation tokens** posts no
-permission list, so it inherits every permission of the user who mints it: it
-sees every tool that user's role grants. Until the page lets you pick
-permissions, mint a token that holds only what the agent needs with the call
-below. An explicit empty list (`"permissions": []`) declares nothing and sees
-no tools.
-:::
+In the dashboard, open **Settings → Automation tokens**, pick a preset and
+create the token:
 
-Log in, then create the token with the permissions the agent should have:
+| Preset | Permissions |
+|--------|-------------|
+| Read-only | every permission whose name contains `:read`, plus `metrics:read` and `mcp:tools:read` |
+| Operator | every permission except `users:manage`, `roles:manage`, `tokens:manage:any`, `automation:tokens:manage:any`, `settings:manage` and `backup:run` |
+| Full | every permission |
+
+Or pick your own list. The token is shown once; store it now, it cannot be
+read again.
+
+Through the API, log in and `POST /api/v1/automation/tokens` with the
+permissions. `GET /api/v1/automation/presets` returns the preset lists:
 
 ```sh
 curl -c cookies.txt -X POST https://burrow.insingo.com/api/v1/auth/login \
@@ -59,34 +64,30 @@ curl -b cookies.txt -X POST https://burrow.insingo.com/api/v1/automation/tokens 
       }'
 ```
 
-The answer holds the token once, in `plaintext`. Store it now; it cannot be
-read again. Add `"expires_at": "2027-01-01T00:00:00Z"` to the body for a token
-that ends on its own.
+The answer holds the token once, in `plaintext`. Add
+`"expires_at": "2027-01-01T00:00:00Z"` to the body for a token that ends on
+its own.
 
-You can only put permissions on a token that your own role has. Three useful
-sets:
+::: warning Without a list the token inherits everything
+A token created without `permissions` inherits every permission of the user who
+mints it at that moment. Give an agent a list. An explicit empty list
+(`"permissions": []`) declares nothing: the token sees `me_get` and the three generic
+tools, and the generic tools find only the operations every token may call.
+:::
 
-| Purpose | `permissions` |
-|---------|---------------|
-| Look, do not touch | `tunnels:read:own`, `users:read`, `audit:read`, `metrics:read` |
-| Operate services | the above plus `services:configure:own` |
-| Everything the tools offer | the above plus `tokens:manage:own` |
-
-`services:configure:own` covers reading services and changing them; there is no
-read-only permission for services yet. If your role is later reduced, the
-token is reduced with it at once.
+You can only put permissions on a token that your own role has.
 
 ---
 
 ## 2. Connect a client {#clients}
 
-Replace the address and the token in the examples.
+Replace the address and the token in the examples. **Settings → MCP** in the dashboard shows the same snippets with your relay's address filled in, ready to copy.
 
 ### Claude Code
 
 ```sh
 claude mcp add --transport http burrow https://burrow.insingo.com/mcp/burrow \
-  --header "Authorization: Bearer bua_YOUR_AUTOMATION_TOKEN"
+  --header "Authorization: Bearer $BURROW_TOKEN"
 ```
 
 To share the server with a project without sharing the token, put this in
@@ -160,52 +161,109 @@ can only sign in through OAuth cannot connect yet.
 
 ## Tools {#tools}
 
-| Tool | What it does | Permission | Kind |
-|------|--------------|------------|------|
-| `tunnels_list` | Lists your own live tunnels; optional `filter` on the name | `tunnels:read:own` | read |
-| `services_list` | Lists services | `services:configure:own` | read |
-| `services_get` | One service with its access policy and key count | `services:configure:own` | read |
-| `services_set_access_mode` | Sets `open`, `api_key` or `burrow_login` on a service | `services:configure:own` | write, repeatable |
-| `api_keys_list` | Lists the API keys of a service, without the keys | `services:configure:own` | read |
-| `api_keys_create` | Creates an API key for a service; **returns the key once** | `services:configure:own` | write |
-| `api_keys_delete` | Deletes an API key | `services:configure:own` | **destructive** |
-| `tokens_list` | Lists your own client tokens, without the tokens | `tokens:manage:own` | read |
-| `tokens_mint` | Issues a client token for you; **returns the token once** | `tokens:manage:own` | write |
-| `users_list` | Lists users | `users:read` | read |
-| `audit_search` | Searches the audit log | `audit:read` | read |
-| `metrics_snapshot` | The current metrics in Prometheus text format | `metrics:read` | read |
+Two kinds of tool: 26 **curated tools** for the common tasks, and three
+**generic tools** that reach every other operation of the API. A token lists
+only the curated tools its permissions open; the generic tools are listed for
+every token.
 
-The "Kind" column is sent to the client as MCP tool annotations
-(`readOnlyHint`, `destructiveHint`, `idempotentHint`), so a client can ask
-before it runs a tool that changes or deletes something.
+### Curated tools
 
-A tool with `:own` in its permission acts on what belongs to the token's user.
-For services an admin's token reaches every service. `tunnels_list`,
-`tokens_list` and `tokens_mint` act on the tunnels and client tokens of the
-token's user only, also for an admin. The wider permission opens these three
-as well: `tunnels:read:any` opens `tunnels_list`, and `tokens:manage:any` opens
-`tokens_list` and `tokens_mint`. The table shows the narrower one. The tools
-for services and API keys need `services:configure:own` itself.
+| Tool | What it does | Kind |
+|------|--------------|------|
+| `me_get` | Who this token acts for: the user, the role and the permissions it holds | read |
+| `services_list` | List services visible to the caller | read |
+| `service_get` | Service detail (config and live state) | read |
+| `known_clients_list` | Every machine that ever connected with a client token | read |
+| `providers_list` | List AI providers | read |
+| `provider_get` | Get one provider | read |
+| `provider_metrics_get` | Per-provider metrics over the trailing 24 hours | read |
+| `ai_models_list` | List synthetic models | read |
+| `gateway_keys_list` | List gateway keys | read |
+| `ai_requests_list` | Recent requests through the AI gateway, newest first | read |
+| `inspector_request_get` | Get a captured request envelope | read |
+| `cost_summary_get` | Aggregated cost summary | read |
+| `budgets_list` | List budgets | read |
+| `audit_events_list` | Query audit events | read |
+| `connection_logs_list` | List per-tunnel connection log entries, newest first | read |
+| `service_create` | Pre-provision a service | write |
+| `service_access_mode_update` | Set a service's access mode | write |
+| `provider_create` | Create a provider | write |
+| `provider_update` | Change a provider's slug and name | write |
+| `provider_models_sync` | Read the model list from a direct provider's upstream | delete (needs `confirm`) |
+| `ai_model_create` | Create a synthetic model | write |
+| `ai_model_update` | Replace a synthetic model | write |
+| `budget_create` | Create a budget | write |
+| `provider_delete` | Delete a provider | delete |
+| `ai_model_delete` | Delete a synthetic model | delete |
+| `gateway_key_delete` | Revoke a gateway key | delete |
 
-`services_set_access_mode` applies the rules of the REST API: `burrow_login`
-needs an auth domain on the relay, and `api_key_header` must be an HTTP header
-name (without it the header is `Authorization`). `mtls` cannot be set through
-MCP: it needs a CA certificate, which is uploaded through the dashboard or the
-REST API.
+The kind is sent to the client as MCP tool annotations (`readOnlyHint`,
+`destructiveHint`, `idempotentHint`), so a client can ask before it runs a tool
+that changes or deletes something.
+
+### Any other operation: find, describe, call
+
+The three generic tools work in this order:
+
+1. `burrow_find_operations` with `query` (words from the name, path or summary;
+   `""` lists everything), optionally `kind` (`read`, `write` or `delete`) and
+   `limit` (1 to 100, default 25). It lists only operations the token may call,
+   with `operation_id`, `tool` (the curated tool's name, or `null`), `kind`,
+   `method`, `path` and `summary`.
+2. `burrow_describe_operation` with `operation_id`: what the operation does,
+   the permissions it needs and its arguments as a JSON Schema
+   (`input_schema`).
+3. `burrow_call_operation` with `operation_id` and `arguments`.
+
+Prefer a curated tool when there is one.
+
+**Arguments** have one shape for every tool: path and query parameters at the
+top level, the request body under `body`. For example, a budget:
+
+```json
+{
+  "operation_id": "budgetCreate",
+  "arguments": {
+    "body": {"scope": "global", "daily_usd": 5, "action_on_exceed": "throttle_zero"}
+  }
+}
+```
+
+**`dry_run`.** Every operation that is not a read accepts `dry_run: true`. The
+arguments and the token's permission are checked and the request that would be
+sent is shown; nothing is sent and nothing changes. A conflict the relay finds
+only while it runs (a name already taken) shows up on the real call.
+
+**`confirm`.** An operation that removes something (a `DELETE`, and the few
+others marked destructive, such as `providerModelsSync`) needs `confirm`. The
+value is the last path parameter of the operation (`confirm: "zai"` for
+`/ai/providers/zai`); for an operation without a path parameter it is the
+operation id. `burrow_describe_operation` names it in its `confirm` field. A
+call with another value is refused and nothing is sent.
+
+**Results.** A result is a JSON object, as `structuredContent` and as text. A
+JSON array from the API comes as `{"items": [...]}`. A result above 64 KiB
+(65536 bytes) is cut: it says `truncated`, how many items there were, and which
+query parameters narrow the answer. Use those. An answer that is not JSON comes
+as `{"text": "..."}`.
+
+**Errors** are results with `isError` set. A call the API refuses carries the
+API's status and message, for example `409 Conflict: burrow_login requires a
+configured auth_domain`. Arguments that do not fit the schema are refused before
+anything is sent, with the name of the argument.
+
+A call leaves the rows the same change leaves through the dashboard or the REST
+API, under the same user, and next to them one `mcp.tool.call` row. The row
+names the curated tool, or `burrow_call_operation/<operationId>` for a generic
+call, with the outcome (`ok`, `error`, `denied` or `dry_run`), the client's
+address and user agent (each cut to 256 bytes). Arguments and results are not
+recorded. See **Settings → Audit log**.
 
 ::: warning Secrets end up in the conversation
-`api_keys_create` and `tokens_mint` return a secret in their result. The client
-shows it to the model, and it stays in the transcript. Use them where that is
-acceptable, or leave their permission off the token.
+An operation that creates a key or a token returns the secret in its result.
+The client shows it to the model, and it stays in the transcript. Use these
+where that is acceptable, or leave their permission off the token.
 :::
-
-Every call is written to the audit log as `mcp.tool.call` with the tool and the
-outcome (`ok`, `error` or `denied`), under the user the token belongs to, with
-the client's address and user agent (each cut to 256 bytes). A tool that changes something also leaves
-the row the same change leaves through the dashboard (`token.mint`,
-`service.access_mode.update`, `service.api_key.create`,
-`service.api_key.revoke`), under the same user. Arguments and results are not
-recorded. See **Settings → Audit log**.
 
 ---
 
@@ -218,10 +276,10 @@ recorded. See **Settings → Audit log**.
 | Request size | 1 MiB. Beyond that: `413`. Answered after the token is checked: a request without a valid token gets `401` first. |
 | Batches | A JSON-RPC batch (a request body that is an array) is refused with `400`. Send one request per POST. Also answered after the token is checked. |
 | Tool call duration | A call is ended after 30 seconds; the result is the error `timed out`. |
-| List sizes | `audit_search` returns at most 1000 events per call, 100 unless `limit` asks for another number. `users_list` returns at most 200 users per call, 50 unless `limit` asks for another number; `offset` pages through them. A `limit` of zero or below means the default, one above the cap means the cap. The other lists are not paged. |
+| Result size | 64 KiB of JSON per result; longer answers are cut and say so. |
 | Protocol | MCP revisions `2026-07-28` (stateless, no handshake), `2025-11-25`, `2025-06-18` and `2025-03-26` over Streamable HTTP. An `initialize` for `2024-11-05` is answered with a revision the server offers. Not the older HTTP+SSE transport, not stdio. |
 | Sessions | None. Every request stands alone; `Mcp-Session-Id` is ignored and there is no event stream to hold open. |
-| Features | Tools only. No resources, no prompts. |
+| Features | Tools only. No resources, no prompts. Every call is an API call under the same permissions and the same audit as the REST API. |
 | Sign-in | A static token in a header. No OAuth. |
 
 ### Browsers
@@ -240,18 +298,45 @@ can read:
 
 | Text | Meaning |
 |------|---------|
-| `invalid arguments: <parameter>` | An argument is missing or has the wrong type. The parameter's name is given when known, never its value. |
-| A fixed sentence, such as `invalid access mode` or `not found` | The input was wrong; the sentence says how. |
-| `forbidden` | The token's user may not touch that object. |
+| `invalid argument <name>: …` | An argument is missing or has the wrong type. The argument's name is given, never its value. |
+| `unknown operation <id>; find it with burrow_find_operations` | The operation does not exist, or the token may not call it. |
+| `confirm must be "<value>" to …; nothing was sent` | A deleting operation without the right `confirm`. |
+| `<status> <reason>: <message>` | The API refused the call, for example `403 Forbidden` or `409 Conflict`. |
+| `the relay is starting; try again` | The relay has not finished starting. |
 | `timed out` | The call took longer than 30 seconds. |
-| `internal error` | Anything else. The cause is in the relay's log (tool name, error types, a driver code), never in the answer. |
+| `internal error` | Anything else. The cause is in the relay's log, never in the answer. |
 
-A tool the token may not call is answered exactly like a tool that does not
-exist: `unknown tool`.
+A curated tool the token may not call is answered exactly like a tool that does
+not exist: `unknown tool`.
 
 ---
 
-## Coming from `BURROW_MCP_LISTEN` {#upgrade}
+## Coming from earlier versions {#upgrade}
+
+The twelve hand-written tools are gone. The tools are built from the API's
+OpenAPI description now, so every operation is reachable. Replace the old names
+like this:
+
+| Old tool | Now |
+|----------|-----|
+| `tunnels_list` | `burrow_call_operation` with `tunnelsList` |
+| `services_list` | `services_list` |
+| `services_get` | `service_get` |
+| `services_set_access_mode` | `service_access_mode_update` |
+| `api_keys_list` | `burrow_call_operation` with `serviceApiKeysList` |
+| `api_keys_create` | `burrow_call_operation` with `serviceApiKeyCreate` |
+| `api_keys_delete` | `burrow_call_operation` with `serviceApiKeyDelete` |
+| `tokens_list` | `burrow_call_operation` with `clientTokensList` |
+| `tokens_mint` | `burrow_call_operation` with `clientTokenCreate` |
+| `users_list` | `burrow_call_operation` with `usersList` |
+| `audit_search` | `audit_events_list` |
+| `metrics_snapshot` | `burrow_call_operation` with `metricsGet` |
+
+Arguments changed shape too: path and query parameters at the top level, a body
+under `body`. Lists come back as `{"items": [...]}`. Ask
+`burrow_describe_operation` for the exact arguments.
+
+### `BURROW_MCP_LISTEN`
 
 Earlier versions had a separate listener (`BURROW_MCP_LISTEN`, usually `:7800`)
 that no MCP client could connect to. It is gone; nothing listens on 7800.
@@ -260,10 +345,6 @@ that no MCP client could connect to. It is gone; nothing listens on 7800.
   accepted and do nothing. The relay logs one warning at start naming the ones
   that are set, never a value. A `_FILE` path is not read and need not exist.
   Remove them, and remove a published port `7800`.
-- Tool names use an underscore where they had a dot: `tunnels.list` is now
-  `tunnels_list`.
-- Tools that list something return an object (`{"tunnels": [...]}`), not a bare
-  array.
 
 ---
 
@@ -272,8 +353,11 @@ that no MCP client could connect to. It is gone; nothing listens on 7800.
 | What you see | Why | What to do |
 |--------------|-----|------------|
 | `401` with `WWW-Authenticate: Bearer` | No token, a mistyped or revoked token, an expired token, or the token's user is suspended. The client token of `burrow connect` and a gateway key do not work here. | Mint a new automation token. |
-| Connected, but no tools | The token was minted with an empty permission list, or your role no longer grants what is on it. | Mint a token [with permissions](#token). |
-| `unknown tool` for a tool from the table | The token may not call it. | Add its permission to a new token. |
+| Connected, but only `me_get` and the three `burrow_…` tools | The token was minted with an empty permission list, or your role no longer grants what is on it. | Mint a token [with permissions](#token). |
+| A tool is missing | The token lacks the permission the tool needs, or the owner's role no longer grants it. | Call `me_get` to see the permissions the token holds; mint a token with the missing one. |
+| `unknown operation <id>` | The operation does not exist, or the token may not call it (the same answer for both). | Find it with `burrow_find_operations`; if it is not listed, the token lacks its permission. |
+| `confirm must be "…"` | A deleting operation was called without the value it names. | Pass `confirm` with the value in the message; `burrow_describe_operation` shows it. |
+| `the relay is starting; try again` | The relay answers MCP before its API is ready. | Try again in a few seconds. |
 | `400 batch requests are not supported` | The body is a JSON-RPC array. | Send one request per POST. |
 | `413` | The body is larger than 1 MiB. | Send less. |
 | `403 cross-origin request refused` | The `POST` or `DELETE` is not same-origin: an `Origin` other than the relay's own (also a sibling subdomain), or `Sec-Fetch-Site: same-site` or `cross-site`. | Use a client that runs outside the browser, or one that sends no `Origin` or the relay's own. |

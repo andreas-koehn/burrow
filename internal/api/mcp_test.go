@@ -326,7 +326,7 @@ func TestMCPMount_SDKClientThroughTheRouter(t *testing.T) {
 			names = append(names, tl.Name)
 		}
 		sort.Strings(names)
-		if got := strings.Join(names, ","); got != "audit_events_list,connection_logs_list,me_get" {
+		if got := strings.Join(names, ","); got != "audit_events_list,burrow_call_operation,burrow_describe_operation,burrow_find_operations,connection_logs_list,me_get" {
 			t.Errorf("%s: tools = %s", revision, got)
 		}
 		_ = cs.Close()

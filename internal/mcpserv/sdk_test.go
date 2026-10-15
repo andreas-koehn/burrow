@@ -146,9 +146,14 @@ func listedTools(t *testing.T, cs *mcp.ClientSession) map[string]*mcp.Tool {
 	return out
 }
 
+// sortedNames lists the curated tools of m; the generic tools, which every
+// token has, are left out (generic_test.go covers them).
 func sortedNames(m map[string]*mcp.Tool) string {
 	names := make([]string, 0, len(m))
 	for n := range m {
+		if strings.HasPrefix(n, "burrow_") {
+			continue
+		}
 		names = append(names, n)
 	}
 	sort.Strings(names)
@@ -346,8 +351,17 @@ func TestMCP_Descriptions(t *testing.T) {
 func TestMCP_ToolDescriptors(t *testing.T) {
 	s := newTestServer(t, nil, nil, quietLog())
 	tools := s.Tools()
-	if len(tools) != len(curatedTools) {
-		t.Fatalf("%d descriptors, want %d", len(tools), len(curatedTools))
+	if len(tools) != len(curatedTools)+3 {
+		t.Fatalf("%d descriptors, want %d", len(tools), len(curatedTools)+3)
+	}
+	generic := tools[len(curatedTools):]
+	tools = tools[:len(curatedTools)]
+	for i, want := range []struct{ name, kind string }{
+		{"burrow_find_operations", "read"}, {"burrow_describe_operation", "read"}, {"burrow_call_operation", "write"},
+	} {
+		if d := generic[i]; d.Name != want.name || d.Kind != want.kind || !d.Generic || d.Permission != "" || d.Permissions == nil || len(d.Permissions) != 0 {
+			t.Errorf("generic descriptor %d = %+v", i, d)
+		}
 	}
 	for i, d := range tools {
 		if d.Name != ToolName(curatedTools[i].ID) || d.Generic {
@@ -375,7 +389,7 @@ func TestMCP_ToolDescriptors(t *testing.T) {
 	if d := byName["provider_create"]; d.Kind != "write" || !strings.Contains(string(d.ParametersSchema), `"dry_run"`) {
 		t.Errorf("provider_create = %+v", d)
 	}
-	if s.OperationCount() != 0 {
+	if s.OperationCount() != len(s.reg.Operations()) || s.OperationCount() < 100 {
 		t.Errorf("OperationCount = %d", s.OperationCount())
 	}
 }

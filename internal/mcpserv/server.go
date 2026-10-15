@@ -128,7 +128,7 @@ type Server struct {
 	// toolSchemas holds the marshalled input schema of each curated
 	// operation, by operation id. Read only after New.
 	toolSchemas map[string]json.RawMessage
-	toolList    []ToolDescriptor // the curated tools, for Tools()
+	toolList    []ToolDescriptor // the curated, then the generic tools, for Tools()
 	// validators caches the resolved argument schema of an operation, by id
 	// (*jsonschema.Resolved).
 	validators sync.Map
@@ -250,6 +250,7 @@ func New(bearer BearerStore, users UserLookup, spec []byte, log *slog.Logger, op
 			Generic:          false,
 		})
 	}
+	s.toolList = append(s.toolList, genericDescriptors()...)
 	limit := httprate.Limit(s.rateLimit, s.rateWindow,
 		httprate.WithKeyFuncs(func(r *http.Request) (string, error) {
 			return tokenFrom(r.Context()).tokenID, nil
@@ -267,9 +268,8 @@ func New(bearer BearerStore, users UserLookup, spec []byte, log *slog.Logger, op
 // starting". Safe to call while requests are served.
 func (s *Server) SetAPIHandler(h http.Handler) { s.api.Store(&h) }
 
-// OperationCount is the number of operations the generic tools reach. There
-// are none yet.
-func (s *Server) OperationCount() int { return 0 }
+// OperationCount is the number of operations the generic tools reach.
+func (s *Server) OperationCount() int { return len(s.reg.Operations()) }
 
 // maxDescriptionBytes bounds the description of a tool built from an
 // operation's summary and description.
@@ -316,7 +316,8 @@ type ToolDescriptor struct {
 	Generic bool `json:"generic"`
 }
 
-// Tools returns the curated tools in the order of curatedTools. Used by the
+// Tools returns the curated tools in the order of curatedTools, then the
+// three generic tools. Used by the
 // dashboard API to render the operator's "available tools" surface. The
 // returned slice is shared — callers MUST NOT mutate it.
 func (s *Server) Tools() []ToolDescriptor { return s.toolList }
@@ -451,6 +452,9 @@ type authedToken struct {
 	// tool call.
 	remoteAddr string
 	userAgent  string
+	// host is the Host of the MCP request: handlers that build addresses from
+	// r.Host see the relay's name, not the replay's placeholder.
+	host string
 }
 
 // mayUse reports whether the token may call op: the same decision the
@@ -541,6 +545,7 @@ func (s *Server) authenticate(r *http.Request) (*authedToken, error) {
 		bearer:     auth,
 		remoteAddr: r.RemoteAddr,
 		userAgent:  r.UserAgent(),
+		host:       r.Host,
 	}, nil
 }
 

@@ -294,6 +294,11 @@ func (s *Server) send(ctx context.Context, tok *authedToken, op Operation, targe
 		req.Header.Set("X-Request-Id", id)
 	}
 	req.RemoteAddr = tok.remoteAddr
+	// The address the MCP client used: handlers that build links from
+	// r.Host must not see the placeholder of apiBase.
+	if tok.host != "" {
+		req.Host = tok.host
+	}
 	w := &capture{header: http.Header{}}
 	(*h).ServeHTTP(w, req)
 	if w.over {

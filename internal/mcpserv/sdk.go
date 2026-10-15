@@ -114,9 +114,13 @@ func (s *Server) serverFor(tok *authedToken) *mcp.Server {
 		if !tok.mayUse(op) {
 			continue
 		}
-		srv.AddTool(s.sdkTool(op), s.callHandler(tok, ToolName(op.ID), func(ctx context.Context, args map[string]any) (*mcp.CallToolResult, string) {
-			return s.invoke(ctx, tok, op, args)
+		srv.AddTool(s.sdkTool(op), s.callHandler(tok, ToolName(op.ID), func(ctx context.Context, args map[string]any) (*mcp.CallToolResult, string, string) {
+			res, word := s.invoke(ctx, tok, op, args)
+			return res, word, ""
 		}))
+	}
+	for _, g := range s.genericTools(tok) {
+		srv.AddTool(g.tool, g.handler)
 	}
 	srv.AddReceivingMiddleware(s.auditHidden(tok))
 	return srv
@@ -149,13 +153,13 @@ func (s *Server) sdkTool(op Operation) *mcp.Tool {
 const toolTimeout = 30 * time.Second
 
 // callHandler adapts run to the SDK's raw tool handler and writes the audit
-// row: auditName and the word run returns. run gets the arguments as an
-// object. A call that fails answers with an isError result, which the model
+// row: the name run returns (auditName when it returns "") and the word run
+// returns. run gets the arguments as an object. A call that fails answers with an isError result, which the model
 // can read and act on; it is not a protocol error.
 //
 // The SDK runs handlers on a goroutine of its own, outside net/http's and the
 // router's recovery, so a panic here would end the process. It is caught.
-func (s *Server) callHandler(tok *authedToken, auditName string, run func(ctx context.Context, args map[string]any) (*mcp.CallToolResult, string)) mcp.ToolHandler {
+func (s *Server) callHandler(tok *authedToken, auditName string, run func(ctx context.Context, args map[string]any) (*mcp.CallToolResult, string, string)) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (res *mcp.CallToolResult, _ error) {
 		defer func() {
 			if p := recover(); p != nil {
@@ -184,7 +188,10 @@ func (s *Server) callHandler(tok *authedToken, auditName string, run func(ctx co
 		}
 		callCtx, cancel := context.WithTimeout(ctx, limit)
 		defer cancel()
-		res, word := run(callCtx, args)
+		res, word, name := run(callCtx, args)
+		if name != "" {
+			auditName = name
+		}
 		if errors.Is(callCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 			// The log names the tool and the deadline, never an argument.
 			s.emitToolAudit(ctx, tok, auditName, "error")

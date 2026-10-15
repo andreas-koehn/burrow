@@ -77,7 +77,7 @@ func newDispatchServer(t *testing.T, api http.Handler, perms []string) (*httptes
 	sink := &auditSink{}
 	s.SetAuditAppender(sink)
 	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: perms,
-		bearer: "Bearer bua_test", remoteAddr: "198.51.100.7:4242", userAgent: "claude-code/2.0"}
+		bearer: "Bearer bua_test", remoteAddr: "198.51.100.7:4242", userAgent: "claude-code/2.0", host: "relay.example.com"}
 	h := s.mcpHandler()
 	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
@@ -339,5 +339,17 @@ func TestCallIsRoutedAfresh(t *testing.T) {
 		if got.ID != wantID || got.Pattern != "/api/v1/services/{serviceID}" {
 			t.Errorf("%s: reached %+v, want id %q on /api/v1/services/{serviceID}", value, got, wantID)
 		}
+	}
+}
+
+func TestCallKeepsTheHostOfTheMCPRequest(t *testing.T) {
+	api := &fakeAPI{reply: `{"id":"svc_1"}`}
+	hs, _ := newDispatchServer(t, api, presetPerms(authz.PresetOperator))
+	cs := connectMCP(t, hs.URL, "", testRevisions[0])
+	if res, err := callTool(t, cs, "service_get", map[string]any{"serviceID": "svc_1"}); err != nil || res.IsError {
+		t.Fatalf("call: %v %+v", err, res)
+	}
+	if api.calls() != 1 || api.seen[0].Host != "relay.example.com" {
+		t.Errorf("the API saw host %q", api.seen[0].Host)
 	}
 }

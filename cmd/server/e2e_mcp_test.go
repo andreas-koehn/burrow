@@ -163,6 +163,7 @@ func (e *mcpE2E) serve(t *testing.T, authDomain string) string {
 		Services:      e.st,
 		AccessModes:   e.st,
 		AIProviders:   e.st,
+		Budgets:       e.wrapped,
 		Bearer:        api.NewStoreBearerStore(e.st),
 		Automation:    e.st,
 		AuditAppender: e.stack.AuditAppender,
@@ -483,5 +484,118 @@ func TestE2EMCP_WritesLeaveTheAuditTrailOfTheAPI(t *testing.T) {
 	}
 	if strings.Contains(string(raw), bearer) {
 		t.Errorf("the audit log holds the bearer")
+	}
+}
+
+// TestE2EMCP_GenericCallsGoThroughTheGate: what the generic tools reach is
+// what the REST API lets the same token do.
+func TestE2EMCP_GenericCallsGoThroughTheGate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip e2e in -short")
+	}
+	ctx := context.Background()
+	e := newMCPE2E(t)
+	base := e.serve(t, "")
+	mcpURL := base + mcpserv.EndpointPath
+
+	budgetIDs := func() []string {
+		var list []struct {
+			ID string `json:"id"`
+		}
+		if code := rest(t, http.MethodGet, base+"/api/v1/budgets", e.mint(t, "e2e-budget-reader", presetPermissions(t, authz.PresetFull)), &list); code != http.StatusOK {
+			t.Fatalf("GET /api/v1/budgets: %d", code)
+		}
+		ids := make([]string, len(list))
+		for i, b := range list {
+			ids[i] = b.ID
+		}
+		return ids
+	}
+	find := func(cs *mcp.ClientSession, query string) []string {
+		t.Helper()
+		var out struct {
+			Operations []struct {
+				OperationID string `json:"operation_id"`
+			} `json:"operations"`
+		}
+		if err := json.Unmarshal([]byte(mcpCall(t, cs, false, "burrow_find_operations", map[string]any{"query": query, "limit": 100})), &out); err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, len(out.Operations))
+		for i, op := range out.Operations {
+			ids[i] = op.OperationID
+		}
+		return ids
+	}
+	unknown := func(cs *mcp.ClientSession, id string, args map[string]any) {
+		t.Helper()
+		got := mcpCall(t, cs, true, "burrow_call_operation", map[string]any{"operation_id": id, "arguments": args})
+		if !strings.HasPrefix(got, "unknown operation "+id) {
+			t.Errorf("%s: %q", id, got)
+		}
+	}
+	budgetBody := map[string]any{"scope": "global", "daily_usd": 5, "action_on_exceed": "throttle_zero"}
+
+	for _, revision := range []string{"2026-07-28", "2025-11-25"} {
+		t.Run(revision, func(t *testing.T) {
+			// --- read-only: sees audit, not budgets; dashboard-only is unknown
+			ro := mcpConnect(t, mcpURL, e.mint(t, "e2e-generic-ro", presetPermissions(t, authz.PresetReadOnly)), revision)
+			if !contains(find(ro, "audit"), "auditEventsList") {
+				t.Errorf("read-only does not find auditEventsList")
+			}
+			if ids := find(ro, "budget"); contains(ids, "budgetsList") || contains(ids, "budgetCreate") {
+				t.Errorf("read-only finds budget operations: %v", ids)
+			}
+			unknown(ro, "budgetCreate", map[string]any{"body": budgetBody})
+			unknown(ro, "gatewayKeyCreate", map[string]any{})
+
+			// --- a user whose token declares what the role does not grant
+			u, err := e.st.CreateUser(ctx, "plain-"+revision+"@x", "a-long-enough-password-1", "user")
+			if err != nil {
+				t.Fatalf("create user: %v", err)
+			}
+			// Minted while the user was an admin, who has the permission; the
+			// role is "user" now, as after a demotion.
+			_, plain, err := e.st.MintAutomationToken(ctx, u.ID, "admin", "e2e-generic-user", []string{"ai:providers:manage"}, nil)
+			if err != nil {
+				t.Fatalf("mint: %v", err)
+			}
+			us := mcpConnect(t, mcpURL, plain, revision)
+			unknown(us, "providerCreate", map[string]any{"body": map[string]any{"name": "sneaky", "kind": "direct", "base_url": "https://example.com", "credential_slot": "x"}})
+			var providers []struct {
+				Slug string `json:"slug"`
+			}
+			if code := rest(t, http.MethodGet, base+"/api/v1/ai/providers", e.mint(t, "e2e-provider-reader", presetPermissions(t, authz.PresetFull)), &providers); code != http.StatusOK || len(providers) != 0 {
+				t.Errorf("providers after the refused create: %d %+v", code, providers)
+			}
+
+			// --- operator: dry run changes nothing, the real call creates it
+			op := mcpConnect(t, mcpURL, e.mint(t, "e2e-generic-op", presetPermissions(t, authz.PresetOperator)), revision)
+			before := budgetIDs()
+			seen := map[string]bool{}
+			for _, r := range e.rows(t) {
+				seen[r.ID] = true
+			}
+			dry := mcpCall(t, op, false, "burrow_call_operation", map[string]any{"operation_id": "budgetCreate", "arguments": map[string]any{"dry_run": true, "body": budgetBody}})
+			if !strings.Contains(dry, `"dry_run":true`) || len(budgetIDs()) != len(before) {
+				t.Fatalf("dry run: %s, budgets %d -> %d", dry, len(before), len(budgetIDs()))
+			}
+			mcpCall(t, op, false, "burrow_call_operation", map[string]any{"operation_id": "budgetCreate", "arguments": map[string]any{"body": budgetBody}})
+			if len(budgetIDs()) != len(before)+1 {
+				t.Fatalf("budgets after the real call: %d, before %d", len(budgetIDs()), len(before))
+			}
+			got := map[string]bool{}
+			for _, r := range e.rows(t) {
+				if !seen[r.ID] {
+					got[r.Action+"/"+r.SubjectLabel] = true
+				}
+			}
+			if !got["mcp.tool.call/burrow_call_operation/budgetCreate"] {
+				t.Errorf("no MCP row for the generic call: %v", got)
+			}
+			// The REST route writes no audit row for a budget today
+			// (budget.create is declared in internal/audit and never
+			// emitted), so the MCP row is the only one of the call.
+		})
 	}
 }
