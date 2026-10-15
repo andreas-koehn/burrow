@@ -80,6 +80,8 @@ export default function ProviderDetail() {
   // Every write on this page is a provider write; the clients list is read by whoever sees every client.
   const canManage = useCan(P.aiProvidersManage);
   const canListClients = useCan(P.tunnelsReadAny);
+  // GET and PUT /services/{id}/ai-config: ai:configure:own or :any. Routing, backends and Pause live there.
+  const canConfigureAi = useCan([P.aiConfigureOwn, P.aiConfigureAny]);
   const [renameOpen, setRenameOpen] = useState(false);
   // The open tab lives in the URL fragment, so it can be linked to and the
   // back button returns to it.
@@ -121,7 +123,7 @@ export default function ProviderDetail() {
       return withAIConfigDefaults(c);
     },
     retry: false,
-    enabled: Boolean(id),
+    enabled: Boolean(id) && canConfigureAi,
   });
   const metrics = useQuery({
     queryKey: ["ai", "provider", slug, "metrics"],
@@ -240,7 +242,9 @@ export default function ProviderDetail() {
     );
   }
 
-  if (!draft || !metrics.data || !provider.data || (!direct && !svc.data)) {
+  // Without the permission the config is not read; the page shows what it can without it.
+  const view = draft ?? (canConfigureAi ? null : withAIConfigDefaults({}));
+  if (!view || !metrics.data || !provider.data || (!direct && !svc.data)) {
     return (
       <div className="ai-endpoint-detail-page">
         <PageHeader back={BACK} title="Provider" subtitle={SUBTITLE} />
@@ -249,7 +253,7 @@ export default function ProviderDetail() {
     );
   }
 
-  const routing = draft.routing;
+  const routing = view.routing;
   const flat = direct && provider.data.billing === "flat";
 
   function setRouting(next: Partial<ServiceAIConfig["routing"]>) {
@@ -450,7 +454,7 @@ export default function ProviderDetail() {
               </section>
 
               {/* Set apart like the other sections a page keeps closed (Connect a client). */}
-              <section aria-labelledby={`${headingId}-advanced`} className="account-section">
+              {canConfigureAi && <section aria-labelledby={`${headingId}-advanced`} className="account-section">
                 <h2 id={`${headingId}-advanced`} className="connect-other-head">
                   <Button
                     variant="ghost"
@@ -517,7 +521,7 @@ export default function ProviderDetail() {
                         </FormField>
                       </div>
                       <div className="actions">
-                        <Button variant="primary" size="sm" disabled={save.isPending} onClick={() => save.mutate(draft)}>
+                        <Button variant="primary" size="sm" disabled={save.isPending} onClick={() => save.mutate(view)}>
                           {save.isPending ? "Saving…" : "Save routing"}
                         </Button>
                       </div>
@@ -555,13 +559,13 @@ export default function ProviderDetail() {
                     </>
                   )}
                 </div>
-              </section>
+              </section>}
 
               {/* A hosted provider is not paused, and only whoever may manage providers renames or deletes: nothing is left for anyone else. */}
-              {(!direct || canManage) && (
+              {((!direct && canConfigureAi) || canManage) && (
                 <section aria-labelledby={`${headingId}-manage`} className="card col gap-2">
                   <h2 id={`${headingId}-manage`}>This provider</h2>
-                  {!direct && (
+                  {!direct && canConfigureAi && (
                     <label className="row row-center gap-2">
                       <Switch
                         aria-label="Pause provider"

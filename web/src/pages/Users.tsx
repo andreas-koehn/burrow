@@ -15,11 +15,9 @@ import { EditUserDialog } from "@/pages/users/EditUserDialog";
 
 const PAGE = 20;
 
-// The role's badge; a role without an entry reads as the built-in user.
-const ROLE_BADGE: Record<string, { kind: "role-admin-teal" | "role-user"; label: string }> = {
-  admin: { kind: "role-admin-teal", label: "Admin" },
-  user: { kind: "role-user", label: "User" },
-};
+// The role's badge shows the role's own name; the teal style is a cosmetic choice for the built-in admin.
+const roleLabel = (role: string) => role.charAt(0).toUpperCase() + role.slice(1);
+const ROLE_KIND: Record<string, "role-admin-teal" | "role-user"> = { admin: "role-admin-teal" };
 
 export default function Users() {
   const { user: me } = useAuth();
@@ -116,7 +114,7 @@ export default function Users() {
               {rows.map((u) => (
                 <tr key={u.id}>
                   <td>{u.email}{u.id === me?.id && <span className="tag" aria-label="this is you"> YOU</span>}</td>
-                  <td><Badge kind={(ROLE_BADGE[u.role] ?? ROLE_BADGE.user!).kind}>{(ROLE_BADGE[u.role] ?? ROLE_BADGE.user!).label}</Badge></td>
+                  <td><Badge kind={ROLE_KIND[u.role] ?? "role-user"}>{roleLabel(u.role)}</Badge></td>
                   <td><Badge kind={u.status === "active" ? "status-connected" : "status-suspended-muted"}>{u.status === "active" ? "Active" : "Suspended"}</Badge></td>
                   <td className="col-created"><RelativeTime value={u.created_at} /></td>
                   <td className="col-created">{u.last_login ? <RelativeTime value={u.last_login} /> : <span className="muted">—</span>}</td>

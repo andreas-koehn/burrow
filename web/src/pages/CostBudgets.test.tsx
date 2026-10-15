@@ -676,5 +676,23 @@ describe("Cost & budgets (§4.24)", () => {
       expect(screen.queryByRole("button", { name: "New budget" })).toBeNull();
       expect(screen.queryByText(/admin/i)).toBeNull();
     });
+
+    it("a budgets-only role asks for neither the services nor the users, and types the ids", async () => {
+      db.me = { ...db.me, role: "operator", permissions: ["budgets:manage", "quotas:read:any"] };
+      const asked: string[] = [];
+      server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
+      try {
+        mount();
+        await userEvent.click(await screen.findByRole("button", { name: "New budget" }));
+        const dialog = await screen.findByRole("dialog", { name: "New budget" });
+        await chooseOption(dialog, "Scope", "User");
+        expect(await within(dialog).findByLabelText("User id")).toBeInTheDocument();
+        await chooseOption(dialog, "Scope", "Service");
+        expect(await within(dialog).findByLabelText("Service id")).toBeInTheDocument();
+        expect(asked.filter((p) => p === "/api/v1/services" || p === "/api/v1/users")).toEqual([]);
+      } finally {
+        server.events.removeAllListeners();
+      }
+    });
   });
 });

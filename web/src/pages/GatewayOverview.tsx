@@ -45,6 +45,8 @@ export default function GatewayOverview() {
   const canReadBudgets = useCan(P.budgetsManage);
   const canAddProvider = useCan(P.aiProvidersManage);
   const canCreateModel = useCan(P.aiConfigureAny);
+  // POST /ai/keys: ai:configure:own or :any.
+  const canCreateKey = useCan([P.aiConfigureOwn, P.aiConfigureAny]);
   const relayNotices = useRelayNotices();
 
   // Same keys and fetches as the Providers and the Cost & budgets pages.
@@ -126,14 +128,14 @@ export default function GatewayOverview() {
       done: modelList.length > 0,
       action: { label: "Create a model", to: "/gateway/models" },
     }] : []),
-    {
+    ...(canCreateKey ? [{
       id: "key",
       title: "Create a gateway key",
       description: "Apps sign in to the gateway with a gateway key.",
       // A reader without ai:read:any sees their own keys: the step is about a key they can use.
       done: keyList.some((k) => !k.revoked_at),
       action: { label: "Create a gateway key", to: "/gateway/keys" },
-    },
+    }] : []),
     {
       id: "request",
       title: "Send the first request",

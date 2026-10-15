@@ -130,4 +130,15 @@ describe("CreateUserDialog — no-email clarifier (P6B.3)", () => {
       expect(screen.queryByRole("button", { name: /delete user/i })).toBeNull();
     });
   });
+
+  it("a custom role shows under its own name", async () => {
+    server.use(http.get("/api/v1/users", () => HttpResponse.json({
+      users: [{ id: "u9", email: "olga@acme.io", role: "operator", status: "active", last_login: null, created_at: "2026-03-01T08:00:00Z" }],
+      next_cursor: "",
+    })));
+    renderApp(<Users />);
+    const row = (await screen.findByText("olga@acme.io")).closest("tr")!;
+    expect(within(row).getByText("Operator")).toBeInTheDocument();
+    expect(within(row).queryByText("User")).toBeNull();
+  });
 });

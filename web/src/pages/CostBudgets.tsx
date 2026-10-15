@@ -62,7 +62,7 @@ function actionHelp(action: Budget["action_on_exceed"], scope: BudgetScope): str
 const OTHER_MODEL = "__other__";
 
 // What a scope still needs before a budget can be created. Global needs nothing.
-const SUBJECT_MISSING: Partial<Record<BudgetScope | "model_address" | "user_id", string>> = {
+const SUBJECT_MISSING: Partial<Record<BudgetScope | "model_address" | "user_id" | "service_id" | "key_id", string>> = {
   gateway_key: "Choose a gateway key.",
   api_key: "Choose a service and a key.",
   model: "Choose a model.",
@@ -70,6 +70,8 @@ const SUBJECT_MISSING: Partial<Record<BudgetScope | "model_address" | "user_id",
   service: "Choose a service.",
   user: "Choose a user.",
   user_id: "Type the user's id.",
+  service_id: "Type the service's id.",
+  key_id: "Type the key's id.",
 };
 
 // As many users as the picker asks for; with more than that the id is typed.
@@ -115,7 +117,10 @@ export default function CostBudgets() {
   const { loading: authLoading } = useAuth();
   // Every call on budgets (GET, POST, PUT, DELETE /budgets): budgets:manage. Naming a key by its id takes GET /ai/keys.
   const canBudgets = useCan(P.budgetsManage);
-  const canReadKeys = useCan([P.aiReadOwn, P.aiReadAny]);
+  // GET /services: services:configure:own or :any. GET /users: users:read or users:manage. Without them the id is typed.
+  const canListServices = useCan([P.servicesConfigureOwn, P.servicesConfigureAny]);
+  const canListUsers = useCan([P.usersRead, P.usersManage]);
+  const canReadKeys = useCan([P.aiReadOwn, P.aiReadAny, P.aiConfigureOwn, P.aiConfigureAny]);
   const cost = useQueries({
     queries: WINDOWS.map((w) => ({
       queryKey: ["cost", "summary", w],
@@ -163,7 +168,7 @@ export default function CostBudgets() {
     queryKey: ["services"],
     queryFn: () => apiFetch<Service[]>("/services"),
     retry: false,
-    enabled: addOpen || keyBudgets,
+    enabled: (addOpen || keyBudgets) && canListServices,
   });
   const serviceList = Array.isArray(services.data) ? services.data : [];
   const serviceOptions = serviceList.map((s) => ({ value: s.id, label: s.name }));
@@ -189,11 +194,11 @@ export default function CostBudgets() {
     queryKey: ["users", "budget-subject"],
     queryFn: () => apiFetch<UsersPage>(`/users?limit=${USER_LIMIT}&offset=0`),
     retry: false,
-    enabled: addOpen && scope === "user",
+    enabled: addOpen && scope === "user" && canListUsers,
   });
   const userList = Array.isArray(users.data?.users) ? users.data.users : [];
   // The id is typed when the users cannot be listed, or not all of them.
-  const typeUserId = users.isError || (users.isSuccess && (users.data?.total ?? 0) > userList.length);
+  const typeUserId = !canListUsers || users.isError || (users.isSuccess && (users.data?.total ?? 0) > userList.length);
   const userOptions = userList.map((u) => ({ value: u.id, label: u.email }));
 
   const keys = useQuery({
@@ -241,6 +246,8 @@ export default function CostBudgets() {
   // said at its own field.
   const missingSubject = scope === "model" && subjectId === OTHER_MODEL ? "model_address"
     : scope === "user" && typeUserId ? "user_id"
+    : scope === "service" && !canListServices ? "service_id"
+    : scope === "api_key" && !canListServices ? "key_id"
     : scope;
   const missing = [
     subjectMissing && SUBJECT_MISSING[missingSubject],
@@ -407,7 +414,15 @@ export default function CostBudgets() {
           <FormField label="Scope" htmlFor="budget-scope" w="md">
             <Select id="budget-scope" value={scope} onChange={(v) => { setScope(v as Budget["scope"]); setSubjectId(""); setKeyService(""); }} options={SCOPE_OPTIONS} />
           </FormField>
-          {scope === "service" ? (
+          {scope === "service" && !canListServices ? (
+            <FormField label="Service id" htmlFor="budget-subject" w="md" descId="budget-subject-desc" help="The services can't be listed here. Type the service's id.">
+              <Input id="budget-subject" className="mono" aria-describedby="budget-subject-desc" value={subjectId} onChange={(e) => setSubjectId(e.target.value)} />
+            </FormField>
+          ) : scope === "api_key" && !canListServices ? (
+            <FormField label="Key id" htmlFor="budget-subject" w="md" descId="budget-subject-desc" help="The services can't be listed here. Type the key's id.">
+              <Input id="budget-subject" className="mono" aria-describedby="budget-subject-desc" value={subjectId} onChange={(e) => setSubjectId(e.target.value)} />
+            </FormField>
+          ) : scope === "service" ? (
             <FormField
               label="Subject"
               htmlFor="budget-subject"
@@ -487,7 +502,7 @@ export default function CostBudgets() {
               htmlFor="budget-subject"
               w="md"
               descId="budget-subject-desc"
-              help={users.isError ? "The users can't be listed here. Type the user's id." : "Too many users to list. Type the user's id."}
+              help={users.isError || !canListUsers ? "The users can't be listed here. Type the user's id." : "Too many users to list. Type the user's id."}
               error={idErr}
             >
               <Input id="budget-subject" className="mono" aria-describedby="budget-subject-desc" aria-invalid={idErr ? true : undefined} value={subjectId} onChange={(e) => setSubjectId(e.target.value)} />

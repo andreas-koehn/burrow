@@ -415,7 +415,7 @@ describe("GatewayOverview", () => {
       withProviders([provider({ requests_24h: 0 })]);
       withModels([]);
       renderApp(<GatewayOverview />);
-      expect(stepStates(await checklist()).map((s) => s[0])).toEqual(["Add a provider", "Create a gateway key", "Send the first request"]);
+      expect(stepStates(await checklist()).map((s) => s[0])).toEqual(["Add a provider", "Send the first request"]);
     });
 
     it("without either, neither step is offered and nothing says the reader is no admin", async () => {
@@ -424,7 +424,8 @@ describe("GatewayOverview", () => {
       withProviders([provider({ requests_24h: 0 })]);
       withModels([]);
       renderApp(<GatewayOverview />);
-      expect(stepStates(await checklist()).map((s) => s[0])).toEqual(["Create a gateway key", "Send the first request"]);
+      // No ai:configure: the Keys page would offer no New key, so the step is not offered.
+      expect(stepStates(await checklist()).map((s) => s[0])).toEqual(["Send the first request"]);
       expect(screen.queryByText(/not an admin/i)).toBeNull();
     });
 

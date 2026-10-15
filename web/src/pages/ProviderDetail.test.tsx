@@ -1539,6 +1539,28 @@ describe("Provider detail", () => {
       expect(within(panel).getByText("Auth header")).toBeInTheDocument();
     });
 
+    it("routing, backends and Pause follow ai:configure, and without it the config is not read", async () => {
+      operator(["ai:read:any", "ai:providers:manage"]);
+      const asked: string[] = [];
+      server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
+      try {
+        mountSettings();
+        await screen.findByRole("button", { name: "Rename" });
+        expect(screen.queryByRole("button", { name: "Advanced" })).toBeNull();
+        expect(screen.queryByRole("switch", { name: "Pause provider" })).toBeNull();
+        expect(asked.some((p) => p.endsWith("/ai-config"))).toBe(false);
+      } finally {
+        server.events.removeAllListeners();
+      }
+    });
+
+    it("a custom role with ai:configure:own is offered Advanced and Pause", async () => {
+      db.me = { ...db.me, role: "operator", permissions: ["ai:read:any", "ai:configure:own"] };
+      mountSettings();
+      expect(await screen.findByRole("switch", { name: "Pause provider" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Advanced" })).toBeInTheDocument();
+    });
+
     it("a custom role without it is offered neither, and nothing says the reader is no admin", async () => {
       operator(["ai:read:any", "ai:configure:any"]);
       mountDirect();
