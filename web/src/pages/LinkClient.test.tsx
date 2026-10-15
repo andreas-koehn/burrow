@@ -9,6 +9,7 @@ import App from "@/App";
 import { setCsrfCookie } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
+import { USER_PERMISSIONS } from "@/auth/permissions";
 
 const CODE = "BRRW-7Q4K";
 const INVALID = "This code is not valid or has expired. Run burrow login again.";
@@ -229,7 +230,7 @@ describe("Link page: approve and deny", () => {
   });
 
   it("tells an account without the permission so, and offers nothing to retry", async () => {
-    db.me.role = "user";
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     db.rolePerms.user = [];
     renderAt(`/link?code=${CODE}`);
     await screen.findByText(CODE);

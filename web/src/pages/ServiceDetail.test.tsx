@@ -7,6 +7,7 @@ import ServiceDetail from "@/pages/ServiceDetail";
 import { http, HttpResponse } from "msw";
 import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
+import { USER_PERMISSIONS } from "@/auth/permissions";
 
 function mount() {
   return renderApp(
@@ -413,7 +414,7 @@ describe("ServiceDetail page", () => {
   });
 
   it("API keys tab without the permission to read the keys: no sentence about keys that are not listed", async () => {
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: USER_PERMISSIONS.filter((x) => !x.startsWith("services:configure")) };
     server.use(http.get("/api/v1/services/:id/api-keys", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
     const { qc } = mountAt("/services/svc_ai001#api-keys");
     await screen.findByRole("heading", { name: /ollama/i });

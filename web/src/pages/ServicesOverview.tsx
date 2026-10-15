@@ -6,6 +6,8 @@ import { InstallLines } from "@/components/InstallLines";
 import { RelativeTime } from "@/components/RelativeTime";
 import { StatusBadge } from "@/components/StatusBadge";
 import { useAuth } from "@/auth/useAuth";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { GLOSSARY } from "@/lib/glossary";
@@ -33,13 +35,16 @@ function byLastServed(a: Service, b: Service): number {
 interface Token { id: string; name: string; last_used: string | null; created_at: string; }
 
 export default function ServicesOverview() {
-  const { user, loading: authLoading } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const { loading: authLoading } = useAuth();
+  // GET /clients/known: tunnels:read:any. GET /connection-logs: audit:read. POST /services: services:configure:any.
+  const canListClients = useCan(P.tunnelsReadAny);
+  const canReadTraffic = useCan(P.auditRead);
+  const canCreateService = useCan(P.servicesConfigureAny);
   const notices = useRelayNotices();
 
   // The rows of the Clients page, from the request the sidebar makes too.
-  // Admin-only endpoint; everyone else gets a dash instead of a count.
-  const clients = useKnownClients({ enabled: isAdmin });
+  // Needs tunnels:read:any; everyone else gets a dash instead of a count.
+  const clients = useKnownClients({ enabled: canListClients });
 
   const services = useQuery({
     queryKey: ["services"],
@@ -55,11 +60,11 @@ export default function ServicesOverview() {
     staleTime: 30_000,
   });
 
-  // One row is enough to know whether anything ever came through. Admin-only endpoint.
+  // One row is enough to know whether anything ever came through. Needs audit:read.
   const anyTraffic = useQuery({
     queryKey: ["connection-logs-any"],
     queryFn: () => apiFetch<ConnectionLog[]>("/connection-logs?limit=1"),
-    enabled: isAdmin,
+    enabled: canReadTraffic,
     retry: false,
     staleTime: 30_000,
   });
@@ -75,14 +80,14 @@ export default function ServicesOverview() {
   const gatewayOnly = svc.length - own.length;
   const listed = [...own].sort(byLastServed).slice(0, LISTED);
 
-  const trafficValue = isAdmin && clients.rows
+  const trafficValue = canListClients && clients.rows
     ? `${formatBytes(cls.reduce((a, c) => a + c.total_bytes_in, 0))} / ${formatBytes(cls.reduce((a, c) => a + c.total_bytes_out, 0))}`
     : "—";
 
   // The checklist states facts, so it waits until every answer it needs is in
   // and stays away when one of them failed.
   const checklistReady = !authLoading && services.isSuccess && tokens.isSuccess
-    && (!isAdmin || (clients.isSuccess && anyTraffic.isSuccess));
+    && (!canListClients || clients.isSuccess) && (!canReadTraffic || anyTraffic.isSuccess);
   // The relay serves this dashboard, so its address is where the page came from.
   const relayOrigin = typeof window !== "undefined" ? window.location.origin : "";
   const steps: ChecklistStep[] = [
@@ -109,10 +114,10 @@ export default function ServicesOverview() {
       title: "Expose a service",
       description: "A service is the saved address and access mode (open, API key or Burrow login) of a local port; it stays when no client is connected.",
       done: svc.length > 0,
-      action: { label: "New service", to: "/services?new=1" },
+      ...(canCreateService ? { action: { label: "New service", to: "/services?new=1" } } : {}),
     },
-    // Only an admin can read the traffic log, so only an admin gets this step.
-    ...(isAdmin ? [{
+    // The traffic log needs audit:read, so only whoever holds it gets this step.
+    ...(canReadTraffic ? [{
       id: "traffic",
       title: "Receive the first request",
       description: "A live connection to a service is a tunnel; it exists while the client is connected and forwards traffic.",
@@ -125,11 +130,11 @@ export default function ServicesOverview() {
     <div className="home-quick-actions">
       <Link className="btn btn-primary btn-sm" to="/clients/connect">Connect a client</Link>
       {/* ?new=1 opens the dialog the label promises. */}
-      <Link className="btn btn-secondary btn-sm" to="/services?new=1">New service</Link>
+      {canCreateService && <Link className="btn btn-secondary btn-sm" to="/services?new=1">New service</Link>}
     </div>
   );
 
-  const stripLoading = authLoading || services.isLoading || (isAdmin && clients.isLoading);
+  const stripLoading = authLoading || services.isLoading || (canListClients && clients.isLoading);
 
   return (
     <div className="home-page">
@@ -164,7 +169,7 @@ export default function ServicesOverview() {
         <MetricStrip ariaLabel="Overview">
           <MetricTile
             label="Clients online"
-            value={isAdmin && clients.rows ? String(clientsOnline(known)) : "—"}
+            value={canListClients && clients.rows ? String(clientsOnline(known)) : "—"}
             sub="machines connected"
             tooltip={GLOSSARY.client.replace(/`/g, "")}
             to="/clients"

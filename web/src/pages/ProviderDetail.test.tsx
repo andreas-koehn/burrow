@@ -7,6 +7,7 @@ import { server } from "@/mocks/server";
 import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import ProviderDetail from "@/pages/ProviderDetail";
 import { addDirectProvider, db } from "@/mocks/db";
+import { USER_PERMISSIONS } from "@/auth/permissions";
 
 function PathProbe() {
   const loc = useLocation();
@@ -92,7 +93,7 @@ describe("Provider detail", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load provider: provider not found/i);
   });
 
-  it("lets an admin rename the provider and follows the new slug", async () => {
+  it("lets a reader with ai:providers:manage rename the provider and follows the new slug", async () => {
     mountSettings();
     const opener = await screen.findByRole("button", { name: "Rename" });
     await userEvent.click(opener);
@@ -170,7 +171,7 @@ describe("Provider detail", () => {
     expect(db.aiProviders.map((p) => p.slug)).toContain("ollama");
   });
 
-  it("lets an admin delete the provider after confirming, and returns to the list", async () => {
+  it("lets a reader with ai:providers:manage delete the provider after confirming, and returns to the list", async () => {
     // No model targets the provider any more.
     db.aiModels = db.aiModels.filter((m) => m.name !== "burrow-simple");
     const fetchSpy = vi.spyOn(globalThis, "fetch");
@@ -224,10 +225,10 @@ describe("Provider detail", () => {
     expect(screen.getByTestId("path")).toHaveTextContent(/^\/gateway\/providers\/ollama$/);
   });
 
-  it("offers neither Delete provider nor Rename to a non-admin", async () => {
-    db.me = { ...db.me, role: "user" };
+  it("offers neither Delete provider nor Rename without ai:providers:manage", async () => {
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     mountSettings();
-    // Pausing is not an admin's alone.
+    // Pausing does not need the permission to manage providers.
     await screen.findByRole("switch", { name: "Pause provider" });
     expect(screen.queryByRole("button", { name: "Delete provider" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
@@ -1028,8 +1029,8 @@ describe("Provider detail", () => {
       await waitFor(() => expect(put).toEqual({ credential_slot: "OPENROUTER,BACKUP" }));
     });
 
-    it("Upstream settings: a non-admin reads it and gets no Edit", async () => {
-      db.me = { ...db.me, role: "user" };
+    it("Upstream settings: without ai:providers:manage it is read and has no Edit", async () => {
+      db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
       mountDirect();
       await openTab("Settings");
       const panel = screen.getByRole("tabpanel");
@@ -1288,7 +1289,7 @@ describe("Provider detail", () => {
     });
 
     it("tunnel provider: a non-admin reads the state and cannot change it", async () => {
-      db.me = { ...db.me, role: "user" };
+      db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
       db.aiProviders[0]!.supports_responses = true;
       mountSettings();
       expect(await screen.findByText("This provider offers the Responses API.")).toBeInTheDocument();
@@ -1296,7 +1297,7 @@ describe("Provider detail", () => {
     });
 
     it("tunnel provider: a non-admin is told which endpoint refuses its models while it is off", async () => {
-      db.me = { ...db.me, role: "user" };
+      db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
       mountSettings();
       expect(await screen.findByText("This provider does not offer the Responses API: /openai/v1/responses refuses its models.")).toBeInTheDocument();
       expect(screen.queryByText(/refused for this provider/)).toBeNull();
@@ -1430,7 +1431,7 @@ describe("Provider detail", () => {
     });
 
     it("tunnel provider: a non-admin reads the limit and cannot change it", async () => {
-      db.me = { ...db.me, role: "user" };
+      db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
       db.aiProviders[0]!.max_concurrent = 2;
       mountSettings();
       expect(await screen.findByText("Serves at most 2 requests at once; more wait for a free place.")).toBeInTheDocument();
@@ -1439,7 +1440,7 @@ describe("Provider detail", () => {
     });
 
     it("tunnel provider: a non-admin is told when there is no limit", async () => {
-      db.me = { ...db.me, role: "user" };
+      db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
       mountSettings();
       expect(await screen.findByText("No limit on requests served at once.")).toBeInTheDocument();
     });
@@ -1515,5 +1516,39 @@ describe("Provider detail", () => {
     mount();
     await screen.findByRole("heading", { name: "Use it in an app" });
     expect(screen.getByText("Status, use in apps, catalog and settings of this provider.")).toBeInTheDocument();
+  });
+
+  describe("writes follow ai:providers:manage", () => {
+    const operator = (permissions: string[]) => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions };
+    };
+
+    it("a custom role holding it is offered Rename and Delete provider", async () => {
+      operator(["ai:providers:manage", "ai:read:any"]);
+      mountSettings();
+      expect(await screen.findByRole("button", { name: "Rename" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Delete provider" })).toBeInTheDocument();
+    });
+
+    it("a custom role holding it is offered Edit on a direct provider's upstream", async () => {
+      operator(["ai:providers:manage", "ai:read:any"]);
+      mountDirect();
+      await openTab("Settings");
+      const panel = screen.getByRole("tabpanel");
+      expect(await within(panel).findByRole("button", { name: "Edit" })).toBeInTheDocument();
+      expect(within(panel).getByText("Auth header")).toBeInTheDocument();
+    });
+
+    it("a custom role without it is offered neither, and nothing says the reader is no admin", async () => {
+      operator(["ai:read:any", "ai:configure:any"]);
+      mountDirect();
+      await openTab("Settings");
+      const panel = screen.getByRole("tabpanel");
+      await within(panel).findByText("https://openrouter.ai/api/v1");
+      expect(within(panel).queryByRole("button", { name: "Edit" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Delete provider" })).toBeNull();
+      expect(screen.queryByText(/not an admin/i)).toBeNull();
+    });
   });
 });

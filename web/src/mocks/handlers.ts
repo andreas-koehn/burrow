@@ -24,19 +24,27 @@ function sortGroups<T extends { key: string; usd: number }>(rows: T[]): T[] {
 }
 
 // Gate: replicate 401 -> 403(csrf) -> 403(admin) ordering.
-function gate(req: Request, opts: { admin?: boolean } = {}): Response | null {
+// `needs` names the permissions the real route accepts (internal/api/access.go); the admin role holds them all.
+function gate(req: Request, opts: { admin?: boolean; needs?: string[] } = {}): Response | null {
   if (req.headers.get("x-mock-unauth") === "1") return err(401, "unauthorized");
   const method = req.method.toUpperCase();
   if (!SAFE.has(method)) {
     if (req.headers.get("X-CSRF-Token") !== db.csrf) return err(403, "csrf token invalid");
   }
-  if (opts.admin && db.me.role !== "admin") return err(403, "admin required");
+  if (opts.admin && db.me.role !== "admin" && !(opts.needs ?? []).some((p) => db.me.permissions?.includes(p))) {
+    return err(403, "admin required");
+  }
   return null;
+}
+
+// Whether the caller holds one of the permissions: the admin role holds them all, any other role what /me lists.
+function holds(...perms: string[]): boolean {
+  return db.me.role === "admin" || perms.some((p) => db.me.permissions?.includes(p));
 }
 
 // services:configure — admin holds :any; the owner holds :own (spec Part C).
 function canConfigure(svc: { user_id: string }): boolean {
-  if (db.me.role === "admin") return true;
+  if (holds("services:configure:any")) return true;
   return svc.user_id === db.me.id;
 }
 
@@ -240,7 +248,7 @@ function providerSlugFromName(name: string): string {
 // A provider is visible when its backing service is (same rule as GET /services).
 function providerVisible(p: AiProviderRow): boolean {
   const svc = db.services.find((s) => s.id === p.service_id);
-  return !!svc && (db.me.role === "admin" || svc.user_id === db.me.id);
+  return !!svc && (holds("ai:read:any", "services:configure:any") || svc.user_id === db.me.id);
 }
 
 // A service as the relay returns it: the stored row without its owner, with
@@ -290,7 +298,7 @@ function providerView(p: AiProviderRow): AiProvider {
     in_use: p.max_concurrent ? db.aiProviderInUse[p.slug] ?? 0 : 0,
     model_count: (db.aiProviderModels[p.slug] ?? []).length,
     // The upstream routes are admin only; header values are never returned.
-    ...(direct && db.me.role === "admin"
+    ...(direct && holds("ai:providers:manage")
       ? {
           auth_header: p.auth_header ?? "Authorization",
           auth_format: p.auth_format ?? "Bearer {key}",
@@ -472,7 +480,7 @@ export const handlers = [
 
   // ---- users ----
   http.get("/api/v1/users", ({ request }) => {
-    const g = gate(request, { admin: true }); if (g) return g;
+    const g = gate(request, { admin: true, needs: ["users:read", "users:manage"] }); if (g) return g;
     const url = new URL(request.url);
     const q = (url.searchParams.get("q") ?? "").toLowerCase();
     const limit = Number(url.searchParams.get("limit")) || 50;
@@ -616,7 +624,7 @@ export const handlers = [
 
   // ---- clients ----
   http.get("/api/v1/clients", ({ request }) => {
-    const g = gate(request, { admin: true }); if (g) return g;
+    const g = gate(request, { admin: true, needs: ["tunnels:read:any"] }); if (g) return g;
     return json(db.clients.map(({ services: _services, ...v }) => v));
   }),
   http.get("/api/v1/clients/connect-info", ({ request }) => gate(request) ?? json({ server: db.connectServer })),
@@ -624,7 +632,7 @@ export const handlers = [
   // One row per client token: online with its live sessions, offline with the
   // last session the relay remembers, or never connected.
   http.get("/api/v1/clients/known", ({ request }) => {
-    const g = gate(request, { admin: true }); if (g) return g;
+    const g = gate(request, { admin: true, needs: ["tunnels:read:any"] }); if (g) return g;
     const live = (name: string) => db.clients.filter((c) => c.token_name === name);
     const row = (tokenId: string, name: string): KnownClient => {
       const sessions = live(name);
@@ -719,7 +727,7 @@ export const handlers = [
     const g = gate(request); if (g) return g;
     // Owner-scoped; admin (tunnels:read:any) sees all.
     // The backing row of a direct AI provider is not listed.
-    const rows = (db.me.role === "admin"
+    const rows = (holds("services:configure:any")
       ? db.services
       : db.services.filter((s) => s.user_id === db.me.id)).filter((s) => s.type !== "direct");
     return json(rows.map(serviceWire));
@@ -1309,9 +1317,9 @@ export const handlers = [
     });
   }),
   http.get("/api/v1/budgets", ({ request }) =>
-    gate(request, { admin: true }) ?? json(db.budgets)),
+    gate(request, { admin: true, needs: ["budgets:manage"] }) ?? json(db.budgets)),
   http.post("/api/v1/budgets", async ({ request }) => {
-    const g = gate(request, { admin: true }); if (g) return g;
+    const g = gate(request, { admin: true, needs: ["budgets:manage"] }); if (g) return g;
     const b = await body<Partial<MockDb["budgets"][number]>>(request);
     if (!b) return err(400, "invalid json");
     // Mirrors validateBudget and the unknown-gateway-key check in internal/api/cost_handlers.go.
@@ -1348,7 +1356,7 @@ export const handlers = [
     return json(rec, 201);
   }),
   http.delete("/api/v1/budgets/:id", ({ request, params }) => {
-    const g = gate(request, { admin: true }); if (g) return g;
+    const g = gate(request, { admin: true, needs: ["budgets:manage"] }); if (g) return g;
     const i = db.budgets.findIndex((b) => b.id === params.id);
     if (i < 0) return err(404, "budget not found");
     db.budgets.splice(i, 1);
@@ -1714,7 +1722,7 @@ export const handlers = [
   }),
   // A caller sees their own keys; an admin sees all. Revoked keys stay listed.
   http.get("/api/v1/ai/keys", ({ request }) =>
-    gate(request) ?? json(db.aiGatewayKeys.filter((k) => db.me.role === "admin" || k.user_id === db.me.id))),
+    gate(request) ?? json(db.aiGatewayKeys.filter((k) => holds("ai:read:any") || k.user_id === db.me.id))),
   http.post("/api/v1/ai/keys", async ({ request }) => {
     const g = gate(request); if (g) return g;
     const b = await body<{ name?: unknown; allowed_models?: unknown }>(request);
@@ -1747,7 +1755,7 @@ export const handlers = [
     const g = gate(request); if (g) return g;
     const k = db.aiGatewayKeys.find((x) => x.id === params.id);
     // Another user's key answers like a missing one.
-    if (!k || (db.me.role !== "admin" && k.user_id !== db.me.id)) return err(404, "key not found");
+    if (!k || (!holds("ai:configure:any") && k.user_id !== db.me.id)) return err(404, "key not found");
     k.revoked_at ??= new Date().toISOString();
     return noContent();
   }),
@@ -1891,7 +1899,7 @@ export const handlers = [
 
   // ---- v0.5.0 connection logs (spec Part E) ----
   http.get("/api/v1/connection-logs", ({ request }) => {
-    const g = gate(request, { admin: true }); if (g) return g;
+    const g = gate(request, { admin: true, needs: ["audit:read"] }); if (g) return g;
     const url = new URL(request.url);
     const kindFilter = url.searchParams.get("kind") ?? "";
     const serviceId = url.searchParams.get("service_id") ?? "";

@@ -551,7 +551,7 @@ describe("Layout workspace shell", () => {
     expect(await screen.findByRole("link", { name: "Clients, 1 online" })).toBeInTheDocument();
   });
 
-  it("does not ask for clients without tunnels:read:any", async () => {
+  it("lists Clients without a count and asks for no client list without tunnels:read:any", async () => {
     renderLayout("user");
     await chip();
     await waitFor(() => expect(screen.getByRole("link", { name: /^Your profile, alice/ })).toBeInTheDocument());

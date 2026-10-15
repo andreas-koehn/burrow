@@ -6,13 +6,14 @@ import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { addDirectProvider, db } from "@/mocks/db";
 import { ProviderModelsPanel, type ProviderModelsPanelProps } from "@/components/ProviderModelsPanel";
+import { USER_PERMISSIONS } from "@/auth/permissions";
 
 // OPENROUTER is set in the fixtures, ZAI is not.
 function renderPanel(props: ProviderModelsPanelProps) {
   if (!db.aiProviders.some((p) => p.slug === props.slug)) {
     addDirectProvider(props.slug, { credential_slot: props.slug === "zai" ? "ZAI" : "OPENROUTER" });
   }
-  if (!props.isAdmin) db.me = { ...db.me, role: "user" };
+  if (!props.canEdit) db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
   return renderApp(<ProviderModelsPanel {...props} />);
 }
 
@@ -24,7 +25,7 @@ function seedModels(slug: string, n: number) {
 
 describe("Provider models panel", () => {
   it("lists models, syncs, and reports the count", async () => {
-    renderPanel({ slug: "openrouter", kind: "direct", isAdmin: true });
+    renderPanel({ slug: "openrouter", kind: "direct", canEdit: true });
     expect(await screen.findByText(/no models yet/i)).toBeInTheDocument();
     expect(screen.getByText("Sync them from the provider or add one by id.")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Sync models" }));
@@ -37,7 +38,7 @@ describe("Provider models panel", () => {
   });
 
   it("shows why a sync failed", async () => {
-    renderPanel({ slug: "zai", kind: "direct", isAdmin: true }); // slot absent in fixtures
+    renderPanel({ slug: "zai", kind: "direct", canEdit: true }); // slot absent in fixtures
     await userEvent.click(await screen.findByRole("button", { name: "Sync models" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("the credential slot ZAI is not set");
   });
@@ -47,7 +48,7 @@ describe("Provider models panel", () => {
       await delay(80);
       return HttpResponse.json({ count: 0 });
     }));
-    renderPanel({ slug: "openrouter", kind: "direct", isAdmin: true });
+    renderPanel({ slug: "openrouter", kind: "direct", canEdit: true });
     await userEvent.click(await screen.findByRole("button", { name: "Sync models" }));
     const busy = await screen.findByRole("button", { name: "Syncing…" });
     expect(busy).toBeDisabled();
@@ -60,7 +61,7 @@ describe("Provider models panel", () => {
 
   it("adds and removes a model by hand", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    renderPanel({ slug: "openrouter", kind: "direct", isAdmin: true });
+    renderPanel({ slug: "openrouter", kind: "direct", canEdit: true });
     await userEvent.type(await screen.findByLabelText("Model id"), "google/gemini-x");
     await userEvent.click(screen.getByRole("button", { name: "Add model" }));
     expect(await screen.findByText("google/gemini-x")).toBeInTheDocument();
@@ -76,7 +77,7 @@ describe("Provider models panel", () => {
   it("ties a refused model id to its input", async () => {
     server.use(http.post("/api/v1/ai/providers/openrouter/models", () =>
       HttpResponse.json({ error: "id must be 1-200 characters without control characters" }, { status: 400 })));
-    renderPanel({ slug: "openrouter", kind: "direct", isAdmin: true });
+    renderPanel({ slug: "openrouter", kind: "direct", canEdit: true });
     const input = await screen.findByLabelText("Model id");
     await userEvent.type(input, "bad");
     await userEvent.click(screen.getByRole("button", { name: "Add model" }));
@@ -85,7 +86,7 @@ describe("Provider models panel", () => {
   });
 
   it("is read-only for non-admins", async () => {
-    renderPanel({ slug: "openrouter", kind: "direct", isAdmin: false });
+    renderPanel({ slug: "openrouter", kind: "direct", canEdit: false });
     await screen.findByText(/no models yet/i);
     expect(screen.queryByRole("button", { name: "Sync models" })).toBeNull();
     expect(screen.queryByLabelText("Model id")).toBeNull();
@@ -94,7 +95,7 @@ describe("Provider models panel", () => {
 
   it("offers no sync for a tunnel provider, only adding by id", async () => {
     db.aiProviderModels.ollama = [];
-    renderApp(<ProviderModelsPanel slug="ollama" kind="tunnel" isAdmin />);
+    renderApp(<ProviderModelsPanel slug="ollama" kind="tunnel" canEdit />);
     await screen.findByText(/no models yet/i);
     expect(screen.getByLabelText("Model id")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sync models" })).toBeNull();
@@ -103,7 +104,7 @@ describe("Provider models panel", () => {
   it("stays usable with a long list: shows a page at a time and filters by id or name", async () => {
     addDirectProvider("openrouter", { credential_slot: "OPENROUTER" });
     seedModels("openrouter", 250);
-    renderPanel({ slug: "openrouter", kind: "direct", isAdmin: true });
+    renderPanel({ slug: "openrouter", kind: "direct", canEdit: true });
     const table = await screen.findByRole("table", { name: "Models" });
     expect(within(table).getAllByRole("row")).toHaveLength(101);
     expect(screen.getByText("Showing 100 of 250 models")).toBeInTheDocument();
@@ -118,7 +119,7 @@ describe("Provider models panel", () => {
   });
 
   it("reports a sync that is already running and an upstream that did not answer", async () => {
-    renderPanel({ slug: "openrouter", kind: "direct", isAdmin: true });
+    renderPanel({ slug: "openrouter", kind: "direct", canEdit: true });
     server.use(http.post("/api/v1/ai/providers/openrouter/models/sync", () =>
       HttpResponse.json({ error: "a sync for this provider is already running" }, { status: 409 })));
     await userEvent.click(await screen.findByRole("button", { name: "Sync models" }));
@@ -145,7 +146,7 @@ describe("Provider models panel", () => {
       db.aiProviderModels["openrouter"]!.shift();
       return new HttpResponse(null, { status: 204 });
     }));
-    renderPanel({ slug: "openrouter", kind: "direct", isAdmin: true });
+    renderPanel({ slug: "openrouter", kind: "direct", canEdit: true });
     await userEvent.click(await screen.findByRole("button", { name: "Remove vendor/model-0000" }));
     const other = screen.getByRole("button", { name: "Remove vendor/model-0001" });
     await waitFor(() => expect(other).toBeDisabled());

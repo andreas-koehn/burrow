@@ -4,7 +4,6 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { ArrowDown, ArrowUp, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { useAuth } from "@/auth/useAuth";
 import { Button, Badge, Dialog, Disclosure, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, Segmented, Select, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { formatBytes } from "@/lib/format";
@@ -16,6 +15,8 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { serviceState, type ServedState } from "@/lib/status";
 import { SERVICE_ID_HINT, deriveServiceId, deriveSlug, serviceIdError } from "@/lib/slug";
 import { serviceUrl } from "@/lib/serviceUrl";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 
 const ACCESS_LABEL: Record<AccessMode, string> = {
   open: "Open",
@@ -111,15 +112,17 @@ export default function Services() {
     return i <= 0 ? winHost : s.slice(0, i);
   })();
   // Who holds each connection. A tunnel does not name its client; a client's detail
-  // lists its tunnels by id. Both endpoints are admin only, so nobody else asks
+  // lists its tunnels by id. Both endpoints need tunnels:read:any, so nobody without it asks
   // (same gate as the sidebar's count in Layout) and sees "—" instead.
-  const isAdmin = useAuth().user?.role === "admin";
+  const canListClients = useCan(P.tunnelsReadAny);
+  // POST /services: services:configure:any.
+  const canCreate = useCan(P.servicesConfigureAny);
   const clients = useQuery({
     queryKey: ["clients"],
     queryFn: () => apiFetch<ClientView[]>("/clients"),
     retry: false,
     refetchInterval: 30000,
-    enabled: live && isAdmin,
+    enabled: live && canListClients,
   });
   // One request per connected client. A stream event refreshes the list above, so a
   // client that just connected gets its detail at once (a new query). The detail of a
@@ -130,7 +133,7 @@ export default function Services() {
       queryFn: () => apiFetch<ClientDetail>(`/clients/${c.session_id}`),
       retry: false,
       refetchInterval: 30000,
-      enabled: live && isAdmin,
+      enabled: live && canListClients,
     })),
   });
   const holders = new Map<string, { sessionId: string; name: string }>();
@@ -375,7 +378,7 @@ export default function Services() {
       <PageHeader
         title="Services"
         subtitle="Durable services exposed through this relay, with their access configuration."
-        actions={<Button variant="primary" size="sm" onClick={() => setNewOpen(true)}>New service</Button>}
+        actions={canCreate ? <Button variant="primary" size="sm" onClick={() => setNewOpen(true)}>New service</Button> : undefined}
       />
       {/* Always there, also while Online loads or fails: it is the way back to All. */}
       <div className="toolbar-row">
@@ -574,7 +577,7 @@ export default function Services() {
 
       {/* P2-1 / P5.1 — new-service dialog */}
       <Dialog
-        open={newOpen}
+        open={newOpen && canCreate}
         onOpenChange={(o) => { if (!o) closeNew(); }}
         title="New service"
         description="Reserve a service and its address before a client serves it."

@@ -61,14 +61,14 @@ export function ResponsesCheckbox({ id, checked, onChange }: ResponsesCheckboxPr
 export interface ProviderResponsesSettingProps {
   /** A provider without upstream settings (kind "tunnel") in the OpenAI format. */
   provider: AiProvider;
-  isAdmin: boolean;
+  canEdit: boolean;
 }
 
 /**
  * Whether a tunnelled provider offers the Responses API. It is saved at once,
  * through the provider's own update; slug and name are sent back unchanged.
  */
-export function ProviderResponsesSetting({ provider, isAdmin }: ProviderResponsesSettingProps) {
+export function ProviderResponsesSetting({ provider, canEdit }: ProviderResponsesSettingProps) {
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const save = useMutation({
@@ -92,7 +92,7 @@ export function ProviderResponsesSetting({ provider, isAdmin }: ProviderResponse
   const checked = save.isPending ? save.variables : provider.supports_responses;
   return (
     <section className="card col gap-2" aria-label="Responses API">
-      {isAdmin ? (
+      {canEdit ? (
         <ResponsesCheckbox
           id="pr-responses"
           checked={checked}
@@ -163,14 +163,14 @@ const inUseText = (p: AiProvider) => `${p.in_use} of ${p.max_concurrent} in use`
 export interface ProviderConcurrencySettingProps {
   /** A provider without upstream settings (kind "tunnel"). */
   provider: AiProvider;
-  isAdmin: boolean;
+  canEdit: boolean;
 }
 
 /**
  * The concurrency limit of a tunnelled provider. It is saved through the
  * provider's own update; slug and name are sent back unchanged.
  */
-export function ProviderConcurrencySetting({ provider, isAdmin }: ProviderConcurrencySettingProps) {
+export function ProviderConcurrencySetting({ provider, canEdit }: ProviderConcurrencySettingProps) {
   const qc = useQueryClient();
   const [text, setText] = useState(concurrencyText(provider.max_concurrent));
   const [fieldErr, setFieldErr] = useState<string | null>(null);
@@ -198,7 +198,7 @@ export function ProviderConcurrencySetting({ provider, isAdmin }: ProviderConcur
   const limited = provider.max_concurrent > 0;
   return (
     <section className="card col gap-2" aria-label="Concurrency limit">
-      {isAdmin ? (
+      {canEdit ? (
         <>
           <ConcurrencyField
             id="pr-concurrency"
@@ -233,7 +233,7 @@ export function ProviderConcurrencySetting({ provider, isAdmin }: ProviderConcur
 export interface ProviderUpstreamPanelProps {
   /** A direct provider. Admins also get auth_header, auth_format and extra_header_names. */
   provider: AiProvider;
-  isAdmin: boolean;
+  canEdit: boolean;
 }
 
 /**
@@ -298,7 +298,7 @@ export function SlotStatus({ slots, known, whileMissing }: SlotStatusProps) {
  * credential is configured. The credential is set on the relay: this panel
  * shows and edits the name of its slot, never a value.
  */
-export function ProviderUpstreamPanel({ provider, isAdmin }: ProviderUpstreamPanelProps) {
+export function ProviderUpstreamPanel({ provider, canEdit }: ProviderUpstreamPanelProps) {
   const [editOpen, setEditOpen] = useState(false);
   const slots = provider.credential_slots;
   const missing = slots.filter((x) => !x.present).map((x) => x.slot);
@@ -307,7 +307,7 @@ export function ProviderUpstreamPanel({ provider, isAdmin }: ProviderUpstreamPan
     <section className="card" aria-label="Upstream">
       <div className="panel-head">
         <h2>Upstream</h2>
-        {isAdmin && (
+        {canEdit && (
           <Button variant="secondary" size="sm" className="ml-auto" onClick={() => setEditOpen(true)}>Edit</Button>
         )}
       </div>
@@ -362,19 +362,19 @@ export function ProviderUpstreamPanel({ provider, isAdmin }: ProviderUpstreamPan
           <dt className="def-key">Requests at once</dt>
           <dd className="def-val">{provider.max_concurrent > 0 ? inUseText(provider) : "no limit"}</dd>
         </div>
-        {isAdmin && provider.auth_header !== undefined && (
+        {canEdit && provider.auth_header !== undefined && (
           <div className="def-row">
             <dt className="def-key">Auth header</dt>
             <dd className="def-val">{provider.auth_header}</dd>
           </div>
         )}
-        {isAdmin && provider.auth_format !== undefined && (
+        {canEdit && provider.auth_format !== undefined && (
           <div className="def-row">
             <dt className="def-key">Auth format</dt>
             <dd className="def-val">{provider.auth_format}</dd>
           </div>
         )}
-        {isAdmin && extra !== undefined && (
+        {canEdit && extra !== undefined && (
           <div className="def-row">
             <dt className="def-key">Extra headers</dt>
             <dd className="def-val" style={{ minWidth: 0, overflowWrap: "anywhere" }}>
@@ -393,7 +393,7 @@ export function ProviderUpstreamPanel({ provider, isAdmin }: ProviderUpstreamPan
             : "Until then this provider answers 503."}
         </ErrorNotice>
       )}
-      {isAdmin && <EditUpstreamDialog provider={provider} open={editOpen} onOpenChange={setEditOpen} />}
+      {canEdit && <EditUpstreamDialog provider={provider} open={editOpen} onOpenChange={setEditOpen} />}
     </section>
   );
 }

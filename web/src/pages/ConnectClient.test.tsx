@@ -9,6 +9,7 @@ import { db } from "@/mocks/db";
 import ConnectClient from "@/pages/ConnectClient";
 import { Layout } from "@/components/Layout";
 import type { ClientView } from "@/lib/contract";
+import { USER_PERMISSIONS } from "@/auth/permissions";
 
 function mount(route = "/clients/connect") {
   return renderApp(
@@ -128,7 +129,7 @@ describe("Connect a client — three lines", () => {
   }, 15000);
 
   it("someone who may not list clients is told where the client will appear, and nothing is asked", async () => {
-    db.me.role = "user";
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     const feed = clientsFeed([]);
     mount();
     expect(await screen.findByText("Your client appears under Clients once it connects.")).toBeInTheDocument();
@@ -493,5 +494,13 @@ describe("Connect a client — for a service or a provider", () => {
     expect(await screen.findByText("That provider is a hosted API: no machine serves it.")).toBeInTheDocument();
     expect(lineTexts()[2]).toBe("burrow http 3000");
     expect(screen.queryByText(/from this machine\./)).toBeNull();
+  });
+
+  it("a custom role with tunnels:read:any waits for the client, and asks for the list", async () => {
+    db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["tunnels:read:any", "tokens:manage:own"] };
+    const feed = clientsFeed([]);
+    mount();
+    expect(await screen.findByText("Waiting for your client…")).toBeInTheDocument();
+    await waitFor(() => expect(feed.asked).toBeGreaterThan(0));
   });
 });

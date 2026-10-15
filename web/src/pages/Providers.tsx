@@ -9,6 +9,8 @@ import { providerState } from "@/lib/status";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Badge, Button, DropdownMenu, EmptyState, ErrorNotice, MetricStrip, MetricTile, PageHeader, SkeletonRows } from "@/components/ds";
 import { useAuth } from "@/auth/useAuth";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import { NewProviderDialog } from "@/components/NewProviderDialog";
 import { providerBaseUrl } from "@/lib/serviceUrl";
 import { formatRatio } from "@/lib/format";
@@ -27,8 +29,9 @@ function fmtUsd(n: number): string {
 export default function Providers() {
   const qc = useQueryClient();
   const nav = useNavigate();
-  const { user, loading } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const { loading } = useAuth();
+  // POST /ai/providers: ai:providers:manage.
+  const canCreate = useCan(P.aiProvidersManage);
   const [newOpen, setNewOpen] = useState(false);
   // /gateway/providers?new=local opens the dialog too. The parameter stays
   // while the dialog is open, so a reload opens it again, and goes when it closes.
@@ -36,7 +39,7 @@ export default function Providers() {
   const linked = searchParams.get("new") === "local";
   // The link is no use to someone who may not add a provider: the page says
   // who can, and keeps saying it once the parameter is taken out.
-  const refused = linked && !loading && !isAdmin;
+  const refused = linked && !loading && !canCreate;
   const [needsAdmin, setNeedsAdmin] = useState(false);
   if (refused && !needsAdmin) setNeedsAdmin(true);
   useEffect(() => {
@@ -114,7 +117,7 @@ export default function Providers() {
       <PageHeader
         title="Providers"
         subtitle="Model providers served through this relay, each under its own base URL — with cache, cost, and traffic at a glance."
-        actions={isAdmin ? (
+        actions={canCreate ? (
           <Button variant="primary" size="sm" onClick={() => setNewOpen(true)}>
             New provider
           </Button>
@@ -126,7 +129,7 @@ export default function Providers() {
       </p>
 
       {needsAdmin && (
-        <ErrorNotice variant="info" role="status">Adding a provider needs an admin.</ErrorNotice>
+        <ErrorNotice variant="info" role="status">Adding a provider needs the permission to manage providers.</ErrorNotice>
       )}
 
       <MetricStrip ariaLabel="Provider metrics">
@@ -166,13 +169,13 @@ export default function Providers() {
         <EmptyState
           icon={<Sparkles size={18} />}
           title="No providers yet"
-          action={isAdmin ? (
+          action={canCreate ? (
             <Button variant="primary" size="sm" onClick={() => setNewOpen(true)}>
               New provider
             </Button>
           ) : undefined}
         >
-          {isAdmin
+          {canCreate
             ? "Add a model server on one of your machines, or a hosted API."
             : "An admin can add a model server on one of their machines, or a hosted API."}
           {" Switching a service to API-key mode does not create a provider."}
@@ -264,7 +267,7 @@ export default function Providers() {
           </table>
         </div>
       )}
-      {isAdmin && <NewProviderDialog open={newOpen || linked} onOpenChange={setDialogOpen} />}
+      {canCreate && <NewProviderDialog open={newOpen || linked} onOpenChange={setDialogOpen} />}
       <Toaster />
     </div>
   );

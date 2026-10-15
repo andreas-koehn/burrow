@@ -397,4 +397,42 @@ describe("GatewayOverview", () => {
     release();
     expect(stepStates(await checklist()).map((s) => s[1])).toEqual(["done", "done", "done", "to do"]);
   });
+
+  describe("setup steps follow the permission they need", () => {
+    it("ai:providers:manage gives the provider step, ai:configure:any the model step", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["ai:providers:manage", "ai:configure:any", "ai:read:any"] };
+      withCost(0, 0);
+      withProviders([]);
+      withModels([]);
+      renderApp(<GatewayOverview />);
+      const list = await checklist();
+      expect(stepStates(list).map((s) => s[0])).toEqual(["Add a provider", "Create a model", "Create a gateway key", "Send the first request"]);
+    });
+
+    it("the two steps are separate: one permission gives one step", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["ai:providers:manage", "ai:read:any"] };
+      withCost(0, 0);
+      withProviders([provider({ requests_24h: 0 })]);
+      withModels([]);
+      renderApp(<GatewayOverview />);
+      expect(stepStates(await checklist()).map((s) => s[0])).toEqual(["Add a provider", "Create a gateway key", "Send the first request"]);
+    });
+
+    it("without either, neither step is offered and nothing says the reader is no admin", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["ai:read:own"] };
+      withCost(0, 0);
+      withProviders([provider({ requests_24h: 0 })]);
+      withModels([]);
+      renderApp(<GatewayOverview />);
+      expect(stepStates(await checklist()).map((s) => s[0])).toEqual(["Create a gateway key", "Send the first request"]);
+      expect(screen.queryByText(/not an admin/i)).toBeNull();
+    });
+
+    it("budgets:manage reads the budgets for the notice", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["budgets:manage", "ai:read:any"] };
+      withBudgets([{ daily_usd: 10, current_usd: 8.5 }]);
+      renderApp(<GatewayOverview />);
+      expect(await screen.findByText("A budget is above 80 % of its daily limit.")).toBeInTheDocument();
+    });
+  });
 });

@@ -88,7 +88,7 @@ describe("AttemptLookup", () => {
     renderLookup();
     expect(screen.getByRole("button", { name: "Look up" })).toBeDisabled();
     await lookUp("req-1");
-    expect(await screen.findByRole("alert")).toHaveTextContent("Only an administrator can read attempt logs.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Reading attempt logs needs the ai:read:any permission.");
   });
 
   it("shows the relay's reason for another failure and offers a retry", async () => {

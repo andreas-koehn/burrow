@@ -7,6 +7,8 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, NotAuthorized, PageHeader, Select, SkeletonRows, SubmitHint, TableEmptyRow, firstMissing } from "@/components/ds";
 import UsageBreakdown from "@/components/UsageBreakdown";
 import { useAuth } from "@/auth/useAuth";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import { fmtCount, fmtUsd, shortId } from "@/lib/costFormat";
 import type { AiGatewayKey, AiModel, Budget, BudgetScope, CostSummary, Service, ServiceApiKey, UsersPage } from "@/lib/contract";
 
@@ -110,8 +112,10 @@ function SpendTile({ w, summary, selected, onSelect }: { w: Window; summary: Cos
 
 export default function CostBudgets() {
   const qc = useQueryClient();
-  const { user, loading: authLoading } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const { loading: authLoading } = useAuth();
+  // Every call on budgets (GET, POST, PUT, DELETE /budgets): budgets:manage. Naming a key by its id takes GET /ai/keys.
+  const canBudgets = useCan(P.budgetsManage);
+  const canReadKeys = useCan([P.aiReadOwn, P.aiReadAny]);
   const cost = useQueries({
     queries: WINDOWS.map((w) => ({
       queryKey: ["cost", "summary", w],
@@ -124,7 +128,7 @@ export default function CostBudgets() {
     queryKey: ["budgets"],
     queryFn: () => apiFetch<Budget[]>("/budgets"),
     retry: false,
-    enabled: isAdmin,
+    enabled: canBudgets,
   });
   // P1-10 — feature gating: if /budgets 404s, the AI gateway isn't on this
   // relay. Disable "New budget" + tooltip, keep the spend tiles since
@@ -154,7 +158,7 @@ export default function CostBudgets() {
 
   // A budget on an API key is listed by the key's name: that takes the key
   // lists of the services, which are only asked for when there is such a budget.
-  const keyBudgets = isAdmin && Array.isArray(budgets.data) && budgets.data.some((b) => b.scope === "api_key");
+  const keyBudgets = canBudgets && Array.isArray(budgets.data) && budgets.data.some((b) => b.scope === "api_key");
   const services = useQuery({
     queryKey: ["services"],
     queryFn: () => apiFetch<Service[]>("/services"),
@@ -196,7 +200,7 @@ export default function CostBudgets() {
     queryKey: ["ai", "keys"],
     queryFn: () => apiFetch<AiGatewayKey[]>("/ai/keys"),
     retry: false,
-    enabled: isAdmin,
+    enabled: canBudgets && canReadKeys,
   });
   const models = useQuery({
     queryKey: ["ai", "models"],
@@ -288,7 +292,7 @@ export default function CostBudgets() {
     create.mutate();
   }
 
-  if (authLoading || (isAdmin && budgets.isLoading)) {
+  if (authLoading || (canBudgets && budgets.isLoading)) {
     return (
       <div className="cost-page">
         <PageHeader title="Cost & budgets" />
@@ -303,7 +307,7 @@ export default function CostBudgets() {
     return apiKeyName.get(b.subject_id) ?? (keyListsComplete ? `${b.subject_id} (deleted)` : b.subject_id);
   }
 
-  const forbidden = !isAdmin || (budgets.error instanceof ApiError && budgets.error.status === 403);
+  const forbidden = !canBudgets || (budgets.error instanceof ApiError && budgets.error.status === 403);
   // A refused /cost/summary leaves the tiles at "—"; say why.
   const costForbidden = cost.some((q) => q.error instanceof ApiError && q.error.status === 403);
   const budgetRows = budgets.data ?? [];
@@ -332,7 +336,7 @@ export default function CostBudgets() {
       {forbidden ? (
         <section className="card">
           <h2>Budgets</h2>
-          <NotAuthorized title="You can't view budgets">Budgets are visible to admins. The cost figures above are not affected.</NotAuthorized>
+          <NotAuthorized title="You can't view budgets">Budgets need the budgets:manage permission. The cost figures above are not affected.</NotAuthorized>
         </section>
       ) : budgets.isError && !featureAbsent ? (
         <section className="card">
@@ -385,7 +389,7 @@ export default function CostBudgets() {
       </section>
       )}
 
-      {isAdmin && <Dialog
+      {canBudgets && <Dialog
         open={addOpen}
         onOpenChange={(o) => { setAddOpen(o); if (!o) setErr(null); }}
         title="New budget"

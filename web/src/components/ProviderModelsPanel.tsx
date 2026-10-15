@@ -9,7 +9,8 @@ import type { AiProviderModel } from "@/lib/contract";
 export interface ProviderModelsPanelProps {
   slug: string;
   kind: "tunnel" | "direct";
-  isAdmin: boolean;
+  /** Syncing, adding and removing models: ai:providers:manage. */
+  canEdit: boolean;
 }
 
 // A synced list can hold up to 5000 models; rows are added a page at a time.
@@ -27,10 +28,10 @@ function reason(e: unknown, fallback: string): string {
 
 /**
  * The provider's stored model list, which GET /ai/<provider>/v1/models
- * answers from. Admins sync it from a direct provider's upstream and add or
+ * answers from. Whoever may manage providers can sync it from a direct provider's upstream and add or
  * remove single ids; everyone else reads it.
  */
-export function ProviderModelsPanel({ slug, kind, isAdmin }: ProviderModelsPanelProps) {
+export function ProviderModelsPanel({ slug, kind, canEdit }: ProviderModelsPanelProps) {
   const qc = useQueryClient();
   const id = useId();
   const rootRef = useRef<HTMLElement>(null);
@@ -107,7 +108,7 @@ export function ProviderModelsPanel({ slug, kind, isAdmin }: ProviderModelsPanel
 
   return (
     <section ref={rootRef} tabIndex={-1} className="col gap-3" aria-label="Models" aria-busy={sync.isPending}>
-      {isAdmin && (
+      {canEdit && (
         <form className="row row-end gap-2" style={{ flexWrap: "wrap" }} onSubmit={onAdd} noValidate>
           <div className="form-field field-w-md">
             <label htmlFor={`${id}-add`}>Model id</label>
@@ -157,7 +158,7 @@ export function ProviderModelsPanel({ slug, kind, isAdmin }: ProviderModelsPanel
         <div className="table-wrap skel-pad"><SkeletonRows n={3} /></div>
       ) : all.length === 0 ? (
         <EmptyState title="No models yet">
-          {!isAdmin
+          {!canEdit
             ? "An administrator can add them."
             : kind === "direct"
               ? "Sync them from the provider or add one by id."
@@ -183,7 +184,7 @@ export function ProviderModelsPanel({ slug, kind, isAdmin }: ProviderModelsPanel
                   <th>Model id</th>
                   <th>Name</th>
                   <th>Context</th>
-                  {isAdmin && <th className="col-actions" aria-label="Actions"></th>}
+                  {canEdit && <th className="col-actions" aria-label="Actions"></th>}
                 </tr>
               </thead>
               <tbody>
@@ -192,7 +193,7 @@ export function ProviderModelsPanel({ slug, kind, isAdmin }: ProviderModelsPanel
                     <td><span className="mono" style={{ overflowWrap: "anywhere" }}>{m.id}</span></td>
                     <td style={{ overflowWrap: "anywhere" }}>{m.display_name || <span className="muted">—</span>}</td>
                     <td className="mono">{m.context_length > 0 ? fmtInt(m.context_length) : "—"}</td>
-                    {isAdmin && (
+                    {canEdit && (
                       <td className="col-actions">
                         <button
                           type="button"

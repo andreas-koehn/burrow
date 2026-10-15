@@ -6,6 +6,7 @@ import { server } from "@/mocks/server";
 import { renderApp } from "@/mocks/test-utils";
 import { db } from "@/mocks/db";
 import CostBudgets from "@/pages/CostBudgets";
+import { USER_PERMISSIONS } from "@/auth/permissions";
 
 function mount() {
   return renderApp(<CostBudgets />, "/gateway/cost");
@@ -367,8 +368,8 @@ describe("Cost & budgets (§4.24)", () => {
     expect(screen.queryByRole("note")).toBeNull();
   });
 
-  it("shows a non-admin the cost view without budgets or write controls", async () => {
-    db.me = { ...db.me, role: "user" };
+  it("shows a reader without budgets:manage the cost view without budgets or write controls", async () => {
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     mount();
     expect(await screen.findByText("You can't view budgets")).toBeInTheDocument();
     expect(screen.getByRole("list", { name: /spend by window/i })).toBeInTheDocument();
@@ -658,5 +659,22 @@ describe("Cost & budgets (§4.24)", () => {
     mount();
     expect(await within(await screen.findByRole("table", { name: "Budgets" })).findByText("burrow-simple")).toBeInTheDocument();
     expect(asked()).toEqual([]);
+  });
+
+  describe("budgets follow budgets:manage", () => {
+    it("offers New budget to a custom role holding it", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["budgets:manage", "quotas:read:any", "ai:read:any"] };
+      mount();
+      expect(await screen.findByRole("button", { name: "New budget" })).toBeInTheDocument();
+      expect(screen.queryByText("You can't view budgets")).toBeNull();
+    });
+
+    it("offers neither the budgets nor New budget without it, and does not name admins", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["quotas:read:any", "ai:read:any"] };
+      mount();
+      expect(await screen.findByText("You can't view budgets")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "New budget" })).toBeNull();
+      expect(screen.queryByText(/admin/i)).toBeNull();
+    });
   });
 });

@@ -3,7 +3,8 @@ import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
-import { useAuth } from "@/auth/useAuth";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import { Button, ErrorNotice, FormField, FormFieldGroup, Input, Select, SubmitHint } from "@/components/ds";
 import { InstallLines } from "@/components/InstallLines";
 import { WaitForProvider } from "@/components/WaitForProvider";
@@ -67,9 +68,9 @@ export function useLocalProviderFlow({ onDone, onUseExisting }: LocalProviderFlo
   const qc = useQueryClient();
   const nav = useNavigate();
   const reasonId = useId();
-  const isAdmin = useAuth().user?.role === "admin";
+  const canListClients = useCan(P.tunnelsReadAny);
   // Asked for from the first step on, so the second knows at once which lines to show.
-  const known = useKnownClients({ enabled: isAdmin });
+  const known = useKnownClients({ enabled: canListClients });
 
   const [name, setName] = useState("");
   const [nameLeft, setNameLeft] = useState(false);
@@ -146,7 +147,7 @@ export function useLocalProviderFlow({ onDone, onUseExisting }: LocalProviderFlo
           made = { id: res?.id || v.slug, name: v.slug };
         } catch (e) {
           if (!(e instanceof ApiError)) setFormErr("Couldn't create the service.");
-          else if (e.status === 403) setFormErr("Adding a provider needs an admin.");
+          else if (e.status === 403) setFormErr("Adding a provider needs the permission to manage providers.");
           else if (e.status === 409) setNameErr(`A service named ${v.slug} already exists. Choose another name, or use that service.`);
           else setFormErr(e.message);
           return null;
@@ -161,7 +162,7 @@ export function useLocalProviderFlow({ onDone, onUseExisting }: LocalProviderFlo
           body: JSON.stringify({ name: v.name, kind: "tunnel", service_id: made.id, gateway_only: true, api_format: v.format }),
         });
       } catch (e) {
-        if (e instanceof ApiError && e.status === 403) setFormErr("Adding a provider needs an admin.");
+        if (e instanceof ApiError && e.status === 403) setFormErr("Adding a provider needs the permission to manage providers.");
         else {
           const why = e instanceof ApiError ? e.message : "the request failed";
           setFormErr(`Service ${made.id} was created, but the provider was not: ${why}. Retry creates the provider only.`);

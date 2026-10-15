@@ -34,7 +34,7 @@ async function fetchKnownClients(): Promise<KnownClient[]> {
 }
 
 export interface KnownClientsOptions {
-  /** The relay lists clients for an admin only: a reader that knows better does not ask. */
+  /** The relay lists clients for tunnels:read:any: a reader without it does not ask. */
   enabled?: boolean;
   /**
    * Milliseconds from one answer to the next request. The shell sets it, for

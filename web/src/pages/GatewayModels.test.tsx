@@ -7,6 +7,7 @@ import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { addDirectProvider, db } from "@/mocks/db";
 import GatewayModels from "@/pages/GatewayModels";
+import { USER_PERMISSIONS, ALL_PERMISSIONS } from "@/auth/permissions";
 
 function mount() {
   return renderApp(<GatewayModels />, "/gateway/models");
@@ -32,7 +33,7 @@ const providerOf = (dialog: HTMLElement, format: "OpenAI" | "Anthropic") =>
   within(within(dialog).getByRole("group", { name: `${format} format, target 1` })).getByLabelText("Provider");
 
 function mountAs(role: "admin" | "user") {
-  db.me = { ...db.me, role };
+  db.me = { ...db.me, role, permissions: role === "admin" ? [...ALL_PERMISSIONS] : [...USER_PERMISSIONS] };
   return mount();
 }
 
@@ -201,7 +202,7 @@ describe("Models page", () => {
   });
 
   it("?new=1 opens nothing for someone who may not write models", async () => {
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     mountAt("/gateway/models?new=1&provider=ollama");
     await screen.findByRole("table", { name: "Models" });
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -387,5 +388,24 @@ describe("Models page", () => {
     await screen.findByRole("table", { name: "Models" });
     expect(screen.queryByRole("heading", { name: "Why did a request fall back?" })).toBeNull();
     expect(screen.queryByLabelText("Request id")).toBeNull();
+  });
+
+  describe("models follow ai:configure:any, attempts follow ai:read:any", () => {
+    it("a custom role with ai:configure:any can create a model and has no attempt lookup without ai:read:any", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["ai:configure:any", "ai:read:own"] };
+      mount();
+      await screen.findByRole("table", { name: "Models" });
+      expect(screen.getByRole("button", { name: "New model" })).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "Why did a request fall back?" })).toBeNull();
+    });
+
+    it("a custom role with ai:read:any sees the attempt lookup and no New model", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["ai:read:any"] };
+      mount();
+      await screen.findByRole("table", { name: "Models" });
+      expect(screen.queryByRole("button", { name: "New model" })).toBeNull();
+      expect(await screen.findByRole("heading", { name: "Why did a request fall back?" })).toBeInTheDocument();
+      expect(screen.queryByText(/admin/i)).toBeNull();
+    });
   });
 });

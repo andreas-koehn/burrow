@@ -5,6 +5,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, PageHeader, ErrorNotice } from "@/components/ds";
 import { useAuth } from "@/auth/useAuth";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import { InstallLines } from "@/components/InstallLines";
 import { WaitForProvider } from "@/components/WaitForProvider";
 import { CHECKSUMS_HREF, EXAMPLE_TARGET, MODEL_SERVER_PORT, downloadTargets, isCommandName, runTarget } from "@/lib/installSnippets";
@@ -29,11 +31,12 @@ function yamlExample(endpoint: string): string {
 /**
  * The page's live state below the three lines: it asks for the clients list
  * every two seconds and reports the first client that was not there when the
- * page opened. Only an admin can list clients; anyone else is told where to look.
+ * page opened. Only whoever holds tunnels:read:any can list clients; anyone else is told where to look.
  */
 function WaitForClient() {
-  const { user, loading } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const { loading } = useAuth();
+  // GET /clients: tunnels:read:any.
+  const canListClients = useCan(P.tunnelsReadAny);
   // The clients that were connected already, from the first answer after the page opened.
   const [known, setKnown] = useState<ReadonlySet<string> | null>(null);
   const [arrived, setArrived] = useState<ClientView | null>(null);
@@ -42,13 +45,13 @@ function WaitForClient() {
     queryKey: ["clients"],
     queryFn: () => apiFetch<ClientView[]>("/clients"),
     // Once a client is here there is nothing left to ask.
-    enabled: isAdmin && !arrived,
+    enabled: canListClients && !arrived,
     refetchInterval: (query) => (query.state.status === "error" ? false : 2000),
     retry: false,
   });
 
   // An answer from before this page opened (the Clients page shares the query) says nothing about now.
-  if (isAdmin && !arrived && clients.isFetchedAfterMount && Array.isArray(clients.data)) {
+  if (canListClients && !arrived && clients.isFetchedAfterMount && Array.isArray(clients.data)) {
     if (known === null) {
       setKnown(new Set(clients.data.map((c) => c.session_id)));
     } else {
@@ -75,7 +78,7 @@ function WaitForClient() {
             Connected: <Link className="link-inline" to={`/clients/${arrived.session_id}`}>{arrived.token_name}</Link>
           </span>
         </>
-      ) : isAdmin && !clients.isError ? (
+      ) : canListClients && !clients.isError ? (
         <>
           <span className="spinner" aria-hidden="true" />
           <span className="muted">Waiting for your client…</span>

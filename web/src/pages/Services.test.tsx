@@ -7,6 +7,7 @@ import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
 import { Route, Routes, useLocation } from "react-router-dom";
 import Services from "@/pages/Services";
+import { USER_PERMISSIONS } from "@/auth/permissions";
 
 function LocationProbe() {
   const { pathname, search } = useLocation();
@@ -1071,7 +1072,7 @@ describe("Services page — All | Online", () => {
 
   it("a non-admin in Online makes no /clients request, not even on a stream event", async () => {
     vi.stubGlobal("EventSource", FakeES);
-    db.me.role = "user";
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     const asked: string[] = [];
     server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
     try {
@@ -1208,5 +1209,22 @@ describe("Services page — All | Online", () => {
     mount();
     await screen.findByRole("table", { name: "Services" });
     expect(FakeES.last).toBeUndefined();
+  });
+
+  describe("New service follows services:configure:any", () => {
+    it("is offered to a custom role holding it", async () => {
+      db.me = { ...db.me, role: "operator", permissions: ["services:configure:any", "services:configure:own"] };
+      mount();
+      await screen.findByRole("table", { name: "Services" });
+      expect(screen.getByRole("button", { name: "New service" })).toBeInTheDocument();
+    });
+
+    it("is not offered with services:configure:own alone, not even by ?new=1", async () => {
+      db.me = { ...db.me, role: "operator", permissions: ["services:configure:own"] };
+      mountAt("/services?new=1");
+      await screen.findByRole("table", { name: "Services" });
+      expect(screen.queryByRole("button", { name: "New service" })).toBeNull();
+      expect(screen.queryByRole("dialog", { name: "New service" })).toBeNull();
+    });
   });
 });

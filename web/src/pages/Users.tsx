@@ -4,6 +4,8 @@ import { AlertTriangle, ShieldAlert } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { RelativeTime } from "@/components/RelativeTime";
 import { useAuth } from "@/auth/useAuth";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import { Button, EmptyState, Input, Select, Badge, Dialog, PageHeader, SkeletonRows } from "@/components/ds";
 import type { UserAdmin, UsersPage, UserRole } from "@/lib/contract";
 import { Toaster } from "@/components/ui/sonner";
@@ -13,8 +15,16 @@ import { EditUserDialog } from "@/pages/users/EditUserDialog";
 
 const PAGE = 20;
 
+// The role's badge; a role without an entry reads as the built-in user.
+const ROLE_BADGE: Record<string, { kind: "role-admin-teal" | "role-user"; label: string }> = {
+  admin: { kind: "role-admin-teal", label: "Admin" },
+  user: { kind: "role-user", label: "User" },
+};
+
 export default function Users() {
   const { user: me } = useAuth();
+  // POST, PATCH and DELETE /users: users:manage. users:read lists them.
+  const canManage = useCan(P.usersManage);
   const qc = useQueryClient();
   const [q, setQ] = useState("");
   const [roleFilter, setRoleFilter] = useState<"" | UserRole>("");
@@ -66,7 +76,7 @@ export default function Users() {
       <PageHeader
         title="Users"
         subtitle="People who can sign in to this Burrow relay."
-        actions={<Button variant="primary" size="sm" onClick={() => setCreating(true)}>New user</Button>}
+        actions={canManage ? <Button variant="primary" size="sm" onClick={() => setCreating(true)}>New user</Button> : undefined}
       />
 
 
@@ -100,17 +110,17 @@ export default function Users() {
         <div className="table-wrap">
           <table className="data" aria-label="Users">
             <thead>
-              <tr><th>User</th><th>Role</th><th>Status</th><th>Created</th><th>Last login</th><th className="col-actions" aria-label="Row actions"></th></tr>
+              <tr><th>User</th><th>Role</th><th>Status</th><th>Created</th><th>Last login</th>{canManage && <th className="col-actions" aria-label="Row actions"></th>}</tr>
             </thead>
             <tbody>
               {rows.map((u) => (
                 <tr key={u.id}>
                   <td>{u.email}{u.id === me?.id && <span className="tag" aria-label="this is you"> YOU</span>}</td>
-                  <td><Badge kind={u.role === "admin" ? "role-admin-teal" : "role-user"}>{u.role === "admin" ? "Admin" : "User"}</Badge></td>
+                  <td><Badge kind={(ROLE_BADGE[u.role] ?? ROLE_BADGE.user!).kind}>{(ROLE_BADGE[u.role] ?? ROLE_BADGE.user!).label}</Badge></td>
                   <td><Badge kind={u.status === "active" ? "status-connected" : "status-suspended-muted"}>{u.status === "active" ? "Active" : "Suspended"}</Badge></td>
                   <td className="col-created"><RelativeTime value={u.created_at} /></td>
                   <td className="col-created">{u.last_login ? <RelativeTime value={u.last_login} /> : <span className="muted">—</span>}</td>
-                  <td className="col-actions">
+                  {canManage && <td className="col-actions">
                     <Button variant="secondary" size="sm" onClick={() => setEditing(u)}>Edit</Button>{" "}
                     <Button
                       variant="destructive" size="sm"
@@ -119,7 +129,7 @@ export default function Users() {
                       disabled={u.id === me?.id}
                       onClick={() => setConfirmTarget(u)}
                     >Delete</Button>
-                  </td>
+                  </td>}
                 </tr>
               ))}
             </tbody>
@@ -136,8 +146,8 @@ export default function Users() {
         </div>
       )}
 
-      <CreateUserDialog open={creating} onClose={() => setCreating(false)} />
-      <EditUserDialog user={editing} selfId={me?.id} onClose={() => setEditing(null)} />
+      {canManage && <CreateUserDialog open={creating} onClose={() => setCreating(false)} />}
+      {canManage && <EditUserDialog user={editing} selfId={me?.id} onClose={() => setEditing(null)} />}
 
       <Dialog
         open={confirmTarget !== null}

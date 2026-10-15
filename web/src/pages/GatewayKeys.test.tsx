@@ -7,6 +7,7 @@ import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
 import GatewayKeys from "@/pages/GatewayKeys";
+import { USER_PERMISSIONS, ALL_PERMISSIONS } from "@/auth/permissions";
 
 function mount() {
   return renderApp(<GatewayKeys />, "/gateway/keys");
@@ -28,7 +29,7 @@ function mountAt(route: string) {
 }
 
 function mountAs(role: "admin" | "user") {
-  db.me = { ...db.me, role };
+  db.me = { ...db.me, role, permissions: role === "admin" ? [...ALL_PERMISSIONS] : [...USER_PERMISSIONS] };
   return mount();
 }
 
@@ -330,5 +331,27 @@ describe("Gateway keys page", () => {
     mount();
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load gateway keys: boom");
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  describe("gateway keys follow ai:configure and ai:read:any", () => {
+    it("a custom role with ai:configure:own and ai:read:own can create and revoke, and sees no owner column", async () => {
+      db.me = { ...db.me, role: "operator", permissions: ["ai:configure:own", "ai:read:own"] };
+      mount();
+      const table = await screen.findByRole("table", { name: "Gateway keys" });
+      expect(screen.getByRole("button", { name: "New key" })).toBeInTheDocument();
+      expect(within(table).getAllByRole("button", { name: /^Revoke / }).length).toBeGreaterThan(0);
+      expect(within(table).queryByRole("columnheader", { name: "Owner" })).toBeNull();
+    });
+
+    it("without ai:configure there is no New key and no Revoke, and the Owner column follows ai:read:any", async () => {
+      db.me = { ...db.me, role: "operator", permissions: ["ai:read:any"] };
+      otherUsersKey();
+      mount();
+      const table = await screen.findByRole("table", { name: "Gateway keys" });
+      expect(screen.queryByRole("button", { name: "New key" })).toBeNull();
+      expect(within(table).queryByRole("button", { name: /^Revoke / })).toBeNull();
+      expect(within(table).getByRole("columnheader", { name: "Owner" })).toBeInTheDocument();
+      expect(screen.queryByText(/admin/i)).toBeNull();
+    });
   });
 });

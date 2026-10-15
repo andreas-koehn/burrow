@@ -45,9 +45,9 @@ function knownClients(rows: Partial<KnownClient>[]) {
   return feed;
 }
 
-function mount(p: AiProvider, s: Service, props: { isAdmin?: boolean; onOnline?: () => void } = {}) {
+function mount(p: AiProvider, s: Service, props: { canListClients?: boolean; onOnline?: () => void } = {}) {
   return renderApp(
-    <ProviderClientPanel provider={p} service={s} isAdmin={props.isAdmin ?? true} onOnline={props.onOnline} />,
+    <ProviderClientPanel provider={p} service={s} canListClients={props.canListClients ?? true} onOnline={props.onOnline} />,
     "/gateway/providers/ollama",
   );
 }
@@ -163,7 +163,7 @@ describe("ProviderClientPanel", () => {
     const p = provider({ state: "never_connected" });
     relaySays(p);
     const known = knownClients([{ token_id: "tok_1", token_name: "koehn-laptop", status: "offline", sessions: [], served: [] }]);
-    mount(p, service({ status: "never_connected" }), { isAdmin: false });
+    mount(p, service({ status: "never_connected" }), { canListClients: false });
     expect(command("Install")).not.toBeNull();
     expect(command("Run")).toHaveTextContent("burrow http 11434 --name ollama");
     await screen.findByText("Waiting for the client…");

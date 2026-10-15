@@ -8,6 +8,7 @@ import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
 import { Dialog } from "@/components/ds";
 import { useLocalProviderFlow, type LocalProviderFlowProps } from "@/components/LocalProviderFlow";
+import { USER_PERMISSIONS } from "@/auth/permissions";
 
 // The steps as "New provider" shows them: the parts of the flow in one dialog.
 function LocalProviderFlow(props: LocalProviderFlowProps) {
@@ -274,11 +275,11 @@ describe("Guided provider — step Name", () => {
   });
 
   it("a non-admin is told who can add a provider", async () => {
-    db.me.role = "user";
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     mount();
     await nameIt("Ollama");
     await proceed();
-    expect(await screen.findByRole("alert")).toHaveTextContent("Adding a provider needs an admin.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Adding a provider needs the permission to manage providers.");
     expect(screen.queryByRole("heading", { name: "Run this on the machine" })).toBeNull();
     expect(screen.queryByRole("group", { name: "Run command" })).toBeNull();
     expect(db.services.some((s) => s.id === "ollama")).toBe(false);

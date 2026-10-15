@@ -291,7 +291,7 @@ describe("ServicesOverview", () => {
     const header = document.querySelector(".page-header") as HTMLElement;
     expect(within(header).getByRole("link", { name: /connect a client/i })).toHaveAttribute("href", "/clients/connect");
     // It opens the dialog its label promises, and neither link wraps a second control.
-    expect(within(header).getByRole("link", { name: /new service/i })).toHaveAttribute("href", "/services?new=1");
+    expect(await within(header).findByRole("link", { name: /new service/i })).toHaveAttribute("href", "/services?new=1");
     expect(header.querySelector("a button")).toBeNull();
   });
 
@@ -341,5 +341,28 @@ describe("ServicesOverview", () => {
       ["Expose a service", "done"],
       ["Receive the first request", "to do"],
     ]);
+  });
+
+  describe("tiles and steps follow the permission they need", () => {
+    it("a custom role with tunnels:read:any, audit:read and services:configure:any gets the clients count, the traffic step and New service", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["tunnels:read:any", "audit:read", "services:configure:any", "services:configure:own"] };
+      db.services = [];
+      renderApp(<ServicesOverview />);
+      const list = await checklist();
+      expect(stepStates(list).map((s) => s[0])).toEqual(["Install and sign in", "Connect a client", "Expose a service", "Receive the first request"]);
+      expect(await screen.findAllByRole("link", { name: /new service/i })).not.toHaveLength(0);
+      await waitFor(() => expect(tiles(screen.getByRole("list", { name: "Overview" }))[0]![1]).not.toBe("—"));
+    });
+
+    it("without them there is no clients count, no traffic step and no New service, and nothing names admins", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["services:configure:own"] };
+      db.services = [];
+      renderApp(<ServicesOverview />);
+      const list = await checklist();
+      expect(stepStates(list).map((s) => s[0])).toEqual(["Install and sign in", "Connect a client", "Expose a service"]);
+      expect(tiles(await strip())[0]![1]).toBe("—");
+      expect(screen.queryByRole("link", { name: /new service/i })).toBeNull();
+      expect(screen.queryByText(/not an admin/i)).toBeNull();
+    });
   });
 });

@@ -26,16 +26,30 @@ describe("ApiKeysPanel", () => {
     expect(lastUsed).toHaveAttribute("title", "18 May 2026, 09:00:00 UTC");
   });
 
-  // P1-5: the services:configure hint is shown ONLY to non-admin viewers.
-  it("shows the services:configure permission hint to non-admin users", async () => {
-    db.me = { id: "u_user", email: "bob@acme.io", role: "user" };
+  // The hint is said only to a reader who lacks services:configure, and then no write control is offered.
+  it("says what is missing, and offers no New key or Revoke, to a reader without services:configure", async () => {
+    db.me = { ...db.me, role: "operator", permissions: ["tunnels:read:own"] };
     renderApp(<ApiKeysPanel serviceId={SVC} />);
     expect(
       await screen.findByText("Managing keys needs the services:configure permission."),
     ).toBeInTheDocument();
+    const table = await screen.findByRole("table", { name: /api keys/i });
+    await within(table).findByText("ci");
+    expect(screen.queryByRole("button", { name: "New key" })).toBeNull();
+    expect(within(table).queryByRole("button", { name: /revoke key/i })).toBeNull();
+    expect(screen.queryByText(/admin/i)).toBeNull();
   });
 
-  it("hides the permission hint for admin users (P1-5)", async () => {
+  it("offers New key and Revoke to a custom role holding services:configure:own", async () => {
+    db.me = { ...db.me, role: "operator", permissions: ["services:configure:own"] };
+    renderApp(<ApiKeysPanel serviceId={SVC} />);
+    expect(await screen.findByRole("button", { name: "New key" })).toBeInTheDocument();
+    const table = await screen.findByRole("table", { name: /api keys/i });
+    expect(await within(table).findByRole("button", { name: /revoke key ci/i })).toBeInTheDocument();
+    expect(screen.queryByText("Managing keys needs the services:configure permission.")).toBeNull();
+  });
+
+  it("hides the permission hint from a reader who holds the permission", async () => {
     // db.me defaults to admin — assert the hint is absent.
     renderApp(<ApiKeysPanel serviceId={SVC} />);
     await screen.findByRole("table", { name: /api keys/i });
@@ -47,7 +61,7 @@ describe("ApiKeysPanel", () => {
   it("creates a key and reveals the plaintext exactly once", async () => {
     renderApp(<ApiKeysPanel serviceId={SVC} />);
     await screen.findByRole("table", { name: /api keys/i });
-    await userEvent.click(screen.getByRole("button", { name: "New key" }));
+    await userEvent.click(await screen.findByRole("button", { name: "New key" }));
     await userEvent.type(screen.getByLabelText(/key name/i), "deploy");
     await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
 

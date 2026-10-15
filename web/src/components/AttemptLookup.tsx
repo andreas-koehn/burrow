@@ -32,7 +32,7 @@ function durationText(ms: number): string {
 
 /**
  * Looks up what one gateway request tried: each target in the order it was
- * tried, what came of it and how long it took. For admins; the relay refuses
+ * tried, what came of it and how long it took. For whoever holds ai:read:any; the relay refuses
  * everyone else.
  */
 export function AttemptLookup() {
@@ -90,7 +90,7 @@ export function AttemptLookup() {
         </div>
       ) : attempts.error ? (
         attempts.error instanceof ApiError && attempts.error.status === 403 ? (
-          <ErrorNotice>Only an administrator can read attempt logs.</ErrorNotice>
+          <ErrorNotice>Reading attempt logs needs the ai:read:any permission.</ErrorNotice>
         ) : (
           <ErrorNotice action={<Button variant="secondary" size="sm" onClick={() => void attempts.refetch()}>Retry</Button>}>
             Couldn't load the attempts:{" "}

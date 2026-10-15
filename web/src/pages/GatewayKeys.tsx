@@ -8,6 +8,8 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Checkbox, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
 import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/auth/useAuth";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import { RelativeTime } from "@/components/RelativeTime";
 import type { AiGatewayKey, AiModel, AiProvider, CreatedAiGatewayKey } from "@/lib/contract";
 
@@ -212,7 +214,9 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
 export default function GatewayKeys() {
   const qc = useQueryClient();
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  // POST and DELETE /ai/keys: ai:configure:own or :any. The list holds other users' keys for ai:read:any.
+  const canWrite = useCan([P.aiConfigureOwn, P.aiConfigureAny]);
+  const seesOwners = useCan(P.aiReadAny);
   const keys = useQuery({
     queryKey: KEYS,
     queryFn: () => apiFetch<AiGatewayKey[]>("/ai/keys"),
@@ -248,7 +252,7 @@ export default function GatewayKeys() {
   });
 
   const list = Array.isArray(keys.data) ? keys.data : [];
-  const newKey = <Button variant="primary" size="sm" onClick={() => setNewOpen(true)}>New key</Button>;
+  const newKey = canWrite ? <Button variant="primary" size="sm" onClick={() => setNewOpen(true)}>New key</Button> : undefined;
 
   return (
     <div className="gateway-keys-page">
@@ -288,7 +292,7 @@ export default function GatewayKeys() {
                 <th scope="col">Models</th>
                 <th scope="col">Last used</th>
                 <th scope="col">Status</th>
-                {isAdmin && <th scope="col">Owner</th>}
+                {seesOwners && <th scope="col">Owner</th>}
                 <th scope="col" className="col-actions" aria-label="Actions"></th>
               </tr>
             </thead>
@@ -317,11 +321,11 @@ export default function GatewayKeys() {
                       {k.revoked_at ? "revoked" : "active"}
                     </Badge>
                   </td>
-                  {isAdmin && (
+                  {seesOwners && (
                     <td>{k.user_id === user?.id ? "you" : <span className="mono small">{k.user_id}</span>}</td>
                   )}
                   <td className="col-actions">
-                    {!k.revoked_at && (
+                    {canWrite && !k.revoked_at && (
                       <Button
                         variant="destructive"
                         size="sm"
@@ -340,7 +344,7 @@ export default function GatewayKeys() {
       )}
 
       {/* Mounted only while open: closing it drops the form and the key it showed. */}
-      {(newOpen || linked) && (
+      {canWrite && (newOpen || linked) && (
         <NewKeyDialog onClose={closeNew} provider={linked ? searchParams.get("provider") ?? undefined : undefined} />
       )}
 

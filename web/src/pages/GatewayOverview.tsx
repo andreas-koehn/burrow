@@ -7,6 +7,8 @@ import { ConnectCard } from "@/components/ConnectCard";
 import { GatewayAddresses } from "@/components/GatewayAddresses";
 import { SetupChecklist, type ChecklistStep } from "@/components/SetupChecklist";
 import { useAuth } from "@/auth/useAuth";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import { apiFetch, ApiError } from "@/lib/api";
 import { providerState } from "@/lib/status";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -38,8 +40,11 @@ function budgetNotices(budgets: Budget[]): { id: string; variant: "error" | "war
 }
 
 export default function GatewayOverview() {
-  const { user, loading: authLoading } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const { loading: authLoading } = useAuth();
+  // GET /budgets: budgets:manage. POST /ai/providers: ai:providers:manage. POST /ai/models: ai:configure:any.
+  const canReadBudgets = useCan(P.budgetsManage);
+  const canAddProvider = useCan(P.aiProvidersManage);
+  const canCreateModel = useCan(P.aiConfigureAny);
   const relayNotices = useRelayNotices();
 
   // Same keys and fetches as the Providers and the Cost & budgets pages.
@@ -73,7 +78,7 @@ export default function GatewayOverview() {
   const budgets = useQuery({
     queryKey: ["budgets"],
     queryFn: () => apiFetch<Budget[]>("/budgets"),
-    enabled: isAdmin,
+    enabled: canReadBudgets,
     retry: false,
   });
 
@@ -98,7 +103,7 @@ export default function GatewayOverview() {
   const setupFailed = models.error ?? keys.error;
   const totalRequests = list.reduce((a, p) => a + p.requests_24h, 0);
   const costAbsent = cost.error instanceof ApiError && cost.error.status === 404;
-  const notices = budgetNotices(isAdmin && Array.isArray(budgets.data) ? budgets.data : []);
+  const notices = budgetNotices(canReadBudgets && Array.isArray(budgets.data) ? budgets.data : []);
 
   // requests_24h alone would reopen the last step after a quiet day; tokens or
   // cost counted in the current window are proof of a request as well.
@@ -106,8 +111,7 @@ export default function GatewayOverview() {
     || (cost.data ? cost.data.total_usd > 0 || cost.data.tokens_in > 0 || cost.data.tokens_out > 0 : false);
 
   const steps: ChecklistStep[] = [
-    // Only an admin can add a provider.
-    ...(isAdmin ? [{
+    ...(canAddProvider ? [{
       id: "provider",
       title: "Add a provider",
       description: "A provider serves models under its own base URL: a model server on one of your machines, or a hosted API the relay calls itself.",
@@ -115,8 +119,7 @@ export default function GatewayOverview() {
       // Opens the guided flow, not just the page it is on.
       action: { label: "Add a provider", to: "/gateway/providers?new=local" },
     }] : []),
-    // Only an admin can create a model.
-    ...(isAdmin ? [{
+    ...(canCreateModel ? [{
       id: "model",
       title: "Create a model",
       description: "A model is a name apps ask for, and for each API format the provider it is sent to.",
@@ -127,7 +130,7 @@ export default function GatewayOverview() {
       id: "key",
       title: "Create a gateway key",
       description: "Apps sign in to the gateway with a gateway key.",
-      // A non-admin sees their own keys: the step is about a key they can use.
+      // A reader without ai:read:any sees their own keys: the step is about a key they can use.
       done: keyList.some((k) => !k.revoked_at),
       action: { label: "Create a gateway key", to: "/gateway/keys" },
     },
@@ -138,7 +141,7 @@ export default function GatewayOverview() {
       done: served,
       content: (
         <ConnectCard
-          canCreate={isAdmin}
+          canCreate={canCreateModel}
           endpoints={endpoints}
           models={modelList.filter((m) => m.enabled)}
         />
@@ -194,7 +197,7 @@ export default function GatewayOverview() {
           </MetricStrip>
 
           {/* Before the table while it has open steps: what is still to do comes first. */}
-          {list.length === 0 && !isAdmin ? (
+          {list.length === 0 && !canAddProvider ? (
             <EmptyState icon={<Sparkles size={18} />} title="No providers yet">
               An administrator can add a model server on one of their machines, or a hosted API.
             </EmptyState>

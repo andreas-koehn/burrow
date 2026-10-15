@@ -7,6 +7,7 @@ import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { addDirectProvider, db } from "@/mocks/db";
 import Providers from "@/pages/Providers";
+import { USER_PERMISSIONS, ALL_PERMISSIONS } from "@/auth/permissions";
 
 function mount() {
   return renderApp(<Providers />, "/gateway/providers");
@@ -40,7 +41,7 @@ const useExisting = (dialog: HTMLElement) =>
   userEvent.click(within(dialog).getByRole("button", { name: "Use a service that already exists" }));
 
 function mountAs(role: "admin" | "user") {
-  db.me = { ...db.me, role };
+  db.me = { ...db.me, role, permissions: role === "admin" ? [...ALL_PERMISSIONS] : [...USER_PERMISSIONS] };
   return mount();
 }
 
@@ -273,27 +274,27 @@ describe("Providers page", () => {
   });
 
   it("?new=local tells someone who may not add a provider who can, and uses the link up", async () => {
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     mountAt("/gateway/providers?new=local");
     await screen.findByRole("table", { name: /providers/i });
-    const notice = await screen.findByText("Adding a provider needs an admin.");
+    const notice = await screen.findByText("Adding a provider needs the permission to manage providers.");
     expect(notice.closest("[role=status]")).not.toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/gateway/providers"));
     // It stays, though the parameter that asked is gone.
-    expect(screen.getByText("Adding a provider needs an admin.")).toBeInTheDocument();
+    expect(screen.getByText("Adding a provider needs the permission to manage providers.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New provider" })).toBeNull();
   });
 
   it("says nothing of the kind to a non-admin who only opens the page, nor to an admin with the link", async () => {
     const first = mountAs("user");
     await screen.findByRole("table", { name: /providers/i });
-    expect(screen.queryByText("Adding a provider needs an admin.")).toBeNull();
+    expect(screen.queryByText("Adding a provider needs the permission to manage providers.")).toBeNull();
     first.unmount();
-    db.me = { ...db.me, role: "admin" };
+    db.me = { ...db.me, role: "admin", permissions: [...ALL_PERMISSIONS] };
     mountAt("/gateway/providers?new=local");
     await screen.findByRole("dialog", { name: "New provider" });
-    expect(screen.queryByText("Adding a provider needs an admin.")).toBeNull();
+    expect(screen.queryByText("Adding a provider needs the permission to manage providers.")).toBeNull();
   });
 
   it("P5.5: concept explainer link to /services is always visible", async () => {
@@ -486,7 +487,7 @@ describe("Providers page", () => {
     expect(slug).toHaveAccessibleDescription(/^slug must be 3-40 characters/);
   });
 
-  it("hides 'New provider' from non-admins", async () => {
+  it("hides 'New provider' from the user role", async () => {
     mountAs("user");
     await screen.findByRole("heading", { name: "Providers" });
     await screen.findByRole("table", { name: /providers/i });
@@ -563,5 +564,22 @@ describe("Providers page", () => {
     const table = screen.getByRole("table", { name: /providers/i });
     expect(await within(table).findByRole("link", { name: "OpenRouter" })).toHaveAttribute("href", "/gateway/providers/openrouter");
     await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  describe("New provider follows ai:providers:manage", () => {
+    it("is offered to a custom role holding it", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["ai:providers:manage", "ai:read:any"] };
+      mount();
+      await screen.findByRole("table", { name: /providers/i });
+      expect(screen.getByRole("button", { name: "New provider" })).toBeInTheDocument();
+    });
+
+    it("is not offered without it, and nothing says the reader is no admin", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["ai:read:any"] };
+      mount();
+      await screen.findByRole("table", { name: /providers/i });
+      expect(screen.queryByRole("button", { name: "New provider" })).toBeNull();
+      expect(screen.queryByText(/not an admin/i)).toBeNull();
+    });
   });
 });

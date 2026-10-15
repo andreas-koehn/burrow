@@ -1,4 +1,4 @@
-import { ALL_PERMISSIONS } from "@/auth/permissions";
+import { ALL_PERMISSIONS, USER_PERMISSIONS } from "@/auth/permissions";
 import { describe, it, expect, beforeEach } from "vitest";
 import { addDirectProvider, db, resetDb } from "@/mocks/db";
 import type { AiModel, AiProvider, KnownClient, Service } from "@/lib/contract";
@@ -175,7 +175,7 @@ describe("MSW status fields mirror the API", () => {
   });
 
   it("GET /clients/known is admin only, like GET /clients", async () => {
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     expect((await fetch("/api/v1/clients/known", authed("GET"))).status).toBe(403);
     expect((await fetch("/api/v1/clients", authed("GET"))).status).toBe(403);
   });
@@ -294,7 +294,7 @@ describe("MSW provider handlers mirror the API", () => {
     db.absentSlots.add("OPENROUTER");
     expect(await get("openrouter")).toMatchObject({ credential_present: false });
     // The upstream auth settings are for admins only.
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     const v = await get("openrouter");
     expect(v).not.toHaveProperty("auth_header");
     expect(v).not.toHaveProperty("auth_format");
@@ -319,7 +319,7 @@ describe("MSW provider handlers mirror the API", () => {
     expect(r.status).toBe(400);
     expect((await putUpstream("ollama", { billing: "flat" })).status).toBe(409);
     expect((await putUpstream("nope", { billing: "flat" })).status).toBe(404);
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     expect((await putUpstream("openrouter", { billing: "flat" })).status).toBe(403);
   });
 
@@ -351,7 +351,7 @@ describe("MSW provider handlers mirror the API", () => {
     expect([r.status, await r.json()]).toEqual([200, { count: 2 }]);
     expect(db.aiProviderModels["openrouter"]).toHaveLength(2); // the answer replaces the list
 
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     expect((await sync("openrouter")).status).toBe(403);
     expect((await models("openrouter", "POST", { id: "b" })).status).toBe(403);
     expect((await models("openrouter", "DELETE", undefined, "?id=b")).status).toBe(403);
@@ -387,9 +387,9 @@ describe("MSW provider handlers mirror the API", () => {
   });
 
   it("DELETE /ai/providers/:slug: 403 for a non-admin, 404 when unknown, 204 and the service stays", async () => {
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     expect((await fetch("/api/v1/ai/providers/ollama", authed("DELETE"))).status).toBe(403);
-    db.me = { ...db.me, role: "admin" };
+    db.me = { ...db.me, role: "admin", permissions: [...ALL_PERMISSIONS] };
     expect((await fetch("/api/v1/ai/providers/nope", authed("DELETE"))).status).toBe(404);
     // A provider a model targets is refused, and the models are named.
     const used = await fetch("/api/v1/ai/providers/ollama", authed("DELETE"));
@@ -587,7 +587,7 @@ describe("MSW gateway handlers mirror the API", () => {
     expect([percent.status, await percent.json()]).toEqual([200, []]);
     db.aiAttempts["100%"] = db.aiAttempts["req-1"]!;
     expect(await (await send("GET", "/ai/requests/100%25/attempts")).json()).toHaveLength(2);
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     expect(await refusal(await send("GET", "/ai/requests/req-1/attempts"))).toEqual([403, "admin required"]);
   });
 
@@ -604,12 +604,12 @@ describe("MSW gateway handlers mirror the API", () => {
     expect(await put.json()).toMatchObject({ name: "burrow-small", enabled: false, dialects: ["openai"], created_at: "2026-05-19T00:00:00Z" });
     expect(await refusal(await send("PUT", "/ai/models/burrow-small", { name: "burrow-intelligence", targets: [target] })))
       .toEqual([409, "model name already in use"]);
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     expect((await send("GET", "/ai/models")).status).toBe(200);
     for (const [method, path] of [["POST", "/ai/models"], ["PUT", "/ai/models/burrow-small"], ["DELETE", "/ai/models/burrow-small"]]) {
       expect((await send(method!, path!, { name: "x1", targets: [target] })).status).toBe(403);
     }
-    db.me = { ...db.me, role: "admin" };
+    db.me = { ...db.me, role: "admin", permissions: [...ALL_PERMISSIONS] };
     expect((await send("DELETE", "/ai/models/burrow-small")).status).toBe(204);
     expect(db.aiModels.map((m) => m.name)).toEqual(["burrow-intelligence"]);
   });
@@ -635,10 +635,10 @@ describe("MSW gateway handlers mirror the API", () => {
   });
 
   it("DELETE /ai/keys/:id revokes and keeps the row; another user's key answers like a missing one", async () => {
-    db.me = { ...db.me, id: "bur_usr_bob0002", role: "user" };
+    db.me = { ...db.me, id: "bur_usr_bob0002", role: "user", permissions: [...USER_PERMISSIONS] };
     expect(await (await send("GET", "/ai/keys")).json()).toEqual([]);
     expect(await refusal(await send("DELETE", "/ai/keys/gk_laptop1"))).toEqual([404, "key not found"]);
-    db.me = { ...db.me, id: "bur_usr_admin01", role: "admin" };
+    db.me = { ...db.me, id: "bur_usr_admin01", role: "admin", permissions: [...ALL_PERMISSIONS] };
     expect((await send("DELETE", "/ai/keys/gk_laptop1")).status).toBe(204);
     expect(db.aiGatewayKeys[0]!.revoked_at).not.toBeNull();
     expect(await refusal(await send("DELETE", "/ai/keys/nope"))).toEqual([404, "key not found"]);

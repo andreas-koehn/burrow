@@ -13,8 +13,8 @@ export interface ProviderClientPanelProps {
   provider: AiProvider;
   /** Its backing service: the command names it, and it names the live session. */
   service: Service;
-  /** The relay lists its clients for an admin only. */
-  isAdmin: boolean;
+  /** The relay lists its clients for whoever holds tunnels:read:any. */
+  canListClients: boolean;
   /** Called once when a client starts serving the provider while the panel waits for one. */
   onOnline?: () => void;
 }
@@ -39,14 +39,14 @@ function Arrived({ onArrive }: { onArrive?: () => void }) {
  * online; otherwise since when it is gone and the command that starts it. The
  * command names the backing service, because that is what a client serves.
  */
-export function ProviderClientPanel({ provider, service, isAdmin, onOnline }: ProviderClientPanelProps) {
+export function ProviderClientPanel({ provider, service, canListClients, onOnline }: ProviderClientPanelProps) {
   const titleId = useId();
   const state = providerState(provider);
   const online = state === "online";
   // Offline means a client served it before; anything else that none has yet.
   const never = !online && state !== "offline";
   // Only a provider nobody served yet may need a machine set up first.
-  const known = useKnownClients({ enabled: isAdmin && never });
+  const known = useKnownClients({ enabled: canListClients && never });
 
   // A relay that predates these fields leaves them out.
   const client = provider.last_client || service.last_client || "";

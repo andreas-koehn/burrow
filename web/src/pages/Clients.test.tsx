@@ -8,6 +8,7 @@ import { db } from "@/mocks/db";
 import { Link, Routes, Route, useLocation } from "react-router-dom";
 import Clients from "@/pages/Clients";
 import { Layout } from "@/components/Layout";
+import { USER_PERMISSIONS } from "@/auth/permissions";
 
 function LocationProbe() {
   const { pathname, search } = useLocation();
@@ -476,12 +477,12 @@ describe("Clients — Clients | Tokens tabs", () => {
     }
   });
 
-  // The clients list is admin only: anyone else starts on their own tokens.
-  describe("for a non-admin", () => {
+  // The clients list needs tunnels:read:any: without it a reader starts on their own tokens.
+  describe("for a reader without tunnels:read:any", () => {
     afterEach(() => server.events.removeAllListeners());
 
     it("opens on the Tokens tab without asking for the clients list", async () => {
-      db.me.role = "user";
+      db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
       const asked: string[] = [];
       server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
       mount();
@@ -493,21 +494,28 @@ describe("Clients — Clients | Tokens tabs", () => {
       expect(currentLocation()).toBe("/clients");
     });
 
-    it("can still open the Clients tab, which the URL then names", async () => {
-      db.me.role = "user";
-      // The relay refuses the list to anyone but an admin; the mock does the same.
+    it("offers no Clients tab, and a link to it opens the Tokens tab", async () => {
+      db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
       const asked: string[] = [];
       server.events.on("request:start", ({ request }) => asked.push(new URL(request.url).pathname));
+      mountAt("/clients?tab=clients");
+      expect(await screen.findByRole("tab", { name: "Tokens" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.queryByRole("tab", { name: "Clients" })).toBeNull();
+      expect(asked).not.toContain("/api/v1/clients/known");
+    });
+
+    it("a role with tunnels:read:any and no token permission gets the Clients tab only", async () => {
+      db.me = { ...db.me, role: "operator", permissions: ["tunnels:read:any"] };
       mount();
-      await userEvent.click(await screen.findByRole("tab", { name: "Clients" }));
-      expect(currentLocation()).toBe("/clients?tab=clients");
-      expect(screen.getByRole("tab", { name: "Clients" })).toHaveAttribute("aria-selected", "true");
-      expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load clients/i);
-      // A refusal is not an older relay: the live sessions are not asked for instead.
-      expect(asked).toContain("/api/v1/clients/known");
-      expect(asked).not.toContain("/api/v1/clients");
-      await userEvent.click(screen.getByRole("tab", { name: "Tokens" }));
-      expect(currentLocation()).toBe("/clients");
+      expect(await screen.findByRole("tab", { name: "Clients" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.queryByRole("tab", { name: "Tokens" })).toBeNull();
+    });
+
+    it("a role with tunnels:read:any and a token permission starts on the machines", async () => {
+      db.me = { ...db.me, role: "operator", permissions: ["tunnels:read:any", "tokens:manage:own"] };
+      mount();
+      expect(await screen.findByRole("tab", { name: "Clients" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("tab", { name: "Tokens" })).toHaveAttribute("aria-selected", "false");
     });
   });
 });

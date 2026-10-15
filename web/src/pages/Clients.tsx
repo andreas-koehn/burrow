@@ -4,6 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/auth/useAuth";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import { Input, Badge, Button, EmptyState, PageHeader, SkeletonRows, Tabs } from "@/components/ds";
 import { StatusBadge } from "@/components/StatusBadge";
 import { RelativeTime } from "@/components/RelativeTime";
@@ -207,19 +209,22 @@ type ClientsTab = "clients" | "tokens";
 export default function Clients() {
   // The tab lives in the URL, so /clients?tab=tokens can be linked and reloaded.
   const [searchParams, setSearchParams] = useSearchParams();
-  const { user, loading } = useAuth();
-  // The clients list is admin only; without a tab in the URL everyone else starts on their tokens.
-  const fallback: ClientsTab = user?.role === "admin" ? "clients" : "tokens";
+  const { loading } = useAuth();
+  // The machine list is GET /clients/known: tunnels:read:any. The tokens are tokens:manage:own or :any.
+  // A reader starts on the machines when they may list them, else on their tokens; a tab they cannot use is not offered.
+  const canList = useCan(P.tunnelsReadAny);
+  const canTokens = useCan([P.tokensManageOwn, P.tokensManageAny]);
+  const fallback: ClientsTab = canList || !canTokens ? "clients" : "tokens";
   const asked = searchParams.get("tab");
-  const tab: ClientsTab = asked === "tokens" || asked === "clients" ? asked : fallback;
+  const tab: ClientsTab = (asked === "tokens" && canTokens) || (asked === "clients" && canList) ? asked : fallback;
   // The URL names a tab only when it is not the one this user starts on.
   const setTab = (value: string) => setSearchParams((prev) => {
     const next = new URLSearchParams(prev);
     if (value === fallback) next.delete("tab"); else next.set("tab", value);
     return next;
   }, { replace: true });
-  // Which tab to start on is not known before the user is.
-  const undecided = loading && asked !== "tokens" && asked !== "clients";
+  // Which tabs there are is not known before the permissions are.
+  const undecided = loading;
 
   return (
     <div className="users-page">
@@ -233,9 +238,9 @@ export default function Clients() {
           value={tab}
           onChange={setTab}
           tabs={[
-            // The tokens are everyone's own, so a failure of the clients list stays inside its tab.
-            { value: "clients", label: "Clients", content: <ClientList /> },
-            { value: "tokens", label: "Tokens", content: <ClientTokensPanel /> },
+            // A failure of the clients list stays inside its tab.
+            ...(canList || !canTokens ? [{ value: "clients", label: "Clients", content: <ClientList /> }] : []),
+            ...(canTokens ? [{ value: "tokens", label: "Tokens", content: <ClientTokensPanel /> }] : []),
           ]}
         />
       )}

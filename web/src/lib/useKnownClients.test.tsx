@@ -6,6 +6,7 @@ import { server } from "@/mocks/server";
 import { db, resetDb } from "@/mocks/db";
 import type { KnownClient } from "@/lib/contract";
 import { clientsOnline, useKnownClients } from "./useKnownClients";
+import { USER_PERMISSIONS } from "@/auth/permissions";
 
 const row = (token_id: string, token_name: string, status: KnownClient["status"]): KnownClient => ({
   token_id, token_name, user_id: "u1", status, last_seen: null,
@@ -65,7 +66,7 @@ describe("useKnownClients", () => {
   });
 
   it("a refusal is an error, and the live sessions are not asked for instead", async () => {
-    db.me.role = "user";
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     const asked = requests();
     try {
       renderApp(<Probe name="a" />);

@@ -10,9 +10,10 @@ import { AttemptLookup } from "@/components/AttemptLookup";
 import { ConnectCard } from "@/components/ConnectCard";
 import { GatewayAddresses } from "@/components/GatewayAddresses";
 import { ModelDialog } from "@/components/ModelDialog";
-import { useAuth } from "@/auth/useAuth";
 import { pairsWords } from "@/lib/translation";
 import type { AiModel, AiProvider, Dialect, GatewayInfo } from "@/lib/contract";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 
 const FORMAT_NAME: Record<Dialect, string> = { openai: "OpenAI format", anthropic: "Anthropic format" };
 
@@ -74,10 +75,10 @@ function responsesText(model: AiModel): string | null {
 
 export default function GatewayModels() {
   const qc = useQueryClient();
-  const { user } = useAuth();
-  // The relay also lets a role with ai:configure:any write models; the session
-  // only tells the role, so everyone but an admin gets the read-only page.
-  const canWrite = user?.role === "admin";
+  // POST, PUT and DELETE /ai/models: ai:configure:any.
+  const canWrite = useCan(P.aiConfigureAny);
+  // GET /ai/requests/{id}/attempts: ai:read:any.
+  const canReadAttempts = useCan(P.aiReadAny);
 
   const models = useQuery({
     queryKey: ["ai", "models"],
@@ -245,8 +246,7 @@ export default function GatewayModels() {
             endpoints={endpoints}
             models={list.filter((m) => m.enabled)}
           />
-          {/* The relay gives the attempt log to admins only. */}
-          {canWrite && <AttemptLookup />}
+          {canReadAttempts && <AttemptLookup />}
         </>
       )}
 

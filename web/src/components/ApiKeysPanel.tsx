@@ -7,6 +7,8 @@ import { Button, Input, Dialog, TableEmptyRow } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { useAuth } from "@/auth/useAuth";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import type { ServiceApiKey, CreatedApiKey } from "@/lib/contract";
 
 export interface ApiKeysPanelProps {
@@ -22,7 +24,9 @@ export interface ApiKeysPanelProps {
 }
 
 export function ApiKeysPanel({ serviceId, ownToaster = true, revokeOnly = false, onRevoked, intro }: ApiKeysPanelProps) {
-  const { user } = useAuth();
+  const meLoaded = useAuth().user !== undefined;
+  // POST and DELETE /services/{id}/api-keys: services:configure:own or :any.
+  const canConfigure = useCan([P.servicesConfigureOwn, P.servicesConfigureAny]);
   const qc = useQueryClient();
   const keysKey = ["service-api-keys", serviceId];
   const { data } = useQuery({
@@ -66,7 +70,7 @@ export function ApiKeysPanel({ serviceId, ownToaster = true, revokeOnly = false,
   return (
     <div className="api-keys-panel">
       {data !== undefined && intro}
-      {!revokeOnly && (
+      {!revokeOnly && canConfigure && (
         <div className="panel-head">
           <Button variant="primary" size="sm" className="ml-auto" onClick={() => setCreating(true)}>New key</Button>
         </div>
@@ -91,14 +95,14 @@ export function ApiKeysPanel({ serviceId, ownToaster = true, revokeOnly = false,
                   <RelativeTime value={k.last_used} empty="Never" />
                 </td>
                 <td className="col-actions">
-                  <Button
+                  {canConfigure && <Button
                     variant="destructive"
                     size="sm"
                     aria-label={`Revoke key ${k.name}`}
                     onClick={() => setRevokeTarget(k)}
                   >
                     Revoke
-                  </Button>
+                  </Button>}
                 </td>
               </tr>
             ))}
@@ -107,11 +111,8 @@ export function ApiKeysPanel({ serviceId, ownToaster = true, revokeOnly = false,
         </table>
       </div>
 
-      {/* P1-5 — only show the permission hint to non-admin users. Admins
-          already have services:configure; the hint just adds noise.
-          Wait for useAuth to resolve (user !== undefined) so the message
-          doesn't flash for admins on first render. */}
-      {user !== undefined && user.role !== "admin" && (
+      {/* Said only to a reader who lacks the permission; useCan is false while /me loads, so wait for it. */}
+      {meLoaded && !canConfigure && (
         <p className="muted">Managing keys needs the services:configure permission.</p>
       )}
 

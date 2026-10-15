@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
 import { db } from "@/mocks/db";
 import { AccessModePanel, type AccessModePanelHandle } from "@/components/AccessModePanel";
+import { USER_PERMISSIONS } from "@/auth/permissions";
 
 describe("AccessModePanel (v0.3.0)", () => {
   // Each test spies on fetch afresh; without the restore the spy of an earlier
@@ -52,8 +53,8 @@ describe("AccessModePanel (v0.3.0)", () => {
     ).toBeNull();
   });
 
-  it("shows the services:configure permission hint for non-admin users (P1-5)", async () => {
-    db.me = { id: "u_user", email: "bob@acme.io", role: "user" };
+  it("shows the services:configure permission hint to a reader without it", async () => {
+    db.me = { id: "u_user", email: "bob@acme.io", role: "operator", permissions: ["tunnels:read:own"] };
     renderApp(<AccessModePanel serviceId="svc_web01" serviceName="web" mode="open" />);
     await userEvent.click(screen.getByRole("radio", { name: /api key/i }));
     expect(
@@ -88,7 +89,7 @@ describe("AccessModePanel (v0.3.0)", () => {
   });
 
   it("a 403 surfaces a friendly permission message", async () => {
-    db.me = { id: "bur_usr_other", email: "x@y.io", role: "user" };
+    db.me = { id: "bur_usr_other", email: "x@y.io", role: "user", permissions: [...USER_PERMISSIONS] };
     renderApp(<AccessModePanel serviceId="svc_web01" serviceName="web" mode="open" />);
     await userEvent.click(screen.getByRole("radio", { name: /api key/i }));
     await userEvent.click(screen.getByRole("button", { name: /save changes/i }));

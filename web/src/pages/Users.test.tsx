@@ -5,6 +5,7 @@ import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import Users from "@/pages/Users";
+import { db } from "@/mocks/db";
 
 describe("Users list", () => {
   it("renders users with status badge and last-login", async () => {
@@ -108,5 +109,25 @@ describe("CreateUserDialog — no-email clarifier (P6B.3)", () => {
     await screen.findByText("bob@acme.io");
     await userEvent.click(screen.getByRole("button", { name: /^new user$/i }));
     expect(await screen.findByText(/does not email an invitation/i)).toBeInTheDocument();
+  });
+
+  describe("writes follow users:manage", () => {
+    it("a custom role with users:manage can add, edit and delete", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["users:manage"] };
+      renderApp(<Users />);
+      const row = (await screen.findByText("bob@acme.io")).closest("tr")!;
+      expect(screen.getByRole("button", { name: /^new user$/i })).toBeInTheDocument();
+      expect(within(row).getByRole("button", { name: "Edit" })).toBeInTheDocument();
+      expect(within(row).getByRole("button", { name: /delete user/i })).toBeInTheDocument();
+    });
+
+    it("a custom role with users:read only reads the list", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["users:read"] };
+      renderApp(<Users />);
+      await screen.findByText("bob@acme.io");
+      expect(screen.queryByRole("button", { name: /^new user$/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+      expect(screen.queryByRole("button", { name: /delete user/i })).toBeNull();
+    });
   });
 });

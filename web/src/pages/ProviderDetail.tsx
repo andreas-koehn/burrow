@@ -12,7 +12,8 @@ import { ProviderConnect } from "@/components/ProviderConnect";
 import { RenameProviderDialog } from "@/components/RenameProviderDialog";
 import { ProviderModelsPanel } from "@/components/ProviderModelsPanel";
 import { ProviderConcurrencySetting, ProviderResponsesSetting, ProviderUpstreamPanel, SlotsNotSet } from "@/components/ProviderUpstreamPanel";
-import { useAuth } from "@/auth/useAuth";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import { providerBaseUrl } from "@/lib/serviceUrl";
 import { providerState } from "@/lib/status";
 import { formatRatio } from "@/lib/format";
@@ -76,8 +77,9 @@ export default function ProviderDetail() {
   const nav = useNavigate();
   const qc = useQueryClient();
   const headingId = useId();
-  const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  // Every write on this page is a provider write; the clients list is read by whoever sees every client.
+  const canManage = useCan(P.aiProvidersManage);
+  const canListClients = useCan(P.tunnelsReadAny);
   const [renameOpen, setRenameOpen] = useState(false);
   // The open tab lives in the URL fragment, so it can be linked to and the
   // back button returns to it.
@@ -336,7 +338,7 @@ export default function ProviderDetail() {
                   )}
                 </section>
               ) : svc.data && (
-                <ProviderClientPanel provider={provider.data} service={svc.data} isAdmin={isAdmin} onOnline={cameOnline} />
+                <ProviderClientPanel provider={provider.data} service={svc.data} canListClients={canListClients} onOnline={cameOnline} />
               )}
 
               <ProviderConnect
@@ -397,7 +399,7 @@ export default function ProviderDetail() {
           {
             value: "catalog",
             label: "Catalog",
-            content: <ProviderModelsPanel slug={provider.data.slug} kind={provider.data.kind} isAdmin={isAdmin} />,
+            content: <ProviderModelsPanel slug={provider.data.slug} kind={provider.data.kind} canEdit={canManage} />,
           },
           {
             value: "settings",
@@ -406,7 +408,7 @@ export default function ProviderDetail() {
               <>
               {/* A direct provider has these two among its upstream settings. */}
               {!direct && provider.data.api_format === "openai" && (
-                <ProviderResponsesSetting provider={provider.data} isAdmin={isAdmin} />
+                <ProviderResponsesSetting provider={provider.data} canEdit={canManage} />
               )}
               {!direct && (
                 // Keyed on the stored limit: a save or a refetch that brings
@@ -414,10 +416,10 @@ export default function ProviderDetail() {
                 <ProviderConcurrencySetting
                   key={provider.data.max_concurrent}
                   provider={provider.data}
-                  isAdmin={isAdmin}
+                  canEdit={canManage}
                 />
               )}
-              {direct && <ProviderUpstreamPanel provider={provider.data} isAdmin={isAdmin} />}
+              {direct && <ProviderUpstreamPanel provider={provider.data} canEdit={canManage} />}
 
               <section aria-labelledby={`${headingId}-keys`} className="card col gap-2">
                 <h2 id={`${headingId}-keys`}>Keys</h2>
@@ -555,8 +557,8 @@ export default function ProviderDetail() {
                 </div>
               </section>
 
-              {/* A hosted provider is not paused, and only an admin renames or deletes: nothing is left for anyone else. */}
-              {(!direct || isAdmin) && (
+              {/* A hosted provider is not paused, and only whoever may manage providers renames or deletes: nothing is left for anyone else. */}
+              {(!direct || canManage) && (
                 <section aria-labelledby={`${headingId}-manage`} className="card col gap-2">
                   <h2 id={`${headingId}-manage`}>This provider</h2>
                   {!direct && (
@@ -569,7 +571,7 @@ export default function ProviderDetail() {
                       <span>Pause provider</span>
                     </label>
                   )}
-                  {isAdmin && (
+                  {canManage && (
                     <div className="row row-center gap-2">
                       <Button variant="secondary" size="sm" onClick={() => setRenameOpen(true)}>
                         Rename
@@ -587,7 +589,7 @@ export default function ProviderDetail() {
         ]}
       />
 
-      {isAdmin && (
+      {canManage && (
         <Dialog
           open={deleteOpen}
           onOpenChange={(o) => { if (!remove.isPending) setDeleteOpen(o); }}
@@ -612,7 +614,7 @@ export default function ProviderDetail() {
         </Dialog>
       )}
 
-      {isAdmin && (
+      {canManage && (
         <RenameProviderDialog
           provider={provider.data}
           open={renameOpen}
