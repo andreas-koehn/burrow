@@ -62,25 +62,25 @@ func (x *DB) GetRole(ctx context.Context, name string) (Role, error) {
 //
 //	name, description, created_at, builtin, permissions, default_for_new_users
 //
-// builtin and default_for_new_users are stored as INTEGER (0/1) in SQLite;
-// permissions is a TEXT JSON array of permission key strings. An empty or
+// builtin and default_for_new_users are INTEGER 0/1 in SQLite and BOOLEAN in
+// Postgres; both scan into bool. permissions is a TEXT JSON array of permission key strings. An empty or
 // invalid JSON value yields an empty slice — never an error — so a freshly
 // migrated row (default '[]') round-trips cleanly.
 func scanRoleRow(scan func(dest ...any) error) (Role, error) {
 	var (
 		r          Role
-		builtin    int
-		permsRaw   string
-		defaultInt int
+		builtin   bool
+		permsRaw  string
+		isDefault bool
 	)
-	if err := scan(&r.Name, &r.Description, &r.CreatedAt, &builtin, &permsRaw, &defaultInt); err != nil {
+	if err := scan(&r.Name, &r.Description, &r.CreatedAt, &builtin, &permsRaw, &isDefault); err != nil {
 		if err == sql.ErrNoRows {
 			return Role{}, err
 		}
 		return Role{}, fmt.Errorf("scan role: %w", err)
 	}
-	r.Builtin = builtin != 0
-	r.DefaultForNewUsers = defaultInt != 0
+	r.Builtin = builtin
+	r.DefaultForNewUsers = isDefault
 	if permsRaw != "" {
 		_ = json.Unmarshal([]byte(permsRaw), &r.Permissions)
 	}
@@ -109,21 +109,17 @@ func (x *DB) CreateRole(ctx context.Context, name, description string, permissio
 	defer tx.Rollback() //nolint:errcheck // best-effort cleanup
 	if defaultForNewUsers {
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE roles SET default_for_new_users=0 WHERE default_for_new_users=1`,
+			`UPDATE roles SET default_for_new_users=false WHERE default_for_new_users=true`,
 		); err != nil {
 			return fmt.Errorf("clear prior default: %w", err)
 		}
 	}
-	defInt := 0
-	if defaultForNewUsers {
-		defInt = 1
-	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO roles(name, description, builtin, permissions, default_for_new_users)
-		 VALUES(?,?,0,?,?)`,
-		name, description, string(permsJSON), defInt,
+		 VALUES(?,?,false,?,?)`,
+		name, description, string(permsJSON), defaultForNewUsers,
 	); err != nil {
-		if isSQLiteUnique(err) {
+		if isUniqueViolation(err) {
 			return ErrRoleExists
 		}
 		return fmt.Errorf("insert role: %w", err)
@@ -153,7 +149,7 @@ func (x *DB) UpdateRole(ctx context.Context, name string, u RoleUpdate) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	var builtin int
+	var builtin bool
 	if err := tx.QueryRowContext(ctx,
 		`SELECT builtin FROM roles WHERE name=?`, name,
 	).Scan(&builtin); err != nil {
@@ -162,7 +158,7 @@ func (x *DB) UpdateRole(ctx context.Context, name string, u RoleUpdate) error {
 		}
 		return fmt.Errorf("lookup role: %w", err)
 	}
-	if builtin != 0 {
+	if builtin {
 		return ErrRoleBuiltin
 	}
 
@@ -172,7 +168,7 @@ func (x *DB) UpdateRole(ctx context.Context, name string, u RoleUpdate) error {
 	// default alone.
 	if u.DefaultForNewUsers != nil && *u.DefaultForNewUsers {
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE roles SET default_for_new_users=0 WHERE default_for_new_users=1`,
+			`UPDATE roles SET default_for_new_users=false WHERE default_for_new_users=true`,
 		); err != nil {
 			return fmt.Errorf("clear prior default: %w", err)
 		}
@@ -199,12 +195,8 @@ func (x *DB) UpdateRole(ctx context.Context, name string, u RoleUpdate) error {
 		args = append(args, string(permsJSON))
 	}
 	if u.DefaultForNewUsers != nil {
-		v := 0
-		if *u.DefaultForNewUsers {
-			v = 1
-		}
 		set = append(set, "default_for_new_users=?")
-		args = append(args, v)
+		args = append(args, *u.DefaultForNewUsers)
 	}
 	if len(set) > 0 {
 		args = append(args, name)
@@ -244,7 +236,7 @@ func (x *DB) DeleteRole(ctx context.Context, name, fallbackRole string) (affecte
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	var builtin int
+	var builtin bool
 	if err := tx.QueryRowContext(ctx,
 		`SELECT builtin FROM roles WHERE name=?`, name,
 	).Scan(&builtin); err != nil {
@@ -253,7 +245,7 @@ func (x *DB) DeleteRole(ctx context.Context, name, fallbackRole string) (affecte
 		}
 		return nil, fmt.Errorf("lookup role: %w", err)
 	}
-	if builtin != 0 {
+	if builtin {
 		return nil, ErrRoleBuiltin
 	}
 
@@ -301,7 +293,7 @@ func (x *DB) DeleteRole(ctx context.Context, name, fallbackRole string) (affecte
 func (x *DB) DefaultRoleName(ctx context.Context) (string, error) {
 	var name string
 	err := x.sqlDB.QueryRowContext(ctx,
-		`SELECT name FROM roles WHERE default_for_new_users=1 LIMIT 1`,
+		`SELECT name FROM roles WHERE default_for_new_users=true LIMIT 1`,
 	).Scan(&name)
 	if err == sql.ErrNoRows {
 		return "", ErrNotFound

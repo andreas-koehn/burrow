@@ -2,8 +2,11 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // The model_aliases table is what earlier versions kept model aliases in.
@@ -45,4 +48,17 @@ func isSQLiteUnique(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "UNIQUE constraint failed") ||
 		strings.Contains(s, "constraint failed: UNIQUE")
+}
+
+// isUniqueViolation reports whether err is a unique-constraint violation on
+// either database: SQLite's UNIQUE error or Postgres SQLSTATE 23505.
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return true
+	}
+	return isSQLiteUnique(err)
 }

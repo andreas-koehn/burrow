@@ -202,3 +202,96 @@ func TestRoleDeleteCascade(t *testing.T) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
+
+// checkCustomRoleLifecycle runs the whole life of a custom role against x:
+// create, list, read, make it the default for new users, update, refuse a
+// duplicate, delete with users moved to a fallback. The SQLite test and the
+// Postgres test both run it.
+func checkCustomRoleLifecycle(t *testing.T, x *DB) {
+	t.Helper()
+	ctx := context.Background()
+
+	// The built-in rows are there and flagged.
+	roles, err := x.ListRoles(ctx)
+	if err != nil {
+		t.Fatalf("list roles: %v", err)
+	}
+	builtin := map[string]bool{}
+	for _, r := range roles {
+		builtin[r.Name] = r.Builtin
+	}
+	if !builtin["admin"] || !builtin["user"] {
+		t.Fatalf("built-in roles not flagged: %+v", roles)
+	}
+
+	if err := x.CreateRole(ctx, "operator-lc", "Runs the gateway", []string{"ai:read:any", "ai:configure:any"}, false); err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	if err := x.CreateRole(ctx, "operator-lc", "again", nil, false); !errors.Is(err, ErrRoleExists) {
+		t.Fatalf("duplicate create: got %v, want ErrRoleExists", err)
+	}
+	got, err := x.GetRole(ctx, "operator-lc")
+	if err != nil {
+		t.Fatalf("get role: %v", err)
+	}
+	if got.Builtin || got.DefaultForNewUsers || len(got.Permissions) != 2 {
+		t.Fatalf("created role read back as %+v", got)
+	}
+
+	// Becoming the default clears the previous default.
+	yes := true
+	if err := x.UpdateRole(ctx, "operator-lc", RoleUpdate{DefaultForNewUsers: &yes}); err != nil {
+		t.Fatalf("make default: %v", err)
+	}
+	def, err := x.DefaultRoleName(ctx)
+	if err != nil || def != "operator-lc" {
+		t.Fatalf("default role = %q, %v; want operator-lc", def, err)
+	}
+	defaults := 0
+	roles, _ = x.ListRoles(ctx)
+	for _, r := range roles {
+		if r.DefaultForNewUsers {
+			defaults++
+		}
+	}
+	if defaults != 1 {
+		t.Fatalf("%d roles are the default, want 1", defaults)
+	}
+
+	desc := "Runs the gateway and its keys"
+	perms := []string{"ai:read:any"}
+	if err := x.UpdateRole(ctx, "operator-lc", RoleUpdate{Description: &desc, Permissions: &perms}); err != nil {
+		t.Fatalf("update role: %v", err)
+	}
+	if err := x.UpdateRole(ctx, "admin", RoleUpdate{Description: &desc}); !errors.Is(err, ErrRoleBuiltin) {
+		t.Fatalf("update built-in: got %v, want ErrRoleBuiltin", err)
+	}
+
+	// A second custom role takes the default over: still exactly one.
+	if err := x.CreateRole(ctx, "auditor-lc", "Reads the audit log", []string{"audit:read"}, true); err != nil {
+		t.Fatalf("create default role: %v", err)
+	}
+	if def, _ := x.DefaultRoleName(ctx); def != "auditor-lc" {
+		t.Fatalf("default role = %q after creating auditor-lc as default", def)
+	}
+	// Put the default back where a fresh database has it, so later checks on
+	// the same database start from there.
+	t.Cleanup(func() {
+		_, _ = x.sqlDB.ExecContext(ctx, `UPDATE roles SET default_for_new_users = (name = 'user')`)
+		_, _ = x.DeleteRole(ctx, "auditor-lc", "user")
+	})
+
+	if _, err := x.DeleteRole(ctx, "operator-lc", "user"); err != nil {
+		t.Fatalf("delete role: %v", err)
+	}
+	if _, err := x.GetRole(ctx, "operator-lc"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted role still readable: %v", err)
+	}
+	if _, err := x.DeleteRole(ctx, "admin", "user"); !errors.Is(err, ErrRoleBuiltin) {
+		t.Fatalf("delete built-in: got %v, want ErrRoleBuiltin", err)
+	}
+}
+
+func TestCustomRoleLifecycle(t *testing.T) {
+	checkCustomRoleLifecycle(t, testDB(t))
+}
