@@ -18,11 +18,15 @@ info:
     the Go types of the handlers by the tests in
     `internal/api/openapi_shapes_test.go`.
 
-    Two extension fields are used on operations. `x-burrow-mcp: false` keeps
-    an operation out of the tool list of the management MCP server; an
-    operation without the field may become a tool. `x-burrow-permission` is
-    reserved for the permission an operation requires; no operation carries
-    it yet.
+    Three extension fields are used on operations. `x-burrow-mcp: false`
+    keeps an operation out of the management MCP server. `x-burrow-permission`
+    says who may call an operation: `kind` is `public` (no credentials),
+    `self` (any signed-in caller), `needs` (one of `any_of`; with
+    `every: true` every permission there is) or `dashboard` (a dashboard
+    session with one of `any_of`; an automation token gets 403). It mirrors
+    the relay's route table, and a test keeps the two equal.
+    `x-burrow-destructive: true` marks an operation that is not a DELETE
+    but removes or revokes something; MCP clients must confirm it.
   version: 0.4.0
   license:
     name: MIT
@@ -1756,6 +1760,7 @@ paths:
     get:
       tags: [metrics]
       operationId: metricsGet
+      x-burrow-permission: {kind: needs, any_of: ["metrics:read"]}
       summary: Prometheus 0.0.4 scrape (closed metric set)
       description: |
         Returns the Burrow closed-metric set in Prometheus text exposition
@@ -1881,6 +1886,7 @@ paths:
     post:
       tags: [auth]
       operationId: authLogin
+      x-burrow-permission: {kind: public, any_of: []}
       x-burrow-mcp: false
       summary: Password login
       security: []
@@ -1912,6 +1918,7 @@ paths:
     post:
       tags: [auth]
       operationId: authLogout
+      x-burrow-permission: {kind: self, any_of: []}
       x-burrow-mcp: false
       summary: Clear the session cookie
       responses:
@@ -1922,6 +1929,7 @@ paths:
     post:
       tags: [auth]
       operationId: authChangePassword
+      x-burrow-permission: {kind: self, any_of: []}
       x-burrow-mcp: false
       summary: Change the caller's password
       requestBody:
@@ -1943,6 +1951,7 @@ paths:
     get:
       tags: [auth]
       operationId: meGet
+      x-burrow-permission: {kind: self, any_of: []}
       summary: Current authenticated principal
       responses:
         '200':
@@ -1959,6 +1968,7 @@ paths:
     get:
       tags: [sessions]
       operationId: sessionsList
+      x-burrow-permission: {kind: needs, any_of: ["sessions:manage:own", "sessions:manage:any"]}
       summary: List the caller's active sessions
       responses:
         '200':
@@ -1974,6 +1984,7 @@ paths:
     delete:
       tags: [sessions]
       operationId: sessionDelete
+      x-burrow-permission: {kind: needs, any_of: ["sessions:manage:own", "sessions:manage:any"]}
       summary: Revoke one of the caller's sessions
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -1984,6 +1995,8 @@ paths:
     post:
       tags: [sessions]
       operationId: sessionsRevokeAll
+      x-burrow-permission: {kind: needs, any_of: ["sessions:manage:own", "sessions:manage:any"]}
+      x-burrow-destructive: true
       summary: Revoke every session except the current one
       responses:
         '200':
@@ -2004,6 +2017,7 @@ paths:
     get:
       tags: [tokens]
       operationId: clientTokensList
+      x-burrow-permission: {kind: needs, any_of: ["tokens:manage:own", "tokens:manage:any"]}
       summary: List the caller's client tokens
       responses:
         '200':
@@ -2017,6 +2031,7 @@ paths:
     post:
       tags: [tokens]
       operationId: clientTokenCreate
+      x-burrow-permission: {kind: needs, any_of: ["tokens:manage:own", "tokens:manage:any"]}
       summary: Issue a new client token (plaintext returned ONCE)
       requestBody:
         required: true
@@ -2045,6 +2060,7 @@ paths:
     delete:
       tags: [tokens]
       operationId: clientTokenDelete
+      x-burrow-permission: {kind: needs, any_of: ["tokens:manage:own", "tokens:manage:any"]}
       summary: Revoke a client token
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2059,6 +2075,7 @@ paths:
     get:
       tags: [tunnels]
       operationId: tunnelsList
+      x-burrow-permission: {kind: needs, any_of: ["tunnels:read:own", "tunnels:read:any"]}
       summary: List the caller's live tunnels
       responses:
         '200':
@@ -2074,6 +2091,7 @@ paths:
     put:
       tags: [tunnels]
       operationId: tunnelAccessModeUpdate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Set tunnel access mode (v0.2 back-compat — delegates to services)
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
@@ -2102,6 +2120,7 @@ paths:
     get:
       tags: [services]
       operationId: servicesList
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: List services visible to the caller
       description: |
         The backing rows of direct AI providers (type "direct") are not
@@ -2120,6 +2139,7 @@ paths:
     post:
       tags: [services]
       operationId: serviceCreate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:any"]}
       summary: Admin pre-provisions a service row (v0.5.2)
       description: |
         Inserts a services row exactly as supplied so dashboard / e2e flows
@@ -2163,6 +2183,7 @@ paths:
     get:
       tags: [services]
       operationId: serviceSlugSuggestionGet
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Suggest a slug no service uses
       description: A suggestion only; uniqueness is enforced when the slug is saved.
       responses:
@@ -2181,6 +2202,7 @@ paths:
     get:
       tags: [services]
       operationId: serviceGet
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Service detail (config + live state)
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -2196,6 +2218,7 @@ paths:
     put:
       tags: [services]
       operationId: serviceAccessModeUpdate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Set the service's access mode
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
@@ -2214,6 +2237,7 @@ paths:
     put:
       tags: [services]
       operationId: serviceSlugUpdate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Change the service's slug
       description: The old URL stops working immediately; there is no redirect.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
@@ -2246,6 +2270,7 @@ paths:
     put:
       tags: [services]
       operationId: serviceGatewayOnlyUpdate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Reach the service through the AI gateway only
       description: |
         With `gateway_only` true the service answers 404 at `/svc/<slug>/`, on
@@ -2284,6 +2309,7 @@ paths:
     get:
       tags: [services]
       operationId: serviceApiKeysList
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: List per-service API keys
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -2298,6 +2324,7 @@ paths:
     post:
       tags: [services]
       operationId: serviceApiKeyCreate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Mint a new per-service API key (plaintext returned ONCE)
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
@@ -2327,6 +2354,7 @@ paths:
     delete:
       tags: [services]
       operationId: serviceApiKeyDelete
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Revoke a per-service API key
       parameters:
         - { $ref: '#/components/parameters/PathServiceID' }
@@ -2340,6 +2368,7 @@ paths:
     get:
       tags: [services]
       operationId: serviceAccessPolicyGet
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Get the role allowlist for burrow_login access
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -2358,6 +2387,7 @@ paths:
     put:
       tags: [services]
       operationId: serviceAccessPolicyUpdate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Replace the role allowlist
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
@@ -2378,6 +2408,7 @@ paths:
     get:
       tags: [services]
       operationId: serviceIpGeoGet
+      x-burrow-permission: {kind: needs, any_of: ["ipgeo:manage:own", "ipgeo:manage:any"]}
       summary: Get per-service IP / Geo allow / deny rules
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -2390,6 +2421,7 @@ paths:
     put:
       tags: [services]
       operationId: serviceIpGeoUpdate
+      x-burrow-permission: {kind: needs, any_of: ["ipgeo:manage:own", "ipgeo:manage:any"]}
       summary: Replace per-service IP / Geo rules
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
@@ -2405,6 +2437,7 @@ paths:
     delete:
       tags: [services, cache]
       operationId: serviceCacheEntriesDelete
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:own", "ai:configure:any"]}
       summary: Purge per-service exact-cache entries
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
@@ -2415,6 +2448,7 @@ paths:
     get:
       tags: [services, cache]
       operationId: serviceAiConfigGet
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:own", "ai:configure:any"]}
       summary: Read per-service AI gateway configuration
       description: >
         Returns the stored service-level AI config blob, or an empty object
@@ -2433,6 +2467,7 @@ paths:
     put:
       tags: [services, cache]
       operationId: serviceAiConfigUpdate
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:own", "ai:configure:any"]}
       summary: Store per-service AI gateway configuration
       description: >
         Persists the service-level AI config blob. Validates
@@ -2460,6 +2495,7 @@ paths:
     get:
       tags: [inspector]
       operationId: inspectorRequestsList
+      x-burrow-permission: {kind: needs, any_of: ["inspector:read:own", "inspector:read:any"]}
       summary: List captured requests
       parameters:
         - { $ref: '#/components/parameters/PathServiceID' }
@@ -2498,6 +2534,7 @@ paths:
     get:
       tags: [inspector]
       operationId: inspectorRequestGet
+      x-burrow-permission: {kind: needs, any_of: ["inspector:read:own", "inspector:read:any"]}
       summary: Get a captured request envelope
       parameters:
         - { $ref: '#/components/parameters/PathServiceID' }
@@ -2518,6 +2555,7 @@ paths:
     post:
       tags: [inspector]
       operationId: inspectorRequestReplay
+      x-burrow-permission: {kind: needs, any_of: ["inspector:replay:own", "inspector:replay:any"]}
       summary: Re-fire the captured request through the proxy chain
       parameters:
         - { $ref: '#/components/parameters/PathServiceID' }
@@ -2558,6 +2596,7 @@ paths:
     post:
       tags: [inspector]
       operationId: inspectorRequestReplayCompare
+      x-burrow-permission: {kind: needs, any_of: ["inspector:replay:own", "inspector:replay:any"]}
       summary: Replay and diff against the original response
       parameters:
         - { $ref: '#/components/parameters/PathServiceID' }
@@ -2610,6 +2649,7 @@ paths:
     get:
       tags: [inspector]
       operationId: inspectorStream
+      x-burrow-permission: {kind: dashboard, any_of: ["inspector:read:own", "inspector:read:any"]}
       x-burrow-mcp: false
       summary: SSE stream of newly-captured requests (no timeout, no CSRF)
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
@@ -2628,6 +2668,7 @@ paths:
     get:
       tags: [cache]
       operationId: cacheSettingsGet
+      x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"]}
       summary: Get prompt-cache settings
       responses:
         '200':
@@ -2639,6 +2680,7 @@ paths:
     put:
       tags: [cache]
       operationId: cacheSettingsUpdate
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
       summary: Replace prompt-cache settings
       requestBody:
         required: true
@@ -2655,6 +2697,7 @@ paths:
     get:
       tags: [cache]
       operationId: cacheStatsGet
+      x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"]}
       summary: Cache hit / miss / size counters
       responses:
         '200':
@@ -2668,6 +2711,7 @@ paths:
     delete:
       tags: [cache]
       operationId: cacheEntriesDelete
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
       summary: Purge ALL cache entries (admin / ai:configure:any)
       responses:
         '204': { description: Purged, the exact-match and the semantic tier. Nothing is returned. }
@@ -2678,6 +2722,7 @@ paths:
     delete:
       tags: [cache]
       operationId: cacheSemanticEntriesDelete
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
       summary: Purge ALL semantic cache entries (admin / ai:configure:any)
       description: >
         Clears the semantic similarity tier only; the exact-match cache is
@@ -2695,6 +2740,7 @@ paths:
     get:
       tags: [redaction]
       operationId: redactionRulesList
+      x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"]}
       summary: List redaction rules
       responses:
         '200':
@@ -2706,6 +2752,7 @@ paths:
     post:
       tags: [redaction]
       operationId: redactionRuleCreate
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
       summary: Create a new redaction rule
       requestBody:
         required: true
@@ -2726,6 +2773,7 @@ paths:
     put:
       tags: [redaction]
       operationId: redactionRuleUpdate
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
       summary: Update a redaction rule
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
@@ -2743,6 +2791,7 @@ paths:
     delete:
       tags: [redaction]
       operationId: redactionRuleDelete
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
       summary: Delete a redaction rule
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2754,6 +2803,7 @@ paths:
     get:
       tags: [redaction]
       operationId: redactionSettingsGet
+      x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"]}
       summary: Get redaction settings
       responses:
         '200':
@@ -2765,6 +2815,7 @@ paths:
     put:
       tags: [redaction]
       operationId: redactionSettingsUpdate
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
       summary: Replace redaction settings
       requestBody:
         required: true
@@ -2780,6 +2831,7 @@ paths:
     post:
       tags: [redaction]
       operationId: redactionPreview
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
       summary: Preview redaction of a sample payload
       requestBody:
         required: true
@@ -2820,6 +2872,7 @@ paths:
     get:
       tags: [guardrails]
       operationId: guardrailSettingsGet
+      x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"]}
       summary: Get prompt-injection guardrail settings
       responses:
         '200':
@@ -2831,6 +2884,7 @@ paths:
     put:
       tags: [guardrails]
       operationId: guardrailSettingsUpdate
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
       summary: Replace guardrail settings
       requestBody:
         required: true
@@ -2847,6 +2901,7 @@ paths:
     get:
       tags: [guardrails]
       operationId: guardrailPatternsList
+      x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"]}
       summary: List bundled guardrail pattern names + descriptions
       responses:
         '200':
@@ -2870,6 +2925,7 @@ paths:
     get:
       tags: [rate-limits]
       operationId: rateLimitsList
+      x-burrow-permission: {kind: needs, any_of: ["quotas:read:own", "quotas:read:any"]}
       summary: List configured rate-limit rules
       description: >
         Each rule is {id, scope, subject, dimension, limit, burst, window}.
@@ -2893,6 +2949,7 @@ paths:
     post:
       tags: [rate-limits]
       operationId: rateLimitCreate
+      x-burrow-permission: {kind: needs, any_of: ["quotas:manage:any"]}
       summary: Create a rate-limit rule
       description: >
         Body {scope, subject, dimension, limit, burst, window}. scope is one
@@ -2919,6 +2976,7 @@ paths:
     get:
       tags: [rate-limits]
       operationId: rateLimitUsageGet
+      x-burrow-permission: {kind: needs, any_of: ["quotas:read:own", "quotas:read:any"]}
       summary: Current rate-limit consumption per rule
       description: >
         The rules that apply to one subject, each with used and
@@ -2949,6 +3007,7 @@ paths:
     put:
       tags: [rate-limits]
       operationId: rateLimitUpdate
+      x-burrow-permission: {kind: needs, any_of: ["quotas:manage:any"]}
       summary: Update a rate-limit rule
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
@@ -2965,6 +3024,7 @@ paths:
     delete:
       tags: [rate-limits]
       operationId: rateLimitDelete
+      x-burrow-permission: {kind: needs, any_of: ["quotas:manage:any"]}
       summary: Delete a rate-limit rule
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -2979,6 +3039,7 @@ paths:
     get:
       tags: [cost]
       operationId: costPricingGet
+      x-burrow-permission: {kind: needs, any_of: ["quotas:read:own", "quotas:read:any", "cost:pricing:manage"]}
       summary: Get the model-pricing table
       responses:
         '200':
@@ -2990,6 +3051,7 @@ paths:
     put:
       tags: [cost]
       operationId: costPricingUpdate
+      x-burrow-permission: {kind: needs, any_of: ["cost:pricing:manage"]}
       summary: Replace the pricing table (admin)
       requestBody:
         required: true
@@ -3006,6 +3068,7 @@ paths:
     get:
       tags: [cost]
       operationId: costSummaryGet
+      x-burrow-permission: {kind: needs, any_of: ["quotas:read:any"]}
       summary: Aggregated cost summary
       description: >
         Admin, or a role with quotas:read:any. The body is {window,
@@ -3056,6 +3119,7 @@ paths:
     get:
       tags: [cost]
       operationId: costExport
+      x-burrow-permission: {kind: needs, any_of: ["quotas:read:any"]}
       x-burrow-mcp: false
       summary: CSV export of cost data
       description: >
@@ -3088,6 +3152,7 @@ paths:
     get:
       tags: [cost]
       operationId: budgetsList
+      x-burrow-permission: {kind: needs, any_of: ["budgets:manage"]}
       summary: List budgets (admin)
       description: >
         Each budget is {id, scope, subject_id, daily_usd, daily_tokens,
@@ -3120,6 +3185,7 @@ paths:
     post:
       tags: [cost]
       operationId: budgetCreate
+      x-burrow-permission: {kind: needs, any_of: ["budgets:manage"]}
       summary: Create a budget
       description: >
         Body {scope, subject_id, daily_usd, daily_tokens, action_on_exceed,
@@ -3152,6 +3218,7 @@ paths:
     put:
       tags: [cost]
       operationId: budgetUpdate
+      x-burrow-permission: {kind: needs, any_of: ["budgets:manage"]}
       summary: Update a budget
       description: Same body and rules as creating one; every field is replaced.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
@@ -3168,6 +3235,7 @@ paths:
     delete:
       tags: [cost]
       operationId: budgetDelete
+      x-burrow-permission: {kind: needs, any_of: ["budgets:manage"]}
       summary: Delete a budget
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -3182,6 +3250,7 @@ paths:
     get:
       tags: [audit]
       operationId: auditEventsList
+      x-burrow-permission: {kind: needs, any_of: ["audit:read"]}
       summary: Query audit events
       parameters:
         - name: action
@@ -3225,6 +3294,7 @@ paths:
     get:
       tags: [audit]
       operationId: auditExport
+      x-burrow-permission: {kind: needs, any_of: ["audit:read"]}
       x-burrow-mcp: false
       summary: Export audit chain (signed JSONL)
       parameters:
@@ -3253,6 +3323,7 @@ paths:
     get:
       tags: [audit]
       operationId: auditFingerprintGet
+      x-burrow-permission: {kind: needs, any_of: ["audit:read"]}
       summary: Audit signing-key public fingerprint
       responses:
         '200':
@@ -3276,6 +3347,7 @@ paths:
     post:
       tags: [audit]
       operationId: auditVerify
+      x-burrow-permission: {kind: needs, any_of: ["audit:read"]}
       summary: Verify a range of audit chain entries
       requestBody:
         required: false
@@ -3312,6 +3384,7 @@ paths:
     get:
       tags: [webhooks]
       operationId: webhooksList
+      x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
       summary: List webhooks
       responses:
         '200':
@@ -3326,6 +3399,7 @@ paths:
     post:
       tags: [webhooks]
       operationId: webhookCreate
+      x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
       summary: Create a webhook (signing_secret returned ONCE)
       requestBody:
         required: true
@@ -3346,6 +3420,7 @@ paths:
     get:
       tags: [webhooks]
       operationId: webhookDeliveriesList
+      x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
       summary: List delivery attempts (recent)
       parameters:
         - name: webhook_id
@@ -3370,6 +3445,7 @@ paths:
     put:
       tags: [webhooks]
       operationId: webhookUpdate
+      x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
       summary: Update a webhook
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
@@ -3386,6 +3462,7 @@ paths:
     delete:
       tags: [webhooks]
       operationId: webhookDelete
+      x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
       summary: Delete a webhook
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -3397,6 +3474,7 @@ paths:
     post:
       tags: [webhooks]
       operationId: webhookTest
+      x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
       summary: Trigger a synchronous test delivery
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -3414,6 +3492,7 @@ paths:
     post:
       tags: [webhooks]
       operationId: webhookPause
+      x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
       summary: Pause webhook deliveries
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -3424,6 +3503,7 @@ paths:
     post:
       tags: [webhooks]
       operationId: webhookResume
+      x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
       summary: Resume webhook deliveries
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -3434,6 +3514,7 @@ paths:
     post:
       tags: [webhooks]
       operationId: webhookPreview
+      x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
       summary: Preview a payload template with caller-supplied fields
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
@@ -3473,6 +3554,7 @@ paths:
     get:
       tags: [automation]
       operationId: automationTokensList
+      x-burrow-permission: {kind: needs, any_of: ["automation:tokens:manage:own", "automation:tokens:manage:any"]}
       summary: List automation bearer tokens
       responses:
         '200':
@@ -3487,6 +3569,7 @@ paths:
     post:
       tags: [automation]
       operationId: automationTokenCreate
+      x-burrow-permission: {kind: needs, any_of: ["automation:tokens:manage:own", "automation:tokens:manage:any"]}
       summary: Mint an automation bearer token (plaintext returned ONCE)
       requestBody:
         required: true
@@ -3528,6 +3611,7 @@ paths:
     delete:
       tags: [automation]
       operationId: automationTokenDelete
+      x-burrow-permission: {kind: needs, any_of: ["automation:tokens:manage:own", "automation:tokens:manage:any"]}
       summary: Revoke an automation bearer token
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -3542,6 +3626,7 @@ paths:
     get:
       tags: [backups]
       operationId: backupsList
+      x-burrow-permission: {kind: needs, any_of: ["backup:run"]}
       summary: List backup archives on disk
       responses:
         '200':
@@ -3556,6 +3641,7 @@ paths:
     post:
       tags: [backups]
       operationId: backupCreate
+      x-burrow-permission: {kind: needs, any_of: ["backup:run"]}
       summary: Trigger a new backup
       responses:
         '202':
@@ -3575,6 +3661,7 @@ paths:
     delete:
       tags: [backups]
       operationId: backupDelete
+      x-burrow-permission: {kind: needs, any_of: ["backup:run"]}
       summary: Delete a backup archive
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -3586,6 +3673,7 @@ paths:
     get:
       tags: [backups]
       operationId: backupDownload
+      x-burrow-permission: {kind: needs, any_of: ["backup:run"]}
       x-burrow-mcp: false
       summary: Stream a backup archive
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
@@ -3601,6 +3689,7 @@ paths:
     post:
       tags: [backups]
       operationId: backupVerify
+      x-burrow-permission: {kind: needs, any_of: ["backup:run"]}
       summary: Verify a backup archive
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -3627,6 +3716,8 @@ paths:
     post:
       tags: [backups]
       operationId: backupRestore
+      x-burrow-permission: {kind: needs, every: true, any_of: ["backup:run"]}
+      x-burrow-destructive: true
       x-burrow-mcp: false
       summary: Upload + restore an archive
       requestBody:
@@ -3659,6 +3750,7 @@ paths:
     get:
       tags: [backups]
       operationId: backupRestoreGet
+      x-burrow-permission: {kind: needs, any_of: ["backup:run"]}
       x-burrow-mcp: false
       summary: Poll restore status
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
@@ -3689,6 +3781,7 @@ paths:
     get:
       tags: [roles]
       operationId: rolesList
+      x-burrow-permission: {kind: needs, any_of: ["roles:read", "roles:manage"]}
       summary: List roles (admin)
       responses:
         '200':
@@ -3703,6 +3796,7 @@ paths:
     post:
       tags: [roles]
       operationId: roleCreate
+      x-burrow-permission: {kind: needs, any_of: ["roles:manage"]}
       summary: Create a custom role
       requestBody:
         required: true
@@ -3722,6 +3816,7 @@ paths:
     get:
       tags: [roles]
       operationId: rolePermissionsList
+      x-burrow-permission: {kind: needs, any_of: ["roles:read", "roles:manage", "automation:tokens:manage:own", "automation:tokens:manage:any"]}
       summary: List the permission catalog (every signed-in user)
       responses:
         '200':
@@ -3737,6 +3832,7 @@ paths:
     get:
       tags: [roles]
       operationId: roleGet
+      x-burrow-permission: {kind: needs, any_of: ["roles:read", "roles:manage"]}
       summary: Get a role (admin)
       parameters:
         - name: name
@@ -3755,6 +3851,7 @@ paths:
     put:
       tags: [roles]
       operationId: roleUpdate
+      x-burrow-permission: {kind: needs, any_of: ["roles:manage"]}
       summary: Update a custom role
       parameters:
         - name: name
@@ -3782,6 +3879,7 @@ paths:
     delete:
       tags: [roles]
       operationId: roleDelete
+      x-burrow-permission: {kind: needs, any_of: ["roles:manage"]}
       summary: Delete a custom role
       parameters:
         - name: name
@@ -3800,6 +3898,7 @@ paths:
     get:
       tags: [users]
       operationId: usersList
+      x-burrow-permission: {kind: needs, any_of: ["users:read", "users:manage"]}
       summary: List users (admin)
       parameters:
         - name: q
@@ -3830,6 +3929,7 @@ paths:
     post:
       tags: [users]
       operationId: userCreate
+      x-burrow-permission: {kind: needs, any_of: ["users:manage"]}
       summary: Create a user (admin)
       requestBody:
         required: true
@@ -3855,6 +3955,7 @@ paths:
     patch:
       tags: [users]
       operationId: userUpdate
+      x-burrow-permission: {kind: needs, any_of: ["users:manage"]}
       summary: Update a user (role / status) — admin
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
@@ -3878,6 +3979,7 @@ paths:
     delete:
       tags: [users]
       operationId: userDelete
+      x-burrow-permission: {kind: needs, any_of: ["users:manage"]}
       summary: Delete a user (admin)
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
@@ -3900,6 +4002,7 @@ paths:
     get:
       tags: [settings]
       operationId: settingsGet
+      x-burrow-permission: {kind: needs, any_of: ["settings:manage"]}
       summary: Get admin settings (admin)
       responses:
         '200':
@@ -3912,6 +4015,7 @@ paths:
     put:
       tags: [settings]
       operationId: settingsUpdate
+      x-burrow-permission: {kind: needs, any_of: ["settings:manage"]}
       summary: Replace admin settings (admin)
       requestBody:
         required: true
@@ -3928,6 +4032,7 @@ paths:
     post:
       tags: [settings]
       operationId: settingsTestEmail
+      x-burrow-permission: {kind: needs, any_of: ["settings:manage"]}
       summary: Send a test SMTP email
       requestBody:
         required: true
@@ -3961,6 +4066,7 @@ paths:
     get:
       tags: [settings]
       operationId: retentionSettingsGet
+      x-burrow-permission: {kind: needs, any_of: ["settings:manage"]}
       summary: Get retention settings (admin)
       description: >
         Returns the seven retention configuration knobs plus an advisory note
@@ -3976,6 +4082,7 @@ paths:
     put:
       tags: [settings]
       operationId: retentionSettingsUpdate
+      x-burrow-permission: {kind: needs, any_of: ["settings:manage"]}
       summary: Replace retention settings (admin)
       description: >
         Validates and persists one or more retention settings. Omitted fields
@@ -3998,6 +4105,7 @@ paths:
     get:
       tags: [clients]
       operationId: clientsList
+      x-burrow-permission: {kind: needs, any_of: ["tunnels:read:any"]}
       summary: List live clients (admin)
       responses:
         '200':
@@ -4014,6 +4122,7 @@ paths:
     get:
       tags: [clients]
       operationId: knownClientsList
+      x-burrow-permission: {kind: needs, any_of: ["tunnels:read:any"]}
       summary: List every client that has a token (admin)
       description: >
         One row per client token of every user: a client that is online with
@@ -4037,6 +4146,7 @@ paths:
     get:
       tags: [clients]
       operationId: clientGet
+      x-burrow-permission: {kind: needs, any_of: ["tunnels:read:any"]}
       summary: Get one live client (admin)
       parameters:
         - name: sessionID
@@ -4056,6 +4166,7 @@ paths:
     get:
       tags: [clients]
       operationId: clientConnectInfoGet
+      x-burrow-permission: {kind: needs, any_of: ["tokens:manage:own", "tokens:manage:any"]}
       summary: Get the control-plane endpoint clients should dial
       description: >
         Returns the host:port a `burrow connect` invocation must point at
@@ -4077,6 +4188,7 @@ paths:
     get:
       tags: [clients]
       operationId: clientDiscoveryGet
+      x-burrow-permission: {kind: public, any_of: []}
       x-burrow-mcp: false
       summary: Tell a client where the control endpoint is and which version the relay runs
       description: >
@@ -4125,6 +4237,7 @@ paths:
     post:
       tags: [clients]
       operationId: clientLoginStart
+      x-burrow-permission: {kind: public, any_of: []}
       x-burrow-mcp: false
       summary: Start a browser-approved client sign-in
       description: >
@@ -4196,6 +4309,7 @@ paths:
     post:
       tags: [clients]
       operationId: clientLoginPoll
+      x-burrow-permission: {kind: public, any_of: []}
       x-burrow-mcp: false
       summary: Collect the outcome of a client sign-in
       description: >
@@ -4262,6 +4376,7 @@ paths:
     get:
       tags: [clients]
       operationId: clientLoginRequestGet
+      x-burrow-permission: {kind: dashboard, any_of: ["tokens:manage:own", "tokens:manage:any"]}
       x-burrow-mcp: false
       summary: Show a client sign-in request to the signed-in user
       description: >
@@ -4291,6 +4406,7 @@ paths:
     post:
       tags: [clients]
       operationId: clientLoginRequestApprove
+      x-burrow-permission: {kind: dashboard, any_of: ["tokens:manage:own", "tokens:manage:any"]}
       x-burrow-mcp: false
       summary: Approve a client sign-in request
       description: >
@@ -4340,6 +4456,7 @@ paths:
     post:
       tags: [clients]
       operationId: clientLoginRequestDeny
+      x-burrow-permission: {kind: dashboard, any_of: ["tokens:manage:own", "tokens:manage:any"]}
       x-burrow-mcp: false
       summary: Deny a client sign-in request
       description: >
@@ -4374,6 +4491,7 @@ paths:
     get:
       tags: [geo]
       operationId: geoStatusGet
+      x-burrow-permission: {kind: needs, any_of: ["ipgeo:manage:own", "ipgeo:manage:any"]}
       summary: Global geo-lookup status (enabled, db path, age)
       responses:
         '200':
@@ -4400,6 +4518,7 @@ paths:
     get:
       tags: [mcp]
       operationId: mcpStatusGet
+      x-burrow-permission: {kind: needs, any_of: ["mcp:tools:read"]}
       summary: burrowd mcp listener status (enabled, listen, token_id)
       responses:
         '200':
@@ -4428,6 +4547,7 @@ paths:
     get:
       tags: [mcp]
       operationId: mcpToolsList
+      x-burrow-permission: {kind: needs, any_of: ["mcp:tools:read"]}
       summary: Closed inventory of MCP tools (name, description, parameters_schema, permission)
       responses:
         '200':
@@ -4454,6 +4574,7 @@ paths:
     get:
       tags: [services]
       operationId: upstreamCredentialSlotsList
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
       summary: List available vault slot handles (admin or ai:configure:any)
       responses:
         '200':
@@ -4474,6 +4595,7 @@ paths:
     get:
       tags: [services]
       operationId: serviceUpstreamCredentialGet
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:own", "ai:configure:any"]}
       summary: Read the upstream-credential binding for a service
       parameters:
         - name: serviceID
@@ -4492,6 +4614,7 @@ paths:
     put:
       tags: [services]
       operationId: serviceUpstreamCredentialUpdate
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:own", "ai:configure:any"]}
       summary: Bind an upstream credential slot to a service
       parameters:
         - name: serviceID
@@ -4518,6 +4641,7 @@ paths:
     delete:
       tags: [services]
       operationId: serviceUpstreamCredentialDelete
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:own", "ai:configure:any"]}
       summary: Unbind the upstream credential from a service
       parameters:
         - name: serviceID
@@ -4537,6 +4661,7 @@ paths:
     get:
       tags: [services]
       operationId: serviceDomainsList
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: List custom domains bound to a service
       parameters:
         - name: serviceID
@@ -4557,6 +4682,7 @@ paths:
     post:
       tags: [services]
       operationId: serviceDomainCreate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Add a custom domain to a service
       parameters:
         - name: serviceID
@@ -4588,6 +4714,7 @@ paths:
     get:
       tags: [services]
       operationId: serviceDomainGet
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Get a single custom domain by ID
       parameters:
         - name: serviceID
@@ -4610,6 +4737,7 @@ paths:
     put:
       tags: [services]
       operationId: serviceDomainUpdate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Replace the cert/key for a custom domain
       parameters:
         - name: serviceID
@@ -4641,6 +4769,7 @@ paths:
     delete:
       tags: [services]
       operationId: serviceDomainDelete
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Remove a custom domain
       parameters:
         - name: serviceID
@@ -4663,6 +4792,7 @@ paths:
     get:
       tags: [audit]
       operationId: connectionLogsList
+      x-burrow-permission: {kind: needs, any_of: ["audit:read"]}
       summary: List per-tunnel connection log entries (newest first)
       description: |
         Returns connection_logs rows with cursor pagination. Permission:
@@ -4705,6 +4835,7 @@ paths:
     get:
       tags: [audit]
       operationId: connectionLogRollupsList
+      x-burrow-permission: {kind: needs, any_of: ["audit:read"]}
       summary: List daily connection log rollup rows
       description: |
         Returns connection_log_rollups rows (daily aggregates). Permission:
@@ -4738,6 +4869,7 @@ paths:
     get:
       tags: [audit]
       operationId: connectionLogsExport
+      x-burrow-permission: {kind: needs, any_of: ["audit:read"]}
       x-burrow-mcp: false
       summary: Export connection logs as NDJSON or CSV
       description: |
@@ -4779,6 +4911,7 @@ paths:
     get:
       tags: [events]
       operationId: eventsStream
+      x-burrow-permission: {kind: dashboard, any_of: ["tunnels:read:own", "tunnels:read:any", "services:configure:own", "services:configure:any", "ai:read:own", "ai:read:any", "inspector:read:own", "inspector:read:any"]}
       x-burrow-mcp: false
       summary: Server-sent events stream (dashboard refresh)
       responses:
@@ -4796,6 +4929,7 @@ paths:
     get:
       tags: [openapi]
       operationId: openapiViewerGet
+      x-burrow-permission: {kind: needs, any_of: ["metrics:read"]}
       x-burrow-mcp: false
       summary: Embedded hand-rolled OpenAPI browser (metrics:read or admin)
       description: >
@@ -4816,6 +4950,7 @@ paths:
     get:
       tags: [openapi]
       operationId: openapiViewerStaticGet
+      x-burrow-permission: {kind: needs, any_of: ["metrics:read"]}
       x-burrow-mcp: false
       summary: Viewer static assets (closed allowlist — viewer.css, viewer.js only)
       description: >
@@ -4845,6 +4980,7 @@ paths:
     get:
       tags: [models]
       operationId: providersList
+      x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:providers:manage"]}
       summary: List AI providers
       description: |
         Returns one entry per row of the providers table, ordered by slug.
@@ -4866,6 +5002,7 @@ paths:
     post:
       tags: [models]
       operationId: providerCreate
+      x-burrow-permission: {kind: needs, any_of: ["ai:providers:manage"]}
       summary: Create a provider (admin)
       description: |
         Kind "tunnel" registers an existing http service in API-key mode as
@@ -4945,6 +5082,7 @@ paths:
     get:
       tags: [models]
       operationId: providerGet
+      x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:providers:manage"]}
       summary: Get one provider
       description: |
         Returns 404 when no provider has that slug or its backing service is
@@ -4964,6 +5102,7 @@ paths:
     put:
       tags: [models]
       operationId: providerUpdate
+      x-burrow-permission: {kind: needs, any_of: ["ai:providers:manage"]}
       summary: Change a provider's slug and name (admin)
       description: |
         After a slug change the old base URL stops working immediately;
@@ -5034,6 +5173,7 @@ paths:
     delete:
       tags: [models]
       operationId: providerDelete
+      x-burrow-permission: {kind: needs, any_of: ["ai:providers:manage"]}
       summary: Delete a provider (admin)
       description: |
         Removes the provider; its base URL stops working immediately. For a
@@ -5065,6 +5205,7 @@ paths:
     put:
       tags: [models]
       operationId: providerUpstreamUpdate
+      x-burrow-permission: {kind: needs, any_of: ["ai:providers:manage"]}
       summary: Change a direct provider's upstream settings (admin)
       description: |
         A field that is left out keeps its stored value, so the credential
@@ -5110,6 +5251,7 @@ paths:
     get:
       tags: [models]
       operationId: providerModelsList
+      x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:providers:manage"]}
       summary: List a provider's stored models
       description: |
         The list GET /ai/<provider>/v1/models answers from. Returns 404 when
@@ -5132,6 +5274,7 @@ paths:
     post:
       tags: [models]
       operationId: providerModelCreate
+      x-burrow-permission: {kind: needs, any_of: ["ai:providers:manage"]}
       summary: Add one model id by hand (admin)
       description: Works for either kind of provider. Adding an id that is already listed changes nothing.
       requestBody:
@@ -5157,6 +5300,7 @@ paths:
     delete:
       tags: [models]
       operationId: providerModelDelete
+      x-burrow-permission: {kind: needs, any_of: ["ai:providers:manage"]}
       summary: Remove one model id (admin)
       parameters:
         - name: id
@@ -5180,6 +5324,8 @@ paths:
     post:
       tags: [models]
       operationId: providerModelsSync
+      x-burrow-permission: {kind: needs, any_of: ["ai:providers:manage"]}
+      x-burrow-destructive: true
       summary: Read the model list from a direct provider's upstream (admin)
       description: |
         Calls GET <upstream_base_url>/models with the provider's credential
@@ -5228,6 +5374,7 @@ paths:
     get:
       tags: [models]
       operationId: providerMetricsGet
+      x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:providers:manage"]}
       summary: Per-provider metrics over the trailing 24 h
       description: |
         Returns metering aggregates for one provider, read from usage_events
@@ -5255,6 +5402,7 @@ paths:
     get:
       tags: [models]
       operationId: aiGatewayGet
+      x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"]}
       summary: The gateway's endpoints
       description: |
         The base URL a client is given per dialect. base_url is "" when the
@@ -5290,6 +5438,7 @@ paths:
     get:
       tags: [models]
       operationId: aiModelsList
+      x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"]}
       summary: List synthetic models
       description: Every synthetic model, ordered by name. Any signed-in caller may read them.
       security:
@@ -5307,6 +5456,7 @@ paths:
     post:
       tags: [models]
       operationId: aiModelCreate
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
       summary: Create a synthetic model (admin or ai:configure:any)
       description: |
         Allowed for a dashboard session of an admin or of a role with
@@ -5360,6 +5510,7 @@ paths:
     get:
       tags: [models]
       operationId: aiModelGet
+      x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"]}
       summary: Get one synthetic model
       security:
         - CookieAuth: []
@@ -5375,6 +5526,7 @@ paths:
     put:
       tags: [models]
       operationId: aiModelUpdate
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
       summary: Replace a synthetic model (admin or ai:configure:any)
       description: |
         The body replaces the model; targets is the new list. Three fields
@@ -5408,6 +5560,7 @@ paths:
     delete:
       tags: [models]
       operationId: aiModelDelete
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
       summary: Delete a synthetic model (admin or ai:configure:any)
       description: |
         Requests for the name are refused from then on. Gateway keys keep
@@ -5423,6 +5576,7 @@ paths:
     get:
       tags: [models]
       operationId: gatewayKeysList
+      x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"]}
       summary: List gateway keys
       description: |
         The caller's gateway keys, newest first; an admin's dashboard
@@ -5444,6 +5598,7 @@ paths:
     post:
       tags: [models]
       operationId: gatewayKeyCreate
+      x-burrow-permission: {kind: dashboard, any_of: ["ai:configure:own", "ai:configure:any"]}
       summary: Create a gateway key
       security:
         - CookieAuth: []
@@ -5513,6 +5668,7 @@ paths:
     delete:
       tags: [models]
       operationId: gatewayKeyDelete
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:own", "ai:configure:any"]}
       summary: Revoke a gateway key
       description: |
         The key stops working at once. Its owner or an admin's dashboard
@@ -5530,6 +5686,7 @@ paths:
     get:
       tags: [models]
       operationId: aiRequestsList
+      x-burrow-permission: {kind: needs, any_of: ["inspector:read:own", "inspector:read:any"]}
       summary: List captured requests across providers
       description: |
         The requests the inspector captured for every provider, as one list,
@@ -5599,6 +5756,7 @@ paths:
     get:
       tags: [models]
       operationId: aiRequestAttemptsList
+      x-burrow-permission: {kind: dashboard, any_of: ["ai:read:any"]}
       summary: What a gateway request tried (admin, dashboard session)
       description: |
         The attempt log of one request to /openai/v1, /ai/v1 or /anthropic,
@@ -5643,6 +5801,7 @@ paths:
     get:
       tags: [database]
       operationId: databaseGet
+      x-burrow-permission: {kind: needs, any_of: ["metrics:read"]}
       summary: Database backend status (driver, URL, alpha flag)
       description: |
         Returns the active database driver ("sqlite" or "postgres"), a
