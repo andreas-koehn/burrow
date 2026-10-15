@@ -661,9 +661,15 @@ func newRootCmd() *cobra.Command {
 			}
 
 			// The management MCP server, mounted at /mcp/burrow by the API
-			// router below. The ToolStore adapter binds to the live tunnel
-			// registry + audit query store + metrics recorder.
-			v04.MCPServer = BuildMCPServer(st, v04, mcpTunnelAdapter{s: srv}, db.Wrap(database), proxyAuthDomain, log)
+			// router below. Its tools are built from the embedded OpenAPI
+			// document; a document the server cannot use stops the relay.
+			// It replays every call through the API router, handed to it
+			// below once the router exists.
+			v04.MCPServer, err = BuildMCPServer(st, v04, api.OpenAPIDocument(), log)
+			if err != nil {
+				log.Error("mcp server: the OpenAPI document cannot be used", "err", err)
+				return err
+			}
 
 			// v0.5.0 Task 17: build every new v0.5.0 component and wire the
 			// semantic cache + credinject injector into the aigw.Chain.
@@ -895,130 +901,135 @@ func newRootCmd() *cobra.Command {
 				proxyTLSCfg.GetConfigForClient = proxyHandler.GetConfigForClient
 			}
 
+			apiRouter := api.NewRouter(api.Deps{
+				Users: st, Tunnels: tunnelListerAdapter{s: srv, access: st, services: st, slugs: st, authDomain: proxyAuthDomain}, Events: bus,
+				Log: log, SecureCookies: effectiveSecureCookies, HTTPSEnabled: httpsEnabled,
+				SPA: spaHandler, TrustedProxies: cfg.TrustedProxies,
+				// Wire env override: 0 means use the api.LoginRateLimitPerIP constant.
+				LoginRateLimitPerIPOverride: cfg.LoginRateLimitPerIP,
+				Roles:                       st, Sessions: st, Settings: st,
+				Clients: clientsAdapter{srv: srv, st: st, services: st, tokens: st}, AccessModes: st,
+				// Revoking a client token, suspending or deleting its user
+				// ends the sessions that are connected with it.
+				ClientSessions: srv,
+				DB:             database,
+				// v0.3.0: service API + live tunnel lookup + auth domain.
+				Services:    st,
+				AIProviders: st,
+				AILimiter:   aiLimiter,
+				AIBreaker:   aiBreaker,
+				AIAttempts:  st,
+				// Direct providers: the save-time host check follows the
+				// same switch as the dial guard, and the model sync leaves
+				// through the guarded transport.
+				AllowPrivateUpstreams: cfg.AIAllowPrivateUpstreams,
+				HostCheck: func(ctx context.Context, host string) error {
+					return aiprovider.CheckHostPublic(ctx, net.DefaultResolver, host)
+				},
+				FetchProviderModels: func(ctx context.Context, p db.AIProvider) ([]aiprovider.Model, error) {
+					return aiprovider.FetchModels(ctx, aiprovider.Config{
+						Slug: p.Slug, BaseURL: p.BaseURL, CredentialSlot: p.CredentialSlot,
+						AuthHeader: p.AuthHeader, AuthFormat: p.AuthFormat, ExtraHeaders: p.ExtraHeaders,
+					}, v05.CredVault, aiUpstreamTransport)
+				},
+				LiveTunnels: liveTunnelLookupAdapter{srv: srv},
+				// AuthDomain uses the same resolved value the proxy/access
+				// checker/gate route on (cfg.AuthDomain, or the first ACME
+				// domain when auth_domain is unset and ACME is on). In the
+				// common case this equals cfg.AuthDomain, so composeHostname
+				// and the burrow_login-409 check are unchanged.
+				AuthDomain: proxyAuthDomain,
+				// mTLS is only offered while the host-routed ingress runs.
+				HostRouting: cfg.HTTPProxyListen != "",
+				// feat/builtin-acme B3: single-origin /svc/{slug} tunnel routing.
+				// proxyHandler is the hoisted host-routing proxy. The router
+				// mounts /svc/{slug} + /svc/{slug}/* on it via ServicePathHandler only
+				// when AuthDomain (above) is non-empty; the synthesized host
+				// "<id>.<AuthDomain>" then matches the proxy's own routing
+				// suffix exactly. When AuthDomain is "" the routes are skipped.
+				TunnelProxy: proxyHandler,
+				AIGateway:   aiGateway,
+				// The burrow_login gate, served at /__burrow/* on this origin so
+				// path-routed services can redirect visitors to it.
+				Gate: gate,
+				// Control plane is on a different port from the API/dashboard
+				// (e.g. compose maps :7000 control, :8080 dashboard). Surface
+				// it via /clients/connect-info so the "Connect a client" wizard
+				// prints a working `burrow connect --server …` command. (P1-2)
+				ControlListen: cfg.Listen,
+				// Reported by the public /client/discovery endpoint.
+				MinClientVersion: cfg.MinClientVersion,
+				// Browser-approved client sign-in (/client/login/*).
+				ClientLogins: st,
+				// Where /download/ and the install scripts send a client.
+				ClientDownloadBase: cfg.ClientDownloadBase,
+				ClientDownloadDir:  cfg.ClientDownloadDir,
+				// v0.4.0 Task 20: backup / restore wiring.
+				BackupDir:      backupDir,
+				BackupRunner:   backupRunnerAdapter{cfg: cfg, events: v04.WebhookDispatcher},
+				RestoreRunner:  restoreRunnerAdapter{cfg: cfg},
+				RestoreTracker: restoreTracker,
+				AuditAppender:  v04.AuditAppender,
+				// v0.4.0 Task 25 wiring — every additive Deps surface.
+				AuditEvents:       v04.AuditEvents,
+				AuditChain:        v04.AuditChain,
+				Metrics:           api.NewMetricsRecorderAdapter(v04.Metrics),
+				Webhooks:          db.Wrap(database),
+				WebhookDispatcher: v04.WebhookDispatcher,
+				WebhookSecrets:    v04.WebhookSecrets,
+				Bearer:            api.NewStoreBearerStore(st),
+				Automation:        st,
+				MCP: api.MCPInfo{
+					Enabled: true,
+					Server:  v04.MCPServer,
+					Handler: v04.MCPServer,
+				},
+				RateLimitDB:       db.Wrap(database),
+				RateLimits:        v04.QuotaEngine,
+				Budgets:           db.Wrap(database),
+				CostEngine:        v04.CostEngine,
+				AIMetrics:         newAIMetricsStore(db.Wrap(database), log),
+				CacheEngine:       v04.CacheEngine,
+				CacheServices:     cacheServiceLookupAdapter{db: db.Wrap(database)},
+				InspectorRings:    v04.InspectorMgr,
+				InspectorServices: cacheServiceLookupAdapter{db: db.Wrap(database)},
+				InspectorReplayer: newInspectorReplayer(v04.AIChain, log),
+				AIModels:          st,
+				AIGatewayKeys:     st,
+				IPGeo:             db.Wrap(database),
+				IPGeoServices:     db.Wrap(database),
+				GeoLookup:         v04.GeoLookup,
+				// v0.5.0 Task 15: database backend status surface.
+				// For SQLite, URLRedacted is the on-disk path (no credentials);
+				// for Postgres it is the DSN with user:pass redacted.
+				Database: api.DBInfo{
+					Driver:      backend.Driver(),
+					URLRedacted: dbURLForStatus(cfg, backend),
+					Alpha:       cfg.ExperimentalPostgres && backend.Driver() == "postgres",
+				},
+				// v0.5.0 Task 17 + P2.2 wiring — new Deps surfaces for Tasks 3-11.
+				// SemanticEngine: newSemanticEngine returns noopSemanticEngine in
+				// the default build (GET /cache/stats returns zeros, ClearAll is a
+				// no-op) and semanticEngineAdapter under -tags=semantic_cache (sums
+				// per-service Stats() across all registered services, implements
+				// ClearAll by iterating ListAllServices).
+				SemanticEngine:      newSemanticEngine(v05.SemanticCache, db.Wrap(database)),
+				ServiceAIConfigs:    db.Wrap(database),
+				CredentialVault:     v05.CredVault,
+				CredentialDB:        db.Wrap(database),
+				CredentialServices:  db.Wrap(database),
+				CustomDomains:       db.Wrap(database),
+				CustomDomainCache:   v05.CustomDomainStore,
+				CertValidationRoots: certValidationRoots,
+				ConnLogDB:           v05.ConnLogDB,
+			})
+			// A tool call of the MCP server is replayed through this router,
+			// so it is the same API with the same gate. Set before anything
+			// listens.
+			v04.MCPServer.SetAPIHandler(apiRouter)
 			apiSrv := &http.Server{
-				Addr: httpListen,
-				Handler: api.NewRouter(api.Deps{
-					Users: st, Tunnels: tunnelListerAdapter{s: srv, access: st, services: st, slugs: st, authDomain: proxyAuthDomain}, Events: bus,
-					Log: log, SecureCookies: effectiveSecureCookies, HTTPSEnabled: httpsEnabled,
-					SPA: spaHandler, TrustedProxies: cfg.TrustedProxies,
-					// Wire env override: 0 means use the api.LoginRateLimitPerIP constant.
-					LoginRateLimitPerIPOverride: cfg.LoginRateLimitPerIP,
-					Roles:                       st, Sessions: st, Settings: st,
-					Clients: clientsAdapter{srv: srv, st: st, services: st, tokens: st}, AccessModes: st,
-					// Revoking a client token, suspending or deleting its user
-					// ends the sessions that are connected with it.
-					ClientSessions: srv,
-					DB:             database,
-					// v0.3.0: service API + live tunnel lookup + auth domain.
-					Services:    st,
-					AIProviders: st,
-					AILimiter:   aiLimiter,
-					AIBreaker:   aiBreaker,
-					AIAttempts:  st,
-					// Direct providers: the save-time host check follows the
-					// same switch as the dial guard, and the model sync leaves
-					// through the guarded transport.
-					AllowPrivateUpstreams: cfg.AIAllowPrivateUpstreams,
-					HostCheck: func(ctx context.Context, host string) error {
-						return aiprovider.CheckHostPublic(ctx, net.DefaultResolver, host)
-					},
-					FetchProviderModels: func(ctx context.Context, p db.AIProvider) ([]aiprovider.Model, error) {
-						return aiprovider.FetchModels(ctx, aiprovider.Config{
-							Slug: p.Slug, BaseURL: p.BaseURL, CredentialSlot: p.CredentialSlot,
-							AuthHeader: p.AuthHeader, AuthFormat: p.AuthFormat, ExtraHeaders: p.ExtraHeaders,
-						}, v05.CredVault, aiUpstreamTransport)
-					},
-					LiveTunnels: liveTunnelLookupAdapter{srv: srv},
-					// AuthDomain uses the same resolved value the proxy/access
-					// checker/gate route on (cfg.AuthDomain, or the first ACME
-					// domain when auth_domain is unset and ACME is on). In the
-					// common case this equals cfg.AuthDomain, so composeHostname
-					// and the burrow_login-409 check are unchanged.
-					AuthDomain: proxyAuthDomain,
-					// mTLS is only offered while the host-routed ingress runs.
-					HostRouting: cfg.HTTPProxyListen != "",
-					// feat/builtin-acme B3: single-origin /svc/{slug} tunnel routing.
-					// proxyHandler is the hoisted host-routing proxy. The router
-					// mounts /svc/{slug} + /svc/{slug}/* on it via ServicePathHandler only
-					// when AuthDomain (above) is non-empty; the synthesized host
-					// "<id>.<AuthDomain>" then matches the proxy's own routing
-					// suffix exactly. When AuthDomain is "" the routes are skipped.
-					TunnelProxy: proxyHandler,
-					AIGateway:   aiGateway,
-					// The burrow_login gate, served at /__burrow/* on this origin so
-					// path-routed services can redirect visitors to it.
-					Gate: gate,
-					// Control plane is on a different port from the API/dashboard
-					// (e.g. compose maps :7000 control, :8080 dashboard). Surface
-					// it via /clients/connect-info so the "Connect a client" wizard
-					// prints a working `burrow connect --server …` command. (P1-2)
-					ControlListen: cfg.Listen,
-					// Reported by the public /client/discovery endpoint.
-					MinClientVersion: cfg.MinClientVersion,
-					// Browser-approved client sign-in (/client/login/*).
-					ClientLogins: st,
-					// Where /download/ and the install scripts send a client.
-					ClientDownloadBase: cfg.ClientDownloadBase,
-					ClientDownloadDir:  cfg.ClientDownloadDir,
-					// v0.4.0 Task 20: backup / restore wiring.
-					BackupDir:      backupDir,
-					BackupRunner:   backupRunnerAdapter{cfg: cfg, events: v04.WebhookDispatcher},
-					RestoreRunner:  restoreRunnerAdapter{cfg: cfg},
-					RestoreTracker: restoreTracker,
-					AuditAppender:  v04.AuditAppender,
-					// v0.4.0 Task 25 wiring — every additive Deps surface.
-					AuditEvents:       v04.AuditEvents,
-					AuditChain:        v04.AuditChain,
-					Metrics:           api.NewMetricsRecorderAdapter(v04.Metrics),
-					Webhooks:          db.Wrap(database),
-					WebhookDispatcher: v04.WebhookDispatcher,
-					WebhookSecrets:    v04.WebhookSecrets,
-					Bearer:            api.NewStoreBearerStore(st),
-					Automation:        st,
-					MCP: api.MCPInfo{
-						Enabled: true,
-						Server:  v04.MCPServer,
-						Handler: v04.MCPServer,
-					},
-					RateLimitDB:       db.Wrap(database),
-					RateLimits:        v04.QuotaEngine,
-					Budgets:           db.Wrap(database),
-					CostEngine:        v04.CostEngine,
-					AIMetrics:         newAIMetricsStore(db.Wrap(database), log),
-					CacheEngine:       v04.CacheEngine,
-					CacheServices:     cacheServiceLookupAdapter{db: db.Wrap(database)},
-					InspectorRings:    v04.InspectorMgr,
-					InspectorServices: cacheServiceLookupAdapter{db: db.Wrap(database)},
-					InspectorReplayer: newInspectorReplayer(v04.AIChain, log),
-					AIModels:          st,
-					AIGatewayKeys:     st,
-					IPGeo:             db.Wrap(database),
-					IPGeoServices:     db.Wrap(database),
-					GeoLookup:         v04.GeoLookup,
-					// v0.5.0 Task 15: database backend status surface.
-					// For SQLite, URLRedacted is the on-disk path (no credentials);
-					// for Postgres it is the DSN with user:pass redacted.
-					Database: api.DBInfo{
-						Driver:      backend.Driver(),
-						URLRedacted: dbURLForStatus(cfg, backend),
-						Alpha:       cfg.ExperimentalPostgres && backend.Driver() == "postgres",
-					},
-					// v0.5.0 Task 17 + P2.2 wiring — new Deps surfaces for Tasks 3-11.
-					// SemanticEngine: newSemanticEngine returns noopSemanticEngine in
-					// the default build (GET /cache/stats returns zeros, ClearAll is a
-					// no-op) and semanticEngineAdapter under -tags=semantic_cache (sums
-					// per-service Stats() across all registered services, implements
-					// ClearAll by iterating ListAllServices).
-					SemanticEngine:      newSemanticEngine(v05.SemanticCache, db.Wrap(database)),
-					ServiceAIConfigs:    db.Wrap(database),
-					CredentialVault:     v05.CredVault,
-					CredentialDB:        db.Wrap(database),
-					CredentialServices:  db.Wrap(database),
-					CustomDomains:       db.Wrap(database),
-					CustomDomainCache:   v05.CustomDomainStore,
-					CertValidationRoots: certValidationRoots,
-					ConnLogDB:           v05.ConnLogDB,
-				}),
+				Addr:              httpListen,
+				Handler:           apiRouter,
 				ReadHeaderTimeout: 10 * time.Second,
 			}
 			if acmeMgr != nil {

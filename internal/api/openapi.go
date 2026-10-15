@@ -17,6 +17,10 @@ import (
 //go:embed openapi.yaml
 var openapiYAML []byte
 
+// OpenAPIDocument returns the embedded OpenAPI document. The MCP server
+// builds its tools from it.
+func OpenAPIDocument() []byte { return openapiYAML }
+
 // GetOpenAPIYAML serves the embedded OpenAPI YAML at
 // GET /api/v1/openapi.yaml. Public (no auth) so SDK code-generators can
 // curl the spec without bootstrapping a session.

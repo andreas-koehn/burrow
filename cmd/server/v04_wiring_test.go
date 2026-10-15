@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/ankoehn/burrow/internal/aigw"
+	"github.com/ankoehn/burrow/internal/api"
 	"github.com/ankoehn/burrow/internal/config"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
@@ -141,7 +142,7 @@ func TestAIChain_PassThroughWhenNoServiceConfig(t *testing.T) {
 
 // TestBuildMCPServer_AlwaysBuilt asserts every relay gets the management MCP
 // server: there is no setting that turns it on, and the variables of the
-// old listener do not turn it off.
+// old listener do not turn it off. A document it cannot use is an error.
 func TestBuildMCPServer_AlwaysBuilt(t *testing.T) {
 	for _, cfg := range []*config.ServerConfig{
 		{},
@@ -156,13 +157,13 @@ func TestBuildMCPServer_AlwaysBuilt(t *testing.T) {
 		t.Cleanup(stack.Observer.stop)
 		t.Cleanup(func() { stack.WebhookDispatcher.Close() })
 
-		mcp := BuildMCPServer(st, stack, nil, wrapped, "", discardLog())
-		if mcp == nil {
-			t.Fatal("BuildMCPServer returned nil")
+		mcp, err := BuildMCPServer(st, stack, api.OpenAPIDocument(), discardLog())
+		if err != nil || mcp == nil {
+			t.Fatalf("BuildMCPServer: %v", err)
 		}
-		// The closed 12-tool set of spec Part P.2.
-		if got := len(mcp.Tools()); got != 12 {
-			t.Fatalf("mcp server has %d tools, want 12", got)
+		// The curated tools, built from the embedded OpenAPI document.
+		if got := len(mcp.Tools()); got < 20 {
+			t.Fatalf("mcp server has %d tools", got)
 		}
 		// It is the handler of /mcp/burrow: a request without a token is
 		// refused, not ignored.
@@ -171,6 +172,18 @@ func TestBuildMCPServer_AlwaysBuilt(t *testing.T) {
 		if rr.Code != http.StatusUnauthorized || rr.Header().Get("WWW-Authenticate") != "Bearer" {
 			t.Fatalf("unauthenticated request: %d %q", rr.Code, rr.Header().Get("WWW-Authenticate"))
 		}
+	}
+	st, wrapped := freshTestStack(t)
+	stack, err := buildV04Stack(context.Background(), &config.ServerConfig{}, wrapped.DB(), st, discardLog())
+	if err != nil {
+		t.Fatalf("buildV04Stack: %v", err)
+	}
+	t.Cleanup(stack.GuardrailAudit.stop)
+	t.Cleanup(stack.Observer.stop)
+	t.Cleanup(func() { stack.WebhookDispatcher.Close() })
+	broken := []byte("openapi: 3.0.3\npaths:\n  /api/v1/x:\n    get:\n      operationId: xGet\n")
+	if _, err := BuildMCPServer(st, stack, broken, discardLog()); err == nil || !strings.Contains(err.Error(), "xGet") {
+		t.Errorf("a document without x-burrow-permission: %v", err)
 	}
 }
 

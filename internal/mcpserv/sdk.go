@@ -1,4 +1,4 @@
-// sdk.go — the MCP side of the package: the registry served through the
+// sdk.go — the MCP side of the package: the tools served through the
 // official Go SDK (github.com/modelcontextprotocol/go-sdk).
 //
 // The SDK's Streamable HTTP handler runs stateless, which is the only mode in
@@ -92,8 +92,8 @@ func (s *Server) mcpHandler() http.Handler {
 	})
 }
 
-// serverFor builds the MCP server one request sees: the tools tok may call,
-// in declaration order (the SDK lists them sorted by name).
+// serverFor builds the MCP server one request sees: the curated tools tok
+// may call, in curatedTools order (the SDK lists them sorted by name).
 func (s *Server) serverFor(tok *authedToken) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "burrow",
@@ -110,28 +110,35 @@ func (s *Server) serverFor(tok *authedToken) *mcp.Server {
 			c.CacheScope = "private"
 		},
 	})
-	for _, t := range s.ordered {
-		if tok.mayCall(t) {
-			srv.AddTool(sdkTool(t), s.callHandler(tok, t))
+	for _, op := range s.curated {
+		if !tok.mayUse(op) {
+			continue
 		}
+		srv.AddTool(s.sdkTool(op), s.callHandler(tok, ToolName(op.ID), func(ctx context.Context, args map[string]any) (*mcp.CallToolResult, string) {
+			return s.invoke(ctx, tok, op, args)
+		}))
 	}
 	srv.AddReceivingMiddleware(s.auditHidden(tok))
 	return srv
 }
 
-// sdkTool is the MCP descriptor of a registry entry. destructiveHint and
-// openWorldHint are always sent: MCP reads a missing one as true, and no tool
-// here reaches beyond the relay.
-func sdkTool(t Tool) *mcp.Tool {
-	destructive, openWorld := t.Destructive, false
+// sdkTool is the MCP descriptor of an operation offered as a tool.
+// destructiveHint and openWorldHint are always sent: MCP reads a missing one
+// as true, and no tool here reaches beyond the relay.
+func (s *Server) sdkTool(op Operation) *mcp.Tool {
+	schema, ok := s.toolSchemas[op.ID]
+	if !ok {
+		schema, _ = json.Marshal(op.InputSchema())
+	}
+	destructive, openWorld := op.Destructive, false
 	return &mcp.Tool{
-		Name:        t.Name,
-		Description: t.Description,
-		InputSchema: t.ParamsSchema,
+		Name:        ToolName(op.ID),
+		Description: s.description(op),
+		InputSchema: schema,
 		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:    t.ReadOnly,
+			ReadOnlyHint:    op.Kind() == "read",
 			DestructiveHint: &destructive,
-			IdempotentHint:  t.Idempotent,
+			IdempotentHint:  op.Method == http.MethodPut,
 			OpenWorldHint:   &openWorld,
 		},
 	}
@@ -141,66 +148,53 @@ func sdkTool(t Tool) *mcp.Tool {
 // (api.JSONHandlerTimeout).
 const toolTimeout = 30 * time.Second
 
-// callHandler adapts a registry Call to the SDK's raw tool handler and writes
-// the audit row. A tool that fails answers with an isError result, which the
-// model can read and act on; it is not a protocol error.
+// callHandler adapts run to the SDK's raw tool handler and writes the audit
+// row: auditName and the word run returns. run gets the arguments as an
+// object. A call that fails answers with an isError result, which the model
+// can read and act on; it is not a protocol error.
 //
 // The SDK runs handlers on a goroutine of its own, outside net/http's and the
 // router's recovery, so a panic here would end the process. It is caught.
-func (s *Server) callHandler(tok *authedToken, t Tool) mcp.ToolHandler {
+func (s *Server) callHandler(tok *authedToken, auditName string, run func(ctx context.Context, args map[string]any) (*mcp.CallToolResult, string)) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (res *mcp.CallToolResult, _ error) {
 		defer func() {
 			if p := recover(); p != nil {
 				// The deferred function must not panic again: a failing audit
 				// sink is contained here.
-				s.safeAudit(ctx, tok, t.Name, "error")
+				s.safeAudit(ctx, tok, auditName, "error")
 				// The panic value can quote data (an index, a key): its type
 				// and the stack, which holds no argument values.
-				s.log.Error("mcp tool panicked", "tool", t.Name, "panic_type", fmt.Sprintf("%T", p), "stack", string(debug.Stack()))
+				s.log.Error("mcp tool panicked", "tool", auditName, "panic_type", fmt.Sprintf("%T", p), "stack", string(debug.Stack()))
 				res = errorResult(errors.New("internal error"))
 			}
 		}()
-		// Inject caller identity into the context so tools can resolve
-		// "owned by" semantics without re-fetching the bearer row.
-		// A tool whose store call hangs must end: neither a client that went
-		// away nor a deadline in front of the handler reaches it otherwise.
+		args := map[string]any{}
+		if raw := bytes.TrimSpace(req.Params.Arguments); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+			if raw[0] != '{' || json.Unmarshal(raw, &args) != nil || args == nil {
+				s.log.Debug("mcp tool call", "tool", auditName, "result", "error", "reason", "arguments are not an object")
+				s.emitToolAudit(ctx, tok, auditName, "error")
+				return errorResult(errors.New("arguments must be an object")), nil
+			}
+		}
+		// A call that hangs must end: neither a client that went away nor a
+		// deadline in front of the handler reaches it otherwise.
 		limit := s.toolTimeout
 		if limit <= 0 {
 			limit = toolTimeout
 		}
-		callCtx, cancel := context.WithTimeout(withCaller(ctx, tok.userID, tok.role), limit)
+		callCtx, cancel := context.WithTimeout(ctx, limit)
 		defer cancel()
-		payload, err := t.Call(callCtx, req.Params.Arguments)
-		if err != nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		res, word := run(callCtx, args)
+		if errors.Is(callCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 			// The log names the tool and the deadline, never an argument.
-			s.emitToolAudit(ctx, tok, t.Name, "error")
-			s.log.Warn("mcp tool call failed", "tool", t.Name, "reason", "deadline exceeded", "deadline", limit.String())
+			s.emitToolAudit(ctx, tok, auditName, "error")
+			s.log.Warn("mcp tool call failed", "tool", auditName, "reason", "deadline exceeded", "deadline", limit.String())
 			return errorResult(errors.New("timed out")), nil
 		}
-		if err != nil {
-			// Store-layer permission failures hit this path when a token
-			// granted only :own scope reaches for another user's data.
-			if errors.Is(err, ErrForbidden) {
-				s.emitToolAudit(ctx, tok, t.Name, "denied")
-				return errorResult(ErrForbidden), nil
-			}
-			s.emitToolAudit(ctx, tok, t.Name, "error")
-			var ae *argError
-			var ue userError
-			switch {
-			case errors.As(err, &ae):
-				// Never the value: the log gets the parameter's name only.
-				s.log.Warn("mcp tool call failed", "tool", t.Name, "reason", "invalid arguments", "param", ae.param)
-				return errorResult(ae), nil
-			case errors.As(err, &ue):
-				s.log.Warn("mcp tool call failed", "tool", t.Name, "reason", string(ue))
-				return errorResult(ue), nil
-			}
-			s.log.Warn("mcp tool call failed", append([]any{"tool", t.Name}, errAttrs(err)...)...)
-			return errorResult(errors.New("internal error")), nil
-		}
-		s.emitToolAudit(ctx, tok, t.Name, "ok")
-		return toolResult(payload), nil
+		// The tool and the outcome, never an argument or the answer.
+		s.log.Debug("mcp tool call", "tool", auditName, "result", word)
+		s.emitToolAudit(ctx, tok, auditName, word)
+		return res, nil
 	}
 }
 
@@ -247,8 +241,8 @@ func (s *Server) auditHidden(tok *authedToken) mcp.Middleware {
 			}()
 			if method == "tools/call" {
 				if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && p != nil {
-					if t, known := s.tools[p.Name]; known && !tok.mayCall(t) {
-						s.emitToolAudit(ctx, tok, t.Name, "denied")
+					if op, known := s.curatedByName[p.Name]; known && !tok.mayUse(op) {
+						s.emitToolAudit(ctx, tok, p.Name, "denied")
 					}
 				}
 			}

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -21,19 +22,19 @@ import (
 
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/authz"
-	"github.com/ankoehn/burrow/internal/db"
-	"github.com/ankoehn/burrow/internal/store"
 )
 
 // The revisions a client may speak: the stateless one and the three with an
 // initialize handshake.
 var testRevisions = []string{"2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"}
 
-// allToolPerms is what a token needs to see the whole registry.
-var allToolPerms = []string{
-	"tunnels:read:own", "services:configure:own", "tokens:manage:own",
-	"users:read", "audit:read", "metrics:read",
-}
+// allCuratedTools are the tool names of curatedTools, sorted: what a token
+// of the full preset of an admin sees.
+const allCuratedTools = "ai_model_create,ai_model_delete,ai_model_update,ai_models_list,ai_requests_list," +
+	"audit_events_list,budget_create,budgets_list,connection_logs_list,cost_summary_get," +
+	"gateway_key_delete,gateway_keys_list,inspector_request_get,known_clients_list,me_get," +
+	"provider_create,provider_delete,provider_get,provider_metrics_get,provider_models_sync," +
+	"provider_update,providers_list,service_access_mode_update,service_create,service_get,services_list"
 
 // ---------- fakes ----------------------------------------------------------
 
@@ -56,30 +57,45 @@ func (a *auditSink) all() []audit.Event {
 	return append([]audit.Event(nil), a.rows...)
 }
 
-// panicStore is a ToolStore whose metrics call panics, as a nil dependency
-// in the wiring would.
-type panicStore struct{ fakeStore }
-
-func (*panicStore) MetricsText() (string, error) { panic("metrics recorder is nil") }
-
 // ---------- bootstrap ------------------------------------------------------
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// newSDKTestServer serves s.mcpHandler() for one fixed token, without the
-// HTTP checks in front of it.
-func newSDKTestServer(t *testing.T, ts ToolStore, perms []string, role string) (*httptest.Server, *auditSink) {
+// newTestServer builds a Server from the relay's OpenAPI document.
+func newTestServer(t *testing.T, bearer BearerStore, users UserLookup, log *slog.Logger, opts ...Option) *Server {
 	t.Helper()
-	s := New(nil, nil, ts, quietLog())
-	sink := &auditSink{}
-	s.SetAuditAppender(sink)
-	tok := &authedToken{tokenID: "tok1", userID: "u1", role: role, perms: perms}
+	spec, err := os.ReadFile("../../docs/openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(bearer, users, spec, log, opts...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s
+}
+
+// serveFor serves s.mcpHandler() for one fixed token, without the HTTP
+// checks in front of it.
+func serveFor(t *testing.T, s *Server, tok *authedToken) *httptest.Server {
+	t.Helper()
 	h := s.mcpHandler()
 	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
 	}))
 	t.Cleanup(hs.Close)
-	return hs, sink
+	return hs
+}
+
+// newSDKTestServer serves s.mcpHandler() for one fixed token with perms and
+// role, replaying calls through api.
+func newSDKTestServer(t *testing.T, api http.Handler, perms []string, role string) (*httptest.Server, *auditSink) {
+	t.Helper()
+	s := newTestServer(t, nil, nil, quietLog())
+	s.SetAPIHandler(api)
+	sink := &auditSink{}
+	s.SetAuditAppender(sink)
+	return serveFor(t, s, &authedToken{tokenID: "tok1", userID: "u1", role: role, perms: perms, bearer: "Bearer bua_test"}), sink
 }
 
 // bearerTransport sends the Authorization header a configured MCP client
@@ -201,16 +217,13 @@ func sameJSON(t *testing.T, a, b string) bool {
 
 const rawToolsList = `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
 
-// ---------- both revisions -------------------------------------------------
+// ---------- every revision -------------------------------------------------
 
 func TestMCP_EveryRevision_ListAndCall(t *testing.T) {
 	for _, rev := range testRevisions {
 		t.Run(rev, func(t *testing.T) {
-			fs := &fakeStore{tunnels: []TunnelInfo{
-				{ID: "tun-a", Name: "alpha", Type: "http", Connected: true},
-				{ID: "tun-b", Name: "beta", Type: "tcp", RemotePort: 2222},
-			}}
-			hs, _ := newSDKTestServer(t, fs, allToolPerms, "admin")
+			api := &fakeAPI{reply: `[{"id":"svc-a","name":"alpha"},{"id":"svc-b","name":"beta"}]`}
+			hs, _ := newSDKTestServer(t, api, presetPerms(authz.PresetFull), "admin")
 			cs := connectMCP(t, hs.URL, "", rev)
 
 			if got := cs.InitializeResult().ProtocolVersion; got != rev {
@@ -224,22 +237,22 @@ func TestMCP_EveryRevision_ListAndCall(t *testing.T) {
 			}
 
 			tools := listedTools(t, cs)
-			if len(tools) != len(orderedTools) {
-				t.Fatalf("listed %d tools, want %d: %s", len(tools), len(orderedTools), sortedNames(tools))
+			if got := sortedNames(tools); got != allCuratedTools {
+				t.Fatalf("tools:\n got %s\nwant %s", got, allCuratedTools)
 			}
-			schema, _ := json.Marshal(tools["tunnels_list"].InputSchema)
-			if !strings.Contains(string(schema), `"filter"`) || !strings.Contains(string(schema), `"additionalProperties":false`) {
-				t.Errorf("tunnels_list inputSchema = %s", schema)
+			schema, _ := json.Marshal(tools["service_get"].InputSchema)
+			if !strings.Contains(string(schema), `"serviceID"`) || !strings.Contains(string(schema), `"additionalProperties":false`) {
+				t.Errorf("service_get inputSchema = %s", schema)
 			}
 
-			res, err := callTool(t, cs, "tunnels_list", map[string]any{"filter": "ALPHA"})
+			res, err := callTool(t, cs, "services_list", nil)
 			if err != nil {
 				t.Fatalf("tools/call: %v", err)
 			}
 			if res.IsError {
 				t.Fatalf("isError: %s", resultText(t, res))
 			}
-			const want = `{"tunnels":[{"id":"tun-a","name":"alpha","type":"http","remote_port":0,"local_addr":"","bytes_in":0,"bytes_out":0,"connected":true}]}`
+			const want = `{"items":[{"id":"svc-a","name":"alpha"},{"id":"svc-b","name":"beta"}]}`
 			if got := resultText(t, res); got != want {
 				t.Errorf("text content\n got %s\nwant %s", got, want)
 			}
@@ -254,7 +267,7 @@ func TestMCP_EveryRevision_ListAndCall(t *testing.T) {
 // A client that only knows 2024-11-05 is answered with a revision the
 // server does offer; the client then decides.
 func TestMCP_Revision20241105_NotOffered(t *testing.T) {
-	hs, _ := newSDKTestServer(t, &fakeStore{}, allToolPerms, "admin")
+	hs, _ := newSDKTestServer(t, &fakeAPI{}, presetPerms(authz.PresetFull), "admin")
 	resp, body := rawPOST(t, hs.URL, "", nil,
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"old","version":"0"}}}`)
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"protocolVersion":"2025-11-25"`) {
@@ -266,34 +279,104 @@ func TestMCP_Revision20241105_NotOffered(t *testing.T) {
 	}
 }
 
-// ---------- annotations ----------------------------------------------------
+// ---------- descriptors ----------------------------------------------------
 
 func TestMCP_Annotations(t *testing.T) {
-	hs, _ := newSDKTestServer(t, &fakeStore{}, allToolPerms, "admin")
+	hs, _ := newSDKTestServer(t, &fakeAPI{}, presetPerms(authz.PresetFull), "admin")
+	s := newTestServer(t, nil, nil, quietLog())
 	for _, rev := range []string{"2026-07-28", "2025-11-25"} {
 		tools := listedTools(t, connectMCP(t, hs.URL, "", rev))
-		for _, name := range orderedTools {
-			tl, a := New(nil, nil, nil, nil).tools[name], tools[name].Annotations
+		for _, op := range s.curated {
+			name := ToolName(op.ID)
+			tl := tools[name]
+			if tl == nil {
+				t.Fatalf("%s %s: not listed", rev, name)
+			}
+			a := tl.Annotations
 			if a == nil || a.DestructiveHint == nil || a.OpenWorldHint == nil {
 				t.Fatalf("%s %s: annotations incomplete: %+v", rev, name, a)
 			}
-			if a.ReadOnlyHint != tl.ReadOnly || *a.DestructiveHint != tl.Destructive || a.IdempotentHint != tl.Idempotent {
-				t.Errorf("%s %s: hints %+v do not match the registry", rev, name, a)
+			if a.ReadOnlyHint != (op.Method == http.MethodGet) || *a.DestructiveHint != op.Destructive || a.IdempotentHint != (op.Method == http.MethodPut) {
+				t.Errorf("%s %s: hints %+v do not match %s %s (destructive %v)", rev, name, a, op.Method, op.Path, op.Destructive)
 			}
 			if *a.OpenWorldHint {
 				t.Errorf("%s %s: openWorldHint is true", rev, name)
 			}
 		}
-		// The three that are not plain reads, spelled out.
-		if a := tools["api_keys_delete"].Annotations; !*a.DestructiveHint || a.ReadOnlyHint {
-			t.Errorf("%s api_keys_delete: %+v", rev, a)
+		// Spelled out.
+		for name, want := range map[string][3]bool{ // readOnly, destructive, idempotent
+			"providers_list":             {true, false, false},
+			"provider_delete":            {false, true, false},
+			"provider_models_sync":       {false, true, false}, // POST, x-burrow-destructive
+			"service_access_mode_update": {false, false, true},
+			"provider_create":            {false, false, false},
+		} {
+			a := tools[name].Annotations
+			if a.ReadOnlyHint != want[0] || *a.DestructiveHint != want[1] || a.IdempotentHint != want[2] {
+				t.Errorf("%s %s: %+v, want readOnly/destructive/idempotent %v", rev, name, a, want)
+			}
 		}
-		if a := tools["services_set_access_mode"].Annotations; !a.IdempotentHint || *a.DestructiveHint || a.ReadOnlyHint {
-			t.Errorf("%s services_set_access_mode: %+v", rev, a)
+	}
+}
+
+// The descriptions: the curated text where the list gives one, otherwise
+// the summary and the first paragraph of the operation's description.
+func TestMCP_Descriptions(t *testing.T) {
+	s := newTestServer(t, nil, nil, quietLog())
+	byName := map[string]ToolDescriptor{}
+	for _, d := range s.Tools() {
+		byName[d.Name] = d
+	}
+	if got := byName["me_get"].Description; !strings.HasPrefix(got, "Who this token acts for") {
+		t.Errorf("me_get description = %q", got)
+	}
+	op, _ := s.reg.Lookup("providerCreate")
+	if got := byName["provider_create"].Description; !strings.HasPrefix(got, op.Summary) || strings.Contains(got, "\n\n\n") {
+		t.Errorf("provider_create description = %q", got)
+	}
+	for _, d := range s.Tools() {
+		if d.Description == "" || len(d.Description) > maxDescriptionBytes {
+			t.Errorf("%s: description of %d bytes", d.Name, len(d.Description))
 		}
-		if a := tools["api_keys_create"].Annotations; a.ReadOnlyHint || *a.DestructiveHint || a.IdempotentHint {
-			t.Errorf("%s api_keys_create: %+v", rev, a)
+	}
+}
+
+// Tools() describes every curated tool for the dashboard: its schema, the
+// permissions that open it, its kind.
+func TestMCP_ToolDescriptors(t *testing.T) {
+	s := newTestServer(t, nil, nil, quietLog())
+	tools := s.Tools()
+	if len(tools) != len(curatedTools) {
+		t.Fatalf("%d descriptors, want %d", len(tools), len(curatedTools))
+	}
+	for i, d := range tools {
+		if d.Name != ToolName(curatedTools[i].ID) || d.Generic {
+			t.Errorf("descriptor %d = %s generic=%v, want %s", i, d.Name, d.Generic, ToolName(curatedTools[i].ID))
 		}
+		var schema map[string]any
+		if err := json.Unmarshal(d.ParametersSchema, &schema); err != nil || schema["type"] != "object" {
+			t.Errorf("%s: schema %s", d.Name, d.ParametersSchema)
+		}
+	}
+	byName := map[string]ToolDescriptor{}
+	for _, d := range tools {
+		byName[d.Name] = d
+	}
+	if d := byName["me_get"]; d.Permission != "" || len(d.Permissions) != 0 || d.Kind != "read" {
+		t.Errorf("me_get = %+v", d)
+	}
+	if d := byName["services_list"]; d.Permission != "services:configure:own" ||
+		strings.Join(d.Permissions, ",") != "services:configure:own,services:configure:any" || d.Kind != "read" {
+		t.Errorf("services_list = %+v", d)
+	}
+	if d := byName["provider_delete"]; d.Kind != "delete" || !strings.Contains(string(d.ParametersSchema), `"confirm"`) {
+		t.Errorf("provider_delete = %+v", d)
+	}
+	if d := byName["provider_create"]; d.Kind != "write" || !strings.Contains(string(d.ParametersSchema), `"dry_run"`) {
+		t.Errorf("provider_create = %+v", d)
+	}
+	if s.OperationCount() != 0 {
+		t.Errorf("OperationCount = %d", s.OperationCount())
 	}
 }
 
@@ -306,28 +389,22 @@ func TestMCP_ListShowsOnlyWhatTheTokenMayCall(t *testing.T) {
 		role  string
 		want  string
 	}{
-		{"everything", allToolPerms, "admin",
-			"api_keys_create,api_keys_delete,api_keys_list,audit_search,metrics_snapshot,services_get,services_list,services_set_access_mode,tokens_list,tokens_mint,tunnels_list,users_list"},
-		{"one permission", []string{"tunnels:read:own"}, "admin", "tunnels_list"},
-		{"read-only operator", []string{"tunnels:read:own", "audit:read", "metrics:read"}, "admin",
-			"audit_search,metrics_snapshot,tunnels_list"},
-		// The token still declares everything; the role of its user no
-		// longer grants the admin permissions.
-		{"minter demoted to user", allToolPerms, "user",
-			"api_keys_create,api_keys_delete,api_keys_list,services_get,services_list,services_set_access_mode,tokens_list,tokens_mint,tunnels_list"},
-		// The permission for everyone's opens the tools that act on the
-		// caller's own, as it does on the JSON API.
-		{"tunnels of anyone", []string{"tunnels:read:any"}, "admin", "tunnels_list"},
-		{"client tokens of anyone", []string{"tokens:manage:any"}, "admin", "tokens_list,tokens_mint"},
-		{"no tool permission", []string{"webhooks:manage"}, "admin", ""},
-		// What the dashboard mints today: a token that declares nothing.
-		// It authenticates and is shown an empty list, not an error.
-		{"no permission declared", nil, "admin", ""},
-		{"unknown role", allToolPerms, "gone", ""},
+		{"everything", presetPerms(authz.PresetFull), "admin", allCuratedTools},
+		{"one permission", []string{"audit:read"}, "admin", "audit_events_list,connection_logs_list,me_get"},
+		// The token still declares everything; the role of its user grants
+		// only the :own permissions of a standard user.
+		{"minter demoted to user", presetPerms(authz.PresetFull), "user",
+			"ai_models_list,ai_requests_list,gateway_key_delete,gateway_keys_list,inspector_request_get,me_get," +
+				"provider_get,provider_metrics_get,providers_list,service_access_mode_update,service_get,services_list"},
+		{"tunnels of anyone", []string{"tunnels:read:any"}, "admin", "known_clients_list,me_get"},
+		{"no tool permission", []string{"webhooks:manage"}, "admin", "me_get"},
+		// A token that declares nothing still reads who it acts for.
+		{"no permission declared", nil, "admin", "me_get"},
+		{"unknown role", presetPerms(authz.PresetFull), "gone", "me_get"},
 	}
 	for _, c := range cases {
 		for _, rev := range []string{"2026-07-28", "2025-11-25"} {
-			hs, _ := newSDKTestServer(t, &fakeStore{}, c.perms, c.role)
+			hs, _ := newSDKTestServer(t, &fakeAPI{}, c.perms, c.role)
 			if got := sortedNames(listedTools(t, connectMCP(t, hs.URL, "", rev))); got != c.want {
 				t.Errorf("%s (%s):\n got %s\nwant %s", c.name, rev, got, c.want)
 			}
@@ -337,14 +414,14 @@ func TestMCP_ListShowsOnlyWhatTheTokenMayCall(t *testing.T) {
 
 // A call on a tool the token may not use is refused exactly like a call on a
 // tool that does not exist, and it is the only one of the two that leaves an
-// audit row.
+// audit row. Nothing reaches the API.
 func TestMCP_CallOutsideTheTokensTools(t *testing.T) {
 	for _, rev := range []string{"2026-07-28", "2025-11-25"} {
-		fs := &fakeStore{}
-		hs, sink := newSDKTestServer(t, fs, []string{"tunnels:read:own"}, "admin")
+		api := &fakeAPI{}
+		hs, sink := newSDKTestServer(t, api, []string{"audit:read"}, "admin")
 		cs := connectMCP(t, hs.URL, "", rev)
 
-		_, errHidden := callTool(t, cs, "services_set_access_mode", map[string]any{"id": "svc1", "mode": "open"})
+		_, errHidden := callTool(t, cs, "provider_delete", map[string]any{"slug": "zai", "confirm": "zai"})
 		_, errUnknown := callTool(t, cs, "no_such_tool", nil)
 
 		var hidden, unknown *jsonrpc.Error
@@ -354,163 +431,254 @@ func TestMCP_CallOutsideTheTokensTools(t *testing.T) {
 		if hidden.Code != jsonrpc.CodeInvalidParams || hidden.Code != unknown.Code {
 			t.Errorf("%s: codes %d and %d, want %d twice", rev, hidden.Code, unknown.Code, jsonrpc.CodeInvalidParams)
 		}
-		a := strings.Replace(hidden.Message, "services_set_access_mode", "NAME", 1)
+		a := strings.Replace(hidden.Message, "provider_delete", "NAME", 1)
 		b := strings.Replace(unknown.Message, "no_such_tool", "NAME", 1)
 		if a != b || len(hidden.Data) != 0 || len(unknown.Data) != 0 {
 			t.Errorf("%s: the two refusals differ: %q / %q", rev, hidden.Message, unknown.Message)
 		}
-		if fs.lastSetMode != "" {
-			t.Errorf("%s: the refused call reached the store", rev)
+		if api.calls() != 0 {
+			t.Errorf("%s: the refused call reached the API", rev)
 		}
 
 		rows := sink.all()
 		if len(rows) != 1 {
 			t.Fatalf("%s: %d audit rows, want 1: %+v", rev, len(rows), rows)
 		}
-		if r := rows[0]; r.Action != audit.ActionMCPToolCall || r.SubjectLabel != "services_set_access_mode" ||
+		if r := rows[0]; r.Action != audit.ActionMCPToolCall || r.SubjectLabel != "provider_delete" ||
 			r.Result != "denied" || r.ActorID != "u1" {
 			t.Errorf("%s: audit row = %+v", rev, r)
 		}
 	}
 }
 
-// A tool that acts only on what belongs to the caller is opened by the :own
-// permission and by the :any one, each on the usual terms: the token declares
-// it AND the role of its user grants it. Two halves of different permissions
-// (declared :any, granted :own) open nothing. What tools/list shows and what
-// tools/call accepts is decided in one place, so the two always agree.
-func TestMCP_EitherScopeOpensAToolForTheCallersOwn(t *testing.T) {
+// A tool opened by an :own and an :any permission is opened by either, each
+// on the usual terms: the token declares it AND the role of its user grants
+// it. Two halves of different permissions (declared :any, granted :own) open
+// nothing. What tools/list shows and what tools/call accepts is decided in
+// one place, so the two always agree.
+func TestMCP_EitherScopeOpensATool(t *testing.T) {
 	authz.SetRoles(map[string][]authz.Permission{
-		"reads-any":   {authz.PermTunnelsReadAny, authz.PermTokensManageAny},
-		"reads-own":   {authz.PermTunnelsReadOwn, authz.PermTokensManageOwn},
-		"reads-audit": {authz.PermAuditRead},
+		"configures-any": {authz.PermServicesConfigureAny},
+		"configures-own": {authz.PermServicesConfigureOwn},
+		"reads-audit":    {authz.PermAuditRead},
 	})
 	t.Cleanup(func() { authz.SetRoles(nil) })
 
-	type scope struct{ own, any string }
-	tools := map[string]scope{
-		"tunnels_list": {"tunnels:read:own", "tunnels:read:any"},
-		"tokens_list":  {"tokens:manage:own", "tokens:manage:any"},
-		"tokens_mint":  {"tokens:manage:own", "tokens:manage:any"},
-	}
-	args := map[string]map[string]any{"tokens_mint": {"name": "ci"}}
-	for tool, sc := range tools {
+	const ownP, anyP = "services:configure:own", "services:configure:any"
+	args := map[string]map[string]any{"service_get": {"serviceID": "svc1"}}
+	for _, tool := range []string{"services_list", "service_get"} {
 		for _, c := range []struct {
 			name  string
 			perms []string
 			role  string
 			open  bool
 		}{
-			{"only :own", []string{sc.own}, "admin", true},
-			{"only :any", []string{sc.any}, "admin", true},
-			{"both", []string{sc.own, sc.any}, "admin", true},
+			{"only :own", []string{ownP}, "admin", true},
+			{"only :any", []string{anyP}, "admin", true},
+			{"both", []string{ownP, anyP}, "admin", true},
 			{"neither", []string{"audit:read"}, "admin", false},
 			{"nothing declared", nil, "admin", false},
-			{":own, the built-in user", []string{sc.own}, "user", true},
+			{":own, the built-in user", []string{ownP}, "user", true},
 			// The token declares one, the role grants the other.
-			{":any declared, the role grants only :own", []string{sc.any}, "user", false},
-			{":own declared, the role grants only :any", []string{sc.own}, "reads-any", false},
-			// A custom role with :any and without :own.
-			{":any, a role with only :any", []string{sc.any}, "reads-any", true},
-			{"both declared, a role with only :any", []string{sc.own, sc.any}, "reads-any", true},
-			{"both declared, a role with only :own", []string{sc.own, sc.any}, "reads-own", true},
-			{"both declared, a role with neither", []string{sc.own, sc.any, "audit:read"}, "reads-audit", false},
+			{":any declared, the role grants only :own", []string{anyP}, "user", false},
+			{":own declared, the role grants only :any", []string{ownP}, "configures-any", false},
+			{":any, a role with only :any", []string{anyP}, "configures-any", true},
+			{"both declared, a role with only :any", []string{ownP, anyP}, "configures-any", true},
+			{"both declared, a role with only :own", []string{ownP, anyP}, "configures-own", true},
+			{"both declared, a role with neither", []string{ownP, anyP, "audit:read"}, "reads-audit", false},
 		} {
-			for _, rev := range []string{"2026-07-28", "2025-11-25"} {
-				what := fmt.Sprintf("%s, %s (%s)", tool, c.name, rev)
-				hs, sink := newSDKTestServer(t, &fakeStore{}, c.perms, c.role)
-				cs := connectMCP(t, hs.URL, "", rev)
-				if _, listed := listedTools(t, cs)[tool]; listed != c.open {
-					t.Errorf("%s: listed = %v, want %v", what, listed, c.open)
-				}
-				res, err := callTool(t, cs, tool, args[tool])
-				var rpcErr *jsonrpc.Error
-				switch {
-				case c.open && (err != nil || res.IsError):
-					t.Errorf("%s: the call failed: err=%v result=%+v", what, err, res)
-				case !c.open && (!errors.As(err, &rpcErr) || rpcErr.Code != jsonrpc.CodeInvalidParams):
-					t.Errorf("%s: the call was not refused like an unknown tool: err=%v result=%+v", what, err, res)
-				}
-				wantRow := "ok"
-				if !c.open {
-					wantRow = "denied"
-				}
-				if rows := sink.all(); len(rows) != 1 || rows[0].SubjectLabel != tool || rows[0].Result != wantRow {
-					t.Errorf("%s: audit rows %+v, want one %s row", what, rows, wantRow)
-				}
+			what := fmt.Sprintf("%s, %s", tool, c.name)
+			api := &fakeAPI{reply: `{}`}
+			hs, sink := newSDKTestServer(t, api, c.perms, c.role)
+			cs := connectMCP(t, hs.URL, "", "2026-07-28")
+			if _, listed := listedTools(t, cs)[tool]; listed != c.open {
+				t.Errorf("%s: listed = %v, want %v", what, listed, c.open)
 			}
+			res, err := callTool(t, cs, tool, args[tool])
+			var rpcErr *jsonrpc.Error
+			switch {
+			case c.open && (err != nil || res.IsError):
+				t.Errorf("%s: the call failed: err=%v result=%+v", what, err, res)
+			case !c.open && (!errors.As(err, &rpcErr) || rpcErr.Code != jsonrpc.CodeInvalidParams):
+				t.Errorf("%s: the call was not refused like an unknown tool: err=%v result=%+v", what, err, res)
+			}
+			wantRow, wantCalls := "ok", 1
+			if !c.open {
+				wantRow, wantCalls = "denied", 0
+			}
+			if rows := sink.all(); len(rows) != 1 || rows[0].SubjectLabel != tool || rows[0].Result != wantRow {
+				t.Errorf("%s: audit rows %+v, want one %s row", what, rows, wantRow)
+			}
+			if api.calls() != wantCalls {
+				t.Errorf("%s: %d API requests, want %d", what, api.calls(), wantCalls)
+			}
+		}
+	}
+}
+
+// An operation that needs every permission (x-burrow-permission every:
+// true) is open only to a token that holds them all; one with an empty
+// any_of to nobody.
+func TestMayUse(t *testing.T) {
+	all := make([]string, 0, len(authz.AllPermissions()))
+	for _, p := range authz.AllPermissions() {
+		all = append(all, string(p))
+	}
+	every := Operation{Access: Access{Kind: "needs", Every: true, AnyOf: []authz.Permission{authz.PermUsersManage}}}
+	empty := Operation{Access: Access{Kind: "needs"}}
+	for _, c := range []struct {
+		name string
+		op   Operation
+		tok  authedToken
+		want bool
+	}{
+		{"every, all of them", every, authedToken{role: "admin", perms: all}, true},
+		{"every, one missing", every, authedToken{role: "admin", perms: all[1:]}, false},
+		{"every, the role lacks some", every, authedToken{role: "user", perms: all}, false},
+		{"empty any_of", empty, authedToken{role: "admin", perms: all}, false},
+		{"self", Operation{Access: Access{Kind: "self"}}, authedToken{role: "gone"}, true},
+		{"public", Operation{Access: Access{Kind: "public"}}, authedToken{}, true},
+		{"dashboard", Operation{Access: Access{Kind: "dashboard", AnyOf: []authz.Permission{authz.PermUsersManage}}}, authedToken{role: "admin", perms: all}, false},
+		{"unknown kind", Operation{Access: Access{Kind: "other"}}, authedToken{role: "admin", perms: all}, false},
+	} {
+		if got := c.tok.mayUse(c.op); got != c.want {
+			t.Errorf("%s: mayUse = %v, want %v", c.name, got, c.want)
 		}
 	}
 }
 
 // ---------- results --------------------------------------------------------
 
-func TestMCP_CallAllowed_IsAudited(t *testing.T) {
-	fs := &fakeStore{}
-	hs, sink := newSDKTestServer(t, fs, allToolPerms, "admin")
+// A write sends the body as JSON, with the method and path of the operation.
+func TestMCP_WriteSendsTheBody(t *testing.T) {
+	api := &fakeAPI{status: http.StatusNoContent}
+	hs, sink := newSDKTestServer(t, api, presetPerms(authz.PresetOperator), "admin")
 	cs := connectMCP(t, hs.URL, "", "2026-07-28")
 
-	res, err := callTool(t, cs, "services_set_access_mode", map[string]any{"id": "svc1", "mode": "api_key", "api_key_header": "X-Key"})
+	res, err := callTool(t, cs, "service_access_mode_update", map[string]any{
+		"serviceID": "svc1", "body": map[string]any{"access_mode": "api_key", "api_key_header": "X-Key"},
+	})
 	if err != nil || res.IsError {
 		t.Fatalf("call: err=%v result=%+v", err, res)
 	}
-	if got := resultText(t, res); got != `{"ok":true}` {
+	if got := resultText(t, res); got != `{"status":204}` {
 		t.Errorf("text = %s", got)
 	}
-	if fs.lastSetMode != "api_key" || fs.lastSetHeader != "X-Key" {
-		t.Errorf("store saw mode=%q header=%q", fs.lastSetMode, fs.lastSetHeader)
+	r := api.seen[0]
+	if r.Method != http.MethodPut || r.URL.Path != "/api/v1/services/svc1/access-mode" || r.Header.Get("Content-Type") != "application/json" {
+		t.Errorf("request = %s %s %q", r.Method, r.URL.Path, r.Header.Get("Content-Type"))
 	}
-	rows := sink.all()
-	if len(rows) != 1 || rows[0].SubjectLabel != "services_set_access_mode" || rows[0].Result != "ok" {
+	if !sameJSON(t, api.bodies[0], `{"access_mode":"api_key","api_key_header":"X-Key"}`) {
+		t.Errorf("body = %s", api.bodies[0])
+	}
+	if rows := sink.all(); len(rows) != 1 || rows[0].SubjectLabel != "service_access_mode_update" || rows[0].Result != "ok" {
 		t.Fatalf("audit rows = %+v", rows)
 	}
 }
 
-// A tool that fails answers with a result the model can read (isError), not
+// Query arguments become the query string; a read sends no body.
+func TestMCP_QueryArguments(t *testing.T) {
+	api := &fakeAPI{reply: `[]`}
+	hs, _ := newSDKTestServer(t, api, presetPerms(authz.PresetReadOnly), "admin")
+	cs := connectMCP(t, hs.URL, "", "2026-07-28")
+	res, err := callTool(t, cs, "ai_requests_list", map[string]any{"provider": "zai", "model": "glm 4.6"})
+	if err != nil || res.IsError {
+		t.Fatalf("call: err=%v result=%+v", err, res)
+	}
+	r := api.seen[0]
+	if q := r.URL.Query(); q.Get("provider") != "zai" || q.Get("model") != "glm 4.6" || len(q) != 2 {
+		t.Errorf("query = %s", r.URL.RawQuery)
+	}
+	if api.bodies[0] != "" || r.Header.Get("Content-Type") != "" {
+		t.Errorf("a read sent a body: %q %q", api.bodies[0], r.Header.Get("Content-Type"))
+	}
+	if got := resultText(t, res); got != `{"items":[]}` {
+		t.Errorf("empty list = %s", got)
+	}
+}
+
+// A call that fails answers with a result the model can read (isError), not
 // with a protocol error.
-func TestMCP_ToolFailure_IsAResult(t *testing.T) {
+func TestMCP_CallFailure_IsAResult(t *testing.T) {
 	for _, rev := range []string{"2026-07-28", "2025-11-25"} {
-		fs := &fakeStore{apiKeyErr: store.ErrForbidden}
-		hs, sink := newSDKTestServer(t, fs, allToolPerms, "admin")
+		api := &fakeAPI{status: http.StatusNotFound, reply: `{"error":"service not found"}`}
+		hs, sink := newSDKTestServer(t, api, presetPerms(authz.PresetOperator), "admin")
 		cs := connectMCP(t, hs.URL, "", rev)
 
-		// The tool's own validation.
-		res, err := callTool(t, cs, "services_get", nil)
+		// Refused before the API: a required argument is missing.
+		res, err := callTool(t, cs, "service_get", nil)
 		if err != nil {
-			t.Fatalf("%s: protocol error for a failed tool: %v", rev, err)
+			t.Fatalf("%s: protocol error for a failed call: %v", rev, err)
 		}
-		if !res.IsError || resultText(t, res) != "id is required" {
-			t.Errorf("%s: result = %+v", rev, res)
+		if text := resultText(t, res); !res.IsError || !strings.Contains(text, "serviceID") {
+			t.Errorf("%s: result = %s", rev, text)
 		}
-		// A row that does not exist.
-		res, err = callTool(t, cs, "services_get", map[string]any{"id": "nope"})
-		if err != nil || !res.IsError || resultText(t, res) != "not found" {
+		if api.calls() != 0 {
+			t.Errorf("%s: refused arguments reached the API", rev)
+		}
+		// The API's answer.
+		res, err = callTool(t, cs, "service_get", map[string]any{"serviceID": "nope"})
+		if err != nil || !res.IsError || resultText(t, res) != "404 Not Found: service not found" {
 			t.Errorf("%s: not found: err=%v result=%+v", rev, err, res)
-		}
-		// The store refuses on ownership: the token may use the tool, not
-		// on this service.
-		res, err = callTool(t, cs, "api_keys_list", map[string]any{"service_id": "someone-elses"})
-		if err != nil || !res.IsError || resultText(t, res) != "forbidden" {
-			t.Errorf("%s: forbidden: err=%v result=%+v", rev, err, res)
 		}
 
 		var got []string
 		for _, r := range sink.all() {
 			got = append(got, r.SubjectLabel+"="+r.Result)
 		}
-		if want := "services_get=error,services_get=error,api_keys_list=denied"; strings.Join(got, ",") != want {
+		if want := "service_get=error,service_get=error"; strings.Join(got, ",") != want {
 			t.Errorf("%s: audit rows %v, want %s", rev, got, want)
 		}
 	}
 }
 
+// The arguments of a call are a JSON object; anything else is refused as a
+// result, not a protocol error.
+func TestMCP_ArgumentsMustBeAnObject(t *testing.T) {
+	api := &fakeAPI{reply: `[]`}
+	hs, sink := newSDKTestServer(t, api, presetPerms(authz.PresetReadOnly), "admin")
+	for _, args := range []string{`[1,2]`, `"x"`, `7`} {
+		resp, body := rawPOST(t, hs.URL, "", map[string]string{"MCP-Protocol-Version": "2025-06-18"},
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"providers_list","arguments":`+args+`}}`)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: %d %s", args, resp.StatusCode, body)
+		}
+		// The SDK may refuse it itself; either way nothing is sent.
+		if !strings.Contains(body, `"isError":true`) && !strings.Contains(body, `"error"`) {
+			t.Errorf("%s: %s", args, body)
+		}
+	}
+	// null and no arguments are an empty object.
+	for _, params := range []string{`{"name":"providers_list","arguments":null}`, `{"name":"providers_list"}`} {
+		_, body := rawPOST(t, hs.URL, "", map[string]string{"MCP-Protocol-Version": "2025-06-18"},
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":`+params+`}`)
+		if strings.Contains(body, `"isError":true`) || !strings.Contains(body, `"items"`) {
+			t.Errorf("%s: %s", params, body)
+		}
+	}
+	if api.calls() != 2 {
+		t.Errorf("%d API requests, want 2", api.calls())
+	}
+	for _, r := range sink.all()[:len(sink.all())-2] {
+		if r.Result != "error" {
+			t.Errorf("audit row %+v", r)
+		}
+	}
+}
+
+// panicAPI is a router whose handler panics, as a nil dependency in the
+// wiring would.
+type panicAPI struct{ msg string }
+
+func (p panicAPI) ServeHTTP(http.ResponseWriter, *http.Request) { panic(p.msg) }
+
 // The SDK runs a tool on a goroutine of its own. A panic there is not caught
 // by net/http or by the router; uncaught it ends the relay.
 func TestMCP_ToolPanic_IsContained(t *testing.T) {
-	hs, sink := newSDKTestServer(t, &panicStore{}, allToolPerms, "admin")
+	hs, sink := newSDKTestServer(t, panicAPI{msg: "metrics recorder is nil"}, presetPerms(authz.PresetFull), "admin")
 	cs := connectMCP(t, hs.URL, "", "2025-11-25")
 
-	res, err := callTool(t, cs, "metrics_snapshot", nil)
+	res, err := callTool(t, cs, "providers_list", nil)
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -521,49 +689,35 @@ func TestMCP_ToolPanic_IsContained(t *testing.T) {
 		t.Errorf("audit rows = %+v", rows)
 	}
 	// The server still answers.
-	if _, err := callTool(t, cs, "tunnels_list", nil); err != nil {
+	if _, err := callTool(t, cs, "me_get", nil); err != nil {
 		t.Fatalf("call after the panic: %v", err)
 	}
 }
 
 // ---------- secrets --------------------------------------------------------
 
-// The two tools that hand out a secret return it to the caller and to
-// nobody else: not to the audit log.
-func TestMCP_MintedSecrets_StayOutOfTheAuditLog(t *testing.T) {
-	fs := &fakeStore{}
-	hs, sink := newSDKTestServer(t, fs, allToolPerms, "admin")
+// The audit row of a call names the tool and the outcome: not the arguments,
+// not the answer, which can hold a secret the API handed out.
+func TestMCP_ArgumentsAndAnswers_StayOutOfTheAuditLog(t *testing.T) {
+	const secret = "bgk_SECRET-handed-out"
+	api := &fakeAPI{status: http.StatusCreated, reply: `{"slug":"ollama","key":"` + secret + `"}`}
+	hs, sink := newSDKTestServer(t, api, presetPerms(authz.PresetFull), "admin")
 	cs := connectMCP(t, hs.URL, "", "2026-07-28")
 
-	res, err := callTool(t, cs, "api_keys_create", map[string]any{"service_id": "svc1", "name": "prod"})
+	res, err := callTool(t, cs, "provider_create", map[string]any{"body": map[string]any{"name": "ARG-VALUE", "kind": "tunnel", "service_id": "svc1"}})
 	if err != nil || res.IsError {
-		t.Fatalf("api_keys_create: err=%v result=%+v", err, res)
+		t.Fatalf("provider_create: err=%v result=%+v", err, res)
 	}
-	if !strings.Contains(resultText(t, res), fs.lastCreatedPT) {
-		t.Errorf("the caller did not get the key: %s", resultText(t, res))
+	if !strings.Contains(resultText(t, res), secret) {
+		t.Errorf("the caller did not get the answer: %s", resultText(t, res))
 	}
-	res, err = callTool(t, cs, "tokens_mint", map[string]any{"name": "ci"})
-	if err != nil || res.IsError {
-		t.Fatalf("tokens_mint: err=%v result=%+v", err, res)
-	}
-	if !strings.Contains(resultText(t, res), fs.lastMintedPT) {
-		t.Errorf("the caller did not get the token: %s", resultText(t, res))
-	}
-
 	rows := sink.all()
-	if len(rows) != 2 {
-		t.Fatalf("%d audit rows, want 2", len(rows))
+	if len(rows) != 1 {
+		t.Fatalf("%d audit rows, want 1", len(rows))
 	}
-	for _, r := range rows {
-		row, _ := json.Marshal(r)
-		for _, secret := range []string{fs.lastCreatedPT, fs.lastMintedPT} {
-			if strings.Contains(string(row), secret) {
-				t.Errorf("audit row carries a minted secret: %s", row)
-			}
-		}
-		if len(r.Payload) != 0 {
-			t.Errorf("audit row has a payload: %s", r.Payload)
-		}
+	row, _ := json.Marshal(rows[0])
+	if strings.Contains(string(row), secret) || strings.Contains(string(row), "ARG-VALUE") || len(rows[0].Payload) != 0 {
+		t.Errorf("audit row carries an argument or the answer: %s", row)
 	}
 }
 
@@ -571,7 +725,7 @@ func TestMCP_MintedSecrets_StayOutOfTheAuditLog(t *testing.T) {
 
 // The list depends on the caller, so no shared cache may keep it.
 func TestMCP_ListIsMarkedPrivate(t *testing.T) {
-	hs, _ := newSDKTestServer(t, &fakeStore{}, []string{"tunnels:read:own"}, "admin")
+	hs, _ := newSDKTestServer(t, &fakeAPI{}, []string{"audit:read"}, "admin")
 	resp, body := rawPOST(t, hs.URL, "", map[string]string{"MCP-Protocol-Version": "2025-06-18"}, rawToolsList)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("tools/list: %d %s", resp.StatusCode, body)
@@ -585,31 +739,30 @@ func TestMCP_ListIsMarkedPrivate(t *testing.T) {
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 		t.Errorf("session id header %q on a stateless endpoint", sid)
 	}
-	if !strings.Contains(body, `"tunnels_list"`) || strings.Contains(body, `"users_list"`) {
+	if !strings.Contains(body, `"audit_events_list"`) || strings.Contains(body, `"providers_list"`) {
 		t.Errorf("list: %s", body)
 	}
 }
 
 // Without a token in the request context nothing is served.
 func TestMCP_NoToken_NothingServed(t *testing.T) {
-	hs := httptest.NewServer(New(nil, nil, &fakeStore{}, nil).mcpHandler())
+	hs := httptest.NewServer(newTestServer(t, nil, nil, nil).mcpHandler())
 	t.Cleanup(hs.Close)
 	resp, body := rawPOST(t, hs.URL, "", map[string]string{"MCP-Protocol-Version": "2025-06-18"}, rawToolsList)
-	if resp.StatusCode != http.StatusBadRequest || strings.Contains(body, "tunnels_list") {
+	if resp.StatusCode != http.StatusBadRequest || strings.Contains(body, "me_get") {
 		t.Fatalf("got %d %s", resp.StatusCode, body)
 	}
 }
 
-// ---------- review fixes ---------------------------------------------------
-
 // A JSON-RPC batch is refused before the SDK sees it: it would let one POST
 // run any number of calls past the per-request limits.
 func TestMCP_Batch_IsRefused(t *testing.T) {
-	batch := `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tunnels_list","arguments":{}}},` +
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tunnels_list","arguments":{}}}]`
+	batch := `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"me_get","arguments":{}}},` +
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"me_get","arguments":{}}}]`
 	for _, rev := range append([]string{""}, testRevisions...) {
 		for _, body := range []string{batch, " \n\t" + batch} {
-			hs, sink := newSDKTestServer(t, &fakeStore{}, allToolPerms, "admin")
+			api := &fakeAPI{}
+			hs, sink := newSDKTestServer(t, api, presetPerms(authz.PresetFull), "admin")
 			hdr := map[string]string{}
 			if rev != "" {
 				hdr["MCP-Protocol-Version"] = rev
@@ -618,8 +771,8 @@ func TestMCP_Batch_IsRefused(t *testing.T) {
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Errorf("revision %q: batch got %d %s, want 400", rev, resp.StatusCode, got)
 			}
-			if rows := sink.all(); len(rows) != 0 {
-				t.Errorf("revision %q: batch left audit rows: %+v", rev, rows)
+			if rows := sink.all(); len(rows) != 0 || api.calls() != 0 {
+				t.Errorf("revision %q: batch left audit rows %+v or reached the API %d times", rev, rows, api.calls())
 			}
 		}
 	}
@@ -628,9 +781,9 @@ func TestMCP_Batch_IsRefused(t *testing.T) {
 // A single request object still works, also when it follows whitespace.
 func TestMCP_SingleRequest_StillServed(t *testing.T) {
 	for _, rev := range []string{"2025-11-25", "2025-06-18", "2025-03-26"} {
-		hs, _ := newSDKTestServer(t, &fakeStore{}, allToolPerms, "admin")
+		hs, _ := newSDKTestServer(t, &fakeAPI{}, presetPerms(authz.PresetFull), "admin")
 		resp, body := rawPOST(t, hs.URL, "", map[string]string{"MCP-Protocol-Version": rev}, "  \n"+rawToolsList)
-		if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"tunnels_list"`) {
+		if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"me_get"`) {
 			t.Errorf("%s: %d %s", rev, resp.StatusCode, body)
 		}
 	}
@@ -642,18 +795,14 @@ type panicAudit struct{}
 func (panicAudit) Append(context.Context, audit.Event) error { panic("audit sink is broken") }
 
 func TestMCP_AuditPanic_IsContained(t *testing.T) {
-	s := New(nil, nil, &fakeStore{}, quietLog())
+	s := newTestServer(t, nil, nil, quietLog())
+	s.SetAPIHandler(&fakeAPI{reply: `{}`})
 	s.SetAuditAppender(panicAudit{})
-	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: []string{"tunnels:read:own"}}
-	h := s.mcpHandler()
-	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
-	}))
-	t.Cleanup(hs.Close)
+	hs := serveFor(t, s, &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: []string{"audit:read"}})
 	cs := connectMCP(t, hs.URL, "", "2025-11-25")
 
 	// An allowed tool, and a tool the token may not see.
-	for _, name := range []string{"tunnels_list", "users_list"} {
+	for _, name := range []string{"audit_events_list", "providers_list"} {
 		res, err := callTool(t, cs, name, nil)
 		if err != nil {
 			t.Fatalf("%s: protocol error: %v", name, err)
@@ -668,41 +817,6 @@ func TestMCP_AuditPanic_IsContained(t *testing.T) {
 	}
 }
 
-// Argument values reach neither the caller nor the log.
-func TestMCP_BadArguments_DoNotEchoValues(t *testing.T) {
-	var logBuf strings.Builder
-	var mu sync.Mutex
-	log := slog.New(slog.NewTextHandler(lockedWriter{&mu, &logBuf}, nil))
-	s := New(nil, nil, &fakeStore{}, log)
-	s.SetAuditAppender(&auditSink{})
-	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: allToolPerms}
-	h := s.mcpHandler()
-	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
-	}))
-	t.Cleanup(hs.Close)
-	cs := connectMCP(t, hs.URL, "", "2025-11-25")
-
-	for _, args := range []map[string]any{
-		{"since": "SECRET-not-a-date"},
-		{"limit": "SECRET-not-a-number"},
-	} {
-		res, err := callTool(t, cs, "audit_search", args)
-		if err != nil {
-			t.Fatalf("protocol error: %v", err)
-		}
-		text := resultText(t, res)
-		if !res.IsError || !strings.HasPrefix(text, "invalid arguments") || strings.Contains(text, "SECRET") {
-			t.Errorf("args %v: result = %+v", args, res)
-		}
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if strings.Contains(logBuf.String(), "SECRET") {
-		t.Errorf("log carries an argument value: %s", logBuf.String())
-	}
-}
-
 type lockedWriter struct {
 	mu *sync.Mutex
 	b  *strings.Builder
@@ -714,26 +828,45 @@ func (w lockedWriter) Write(p []byte) (int, error) {
 	return w.b.Write(p)
 }
 
-// A store error that is not the caller's business is answered with a fixed
-// text and logged.
-func TestMCP_StoreError_IsNotShownToTheCaller(t *testing.T) {
-	fs := &fakeStore{apiKeyErr: errors.New("pq: connection to 10.0.0.5 refused")}
-	hs, _ := newSDKTestServer(t, fs, allToolPerms, "admin")
+// Argument values reach no log line, refused or sent.
+func TestMCP_ArgumentValues_StayOutOfTheLog(t *testing.T) {
+	var logBuf strings.Builder
+	var mu sync.Mutex
+	log := slog.New(slog.NewTextHandler(lockedWriter{&mu, &logBuf}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	s := newTestServer(t, nil, nil, log)
+	s.SetAPIHandler(&fakeAPI{status: http.StatusBadRequest, reply: `{"error":"bad"}`})
+	s.SetAuditAppender(&auditSink{})
+	hs := serveFor(t, s, &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: presetPerms(authz.PresetFull)})
 	cs := connectMCP(t, hs.URL, "", "2025-11-25")
-	res, err := callTool(t, cs, "api_keys_list", map[string]any{"service_id": "svc1"})
-	if err != nil || !res.IsError || resultText(t, res) != "internal error" {
-		t.Errorf("err=%v result=%+v", err, res)
+
+	for _, args := range []map[string]any{
+		{"since": "SECRET-not-a-date", "limit": "SECRET-not-a-number"},
+		{"action": "SECRET-sent"},
+		{"SECRET-unknown": 1},
+	} {
+		res, err := callTool(t, cs, "audit_events_list", args)
+		if err != nil || !res.IsError {
+			t.Fatalf("args %v: err=%v result=%+v", args, err, res)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(logBuf.String(), "audit_events_list") {
+		t.Fatalf("the calls were not logged; the test would prove nothing: %s", logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), "SECRET") {
+		t.Errorf("log carries an argument value: %s", logBuf.String())
 	}
 }
 
 // One handler serves tokens with different permissions; each request sees
 // only its own token's tools, interleaved and concurrent.
 func TestMCP_TwoTokensOneHandler(t *testing.T) {
-	s := New(nil, nil, &fakeStore{}, quietLog())
+	s := newTestServer(t, nil, nil, quietLog())
 	s.SetAuditAppender(&auditSink{})
 	toks := map[string]*authedToken{
-		"a": {tokenID: "ta", userID: "u1", role: "admin", perms: []string{"tunnels:read:own"}},
-		"b": {tokenID: "tb", userID: "u2", role: "admin", perms: []string{"audit:read", "metrics:read"}},
+		"a": {tokenID: "ta", userID: "u1", role: "admin", perms: []string{"audit:read"}},
+		"b": {tokenID: "tb", userID: "u2", role: "admin", perms: []string{"tunnels:read:any"}},
 	}
 	h := s.mcpHandler()
 	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -745,7 +878,7 @@ func TestMCP_TwoTokensOneHandler(t *testing.T) {
 		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
 	}))
 	t.Cleanup(hs.Close)
-	want := map[string]string{"a": "tunnels_list", "b": "audit_search,metrics_snapshot"}
+	want := map[string]string{"a": "audit_events_list,connection_logs_list,me_get", "b": "known_clients_list,me_get"}
 
 	var wg sync.WaitGroup
 	errs := make(chan string, 64)
@@ -784,47 +917,27 @@ func TestMCP_TwoTokensOneHandler(t *testing.T) {
 	}
 }
 
-// markerStore fails with texts that quote a caller-supplied value, as a
-// database duplicate-key detail does, and panics the same way.
-type markerStore struct{ fakeStore }
-
 const marker = "MARKER-7f3a-secret-value"
 
-func (*markerStore) ListAPIKeys(context.Context, string, string, string) ([]db.ServiceAPIKey, error) {
-	return nil, fmt.Errorf("duplicate key value violates unique constraint: Key (name)=(%s) already exists", marker)
-}
-
-func (*markerStore) MetricsText() (string, error) { panic("index out of range near " + marker) }
-
-func TestMCP_ErrorAndPanicText_StayOutOfLogsAndResults(t *testing.T) {
+// A panic of the API is answered with a fixed text and logged with its type
+// and a stack, never its value.
+func TestMCP_PanicText_StaysOutOfLogsAndResults(t *testing.T) {
 	var logBuf strings.Builder
 	var mu sync.Mutex
 	log := slog.New(slog.NewTextHandler(lockedWriter{&mu, &logBuf}, nil))
-	s := New(nil, nil, &markerStore{}, log)
+	s := newTestServer(t, nil, nil, log)
+	s.SetAPIHandler(panicAPI{msg: "index out of range near " + marker})
 	s.SetAuditAppender(&auditSink{})
-	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: allToolPerms}
-	h := s.mcpHandler()
-	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
-	}))
-	t.Cleanup(hs.Close)
+	hs := serveFor(t, s, &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: presetPerms(authz.PresetFull)})
 	cs := connectMCP(t, hs.URL, "", "2025-11-25")
 
-	for _, c := range []struct {
-		tool string
-		args map[string]any
-	}{
-		{"api_keys_list", map[string]any{"service_id": "svc1"}},
-		{"metrics_snapshot", nil},
-	} {
-		res, err := callTool(t, cs, c.tool, c.args)
-		if err != nil || !res.IsError {
-			t.Fatalf("%s: err=%v result=%+v", c.tool, err, res)
-		}
-		raw, _ := json.Marshal(res)
-		if strings.Contains(string(raw), marker) || resultText(t, res) != "internal error" {
-			t.Errorf("%s: result = %s", c.tool, raw)
-		}
+	res, err := callTool(t, cs, "providers_list", nil)
+	if err != nil || !res.IsError {
+		t.Fatalf("err=%v result=%+v", err, res)
+	}
+	raw, _ := json.Marshal(res)
+	if strings.Contains(string(raw), marker) || resultText(t, res) != "internal error" {
+		t.Errorf("result = %s", raw)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -832,178 +945,84 @@ func TestMCP_ErrorAndPanicText_StayOutOfLogsAndResults(t *testing.T) {
 	if strings.Contains(logs, marker) {
 		t.Errorf("a log line carries the marker: %s", logs)
 	}
-	if !strings.Contains(logs, "api_keys_list") || !strings.Contains(logs, "metrics_snapshot") {
-		t.Errorf("the failures were not logged; the test would prove nothing: %s", logs)
+	if !strings.Contains(logs, "providers_list") || !strings.Contains(logs, "panic_type=string") || !strings.Contains(logs, "goroutine") {
+		t.Errorf("panic log: %s", logs)
 	}
 }
 
-// Every object result goes out twice: as structuredContent and as the text
-// of one content block, the same JSON.
-func TestMCP_ObjectResult_IsStructuredAndText(t *testing.T) {
-	fs := &fakeStore{
-		tunnels:     []TunnelInfo{{ID: "tun-a", Name: "alpha", Type: "http"}},
-		metricsBody: "burrow_x 1\n",
-	}
-	for _, rev := range testRevisions {
-		hs, _ := newSDKTestServer(t, fs, allToolPerms, "admin")
-		cs := connectMCP(t, hs.URL, "", rev)
-		for _, tool := range []string{"tunnels_list", "services_list", "tokens_list", "users_list", "audit_search", "metrics_snapshot"} {
-			res, err := callTool(t, cs, tool, nil)
+// Every result goes out twice: as structuredContent and as the text of one
+// content block, the same JSON object.
+func TestMCP_Results_AreStructuredAndText(t *testing.T) {
+	for _, c := range []struct {
+		name, ct, reply string
+		status          int
+		want            string
+	}{
+		{"object", "application/json", `{"id":"p1"}`, 200, `{"id":"p1"}`},
+		{"object with spaces", "application/json", "{ \"id\": \"p1\" }\n", 200, `{"id":"p1"}`},
+		{"array", "application/json", `[1,2]`, 200, `{"items":[1,2]}`},
+		{"no content", "", ``, 204, `{"status":204}`},
+		{"text", "text/plain; version=0.0.4", "burrow_x 1\n", 200, `{"content_type":"text/plain; version=0.0.4","text":"burrow_x 1\n"}`},
+		{"scalar", "application/json", `"ok"`, 200, `{"text":"\"ok\""}`},
+	} {
+		api := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if c.ct != "" {
+				w.Header().Set("Content-Type", c.ct)
+			}
+			w.WriteHeader(c.status)
+			_, _ = io.WriteString(w, c.reply)
+		})
+		for _, rev := range []string{"2026-07-28", "2025-03-26"} {
+			hs, _ := newSDKTestServer(t, api, presetPerms(authz.PresetFull), "admin")
+			res, err := callTool(t, connectMCP(t, hs.URL, "", rev), "providers_list", nil)
 			if err != nil || res.IsError {
-				t.Fatalf("%s %s: err=%v result=%+v", rev, tool, err, res)
+				t.Fatalf("%s %s: err=%v result=%+v", c.name, rev, err, res)
+			}
+			text := resultText(t, res)
+			if !sameJSON(t, text, c.want) {
+				t.Errorf("%s %s: text %s, want %s", c.name, rev, text, c.want)
 			}
 			structured, ok := res.StructuredContent.(map[string]any)
 			if !ok {
-				t.Fatalf("%s %s: structuredContent is %T, want an object", rev, tool, res.StructuredContent)
-			}
-			var fromText map[string]any
-			if err := json.Unmarshal([]byte(resultText(t, res)), &fromText); err != nil {
-				t.Fatalf("%s %s: text is not a JSON object: %v", rev, tool, err)
+				t.Fatalf("%s %s: structuredContent is %T, want an object", c.name, rev, res.StructuredContent)
 			}
 			a, _ := json.Marshal(structured)
-			b, _ := json.Marshal(fromText)
-			if string(a) != string(b) {
-				t.Errorf("%s %s: structuredContent %s != text %s", rev, tool, a, b)
+			if !sameJSON(t, string(a), text) {
+				t.Errorf("%s %s: structuredContent %s != text %s", c.name, rev, a, text)
 			}
 		}
-	}
-}
-
-// The caller's wrong input is answered as such, not as an internal error.
-func TestMCP_AccessModeInputErrors_AreUserErrors(t *testing.T) {
-	for _, c := range []struct {
-		err  error
-		want string
-	}{
-		{store.ErrInvalidAccessMode, "invalid access mode"},
-		{store.ErrServiceNotHTTP, "api_key and burrow_login require an http service"},
-		{store.ErrDirectService, "service backs a direct AI provider"},
-	} {
-		fs := &fakeStore{setModeErr: c.err}
-		hs, _ := newSDKTestServer(t, fs, allToolPerms, "admin")
-		cs := connectMCP(t, hs.URL, "", "2025-11-25")
-		res, err := callTool(t, cs, "services_set_access_mode", map[string]any{"id": "svc1", "mode": "bogus"})
-		if err != nil || !res.IsError || resultText(t, res) != c.want {
-			t.Errorf("%v: err=%v result=%+v, want %q", c.err, err, res, c.want)
-		}
-	}
-}
-
-// fakeDriverErr has the method of a sqlite driver error.
-type fakeDriverErr struct{ msg string }
-
-func (e *fakeDriverErr) Error() string { return e.msg }
-func (*fakeDriverErr) Code() int       { return 2067 }
-
-type chainStore struct{ fakeStore }
-
-func (*chainStore) ListAPIKeys(_ context.Context, _, _, serviceID string) ([]db.ServiceAPIKey, error) {
-	switch serviceID {
-	case "sentinel":
-		return nil, fmt.Errorf("create key %q: %w", marker, store.ErrTokenNameRequired)
-	default:
-		return nil, fmt.Errorf("insert %q: %w", marker, &fakeDriverErr{msg: "UNIQUE constraint failed: " + marker})
-	}
-}
-
-// The log says why a tool failed without quoting argument values: the types
-// along the chain, the text of a known sentinel, the code of a driver error.
-func TestMCP_FailureLog_NamesTheCauseNotTheText(t *testing.T) {
-	var logBuf strings.Builder
-	var mu sync.Mutex
-	log := slog.New(slog.NewTextHandler(lockedWriter{&mu, &logBuf}, nil))
-	s := New(nil, nil, &chainStore{}, log)
-	s.SetAuditAppender(&auditSink{})
-	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: allToolPerms}
-	h := s.mcpHandler()
-	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
-	}))
-	t.Cleanup(hs.Close)
-	cs := connectMCP(t, hs.URL, "", "2025-11-25")
-	for _, id := range []string{"sentinel", "driver"} {
-		if res, err := callTool(t, cs, "api_keys_list", map[string]any{"service_id": id}); err != nil || !res.IsError {
-			t.Fatalf("%s: err=%v result=%+v", id, err, res)
-		}
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	logs := logBuf.String()
-	if strings.Contains(logs, marker) {
-		t.Errorf("a log line carries the marker: %s", logs)
-	}
-	for _, want := range []string{
-		"*fmt.wrapError > *errors.errorString", // the chain of the sentinel case
-		store.ErrTokenNameRequired.Error(),     // its fixed text
-		"*fmt.wrapError > *mcpserv.fakeDriverErr",
-		"sqlite 2067", // the driver code
-	} {
-		if !strings.Contains(logs, want) {
-			t.Errorf("the log lacks %q: %s", want, logs)
-		}
-	}
-}
-
-// A panic is logged with its type and a stack, not its value.
-func TestMCP_PanicLog_HasTypeAndStack(t *testing.T) {
-	var logBuf strings.Builder
-	var mu sync.Mutex
-	log := slog.New(slog.NewTextHandler(lockedWriter{&mu, &logBuf}, nil))
-	s := New(nil, nil, &markerStore{}, log)
-	s.SetAuditAppender(&auditSink{})
-	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: allToolPerms}
-	h := s.mcpHandler()
-	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
-	}))
-	t.Cleanup(hs.Close)
-	cs := connectMCP(t, hs.URL, "", "2025-11-25")
-	if _, err := callTool(t, cs, "metrics_snapshot", nil); err != nil {
-		t.Fatal(err)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	logs := logBuf.String()
-	if strings.Contains(logs, marker) || !strings.Contains(logs, "panic_type=string") || !strings.Contains(logs, "goroutine") {
-		t.Errorf("panic log: %s", logs)
 	}
 }
 
 // ---------- tool deadline ---------------------------------------------------
 
-// hangStore blocks ListAPIKeys until its context is done, as a store call
-// that hangs would, and says when it has returned.
-type hangStore struct {
-	fakeStore
+// hangAPI blocks until its request's context is done, as a handler that
+// hangs would, and says when it has returned.
+type hangAPI struct {
 	entered  chan struct{}
 	returned chan struct{}
 }
 
-func (h *hangStore) ListAPIKeys(ctx context.Context, _, _, _ string) ([]db.ServiceAPIKey, error) {
+func (h *hangAPI) ServeHTTP(_ http.ResponseWriter, r *http.Request) {
 	defer close(h.returned)
 	close(h.entered)
-	<-ctx.Done()
-	return nil, ctx.Err()
+	<-r.Context().Done()
 }
 
 func TestMCP_HangingTool_EndsAtTheDeadline(t *testing.T) {
-	hs := &hangStore{entered: make(chan struct{}), returned: make(chan struct{})}
+	api := &hangAPI{entered: make(chan struct{}), returned: make(chan struct{})}
 	var logs strings.Builder
 	var logMu sync.Mutex
-	s := New(nil, nil, hs, slog.New(slog.NewTextHandler(lockedWriter{&logMu, &logs}, nil)))
+	s := newTestServer(t, nil, nil, slog.New(slog.NewTextHandler(lockedWriter{&logMu, &logs}, nil)))
+	s.SetAPIHandler(api)
 	s.toolTimeout = 100 * time.Millisecond
 	sink := &auditSink{}
 	s.SetAuditAppender(sink)
-	tok := &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: allToolPerms}
-	h := s.mcpHandler()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.ServeHTTP(w, r.WithContext(withToken(r.Context(), tok)))
-	}))
-	t.Cleanup(srv.Close)
+	srv := serveFor(t, s, &authedToken{tokenID: "tok1", userID: "u1", role: "admin", perms: presetPerms(authz.PresetFull)})
 	cs := connectMCP(t, srv.URL, "", "2025-11-25")
 
 	start := time.Now()
-	res, err := callTool(t, cs, "api_keys_list", map[string]any{"service_id": "secret-service-id"})
+	res, err := callTool(t, cs, "service_get", map[string]any{"serviceID": "secret-service-id"})
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -1014,9 +1033,9 @@ func TestMCP_HangingTool_EndsAtTheDeadline(t *testing.T) {
 		t.Errorf("result = %+v", res)
 	}
 	select {
-	case <-hs.returned:
+	case <-api.returned:
 	case <-time.After(2 * time.Second):
-		t.Fatal("the tool call is still running after the deadline")
+		t.Fatal("the API request is still running after the deadline")
 	}
 	if rows := sink.all(); len(rows) != 1 || rows[0].Result != "error" {
 		t.Errorf("audit rows = %+v", rows)
@@ -1024,7 +1043,7 @@ func TestMCP_HangingTool_EndsAtTheDeadline(t *testing.T) {
 	logMu.Lock()
 	out := logs.String()
 	logMu.Unlock()
-	if !strings.Contains(out, "api_keys_list") || !strings.Contains(out, "deadline=100ms") {
+	if !strings.Contains(out, "service_get") || !strings.Contains(out, "deadline=100ms") {
 		t.Errorf("log lacks the tool or the deadline: %s", out)
 	}
 	if strings.Contains(out, "secret-service-id") {

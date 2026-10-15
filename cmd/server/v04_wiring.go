@@ -214,13 +214,9 @@ func buildV04Stack(
 		geoLookup = proxy.NoopGeoLookup()
 	}
 
-	// --- mcp server (deferred until caller supplies the live tunnel
-	// registry; see BuildMCPServer below). main.go wires it after
-	// constructing *server.Server.
+	// --- mcp server: built in main.go via BuildMCPServer, which hands it
+	// the API router once that exists.
 	var mcpServer *mcpserv.Server
-	_ = mcpServer
-	// We construct MCPServer lazily in main.go via BuildMCPServer so the
-	// adapter sees the actual live tunnel registry (cycle-free at construction).
 
 	return &v04Stack{
 		AuditLogger:       auditLogger,
@@ -307,86 +303,6 @@ func (a mcpBearerAdapter) TouchBearer(ctx context.Context, id string) error {
 	return a.s.TouchBearer(ctx, id)
 }
 
-// mcpToolStoreAdapter satisfies mcpserv.ToolStore by composing *store.Store,
-// the live tunnel registry, the audit query store, and the metrics
-// recorder. Every method maps to its REST equivalent — the MCP tools are
-// thin wrappers over the same business logic.
-type mcpToolStoreAdapter struct {
-	st      *store.Store
-	tunnels mcpTunnelSource // *server.Server adapter (live registry)
-	audit   *db.DB          // SearchAuditEvents
-	metrics *metrics.Recorder
-}
-
-// mcpTunnelSource is the narrow user-scoped tunnel-listing surface the MCP
-// adapter needs from cmd/server's live tunnel registry. Defined here (rather
-// than reusing api.TunnelLister) so the adapter has no dependency on the
-// api package.
-type mcpTunnelSource interface {
-	ListUserTunnelsMCP(callerID string) []mcpserv.TunnelInfo
-}
-
-func (a mcpToolStoreAdapter) ListUserTunnels(_ context.Context, callerID, _ string) ([]mcpserv.TunnelInfo, error) {
-	if a.tunnels == nil {
-		return nil, nil
-	}
-	return a.tunnels.ListUserTunnelsMCP(callerID), nil
-}
-
-func (a mcpToolStoreAdapter) ListServices(ctx context.Context, callerID, callerRole string) ([]store.ServiceView, error) {
-	return a.st.ListServices(ctx, callerID, callerRole)
-}
-
-func (a mcpToolStoreAdapter) GetService(ctx context.Context, callerID, callerRole, id string) (store.ServiceDetail, error) {
-	return a.st.GetService(ctx, callerID, callerRole, id)
-}
-
-func (a mcpToolStoreAdapter) SetServiceAccessMode(ctx context.Context, callerID, callerRole, id, mode, header string, mtlsCAPEM []byte) error {
-	return a.st.SetServiceAccessMode(ctx, callerID, callerRole, id, mode, header, mtlsCAPEM)
-}
-
-func (a mcpToolStoreAdapter) ListAPIKeys(ctx context.Context, callerID, callerRole, serviceID string) ([]db.ServiceAPIKey, error) {
-	return a.st.ListAPIKeys(ctx, callerID, callerRole, serviceID)
-}
-
-func (a mcpToolStoreAdapter) CreateAPIKey(ctx context.Context, callerID, callerRole, serviceID, name string) (string, string, error) {
-	return a.st.CreateAPIKey(ctx, callerID, callerRole, serviceID, name)
-}
-
-func (a mcpToolStoreAdapter) DeleteAPIKey(ctx context.Context, callerID, callerRole, serviceID, keyID string) error {
-	return a.st.DeleteAPIKey(ctx, callerID, callerRole, serviceID, keyID)
-}
-
-func (a mcpToolStoreAdapter) ListClientTokens(ctx context.Context, userID string) ([]db.ClientToken, error) {
-	return a.st.ListClientTokens(ctx, userID)
-}
-
-func (a mcpToolStoreAdapter) IssueClientToken(ctx context.Context, userID, name string) (string, error) {
-	return a.st.IssueClientToken(ctx, userID, name)
-}
-
-func (a mcpToolStoreAdapter) ListUsers(ctx context.Context, q string, limit, offset int) ([]db.User, int, error) {
-	return a.st.ListUsersPage(ctx, q, limit, offset)
-}
-
-func (a mcpToolStoreAdapter) SearchAuditEvents(ctx context.Context, q db.AuditQuery) ([]db.AuditEvent, error) {
-	if a.audit == nil {
-		return nil, nil
-	}
-	return a.audit.ListAuditEvents(ctx, q)
-}
-
-func (a mcpToolStoreAdapter) MetricsText() (string, error) {
-	if a.metrics == nil {
-		return "", nil
-	}
-	var buf metricsBuf
-	if err := a.metrics.WriteText(&buf); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
-}
-
 // cacheServiceLookupAdapter satisfies api.CacheServiceLookup. It is a
 // thin wrapper over *db.DB so the api package stays decoupled from the
 // db schema details. v0.4.0 ships without a real service_ai_config DB
@@ -416,89 +332,28 @@ func (a cacheServiceLookupAdapter) ListAllServiceAIConfigs(_ context.Context) ([
 	return nil, nil
 }
 
-// mcpTunnelAdapter narrows *server.Server's ListUserTunnels to the
-// mcpserv.TunnelInfo shape the MCP adapter needs. *server.Server is
-// already usable directly, but the adapter exists to keep mcpserv free
-// of any internal/server import.
-type mcpTunnelAdapter struct{ s userTunnelLister }
-
-func (a mcpTunnelAdapter) ListUserTunnelsMCP(callerID string) []mcpserv.TunnelInfo {
-	if a.s == nil {
-		return nil
-	}
-	tns := a.s.ListUserTunnels(callerID)
-	out := make([]mcpserv.TunnelInfo, 0, len(tns))
-	for _, t := range tns {
-		out = append(out, mcpserv.TunnelInfo{
-			ID: t.ID, Name: t.Name, Type: t.Type,
-			RemotePort: t.RemotePort, LocalAddr: t.LocalAddr,
-			BytesIn: t.BytesIn, BytesOut: t.BytesOut,
-			Connected: t.Connected,
-		})
-	}
-	return out
-}
-
-// metricsBuf is a tiny strings.Builder-shaped http.ResponseWriter so we
-// can capture WriteText into a string without spinning up an httptest
-// server. Implements the minimal http.ResponseWriter surface (Header,
-// WriteHeader, Write) the recorder uses.
-type metricsBuf struct {
-	hdr http.Header
-	b   []byte
-}
-
-func (m *metricsBuf) Header() http.Header {
-	if m.hdr == nil {
-		m.hdr = http.Header{}
-	}
-	return m.hdr
-}
-func (m *metricsBuf) WriteHeader(int)             {}
-func (m *metricsBuf) Write(p []byte) (int, error) { m.b = append(m.b, p...); return len(p), nil }
-func (m *metricsBuf) String() string              { return string(m.b) }
-
 // ---------------------------------------------------------------------------
 // Inspector replayer adapter
 // ---------------------------------------------------------------------------
 
 // BuildMCPServer constructs the *mcpserv.Server the API router mounts at
-// /mcp/burrow. It is called from main.go after the live tunnel registry has
-// been constructed (so the ToolStore adapter can reach into it). Every relay
-// has one; there is nothing to configure.
+// /mcp/burrow, its tools built from spec (api.OpenAPIDocument()). Every relay
+// has one; there is nothing to configure. main.go hands it the router with
+// SetAPIHandler once the router is built: a tool call is replayed through
+// it with the caller's bearer, so the gate, the handlers and the audit rows
+// are those of the REST API.
 //
 // The audit logger is wired into the server so every tools/call dispatch
-// emits one mcp.tool.call audit row (Task 15 — closes spec Part P's audit
-// contract).
-//
-// authDomain is the resolved auth domain the API router gets as
-// api.Deps.AuthDomain: without one the access-mode tool refuses burrow_login,
-// as the JSON API does.
-func BuildMCPServer(
-	st *store.Store,
-	stack *v04Stack,
-	tunnels mcpTunnelSource,
-	wrapped *db.DB,
-	authDomain string,
-	log *slog.Logger,
-) *mcpserv.Server {
-	toolStore := mcpToolStoreAdapter{
-		st:      st,
-		tunnels: tunnels,
-		audit:   wrapped,
-		metrics: stack.Metrics,
+// emits one mcp.tool.call audit row.
+func BuildMCPServer(st *store.Store, stack *v04Stack, spec []byte, log *slog.Logger) (*mcpserv.Server, error) {
+	srv, err := mcpserv.New(mcpBearerAdapter{s: st}, st, spec, log)
+	if err != nil {
+		return nil, err
 	}
-	srv := mcpserv.New(
-		mcpBearerAdapter{s: st},
-		st,
-		toolStore,
-		log,
-		mcpserv.WithAuthDomain(authDomain),
-	)
 	if stack.AuditLogger != nil {
 		srv.SetAuditAppender(stack.AuditLogger)
 	}
-	return srv
+	return srv, nil
 }
 
 // warnRetiredMCPConfig says once, at start, that the variables of the

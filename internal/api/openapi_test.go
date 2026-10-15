@@ -842,6 +842,7 @@ func (*fullDepsStub) Tools() []mcpserv.ToolDescriptor {
 	stubPanic("Tools")
 	return nil
 }
+func (*fullDepsStub) OperationCount() int { return 0 }
 
 // stubCredVaultForOpenAPI satisfies CredentialVaultIface for the full-deps
 // route-enumeration walk. chi.Walk does not invoke handlers, so these methods

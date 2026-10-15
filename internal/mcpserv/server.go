@@ -1,5 +1,5 @@
-// Package mcpserv is Burrow's management MCP server: the relay's own
-// management surface as a closed set of tools for MCP clients.
+// Package mcpserv is Burrow's management MCP server: the relay's own JSON
+// API, offered to MCP clients as tools.
 //
 // Protocol: the official Go SDK serves the Streamable HTTP transport,
 // stateless, for the MCP revisions 2026-07-28, 2025-11-25, 2025-06-18 and
@@ -12,14 +12,14 @@
 // request a browser sends from another origin is refused before the token
 // is looked at.
 //
-// Permissions: every tool declares an authz.Permission string that maps to
-// the SAME permission the equivalent REST endpoint enforces (e.g.
-// audit_search → audit:read). Cookie/admin shortcuts are NOT applied;
-// the bearer token's permission set is the source of truth, intersected
-// with the minter user's CURRENT role (matches Task 18 effectivePerms). A
-// token sees and can call exactly the tools that rule allows. A tool that
-// acts only on what belongs to the caller is opened by the :any twin of its
-// :own permission as well (Tool.AlsoOpenedBy), on the same rule.
+// Tools: the operations of the OpenAPI document (registry.go) are the tools.
+// A short list of them (curated.go) is offered as tools of their own. A call
+// is replayed as an HTTP request through the relay's own router with the
+// caller's Authorization header (dispatch.go), so the permission gate, the
+// validation, the handler and the audit rows are those of the REST call. A
+// token is shown the tools whose x-burrow-permission it satisfies (mayUse),
+// the same rule the API's gate applies: the token declares the permission
+// AND the role of its user grants it now.
 //
 // What a request passes, in order:
 //
@@ -32,21 +32,23 @@
 //	               405  anything but POST
 //	               200  JSON-RPC, errors included
 //
-// One audit row (mcp.tool.call) is written per tools/call on a tool of the
-// registry: ok, error, or denied. That row and the rows the store writes for
-// a tool's own changes (token.mint, service.access_mode.update, …) name the
-// token's user, the client address, the user agent and the request id, like
-// the rows of the JSON API (auditContext).
+// One audit row (mcp.tool.call) is written per tools/call on a known tool:
+// ok, dry_run, error, or denied. It names the token's user, the client
+// address, the user agent and the request id, like the rows of the JSON API
+// (auditContext); the API writes its own rows for what the call changes.
 package mcpserv
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -110,21 +112,34 @@ type UserLookup interface {
 // Server is the management MCP server, an http.Handler. The zero value is
 // NOT usable — call New().
 type Server struct {
-	bearer   BearerStore
-	users    UserLookup
-	log      *slog.Logger
-	tools    map[string]Tool
-	ordered  []Tool           // declaration order
-	toolList []ToolDescriptor // the same order, for Tools()
-	audit    AuditAppender    // optional; nil = audit hook disabled
+	bearer BearerStore
+	users  UserLookup
+	log    *slog.Logger
+	audit  AuditAppender // optional; nil = audit hook disabled
+
+	// reg is the registry of the OpenAPI document New was given.
+	reg *Registry
+	// curated are the operations of curatedTools, in that order;
+	// curatedByName finds one by its tool name.
+	curated       []Operation
+	curatedByName map[string]Operation
+	// curatedDesc holds the descriptions curatedTools gives, by operation id.
+	curatedDesc map[string]string
+	// toolSchemas holds the marshalled input schema of each curated
+	// operation, by operation id. Read only after New.
+	toolSchemas map[string]json.RawMessage
+	toolList    []ToolDescriptor // the curated tools, for Tools()
+	// validators caches the resolved argument schema of an operation, by id
+	// (*jsonschema.Resolved).
+	validators sync.Map
+	// api is the relay's router (SetAPIHandler); nil until it is set.
+	api atomic.Pointer[http.Handler]
 
 	rateLimit int
 	// toolTimeout overrides the package constant of that name; tests only.
 	toolTimeout time.Duration
 	rateWindow  time.Duration
-	// authDomain: the relay has an auth domain (WithAuthDomain).
-	authDomain bool
-	handler    http.Handler
+	handler     http.Handler
 }
 
 // Option adjusts a Server at construction.
@@ -136,18 +151,10 @@ func WithRateLimit(requests int, window time.Duration) Option {
 	return func(s *Server) { s.rateLimit, s.rateWindow = requests, window }
 }
 
-// WithAuthDomain tells the server the relay's auth domain, the value the
-// JSON API has as api.Deps.AuthDomain. Only whether it is set matters:
-// services_set_access_mode refuses burrow_login without one, as the JSON API
-// does. Without this option the mode is refused.
-func WithAuthDomain(domain string) Option {
-	return func(s *Server) { s.authDomain = domain != "" }
-}
-
 // SetAuditAppender installs an audit appender. The MCP server emits one
-// mcp.tool.call audit row per tools/call dispatch — both denied (the
-// bearer's perms did not include the tool's required permission) and ok.
-// Nil disables the audit hook entirely.
+// mcp.tool.call audit row per tools/call on a known tool: ok, dry_run,
+// error, or denied (the token may not use the tool, or the API answered 401
+// or 403). Nil disables the audit hook entirely.
 //
 // Safe to call once at startup; not safe to mutate after the server has
 // been handed to goroutines.
@@ -180,39 +187,67 @@ func (s *Server) emitToolAudit(ctx context.Context, tok *authedToken, toolName, 
 	})
 }
 
-// New returns a Server with the closed 12-tool inventory installed. Pass nil
-// for bearer/users in tests that only exercise the registry; every request
-// is then answered 500, never served.
+// New returns a Server whose tools are built from spec, the bytes of the
+// relay's OpenAPI document. It fails when the document does not make a
+// registry (NewRegistry) or when a curated tool names an operation the
+// registry does not have. Pass nil for bearer/users in tests that serve
+// mcpHandler directly; every request through ServeHTTP is then answered 500.
 //
-// The toolStore parameter is the production wiring seam — cmd/server
-// constructs a single adapter over *store.Store and passes it here. Tests
-// provide a fake.
-func New(bearer BearerStore, users UserLookup, toolStore ToolStore, log *slog.Logger, opts ...Option) *Server {
+// A call is answered "the relay is starting" until SetAPIHandler hands the
+// server the router to replay it through.
+func New(bearer BearerStore, users UserLookup, spec []byte, log *slog.Logger, opts ...Option) (*Server, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	reg, err := NewRegistry(spec)
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{
-		bearer:     bearer,
-		users:      users,
-		log:        log,
-		rateLimit:  DefaultRateLimit,
-		rateWindow: DefaultRateWindow,
+		bearer:        bearer,
+		users:         users,
+		log:           log,
+		reg:           reg,
+		curatedByName: map[string]Operation{},
+		curatedDesc:   map[string]string{},
+		toolSchemas:   map[string]json.RawMessage{},
+		rateLimit:     DefaultRateLimit,
+		rateWindow:    DefaultRateWindow,
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
-	// After the options: the tools read what they set.
-	s.tools = buildTools(toolStore, toolEnv{authDomain: s.authDomain})
-	s.ordered = make([]Tool, 0, len(orderedTools))
-	s.toolList = make([]ToolDescriptor, 0, len(orderedTools))
-	for _, name := range orderedTools {
-		t := s.tools[name]
-		s.ordered = append(s.ordered, t)
+	for _, ct := range curatedTools {
+		op, ok := reg.Lookup(ct.ID)
+		if !ok {
+			return nil, fmt.Errorf("curated tool %s: no such operation in the spec", ct.ID)
+		}
+		schema, err := json.Marshal(op.InputSchema())
+		if err != nil {
+			return nil, fmt.Errorf("curated tool %s: input schema: %w", ct.ID, err)
+		}
+		s.curated = append(s.curated, op)
+		s.curatedByName[ToolName(op.ID)] = op
+		s.toolSchemas[op.ID] = schema
+		if ct.Description != "" {
+			s.curatedDesc[op.ID] = ct.Description
+		}
+		perms := make([]string, 0, len(op.Access.AnyOf))
+		for _, p := range op.Access.AnyOf {
+			perms = append(perms, string(p))
+		}
+		first := ""
+		if len(perms) > 0 {
+			first = perms[0]
+		}
 		s.toolList = append(s.toolList, ToolDescriptor{
-			Name:             t.Name,
-			Description:      t.Description,
-			ParametersSchema: t.ParamsSchema,
-			Permission:       string(t.Permission),
+			Name:             ToolName(op.ID),
+			Description:      s.description(op),
+			ParametersSchema: schema,
+			Permission:       first,
+			Permissions:      perms,
+			Kind:             op.Kind(),
+			Generic:          false,
 		})
 	}
 	limit := httprate.Limit(s.rateLimit, s.rateWindow,
@@ -224,23 +259,66 @@ func New(bearer BearerStore, users UserLookup, toolStore ToolStore, log *slog.Lo
 		}),
 	)
 	s.handler = checkOrigin(s.requireBearer(limit(s.touchBearer(s.mcpHandler()))))
-	return s
+	return s, nil
 }
 
-// ToolDescriptor is the read-only view of a Tool exposed via the JSON API's
-// GET /api/v1/mcp/tools endpoint. The api package consumes this slice via
-// Server.Tools() — there is no need to expose the live Call func.
+// SetAPIHandler hands the server the relay's router: every tool call is
+// replayed through it. Calls before it is set are answered "the relay is
+// starting". Safe to call while requests are served.
+func (s *Server) SetAPIHandler(h http.Handler) { s.api.Store(&h) }
+
+// OperationCount is the number of operations the generic tools reach. There
+// are none yet.
+func (s *Server) OperationCount() int { return 0 }
+
+// maxDescriptionBytes bounds the description of a tool built from an
+// operation's summary and description.
+const maxDescriptionBytes = 1024
+
+// description is what a tool built from op says about itself: the text
+// curatedTools gives, or the operation's summary and the first paragraph of
+// its description, cut to maxDescriptionBytes.
+func (s *Server) description(op Operation) string {
+	if d := s.curatedDesc[op.ID]; d != "" {
+		return d
+	}
+	d := op.Summary
+	if para, _, _ := strings.Cut(strings.TrimSpace(op.Description), "\n\n"); para != "" {
+		if d != "" {
+			d += "\n\n"
+		}
+		d += strings.TrimSpace(para)
+	}
+	if len(d) > maxDescriptionBytes {
+		cut := maxDescriptionBytes
+		for cut > 0 && !utf8.RuneStart(d[cut]) {
+			cut--
+		}
+		d = d[:cut]
+	}
+	return d
+}
+
+// ToolDescriptor is the read-only view of a tool exposed via the JSON API's
+// GET /api/v1/mcp/tools endpoint.
 type ToolDescriptor struct {
 	Name             string          `json:"name"`
 	Description      string          `json:"description"`
 	ParametersSchema json.RawMessage `json:"parameters_schema"`
-	Permission       string          `json:"permission"`
+	// Permission is the first of Permissions, "" for an operation every
+	// token may call.
+	Permission string `json:"permission"`
+	// Permissions are those of which the token needs one (x-burrow-permission
+	// any_of).
+	Permissions []string `json:"permissions"`
+	Kind        string   `json:"kind"` // read | write | delete
+	// Generic is true for the tools that reach any operation.
+	Generic bool `json:"generic"`
 }
 
-// Tools returns the closed tool inventory in stable declaration order.
-// Used by the dashboard API to render the operator's "available tools"
-// surface and by callers that wish to enumerate without issuing a tools/list
-// RPC. The returned slice is shared — callers MUST NOT mutate it.
+// Tools returns the curated tools in the order of curatedTools. Used by the
+// dashboard API to render the operator's "available tools" surface. The
+// returned slice is shared — callers MUST NOT mutate it.
 func (s *Server) Tools() []ToolDescriptor { return s.toolList }
 
 // ----- HTTP entry point ----------------------------------------------------
@@ -285,11 +363,11 @@ func (s *Server) requireBearer(next http.Handler) http.Handler {
 	})
 }
 
-// auditContext is who acts and from where, for the audit rows of this
-// request: the store's own rows for what a tool changes read it from the
-// context (audit.LogContextFrom), and emitToolAudit does. It holds what the
-// JSON API's withAuditContext holds, built the same way, so a change made
-// through a tool leaves the trail of the same change made through the API.
+// auditContext is who acts and from where, for the mcp.tool.call rows of
+// this request (emitToolAudit reads it with audit.LogContextFrom). It holds
+// what the JSON API's withAuditContext holds, built the same way; the API
+// request a call becomes carries the same address, user agent and request id
+// (dispatch.go), so the API's own rows for the change name the same.
 //
 // The address is r.RemoteAddr: the API router's TrustedProxyMiddleware has
 // put the client's address there when a trusted proxy forwarded the request.
@@ -366,22 +444,39 @@ type authedToken struct {
 	email   string // for the audit trail
 	role    string
 	perms   []string
+	// bearer is the request's whole Authorization value; a tool call sends
+	// it on to the API.
+	bearer string
+	// remoteAddr and userAgent are the request's, for the API request of a
+	// tool call.
+	remoteAddr string
+	userAgent  string
 }
 
-// mayCall reports whether the token lists and may call tool: by the tool's
-// permission or by one of those that open it as well, each on the terms of
-// can. It is the only place that decides it; the list of a request and the
-// check of a call both ask here, so they cannot disagree.
-func (t *authedToken) mayCall(tool Tool) bool {
-	if t.can(tool.Permission) {
+// mayUse reports whether the token may call op: the same decision the
+// API's gate takes for the route, from the operation's x-burrow-permission.
+// The list of a request and the check of a call both ask here.
+func (t *authedToken) mayUse(op Operation) bool {
+	switch op.Access.Kind {
+	case "public", "self":
 		return true
-	}
-	for _, p := range tool.AlsoOpenedBy {
-		if t.can(p) {
-			return true
+	case "needs":
+		if op.Access.Every {
+			for _, p := range authz.AllPermissions() {
+				if !t.can(p) {
+					return false
+				}
+			}
 		}
+		for _, p := range op.Access.AnyOf {
+			if t.can(p) {
+				return true
+			}
+		}
+		return false
+	default: // "dashboard" never reaches the registry; anything else is refused
+		return false
 	}
-	return false
 }
 
 // can returns true when the requested permission is in BOTH the bearer's
@@ -438,11 +533,14 @@ func (s *Server) authenticate(r *http.Request) (*authedToken, error) {
 		return nil, errAuthInvalid
 	}
 	return &authedToken{
-		tokenID: info.ID,
-		userID:  u.ID,
-		email:   u.Email,
-		role:    u.Role,
-		perms:   info.Permissions,
+		tokenID:    info.ID,
+		userID:     u.ID,
+		email:      u.Email,
+		role:       u.Role,
+		perms:      info.Permissions,
+		bearer:     auth,
+		remoteAddr: r.RemoteAddr,
+		userAgent:  r.UserAgent(),
 	}, nil
 }
 
@@ -452,11 +550,6 @@ var (
 	errAuthInvalid  = errors.New("invalid bearer token")
 	errAuthInternal = errors.New("internal error")
 )
-
-// ErrForbidden is the sentinel a Tool.Call returns when the underlying
-// store rejects the request on permission grounds. The call is audited as
-// "denied" and answered with an isError result.
-var ErrForbidden = errors.New("forbidden")
 
 // writeAuthErr renders a bearer-auth failure as HTTP 401 with a JSON body
 // and the challenge an MCP client expects. 500 is used only for internal
@@ -487,17 +580,9 @@ func writeHTTPError(w http.ResponseWriter, status int, msg string) {
 type ctxKey int
 
 const (
-	ctxKeyCallerID ctxKey = iota
-	ctxKeyCallerRole
-	ctxKeyToken
+	ctxKeyToken ctxKey = iota
 	ctxKeyMCPServer
 )
-
-func withCaller(ctx context.Context, uid, role string) context.Context {
-	ctx = context.WithValue(ctx, ctxKeyCallerID, uid)
-	ctx = context.WithValue(ctx, ctxKeyCallerRole, role)
-	return ctx
-}
 
 // withToken stores the authenticated token of an HTTP request.
 func withToken(ctx context.Context, tok *authedToken) context.Context {
@@ -508,21 +593,6 @@ func withToken(ctx context.Context, tok *authedToken) context.Context {
 func tokenFrom(ctx context.Context) *authedToken {
 	tok, _ := ctx.Value(ctxKeyToken).(*authedToken)
 	return tok
-}
-
-// CallerID returns the bearer-authed user id for the current MCP request,
-// or "" when invoked outside an MCP tool call. Exported so tool wrappers
-// in this package (tools.go) can resolve "owned by" semantics without
-// reaching back into the Server.
-func CallerID(ctx context.Context) string {
-	v, _ := ctx.Value(ctxKeyCallerID).(string)
-	return v
-}
-
-// CallerRole returns the user's CURRENT role for the bearer-authed request.
-func CallerRole(ctx context.Context) string {
-	v, _ := ctx.Value(ctxKeyCallerRole).(string)
-	return v
 }
 
 // ----- sha256Hex (kept local) ----------------------------------------------

@@ -8,9 +8,11 @@ package main
 //	BURROW_LIVE_MCP_URL    e.g. https://burrow.example.com/mcp/burrow
 //	BURROW_LIVE_MCP_TOKEN  an automation token (bua_…) of that relay
 //
-// The test only reads: it lists the tools the token may call and calls
-// every read-only one that needs no argument. It prints tool names and
-// result sizes, never a result and never the token.
+// The test only reads: it lists the curated tools the token may call
+// (me_get is among them for every token) and calls every read-only one that
+// needs no argument; each call is a request to the relay's API with the
+// token. It prints tool names and result sizes, never a result and never the
+// token.
 
 import (
 	"context"
@@ -37,8 +39,12 @@ func TestLiveMCP(t *testing.T) {
 			if err != nil {
 				t.Fatalf("tools/list: %v", err)
 			}
-			if len(res.Tools) == 0 {
-				t.Fatal("the token sees no tool: mint one with a permission list (docs/guide/mcp.md)")
+			listed := false
+			for _, tool := range res.Tools {
+				listed = listed || tool.Name == "me_get"
+			}
+			if !listed {
+				t.Fatal("me_get is not listed: the relay serves the tools of an older version")
 			}
 			for _, tool := range res.Tools {
 				schema, _ := json.Marshal(tool.InputSchema)

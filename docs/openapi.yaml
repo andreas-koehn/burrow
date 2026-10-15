@@ -4572,7 +4572,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [enabled, listen, token_id, endpoint]
+                required: [enabled, listen, token_id, endpoint, operations]
                 properties:
                   enabled: { type: boolean }
                   listen:
@@ -4585,6 +4585,9 @@ paths:
                     type: string
                     description: The path of the management MCP endpoint on the relay's main address.
                     example: /mcp/burrow
+                  operations:
+                    type: integer
+                    description: The number of operations the generic tools reach (burrow_call_operation).
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -4593,7 +4596,7 @@ paths:
       tags: [mcp]
       operationId: mcpToolsList
       x-burrow-permission: {kind: needs, any_of: ["mcp:tools:read"]}
-      summary: Closed inventory of MCP tools (name, description, parameters_schema, permission)
+      summary: The MCP tools offered by name (name, description, parameters_schema, permissions, kind)
       responses:
         '200':
           description: Tool inventory.
@@ -4603,12 +4606,25 @@ paths:
                 type: array
                 items:
                   type: object
-                  required: [name, description, parameters_schema, permission]
+                  required: [name, description, parameters_schema, permission, permissions, kind, generic]
                   properties:
                     name: { type: string }
                     description: { type: string }
                     parameters_schema: { type: object }
-                    permission: { type: string }
+                    permission:
+                      type: string
+                      description: The first of permissions; empty for a tool every token may call.
+                    permissions:
+                      type: array
+                      items: { type: string }
+                      description: The token needs one of these (the operation's x-burrow-permission any_of); empty for a tool every token may call.
+                    kind:
+                      type: string
+                      enum: [read, write, delete]
+                      description: read for a GET, delete for an operation that removes something (it takes confirm), write otherwise.
+                    generic:
+                      type: boolean
+                      description: True for the tools that reach any operation, false for a curated tool.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 

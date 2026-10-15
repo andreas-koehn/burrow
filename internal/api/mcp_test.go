@@ -24,9 +24,23 @@ import (
 )
 
 // fakeToolsLister satisfies MCPToolsLister with a canned inventory.
-type fakeToolsLister struct{ rows []mcpserv.ToolDescriptor }
+type fakeToolsLister struct {
+	rows []mcpserv.ToolDescriptor
+	ops  int
+}
 
 func (f *fakeToolsLister) Tools() []mcpserv.ToolDescriptor { return f.rows }
+func (f *fakeToolsLister) OperationCount() int             { return f.ops }
+
+// newMCPServer builds the MCP server from the embedded OpenAPI document.
+func newMCPServer(t *testing.T, bearer mcpserv.BearerStore, users mcpserv.UserLookup) *mcpserv.Server {
+	t.Helper()
+	srv, err := mcpserv.New(bearer, users, OpenAPIDocument(), discardLog())
+	if err != nil {
+		t.Fatalf("mcpserv.New: %v", err)
+	}
+	return srv
+}
 
 // newMCPTestServer wires the minimal Deps needed for the /api/v1/mcp/*
 // surface. role lets the test pick the caller's role; info is the MCPInfo
@@ -74,7 +88,7 @@ func TestMCPStatus_AsWiredByTheServer(t *testing.T) {
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d body=%s", r.StatusCode, readBody(t, r))
 	}
-	const want = `{"enabled":true,"listen":"","token_id":"","endpoint":"/mcp/burrow"}`
+	const want = `{"enabled":true,"listen":"","token_id":"","endpoint":"/mcp/burrow","operations":0}`
 	if got := strings.TrimSpace(readBody(t, r)); got != want {
 		t.Fatalf("body\n got %s\nwant %s", got, want)
 	}
@@ -91,17 +105,33 @@ func TestMCPStatus_Disabled(t *testing.T) {
 	if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Enabled || got.Listen != "" || got.TokenID != "" || got.Endpoint != "/mcp/burrow" {
+	if got.Enabled || got.Listen != "" || got.TokenID != "" || got.Endpoint != "/mcp/burrow" || got.Operations != 0 {
 		t.Fatalf("want zero-value status with the endpoint, got %+v", got)
+	}
+}
+
+// "operations" is what the server says the generic tools reach.
+func TestMCPStatus_Operations(t *testing.T) {
+	_, c := newMCPTestServer(t, "admin", MCPInfo{Enabled: true, Server: &fakeToolsLister{ops: 104}})
+	r := c.get(t, "/api/v1/mcp/status")
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", r.StatusCode, readBody(t, r))
+	}
+	const want = `{"enabled":true,"listen":"","token_id":"","endpoint":"/mcp/burrow","operations":104}`
+	if got := strings.TrimSpace(readBody(t, r)); got != want {
+		t.Fatalf("body\n got %s\nwant %s", got, want)
 	}
 }
 
 func TestMCPTools_AdminSeesInventory(t *testing.T) {
 	tools := []mcpserv.ToolDescriptor{
-		{Name: "tunnels_list", Description: "x", Permission: "tunnels:read:own",
+		{Name: "services_list", Description: "x", Permission: "services:configure:own",
+			Permissions: []string{"services:configure:own", "services:configure:any"}, Kind: "read",
 			ParametersSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "services_list", Description: "y", Permission: "services:configure:own",
+		{Name: "me_get", Description: "y", Kind: "read",
 			ParametersSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "burrow_call_operation", Description: "z", Kind: "write", Generic: true,
+			Permissions: []string{}, ParametersSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	_, c := newMCPTestServer(t, "admin", MCPInfo{Server: &fakeToolsLister{rows: tools}})
 	r := c.get(t, "/api/v1/mcp/tools")
@@ -109,18 +139,59 @@ func TestMCPTools_AdminSeesInventory(t *testing.T) {
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d body=%s", r.StatusCode, readBody(t, r))
 	}
+	raw := readBody(t, r)
 	var got []mcpToolResp
-	if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("got %d tools, want 2", len(got))
+	if len(got) != 3 {
+		t.Fatalf("got %d tools, want 3", len(got))
 	}
-	if got[0].Name != "tunnels_list" || got[0].Permission != "tunnels:read:own" {
+	if got[0].Name != "services_list" || got[0].Permission != "services:configure:own" ||
+		strings.Join(got[0].Permissions, ",") != "services:configure:own,services:configure:any" ||
+		got[0].Kind != "read" || got[0].Generic {
 		t.Errorf("tool[0] mismatch: %+v", got[0])
 	}
 	if string(got[0].ParametersSchema) != `{"type":"object"}` {
 		t.Errorf("schema mismatch: %s", got[0].ParametersSchema)
+	}
+	if got[2].Kind != "write" || !got[2].Generic {
+		t.Errorf("tool[2] mismatch: %+v", got[2])
+	}
+	// A tool every token may call has an empty list, not null.
+	if !strings.Contains(raw, `"name":"me_get","description":"y","parameters_schema":{"type":"object"},"permission":"","permissions":[],"kind":"read","generic":false`) {
+		t.Errorf("me_get entry: %s", raw)
+	}
+}
+
+// The real server's inventory: the curated tools, each with its kind and
+// permissions.
+func TestMCPTools_TheServersCuratedTools(t *testing.T) {
+	srv := newMCPServer(t, mcpTokens{}, mcpTokens{})
+	_, c := newMCPTestServer(t, "admin", MCPInfo{Server: srv})
+	r := c.get(t, "/api/v1/mcp/tools")
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", r.StatusCode, readBody(t, r))
+	}
+	var got []mcpToolResp
+	if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]mcpToolResp{}
+	for _, tl := range got {
+		byName[tl.Name] = tl
+		if tl.Kind != "read" && tl.Kind != "write" && tl.Kind != "delete" {
+			t.Errorf("%s: kind %q", tl.Name, tl.Kind)
+		}
+	}
+	if len(got) != len(srv.Tools()) || len(got) < 20 {
+		t.Fatalf("%d tools", len(got))
+	}
+	if tl := byName["provider_delete"]; tl.Kind != "delete" || tl.Permission != "ai:providers:manage" || tl.Generic {
+		t.Errorf("provider_delete = %+v", tl)
+	}
+	if tl := byName["me_get"]; tl.Kind != "read" || tl.Permission != "" || len(tl.Permissions) != 0 {
+		t.Errorf("me_get = %+v", tl)
 	}
 }
 
@@ -224,8 +295,7 @@ func (a mcpAuth) RoundTrip(r *http.Request) (*http.Response, error) {
 func TestMCPMount_SDKClientThroughTheRouter(t *testing.T) {
 	const token = "bua_routertesttoken123"
 	var logs lockedLog
-	srv := mcpserv.New(mcpTokens{plaintext: token, perms: []string{"tunnels:read:own", "audit:read"}},
-		mcpTokens{}, nil, discardLog())
+	srv := newMCPServer(t, mcpTokens{plaintext: token, perms: []string{"tunnels:read:own", "audit:read"}}, mcpTokens{})
 	hs := httptest.NewServer(NewRouter(Deps{
 		Log: slog.New(slog.NewTextHandler(&logs, nil)),
 		SPA: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "<html>dashboard</html>") }),
@@ -256,7 +326,7 @@ func TestMCPMount_SDKClientThroughTheRouter(t *testing.T) {
 			names = append(names, tl.Name)
 		}
 		sort.Strings(names)
-		if got := strings.Join(names, ","); got != "audit_search,tunnels_list" {
+		if got := strings.Join(names, ","); got != "audit_events_list,connection_logs_list,me_get" {
 			t.Errorf("%s: tools = %s", revision, got)
 		}
 		_ = cs.Close()
@@ -362,7 +432,7 @@ func TestMCPMount_PerAddressLimit(t *testing.T) {
 	const token = "bua_addresslimittoken1"
 	const limit = 5
 	store := &countingTokens{mcpTokens: mcpTokens{plaintext: token, perms: []string{"tunnels:read:own"}}}
-	srv := mcpserv.New(store, mcpTokens{}, nil, discardLog())
+	srv := newMCPServer(t, store, mcpTokens{})
 	hs := httptest.NewServer(NewRouter(Deps{
 		Log:            discardLog(),
 		TrustedProxies: []string{"127.0.0.0/8"},
@@ -420,7 +490,7 @@ func mcpLimitServer(t *testing.T, limit int, proxies []string) (*httptest.Server
 	t.Helper()
 	const token = "bua_limitservertoken01"
 	store := &countingTokens{mcpTokens: mcpTokens{plaintext: token, perms: []string{"tunnels:read:own"}}}
-	srv := mcpserv.New(store, mcpTokens{}, nil, discardLog())
+	srv := newMCPServer(t, store, mcpTokens{})
 	hs := httptest.NewServer(NewRouter(Deps{
 		Log:            discardLog(),
 		TrustedProxies: proxies,
@@ -582,7 +652,7 @@ func TestMCPMount_AuditRowCarriesAddressAndRequestID(t *testing.T) {
 		{"no trusted proxy", nil, "127.0.0.1"},
 	} {
 		sink := &mcpAuditRows{}
-		srv := mcpserv.New(mcpTokens{plaintext: token, perms: []string{"tunnels:read:own"}}, mcpTokens{}, nil, discardLog())
+		srv := newMCPServer(t, mcpTokens{plaintext: token, perms: []string{"audit:read"}}, mcpTokens{})
 		srv.SetAuditAppender(sink)
 		hs := httptest.NewServer(NewRouter(Deps{
 			Log:            discardLog(),
@@ -592,7 +662,7 @@ func TestMCPMount_AuditRowCarriesAddressAndRequestID(t *testing.T) {
 		t.Cleanup(hs.Close)
 
 		req, _ := http.NewRequest(http.MethodPost, hs.URL+"/mcp/burrow", strings.NewReader(
-			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tunnels_list","arguments":{}}}`))
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"me_get","arguments":{}}}`))
 		for k, v := range map[string]string{
 			"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
 			"MCP-Protocol-Version": "2025-06-18", "Authorization": "Bearer " + token,
@@ -615,7 +685,7 @@ func TestMCPMount_AuditRowCarriesAddressAndRequestID(t *testing.T) {
 			t.Fatalf("%s: %d audit rows, want 1 (%s)", c.name, len(rows), body)
 		}
 		r := rows[0]
-		if r.SubjectLabel != "tunnels_list" || r.ActorID != "u1" || r.ActorEmail != "admin@x" {
+		if r.SubjectLabel != "me_get" || r.ActorID != "u1" || r.ActorEmail != "admin@x" {
 			t.Errorf("%s: row %+v", c.name, r)
 		}
 		if r.SourceIP != c.want {
