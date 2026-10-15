@@ -152,8 +152,81 @@ func TestOpenAPI_RouteCoverage(t *testing.T) {
 // "/*" registration branch is exercised; the walk filter drops it from the
 // coverage assertion (the spec describes the JSON API, not the SPA).
 func TestOpenAPIRouteCoverage_FullIntegrationMux(t *testing.T) {
+	r := NewRouter(fullIntegrationDeps(t))
+	mux, ok := r.(chi.Router)
+	if !ok {
+		t.Fatalf("NewRouter did not return chi.Router; got %T", r)
+	}
+	routes := enumerateRoutes(t, mux)
+	routes = withoutNonAPIRoutes(routes)
+	docPaths := loadOpenAPIPaths(t, docsOpenAPIPath)
+
+	var missing []string
+	for _, e := range routes {
+		if !docPaths[e] {
+			missing = append(missing, fmt.Sprintf("%s %s", e.Method, e.Path))
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("%d route(s) on the full integration mux not documented in %s:\n  %s",
+			len(missing), docsOpenAPIPath, strings.Join(missing, "\n  "))
+	}
+}
+
+// TestOpenAPI_EveryDocumentedOperationIsRouted: the other direction. Each
+// (method, path) of the spec is answered by the full integration mux, so
+// no MCP tool built from the spec points at nothing.
+func TestOpenAPI_EveryDocumentedOperationIsRouted(t *testing.T) {
+	r := NewRouter(fullIntegrationDeps(t))
+	mux, ok := r.(chi.Router)
+	if !ok {
+		t.Fatalf("NewRouter did not return chi.Router; got %T", r)
+	}
+	routed := map[routeEntry]bool{}
+	for _, e := range withoutNonAPIRoutes(enumerateRoutes(t, mux)) {
+		routed[e] = true
+	}
+	// /metrics is mounted outside enumerateRoutes' exclusions, so it is in
+	// routed already; the path-level "parameters" key is not an operation.
+	var missing []string
+	for e := range loadOpenAPIPaths(t, docsOpenAPIPath) {
+		switch e.Method {
+		case "GET", "POST", "PUT", "PATCH", "DELETE":
+		default:
+			continue
+		}
+		if !routed[e] {
+			missing = append(missing, fmt.Sprintf("%s %s", e.Method, e.Path))
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Fatalf("%d documented operation(s) not served by the full integration mux:\n  %s",
+			len(missing), strings.Join(missing, "\n  "))
+	}
+}
+
+// withoutNonAPIRoutes drops what the spec does not describe: the SPA
+// catch-all, test-only /api/v1/internal/* routes (build-tag gated, never in
+// the shipped spec) and the dashboard's /link page.
+func withoutNonAPIRoutes(routes []routeEntry) []routeEntry {
+	filtered := make([]routeEntry, 0, len(routes))
+	for _, e := range routes {
+		if e.Path == "/*" || strings.HasPrefix(e.Path, "/api/v1/internal/") {
+			continue
+		}
+		if e.Path == "/link" || e.Path == "/link/" {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	return filtered
+}
+
+// fullIntegrationDeps wires every Deps field cmd/server populates with a stub.
+func fullIntegrationDeps(t *testing.T) Deps {
 	stub := &fullDepsStub{}
-	deps := Deps{
+	return Deps{
 		Users:          stub,
 		Tunnels:        stub,
 		Events:         stub,
@@ -213,43 +286,6 @@ func TestOpenAPIRouteCoverage_FullIntegrationMux(t *testing.T) {
 		CustomDomains: stub,
 		// v0.5.0 Task 8: connection log store.
 		ConnLogDB: stub,
-	}
-	r := NewRouter(deps)
-	mux, ok := r.(chi.Router)
-	if !ok {
-		t.Fatalf("NewRouter did not return chi.Router; got %T", r)
-	}
-	routes := enumerateRoutes(t, mux)
-	// Drop the SPA catch-all from the assertion — the spec describes the
-	// JSON API, not the embedded dashboard. chi reports the catch-all as
-	// "/*"; filter it out here rather than inside enumerateRoutes so the
-	// minimal-Deps test (no SPA) is unaffected.
-	// Also drop /api/v1/internal/* — these are test-only routes gated behind
-	// build tags (e.g. POST /test-reset from router_integration.go). They
-	// must never appear in the shipped openapi.yaml.
-	filtered := routes[:0]
-	for _, e := range routes {
-		if e.Path == "/*" || strings.HasPrefix(e.Path, "/api/v1/internal/") {
-			continue
-		}
-		// /link is a dashboard page as well, routed by name (spa_test.go).
-		if e.Path == "/link" || e.Path == "/link/" {
-			continue
-		}
-		filtered = append(filtered, e)
-	}
-	routes = filtered
-	docPaths := loadOpenAPIPaths(t, docsOpenAPIPath)
-
-	var missing []string
-	for _, e := range routes {
-		if !docPaths[e] {
-			missing = append(missing, fmt.Sprintf("%s %s", e.Method, e.Path))
-		}
-	}
-	if len(missing) > 0 {
-		t.Fatalf("%d route(s) on the full integration mux not documented in %s:\n  %s",
-			len(missing), docsOpenAPIPath, strings.Join(missing, "\n  "))
 	}
 }
 
