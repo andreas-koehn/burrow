@@ -13,7 +13,7 @@ type loginReq struct {
 	Password string `json:"password"`
 }
 
-// userResp is returned by Login and Me — id/email/role.
+// userResp is returned by Login — id/email/role; Me embeds it in meResp.
 type userResp struct {
 	ID    string `json:"id"`
 	Email string `json:"email"`

@@ -81,3 +81,24 @@ func TestAutomationPresets(t *testing.T) {
 		}
 	})
 }
+
+func TestAutomationPresetsOfADemotedMinter(t *testing.T) {
+	h := newAuthzHarness(t)
+	token := h.token(t, "admin", string(authz.PermAutomationTokensManageOwn), string(authz.PermAIReadOwn), string(authz.PermUsersManage))
+	if _, err := h.sqldb.Exec(`UPDATE users SET role='user' WHERE id='u-admin'`); err != nil {
+		t.Fatal(err)
+	}
+	code, ps := getPresets(t, h, token)
+	if code != http.StatusOK {
+		t.Fatalf("got %d", code)
+	}
+	for _, p := range ps {
+		if slices.Contains(p.Permissions, string(authz.PermUsersManage)) {
+			t.Errorf("%s offers users:manage to a token whose user lost it", p.Name)
+		}
+	}
+	if full := ps[2].Permissions; !slices.Contains(full, string(authz.PermAIReadOwn)) {
+		t.Errorf("full = %v, want it to keep ai:read:own", full)
+	}
+}
+

@@ -66,3 +66,18 @@ func TestMePermissions(t *testing.T) {
 		t.Errorf("custom role session: role %q permissions %v, want cr-audit [audit:read]", role, custom)
 	}
 }
+
+// A token holds what it declares AND what its user's role still grants: after
+// the minter is demoted, /me no longer lists what the old role gave.
+func TestMePermissionsOfADemotedMinter(t *testing.T) {
+	h := newAuthzHarness(t)
+	token := h.token(t, "admin", string(authz.PermAIReadOwn), string(authz.PermUsersManage))
+	if _, err := h.sqldb.Exec(`UPDATE users SET role='user' WHERE id='u-admin'`); err != nil {
+		t.Fatal(err)
+	}
+	_, perms := getMe(t, h, token)
+	if !slices.Equal(perms, []string{string(authz.PermAIReadOwn)}) {
+		t.Errorf("token permissions = %v, want [ai:read:own]", perms)
+	}
+}
+
