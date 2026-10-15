@@ -63,12 +63,13 @@ func (x *DB) GetRole(ctx context.Context, name string) (Role, error) {
 //	name, description, created_at, builtin, permissions, default_for_new_users
 //
 // builtin and default_for_new_users are INTEGER 0/1 in SQLite and BOOLEAN in
-// Postgres; both scan into bool. permissions is a TEXT JSON array of permission key strings. An empty or
-// invalid JSON value yields an empty slice — never an error — so a freshly
-// migrated row (default '[]') round-trips cleanly.
+// Postgres; both scan into bool. permissions is a TEXT JSON array of
+// permission key strings. An empty or invalid JSON value yields an empty
+// slice — never an error — so a freshly migrated row (default '[]')
+// round-trips cleanly.
 func scanRoleRow(scan func(dest ...any) error) (Role, error) {
 	var (
-		r          Role
+		r         Role
 		builtin   bool
 		permsRaw  string
 		isDefault bool
