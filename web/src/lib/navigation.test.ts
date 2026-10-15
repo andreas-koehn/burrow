@@ -71,10 +71,12 @@ describe("navigation description", () => {
     expect(needs.sessions).toBeUndefined();
     expect(needs.automation).toBeUndefined();
   });
-  it("Clients, in both workspaces, needs tunnels:read:any", () => {
+  it("Clients, in both workspaces, is open to whoever lists clients or manages tokens, the user role included", () => {
     for (const id of ["clients", "gateway-clients"]) {
       const e = [...NAVIGATIONS.services.groups, ...NAVIGATIONS.gateway.groups].flatMap((g) => g.entries).find((x) => x.id === id);
-      expect(e?.needs, id).toEqual(["tunnels:read:any"]);
+      expect(e?.needs, id).toEqual(["tunnels:read:any", "tokens:manage:own", "tokens:manage:any"]);
+      expect(user.can(e?.needs), id).toBe(true);
+      expect(auditor.can(e?.needs), id).toBe(false);
     }
   });
   // The spec's budget is seven entries per job. The AI Gateway wireframe reaches eight with

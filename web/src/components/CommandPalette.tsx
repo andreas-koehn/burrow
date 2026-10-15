@@ -65,23 +65,26 @@ export function CommandPalette({
   // an answer one of those already has is here at once. Nobody the AI Gateway is not shown
   // to is asked on behalf of; a lookup that fails adds no rows and takes nothing else away.
   const ai = open && hasAiGateway;
+  // ...and each is asked only of someone who holds a permission of its route (an http service
+  // being connected shows the gateway, not what the role may read).
+  const aiRead = [P.aiReadOwn, P.aiReadAny, P.aiConfigureOwn, P.aiConfigureAny];
   const providersQuery = useQuery({
     queryKey: ["ai", "providers"],
     queryFn: () => apiFetch<AiProvider[]>("/ai/providers"),
     retry: false,
-    enabled: ai,
+    enabled: ai && can([P.aiReadOwn, P.aiReadAny, P.aiProvidersManage]),
   });
   const modelsQuery = useQuery({
     queryKey: ["ai", "models"],
     queryFn: () => apiFetch<AiModel[]>("/ai/models"),
     retry: false,
-    enabled: ai,
+    enabled: ai && can(aiRead),
   });
   const keysQuery = useQuery({
     queryKey: ["ai", "keys"],
     queryFn: () => apiFetch<AiGatewayKey[]>("/ai/keys"),
     retry: false,
-    enabled: ai,
+    enabled: ai && can(aiRead),
   });
 
   const q = query.toLowerCase();

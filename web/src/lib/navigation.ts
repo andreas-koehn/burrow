@@ -50,6 +50,8 @@ export interface NavContext {
 
 /** Permissions shared by several entries, and by the routes that guard the same pages. */
 const NEEDS = {
+  // The page lists clients (tunnels:read:any) and, for everyone, the tokens and the connect flow (tokens:manage:*).
+  clients: [P.tunnelsReadAny, P.tokensManageOwn, P.tokensManageAny],
   settings: [P.settingsManage],
   users: [P.usersRead, P.usersManage],
   roles: [P.rolesRead, P.rolesManage],
@@ -71,7 +73,7 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
       { entries: [{ id: "services-overview", label: "Overview", paletteLabel: "Services overview", to: "/", icon: LayoutDashboard }] },
       { title: "Connect", entries: [
         { id: "services", label: "Services", to: "/services", icon: Globe, count: "services" },
-        { id: "clients", label: "Clients", to: "/clients", icon: Boxes, count: "clientsOnline", needs: [P.tunnelsReadAny] },
+        { id: "clients", label: "Clients", to: "/clients", icon: Boxes, count: "clientsOnline", needs: NEEDS.clients },
       ] },
       { title: "Observe", entries: [{ id: "traffic", label: "Traffic", to: "/traffic", icon: Activity }] },
     ],
@@ -82,7 +84,7 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
       { entries: [{ id: "gateway-overview", label: "Overview", paletteLabel: "AI Gateway overview", to: "/gateway", icon: LayoutDashboard }] },
       // A client serves services and providers alike: the one page at /clients is listed in both workspaces.
       { title: "Connect", entries: [
-        { id: "gateway-clients", label: "Clients", to: "/clients", icon: Boxes, count: "clientsOnline", needs: [P.tunnelsReadAny] },
+        { id: "gateway-clients", label: "Clients", to: "/clients", icon: Boxes, count: "clientsOnline", needs: NEEDS.clients },
       ] },
       { title: "Route", entries: [
         { id: "providers", label: "Providers", to: "/gateway/providers", icon: Sparkles },

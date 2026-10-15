@@ -5,7 +5,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Routes, Route, Link, useLocation } from "react-router-dom";
 import { ThemeProvider } from "./theme-provider";
 import { Layout } from "./Layout";
-import { USER_PERMISSIONS } from "@/auth/permissions";
 
 interface Options {
   path?: string;
@@ -262,8 +261,7 @@ describe("Layout workspace shell", () => {
 
   it("without the AI gateway, Clients shows the Services sidebar whatever is remembered", async () => {
     localStorage.setItem("burrow.lastWorkspace", "gateway");
-    // A role that may list clients: the user set, plus tunnels:read:any.
-    renderLayout("user", { path: "/clients", services: [httpService("svc1", "ollama", false)], permissions: [...USER_PERMISSIONS, "tunnels:read:any"] });
+    renderLayout("user", { path: "/clients", services: [httpService("svc1", "ollama", false)] });
     await screen.findByRole("link", { name: "Services, 1" });
     await chip();
     expect(screen.getByRole("navigation", { name: "Services" })).toBeInTheDocument();
@@ -390,8 +388,7 @@ describe("Layout workspace shell", () => {
     const head = document.querySelector(".sidebar-brand") as HTMLElement;
     expect(head).toHaveTextContent(/^Services$/);
     expect(within(head).queryByRole("link")).toBeNull();
-    // Clients is listed for those who may read clients (tunnels:read:any), not for the user role.
-    expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Traffic"]);
+    expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
   });
 
   it("a non-admin with a connected http service gets the tabs", async () => {
@@ -561,8 +558,8 @@ describe("Layout workspace shell", () => {
     const urls = vi.mocked(globalThis.fetch).mock.calls.map((c) => String(c[0]));
     expect(urls.some((u) => u.includes("/api/v1/services"))).toBe(true);
     expect(urls.some((u) => u.includes("/api/v1/clients"))).toBe(false);
-    // There is no Clients entry to count for, and no count is asked for.
-    expect(screen.queryByRole("link", { name: /^Clients/ })).toBeNull();
+    // The user role gets the Clients entry (tokens, connect flow) without a count, and none is asked for.
+    expect(screen.getByRole("link", { name: "Clients" })).toBeInTheDocument();
   });
 
   it("asks for clients, and counts them, for a custom role with tunnels:read:any", async () => {

@@ -47,8 +47,8 @@ describe("destinationsFor — the navigation description, flattened", () => {
     expect(path("Guardrails")).toBe("/gateway/guardrails");
   });
 
-  it("a non-admin without AI access sees Services (no Clients, which needs tunnels:read:any) and the Personal settings only", () => {
-    expect(byGroup(plain, "Services")).toEqual(["Services overview", "Services", "Traffic"]);
+  it("a non-admin without AI access sees Services and the Personal settings only", () => {
+    expect(byGroup(plain, "Services")).toEqual(["Services overview", "Services", "Clients", "Traffic"]);
     expect(byGroup(plain, "AI Gateway")).toEqual([]);
     expect(byGroup(plain, "Settings")).toEqual(["Profile & password", "Sessions", "Automation tokens"]);
   });

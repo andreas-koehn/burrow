@@ -264,6 +264,18 @@ describe("CommandPalette — P6A.2: live entities (MSW seed)", () => {
     expect(screen.queryByRole("option", { name: /office-box-1.*client/i })).not.toBeInTheDocument();
   });
 
+  it("asks for providers, models and keys only with the permissions of their routes, whatever shows the gateway", async () => {
+    const asked: string[] = [];
+    for (const path of ["providers", "models", "keys"]) {
+      server.use(http.get(`/api/v1/ai/${path}`, () => { asked.push(path); return HttpResponse.json([]); }));
+    }
+    // A role with no AI permission, in a relay where an http service is connected (hasAiGateway).
+    renderPalette({ perms: ["audit:read"], hasAiGateway: true });
+    await userEvent.type(screen.getByRole("searchbox"), "a");
+    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
+    expect(asked).toEqual([]);
+  });
+
   it("grafana service appears when typing 'graf'", async () => {
     renderPalette();
     const input = screen.getByRole("searchbox");
