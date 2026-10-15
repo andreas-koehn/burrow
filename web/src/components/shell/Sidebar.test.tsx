@@ -5,21 +5,23 @@ import { MemoryRouter } from "react-router-dom";
 import { FOOTER_ENTRIES, navigationFor, workspacesFor } from "@/lib/navigation";
 import { workspaceFor } from "@/lib/workspace";
 import { Sidebar, type SidebarProps } from "./Sidebar";
+import { holdsAny, ALL_PERMISSIONS, USER_PERMISSIONS } from "@/auth/permissions";
+const canOf = (held: readonly string[]) => (needs?: readonly string[]) => holdsAny(new Set(held), needs);
 
-const admin = { isAdmin: true, hasAiGateway: true };
-const plain = { isAdmin: false, hasAiGateway: false };
+const admin = { can: canOf(ALL_PERMISSIONS), hasAiGateway: true };
+const plain = { can: canOf(USER_PERMISSIONS), hasAiGateway: false };
 
 function mount(path: string, ctx = admin, over: Partial<SidebarProps> = {}) {
   const workspace = workspaceFor(path);
   const props: SidebarProps = {
     navigation: navigationFor(workspace, ctx),
     workspaces: workspacesFor(ctx),
-    footer: FOOTER_ENTRIES.filter((e) => !e.adminOnly || ctx.isAdmin),
+    footer: FOOTER_ENTRIES.filter((e) => ctx.can(e.needs)),
     pathname: path,
     collapsed: false,
     counts: {},
     attention: [],
-    user: { email: "alice@example.com", isAdmin: ctx.isAdmin, role: ctx.isAdmin ? "admin" : "user" },
+    user: { email: "alice@example.com", role: ctx === admin ? "admin" : "user" },
     theme: "light",
     onSearch: vi.fn(),
     onToggleTheme: vi.fn(),

@@ -1,3 +1,4 @@
+import { USER_PERMISSIONS } from "@/auth/permissions";
 import { describe, it, expect, afterEach } from "vitest";
 import { screen, within, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
@@ -258,7 +259,7 @@ describe("GatewayOverview", () => {
   });
 
   it("non-admin without an enabled model: the last step says whom to ask, not to create one", async () => {
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     withCost(0, 0);
     withProviders([provider({ requests_24h: 0 })]);
     withModels([]);
@@ -315,7 +316,7 @@ describe("GatewayOverview", () => {
   });
 
   it("non-admin: no admin-only request and no error notice; setup starts at the gateway key", async () => {
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     const asked: string[] = [];
     const spy = (path: string) => http.get(`/api/v1/${path}`, () => { asked.push(path); return HttpResponse.json({ error: "admin required" }, { status: 403 }); });
     server.use(spy("settings"), spy("budgets"), spy("clients"));
@@ -331,7 +332,7 @@ describe("GatewayOverview", () => {
   });
 
   it("non-admin without a provider: told who can add one, no checklist", async () => {
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     withProviders([]);
     renderApp(<GatewayOverview />);
     expect(await screen.findByText("An administrator can add a model server on one of their machines, or a hosted API.")).toBeInTheDocument();

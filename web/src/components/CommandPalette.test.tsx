@@ -9,6 +9,7 @@ import { CommandPalette } from "@/components/CommandPalette";
 import { setCsrfCookie } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
+import { holdsAny, ALL_PERMISSIONS, USER_PERMISSIONS } from "@/auth/permissions";
 
 // Helper to render CommandPalette inside a router and query provider.
 // Renders a "spy" route so we can detect navigation by checking current location.
@@ -19,14 +20,15 @@ function SpyHeading() {
 
 interface RenderOptions {
   open?: boolean;
-  isAdmin?: boolean;
+  /** What the caller may do; everything by default. */
+  perms?: readonly string[];
   hasAiGateway?: boolean;
   onOpenChange?: (open: boolean) => void;
 }
 
 function renderPalette({
   open = true,
-  isAdmin = true,
+  perms = ALL_PERMISSIONS,
   hasAiGateway = true,
   onOpenChange = vi.fn(),
 }: RenderOptions = {}) {
@@ -45,7 +47,7 @@ function renderPalette({
                   <CommandPalette
                     open={open}
                     onOpenChange={onOpenChange}
-                    isAdmin={isAdmin}
+                    can={(needs) => holdsAny(new Set(perms), needs)}
                     hasAiGateway={hasAiGateway}
                   />
                 </>
@@ -76,7 +78,7 @@ describe("CommandPalette — P6A.1: destinations", () => {
   });
 
   it("lists the navigation description, grouped by workspace", () => {
-    renderPalette({ isAdmin: true });
+    renderPalette();
     const rows = screen.getAllByRole("option").map((o) => o.textContent);
     // Services first, then the gateway, then Settings.
     expect(rows.slice(0, 5)).toEqual([
@@ -107,7 +109,7 @@ describe("CommandPalette — P6A.1: destinations", () => {
 
   // Clients is in both sidebars and is still one page.
   it("lists Clients once, and opens the one page", async () => {
-    renderPalette({ isAdmin: true });
+    renderPalette();
     const pages = () => screen.getAllByRole("option").filter((o) => o.querySelector("span")?.textContent === "Clients");
     expect(pages()).toHaveLength(1);
     await userEvent.type(screen.getByRole("searchbox"), "clients");
@@ -117,7 +119,7 @@ describe("CommandPalette — P6A.1: destinations", () => {
   });
 
   it("typing 'cost' finds 'Cost & budgets' under 'AI Gateway' and navigates to its new path", async () => {
-    renderPalette({ isAdmin: true });
+    renderPalette();
     await userEvent.type(screen.getByRole("searchbox"), "cost");
     const rows = screen.getAllByRole("option");
     expect(rows).toHaveLength(1);
@@ -140,7 +142,7 @@ describe("CommandPalette — P6A.1: destinations", () => {
   });
 
   it("typing 'sett' lists the Settings pages (admin) and nothing from another workspace", async () => {
-    renderPalette({ isAdmin: true });
+    renderPalette();
     const input = screen.getByRole("searchbox");
     await userEvent.type(input, "sett");
     const rows = screen.getAllByRole("option");
@@ -150,14 +152,14 @@ describe("CommandPalette — P6A.1: destinations", () => {
   });
 
   it("without AI access there is no gateway destination", () => {
-    renderPalette({ isAdmin: false, hasAiGateway: false });
+    renderPalette({ perms: USER_PERMISSIONS, hasAiGateway: false });
     const groups = screen.getAllByRole("option").map((o) => o.querySelector(".shortcut")?.textContent);
     expect(groups).not.toContain("AI Gateway");
     expect(screen.queryByRole("option", { name: /providers/i })).toBeNull();
   });
 
   it("a non-admin sees no admin entry, only the Personal settings", () => {
-    renderPalette({ isAdmin: false });
+    renderPalette({ perms: USER_PERMISSIONS });
     const settings = screen.getAllByRole("option")
       .filter((o) => o.querySelector(".shortcut")?.textContent === "Settings")
       .map((o) => o.querySelector("span")?.textContent);
@@ -217,8 +219,8 @@ describe("CommandPalette — P6A.1: destinations", () => {
     });
   });
 
-  it("excludes admin-only destinations when isAdmin=false", async () => {
-    renderPalette({ isAdmin: false });
+  it("excludes admin-only destinations without the permissions", async () => {
+    renderPalette({ perms: USER_PERMISSIONS });
     const input = screen.getByRole("searchbox");
     await userEvent.type(input, "users");
     // Users is admin-only — should not appear for non-admin
@@ -227,8 +229,8 @@ describe("CommandPalette — P6A.1: destinations", () => {
     });
   });
 
-  it("includes admin-only destinations when isAdmin=true", async () => {
-    renderPalette({ isAdmin: true });
+  it("includes admin-only destinations with the permissions", async () => {
+    renderPalette();
     const input = screen.getByRole("searchbox");
     await userEvent.type(input, "users");
     // The option accessible name includes the group label "Settings" too.
@@ -238,7 +240,7 @@ describe("CommandPalette — P6A.1: destinations", () => {
 
 describe("CommandPalette — P6A.2: live entities (MSW seed)", () => {
   it("typing 'ollam' shows 'ollama — service' from MSW seed", async () => {
-    renderPalette({ isAdmin: true });
+    renderPalette();
     const input = screen.getByRole("searchbox");
     await userEvent.type(input, "ollam");
     // MSW seed has service named 'ollama' (svc_ai001)
@@ -246,7 +248,7 @@ describe("CommandPalette — P6A.2: live entities (MSW seed)", () => {
   });
 
   it("typing 'office' shows 'office-box-1 — client' from MSW seed (admin)", async () => {
-    renderPalette({ isAdmin: true });
+    renderPalette();
     const input = screen.getByRole("searchbox");
     await userEvent.type(input, "office");
     // MSW seed has client with token_name 'office-box-1'
@@ -254,7 +256,7 @@ describe("CommandPalette — P6A.2: live entities (MSW seed)", () => {
   });
 
   it("clients do not appear for non-admin (query disabled)", async () => {
-    renderPalette({ isAdmin: false });
+    renderPalette({ perms: USER_PERMISSIONS });
     const input = screen.getByRole("searchbox");
     await userEvent.type(input, "office");
     // Wait briefly; clients should never appear for non-admin
@@ -263,7 +265,7 @@ describe("CommandPalette — P6A.2: live entities (MSW seed)", () => {
   });
 
   it("grafana service appears when typing 'graf'", async () => {
-    renderPalette({ isAdmin: true });
+    renderPalette();
     const input = screen.getByRole("searchbox");
     await userEvent.type(input, "graf");
     expect(await screen.findByRole("option", { name: /grafana.*service/i })).toBeInTheDocument();
@@ -335,7 +337,7 @@ describe("CommandPalette — providers, models and gateway keys", () => {
 
   it("keeps a gateway-only service findable for someone without the AI gateway", async () => {
     db.services.find((s) => s.id === "svc_ai001")!.gateway_only = true;
-    renderPalette({ isAdmin: false, hasAiGateway: false });
+    renderPalette({ perms: USER_PERMISSIONS, hasAiGateway: false });
     await userEvent.type(screen.getByRole("searchbox"), "ollama");
     expect(await seenOllama()).toBeInTheDocument();
     expect(results()).toEqual(["ollama — service"]);
@@ -384,7 +386,7 @@ describe("CommandPalette — providers, models and gateway keys", () => {
     const asked: string[] = [];
     const count = (what: string) => http.get(`/api/v1/ai/${what}`, () => { asked.push(what); return HttpResponse.json([]); });
     server.use(count("providers"), count("models"), count("keys"));
-    renderPalette({ isAdmin: false, hasAiGateway: false });
+    renderPalette({ perms: USER_PERMISSIONS, hasAiGateway: false });
     await userEvent.type(screen.getByRole("searchbox"), "ollama");
     // The services have answered, so everything the palette asks for has been asked.
     expect(await seenOllama()).toBeInTheDocument();

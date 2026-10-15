@@ -1,7 +1,9 @@
 import { Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { RequireAuth } from "@/auth/RequireAuth";
 import { useAuth } from "@/auth/useAuth";
-import { RequireAdmin } from "@/components/RequireAdmin";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
+import { RequirePermission } from "@/components/RequirePermission";
 import { Layout } from "@/components/Layout";
 import Login from "@/pages/Login";
 import ServicesOverview from "@/pages/ServicesOverview";
@@ -36,6 +38,7 @@ import OpenApiViewer from "@/pages/OpenApiViewer";
 import GatewayOverview from "@/pages/GatewayOverview";
 import GatewayModels from "@/pages/GatewayModels";
 import GatewayKeys from "@/pages/GatewayKeys";
+import { allEntries } from "@/lib/navigation";
 import { RedirectTo } from "@/lib/redirects";
 import { OLD_ROUTES } from "@/lib/moved-routes";
 
@@ -45,12 +48,17 @@ function ServiceDomainsRedirect() {
   return <Navigate to={`/services/${id}`} replace />;
 }
 
-// Settings has no page of its own: an admin starts on the relay's settings, everyone else on their profile.
+// What a page needs is what its navigation entry says, so the route and the sidebar cannot disagree.
+const everything = { can: () => true, hasAiGateway: true };
+const needsOf = (path: string) => allEntries(everything).find((x) => x.entry.to === path)?.entry.needs ?? [];
+
+// Settings has no page of its own: whoever may change the relay's settings starts there, everyone else on their profile.
 function SettingsIndex() {
   const { user } = useAuth();
+  const manages = useCan(P.settingsManage);
   const { search, hash } = useLocation();
   if (!user) return null; // RequireAuth above has not resolved yet
-  return <Navigate to={{ pathname: user.role === "admin" ? "/settings/general" : "/settings/profile", search, hash }} replace />;
+  return <Navigate to={{ pathname: manages ? "/settings/general" : "/settings/profile", search, hash }} replace />;
 }
 
 export default function App() {
@@ -79,19 +87,19 @@ export default function App() {
         <Route path="/traffic" element={<Traffic />} />
         <Route path="/services/:id" element={<ServiceDetail />} />
         <Route path="/services/:id/domains" element={<ServiceDomainsRedirect />} />
-        {/* Settings. The admin-only pages are the entries marked adminOnly in lib/navigation.ts. */}
+        {/* Settings. A page with a `needs` in lib/navigation.ts is guarded by exactly that list. */}
         <Route path="/settings" element={<SettingsIndex />} />
-        <Route path="/settings/general" element={<RequireAdmin><GeneralSettings /></RequireAdmin>} />
-        <Route path="/settings/email" element={<RequireAdmin><EmailSettings /></RequireAdmin>} />
-        <Route path="/settings/retention" element={<RequireAdmin><Retention /></RequireAdmin>} />
-        <Route path="/settings/database" element={<RequireAdmin><DatabaseBackend /></RequireAdmin>} />
-        <Route path="/settings/backups" element={<RequireAdmin><BackupRestore /></RequireAdmin>} />
-        <Route path="/settings/users" element={<RequireAdmin><Users /></RequireAdmin>} />
-        <Route path="/settings/roles" element={<RequireAdmin><Roles /></RequireAdmin>} />
-        <Route path="/settings/audit" element={<RequireAdmin><AuditLog /></RequireAdmin>} />
-        <Route path="/settings/webhooks" element={<RequireAdmin><Webhooks /></RequireAdmin>} />
+        <Route path="/settings/general" element={<RequirePermission needs={needsOf("/settings/general")}><GeneralSettings /></RequirePermission>} />
+        <Route path="/settings/email" element={<RequirePermission needs={needsOf("/settings/email")}><EmailSettings /></RequirePermission>} />
+        <Route path="/settings/retention" element={<RequirePermission needs={needsOf("/settings/retention")}><Retention /></RequirePermission>} />
+        <Route path="/settings/database" element={<RequirePermission needs={needsOf("/settings/database")}><DatabaseBackend /></RequirePermission>} />
+        <Route path="/settings/backups" element={<RequirePermission needs={needsOf("/settings/backups")}><BackupRestore /></RequirePermission>} />
+        <Route path="/settings/users" element={<RequirePermission needs={needsOf("/settings/users")}><Users /></RequirePermission>} />
+        <Route path="/settings/roles" element={<RequirePermission needs={needsOf("/settings/roles")}><Roles /></RequirePermission>} />
+        <Route path="/settings/audit" element={<RequirePermission needs={needsOf("/settings/audit")}><AuditLog /></RequirePermission>} />
+        <Route path="/settings/webhooks" element={<RequirePermission needs={needsOf("/settings/webhooks")}><Webhooks /></RequirePermission>} />
         {/* P1-14: in-app OpenAPI viewer, framed inside the dashboard chrome. */}
-        <Route path="/settings/api" element={<RequireAdmin><OpenApiViewer /></RequireAdmin>} />
+        <Route path="/settings/api" element={<RequirePermission needs={needsOf("/settings/api")}><OpenApiViewer /></RequirePermission>} />
         <Route path="/settings/profile" element={<Profile />} />
         <Route path="/settings/sessions" element={<Sessions />} />
         <Route path="/settings/automation" element={<AutomationTokens />} />

@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from "@/auth/permissions";
 import { describe, it, expect, beforeEach } from "vitest";
 import { addDirectProvider, db, resetDb } from "@/mocks/db";
 import type { AiModel, AiProvider, KnownClient, Service } from "@/lib/contract";
@@ -17,7 +18,7 @@ describe("MSW handlers (contract fidelity)", () => {
     const r = await fetch("/api/v1/me", authed("GET"));
     expect(r.status).toBe(200);
     const b = await r.json();
-    expect(b).toEqual({ id: expect.any(String), email: "alice@acme.io", role: "admin" });
+    expect(b).toEqual({ id: expect.any(String), email: "alice@acme.io", role: "admin", permissions: [...ALL_PERMISSIONS] });
   });
 
   it("GET /api/v1/users is paginated and enveloped", async () => {

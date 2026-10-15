@@ -12,6 +12,7 @@ import { setCsrfCookie } from "@/mocks/test-utils";
 import { db, resetDb } from "@/mocks/db";
 import { OLD_ROUTES } from "@/lib/moved-routes";
 import { NAVIGATIONS } from "@/lib/navigation";
+import { USER_PERMISSIONS } from "@/auth/permissions";
 
 function PathProbe() {
   const { pathname, search, hash } = useLocation();
@@ -95,20 +96,22 @@ describe("App routes", () => {
   });
 
   it("/settings opens the profile for everyone else", async () => {
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     renderAt("/settings");
     expect(await screen.findByRole("heading", { name: "Profile & password", level: 1 })).toBeInTheDocument();
     expect(screen.getByTestId("path")).toHaveTextContent(/^\/settings\/profile$/);
   });
 
   const settingsEntries = NAVIGATIONS.settings.groups.flatMap((g) => g.entries);
-  it.each(settingsEntries.filter((e) => e.adminOnly).map((e) => e.to))(
-    "a non-admin opening %s is sent to their profile",
-    async (path) => {
-      db.me = { ...db.me, role: "user" };
+  it.each(settingsEntries.filter((e) => e.needs).map((e) => [e.to, e.needs!]))(
+    "someone without the permissions of %s is told what is missing",
+    async (path, needs) => {
+      db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
       renderAt(path);
-      expect(await screen.findByRole("heading", { name: "Profile & password", level: 1 })).toBeInTheDocument();
-      expect(screen.getByTestId("path")).toHaveTextContent(/^\/settings\/profile$/);
+      expect(await screen.findByRole("heading", { name: "You cannot open this page", level: 1 })).toBeInTheDocument();
+      expect(screen.getByTestId("path")).toHaveTextContent(new RegExp(`^${path}$`));
+      expect(screen.getByText(new RegExp(`${needs[0]}`))).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Back to your profile" })).toHaveAttribute("href", "/settings/profile");
       // Only the Personal group is offered.
       const nav = within(screen.getByRole("navigation", { name: "Settings" }));
       expect(nav.getAllByRole("link").map((a) => a.getAttribute("aria-label")))
@@ -116,10 +119,26 @@ describe("App routes", () => {
     },
   );
 
-  it.each(settingsEntries.filter((e) => !e.adminOnly).map((e) => [e.to, e.label]))(
+  it("a custom role with audit:read opens the audit log and not the webhooks", async () => {
+    db.me = { ...db.me, role: "auditor", permissions: ["audit:read"] };
+    renderAt("/settings/audit");
+    expect(await screen.findByRole("heading", { name: "Audit log", level: 1 })).toBeInTheDocument();
+    const nav = within(screen.getByRole("navigation", { name: "Settings" }));
+    expect(nav.getByRole("link", { name: "Audit log" })).toBeInTheDocument();
+    expect(nav.queryByRole("link", { name: "Webhooks" })).toBeNull();
+  });
+
+  it("/settings opens General for a custom role with settings:manage", async () => {
+    db.me = { ...db.me, role: "operator", permissions: ["settings:manage"] };
+    renderAt("/settings");
+    expect(await screen.findByTestId("path")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent(/^\/settings\/general$/));
+  });
+
+  it.each(settingsEntries.filter((e) => !e.needs).map((e) => [e.to, e.label]))(
     "a non-admin may open %s",
     async (path, label) => {
-      db.me = { ...db.me, role: "user" };
+      db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
       renderAt(path);
       expect(await screen.findByRole("heading", { name: label, level: 1 })).toBeInTheDocument();
       expect(screen.getByTestId("path")).toHaveTextContent(path);

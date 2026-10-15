@@ -240,7 +240,7 @@ describe("narrow page column — form-only pages", () => {
 describe("settings pages share one container", () => {
   const app = readFileSync(resolve(__dirname, "App.tsx"), "utf8");
   // Every page routed under /settings, as the file it is imported from.
-  const components = [...app.matchAll(/<Route path="\/settings\/[^"]+" element=\{(?:<RequireAdmin>)?<(\w+) \/>/g)].map((m) => m[1]!);
+  const components = [...app.matchAll(/<Route path="\/settings\/[^"]+" element=\{(?:<RequirePermission needs=\{needsOf\("[^"]+"\)\}>)?<(\w+) \/>/g)].map((m) => m[1]!);
   const files = components.map((c) => app.match(new RegExp(`import ${c} from "@/pages/([^"]+)"`))?.[1] ?? `no import of ${c}`);
   const page = (name: string) => readFileSync(resolve(__dirname, "pages", `${name}.tsx`), "utf8");
   // className of every element that directly wraps a <PageHeader> in a page: its root, in each of its states.

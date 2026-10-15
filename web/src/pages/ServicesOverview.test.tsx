@@ -1,3 +1,4 @@
+import { USER_PERMISSIONS } from "@/auth/permissions";
 import { describe, it, expect, afterEach } from "vitest";
 import { screen, within, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
@@ -295,7 +296,7 @@ describe("ServicesOverview", () => {
   });
 
   it("non-admin: no admin-only request, dashes for what they cannot see, no error notice", async () => {
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     db.services = [];
     const asked: string[] = [];
     const spy = (path: string) => http.get(`/api/v1/${path}`, () => { asked.push(path); return HttpResponse.json({ error: "admin required" }, { status: 403 }); });

@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { destinationsFor } from "./destinations";
 import { allEntries } from "./navigation";
+import { holdsAny, ALL_PERMISSIONS, USER_PERMISSIONS } from "@/auth/permissions";
+const canOf = (held: readonly string[]) => (needs?: readonly string[]) => holdsAny(new Set(held), needs);
 
-const admin = { isAdmin: true, hasAiGateway: true };
-const plain = { isAdmin: false, hasAiGateway: false };
+const admin = { can: canOf(ALL_PERMISSIONS), hasAiGateway: true };
+const plain = { can: canOf(USER_PERMISSIONS), hasAiGateway: false };
 const byGroup = (ctx: typeof admin, group: string) => destinationsFor(ctx).filter((d) => d.group === group).map((d) => d.label);
 
 describe("destinationsFor — the navigation description, flattened", () => {
@@ -45,13 +47,13 @@ describe("destinationsFor — the navigation description, flattened", () => {
     expect(path("Guardrails")).toBe("/gateway/guardrails");
   });
 
-  it("a non-admin without AI access sees Services and the Personal settings only", () => {
-    expect(byGroup(plain, "Services")).toEqual(["Services overview", "Services", "Clients", "Traffic"]);
+  it("a non-admin without AI access sees Services (no Clients, which needs tunnels:read:any) and the Personal settings only", () => {
+    expect(byGroup(plain, "Services")).toEqual(["Services overview", "Services", "Traffic"]);
     expect(byGroup(plain, "AI Gateway")).toEqual([]);
     expect(byGroup(plain, "Settings")).toEqual(["Profile & password", "Sessions", "Automation tokens"]);
   });
 
   it("a non-admin with AI access sees the gateway entries, Requests included", () => {
-    expect(byGroup({ isAdmin: false, hasAiGateway: true }, "AI Gateway")).toContain("Requests");
+    expect(byGroup({ ...plain, hasAiGateway: true }, "AI Gateway")).toContain("Requests");
   });
 });

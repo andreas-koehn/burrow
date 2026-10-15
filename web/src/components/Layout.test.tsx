@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Routes, Route, Link, useLocation } from "react-router-dom";
 import { ThemeProvider } from "./theme-provider";
 import { Layout } from "./Layout";
+import { USER_PERMISSIONS } from "@/auth/permissions";
 
 interface Options {
   path?: string;
@@ -15,6 +16,8 @@ interface Options {
   clients?: unknown[];
   /** GET /settings; email is set up unless a test says otherwise. */
   settings?: Record<string, string> | "fail";
+  /** What /me says the caller may do; left out, as on a relay from before /me carried it (the role decides). */
+  permissions?: string[];
 }
 
 const EMAIL_SET_UP = { "smtp.host": "smtp.example.com" };
@@ -33,7 +36,7 @@ const online = (token_id: string, token_name: string, ...sessionIds: string[]) =
   sessions: sessionIds.map((session_id) => ({ session_id, token_name, user_id: "u1" })),
 });
 
-function renderLayout(meRole?: "admin" | "user" | null, { path = "/services", services, known, clients, settings = EMAIL_SET_UP }: Options = {}) {
+function renderLayout(meRole?: "admin" | "user" | "operator" | null, { path = "/services", services, known, clients, settings = EMAIL_SET_UP, permissions }: Options = {}) {
   // Mock fetch: /api/v1/me returns a user with the given role, or 401 if null.
   vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
     const u = String(url);
@@ -42,7 +45,7 @@ function renderLayout(meRole?: "admin" | "user" | null, { path = "/services", se
         return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 }) as Response;
       }
       return new Response(
-        JSON.stringify({ id: "u1", email: "alice@example.com", role: meRole }),
+        JSON.stringify({ id: "u1", email: "alice@example.com", role: meRole, ...(permissions ? { permissions } : {}) }),
         { status: 200 }
       ) as Response;
     }
@@ -79,7 +82,8 @@ function renderLayout(meRole?: "admin" | "user" | null, { path = "/services", se
   );
 }
 
-const chip = () => screen.findByRole("link", { name: /^Your profile/ });
+// The profile link names the email, so it is there once /me has answered — and the permissions with it.
+const chip = () => screen.findByRole("link", { name: /^Your profile, alice@example.com/ });
 const httpService = (id: string, name: string, connected = true) => ({ id, name, type: "http", connected });
 const sidebarLinks = (name: string) =>
   within(screen.getByRole("navigation", { name })).getAllByRole("link").map((a) => a.getAttribute("aria-label"));
@@ -228,7 +232,7 @@ describe("Layout workspace shell", () => {
     localStorage.setItem("burrow.lastWorkspace", "gateway"); // an earlier visit
     renderLayout("admin", { path: "/services" });
     const services = await screen.findByRole("navigation", { name: "Services" });
-    await userEvent.click(within(services).getByRole("link", { name: /^Clients(,|$)/ }));
+    await userEvent.click(await within(services).findByRole("link", { name: /^Clients(,|$)/ }));
     expect(screen.getByTestId("where")).toHaveTextContent("/clients");
     expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
     expect(screen.getByRole("link", { name: /^Clients(,|$)/ })).toHaveAttribute("aria-current", "page");
@@ -258,8 +262,10 @@ describe("Layout workspace shell", () => {
 
   it("without the AI gateway, Clients shows the Services sidebar whatever is remembered", async () => {
     localStorage.setItem("burrow.lastWorkspace", "gateway");
-    renderLayout("user", { path: "/clients", services: [httpService("svc1", "ollama", false)] });
+    // A role that may list clients: the user set, plus tunnels:read:any.
+    renderLayout("user", { path: "/clients", services: [httpService("svc1", "ollama", false)], permissions: [...USER_PERMISSIONS, "tunnels:read:any"] });
     await screen.findByRole("link", { name: "Services, 1" });
+    await chip();
     expect(screen.getByRole("navigation", { name: "Services" })).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "AI Gateway" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Providers" })).toBeNull();
@@ -384,11 +390,18 @@ describe("Layout workspace shell", () => {
     const head = document.querySelector(".sidebar-brand") as HTMLElement;
     expect(head).toHaveTextContent(/^Services$/);
     expect(within(head).queryByRole("link")).toBeNull();
-    expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
+    // Clients is listed for those who may read clients (tunnels:read:any), not for the user role.
+    expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Traffic"]);
   });
 
   it("a non-admin with a connected http service gets the tabs", async () => {
     renderLayout("user", { services: [httpService("svc1", "ollama")] });
+    await screen.findByRole("navigation", { name: "Workspace" });
+    expect(tabs()).toEqual([["Services", "/", "true"], ["AI Gateway", "/gateway", null]]);
+  });
+
+  it("a custom role with ai:read:any gets the tabs without a connected service", async () => {
+    renderLayout("operator", { permissions: ["ai:read:any"] });
     await screen.findByRole("navigation", { name: "Workspace" });
     expect(tabs()).toEqual([["Services", "/", "true"], ["AI Gateway", "/gateway", null]]);
   });
@@ -541,14 +554,20 @@ describe("Layout workspace shell", () => {
     expect(await screen.findByRole("link", { name: "Clients, 1 online" })).toBeInTheDocument();
   });
 
-  it("does not ask for clients as a non-admin", async () => {
+  it("does not ask for clients without tunnels:read:any", async () => {
     renderLayout("user");
     await chip();
     await waitFor(() => expect(screen.getByRole("link", { name: /^Your profile, alice/ })).toBeInTheDocument());
     const urls = vi.mocked(globalThis.fetch).mock.calls.map((c) => String(c[0]));
     expect(urls.some((u) => u.includes("/api/v1/services"))).toBe(true);
     expect(urls.some((u) => u.includes("/api/v1/clients"))).toBe(false);
-    expect(screen.getByRole("link", { name: "Clients" })).toBeInTheDocument();
+    // There is no Clients entry to count for, and no count is asked for.
+    expect(screen.queryByRole("link", { name: /^Clients/ })).toBeNull();
+  });
+
+  it("asks for clients, and counts them, for a custom role with tunnels:read:any", async () => {
+    renderLayout("user", { known: [online("tok_1", "office-box-1", "sess_1")], permissions: ["tunnels:read:any"] });
+    expect(await screen.findByRole("link", { name: "Clients, 1 online" })).toBeInTheDocument();
   });
 
   it("the breadcrumb names a service instead of showing its id", async () => {

@@ -5,6 +5,7 @@ import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { db, resetDb } from "@/mocks/db";
 import { EMAIL_NOT_CONFIGURED } from "@/lib/copy";
+import { USER_PERMISSIONS } from "@/auth/permissions";
 import { useAuth } from "@/auth/useAuth";
 import { useRelayNotices } from "./useRelayNotices";
 
@@ -48,11 +49,31 @@ describe("useRelayNotices", () => {
   });
 
   it("non-admin: no notice, and the settings endpoint is not requested", async () => {
-    db.me = { ...db.me, role: "user" };
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
     const seen = watchSettings(() => HttpResponse.json({}));
     renderApp(<Probe />);
     await signedInAs("user");
     // Give a wrongly enabled query the time to fire.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(seen.count).toBe(0);
+    expect(notices()).toEqual([]);
+  });
+
+  it("a custom role with settings:manage gets the notice, whatever it is called", async () => {
+    db.me = { ...db.me, role: "operator", permissions: ["settings:manage"] };
+    // The mock relay still answers /settings by role; this one answers by permission, as the real one does.
+    watchSettings(() => HttpResponse.json({}));
+    renderApp(<Probe />);
+    await waitFor(() => expect(notices()).toEqual([
+      { id: "email", message: EMAIL_NOT_CONFIGURED, action: { label: "Set up email", to: "/settings/email" } },
+    ]));
+  });
+
+  it("a role without settings:manage is not asked, though it reads the audit log", async () => {
+    db.me = { ...db.me, role: "auditor", permissions: ["audit:read"] };
+    const seen = watchSettings(() => HttpResponse.json({}));
+    renderApp(<Probe />);
+    await signedInAs("auditor");
     await new Promise((r) => setTimeout(r, 50));
     expect(seen.count).toBe(0);
     expect(notices()).toEqual([]);

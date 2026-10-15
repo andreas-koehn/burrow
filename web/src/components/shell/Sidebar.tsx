@@ -18,7 +18,7 @@ export interface SidebarProps {
   counts: { services?: number; clientsOnline?: number };
   /** Pages where an open relay notice is resolved; their entries carry a dot. */
   attention: string[];
-  user: { email: string; isAdmin: boolean; role?: string };
+  user: { email: string; role?: string };
   theme: "light" | "dark";
   onSearch(): void;
   onToggleTheme(): void;

@@ -7,9 +7,11 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { NAVIGATIONS, navigationFor, workspacesFor } from "@/lib/navigation";
 import { workspaceFor } from "@/lib/workspace";
 import { WorkspaceTabs } from "./WorkspaceTabs";
+import { holdsAny, ALL_PERMISSIONS, USER_PERMISSIONS } from "@/auth/permissions";
+const canOf = (held: readonly string[]) => (needs?: readonly string[]) => holdsAny(new Set(held), needs);
 
-const admin = { isAdmin: true, hasAiGateway: true };
-const plain = { isAdmin: false, hasAiGateway: false };
+const admin = { can: canOf(ALL_PERMISSIONS), hasAiGateway: true };
+const plain = { can: canOf(USER_PERMISSIONS), hasAiGateway: false };
 
 function Probe() {
   return <div data-testid="path">{useLocation().pathname}</div>;

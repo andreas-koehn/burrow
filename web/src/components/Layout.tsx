@@ -4,6 +4,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 import { useTheme } from "@/components/theme-provider";
 import { useAuth } from "@/auth/useAuth";
+import { useCanFn } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import type { Service } from "@/lib/contract";
 import { CommandPalette } from "@/components/CommandPalette";
 import { Sidebar } from "@/components/shell/Sidebar";
@@ -49,31 +51,28 @@ export function Layout() {
     qc.clear();
     nav("/login", { replace: true });
   }
-  // The AI Gateway used to be gated on "≥1 service has access_mode === api_key"
-  // (P0-2). That kept it hidden on a fresh stack — even for admins — because
-  // the dashboard is needed to MINT an API-key gated service in the first
-  // place. It is now visible to every admin (the only role that can configure
-  // those resources anyway). Non-admins still see it when at least one http
-  // service is connected, so a user with only the ai:configure:own permission
-  // still finds the entry point.
+  // The AI Gateway is shown to whoever may read or configure it relay-wide. Everyone else
+  // sees it once at least one http service is connected, so a user with only the
+  // ai:configure:own permission still finds the entry point (the first service has to
+  // be minted in the dashboard before that).
   const services = useQuery({
     queryKey: ["services"],
     queryFn: () => apiFetch<Service[]>("/services"),
     retry: false,
   });
-  const isAdmin = user?.role === "admin";
-  // Empty for non-admins, and no request is made for them.
+  const can = useCanFn();
+  // Empty without settings:manage, and no request is made then.
   const relayNotices = useRelayNotices();
   // The rows of the Clients page, from the request that page makes too. The
-  // endpoint is admin-gated; nobody else is asked for, or gets, a count.
+  // endpoint needs tunnels:read:any; nobody else is asked for, or gets, a count.
   // The shell is the one reader that is always there, so it keeps the list
   // fresh for every page: no other reader sets an interval of its own.
-  const clients = useKnownClients({ enabled: isAdmin, refetchInterval: 30000 });
+  const clients = useKnownClients({ enabled: can([P.tunnelsReadAny]), refetchInterval: 30000 });
   const servicesList = Array.isArray(services.data) ? services.data : [];
   const clientsList = clients.rows ?? [];
-  const hasAiGateway = isAdmin
+  const hasAiGateway = can([P.aiReadAny, P.aiProvidersManage])
     || servicesList.some((s) => s.type === "http" && s.connected);
-  const ctx = { isAdmin, hasAiGateway };
+  const ctx = { can, hasAiGateway };
 
   // The sidebar follows the URL, except on a relay-level page (Clients): that one is
   // shown in the workspace the reader came from — Services for someone the AI Gateway
@@ -117,7 +116,7 @@ export function Layout() {
         navigation={navigation}
         workspaces={workspacesFor(ctx)}
         // Inside Settings both shortcuts would only repeat entries of the list above them.
-        footer={navigation.workspace === "settings" ? [] : FOOTER_ENTRIES.filter((e) => !e.adminOnly || isAdmin)}
+        footer={navigation.workspace === "settings" ? [] : FOOTER_ENTRIES.filter((e) => can(e.needs))}
         pathname={pathname}
         collapsed={collapsed}
         counts={{
@@ -126,7 +125,7 @@ export function Layout() {
           clientsOnline: clients.rows ? clientsOnline(clients.rows) : undefined,
         }}
         attention={relayNotices.map((n) => n.action.to)}
-        user={{ email: user?.email ?? "", isAdmin, role: user?.role }}
+        user={{ email: user?.email ?? "", role: user?.role }}
         theme={theme}
         onSearch={openPalette}
         onToggleTheme={toggleTheme}
@@ -144,7 +143,7 @@ export function Layout() {
         key={paletteKey}
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
-        isAdmin={isAdmin}
+        can={can}
         hasAiGateway={hasAiGateway}
       />
     </div>

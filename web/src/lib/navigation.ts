@@ -4,6 +4,7 @@ import {
   ServerCog, Mail, Archive, HardDrive, DatabaseBackup, Users, ShieldCheck, ScrollText, Webhook,
   BookOpen, UserCircle, MonitorSmartphone, Bot, Network, Layers, KeyRound,
 } from "lucide-react";
+import { P } from "@/auth/permissions";
 import { workspaceFor, type Workspace } from "./workspace";
 
 export interface NavEntry {
@@ -14,7 +15,8 @@ export interface NavEntry {
   /** Path the entry opens. */
   to: string;
   icon: LucideIcon;
-  adminOnly?: boolean;
+  /** Permissions that open the page (any of them); without, everybody sees the entry. They are those of the API the page reads. */
+  needs?: readonly string[];
   /** Extra path prefixes for which this entry counts as the current page. */
   also?: string[];
   /** Live figure shown at the right edge of the entry. */
@@ -41,9 +43,17 @@ export interface Navigation {
 }
 
 export interface NavContext {
-  isAdmin: boolean;
+  /** Whether the caller holds any of the permissions (none listed: yes). */
+  can: (needs?: readonly string[]) => boolean;
   hasAiGateway: boolean;
 }
+
+/** Permissions shared by several entries, and by the routes that guard the same pages. */
+const NEEDS = {
+  settings: [P.settingsManage],
+  users: [P.usersRead, P.usersManage],
+  roles: [P.rolesRead, P.rolesManage],
+} as const;
 
 /** Where the user chip leads. Named, so the sidebar cannot lose it to a renamed id. */
 export const PROFILE_ENTRY: NavEntry = {
@@ -61,7 +71,7 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
       { entries: [{ id: "services-overview", label: "Overview", paletteLabel: "Services overview", to: "/", icon: LayoutDashboard }] },
       { title: "Connect", entries: [
         { id: "services", label: "Services", to: "/services", icon: Globe, count: "services" },
-        { id: "clients", label: "Clients", to: "/clients", icon: Boxes, count: "clientsOnline" },
+        { id: "clients", label: "Clients", to: "/clients", icon: Boxes, count: "clientsOnline", needs: [P.tunnelsReadAny] },
       ] },
       { title: "Observe", entries: [{ id: "traffic", label: "Traffic", to: "/traffic", icon: Activity }] },
     ],
@@ -72,7 +82,7 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
       { entries: [{ id: "gateway-overview", label: "Overview", paletteLabel: "AI Gateway overview", to: "/gateway", icon: LayoutDashboard }] },
       // A client serves services and providers alike: the one page at /clients is listed in both workspaces.
       { title: "Connect", entries: [
-        { id: "gateway-clients", label: "Clients", to: "/clients", icon: Boxes, count: "clientsOnline" },
+        { id: "gateway-clients", label: "Clients", to: "/clients", icon: Boxes, count: "clientsOnline", needs: [P.tunnelsReadAny] },
       ] },
       { title: "Route", entries: [
         { id: "providers", label: "Providers", to: "/gateway/providers", icon: Sparkles },
@@ -93,20 +103,20 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
     workspace: "settings", label: "Settings", icon: ServerCog, home: "/settings",
     groups: [
       { title: "Relay", entries: [
-        { id: "general", label: "General", to: "/settings/general", icon: ServerCog, adminOnly: true },
-        { id: "email", label: "Email", to: "/settings/email", icon: Mail, adminOnly: true },
-        { id: "retention", label: "Retention", to: "/settings/retention", icon: Archive, adminOnly: true },
-        { id: "database", label: "Database", to: "/settings/database", icon: HardDrive, adminOnly: true },
-        { id: "backups", label: "Backups", to: "/settings/backups", icon: DatabaseBackup, adminOnly: true },
+        { id: "general", label: "General", to: "/settings/general", icon: ServerCog, needs: NEEDS.settings },
+        { id: "email", label: "Email", to: "/settings/email", icon: Mail, needs: NEEDS.settings },
+        { id: "retention", label: "Retention", to: "/settings/retention", icon: Archive, needs: NEEDS.settings },
+        { id: "database", label: "Database", to: "/settings/database", icon: HardDrive, needs: [P.metricsRead] },
+        { id: "backups", label: "Backups", to: "/settings/backups", icon: DatabaseBackup, needs: [P.backupRun] },
       ] },
       { title: "Access", entries: [
-        { id: "users", label: "Users", to: "/settings/users", icon: Users, adminOnly: true },
-        { id: "roles", label: "Roles", to: "/settings/roles", icon: ShieldCheck, adminOnly: true },
-        { id: "audit", label: "Audit log", to: "/settings/audit", icon: ScrollText, adminOnly: true },
+        { id: "users", label: "Users", to: "/settings/users", icon: Users, needs: NEEDS.users },
+        { id: "roles", label: "Roles", to: "/settings/roles", icon: ShieldCheck, needs: NEEDS.roles },
+        { id: "audit", label: "Audit log", to: "/settings/audit", icon: ScrollText, needs: [P.auditRead] },
       ] },
       { title: "Integrations", entries: [
-        { id: "webhooks", label: "Webhooks", to: "/settings/webhooks", icon: Webhook, adminOnly: true },
-        { id: "api", label: "API reference", to: "/settings/api", icon: BookOpen, adminOnly: true },
+        { id: "webhooks", label: "Webhooks", to: "/settings/webhooks", icon: Webhook, needs: [P.webhooksManage] },
+        { id: "api", label: "API reference", to: "/settings/api", icon: BookOpen, needs: [P.metricsRead] },
       ] },
       { title: "Personal", entries: [
         PROFILE_ENTRY,
@@ -117,10 +127,10 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
   },
 };
 
-/** Shortcuts into Settings shown at the foot of the sidebar; admin only. */
+/** Shortcuts into Settings shown at the foot of the sidebar, to those who may open the page. */
 export const FOOTER_ENTRIES: NavEntry[] = [
-  { id: "footer-users", label: "Users & roles", to: "/settings/users", icon: Users, adminOnly: true },
-  { id: "footer-settings", label: "Settings", to: "/settings/general", icon: ServerCog, adminOnly: true, gathersAttention: true },
+  { id: "footer-users", label: "Users & roles", to: "/settings/users", icon: Users, needs: NEEDS.users },
+  { id: "footer-settings", label: "Settings", to: "/settings/general", icon: ServerCog, needs: NEEDS.settings, gathersAttention: true },
 ];
 
 /**
@@ -136,7 +146,7 @@ export function attentionTarget(entry: NavEntry, pages: string[]): string | unde
 export function navigationFor(workspace: Workspace, ctx: NavContext): Navigation {
   const nav = NAVIGATIONS[workspace];
   const groups = nav.groups
-    .map((g) => ({ ...g, entries: g.entries.filter((e) => !e.adminOnly || ctx.isAdmin) }))
+    .map((g) => ({ ...g, entries: g.entries.filter((e) => ctx.can(e.needs)) }))
     .filter((g) => g.entries.length > 0);
   return { ...nav, groups };
 }

@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Dialog, Input } from "@/components/ds";
+import { P } from "@/auth/permissions";
 import { destinationsFor } from "@/lib/destinations";
 import { apiFetch } from "@/lib/api";
 import type { AiGatewayKey, AiModel, AiProvider, Service, ClientView } from "@/lib/contract";
@@ -9,7 +10,8 @@ import type { AiGatewayKey, AiModel, AiProvider, Service, ClientView } from "@/l
 export interface CommandPaletteProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  isAdmin: boolean;
+  /** Whether the caller holds any of the permissions. */
+  can: (needs?: readonly string[]) => boolean;
   hasAiGateway: boolean;
 }
 
@@ -35,7 +37,7 @@ const has = (text: string | undefined, q: string) => (text ?? "").toLowerCase().
 export function CommandPalette({
   open,
   onOpenChange,
-  isAdmin,
+  can,
   hasAiGateway,
 }: CommandPaletteProps) {
   const navigate = useNavigate();
@@ -50,13 +52,13 @@ export function CommandPalette({
     enabled: open,
   });
 
-  // Clients — admin-gated; tolerate 403/network errors → empty list.
+  // Clients — need tunnels:read:any; tolerate 403/network errors → empty list.
   const clientsQuery = useQuery({
     queryKey: ["clients"],
     queryFn: () =>
       apiFetch<ClientView[]>("/clients").catch(() => [] as ClientView[]),
     retry: false,
-    enabled: open && isAdmin,
+    enabled: open && can([P.tunnelsReadAny]),
   });
 
   // Providers, models and gateway keys, under the keys and fetches of their own pages, so
@@ -88,7 +90,7 @@ export function CommandPalette({
   // Wrapped in useMemo so the array reference is stable and doesn't cause
   // the useCallback below to re-create on every render.
   const allItems = useMemo<PaletteItem[]>(() => {
-    const destinations = destinationsFor({ isAdmin, hasAiGateway });
+    const destinations = destinationsFor({ can, hasAiGateway });
 
     // Filter destinations by query. A page whose own name matches comes before the
     // pages that only sit in a workspace of that name ("Services" is both, and the
@@ -184,7 +186,7 @@ export function CommandPalette({
       })),
       ...entityItems,
     ];
-  }, [q, servicesQuery.data, clientsQuery.data, providersQuery.data, modelsQuery.data, keysQuery.data, isAdmin, hasAiGateway]);
+  }, [q, servicesQuery.data, clientsQuery.data, providersQuery.data, modelsQuery.data, keysQuery.data, can, hasAiGateway]);
 
   const activate = useCallback(
     (path: string) => {

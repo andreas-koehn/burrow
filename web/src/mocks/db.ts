@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from "@/auth/permissions";
 import type {
   UserAdmin, RoleSummary, Session, ClientDetail, ClientDiscovery, ClientLoginRequest, SettingsMap, AiProviderModel,
   Service, ServiceApiKey, CostSummary, ServiceAIConfig,
@@ -77,7 +78,7 @@ export interface AiProviderRow {
 }
 
 export interface MockDb {
-  me: { id: string; email: string; role: "admin" | "user" };
+  me: { id: string; email: string; role: string; permissions?: string[] };
   csrf: string;
   connectServer: string;
   /** GET /client/discovery */
@@ -152,7 +153,7 @@ export interface MockDb {
 function seed(): MockDb {
   const meId = "bur_usr_admin01";
   return {
-    me: { id: meId, email: "alice@acme.io", role: "admin" },
+    me: { id: meId, email: "alice@acme.io", role: "admin", permissions: [...ALL_PERMISSIONS] },
     csrf: "test-csrf-token",
     connectServer: "relay.example.com:7000",
     discovery: { control: "relay.example.com:7000", version: "0.6.0", min_client_version: "0.1.0", protocol_version: 1 },

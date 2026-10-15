@@ -4,13 +4,16 @@ import { resolve } from "node:path";
 import { describe, it, expect, beforeEach } from "vitest";
 import { matchPath } from "react-router-dom";
 import { OLD_ROUTES } from "./moved-routes";
+import { holdsAny, ALL_PERMISSIONS, USER_PERMISSIONS } from "@/auth/permissions";
 import { NAVIGATIONS, FOOTER_ENTRIES, navigationFor, workspacesFor, activeEntry, attentionTarget, breadcrumbFor, allEntries } from "./navigation";
 
 // What is remembered decides where a relay-level page is shown: start every test without it.
 beforeEach(() => localStorage.clear());
 
-const admin = { isAdmin: true, hasAiGateway: true };
-const user = { isAdmin: false, hasAiGateway: false };
+const canOf = (held: readonly string[]) => (needs?: readonly string[]) => holdsAny(new Set(held), needs);
+const admin = { can: canOf(ALL_PERMISSIONS), hasAiGateway: true };
+const user = { can: canOf(USER_PERMISSIONS), hasAiGateway: false };
+const auditor = { can: canOf(["audit:read"]), hasAiGateway: false };
 const labels = (ws: "services" | "gateway" | "settings", ctx = admin) =>
   navigationFor(ws, ctx).groups.map((g) => [g.title ?? "", g.entries.map((e) => e.label)]);
 
@@ -46,6 +49,34 @@ describe("navigation description", () => {
   it("a non-admin sees only the Personal group in Settings", () => {
     expect(labels("settings", user)).toEqual([["Personal", ["Profile & password", "Sessions", "Automation tokens"]]]);
   });
+  it("someone who may only read the audit log sees that page beside the Personal ones", () => {
+    expect(labels("settings", auditor)).toEqual([
+      ["Access", ["Audit log"]],
+      ["Personal", ["Profile & password", "Sessions", "Automation tokens"]],
+    ]);
+  });
+  it("no entry is marked by role", () => {
+    const entries = [...(["services", "gateway", "settings"] as const).flatMap((ws) => NAVIGATIONS[ws].groups.flatMap((g) => g.entries)), ...FOOTER_ENTRIES];
+    for (const e of entries) expect(e, e.id).not.toHaveProperty("adminOnly");
+  });
+  it("each settings entry declares the permissions of its API", () => {
+    const needs = Object.fromEntries(NAVIGATIONS.settings.groups.flatMap((g) => g.entries).map((e) => [e.id, e.needs]));
+    expect(needs).toMatchObject({
+      general: ["settings:manage"], email: ["settings:manage"], retention: ["settings:manage"],
+      database: ["metrics:read"], backups: ["backup:run"],
+      users: ["users:read", "users:manage"], roles: ["roles:read", "roles:manage"], audit: ["audit:read"],
+      webhooks: ["webhooks:manage"], api: ["metrics:read"],
+    });
+    expect(needs.profile).toBeUndefined();
+    expect(needs.sessions).toBeUndefined();
+    expect(needs.automation).toBeUndefined();
+  });
+  it("Clients, in both workspaces, needs tunnels:read:any", () => {
+    for (const id of ["clients", "gateway-clients"]) {
+      const e = [...NAVIGATIONS.services.groups, ...NAVIGATIONS.gateway.groups].flatMap((g) => g.entries).find((x) => x.id === id);
+      expect(e?.needs, id).toEqual(["tunnels:read:any"]);
+    }
+  });
   // The spec's budget is seven entries per job. The AI Gateway wireframe reaches eight with
   // Models and Gateway keys (plan gateway-models) and nine with Clients, which belongs to the
   // relay and is listed in both workspaces; nothing may go beyond that.
@@ -74,16 +105,18 @@ describe("navigation description", () => {
     expect(named).toEqual([["/", "Overview", "Services overview"], ["/gateway", "Overview", "AI Gateway overview"]]);
     expect(FOOTER_ENTRIES.every((e) => e.paletteLabel === undefined)).toBe(true);
   });
-  it("the footer entries are for admins and point into Settings", () => {
-    expect(FOOTER_ENTRIES.map((e) => [e.label, e.to, e.adminOnly])).toEqual([
-      ["Users & roles", "/settings/users", true],
-      ["Settings", "/settings/general", true],
+  it("the footer entries point into Settings and follow the permissions of the page", () => {
+    expect(FOOTER_ENTRIES.map((e) => [e.label, e.to, e.needs])).toEqual([
+      ["Users & roles", "/settings/users", ["users:read", "users:manage"]],
+      ["Settings", "/settings/general", ["settings:manage"]],
     ]);
+    expect(FOOTER_ENTRIES.filter((e) => user.can(e.needs))).toEqual([]);
+    expect(FOOTER_ENTRIES.filter((e) => admin.can(e.needs))).toHaveLength(2);
   });
   it("offers the AI Gateway workspace only when it is visible to the user", () => {
     expect(workspacesFor(admin).map((n) => n.workspace)).toEqual(["services", "gateway"]);
     expect(workspacesFor(user).map((n) => n.workspace)).toEqual(["services"]);
-    expect(workspacesFor({ isAdmin: false, hasAiGateway: true }).map((n) => n.workspace)).toEqual(["services", "gateway"]);
+    expect(workspacesFor({ ...user, hasAiGateway: true }).map((n) => n.workspace)).toEqual(["services", "gateway"]);
   });
   it("every path is unique and none belongs to the relay's own prefixes", () => {
     const paths = allEntries(admin).map((x) => x.entry.to);
@@ -234,12 +267,12 @@ describe("reachability", () => {
     }
   });
 
-  // Admin-only settings pages are guarded where they are routed, exactly as the navigation marks them.
-  it("wraps every admin-only settings route in RequireAdmin, and no other", () => {
+  // Settings pages with a need are guarded where they are routed, and the route reads the need from the entry.
+  it("wraps every settings route that has a need in RequirePermission, and no other", () => {
     const element = (path: string) => app.match(new RegExp(`path="${path}" element=\\{(<[A-Za-z]+)`))?.[1];
     for (const e of NAVIGATIONS.settings.groups.flatMap((g) => g.entries)) {
       expect(element(e.to), e.to).toBeDefined();
-      expect(element(e.to) === "<RequireAdmin", e.to).toBe(e.adminOnly === true);
+      expect(element(e.to) === "<RequirePermission", e.to).toBe(e.needs !== undefined);
     }
   });
 

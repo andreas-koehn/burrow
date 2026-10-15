@@ -4,8 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { breadcrumbFor } from "@/lib/navigation";
 import { TopBar } from "./TopBar";
+import { holdsAny, ALL_PERMISSIONS } from "@/auth/permissions";
+const canOf = (held: readonly string[]) => (needs?: readonly string[]) => holdsAny(new Set(held), needs);
 
-const admin = { isAdmin: true, hasAiGateway: true };
+const admin = { can: canOf(ALL_PERMISSIONS), hasAiGateway: true };
 
 function mount(path: string, props: { collapsed?: boolean; onToggle?: () => void } = {}) {
   const onToggle = props.onToggle ?? vi.fn();
