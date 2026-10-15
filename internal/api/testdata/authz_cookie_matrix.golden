@@ -31,6 +31,7 @@ admin GET /api/v1/ai/requests/{requestID}/attempts 200
 admin GET /api/v1/audit/events 200
 admin GET /api/v1/audit/export 500
 admin GET /api/v1/audit/fingerprint 500
+admin GET /api/v1/automation/presets 200
 admin GET /api/v1/automation/tokens 200
 admin GET /api/v1/backups 200
 admin GET /api/v1/backups/restores/{id} 404
@@ -184,6 +185,7 @@ user GET /api/v1/ai/requests/{requestID}/attempts 403
 user GET /api/v1/audit/events 403
 user GET /api/v1/audit/export 403
 user GET /api/v1/audit/fingerprint 403
+user GET /api/v1/automation/presets 200
 user GET /api/v1/automation/tokens 200
 user GET /api/v1/backups 403
 user GET /api/v1/backups/restores/{id} 403
@@ -337,6 +339,7 @@ cr-none GET /api/v1/ai/requests/{requestID}/attempts 403
 cr-none GET /api/v1/audit/events 403
 cr-none GET /api/v1/audit/export 403
 cr-none GET /api/v1/audit/fingerprint 403
+cr-none GET /api/v1/automation/presets 403
 cr-none GET /api/v1/automation/tokens 403
 cr-none GET /api/v1/backups 403
 cr-none GET /api/v1/backups/restores/{id} 403
@@ -490,6 +493,7 @@ cr-legacy GET /api/v1/ai/requests/{requestID}/attempts 403
 cr-legacy GET /api/v1/audit/events 200
 cr-legacy GET /api/v1/audit/export 500
 cr-legacy GET /api/v1/audit/fingerprint 500
+cr-legacy GET /api/v1/automation/presets 200
 cr-legacy GET /api/v1/automation/tokens 200
 cr-legacy GET /api/v1/backups 200
 cr-legacy GET /api/v1/backups/restores/{id} 404

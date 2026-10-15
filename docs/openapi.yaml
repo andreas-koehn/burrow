@@ -958,6 +958,19 @@ components:
         id: { type: string }
         email: { type: string, format: email }
         role: { type: string }
+    Me:
+      description: >
+        The caller as /me returns it: the SessionUser fields plus the caller's
+        effective permissions (a session's role, or a token's declared and
+        still granted permissions), in the order the server lists them.
+      allOf:
+        - $ref: '#/components/schemas/SessionUser'
+        - type: object
+          required: [permissions]
+          properties:
+            permissions:
+              type: array
+              items: { type: string }
     Client:
       type: object
       description: One live client, that is one control session of a connected burrow client.
@@ -1046,6 +1059,17 @@ components:
         key: { type: string, example: 'tokens:manage:own' }
         group: { type: string, description: Section label for display., example: Client tokens }
         description: { type: string }
+    AutomationPreset:
+      type: object
+      description: A named starting point for the permissions of an automation token.
+      required: [name, description, permissions]
+      properties:
+        name: { type: string, enum: [read-only, operator, full] }
+        description: { type: string }
+        permissions:
+          type: array
+          description: The preset's permissions, cut to what the caller holds.
+          items: { type: string }
     AutomationToken:
       type: object
       description: An automation token as it is listed. The token itself is returned once, when it is created.
@@ -1958,7 +1982,7 @@ paths:
           description: The signed-in user.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/SessionUser' }
+              schema: { $ref: '#/components/schemas/Me' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ────────────────────────────────────────────────────────────────────────
@@ -3550,6 +3574,27 @@ paths:
   # ────────────────────────────────────────────────────────────────────────
   # Automation (bearer-token API)
   # ────────────────────────────────────────────────────────────────────────
+  /api/v1/automation/presets:
+    get:
+      tags: [automation]
+      operationId: automationPresetsList
+      x-burrow-permission: {kind: needs, any_of: ["automation:tokens:manage:own", "automation:tokens:manage:any"]}
+      summary: List the presets an automation token can be made from
+      description: >
+        Each preset's permission list is cut to the permissions the caller
+        holds. A token stores the list sent when it is minted, not the preset's
+        name, so a later change to a preset never widens an existing token.
+      responses:
+        '200':
+          description: The presets, in the order read-only, operator, full.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AutomationPreset' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /api/v1/automation/tokens:
     get:
       tags: [automation]

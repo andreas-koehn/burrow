@@ -97,6 +97,7 @@ var openAPIOperationIDs = map[string]string{
 	"POST /api/v1/webhooks/{id}/pause":                                          "webhookPause",
 	"POST /api/v1/webhooks/{id}/resume":                                         "webhookResume",
 	"POST /api/v1/webhooks/{id}/preview":                                        "webhookPreview",
+	"GET /api/v1/automation/presets":                                            "automationPresetsList",
 	"GET /api/v1/automation/tokens":                                             "automationTokensList",
 	"POST /api/v1/automation/tokens":                                            "automationTokenCreate",
 	"DELETE /api/v1/automation/tokens/{id}":                                     "automationTokenDelete",
@@ -326,7 +327,7 @@ type openAPIResponseBody struct {
 var openAPIResponses = map[string]openAPIResponseBody{
 	// auth, sessions, tokens, clients, users, roles (O03)
 	"authLogin":            {status: "200", typ: oaType[userResp]()},
-	"meGet":                {status: "200", typ: oaType[userResp]()},
+	"meGet":                {status: "200", typ: oaType[meResp]()},
 	"sessionsList":         {status: "200", typ: oaType[sessionResp](), list: true},
 	"sessionsRevokeAll":    {status: "200", keys: []string{"revoked"}},
 	"clientTokensList":     {status: "200", typ: oaType[tokenResp](), list: true},
@@ -348,6 +349,7 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"roleCreate":                {status: "201", typ: oaType[roleDetailResp]()},
 	"rolePermissionsList":       {status: "200", typ: oaType[permissionInfo](), list: true},
 	"roleGet":                   {status: "200", typ: oaType[roleDetailResp]()},
+	"automationPresetsList":     {status: "200", typ: oaType[automationPresetResp](), list: true},
 	"automationTokensList":      {status: "200", typ: oaType[automationTokenResp](), list: true},
 	"automationTokenCreate":     {status: "201", typ: oaType[createTokenWrap]()},
 

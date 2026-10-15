@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+
+	"github.com/ankoehn/burrow/internal/authz"
 )
 
 type loginReq struct {
@@ -78,12 +80,25 @@ func (d Deps) Logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Me returns the authenticated user's public profile.
+// meResp is userResp plus what the caller may do: the permissions of a
+// session's role, or of a token (declared and still granted).
+type meResp struct {
+	userResp
+	Permissions []string `json:"permissions"`
+}
+
+// Me returns the authenticated user's public profile and effective permissions.
 func (d Deps) Me(w http.ResponseWriter, r *http.Request) {
 	u, err := d.Users.GetUserByID(r.Context(), userID(r.Context()))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "lookup failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, userResp{ID: u.ID, Email: u.Email, Role: u.Role})
+	perms := []string{}
+	for _, p := range authz.AllPermissions() {
+		if effectivePerms(r.Context(), u.Role, p) {
+			perms = append(perms, string(p))
+		}
+	}
+	writeJSON(w, http.StatusOK, meResp{userResp{ID: u.ID, Email: u.Email, Role: u.Role}, perms})
 }

@@ -265,6 +265,7 @@ var routeAccess = map[string]access{
 	"GET /api/v1/mcp/tools":                    needs(authz.PermMcpToolsRead),
 
 	// --- Automation tokens, roles, users, settings --------------------------
+	"GET /api/v1/automation/presets":        needs(automationTokens...),
 	"GET /api/v1/automation/tokens":         needs(automationTokens...),
 	"POST /api/v1/automation/tokens":        needs(automationTokens...),
 	"DELETE /api/v1/automation/tokens/{id}": needs(automationTokens...),

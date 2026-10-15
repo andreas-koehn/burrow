@@ -30,7 +30,7 @@ curl -b cookies.txt \
 
 ### Bearer token (automation)
 
-Mint an automation token from the dashboard (Settings → Tokens) or via `POST /api/v1/automation/tokens`. Use it as a standard `Authorization` header — no CSRF header needed:
+Mint an automation token from the dashboard (Settings → Automation tokens) or via `POST /api/v1/automation/tokens`. Use it as a standard `Authorization` header — no CSRF header needed:
 
 ```sh
 curl -H "Authorization: Bearer bua_YOUR_TOKEN_HERE" \
@@ -38,6 +38,12 @@ curl -H "Authorization: Bearer bua_YOUR_TOKEN_HERE" \
 ```
 
 Bearer tokens carry the permissions declared at mint time, scoped to the issuing user's role.
+
+`GET /api/v1/automation/presets` lists the presets the dashboard offers
+(`read-only`, `operator`, `full`), each cut to the permissions you hold.
+Send the list you want as `permissions` when you mint: the token stores the
+list, so a later change to a preset never widens it. `GET /api/v1/me`
+returns your effective permissions as `permissions`.
 
 ::: tip
 Bearer tokens are the right choice for CI pipelines, scripts, and SDK clients. Session cookies are for the dashboard UI.

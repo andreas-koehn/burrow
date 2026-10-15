@@ -453,6 +453,7 @@ func NewRouter(d Deps) http.Handler {
 			// automation:tokens:manage:own / :any (the store narrows what
 			// :own callers may list/revoke). The POST response carries the
 			// plaintext bearer secret EXACTLY ONCE; GET responses redact it.
+			r.Get("/automation/presets", d.GetAutomationPresets)
 			r.Get("/automation/tokens", d.GetAutomationTokens)
 			r.Post("/automation/tokens", d.PostAutomationToken)
 			r.Delete("/automation/tokens/{id}", d.DeleteAutomationToken)
