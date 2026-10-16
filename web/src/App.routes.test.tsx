@@ -103,19 +103,19 @@ describe("App routes", () => {
   });
 
   const settingsEntries = NAVIGATIONS.settings.groups.flatMap((g) => g.entries);
-  it.each(settingsEntries.filter((e) => e.needs).map((e) => [e.to, e.needs!]))(
+  it.each(settingsEntries.filter((e) => e.needs).map((e) => [e.to, e.needs!, e.label] as const))(
     "someone without the permissions of %s is told what is missing",
-    async (path, needs) => {
-      db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
+    async (path, needs, label) => {
+      db.me = { ...db.me, role: "user", permissions: USER_PERMISSIONS.filter((p) => !needs.includes(p)) };
       renderAt(path);
       expect(await screen.findByRole("heading", { name: "You cannot open this page", level: 1 })).toBeInTheDocument();
       expect(screen.getByTestId("path")).toHaveTextContent(new RegExp(`^${path}$`));
       expect(screen.getByText(new RegExp(`${needs[0]}`))).toBeInTheDocument();
       expect(screen.getByRole("link", { name: "Back to your profile" })).toHaveAttribute("href", "/settings/profile");
-      // Only the Personal group is offered.
+      // Only the Personal group is offered, without the page itself.
       const nav = within(screen.getByRole("navigation", { name: "Settings" }));
       expect(nav.getAllByRole("link").map((a) => a.getAttribute("aria-label")))
-        .toEqual(["Profile & password", "Sessions", "Automation tokens"]);
+        .toEqual(["Profile & password", "Sessions", "Automation tokens"].filter((l) => l !== label));
     },
   );
 

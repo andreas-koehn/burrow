@@ -39,6 +39,12 @@ describe("Automation tokens", () => {
     expect(card.textContent).toMatch(/mint a token/i);
   });
 
+  it("says when the tokens cannot be loaded instead of loading for ever", async () => {
+    server.use(http.get("/api/v1/automation/tokens", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    mount();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Couldn't load the automation tokens/);
+  });
+
   it("renders a row per token with mono bua_ prefix", async () => {
     mount();
     const table = await screen.findByRole("table", { name: /automation tokens/i });
@@ -223,6 +229,16 @@ describe("Automation tokens", () => {
       await userEvent.type(within(dlg).getByLabelText(/^name$/i), "ci-bot");
       await userEvent.click(within(dlg).getByRole("button", { name: /^create$/i }));
       expect(await screen.findByRole("link", { name: "Use it in an MCP client" })).toHaveAttribute("href", "/settings/mcp");
+    });
+
+    it("leaves the MCP link out for someone who cannot open the MCP page", async () => {
+      db.me = { ...db.me, role: "scripter", permissions: ALL_PERMISSIONS.filter((p) => p !== "mcp:tools:read") };
+      captureMint();
+      const dlg = await openDialog();
+      await userEvent.type(within(dlg).getByLabelText(/^name$/i), "ci-bot");
+      await userEvent.click(within(dlg).getByRole("button", { name: /^create$/i }));
+      expect(await screen.findByText(/Save this token now/)).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "Use it in an MCP client" })).toBeNull();
     });
   });
 });

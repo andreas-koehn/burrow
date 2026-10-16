@@ -33,7 +33,7 @@ describe("RequirePermission", () => {
   it("names the alternatives when two permissions open the page", async () => {
     db.me = { ...db.me, role: "operator", permissions: ["audit:read"] };
     mount(["users:read", "users:manage"]);
-    expect(await screen.findByText("It needs one of the permissions users:read or users:manage.")).toBeInTheDocument();
+    expect(await screen.findByText("It needs one of the permissions users:read or users:manage. Ask an admin to add one to your role.")).toBeInTheDocument();
   });
 
   it("shows nothing while /me loads", () => {

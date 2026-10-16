@@ -7,13 +7,28 @@ import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
 import { ALL_PERMISSIONS } from "@/auth/permissions";
 import McpSettings from "@/pages/settings/McpSettings";
+import { firstSentence } from "@/lib/firstSentence";
 
 const URL_ = () => `${window.location.origin}/mcp/burrow`;
 const mount = () => renderApp(<McpSettings />, "/settings/mcp");
 
+describe("firstSentence", () => {
+  it("ends a summary without a full stop at its paragraph", () => {
+    expect(firstSentence("List AI providers\n\nReturns one entry per row of the providers table.")).toBe("List AI providers");
+  });
+  it("takes the first sentence of a paragraph, across line breaks", () => {
+    expect(firstSentence("Who this token acts for: the user,\nthe role. And more.")).toBe("Who this token acts for: the user, the role.");
+  });
+  it("keeps a text without any stop whole", () => {
+    expect(firstSentence("Service detail (config + live state)")).toBe("Service detail (config + live state)");
+  });
+});
+
 describe("Settings → MCP", () => {
-  it("shows the endpoint built from the page's origin and a Copy button", async () => {
+  it("shows the address built from the page's origin and a Copy button", async () => {
     mount();
+    expect(await screen.findByRole("heading", { name: "Address" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Endpoint" })).toBeNull();
     expect(await screen.findByText(URL_())).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /copy/i }).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /copy address/i })).toBeInTheDocument();
@@ -35,6 +50,14 @@ describe("Settings → MCP", () => {
     mount();
     const link = await screen.findByRole("link", { name: "Create a read-only token" });
     expect(link).toHaveAttribute("href", "/settings/automation?new=1&preset=read-only");
+  });
+
+  it("offers no token link to someone who may not make automation tokens, and says what is missing", async () => {
+    db.me = { ...db.me, role: "operator-e2e", permissions: ["ai:read:any", "mcp:tools:read"] };
+    mount();
+    await screen.findByText(/claude mcp add --transport http burrow/);
+    expect(screen.queryByRole("link", { name: "Create a read-only token" })).toBeNull();
+    expect(screen.getByText(/needs the permission automation:tokens:manage:own/)).toBeInTheDocument();
   });
 
   it("lists every tool with its kind and what it needs, and the operation count", async () => {
@@ -76,6 +99,18 @@ describe("Settings → MCP", () => {
     expect(screen.queryByRole("table", { name: "Recent MCP calls" })).toBeNull();
     expect(asked).toBe(0);
     server.events.removeAllListeners();
+  });
+
+  it("keeps a loaded tools list when the status fails, without the operations sentence", async () => {
+    server.use(http.get("/api/v1/mcp/status", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+    mount();
+    const table = await screen.findByRole("table", { name: "MCP tools" });
+    expect(within(table).getByText("services_list")).toBeInTheDocument();
+    expect(screen.queryByText(/operations in all/)).toBeNull();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/status/i);
+    expect(alert).not.toHaveTextContent(/load the tools/i);
+    expect(screen.getByText(URL_())).toBeInTheDocument();
   });
 
   it("says when the tools cannot be loaded and still shows the snippets", async () => {

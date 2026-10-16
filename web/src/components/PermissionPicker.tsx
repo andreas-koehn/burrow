@@ -44,7 +44,10 @@ export interface PermissionPickerProps {
   idPrefix: string;
 }
 
-/** Permissions as checkboxes, grouped by area. The scroll region is the caller's choice of height (css). */
+/**
+ * Permissions as checkboxes, grouped by area. The list scrolls (css); it is a Tab stop of its own so
+ * the keyboard can scroll it even where every checkbox is disabled.
+ */
 export function PermissionPicker({ value, onChange, held, idPrefix }: PermissionPickerProps) {
   const chosen = new Set(value);
   function toggle(p: string, on: boolean) {
@@ -53,7 +56,7 @@ export function PermissionPicker({ value, onChange, held, idPrefix }: Permission
     onChange(ALL_PERMISSIONS.filter((x) => next.has(x)));
   }
   return (
-    <div className="permission-picker">
+    <div className="permission-picker" role="group" aria-label="Permissions" tabIndex={0}>
       {GROUPS.map((g) => (
         <div key={g.area} role="group" aria-label={g.label} className="permission-group">
           <span className="permission-group-label muted small" aria-hidden="true">{g.label}</span>

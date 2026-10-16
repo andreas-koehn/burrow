@@ -5,9 +5,10 @@ import { Link, useSearchParams } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Dialog, Disclosure, EmptyState, FormField, FormFieldGroup, Input, PageHeader, Segmented, Select, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
+import { Button, Dialog, Disclosure, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, Segmented, Select, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
 import { PermissionPicker } from "@/components/PermissionPicker";
 import { usePermissions } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import { RelativeTime } from "@/components/RelativeTime";
 import type { AutomationPreset, AutomationToken, CreatedAutomationToken } from "@/lib/contract";
 
@@ -129,7 +130,9 @@ export default function AutomationTokens() {
 
       <p className="muted small">These authenticate scripts, not clients. To connect a machine that runs burrow, use <Link className="link-inline" to="/clients?tab=tokens">Client tokens</Link>. Apps that call a model use a <Link className="link-inline" to="/gateway/keys">gateway key</Link>.</p>
 
-      {!tokens.data ? (
+      {tokens.error ? (
+        <ErrorNotice>Couldn't load the automation tokens: {tokens.error instanceof ApiError ? tokens.error.message : "Unknown error"}</ErrorNotice>
+      ) : !tokens.data ? (
         <SkeletonRows n={2} />
       ) : tokens.data.length === 0 ? (
         <EmptyState title="No automation tokens yet">
@@ -182,7 +185,7 @@ export default function AutomationTokens() {
       >
         <FormFieldGroup>
           <FormField label="Name" htmlFor="at-name" w="full">
-            <Input id="at-name" value={name} onChange={(e) => setName(e.target.value)} />
+            <Input id="at-name" autoComplete="off" spellCheck={false} value={name} onChange={(e) => setName(e.target.value)} />
           </FormField>
           <FormField label="Expiry" htmlFor="at-expiry" w="md">
             <Select id="at-expiry" value={expiry} onChange={setExpiry} options={EXPIRY_OPTIONS} />
@@ -236,7 +239,7 @@ export default function AutomationTokens() {
             <Copy size={13} />
           </button>
         </div>
-        <p><Link className="link-inline" to="/settings/mcp">Use it in an MCP client</Link></p>
+        {held.has(P.mcpToolsRead) && <p><Link className="link-inline" to="/settings/mcp">Use it in an MCP client</Link></p>}
       </Dialog>
       <Toaster />
     </div>

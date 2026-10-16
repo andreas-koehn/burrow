@@ -103,8 +103,8 @@ export default function App() {
         {/* P1-14: in-app OpenAPI viewer, framed inside the dashboard chrome. */}
         <Route path="/settings/api" element={<RequirePermission needs={needsOf("/settings/api")}><OpenApiViewer /></RequirePermission>} />
         <Route path="/settings/profile" element={<Profile />} />
-        <Route path="/settings/sessions" element={<Sessions />} />
-        <Route path="/settings/automation" element={<AutomationTokens />} />
+        <Route path="/settings/sessions" element={<RequirePermission needs={needsOf("/settings/sessions")}><Sessions /></RequirePermission>} />
+        <Route path="/settings/automation" element={<RequirePermission needs={needsOf("/settings/automation")}><AutomationTokens /></RequirePermission>} />
         {/* Old bookmarks: every moved path lands on its new home, params, query and hash intact. */}
         {OLD_ROUTES.map((r) => <Route key={r.from} path={r.from} element={<RedirectTo to={r.to} />} />)}
       </Route>

@@ -55,6 +55,9 @@ const NEEDS = {
   settings: [P.settingsManage],
   users: [P.usersRead, P.usersManage],
   roles: [P.rolesRead, P.rolesManage],
+  // Personal pages still read an API that needs a permission: a custom role may lack it.
+  sessions: [P.sessionsManageOwn, P.sessionsManageAny],
+  automation: [P.automationTokensManageOwn, P.automationTokensManageAny],
 } as const;
 
 /** Where the user chip leads. Named, so the sidebar cannot lose it to a renamed id. */
@@ -123,8 +126,8 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
       ] },
       { title: "Personal", entries: [
         PROFILE_ENTRY,
-        { id: "sessions", label: "Sessions", to: "/settings/sessions", icon: MonitorSmartphone },
-        { id: "automation", label: "Automation tokens", to: "/settings/automation", icon: Bot },
+        { id: "sessions", label: "Sessions", to: "/settings/sessions", icon: MonitorSmartphone, needs: NEEDS.sessions },
+        { id: "automation", label: "Automation tokens", to: "/settings/automation", icon: Bot, needs: NEEDS.automation },
       ] },
     ],
   },

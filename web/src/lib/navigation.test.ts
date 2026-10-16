@@ -49,10 +49,10 @@ describe("navigation description", () => {
   it("a non-admin sees only the Personal group in Settings", () => {
     expect(labels("settings", user)).toEqual([["Personal", ["Profile & password", "Sessions", "Automation tokens"]]]);
   });
-  it("someone who may only read the audit log sees that page beside the Personal ones", () => {
+  it("someone who may only read the audit log sees that page beside the profile", () => {
     expect(labels("settings", auditor)).toEqual([
       ["Access", ["Audit log"]],
-      ["Personal", ["Profile & password", "Sessions", "Automation tokens"]],
+      ["Personal", ["Profile & password"]],
     ]);
   });
   it("MCP sits in Integrations after Webhooks and needs mcp:tools:read", () => {
@@ -72,10 +72,10 @@ describe("navigation description", () => {
       database: ["metrics:read"], backups: ["backup:run"],
       users: ["users:read", "users:manage"], roles: ["roles:read", "roles:manage"], audit: ["audit:read"],
       webhooks: ["webhooks:manage"], api: ["metrics:read"],
+      sessions: ["sessions:manage:own", "sessions:manage:any"],
+      automation: ["automation:tokens:manage:own", "automation:tokens:manage:any"],
     });
     expect(needs.profile).toBeUndefined();
-    expect(needs.sessions).toBeUndefined();
-    expect(needs.automation).toBeUndefined();
   });
   it("Clients, in both workspaces, is open to whoever lists clients or manages tokens, the user role included", () => {
     for (const id of ["clients", "gateway-clients"]) {

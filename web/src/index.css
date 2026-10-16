@@ -455,6 +455,7 @@ select.input { height: 32px; padding-right: 8px; cursor: pointer; }
 
 /* permission picker: grouped checkboxes that scroll inside the dialog */
 .permission-picker { max-height: 22rem; overflow-y: auto; min-width: 0; }
+.permission-picker:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .permission-group + .permission-group { margin-top: var(--space-md); }
 .permission-group-label { display: block; margin-bottom: var(--space-xs); }
 .permission-option { display: flex; align-items: center; gap: var(--space-sm); min-height: 24px; }
@@ -486,8 +487,10 @@ select.input { height: 32px; padding-right: 8px; cursor: pointer; }
 .badge.role-user { color: var(--muted-foreground); }
 .badge.role-user .dot { background: var(--muted-foreground); }
 
+/* --success on the light card is about 3.4:1 at the badge's 12px; the text is
+   mixed towards the foreground until it reads (the dot keeps the plain token). */
 .badge.status-connected,
-.badge.status-online { color: var(--success); border-color: color-mix(in oklch, var(--success) 35%, var(--border)); }
+.badge.status-online { color: color-mix(in oklch, var(--success) 65%, var(--foreground)); border-color: color-mix(in oklch, var(--success) 35%, var(--border)); }
 .badge.status-connected .dot,
 .badge.status-online .dot { background: var(--success); box-shadow: 0 0 0 3px color-mix(in oklch, var(--success) 18%, transparent); }
 /* The three states of anything served through a client (StatusBadge): online
@@ -508,7 +511,7 @@ select.input { height: 32px; padding-right: 8px; cursor: pointer; }
 .dark .badge { border-color: oklch(0.42 0 0); }
 /* Preserve tinted borders for coloured status variants in dark mode */
 .dark .badge.status-connected,
-.dark .badge.status-online { border-color: color-mix(in oklch, var(--success) 35%, oklch(0.42 0 0)); }
+.dark .badge.status-online { color: var(--success); border-color: color-mix(in oklch, var(--success) 35%, oklch(0.42 0 0)); }
 .dark .badge.status-idle      { color: var(--warning); border-color: color-mix(in oklch, var(--warning) 40%, oklch(0.42 0 0)); }
 .dark .badge.status-suspended { border-color: color-mix(in oklch, var(--destructive) 35%, oklch(0.42 0 0)); }
 

@@ -8,6 +8,7 @@ import { CopyableCode } from "@/components/CopyableCode";
 import { RelativeTime } from "@/components/RelativeTime";
 import { Badge, ErrorNotice, PageHeader, SkeletonRows, Tabs } from "@/components/ds";
 import { mcpSnippets } from "@/lib/mcpSnippets";
+import { firstSentence } from "@/lib/firstSentence";
 import type { AuditEvent, McpStatus, McpTool } from "@/lib/contract";
 
 const KIND_WORD: Record<McpTool["kind"], string> = { read: "Read", write: "Write", delete: "Delete" };
@@ -19,19 +20,13 @@ const RESULT_BADGE: Record<AuditEvent["result"], string> = {
   dry_run: "status-idle",
 };
 
-/** The first sentence of a description. */
-function firstSentence(text: string): string {
-  const m = text.match(/^.*?[.!?](?=\s|$)/s);
-  return (m ? m[0] : text).trim();
-}
-
 function message(e: unknown): string {
   return e instanceof ApiError ? e.message : "Unknown error";
 }
 
 function ToolsTable({ tools, operations }: { tools: McpTool[]; operations?: number }) {
   return (
-    <>
+    <div className="stack-md">
       <div className="table-wrap">
         <table className="data" aria-label="MCP tools">
           <thead>
@@ -46,9 +41,9 @@ function ToolsTable({ tools, operations }: { tools: McpTool[]; operations?: numb
             {tools.map((t) => (
               <tr key={t.name}>
                 <td className="mono">{t.name}</td>
-                <td>{firstSentence(t.description)}</td>
+                <td className="cell-wrap">{firstSentence(t.description)}</td>
                 <td>{KIND_WORD[t.kind] ?? t.kind}</td>
-                <td className="mono">{t.permissions?.length ? t.permissions.join(" or ") : "—"}</td>
+                <td className="mono cell-wrap">{t.permissions?.length ? t.permissions.join(" or ") : "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -59,7 +54,7 @@ function ToolsTable({ tools, operations }: { tools: McpTool[]; operations?: numb
           The three tools at the end reach {operations} operations in all; each token sees only those it may call.
         </p>
       )}
-    </>
+    </div>
   );
 }
 
@@ -70,8 +65,8 @@ function RecentCalls() {
     retry: false,
   });
   return (
-    <section className="settings-section" aria-labelledby="mcp-calls">
-      <h2 id="mcp-calls">Recent calls</h2>
+    <section className="account-section" aria-labelledby="mcp-calls">
+      <div className="section-head"><div className="left"><h2 id="mcp-calls">Recent calls</h2></div></div>
       {calls.error ? (
         <ErrorNotice>Couldn't load the recent calls: {message(calls.error)}</ErrorNotice>
       ) : !calls.data ? (
@@ -108,6 +103,7 @@ function RecentCalls() {
 
 export default function McpSettings() {
   const seesCalls = useCan(P.auditRead);
+  const makesTokens = useCan([P.automationTokensManageOwn, P.automationTokensManageAny]);
   const status = useQuery({ queryKey: ["mcp", "status"], queryFn: () => apiFetch<McpStatus>("/mcp/status"), retry: false });
   const tools = useQuery({ queryKey: ["mcp", "tools"], queryFn: () => apiFetch<McpTool[]>("/mcp/tools"), retry: false });
   const [tab, setTab] = useState("claude-code");
@@ -123,57 +119,66 @@ export default function McpSettings() {
         subtitle="Let an agent manage this relay. An MCP client such as Claude Code, Cursor or VS Code connects to the address below with an automation token and gets the tools that token may use."
       />
 
-      <section className="settings-section" aria-labelledby="mcp-endpoint">
-        <h2 id="mcp-endpoint">Endpoint</h2>
+      <section className="account-section" aria-labelledby="mcp-endpoint">
+        <div className="section-head"><div className="left"><h2 id="mcp-endpoint">Address</h2></div></div>
         <CopyableCode text={url} label="Copy address" wrap />
       </section>
 
-      <section className="settings-section" aria-labelledby="mcp-connect">
-        <h2 id="mcp-connect">Connect a client</h2>
-        <Tabs
-          value={tab}
-          onChange={setTab}
-          tabs={[
-            { value: "claude-code", label: "Claude Code", content: <CopyableCode text={snippets.claudeCode} label="Copy Claude Code command" wrap /> },
-            {
-              value: "cursor",
-              label: "Cursor",
-              content: (
-                <>
-                  <p className="muted small mono">~/.cursor/mcp.json</p>
-                  <CopyableCode text={snippets.cursor} label="Copy Cursor configuration" />
-                </>
-              ),
-            },
-            {
-              value: "vscode",
-              label: "VS Code",
-              content: (
-                <>
-                  <p className="muted small mono">.vscode/mcp.json</p>
-                  <CopyableCode text={snippets.vscode} label="Copy VS Code configuration" />
-                </>
-              ),
-            },
-          ]}
-        />
-        <p className="muted small">
-          Put your token into BURROW_TOKEN first.{" "}
-          <Link className="link-inline" to="/settings/automation?new=1&preset=read-only">Create a read-only token</Link>
-        </p>
+      <section className="account-section" aria-labelledby="mcp-connect">
+        <div className="section-head"><div className="left"><h2 id="mcp-connect">Connect a client</h2></div></div>
+        <div className="stack-md">
+          <Tabs
+            value={tab}
+            onChange={setTab}
+            tabs={[
+              { value: "claude-code", label: "Claude Code", content: <CopyableCode text={snippets.claudeCode} label="Copy Claude Code command" wrap /> },
+              {
+                value: "cursor",
+                label: "Cursor",
+                content: (
+                  <>
+                    <p className="muted small mono">~/.cursor/mcp.json</p>
+                    <CopyableCode text={snippets.cursor} label="Copy Cursor configuration" />
+                  </>
+                ),
+              },
+              {
+                value: "vscode",
+                label: "VS Code",
+                content: (
+                  <>
+                    <p className="muted small mono">.vscode/mcp.json</p>
+                    <CopyableCode text={snippets.vscode} label="Copy VS Code configuration" />
+                  </>
+                ),
+              },
+            ]}
+          />
+          <p className="muted small">
+            Put your token into BURROW_TOKEN first.{" "}
+            {makesTokens ? (
+              <Link className="link-inline" to="/settings/automation?new=1&preset=read-only">Create a read-only token</Link>
+            ) : (
+              "Making one needs the permission automation:tokens:manage:own; ask an admin for a token."
+            )}
+          </p>
+        </div>
       </section>
 
-      <section className="settings-section" aria-labelledby="mcp-tools">
-        <h2 id="mcp-tools">Tools</h2>
-        {tools.error || status.error ? (
-          <ErrorNotice>
-            Couldn't load the tools: {message(tools.error ?? status.error)}
-          </ErrorNotice>
-        ) : !tools.data || !status.data ? (
-          <SkeletonRows n={3} />
-        ) : (
-          <ToolsTable tools={tools.data} operations={status.data.operations} />
-        )}
+      <section className="account-section" aria-labelledby="mcp-tools">
+        <div className="section-head"><div className="left"><h2 id="mcp-tools">Tools</h2></div></div>
+        <div className="stack-md">
+          {tools.error ? (
+            <ErrorNotice>Couldn't load the tools: {message(tools.error)}</ErrorNotice>
+          ) : !tools.data ? (
+            <SkeletonRows n={3} />
+          ) : (
+            <ToolsTable tools={tools.data} operations={status.data?.operations} />
+          )}
+          {status.error && (
+            <ErrorNotice>Couldn't load the MCP status, so the number of operations is missing: {message(status.error)}</ErrorNotice>
+          )}
+        </div>
       </section>
 
       {seesCalls && <RecentCalls />}

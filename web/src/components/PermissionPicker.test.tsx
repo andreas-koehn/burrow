@@ -18,6 +18,14 @@ describe("PermissionPicker", () => {
     }
   });
 
+  it("makes the scrolling list a Tab stop, so the keyboard reaches it even when every box is disabled", async () => {
+    render(<PermissionPicker value={[]} onChange={() => {}} held={new Set()} idPrefix="t" />);
+    const list = screen.getByRole("group", { name: "Permissions" });
+    expect(list).toHaveAttribute("tabindex", "0");
+    await userEvent.tab();
+    expect(list).toHaveFocus();
+  });
+
   it("disables a permission the reader does not hold and says why", () => {
     const held = new Set(ALL_PERMISSIONS.filter((p) => p !== "users:manage"));
     render(<PermissionPicker value={[]} onChange={() => {}} held={held} idPrefix="t" />);

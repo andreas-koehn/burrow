@@ -6,7 +6,7 @@ import { PageHeader } from "@/components/ds";
 /** "webhooks:manage" / "users:read or users:manage" — what a page says it needs. */
 function missing(needs: readonly string[]): string {
   if (needs.length === 1) return `It needs the permission ${needs[0]}. Ask an admin to add it to your role.`;
-  return `It needs one of the permissions ${needs.slice(0, -1).join(", ")} or ${needs[needs.length - 1]}.`;
+  return `It needs one of the permissions ${needs.slice(0, -1).join(", ")} or ${needs[needs.length - 1]}. Ask an admin to add one to your role.`;
 }
 
 /**
