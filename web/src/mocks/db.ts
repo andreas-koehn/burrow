@@ -279,13 +279,13 @@ function seed(): MockDb {
     aiProviderInUse: {},
     aiModels: [
       {
-        name: "burrow-simple", description: "Small and local.", enabled: true, fallback_on_rate_limit: false,
+        name: "burrow-simple", description: "Small and local.", system_text: "", routing: "ordered", enabled: true, fallback_on_rate_limit: false,
         translate: false, attempt_timeout_s: 60, total_timeout_s: 120,
         targets: [{ dialect: "openai", provider: "ollama", model: "mistral", available: true }],
         dialects: ["openai"], serving: {}, ...NO_MODES, created_at: "2026-05-19T00:00:00Z", updated_at: "2026-05-19T00:00:00Z",
       },
       {
-        name: "burrow-intelligence", description: "", enabled: true, fallback_on_rate_limit: false,
+        name: "burrow-intelligence", description: "", system_text: "", routing: "ordered", enabled: true, fallback_on_rate_limit: false,
         translate: false, attempt_timeout_s: 60, total_timeout_s: 120,
         // As the relay returns them: by format, then by position.
         targets: [
@@ -304,7 +304,7 @@ function seed(): MockDb {
     },
     aiGatewayKeys: [
       {
-        id: "gk_laptop1", name: "laptop", key_prefix: "bgw_Ab3d", user_id: meId, allowed_models: [],
+        id: "gk_laptop1", name: "laptop", key_prefix: "bgw_Ab3d", user_id: meId, allowed_models: [], system_text: "",
         last_used: "2026-05-18T09:00:00Z", created_at: "2026-05-10T08:00:00Z", revoked_at: null,
       },
     ],

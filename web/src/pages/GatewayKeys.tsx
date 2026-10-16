@@ -5,12 +5,15 @@ import { Copy, KeyRound } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Badge, Button, Checkbox, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
+import { Badge, Button, Checkbox, Dialog, Disclosure, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
 import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/auth/useAuth";
 import { useCan } from "@/auth/useCan";
 import { P } from "@/auth/permissions";
 import { RelativeTime } from "@/components/RelativeTime";
+import { EditGatewayKeyDialog } from "@/components/EditGatewayKeyDialog";
+import { SystemTextField } from "@/components/SystemTextField";
+import { MAX_SYSTEM_TEXT_BYTES, byteLength } from "@/lib/systemText";
 import type { AiGatewayKey, AiModel, AiProvider, CreatedAiGatewayKey } from "@/lib/contract";
 
 const KEYS = ["ai", "keys"] as const;
@@ -36,6 +39,9 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
   const [restricted, setRestricted] = useState(provider !== undefined);
   // What the reader ticked; null until they tick or untick something.
   const [picked, setPicked] = useState<string[] | null>(provider !== undefined ? null : []);
+  const [systemText, setSystemText] = useState("");
+  // Closed, so the dialog's default state keeps to a name and one choice.
+  const [textOpen, setTextOpen] = useState(false);
   const [secret, setSecret] = useState<string | null>(null);
   const [formErr, setFormErr] = useState<string | null>(null);
 
@@ -69,7 +75,11 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
       const res = await apiFetch<CreatedAiGatewayKey>("/ai/keys", {
         method: "POST",
         // No list: every model.
-        body: JSON.stringify(restricted ? { name: name.trim(), allowed_models: chosen } : { name: name.trim() }),
+        body: JSON.stringify({
+          name: name.trim(),
+          ...(restricted ? { allowed_models: chosen } : {}),
+          ...(systemText !== "" ? { system_text: systemText } : {}),
+        }),
       });
       setSecret(res.key);
       // What the mutation keeps as its result must not carry the key.
@@ -85,6 +95,7 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
   const missing = [
     trimmed === "" && "Enter a name.",
     restricted && chosen.length === 0 && "Choose at least one model or provider.",
+    byteLength(systemText) > MAX_SYSTEM_TEXT_BYTES && `Shorten the system text to ${MAX_SYSTEM_TEXT_BYTES} bytes.`,
   ];
   const hint = firstMissing(missing);
 
@@ -157,6 +168,14 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
           />
         </FormField>
       </FormFieldGroup>
+      <Disclosure label="System text" open={textOpen || byteLength(systemText) > MAX_SYSTEM_TEXT_BYTES} onOpenChange={setTextOpen}>
+        <SystemTextField
+          id="gateway-key-system-text"
+          value={systemText}
+          onChange={(v) => { setSystemText(v); setFormErr(null); }}
+          help="Sent before the app's own system text for every request made with this key."
+        />
+      </Disclosure>
       <div role="radiogroup" aria-labelledby={scopeId} className="col gap-2">
         <span id={scopeId} className="muted small">Models the key may use</span>
         {([
@@ -214,7 +233,7 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
 export default function GatewayKeys() {
   const qc = useQueryClient();
   const { user } = useAuth();
-  // POST and DELETE /ai/keys: ai:configure:own or :any. The list holds other users' keys for ai:read:any.
+  // POST, PUT and DELETE /ai/keys: ai:configure:own or :any. The list holds other users' keys for ai:read:any.
   const canWrite = useCan([P.aiConfigureOwn, P.aiConfigureAny]);
   const seesOwners = useCan(P.aiReadAny);
   const keys = useQuery({
@@ -239,6 +258,7 @@ export default function GatewayKeys() {
       }, { replace: true });
     }
   }
+  const [editing, setEditing] = useState<AiGatewayKey | null>(null);
   const [revoking, setRevoking] = useState<AiGatewayKey | null>(null);
   const [revokeErr, setRevokeErr] = useState<string | null>(null);
   const revoke = useMutation({
@@ -299,7 +319,10 @@ export default function GatewayKeys() {
             <tbody>
               {list.map((k) => (
                 <tr key={k.id}>
-                  <td className="col-name">{k.name}</td>
+                  <td className="col-name">
+                    {k.name}
+                    {k.system_text && <div className="muted small">System text</div>}
+                  </td>
                   <td className="mono">{`${k.key_prefix}…`}</td>
                   <td>
                     {k.allowed_models.length === 0
@@ -325,6 +348,17 @@ export default function GatewayKeys() {
                     <td>{k.user_id === user?.id ? "you" : <span className="mono small">{k.user_id}</span>}</td>
                   )}
                   <td className="col-actions">
+                    <div className="row row-center gap-2" style={{ justifyContent: "flex-end" }}>
+                    {canWrite && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        aria-label={`Edit ${k.name}`}
+                        onClick={() => setEditing(k)}
+                      >
+                        Edit
+                      </Button>
+                    )}
                     {canWrite && !k.revoked_at && (
                       <Button
                         variant="destructive"
@@ -335,6 +369,7 @@ export default function GatewayKeys() {
                         Revoke
                       </Button>
                     )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -346,6 +381,10 @@ export default function GatewayKeys() {
       {/* Mounted only while open: closing it drops the form and the key it showed. */}
       {canWrite && (newOpen || linked) && (
         <NewKeyDialog onClose={closeNew} provider={linked ? searchParams.get("provider") ?? undefined : undefined} />
+      )}
+
+      {canWrite && editing !== null && (
+        <EditGatewayKeyDialog open onOpenChange={(o) => { if (!o) setEditing(null); }} gatewayKey={editing} />
       )}
 
       <Dialog

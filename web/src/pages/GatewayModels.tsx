@@ -208,7 +208,12 @@ export default function GatewayModels() {
                     aria-current={m.name === focused ? "true" : undefined}
                   >
                     <td className="col-name">
-                      <div className="mono">{m.name}</div>
+                      <div className="row row-center gap-2">
+                        <span className="mono">{m.name}</span>
+                        {m.routing === "fastest" && <Badge kind="status-idle">Fastest</Badge>}
+                        {m.routing === "cheapest" && <Badge kind="status-idle">Cheapest</Badge>}
+                      </div>
+                      {m.system_text && <div className="muted small">System text</div>}
                       {m.description && <div className="muted small">{m.description}</div>}
                     </td>
                     <td>

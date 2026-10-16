@@ -35,7 +35,7 @@ function mountAs(role: "admin" | "user") {
 
 const otherUsersKey = () => db.aiGatewayKeys.push({
   id: "gk_bob", name: "bobs-ci", key_prefix: "bgw_Zz9y", user_id: "bur_usr_bob0002", allowed_models: ["burrow-simple", "ollama/*"],
-  last_used: null, created_at: "2026-05-11T08:00:00Z", revoked_at: null,
+  system_text: "", last_used: null, created_at: "2026-05-11T08:00:00Z", revoked_at: null,
 });
 
 describe("Gateway keys page", () => {
@@ -352,6 +352,105 @@ describe("Gateway keys page", () => {
       expect(within(table).queryByRole("button", { name: /^Revoke / })).toBeNull();
       expect(within(table).getByRole("columnheader", { name: "Owner" })).toBeInTheDocument();
       expect(screen.queryByText(/admin/i)).toBeNull();
+    });
+  });
+
+  describe("system text and editing", () => {
+    it("create sends system_text", async () => {
+      let posted: Record<string, unknown> | null = null;
+      server.use(http.post("/api/v1/ai/keys", async ({ request }) => {
+        posted = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ id: "gk_n", name: "n", key_prefix: "bgw_x", user_id: db.me.id, allowed_models: [], last_used: null, created_at: "2026-05-10T08:00:00Z", revoked_at: null, system_text: "", key: "bgw_secret" }, { status: 201 });
+      }));
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: "New key" }));
+      const dialog = await screen.findByRole("dialog", { name: "New gateway key" });
+      await userEvent.type(within(dialog).getByLabelText("Name"), "ci");
+      await userEvent.click(within(dialog).getByRole("button", { name: "System text" }));
+      await userEvent.type(within(dialog).getByLabelText("System text"), "Be brief.");
+      expect(within(dialog).getByText("9 / 8192 bytes")).toBeInTheDocument();
+      expect(within(dialog).getByText("Sent before the app's own system text for every request made with this key.")).toBeInTheDocument();
+      await userEvent.click(within(dialog).getByRole("button", { name: "Create key" }));
+      await waitFor(() => expect(posted).not.toBeNull());
+      expect(posted).toMatchObject({ name: "ci", system_text: "Be brief." });
+    });
+
+    it("create is blocked over 8192 bytes", async () => {
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: "New key" }));
+      const dialog = await screen.findByRole("dialog", { name: "New gateway key" });
+      await userEvent.type(within(dialog).getByLabelText("Name"), "ci");
+      await userEvent.click(within(dialog).getByRole("button", { name: "System text" }));
+      await userEvent.click(within(dialog).getByLabelText("System text"));
+      await userEvent.paste("ä".repeat(4097));
+      expect(within(dialog).getByText("Too long: at most 8192 bytes.")).toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "Create key" })).toBeDisabled();
+    });
+
+    it("marks keys that have a system text", async () => {
+      db.aiGatewayKeys[0]!.system_text = "Be brief.";
+      otherUsersKey();
+      mount();
+      const table = await screen.findByRole("table", { name: "Gateway keys" });
+      expect(within(within(table).getByRole("row", { name: /laptop/ })).getByText("System text")).toBeInTheDocument();
+      expect(within(within(table).getByRole("row", { name: /bobs-ci/ })).queryByText("System text")).toBeNull();
+    });
+
+    it("Edit is offered with ai:configure:own or :any, and not without", async () => {
+      db.me = { ...db.me, role: "operator", permissions: ["ai:configure:own", "ai:read:own"] };
+      const first = mount();
+      const table = await screen.findByRole("table", { name: "Gateway keys" });
+      expect(within(table).getByRole("button", { name: "Edit laptop" })).toBeInTheDocument();
+      first.unmount();
+      db.me = { ...db.me, role: "viewer", permissions: ["ai:read:own"] };
+      mount();
+      const table2 = await screen.findByRole("table", { name: "Gateway keys" });
+      expect(within(table2).queryByRole("button", { name: /^Edit / })).toBeNull();
+    });
+
+    it("Edit PUTs only the changed fields", async () => {
+      db.aiGatewayKeys[0]!.system_text = "Old.";
+      const puts: Record<string, unknown>[] = [];
+      server.use(http.put("/api/v1/ai/keys/gk_laptop1", async ({ request }) => {
+        puts.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({});
+      }));
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: "Edit laptop" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit laptop" });
+      const save = within(dialog).getByRole("button", { name: "Save changes" });
+      expect(save).toBeDisabled();
+      expect(within(dialog).getByLabelText("System text")).toHaveValue("Old.");
+      await userEvent.clear(within(dialog).getByLabelText("System text"));
+      await userEvent.click(save);
+      await waitFor(() => expect(puts).toHaveLength(1));
+      // Cleared text is sent as "", the name is left out.
+      expect(puts[0]).toEqual({ system_text: "" });
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit laptop" })).toBeNull());
+    });
+
+    it("Edit renames with the name alone", async () => {
+      const puts: Record<string, unknown>[] = [];
+      server.use(http.put("/api/v1/ai/keys/gk_laptop1", async ({ request }) => {
+        puts.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({});
+      }));
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: "Edit laptop" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit laptop" });
+      await userEvent.type(within(dialog).getByLabelText("Name"), "-2");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+      await waitFor(() => expect(puts).toEqual([{ name: "laptop-2" }]));
+    });
+
+    it("a 404 says the key no longer exists", async () => {
+      server.use(http.put("/api/v1/ai/keys/gk_laptop1", () => HttpResponse.json({ error: "key not found" }, { status: 404 })));
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: "Edit laptop" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit laptop" });
+      await userEvent.type(within(dialog).getByLabelText("System text"), "x");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+      expect(await within(dialog).findByText("This key no longer exists.")).toBeInTheDocument();
     });
   });
 });

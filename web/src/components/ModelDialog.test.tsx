@@ -297,7 +297,7 @@ describe("ModelDialog", () => {
     // What the dialog does not edit goes back as it came.
     expect(put!.body).toEqual({
       name: "burrow-simple", description: "Small and local.", enabled: false, fallback_on_rate_limit: false,
-      translate: false, attempt_timeout_s: 60, total_timeout_s: 120,
+      translate: false, system_text: "", routing: "ordered", attempt_timeout_s: 60, total_timeout_s: 120,
       targets: [{ dialect: "openai", provider: "ollama", model: "mistral" }],
     });
   });
@@ -410,7 +410,7 @@ describe("ModelDialog", () => {
     await userEvent.click(screen.getByRole("button", { name: "Create model" }));
     await waitFor(() => expect(posted).toEqual({
       name: "burrow-adv", description: "For tests.", enabled: false, fallback_on_rate_limit: false,
-      translate: false, attempt_timeout_s: 60, total_timeout_s: 120,
+      translate: false, system_text: "", routing: "ordered", attempt_timeout_s: 60, total_timeout_s: 120,
       targets: [{ dialect: "openai", provider: "ollama", model: "mistral" }],
     }));
   });
@@ -729,5 +729,93 @@ describe("ModelDialog", () => {
     await userEvent.click(screen.getByRole("switch", { name: "Enabled" }));
     await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("timeouts must be between 1 and 600 seconds");
+  });
+
+  describe("system text and routing", () => {
+    const toggle = () => screen.getByRole("button", { name: "System text and routing" });
+
+    it("is closed by default", async () => {
+      renderDialog({ model: fixtureModel("burrow-simple") });
+      await group("OpenAI format");
+      expect(toggle()).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByLabelText("System text")).toBeNull();
+    });
+
+    it("opens by itself for a model with a system text or a routing mode", async () => {
+      fixtureModel("burrow-simple").system_text = "Be brief.";
+      renderDialog({ model: fixtureModel("burrow-simple") });
+      expect(toggle()).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByLabelText("System text")).toHaveValue("Be brief.");
+    });
+
+    it("opens by itself for a model with a non-ordered routing", async () => {
+      fixtureModel("burrow-simple").routing = "cheapest";
+      renderDialog({ model: fixtureModel("burrow-simple") });
+      expect(toggle()).toHaveAttribute("aria-expanded", "true");
+    });
+
+    it("counts bytes, not characters", async () => {
+      renderDialog({ model: fixtureModel("burrow-simple") });
+      await userEvent.click(toggle());
+      await userEvent.type(screen.getByLabelText("System text"), "ä");
+      expect(screen.getByText("2 / 8192 bytes")).toBeInTheDocument();
+      expect(screen.getByText(/Sent before the app's own system text\. Apps cannot remove it\. Not used for embeddings, images, audio or rerank\./)).toBeInTheDocument();
+    });
+
+    it("8193 bytes name the limit and disable Save with the hint", async () => {
+      renderDialog({ model: fixtureModel("burrow-simple") });
+      await userEvent.click(toggle());
+      await userEvent.click(screen.getByLabelText("System text"));
+      await userEvent.paste("a".repeat(8193));
+      expect(screen.getByText("Too long: at most 8192 bytes.")).toBeInTheDocument();
+      const save = screen.getByRole("button", { name: "Save changes" });
+      expect(save).toBeDisabled();
+      expect(document.getElementById("model-hint")).toHaveTextContent(/system text.*8192 bytes/i);
+      await userEvent.clear(screen.getByLabelText("System text"));
+      await userEvent.paste("a".repeat(8192));
+      expect(save).toBeEnabled();
+    });
+
+    it("offers the routing choice only with two targets in one format", async () => {
+      renderDialog({ model: fixtureModel("burrow-simple") });
+      await userEvent.click(toggle());
+      expect(screen.getByText("Routing matters when a format has two or more targets.")).toBeInTheDocument();
+      expect(screen.queryByRole("radio", { name: "Fastest" })).toBeNull();
+    });
+
+    it("shows the three choices with their help for two targets", async () => {
+      renderDialog({ model: twoTargets() });
+      await userEvent.click(toggle());
+      expect(screen.getByRole("radio", { name: "Configured order" })).toBeChecked();
+      expect(screen.getByRole("radio", { name: "Fastest" })).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Cheapest" })).toBeInTheDocument();
+      expect(screen.getByText("By each provider's measured latency over the last 24 hours. Providers without a measurement come last.")).toBeInTheDocument();
+      expect(screen.getByText("By the price table, input and output weighted 3:1. Models without a price come last.")).toBeInTheDocument();
+      expect(screen.queryByText("Routing matters when a format has two or more targets.")).toBeNull();
+    });
+
+    it("saves system_text and routing", async () => {
+      let put: Record<string, unknown> | null = null;
+      server.use(http.put("/api/v1/ai/models/burrow-simple", async ({ request }) => {
+        put = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ name: "burrow-simple" });
+      }));
+      renderDialog({ model: twoTargets() });
+      await userEvent.click(toggle());
+      await userEvent.type(screen.getByLabelText("System text"), "Answer in German.");
+      await userEvent.click(screen.getByRole("radio", { name: "Fastest" }));
+      await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+      await waitFor(() => expect(put).not.toBeNull());
+      expect(put).toMatchObject({ system_text: "Answer in German.", routing: "fastest" });
+    });
+
+    it("a routing change alone is a change", async () => {
+      renderDialog({ model: twoTargets() });
+      const save = screen.getByRole("button", { name: "Save changes" });
+      expect(save).toBeDisabled();
+      await userEvent.click(toggle());
+      await userEvent.click(screen.getByRole("radio", { name: "Cheapest" }));
+      expect(save).toBeEnabled();
+    });
   });
 });

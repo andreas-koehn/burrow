@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, X } from "lucide-react";
@@ -7,7 +7,9 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Checkbox, Combobox, Dialog, Disclosure, ErrorNotice, FormField, FormFieldGroup, Input, Select, SubmitHint, Switch, firstMissing } from "@/components/ds";
 import { modelNameError } from "@/lib/modelNames";
 import { providerState } from "@/lib/status";
-import type { AiModel, AiModelTarget, AiProvider, AiProviderModel, Dialect } from "@/lib/contract";
+import { SystemTextField } from "@/components/SystemTextField";
+import { MAX_SYSTEM_TEXT_BYTES, byteLength } from "@/lib/systemText";
+import type { AiModel, AiModelTarget, AiProvider, AiProviderModel, Dialect, ModelRouting } from "@/lib/contract";
 
 export interface ModelDialogProps {
   open: boolean;
@@ -292,6 +294,12 @@ function parseTimeout(text: string): number | null {
   return n >= 1 && n <= 600 ? n : null;
 }
 
+const ROUTING_CHOICES: { value: ModelRouting; label: string; help: string }[] = [
+  { value: "ordered", label: "Configured order", help: "The targets as listed; the next is tried when one fails." },
+  { value: "fastest", label: "Fastest", help: "By each provider's measured latency over the last 24 hours. Providers without a measurement come last." },
+  { value: "cheapest", label: "Cheapest", help: "By the price table, input and output weighted 3:1. Models without a price come last." },
+];
+
 const TIMEOUT_RANGE = "Between 1 and 600 seconds.";
 
 function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps, "open">) {
@@ -320,6 +328,11 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
     model.description !== "" || !model.enabled || model.fallback_on_rate_limit
     || model.attempt_timeout_s !== 60 || model.total_timeout_s !== 120
   ));
+  const [systemText, setSystemText] = useState(model?.system_text ?? "");
+  const [routing, setRouting] = useState<ModelRouting>(model?.routing ?? "ordered");
+  // Opens where the model holds something set there.
+  const [sysOpen, setSysOpen] = useState(() => (model?.system_text ?? "") !== "" || (model?.routing ?? "ordered") !== "ordered");
+  const routingId = useId();
   const [lostOpen, setLostOpen] = useState(false);
   // A field's rule is named once the field was left; an unfinished target once the form was sent.
   const [nameLeft, setNameLeft] = useState(false);
@@ -373,9 +386,15 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
     : null;
   const timeoutsOk = attemptErr === null && totalErr === null;
 
+  // Routing only orders targets within one format.
+  const routable = FORMATS.some(({ dialect }) => targets.filter((t) => t.dialect === dialect).length >= 2);
+  const textTooLong = byteLength(systemText) > MAX_SYSTEM_TEXT_BYTES;
+
   const payload = {
     name,
     description: description.trim(),
+    system_text: systemText,
+    routing,
     enabled,
     fallback_on_rate_limit: onRateLimit,
     translate,
@@ -386,6 +405,8 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
   const dirty = !model
     || name !== model.name
     || payload.description !== model.description
+    || systemText !== (model.system_text ?? "")
+    || routing !== (model.routing ?? "ordered")
     || enabled !== model.enabled
     || onRateLimit !== model.fallback_on_rate_limit
     || translate !== (model.translate ?? false)
@@ -420,6 +441,7 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
     nameErr !== null && "Check the model name.",
     targets.length === 0 && "Choose a provider and a model for at least one format.",
     twice && "A target is listed twice.",
+    textTooLong && `Shorten the system text to ${MAX_SYSTEM_TEXT_BYTES} bytes.`,
     !timeoutsOk && "Check the timeouts under Advanced.",
     !dirty && "No changes to save.",
   ];
@@ -532,6 +554,39 @@ function ModelForm({ onOpenChange, model, initialTarget }: Omit<ModelDialogProps
           </p>
         </Disclosure>
       </div>
+
+      <Disclosure label="System text and routing" open={sysOpen} onOpenChange={setSysOpen}>
+        <FormFieldGroup>
+          <SystemTextField
+            id="model-system-text"
+            value={systemText}
+            onChange={change(setSystemText)}
+            help="Sent before the app's own system text. Apps cannot remove it. Not used for embeddings, images, audio or rerank."
+          />
+        </FormFieldGroup>
+        {routable ? (
+          <div role="radiogroup" aria-labelledby={routingId} className="col gap-2">
+            <span id={routingId} className="muted small">Order targets by</span>
+            {ROUTING_CHOICES.map((c) => (
+              <div key={c.value} className="col">
+                <label className="row row-center gap-2">
+                  <input
+                    type="radio"
+                    name={routingId}
+                    checked={routing === c.value}
+                    aria-describedby={`${routingId}-${c.value}`}
+                    onChange={() => change(setRouting)(c.value)}
+                  />
+                  <span>{c.label}</span>
+                </label>
+                <span id={`${routingId}-${c.value}`} className="muted small">{c.help}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted small">Routing matters when a format has two or more targets.</p>
+        )}
+      </Disclosure>
 
       {/* Held open by a field in it: the toggle must not arm a close for the moment the value turns valid. */}
       <Disclosure label="Advanced" open={advancedOpen} onOpenChange={(o) => setAdvanced(o || advancedForced)}>

@@ -632,9 +632,14 @@ export interface AiServingTarget {
 }
 /** How a model is served in one format: by a target of that format, through translation, or not at all. */
 export type DialectMode = "native" | "translated" | "not_served";
+/** How a model orders its targets within a format. */
+export type ModelRouting = "ordered" | "fastest" | "cheapest";
 export interface AiModel {
   name: string;
   description: string;
+  /** Put before the app's own system text on chat, responses and messages requests; "" for none. At most 8192 bytes. */
+  system_text: string;
+  routing: ModelRouting;
   enabled: boolean;
   fallback_on_rate_limit: boolean;
   /** A format the model has no target for is answered by translating to a target of the other format. */
@@ -685,6 +690,8 @@ export interface AiGatewayKey {
   user_id: string;
   /** Empty: every model. Else synthetic names, "<provider>/<model>" or "<provider>/*". */
   allowed_models: string[];
+  /** Put before the app's own system text for every request made with the key; "" for none. At most 8192 bytes. */
+  system_text: string;
   last_used: string | null;
   created_at: string;
   revoked_at: string | null;

@@ -388,12 +388,14 @@ interface ModelBody {
   enabled?: unknown;
   fallback_on_rate_limit?: unknown;
   translate?: unknown;
+  system_text?: unknown;
+  routing?: unknown;
   attempt_timeout_s?: unknown;
   total_timeout_s?: unknown;
   targets?: unknown;
 }
 const TARGET_FIELDS = ["dialect", "provider", "model"];
-const MODEL_FIELDS = ["name", "description", "enabled", "fallback_on_rate_limit", "translate", "attempt_timeout_s", "total_timeout_s", "targets"];
+const MODEL_FIELDS = ["name", "description", "enabled", "fallback_on_rate_limit", "translate", "system_text", "routing", "attempt_timeout_s", "total_timeout_s", "targets"];
 
 const MSG_MODEL_NAME = "name must be 2-63 characters: lowercase letters, digits, dot, underscore, hyphen";
 const MSG_MODEL_TARGETS = "a model needs at least one target and at most 8 per format";
@@ -435,6 +437,14 @@ function modelFromBody(b: ModelBody | null, old?: AiModel): Omit<AiModel, "creat
     targets.push({ dialect, provider: slug, model });
     if (targets.filter((x) => x.dialect === dialect).length > 8) return MSG_MODEL_TARGETS;
   }
+  // Left out: the stored value on update. An empty system_text clears it; an empty routing is refused.
+  if (b.system_text !== undefined && typeof b.system_text !== "string") return "invalid JSON body";
+  const systemText = typeof b.system_text === "string" ? b.system_text : old?.system_text ?? "";
+  if (byteLen(systemText) > 8192) return "system_text is longer than 8192 bytes";
+  if (b.routing !== undefined && b.routing !== "ordered" && b.routing !== "fastest" && b.routing !== "cheapest") {
+    return "routing must be ordered, fastest or cheapest";
+  }
+  const routing = b.routing ?? old?.routing ?? "ordered";
   const attempt = typeof b.attempt_timeout_s === "number" && b.attempt_timeout_s !== 0 ? b.attempt_timeout_s : 60;
   const total = typeof b.total_timeout_s === "number" && b.total_timeout_s !== 0 ? b.total_timeout_s : 120;
   if (attempt < 1 || attempt > 600 || total < 1 || total > 600) return "timeouts must be between 1 and 600 seconds";
@@ -442,6 +452,8 @@ function modelFromBody(b: ModelBody | null, old?: AiModel): Omit<AiModel, "creat
   return {
     name,
     description,
+    system_text: systemText,
+    routing,
     enabled: typeof b.enabled === "boolean" ? b.enabled : old?.enabled ?? true,
     fallback_on_rate_limit: b.fallback_on_rate_limit === true,
     // Left out or null: off on create, the stored value on update.
@@ -1755,12 +1767,15 @@ export const handlers = [
     gate(request) ?? json(db.aiGatewayKeys.filter((k) => holds("ai:read:any") || k.user_id === db.me.id))),
   http.post("/api/v1/ai/keys", async ({ request }) => {
     const g = gate(request); if (g) return g;
-    const b = await body<{ name?: unknown; allowed_models?: unknown }>(request);
+    const b = await body<{ name?: unknown; allowed_models?: unknown; system_text?: unknown }>(request);
     if (!b || typeof b !== "object") return err(400, "invalid JSON body");
-    const extra = Object.keys(b).find((k) => k !== "name" && k !== "allowed_models");
+    const extra = Object.keys(b).find((k) => k !== "name" && k !== "allowed_models" && k !== "system_text");
     if (extra) return err(400, `unknown field "${extra}"`);
     const name = typeof b.name === "string" ? b.name.trim() : "";
     if (name === "" || byteLen(name) > 120 || hasControl(name)) return err(400, "name must be 1-120 characters without control characters");
+    if (b.system_text !== undefined && typeof b.system_text !== "string") return err(400, "invalid JSON body");
+    const systemText = b.system_text ?? "";
+    if (byteLen(systemText) > 8192) return err(400, "system_text is longer than 8192 bytes");
     const allowed = b.allowed_models ?? [];
     if (!Array.isArray(allowed)) return err(400, "invalid JSON body");
     if (allowed.length > 64) return err(400, "at most 64 allowed models");
@@ -1773,6 +1788,7 @@ export const handlers = [
       key_prefix: "bgw_xxxx",
       user_id: db.me.id,
       allowed_models: allowed as string[],
+      system_text: systemText,
       last_used: null,
       created_at: new Date().toISOString(),
       revoked_at: null,
@@ -1780,6 +1796,27 @@ export const handlers = [
     db.aiGatewayKeys.push(row);
     // The plaintext leaves the server this once and must not be stored on the way.
     return HttpResponse.json({ ...row, key: "bgw_" + "x".repeat(43) }, { status: 201, headers: { "Cache-Control": "no-store" } });
+  }),
+  // Name and system text only; a field left out stays. Another user's key answers like a missing one.
+  http.put("/api/v1/ai/keys/:id", async ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const k = db.aiGatewayKeys.find((x) => x.id === params.id);
+    if (!k || (!holds("ai:configure:any") && k.user_id !== db.me.id)) return err(404, "key not found");
+    const b = await body<{ name?: unknown; system_text?: unknown }>(request);
+    if (!b || typeof b !== "object") return err(400, "invalid JSON body");
+    const extra = Object.keys(b).find((f) => f !== "name" && f !== "system_text");
+    if (extra) return err(400, `unknown field "${extra}"`);
+    if (b.name !== undefined) {
+      const name = typeof b.name === "string" ? b.name.trim() : "";
+      if (name === "" || byteLen(name) > 120 || hasControl(name)) return err(400, "name must be 1-120 characters without control characters");
+      k.name = name;
+    }
+    if (b.system_text !== undefined) {
+      if (typeof b.system_text !== "string") return err(400, "invalid JSON body");
+      if (byteLen(b.system_text) > 8192) return err(400, "system_text is longer than 8192 bytes");
+      k.system_text = b.system_text;
+    }
+    return json(k);
   }),
   http.delete("/api/v1/ai/keys/:id", ({ request, params }) => {
     const g = gate(request); if (g) return g;

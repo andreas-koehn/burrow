@@ -315,7 +315,7 @@ describe("Models page", () => {
     // zai's slot is not set on this relay; openrouter's is.
     addDirectProvider("openrouter");
     db.aiModels.push({
-      name: "burrow-smart", description: "", enabled: true, fallback_on_rate_limit: false,
+      name: "burrow-smart", description: "", system_text: "", routing: "ordered", enabled: true, fallback_on_rate_limit: false,
       attempt_timeout_s: 60, total_timeout_s: 120,
       targets: [
         { dialect: "openai", provider: "zai", model: "glm-5.1", available: false },
@@ -407,5 +407,27 @@ describe("Models page", () => {
       expect(await screen.findByRole("heading", { name: "Why did a request fall back?" })).toBeInTheDocument();
       expect(screen.queryByText(/admin/i)).toBeNull();
     });
+  });
+
+  it("marks a model with a routing mode and a system text", async () => {
+    db.aiModels[0]!.routing = "fastest";
+    db.aiModels[0]!.system_text = "Be brief.";
+    db.aiModels[1]!.routing = "cheapest";
+    mount();
+    const table = await screen.findByRole("table", { name: "Models" });
+    const simple = within(table).getByRole("row", { name: /burrow-simple/ });
+    expect(within(simple).getByText("Fastest")).toBeInTheDocument();
+    expect(within(simple).getByText("System text")).toBeInTheDocument();
+    const intel = within(table).getByRole("row", { name: /burrow-intelligence/ });
+    expect(within(intel).getByText("Cheapest")).toBeInTheDocument();
+    expect(within(intel).queryByText("System text")).toBeNull();
+  });
+
+  it("shows no marker for ordered routing without a system text", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: "Models" });
+    expect(within(table).queryByText("Fastest")).toBeNull();
+    expect(within(table).queryByText("Cheapest")).toBeNull();
+    expect(within(table).queryByText("System text")).toBeNull();
   });
 });
