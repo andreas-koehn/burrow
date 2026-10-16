@@ -361,7 +361,7 @@ func (c *Chain) ServeHTTP(w http.ResponseWriter, r *http.Request, svc Service, p
 
 	// A request that carries system text needs the buffered path even when
 	// the service has no AI feature: the text is put into the body there.
-	if IsAIPassThrough(svc.AIConfig) && SystemTextFrom(r.Context()) == "" {
+	if IsAIPassThrough(svc.AIConfig) && !(SystemTextFrom(r.Context()) != "" && SystemTextApplies(r.Method, r.URL.Path)) {
 		// The body goes to the upstream as it arrives, unbuffered. Go's
 		// HTTP/1 server consumes what is left of a request body when the
 		// response headers are written; an upstream that answers before it

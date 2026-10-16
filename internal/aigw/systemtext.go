@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 )
 
@@ -33,6 +34,26 @@ func JoinSystemText(modelText, keyText string) string {
 	return modelText + "\n\n" + keyText
 }
 
+// systemTextField names the body key system text goes into on path, or "".
+func systemTextField(path string) string {
+	switch strings.TrimRight(path, "/") {
+	case "/v1/chat/completions":
+		return "messages"
+	case "/v1/responses":
+		return "instructions"
+	case "/v1/messages":
+		return "system"
+	}
+	return ""
+}
+
+// SystemTextApplies reports whether a request is one system text is put into:
+// a POST to Chat Completions, Responses or Messages. Everything else (model
+// lists, embeddings, token counts, media, uploads) never gets it.
+func SystemTextApplies(method, path string) bool {
+	return method == http.MethodPost && systemTextField(path) != ""
+}
+
 // ApplySystemText returns body with text placed before the app's own system
 // content, for the formats that have one; any other path, an empty text or a
 // body it cannot parse is returned unchanged with applied == false.
@@ -44,15 +65,8 @@ func ApplySystemText(path string, body []byte, text string) (out []byte, applied
 	if text == "" {
 		return body, false
 	}
-	var key string
-	switch strings.TrimRight(path, "/") {
-	case "/v1/chat/completions":
-		key = "messages"
-	case "/v1/responses":
-		key = "instructions"
-	case "/v1/messages":
-		key = "system"
-	default:
+	key := systemTextField(path)
+	if key == "" {
 		return body, false
 	}
 	var obj map[string]json.RawMessage
@@ -80,7 +94,9 @@ func ApplySystemText(path string, body []byte, text string) (out []byte, applied
 			if json.Unmarshal(cur, &s) != nil {
 				return body, false
 			}
-			next = text + "\n\n" + s
+			if s != "" {
+				next = text + "\n\n" + s
+			}
 		}
 	case "system":
 		next = text
@@ -89,7 +105,9 @@ func ApplySystemText(path string, body []byte, text string) (out []byte, applied
 			var blocks []json.RawMessage
 			switch {
 			case json.Unmarshal(cur, &s) == nil:
-				next = text + "\n\n" + s
+				if s != "" {
+					next = text + "\n\n" + s
+				}
 			case json.Unmarshal(cur, &blocks) == nil:
 				first, _ := marshalNoEscape(map[string]string{"type": "text", "text": text})
 				next = append([]json.RawMessage{first}, blocks...)

@@ -30,6 +30,8 @@ func TestApplySystemText(t *testing.T) {
 		{"messages with block system", "/v1/messages",
 			`{"model":"m","system":[{"type":"text","text":"Be brief.","cache_control":{"type":"ephemeral"}}],"messages":[]}`, "T",
 			`[{"type":"text","text":"T"},{"type":"text","text":"Be brief.","cache_control":{"type":"ephemeral"}}]`, true},
+		{"responses with empty instructions", "/v1/responses", `{"model":"m","input":"hi","instructions":""}`, "T", `"T"`, true},
+		{"messages with empty system", "/v1/messages", `{"model":"m","system":"","messages":[]}`, "T", `"T"`, true},
 		{"embeddings untouched", "/v1/embeddings", `{"model":"m","input":"hi"}`, "T", "", false},
 		{"count_tokens untouched", "/v1/messages/count_tokens", `{"model":"m","messages":[]}`, "T", "", false},
 		{"empty text", "/v1/chat/completions", `{"model":"m","messages":[]}`, "", "", false},

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ankoehn/burrow/internal/aigw"
+	"github.com/ankoehn/burrow/internal/aimeter"
 	"github.com/ankoehn/burrow/internal/cache/exact"
 	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/inspector"
@@ -113,5 +114,38 @@ func TestChain_SystemText_InInspector(t *testing.T) {
 	entries := mgr.Get("svc-st-i").List(inspector.ListQuery{})
 	if len(entries) != 1 || !strings.Contains(string(entries[0].ReqBody), "House rule.") {
 		t.Fatalf("inspector entries: %+v", entries)
+	}
+}
+
+// A service without AI features keeps the unbuffered pass-through path for
+// every request the text is not for, even with a key's text in the context.
+func TestChain_SystemText_PassThroughKeptForOtherRequests(t *testing.T) {
+	run := func(method, path, body string) (string, int) {
+		var got string
+		up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			got = string(raw)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"c-1","usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`))
+		})
+		sink := newMemSink()
+		chain := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, testLog())
+		ctx := aigw.WithSystemText(context.Background(), "T")
+		r := httptest.NewRequest(method, "https://abc.example.com"+path, strings.NewReader(body)).WithContext(ctx)
+		r.Header.Set("Content-Type", "application/json")
+		if out := runChain(t, chain, up, aigw.Service{ID: "svc-pt"}, r); out.Code != 200 {
+			t.Fatalf("%s %s: status %d", method, path, out.Code)
+		}
+		return got, len(sink.samples.Load().([]aimeter.Sample))
+	}
+	if got, n := run("GET", "/v1/models", ""); got != "" || n != 0 {
+		t.Errorf("GET /v1/models: body %q, usage rows %d", got, n)
+	}
+	const emb = `{"model":"m","input":"hi"}`
+	if got, n := run("POST", "/v1/embeddings", emb); got != emb || n != 0 {
+		t.Errorf("embeddings: body %q, usage rows %d", got, n)
+	}
+	if got, n := run("POST", "/v1/chat/completions", chatHi); !strings.Contains(got, `"content":"T"`) || n != 1 {
+		t.Errorf("chat: body %q, usage rows %d", got, n)
 	}
 }

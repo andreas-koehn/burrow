@@ -2,6 +2,7 @@ package aigateway
 
 import (
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -82,5 +83,45 @@ func TestServe_SystemTextOfGatewayKeyOnProviderPath(t *testing.T) {
 	}
 	if v := do("sk-good"); v != "" {
 		t.Errorf("service key: %q", v)
+	}
+}
+
+// Through the real chain, with a fallback: the first target fails, the second
+// answers and receives the text exactly once, in front of the app's own.
+// Direct providers are used: the tunnel fake loses the request context.
+func TestServeDialect_SystemTextOnceAfterFallback(t *testing.T) {
+	var bodies []string
+	var slugs []string
+	g := globalGateway(nil, aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	g.Direct = func(p db.AIProvider, _ aiprovider.ErrorWriter) (http.Handler, error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			bodies, slugs = append(bodies, string(b)), append(slugs, p.Slug)
+			if p.Slug == "zai" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"model":"x","choices":[]}`))
+		}), nil
+	}
+	syn := g.Synthetic.(fakeSynthetic)
+	m := syn["burrow-intelligence"]
+	m.SystemText = "M"
+	syn["burrow-intelligence"] = m
+	g.GatewayKeys = fakeGatewayKeys{"bgw_k": {ID: "gk-k", SystemText: "K"}}
+
+	rec := httptest.NewRecorder()
+	g.ServeDialect(rec, post("/v1/chat/completions", "bgw_k", `{"model":"burrow-intelligence","messages":[{"role":"system","content":"Be brief."}]}`), DialectOpenAI)
+	if rec.Code != 200 || len(bodies) != 2 || slugs[0] != "zai" || slugs[1] != "openrouter" {
+		t.Fatalf("status %d, attempts %v", rec.Code, slugs)
+	}
+	for i, b := range bodies {
+		if n := strings.Count(b, "M\\n\\nK"); n != 1 {
+			t.Errorf("attempt %d: text appears %d times: %s", i, n, b)
+		}
+		if !strings.Contains(b, "Be brief.") {
+			t.Errorf("attempt %d lost the app's system message: %s", i, b)
+		}
 	}
 }
