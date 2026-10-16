@@ -291,7 +291,7 @@ describe("Layout workspace shell", () => {
     expect(nav.getAllByRole("link").filter((a) => a.getAttribute("aria-current") === "page")).toHaveLength(1);
     expect(sidebarLinks("Settings")).toEqual([
       "General", "Email", "Retention", "Database", "Backups", "Users", "Roles", "Audit log",
-      "Webhooks", "API reference", "Profile & password", "Sessions", "Automation tokens",
+      "Webhooks", "MCP", "API reference", "Profile & password", "Sessions", "Automation tokens",
     ]);
   });
 

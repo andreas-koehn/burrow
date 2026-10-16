@@ -11,6 +11,7 @@ const RESULT_BADGE: Record<AuditEvent["result"], string> = {
   ok: "status-connected",
   denied: "status-idle",
   error: "status-suspended",
+  dry_run: "status-idle",
 };
 
 function Row({ e }: { e: AuditEvent }) {

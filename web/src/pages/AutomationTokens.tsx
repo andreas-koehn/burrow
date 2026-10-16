@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
@@ -59,15 +59,26 @@ export default function AutomationTokens() {
   const olderRelay = presetsQ.error instanceof ApiError && presetsQ.error.status === 404;
   const held = usePermissions();
 
-  const [addOpen, setAddOpen] = useState(false);
-  // What the reader picked; until then the dialog shows the read-only preset.
+  // Settings → MCP leads here with ?new=1&preset=…: the dialog opens with that preset and the URL is cleaned.
+  const [params, setParams] = useSearchParams();
+  const [wanted, setWanted] = useState<string | null>(() => (params.get("new") === "1" ? params.get("preset") ?? "read-only" : null));
+  const [addOpen, setAddOpen] = useState(wanted !== null);
+  useEffect(() => {
+    if (params.get("new") === null && params.get("preset") === null) return;
+    const next = new URLSearchParams(params);
+    next.delete("new");
+    next.delete("preset");
+    setParams(next, { replace: true });
+  }, [params, setParams]);
+  // What the reader picked; until then the dialog shows the preset the link named, else read-only.
   const [picked, setPicked] = useState<{ choice: string; perms: string[] } | null>(null);
   const [permsOpen, setPermsOpen] = useState(false);
   const [name, setName] = useState("");
   const [expiry, setExpiry] = useState("never");
   const readOnly = presets?.find((p) => p.name === "read-only");
-  const choice = picked?.choice ?? "read-only";
-  const perms = picked?.perms ?? readOnly?.permissions ?? [];
+  const linked = presets?.find((p) => p.name === wanted);
+  const choice = picked?.choice ?? linked?.name ?? "read-only";
+  const perms = picked?.perms ?? (linked ?? readOnly)?.permissions ?? [];
   const chosenPreset = presets?.find((p) => p.name === choice);
   const [created, setCreated] = useState<CreatedAutomationToken | null>(null);
 
@@ -76,6 +87,7 @@ export default function AutomationTokens() {
     setName("");
     setExpiry("never");
     setPicked(null);
+    setWanted(null);
     setPermsOpen(false);
   }
 

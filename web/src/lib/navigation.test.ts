@@ -42,7 +42,7 @@ describe("navigation description", () => {
     expect(labels("settings")).toEqual([
       ["Relay", ["General", "Email", "Retention", "Database", "Backups"]],
       ["Access", ["Users", "Roles", "Audit log"]],
-      ["Integrations", ["Webhooks", "API reference"]],
+      ["Integrations", ["Webhooks", "MCP", "API reference"]],
       ["Personal", ["Profile & password", "Sessions", "Automation tokens"]],
     ]);
   });
@@ -54,6 +54,12 @@ describe("navigation description", () => {
       ["Access", ["Audit log"]],
       ["Personal", ["Profile & password", "Sessions", "Automation tokens"]],
     ]);
+  });
+  it("MCP sits in Integrations after Webhooks and needs mcp:tools:read", () => {
+    const g = NAVIGATIONS.settings.groups.find((x) => x.title === "Integrations")!;
+    const ids = g.entries.map((e) => e.id);
+    expect(ids.indexOf("mcp")).toBe(ids.indexOf("webhooks") + 1);
+    expect(g.entries.find((e) => e.id === "mcp")).toMatchObject({ to: "/settings/mcp", needs: ["mcp:tools:read"] });
   });
   it("no entry is marked by role", () => {
     const entries = [...(["services", "gateway", "settings"] as const).flatMap((ws) => NAVIGATIONS[ws].groups.flatMap((g) => g.entries)), ...FOOTER_ENTRIES];

@@ -2,7 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard, Globe, Boxes, Activity, Sparkles, ShieldAlert, Database, Search, DollarSign,
   ServerCog, Mail, Archive, HardDrive, DatabaseBackup, Users, ShieldCheck, ScrollText, Webhook,
-  BookOpen, UserCircle, MonitorSmartphone, Bot, Network, Layers, KeyRound,
+  BookOpen, UserCircle, MonitorSmartphone, Bot, Network, Layers, KeyRound, Cable,
 } from "lucide-react";
 import { P } from "@/auth/permissions";
 import { workspaceFor, type Workspace } from "./workspace";
@@ -118,6 +118,7 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
       ] },
       { title: "Integrations", entries: [
         { id: "webhooks", label: "Webhooks", to: "/settings/webhooks", icon: Webhook, needs: [P.webhooksManage] },
+        { id: "mcp", label: "MCP", to: "/settings/mcp", icon: Cable, needs: [P.mcpToolsRead] },
         { id: "api", label: "API reference", to: "/settings/api", icon: BookOpen, needs: [P.metricsRead] },
       ] },
       { title: "Personal", entries: [

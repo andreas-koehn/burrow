@@ -3,7 +3,7 @@ import type {
   UserAdmin, RoleSummary, Session, ClientDetail, ClientDiscovery, ClientLoginRequest, SettingsMap, AiProviderModel,
   Service, ServiceApiKey, CostSummary, ServiceAIConfig,
   InspectorEntry, CacheSettings, RedactionRule, RedactionSettings,
-  GuardrailPattern, GuardrailSettingsResponse, Budget, CostGroupBy, CostGroupRow, PricingTable, AuditEvent, Webhook,
+  GuardrailPattern, GuardrailSettingsResponse, Budget, CostGroupBy, CostGroupRow, PricingTable, AuditEvent, McpStatus, McpTool, Webhook,
   WebhookDelivery, ProvisioningKey, ProvisioningPending,
   AutomationToken, BackupRow, CacheStatsV5, SemanticCacheSettings,
   UpstreamCredentialBinding, CustomDomain, AiModel, AiGatewayKey, AiRequestAttempt,
@@ -129,6 +129,8 @@ export interface MockDb {
   costGroups: Record<CostGroupBy, CostGroupRow[]>;
   pricing: PricingTable;
   audit: AuditEvent[];
+  mcpStatus: McpStatus;
+  mcpTools: McpTool[];
   webhooks: Webhook[];
   webhookDeliveries: WebhookDelivery[];
   provisioningKeys: ProvisioningKey[];
@@ -393,7 +395,17 @@ function seed(): MockDb {
         { provider: "ollama", model: "llama3.1:8b", input_per_million: 0, output_per_million: 0 },
       ],
     },
+    mcpStatus: { enabled: true, endpoint: "/mcp/burrow", operations: 131 },
+    mcpTools: [
+      { name: "services_list", description: "List services. Returns every service the caller may see.", parameters_schema: {}, permission: "services:configure:own", permissions: ["services:configure:own", "services:configure:any"], kind: "read", generic: false },
+      { name: "services_delete", description: "Delete a service.", parameters_schema: {}, permission: "services:configure:own", permissions: ["services:configure:own", "services:configure:any"], kind: "delete", generic: false },
+      { name: "burrow_find_operations", description: "Search the operations this token may call.", parameters_schema: {}, permission: "", permissions: [], kind: "read", generic: true },
+      { name: "burrow_describe_operation", description: "Describe one operation.", parameters_schema: {}, permission: "", permissions: [], kind: "read", generic: true },
+      { name: "burrow_call_operation", description: "Run any operation this token may call.", parameters_schema: {}, permission: "", permissions: [], kind: "write", generic: true },
+    ],
     audit: [
+      { id: "ae_mcp1", ts: "2026-05-19T08:05:00Z", actor_id: meId, actor_email: "alice@acme.io", action: "mcp.tool.call", subject_id: "", subject_label: "services_list", result: "ok", source_ip: "203.0.113.7", user_agent: "claude-code", request_id: "req_m1", payload: {}, prev_hash: "33", hash: "44" },
+      { id: "ae_mcp2", ts: "2026-05-19T08:06:00Z", actor_id: meId, actor_email: "alice@acme.io", action: "mcp.tool.call", subject_id: "", subject_label: "burrow_call_operation/servicesDelete", result: "denied", source_ip: "203.0.113.7", user_agent: "claude-code", request_id: "req_m2", payload: {}, prev_hash: "44", hash: "55" },
       { id: "ae_001", ts: "2026-05-19T08:00:00Z", actor_id: meId, actor_email: "alice@acme.io", action: "services.create", subject_id: "svc_ai001", subject_label: "ollama", result: "ok", source_ip: "203.0.113.7", user_agent: "Mozilla/5.0", request_id: "req_001", payload: { name: "ollama" }, prev_hash: "0000000000000000000000000000000000000000000000000000000000000000", hash: "11111111111111111111111111111111111111111111111111111111111111111111" },
       { id: "ae_002", ts: "2026-05-19T08:01:00Z", actor_id: meId, actor_email: "alice@acme.io", action: "services.update", subject_id: "svc_ai001", subject_label: "ollama", result: "ok", source_ip: "203.0.113.7", user_agent: "Mozilla/5.0", request_id: "req_002", payload: { access_mode: "api_key" }, prev_hash: "11", hash: "22" },
       { id: "ae_003", ts: "2026-05-19T08:02:00Z", actor_id: meId, actor_email: "alice@acme.io", action: "tokens.create", subject_id: "tok_1", subject_label: "office-box-1", result: "ok", source_ip: "203.0.113.7", user_agent: "Mozilla/5.0", request_id: "req_003", payload: { name: "office-box-1" }, prev_hash: "22", hash: "33" },

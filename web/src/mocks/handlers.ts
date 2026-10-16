@@ -1371,6 +1371,7 @@ export const handlers = [
     const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit")) || 100));
     const beforeId = url.searchParams.get("before_id");
     const q = (url.searchParams.get("q") ?? "").toLowerCase();
+    const action = url.searchParams.get("action");
     let rows = db.audit
       .slice()
       .sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
@@ -1378,9 +1379,12 @@ export const handlers = [
       const i = rows.findIndex((e) => e.id === beforeId);
       if (i >= 0) rows = rows.slice(i + 1);
     }
+    if (action) rows = rows.filter((e) => e.action === action);
     if (q) rows = rows.filter((e) => `${e.action} ${e.subject_label} ${e.actor_email}`.toLowerCase().includes(q));
     return json(rows.slice(0, limit));
   }),
+  http.get("/api/v1/mcp/status", ({ request }) => gate(request, { admin: true, needs: ["mcp:tools:read"] }) ?? json(db.mcpStatus)),
+  http.get("/api/v1/mcp/tools", ({ request }) => gate(request, { admin: true, needs: ["mcp:tools:read"] }) ?? json(db.mcpTools)),
   http.get("/api/v1/audit/fingerprint", ({ request }) =>
     gate(request, { admin: true }) ?? json({ public_key: "MIIBIjANBgkqhkiG…", fingerprint: "SHA256:deadbeef" })),
   http.get("/api/v1/audit/export", ({ request }) => {

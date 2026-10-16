@@ -6,7 +6,13 @@ import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
 import { ALL_PERMISSIONS } from "@/auth/permissions";
+import { useLocation } from "react-router-dom";
 import AutomationTokens from "@/pages/AutomationTokens";
+
+function Where() {
+  const l = useLocation();
+  return <span data-testid="where">{l.pathname + l.search}</span>;
+}
 
 function mount() {
   return renderApp(<AutomationTokens />, "/settings/automation");
@@ -218,5 +224,14 @@ describe("Automation tokens", () => {
       await userEvent.click(within(dlg).getByRole("button", { name: /^create$/i }));
       expect(await screen.findByRole("link", { name: "Use it in an MCP client" })).toHaveAttribute("href", "/settings/mcp");
     });
+  });
+});
+
+describe("Automation tokens opened from Settings → MCP", () => {
+  it("opens the dialog with the preset in the URL and drops both parameters", async () => {
+    const { container } = renderApp(<><AutomationTokens /><Where /></>, "/settings/automation?new=1&preset=operator");
+    const dlg = await screen.findByRole("dialog", { name: "New automation token" });
+    await waitFor(() => expect(within(dlg).getByRole("radio", { name: "Operator" })).toBeChecked());
+    await waitFor(() => expect(container.querySelector("[data-testid=where]")!.textContent).toBe("/settings/automation"));
   });
 });

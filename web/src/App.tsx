@@ -28,6 +28,7 @@ import Traffic from "@/pages/Traffic";
 import CostBudgets from "@/pages/CostBudgets";
 import AuditLog from "@/pages/AuditLog";
 import Webhooks from "@/pages/Webhooks";
+import McpSettings from "@/pages/settings/McpSettings";
 
 import AutomationTokens from "@/pages/AutomationTokens";
 import BackupRestore from "@/pages/BackupRestore";
@@ -98,6 +99,7 @@ export default function App() {
         <Route path="/settings/roles" element={<RequirePermission needs={needsOf("/settings/roles")}><Roles /></RequirePermission>} />
         <Route path="/settings/audit" element={<RequirePermission needs={needsOf("/settings/audit")}><AuditLog /></RequirePermission>} />
         <Route path="/settings/webhooks" element={<RequirePermission needs={needsOf("/settings/webhooks")}><Webhooks /></RequirePermission>} />
+        <Route path="/settings/mcp" element={<RequirePermission needs={needsOf("/settings/mcp")}><McpSettings /></RequirePermission>} />
         {/* P1-14: in-app OpenAPI viewer, framed inside the dashboard chrome. */}
         <Route path="/settings/api" element={<RequirePermission needs={needsOf("/settings/api")}><OpenApiViewer /></RequirePermission>} />
         <Route path="/settings/profile" element={<Profile />} />

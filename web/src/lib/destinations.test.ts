@@ -14,7 +14,7 @@ describe("destinationsFor — the navigation description, flattened", () => {
     expect(byGroup(admin, "AI Gateway")).toEqual(["AI Gateway overview", "Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
     expect(byGroup(admin, "Settings")).toEqual([
       "General", "Email", "Retention", "Database", "Backups", "Users", "Roles", "Audit log",
-      "Webhooks", "API reference", "Profile & password", "Sessions", "Automation tokens",
+      "Webhooks", "MCP", "API reference", "Profile & password", "Sessions", "Automation tokens",
     ]);
     expect(new Set(destinationsFor(admin).map((d) => d.group))).toEqual(new Set(["Services", "AI Gateway", "Settings"]));
   });

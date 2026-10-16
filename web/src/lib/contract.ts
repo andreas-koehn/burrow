@@ -476,7 +476,7 @@ export interface AuditEvent {
   action: string;
   subject_id: string;
   subject_label: string;
-  result: "ok" | "denied" | "error";
+  result: "ok" | "denied" | "error" | "dry_run";
   source_ip: string;
   user_agent: string;
   request_id: string;
@@ -543,6 +543,24 @@ export interface AutomationToken {
   created_at: string;
 }
 /** A starting list for a new automation token (`GET /automation/presets`), already cut to the caller's permissions. */
+// MCP (Settings → MCP).
+export interface McpStatus {
+  enabled: boolean;
+  endpoint: string;
+  /** How many operations the generic tools reach; left out by a relay from before. */
+  operations?: number;
+}
+export interface McpTool {
+  name: string;
+  description: string;
+  parameters_schema: unknown;
+  permission: string;
+  /** Any one of these lets a token call the tool. */
+  permissions: string[];
+  kind: "read" | "write" | "delete";
+  generic: boolean;
+}
+
 export interface AutomationPreset {
   name: "read-only" | "operator" | "full";
   description: string;
