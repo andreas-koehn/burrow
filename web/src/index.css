@@ -3097,3 +3097,11 @@ button.setup-step-title:focus-visible { outline: 2px solid var(--ring); outline-
 /* Clients: the live sessions of a token that is connected more than once, under its name. */
 .client-sessions { list-style: none; margin: var(--space-xs) 0 0; padding: 0; font-size: 12px; }
 .client-sessions li + li { margin-top: var(--space-xs); }
+
+/* A fieldset used only to disable a group of controls at once (read-only view). */
+.plain-fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+.choice-help { margin: 4px 0 8px; }
+.choice-help dt { display: inline; font-weight: 500; }
+.choice-help dt::after { content: ": "; }
+.choice-help dd { display: inline; margin: 0; }
+.choice-help > div { margin-bottom: 2px; }

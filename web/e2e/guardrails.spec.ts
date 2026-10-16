@@ -8,13 +8,13 @@ import { test, expect } from "@playwright/test";
 
 test.use({ storageState: "playwright-auth.json" });
 
-test("v0.4.0: guardrails page mounts with three accordion sections", async ({ page }) => {
+test("v0.4.0: guardrails page mounts with its accordion sections", async ({ page }) => {
   await page.goto("/gateway/guardrails");
   await expect(page.getByRole("heading", { name: "Guardrails & redaction" })).toBeVisible();
 
   await expect(page.getByRole("button", { name: "Regex redaction" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Presidio (Microsoft sidecar)" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Prompt-injection guardrails" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Requests", exact: false })).toBeVisible();
 
   // Open Presidio section to surface its "Test connection" button.
   await page.getByRole("button", { name: "Presidio (Microsoft sidecar)" }).click();

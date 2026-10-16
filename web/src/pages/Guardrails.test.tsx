@@ -1,8 +1,10 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
+import { ALL_PERMISSIONS } from "@/auth/permissions";
+import type { GuardrailSettings } from "@/lib/contract";
 import { server } from "@/mocks/server";
 import { db } from "@/mocks/db";
 import Guardrails from "@/pages/Guardrails";
@@ -12,11 +14,11 @@ function mount() {
 }
 
 describe("Guardrails page (§4.22)", () => {
-  it("renders three accordion sections (Regex, Presidio, Prompt-injection), collapsed by default", async () => {
+  it("renders the Regex, Presidio and Requests accordion sections, collapsed by default", async () => {
     mount();
     expect(await screen.findByRole("button", { name: /regex redaction/i })).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByRole("button", { name: /presidio/i })).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("button", { name: /prompt-injection/i })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /^requests/i })).toHaveAttribute("aria-expanded", "false");
   });
 
   it("Regex section shows built-in + custom tables when expanded", async () => {
@@ -37,9 +39,9 @@ describe("Guardrails page (§4.22)", () => {
     expect(screen.getByRole("button", { name: /test connection/i })).toBeInTheDocument();
   });
 
-  it("Prompt-injection section shows action Select + View pattern list disclosure", async () => {
+  it("Requests section shows action Select + View pattern list disclosure", async () => {
     mount();
-    await userEvent.click(await screen.findByRole("button", { name: /prompt-injection/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^requests/i }));
     expect(await screen.findByLabelText(/on detection/i)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /view pattern list/i }));
     expect(await screen.findByText(/ignore previous instructions/i)).toBeInTheDocument();
@@ -245,5 +247,281 @@ describe("Guardrails custom rules (F9)", () => {
     // Non-vacuous: the table really holds the seeded built-in rows.
     expect(within(builtIn).getByText("Email address")).toBeInTheDocument();
     expect(within(builtIn).queryByRole("button", { name: /delete rule/i })).toBeNull();
+  });
+});
+
+describe("Guardrails: answers, custom patterns and the judge (G07)", () => {
+  const SEEDED: GuardrailSettings = {
+    enabled: true,
+    action: "refuse_403",
+    answers: { enabled: true, action: "flag" },
+    custom_patterns: [
+      { id: "codename", pattern: "project\\s+x", direction: "both", description: "An internal codename" },
+      { id: "only-answers", pattern: "internal-only", direction: "answer", description: "Never in an answer" },
+    ],
+    judge: { enabled: false, model: "", policy: "No legal advice.", check: "requests", timeout_ms: 3000, on_failure: "allow" },
+  };
+
+  // The blobs the page PUT, in order.
+  let puts: GuardrailSettings[];
+  beforeEach(() => {
+    db.guardrailSettings.global = structuredClone(SEEDED);
+    puts = [];
+    server.use(http.put("/api/v1/guardrails/settings", async ({ request }) => {
+      const b = (await request.json()) as GuardrailSettings;
+      puts.push(b);
+      db.guardrailSettings = { ...db.guardrailSettings, global: b };
+      return new HttpResponse(null, { status: 204 });
+    }));
+  });
+
+  async function open(name: RegExp) {
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name }));
+  }
+  async function openMore(name: RegExp) {
+    await userEvent.click(await screen.findByRole("button", { name }));
+  }
+
+  it("shows the four sections with their headings", async () => {
+    mount();
+    for (const name of [/^requests/i, /^answers/i, /^custom patterns/i, /^judge/i]) {
+      expect(await screen.findByRole("button", { name })).toHaveAttribute("aria-expanded", "false");
+    }
+  });
+
+  it("Requests: says the switch applies to all model traffic, and lists your request patterns", async () => {
+    await open(/^requests/i);
+    expect(screen.getByText(/applies to all model traffic, unless a service turns on its own guardrails/i)).toBeInTheDocument();
+    expect(screen.queryByText(/endpoint/i)).toBeNull();
+    expect(screen.getByRole("heading", { name: "Your patterns" })).toBeInTheDocument();
+    const mine = screen.getByRole("list", { name: "Your patterns" });
+    expect(within(mine).getByText(/codename/)).toBeInTheDocument();
+    // An answers-only pattern does not screen requests.
+    expect(within(mine).queryByText(/only-answers/)).toBeNull();
+  });
+
+  it("Answers: switching to Block and saving PUTs the whole blob with only answers.action changed", async () => {
+    await open(/^answers/i);
+    expect(await screen.findByRole("switch", { name: "Inspect answers" })).toBeChecked();
+    expect(screen.getByText("Deliver the answer and record it.")).toBeInTheDocument();
+    expect(screen.getByText("Withhold it. A streamed answer stops at the match; what was already sent stays sent.")).toBeInTheDocument();
+    // The bundled answer patterns are listed, the request ones are not.
+    expect(screen.getByText(/answer_private_key/)).toBeInTheDocument();
+    expect(screen.queryByText(/ignore_prev/)).toBeNull();
+    await userEvent.click(screen.getByRole("radio", { name: /^Block/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Save answer settings" }));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ...SEEDED, answers: { enabled: true, action: "block" } });
+  });
+
+  it("Custom patterns: a table of id, direction, description and pattern", async () => {
+    await open(/^custom patterns/i);
+    const table = await screen.findByRole("table", { name: "Custom patterns" });
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["ID", "Applies to", "Description", "Pattern", ""]);
+    const row = within(table).getByText("codename").closest("tr")!;
+    expect(within(row).getByText("Requests and answers")).toBeInTheDocument();
+    expect(within(row).getByText("An internal codename")).toBeInTheDocument();
+    expect(within(row).getByText("project\\s+x")).toHaveClass("mono");
+    expect(screen.getByText("2 of 50")).toBeInTheDocument();
+  });
+
+  it("Custom patterns: adding one through the dialog PUTs it appended, the rest unchanged", async () => {
+    await open(/^custom patterns/i);
+    await userEvent.click(await screen.findByRole("button", { name: "Add pattern" }));
+    const dialog = await screen.findByRole("dialog", { name: "New custom pattern" });
+    expect(within(dialog).getByText("Lowercase letters, digits, - and _.")).toBeInTheDocument();
+    expect(within(dialog).getByText("A regular expression in Go RE2 syntax, up to 512 characters.")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Add" })).toBeDisabled();
+    await userEvent.type(within(dialog).getByLabelText("ID"), "secret-word");
+    await userEvent.type(within(dialog).getByLabelText("Pattern"), "abracadabra");
+    await userEvent.click(within(dialog).getByRole("combobox", { name: "Direction" }));
+    await userEvent.click(screen.getByRole("option", { name: "Answers" }));
+    await userEvent.type(within(dialog).getByLabelText("Description"), "A magic word");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({
+      ...SEEDED,
+      custom_patterns: [...SEEDED.custom_patterns, { id: "secret-word", pattern: "abracadabra", direction: "answer", description: "A magic word" }],
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New custom pattern" })).toBeNull());
+  });
+
+  it("Custom patterns: a duplicate id is named under ID once the field was left, before submit", async () => {
+    await open(/^custom patterns/i);
+    await userEvent.click(await screen.findByRole("button", { name: "Add pattern" }));
+    const dialog = await screen.findByRole("dialog", { name: "New custom pattern" });
+    const id = within(dialog).getByLabelText("ID");
+    await userEvent.type(id, "codename");
+    // Nothing is said while the field is being typed in.
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    await userEvent.tab();
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("A pattern with this id already exists.");
+    expect(within(dialog).getByRole("button", { name: "Add" })).toBeDisabled();
+    expect(puts).toHaveLength(0);
+  });
+
+  it("Custom patterns: an id with a capital letter or a space is refused on blur", async () => {
+    await open(/^custom patterns/i);
+    await userEvent.click(await screen.findByRole("button", { name: "Add pattern" }));
+    const dialog = await screen.findByRole("dialog", { name: "New custom pattern" });
+    await userEvent.type(within(dialog).getByLabelText("ID"), "Not Valid");
+    await userEvent.tab();
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Lowercase letters, digits, - and _");
+  });
+
+  it("Custom patterns: the server's 400 about the pattern shows under Pattern", async () => {
+    server.use(http.put("/api/v1/guardrails/settings", () => HttpResponse.json(
+      { error: 'custom pattern "bad": not a valid regular expression (Go RE2 syntax): missing closing ): `(`' }, { status: 400 },
+    )));
+    await open(/^custom patterns/i);
+    await userEvent.click(await screen.findByRole("button", { name: "Add pattern" }));
+    const dialog = await screen.findByRole("dialog", { name: "New custom pattern" });
+    await userEvent.type(within(dialog).getByLabelText("ID"), "bad");
+    await userEvent.type(within(dialog).getByLabelText("Pattern"), "(");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent("not a valid regular expression");
+    expect(within(dialog).getByLabelText("Pattern")).toHaveAccessibleDescription(/not a valid regular expression/);
+    expect(screen.getByRole("dialog", { name: "New custom pattern" })).toBeInTheDocument();
+  });
+
+  it("Custom patterns: a 400 that names no field shows as an alert in the dialog", async () => {
+    server.use(http.put("/api/v1/guardrails/settings", () => HttpResponse.json(
+      { error: "at most 50 custom patterns are allowed, got 51" }, { status: 400 },
+    )));
+    await open(/^custom patterns/i);
+    await userEvent.click(await screen.findByRole("button", { name: "Add pattern" }));
+    const dialog = await screen.findByRole("dialog", { name: "New custom pattern" });
+    await userEvent.type(within(dialog).getByLabelText("ID"), "one-more");
+    await userEvent.type(within(dialog).getByLabelText("Pattern"), "abc");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("at most 50 custom patterns");
+  });
+
+  it("Custom patterns: editing a pattern PUTs it in place", async () => {
+    await open(/^custom patterns/i);
+    await userEvent.click(await screen.findByRole("button", { name: "Edit pattern codename" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit codename" });
+    expect(within(dialog).getByLabelText("ID")).toBeDisabled();
+    const desc = within(dialog).getByLabelText("Description");
+    await userEvent.clear(desc);
+    await userEvent.type(desc, "Renamed");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0].custom_patterns).toEqual([{ ...SEEDED.custom_patterns[0], description: "Renamed" }, SEEDED.custom_patterns[1]]);
+  });
+
+  it("Custom patterns: deleting asks once with the id named, then PUTs without it", async () => {
+    await open(/^custom patterns/i);
+    await userEvent.click(await screen.findByRole("button", { name: "Delete pattern codename" }));
+    const confirm = await screen.findByRole("dialog", { name: "Delete pattern?" });
+    expect(within(confirm).getByText("codename")).toBeInTheDocument();
+    expect(puts).toHaveLength(0);
+    await userEvent.click(within(confirm).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ...SEEDED, custom_patterns: [SEEDED.custom_patterns[1]] });
+  });
+
+  it("Custom patterns: Add is disabled at 50, with a line that says why", async () => {
+    db.guardrailSettings.global.custom_patterns = Array.from({ length: 50 }, (_, i) => ({
+      id: `p${i}`, pattern: `word${i}`, direction: "request" as const, description: "",
+    }));
+    await open(/^custom patterns/i);
+    expect(await screen.findByText("50 of 50")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add pattern" })).toBeDisabled();
+    expect(screen.getByText("At most 50 patterns. Delete one to add another.")).toBeInTheDocument();
+  });
+
+  it("Judge: the Model select lists the models and saving PUTs judge.model", async () => {
+    await open(/^judge/i);
+    expect(await screen.findByText("Each judge call is a request of that model and costs like one.")).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("switch", { name: "Ask a model" }));
+    await userEvent.click(screen.getByRole("combobox", { name: "Model" }));
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["burrow-simple", "burrow-intelligence"]);
+    await userEvent.click(screen.getByRole("option", { name: "burrow-simple" }));
+    await userEvent.click(screen.getByRole("radio", { name: /^Requests and answers/ }));
+    expect(screen.getByText("Streamed answers are not judged.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("radio", { name: /^Refuse the request/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Save judge settings" }));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({
+      ...SEEDED,
+      judge: { enabled: true, model: "burrow-simple", policy: "No legal advice.", check: "requests_and_answers", timeout_ms: 3000, on_failure: "refuse" },
+    });
+  });
+
+  it("Judge: the policy has a counter up to 4000, and the help for each choice is there", async () => {
+    await open(/^judge/i);
+    expect(await screen.findByText("16 of 4000")).toBeInTheDocument();
+    expect(screen.getByText("Keeps apps running while the judge is down; each case is recorded.")).toBeInTheDocument();
+    expect(screen.getByText("Nothing unjudged gets through.")).toBeInTheDocument();
+    expect(screen.getByText("Default 3000.")).toBeInTheDocument();
+  });
+
+  it("Judge: a time limit outside 500 to 30000 is refused on blur, and Save is off", async () => {
+    await open(/^judge/i);
+    const limit = await screen.findByLabelText("Time limit (ms)");
+    await userEvent.clear(limit);
+    await userEvent.type(limit, "100");
+    expect(screen.queryByText(/500 to 30000/)).toBeNull();
+    await userEvent.tab();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Use a number from 500 to 30000.");
+    expect(screen.getByRole("button", { name: "Save judge settings" })).toBeDisabled();
+    await userEvent.clear(limit);
+    await userEvent.type(limit, "30000");
+    await userEvent.tab();
+    expect(screen.queryByText(/500 to 30000\./)).toBeNull();
+    expect(screen.getByRole("button", { name: "Save judge settings" })).toBeEnabled();
+  });
+
+  it("Judge: with the switch on and no model chosen, Save is off and says what is missing", async () => {
+    await open(/^judge/i);
+    await userEvent.click(await screen.findByRole("switch", { name: "Ask a model" }));
+    expect(screen.getByRole("button", { name: "Save judge settings" })).toBeDisabled();
+    expect(screen.getByText("Choose a model.")).toBeInTheDocument();
+  });
+
+  it("Judge: with no models, the section links to creating one", async () => {
+    db.aiModels.length = 0;
+    await open(/^judge/i);
+    const link = await screen.findByRole("link", { name: /create a model/i });
+    expect(link).toHaveAttribute("href", "/gateway/models?new=1");
+    expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull();
+  });
+
+  it("saving one section keeps what another section changed since: the blob is read from the stored settings", async () => {
+    await open(/^answers/i);
+    await userEvent.click(await screen.findByRole("radio", { name: /^Block/ }));
+    await openMore(/^custom patterns/i);
+    await userEvent.click(await screen.findByRole("button", { name: "Delete pattern codename" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Delete pattern?" })).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    await userEvent.click(screen.getByRole("button", { name: "Save answer settings" }));
+    await waitFor(() => expect(puts).toHaveLength(2));
+    expect(puts[1].custom_patterns).toEqual([SEEDED.custom_patterns[1]]);
+    expect(puts[1].answers.action).toBe("block");
+  });
+
+  describe("without ai:configure:any", () => {
+    beforeEach(() => { db.me.permissions = ALL_PERMISSIONS.filter((p) => p !== "ai:configure:any"); });
+
+    it("shows the values and offers no Save, Add, Edit or Delete", async () => {
+      mount();
+      for (const name of [/^requests/i, /^answers/i, /^custom patterns/i, /^judge/i]) {
+        await userEvent.click(await screen.findByRole("button", { name }));
+      }
+      // Wait until the permissions are known: the values are in the document either way.
+      const table = await screen.findByRole("table", { name: "Custom patterns" });
+      expect(within(table).getByText("codename")).toBeInTheDocument();
+      expect(screen.getByRole("switch", { name: "Inspect answers" })).toBeChecked();
+      expect(screen.getByLabelText("Policy")).toHaveValue("No legal advice.");
+      // The permissions arrive with /me; give them time, then nothing may have appeared.
+      await new Promise((r) => setTimeout(r, 150));
+      expect(screen.queryByRole("button", { name: "Add pattern" })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^save (guardrails|answer|judge)/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^(edit|delete) pattern/i })).toBeNull();
+      expect(screen.getByRole("switch", { name: "Inspect answers" })).toBeDisabled();
+    });
   });
 });

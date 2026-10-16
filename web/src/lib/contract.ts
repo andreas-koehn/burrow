@@ -301,13 +301,39 @@ export interface RedactionSettings {
   presidio_enabled: boolean;
   presidio_url?: string;
 }
+export type GuardrailDirection = "request" | "answer" | "both";
+export interface GuardrailCustomPattern {
+  id: string;
+  pattern: string;
+  direction: GuardrailDirection;
+  description: string;
+}
+export interface GuardrailJudgeSettings {
+  enabled: boolean;
+  /** The name of a model; required when the judge is on. */
+  model: string;
+  policy: string;
+  check: "requests" | "requests_and_answers";
+  timeout_ms: number;
+  on_failure: "allow" | "refuse";
+}
 export interface GuardrailSettings {
   enabled: boolean;
   action: "log_only" | "refuse_403" | "refuse_safe";
+  answers: { enabled: boolean; action: "flag" | "block" };
+  custom_patterns: GuardrailCustomPattern[];
+  judge: GuardrailJudgeSettings;
+}
+/** A service's own guardrails section: the request tier only. */
+export interface ServiceGuardrailSettings {
+  enabled: boolean;
+  action: GuardrailSettings["action"];
 }
 export interface GuardrailPattern {
   id: string;
   description: string;
+  /** Bundled patterns screen requests or answers; custom ones may do both and are not in this list. */
+  direction: "request" | "answer";
 }
 export interface GuardrailPerServiceSetting {
   service_id: string;
@@ -347,7 +373,7 @@ export interface MtlsConfig {
 export interface ServiceAIConfig {
   cache: CacheSettings;
   redaction: RedactionSettings;
-  guardrails: GuardrailSettings;
+  guardrails: ServiceGuardrailSettings;
   inspector: InspectorSettings;
   routing: RoutingPolicy;
   ip_geo: IpGeoConfig;

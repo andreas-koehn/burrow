@@ -1292,9 +1292,10 @@ export const handlers = [
   http.put("/api/v1/guardrails/settings", async ({ request }) => {
     const g = gate(request, { admin: true }); if (g) return g;
     // PUT accepts the FLAT global settings; GET returns them nested under `global`.
-    const b = await body<GuardrailSettings>(request);
+    const b = await body<Partial<GuardrailSettings>>(request);
     if (!b) return err(400, "invalid guardrail settings");
-    db.guardrailSettings = { global: b, per_service: db.guardrailSettings.per_service };
+    // Like the relay: a field the body leaves out keeps its stored value.
+    db.guardrailSettings = { global: { ...db.guardrailSettings.global, ...b }, per_service: db.guardrailSettings.per_service };
     return noContent();
   }),
   http.get("/api/v1/guardrails/patterns", ({ request }) =>

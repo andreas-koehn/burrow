@@ -7,7 +7,7 @@
 //   - Page heading is "Guardrails & redaction". Three Accordion sections, each
 //     a <button className="accordion-trigger"> whose label text is:
 //     "Regex redaction", "Presidio (Microsoft sidecar)",
-//     "Prompt-injection guardrails". Clicking toggles aria-expanded.
+//     "Requests" (was "Prompt-injection guardrails"). Clicking toggles aria-expanded.
 //   - Injection accordion: a DS Switch (role="switch",
 //     name="Enable injection guardrails"), a "View pattern list" link button,
 //     a DS Select #injection-action (custom listbox: click → role="option"
@@ -75,7 +75,7 @@ test("43-guardrails: view sections + config round-trip", async ({ page, request 
     const triggers = page.locator("button.accordion-trigger");
     await expect(triggers.filter({ hasText: /regex redaction/i })).toBeVisible();
     await expect(triggers.filter({ hasText: /presidio/i })).toBeVisible();
-    await expect(triggers.filter({ hasText: /prompt-injection/i })).toBeVisible();
+    await expect(triggers.filter({ hasText: /^requests/i })).toBeVisible();
 
     // --- Regex-redaction section: built-in rules table has >= 1 row ---
     await triggers.filter({ hasText: /regex redaction/i }).click();
@@ -85,8 +85,8 @@ test("43-guardrails: view sections + config round-trip", async ({ page, request 
     // Collapse again so the injection accordion is the focus below.
     await triggers.filter({ hasText: /regex redaction/i }).click();
 
-    // --- Prompt-injection accordion ---
-    await triggers.filter({ hasText: /prompt-injection/i }).click();
+    // --- Requests accordion (was "Prompt-injection guardrails") ---
+    await triggers.filter({ hasText: /^requests/i }).click();
 
     const injectionSwitch = page.getByRole("switch", { name: /injection/i });
     await expect(injectionSwitch).toBeVisible();
@@ -136,7 +136,7 @@ test("43-guardrails: injection config round-trip (no pattern list)", async ({ pa
     await page.goto("/gateway/guardrails");
     await expect(page.getByRole("heading", { name: /Guardrails/i, level: 1 })).toBeVisible();
 
-    await page.locator("button.accordion-trigger").filter({ hasText: /prompt-injection/i }).click();
+    await page.locator("button.accordion-trigger").filter({ hasText: /^requests/i }).click();
 
     const injectionSwitch = page.getByRole("switch", { name: /injection/i });
     await expect(injectionSwitch).toBeVisible();

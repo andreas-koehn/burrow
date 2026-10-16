@@ -75,7 +75,10 @@ describe("contract", () => {
     expect(known.sessions).toEqual([]);
     const cache: CacheSettings = { enabled: false, applies_per: "per_endpoint", ttl_seconds: 600, max_entries: 1000, max_per_entry_kb: 64 };
     const red: RedactionSettings = { enabled: false, redact_for_logs_only: false, rule_ids: [], presidio_enabled: false };
-    const gr: GuardrailSettings = { enabled: false, action: "log_only" };
+    const gr: GuardrailSettings = {
+      enabled: false, action: "log_only", answers: { enabled: false, action: "flag" }, custom_patterns: [],
+      judge: { enabled: false, model: "", policy: "", check: "requests", timeout_ms: 3000, on_failure: "allow" },
+    };
     const insp: InspectorSettings = { enabled: false, max_requests: 100 };
     const routing: RoutingPolicy = {
       strategy: "single", model_alias: "", header_name: "X-Burrow-Model", paused: false,
