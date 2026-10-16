@@ -84,8 +84,20 @@ describe("Requests page", () => {
     mount();
     const t = await table();
     expect(within(t).getAllByRole("columnheader").map((h) => h.textContent))
-      .toEqual(["When", "Provider", "Model", "Path", "Status", "Cache", "Guardrail", "Translation"]);
+      .toEqual(["When", "Provider", "Model", "Path", "Status", "Latency", "Cache", "Guardrail", "Translation"]);
     for (const h of within(t).getAllByRole("columnheader")) expect(h).toHaveAttribute("scope", "col");
+  });
+
+  it("shows the measured latency, and a dash where none was measured", async () => {
+    capture("svc_ai001", [1, 2]);
+    db.inspectorEntries.svc_ai001![0]!.duration_ms = 1284;
+    db.inspectorEntries.svc_ai001![1]!.duration_ms = 0;
+    mount();
+    const t = await table();
+    const LATENCY = 5;
+    expect(column(t, LATENCY)).toEqual(["1,284 ms", "—"]);
+    expect(bodyRows(t)[1]!.querySelectorAll("td")[LATENCY]!.querySelector("span")).toHaveAttribute("title", "Not measured");
+    expect(within(t).getByRole("columnheader", { name: "Latency" })).toHaveAttribute("scope", "col");
   });
 
   it("says how long ago a request came in, with the exact time on hover", async () => {

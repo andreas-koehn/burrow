@@ -326,6 +326,15 @@ describe("Link page: codes that lead nowhere", () => {
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
   });
 
+  it("says a reader without the permission cannot sign in machines (403 on lookup)", async () => {
+    server.use(http.get(REQUESTS, () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
+    renderAt(`/link?code=${CODE}`);
+    expect(await screen.findByText("You cannot sign in machines")).toBeInTheDocument();
+    expect(screen.getByText(/Approving a machine needs the permission to manage client tokens\. Ask an admin to add/)).toHaveTextContent("tokens:manage:own");
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(screen.queryByText("The sign-in request could not be loaded.")).toBeNull();
+  });
+
   it("offers a retry when the relay cannot be asked", async () => {
     let fail = true;
     server.use(http.get(REQUESTS, () => (fail ? HttpResponse.json({ error: "lookup failed" }, { status: 500 }) : undefined)));

@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, Select, Switch, Badge, Dialog } from "@/components/ds";
+import { Button, Select, Switch, Badge, Dialog, FormField } from "@/components/ds";
 import type { UserAdmin, UserRole, UserStatus } from "@/lib/contract";
 import { toast } from "sonner";
+import { useRoleChoices } from "./useRoleChoices";
 
 export function EditUserDialog({ user, selfId, onClose }: { user: UserAdmin | null; selfId?: string; onClose: () => void }) {
   const qc = useQueryClient();
   const [role, setRole] = useState<UserRole>("user");
   const [status, setStatus] = useState<UserStatus>("active");
+  const choices = useRoleChoices(user !== null, user?.role);
   const isSelf = !!user && user.id === selfId;
 
   useEffect(() => { if (user) { setRole(user.role); setStatus(user.status); } }, [user]);
@@ -44,10 +46,9 @@ export function EditUserDialog({ user, selfId, onClose }: { user: UserAdmin | nu
       }
     >
       <div className="pw-form">
-        <div className="field">
-          <label htmlFor="eu-role">Role</label>
-          <Select id="eu-role" options={[{ value: "user", label: "User" }, { value: "admin", label: "Admin" }]} value={role} onChange={(v) => setRole(v as UserRole)} />
-        </div>
+        <FormField label="Role" htmlFor="eu-role" help={choices.describe(role)} descId="eu-role-help">
+          <Select id="eu-role" aria-describedby={choices.describe(role) ? "eu-role-help" : undefined} options={choices.options} value={role} onChange={(v) => setRole(v as UserRole)} />
+        </FormField>
         <div className="field">
           <label>Status</label>
           <div className="row row-center gap-2">

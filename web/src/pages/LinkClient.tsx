@@ -257,6 +257,16 @@ function Request({ code }: { code: string }) {
         </>
       );
     }
+    if (status === 403) {
+      return (
+        <>
+          <h1 className="signin-title">You cannot sign in machines</h1>
+          <p className="signin-sub">
+            Approving a machine needs the permission to manage client tokens. Ask an admin to add <code>tokens:manage:own</code> to your role, then open the link from your terminal again.
+          </p>
+        </>
+      );
+    }
     return (
       <>
         <h1 className="signin-title">Sign in a machine</h1>

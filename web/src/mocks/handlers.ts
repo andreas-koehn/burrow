@@ -531,7 +531,7 @@ export const handlers = [
   }),
 
   // ---- roles ----
-  http.get("/api/v1/roles", ({ request }) => gate(request, { admin: true }) ?? json(db.roles)),
+  http.get("/api/v1/roles", ({ request }) => gate(request, { admin: true, needs: ["roles:read", "roles:manage"] }) ?? json(db.roles)),
   http.get("/api/v1/roles/permissions", ({ request }) => {
     const g = gate(request, { admin: true }); if (g) return g;
     return json([

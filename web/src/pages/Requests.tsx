@@ -10,6 +10,7 @@ import { droppedNames, pairWords } from "@/lib/translation";
 import { InspectorOffHint } from "@/components/InspectorOffHint";
 import { Badge, Button, EmptyState, ErrorNotice, PageHeader, Select, type SelectOption } from "@/components/ds";
 import { RelativeTime } from "@/components/RelativeTime";
+import { Latency } from "@/components/Latency";
 import { LogView, type LogColumn } from "@/components/LogView";
 import type { AiCapturedRequest, AiGatewayKey, AiModel, AiProvider, InspectorEntry, Service, ServiceAIConfig } from "@/lib/contract";
 
@@ -195,7 +196,7 @@ export default function Requests() {
 
   const providerName = new Map(providerList.map((p) => [p.slug, p.name || p.slug]));
 
-  // Tokens, cost and latency are left out: the relay records none of them on a captured request.
+  // Tokens and cost are left out: the relay records neither on a captured request.
   const columns: LogColumn<AiCapturedRequest>[] = [
     { id: "time", header: "When", cell: (r) => <RelativeTime value={r.ts} /> },
     // A provider renamed since keeps its old slug here.
@@ -204,6 +205,7 @@ export default function Requests() {
     { id: "model", header: "Model", cell: (r) => r.model || "—" },
     { id: "path", header: "Path", cell: (r) => <Link className="mono" to={`/gateway/requests/${r.service_id}/${r.id}`}>{r.path}</Link> },
     { id: "status", header: "Status", cell: (r) => <Badge nodot kind={`status-${Math.floor(r.status / 100)}xx`}>{r.status}</Badge> },
+    { id: "latency", header: "Latency", cell: (r) => <Latency ms={r.duration_ms} /> },
     { id: "cache", header: "Cache", cell: (r) => <span className="mono">{r.cache}</span> },
     {
       id: "guardrail",

@@ -22,7 +22,6 @@ const SAMPLE_FIELDS: Record<string, Record<string, unknown>> = {
     service_id: "svc_ai001",
     exact_key_hash: "sha256:deadbeef1234",
     prompt_fingerprint: "fp_abc123",
-    similarity_to_first: 0.97,
   },
   "audit.policy_change": {
     actor_email: "alice@acme.io",
@@ -84,16 +83,19 @@ const SAMPLE_FIELDS: Record<string, Record<string, unknown>> = {
     count: 2,
   },
   "tunnel.connected": {
-    session_id: "sess_4f7a9c0b2e81",
-    remote_addr: "203.0.113.7:51234",
+    ServiceID: "svc_web01",
+    TunnelID: "tun_4f7a9c0b",
+    Kind: "http",
   },
   "tunnel.disconnected": {
-    session_id: "sess_4f7a9c0b2e81",
-    reason: "client_closed",
+    ServiceID: "svc_web01",
+    TunnelID: "tun_4f7a9c0b",
+    Kind: "http",
   },
   "tunnel.failed": {
-    session_id: "sess_fail01",
-    reason: "auth_failed",
+    ServiceID: "svc_web01",
+    TunnelID: "tun_4f7a9c0b",
+    Error: "port_taken",
   },
   "cert.expiring": {
     service_id: "svc_web01",

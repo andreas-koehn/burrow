@@ -19,6 +19,7 @@ import { providerState } from "@/lib/status";
 import { formatRatio } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { RelativeTime } from "@/components/RelativeTime";
+import { Latency } from "@/components/Latency";
 import type {
   AiProvider, AiProviderModel, Service, ServiceAIConfig,
 } from "@/lib/contract";
@@ -370,12 +371,12 @@ export default function ProviderDetail() {
                   <table className="data" aria-label="Recent requests">
                     <thead>
                       <tr>
-                        <th>When</th>
-                        <th>Method</th>
-                        <th>Path</th>
-                        <th>Status</th>
-                        {/* No Latency, as on the Requests list: the relay sets no duration on a captured request. */}
-                        <th>Cache</th>
+                        <th scope="col">When</th>
+                        <th scope="col">Method</th>
+                        <th scope="col">Path</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Latency</th>
+                        <th scope="col">Cache</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -386,12 +387,13 @@ export default function ProviderDetail() {
                           <td className="mono">{r.method}</td>
                           <td><Link className="mono" to={`/gateway/requests/${id}/${r.id}`}>{r.path}</Link></td>
                           <td className="mono">{r.status}</td>
+                          <td className="mono"><Latency ms={r.duration_ms} /></td>
                           <td className="mono">{r.cache}</td>
                         </tr>
                       ))}
                       {/* Only once the answer is there: an empty table is not yet a table without requests. */}
                       {recent.data && recent.data.length === 0 && (
-                        <TableEmptyRow colSpan={5} title="No requests yet" />
+                        <TableEmptyRow colSpan={6} title="No requests yet" />
                       )}
                     </tbody>
                   </table>

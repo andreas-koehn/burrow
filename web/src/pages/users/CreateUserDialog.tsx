@@ -4,6 +4,7 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Input, Select, Dialog, FormField, FormFieldGroup } from "@/components/ds";
 import type { UserAdmin, UserRole } from "@/lib/contract";
 import { toast } from "sonner";
+import { useRoleChoices } from "./useRoleChoices";
 
 export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const qc = useQueryClient();
@@ -11,6 +12,7 @@ export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: ()
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<UserRole>("user");
   const [formError, setFormError] = useState("");
+  const choices = useRoleChoices(open);
 
   function reset() { setEmail(""); setPassword(""); setRole("user"); setFormError(""); }
 
@@ -47,8 +49,8 @@ export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: ()
           <FormField label="Password" htmlFor="cu-pw" w="md" help="Minimum 8 characters. The user can change it after signing in.">
             <Input id="cu-pw" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
           </FormField>
-          <FormField label="Role" htmlFor="cu-role" w="md">
-            <Select id="cu-role" options={[{ value: "user", label: "User" }, { value: "admin", label: "Admin" }]} value={role} onChange={(v) => setRole(v as UserRole)} />
+          <FormField label="Role" htmlFor="cu-role" w="md" help={choices.describe(role)} descId="cu-role-help">
+            <Select id="cu-role" aria-describedby={choices.describe(role) ? "cu-role-help" : undefined} options={choices.options} value={role} onChange={(v) => setRole(v as UserRole)} />
           </FormField>
         </FormFieldGroup>
         {formError && <p role="alert" className="field-error">{formError}</p>}

@@ -3,7 +3,7 @@
 
 import type { ServedState, State } from "./status";
 
-export type UserRole = "admin" | "user";
+export type UserRole = string;
 export type UserStatus = "active" | "suspended";
 
 export interface UserAdmin {
@@ -869,7 +869,10 @@ export interface DatabaseStatus {
 // WEBHOOK_EVENT_FIELDS: maps v0.5.0 event names to their available field names (spec H.2).
 export const WEBHOOK_EVENT_FIELDS: Record<string, string[]> = {
   "ai.upstream_error": ["service_id", "backend_service_id", "status", "error", "retry_count"],
-  "ai.cache_promotion": ["service_id", "exact_key_hash", "prompt_fingerprint", "similarity_to_first"],
+  "tunnel.connected": ["ServiceID", "TunnelID", "Kind"],
+  "tunnel.disconnected": ["ServiceID", "TunnelID", "Kind"],
+  "tunnel.failed": ["ServiceID", "TunnelID", "Error"],
+  "ai.cache_promotion": ["service_id", "exact_key_hash", "prompt_fingerprint"],
   "audit.policy_change": ["actor_email", "action", "before", "after"],
   "service.created": ["service_id", "name", "type", "access_mode"],
   "service.deleted": ["service_id", "name"],

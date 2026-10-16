@@ -142,3 +142,37 @@ describe("WebhookTemplateEditor", () => {
     expect(alert.textContent).toMatch(/nested template includes are forbidden/i);
   });
 });
+
+describe("Webhook sample fields", () => {
+  // cmd/server/observer.go publishes these keys; the field list and the sample must name exactly them.
+  it.each([
+    ["tunnel.connected", ["Kind", "ServiceID", "TunnelID"]],
+    ["tunnel.disconnected", ["Kind", "ServiceID", "TunnelID"]],
+    ["tunnel.failed", ["Error", "ServiceID", "TunnelID"]],
+    ["ai.cache_promotion", ["exact_key_hash", "prompt_fingerprint", "service_id"]],
+  ])("%s: the field list equals the sample's keys", async (event, keys) => {
+    expect([...(WEBHOOK_EVENT_FIELDS[event] ?? [])].sort()).toEqual(keys);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockClear();
+    mountEditor("wh_ops", event, "x");
+    await userEvent.click(await screen.findByRole("button", { name: /preview/i }));
+    let sent: Record<string, unknown> | undefined;
+    await waitFor(() => {
+      const call = fetchSpy.mock.calls.find(([u, init]) =>
+        String(u).includes("/api/v1/webhooks/wh_ops/preview") && (init as RequestInit | undefined)?.method === "POST");
+      expect(call).toBeDefined();
+      sent = JSON.parse(String((call![1] as RequestInit).body));
+    });
+    expect(Object.keys(sent!.fields as object).sort()).toEqual(keys);
+    fetchSpy.mockRestore();
+  });
+
+  it("similarity_to_first appears nowhere in the sources outside tests", () => {
+    const files = import.meta.glob("/src/**/*.{ts,tsx}", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+    const hits = Object.entries(files)
+      .filter(([f]) => !/\.test\.tsx?$/.test(f))
+      .filter(([, src]) => src.includes("similarity_to_first"))
+      .map(([f]) => f);
+    expect(hits).toEqual([]);
+  });
+});
