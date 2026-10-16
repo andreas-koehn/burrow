@@ -700,7 +700,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// key (the text changes the answer). Applied once here; fallback attempts
 	// and translations reuse this body.
 	// ---------------------------------------------------------------
-	if text := SystemTextFrom(r.Context()); text != "" {
+	if text := SystemTextFrom(r.Context()); text != "" && SystemTextApplies(r.Method, r.URL.Path) {
 		if out, ok := ApplySystemText(r.URL.Path, upstreamBody, text); ok {
 			upstreamBody = out
 			if rb, ok2 := ApplySystemText(r.URL.Path, redactedBody, text); ok2 {

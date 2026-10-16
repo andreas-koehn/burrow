@@ -129,12 +129,19 @@ func TestChain_SystemText_PassThroughKeptForOtherRequests(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id":"c-1","usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`))
 		})
 		sink := newMemSink()
-		chain := aigw.NewChain(nil, nil, nil, nil, nil, nil, nil, sink, testLog())
+		mgr := inspector.NewManager()
+		chain := aigw.NewChain(nil, nil, nil, nil, nil, mgr, nil, sink, testLog())
 		ctx := aigw.WithSystemText(context.Background(), "T")
 		r := httptest.NewRequest(method, "https://abc.example.com"+path, strings.NewReader(body)).WithContext(ctx)
 		r.Header.Set("Content-Type", "application/json")
 		if out := runChain(t, chain, up, aigw.Service{ID: "svc-pt"}, r); out.Code != 200 {
 			t.Fatalf("%s %s: status %d", method, path, out.Code)
+		}
+		// The inspector is not configured on the service: a request that
+		// wrongly left pass-through would still be told apart by its usage
+		// row; a capture is possible only on a service with the inspector on.
+		if ring := mgr.Get("svc-pt"); ring != nil && len(ring.List(inspector.ListQuery{})) != 0 {
+			t.Errorf("%s %s was captured", method, path)
 		}
 		return got, len(sink.samples.Load().([]aimeter.Sample))
 	}
@@ -147,5 +154,23 @@ func TestChain_SystemText_PassThroughKeptForOtherRequests(t *testing.T) {
 	}
 	if got, n := run("POST", "/v1/chat/completions", chatHi); !strings.Contains(got, `"content":"T"`) || n != 1 {
 		t.Errorf("chat: body %q, usage rows %d", got, n)
+	}
+}
+
+// Only a POST gets the text, on a service that runs the buffered chain too.
+func TestChain_SystemText_NotForOtherMethods(t *testing.T) {
+	rec := &bodyRecorder{}
+	chain := aigw.NewChain(nil, nil, nil, nil, guardrails.NewEngine(), nil, nil, nil, testLog())
+	svc := aigw.Service{ID: "svc-st-m", AIConfig: aigw.ServiceAIConfig{
+		Guardrails: &guardrails.Settings{Enabled: true, Action: guardrails.ActionLogOnly},
+	}}
+	ctx := aigw.WithSystemText(context.Background(), "T")
+	for _, method := range []string{"PUT", "GET"} {
+		r := chatReq(ctx, chatHi)
+		r.Method = method
+		runChain(t, chain, rec.handler(), svc, r)
+	}
+	if len(rec.bodies) != 2 || rec.bodies[0] != chatHi || rec.bodies[1] != chatHi {
+		t.Fatalf("bodies changed: %v", rec.bodies)
 	}
 }
