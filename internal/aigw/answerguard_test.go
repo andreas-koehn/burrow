@@ -337,3 +337,47 @@ func TestAnswerGuard_ImplicitHeader(t *testing.T) {
 		t.Fatalf("%d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// Custom patterns are checked on the whole window at events without text
+// (the end of the answer), so a short answer that never reaches the custom
+// interval is still blocked before its end is forwarded.
+func TestAnswerGuard_CustomPatternCheckedBeforeTheEnd(t *testing.T) {
+	custom := []guardrails.CustomPattern{{ID: "codename", Pattern: `project falcon`, Direction: guardrails.DirectionAnswer}}
+	rec := httptest.NewRecorder()
+	g := newAnswerGuard(rec, guardReq(), guardrails.FormatChat, guardrails.AnswerActionBlock, guardInspect)
+	g.quick = guardEngine.InspectAnswerBundled
+	g.full = func(text string) (bool, string) { return guardEngine.InspectAnswerCustom(text, custom) }
+	stopped := 0
+	g.onStop = func() { stopped++ }
+	frames := chatFrames([]string{"It is project ", "falcon."})
+	g.Header().Set("Content-Type", "text/event-stream")
+	g.WriteHeader(200)
+	for _, f := range frames {
+		_, _ = g.Write([]byte(f))
+	}
+	g.finish(false)
+	body := rec.Body.String()
+	if !strings.HasPrefix(body, strings.Join(frames[:3], "")) || strings.Contains(body, `"finish_reason":"stop"`) || !strings.Contains(body, "guardrail_blocked_answer") {
+		t.Fatalf("body:\n%s", body)
+	}
+	if hit, id, blocked, _ := g.Result(); !hit || id != "codename" || !blocked || stopped != 1 {
+		t.Fatalf("Result %v %q %v, onStop called %d times", hit, id, blocked, stopped)
+	}
+}
+
+// A custom pattern in the last text of a stream that has no event after it
+// is found at the end of the stream.
+func TestAnswerGuard_CustomPatternAtTheVeryEnd(t *testing.T) {
+	custom := []guardrails.CustomPattern{{ID: "codename", Pattern: `project falcon`, Direction: guardrails.DirectionAnswer}}
+	rec := httptest.NewRecorder()
+	g := newAnswerGuard(rec, guardReq(), guardrails.FormatChat, guardrails.AnswerActionFlag, guardInspect)
+	g.quick = guardEngine.InspectAnswerBundled
+	g.full = func(text string) (bool, string) { return guardEngine.InspectAnswerCustom(text, custom) }
+	g.Header().Set("Content-Type", "text/event-stream")
+	g.WriteHeader(200)
+	_, _ = g.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"project falcon\"}}]}\n\n"))
+	g.finish(false)
+	if hit, id, _, _ := g.Result(); !hit || id != "codename" {
+		t.Fatalf("Result %v %q", hit, id)
+	}
+}

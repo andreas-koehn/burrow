@@ -57,6 +57,8 @@ func TestValidateCustomPatterns_Refuses(t *testing.T) {
 		{"empty id", with(CustomPattern{ID: "", Pattern: "y", Direction: "both"}), []string{`""`, "id"}},
 		{"long id", with(CustomPattern{ID: strings.Repeat("a", 65), Pattern: "y", Direction: "both"}), []string{"id"}},
 		{"empty pattern", with(CustomPattern{ID: "empty", Pattern: "", Direction: "both"}), []string{`"empty"`, "pattern"}},
+		{"matches empty text", with(CustomPattern{ID: "star", Pattern: `a*`, Direction: "both"}), []string{`"star"`, "empty"}},
+		{"matches empty text (anchor)", with(CustomPattern{ID: "anchor", Pattern: `^`, Direction: "answer"}), []string{`"anchor"`, "empty"}},
 		{"long description", with(CustomPattern{ID: "desc", Pattern: "y", Direction: "both", Description: strings.Repeat("d", 201)}), []string{`"desc"`, "200"}},
 	}
 	for _, c := range cases {

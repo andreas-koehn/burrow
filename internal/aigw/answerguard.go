@@ -69,6 +69,16 @@ type answerGuard struct {
 	log     *slog.Logger
 	max     int // the most of a whole answer that is held or kept
 
+	// quick and full are the checks of a streamed answer (see
+	// guardrails.StreamScanner): quick on the tail of the text with every
+	// event, full on the whole window now and then and where the answer may
+	// end. newAnswerGuard sets quick to inspect and full to nil; the chain
+	// sets the bundled and the custom patterns.
+	quick, full func(string) (bool, string)
+	// onStop is called once a stream was stopped, after its error event was
+	// written and flushed: the chain cancels the upstream request with it.
+	onStop func()
+
 	mode    guardMode
 	status  int
 	buf     bytes.Buffer // the held or kept answer, or the bytes of the event being read
@@ -93,6 +103,7 @@ func newAnswerGuard(w http.ResponseWriter, r *http.Request, format, action strin
 	return &answerGuard{
 		w: w, r: r, format: format, action: action, inspect: inspect,
 		log: slog.Default(), max: inspector.MaxRespBodyBytes,
+		quick: inspect,
 	}
 }
 
@@ -126,7 +137,7 @@ func (g *answerGuard) WriteHeader(code int) {
 	case strings.HasPrefix(ct, "text/event-stream"):
 		g.mode = modeStream
 		g.parser = sse.NewParser(maxPendingFrame + 1024)
-		g.scanner = guardrails.NewStreamScanner(g.inspect)
+		g.scanner = guardrails.NewStreamScanner(g.quick, g.full)
 	case ct == "" || isJSONType(ct):
 		if g.action == guardrails.AnswerActionBlock {
 			g.mode = modeHeld
@@ -264,14 +275,37 @@ func (g *answerGuard) checkFrame(raw []byte) bool {
 
 func (g *answerGuard) checkFrames(frames []sse.Frame) bool {
 	for _, f := range frames {
-		text, ok := guardrails.DeltaText(g.format, f.Data)
-		if !ok {
-			continue // no text: passes unchecked
+		var hit bool
+		var id string
+		if text, ok := guardrails.DeltaText(g.format, f.Data); ok {
+			hit, id = g.scanner.Add(text)
+		} else {
+			// No text: the event itself passes unchecked, but the answer
+			// may end here (finish reason, usage, [DONE]), so the text not
+			// yet checked against the custom patterns is checked now.
+			hit, id = g.scanner.Flush()
 		}
-		if hit, id := g.scanner.Add(text); hit {
+		if hit {
 			g.hit, g.pattern = true, id
 			return true
 		}
+	}
+	return false
+}
+
+// stopped reports whether the guard stopped a stream: the response is then
+// complete as far as the app is concerned, whatever the upstream does.
+func (g *answerGuard) stopped() bool { return g.blocked && g.midStream }
+
+// flushScanner runs the scanner's last full check at the end of a stream
+// and records a hit.
+func (g *answerGuard) flushScanner() bool {
+	if g.scanner == nil {
+		return false
+	}
+	if hit, id := g.scanner.Flush(); hit {
+		g.hit, g.pattern = true, id
+		return true
 	}
 	return false
 }
@@ -284,6 +318,9 @@ func (g *answerGuard) stopStream() {
 	g.buf.Reset()
 	_, _ = g.w.Write(blockedStreamEvent(g.format))
 	g.Flush()
+	if g.onStop != nil {
+		g.onStop()
+	}
 }
 
 // finish ends the response once the upstream handler returned. aborted says
@@ -323,7 +360,7 @@ func (g *answerGuard) finish(aborted bool) {
 		if err == nil {
 			frames = append(frames, g.parser.Flush()...)
 		}
-		if g.checkFrames(frames) {
+		if g.checkFrames(frames) || g.flushScanner() {
 			if g.action == guardrails.AnswerActionBlock && !aborted {
 				g.stopStream()
 			}

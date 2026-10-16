@@ -31,6 +31,10 @@ type Pattern struct {
 	ID          string
 	Description string
 	Regex       string
+	// Requires lists literals of which the regex needs at least one to match
+	// (case-sensitive). The engine skips the regex when the text holds none
+	// of them, which is far cheaper than running it. Empty: always run.
+	Requires []string
 }
 
 // Patterns is the closed list of v0.4.0 prompt-injection rules. Exactly
@@ -138,9 +142,10 @@ var Patterns = []Pattern{
 //     engine itself returns only (hit, pattern_id)).
 //
 // Answers and CustomPatterns are global: they are read from the global blob
-// only (the config loader copies them onto a service's settings). A
-// service's own guardrails section covers Enabled and Action; a service whose
-// request guardrails are off has no answer inspection either.
+// only. A service's own guardrails section overrides Enabled and Action when
+// its Enabled is true; see Effective for how the settings of a service are
+// put together. Where the guardrails are off, answers are not inspected
+// either.
 type Settings struct {
 	Enabled        bool            `json:"enabled"`
 	Action         string          `json:"action"`

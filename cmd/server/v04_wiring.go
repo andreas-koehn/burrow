@@ -178,7 +178,12 @@ func buildV04Stack(
 	// straight to the v0.3.0 proxy handler (byte-for-byte preserved).
 	// Services with a row → cache/redaction/guardrails/inspector/anthropic
 	// pointers are populated and the chain runs the corresponding middleware.
-	aiChain.Loader = chainConfigLoader{db: wrapped, log: log, global: newGlobalGuardrails(wrapped, globalGuardrailsInterval, log)}
+	// The global guardrails, read at most every globalGuardrailsInterval: the
+	// loader applies them to a service with an AI config, the chain to a
+	// gateway service without one.
+	globalGuard := newGlobalGuardrails(wrapped, globalGuardrailsInterval, log)
+	aiChain.Loader = chainConfigLoader{db: wrapped, log: log, global: globalGuard}
+	aiChain.GlobalGuardrails = globalGuard.get
 
 	// Wire quota enforcement into the chain's rate-limit hook (Task 11 /
 	// spec Part D). The previously-stubbed Chain.RateLimit field is assigned

@@ -51,7 +51,7 @@ var bundledIDs = func() map[string]bool {
 // ValidateCustomPatterns checks a list of custom patterns: at most
 // MaxCustomPatterns; each id of the form [a-z0-9_-]{1,64}, used once and no
 // bundled id; each pattern a non-empty Go RE2 expression of at most
-// MaxCustomPatternLen characters; the direction one of request, answer,
+// MaxCustomPatternLen characters that does not match empty text; the direction one of request, answer,
 // both; the description at most MaxCustomPatternDescLen characters. The
 // error names the first pattern that fails, by id, and why: it is written
 // to the caller as it is.
@@ -77,8 +77,13 @@ func ValidateCustomPatterns(ps []CustomPattern) error {
 		case utf8.RuneCountInString(p.Description) > MaxCustomPatternDescLen:
 			return fmt.Errorf("custom pattern %q: the description is longer than %d characters", p.ID, MaxCustomPatternDescLen)
 		}
-		if _, err := regexp.Compile(p.Pattern); err != nil {
+		re, err := regexp.Compile(p.Pattern)
+		if err != nil {
 			return fmt.Errorf("custom pattern %q: not a valid regular expression (Go RE2 syntax): %v", p.ID, err)
+		}
+		if re.MatchString("") {
+			// It would match every request and every answer.
+			return fmt.Errorf("custom pattern %q: the pattern matches empty text, so it would match everything", p.ID)
 		}
 		seen[p.ID] = true
 	}
@@ -93,4 +98,30 @@ func validDirection(d string) bool {
 // DirectionAnswer).
 func (p CustomPattern) appliesTo(dir string) bool {
 	return p.Direction == dir || p.Direction == DirectionBoth
+}
+
+// Effective returns the guardrail settings that apply to a service, from its
+// own guardrails section (nil when it has none) and the global settings. A
+// section with enabled true overrides the global enabled and action; a
+// section with enabled false counts as no override (the dashboard writes
+// one with every AI-config save, so it does not mean the service opted
+// out). Answer inspection and custom patterns are always the global ones.
+// The result is nil when the service has no section and the global
+// guardrails are off: the service then has no guardrails at all. The result
+// is a copy; the custom patterns are shared and must not be changed.
+func Effective(own *Settings, global Settings) *Settings {
+	switch {
+	case own != nil && own.Enabled:
+		s := *own
+		s.Answers, s.CustomPatterns = global.Answers, global.CustomPatterns
+		return &s
+	case global.Enabled:
+		s := global
+		return &s
+	case own != nil:
+		s := *own
+		s.Answers, s.CustomPatterns = AnswerSettings{}, nil
+		return &s
+	}
+	return nil
 }

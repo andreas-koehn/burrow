@@ -9,7 +9,7 @@ import (
 // secret scanner mistakes this file for a leak.
 var (
 	fakeOpenAI       = "sk-" + "proj-" + strings.Repeat("aB3dE5fG7h", 4)
-	fakeOpenAIPlain  = "sk-" + strings.Repeat("Zx9Yw8Vu7T", 3)
+	fakeOpenAIPlain  = "sk-" + strings.Repeat("Zx9Yw8Vu7T", 4)
 	fakeAnthropic    = "sk-" + "ant-api03-" + strings.Repeat("Qw3rTy_-12", 4)
 	fakeAWS          = "AKIA" + "IOSFODNN7EXAMPLE"
 	fakeGitHub       = "ghp" + "_" + strings.Repeat("A1b2C3d4E5", 4)
@@ -60,6 +60,10 @@ func TestAnswerPatterns_HitsAndNearMisses(t *testing.T) {
 	}{
 		{"openai_key", "your key is " + fakeOpenAI + " keep it", "the prefix sk-abcdefghij is too short"},
 		{"openai_key", "plain " + fakeOpenAIPlain, "a task-management-application-for-teams is prose"},
+		{"openai_key", "sk-svcacct-" + strings.Repeat("Ab1-_", 8), `<div class="sk-fading-circle-container-big">`},
+		{"openai_key", "sk-admin-" + strings.Repeat("Ab1-_", 8), ".sk-cube-grid-loader-element-x { color: red }"},
+		{"openai_key", fakeOpenAI, "sk-proj-" + strings.Repeat("a", 39) + " (one short)"},
+		{"openai_key", fakeOpenAIPlain, "sk-" + strings.Repeat("a", 31) + " (one short)"},
 		{"anthropic_key", "use " + fakeAnthropic, "sk-ant-short"},
 		{"aws_access_key", "id=" + fakeAWS + ";", "KAKIAIOSFODNN7EXAMPLE is inside a word, AKIA alone"},
 		{"github_token", "token " + fakeGitHub, "ghp_tooShort123"},
@@ -139,5 +143,40 @@ func TestEngine_CustomPatternsByDirection(t *testing.T) {
 	bad := []CustomPattern{{ID: "bad", Pattern: `(?<=x)`, Direction: DirectionBoth}}
 	if hit, _ := e.InspectAnswerText("x", bad); hit {
 		t.Error("an invalid pattern matched")
+	}
+}
+
+// The streaming scanner checks the bundled patterns on the last
+// ScanTailBundled bytes of the window only: every bundled pattern's
+// shortest match must fit there.
+func TestAnswerPatterns_ShortestMatchFitsTheTail(t *testing.T) {
+	e := NewEngine()
+	for _, hit := range []string{fakeOpenAI, fakeOpenAIPlain, fakeAnthropic, fakeAWS, fakeGitHub, fakeSlack, fakeGoogle, fakePEM, fakeAutomation, fakeGatewayKey} {
+		if len(hit) > ScanTailBundled {
+			t.Errorf("sample %q is longer than the tail", hit)
+		}
+		if ok, _ := e.InspectAnswerBundled(hit); !ok {
+			t.Errorf("sample %q not found by the bundled patterns", hit)
+		}
+	}
+}
+
+// Every bundled answer pattern names the literals it needs, and each literal
+// is spelled in its regex (a literal the regex does not need would make the
+// engine skip matches).
+func TestAnswerPatterns_Requires(t *testing.T) {
+	for _, p := range AnswerPatterns {
+		if len(p.Requires) == 0 {
+			t.Errorf("%s requires no literal", p.ID)
+		}
+		for _, lit := range p.Requires {
+			src := strings.NewReplacer(`(?:`, "", `|`, "", `)`, "", `[pousr]`, "").Replace(p.Regex)
+			ok := strings.Contains(p.Regex, lit) || strings.Contains(src, lit) ||
+				(p.ID == "github_token" && strings.HasPrefix(lit, "gh") && strings.Contains("pousr", lit[2:3])) ||
+				(p.ID == "slack_token" && strings.HasPrefix(lit, "xox") && strings.Contains("baprs", lit[3:4]))
+			if !ok {
+				t.Errorf("%s: literal %q is not in %s", p.ID, lit, p.Regex)
+			}
+		}
 	}
 }

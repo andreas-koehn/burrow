@@ -73,16 +73,12 @@ func (l chainConfigLoader) LoadAIConfig(ctx context.Context, serviceID string) (
 	if err != nil {
 		return aigw.Service{}, false, err
 	}
-	if g := cfg.Guardrails; g != nil {
-		// Answer inspection and the custom patterns are global settings; a
-		// service's own section covers only enabled and action. A service
-		// whose guardrails are off needs neither.
-		g.Answers, g.CustomPatterns = guardrails.AnswerSettings{}, nil
-		if g.Enabled {
-			global := l.globalGuardrails(ctx)
-			g.Answers, g.CustomPatterns = global.Answers, global.CustomPatterns
-		}
-	}
+	// The guardrails that apply: the global settings, with the service's own
+	// enabled and action when its section has enabled true (a section with
+	// enabled false, which the dashboard writes with every save, counts as
+	// no override). Answer inspection and custom patterns are always global.
+	// See guardrails.Effective.
+	cfg.Guardrails = guardrails.Effective(cfg.Guardrails, l.globalGuardrails(ctx))
 	return aigw.Service{ID: serviceID, AIConfig: cfg}, true, nil
 }
 

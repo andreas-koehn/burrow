@@ -1,7 +1,7 @@
 // Package retention implements the daily data-retention compaction job and
 // the settings accessors the job and HTTP API consume.
 //
-// Compaction is deliberately audit-chain-safe: only the six high-frequency
+// Compaction is deliberately audit-chain-safe: only the seven high-frequency
 // "leaf" action types whose rows never sit between two structurally-linked
 // chain rows are eligible for deletion. Rows whose action is NOT in
 // EligibleAuditActions are left untouched even if they fall outside the
@@ -20,12 +20,13 @@ import (
 )
 
 // EligibleAuditActions is the closed set of action keys the daily compaction
-// job will delete past audit.retention_days.  These are the six rate-limited
+// job will delete past audit.retention_days.  These are the seven rate-limited
 // "leaf" keys that are never referenced as structural chain links by upstream
 // rows.
 var EligibleAuditActions = []string{
 	"redaction.applied",
 	"guardrail.refused",
+	"guardrail.flagged",
 	"connection.session_summary",
 	"retention.compact",
 	"ai.cache.promoted",

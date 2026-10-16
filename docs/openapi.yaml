@@ -1486,9 +1486,12 @@ components:
     GuardrailSettings:
       type: object
       description: >
-        Stored guardrail settings. answers and custom_patterns are global:
-        they apply to every service whose guardrails are on (a service's own
-        guardrails section covers enabled and action only).
+        Stored global guardrail settings. They apply to every gateway request
+        (also for a provider without an AI configuration) and to every service
+        with an AI configuration. A service's own guardrails section overrides
+        enabled and action only when its enabled is true; a section with
+        enabled false counts as no override. answers and custom_patterns are
+        always the global ones.
       required: [enabled, action, answers, custom_patterns]
       properties:
         enabled: { type: boolean }
@@ -1535,7 +1538,7 @@ components:
           type: string
           minLength: 1
           maxLength: 512
-          description: A Go RE2 regular expression; maxLength counts characters.
+          description: A Go RE2 regular expression that does not match empty text; maxLength counts characters.
         direction:
           type: string
           enum: [request, answer, both]
@@ -3031,7 +3034,7 @@ paths:
         answers.action is not flag or block (empty means flag), or when
         custom_patterns has more than 50 entries or an entry with a bad or
         repeated id, a bundled id, an empty pattern, a pattern longer than
-        512 characters or not valid Go RE2 syntax, a direction other than
+        512 characters, not valid Go RE2 syntax or matching empty text, a direction other than
         request, answer or both, or a description longer than 200
         characters. The message names the first bad pattern by id.
         answers and custom_patterns keep their stored values when the body

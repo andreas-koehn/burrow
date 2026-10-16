@@ -3,6 +3,7 @@ package guardrails
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 )
 
@@ -113,13 +114,45 @@ func (e *Engine) InspectRequest(body []byte, custom []CustomPattern) (hit bool, 
 // bundled AnswerPatterns, then the custom patterns with direction "answer" or
 // "both". It returns the id of the first that matches.
 func (e *Engine) InspectAnswerText(text string, custom []CustomPattern) (hit bool, id string) {
+	if hit, id := e.InspectAnswerBundled(text); hit {
+		return true, id
+	}
+	return e.InspectAnswerCustom(text, custom)
+}
+
+// InspectAnswerBundled screens the text of an answer against the bundled
+// AnswerPatterns only.
+func (e *Engine) InspectAnswerBundled(text string) (hit bool, id string) {
 	if e == nil || text == "" {
 		return false, ""
 	}
 	for i := range e.answers {
-		if e.answers[i].re.MatchString(text) {
+		if e.answers[i].mayMatch(text) && e.answers[i].re.MatchString(text) {
 			return true, e.answers[i].ID
 		}
+	}
+	return false, ""
+}
+
+// mayMatch reports whether text holds one of the literals the pattern
+// requires (always, for a pattern that requires none).
+func (c *compiled) mayMatch(text string) bool {
+	if len(c.Requires) == 0 {
+		return true
+	}
+	for _, lit := range c.Requires {
+		if strings.Contains(text, lit) {
+			return true
+		}
+	}
+	return false
+}
+
+// InspectAnswerCustom screens the text of an answer against the custom
+// patterns with direction "answer" or "both" only.
+func (e *Engine) InspectAnswerCustom(text string, custom []CustomPattern) (hit bool, id string) {
+	if e == nil || text == "" {
+		return false, ""
 	}
 	for _, p := range custom {
 		if !p.appliesTo(DirectionAnswer) {

@@ -162,7 +162,7 @@ var AllActions = []string{
 	ActionCacheClear, ActionCacheSettingsUpdate,
 	ActionRedactionRuleCreate, ActionRedactionRuleUpdate, ActionRedactionRuleDelete,
 	ActionRedactionApplied,
-	ActionGuardrailSettingsUpdate, ActionGuardrailRefused,
+	ActionGuardrailSettingsUpdate, ActionGuardrailRefused, ActionGuardrailFlagged,
 	ActionBudgetCreate, ActionBudgetUpdate, ActionBudgetDelete, ActionBudgetExceeded,
 	ActionRateLimitCreate, ActionRateLimitUpdate, ActionRateLimitDelete, ActionRateLimitEnforced,
 	ActionWebhookCreate, ActionWebhookUpdate, ActionWebhookDelete, ActionWebhookDeliveryFailed,

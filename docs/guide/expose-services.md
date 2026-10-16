@@ -462,8 +462,23 @@ Good to know:
 The guardrails screen what an app sends against a bundled list of
 prompt-injection patterns (see the **Guardrails** page). Two more things are
 set there, globally: inspection of the model's answers, and patterns of your
-own. Both apply to every service whose guardrails are on; a service that
-turns its guardrails off turns them off too.
+own.
+
+Which settings apply to a request:
+
+- The global settings (on or off, the action for requests, answers, custom
+  patterns) apply to every request through the model gateway, also for a
+  provider that has no AI configuration of its own, and to every service
+  that has an AI configuration.
+- A service's own guardrails section overrides the global on/off and
+  request action only when it is switched on. A section that is switched
+  off counts as no override: the service follows the global settings. (The
+  dashboard writes such a section with every save of a service's AI
+  configuration, so "off" cannot mean an opt-out.)
+- Answer inspection and custom patterns always come from the global
+  settings, and run only where the guardrails are on.
+- A tunnelled service without any AI configuration is not touched: its
+  traffic passes byte for byte.
 
 #### Answers
 
@@ -488,13 +503,22 @@ Two actions:
   checked, and on a hit replaced by an error in the app's format with status
   `502` and code `guardrail_blocked_answer` ("the answer was withheld by a
   guardrail"); none of the answer reaches the app. Holding the answer is the
-  price of blocking it. A streamed answer is forwarded event by event, and
-  every event is checked together with the last 4096 bytes of text before
-  it, so a key split across several events is still found. On a hit that
-  event and everything after it are dropped, one error event in the app's
-  format ends the stream, and the request shows "blocked mid-answer". **What
-  was sent before the hit cannot be recalled.** The audit entry is
+  price of blocking it. A streamed answer is forwarded event by event. On a
+  hit that event and everything after it are dropped, one error event in the
+  app's format ends the stream, the request to the provider is cancelled (the
+  model stops generating), and the request shows "blocked mid-answer".
+  **What was sent before the hit cannot be recalled.** The audit entry is
   `guardrail.refused` with `direction: "answer"`.
+
+How a stream is checked: Burrow keeps the last 4096 bytes of the answer's
+text. The bundled patterns are checked on every event with text, on the
+last 512 bytes plus the new text, so a key split across several events is
+found in the event that completes it. Custom patterns are checked on all
+4096 bytes plus the new text, every 256 bytes of new text, at every event
+without text (where the answer may end) and at the end of the stream.
+Checking them on every token would cost too much; the price is that with
+**block** up to 256 bytes of text after a custom match can reach the app
+before the stream is stopped.
 
 A blocked answer is never put into the response cache; a flagged one is.
 Answers served from the cache were checked when they were stored. While
@@ -506,7 +530,7 @@ The bundled answer patterns:
 | id | finds |
 |---|---|
 | `anthropic_key` | an Anthropic API key (`sk-ant-…`) |
-| `openai_key` | an OpenAI API key (`sk-…`, `sk-proj-…`) |
+| `openai_key` | an OpenAI API key: `sk-proj-…`, `sk-svcacct-…`, `sk-admin-…` (40 or more key characters after the kind) or a legacy `sk-` key (32 or more letters and digits). Hyphenated words after `sk-`, such as CSS classes, are not keys |
 | `aws_access_key` | an AWS access key id (`AKIA` and 16 characters) |
 | `github_token` | a GitHub token (`ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…`, `github_pat_…`) |
 | `slack_token` | a Slack token (`xoxb-…`, `xoxa-…`, `xoxp-…`, `xoxr-…`, `xoxs-…`) |
@@ -527,7 +551,8 @@ description:
   none of the bundled ids. It is what the inspector, the audit log and the
   webhook name when the pattern matches.
 - **pattern**: Go RE2 syntax (no look-around, no back-references), at most
-  512 characters. `(?i)` makes it case-insensitive.
+  512 characters. `(?i)` makes it case-insensitive. A pattern that matches
+  empty text (`a*`, `^`) is refused: it would match everything.
 - **direction**: `request` (checked against the request body, after the
   bundled request patterns, with the request action set for the
   guardrails), `answer` (checked against the text of answers, after the

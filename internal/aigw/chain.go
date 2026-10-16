@@ -272,6 +272,12 @@ type Chain struct {
 	// is the request's. nil = not reported.
 	OnGuardrailRefuse func(ctx context.Context, serviceID, pattern, action string)
 
+	// GlobalGuardrails returns the global guardrail settings. DispatchMetered
+	// (the gateway) applies them to a service whose AI config has no
+	// guardrails (see guardrails.Effective); cmd/server reads them, cached,
+	// from the settings table. nil = no global settings.
+	GlobalGuardrails func(ctx context.Context) guardrails.Settings
+
 	// OnGuardrailAnswer is called once per answer an answer pattern matched,
 	// with the service, the id of the pattern (never the matched text) and
 	// the action taken ("flag": delivered, "block": withheld). It runs on the
@@ -433,6 +439,12 @@ func (c *Chain) DispatchMetered(w http.ResponseWriter, r *http.Request,
 ) {
 	svc := c.resolve(r, serviceID, localHost, apiKeyHeader, apiKeyID)
 	svc.TrustReportedCost = trustReportedCost
+	// A provider's service usually has no AI config of its own: the global
+	// guardrails apply to it. (The loader has already applied them to a
+	// service with a config.)
+	if svc.AIConfig.Guardrails == nil && c.GlobalGuardrails != nil {
+		svc.AIConfig.Guardrails = guardrails.Effective(nil, c.GlobalGuardrails(r.Context()))
+	}
 	r, ok := c.allow(w, r, svc)
 	if !ok {
 		return
@@ -903,20 +915,35 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// Answer inspection: the guard sits between the upstream and the meter,
 	// so the meter, the inspector and the cache see what the app received.
 	var upstreamWriter http.ResponseWriter = wrapped
+	upstreamReq := r
 	guard := c.answerGuardFor(wrapped, r, kind, cfg)
 	if guard != nil {
 		upstreamWriter = guard
-		// An answer the upstream compresses for the app cannot be read: ask
-		// for one it does not compress (Go's transport then asks for gzip
-		// itself and unpacks it).
+		// An answer the upstream compresses for the app cannot be read.
+		// Without the app's Accept-Encoding the upstream answers
+		// uncompressed: the relay's transports set DisableCompression (a
+		// transport that does not asks for gzip itself and unpacks it).
 		r.Header.Del("Accept-Encoding")
+		// A stream the guard stops needs nothing more from the upstream:
+		// its request is cancelled, so the model stops generating and the
+		// app's response ends at once.
+		upCtx, cancelUpstream := context.WithCancel(r.Context())
+		defer cancelUpstream()
+		guard.onStop = cancelUpstream
+		upstreamReq = r.WithContext(upCtx)
 	}
 
 	// Under a real http.Server a ReverseProxy panics http.ErrAbortHandler
 	// when the client hangs up mid-response. The tokens were spent all the
 	// same, so the bookkeeping below still runs; the panic is then raised
 	// again, unchanged, so the server aborts the connection as before.
-	aborted, abort := serveUpstream(proxyHandler, upstreamWriter, r)
+	aborted, abort := serveUpstream(proxyHandler, upstreamWriter, upstreamReq)
+	if aborted && abort == http.ErrAbortHandler && guard != nil && guard.stopped() {
+		// The copy broke off because the guard cancelled the upstream after
+		// it had ended the stream: the app got a complete response, and the
+		// connection is not to be aborted.
+		aborted, abort = false, nil
+	}
 	answerBlocked := false
 	if guard != nil {
 		guard.finish(aborted) // a held answer goes out (or is replaced) here
@@ -1198,6 +1225,15 @@ func (c *Chain) answerGuardFor(w http.ResponseWriter, r *http.Request, kind Kind
 		return engine.InspectAnswerText(text, custom)
 	})
 	guard.log = c.Log
+	// A stream: the bundled patterns on every event, the custom ones on the
+	// whole window now and then (see guardrails.StreamScanner).
+	guard.quick, guard.full = engine.InspectAnswerBundled, nil
+	for _, p := range custom {
+		if p.Direction == guardrails.DirectionAnswer || p.Direction == guardrails.DirectionBoth {
+			guard.full = func(text string) (bool, string) { return engine.InspectAnswerCustom(text, custom) }
+			break
+		}
+	}
 	return guard
 }
 
