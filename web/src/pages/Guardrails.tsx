@@ -181,8 +181,8 @@ function JudgeSection({ draft, onChange, models, canWrite, saving, onSave }: {
     ...(draft.model && !names.includes(draft.model) && models ? [{ value: draft.model, label: `${draft.model} (not found)` }] : []),
   ];
   const noModels = models !== undefined && models.length === 0;
-  const missing = [draft.enabled && draft.model === "" && "Choose a model."];
-  const blocked = saving || !timeoutValid || !policyValid || draft.enabled && draft.model === "";
+  const missing: string[] = draft.enabled && draft.model === "" ? ["Choose a model."] : [];
+  const blocked = saving || !timeoutValid || !policyValid || missing.length > 0;
 
   return (
     <>
@@ -279,7 +279,7 @@ function JudgeSection({ draft, onChange, models, canWrite, saving, onSave }: {
           <SubmitHint id="judge-hint" missing={missing} />
           <Button
             variant="primary" size="sm" disabled={blocked}
-            aria-describedby={missing.some(Boolean) ? "judge-hint" : undefined}
+            aria-describedby={missing.length > 0 ? "judge-hint" : undefined}
             onClick={onSave}
           >
             {saving ? "Saving…" : "Save judge settings"}

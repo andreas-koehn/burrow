@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 
 	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/store"
@@ -297,6 +298,65 @@ func (d Deps) GetGuardrailPatterns(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, p := range guardrails.AnswerPatterns {
 		out = append(out, guardrailPatternResp{ID: p.ID, Description: p.Description, Direction: guardrails.DirectionAnswer})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// guardrailPreviewMaxBody bounds the body of POST /guardrails/preview.
+const guardrailPreviewMaxBody = 64 << 10
+
+// guardrailPreviewMaxMatches is how many matches the preview returns.
+const guardrailPreviewMaxMatches = 100
+
+type guardrailPreviewReq struct {
+	Pattern string `json:"pattern"`
+	Text    string `json:"text"`
+}
+
+type guardrailPreviewMatch struct {
+	Start int    `json:"start"`
+	End   int    `json:"end"`
+	Text  string `json:"text"`
+}
+
+type guardrailPreviewResp struct {
+	Matches   []guardrailPreviewMatch `json:"matches"`
+	Truncated bool                    `json:"truncated"`
+}
+
+// PostGuardrailPreview handles POST /api/v1/guardrails/preview. Needs
+// ai:configure:any (routeAccess). The pattern must pass the rules a custom
+// pattern passes on save (guardrails.ValidateCustomPatterns; the 400 carries
+// the same message); the response lists where it matches in text, as byte
+// offsets, at most the first guardrailPreviewMaxMatches.
+func (d Deps) PostGuardrailPreview(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, guardrailPreviewMaxBody)
+	var in guardrailPreviewReq
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := guardrails.ValidateCustomPatterns([]guardrails.CustomPattern{
+		{ID: "preview", Pattern: in.Pattern, Direction: guardrails.DirectionBoth},
+	}); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	out := guardrailPreviewResp{Matches: []guardrailPreviewMatch{}}
+	if in.Text != "" {
+		re, err := regexp.Compile(in.Pattern) // validated above
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// One more than the limit tells whether the list was cut.
+		for _, span := range re.FindAllStringIndex(in.Text, guardrailPreviewMaxMatches+1) {
+			if len(out.Matches) == guardrailPreviewMaxMatches {
+				out.Truncated = true
+				break
+			}
+			out.Matches = append(out.Matches, guardrailPreviewMatch{Start: span[0], End: span[1], Text: in.Text[span[0]:span[1]]})
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

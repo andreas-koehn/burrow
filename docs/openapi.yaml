@@ -1484,6 +1484,26 @@ components:
                     description: >
                       Whether the service's AI configuration has a redaction
                       section. Without one the entry shows the defaults.
+    GuardrailPreviewRequest:
+      type: object
+      required: [pattern, text]
+      properties:
+        pattern: { type: string, maxLength: 512 }
+        text: { type: string }
+    GuardrailPreviewResult:
+      type: object
+      required: [matches, truncated]
+      properties:
+        matches:
+          type: array
+          items:
+            type: object
+            required: [start, end, text]
+            properties:
+              start: { type: integer, description: 'Byte offset into text.' }
+              end: { type: integer, description: 'Byte offset into text, exclusive.' }
+              text: { type: string }
+        truncated: { type: boolean, description: 'True when there were more than 100 matches.' }
     GuardrailSettingsInput:
       type: object
       required: [action]
@@ -3142,6 +3162,34 @@ paths:
             schema: { $ref: '#/components/schemas/GuardrailSettingsInput' }
       responses:
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/guardrails/preview:
+    post:
+      tags: [guardrails]
+      operationId: guardrailPreview
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
+      summary: Test a custom pattern against a sample text
+      description: >
+        Lists where the pattern matches in text, as byte offsets into text, at
+        most the first 100 matches (truncated says whether there were more).
+        The pattern must be valid as a custom pattern: Go RE2 syntax, 1 to 512
+        characters, not matching empty text; a 400 carries the message the
+        settings update gives. The body is at most 64 KiB. Empty text gives an
+        empty list. Nothing is stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GuardrailPreviewRequest' }
+      responses:
+        '200':
+          description: The matches.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuardrailPreviewResult' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }

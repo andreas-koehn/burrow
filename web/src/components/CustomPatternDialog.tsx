@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button, Dialog, FormField, FormFieldGroup, Input, Select, SubmitHint } from "@/components/ds";
-import { ApiError } from "@/lib/api";
-import type { GuardrailCustomPattern, GuardrailDirection } from "@/lib/contract";
+import { ApiError, apiFetch } from "@/lib/api";
+import type { GuardrailCustomPattern, GuardrailDirection, GuardrailPreviewResult } from "@/lib/contract";
 
 const MAX_PATTERN_LEN = 512;
 const MAX_DESCRIPTION_LEN = 200;
@@ -50,6 +50,10 @@ export function CustomPatternDialog({ pattern, takenIds, onSave, onClose }: Cust
   const [left, setLeft] = useState<ReadonlySet<Field>>(new Set());
   const [serverErr, setServerErr] = useState<{ field: Field | null; message: string } | null>(null);
   const [pending, setPending] = useState(false);
+  // Trying the pattern on a sample text; the result is of the pattern as it was tested.
+  const [sample, setSample] = useState("");
+  const [tested, setTested] = useState<GuardrailPreviewResult | null>(null);
+  const [testing, setTesting] = useState(false);
   // A late answer to a dialog that was closed is dropped.
   const [closed, setClosed] = useState(false);
 
@@ -79,6 +83,25 @@ export function CustomPatternDialog({ pattern, takenIds, onSave, onClose }: Cust
   function close() {
     setClosed(true);
     onClose();
+  }
+
+  async function runTest() {
+    if (regex === "" || sample === "" || testing) return;
+    setServerErr(null);
+    setTesting(true);
+    try {
+      const res = await apiFetch<GuardrailPreviewResult>("/guardrails/preview", {
+        method: "POST",
+        body: JSON.stringify({ pattern: regex, text: sample }),
+      });
+      if (!closed) setTested(res);
+    } catch (e) {
+      if (closed) return;
+      const message = e instanceof ApiError ? e.message : "Couldn't test the pattern.";
+      setServerErr({ field: fieldOfMessage(message), message });
+    } finally {
+      if (!closed) setTesting(false);
+    }
   }
 
   async function submit() {
@@ -155,7 +178,7 @@ export function CustomPatternDialog({ pattern, takenIds, onSave, onClose }: Cust
               invalid={patternShown !== null}
               aria-describedby="cp-pattern-desc"
               value={regex}
-              onChange={(e) => { setRegex(e.target.value); edited("pattern"); }}
+              onChange={(e) => { setRegex(e.target.value); setTested(null); edited("pattern"); }}
               onBlur={() => leave("pattern")}
             />
           </FormField>
@@ -185,6 +208,38 @@ export function CustomPatternDialog({ pattern, takenIds, onSave, onClose }: Cust
             />
           </FormField>
         </FormFieldGroup>
+        <h3>Test against a sample text</h3>
+        <FormField label="Sample text" htmlFor="cp-sample" help="Nothing is saved. Up to 64 KiB.">
+          <textarea
+            id="cp-sample"
+            className="input mono resizable"
+            rows={3}
+            spellCheck={false}
+            value={sample}
+            onChange={(e) => { setSample(e.target.value); setTested(null); }}
+          />
+        </FormField>
+        <div className="row row-center gap-2">
+          <Button variant="secondary" size="sm" disabled={regex === "" || sample === "" || testing} onClick={() => void runTest()}>
+            {testing ? "Testing…" : "Test"}
+          </Button>
+          {tested && (
+            <span role="status">
+              {tested.matches.length === 0 ? "No match" : `${tested.matches.length} ${tested.matches.length === 1 ? "match" : "matches"}`}
+            </span>
+          )}
+        </div>
+        {tested && tested.matches.length > 0 && (
+          <ul className="mono small" aria-label="Matches">
+            {tested.matches.slice(0, 10).map((m, i) => (
+              <li key={i}><mark>{m.text}</mark> <span className="muted">at byte {m.start}</span></li>
+            ))}
+          </ul>
+        )}
+        {tested && tested.matches.length > 10 && (
+          <p className="muted small">And {tested.matches.length - 10} more.</p>
+        )}
+        {tested?.truncated && <p className="muted small">Showing the first {tested.matches.length} matches.</p>}
         {serverErr && serverErr.field === null && <p role="alert" className="notice-inline error">{serverErr.message}</p>}
         <button type="submit" hidden />
       </form>

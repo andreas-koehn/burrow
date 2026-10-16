@@ -363,6 +363,8 @@ func NewRouter(d Deps) http.Handler {
 			r.Get("/guardrails/settings", d.GetGuardrailSettings)
 			r.Put("/guardrails/settings", d.PutGuardrailSettings)
 			r.Get("/guardrails/patterns", d.GetGuardrailPatterns)
+			// Where a pattern matches in a sample text: ai:configure:any.
+			r.Post("/guardrails/preview", d.PostGuardrailPreview)
 			// Synthetic models and gateway keys. Reading the models and the
 			// gateway's endpoints needs ai:read or ai:configure, :own or
 			// :any; model writes need ai:configure:any. A gateway key

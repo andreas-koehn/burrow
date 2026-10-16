@@ -71,6 +71,7 @@ var openAPIOperationIDs = map[string]string{
 	"GET /api/v1/guardrails/settings":                                           "guardrailSettingsGet",
 	"PUT /api/v1/guardrails/settings":                                           "guardrailSettingsUpdate",
 	"GET /api/v1/guardrails/patterns":                                           "guardrailPatternsList",
+	"POST /api/v1/guardrails/preview":                                           "guardrailPreview",
 	"GET /api/v1/rate-limits":                                                   "rateLimitsList",
 	"POST /api/v1/rate-limits":                                                  "rateLimitCreate",
 	"GET /api/v1/rate-limits/usage":                                             "rateLimitUsageGet",
@@ -295,6 +296,7 @@ var openAPIRequestBodies = map[string]openAPIRequestBody{
 	"redactionSettingsUpdate":       {typ: oaType[redactionGlobalJSON]()},
 	"redactionPreview":              {typ: oaType[redactionPreviewReq]()},
 	"guardrailSettingsUpdate":       {typ: oaType[guardrails.Settings]()},
+	"guardrailPreview":              {typ: oaType[guardrailPreviewReq]()},
 	"inspectorRequestReplay":        {typ: oaType[replayReq]()},
 	"inspectorRequestReplayCompare": {typ: oaType[replayReq]()},
 
@@ -420,6 +422,7 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"redactionPreview":              {status: "200", typ: oaType[redactionPreviewResp]()},
 	"guardrailSettingsGet":          {status: "200", typ: oaType[guardrailSettingsResp]()},
 	"guardrailPatternsList":         {status: "200", typ: oaType[guardrailPatternResp](), list: true},
+	"guardrailPreview":              {status: "200", typ: oaType[guardrailPreviewResp]()},
 	"inspectorRequestsList":         {status: "200", typ: oaType[inspectorEntryJSON](), list: true},
 	"inspectorRequestGet":           {status: "200", typ: oaType[inspectorEntryJSON]()},
 	"inspectorRequestReplay":        {status: "200", keys: []string{"new_entry"}},

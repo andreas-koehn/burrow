@@ -1298,6 +1298,18 @@ export const handlers = [
     db.guardrailSettings = { global: { ...db.guardrailSettings.global, ...b }, per_service: db.guardrailSettings.per_service };
     return noContent();
   }),
+  http.post("/api/v1/guardrails/preview", async ({ request }) => {
+    const g = gate(request, { admin: true }); if (g) return g;
+    const b = await body<{ pattern?: string; text?: string }>(request);
+    if (!b?.pattern) return err(400, 'custom pattern "preview": the pattern is empty');
+    let re: RegExp;
+    try { re = new RegExp(b.pattern, "g"); } catch { return err(400, 'custom pattern "preview": not a valid regular expression (Go RE2 syntax)'); }
+    const all = [...(b.text ?? "").matchAll(re)].filter((m) => m[0] !== "");
+    return json({
+      matches: all.slice(0, 100).map((m) => ({ start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, text: m[0] })),
+      truncated: all.length > 100,
+    });
+  }),
   http.get("/api/v1/guardrails/patterns", ({ request }) =>
     gate(request, { admin: true }) ?? json(db.guardrailPatterns)),
 

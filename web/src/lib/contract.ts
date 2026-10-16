@@ -324,6 +324,12 @@ export interface GuardrailSettings {
   custom_patterns: GuardrailCustomPattern[];
   judge: GuardrailJudgeSettings;
 }
+/** POST /guardrails/preview: offsets are bytes into the sample text. */
+export interface GuardrailPreviewResult {
+  matches: { start: number; end: number; text: string }[];
+  /** More than 100 matches; only the first 100 are listed. */
+  truncated: boolean;
+}
 /** A service's own guardrails section: the request tier only. */
 export interface ServiceGuardrailSettings {
   enabled: boolean;

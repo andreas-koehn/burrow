@@ -56,6 +56,7 @@ admin GET /api/v1/database 200
 admin GET /api/v1/events 200
 admin GET /api/v1/geo/status 200
 admin GET /api/v1/guardrails/patterns 200
+admin POST /api/v1/guardrails/preview 400
 admin GET /api/v1/guardrails/settings 200
 admin GET /api/v1/mcp/status 200
 admin GET /api/v1/mcp/tools 200
@@ -211,6 +212,7 @@ user GET /api/v1/database 403
 user GET /api/v1/events 200
 user GET /api/v1/geo/status 200
 user GET /api/v1/guardrails/patterns 200
+user POST /api/v1/guardrails/preview 403
 user GET /api/v1/guardrails/settings 200
 user GET /api/v1/mcp/status 403
 user GET /api/v1/mcp/tools 403
@@ -366,6 +368,7 @@ cr-none GET /api/v1/database 403
 cr-none GET /api/v1/events 200
 cr-none GET /api/v1/geo/status 200
 cr-none GET /api/v1/guardrails/patterns 200
+cr-none POST /api/v1/guardrails/preview 403
 cr-none GET /api/v1/guardrails/settings 200
 cr-none GET /api/v1/mcp/status 403
 cr-none GET /api/v1/mcp/tools 403
@@ -521,6 +524,7 @@ cr-legacy GET /api/v1/database 200
 cr-legacy GET /api/v1/events 200
 cr-legacy GET /api/v1/geo/status 200
 cr-legacy GET /api/v1/guardrails/patterns 200
+cr-legacy POST /api/v1/guardrails/preview 400
 cr-legacy GET /api/v1/guardrails/settings 200
 cr-legacy GET /api/v1/mcp/status 200
 cr-legacy GET /api/v1/mcp/tools 200

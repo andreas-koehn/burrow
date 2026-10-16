@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
@@ -503,11 +503,65 @@ describe("Guardrails: answers, custom patterns and the judge (G07)", () => {
     expect(puts[1].answers.action).toBe("block");
   });
 
+  describe("testing a pattern against a sample text", () => {
+    async function openDialog() {
+      await open(/^custom patterns/i);
+      await userEvent.click(await screen.findByRole("button", { name: "Add pattern" }));
+      return screen.findByRole("dialog", { name: "New custom pattern" });
+    }
+
+    it("lists the matches as marked snippets with a count", async () => {
+      const dialog = await openDialog();
+      const test = within(dialog).getByRole("button", { name: "Test" });
+      expect(test).toBeDisabled();
+      await userEvent.type(within(dialog).getByLabelText("Pattern"), "ab+");
+      await userEvent.type(within(dialog).getByLabelText("Sample text"), "ab xx abbb");
+      await userEvent.click(test);
+      expect(await within(dialog).findByText("2 matches")).toBeInTheDocument();
+      const marks = within(dialog).getAllByText((_, el) => el?.tagName === "MARK");
+      expect(marks.map((m) => m.textContent)).toEqual(["ab", "abbb"]);
+    });
+
+    it("says No match, and a changed pattern clears the old result", async () => {
+      const dialog = await openDialog();
+      await userEvent.type(within(dialog).getByLabelText("Pattern"), "zzz");
+      await userEvent.type(within(dialog).getByLabelText("Sample text"), "abc");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Test" }));
+      expect(await within(dialog).findByText("No match")).toBeInTheDocument();
+      await userEvent.type(within(dialog).getByLabelText("Pattern"), "z");
+      expect(within(dialog).queryByText("No match")).toBeNull();
+    });
+
+    it("shows the server's 400 under Pattern", async () => {
+      server.use(http.post("/api/v1/guardrails/preview", () => HttpResponse.json(
+        { error: 'custom pattern "preview": not a valid regular expression (Go RE2 syntax): missing closing )' }, { status: 400 },
+      )));
+      const dialog = await openDialog();
+      await userEvent.type(within(dialog).getByLabelText("Pattern"), "(");
+      await userEvent.type(within(dialog).getByLabelText("Sample text"), "abc");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Test" }));
+      expect(await within(dialog).findByRole("alert")).toHaveTextContent("not a valid regular expression");
+      expect(within(dialog).getByLabelText("Pattern")).toHaveAccessibleDescription(/not a valid regular expression/);
+    });
+
+    it("says when the list was cut", async () => {
+      server.use(http.post("/api/v1/guardrails/preview", () => HttpResponse.json({
+        matches: Array.from({ length: 100 }, (_, i) => ({ start: i, end: i + 1, text: "a" })), truncated: true,
+      })));
+      const dialog = await openDialog();
+      await userEvent.type(within(dialog).getByLabelText("Pattern"), "a");
+      await userEvent.type(within(dialog).getByLabelText("Sample text"), "a");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Test" }));
+      expect(await within(dialog).findByText("100 matches")).toBeInTheDocument();
+      expect(within(dialog).getByText("Showing the first 100 matches.")).toBeInTheDocument();
+    });
+  });
+
   describe("without ai:configure:any", () => {
     beforeEach(() => { db.me.permissions = ALL_PERMISSIONS.filter((p) => p !== "ai:configure:any"); });
 
     it("shows the values and offers no Save, Add, Edit or Delete", async () => {
-      mount();
+      const { qc } = mount();
       for (const name of [/^requests/i, /^answers/i, /^custom patterns/i, /^judge/i]) {
         await userEvent.click(await screen.findByRole("button", { name }));
       }
@@ -516,8 +570,9 @@ describe("Guardrails: answers, custom patterns and the judge (G07)", () => {
       expect(within(table).getByText("codename")).toBeInTheDocument();
       expect(screen.getByRole("switch", { name: "Inspect answers" })).toBeChecked();
       expect(screen.getByLabelText("Policy")).toHaveValue("No legal advice.");
-      // The permissions arrive with /me; give them time, then nothing may have appeared.
-      await new Promise((r) => setTimeout(r, 150));
+      // The permissions are known once /me has been read; let React show what that changes.
+      await waitFor(() => expect(qc.getQueryState(["me"])?.status).toBe("success"));
+      await act(async () => {});
       expect(screen.queryByRole("button", { name: "Add pattern" })).toBeNull();
       expect(screen.queryByRole("button", { name: /^save (guardrails|answer|judge)/i })).toBeNull();
       expect(screen.queryByRole("button", { name: /^(edit|delete) pattern/i })).toBeNull();

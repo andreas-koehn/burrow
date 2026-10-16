@@ -219,6 +219,7 @@ var routeAccess = map[string]access{
 	"GET /api/v1/guardrails/settings":              needs(aiRead...),
 	"GET /api/v1/guardrails/patterns":              needs(aiRead...),
 	"PUT /api/v1/guardrails/settings":              needs(authz.PermAIConfigureAny),
+	"POST /api/v1/guardrails/preview":              needs(authz.PermAIConfigureAny),
 
 	// --- Quotas and cost --------------------------------------------------
 	"GET /api/v1/rate-limits":         needs(quotasRead...),
