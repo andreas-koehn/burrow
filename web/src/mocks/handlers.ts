@@ -1801,7 +1801,7 @@ export const handlers = [
   http.put("/api/v1/ai/keys/:id", async ({ request, params }) => {
     const g = gate(request); if (g) return g;
     const k = db.aiGatewayKeys.find((x) => x.id === params.id);
-    if (!k || (!holds("ai:configure:any") && k.user_id !== db.me.id)) return err(404, "key not found");
+    if (!k || (db.me.role !== "admin" && k.user_id !== db.me.id)) return err(404, "key not found");
     const b = await body<{ name?: unknown; system_text?: unknown }>(request);
     if (!b || typeof b !== "object") return err(400, "invalid JSON body");
     const extra = Object.keys(b).find((f) => f !== "name" && f !== "system_text");
@@ -1822,7 +1822,7 @@ export const handlers = [
     const g = gate(request); if (g) return g;
     const k = db.aiGatewayKeys.find((x) => x.id === params.id);
     // Another user's key answers like a missing one.
-    if (!k || (!holds("ai:configure:any") && k.user_id !== db.me.id)) return err(404, "key not found");
+    if (!k || (db.me.role !== "admin" && k.user_id !== db.me.id)) return err(404, "key not found");
     k.revoked_at ??= new Date().toISOString();
     return noContent();
   }),

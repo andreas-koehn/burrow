@@ -8,7 +8,7 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Checkbox, Dialog, Disclosure, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
 import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/auth/useAuth";
-import { useCan } from "@/auth/useCan";
+import { useCan, useOwnsOrAdmin } from "@/auth/useCan";
 import { P } from "@/auth/permissions";
 import { RelativeTime } from "@/components/RelativeTime";
 import { EditGatewayKeyDialog } from "@/components/EditGatewayKeyDialog";
@@ -235,6 +235,10 @@ export default function GatewayKeys() {
   const { user } = useAuth();
   // POST, PUT and DELETE /ai/keys: ai:configure:own or :any. The list holds other users' keys for ai:read:any.
   const canWrite = useCan([P.aiConfigureOwn, P.aiConfigureAny]);
+  // The relay lets only a key's owner or a caller whose role is admin change or revoke it
+  // (internal/store/ai_gateway_keys.go); for anyone else the key answers 404.
+  const ownsOrAdmin = useOwnsOrAdmin();
+  const mayChange = (k: AiGatewayKey) => canWrite && ownsOrAdmin(k.user_id);
   const seesOwners = useCan(P.aiReadAny);
   const keys = useQuery({
     queryKey: KEYS,
@@ -349,7 +353,7 @@ export default function GatewayKeys() {
                   )}
                   <td className="col-actions">
                     <div className="row row-center gap-2" style={{ justifyContent: "flex-end" }}>
-                    {canWrite && (
+                    {mayChange(k) && (
                       <Button
                         variant="secondary"
                         size="sm"
@@ -359,7 +363,7 @@ export default function GatewayKeys() {
                         Edit
                       </Button>
                     )}
-                    {canWrite && !k.revoked_at && (
+                    {mayChange(k) && !k.revoked_at && (
                       <Button
                         variant="destructive"
                         size="sm"

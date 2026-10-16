@@ -809,6 +809,24 @@ describe("ModelDialog", () => {
       expect(put).toMatchObject({ system_text: "Answer in German.", routing: "fastest" });
     });
 
+    it("keeps a stored system text and routing when saved with the disclosure never opened", async () => {
+      let put: Record<string, unknown> | null = null;
+      server.use(http.put("/api/v1/ai/models/burrow-simple", async ({ request }) => {
+        put = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ name: "burrow-simple" });
+      }));
+      const model = twoTargets();
+      model.system_text = "Answer in German.";
+      model.routing = "fastest";
+      renderDialog({ model });
+      // The disclosure is not touched; something else changes.
+      await openAdvanced();
+      await userEvent.type(screen.getByLabelText("Description (optional)"), "x");
+      await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+      await waitFor(() => expect(put).not.toBeNull());
+      expect(put).toMatchObject({ system_text: "Answer in German.", routing: "fastest" });
+    });
+
     it("a routing change alone is a change", async () => {
       renderDialog({ model: twoTargets() });
       const save = screen.getByRole("button", { name: "Save changes" });

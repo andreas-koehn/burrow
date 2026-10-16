@@ -19,3 +19,13 @@ export function useCan(needs?: string | readonly string[]): boolean {
   const held = usePermissions();
   return holdsAny(held, typeof needs === "string" ? [needs] : needs);
 }
+
+/**
+ * Whether the caller owns a resource the relay lets only its owner or a caller
+ * whose role is admin change (gateway keys: internal/store/ai_gateway_keys.go).
+ * This is the relay's own rule, which asks for the role, not a permission.
+ */
+export function useOwnsOrAdmin(): (ownerId: string) => boolean {
+  const { user } = useAuth();
+  return useCallback((ownerId: string) => user?.role === "admin" || (user !== undefined && user !== null && user.id === ownerId), [user]);
+}

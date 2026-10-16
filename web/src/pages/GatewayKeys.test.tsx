@@ -453,4 +453,27 @@ describe("Gateway keys page", () => {
       expect(await within(dialog).findByText("This key no longer exists.")).toBeInTheDocument();
     });
   });
+
+  describe("who may change a key", () => {
+    it("another user's key shows no Edit or Revoke for an ai:configure:own holder who can read all", async () => {
+      otherUsersKey();
+      db.me = { ...db.me, role: "operator", permissions: ["ai:configure:own", "ai:read:any"] };
+      mount();
+      const table = await screen.findByRole("table", { name: "Gateway keys" });
+      const bob = within(table).getByRole("row", { name: /bobs-ci/ });
+      expect(within(bob).queryByRole("button", { name: /^(Edit|Revoke) / })).toBeNull();
+      const mine = within(table).getByRole("row", { name: /laptop/ });
+      expect(within(mine).getByRole("button", { name: "Edit laptop" })).toBeInTheDocument();
+      expect(within(mine).getByRole("button", { name: "Revoke laptop" })).toBeInTheDocument();
+    });
+
+    it("an admin gets Edit and Revoke on another user's key", async () => {
+      otherUsersKey();
+      mountAs("admin");
+      const table = await screen.findByRole("table", { name: "Gateway keys" });
+      const bob = within(table).getByRole("row", { name: /bobs-ci/ });
+      expect(within(bob).getByRole("button", { name: "Edit bobs-ci" })).toBeInTheDocument();
+      expect(within(bob).getByRole("button", { name: "Revoke bobs-ci" })).toBeInTheDocument();
+    });
+  });
 });
