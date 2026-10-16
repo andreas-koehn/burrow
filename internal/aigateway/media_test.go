@@ -238,3 +238,20 @@ func TestServeDialect_MediaPaths_NeverCached(t *testing.T) {
 		t.Fatalf("usage rows = %d", got)
 	}
 }
+
+// The attack form must not reach the upstream: its model differs between a
+// lenient and a strict reader, and the key's allow-list is checked on one.
+func TestServeDialect_Multipart_AmbiguousModelNeverReachesUpstream(t *testing.T) {
+	var seen upstreamSeen
+	g := globalGateway(mediaUpstream(&seen), &spyChain{})
+	for _, path := range []string{"/v1/audio/transcriptions", "/v1/audio/translations"} {
+		r := httptest.NewRequest("POST", path, strings.NewReader(attackForm))
+		r.Header.Set("Content-Type", "multipart/form-data; boundary=B")
+		r.Header.Set("Authorization", "Bearer bgw_some")
+		rec := httptest.NewRecorder()
+		g.ServeDialect(rec, r, DialectOpenAI)
+		if rec.Code != 400 || rec.Header().Get("Burrow-Error-Code") != "invalid_request" || seen.n != 0 {
+			t.Fatalf("%s: status %d code %q upstream calls %d", path, rec.Code, rec.Header().Get("Burrow-Error-Code"), seen.n)
+		}
+	}
+}

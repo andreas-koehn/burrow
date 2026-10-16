@@ -1207,9 +1207,20 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	)
 }
 
-// isUpload reports whether r is a multipart upload to a media endpoint.
+// isUpload reports whether r is a multipart upload to an upload endpoint.
 func isUpload(r *http.Request) bool {
-	return IsMediaPath(r.URL.Path) && strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))), "multipart/")
+	return isUploadPath(r.URL.Path) && strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))), "multipart/")
+}
+
+// isUploadPath reports whether the endpoint takes an audio upload. A request
+// is exempt from redaction, patterns and inspector storage by its path, never
+// by the Content-Type a client puts on a JSON body.
+func isUploadPath(path string) bool {
+	switch strings.TrimRight(path, "/") {
+	case "/v1/audio/transcriptions", "/v1/audio/translations":
+		return true
+	}
+	return false
 }
 
 // isBinaryType reports whether a Content-Type names a body that is not JSON
@@ -1451,7 +1462,7 @@ func (c *Chain) captureEntry(svc Service, r *http.Request, took time.Duration,
 	reqBody, reqOmitted, reqTrunc := inspector.TruncateRequest(redactedBody)
 	respBodyT, respOmitted, respTrunc := inspector.TruncateResponse(respBody)
 	// A body that is neither JSON nor text is never stored: a note stands in.
-	if isBinaryType(r.Header.Get("Content-Type")) {
+	if isUploadPath(r.URL.Path) && isBinaryType(r.Header.Get("Content-Type")) {
 		reqBody, reqOmitted, reqTrunc = binaryNote(len(origBody)), 0, false
 	}
 	if isBinaryType(respHeaders.Get("Content-Type")) {

@@ -174,8 +174,8 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, d *Dialect, p
 		return
 	}
 	if !checked || translated || isMediaPath(path) {
-		// A media answer is never cached either. In the context, not in a header: the request's headers go on to
-		// the upstream. A translated answer is never cached: the key is the
+		// A media answer is never cached either. In the context, not in a
+		// header: the request's headers go on to the upstream. A translated answer is never cached: the key is the
 		// first target's service and model, which a request in that target's
 		// own format shares, and one of the two would be served the other's
 		// format.
@@ -186,6 +186,17 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, d *Dialect, p
 	// service, must not put that service's credential on a request that may
 	// go to another target.
 	r = r.WithContext(aigw.WithOwnCredential(r.Context()))
+
+	// An upload goes upstream with each candidate's model in place of the
+	// requested one: the upstream must read exactly that model back.
+	if body.multipart {
+		for _, c := range candidates {
+			if verifyFormModel(body.WithModel(c.model), body.boundary, c.model) != nil {
+				g.fail(w, r, http.StatusBadRequest, "invalid_request", "the multipart form is malformed")
+				return
+			}
+		}
+	}
 
 	// The forwarded body differs from the client's in the bytes of the
 	// "model" value only. It has exactly one top-level "model" key in any
@@ -297,6 +308,8 @@ func (g *Gateway) readBodyOrFail(w http.ResponseWriter, r *http.Request) (*reque
 	case errors.Is(err, errDuplicateModel):
 		// Which of the fields an upstream reads is not defined.
 		g.fail(w, r, http.StatusBadRequest, "invalid_request", `the request has more than one "model" field`)
+	case errors.Is(err, errMalformedForm):
+		g.fail(w, r, http.StatusBadRequest, "invalid_request", "the multipart form is malformed")
 	case errors.Is(err, errNotMultipart):
 		g.fail(w, r, http.StatusBadRequest, "invalid_request", "this endpoint takes multipart/form-data")
 	case errors.Is(err, errNoModelField):

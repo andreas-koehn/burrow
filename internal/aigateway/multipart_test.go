@@ -160,3 +160,44 @@ func TestIsMediaPath(t *testing.T) {
 		t.Fatal("setup")
 	}
 }
+
+// A gateway and an upstream must read the same "model" from a form: the
+// reproduced attack has LF line endings that Go's parser accepts and an
+// embedded CRLF part header inside the file that a CRLF-only scanner reads.
+const attackForm = "--B\nContent-Disposition: form-data; name=\"model\"\n\nexpensive\n--B\nContent-Disposition: form-data; name=\"file\"; filename=\"a\"\n\nAUDIO\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nallowed\r\n--B--\n"
+
+func TestReadMultipartModel_RefusesAmbiguousForms(t *testing.T) {
+	ct := "multipart/form-data; boundary=B"
+	crlf := func(s string) string { return strings.ReplaceAll(s, "\n", "\r\n") }
+	for name, body := range map[string]string{
+		"lf only line endings (the attack)": attackForm,
+		"lf after the first delimiter":      "--B\nContent-Disposition: form-data; name=\"model\"\r\n\r\nm\r\n--B--\r\n",
+		"lf after a later delimiter":        crlf("--B\nContent-Disposition: form-data; name=\"file\"; filename=\"a\"\n\nx\n--B") + "\nContent-Disposition: form-data; name=\"model\"\r\n\r\nm\r\n--B--\r\n",
+		"text after the delimiter":          "--B junk\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nm\r\n--B--\r\n",
+	} {
+		_, _, err := readMultipartModel(formRequest(strings.NewReader(body), ct), 1<<20)
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// Linear whitespace after a delimiter is allowed.
+	ok := "--B  \r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nm\r\n--B--\r\n"
+	if m, _, err := readMultipartModel(formRequest(strings.NewReader(ok), ct), 1<<20); err != nil || m != "m" {
+		t.Errorf("trailing whitespace: %q %v", m, err)
+	}
+}
+
+func TestReadMultipartModel_RewriteIsReadBackByGo(t *testing.T) {
+	raw := buildForm(formPart{name: "file", filename: "a.wav", content: trickyAudio()}, formPart{name: "model", content: []byte("m")})
+	_, rewrite, err := readMultipartModel(formRequest(bytes.NewReader(raw), formType), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rewrite("ok"); err != nil {
+		t.Fatalf("a plain rewrite: %v", err)
+	}
+	// A value that would end the part and add another field is refused.
+	if _, err := rewrite("x\r\n--" + testBoundary + "\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ny"); err == nil {
+		t.Fatal("a model value that injects a part was accepted")
+	}
+}

@@ -43,6 +43,7 @@ type requestBody struct {
 	// multipart: raw is a multipart/form-data body and raw[start:end] the raw
 	// value of its "model" field (no quotes, no JSON escaping).
 	multipart bool
+	boundary  string // of a multipart body
 }
 
 // readRequestBody buffers r's body, up to limit bytes, and locates its

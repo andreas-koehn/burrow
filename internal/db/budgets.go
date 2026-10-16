@@ -208,7 +208,7 @@ const listUsageForWindowSQL = `
 		       CAST(COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_in  ELSE 0 END), 0) AS BIGINT) AS priced_tokens_in,
 		       CAST(COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_out ELSE 0 END), 0) AS BIGINT) AS priced_tokens_out,
 		       CAST(COALESCE(SUM(CASE WHEN cost_usd IS NULL AND tokens_in = 0 AND tokens_out = 0
-		                               AND cache_hit = 0 AND upstream_status BETWEEN 200 AND 299 THEN 1 ELSE 0 END), 0) AS BIGINT) AS tokenless_requests
+		                               AND NOT cache_hit AND upstream_status BETWEEN 200 AND 299 THEN 1 ELSE 0 END), 0) AS BIGINT) AS tokenless_requests
 		  FROM usage_events
 		 WHERE ts >= ?
 		 GROUP BY service_id, api_key_id, kind,

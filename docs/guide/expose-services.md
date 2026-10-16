@@ -726,9 +726,9 @@ How they behave:
   sizes and timing. A body that is not JSON or text (audio, an upload) is not
   stored; the inspector shows `<binary, N bytes>` instead.
 - **Cost.** One usage row per request. Tokens come from the answer's `usage`
-  (for rerank also `meta.billed_units`) when it has them and are priced by
+  (for rerank also `meta.billed_units` input and output tokens; Cohere's `search_units` are not tokens) when it has them and are priced by
   tokens as for chat; there is no byte estimate for audio or images. A request
-  with no tokens is priced at the model's `per_request_usd` in the price table
+  with no tokens (a Cohere rerank answer that bills only search units, for one) is priced at the model's `per_request_usd` in the price table
   (`PUT /api/v1/cost/pricing`, or `per_request_usd` in a pricing YAML); with no
   such price it costs 0 and is counted in `unpriced_requests` of
   `GET /api/v1/cost/summary`. No bundled entry sets `per_request_usd`: add the

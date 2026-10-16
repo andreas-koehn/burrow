@@ -6,7 +6,9 @@
 # tokens as always; one without is priced at per_request_usd when the entry has
 # it, else it costs 0 and counts as "not priced" on the cost page. Example:
 #   - { provider: openai, model: gpt-image-1, per_request_usd: 0.04 }
-# No entry below sets it: these are prices the operator knows, not the bundle. Operator may override via
+# No entry below sets it: these are prices the operator knows, not the bundle.
+#
+# The operator may override the table via
 # PUT /api/v1/cost/pricing or by setting BURROW_PRICING_PATH=/path/to/yaml
 # (Task 24 wires the env var). NEVER fetched online — Burrow has no
 # phone-home for prices (spec Part F invariant).
