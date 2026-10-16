@@ -343,6 +343,15 @@ is a name of your own that apps ask for on the gateway's base URLs
 (`/openai/v1` and `/anthropic`, shown in full on the **AI Gateway** overview)
 instead of the provider's.
 
+A model with several targets tries them in a routing order. **Ordered** (the
+default) keeps the order you configured. **Fastest** puts the target whose
+provider has the lowest p95 latency over the last 24 hours first (the figure
+the providers page shows, at most a minute old). **Cheapest** puts the lowest
+blended price first (three parts input to one part output, per million tokens,
+from the pricing table). Targets without a measurement or a price, and
+latencies above 120 seconds, go last in configured order. Fallback is
+unchanged: if the first target fails, the next one is tried.
+
 To use a service that already exists, follow section (C) to expose the model
 server with the `api_key` access mode, then choose **Use a service that already
 exists** in the same dialog and pick the service.

@@ -131,6 +131,12 @@ func (m *aiMetricsStore) latency(ctx context.Context) map[string]int {
 	return m.compute(ctx, done)
 }
 
+// serviceLatency is the aigateway.LatencySource: the p95 of one service.
+func (m *aiMetricsStore) serviceLatency(ctx context.Context, serviceID string) (int, bool) {
+	ms, ok := m.latency(ctx)[serviceID]
+	return ms, ok
+}
+
 // errLatencyPanicked is what a computation that panicked is logged with.
 var errLatencyPanicked = errors.New("the read panicked")
 

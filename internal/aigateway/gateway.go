@@ -105,6 +105,11 @@ type Gateway struct {
 	Log        *slog.Logger
 	Models     ModelLister // nil = /v1/models is always forwarded
 
+	// Latency and Prices feed routing: fastest / cheapest. nil = that mode
+	// behaves like ordered.
+	Latency LatencySource
+	Prices  PriceSource
+
 	// GatewayKeys validates gateway keys ("bgw_…"). nil = none is accepted.
 	GatewayKeys GatewayKeys
 	// Catalog feeds the model list of a dialect endpoint. nil = empty list.

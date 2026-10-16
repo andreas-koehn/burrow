@@ -876,7 +876,11 @@ func newRootCmd() *cobra.Command {
 			aiLimiter := aigateway.NewLimiter()
 			// The /ai/ data plane shares the proxy's dialer, AI chain and
 			// IP/geo policy.
+			// One metrics store: the providers page and fastest routing read
+			// the same cached p95 figures.
+			aiMetrics := newAIMetricsStore(db.Wrap(database), log)
 			aiGateway := newAIGateway(aiGatewayParts{
+				Latency:    aiMetrics.serviceLatency,
 				Store:      st,
 				Tunnels:    proxyDialerAdapter{st: st, srv: srv},
 				Chain:      v04.AIChain,
@@ -988,7 +992,7 @@ func newRootCmd() *cobra.Command {
 				RateLimits:        v04.QuotaEngine,
 				Budgets:           db.Wrap(database),
 				CostEngine:        v04.CostEngine,
-				AIMetrics:         newAIMetricsStore(db.Wrap(database), log),
+				AIMetrics:         aiMetrics,
 				CacheEngine:       v04.CacheEngine,
 				CacheServices:     cacheServiceLookupAdapter{db: db.Wrap(database)},
 				InspectorRings:    v04.InspectorMgr,
@@ -1350,6 +1354,8 @@ type aiGatewayParts struct {
 	BudgetTTL  time.Duration
 	Breaker    *aigateway.Breaker
 	Limiter    *aigateway.Limiter
+	// Latency feeds routing "fastest"; nil = it behaves like "ordered".
+	Latency    aigateway.LatencySource
 	IPGeoDeny  func(*proxy.Resolved, *http.Request) bool
 	PublicHost string
 	Log        *slog.Logger
@@ -1398,8 +1404,29 @@ func newAIGateway(p aiGatewayParts) *aigateway.Gateway {
 		// gateway_key budget also revokes the key.
 		p.CostEngine.SetGatewayKeyRevoker(p.Store)
 		g.Budgets = cost.NewGuard(p.CostEngine, p.BudgetTTL)
+		g.Prices = enginePrices(p.CostEngine)
+	}
+	if p.Latency != nil {
+		g.Latency = p.Latency
 	}
 	return g
+}
+
+// enginePrices is the PriceSource of routing "cheapest": the blended price
+// per million tokens (3:1 input to output) from the engine's current pricing,
+// looked up as "<provider>/<model>" and then as the bare model.
+func enginePrices(e *cost.Engine) aigateway.PriceSource {
+	return func(provider, model string) (float64, bool) {
+		p := e.Pricing()
+		ent, ok := p.Lookup(provider + "/" + model)
+		if !ok {
+			ent, ok = p.Lookup(model)
+		}
+		if !ok {
+			return 0, false
+		}
+		return 0.75*ent.InputPerMillion + 0.25*ent.OutputPerMillion, true
+	}
 }
 
 // proxyConnLogAdapter bridges the proxy.ConnLogSink interface (which is

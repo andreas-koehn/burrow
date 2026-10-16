@@ -123,6 +123,7 @@ func (g *Gateway) resolveSynthetic(ctx context.Context, name, dialect string) (R
 			res.Targets = append(res.Targets, Target{Provider: p, Model: t.TargetModel})
 		}
 	}
+	res.Targets = g.orderTargets(ctx, m.Routing, res.Targets)
 	if len(res.Targets) > 0 {
 		// The other dialect is not looked at: a request that has a target
 		// of its own neither needs it nor may fail because of it. The one
@@ -151,6 +152,7 @@ func (g *Gateway) resolveSynthetic(ctx context.Context, name, dialect string) (R
 		res.Other = append(res.Other, Target{Provider: p, Model: t.TargetModel})
 	}
 	if len(res.Other) > 0 {
+		res.Other = g.orderTargets(ctx, m.Routing, res.Other)
 		return res, nil
 	}
 	return Resolution{}, errModelNotFound
@@ -172,7 +174,7 @@ func (g *Gateway) otherTargets(ctx context.Context, res Resolution) []Target {
 			other = append(other, Target{Provider: p, Model: t.TargetModel})
 		}
 	}
-	return other
+	return g.orderTargets(ctx, res.Model.Routing, other)
 }
 
 // targetProvider returns the provider of a target row. ok is false when the
