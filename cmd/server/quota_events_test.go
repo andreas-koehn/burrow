@@ -589,3 +589,35 @@ func TestQuotaEvents_WindowIsPartOfTheThrottleKey(t *testing.T) {
 		t.Fatalf("events = %+v", got)
 	}
 }
+
+// An answer an answer pattern matched is audited too: guardrail.flagged when
+// it was delivered, guardrail.refused (direction answer) when it was
+// withheld. Both name the pattern, never the text.
+func TestGuardrailAuditor_Answers(t *testing.T) {
+	aud := &blockingAudit{}
+	g := newGuardrailAuditor(aud, nil)
+	t.Cleanup(g.stop)
+	g.answered(context.Background(), "svc-1", "openai_key", "flag")
+	route := aigw.NewRoute("gk-9", "openai", "m", "req-1")
+	g.answered(aigw.WithRoute(context.Background(), route), "svc-1", "aws_access_key", "block")
+	flushed(t, g)
+	got := aud.all()
+	if len(got) != 2 {
+		t.Fatalf("events %+v", got)
+	}
+	if e := got[0]; e.Action != audit.ActionGuardrailFlagged || e.SubjectID != "svc-1" || e.SubjectLabel != "openai_key" || e.Result != "ok" {
+		t.Fatalf("flagged event = %+v", e)
+	}
+	if p := string(got[0].Payload); p != `{"action":"flag","direction":"answer","pattern":"openai_key"}` {
+		t.Fatalf("flagged payload = %s", p)
+	}
+	if e := got[1]; e.Action != audit.ActionGuardrailRefused || e.Result != "denied" {
+		t.Fatalf("blocked event = %+v", e)
+	}
+	if p := string(got[1].Payload); p != `{"action":"block","direction":"answer","gateway_key_id":"gk-9","pattern":"aws_access_key"}` {
+		t.Fatalf("blocked payload = %s", p)
+	}
+	if !audit.IsAggregated(audit.ActionGuardrailFlagged) {
+		t.Fatal("guardrail.flagged is not sampled: a stream of leaks could grow the audit chain at will")
+	}
+}

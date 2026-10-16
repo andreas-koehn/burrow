@@ -117,7 +117,7 @@ var knownEventFields = map[string]map[string]any{
 	"quota.exceeded":              {"scope": "", "subject": "", "dimension": "", "limit": 0, "window": "", "service_id": ""},
 	"budget.exceeded":             {"budget_id": "", "scope": "", "subject_id": "", "daily_usd": 0.0, "current_usd": 0.0, "daily_tokens": 0, "current_tokens": 0, "action_on_exceed": "", "gateway_key_id": "", "model": ""},
 	"redaction.applied":           {"ServiceID": "", "RuleID": ""},
-	"guardrail.refused":           {"ServiceID": "", "Pattern": ""},
+	"guardrail.refused":           {"ServiceID": "", "Pattern": "", "direction": "", "tier": "", "action": ""},
 	"cert.expiring":               {"hostname": "", "service_id": "", "not_after": ""},
 	"audit.exported":              {"ActorEmail": "", "RecordCount": 0},
 	"backup.completed":            {"Path": "", "SizeBytes": 0},

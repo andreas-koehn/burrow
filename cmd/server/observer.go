@@ -401,10 +401,31 @@ func (o *observer) ObserveModelRequest(e observe.ModelRequest) {
 	for _, red := range e.Redactions {
 		o.redactionApplied(e.ServiceID, red.Rule)
 	}
-	if e.Outcome == observe.ModelGuardrailRefused &&
-		o.perMinute.allow("guardrail.refused\x00"+e.ServiceID+"\x00"+e.GuardrailPattern) {
-		o.publish("guardrail.refused", map[string]any{"ServiceID": e.ServiceID, "Pattern": e.GuardrailPattern})
+	o.guardrailEvent(e)
+}
+
+// guardrailEvent announces a guardrail hit as guardrail.refused: a refused
+// request (direction "request"), or an answer a pattern matched (direction
+// "answer", action "flag" when it was delivered, "block" when it was
+// withheld). At most one per service, pattern and direction per minute.
+func (o *observer) guardrailEvent(e observe.ModelRequest) {
+	direction := e.GuardrailDirection
+	switch {
+	case e.Outcome == observe.ModelGuardrailRefused:
+		if direction == "" {
+			direction = "request"
+		}
+	case direction == "answer" && e.GuardrailPattern != "":
+	default:
+		return
 	}
+	if !o.perMinute.allow("guardrail.refused\x00" + e.ServiceID + "\x00" + e.GuardrailPattern + "\x00" + direction) {
+		return
+	}
+	o.publish("guardrail.refused", map[string]any{
+		"ServiceID": e.ServiceID, "Pattern": e.GuardrailPattern,
+		"direction": direction, "tier": "pattern", "action": e.GuardrailAction,
+	})
 }
 
 // costUSD is what the request cost: what a trusted upstream stated, else the

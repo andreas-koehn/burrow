@@ -24,6 +24,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/api"
@@ -39,6 +41,9 @@ import (
 type chainConfigLoader struct {
 	db  *db.DB
 	log *slog.Logger
+	// global reads the global guardrails blob, cached; nil reads it from db
+	// on every load that needs it.
+	global *globalGuardrails
 }
 
 // LoadAIConfig resolves the per-service AI config blob into the typed
@@ -68,7 +73,95 @@ func (l chainConfigLoader) LoadAIConfig(ctx context.Context, serviceID string) (
 	if err != nil {
 		return aigw.Service{}, false, err
 	}
+	if g := cfg.Guardrails; g != nil {
+		// Answer inspection and the custom patterns are global settings; a
+		// service's own section covers only enabled and action. A service
+		// whose guardrails are off needs neither.
+		g.Answers, g.CustomPatterns = guardrails.AnswerSettings{}, nil
+		if g.Enabled {
+			global := l.globalGuardrails(ctx)
+			g.Answers, g.CustomPatterns = global.Answers, global.CustomPatterns
+		}
+	}
 	return aigw.Service{ID: serviceID, AIConfig: cfg}, true, nil
+}
+
+// globalGuardrails returns the global guardrails settings: from the cache
+// when the loader has one, else from the settings table.
+func (l chainConfigLoader) globalGuardrails(ctx context.Context) guardrails.Settings {
+	if l.global != nil {
+		return l.global.get(ctx)
+	}
+	return readGlobalGuardrails(ctx, l.db, l.log)
+}
+
+// globalGuardrailsInterval is how long the relay keeps the global guardrails
+// settings before it reads them again: a change made in the dashboard
+// reaches the gateway within this time.
+const globalGuardrailsInterval = 2 * time.Second
+
+// settingsLister is *db.DB as the guardrails reader needs it.
+type settingsLister interface {
+	GetAllSettings(ctx context.Context) ([]db.Setting, error)
+}
+
+// globalGuardrails caches the global guardrails blob (settings key
+// "guardrails.global") for interval, so a request reads it at most once per
+// interval. Safe for concurrent use.
+type globalGuardrails struct {
+	db       settingsLister
+	log      *slog.Logger
+	interval time.Duration
+
+	mu  sync.Mutex
+	at  time.Time
+	val guardrails.Settings
+}
+
+// newGlobalGuardrails returns the cache; log may be nil.
+func newGlobalGuardrails(d settingsLister, interval time.Duration, log *slog.Logger) *globalGuardrails {
+	return &globalGuardrails{db: d, interval: interval, log: log}
+}
+
+func (c *globalGuardrails) get(ctx context.Context) guardrails.Settings {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.at.IsZero() && time.Since(c.at) < c.interval {
+		return c.val
+	}
+	c.val, c.at = readGlobalGuardrails(ctx, c.db, c.log), time.Now()
+	return c.val
+}
+
+// readGlobalGuardrails reads and decodes the global guardrails blob. A
+// missing row, a read error or a blob that does not decode gives the
+// defaults (answer inspection off, no custom patterns): the settings API
+// validates what it stores, and a bad row must not take the proxy down.
+func readGlobalGuardrails(ctx context.Context, d settingsLister, log *slog.Logger) guardrails.Settings {
+	if d == nil {
+		return guardrails.DefaultSettings
+	}
+	rows, err := d.GetAllSettings(ctx)
+	if err != nil {
+		if log != nil {
+			log.Warn("aigw: read global guardrails failed", slog.String("err", err.Error()))
+		}
+		return guardrails.DefaultSettings
+	}
+	for _, r := range rows {
+		if r.Key != "guardrails.global" {
+			continue
+		}
+		var s guardrails.Settings
+		if err := json.Unmarshal([]byte(r.Value), &s); err != nil {
+			if log != nil {
+				log.Warn("aigw: global guardrails do not decode", slog.String("err", err.Error()))
+			}
+			return guardrails.DefaultSettings
+		}
+		return s.Normalized()
+	}
+	return guardrails.DefaultSettings
 }
 
 // decodeServiceAIConfig parses the outer JSON object and pulls out each

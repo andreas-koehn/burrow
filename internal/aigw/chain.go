@@ -272,6 +272,13 @@ type Chain struct {
 	// is the request's. nil = not reported.
 	OnGuardrailRefuse func(ctx context.Context, serviceID, pattern, action string)
 
+	// OnGuardrailAnswer is called once per answer an answer pattern matched,
+	// with the service, the id of the pattern (never the matched text) and
+	// the action taken ("flag": delivered, "block": withheld). It runs on the
+	// request's goroutine after the response, so it must not block; a panic
+	// in it is recovered. nil = not reported.
+	OnGuardrailAnswer func(ctx context.Context, serviceID, pattern, action string)
+
 	// Observer is told of every request that ran through the chain, whoever
 	// answered it: an upstream, a cache, or the chain itself with a refusal
 	// (a guardrail, a redaction rule, the size limit). A request the rate
@@ -602,7 +609,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 			// Drop-action rule fired — short-circuit with 400 redaction.drop.
 			ev.Outcome, ev.Status = observe.ModelRedactionDropped, http.StatusBadRequest
 			writeError(w, r, http.StatusBadRequest, "redaction.drop", "invalid_request", "the request was refused by a redaction rule")
-			c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusBadRequest, nil, nil, 0, false, "MISS", fromReplay)
+			c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusBadRequest, nil, nil, 0, false, "MISS", fromReplay, nil)
 			return
 		}
 	}
@@ -618,26 +625,34 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// ---------------------------------------------------------------
 	// Step 5: guardrails — may refuse with 403/200-safe-refusal.
 	// ---------------------------------------------------------------
+	var guardMark *inspector.GuardrailMark // for the inspector entry
 	if cfg.Guardrails != nil && cfg.Guardrails.Enabled && c.Guardrails != nil && len(redactedBody) > 0 {
-		hit, pattern := c.Guardrails.Inspect(redactedBody)
+		// The bundled request patterns, then the operator's custom ones for
+		// requests.
+		hit, pattern := c.Guardrails.InspectRequest(redactedBody, cfg.Guardrails.CustomPatterns)
 		if hit {
+			mark := func(action string) *inspector.GuardrailMark {
+				return &inspector.GuardrailMark{Pattern: pattern, Direction: guardrails.DirectionRequest, Action: action}
+			}
 			switch cfg.Guardrails.Action {
 			case guardrails.ActionRefuse403, "":
 				ev.Outcome, ev.Status = observe.ModelGuardrailRefused, http.StatusForbidden
 				ev.GuardrailPattern, ev.GuardrailAction = pattern, guardrails.ActionRefuse403
+				ev.GuardrailDirection = guardrails.DirectionRequest
 				c.guardrailRefused(r, svc, pattern, guardrails.ActionRefuse403)
 				writeError(w, r, http.StatusForbidden, "guardrail.refuse", "forbidden", "the request was refused by a guardrail")
 				c.Log.Info("aigw: guardrail refuse",
 					slog.String("service_id", svc.ID),
 					slog.String("pattern", pattern),
 				)
-				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
+				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay, mark(guardrails.ActionRefuse403))
 				return
 			case guardrails.ActionRefuseSafe:
 				// 403 where the endpoint has no well-formed refusal; the safe
 				// answer below is a 200.
 				ev.Outcome, ev.Status = observe.ModelGuardrailRefused, http.StatusForbidden
 				ev.GuardrailPattern, ev.GuardrailAction = pattern, guardrails.ActionRefuseSafe
+				ev.GuardrailDirection = guardrails.DirectionRequest
 				c.guardrailRefused(r, svc, pattern, guardrails.ActionRefuseSafe)
 				ew := ErrorWriterFrom(r.Context())
 				streamed := false
@@ -655,7 +670,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 					refusalBody, hdr, streamed, ok = dialectRefusal(kind, r, body)
 					if !ok && ew != nil {
 						ew(w, http.StatusForbidden, "forbidden", "the request was refused by a guardrail")
-						c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
+						c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay, mark(guardrails.ActionRefuseSafe))
 						return
 					}
 					if !ok {
@@ -666,7 +681,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 					// not recognise: an entry point with its own error shape
 					// gets a plain refusal instead of the generic envelope.
 					ew(w, http.StatusForbidden, "forbidden", "the request was refused by a guardrail")
-					c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay)
+					c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay, mark(guardrails.ActionRefuseSafe))
 					return
 				default:
 					refusalBody, hdr = safeRefusalBody(kind)
@@ -682,10 +697,12 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				// Pass the ORIGINAL + redacted request bodies so operators
 				// investigating refusals can see what was sent.
 				// TruncateRequest will cap whatever we pass.
-				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusOK, refusalBody, hdr, 0, streamed, "MISS", fromReplay)
+				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusOK, refusalBody, hdr, 0, streamed, "MISS", fromReplay, mark(guardrails.ActionRefuseSafe))
 				return
 			case guardrails.ActionLogOnly:
-				// Fall through; just record the hit in logs.
+				// Fall through; just record the hit in logs (and on the
+				// inspector entry).
+				guardMark = mark(guardrails.ActionLogOnly)
 				c.Log.Info("aigw: guardrail log_only",
 					slog.String("service_id", svc.ID),
 					slog.String("pattern", pattern),
@@ -738,7 +755,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 			for k, v := range entry.Headers {
 				cacheHdr.Set(k, v)
 			}
-			c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, entry.Status, entry.Body, cacheHdr, 0, false, cacheStatus, fromReplay)
+			c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, entry.Status, entry.Body, cacheHdr, 0, false, cacheStatus, fromReplay, nil)
 			c.recordMeter(r.Context(), &ev, svc, kind, 0, 0, int64(len(redactedBody)), int64(len(entry.Body)), false, true, entry.Status, cachedCost(), elapsed)
 			return
 		}
@@ -805,7 +822,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				for k, v := range exactEntry.Headers {
 					cacheHdr.Set(k, v)
 				}
-				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, status, exactEntry.Body, cacheHdr, 0, false, "similar", fromReplay)
+				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, status, exactEntry.Body, cacheHdr, 0, false, "similar", fromReplay, nil)
 				c.recordMeter(r.Context(), &ev, svc, kind, 0, 0, int64(len(redactedBody)), int64(len(exactEntry.Body)), false, true, status, cachedCost(), elapsed)
 				return
 			}
@@ -883,11 +900,43 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		statusCode:     0,
 	}
 
+	// Answer inspection: the guard sits between the upstream and the meter,
+	// so the meter, the inspector and the cache see what the app received.
+	var upstreamWriter http.ResponseWriter = wrapped
+	guard := c.answerGuardFor(wrapped, r, kind, cfg)
+	if guard != nil {
+		upstreamWriter = guard
+		// An answer the upstream compresses for the app cannot be read: ask
+		// for one it does not compress (Go's transport then asks for gzip
+		// itself and unpacks it).
+		r.Header.Del("Accept-Encoding")
+	}
+
 	// Under a real http.Server a ReverseProxy panics http.ErrAbortHandler
 	// when the client hangs up mid-response. The tokens were spent all the
 	// same, so the bookkeeping below still runs; the panic is then raised
 	// again, unchanged, so the server aborts the connection as before.
-	aborted, abort := serveUpstream(proxyHandler, wrapped, r)
+	aborted, abort := serveUpstream(proxyHandler, upstreamWriter, r)
+	answerBlocked := false
+	if guard != nil {
+		guard.finish(aborted) // a held answer goes out (or is replaced) here
+		if hit, pattern, blocked, mid := guard.Result(); hit {
+			answerBlocked = blocked
+			action := guardrails.AnswerActionFlag
+			if blocked {
+				action = guardrails.AnswerActionBlock
+			}
+			ev.GuardrailPattern, ev.GuardrailAction = pattern, action
+			ev.GuardrailDirection, ev.GuardrailMidStream = guardrails.DirectionAnswer, mid
+			guardMark = &inspector.GuardrailMark{Pattern: pattern, Direction: guardrails.DirectionAnswer, Action: action, MidStream: mid}
+			c.Log.Info("aigw: guardrail matched an answer",
+				slog.String("service_id", svc.ID),
+				slog.String("pattern", pattern),
+				slog.String("action", action),
+			)
+			c.guardrailAnswer(r, svc, pattern, action)
+		}
+	}
 	// The response ends here; what follows (cache store, semantic promote,
 	// inspector capture) is the relay's own bookkeeping and is not latency.
 	elapsed := time.Since(started)
@@ -947,7 +996,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 			tokens = aimeter.Tokens{In: ri.TokensIn, Out: ri.TokensOut, Total: ri.TokensIn + ri.TokensOut}
 		}
 	}
-	if !aborted && !fallbackAnswer && cfg.Cache != nil && cfg.Cache.Enabled && c.Cache != nil && !bypass &&
+	if !aborted && !fallbackAnswer && !answerBlocked && cfg.Cache != nil && cfg.Cache.Enabled && c.Cache != nil && !bypass &&
 		wrapped.statusCode >= 200 && wrapped.statusCode < 300 &&
 		!isStreamedResponse(wrapped.Header()) &&
 		wrapped.Header().Get("Content-Length") != "" {
@@ -998,7 +1047,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// Inspector capture: only when this service has the feature enabled.
 	// An aborted response is captured too, with the bytes that were sent.
 	c.captureEntry(svc, r, elapsed, body, redactedBody, redactHits, kind,
-		wrapped.statusCode, capw.bytes(), wrapped.Header(), bytesIn, isStreamedResponse(wrapped.Header()), cacheStatus, fromReplay)
+		wrapped.statusCode, capw.bytes(), wrapped.Header(), bytesIn, isStreamedResponse(wrapped.Header()), cacheStatus, fromReplay, guardMark)
 
 	// Meter the request — always, even on non-2xx or after an abort, so
 	// quota usage reflects reality. cache_hit is false on this MISS path; cacheStatus tells the
@@ -1110,6 +1159,64 @@ func (c *Chain) guardrailRefused(r *http.Request, svc Service, pattern, action s
 	c.OnGuardrailRefuse(r.Context(), svc.ID, pattern, action)
 }
 
+// guardrailAnswer reports an answer a pattern matched to OnGuardrailAnswer,
+// if one is set. A hook that panics is logged and otherwise ignored.
+func (c *Chain) guardrailAnswer(r *http.Request, svc Service, pattern, action string) {
+	if c.OnGuardrailAnswer == nil {
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			c.Log.Error("aigw: guardrail answer hook panicked",
+				slog.String("service_id", svc.ID), slog.Any("panic", rec))
+		}
+	}()
+	c.OnGuardrailAnswer(r.Context(), svc.ID, pattern, action)
+}
+
+// answerGuardFor returns the answer guard for a request whose answer is
+// inspected, nil for every other. An answer is inspected when the service's
+// guardrails are on (a service that turns them off turns answer inspection
+// off too), answer inspection is on, and the request is a POST to an
+// endpoint whose answer is text in a format the guardrails read: Chat
+// Completions, Responses or Messages.
+func (c *Chain) answerGuardFor(w http.ResponseWriter, r *http.Request, kind Kind, cfg ServiceAIConfig) *answerGuard {
+	g := cfg.Guardrails
+	if c.Guardrails == nil || g == nil || !g.Enabled || !g.Answers.Enabled || r.Method != http.MethodPost {
+		return nil
+	}
+	format := answerFormat(kind, r.URL.Path)
+	if format == "" {
+		return nil
+	}
+	action := g.Answers.Action
+	if action != guardrails.AnswerActionBlock {
+		action = guardrails.AnswerActionFlag
+	}
+	engine, custom := c.Guardrails, g.CustomPatterns
+	guard := newAnswerGuard(w, r, format, action, func(text string) (bool, string) {
+		return engine.InspectAnswerText(text, custom)
+	})
+	guard.log = c.Log
+	return guard
+}
+
+// answerFormat is the text format of the answer to a request of kind on
+// path: guardrails.FormatChat, FormatResponses or FormatMessages, "" for an
+// endpoint whose answer the guardrails do not read.
+func answerFormat(kind Kind, path string) string {
+	path = strings.TrimSuffix(path, "/")
+	switch {
+	case kind == KindOpenAI && path == "/v1/chat/completions":
+		return guardrails.FormatChat
+	case kind == KindOpenAI && path == "/v1/responses":
+		return guardrails.FormatResponses
+	case kind == KindAnthropic && path == "/v1/messages":
+		return guardrails.FormatMessages
+	}
+	return ""
+}
+
 // postResponseTimeout bounds bookkeeping that runs after the response has
 // been sent (usage row, cache entry). It runs on a context detached from the
 // request, because a client that hangs up right after the last byte cancels
@@ -1132,7 +1239,7 @@ func detached(ctx context.Context) (context.Context, context.CancelFunc) {
 func (c *Chain) captureEntry(svc Service, r *http.Request, took time.Duration,
 	origBody, redactedBody []byte, redactHits []redact.RuleHit,
 	kind Kind, status int, respBody []byte, respHeaders http.Header,
-	bytesIn int64, streamed bool, cacheStatus string, fromReplay bool) {
+	bytesIn int64, streamed bool, cacheStatus string, fromReplay bool, mark *inspector.GuardrailMark) {
 	if c.Inspector == nil {
 		return
 	}
@@ -1174,6 +1281,7 @@ func (c *Chain) captureEntry(svc Service, r *http.Request, took time.Duration,
 		Cache:        cacheStatus,
 		Redactions:   hits,
 		Dropped:      []string{},
+		Guardrail:    mark,
 	}
 	// Read here, after the response, as the usage row does: the entry names
 	// the provider and the pair of the attempt that answered. A request

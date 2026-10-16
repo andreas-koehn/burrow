@@ -1474,12 +1474,75 @@ components:
       properties:
         enabled: { type: boolean }
         action: { type: string, enum: [log_only, refuse_403, refuse_safe] }
+        answers: { $ref: '#/components/schemas/GuardrailAnswerSettings' }
+        custom_patterns:
+          type: array
+          maxItems: 50
+          description: >
+            The operator's own patterns, matched after the bundled ones of
+            their direction. Ids are unique and no bundled id. A list that
+            breaks a rule is refused with 400 naming the first bad pattern.
+          items: { $ref: '#/components/schemas/GuardrailCustomPattern' }
     GuardrailSettings:
-      description: Stored guardrail settings.
-      allOf:
-        - $ref: '#/components/schemas/GuardrailSettingsInput'
-        - type: object
-          required: [enabled]
+      type: object
+      description: >
+        Stored guardrail settings. answers and custom_patterns are global:
+        they apply to every service whose guardrails are on (a service's own
+        guardrails section covers enabled and action only).
+      required: [enabled, action, answers, custom_patterns]
+      properties:
+        enabled: { type: boolean }
+        action: { type: string, enum: [log_only, refuse_403, refuse_safe] }
+        answers:
+          type: object
+          description: See GuardrailAnswerSettings.
+          required: [enabled, action]
+          properties:
+            enabled: { type: boolean }
+            action: { type: string, enum: [flag, block] }
+        custom_patterns:
+          type: array
+          description: See GuardrailCustomPattern; [] when there are none.
+          items:
+            type: object
+            required: [id, pattern, direction, description]
+            properties:
+              id: { type: string }
+              pattern: { type: string }
+              direction: { type: string, enum: [request, answer, both] }
+              description: { type: string }
+    GuardrailAnswerSettings:
+      type: object
+      description: >
+        Inspection of answers (Chat Completions, Responses, Messages) for
+        secrets. flag delivers the answer and records the hit; block
+        withholds a whole answer (502 guardrail_blocked_answer) and stops a
+        streamed one with an error event. Defaults {enabled: false, action: flag}.
+      properties:
+        enabled: { type: boolean }
+        action:
+          type: string
+          enum: [flag, block]
+          description: An empty or missing action is stored as flag.
+    GuardrailCustomPattern:
+      type: object
+      required: [id, pattern, direction]
+      properties:
+        id:
+          type: string
+          pattern: '^[a-z0-9_-]{1,64}$'
+        pattern:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: A Go RE2 regular expression; maxLength counts characters.
+        direction:
+          type: string
+          enum: [request, answer, both]
+          description: request runs on the request body, answer on the text of answers.
+        description:
+          type: string
+          maxLength: 200
     GuardrailSettingsView:
       type: object
       description: What GET /api/v1/guardrails/settings returns.
@@ -1554,6 +1617,20 @@ components:
             params:
               description: The call's params as they were sent; any JSON value.
         adapter_lossy: { type: boolean }
+        guardrail:
+          type: object
+          description: >
+            Set when a guardrail pattern matched the request or its answer:
+            the pattern's id (never the matched text), the direction and the
+            action taken (log_only, refuse_403, refuse_safe for a request;
+            flag or block for an answer). mid_stream is true when a streamed
+            answer was stopped after part of it had been sent.
+          required: [pattern, direction, action]
+          properties:
+            pattern: { type: string }
+            direction: { type: string, enum: [request, answer] }
+            action: { type: string }
+            mid_stream: { type: boolean }
         translated:
           type: string
           enum: ['', messages-chat, responses-chat, chat-messages, responses-messages]
@@ -2949,6 +3026,16 @@ paths:
       operationId: guardrailSettingsUpdate
       x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
       summary: Replace guardrail settings
+      description: >
+        400 when action is not log_only, refuse_403 or refuse_safe, when
+        answers.action is not flag or block (empty means flag), or when
+        custom_patterns has more than 50 entries or an entry with a bad or
+        repeated id, a bundled id, an empty pattern, a pattern longer than
+        512 characters or not valid Go RE2 syntax, a direction other than
+        request, answer or both, or a description longer than 200
+        characters. The message names the first bad pattern by id.
+        answers and custom_patterns keep their stored values when the body
+        leaves them out.
       requestBody:
         required: true
         content:
@@ -2966,6 +3053,10 @@ paths:
       operationId: guardrailPatternsList
       x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"]}
       summary: List bundled guardrail pattern names + descriptions
+      description: >
+        The bundled request patterns (direction request), then the bundled
+        answer patterns (direction answer), each in match order. Regex
+        sources are not returned. Custom patterns are part of the settings.
       responses:
         '200':
           description: List of patterns.
@@ -2975,10 +3066,11 @@ paths:
                 type: array
                 items:
                   type: object
-                  required: [id, description]
+                  required: [id, description, direction]
                   properties:
                     id: { type: string }
                     description: { type: string }
+                    direction: { type: string, enum: [request, answer] }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ────────────────────────────────────────────────────────────────────────

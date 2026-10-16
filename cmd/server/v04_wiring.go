@@ -178,7 +178,7 @@ func buildV04Stack(
 	// straight to the v0.3.0 proxy handler (byte-for-byte preserved).
 	// Services with a row → cache/redaction/guardrails/inspector/anthropic
 	// pointers are populated and the chain runs the corresponding middleware.
-	aiChain.Loader = chainConfigLoader{db: wrapped, log: log}
+	aiChain.Loader = chainConfigLoader{db: wrapped, log: log, global: newGlobalGuardrails(wrapped, globalGuardrailsInterval, log)}
 
 	// Wire quota enforcement into the chain's rate-limit hook (Task 11 /
 	// spec Part D). The previously-stubbed Chain.RateLimit field is assigned
@@ -192,6 +192,9 @@ func buildV04Stack(
 	// by the audit logger), written off the request path.
 	guardrailAudit := newGuardrailAuditor(auditLogger, log)
 	aiChain.OnGuardrailRefuse = guardrailAudit.refused
+	// An answer an answer pattern matched leaves one too (guardrail.flagged,
+	// or guardrail.refused with direction "answer" when it was withheld).
+	aiChain.OnGuardrailAnswer = guardrailAudit.answered
 
 	// --- metrics recorder --------------------------------------------------
 	metricsRec := metrics.New()

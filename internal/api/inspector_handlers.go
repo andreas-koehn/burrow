@@ -95,6 +95,9 @@ type inspectorEntryJSON struct {
 	Provider     string `json:"provider"`
 	Model        string `json:"model"`
 	GatewayKeyID string `json:"gateway_key_id"`
+	// Guardrail is set when a guardrail pattern matched the request or its
+	// answer.
+	Guardrail *inspector.GuardrailMark `json:"guardrail,omitempty"`
 }
 
 // inspectorEntryToJSON converts a captured Entry to the wire shape. Bodies
@@ -127,6 +130,7 @@ func inspectorEntryToJSON(e inspector.Entry) inspectorEntryJSON {
 		Provider:     e.Provider,
 		Model:        e.Model,
 		GatewayKeyID: e.GatewayKeyID,
+		Guardrail:    e.Guardrail,
 	}
 	if out.Dropped == nil {
 		out.Dropped = []string{}

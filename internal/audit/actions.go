@@ -66,6 +66,11 @@ const (
 	// or per Event.AggregationKey when the caller sets one (the gateway
 	// does: service, pattern, action and gateway key).
 	ActionGuardrailRefused = "guardrail.refused"
+	// ActionGuardrailFlagged is written when an answer pattern matched an
+	// answer that was delivered (answer action "flag"); a withheld answer is
+	// a guardrail.refused with direction "answer". Aggregated like
+	// guardrail.refused.
+	ActionGuardrailFlagged = "guardrail.flagged"
 
 	ActionBudgetCreate   = "budget.create"
 	ActionBudgetUpdate   = "budget.update"
@@ -180,6 +185,7 @@ var AllActions = []string{
 var aggregatedActions = map[string]bool{
 	ActionRedactionApplied: true,
 	ActionGuardrailRefused: true,
+	ActionGuardrailFlagged: true,
 	// One row per limit per hour: the caller keys it by scope, subject and
 	// dimension (Event.AggregationKey).
 	ActionRateLimitEnforced: true,

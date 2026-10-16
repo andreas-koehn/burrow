@@ -3,6 +3,7 @@ package guardrails
 import (
 	"fmt"
 	"regexp"
+	"sync"
 )
 
 // compiled is one Pattern paired with its precompiled *regexp.Regexp.
@@ -20,8 +21,19 @@ type compiled struct {
 // Engine is concurrency-safe after NewEngine returns: the compiled rules
 // are read-only and *regexp.Regexp is itself goroutine-safe.
 type Engine struct {
-	rules []compiled
+	rules   []compiled // the bundled request patterns
+	answers []compiled // the bundled answer patterns
+
+	// custom holds the compiled custom patterns by source. The settings hand
+	// the patterns to every call; each source is compiled once.
+	mu     sync.RWMutex
+	custom map[string]*regexp.Regexp // nil value: the source does not compile
 }
+
+// maxCompiledCustom bounds the cache of compiled custom patterns. Settings
+// hold at most MaxCustomPatterns; the cache is emptied when edits over time
+// have filled it with sources no longer in use.
+const maxCompiledCustom = 4 * MaxCustomPatterns
 
 // NewEngine compiles the bundled Patterns list and returns a ready-to-use
 // Engine. Every bundled regex is author-vetted; a compile failure is a
@@ -34,8 +46,12 @@ type Engine struct {
 // returns the first match it finds, so high-priority rules are listed
 // first in patterns.go.
 func NewEngine() *Engine {
-	out := make([]compiled, 0, len(Patterns))
-	for _, p := range Patterns {
+	return &Engine{rules: compileBundled(Patterns), answers: compileBundled(AnswerPatterns), custom: map[string]*regexp.Regexp{}}
+}
+
+func compileBundled(ps []Pattern) []compiled {
+	out := make([]compiled, 0, len(ps))
+	for _, p := range ps {
 		re, err := regexp.Compile(p.Regex)
 		if err != nil {
 			// Closed pattern set, compiled at startup — a failure here is
@@ -46,7 +62,7 @@ func NewEngine() *Engine {
 		}
 		out = append(out, compiled{Pattern: p, re: re})
 	}
-	return &Engine{rules: out}
+	return out
 }
 
 // Inspect screens body against every bundled pattern in declaration
@@ -70,4 +86,71 @@ func (e *Engine) Inspect(body []byte) (hit bool, pattern string) {
 		}
 	}
 	return false, ""
+}
+
+// InspectRequest screens a request body: the bundled request patterns in
+// declaration order, then the custom patterns with direction "request" or
+// "both" in the order given. It returns the id of the first that matches.
+func (e *Engine) InspectRequest(body []byte, custom []CustomPattern) (hit bool, id string) {
+	if e == nil || len(body) == 0 {
+		return false, ""
+	}
+	if hit, id := e.Inspect(body); hit {
+		return true, id
+	}
+	for _, p := range custom {
+		if !p.appliesTo(DirectionRequest) {
+			continue
+		}
+		if re := e.compiledCustom(p.Pattern); re != nil && re.Match(body) {
+			return true, p.ID
+		}
+	}
+	return false, ""
+}
+
+// InspectAnswerText screens the text of an answer (never its JSON): the
+// bundled AnswerPatterns, then the custom patterns with direction "answer" or
+// "both". It returns the id of the first that matches.
+func (e *Engine) InspectAnswerText(text string, custom []CustomPattern) (hit bool, id string) {
+	if e == nil || text == "" {
+		return false, ""
+	}
+	for i := range e.answers {
+		if e.answers[i].re.MatchString(text) {
+			return true, e.answers[i].ID
+		}
+	}
+	for _, p := range custom {
+		if !p.appliesTo(DirectionAnswer) {
+			continue
+		}
+		if re := e.compiledCustom(p.Pattern); re != nil && re.MatchString(text) {
+			return true, p.ID
+		}
+	}
+	return false, ""
+}
+
+// compiledCustom returns the compiled form of a custom pattern's source, nil
+// when it does not compile. The settings API refuses such a pattern; one that
+// reaches the engine anyway (a blob written past the API) is skipped.
+func (e *Engine) compiledCustom(src string) *regexp.Regexp {
+	e.mu.RLock()
+	re, ok := e.custom[src]
+	e.mu.RUnlock()
+	if ok {
+		return re
+	}
+	re, err := regexp.Compile(src)
+	if err != nil {
+		re = nil
+	}
+	e.mu.Lock()
+	if e.custom == nil || len(e.custom) >= maxCompiledCustom {
+		e.custom = map[string]*regexp.Regexp{}
+	}
+	e.custom[src] = re
+	e.mu.Unlock()
+	return re
 }

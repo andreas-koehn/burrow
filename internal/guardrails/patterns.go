@@ -136,9 +136,43 @@ var Patterns = []Pattern{
 //   - ActionRefuseSafe — short-circuit with 200 and an upstream-shaped
 //     safe-refusal body (the body is the caller's responsibility — the
 //     engine itself returns only (hit, pattern_id)).
+//
+// Answers and CustomPatterns are global: they are read from the global blob
+// only (the config loader copies them onto a service's settings). A
+// service's own guardrails section covers Enabled and Action; a service whose
+// request guardrails are off has no answer inspection either.
 type Settings struct {
+	Enabled        bool            `json:"enabled"`
+	Action         string          `json:"action"`
+	Answers        AnswerSettings  `json:"answers"`
+	CustomPatterns []CustomPattern `json:"custom_patterns"`
+}
+
+// AnswerSettings switches the inspection of answers on and says what a hit
+// does: AnswerActionFlag delivers the answer and records the hit,
+// AnswerActionBlock withholds it (see internal/aigw's answer guard).
+type AnswerSettings struct {
 	Enabled bool   `json:"enabled"`
-	Action  string `json:"action"`
+	Action  string `json:"action"` // "flag" (default when enabled) | "block"
+}
+
+// The actions on an answer.
+const (
+	AnswerActionFlag  = "flag"
+	AnswerActionBlock = "block"
+)
+
+// Normalized returns s with the defaults of the fields an older blob does
+// not have: the answer action "flag" and an empty (non-nil) list of custom
+// patterns.
+func (s Settings) Normalized() Settings {
+	if s.Answers.Action == "" {
+		s.Answers.Action = AnswerActionFlag
+	}
+	if s.CustomPatterns == nil {
+		s.CustomPatterns = []CustomPattern{}
+	}
+	return s
 }
 
 // Action enum. The closed set is enforced by the JSON-API handler's
@@ -162,6 +196,8 @@ var ValidActions = map[string]bool{
 // settings table: disabled, action=log_only. Locks "safe by default" —
 // upgrading to v0.4.0 does NOT silently start refusing traffic.
 var DefaultSettings = Settings{
-	Enabled: false,
-	Action:  ActionLogOnly,
+	Enabled:        false,
+	Action:         ActionLogOnly,
+	Answers:        AnswerSettings{Enabled: false, Action: AnswerActionFlag},
+	CustomPatterns: []CustomPattern{},
 }

@@ -178,7 +178,16 @@ type ModelRequest struct {
 	// GuardrailAction the action taken (ModelGuardrailRefused). Both are set by
 	// the chain (W05); the observer uses the pattern, the action is for later
 	// consumers.
+	//
+	// An answer a pattern matched sets them too, with the Outcome left as it
+	// was (the upstream answered): GuardrailAction is then "flag" (delivered)
+	// or "block" (withheld).
 	GuardrailPattern, GuardrailAction string
+	// GuardrailDirection is "request" or "answer": what the pattern matched;
+	// "" when none did. GuardrailMidStream: a streamed answer was stopped after
+	// part of it had reached the caller ("blocked mid-answer").
+	GuardrailDirection string
+	GuardrailMidStream bool
 
 	// Attempts is what the gateway sent to upstreams, in order; empty outside
 	// a dialect endpoint.

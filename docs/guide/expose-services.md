@@ -456,3 +456,86 @@ Good to know:
   a key's text applies on every request that key makes to a chat, responses
   or messages endpoint, including `/ai/<provider>/v1` and direct
   `<provider>/<model>` addresses. A service API key has no text.
+
+### Guardrails on answers and custom patterns {#guardrails}
+
+The guardrails screen what an app sends against a bundled list of
+prompt-injection patterns (see the **Guardrails** page). Two more things are
+set there, globally: inspection of the model's answers, and patterns of your
+own. Both apply to every service whose guardrails are on; a service that
+turns its guardrails off turns them off too.
+
+#### Answers
+
+With answer inspection on, Burrow reads the text of every answer on the chat
+(`/v1/chat/completions`), responses (`/v1/responses`) and messages
+(`/v1/messages`) endpoints and checks it against the bundled answer patterns,
+then against your custom patterns for answers. Only the text the model wrote
+is checked, not the JSON around it; escaped characters are decoded first, so
+`sk-…` counts as `sk-…`. Tool calls, embeddings, counting tokens and
+answers that are not text (audio, images) are not inspected. Neither is an
+error answer of the provider, or an answer larger than the inspector's
+capture limit (1 MiB); the log says so once.
+
+Two actions:
+
+- **flag** (the default): the answer is delivered unchanged. The request is
+  marked with the pattern's id in the request inspector and on the Requests
+  page, an audit entry `guardrail.flagged` is written, and the webhook event
+  `guardrail.refused` is published with `direction: "answer"` and
+  `action: "flag"`. Nothing is held back.
+- **block**: an answer that comes in one piece is held until it is complete,
+  checked, and on a hit replaced by an error in the app's format with status
+  `502` and code `guardrail_blocked_answer` ("the answer was withheld by a
+  guardrail"); none of the answer reaches the app. Holding the answer is the
+  price of blocking it. A streamed answer is forwarded event by event, and
+  every event is checked together with the last 4096 bytes of text before
+  it, so a key split across several events is still found. On a hit that
+  event and everything after it are dropped, one error event in the app's
+  format ends the stream, and the request shows "blocked mid-answer". **What
+  was sent before the hit cannot be recalled.** The audit entry is
+  `guardrail.refused` with `direction: "answer"`.
+
+A blocked answer is never put into the response cache; a flagged one is.
+Answers served from the cache were checked when they were stored. While
+answer inspection is on, Burrow asks the provider for an uncompressed answer
+so that it can read it; the app gets it uncompressed too.
+
+The bundled answer patterns:
+
+| id | finds |
+|---|---|
+| `anthropic_key` | an Anthropic API key (`sk-ant-…`) |
+| `openai_key` | an OpenAI API key (`sk-…`, `sk-proj-…`) |
+| `aws_access_key` | an AWS access key id (`AKIA` and 16 characters) |
+| `github_token` | a GitHub token (`ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…`, `github_pat_…`) |
+| `slack_token` | a Slack token (`xoxb-…`, `xoxa-…`, `xoxp-…`, `xoxr-…`, `xoxs-…`) |
+| `google_api_key` | a Google API key (`AIza` and 35 characters) |
+| `private_key_pem` | the first line of a PEM private key (`-----BEGIN … PRIVATE KEY-----`) |
+| `burrow_automation_token` | a Burrow automation token (`bua_…`) |
+| `burrow_gateway_key` | a Burrow gateway key (`bgw_…`) |
+
+A key shape is only found where it starts a word: `task-…` is no `sk-…`. A
+secret glued to the word before it (`mykeysk-…`) is not found.
+
+#### Custom patterns
+
+A custom pattern has an id, a regular expression, a direction and a
+description:
+
+- **id**: 1 to 64 characters of `a-z`, `0-9`, `_` and `-`, used once, and
+  none of the bundled ids. It is what the inspector, the audit log and the
+  webhook name when the pattern matches.
+- **pattern**: Go RE2 syntax (no look-around, no back-references), at most
+  512 characters. `(?i)` makes it case-insensitive.
+- **direction**: `request` (checked against the request body, after the
+  bundled request patterns, with the request action set for the
+  guardrails), `answer` (checked against the text of answers, after the
+  bundled answer patterns, with the answer action) or `both`.
+- **description**: at most 200 characters.
+
+At most 50 custom patterns. `PUT /api/v1/guardrails/settings` refuses a list
+that breaks a rule with `400` and a message that names the first bad
+pattern. A `PUT` that leaves out `answers` or `custom_patterns` keeps what is
+stored for them. `GET /api/v1/guardrails/patterns` lists the bundled patterns with
+their `direction`; the custom ones are part of the settings.

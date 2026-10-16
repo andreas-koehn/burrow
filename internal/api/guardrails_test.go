@@ -266,15 +266,25 @@ func TestGuardrailGetPatterns_ShapeAndOrder(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(got) != len(guardrails.Patterns) {
-		t.Fatalf("len=%d want %d", len(got), len(guardrails.Patterns))
+	// The request patterns first ("request"), then the answer patterns
+	// ("answer"), each in match order.
+	all := append(append([]guardrails.Pattern(nil), guardrails.Patterns...), guardrails.AnswerPatterns...)
+	if len(got) != len(all) {
+		t.Fatalf("len=%d want %d", len(got), len(all))
 	}
 	for i := range got {
-		if got[i].ID != guardrails.Patterns[i].ID {
-			t.Errorf("[%d] id=%q want %q", i, got[i].ID, guardrails.Patterns[i].ID)
+		if got[i].ID != all[i].ID {
+			t.Errorf("[%d] id=%q want %q", i, got[i].ID, all[i].ID)
 		}
-		if got[i].Description != guardrails.Patterns[i].Description {
-			t.Errorf("[%d] description=%q want %q", i, got[i].Description, guardrails.Patterns[i].Description)
+		if got[i].Description != all[i].Description {
+			t.Errorf("[%d] description=%q want %q", i, got[i].Description, all[i].Description)
+		}
+		want := "request"
+		if i >= len(guardrails.Patterns) {
+			want = "answer"
+		}
+		if got[i].Direction != want {
+			t.Errorf("[%d] %s direction=%q want %q", i, got[i].ID, got[i].Direction, want)
 		}
 	}
 	// Regex source MUST NOT appear in the response body. Each bundled

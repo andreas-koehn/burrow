@@ -13,6 +13,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/quota"
 )
 
@@ -154,7 +155,10 @@ const guardrailAuditQueue = 256
 // there.
 type guardrailRefusal struct {
 	service, pattern, action, gatewayKey string
-	ack                                  chan struct{}
+	// direction is "" for a refused request, "answer" for an answer a
+	// pattern matched.
+	direction string
+	ack       chan struct{}
 }
 
 // guardrailAuditor writes the guardrail.refused audit entries. The chain
@@ -190,7 +194,18 @@ func newGuardrailAuditor(a auditAppender, log *slog.Logger) *guardrailAuditor {
 // refused is the chain's OnGuardrailRefuse hook. It never blocks: it reads
 // the gateway key from the request's route and hands the refusal over.
 func (g *guardrailAuditor) refused(ctx context.Context, serviceID, pattern, action string) {
-	job := guardrailRefusal{service: serviceID, pattern: pattern, action: action}
+	g.enqueue(ctx, guardrailRefusal{service: serviceID, pattern: pattern, action: action})
+}
+
+// answered is the chain's OnGuardrailAnswer hook: an answer pattern matched
+// an answer, which was delivered (action "flag", audited as
+// guardrail.flagged) or withheld ("block", audited as guardrail.refused
+// with direction "answer"). It never blocks.
+func (g *guardrailAuditor) answered(ctx context.Context, serviceID, pattern, action string) {
+	g.enqueue(ctx, guardrailRefusal{service: serviceID, pattern: pattern, action: action, direction: "answer"})
+}
+
+func (g *guardrailAuditor) enqueue(ctx context.Context, job guardrailRefusal) {
 	if ri, ok := aigw.RouteFrom(ctx); ok {
 		job.gatewayKey = ri.GatewayKeyID
 	}
@@ -220,7 +235,9 @@ func (g *guardrailAuditor) work() {
 
 // write appends the entry for one refusal: guardrail.refused for the
 // service, with the id of the pattern that matched (never the matched text),
-// the action taken and the gateway key that asked, if one did. The actor is
+// the action taken and the gateway key that asked, if one did. An answer a
+// pattern matched carries direction "answer"; when it was delivered (flag)
+// the entry is guardrail.flagged with result "ok" instead. The actor is
 // empty: the system refused. The audit logger keeps one row per service,
 // pattern, action and gateway key per hour, so a client that keeps tripping
 // a guardrail cannot grow the hash chain at will. Best-effort: an error or a
@@ -237,13 +254,20 @@ func (g *guardrailAuditor) write(job guardrailRefusal) {
 	if job.gatewayKey != "" {
 		payload["gateway_key_id"] = job.gatewayKey
 	}
+	action, result := audit.ActionGuardrailRefused, "denied"
+	if job.direction != "" {
+		payload["direction"] = job.direction
+		if job.action == guardrails.AnswerActionFlag {
+			action, result = audit.ActionGuardrailFlagged, "ok" // the answer was delivered
+		}
+	}
 	err := g.audit.Append(ctx, audit.Event{
-		Action:         audit.ActionGuardrailRefused,
+		Action:         action,
 		SubjectID:      job.service,
 		SubjectLabel:   job.pattern,
-		Result:         "denied",
+		Result:         result,
 		Payload:        audit.MustJSON(payload),
-		AggregationKey: job.service + "\x00" + job.pattern + "\x00" + job.action + "\x00" + job.gatewayKey,
+		AggregationKey: job.service + "\x00" + job.pattern + "\x00" + job.action + "\x00" + job.gatewayKey + "\x00" + job.direction,
 	})
 	if err != nil {
 		g.log.Warn("guardrail audit: write failed", "service_id", job.service, "err", err)

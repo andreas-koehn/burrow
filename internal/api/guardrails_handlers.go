@@ -63,7 +63,15 @@ type guardrailPerServiceSettings struct {
 type guardrailPatternResp struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
+	// Direction is "request" for a pattern that screens requests, "answer"
+	// for one that screens the text of answers.
+	Direction string `json:"direction"`
 }
+
+// guardrailSettingsMaxBody bounds the body of PUT /guardrails/settings: room
+// for MaxCustomPatterns patterns of the longest length with their
+// descriptions, even when every character is JSON-escaped.
+const guardrailSettingsMaxBody = 256 << 10
 
 // loadGuardrailsGlobal decodes the global guardrails blob from the settings
 // map, falling back to DefaultSettings on missing/corrupt JSON. Matches
@@ -84,7 +92,12 @@ func loadGuardrailsGlobal(m map[string]string) guardrails.Settings {
 		// repair the row.
 		return guardrails.DefaultSettings
 	}
-	return s
+	if s.Answers.Action != guardrails.AnswerActionBlock {
+		s.Answers.Action = guardrails.AnswerActionFlag
+	}
+	// A blob stored before the answer settings existed has none of them:
+	// they read as their defaults.
+	return s.Normalized()
 }
 
 // perServiceGuardrailsFromConfig decodes the .guardrails sub-object out of
@@ -155,12 +168,15 @@ func (d Deps) GetGuardrailSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // PutGuardrailSettings handles PUT /api/v1/guardrails/settings.
-// Needs ai:configure:any (routeAccess in access.go). 400 on invalid action;
-// 204 on success. The persisted blob
+// Needs ai:configure:any (routeAccess in access.go). 400 on an invalid
+// action, an invalid answers.action (empty means "flag") or an invalid list
+// of custom patterns (guardrails.ValidateCustomPatterns; the message names
+// the first bad pattern); 204 on success. answers and custom_patterns keep
+// their stored values when the body leaves them out. The persisted blob
 // is canonicalized (re-marshaled from the typed struct) so extra/unknown
 // fields don't survive the round-trip.
 func (d Deps) PutGuardrailSettings(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	r.Body = http.MaxBytesReader(w, r.Body, guardrailSettingsMaxBody)
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
@@ -175,10 +191,42 @@ func (d Deps) PutGuardrailSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid action")
 		return
 	}
+	switch s.Answers.Action {
+	case "", guardrails.AnswerActionFlag, guardrails.AnswerActionBlock:
+	default:
+		writeErr(w, http.StatusBadRequest, "invalid answers.action: use flag or block")
+		return
+	}
+	if err := guardrails.ValidateCustomPatterns(s.CustomPatterns); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if d.Settings == nil {
 		writeErr(w, http.StatusInternalServerError, "settings store unavailable")
 		return
 	}
+	// A client from before answers and custom_patterns existed sends neither:
+	// what is stored for a field left out is kept, so saving the request
+	// settings does not switch answer inspection off or drop the patterns.
+	var present map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &present) // raw decoded above
+	_, hasAnswers := present["answers"]
+	_, hasCustom := present["custom_patterns"]
+	if !hasAnswers || !hasCustom {
+		m, err := d.Settings.GetSettings(r.Context())
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "get guardrail settings failed")
+			return
+		}
+		stored := loadGuardrailsGlobal(m)
+		if !hasAnswers {
+			s.Answers = stored.Answers
+		}
+		if !hasCustom {
+			s.CustomPatterns = stored.CustomPatterns
+		}
+	}
+	s = s.Normalized()
 	canon, err := json.Marshal(s)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "marshal failed")
@@ -195,16 +243,21 @@ func (d Deps) PutGuardrailSettings(w http.ResponseWriter, r *http.Request) {
 
 // GetGuardrailPatterns handles GET /api/v1/guardrails/patterns.
 // The route needs ai:read:own or :any, or ai:configure:own or :any (routeAccess). Returns the closed
-// bundled list as [{id, description}] — regex sources are deliberately
-// NOT exposed (spec Part B.5: "regex source NOT exposed publicly").
+// bundled lists as [{id, description, direction}]: the request patterns
+// (direction "request"), then the answer patterns ("answer"). Regex sources
+// are deliberately NOT exposed (spec Part B.5: "regex source NOT exposed
+// publicly"). Custom patterns are part of the settings, not of this list.
 //
-// Response order matches guardrails.Patterns iteration order, which is
-// the engine's match-priority order — handy for a UI that wants to
-// indicate "this pattern fires before that one" without an extra field.
+// Within each direction the order is the engine's match-priority order —
+// handy for a UI that wants to indicate "this pattern fires before that
+// one" without an extra field.
 func (d Deps) GetGuardrailPatterns(w http.ResponseWriter, r *http.Request) {
-	out := make([]guardrailPatternResp, 0, len(guardrails.Patterns))
+	out := make([]guardrailPatternResp, 0, len(guardrails.Patterns)+len(guardrails.AnswerPatterns))
 	for _, p := range guardrails.Patterns {
-		out = append(out, guardrailPatternResp{ID: p.ID, Description: p.Description})
+		out = append(out, guardrailPatternResp{ID: p.ID, Description: p.Description, Direction: guardrails.DirectionRequest})
+	}
+	for _, p := range guardrails.AnswerPatterns {
+		out = append(out, guardrailPatternResp{ID: p.ID, Description: p.Description, Direction: guardrails.DirectionAnswer})
 	}
 	writeJSON(w, http.StatusOK, out)
 }

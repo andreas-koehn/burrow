@@ -77,6 +77,22 @@ type Entry struct {
 	Provider     string `json:"provider"`
 	Model        string `json:"model"`
 	GatewayKeyID string `json:"gateway_key_id"`
+	// Guardrail is set when a guardrail pattern matched the request or the
+	// answer; nil otherwise.
+	Guardrail *GuardrailMark `json:"guardrail,omitempty"`
+}
+
+// GuardrailMark says which guardrail pattern matched a captured request and
+// what was done: the id of the pattern (never the matched text), the
+// direction ("request" or "answer") and the action ("log_only",
+// "refuse_403", "refuse_safe" for a request; "flag" or "block" for an
+// answer). MidStream: a streamed answer was stopped after part of it had
+// been sent ("blocked mid-answer").
+type GuardrailMark struct {
+	Pattern   string `json:"pattern"`
+	Direction string `json:"direction"`
+	Action    string `json:"action"`
+	MidStream bool   `json:"mid_stream,omitempty"`
 }
 
 // RedactionHit is one (rule, count) pair from the redactor's report.

@@ -663,3 +663,41 @@ func TestObserver_PanicUnderTheLockDoesNotHoldIt(t *testing.T) {
 	}
 	wantLines(t, expo(t, rec), `burrow_client_session_count{user="u1"} 1`)
 }
+
+// An answer a pattern matched is announced as guardrail.refused with
+// direction "answer" and the action taken; a refused request says
+// direction "request". Both are tier "pattern".
+func TestObserver_GuardrailDirections(t *testing.T) {
+	o, _, em, _ := newTestObserver(t)
+	o.ObserveModelRequest(observe.ModelRequest{
+		ServiceID: "svc-g", Outcome: observe.ModelAnswered, Status: 200, Metered: true,
+		GuardrailPattern: "openai_key", GuardrailAction: "flag", GuardrailDirection: "answer",
+	})
+	o.ObserveModelRequest(observe.ModelRequest{
+		ServiceID: "svc-g", Outcome: observe.ModelAnswered, Status: 200, Metered: true,
+		GuardrailPattern: "aws_access_key", GuardrailAction: "block", GuardrailDirection: "answer", GuardrailMidStream: true,
+	})
+	o.ObserveModelRequest(observe.ModelRequest{
+		ServiceID: "svc-g", Outcome: observe.ModelGuardrailRefused, Status: 403,
+		GuardrailPattern: "ignore_prev", GuardrailAction: "refuse_403", GuardrailDirection: "request",
+	})
+	// An answer without a hit announces nothing.
+	o.ObserveModelRequest(observe.ModelRequest{ServiceID: "svc-g", Outcome: observe.ModelAnswered, Status: 200})
+	got := em.named("guardrail.refused")
+	if len(got) != 3 {
+		t.Fatalf("%d guardrail.refused events: %v", len(got), got)
+	}
+	want := []map[string]any{
+		{"ServiceID": "svc-g", "Pattern": "openai_key", "direction": "answer", "tier": "pattern", "action": "flag"},
+		{"ServiceID": "svc-g", "Pattern": "aws_access_key", "direction": "answer", "tier": "pattern", "action": "block"},
+		{"ServiceID": "svc-g", "Pattern": "ignore_prev", "direction": "request", "tier": "pattern", "action": "refuse_403"},
+	}
+	for i, w := range want {
+		fieldsOf(t, "guardrail.refused", got[i])
+		for k, v := range w {
+			if got[i][k] != v {
+				t.Errorf("event %d: %v, want %s=%v", i, got[i], k, v)
+			}
+		}
+	}
+}
