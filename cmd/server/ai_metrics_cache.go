@@ -131,10 +131,27 @@ func (m *aiMetricsStore) latency(ctx context.Context) map[string]int {
 	return m.compute(ctx, done)
 }
 
-// serviceLatency is the aigateway.LatencySource: the p95 of one service.
-func (m *aiMetricsStore) serviceLatency(ctx context.Context, serviceID string) (int, bool) {
-	ms, ok := m.latency(ctx)[serviceID]
-	return ms, ok
+// latencyNoWait is latency for the data plane: it never waits for a
+// computation. It returns the last figure (nil on a cold start or when none
+// succeeded yet) and, when that is older than aiLatencyTTL and no computation
+// runs, starts one in the background. The providers page keeps the blocking
+// latency.
+func (m *aiMetricsStore) latencyNoWait() map[string]int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.running == nil && (!m.tried || m.now().Sub(m.at) >= aiLatencyTTL) {
+		done := make(chan struct{})
+		m.running = done
+		m.at, m.tried = m.now(), true
+		go m.compute(context.Background(), done)
+	}
+	return m.p95
+}
+
+// serviceLatencies is the aigateway.LatencySource: the p95 per service,
+// without waiting.
+func (m *aiMetricsStore) serviceLatencies(context.Context) map[string]int {
+	return m.latencyNoWait()
 }
 
 // errLatencyPanicked is what a computation that panicked is logged with.

@@ -25,7 +25,7 @@ func TestOrderTargets(t *testing.T) {
 	lat := map[string]int{"svc-a": 900, "svc-b": 200, "svc-c": 500000}
 	price := map[string]float64{"b/m2": 5, "c/m3": 1}
 	g := &Gateway{
-		Latency: func(_ context.Context, svc string) (int, bool) { ms, ok := lat[svc]; return ms, ok },
+		Latency: func(context.Context) map[string]int { return lat },
 		Prices:  func(p, m string) (float64, bool) { v, ok := price[p+"/"+m]; return v, ok },
 	}
 	ctx := context.Background()
@@ -50,7 +50,7 @@ func TestOrderTargets(t *testing.T) {
 	}
 	// Ties keep configured order.
 	lat2 := map[string]int{"svc-a": 300, "svc-b": 300}
-	g2 := &Gateway{Latency: func(_ context.Context, s string) (int, bool) { ms, ok := lat2[s]; return ms, ok }}
+	g2 := &Gateway{Latency: func(context.Context) map[string]int { return lat2 }}
 	if got := slugs(g2.orderTargets(ctx, "fastest", []Target{a, b})); !equal(got, []string{"a", "b"}) {
 		t.Errorf("tie: %v", got)
 	}
@@ -77,8 +77,8 @@ func equal(a, b []string) bool {
 // A model routed "fastest" or "cheapest" sends its first attempt to the
 // winner and falls back unchanged.
 func TestRouting_FirstAttemptAndFallback(t *testing.T) {
-	latency := func(_ context.Context, svc string) (int, bool) {
-		return map[string]int{"prov-zai": 800, "prov-or": 100}[svc], true
+	latency := func(context.Context) map[string]int {
+		return map[string]int{"prov-zai": 800, "prov-or": 100}
 	}
 	prices := func(p, _ string) (float64, bool) {
 		return map[string]float64{"zai": 9, "openrouter": 1}[p], true

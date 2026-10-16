@@ -880,7 +880,7 @@ func newRootCmd() *cobra.Command {
 			// the same cached p95 figures.
 			aiMetrics := newAIMetricsStore(db.Wrap(database), log)
 			aiGateway := newAIGateway(aiGatewayParts{
-				Latency:    aiMetrics.serviceLatency,
+				Latency:    aiMetrics.serviceLatencies,
 				Store:      st,
 				Tunnels:    proxyDialerAdapter{st: st, srv: srv},
 				Chain:      v04.AIChain,

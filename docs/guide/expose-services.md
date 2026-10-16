@@ -348,8 +348,12 @@ default) keeps the order you configured. **Fastest** puts the target whose
 provider has the lowest p95 latency over the last 24 hours first (the figure
 the providers page shows, at most a minute old). **Cheapest** puts the lowest
 blended price first (three parts input to one part output, per million tokens,
-from the pricing table). Targets without a measurement or a price, and
-latencies above 120 seconds, go last in configured order. Fallback is
+from the pricing table). A target is priced only when its model is in the
+pricing table (bundled bare names, or an entry added in the pricing editor); a
+target priced at 0, such as a local model, always comes first. Targets without
+a measurement or a price, and latencies above 120 seconds, go last in
+configured order. After a restart the latency figure is empty for the first
+requests, which then use the configured order. Fallback is
 unchanged: if the first target fails, the next one is tried.
 
 To use a service that already exists, follow section (C) to expose the model

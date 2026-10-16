@@ -6,9 +6,10 @@ import (
 )
 
 // LatencySource returns the p95 latency in milliseconds per backing service
-// id of a provider, as the providers page shows it; ok is false when the
-// service has no measurement.
-type LatencySource func(ctx context.Context, serviceID string) (ms int, ok bool)
+// id of a provider, as the providers page shows it; a service without a
+// measurement is absent. It is read once per request and must not block. The
+// map is shared and must not be written to.
+type LatencySource func(ctx context.Context) map[string]int
 
 // PriceSource returns the blended price per million tokens of a provider's
 // model (0.75*input + 0.25*output); ok is false when the pricing table has
@@ -34,8 +35,9 @@ func (g *Gateway) orderTargets(ctx context.Context, routing string, targets []Ta
 		if g.Latency == nil {
 			return targets
 		}
+		lat := g.Latency(ctx)
 		score = func(t Target) (float64, bool) {
-			ms, ok := g.Latency(ctx, t.Provider.ServiceID)
+			ms, ok := lat[t.Provider.ServiceID]
 			if !ok || ms < 0 || ms > maxUsableLatencyMs {
 				return 0, false
 			}
