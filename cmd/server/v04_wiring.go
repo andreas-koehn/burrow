@@ -68,6 +68,9 @@ type v04Stack struct {
 	AIChain           *aigw.Chain
 	// GuardrailAudit writes the guardrail.refused entries; flushed at shutdown.
 	GuardrailAudit *guardrailAuditor
+	// Judge is the chain's way to the judge model: main hands it the AI
+	// gateway once that is built (the chain is built first).
+	Judge *judgeAdapter
 	// Observer receives the events of the observation points (sessions,
 	// traffic, model requests) and turns them into metrics, webhook events
 	// and audit entries. Flushed at shutdown.
@@ -200,6 +203,13 @@ func buildV04Stack(
 	// An answer an answer pattern matched leaves one too (guardrail.flagged,
 	// or guardrail.refused with direction "answer" when it was withheld).
 	aiChain.OnGuardrailAnswer = guardrailAudit.answered
+	// The judge model is asked through the AI gateway, built later in main
+	// (judgeAdapter.set); its blocks and failures are audited like the
+	// pattern hits (guardrail.refused with tier "judge",
+	// guardrail.judge_failed).
+	judge := &judgeAdapter{}
+	aiChain.Judge = judge.judge
+	aiChain.OnGuardrailJudge = guardrailAudit.judged
 
 	// --- metrics recorder --------------------------------------------------
 	metricsRec := metrics.New()
@@ -246,6 +256,7 @@ func buildV04Stack(
 		MCPServer:         mcpServer,
 		AIChain:           aiChain,
 		GuardrailAudit:    guardrailAudit,
+		Judge:             judge,
 		Observer:          obs,
 	}, nil
 }

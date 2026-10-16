@@ -285,6 +285,19 @@ type Chain struct {
 	// in it is recovered. nil = not reported.
 	OnGuardrailAnswer func(ctx context.Context, serviceID, pattern, action string)
 
+	// Judge asks the judge model about a text: it sends model one Chat
+	// Completions request with the bundled instruction, the policy and the
+	// text, attributed to serviceID, and returns the model's answer. It must
+	// return when ctx ends. cmd/server sets the gateway's Judge here. nil =
+	// no judge is available (a request it should judge counts as a failure
+	// of class "unavailable").
+	Judge func(ctx context.Context, serviceID, model, policy, text string) (string, error)
+
+	// OnGuardrailJudge is called once per judgement that leaves an audit
+	// entry: a block, or a failure. It runs on the request's goroutine, so
+	// it must not block; a panic in it is recovered. nil = not reported.
+	OnGuardrailJudge func(ctx context.Context, serviceID string, e JudgeEvent)
+
 	// Observer is told of every request that ran through the chain, whoever
 	// answered it: an upstream, a cache, or the chain itself with a refusal
 	// (a guardrail, a redaction rule, the size limit). A request the rate
@@ -550,7 +563,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 
 	// What the observer is told when this function returns, by whichever way
 	// it does: every step below notes what it decided.
-	ev := observe.ModelRequest{ServiceID: svc.ID, APIKeyID: svc.APIKeyID, Outcome: observe.ModelAnswered}
+	ev := observe.ModelRequest{ServiceID: svc.ID, APIKeyID: svc.APIKeyID, Outcome: observe.ModelAnswered, Purpose: PurposeFrom(r.Context())}
 	if !fromReplay { // an inspector replay is not traffic
 		defer c.report(r, &ev, started)
 	}
@@ -621,7 +634,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 			// Drop-action rule fired — short-circuit with 400 redaction.drop.
 			ev.Outcome, ev.Status = observe.ModelRedactionDropped, http.StatusBadRequest
 			writeError(w, r, http.StatusBadRequest, "redaction.drop", "invalid_request", "the request was refused by a redaction rule")
-			c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusBadRequest, nil, nil, 0, false, "MISS", fromReplay, nil)
+			c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusBadRequest, nil, nil, 0, false, "MISS", fromReplay, nil, nil)
 			return
 		}
 	}
@@ -638,7 +651,11 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// Step 5: guardrails — may refuse with 403/200-safe-refusal.
 	// ---------------------------------------------------------------
 	var guardMark *inspector.GuardrailMark // for the inspector entry
-	if cfg.Guardrails != nil && cfg.Guardrails.Enabled && c.Guardrails != nil && len(redactedBody) > 0 {
+	var judgeMark *inspector.JudgeMark     // the judge's word, for the inspector entry
+	// A request that carries WithoutGuardrails (the judge's own call) skips
+	// both tiers and the answer guard.
+	guarded := cfg.Guardrails != nil && cfg.Guardrails.Enabled && !GuardrailsSkipped(r.Context())
+	if guarded && c.Guardrails != nil && len(redactedBody) > 0 {
 		// The bundled request patterns, then the operator's custom ones for
 		// requests.
 		hit, pattern := c.Guardrails.InspectRequest(redactedBody, cfg.Guardrails.CustomPatterns)
@@ -657,7 +674,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 					slog.String("service_id", svc.ID),
 					slog.String("pattern", pattern),
 				)
-				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay, mark(guardrails.ActionRefuse403))
+				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay, mark(guardrails.ActionRefuse403), judgeMark)
 				return
 			case guardrails.ActionRefuseSafe:
 				// 403 where the endpoint has no well-formed refusal; the safe
@@ -682,7 +699,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 					refusalBody, hdr, streamed, ok = dialectRefusal(kind, r, body)
 					if !ok && ew != nil {
 						ew(w, http.StatusForbidden, "forbidden", "the request was refused by a guardrail")
-						c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay, mark(guardrails.ActionRefuseSafe))
+						c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay, mark(guardrails.ActionRefuseSafe), judgeMark)
 						return
 					}
 					if !ok {
@@ -693,7 +710,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 					// not recognise: an entry point with its own error shape
 					// gets a plain refusal instead of the generic envelope.
 					ew(w, http.StatusForbidden, "forbidden", "the request was refused by a guardrail")
-					c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay, mark(guardrails.ActionRefuseSafe))
+					c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay, mark(guardrails.ActionRefuseSafe), judgeMark)
 					return
 				default:
 					refusalBody, hdr = safeRefusalBody(kind)
@@ -709,7 +726,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				// Pass the ORIGINAL + redacted request bodies so operators
 				// investigating refusals can see what was sent.
 				// TruncateRequest will cap whatever we pass.
-				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusOK, refusalBody, hdr, 0, streamed, "MISS", fromReplay, mark(guardrails.ActionRefuseSafe))
+				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusOK, refusalBody, hdr, 0, streamed, "MISS", fromReplay, mark(guardrails.ActionRefuseSafe), judgeMark)
 				return
 			case guardrails.ActionLogOnly:
 				// Fall through; just record the hit in logs (and on the
@@ -719,6 +736,35 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 					slog.String("service_id", svc.ID),
 					slog.String("pattern", pattern),
 				)
+			}
+		}
+	}
+
+	// ---------------------------------------------------------------
+	// Step 5a: the judge — a model the operator chose classifies the
+	// request's text (after redaction) against the policy. After the
+	// pattern tier, so a request it refuses costs no judge call; before
+	// the system text (the judge sees what the app sent) and the cache. A
+	// block, or a failure with on_failure "refuse", answers 403; the
+	// judge's reason goes to the audit entry, the inspector and the
+	// observer, never to the app.
+	// ---------------------------------------------------------------
+	judgeSettings, judgeTextFormat, judging := judgeFormat(r, kind, cfg)
+	if judging {
+		if text, ok := guardrails.RequestText(judgeTextFormat, redactedBody); ok {
+			jd := c.judge(r.Context(), svc.ID, judgeSettings, text)
+			judgeMark = c.note(r, svc, &ev, jd, guardrails.DirectionRequest)
+			if jd.refuse {
+				ev.Outcome, ev.Status = observe.ModelGuardrailRefused, http.StatusForbidden
+				ev.GuardrailPattern, ev.GuardrailAction = "", guardrails.ActionRefuse403
+				ev.GuardrailDirection, ev.GuardrailTier = guardrails.DirectionRequest, tierJudge
+				writeError(w, r, http.StatusForbidden, codeJudgeRefused, codeJudgeRefused, messageJudgeRefused)
+				c.Log.Info("aigw: guardrail judge refused a request",
+					slog.String("service_id", svc.ID),
+					slog.String("verdict", jd.verdict),
+				)
+				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, http.StatusForbidden, nil, nil, 0, false, "MISS", fromReplay, guardMark, judgeMark)
+				return
 			}
 		}
 	}
@@ -767,7 +813,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 			for k, v := range entry.Headers {
 				cacheHdr.Set(k, v)
 			}
-			c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, entry.Status, entry.Body, cacheHdr, 0, false, cacheStatus, fromReplay, nil)
+			c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, entry.Status, entry.Body, cacheHdr, 0, false, cacheStatus, fromReplay, nil, judgeMark)
 			c.recordMeter(r.Context(), &ev, svc, kind, 0, 0, int64(len(redactedBody)), int64(len(entry.Body)), false, true, entry.Status, cachedCost(), elapsed)
 			return
 		}
@@ -834,7 +880,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				for k, v := range exactEntry.Headers {
 					cacheHdr.Set(k, v)
 				}
-				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, status, exactEntry.Body, cacheHdr, 0, false, "similar", fromReplay, nil)
+				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, status, exactEntry.Body, cacheHdr, 0, false, "similar", fromReplay, nil, judgeMark)
 				c.recordMeter(r.Context(), &ev, svc, kind, 0, 0, int64(len(redactedBody)), int64(len(exactEntry.Body)), false, true, status, cachedCost(), elapsed)
 				return
 			}
@@ -916,7 +962,18 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// so the meter, the inspector and the cache see what the app received.
 	var upstreamWriter http.ResponseWriter = wrapped
 	upstreamReq := r
-	guard := c.answerGuardFor(wrapped, r, kind, cfg)
+	// With check "requests_and_answers" a whole answer is judged too, once
+	// the answer patterns let it pass (see answerGuard).
+	var answerJudgement *judgement
+	var judgeAnswer func(string) bool
+	if judging && judgeSettings.ChecksAnswers() {
+		judgeAnswer = func(text string) bool {
+			jd := c.judge(r.Context(), svc.ID, judgeSettings, text)
+			answerJudgement = &jd
+			return jd.refuse
+		}
+	}
+	guard := c.answerGuardFor(wrapped, r, kind, cfg, judgeAnswer)
 	if guard != nil {
 		upstreamWriter = guard
 		// An answer the upstream compresses for the app cannot be read.
@@ -962,6 +1019,19 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				slog.String("action", action),
 			)
 			c.guardrailAnswer(r, svc, pattern, action)
+		}
+	}
+	if answerJudgement != nil {
+		jd := *answerJudgement
+		judgeMark = c.note(r, svc, &ev, jd, guardrails.DirectionAnswer)
+		if jd.refuse {
+			answerBlocked = true
+			ev.GuardrailPattern, ev.GuardrailAction = "", guardrails.AnswerActionBlock
+			ev.GuardrailDirection, ev.GuardrailTier, ev.GuardrailMidStream = guardrails.DirectionAnswer, tierJudge, false
+			c.Log.Info("aigw: guardrail judge withheld an answer",
+				slog.String("service_id", svc.ID),
+				slog.String("verdict", jd.verdict),
+			)
 		}
 	}
 	// The response ends here; what follows (cache store, semantic promote,
@@ -1074,7 +1144,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// Inspector capture: only when this service has the feature enabled.
 	// An aborted response is captured too, with the bytes that were sent.
 	c.captureEntry(svc, r, elapsed, body, redactedBody, redactHits, kind,
-		wrapped.statusCode, capw.bytes(), wrapped.Header(), bytesIn, isStreamedResponse(wrapped.Header()), cacheStatus, fromReplay, guardMark)
+		wrapped.statusCode, capw.bytes(), wrapped.Header(), bytesIn, isStreamedResponse(wrapped.Header()), cacheStatus, fromReplay, guardMark, judgeMark)
 
 	// Meter the request — always, even on non-2xx or after an abort, so
 	// quota usage reflects reality. cache_hit is false on this MISS path; cacheStatus tells the
@@ -1202,19 +1272,31 @@ func (c *Chain) guardrailAnswer(r *http.Request, svc Service, pattern, action st
 }
 
 // answerGuardFor returns the answer guard for a request whose answer is
-// inspected, nil for every other. An answer is inspected when the service's
-// guardrails are on (a service that turns them off turns answer inspection
-// off too), answer inspection is on, and the request is a POST to an
-// endpoint whose answer is text in a format the guardrails read: Chat
-// Completions, Responses or Messages.
-func (c *Chain) answerGuardFor(w http.ResponseWriter, r *http.Request, kind Kind, cfg ServiceAIConfig) *answerGuard {
+// inspected or judged, nil for every other. An answer is inspected when the
+// service's guardrails are on (a service that turns them off turns answer
+// inspection and the judge off too), the request does not carry
+// WithoutGuardrails, answer inspection is on or judge is set (the judge
+// checks answers), and the request is a POST to an endpoint whose answer is
+// text in a format the guardrails read: Chat Completions, Responses or
+// Messages. judge is asked about whole answers only.
+func (c *Chain) answerGuardFor(w http.ResponseWriter, r *http.Request, kind Kind, cfg ServiceAIConfig, judge func(string) bool) *answerGuard {
 	g := cfg.Guardrails
-	if c.Guardrails == nil || g == nil || !g.Enabled || !g.Answers.Enabled || r.Method != http.MethodPost {
+	if g == nil || !g.Enabled || r.Method != http.MethodPost || GuardrailsSkipped(r.Context()) {
+		return nil
+	}
+	patterns := c.Guardrails != nil && g.Answers.Enabled
+	if !patterns && judge == nil {
 		return nil
 	}
 	format := answerFormat(kind, r.URL.Path)
 	if format == "" {
 		return nil
+	}
+	if !patterns {
+		// The judge alone: whole answers are held for it, streams pass.
+		guard := newAnswerGuard(w, r, format, guardrails.AnswerActionFlag, nil)
+		guard.log, guard.judge = c.Log, judge
+		return guard
 	}
 	action := g.Answers.Action
 	if action != guardrails.AnswerActionBlock {
@@ -1224,7 +1306,7 @@ func (c *Chain) answerGuardFor(w http.ResponseWriter, r *http.Request, kind Kind
 	guard := newAnswerGuard(w, r, format, action, func(text string) (bool, string) {
 		return engine.InspectAnswerText(text, custom)
 	})
-	guard.log = c.Log
+	guard.log, guard.judge = c.Log, judge
 	// A stream: the bundled patterns on every event, the custom ones on the
 	// whole window now and then (see guardrails.StreamScanner).
 	guard.quick, guard.full = engine.InspectAnswerBundled, nil
@@ -1275,7 +1357,7 @@ func detached(ctx context.Context) (context.Context, context.CancelFunc) {
 func (c *Chain) captureEntry(svc Service, r *http.Request, took time.Duration,
 	origBody, redactedBody []byte, redactHits []redact.RuleHit,
 	kind Kind, status int, respBody []byte, respHeaders http.Header,
-	bytesIn int64, streamed bool, cacheStatus string, fromReplay bool, mark *inspector.GuardrailMark) {
+	bytesIn int64, streamed bool, cacheStatus string, fromReplay bool, mark *inspector.GuardrailMark, judge *inspector.JudgeMark) {
 	if c.Inspector == nil {
 		return
 	}
@@ -1318,6 +1400,8 @@ func (c *Chain) captureEntry(svc Service, r *http.Request, took time.Duration,
 		Redactions:   hits,
 		Dropped:      []string{},
 		Guardrail:    mark,
+		Judge:        judge,
+		Purpose:      PurposeFrom(r.Context()),
 	}
 	// Read here, after the response, as the usage row does: the entry names
 	// the provider and the pair of the attempt that answered. A request

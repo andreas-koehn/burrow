@@ -98,6 +98,12 @@ type inspectorEntryJSON struct {
 	// Guardrail is set when a guardrail pattern matched the request or its
 	// answer.
 	Guardrail *inspector.GuardrailMark `json:"guardrail,omitempty"`
+	// Judge is set when the judge model was asked about the request or its
+	// answer: the verdict and, for a block, the reason.
+	Judge *inspector.JudgeMark `json:"judge,omitempty"`
+	// Purpose is "guardrail-judge" for the relay's own call to the judge
+	// model, "" for an app's request.
+	Purpose string `json:"purpose,omitempty"`
 }
 
 // inspectorEntryToJSON converts a captured Entry to the wire shape. Bodies
@@ -131,6 +137,8 @@ func inspectorEntryToJSON(e inspector.Entry) inspectorEntryJSON {
 		Model:        e.Model,
 		GatewayKeyID: e.GatewayKeyID,
 		Guardrail:    e.Guardrail,
+		Judge:        e.Judge,
+		Purpose:      e.Purpose,
 	}
 	if out.Dropped == nil {
 		out.Dropped = []string{}

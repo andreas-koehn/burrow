@@ -136,24 +136,36 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 		g.failNoCandidate(w, r, res, d, requested, why)
 		return
 	}
+	// The model's text, then the key's: the chain puts them before the app's
+	// own system content (res.Model is zero for a direct address).
+	g.dispatch(w, r, d, path, res, candidates, body, key.ID, aigw.JoinSystemText(res.Model.SystemText, key.SystemText), "")
+}
+
+// dispatch serves a request whose model is resolved and has candidates for
+// path: the route, the system text, the first target's policy, the chain and,
+// under it, the fallback chain. keyID is the gateway key that asked ("" for
+// the relay's own call), systemText what the chain puts before the app's
+// system content, serviceID the service the chain runs under and the usage is
+// attributed to ("" = the first target's backing service). The request id is
+// read from the response header headerRequestID.
+func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, d *Dialect, path string, res Resolution, candidates []candidate, body *requestBody, keyID, systemText, serviceID string) {
 	// All of a request's candidates are translated, or none is.
 	translated := candidates[0].pair != nil
 	first := Target{Provider: candidates[0].provider, Model: candidates[0].model}
 
 	requestID := w.Header().Get(headerRequestID)
-	route := aigw.NewRoute(key.ID, d.Name, requested, requestID)
+	route := aigw.NewRoute(keyID, d.Name, res.Requested, requestID)
 	// Until an attempt answers, the route names the first target: an answer
 	// that comes from the chain itself (a cached one) is accounted to it.
 	route.SetTarget(first.Provider.Slug, first.Model)
 	r = r.WithContext(aigw.WithAttempts(aigw.WithRoute(r.Context(), route)))
-	// The model's text, then the key's: the chain puts them before the app's
-	// own system content (res.Model is zero for a direct address).
-	if text := aigw.JoinSystemText(res.Model.SystemText, key.SystemText); text != "" {
-		r = r.WithContext(aigw.WithSystemText(r.Context(), text))
+	if systemText != "" {
+		r = r.WithContext(aigw.WithSystemText(r.Context(), systemText))
 	}
 
-	// The chain runs under the first target's service: its AI config, its
-	// limits, its cache. That service's policy is therefore checked before
+	// The chain runs under the first target's service (or serviceID, for
+	// the judge): its AI config, its limits, its cache. The first target's
+	// service's policy is therefore checked before
 	// the chain, as it is for a single target; every target's own policy is
 	// checked again when its turn comes, before its credential is read.
 	host, checked, ok := g.firstTargetPolicy(w, r, first.Provider)
@@ -191,11 +203,14 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 		// guardrails apply to a prompt that is only counted, too.
 		r = r.WithContext(aigw.WithoutUsage(r.Context()))
 	}
+	if serviceID == "" {
+		serviceID = first.Provider.ServiceID
+	}
 	// A reported cost is believed only when every candidate is an upstream
 	// the relay calls itself: the chain cannot tell which one answered. It
 	// is not believed for a translated answer: the chain reads the caller's
 	// side of it, where no upstream's figure stands.
-	g.Chain.DispatchMetered(w, r, first.Provider.ServiceID, host, "Authorization", "", allDirect(candidates) && !translated, fo)
+	g.Chain.DispatchMetered(w, r, serviceID, host, "Authorization", "", allDirect(candidates) && !translated, fo)
 }
 
 // failNoCandidate answers a request whose model has nothing to try on this

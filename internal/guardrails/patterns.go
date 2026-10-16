@@ -141,16 +141,17 @@ var Patterns = []Pattern{
 //     safe-refusal body (the body is the caller's responsibility — the
 //     engine itself returns only (hit, pattern_id)).
 //
-// Answers and CustomPatterns are global: they are read from the global blob
-// only. A service's own guardrails section overrides Enabled and Action when
-// its Enabled is true; see Effective for how the settings of a service are
-// put together. Where the guardrails are off, answers are not inspected
-// either.
+// Answers, CustomPatterns and Judge are global: they are read from the
+// global blob only. A service's own guardrails section overrides Enabled and
+// Action when its Enabled is true; see Effective for how the settings of a
+// service are put together. Where the guardrails are off, answers are not
+// inspected and the judge is not asked either.
 type Settings struct {
 	Enabled        bool            `json:"enabled"`
 	Action         string          `json:"action"`
 	Answers        AnswerSettings  `json:"answers"`
 	CustomPatterns []CustomPattern `json:"custom_patterns"`
+	Judge          JudgeSettings   `json:"judge"`
 }
 
 // AnswerSettings switches the inspection of answers on and says what a hit
@@ -168,8 +169,9 @@ const (
 )
 
 // Normalized returns s with the defaults of the fields an older blob does
-// not have: the answer action "flag" and an empty (non-nil) list of custom
-// patterns.
+// not have: the answer action "flag", an empty (non-nil) list of custom
+// patterns, and the judge's check "requests", timeout 3000 ms and on_failure
+// "allow".
 func (s Settings) Normalized() Settings {
 	if s.Answers.Action == "" {
 		s.Answers.Action = AnswerActionFlag
@@ -177,6 +179,7 @@ func (s Settings) Normalized() Settings {
 	if s.CustomPatterns == nil {
 		s.CustomPatterns = []CustomPattern{}
 	}
+	s.Judge = s.Judge.normalized()
 	return s
 }
 
@@ -205,4 +208,5 @@ var DefaultSettings = Settings{
 	Action:         ActionLogOnly,
 	Answers:        AnswerSettings{Enabled: false, Action: AnswerActionFlag},
 	CustomPatterns: []CustomPattern{},
+	Judge:          JudgeSettings{}.normalized(),
 }

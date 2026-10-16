@@ -71,6 +71,11 @@ const (
 	// a guardrail.refused with direction "answer". Aggregated like
 	// guardrail.refused.
 	ActionGuardrailFlagged = "guardrail.flagged"
+	// ActionGuardrailJudgeFailed is written when the judge model could not
+	// judge a request or an answer (a timeout, an error, an answer that is no
+	// verdict, no judge): the payload names the class and what on_failure
+	// did, never the judged text. Aggregated like guardrail.refused.
+	ActionGuardrailJudgeFailed = "guardrail.judge_failed"
 
 	ActionBudgetCreate   = "budget.create"
 	ActionBudgetUpdate   = "budget.update"
@@ -162,7 +167,7 @@ var AllActions = []string{
 	ActionCacheClear, ActionCacheSettingsUpdate,
 	ActionRedactionRuleCreate, ActionRedactionRuleUpdate, ActionRedactionRuleDelete,
 	ActionRedactionApplied,
-	ActionGuardrailSettingsUpdate, ActionGuardrailRefused, ActionGuardrailFlagged,
+	ActionGuardrailSettingsUpdate, ActionGuardrailRefused, ActionGuardrailFlagged, ActionGuardrailJudgeFailed,
 	ActionBudgetCreate, ActionBudgetUpdate, ActionBudgetDelete, ActionBudgetExceeded,
 	ActionRateLimitCreate, ActionRateLimitUpdate, ActionRateLimitDelete, ActionRateLimitEnforced,
 	ActionWebhookCreate, ActionWebhookUpdate, ActionWebhookDelete, ActionWebhookDeliveryFailed,
@@ -183,9 +188,10 @@ var AllActions = []string{
 // per (subject_id, action), or per Event.AggregationKey, by Logger.Append. A high-traffic redaction or
 // guardrail storm therefore cannot saturate the chain.
 var aggregatedActions = map[string]bool{
-	ActionRedactionApplied: true,
-	ActionGuardrailRefused: true,
-	ActionGuardrailFlagged: true,
+	ActionRedactionApplied:     true,
+	ActionGuardrailRefused:     true,
+	ActionGuardrailFlagged:     true,
+	ActionGuardrailJudgeFailed: true,
 	// One row per limit per hour: the caller keys it by scope, subject and
 	// dimension (Event.AggregationKey).
 	ActionRateLimitEnforced: true,

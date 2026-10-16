@@ -113,14 +113,14 @@ func Effective(own *Settings, global Settings) *Settings {
 	switch {
 	case own != nil && own.Enabled:
 		s := *own
-		s.Answers, s.CustomPatterns = global.Answers, global.CustomPatterns
+		s.Answers, s.CustomPatterns, s.Judge = global.Answers, global.CustomPatterns, global.Judge
 		return &s
 	case global.Enabled:
 		s := global
 		return &s
 	case own != nil:
 		s := *own
-		s.Answers, s.CustomPatterns = AnswerSettings{}, nil
+		s.Answers, s.CustomPatterns, s.Judge = AnswerSettings{}, nil, JudgeSettings{}
 		return &s
 	}
 	return nil

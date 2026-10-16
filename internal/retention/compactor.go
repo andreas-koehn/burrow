@@ -27,6 +27,7 @@ var EligibleAuditActions = []string{
 	"redaction.applied",
 	"guardrail.refused",
 	"guardrail.flagged",
+	"guardrail.judge_failed",
 	"connection.session_summary",
 	"retention.compact",
 	"ai.cache.promoted",

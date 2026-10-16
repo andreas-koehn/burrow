@@ -895,6 +895,9 @@ func newRootCmd() *cobra.Command {
 				PublicHost: proxyAuthDomain,
 				Log:        log,
 			})
+			// The chain asks the judge model through the gateway, which is
+			// built only now; no listener has been started yet.
+			v04.Judge.set(aiGateway)
 			if proxyTLSCfg != nil {
 				// Wire GetConfigForClient so mTLS services get a per-vhost
 				// TLS config with ClientCAs + RequireAndVerifyClientCert at

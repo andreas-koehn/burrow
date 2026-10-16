@@ -3,10 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
 	"github.com/ankoehn/burrow/internal/guardrails"
+	"github.com/ankoehn/burrow/internal/store"
 )
 
 // GuardrailSettingsStore is the read/write surface the guardrail handlers
@@ -169,10 +172,12 @@ func (d Deps) GetGuardrailSettings(w http.ResponseWriter, r *http.Request) {
 
 // PutGuardrailSettings handles PUT /api/v1/guardrails/settings.
 // Needs ai:configure:any (routeAccess in access.go). 400 on an invalid
-// action, an invalid answers.action (empty means "flag") or an invalid list
+// action, an invalid answers.action (empty means "flag"), an invalid list
 // of custom patterns (guardrails.ValidateCustomPatterns; the message names
-// the first bad pattern); 204 on success. answers and custom_patterns keep
-// their stored values when the body leaves them out. The persisted blob
+// the first bad pattern) or invalid judge settings (guardrails.ValidateJudge;
+// an enabled judge must name an existing synthetic model); 204 on success.
+// answers, custom_patterns and judge keep their stored values when the body
+// leaves them out; empty judge enums and timeout are stored as defaults. The persisted blob
 // is canonicalized (re-marshaled from the typed struct) so extra/unknown
 // fields don't survive the round-trip.
 func (d Deps) PutGuardrailSettings(w http.ResponseWriter, r *http.Request) {
@@ -201,6 +206,18 @@ func (d Deps) PutGuardrailSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	var present map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &present) // raw decoded above
+	_, hasJudge := present["judge"]
+	if hasJudge {
+		if err := guardrails.ValidateJudge(s.Judge); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if s.Judge.Enabled && !d.judgeModelExists(w, r, s.Judge.Model) {
+			return
+		}
+	}
 	if d.Settings == nil {
 		writeErr(w, http.StatusInternalServerError, "settings store unavailable")
 		return
@@ -208,11 +225,9 @@ func (d Deps) PutGuardrailSettings(w http.ResponseWriter, r *http.Request) {
 	// A client from before answers and custom_patterns existed sends neither:
 	// what is stored for a field left out is kept, so saving the request
 	// settings does not switch answer inspection off or drop the patterns.
-	var present map[string]json.RawMessage
-	_ = json.Unmarshal(raw, &present) // raw decoded above
 	_, hasAnswers := present["answers"]
 	_, hasCustom := present["custom_patterns"]
-	if !hasAnswers || !hasCustom {
+	if !hasAnswers || !hasCustom || !hasJudge {
 		m, err := d.Settings.GetSettings(r.Context())
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "get guardrail settings failed")
@@ -224,6 +239,9 @@ func (d Deps) PutGuardrailSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if !hasCustom {
 			s.CustomPatterns = stored.CustomPatterns
+		}
+		if !hasJudge {
+			s.Judge = stored.Judge
 		}
 	}
 	s = s.Normalized()
@@ -239,6 +257,27 @@ func (d Deps) PutGuardrailSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// judgeModelExists reports whether name is an existing synthetic model, and
+// writes the 400 (or the 500 of a failed lookup) when it is not. A disabled
+// model counts: it exists, and the operator may enable it later.
+func (d Deps) judgeModelExists(w http.ResponseWriter, r *http.Request, name string) bool {
+	notFound := func() bool {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("judge model %q does not exist", name))
+		return false
+	}
+	if d.AIModels == nil || !store.ValidModelName(name) {
+		return notFound()
+	}
+	if _, err := d.AIModels.ModelByName(r.Context(), name); err != nil {
+		if errors.Is(err, store.ErrModelNotFound) {
+			return notFound()
+		}
+		writeErr(w, http.StatusInternalServerError, "look up judge model failed")
+		return false
+	}
+	return true
 }
 
 // GetGuardrailPatterns handles GET /api/v1/guardrails/patterns.

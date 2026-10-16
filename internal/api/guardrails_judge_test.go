@@ -1,0 +1,161 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/guardrails"
+	"github.com/ankoehn/burrow/internal/inspector"
+)
+
+func judgeAdmin(t *testing.T, ss *fakeCacheSettingsStore) *authClient {
+	t.Helper()
+	models := &fakeModelStore{rows: []db.AIModel{{Name: "judge-model", Enabled: true}}}
+	srv := httptest.NewServer(NewRouter(Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, Settings: ss, AIModels: models}))
+	t.Cleanup(srv.Close)
+	return authedClient(t, srv)
+}
+
+// GET serves the judge with its defaults, also for a blob stored before the
+// judge existed.
+func TestGuardrailGetSettings_JudgeDefaults(t *testing.T) {
+	for name, saved := range map[string]map[string]string{
+		"no row":   {},
+		"old blob": {"guardrails.global": `{"enabled":true,"action":"refuse_403","answers":{"enabled":false,"action":"flag"},"custom_patterns":[]}`},
+	} {
+		c := judgeAdmin(t, &fakeCacheSettingsStore{saved: saved})
+		r := c.get(t, "/api/v1/guardrails/settings")
+		body := readBody(t, r)
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("%s: %d %s", name, r.StatusCode, body)
+		}
+		var raw struct {
+			Global map[string]json.RawMessage `json:"global"`
+		}
+		if err := json.Unmarshal([]byte(body), &raw); err != nil {
+			t.Fatal(err)
+		}
+		if j := string(raw.Global["judge"]); j != `{"enabled":false,"model":"","policy":"","check":"requests","timeout_ms":3000,"on_failure":"allow"}` {
+			t.Errorf("%s: judge = %s", name, j)
+		}
+	}
+}
+
+func TestGuardrailPutSettings_Judge(t *testing.T) {
+	ss := &fakeCacheSettingsStore{}
+	c := judgeAdmin(t, ss)
+	r := c.put(t, "/api/v1/guardrails/settings", map[string]any{
+		"enabled": true, "action": "refuse_403",
+		"judge": map[string]any{"enabled": true, "model": "judge-model", "policy": "No malware.", "check": "requests_and_answers", "timeout_ms": 1500, "on_failure": "refuse"},
+	})
+	if r.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT %d %s", r.StatusCode, readBody(t, r))
+	}
+	r.Body.Close()
+	var s guardrails.Settings
+	if err := json.Unmarshal([]byte(ss.saved["guardrails.global"]), &s); err != nil {
+		t.Fatal(err)
+	}
+	want := guardrails.JudgeSettings{Enabled: true, Model: "judge-model", Policy: "No malware.", Check: "requests_and_answers", TimeoutMS: 1500, OnFailure: "refuse"}
+	if s.Judge != want {
+		t.Fatalf("persisted judge %+v", s.Judge)
+	}
+	// Empty enums and timeout are stored as their defaults.
+	r = c.put(t, "/api/v1/guardrails/settings", map[string]any{
+		"action": "log_only", "judge": map[string]any{"enabled": false},
+	})
+	if r.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT %d %s", r.StatusCode, readBody(t, r))
+	}
+	r.Body.Close()
+	s = guardrails.Settings{}
+	_ = json.Unmarshal([]byte(ss.saved["guardrails.global"]), &s)
+	if s.Judge != (guardrails.JudgeSettings{Check: "requests", TimeoutMS: 3000, OnFailure: "allow"}) {
+		t.Fatalf("defaults not stored: %+v", s.Judge)
+	}
+}
+
+func TestGuardrailPutSettings_RefusesBadJudge(t *testing.T) {
+	for name, tc := range map[string]struct {
+		judge map[string]any
+		msg   string
+	}{
+		"no model":        {map[string]any{"enabled": true}, "judge model is required"},
+		"unknown model":   {map[string]any{"enabled": true, "model": "nope"}, `judge model \"nope\" does not exist`},
+		"bad model name":  {map[string]any{"enabled": true, "model": "a b/c"}, `does not exist`},
+		"long policy":     {map[string]any{"policy": strings.Repeat("p", guardrails.MaxJudgePolicy+1)}, "policy"},
+		"bad check":       {map[string]any{"check": "answers"}, "judge.check"},
+		"short timeout":   {map[string]any{"timeout_ms": 499}, "timeout_ms"},
+		"long timeout":    {map[string]any{"timeout_ms": 30001}, "timeout_ms"},
+		"bad on_failure":  {map[string]any{"on_failure": "block"}, "judge.on_failure"},
+		"timeout a word":  {map[string]any{"timeout_ms": "fast"}, "invalid setting"},
+		"policy a number": {map[string]any{"policy": 3}, "invalid setting"},
+	} {
+		ss := &fakeCacheSettingsStore{}
+		c := judgeAdmin(t, ss)
+		r := c.put(t, "/api/v1/guardrails/settings", map[string]any{"enabled": true, "action": "refuse_403", "judge": tc.judge})
+		body := readBody(t, r)
+		if r.StatusCode != http.StatusBadRequest || !strings.Contains(body, tc.msg) {
+			t.Errorf("%s: %d %s", name, r.StatusCode, body)
+		}
+		if _, saved := ss.saved["guardrails.global"]; saved {
+			t.Errorf("%s: saved", name)
+		}
+	}
+}
+
+// A disabled judge may name a model that is gone: saving the other settings
+// must not fail on it.
+func TestGuardrailPutSettings_DisabledJudgeModelNotLookedUp(t *testing.T) {
+	c := judgeAdmin(t, &fakeCacheSettingsStore{})
+	r := c.put(t, "/api/v1/guardrails/settings", map[string]any{"action": "log_only", "judge": map[string]any{"enabled": false, "model": "deleted-model"}})
+	if r.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT %d %s", r.StatusCode, readBody(t, r))
+	}
+	r.Body.Close()
+}
+
+// The judge keeps its stored value when the body leaves it out.
+func TestGuardrailPutSettings_KeepsJudgeLeftOut(t *testing.T) {
+	ss := &fakeCacheSettingsStore{saved: map[string]string{
+		"guardrails.global": `{"enabled":true,"action":"refuse_403","answers":{"enabled":false,"action":"flag"},"custom_patterns":[],"judge":{"enabled":true,"model":"judge-model","policy":"p","check":"requests","timeout_ms":900,"on_failure":"refuse"}}`,
+	}}
+	c := judgeAdmin(t, ss)
+	r := c.put(t, "/api/v1/guardrails/settings", map[string]any{"enabled": false, "action": "log_only"})
+	if r.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT %d %s", r.StatusCode, readBody(t, r))
+	}
+	r.Body.Close()
+	var s guardrails.Settings
+	if err := json.Unmarshal([]byte(ss.saved["guardrails.global"]), &s); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Judge.Enabled || s.Judge.Model != "judge-model" || s.Judge.TimeoutMS != 900 || s.Judge.OnFailure != "refuse" {
+		t.Fatalf("judge left out was not kept: %+v", s.Judge)
+	}
+}
+
+// An inspector entry names the judge's verdict (and, for a block, its
+// reason), and a judge call says what it is for.
+func TestInspectorEntryJSON_Judge(t *testing.T) {
+	e := inspector.Entry{ID: "e1", Judge: &inspector.JudgeMark{Direction: "request", Verdict: "block", Reason: "asks for malware"}}
+	b, err := json.Marshal(inspectorEntryToJSON(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"judge":{"direction":"request","verdict":"block","reason":"asks for malware"}`) {
+		t.Fatalf("entry %s", b)
+	}
+	b, _ = json.Marshal(inspectorEntryToJSON(inspector.Entry{ID: "e2", Purpose: "guardrail-judge"}))
+	if !strings.Contains(string(b), `"purpose":"guardrail-judge"`) || strings.Contains(string(b), `"judge"`) {
+		t.Fatalf("judge call entry %s", b)
+	}
+	b, _ = json.Marshal(inspectorEntryToJSON(inspector.Entry{ID: "e3"}))
+	if strings.Contains(string(b), "judge") || strings.Contains(string(b), "purpose") {
+		t.Fatalf("plain entry %s", b)
+	}
+}

@@ -188,6 +188,21 @@ type ModelRequest struct {
 	// part of it had reached the caller ("blocked mid-answer").
 	GuardrailDirection string
 	GuardrailMidStream bool
+	// GuardrailTier is "pattern" or "judge": which tier refused the request
+	// or withheld the answer; "" when none did, or for a pattern hit (the
+	// pattern tier was the only one before the judge). A judge's refusal
+	// leaves GuardrailPattern empty.
+	GuardrailTier string
+	// The judge's word on the request or its answer, when it was asked:
+	// JudgeVerdict is "allow", "block" or "failed"; JudgeReason the model's
+	// reason for a block (never shown to the app); JudgeFailure the class of
+	// a failure ("timeout", "error", "malformed", "unavailable").
+	// JudgeDirection is "request" or "answer": what the verdict is about.
+	JudgeVerdict, JudgeReason, JudgeFailure, JudgeDirection string
+
+	// Purpose says why the relay itself made the request: "guardrail-judge"
+	// for a call to the judge model; "" for an app's request.
+	Purpose string
 
 	// Attempts is what the gateway sent to upstreams, in order; empty outside
 	// a dialect endpoint.

@@ -1483,6 +1483,7 @@ components:
             their direction. Ids are unique and no bundled id. A list that
             breaks a rule is refused with 400 naming the first bad pattern.
           items: { $ref: '#/components/schemas/GuardrailCustomPattern' }
+        judge: { $ref: '#/components/schemas/JudgeSettings' }
     GuardrailSettings:
       type: object
       description: >
@@ -1490,9 +1491,9 @@ components:
         (also for a provider without an AI configuration) and to every service
         with an AI configuration. A service's own guardrails section overrides
         enabled and action only when its enabled is true; a section with
-        enabled false counts as no override. answers and custom_patterns are
-        always the global ones.
-      required: [enabled, action, answers, custom_patterns]
+        enabled false counts as no override. answers, custom_patterns and
+        judge are always the global ones.
+      required: [enabled, action, answers, custom_patterns, judge]
       properties:
         enabled: { type: boolean }
         action: { type: string, enum: [log_only, refuse_403, refuse_safe] }
@@ -1514,6 +1515,58 @@ components:
               pattern: { type: string }
               direction: { type: string, enum: [request, answer, both] }
               description: { type: string }
+        judge:
+          type: object
+          description: See JudgeSettings; the defaults are filled in.
+          required: [enabled, model, policy, check, timeout_ms, on_failure]
+          properties:
+            enabled: { type: boolean }
+            model: { type: string }
+            policy: { type: string }
+            check: { type: string, enum: [requests, requests_and_answers] }
+            timeout_ms: { type: integer }
+            on_failure: { type: string, enum: [allow, refuse] }
+    JudgeSettings:
+      type: object
+      description: >
+        The judge: a synthetic model that classifies the text of requests
+        (Chat Completions, Responses, Messages; after redaction, at most
+        16384 bytes) against the policy, after the patterns and before the
+        cache. It gets a bundled English instruction, then the policy, and
+        must answer {"verdict": "allow" | "block", "reason": "…"}. A block
+        refuses the request with 403 guardrail_judge_refused (the reason goes
+        to the audit log and the request inspector, never to the app). With
+        check requests_and_answers an answer that comes in one piece is held
+        and judged too, and withheld on a block (502
+        guardrail_judge_blocked_answer); streamed answers are never judged. A
+        timeout, an error or an answer that is no verdict is a failure:
+        on_failure allow lets the request through, refuse refuses it as a
+        block; each failure is audited as guardrail.judge_failed. Judge calls
+        are metered as usage of the judge model for the judged request's
+        service. Defaults {enabled: false, model: "", policy: "", check:
+        requests, timeout_ms: 3000, on_failure: allow}.
+      properties:
+        enabled: { type: boolean }
+        model:
+          type: string
+          description: The name of an existing synthetic model; required when enabled.
+        policy:
+          type: string
+          maxLength: 4000
+          description: The operator's policy in plain text; maxLength counts characters.
+        check:
+          type: string
+          enum: [requests, requests_and_answers]
+          description: An empty or missing value is stored as requests.
+        timeout_ms:
+          type: integer
+          minimum: 500
+          maximum: 30000
+          description: How long the judge may take; 0 or missing is stored as 3000.
+        on_failure:
+          type: string
+          enum: [allow, refuse]
+          description: An empty or missing value is stored as allow.
     GuardrailAnswerSettings:
       type: object
       description: >
@@ -1634,6 +1687,22 @@ components:
             direction: { type: string, enum: [request, answer] }
             action: { type: string }
             mid_stream: { type: boolean }
+        judge:
+          type: object
+          description: >
+            Set when the judge model was asked about the request or its
+            answer (an answer's verdict replaces the request's): the verdict,
+            the judge's reason for a block, and the class of a failure.
+          required: [direction, verdict]
+          properties:
+            direction: { type: string, enum: [request, answer] }
+            verdict: { type: string, enum: [allow, block, failed] }
+            reason: { type: string }
+            failure: { type: string, enum: [timeout, error, malformed, unavailable] }
+        purpose:
+          type: string
+          enum: [guardrail-judge]
+          description: Set on the relay's own call to the judge model; absent for an app's request.
         translated:
           type: string
           enum: ['', messages-chat, responses-chat, chat-messages, responses-messages]
@@ -3037,8 +3106,12 @@ paths:
         512 characters, not valid Go RE2 syntax or matching empty text, a direction other than
         request, answer or both, or a description longer than 200
         characters. The message names the first bad pattern by id.
-        answers and custom_patterns keep their stored values when the body
-        leaves them out.
+        400 as well for judge settings that break JudgeSettings: no model
+        while enabled, a model that is no existing synthetic model ("judge
+        model … does not exist"), a policy longer than 4000 characters, a
+        timeout_ms outside 500 to 30000, or a check or on_failure outside
+        their values. answers, custom_patterns and judge keep their stored
+        values when the body leaves them out.
       requestBody:
         required: true
         content:

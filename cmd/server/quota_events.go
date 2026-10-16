@@ -158,7 +158,10 @@ type guardrailRefusal struct {
 	// direction is "" for a refused request, "answer" for an answer a
 	// pattern matched.
 	direction string
-	ack       chan struct{}
+	// judge is set for a judgement of the judge model (see judged); pattern
+	// and action are then unused.
+	judge *aigw.JudgeEvent
+	ack   chan struct{}
 }
 
 // guardrailAuditor writes the guardrail.refused audit entries. The chain
@@ -203,6 +206,14 @@ func (g *guardrailAuditor) refused(ctx context.Context, serviceID, pattern, acti
 // with direction "answer"). It never blocks.
 func (g *guardrailAuditor) answered(ctx context.Context, serviceID, pattern, action string) {
 	g.enqueue(ctx, guardrailRefusal{service: serviceID, pattern: pattern, action: action, direction: "answer"})
+}
+
+// judged is the chain's OnGuardrailJudge hook: the judge blocked a request
+// or an answer (audited as guardrail.refused with tier "judge" and the
+// judge's reason), or it failed (guardrail.judge_failed with the class). It
+// never blocks.
+func (g *guardrailAuditor) judged(ctx context.Context, serviceID string, e aigw.JudgeEvent) {
+	g.enqueue(ctx, guardrailRefusal{service: serviceID, judge: &e})
 }
 
 func (g *guardrailAuditor) enqueue(ctx context.Context, job guardrailRefusal) {
@@ -250,6 +261,10 @@ func (g *guardrailAuditor) write(job guardrailRefusal) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), guardrailAuditTimeout)
 	defer cancel()
+	if job.judge != nil {
+		g.writeJudge(ctx, job)
+		return
+	}
 	payload := map[string]string{"pattern": job.pattern, "action": job.action}
 	if job.gatewayKey != "" {
 		payload["gateway_key_id"] = job.gatewayKey
@@ -270,6 +285,48 @@ func (g *guardrailAuditor) write(job guardrailRefusal) {
 		AggregationKey: job.service + "\x00" + job.pattern + "\x00" + job.action + "\x00" + job.gatewayKey + "\x00" + job.direction,
 	})
 	if err != nil {
+		g.log.Warn("guardrail audit: write failed", "service_id", job.service, "err", err)
+	}
+}
+
+// writeJudge appends the entry for one judgement of the judge model. A block
+// is guardrail.refused with tier "judge", the direction and the judge's
+// reason (the model's words about the content, never the content). A failure
+// is guardrail.judge_failed with the class as its reason and what
+// on_failure did; its result is "denied" when the request was refused or
+// the answer withheld, "ok" when it went through. Both are kept to one entry
+// per service, kind, direction and gateway key per hour (for a failure also
+// per class), like the pattern entries: the reason of later blocks in that
+// hour is in the inspector, not here.
+func (g *guardrailAuditor) writeJudge(ctx context.Context, job guardrailRefusal) {
+	e := *job.judge
+	var ev audit.Event
+	if e.Verdict == aigw.JudgeBlock {
+		payload := map[string]string{"tier": "judge", "direction": e.Direction, "action": "block", "reason": e.Reason}
+		if job.gatewayKey != "" {
+			payload["gateway_key_id"] = job.gatewayKey
+		}
+		ev = audit.Event{
+			Action: audit.ActionGuardrailRefused, SubjectID: job.service, SubjectLabel: "judge", Result: "denied",
+			Payload:        audit.MustJSON(payload),
+			AggregationKey: job.service + "\x00judge\x00" + e.Direction + "\x00" + job.gatewayKey,
+		}
+	} else {
+		onFailure, result := guardrails.JudgeOnFailureAllow, "ok"
+		if e.Refused {
+			onFailure, result = guardrails.JudgeOnFailureRefuse, "denied"
+		}
+		payload := map[string]string{"reason": e.Failure, "direction": e.Direction, "on_failure": onFailure}
+		if job.gatewayKey != "" {
+			payload["gateway_key_id"] = job.gatewayKey
+		}
+		ev = audit.Event{
+			Action: audit.ActionGuardrailJudgeFailed, SubjectID: job.service, SubjectLabel: e.Failure, Result: result,
+			Payload:        audit.MustJSON(payload),
+			AggregationKey: job.service + "\x00" + e.Failure + "\x00" + e.Direction + "\x00" + onFailure + "\x00" + job.gatewayKey,
+		}
+	}
+	if err := g.audit.Append(ctx, ev); err != nil {
 		g.log.Warn("guardrail audit: write failed", "service_id", job.service, "err", err)
 	}
 }

@@ -18,10 +18,12 @@ import (
 	"github.com/ankoehn/burrow/internal/inspector"
 )
 
-// What the app is told when an answer is withheld.
+// What the app is told when an answer is withheld: by a pattern, or by the
+// judge.
 const (
-	codeBlockedAnswer    = "guardrail_blocked_answer"
-	messageBlockedAnswer = "the answer was withheld by a guardrail"
+	codeBlockedAnswer      = "guardrail_blocked_answer"
+	codeJudgeBlockedAnswer = "guardrail_judge_blocked_answer"
+	messageBlockedAnswer   = "the answer was withheld by a guardrail"
 )
 
 // maxPendingFrame bounds how much of one server-sent event the guard holds
@@ -60,6 +62,12 @@ const (
 //
 // Anything else (audio, images, an error status, a compressed body) passes
 // uninspected.
+//
+// With judge set, a whole answer is also held and, once the patterns let it
+// pass, shown to the judge; on a block it is replaced by a 502 with code
+// guardrail_judge_blocked_answer. A streamed answer is never judged. Without
+// answer patterns (inspect nil) only whole answers are held, for the judge,
+// and streams pass as they come.
 type answerGuard struct {
 	w       http.ResponseWriter
 	r       *http.Request
@@ -75,6 +83,10 @@ type answerGuard struct {
 	// end. newAnswerGuard sets quick to inspect and full to nil; the chain
 	// sets the bundled and the custom patterns.
 	quick, full func(string) (bool, string)
+	// judge is asked about the text of a whole answer the patterns let
+	// pass; it reports that the answer is to be withheld. nil = answers are
+	// not judged.
+	judge func(text string) (withhold bool)
 	// onStop is called once a stream was stopped, after its error event was
 	// written and flushed: the chain cancels the upstream request with it.
 	onStop func()
@@ -90,6 +102,8 @@ type answerGuard struct {
 	pattern   string
 	blocked   bool
 	midStream bool
+	// judgeBlocked: the judge withheld the answer.
+	judgeBlocked bool
 }
 
 // newAnswerGuard wraps w for a response whose answers are inspected. For a
@@ -134,14 +148,20 @@ func (g *answerGuard) WriteHeader(code int) {
 	case enc != "" && !strings.EqualFold(enc, "identity"):
 		g.mode = modePass
 		g.log.Warn("aigw: answer not inspected: the body is compressed", slog.String("content_encoding", enc))
+	case strings.HasPrefix(ct, "text/event-stream") && g.inspect == nil:
+		g.mode = modePass // streams are not judged, and there are no patterns
 	case strings.HasPrefix(ct, "text/event-stream"):
 		g.mode = modeStream
 		g.parser = sse.NewParser(maxPendingFrame + 1024)
 		g.scanner = guardrails.NewStreamScanner(g.quick, g.full)
 	case ct == "" || isJSONType(ct):
-		if g.action == guardrails.AnswerActionBlock {
+		if g.action == guardrails.AnswerActionBlock || g.judge != nil {
 			g.mode = modeHeld
 			return // the status goes out with the answer, or the error does
+		}
+		if g.inspect == nil {
+			g.mode = modePass
+			break
 		}
 		g.mode = modeTee
 	default:
@@ -335,10 +355,21 @@ func (g *answerGuard) finish(aborted bool) {
 			return
 		}
 		if text, ok := guardrails.AnswerText(g.format, body); ok {
-			if hit, id := g.inspect(text); hit {
-				g.hit, g.pattern, g.blocked = true, id, true
+			if g.inspect != nil {
+				if hit, id := g.inspect(text); hit {
+					g.hit, g.pattern = true, id
+					if g.action == guardrails.AnswerActionBlock {
+						g.blocked = true
+						g.buf.Reset()
+						g.writeBlocked(codeBlockedAnswer)
+						return
+					}
+				}
+			}
+			if g.judge != nil && g.judge(text) {
+				g.judgeBlocked = true
 				g.buf.Reset()
-				g.writeBlocked()
+				g.writeBlocked(codeJudgeBlockedAnswer)
 				return
 			}
 		}
@@ -373,10 +404,10 @@ func (g *answerGuard) finish(aborted bool) {
 }
 
 // writeBlocked replaces a held answer with the 502 error in the caller's
-// format. Nothing of the answer goes out; the upstream's length and encoding
-// do not describe the error.
-func (g *answerGuard) writeBlocked() {
-	body := blockedAnswerBody(g.format)
+// format, with code. Nothing of the answer goes out; the upstream's length and
+// encoding do not describe the error.
+func (g *answerGuard) writeBlocked(code string) {
+	body := blockedAnswerBody(g.format, code)
 	h := g.w.Header()
 	h.Del("Content-Encoding")
 	h.Set("Content-Type", "application/json")
@@ -387,11 +418,11 @@ func (g *answerGuard) writeBlocked() {
 
 // blockedAnswerBody is the body of the 502 that replaces a whole answer: the
 // error shape of the caller's format, as the gateway writes its own errors.
-func blockedAnswerBody(format string) []byte {
+func blockedAnswerBody(format, code string) []byte {
 	if format == guardrails.FormatMessages {
-		return messages.EncodeError(http.StatusBadGateway, codeBlockedAnswer, messageBlockedAnswer)
+		return messages.EncodeError(http.StatusBadGateway, code, messageBlockedAnswer)
 	}
-	return chat.EncodeError(http.StatusBadGateway, codeBlockedAnswer, messageBlockedAnswer)
+	return chat.EncodeError(http.StatusBadGateway, code, messageBlockedAnswer)
 }
 
 // blockedStreamEvent is the one event that ends a stopped stream: for Chat
