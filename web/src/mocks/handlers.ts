@@ -1,4 +1,5 @@
 import { http, HttpResponse } from "msw";
+import { ALL_PERMISSIONS } from "@/auth/permissions";
 import { modelNameError } from "@/lib/modelNames";
 import { db, NO_MODES, type MockDb, type CacheSettingsPayload, type AiProviderRow, type ServiceRow } from "@/mocks/db";
 import type { AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, ClientView, CostGroupBy, CostSummary, Dialect, DialectMode, KnownClient, Service, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
@@ -1571,6 +1572,18 @@ export const handlers = [
   // ---- v0.4.0 automation tokens (spec Part M) ----
   http.get("/api/v1/automation/tokens", ({ request }) =>
     gate(request) ?? json(db.automationTokens.filter((t) => db.me.role === "admin" || t.user_id === db.me.id))),
+  // The three presets of internal/automation, each cut to what the caller holds (the relay does the same).
+  http.get("/api/v1/automation/presets", ({ request }) => {
+    const g = gate(request); if (g) return g;
+    const held = new Set(db.me.permissions ?? []);
+    const cut = (list: string[]) => list.filter((p) => held.has(p));
+    const notOperator = ["users:manage", "roles:manage", "tokens:manage:any", "automation:tokens:manage:any", "settings:manage", "backup:run"];
+    return json([
+      { name: "read-only", description: "Reads everything, changes nothing.", permissions: cut(ALL_PERMISSIONS.filter((p) => p.includes(":read"))) },
+      { name: "operator", description: "Everything except managing users, roles, settings, backups and other people's tokens.", permissions: cut(ALL_PERMISSIONS.filter((p) => !notOperator.includes(p))) },
+      { name: "full", description: "Every permission you hold.", permissions: cut([...ALL_PERMISSIONS]) },
+    ]);
+  }),
   http.post("/api/v1/automation/tokens", async ({ request }) => {
     const g = gate(request); if (g) return g;
     const b = await body<{ name?: string; expires_at?: string | null; permissions?: string[] }>(request);

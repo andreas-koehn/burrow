@@ -451,6 +451,13 @@ select.input { height: 32px; padding-right: 8px; cursor: pointer; }
   border-color: var(--primary);
 }
 .checkbox:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.checkbox:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* permission picker: grouped checkboxes that scroll inside the dialog */
+.permission-picker { max-height: 22rem; overflow-y: auto; min-width: 0; }
+.permission-group + .permission-group { margin-top: var(--space-md); }
+.permission-group-label { display: block; margin-bottom: var(--space-xs); }
+.permission-option { display: flex; align-items: center; gap: var(--space-sm); min-height: 24px; }
 
 .checkbox-row { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
 

@@ -542,6 +542,12 @@ export interface AutomationToken {
   last_used: string | null;
   created_at: string;
 }
+/** A starting list for a new automation token (`GET /automation/presets`), already cut to the caller's permissions. */
+export interface AutomationPreset {
+  name: "read-only" | "operator" | "full";
+  description: string;
+  permissions: string[];
+}
 export interface CreatedAutomationToken {
   token: AutomationToken;
   plaintext: string;

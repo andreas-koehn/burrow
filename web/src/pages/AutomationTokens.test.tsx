@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { renderApp } from "@/mocks/test-utils";
+import { server } from "@/mocks/server";
+import { db } from "@/mocks/db";
+import { ALL_PERMISSIONS } from "@/auth/permissions";
 import AutomationTokens from "@/pages/AutomationTokens";
 
 function mount() {
@@ -88,5 +92,117 @@ describe("Automation tokens", () => {
     expect(
       await screen.findByText("Save this token now — you won't see it again."),
     ).toBeInTheDocument();
+  });
+
+  describe("token dialog presets", () => {
+    const readOnly = ALL_PERMISSIONS.filter((p) => p.includes(":read"));
+    let posted: Record<string, unknown> | null;
+
+    function captureMint() {
+      posted = null;
+      server.use(
+        http.post("/api/v1/automation/tokens", async ({ request }) => {
+          posted = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(
+            {
+              token: { id: "at_new", name: "x", prefix: "bua_new", user_id: "u", role_at_mint: "admin", permissions: [], expires_at: null, last_used: null, created_at: "2026-10-01T00:00:00Z" },
+              plaintext: "bua_new_secret",
+            },
+            { status: 201 },
+          );
+        }),
+      );
+    }
+
+    async function openDialog() {
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: /new token/i }));
+      const dlg = await screen.findByRole("dialog");
+      await within(dlg).findByRole("radio", { name: "Read-only" });
+      return dlg;
+    }
+
+    it("opens on Read-only with its description, the count and a hint for the empty name", async () => {
+      const dlg = await openDialog();
+      expect(within(dlg).getByRole("radio", { name: "Read-only" })).toBeChecked();
+      expect(within(dlg).getByText("Reads everything, changes nothing.")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(within(dlg).getByRole("button", { name: `Permissions (${readOnly.length})` })).toBeInTheDocument(),
+      );
+      expect(within(dlg).getByRole("button", { name: /^create$/i })).toBeDisabled();
+      expect(within(dlg).getByText("Enter a name.")).toBeInTheDocument();
+    });
+
+    it("posts the read-only list once a name is typed", async () => {
+      captureMint();
+      const dlg = await openDialog();
+      await userEvent.type(within(dlg).getByLabelText(/^name$/i), "ci-bot");
+      await userEvent.click(within(dlg).getByRole("button", { name: /^create$/i }));
+      await waitFor(() => expect(posted).not.toBeNull());
+      expect(posted!.permissions).toEqual(readOnly);
+      expect(posted!.name).toBe("ci-bot");
+    });
+
+    it("moves between Operator and Custom as boxes change", async () => {
+      const dlg = await openDialog();
+      await userEvent.click(within(dlg).getByRole("radio", { name: "Operator" }));
+      const operator = ALL_PERMISSIONS.length - 6;
+      expect(await within(dlg).findByRole("button", { name: `Permissions (${operator})` })).toBeInTheDocument();
+      await userEvent.click(within(dlg).getByRole("button", { name: /^Permissions/ }));
+      await userEvent.click(within(dlg).getByRole("checkbox", { name: "audit:read" }));
+      expect(within(dlg).getByRole("radio", { name: "Custom" })).toBeChecked();
+      expect(within(dlg).getByRole("button", { name: `Permissions (${operator - 1})` })).toBeInTheDocument();
+      await userEvent.click(within(dlg).getByRole("checkbox", { name: "audit:read" }));
+      expect(within(dlg).getByRole("radio", { name: "Operator" })).toBeChecked();
+    });
+
+    it("says what an empty list can do", async () => {
+      const dlg = await openDialog();
+      await userEvent.click(within(dlg).getByRole("button", { name: /^Permissions/ }));
+      for (const p of readOnly) await userEvent.click(within(dlg).getByRole("checkbox", { name: p }));
+      expect(within(dlg).getByText("This token can only read its own profile.")).toBeInTheDocument();
+    }, 30000);
+
+    it("disables a permission the reader does not hold", async () => {
+      db.me.permissions = ALL_PERMISSIONS.filter((p) => p !== "users:manage");
+      const dlg = await openDialog();
+      await userEvent.click(within(dlg).getByRole("button", { name: /^Permissions/ }));
+      expect(within(dlg).getByRole("checkbox", { name: "users:manage" })).toBeDisabled();
+    });
+
+    it("falls back to inheriting when the relay has no presets route", async () => {
+      server.use(http.get("/api/v1/automation/presets", () => HttpResponse.json({ error: "not found" }, { status: 404 })));
+      captureMint();
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: /new token/i }));
+      const dlg = await screen.findByRole("dialog");
+      expect(await within(dlg).findByText("The token will inherit your current permissions; the server enforces this too.")).toBeInTheDocument();
+      expect(within(dlg).queryByRole("radiogroup")).toBeNull();
+      expect(within(dlg).queryByRole("button", { name: /^Permissions/ })).toBeNull();
+      await userEvent.type(within(dlg).getByLabelText(/^name$/i), "old");
+      await userEvent.click(within(dlg).getByRole("button", { name: /^create$/i }));
+      await waitFor(() => expect(posted).not.toBeNull());
+      expect(posted).not.toHaveProperty("permissions");
+    });
+
+    it("names the preset a token matches, else Custom with the count", async () => {
+      db.automationTokens.push(
+        { id: "at_ro", name: "reader", prefix: "bua_ro", user_id: db.me.id, role_at_mint: "admin", permissions: [...readOnly], expires_at: null, last_used: null, created_at: "2026-04-01T00:00:00Z" },
+        { id: "at_cu", name: "mixed", prefix: "bua_cu", user_id: db.me.id, role_at_mint: "admin", permissions: ["audit:read", "metrics:read"], expires_at: null, last_used: null, created_at: "2026-04-01T00:00:00Z" },
+      );
+      mount();
+      const table = await screen.findByRole("table", { name: /automation tokens/i });
+      const row = (n: string) => within(table).getByText(n).closest("tr")!;
+      await waitFor(() => expect(row("reader")).toHaveTextContent("Read-only"));
+      expect(row("mixed")).toHaveTextContent("Custom · 2");
+    });
+
+    it("links the saved-token dialog to the MCP page", async () => {
+      captureMint();
+      const dlg = await openDialog();
+      await userEvent.type(within(dlg).getByLabelText(/^name$/i), "ci-bot");
+      await userEvent.click(within(dlg).getByRole("button", { name: /^create$/i }));
+      expect(await screen.findByRole("link", { name: "Use it in an MCP client" })).toHaveAttribute("href", "/settings/mcp");
+    });
   });
 });
