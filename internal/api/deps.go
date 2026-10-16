@@ -312,8 +312,9 @@ type AIModelStore interface {
 // *store.Store satisfies it. The plaintext key is the second result of
 // CreateGatewayKey and comes from nowhere else.
 type AIGatewayKeyStore interface {
-	CreateGatewayKey(ctx context.Context, userID, name string, allowed []string) (store.GatewayKey, string, error)
+	CreateGatewayKey(ctx context.Context, userID, name string, allowed []string, systemText string) (store.GatewayKey, string, error)
 	ListGatewayKeys(ctx context.Context, callerID, callerRole string) ([]store.GatewayKey, error)
+	UpdateGatewayKey(ctx context.Context, callerID, callerRole, id string, name, systemText *string) (store.GatewayKey, error)
 	RevokeGatewayKey(ctx context.Context, callerID, callerRole, id string) error
 }
 

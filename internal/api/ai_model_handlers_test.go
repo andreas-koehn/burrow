@@ -60,6 +60,9 @@ func (f *fakeModelStore) fill(m db.AIModel) db.AIModel {
 	if m.TotalTimeoutS == 0 {
 		m.TotalTimeoutS = 120
 	}
+	if m.Routing == "" {
+		m.Routing = "ordered"
+	}
 	m.UpdatedAt = time.Unix(1_700_000_000, 0).UTC()
 	return m
 }
@@ -346,9 +349,9 @@ func TestPostModel(t *testing.T) {
 		}
 	})
 
-	t.Run("body over 16 KiB", func(t *testing.T) {
+	t.Run("body over 64 KiB", func(t *testing.T) {
 		f := newModelFixture()
-		body := map[string]any{"name": "big", "description": strings.Repeat("x", 17<<10), "targets": valid["targets"]}
+		body := map[string]any{"name": "big", "description": strings.Repeat("x", 65<<10), "targets": valid["targets"]}
 		resp := f.serve(t).post(t, "/api/v1/ai/models", body)
 		if readBody(t, resp); resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusRequestEntityTooLarge {
 			t.Fatalf("status = %d", resp.StatusCode)
@@ -1039,5 +1042,83 @@ func TestModelView_Modes(t *testing.T) {
 		if f.ms.rows[0].Translate || len(f.ms.rows) != 1 {
 			t.Errorf("a refused write changed the store: %+v", f.ms.rows)
 		}
+	})
+}
+
+func TestModelSystemTextAndRouting(t *testing.T) {
+	post := map[string]any{
+		"name": "burrow-text", "system_text": "Answer in German.", "routing": "fastest",
+		"targets": []map[string]string{{"provider": "ollama", "model": "mistral"}},
+	}
+	t.Run("create, read, update", func(t *testing.T) {
+		f := newModelFixture()
+		c := f.serve(t)
+		m := decodeModel(t, wantStatus(t, c.post(t, "/api/v1/ai/models", post), http.StatusCreated))
+		if m.SystemText != "Answer in German." || m.Routing != "fastest" || f.ms.last.SystemText != "Answer in German." || f.ms.last.Routing != "fastest" {
+			t.Fatalf("create: %+v stored %+v", m, f.ms.last)
+		}
+		m = decodeModel(t, wantStatus(t, c.get(t, "/api/v1/ai/models/burrow-text"), http.StatusOK))
+		if m.SystemText != "Answer in German." || m.Routing != "fastest" {
+			t.Fatalf("get: %+v", m)
+		}
+		put := map[string]any{"system_text": "Be brief.", "routing": "cheapest", "targets": post["targets"]}
+		m = decodeModel(t, wantStatus(t, c.put(t, "/api/v1/ai/models/burrow-text", put), http.StatusOK))
+		if m.SystemText != "Be brief." || m.Routing != "cheapest" {
+			t.Fatalf("put: %+v", m)
+		}
+		// Left out on an update keeps what is stored; an empty text clears it.
+		keep := map[string]any{"targets": post["targets"], "description": "d"}
+		m = decodeModel(t, wantStatus(t, c.put(t, "/api/v1/ai/models/burrow-text", keep), http.StatusOK))
+		if m.SystemText != "Be brief." || m.Routing != "cheapest" {
+			t.Fatalf("put without the fields: %+v", m)
+		}
+		clear := map[string]any{"targets": post["targets"], "system_text": ""}
+		m = decodeModel(t, wantStatus(t, c.put(t, "/api/v1/ai/models/burrow-text", clear), http.StatusOK))
+		if m.SystemText != "" || m.Routing != "cheapest" {
+			t.Fatalf("put with an empty text: %+v", m)
+		}
+	})
+	t.Run("defaults on the wire", func(t *testing.T) {
+		f := newModelFixture(simpleModel())
+		body := wantStatus(t, f.serve(t).get(t, "/api/v1/ai/models/burrow-simple"), http.StatusOK)
+		if !strings.Contains(body, `"system_text":""`) || !strings.Contains(body, `"routing":"ordered"`) {
+			t.Errorf("body = %s", body)
+		}
+		create := map[string]any{"name": "burrow-plain", "targets": post["targets"]}
+		wantStatus(t, f.serve(t).post(t, "/api/v1/ai/models", create), http.StatusCreated)
+		if f.ms.last.Routing != "ordered" || f.ms.last.SystemText != "" {
+			t.Errorf("stored %+v", f.ms.last)
+		}
+	})
+	t.Run("refused before the store", func(t *testing.T) {
+		for name, c := range map[string]struct {
+			field string
+			value any
+			msg   string
+		}{
+			"8193 bytes":       {"system_text", strings.Repeat("a", 8193), "system_text is longer than 8192 bytes"},
+			"bytes, not runes": {"system_text", strings.Repeat("é", 4097), "system_text is longer than 8192 bytes"},
+			"random routing":   {"routing", "random", "routing must be ordered, fastest or cheapest"},
+			"empty routing":    {"routing", "", "routing must be ordered, fastest or cheapest"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				f := newModelFixture(simpleModel())
+				body := map[string]any{"name": "burrow-new", "targets": post["targets"], c.field: c.value}
+				got := wantStatus(t, f.serve(t).post(t, "/api/v1/ai/models", body), http.StatusBadRequest)
+				if !strings.Contains(got, c.msg) {
+					t.Errorf("body = %s, want %q", got, c.msg)
+				}
+				put := map[string]any{"targets": post["targets"], c.field: c.value}
+				got = wantStatus(t, f.serve(t).put(t, "/api/v1/ai/models/burrow-simple", put), http.StatusBadRequest)
+				if !strings.Contains(got, c.msg) || f.ms.writes != 0 {
+					t.Errorf("put body = %s, writes %d", got, f.ms.writes)
+				}
+			})
+		}
+	})
+	t.Run("exactly 8192 bytes passes", func(t *testing.T) {
+		f := newModelFixture()
+		body := map[string]any{"name": "burrow-full", "targets": post["targets"], "system_text": strings.Repeat("a", 8192)}
+		wantStatus(t, f.serve(t).post(t, "/api/v1/ai/models", body), http.StatusCreated)
 	})
 }

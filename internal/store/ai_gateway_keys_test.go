@@ -20,7 +20,7 @@ func TestGatewayKeys(t *testing.T) {
 	userB := mustCreateUser(t, s, "gk-b@x", "user").ID
 	admin := mustCreateUser(t, s, "gk-admin@x", "admin").ID
 
-	k, plain, err := s.CreateGatewayKey(ctx, userA, "  laptop ", []string{"burrow-simple", "zai/*", "burrow-simple"})
+	k, plain, err := s.CreateGatewayKey(ctx, userA, "  laptop ", []string{"burrow-simple", "zai/*", "burrow-simple"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestGatewayKeys(t *testing.T) {
 		}
 	}
 
-	k2, plain2, err := s.CreateGatewayKey(ctx, userB, "ci", nil)
+	k2, plain2, err := s.CreateGatewayKey(ctx, userB, "ci", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,16 +65,22 @@ func TestGatewayKeys(t *testing.T) {
 	}
 
 	for name, call := range map[string]func() error{
-		"empty name":      func() error { _, _, err := s.CreateGatewayKey(ctx, userA, " ", nil); return err },
-		"long name":       func() error { _, _, err := s.CreateGatewayKey(ctx, userA, strings.Repeat("n", 121), nil); return err },
-		"control in name": func() error { _, _, err := s.CreateGatewayKey(ctx, userA, "a\nb", nil); return err },
-		"bad entry":       func() error { _, _, err := s.CreateGatewayKey(ctx, userA, "x", []string{"ok-name", "*/x"}); return err },
+		"empty name": func() error { _, _, err := s.CreateGatewayKey(ctx, userA, " ", nil, ""); return err },
+		"long name": func() error {
+			_, _, err := s.CreateGatewayKey(ctx, userA, strings.Repeat("n", 121), nil, "")
+			return err
+		},
+		"control in name": func() error { _, _, err := s.CreateGatewayKey(ctx, userA, "a\nb", nil, ""); return err },
+		"bad entry": func() error {
+			_, _, err := s.CreateGatewayKey(ctx, userA, "x", []string{"ok-name", "*/x"}, "")
+			return err
+		},
 		"too many entries": func() error {
 			many := make([]string, 65)
 			for i := range many {
 				many[i] = fmt.Sprintf("model-%d", i)
 			}
-			_, _, err := s.CreateGatewayKey(ctx, userA, "x", many)
+			_, _, err := s.CreateGatewayKey(ctx, userA, "x", many, "")
 			return err
 		},
 	} {
@@ -140,7 +146,7 @@ func TestRevokeGatewayKeyByID(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	owner := mustCreateUser(t, s, "gk-sys@x", "user").ID
-	k, plain, err := s.CreateGatewayKey(ctx, owner, "ci", nil)
+	k, plain, err := s.CreateGatewayKey(ctx, owner, "ci", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +203,7 @@ func TestRevokeGatewayKeyByID_Concurrent(t *testing.T) {
 	sink := &auditSink{}
 	s.SetAuditLogger(sink)
 	for round := 0; round < 5; round++ {
-		k, _, err := s.CreateGatewayKey(ctx, owner, "ci", nil)
+		k, _, err := s.CreateGatewayKey(ctx, owner, "ci", nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -251,5 +257,80 @@ func TestRevokeGatewayKeyByID_Concurrent(t *testing.T) {
 		if err != nil || key.RevokedAt == nil {
 			t.Fatalf("round %d: the key is not revoked (%v)", round, err)
 		}
+	}
+}
+
+func TestUpdateGatewayKey(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, s, "gku-owner@x", "user").ID
+	other := mustCreateUser(t, s, "gku-other@x", "user").ID
+	admin := mustCreateUser(t, s, "gku-admin@x", "admin").ID
+
+	k, _, err := s.CreateGatewayKey(ctx, owner, "laptop", nil, "Be brief.")
+	if err != nil || k.SystemText != "Be brief." {
+		t.Fatalf("create with system text: %v %+v", err, k)
+	}
+	str := func(v string) *string { return &v }
+
+	// nil pointers change nothing.
+	got, err := s.UpdateGatewayKey(ctx, owner, "user", k.ID, nil, nil)
+	if err != nil || got.Name != "laptop" || got.SystemText != "Be brief." {
+		t.Fatalf("no-op update: %v %+v", err, got)
+	}
+	got, err = s.UpdateGatewayKey(ctx, owner, "user", k.ID, str("  desk "), nil)
+	if err != nil || got.Name != "desk" || got.SystemText != "Be brief." {
+		t.Fatalf("rename: %v %+v", err, got)
+	}
+	got, err = s.UpdateGatewayKey(ctx, owner, "user", k.ID, nil, str("Answer in German."))
+	if err != nil || got.Name != "desk" || got.SystemText != "Answer in German." {
+		t.Fatalf("text: %v %+v", err, got)
+	}
+	got, err = s.UpdateGatewayKey(ctx, owner, "user", k.ID, nil, str(""))
+	if err != nil || got.SystemText != "" {
+		t.Fatalf("clear text: %v %+v", err, got)
+	}
+
+	for name, c := range map[string]struct {
+		name, text *string
+	}{
+		"empty name":   {str(" "), nil},
+		"long name":    {str(strings.Repeat("n", 121)), nil},
+		"control name": {str("a\nb"), nil},
+		"long text":    {nil, str(strings.Repeat("t", MaxSystemTextBytes+1))},
+	} {
+		if _, err := s.UpdateGatewayKey(ctx, owner, "user", k.ID, c.name, c.text); !errors.Is(err, ErrInvalidKey) {
+			t.Errorf("%s: err = %v, want ErrInvalidKey", name, err)
+		}
+	}
+	if _, err := s.UpdateGatewayKey(ctx, owner, "user", k.ID, nil, str(strings.Repeat("é", MaxSystemTextBytes/2))); err != nil {
+		t.Errorf("exactly %d bytes must pass: %v", MaxSystemTextBytes, err)
+	}
+
+	// A stranger and a missing id look alike.
+	if _, err := s.UpdateGatewayKey(ctx, other, "user", k.ID, str("x"), nil); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("stranger err = %v", err)
+	}
+	if _, err := s.UpdateGatewayKey(ctx, owner, "user", "missing", str("x"), nil); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("missing err = %v", err)
+	}
+	if _, err := s.UpdateGatewayKey(ctx, "", "user", k.ID, str("x"), nil); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("empty caller err = %v", err)
+	}
+	if got, _ := s.UpdateGatewayKey(ctx, admin, "admin", k.ID, str("by-admin"), nil); got.Name != "by-admin" {
+		t.Fatalf("admin update: %+v", got)
+	}
+
+	// A revoked key can still be renamed.
+	if err := s.RevokeGatewayKey(ctx, owner, "user", k.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.UpdateGatewayKey(ctx, owner, "user", k.ID, str("old laptop"), nil)
+	if err != nil || got.Name != "old laptop" || got.RevokedAt == nil {
+		t.Fatalf("rename revoked: %v %+v", err, got)
+	}
+
+	if _, _, err := s.CreateGatewayKey(ctx, owner, "x", nil, strings.Repeat("t", MaxSystemTextBytes+1)); !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("create with long text err = %v", err)
 	}
 }

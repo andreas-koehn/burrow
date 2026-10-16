@@ -24,6 +24,7 @@ type GatewayKey struct {
 	KeyPrefix     string // first 8 characters of the key, for display
 	UserID        string
 	AllowedModels []string // never nil; empty = every model
+	SystemText    string   // put in front of the app's system content; empty = none
 	LastUsed      *time.Time
 	CreatedAt     time.Time
 	RevokedAt     *time.Time
@@ -45,6 +46,8 @@ const (
 	maxGatewayKeyAllowed = 64
 )
 
+const msgSystemTextLong = "system_text is longer than 8192 bytes"
+
 func invalidKey(reason string) error { return fmt.Errorf("%w: %s", ErrInvalidKey, reason) }
 
 // newGatewayKey returns a fresh plaintext key: the prefix plus 32 random bytes.
@@ -59,18 +62,22 @@ func newGatewayKey() (string, error) {
 func toGatewayKey(k db.AIGatewayKey) GatewayKey {
 	return GatewayKey{
 		ID: k.ID, Name: k.Name, KeyPrefix: k.KeyPrefix, UserID: k.UserID,
-		AllowedModels: append([]string{}, k.AllowedModels...),
-		LastUsed:      k.LastUsed, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt,
+		AllowedModels: append([]string{}, k.AllowedModels...), SystemText: k.SystemText,
+		LastUsed: k.LastUsed, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt,
 	}
 }
 
 // CreateGatewayKey makes a gateway key owned by userID. The plaintext is
 // returned here and nowhere else: the database keeps its hash. allowed
 // restricts the key to those models (see ValidAllowEntry); empty means all.
-func (s *Store) CreateGatewayKey(ctx context.Context, userID, name string, allowed []string) (GatewayKey, string, error) {
+// systemText is put in front of the system content of the key's requests.
+func (s *Store) CreateGatewayKey(ctx context.Context, userID, name string, allowed []string, systemText string) (GatewayKey, string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > maxGatewayKeyName || hasControl(name) {
 		return GatewayKey{}, "", invalidKey("name must be 1-120 characters without control characters")
+	}
+	if len([]byte(systemText)) > MaxSystemTextBytes {
+		return GatewayKey{}, "", invalidKey(msgSystemTextLong)
 	}
 	if len(allowed) > maxGatewayKeyAllowed {
 		return GatewayKey{}, "", invalidKey("at most 64 allowed models")
@@ -93,7 +100,7 @@ func (s *Store) CreateGatewayKey(ctx context.Context, userID, name string, allow
 	id := uuid.NewString()
 	if err := s.q.CreateAIGatewayKey(ctx, db.AIGatewayKey{
 		ID: id, Name: name, KeyHash: auth.HashToken(plaintext), KeyPrefix: plaintext[:gatewayKeyShown],
-		UserID: userID, AllowedModels: entries,
+		UserID: userID, AllowedModels: entries, SystemText: systemText,
 	}); err != nil {
 		return GatewayKey{}, "", err
 	}
@@ -144,6 +151,43 @@ func (s *Store) RevokeGatewayKey(ctx context.Context, callerID, callerRole, id s
 		return err
 	}
 	return nil
+}
+
+// UpdateGatewayKey changes the name and the system text of a key; a nil
+// pointer leaves that field as it is. Its owner or an admin may; for anyone
+// else the key looks like one that does not exist. A revoked key can still
+// be changed.
+func (s *Store) UpdateGatewayKey(ctx context.Context, callerID, callerRole, id string, name, systemText *string) (GatewayKey, error) {
+	k, err := s.q.GetAIGatewayKey(ctx, id)
+	if errors.Is(err, db.ErrNotFound) {
+		return GatewayKey{}, ErrKeyNotFound
+	}
+	if err != nil {
+		return GatewayKey{}, err
+	}
+	if callerRole != "admin" && (callerID == "" || k.UserID != callerID) {
+		return GatewayKey{}, ErrKeyNotFound
+	}
+	newName, newText := k.Name, k.SystemText
+	if name != nil {
+		newName = strings.TrimSpace(*name)
+		if newName == "" || len(newName) > maxGatewayKeyName || hasControl(newName) {
+			return GatewayKey{}, invalidKey("name must be 1-120 characters without control characters")
+		}
+	}
+	if systemText != nil {
+		if len([]byte(*systemText)) > MaxSystemTextBytes {
+			return GatewayKey{}, invalidKey(msgSystemTextLong)
+		}
+		newText = *systemText
+	}
+	if err := s.q.UpdateAIGatewayKey(ctx, id, newName, newText); errors.Is(err, db.ErrNotFound) {
+		return GatewayKey{}, ErrKeyNotFound
+	} else if err != nil {
+		return GatewayKey{}, err
+	}
+	k.Name, k.SystemText = newName, newText
+	return toGatewayKey(k), nil
 }
 
 // RevokeGatewayKeyByID revokes the key at once, for the system itself: the

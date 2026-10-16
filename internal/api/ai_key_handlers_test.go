@@ -26,20 +26,25 @@ type fakeKeyStore struct {
 	creates, revokes       int
 	lastUser, lastName     string
 	lastAllowed            []string
+	lastText               string
+	updates                int
+	updCaller, updRole     string
+	updID                  string
+	updName, updText       *string
 	listCaller, listRole   string
 	revokeCaller, revokeID string
 	revokeRole             string
 }
 
-func (f *fakeKeyStore) CreateGatewayKey(_ context.Context, userID, name string, allowed []string) (store.GatewayKey, string, error) {
+func (f *fakeKeyStore) CreateGatewayKey(_ context.Context, userID, name string, allowed []string, systemText string) (store.GatewayKey, string, error) {
 	f.creates++
-	f.lastUser, f.lastName, f.lastAllowed = userID, name, allowed
+	f.lastUser, f.lastName, f.lastAllowed, f.lastText = userID, name, allowed, systemText
 	if f.err != nil {
 		return store.GatewayKey{}, "", f.err
 	}
 	k := store.GatewayKey{
 		ID: fmt.Sprintf("key-%d", f.creates), Name: name, KeyPrefix: testGatewayKey[:8], UserID: userID,
-		AllowedModels: append([]string{}, allowed...), CreatedAt: time.Unix(1_700_000_000, 0).UTC(),
+		AllowedModels: append([]string{}, allowed...), SystemText: systemText, CreatedAt: time.Unix(1_700_000_000, 0).UTC(),
 	}
 	f.rows = append(f.rows, k)
 	return k, testGatewayKey, nil
@@ -67,6 +72,26 @@ func (f *fakeKeyStore) RevokeGatewayKey(_ context.Context, callerID, callerRole,
 		}
 	}
 	return store.ErrKeyNotFound
+}
+
+func (f *fakeKeyStore) UpdateGatewayKey(_ context.Context, callerID, callerRole, id string, name, systemText *string) (store.GatewayKey, error) {
+	f.updates++
+	f.updCaller, f.updRole, f.updID, f.updName, f.updText = callerID, callerRole, id, name, systemText
+	if f.err != nil {
+		return store.GatewayKey{}, f.err
+	}
+	for i, k := range f.rows {
+		if k.ID == id && (callerRole == "admin" || k.UserID == callerID) {
+			if name != nil {
+				f.rows[i].Name = *name
+			}
+			if systemText != nil {
+				f.rows[i].SystemText = *systemText
+			}
+			return f.rows[i], nil
+		}
+	}
+	return store.GatewayKey{}, store.ErrKeyNotFound
 }
 
 type keyFixture struct {
@@ -403,5 +428,135 @@ func TestGetGatewayInfo(t *testing.T) {
 	want = `{"endpoints":[{"dialect":"openai","base_url":""},{"dialect":"anthropic","base_url":""}]}`
 	if strings.TrimSpace(body) != want {
 		t.Errorf("no auth domain: body = %s", body)
+	}
+}
+
+func TestPostKey_SystemText(t *testing.T) {
+	f := newKeyFixture("user")
+	c := f.serve(t)
+	body := wantStatus(t, c.post(t, "/api/v1/ai/keys", map[string]any{"name": "laptop", "system_text": "Be brief."}), http.StatusCreated)
+	if f.ks.lastText != "Be brief." || !strings.Contains(body, `"system_text":"Be brief."`) {
+		t.Errorf("stored %q, body %s", f.ks.lastText, body)
+	}
+	// Without the field the key has none, and the field is always present.
+	body = wantStatus(t, c.post(t, "/api/v1/ai/keys", map[string]any{"name": "plain"}), http.StatusCreated)
+	if !strings.Contains(body, `"system_text":""`) {
+		t.Errorf("body = %s", body)
+	}
+	// The limit is bytes, checked before the store.
+	f2 := newKeyFixture("user")
+	resp := f2.serve(t).post(t, "/api/v1/ai/keys", map[string]any{"name": "k", "system_text": strings.Repeat("a", 8193)})
+	if got := wantStatus(t, resp, http.StatusBadRequest); !strings.Contains(got, "system_text is longer than 8192 bytes") || f2.ks.creates != 0 {
+		t.Errorf("body %s, creates %d", got, f2.ks.creates)
+	}
+}
+
+func TestPutKey(t *testing.T) {
+	rows := func() []store.GatewayKey {
+		return []store.GatewayKey{
+			{ID: "k-mine", Name: "mine", KeyPrefix: "bgw_AAAA", UserID: "u-self", SystemText: "old"},
+			{ID: "k-other", Name: "theirs", KeyPrefix: "bgw_BBBB", UserID: "u-other"},
+		}
+	}
+
+	t.Run("owner renames and sets text", func(t *testing.T) {
+		f := newKeyFixture("user")
+		f.ks.rows = rows()
+		body := wantStatus(t, f.serve(t).put(t, "/api/v1/ai/keys/k-mine", map[string]any{"name": "desk", "system_text": "new"}), http.StatusOK)
+		var got map[string]any
+		if err := json.Unmarshal([]byte(body), &got); err != nil || got["name"] != "desk" || got["system_text"] != "new" || got["id"] != "k-mine" {
+			t.Fatalf("body = %s (%v)", body, err)
+		}
+		if _, has := got["key"]; has {
+			t.Errorf("update answer carries a key: %s", body)
+		}
+		if f.ks.updCaller != "u-self" || f.ks.updRole != "user" || f.ks.updID != "k-mine" {
+			t.Errorf("store called with %q / %q / %q", f.ks.updCaller, f.ks.updRole, f.ks.updID)
+		}
+		if len(f.aud.events) != 1 || f.aud.events[0].Action != "ai_gateway_key.update" || f.aud.events[0].SubjectID != "k-mine" {
+			t.Fatalf("audit = %+v", f.aud.events)
+		}
+		if p := auditPayload(t, f.aud.events[0]); strings.Contains(fmt.Sprint(p), "new") {
+			t.Errorf("the audit payload carries the system text: %v", p)
+		}
+	})
+
+	t.Run("system text only leaves the name", func(t *testing.T) {
+		f := newKeyFixture("user")
+		f.ks.rows = rows()
+		body := wantStatus(t, f.serve(t).put(t, "/api/v1/ai/keys/k-mine", map[string]any{"system_text": ""}), http.StatusOK)
+		if f.ks.updName != nil || f.ks.updText == nil || *f.ks.updText != "" || !strings.Contains(body, `"name":"mine"`) || !strings.Contains(body, `"system_text":""`) {
+			t.Errorf("name %v text %v body %s", f.ks.updName, f.ks.updText, body)
+		}
+	})
+
+	t.Run("another user's key is a missing key", func(t *testing.T) {
+		f := newKeyFixture("user")
+		f.ks.rows = rows()
+		c := f.serve(t)
+		other := wantStatus(t, c.put(t, "/api/v1/ai/keys/k-other", map[string]any{"name": "x"}), http.StatusNotFound)
+		missing := wantStatus(t, c.put(t, "/api/v1/ai/keys/k-nope", map[string]any{"name": "x"}), http.StatusNotFound)
+		if other != missing || !strings.Contains(other, "key not found") {
+			t.Errorf("answers differ: %q vs %q", other, missing)
+		}
+		if f.ks.rows[1].Name != "theirs" || len(f.aud.events) != 0 {
+			t.Errorf("the key changed or the refusal was audited")
+		}
+	})
+
+	t.Run("admin updates any", func(t *testing.T) {
+		f := newKeyFixture("admin")
+		f.ks.rows = rows()
+		wantStatus(t, f.serve(t).put(t, "/api/v1/ai/keys/k-other", map[string]any{"name": "x"}), http.StatusOK)
+		if f.ks.rows[1].Name != "x" {
+			t.Error("not renamed")
+		}
+	})
+
+	t.Run("refused before the store", func(t *testing.T) {
+		for name, body := range map[string]any{
+			"empty name":     map[string]any{"name": ""},
+			"blank name":     map[string]any{"name": "  "},
+			"long name":      map[string]any{"name": strings.Repeat("n", 121)},
+			"control name":   map[string]any{"name": "a\nb"},
+			"long text":      map[string]any{"system_text": strings.Repeat("a", 8193)},
+			"unknown field":  map[string]any{"user_id": "x"},
+			"allowed models": map[string]any{"allowed_models": []string{"a"}},
+			"not json":       "nope",
+		} {
+			t.Run(name, func(t *testing.T) {
+				f := newKeyFixture("user")
+				f.ks.rows = rows()
+				wantStatus(t, f.serve(t).put(t, "/api/v1/ai/keys/k-mine", body), http.StatusBadRequest)
+				if f.ks.updates != 0 {
+					t.Error("the store was called")
+				}
+			})
+		}
+	})
+
+	t.Run("overlong id and no store", func(t *testing.T) {
+		f := newKeyFixture("admin")
+		wantStatus(t, f.serve(t).put(t, "/api/v1/ai/keys/"+strings.Repeat("a", 200), map[string]any{"name": "x"}), http.StatusNotFound)
+		f.d.AIGatewayKeys = nil
+		wantStatus(t, f.serve(t).put(t, "/api/v1/ai/keys/k", map[string]any{"name": "x"}), http.StatusNotFound)
+		if f.ks.updates != 0 {
+			t.Error("the store was called")
+		}
+	})
+}
+
+// A token without ai:configure gets 403 on the update; with ai:configure:own
+// it reaches its user's keys only.
+func TestPutKey_Access(t *testing.T) {
+	h := newAuthzHarness(t)
+	route := apiRoute{http.MethodPut, "/api/v1/ai/keys/{id}"}
+	if rec := h.call(t, route, h.token(t, "admin", "ai:read:any")); rec.Code != http.StatusForbidden {
+		t.Errorf("a token with ai:read:any only: %d, want 403", rec.Code)
+	}
+	for _, perm := range []string{"ai:configure:own", "ai:configure:any"} {
+		if rec := h.call(t, route, h.token(t, "admin", perm)); rec.Code == http.StatusForbidden || rec.Code == http.StatusUnauthorized {
+			t.Errorf("a token with %s: %d, want it to pass", perm, rec.Code)
+		}
 	}
 }

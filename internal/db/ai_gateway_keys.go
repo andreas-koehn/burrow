@@ -17,18 +17,19 @@ type AIGatewayKey struct {
 	KeyPrefix     string // first 8 characters of the plaintext, for display
 	UserID        string
 	AllowedModels []string // never nil after a read; empty = all models
+	SystemText    string   // put in front of the app's system content; empty = none
 	LastUsed      *time.Time
 	CreatedAt     time.Time
 	RevokedAt     *time.Time
 }
 
-const aiGatewayKeyCols = `id, name, key_hash, key_prefix, user_id, allowed_models, last_used, created_at, revoked_at`
+const aiGatewayKeyCols = `id, name, key_hash, key_prefix, user_id, allowed_models, system_text, last_used, created_at, revoked_at`
 
 func scanAIGatewayKey(row interface{ Scan(...any) error }) (AIGatewayKey, error) {
 	var k AIGatewayKey
 	var allowed string
 	var lastUsed, revoked sql.NullTime
-	if err := row.Scan(&k.ID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.UserID, &allowed, &lastUsed, &k.CreatedAt, &revoked); err != nil {
+	if err := row.Scan(&k.ID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.UserID, &allowed, &k.SystemText, &lastUsed, &k.CreatedAt, &revoked); err != nil {
 		return k, err
 	}
 	k.AllowedModels = []string{}
@@ -58,8 +59,8 @@ func (x *DB) CreateAIGatewayKey(ctx context.Context, k AIGatewayKey) error {
 		return fmt.Errorf("create ai gateway key: %w", err)
 	}
 	if _, err := x.sqlDB.ExecContext(ctx,
-		`INSERT INTO ai_gateway_keys(id, name, key_hash, key_prefix, user_id, allowed_models) VALUES(?,?,?,?,?,?)`,
-		k.ID, k.Name, k.KeyHash, k.KeyPrefix, k.UserID, string(allowed)); err != nil {
+		`INSERT INTO ai_gateway_keys(id, name, key_hash, key_prefix, user_id, allowed_models, system_text) VALUES(?,?,?,?,?,?,?)`,
+		k.ID, k.Name, k.KeyHash, k.KeyPrefix, k.UserID, string(allowed), k.SystemText); err != nil {
 		return fmt.Errorf("create ai gateway key: %w", err)
 	}
 	return nil
@@ -110,6 +111,17 @@ func (x *DB) ListAIGatewayKeys(ctx context.Context, userID string) ([]AIGatewayK
 		out = append(out, k)
 	}
 	return out, rows.Err()
+}
+
+// UpdateAIGatewayKey replaces the name and the system text of the key, revoked
+// or not; ErrNotFound when there is no such key.
+func (x *DB) UpdateAIGatewayKey(ctx context.Context, id, name, systemText string) error {
+	res, err := x.sqlDB.ExecContext(ctx,
+		`UPDATE ai_gateway_keys SET name=?, system_text=? WHERE id=?`, name, systemText, id)
+	if err != nil {
+		return fmt.Errorf("update ai gateway key: %w", err)
+	}
+	return notFoundIfNoRows(res, "update ai gateway key")
 }
 
 // RevokeAIGatewayKey sets revoked_at once; a second call keeps the first time.

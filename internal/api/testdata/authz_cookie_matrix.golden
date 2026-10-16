@@ -1,4 +1,5 @@
 admin DELETE /api/v1/ai/keys/{id} 404
+admin PUT /api/v1/ai/keys/{id} 404
 admin DELETE /api/v1/ai/models/{name} 404
 admin DELETE /api/v1/ai/providers/{slug} 404
 admin DELETE /api/v1/ai/providers/{slug}/models 400
@@ -153,6 +154,7 @@ admin PUT /api/v1/settings/retention 204
 admin PUT /api/v1/tunnels/{id}/access-mode 400
 admin PUT /api/v1/webhooks/{id} 400
 user DELETE /api/v1/ai/keys/{id} 404
+user PUT /api/v1/ai/keys/{id} 404
 user DELETE /api/v1/ai/models/{name} 403
 user DELETE /api/v1/ai/providers/{slug} 403
 user DELETE /api/v1/ai/providers/{slug}/models 403
@@ -307,6 +309,7 @@ user PUT /api/v1/settings/retention 403
 user PUT /api/v1/tunnels/{id}/access-mode 400
 user PUT /api/v1/webhooks/{id} 403
 cr-none DELETE /api/v1/ai/keys/{id} 404
+cr-none PUT /api/v1/ai/keys/{id} 403
 cr-none DELETE /api/v1/ai/models/{name} 403
 cr-none DELETE /api/v1/ai/providers/{slug} 403
 cr-none DELETE /api/v1/ai/providers/{slug}/models 403
@@ -461,6 +464,7 @@ cr-none PUT /api/v1/settings/retention 403
 cr-none PUT /api/v1/tunnels/{id}/access-mode 400
 cr-none PUT /api/v1/webhooks/{id} 403
 cr-legacy DELETE /api/v1/ai/keys/{id} 404
+cr-legacy PUT /api/v1/ai/keys/{id} 404
 cr-legacy DELETE /api/v1/ai/models/{name} 404
 cr-legacy DELETE /api/v1/ai/providers/{slug} 403
 cr-legacy DELETE /api/v1/ai/providers/{slug}/models 403

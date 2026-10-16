@@ -556,3 +556,35 @@ func TestDeleteUser_RefusedWhileModelTargetsProvider(t *testing.T) {
 		t.Fatalf("provider after its owner went: %v", err)
 	}
 }
+
+func TestModelSystemTextAndRouting(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	modelFixture(t, s)
+
+	got, err := s.CreateModel(ctx, simpleModel())
+	if err != nil || got.SystemText != "" || got.Routing != "ordered" {
+		t.Fatalf("defaults: %v %+v", err, got)
+	}
+	m := simpleModel()
+	m.SystemText, m.Routing = "Answer in German.", "cheapest"
+	if got, err = s.UpdateModel(ctx, "burrow-simple", m); err != nil || got.SystemText != "Answer in German." || got.Routing != "cheapest" {
+		t.Fatalf("update: %v %+v", err, got)
+	}
+	m.SystemText = strings.Repeat("t", MaxSystemTextBytes)
+	if _, err = s.UpdateModel(ctx, "burrow-simple", m); err != nil {
+		t.Fatalf("exactly the limit must pass: %v", err)
+	}
+	m.SystemText = strings.Repeat("é", MaxSystemTextBytes/2+1)
+	if _, err = s.UpdateModel(ctx, "burrow-simple", m); !errors.Is(err, ErrInvalidModel) || !strings.Contains(err.Error(), "system_text is longer than 8192 bytes") {
+		t.Fatalf("over the limit in bytes: %v", err)
+	}
+	m.SystemText, m.Routing = "", "random"
+	if _, err = s.CreateModel(ctx, m); !errors.Is(err, ErrInvalidModel) || !strings.Contains(err.Error(), "routing must be ordered, fastest or cheapest") {
+		t.Fatalf("bad routing: %v", err)
+	}
+	m.Name, m.Routing = "burrow-empty-routing", ""
+	if got, err = s.CreateModel(ctx, m); err != nil || got.Routing != "ordered" {
+		t.Fatalf("empty routing: %v %+v", err, got)
+	}
+}

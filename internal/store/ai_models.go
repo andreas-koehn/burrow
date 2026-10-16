@@ -44,6 +44,12 @@ const (
 	maxTimeoutSecs      = 600
 )
 
+// MaxSystemTextBytes bounds the system text of a model and of a gateway key.
+const MaxSystemTextBytes = 8192
+
+// ValidRouting holds the orders a model's targets can be tried in.
+var ValidRouting = map[string]bool{"ordered": true, "fastest": true, "cheapest": true}
+
 // modelDialects are the API formats a target can have.
 var modelDialects = []string{"openai", "anthropic"}
 
@@ -68,6 +74,15 @@ func (s *Store) normalizeModel(ctx context.Context, m db.AIModel) (db.AIModel, e
 	m.Description = strings.TrimSpace(m.Description)
 	if len(m.Description) > maxModelDescription || hasControl(m.Description) {
 		return m, invalidModel("description must be at most 500 characters without control characters")
+	}
+	if len([]byte(m.SystemText)) > MaxSystemTextBytes {
+		return m, invalidModel("system_text is longer than 8192 bytes")
+	}
+	if m.Routing == "" {
+		m.Routing = "ordered"
+	}
+	if !ValidRouting[m.Routing] {
+		return m, invalidModel("routing must be ordered, fastest or cheapest")
 	}
 	const targetCount = "a model needs at least one target and at most 8 per format"
 	if len(m.Targets) == 0 || len(m.Targets) > maxModelTargets*len(modelDialects) {

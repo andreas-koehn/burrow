@@ -568,13 +568,17 @@ func (*fullDepsStub) DeleteModel(context.Context, string) error {
 }
 
 // AIGatewayKeyStore.
-func (*fullDepsStub) CreateGatewayKey(context.Context, string, string, []string) (store.GatewayKey, string, error) {
+func (*fullDepsStub) CreateGatewayKey(context.Context, string, string, []string, string) (store.GatewayKey, string, error) {
 	stubPanic("CreateGatewayKey")
 	return store.GatewayKey{}, "", nil
 }
 func (*fullDepsStub) ListGatewayKeys(context.Context, string, string) ([]store.GatewayKey, error) {
 	stubPanic("ListGatewayKeys")
 	return nil, nil
+}
+func (*fullDepsStub) UpdateGatewayKey(context.Context, string, string, string, *string, *string) (store.GatewayKey, error) {
+	stubPanic("UpdateGatewayKey")
+	return store.GatewayKey{}, nil
 }
 func (*fullDepsStub) RevokeGatewayKey(context.Context, string, string, string) error {
 	stubPanic("RevokeGatewayKey")

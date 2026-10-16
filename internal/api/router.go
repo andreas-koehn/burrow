@@ -378,6 +378,7 @@ func NewRouter(d Deps) http.Handler {
 			r.Delete("/ai/models/{name}", d.DeleteAIModel)
 			r.Get("/ai/keys", d.GetAIKeys)
 			r.Post("/ai/keys", d.PostAIKey)
+			r.Put("/ai/keys/{id}", d.PutAIKey)
 			r.Delete("/ai/keys/{id}", d.DeleteAIKey)
 			// The captured requests of every provider in one list. The
 			// handler gates it like the per-service inspector list:

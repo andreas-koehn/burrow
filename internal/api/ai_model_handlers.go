@@ -54,9 +54,14 @@ type aiModelResp struct {
 	Enabled             bool   `json:"enabled"`
 	FallbackOnRateLimit bool   `json:"fallback_on_rate_limit"`
 	// A request in a format the model has no target for may be translated.
-	Translate       bool `json:"translate"`
-	AttemptTimeoutS int  `json:"attempt_timeout_s"`
-	TotalTimeoutS   int  `json:"total_timeout_s"`
+	Translate bool `json:"translate"`
+	// SystemText goes in front of the app's own system content; at most 8192
+	// bytes. Routing is the order the targets are tried in: "ordered",
+	// "fastest" or "cheapest".
+	SystemText      string `json:"system_text"`
+	Routing         string `json:"routing"`
+	AttemptTimeoutS int    `json:"attempt_timeout_s"`
+	TotalTimeoutS   int    `json:"total_timeout_s"`
 	// Within one dialect the order is the order the targets are tried in.
 	Targets []aiModelTargetResp `json:"targets"`
 	// The formats the model has targets in, sorted; derived from the
@@ -78,6 +83,14 @@ type aiModelResp struct {
 	TranslationPairs map[string][]string `json:"translation_pairs"`
 	CreatedAt        time.Time           `json:"created_at"`
 	UpdatedAt        time.Time           `json:"updated_at"`
+}
+
+// routingOrOrdered reads an empty routing as the default.
+func routingOrOrdered(r string) string {
+	if r == "" {
+		return "ordered"
+	}
+	return r
 }
 
 // providersBySlug loads every provider once for a model view. Without a
@@ -122,6 +135,7 @@ func (d Deps) modelView(m db.AIModel, providers map[string]db.AIProvider) aiMode
 	out := aiModelResp{
 		Name: m.Name, Description: m.Description, Enabled: m.Enabled,
 		FallbackOnRateLimit: m.FallbackOnRateLimit, Translate: m.Translate,
+		SystemText: m.SystemText, Routing: routingOrOrdered(m.Routing),
 		AttemptTimeoutS: m.AttemptTimeoutS, TotalTimeoutS: m.TotalTimeoutS,
 		Targets:   make([]aiModelTargetResp, 0, len(m.Targets)),
 		Dialects:  []string{},
@@ -190,7 +204,10 @@ type aiModelReq struct {
 	Enabled             *bool `json:"enabled"`
 	FallbackOnRateLimit bool  `json:"fallback_on_rate_limit"`
 	// Left out: off on create, unchanged on update.
-	Translate       *bool           `json:"translate"`
+	Translate *bool `json:"translate"`
+	// Left out: empty text and "ordered" on create, unchanged on update.
+	SystemText      *string         `json:"system_text"`
+	Routing         *string         `json:"routing"`
 	AttemptTimeoutS int             `json:"attempt_timeout_s"`
 	TotalTimeoutS   int             `json:"total_timeout_s"`
 	Targets         []aiModelTarget `json:"targets"`
@@ -198,21 +215,30 @@ type aiModelReq struct {
 
 const (
 	// maxModelBody bounds a model body: 16 targets of a 63-byte slug and a
-	// 200-byte model id plus a 500-byte description fit several times.
-	maxModelBody = 16 << 10
+	// 200-byte model id plus a 500-byte description fit several times, and so
+	// does a system text of 8192 bytes written as \u00XX escapes.
+	maxModelBody = 64 << 10
 	// maxModelReqTargets is 8 per dialect for the two dialects; the store
 	// counts per dialect.
 	maxModelReqTargets = 16
 
 	msgModelName     = "name must be 2-63 characters: lowercase letters, digits, dot, underscore, hyphen"
 	msgModelTargets  = "a model needs at least one target and at most 8 per format"
+	msgModelText     = "system_text is longer than 8192 bytes"
+	msgModelRouting  = "routing must be ordered, fastest or cheapest"
 	msgModelNotFound = "model not found"
 	msgModelsOff     = "synthetic models are not available on this relay"
 )
 
-// model turns the body into the store's type. enabled and translate are the
-// values used when the body leaves the field out.
-func (in aiModelReq) model(enabled, translate bool) db.AIModel {
+// model turns the body into the store's type. enabled, translate, systemText
+// and routing are the values used when the body leaves the field out.
+func (in aiModelReq) model(enabled, translate bool, systemText, routing string) db.AIModel {
+	if in.SystemText != nil {
+		systemText = *in.SystemText
+	}
+	if in.Routing != nil {
+		routing = *in.Routing
+	}
 	if in.Enabled != nil {
 		enabled = *in.Enabled
 	}
@@ -222,6 +248,7 @@ func (in aiModelReq) model(enabled, translate bool) db.AIModel {
 	m := db.AIModel{
 		Name: in.Name, Description: in.Description, Enabled: enabled,
 		FallbackOnRateLimit: in.FallbackOnRateLimit, Translate: translate,
+		SystemText: systemText, Routing: routing,
 		AttemptTimeoutS: in.AttemptTimeoutS, TotalTimeoutS: in.TotalTimeoutS,
 		Targets: make([]db.AIModelTarget, 0, len(in.Targets)),
 	}
@@ -241,6 +268,14 @@ func validModelReq(w http.ResponseWriter, in aiModelReq) bool {
 	}
 	if len(in.Targets) == 0 || len(in.Targets) > maxModelReqTargets {
 		writeErr(w, http.StatusBadRequest, msgModelTargets)
+		return false
+	}
+	if in.SystemText != nil && len(*in.SystemText) > store.MaxSystemTextBytes {
+		writeErr(w, http.StatusBadRequest, msgModelText)
+		return false
+	}
+	if in.Routing != nil && !store.ValidRouting[*in.Routing] {
+		writeErr(w, http.StatusBadRequest, msgModelRouting)
 		return false
 	}
 	return true
@@ -274,6 +309,8 @@ func modelAudit(m db.AIModel) map[string]any {
 		"enabled":                m.Enabled,
 		"fallback_on_rate_limit": m.FallbackOnRateLimit,
 		"translate":              m.Translate,
+		"routing":                routingOrOrdered(m.Routing),
+		"system_text_bytes":      len(m.SystemText),
 		"targets":                targets,
 	}
 }
@@ -355,7 +392,7 @@ func (d Deps) PostAIModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, msgModelsOff)
 		return
 	}
-	m, err := d.AIModels.CreateModel(r.Context(), in.model(true, false))
+	m, err := d.AIModels.CreateModel(r.Context(), in.model(true, false, "", "ordered"))
 	if err != nil {
 		if !mapModelErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
@@ -389,7 +426,7 @@ func (d Deps) PutAIModel(w http.ResponseWriter, r *http.Request) {
 	if !validModelReq(w, in) {
 		return
 	}
-	m, err := d.AIModels.UpdateModel(r.Context(), old.Name, in.model(old.Enabled, old.Translate))
+	m, err := d.AIModels.UpdateModel(r.Context(), old.Name, in.model(old.Enabled, old.Translate, old.SystemText, old.Routing))
 	if err != nil {
 		if !mapModelErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")

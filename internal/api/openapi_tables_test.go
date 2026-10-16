@@ -170,6 +170,7 @@ var openAPIOperationIDs = map[string]string{
 	"DELETE /api/v1/ai/models/{name}":                                           "aiModelDelete",
 	"GET /api/v1/ai/keys":                                                       "gatewayKeysList",
 	"POST /api/v1/ai/keys":                                                      "gatewayKeyCreate",
+	"PUT /api/v1/ai/keys/{id}":                                                  "gatewayKeyUpdate",
 	"DELETE /api/v1/ai/keys/{id}":                                               "gatewayKeyDelete",
 	"GET /api/v1/ai/requests":                                                   "aiRequestsList",
 	"GET /api/v1/ai/requests/{requestID}/attempts":                              "aiRequestAttemptsList",
@@ -275,6 +276,7 @@ var openAPIRequestBodies = map[string]openAPIRequestBody{
 	"aiModelCreate":       {typ: oaType[aiModelReq]()},
 	"aiModelUpdate":       {typ: oaType[aiModelReq]()},
 	"gatewayKeyCreate":    {typ: oaType[postAIKeyReq]()},
+	"gatewayKeyUpdate":    {typ: oaType[putAIKeyReq]()},
 
 	// cache, rate limits, cost, budgets (O05)
 	// PutCacheSettings (cache_handlers.go) hands the body to
@@ -394,6 +396,7 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"aiModelUpdate":          {status: "200", typ: oaType[aiModelResp]()},
 	"gatewayKeysList":        {status: "200", typ: oaType[aiKeyResp](), list: true},
 	"gatewayKeyCreate":       {status: "201", typ: oaType[aiKeyCreatedResp]()},
+	"gatewayKeyUpdate":       {status: "200", typ: oaType[aiKeyResp]()},
 	"aiRequestAttemptsList":  {status: "200", typ: oaType[aiAttemptResp](), list: true},
 	"aiRequestsList":         {status: "200", typ: oaType[inspectorEntryJSON](), list: true},
 

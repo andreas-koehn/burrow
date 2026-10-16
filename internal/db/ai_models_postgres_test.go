@@ -29,6 +29,11 @@ func TestGatewayModels_Postgres(t *testing.T) {
 	t.Run("migration 0025 down and up", func(t *testing.T) {
 		checkMigration0025DownAndUp(t, x, "0025_v0.9.0_translation.postgres.sql", "u-mig25-pg")
 	})
+	t.Run("system text and routing", func(t *testing.T) { checkAIModelSystemText(t, x, "u-models-pg") })
+	t.Run("gateway key system text", func(t *testing.T) { checkAIGatewayKeySystemText(t, x, "u-gkst-pg") })
+	t.Run("migration 0028 down and up", func(t *testing.T) {
+		checkMigration0028DownAndUp(t, x, "0028_v0.11.0_system_text_routing.postgres.sql", "u-mig28-pg")
+	})
 	t.Run("provider rename", func(t *testing.T) { checkAIModelsFollowProviderRename(t, x, "u-models-pg") })
 	t.Run("gateway keys", func(t *testing.T) { checkAIGatewayKeys(t, x, "u-gwkey-pg-1", "u-gwkey-pg-2") })
 	t.Run("delete keeps other errors", func(t *testing.T) {

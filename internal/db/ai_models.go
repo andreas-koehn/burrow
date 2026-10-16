@@ -18,7 +18,12 @@ type AIModel struct {
 	FallbackOnRateLimit bool
 	// Translate lets a request in a format the model has no target for be
 	// translated to a target of another format. Off unless switched on.
-	Translate       bool
+	Translate bool
+	// SystemText is put in front of the app's own system content (empty =
+	// none). Routing is the order the targets are tried in: "ordered",
+	// "fastest" or "cheapest"; empty is read and written as "ordered".
+	SystemText      string
+	Routing         string
 	AttemptTimeoutS int             // seconds until the first response byte of one attempt
 	TotalTimeoutS   int             // seconds across all attempts until a response starts
 	Targets         []AIModelTarget // ordered by Dialect, then Position; never nil after a read
@@ -42,12 +47,15 @@ var ErrDuplicateModel = errors.New("db: model name already in use")
 // would change the API format of one.
 var ErrProviderInUse = errors.New("provider is used by a model")
 
-const aiModelCols = `name, description, enabled, fallback_on_rate_limit, translate, attempt_timeout_s, total_timeout_s, created_at, updated_at`
+const aiModelCols = `name, description, enabled, fallback_on_rate_limit, translate, system_text, routing, attempt_timeout_s, total_timeout_s, created_at, updated_at`
 
 func scanAIModel(row interface{ Scan(...any) error }) (AIModel, error) {
 	var m AIModel
 	err := row.Scan(&m.Name, &m.Description, (*intBool)(&m.Enabled), (*intBool)(&m.FallbackOnRateLimit),
-		(*intBool)(&m.Translate), &m.AttemptTimeoutS, &m.TotalTimeoutS, &m.CreatedAt, &m.UpdatedAt)
+		(*intBool)(&m.Translate), &m.SystemText, &m.Routing, &m.AttemptTimeoutS, &m.TotalTimeoutS, &m.CreatedAt, &m.UpdatedAt)
+	if m.Routing == "" {
+		m.Routing = "ordered"
+	}
 	m.Targets = []AIModelTarget{}
 	return m, err
 }
@@ -67,6 +75,14 @@ func insertAIModelTargets(ctx context.Context, tx *sql.Tx, name string, targets 
 	return nil
 }
 
+// routingOrDefault is the value stored for a model's routing.
+func routingOrDefault(r string) string {
+	if r == "" {
+		return "ordered"
+	}
+	return r
+}
+
 // CreateAIModel inserts the model and its targets in one transaction.
 func (x *DB) CreateAIModel(ctx context.Context, m AIModel) error {
 	tx, err := x.sqlDB.BeginTx(ctx, nil)
@@ -74,10 +90,10 @@ func (x *DB) CreateAIModel(ctx context.Context, m AIModel) error {
 		return fmt.Errorf("begin create model tx: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO ai_models(name, description, enabled, fallback_on_rate_limit, translate, attempt_timeout_s, total_timeout_s)
-		 VALUES(?,?,?,?,?,?,?)`,
+		`INSERT INTO ai_models(name, description, enabled, fallback_on_rate_limit, translate, system_text, routing, attempt_timeout_s, total_timeout_s)
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
 		m.Name, m.Description, boolToInt(m.Enabled), boolToInt(m.FallbackOnRateLimit), boolToInt(m.Translate),
-		m.AttemptTimeoutS, m.TotalTimeoutS); err != nil {
+		m.SystemText, routingOrDefault(m.Routing), m.AttemptTimeoutS, m.TotalTimeoutS); err != nil {
 		_ = tx.Rollback()
 		if isDuplicateServiceErr(err) {
 			return ErrDuplicateModel
@@ -175,10 +191,10 @@ func (x *DB) UpdateAIModel(ctx context.Context, name string, m AIModel) error {
 		return fmt.Errorf("begin update model tx: %w", err)
 	}
 	res, err := tx.ExecContext(ctx,
-		`UPDATE ai_models SET name=?, description=?, enabled=?, fallback_on_rate_limit=?, translate=?, attempt_timeout_s=?, total_timeout_s=?, updated_at=CURRENT_TIMESTAMP
+		`UPDATE ai_models SET name=?, description=?, enabled=?, fallback_on_rate_limit=?, translate=?, system_text=?, routing=?, attempt_timeout_s=?, total_timeout_s=?, updated_at=CURRENT_TIMESTAMP
 		  WHERE name=?`,
 		m.Name, m.Description, boolToInt(m.Enabled), boolToInt(m.FallbackOnRateLimit), boolToInt(m.Translate),
-		m.AttemptTimeoutS, m.TotalTimeoutS, name)
+		m.SystemText, routingOrDefault(m.Routing), m.AttemptTimeoutS, m.TotalTimeoutS, name)
 	if err != nil {
 		_ = tx.Rollback()
 		if isDuplicateServiceErr(err) {

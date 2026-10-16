@@ -40,6 +40,7 @@ type aiKeyResp struct {
 	KeyPrefix     string     `json:"key_prefix"`
 	UserID        string     `json:"user_id"`
 	AllowedModels []string   `json:"allowed_models"` // empty = every model
+	SystemText    string     `json:"system_text"`    // put in front of the app's system content
 	LastUsed      *time.Time `json:"last_used"`
 	CreatedAt     time.Time  `json:"created_at"`
 	RevokedAt     *time.Time `json:"revoked_at"`
@@ -54,8 +55,8 @@ type aiKeyCreatedResp struct {
 func toAIKeyResp(k store.GatewayKey) aiKeyResp {
 	return aiKeyResp{
 		ID: k.ID, Name: k.Name, KeyPrefix: k.KeyPrefix, UserID: k.UserID,
-		AllowedModels: append([]string{}, k.AllowedModels...),
-		LastUsed:      k.LastUsed, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt,
+		AllowedModels: append([]string{}, k.AllowedModels...), SystemText: k.SystemText,
+		LastUsed: k.LastUsed, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt,
 	}
 }
 
@@ -64,10 +65,18 @@ func toAIKeyResp(k store.GatewayKey) aiKeyResp {
 type postAIKeyReq struct {
 	Name          string   `json:"name"`
 	AllowedModels []string `json:"allowed_models"`
+	SystemText    string   `json:"system_text"`
+}
+
+// putAIKeyReq is the body of PUT /ai/keys/{id}. A field left out stays as it
+// is; the key, its owner and its allow-list cannot be changed.
+type putAIKeyReq struct {
+	Name       *string `json:"name"`
+	SystemText *string `json:"system_text"`
 }
 
 const (
-	maxKeyBody    = 8 << 10
+	maxKeyBody    = 64 << 10 // a system text of 8192 bytes escaped as \u00XX still fits
 	maxKeyName    = 120
 	maxKeyAllowed = 64
 	maxKeyID      = 64 // ids are UUIDs
@@ -75,6 +84,7 @@ const (
 	msgKeyName     = "name must be 1-120 characters without control characters"
 	msgKeyAllowed  = `an allowed model must be a model name, "<provider>/<model>" or "<provider>/*"`
 	msgKeyTooMany  = "at most 64 allowed models"
+	msgKeyText     = "system_text is longer than 8192 bytes"
 	msgKeyNotFound = "key not found"
 )
 
@@ -153,6 +163,10 @@ func (d Deps) PostAIKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, msgKeyName)
 		return
 	}
+	if len(in.SystemText) > store.MaxSystemTextBytes {
+		writeErr(w, http.StatusBadRequest, msgKeyText)
+		return
+	}
 	if len(in.AllowedModels) > maxKeyAllowed {
 		writeErr(w, http.StatusBadRequest, msgKeyTooMany)
 		return
@@ -167,7 +181,7 @@ func (d Deps) PostAIKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "gateway keys are not available on this relay")
 		return
 	}
-	k, plaintext, err := d.AIGatewayKeys.CreateGatewayKey(r.Context(), userID(r.Context()), name, in.AllowedModels)
+	k, plaintext, err := d.AIGatewayKeys.CreateGatewayKey(r.Context(), userID(r.Context()), name, in.AllowedModels, in.SystemText)
 	if err != nil {
 		if !mapKeyErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
@@ -178,6 +192,7 @@ func (d Deps) PostAIKey(w http.ResponseWriter, r *http.Request) {
 		"name":           k.Name,
 		"allowed_models": k.AllowedModels,
 		"key_prefix":     k.KeyPrefix,
+		"system_text":    len(k.SystemText) > 0,
 	})
 	writeJSON(w, http.StatusCreated, aiKeyCreatedResp{aiKeyResp: toAIKeyResp(k), Key: plaintext})
 }
@@ -204,4 +219,53 @@ func (d Deps) DeleteAIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	d.auditAI(r, audit.ActionAIGatewayKeyRevoke, id, "", map[string]any{})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// PutAIKey handles PUT /api/v1/ai/keys/{id}: renames the key and sets its
+// system text. Its owner or an admin's session may; anyone else's key answers
+// 404 like an id that does not exist. A field left out stays as it is, an
+// empty name is refused, an empty system_text clears the text. A revoked key
+// can still be changed. The audit event says which fields changed, never the
+// text.
+func (d Deps) PutAIKey(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxKeyBody)
+	var in putAIKeyReq
+	if msg, _ := decodeStrictJSON(r.Body, &in); msg != "" {
+		writeErr(w, http.StatusBadRequest, msg)
+		return
+	}
+	if in.Name != nil {
+		name := strings.TrimSpace(*in.Name)
+		if name == "" || len(name) > maxKeyName || strings.ContainsFunc(name, unicode.IsControl) {
+			writeErr(w, http.StatusBadRequest, msgKeyName)
+			return
+		}
+	}
+	if in.SystemText != nil && len(*in.SystemText) > store.MaxSystemTextBytes {
+		writeErr(w, http.StatusBadRequest, msgKeyText)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if d.AIGatewayKeys == nil || id == "" || len(id) > maxKeyID {
+		writeErr(w, http.StatusNotFound, msgKeyNotFound)
+		return
+	}
+	role, err := d.keyCallerRole(r)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	k, err := d.AIGatewayKeys.UpdateGatewayKey(r.Context(), userID(r.Context()), role, id, in.Name, in.SystemText)
+	if err != nil {
+		if !mapKeyErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	d.auditAI(r, audit.ActionAIGatewayKeyUpdate, k.ID, k.Name, map[string]any{
+		"name":        k.Name,
+		"renamed":     in.Name != nil,
+		"system_text": in.SystemText != nil,
+	})
+	writeJSON(w, http.StatusOK, toAIKeyResp(k))
 }

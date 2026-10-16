@@ -453,6 +453,25 @@ components:
             the model can serve in its own format is never translated.
             Left out, it is false on create and keeps its stored value on
             update.
+        system_text:
+          type: string
+          default: ''
+          description: >
+            Text put in front of the app's own system content on Chat
+            Completions, Responses and Messages requests (the key's text
+            follows it). At most 8192 bytes, not characters; longer text is
+            refused with 400. Empty means none. Left out, it is empty on
+            create and keeps its stored value on update.
+        routing:
+          type: string
+          enum: [ordered, fastest, cheapest]
+          default: ordered
+          description: >
+            The order a request's targets are tried in: as configured
+            (ordered), by the provider's p95 latency over 24 h (fastest) or
+            by the blended price of the target model (cheapest). Left out, it
+            is ordered on create and keeps its stored value on update; any
+            other value is refused with 400.
         attempt_timeout_s:
           type: integer
           minimum: 1
@@ -555,10 +574,16 @@ components:
       description: >
         A gateway key as every response but its creation shows it. The key
         itself is stored as a hash and is never returned again.
-      required: [id, name, key_prefix, user_id, allowed_models, last_used, created_at, revoked_at]
+      required: [id, name, key_prefix, user_id, allowed_models, system_text, last_used, created_at, revoked_at]
       properties:
         id: { type: string }
         name: { type: string, maxLength: 120 }
+        system_text:
+          type: string
+          description: >
+            Text put in front of the app's own system content on requests
+            made with this key (after the model's text). At most 8192 bytes;
+            empty means none.
         key_prefix:
           type: string
           description: The first 8 characters of the key, for display.
@@ -574,6 +599,20 @@ components:
         last_used: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
         revoked_at: { type: string, format: date-time, nullable: true }
+    GatewayKeyUpdate:
+      type: object
+      description: >
+        The body of PUT /api/v1/ai/keys/{id}. A field left out stays as it
+        is.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: No control characters.
+        system_text:
+          type: string
+          description: At most 8192 bytes, not characters. Empty clears it.
     AIProviderModel:
       type: object
       description: One entry of a provider's stored model list.
@@ -5525,7 +5564,7 @@ paths:
         ai:configure:any (the role of the token's user alone is not
         enough). The same holds for PUT and DELETE.
 
-        The body is at most 16 KiB and may carry only the fields of the
+        The body is at most 64 KiB and may carry only the fields of the
         schema; dialects and the timestamps are not accepted. enabled left
         out means true, translate left out means false; a timeout left out
         or 0 means its default. Every target must name an existing provider,
@@ -5669,7 +5708,7 @@ paths:
         Creates a key owned by the caller. The response carries the key
         ("bgw_" and 43 characters) and is the only one that ever does: the
         relay stores a hash. It is sent with Cache-Control: no-store. The
-        body is at most 8 KiB and has no other fields than the two below.
+        body is at most 64 KiB and has no other fields than the three below.
       requestBody:
         required: true
         content:
@@ -5691,6 +5730,12 @@ paths:
                     model name, "<provider>/<model>" or "<provider>/*"; it
                     need not name something that exists.
                   items: { type: string, maxLength: 264 }
+                system_text:
+                  type: string
+                  description: >
+                    Text put in front of the app's own system content. At
+                    most 8192 bytes, not characters; longer text is refused
+                    with 400. Left out or empty: none.
             example:
               name: laptop
               allowed_models: [burrow-simple, 'zai/*']
@@ -5726,6 +5771,40 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/ai/keys/{id}:
+    put:
+      tags: [models]
+      operationId: gatewayKeyUpdate
+      x-burrow-permission: {kind: needs, any_of: ["ai:configure:own", "ai:configure:any"]}
+      summary: Rename a gateway key or set its system text
+      description: |
+        Changes the name and the system text of a key, nothing else; the key
+        itself, its owner and its allow-list stay. A field left out stays as
+        it is, an empty system_text clears the text, an empty name is
+        refused. A revoked key can still be changed. Its owner or an admin's
+        dashboard session may; an automation token changes the keys of its
+        user only. Another user's key answers 404, like an id that does not
+        exist. The body is at most 64 KiB.
+      parameters: [ { $ref: '#/components/parameters/PathID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GatewayKeyUpdate' }
+            example:
+              system_text: Answer in German.
+      responses:
+        '200':
+          description: The key as it is now. It does not carry the key itself.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AIGatewayKey' }
+        '400':
+          description: The body is not valid; the message says why.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [models]
       operationId: gatewayKeyDelete
