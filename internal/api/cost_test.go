@@ -739,6 +739,39 @@ func TestCostHandler_PricingPutThenGetRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCostHandler_PerRequestUSD_RoundTripAndSummary(t *testing.T) {
+	eng := &fakeCostEngine{pricing: cost.Pricing{Version: "init", Entries: map[string]cost.Entry{}},
+		summary: cost.Summary{TopConsumers: []cost.SummaryConsumer{}, UnpricedRequests: 7}}
+	srv := newTestServer(Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, CostEngine: eng})
+	defer srv.Close()
+	c := authedClient(t, srv)
+	put := func(price float64) int {
+		return c.put(t, "/api/v1/cost/pricing", map[string]any{"version": "v3", "entries": []map[string]any{
+			{"provider": "oai", "model": "img", "input_per_million": 0, "output_per_million": 0, "per_request_usd": price},
+		}}).StatusCode
+	}
+	if code := put(-0.5); code != http.StatusBadRequest {
+		t.Fatalf("a negative per_request_usd: status %d", code)
+	}
+	if code := put(0.04); code != http.StatusNoContent {
+		t.Fatalf("put status %d", code)
+	}
+	r := c.get(t, "/api/v1/cost/pricing")
+	var got pricingResp
+	_ = json.NewDecoder(r.Body).Decode(&got)
+	r.Body.Close()
+	if len(got.Entries) != 1 || got.Entries[0].PerRequestUSD != 0.04 {
+		t.Fatalf("entries after PUT: %+v", got.Entries)
+	}
+	r = c.get(t, "/api/v1/cost/summary?window=today")
+	var sum map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&sum)
+	r.Body.Close()
+	if sum["unpriced_requests"] != float64(7) {
+		t.Fatalf("summary = %v", sum)
+	}
+}
+
 // Compile-time assertions that the production *cost.Engine satisfies our
 // CostEngine interface, and *db.DB satisfies BudgetStore. Catches drift at
 // build time.

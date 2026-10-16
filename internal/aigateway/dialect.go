@@ -45,6 +45,13 @@ var DialectOpenAI = &Dialect{
 		"/v1/completions":      true,
 		"/v1/embeddings":       true,
 		"/v1/responses":        true,
+		// Media and rerank: OpenAI format only, never cached, no system text,
+		// no translation (see isMediaPath).
+		"/v1/images/generations":   true,
+		"/v1/audio/speech":         true,
+		"/v1/audio/transcriptions": true,
+		"/v1/audio/translations":   true,
+		"/v1/rerank":               true,
 	},
 	writeModels: writeOpenAIModels,
 }

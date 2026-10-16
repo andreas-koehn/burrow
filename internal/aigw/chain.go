@@ -125,6 +125,19 @@ func WithoutCache(ctx context.Context) context.Context {
 	return context.WithValue(ctx, noCacheKey{}, true)
 }
 
+// IsMediaPath reports whether path is one of the gateway's media and rerank
+// endpoints: images, speech, transcription, audio translation and rerank.
+// Their answers are never cached, they get no system text and are not
+// translated.
+func IsMediaPath(path string) bool {
+	switch strings.TrimRight(path, "/") {
+	case "/v1/images/generations", "/v1/audio/speech", "/v1/audio/transcriptions",
+		"/v1/audio/translations", "/v1/rerank":
+		return true
+	}
+	return false
+}
+
 // CacheBypassed reports whether WithoutCache was set.
 func CacheBypassed(ctx context.Context) bool {
 	off, _ := ctx.Value(noCacheKey{}).(bool)
@@ -622,7 +635,10 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		redactDrop *redact.Rule
 	)
 	redactedBody := body
-	if cfg.Redaction != nil && cfg.Redaction.Enabled && c.Redact != nil && len(body) > 0 {
+	// An upload (audio) is no text: its bytes are not rewritten or read for
+	// patterns, and the inspector omits it.
+	upload := isUpload(r)
+	if cfg.Redaction != nil && cfg.Redaction.Enabled && c.Redact != nil && len(body) > 0 && !upload {
 		var err error
 		redactedBody, redactDrop, redactHits, err = c.Redact.Apply(body, redact.ScopeRequestBody)
 		if err != nil {
@@ -659,7 +675,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// A request that carries WithoutGuardrails (the judge's own call) skips
 	// both tiers and the answer guard.
 	guarded := cfg.Guardrails != nil && cfg.Guardrails.Enabled && !GuardrailsSkipped(r.Context())
-	if guarded && c.Guardrails != nil && len(redactedBody) > 0 {
+	if guarded && c.Guardrails != nil && len(redactedBody) > 0 && !upload {
 		// The bundled request patterns, then the operator's custom ones for
 		// requests.
 		hit, pattern := c.Guardrails.InspectRequest(redactedBody, cfg.Guardrails.CustomPatterns)
@@ -801,7 +817,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// A request without usage is no inference; its answer is never taken
 	// from or put into the cache of inference answers (the semantic tier
 	// keys on the body alone and could not tell the two apart).
-	bypass := strings.EqualFold(r.Header.Get("Burrow-Cache"), "bypass") || withoutUsage(r.Context()) || CacheBypassed(r.Context())
+	bypass := strings.EqualFold(r.Header.Get("Burrow-Cache"), "bypass") || withoutUsage(r.Context()) || CacheBypassed(r.Context()) || IsMediaPath(r.URL.Path)
 	if cfg.Cache != nil && cfg.Cache.Enabled && c.Cache != nil && !bypass {
 		key := buildCacheKey(svc, r, redactedBody, *cfg.Cache)
 		entry, hit, err := c.Cache.Lookup(r.Context(), key)
@@ -1078,6 +1094,11 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// reparse the captured body so usage_events records authoritative
 	// token counts instead of the byte-estimate fallback.
 	tokens = bodyTokens(kind, wrapped.Header(), capw, tokens)
+	if IsMediaPath(r.URL.Path) {
+		// No byte estimate for audio and images: what the answer states, else
+		// none (the usage row is then priced per request, if at all).
+		tokens = mediaTokens(wrapped.Header(), capw)
+	}
 
 	// Cost the upstream itself reports (OpenRouter). Streamed responses carry
 	// it in the final usage chunk; plain JSON responses in the body. It is
@@ -1184,6 +1205,35 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		reportedUSD,
 		elapsed,
 	)
+}
+
+// isUpload reports whether r is a multipart upload to a media endpoint.
+func isUpload(r *http.Request) bool {
+	return IsMediaPath(r.URL.Path) && strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))), "multipart/")
+}
+
+// isBinaryType reports whether a Content-Type names a body that is not JSON
+// or text: audio, images, video, uploads and raw bytes.
+func isBinaryType(contentType string) bool {
+	ct := strings.ToLower(strings.TrimSpace(contentType))
+	for _, p := range []string{"audio/", "image/", "video/", "multipart/", "application/octet-stream"} {
+		if strings.HasPrefix(ct, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// binaryNote is what the inspector keeps of a body it does not store.
+func binaryNote(n int) []byte { return []byte("<binary, " + strconv.Itoa(n) + " bytes>") }
+
+// mediaTokens reads the usage a media or rerank answer states. Zero when it is
+// not a JSON answer in one piece or states none.
+func mediaTokens(header http.Header, capw *capture) aimeter.Tokens {
+	if isStreamedResponse(header) || capw.truncated() || isBinaryType(header.Get("Content-Type")) {
+		return aimeter.Tokens{}
+	}
+	return aimeter.ParseOpenAIBody(capw.bytes())
 }
 
 // bodyTokens returns the usage of an answer that came in one piece, read
@@ -1400,6 +1450,13 @@ func (c *Chain) captureEntry(svc Service, r *http.Request, took time.Duration,
 
 	reqBody, reqOmitted, reqTrunc := inspector.TruncateRequest(redactedBody)
 	respBodyT, respOmitted, respTrunc := inspector.TruncateResponse(respBody)
+	// A body that is neither JSON nor text is never stored: a note stands in.
+	if isBinaryType(r.Header.Get("Content-Type")) {
+		reqBody, reqOmitted, reqTrunc = binaryNote(len(origBody)), 0, false
+	}
+	if isBinaryType(respHeaders.Get("Content-Type")) {
+		respBodyT, respOmitted, respTrunc = binaryNote(len(respBody)), 0, false
+	}
 
 	hits := make([]inspector.RedactionHit, 0, len(redactHits))
 	for _, h := range redactHits {
@@ -1572,7 +1629,9 @@ func DetectKind(r *http.Request, body []byte) Kind {
 	// OpenAI by path.
 	if r.Method == http.MethodPost {
 		switch r.URL.Path {
-		case "/v1/chat/completions", "/v1/completions", "/v1/embeddings", "/v1/responses":
+		case "/v1/chat/completions", "/v1/completions", "/v1/embeddings", "/v1/responses",
+			"/v1/images/generations", "/v1/audio/speech", "/v1/audio/transcriptions",
+			"/v1/audio/translations", "/v1/rerank":
 			return KindOpenAI
 		}
 	}

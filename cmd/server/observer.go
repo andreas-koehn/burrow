@@ -434,6 +434,15 @@ func (o *observer) guardrailEvent(e observe.ModelRequest) {
 	})
 }
 
+// tokenless is 1 for a request that was answered with no token count, which
+// the cost summary prices per request (see db.UsageRow.TokenlessRequests).
+func tokenless(e observe.ModelRequest) int64 {
+	if e.Outcome == observe.ModelAnswered && e.Status >= 200 && e.Status < 300 && e.TokensIn == 0 && e.TokensOut == 0 {
+		return 1
+	}
+	return 0
+}
+
 // costUSD is what the request cost: what a trusted upstream stated, else the
 // price table for its tokens, as the cost summary prices a usage row.
 func (o *observer) costUSD(e observe.ModelRequest) float64 {
@@ -446,6 +455,7 @@ func (o *observer) costUSD(e observe.ModelRequest) float64 {
 	return o.Cost.RowUSD(db.UsageRow{
 		Kind: e.Kind, ProviderSlug: e.ProviderSlug, TargetModel: e.TargetModel,
 		PricedTokensIn: int64(e.TokensIn), PricedTokensOut: int64(e.TokensOut),
+		TokenlessRequests: tokenless(e),
 	})
 }
 

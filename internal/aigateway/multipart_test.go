@@ -1,0 +1,162 @@
+package aigateway
+
+import (
+	"bytes"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+const testBoundary = "XbOuNdArYx"
+
+// trickyAudio holds "\r\n--" that is not the boundary, a line that starts
+// like the boundary, and every byte value.
+func trickyAudio() []byte {
+	var b bytes.Buffer
+	b.WriteString("RIFF\r\n--not-the-boundary\r\n--" + testBoundary[:4] + "\r\n")
+	for i := 0; i < 256; i++ {
+		b.WriteByte(byte(i))
+	}
+	b.WriteString("\r\n--")
+	return b.Bytes()
+}
+
+type formPart struct {
+	name, filename string
+	content        []byte
+}
+
+func buildForm(parts ...formPart) []byte {
+	var b bytes.Buffer
+	for _, p := range parts {
+		b.WriteString("--" + testBoundary + "\r\n")
+		b.WriteString(`Content-Disposition: form-data; name="` + p.name + `"`)
+		if p.filename != "" {
+			b.WriteString(`; filename="` + p.filename + `"` + "\r\nContent-Type: audio/wav")
+		}
+		b.WriteString("\r\n\r\n")
+		b.Write(p.content)
+		b.WriteString("\r\n")
+	}
+	b.WriteString("--" + testBoundary + "--\r\n")
+	return b.Bytes()
+}
+
+func formRequest(body io.Reader, contentType string) *http.Request {
+	r := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", body)
+	if contentType != "" {
+		r.Header.Set("Content-Type", contentType)
+	}
+	return r
+}
+
+const formType = "multipart/form-data; boundary=" + testBoundary
+
+func TestReadMultipartModel_ModelBeforeAndAfterFile(t *testing.T) {
+	audio := trickyAudio()
+	file := formPart{name: "file", filename: "a.wav", content: audio}
+	model := formPart{name: "model", content: []byte("whisper-1")}
+	lang := formPart{name: "language", content: []byte("de")}
+	for name, parts := range map[string][]formPart{
+		"before": {model, lang, file},
+		"after":  {file, lang, model},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := buildForm(parts...)
+			got, rewrite, err := readMultipartModel(formRequest(bytes.NewReader(raw), formType), 1<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != "whisper-1" {
+				t.Fatalf("model = %q", got)
+			}
+			out, err := rewrite("a-much-longer-target-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := bytes.Replace(raw, []byte("whisper-1"), []byte("a-much-longer-target-model"), 1)
+			if !bytes.Equal(out, want) {
+				t.Fatalf("rewrite changed more than the model value:\n got %q\nwant %q", out, want)
+			}
+			if !bytes.Contains(out, audio) {
+				t.Fatal("the binary part is not byte-identical")
+			}
+		})
+	}
+}
+
+func TestReadMultipartModel_Errors(t *testing.T) {
+	file := formPart{name: "file", filename: "a.wav", content: []byte("x")}
+	cases := []struct {
+		name string
+		body []byte
+		ct   string
+		want error
+	}{
+		{"no model", buildForm(file), formType, errNoModelField},
+		{"empty model", buildForm(file, formPart{name: "model"}), formType, errNoModelField},
+		{"json content type", []byte(`{"model":"m"}`), "application/json", errNotMultipart},
+		{"no content type", buildForm(file), "", errNotMultipart},
+		{"no boundary", buildForm(file), "multipart/form-data", errNotMultipart},
+		{"two models", buildForm(formPart{name: "model", content: []byte("a")}, formPart{name: "model", content: []byte("b")}), formType, errDuplicateModel},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, err := readMultipartModel(formRequest(bytes.NewReader(c.body), c.ct), 1<<20)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("err = %v, want %v", err, c.want)
+			}
+		})
+	}
+}
+
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+func TestReadMultipartModel_OverTheLimitReadsNoMore(t *testing.T) {
+	raw := buildForm(formPart{name: "file", filename: "a.wav", content: bytes.Repeat([]byte("a"), 10_000)},
+		formPart{name: "model", content: []byte("m")})
+	cr := &countingReader{r: bytes.NewReader(raw)}
+	const limit = 1000
+	_, _, err := readMultipartModel(formRequest(cr, formType), limit)
+	if !errors.Is(err, errBodyTooLarge) {
+		t.Fatalf("err = %v", err)
+	}
+	if cr.n > limit+1 {
+		t.Fatalf("read %d bytes, want at most %d", cr.n, limit+1)
+	}
+}
+
+func TestReadMultipartModel_ExactlyTheLimitPasses(t *testing.T) {
+	raw := buildForm(formPart{name: "model", content: []byte("m")})
+	if _, _, err := readMultipartModel(formRequest(bytes.NewReader(raw), formType), int64(len(raw))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIsMediaPath(t *testing.T) {
+	for _, p := range []string{"/v1/images/generations", "/v1/audio/speech", "/v1/audio/transcriptions", "/v1/audio/translations", "/v1/rerank", "/v1/rerank/"} {
+		if !isMediaPath(p) {
+			t.Errorf("%s should be a media path", p)
+		}
+	}
+	for _, p := range []string{"/v1/chat/completions", "/v1/embeddings", "/v1/audio"} {
+		if isMediaPath(p) {
+			t.Errorf("%s should not be a media path", p)
+		}
+	}
+	if !strings.Contains(formType, testBoundary) {
+		t.Fatal("setup")
+	}
+}

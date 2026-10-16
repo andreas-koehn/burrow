@@ -3,11 +3,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHealthz(t *testing.T) {
@@ -489,5 +492,140 @@ func TestToolCall_Responses(t *testing.T) {
 	after := `{"model":"g","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"call a tool"}]},{"type":"function_call","call_id":"call_mock_1","name":"echo","arguments":"{}"},{"type":"function_call_output","call_id":"call_mock_1","output":"hi"}]}`
 	if out := post(t, "/v1/responses", after).Body.String(); strings.Contains(out, "function_call") || !strings.Contains(out, `"output_text"`) {
 		t.Fatalf("the turn after the call was answered %q", out)
+	}
+}
+
+// --- media and rerank paths, test switches ------------------------------------
+
+func multipartRequest(t *testing.T, path string, fields map[string]string, file bool) *http.Request {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for k, v := range fields {
+		if err := mw.WriteField(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if file {
+		fw, _ := mw.CreateFormFile("file", "a.wav")
+		_, _ = fw.Write([]byte("RIFF\r\n--x\x00\x01"))
+	}
+	_ = mw.Close()
+	req := httptest.NewRequest(http.MethodPost, path, &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	return req
+}
+
+func TestImagesGenerations(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"m","prompt":"a cat"}`)))
+	var out struct {
+		Created int64 `json:"created"`
+		Data    []struct {
+			B64 string `json:"b64_json"`
+		} `json:"data"`
+	}
+	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &out) != nil || out.Created == 0 || len(out.Data) != 1 || out.Data[0].B64 != "aGk=" {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAudioSpeech(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"model":"m","input":"hi","voice":"alloy"}`)))
+	if rec.Code != 200 || rec.Header().Get("Content-Type") != "audio/mpeg" || rec.Body.Len() < 3 || rec.Body.Len() > 64 {
+		t.Fatalf("status %d type %q len %d", rec.Code, rec.Header().Get("Content-Type"), rec.Body.Len())
+	}
+}
+
+func TestAudioTranscriptionsAndTranslations(t *testing.T) {
+	for _, path := range []string{"/v1/audio/transcriptions", "/v1/audio/translations"} {
+		rec := httptest.NewRecorder()
+		handler().ServeHTTP(rec, multipartRequest(t, path, map[string]string{"model": "whisper"}, true))
+		if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"text":"hello from mockoai"}` {
+			t.Fatalf("%s: status %d body %s", path, rec.Code, rec.Body.String())
+		}
+		for name, req := range map[string]*http.Request{
+			"no model": multipartRequest(t, path, nil, true),
+			"no file":  multipartRequest(t, path, map[string]string{"model": "whisper"}, false),
+			"not a form": func() *http.Request {
+				r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"m"}`))
+				r.Header.Set("Content-Type", "application/json")
+				return r
+			}(),
+		} {
+			rec := httptest.NewRecorder()
+			handler().ServeHTTP(rec, req)
+			if rec.Code != 400 {
+				t.Fatalf("%s %s: status %d", path, name, rec.Code)
+			}
+		}
+	}
+}
+
+func TestRerank(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/rerank", strings.NewReader(`{"model":"m","query":"q","documents":["a"]}`)))
+	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"results":[{"index":0,"relevance_score":0.9}],"usage":{"total_tokens":12}}` {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChatMockAnswerHeader(t *testing.T) {
+	const answer = "The secret is sk-abcdefghijklmnopqrstuvwxyz0123"
+	// Not streamed: the content is exactly the text.
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("X-Mock-Answer", answer)
+	rec := httptest.NewRecorder()
+	handler().ServeHTTP(rec, req)
+	var out struct {
+		Choices []struct {
+			Message struct{ Content string } `json:"message"`
+		} `json:"choices"`
+	}
+	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &out) != nil || len(out.Choices) != 1 || out.Choices[0].Message.Content != answer {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+
+	// Streamed: three deltas that join to the text.
+	req = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("X-Mock-Answer", answer)
+	rec = httptest.NewRecorder()
+	handler().ServeHTTP(rec, req)
+	var deltas []string
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		payload, ok := strings.CutPrefix(line, "data: ")
+		if !ok || payload == "[DONE]" {
+			continue
+		}
+		var ch struct {
+			Choices []struct {
+				Delta struct{ Content string } `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(payload), &ch) == nil && len(ch.Choices) == 1 && ch.Choices[0].Delta.Content != "" {
+			deltas = append(deltas, ch.Choices[0].Delta.Content)
+		}
+	}
+	if len(deltas) != 3 || strings.Join(deltas, "") != answer {
+		t.Fatalf("deltas %q", deltas)
+	}
+
+	// Without the header nothing changes.
+	rec = httptest.NewRecorder()
+	handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`)))
+	if !strings.Contains(rec.Body.String(), "mockoai") {
+		t.Fatalf("default answer changed: %s", rec.Body.String())
+	}
+}
+
+func TestChatMockDelayHeader(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("X-Mock-Delay-Ms", "120")
+	start := time.Now()
+	rec := httptest.NewRecorder()
+	handler().ServeHTTP(rec, req)
+	if d := time.Since(start); d < 120*time.Millisecond || rec.Code != 200 {
+		t.Fatalf("answered after %v with status %d", d, rec.Code)
 	}
 }

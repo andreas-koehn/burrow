@@ -159,10 +159,30 @@ func ParseOpenAICost(body []byte) (float64, bool) {
 func ParseOpenAIBody(body []byte) Tokens {
 	var env struct {
 		Usage *openAIUsage `json:"usage"`
+		// Rerank answers (Cohere, Jina, vLLM, TEI) count what they bill here.
+		Meta *struct {
+			BilledUnits struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"billed_units"`
+		} `json:"meta"`
 	}
-	if err := json.Unmarshal(body, &env); err != nil || env.Usage == nil {
+	if err := json.Unmarshal(body, &env); err != nil {
 		return Tokens{}
 	}
-	in, out, total := env.Usage.counts()
-	return Tokens{In: in, Out: out, Total: total}
+	if env.Usage != nil {
+		in, out, total := env.Usage.counts()
+		if in == 0 && out == 0 && total > 0 {
+			// Only a total (rerank): the input is what is billed.
+			in = total
+		}
+		if in > 0 || out > 0 || total > 0 || env.Meta == nil {
+			return Tokens{In: in, Out: out, Total: total}
+		}
+	}
+	if env.Meta != nil {
+		b := env.Meta.BilledUnits
+		return Tokens{In: b.InputTokens, Out: b.OutputTokens, Total: b.InputTokens + b.OutputTokens}
+	}
+	return Tokens{}
 }

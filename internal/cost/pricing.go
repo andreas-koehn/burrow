@@ -32,9 +32,12 @@ var bundledFS embed.FS
 
 // Entry is the per-model USD price (per 1,000,000 tokens, split by side).
 // A zero-cost model (e.g. ollama) is represented as both fields == 0.
+// PerRequestUSD is the price of one request that reports no tokens (images,
+// speech, transcription); 0 = not priced per request.
 type Entry struct {
 	InputPerMillion  float64
 	OutputPerMillion float64
+	PerRequestUSD    float64
 }
 
 // Pricing is the full table: a version string + an entries map keyed by
@@ -53,6 +56,7 @@ type yamlEntry struct {
 	Model            string  `yaml:"model"`
 	InputPerMillion  float64 `yaml:"input_per_million"`
 	OutputPerMillion float64 `yaml:"output_per_million"`
+	PerRequestUSD    float64 `yaml:"per_request_usd"`
 }
 
 type yamlPricing struct {
@@ -101,13 +105,14 @@ func parsePricing(raw []byte) (Pricing, error) {
 		if e.Model == "" {
 			return Pricing{}, fmt.Errorf("cost: pricing entry %d missing model", i)
 		}
-		if e.InputPerMillion < 0 || e.OutputPerMillion < 0 {
+		if e.InputPerMillion < 0 || e.OutputPerMillion < 0 || e.PerRequestUSD < 0 {
 			return Pricing{}, fmt.Errorf("cost: pricing entry %s/%s has negative price",
 				e.Provider, e.Model)
 		}
 		entry := Entry{
 			InputPerMillion:  e.InputPerMillion,
 			OutputPerMillion: e.OutputPerMillion,
+			PerRequestUSD:    e.PerRequestUSD,
 		}
 		if e.Provider != "" {
 			p.Entries[e.Provider+"/"+e.Model] = entry

@@ -68,6 +68,7 @@ type pricingEntryResp struct {
 	Model            string  `json:"model"`
 	InputPerMillion  float64 `json:"input_per_million"`
 	OutputPerMillion float64 `json:"output_per_million"`
+	PerRequestUSD    float64 `json:"per_request_usd"`
 }
 
 // pricingResp is the response body for GET /cost/pricing.
@@ -97,6 +98,7 @@ func pricingTableToResp(p cost.Pricing) pricingResp {
 			Model:            parts[1],
 			InputPerMillion:  e.InputPerMillion,
 			OutputPerMillion: e.OutputPerMillion,
+			PerRequestUSD:    e.PerRequestUSD,
 		})
 	}
 	return out
@@ -149,7 +151,7 @@ func (d Deps) PutCostPricing(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("entry %d: model is required", i))
 			return
 		}
-		if e.InputPerMillion < 0 || e.OutputPerMillion < 0 {
+		if e.InputPerMillion < 0 || e.OutputPerMillion < 0 || e.PerRequestUSD < 0 {
 			writeErr(w, http.StatusBadRequest,
 				fmt.Sprintf("entry %s/%s: prices must be >= 0", e.Provider, e.Model))
 			return
@@ -157,6 +159,7 @@ func (d Deps) PutCostPricing(w http.ResponseWriter, r *http.Request) {
 		entry := cost.Entry{
 			InputPerMillion:  e.InputPerMillion,
 			OutputPerMillion: e.OutputPerMillion,
+			PerRequestUSD:    e.PerRequestUSD,
 		}
 		if e.Provider != "" {
 			pr.Entries[e.Provider+"/"+e.Model] = entry

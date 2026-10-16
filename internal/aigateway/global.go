@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ankoehn/burrow/internal/aigw"
@@ -172,8 +173,8 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, d *Dialect, p
 	if !ok {
 		return
 	}
-	if !checked || translated {
-		// In the context, not in a header: the request's headers go on to
+	if !checked || translated || isMediaPath(path) {
+		// A media answer is never cached either. In the context, not in a header: the request's headers go on to
 		// the upstream. A translated answer is never cached: the key is the
 		// first target's service and model, which a request in that target's
 		// own format shares, and one of the two would be served the other's
@@ -226,10 +227,21 @@ func (g *Gateway) failNoCandidate(w http.ResponseWriter, r *http.Request, res Re
 		}
 		g.fail(w, r, http.StatusBadRequest, "endpoint_unsupported", msg)
 	case whyFormatMismatch:
+		if isMediaPath(r.URL.Path) {
+			g.failNoTargetForPath(w, r, requested)
+			return
+		}
 		g.failFormatMismatch(w, r, requested, d, res.Other[0].Provider.APIFormat)
 	default:
 		g.fail(w, r, http.StatusNotFound, "model_not_found", "unknown model "+shownName(requested))
 	}
+}
+
+// failNoTargetForPath answers a request to a media or rerank endpoint whose
+// model has no OpenAI-format target: those endpoints are never translated.
+func (g *Gateway) failNoTargetForPath(w http.ResponseWriter, r *http.Request, requested string) {
+	g.fail(w, r, http.StatusBadRequest, "model_has_no_target_for_path",
+		"model "+strconv.Quote(shownName(requested))+" has no target for "+strings.TrimSuffix(r.URL.Path, "/"))
 }
 
 func (g *Gateway) failFormatMismatch(w http.ResponseWriter, r *http.Request, requested string, d *Dialect, servedBy string) {
@@ -285,6 +297,10 @@ func (g *Gateway) readBodyOrFail(w http.ResponseWriter, r *http.Request) (*reque
 	case errors.Is(err, errDuplicateModel):
 		// Which of the fields an upstream reads is not defined.
 		g.fail(w, r, http.StatusBadRequest, "invalid_request", `the request has more than one "model" field`)
+	case errors.Is(err, errNotMultipart):
+		g.fail(w, r, http.StatusBadRequest, "invalid_request", "this endpoint takes multipart/form-data")
+	case errors.Is(err, errNoModelField):
+		g.fail(w, r, http.StatusBadRequest, "model_required", `the request needs a "model" field`)
 	default:
 		g.fail(w, r, http.StatusBadRequest, "invalid_request", "could not read the request body")
 	}
@@ -303,6 +319,8 @@ func (g *Gateway) resolveOrFail(w http.ResponseWriter, r *http.Request, requeste
 		return res, true
 	case err == nil || errors.Is(err, errModelNotFound):
 		g.fail(w, r, http.StatusNotFound, "model_not_found", "unknown model "+shownName(requested))
+	case errors.As(err, &mismatch) && isMediaPath(r.URL.Path):
+		g.failNoTargetForPath(w, r, requested)
 	case errors.As(err, &mismatch):
 		g.failFormatMismatch(w, r, requested, d, mismatch.ServedBy)
 	default:

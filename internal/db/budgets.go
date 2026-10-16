@@ -188,6 +188,10 @@ type UsageRow struct {
 	TargetModel    string
 	// Requests is the number of usage rows in the group.
 	Requests int64
+	// TokenlessRequests is how many of them were answered (2xx, not from the
+	// cache) with no token count and no reported cost: images, speech,
+	// transcription. They are priced per request, if at all.
+	TokenlessRequests int64
 }
 
 // listUsageForWindowSQL is the window aggregation; its one parameter is the
@@ -202,7 +206,9 @@ const listUsageForWindowSQL = `
 		       CAST(COALESCE(SUM(bytes_out), 0)  AS BIGINT) AS bytes_out,
 		       COALESCE(SUM(cost_usd), 0)   AS reported_usd,
 		       CAST(COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_in  ELSE 0 END), 0) AS BIGINT) AS priced_tokens_in,
-		       CAST(COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_out ELSE 0 END), 0) AS BIGINT) AS priced_tokens_out
+		       CAST(COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN tokens_out ELSE 0 END), 0) AS BIGINT) AS priced_tokens_out,
+		       CAST(COALESCE(SUM(CASE WHEN cost_usd IS NULL AND tokens_in = 0 AND tokens_out = 0
+		                               AND cache_hit = 0 AND upstream_status BETWEEN 200 AND 299 THEN 1 ELSE 0 END), 0) AS BIGINT) AS tokenless_requests
 		  FROM usage_events
 		 WHERE ts >= ?
 		 GROUP BY service_id, api_key_id, kind,
@@ -225,7 +231,7 @@ func (x *DB) ListUsageForWindow(ctx context.Context, window string) ([]UsageRow,
 			&u.GatewayKeyID, &u.Dialect, &u.ProviderSlug, &u.RequestedModel, &u.TargetModel,
 			&u.Requests,
 			&u.TokensIn, &u.TokensOut, &u.BytesIn, &u.BytesOut,
-			&u.ReportedUSD, &u.PricedTokensIn, &u.PricedTokensOut); err != nil {
+			&u.ReportedUSD, &u.PricedTokensIn, &u.PricedTokensOut, &u.TokenlessRequests); err != nil {
 			return nil, fmt.Errorf("scan usage row: %w", err)
 		}
 		out = append(out, u)

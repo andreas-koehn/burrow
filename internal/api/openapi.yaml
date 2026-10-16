@@ -1306,6 +1306,15 @@ components:
         model: { type: string }
         input_per_million: { type: number, format: double, minimum: 0 }
         output_per_million: { type: number, format: double, minimum: 0 }
+        per_request_usd:
+          type: number
+          format: double
+          minimum: 0
+          description: >
+            USD for one request that reports no tokens (image generation,
+            speech, transcription). A request with token counts is priced by
+            tokens; one without by this price, and costs 0 and counts in
+            unpriced_requests of the cost summary when it is 0 or unset.
     CostPricingInput:
       type: object
       description: A whole price table; it replaces the one in use.
@@ -1328,13 +1337,20 @@ components:
             allOf:
               - $ref: '#/components/schemas/CostPricingEntryInput'
               - type: object
-                required: [provider, model, input_per_million, output_per_million]
+                required: [provider, model, input_per_million, output_per_million, per_request_usd]
     CostSummary:
       type: object
-      required: [window, total_usd, tokens_in, tokens_out, top_consumers, pct_of_budget]
+      required: [window, total_usd, tokens_in, tokens_out, top_consumers, pct_of_budget, unpriced_requests]
       properties:
         window: { type: string, enum: [today, week, month, year] }
         total_usd: { type: number, format: double }
+        unpriced_requests:
+          type: integer
+          format: int64
+          description: >
+            Requests of the window that were answered without a token count
+            (images, speech, transcription) and whose model has no
+            per_request_usd price: they are counted at 0.
         tokens_in: { type: integer, format: int64 }
         tokens_out: { type: integer, format: int64 }
         top_consumers:
@@ -3310,7 +3326,8 @@ paths:
       summary: Aggregated cost summary
       description: >
         Admin, or a role with quotas:read:any. The body is {window,
-        total_usd, tokens_in, tokens_out, top_consumers, pct_of_budget}. With
+        total_usd, tokens_in, tokens_out, top_consumers, pct_of_budget,
+        unpriced_requests}. With
         group_by it also carries group_by and groups: one {key, requests,
         tokens_in, tokens_out, usd} per gateway key (key = the key's id),
         model (the name clients asked for; a request on /ai/<provider>/… is

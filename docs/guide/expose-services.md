@@ -595,8 +595,10 @@ You are a content policy classifier. Decide whether the content below violates t
 The text is the same text the patterns see: what the app wrote as system
 text, instructions and messages on the chat, responses and messages
 endpoints, after redaction, cut to the first 16384 bytes. The system text of
-a model or a gateway key is not part of it. Embeddings, counting tokens and
-the other endpoints are not judged.
+a model or a gateway key is not part of it. On the image, speech and rerank
+endpoints it is the text field of the request (see
+[More endpoints](#more-endpoints)). Embeddings, counting tokens and audio
+uploads are not judged.
 
 When it runs: after the patterns and before the cache and the provider. A
 request the patterns refuse never costs a judge call. The judge's own call
@@ -648,8 +650,9 @@ it.
 `refuse` covers only text the judge can see. These pass without a verdict,
 whatever `on_failure` says:
 
-- requests to other endpoints than chat, responses and messages
-  (embeddings, counting tokens, images, audio, rerank);
+- requests to endpoints without text to read (embeddings, counting tokens,
+  audio uploads); answers of the image, speech, transcription and rerank
+  endpoints;
 - streamed answers;
 - requests and answers without text (an image-only request, an answer of
   tool calls only); the inspector marks them "not judged: no text";
@@ -682,3 +685,51 @@ close to the relay keeps that low.
 a model that does not exist, a policy longer than 4000 characters, a timeout
 outside 500 to 30000 ms or an unknown `check` or `on_failure` with `400`. A
 `PUT` that leaves out `judge` keeps what is stored for it.
+
+### More endpoints: images, speech, transcription and rerank {#more-endpoints}
+
+Five more OpenAI-format paths go through the gateway, on `/openai/v1`,
+`/ai/v1` and `/ai/<provider>/v1`, with a gateway key like chat:
+
+| Path | Body | The model comes from |
+|---|---|---|
+| `POST /v1/images/generations` | JSON | `model` |
+| `POST /v1/audio/speech` | JSON | `model` |
+| `POST /v1/audio/transcriptions` | multipart/form-data | the form field `model` |
+| `POST /v1/audio/translations` | multipart/form-data | the form field `model` |
+| `POST /v1/rerank` | JSON (the Cohere/Jina shape that vLLM, Infinity, TEI and LiteLLM accept) | `model` |
+
+How they behave:
+
+- **OpenAI format only.** A model is resolved as for chat, by a synthetic
+  model name or `<provider>/<model>`, and only targets of providers in the
+  OpenAI format serve these paths. A model with no such target answers `400`
+  `model_has_no_target_for_path` (`model "<name>" has no target for <path>`),
+  even when translation is on: these paths are never translated.
+- **Uploads.** For the two audio paths the body must be `multipart/form-data`
+  (otherwise `400` `invalid_request`). Burrow reads at most the request body
+  limit (over it: `413`), finds the `model` field wherever it stands in the
+  form (a form without one is `400` `model_required`), replaces its value with
+  the target's model and forwards every other byte, the audio included,
+  unchanged.
+- **Keys, limits, fallback.** The key's allowed-models list, budgets, rate
+  limits, the circuit breaker, fallback and the routing modes work as for
+  chat.
+- **No cache, no system text.** Answers of these paths are never cached, and
+  a model's or key's system text is never added.
+- **Guardrails** read the text fields: `prompt` for images, `input` for
+  speech, `query` and `documents` for rerank. Audio uploads are not
+  inspected or redacted, and answers that are audio, images or scores are not
+  inspected. The judge, when on, reads the same text fields; a request
+  without text is "not judged: no text".
+- **Inspector.** The request inspector shows method, path, model, status,
+  sizes and timing. A body that is not JSON or text (audio, an upload) is not
+  stored; the inspector shows `<binary, N bytes>` instead.
+- **Cost.** One usage row per request. Tokens come from the answer's `usage`
+  (for rerank also `meta.billed_units`) when it has them and are priced by
+  tokens as for chat; there is no byte estimate for audio or images. A request
+  with no tokens is priced at the model's `per_request_usd` in the price table
+  (`PUT /api/v1/cost/pricing`, or `per_request_usd` in a pricing YAML); with no
+  such price it costs 0 and is counted in `unpriced_requests` of
+  `GET /api/v1/cost/summary`. No bundled entry sets `per_request_usd`: add the
+  prices you pay.

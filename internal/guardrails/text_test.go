@@ -121,3 +121,26 @@ func TestRequestText_PerFormat(t *testing.T) {
 		t.Errorf("no messages: %q %v", got, ok)
 	}
 }
+
+func TestRequestText_MediaEndpoints(t *testing.T) {
+	cases := []struct {
+		name, format, body string
+		want               string
+		ok                 bool
+	}{
+		{"images", FormatImages, `{"model":"m","prompt":"a red fox","n":1}`, "a red fox", true},
+		{"speech", FormatSpeech, `{"model":"m","input":"Hello there","voice":"alloy"}`, "Hello there", true},
+		{"rerank strings", FormatRerank, `{"model":"m","query":"q?","documents":["doc one","doc two"]}`, "q?\ndoc one\ndoc two", true},
+		{"rerank objects", FormatRerank, `{"model":"m","query":"q?","documents":["doc one",{"text":"doc two"},{"title":"no text"}]}`, "q?\ndoc one\ndoc two", true},
+		{"rerank no documents", FormatRerank, `{"model":"m","query":"q?"}`, "q?", true},
+		{"images without prompt", FormatImages, `{"model":"m"}`, "", false},
+		{"speech not json", FormatSpeech, `nope`, "", false},
+		{"transcription is a form", FormatTranscription, "--B\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nm\r\n--B--\r\n", "", false},
+	}
+	for _, c := range cases {
+		got, ok := RequestText(c.format, []byte(c.body))
+		if got != c.want || ok != c.ok {
+			t.Errorf("%s: RequestText = %q, %v; want %q, %v", c.name, got, ok, c.want, c.ok)
+		}
+	}
+}

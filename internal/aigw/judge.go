@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ankoehn/burrow/internal/guardrails"
@@ -113,6 +114,11 @@ func judgeFormat(r *http.Request, kind Kind, cfg ServiceAIConfig) (guardrails.Ju
 		return guardrails.JudgeSettings{}, "", false
 	}
 	format := answerFormat(kind, r.URL.Path)
+	if format == "" {
+		// Media endpoints have request text only (their answers are audio,
+		// images or scores).
+		format = mediaRequestFormat(r.URL.Path)
+	}
 	return g.Judge, format, format != ""
 }
 
@@ -210,4 +216,20 @@ func (c *Chain) note(r *http.Request, svc Service, ev *observe.ModelRequest, jd 
 		}()
 	}
 	return &inspector.JudgeMark{Direction: direction, Verdict: jd.verdict, Reason: jd.reason, Failure: jd.failure}
+}
+
+// mediaRequestFormat is the guardrails text format of a media or rerank
+// request, "" for any other path.
+func mediaRequestFormat(path string) string {
+	switch strings.TrimRight(path, "/") {
+	case "/v1/images/generations":
+		return guardrails.FormatImages
+	case "/v1/audio/speech":
+		return guardrails.FormatSpeech
+	case "/v1/rerank":
+		return guardrails.FormatRerank
+	case "/v1/audio/transcriptions", "/v1/audio/translations":
+		return guardrails.FormatTranscription
+	}
+	return ""
 }

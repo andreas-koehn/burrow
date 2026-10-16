@@ -13,6 +13,16 @@ const (
 	FormatMessages  = "messages"  // Anthropic Messages
 )
 
+// The request formats of the media and rerank endpoints. Only requests have
+// text there (their answers are audio, images or scores): RequestText reads
+// them, AnswerText and DeltaText do not know them.
+const (
+	FormatImages        = "images"        // POST /v1/images/generations: prompt
+	FormatSpeech        = "speech"        // POST /v1/audio/speech: input
+	FormatRerank        = "rerank"        // POST /v1/rerank: query and documents
+	FormatTranscription = "transcription" // audio uploads: multipart, no text
+)
+
 // The text lives where the translate package's codecs read and write it:
 //
 //   - Chat: choices[].message.content (a string or text parts) and, streamed,
@@ -175,7 +185,54 @@ func RequestText(format string, body []byte) (string, bool) {
 		for _, m := range r.Messages {
 			parts = appendContent(parts, m.Content)
 		}
+	case FormatImages:
+		var r struct {
+			Prompt string `json:"prompt"`
+		}
+		if json.Unmarshal(body, &r) != nil {
+			return "", false
+		}
+		if r.Prompt != "" {
+			parts = append(parts, r.Prompt)
+		}
+	case FormatSpeech:
+		var r struct {
+			Input string `json:"input"`
+		}
+		if json.Unmarshal(body, &r) != nil {
+			return "", false
+		}
+		if r.Input != "" {
+			parts = append(parts, r.Input)
+		}
+	case FormatRerank:
+		var r struct {
+			Query     string            `json:"query"`
+			Documents []json.RawMessage `json:"documents"`
+		}
+		if json.Unmarshal(body, &r) != nil {
+			return "", false
+		}
+		if r.Query != "" {
+			parts = append(parts, r.Query)
+		}
+		for _, d := range r.Documents {
+			// A document is a string or an object with a "text".
+			var s string
+			var o struct {
+				Text string `json:"text"`
+			}
+			switch {
+			case json.Unmarshal(d, &s) == nil:
+				if s != "" {
+					parts = append(parts, s)
+				}
+			case json.Unmarshal(d, &o) == nil && o.Text != "":
+				parts = append(parts, o.Text)
+			}
+		}
 	default:
+		// Includes FormatTranscription: a multipart form is not read.
 		return "", false
 	}
 	return joined(parts)

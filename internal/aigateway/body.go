@@ -40,6 +40,9 @@ type requestBody struct {
 	// raw[start:end] is the top-level model value, quotes included. Only
 	// meaningful when model != "".
 	start, end int
+	// multipart: raw is a multipart/form-data body and raw[start:end] the raw
+	// value of its "model" field (no quotes, no JSON escaping).
+	multipart bool
 }
 
 // readRequestBody buffers r's body, up to limit bytes, and locates its
@@ -47,6 +50,9 @@ type requestBody struct {
 // or the error of the read. A body that is not JSON is not an error: it has
 // no model.
 func readRequestBody(r *http.Request, limit int64) (*requestBody, error) {
+	if isMultipartPath(r.URL.Path) {
+		return readMultipartBody(r, limit)
+	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
 		return nil, err
@@ -161,6 +167,9 @@ func (b *requestBody) WithModel(model string) []byte {
 		return b.raw
 	}
 	name := jsonString(model)
+	if b.multipart {
+		name = []byte(model)
+	}
 	out := make([]byte, 0, len(b.raw)-(b.end-b.start)+len(name))
 	out = append(out, b.raw[:b.start]...)
 	out = append(out, name...)

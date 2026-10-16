@@ -4,7 +4,15 @@
 // Mock OpenAI-compatible server for Burrow e2e tests.
 // Implements POST /v1/chat/completions (SSE), POST /v1/embeddings,
 // POST /v1/responses (JSON, or SSE with "stream": true),
-// POST /v1/messages and /v1/messages/count_tokens (Anthropic shape).
+// POST /v1/messages and /v1/messages/count_tokens (Anthropic shape), and the
+// fixed small answers of POST /v1/images/generations, /v1/audio/speech,
+// /v1/audio/transcriptions, /v1/audio/translations (a multipart form with
+// model and file) and /v1/rerank.
+//
+// Test switches on /v1/chat/completions (without them nothing changes): the
+// request header X-Mock-Answer is the assistant's content, exactly (a
+// non-streamed answer, or three stream deltas), X-Mock-Delay-Ms delays the
+// first byte.
 // Deterministic seeded responses — no real model, no phone-home.
 //
 // Tool calls: when the last message of a request is the user text
@@ -23,6 +31,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
+	"time"
 )
 
 // What a tool-call answer holds, in every shape.
@@ -225,6 +235,20 @@ func responsesToolCall(w http.ResponseWriter, req request) {
 	s.send("response.completed", map[string]any{"type": "response.completed", "response": done})
 }
 
+// threeParts cuts text into three consecutive pieces (fewer when it is
+// shorter than three runes), as a stream delivers it.
+func threeParts(text string) []string {
+	r := []rune(text)
+	var out []string
+	for i := 0; i < 3; i++ {
+		lo, hi := len(r)*i/3, len(r)*(i+1)/3
+		if hi > lo {
+			out = append(out, string(r[lo:hi]))
+		}
+	}
+	return out
+}
+
 func finishReason(last bool) string {
 	if last {
 		return `"stop"`
@@ -243,15 +267,33 @@ func handler() http.Handler {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if req := readRequest(r); req.asksForTool() {
+		req := readRequest(r)
+		// Test switch: X-Mock-Delay-Ms delays the first byte.
+		if ms, err := strconv.Atoi(r.Header.Get("X-Mock-Delay-Ms")); err == nil && ms > 0 {
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+		}
+		if req.asksForTool() {
 			chatToolCall(w, req)
 			return
+		}
+		chunks := []string{"Hello", " from", " mockoai", "."}
+		// Test switch: X-Mock-Answer is the assistant's content, exactly.
+		if answer := r.Header.Get("X-Mock-Answer"); answer != "" {
+			if !req.Stream {
+				writeJSON(w, map[string]any{
+					"id": "chatcmpl-test", "object": "chat.completion", "model": req.Model,
+					"choices": []map[string]any{{"index": 0, "finish_reason": "stop",
+						"message": map[string]any{"role": "assistant", "content": answer}}},
+					"usage": map[string]int{"prompt_tokens": 4, "completion_tokens": 8, "total_tokens": 12},
+				})
+				return
+			}
+			chunks = threeParts(answer)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("X-Accel-Buffering", "no")
 		flusher, _ := w.(http.Flusher)
-		chunks := []string{"Hello", " from", " mockoai", "."}
 		for i, c := range chunks {
 			fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":%q},\"finish_reason\":%s}]}\n\n",
 				c, finishReason(i == len(chunks)-1))
@@ -263,6 +305,53 @@ func handler() http.Handler {
 		if flusher != nil {
 			flusher.Flush()
 		}
+	})
+	// Images, speech, transcription and rerank: fixed small answers.
+	mux.HandleFunc("/v1/images/generations", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		writeJSON(w, map[string]any{"created": 1700000000, "data": []map[string]string{{"b64_json": "aGk="}}})
+	})
+	mux.HandleFunc("/v1/audio/speech", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write([]byte("ID3\x04\x00mock"))
+	})
+	transcribe := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		// The form is read as a client sends it; model and file are required.
+		if err := r.ParseMultipartForm(8 << 20); err != nil || r.FormValue("model") == "" {
+			http.Error(w, `{"error":{"message":"multipart form with model and file required"}}`, http.StatusBadRequest)
+			return
+		}
+		if _, _, err := r.FormFile("file"); err != nil {
+			http.Error(w, `{"error":{"message":"file required"}}`, http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, map[string]string{"text": "hello from mockoai"})
+	}
+	mux.HandleFunc("/v1/audio/transcriptions", transcribe)
+	mux.HandleFunc("/v1/audio/translations", transcribe)
+	mux.HandleFunc("/v1/rerank", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		writeJSON(w, map[string]any{
+			"results": []map[string]any{{"index": 0, "relevance_score": 0.9}},
+			"usage":   map[string]int{"total_tokens": 12},
+		})
 	})
 	mux.HandleFunc("/v1/embeddings", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

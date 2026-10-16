@@ -244,12 +244,36 @@ func (e *Engine) priceKey(r db.UsageRow) string {
 
 // rowUSD prices one usage row: what upstreams reported, plus the price table
 // for the tokens no upstream put a price on (see priceKey).
+//
+// A row with tokens is priced by tokens as above. Its requests that stated
+// none (r.TokenlessRequests: images, speech, transcription) are priced at the
+// entry's PerRequestUSD, when it has one.
 func (e *Engine) rowUSD(r db.UsageRow) float64 {
 	usd := r.ReportedUSD
 	if key := e.priceKey(r); key != "" {
 		usd += e.UsdFor(key, int(r.PricedTokensIn), int(r.PricedTokensOut))
+		usd += float64(r.TokenlessRequests) * e.perRequest(key)
 	}
 	return usd
+}
+
+// perRequest is the per-request price of the price-table entry key.
+func (e *Engine) perRequest(key string) float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	entry, _ := e.pricing.Lookup(key)
+	return entry.PerRequestUSD
+}
+
+// Unpriced reports whether a usage row holds requests that cost nothing only
+// because nothing prices them: they stated no tokens, and the model has no
+// per-request price. The cost page shows their number.
+func (e *Engine) Unpriced(r db.UsageRow) bool {
+	if r.TokenlessRequests <= 0 {
+		return false
+	}
+	key := e.priceKey(r)
+	return key == "" || e.perRequest(key) <= 0
 }
 
 // RowUSD prices one usage row as Summary does: what upstreams reported, plus
@@ -656,6 +680,9 @@ type Summary struct {
 	TokensOut    int64             `json:"tokens_out"`
 	TopConsumers []SummaryConsumer `json:"top_consumers"`
 	PctOfBudget  *float64          `json:"pct_of_budget"`
+	// UnpricedRequests counts the window's requests that stated no tokens and
+	// have no per-request price (see Engine.Unpriced).
+	UnpricedRequests int64 `json:"unpriced_requests"`
 }
 
 // Summary computes the cost summary for the given window. The window string
@@ -687,6 +714,9 @@ func (e *Engine) Summary(ctx context.Context, window string) (Summary, error) {
 		c.TokensIn += r.TokensIn
 		c.TokensOut += r.TokensOut
 		usd := e.rowUSD(r)
+		if e.Unpriced(r) {
+			out.UnpricedRequests += r.TokenlessRequests
+		}
 		c.USD += usd
 		out.TotalUSD += usd
 		out.TokensIn += r.TokensIn

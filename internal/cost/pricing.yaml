@@ -1,6 +1,12 @@
 # internal/cost/pricing.yaml — bundled default pricing table.
 #
-# Currency is USD per 1,000,000 tokens. Operator may override via
+# Currency is USD per 1,000,000 tokens. An entry may also carry
+# per_request_usd: the price of one request that reports no tokens (image
+# generation, speech, transcription). A usage row with tokens is priced by
+# tokens as always; one without is priced at per_request_usd when the entry has
+# it, else it costs 0 and counts as "not priced" on the cost page. Example:
+#   - { provider: openai, model: gpt-image-1, per_request_usd: 0.04 }
+# No entry below sets it: these are prices the operator knows, not the bundle. Operator may override via
 # PUT /api/v1/cost/pricing or by setting BURROW_PRICING_PATH=/path/to/yaml
 # (Task 24 wires the env var). NEVER fetched online — Burrow has no
 # phone-home for prices (spec Part F invariant).
