@@ -452,6 +452,9 @@ func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, p db.AIPr
 	route := aigw.NewRoute(key.ID, p.APIFormat, requested, w.Header().Get(headerRequestID))
 	route.SetTarget(p.Slug, model)
 	ctx := aigw.WithRoute(r.Context(), route)
+	if key.SystemText != "" {
+		ctx = aigw.WithSystemText(ctx, key.SystemText)
+	}
 	return r.WithContext(context.WithValue(ctx, allowListKey{}, key.AllowedModels)), "", true
 }
 

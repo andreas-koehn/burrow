@@ -424,3 +424,35 @@ What the relay does with a direct provider's traffic:
   upstream's model list; `GET /ai/<provider>/v1/models` is answered from the
   stored list. A tunnel provider's `/v1/models` is forwarded to the local
   server unless models were added by hand.
+
+### System text for models and gateway keys {#system-text}
+
+A model and a gateway key can each carry a **system text** (plain text, at
+most 8192 bytes): house rules every app gets and none can remove. Burrow puts
+it in front of whatever system content the app sent, in this order: the
+model's text, a blank line, the key's text, then the app's own. The app's
+content is never removed, reordered or rewritten.
+
+Where the text goes depends on the format of the request:
+
+- **Chat Completions** (`/v1/chat/completions`): one new `system` message at
+  the start of `messages`. A `system` or `developer` message of the app
+  follows it.
+- **Responses** (`/v1/responses`): in front of `instructions`, or as
+  `instructions` when the app sent none.
+- **Messages** (`/v1/messages`): in front of `system`. A string `system`
+  stays a string; when the app sent blocks, the text is a new first text
+  block; without `system` it becomes the string.
+
+Good to know:
+
+- The guardrails inspect what the app sent, before the text is added.
+- The text is part of the cache key: two requests that differ only in system
+  text never share a cached answer.
+- The request inspector shows the request as it went upstream, with the text
+  in place. The app does not see it.
+- It is not added to embeddings, to counting tokens, or to the image, audio
+  and rerank endpoints. A model's text applies when the app names the model;
+  a key's text applies on every request that key makes to a chat, responses
+  or messages endpoint, including `/ai/<provider>/v1` and direct
+  `<provider>/<model>` addresses. A service API key has no text.

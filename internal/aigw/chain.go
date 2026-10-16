@@ -359,7 +359,9 @@ func (c *Chain) ServeHTTP(w http.ResponseWriter, r *http.Request, svc Service, p
 		return
 	}
 
-	if IsAIPassThrough(svc.AIConfig) {
+	// A request that carries system text needs the buffered path even when
+	// the service has no AI feature: the text is put into the body there.
+	if IsAIPassThrough(svc.AIConfig) && SystemTextFrom(r.Context()) == "" {
 		// The body goes to the upstream as it arrives, unbuffered. Go's
 		// HTTP/1 server consumes what is left of a request body when the
 		// response headers are written; an upstream that answers before it
@@ -688,6 +690,21 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 					slog.String("service_id", svc.ID),
 					slog.String("pattern", pattern),
 				)
+			}
+		}
+	}
+
+	// ---------------------------------------------------------------
+	// Step 5b: system text of the model and the gateway key. After the
+	// guardrails (they inspect only what the app sent) and before the cache
+	// key (the text changes the answer). Applied once here; fallback attempts
+	// and translations reuse this body.
+	// ---------------------------------------------------------------
+	if text := SystemTextFrom(r.Context()); text != "" {
+		if out, ok := ApplySystemText(r.URL.Path, upstreamBody, text); ok {
+			upstreamBody = out
+			if rb, ok2 := ApplySystemText(r.URL.Path, redactedBody, text); ok2 {
+				redactedBody = rb
 			}
 		}
 	}
