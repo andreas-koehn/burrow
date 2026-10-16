@@ -201,3 +201,30 @@ func TestReadMultipartModel_RewriteIsReadBackByGo(t *testing.T) {
 		t.Fatal("a model value that injects a part was accepted")
 	}
 }
+
+// A part whose Content-Disposition Go cannot parse may be read by another
+// parser (python-multipart keeps the last duplicate parameter) as the model.
+func TestReadMultipartModel_FailsClosedOnUnreadableParts(t *testing.T) {
+	ct := "multipart/form-data; boundary=B"
+	form := func(disp string) string {
+		return "--B\r\nContent-Disposition: " + disp + "\r\n\r\nexpensive\r\n--B\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nallowed\r\n--B--\r\n"
+	}
+	for name, body := range map[string]string{
+		"duplicate name":       form(`form-data; name="x"; name="model"`),
+		"trailing empty param": form(`form-data; name="x"; ;`),
+		"not form-data":        form(`attachment; name="x"`),
+		"no name":              form(`form-data`),
+		"unparsable":           form(`form-data; name="x`),
+		"no disposition":       "--B\r\nContent-Type: text/plain\r\n\r\nx\r\n--B\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nallowed\r\n--B--\r\n",
+		"model with filename":  "--B\r\nContent-Disposition: form-data; name=\"model\"; filename=\"m\"\r\n\r\nx\r\n--B\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nallowed\r\n--B--\r\n",
+	} {
+		if _, _, err := readMultipartModel(formRequest(strings.NewReader(body), ct), 1<<20); !errors.Is(err, errMalformedForm) {
+			t.Errorf("%s: err = %v, want errMalformedForm", name, err)
+		}
+	}
+	// Ordinary forms still pass.
+	ok := "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\nx\r\n--B\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nallowed\r\n--B--\r\n"
+	if m, _, err := readMultipartModel(formRequest(strings.NewReader(ok), ct), 1<<20); err != nil || m != "allowed" {
+		t.Errorf("ordinary form: %q %v", m, err)
+	}
+}

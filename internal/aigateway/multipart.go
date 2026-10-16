@@ -172,7 +172,16 @@ func locateFormModel(raw []byte, boundary string) (start, end int, err error) {
 			}
 			from = at + 2 // "--boundaryXYZ": content, not a delimiter
 		}
-		if _, p, perr := mime.ParseMediaType(hdr.Get("Content-Disposition")); perr == nil && p["name"] == "model" && p["filename"] == "" {
+		// Fail closed: a part another parser could read differently (a
+		// duplicate parameter, a stray ";") is never skipped as "not the model".
+		mt, p, perr := mime.ParseMediaType(hdr.Get("Content-Disposition"))
+		if perr != nil || mt != "form-data" || p["name"] == "" {
+			return 0, 0, errMalformedForm
+		}
+		if _, hasFile := p["filename"]; p["name"] == "model" && hasFile {
+			return 0, 0, errMalformedForm
+		}
+		if p["name"] == "model" {
 			if found {
 				return 0, 0, errDuplicateModel
 			}

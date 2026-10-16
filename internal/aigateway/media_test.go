@@ -45,9 +45,9 @@ func mediaRequest(c mediaCase, key, model string) *http.Request {
 }
 
 type upstreamSeen struct {
-	path, model, ct string
-	body            []byte
-	n               int
+	path, ct string
+	body     []byte
+	n        int
 }
 
 func mediaUpstream(seen *upstreamSeen) http.Handler {

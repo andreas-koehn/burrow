@@ -175,10 +175,10 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, d *Dialect, p
 	}
 	if !checked || translated || isMediaPath(path) {
 		// A media answer is never cached either. In the context, not in a
-		// header: the request's headers go on to the upstream. A translated answer is never cached: the key is the
-		// first target's service and model, which a request in that target's
-		// own format shares, and one of the two would be served the other's
-		// format.
+		// header: the request's headers go on to the upstream. A translated
+		// answer is never cached: the key is the first target's service and
+		// model, which a request in that target's own format shares, and one
+		// of the two would be served the other's format.
 		r = r.WithContext(aigw.WithoutCache(r.Context()))
 	}
 	// Each attempt applies the upstream credential of its own target (see
@@ -187,14 +187,14 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, d *Dialect, p
 	// go to another target.
 	r = r.WithContext(aigw.WithOwnCredential(r.Context()))
 
-	// An upload goes upstream with each candidate's model in place of the
-	// requested one: the upstream must read exactly that model back.
+	// An upload goes upstream with the candidate's model in place of the
+	// requested one, and the upstream must read exactly that model back. Only
+	// the model value's bytes differ between candidates, so the first
+	// candidate's body is checked (one copy at a time).
 	if body.multipart {
-		for _, c := range candidates {
-			if verifyFormModel(body.WithModel(c.model), body.boundary, c.model) != nil {
-				g.fail(w, r, http.StatusBadRequest, "invalid_request", "the multipart form is malformed")
-				return
-			}
+		if verifyFormModel(body.WithModel(candidates[0].model), body.boundary, candidates[0].model) != nil {
+			g.fail(w, r, http.StatusBadRequest, "invalid_request", "the multipart form is malformed")
+			return
 		}
 	}
 

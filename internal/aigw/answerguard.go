@@ -268,7 +268,7 @@ func (g *answerGuard) writeStream(p []byte) (int, error) {
 				return n, err
 			}
 		}
-		g.boundPending(false)
+		_ = g.boundPending(false) // nothing is forwarded here: no write can fail
 		return n, err
 	}
 	g.buf.Write(p)
