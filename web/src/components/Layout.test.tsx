@@ -388,7 +388,7 @@ describe("Layout workspace shell", () => {
     const head = document.querySelector(".sidebar-brand") as HTMLElement;
     expect(head).toHaveTextContent(/^Services$/);
     expect(within(head).queryByRole("link")).toBeNull();
-    expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients", "Traffic"]);
+    expect(sidebarLinks("Services")).toEqual(["Overview", "Services", "Clients"]);
   });
 
   it("a non-admin with a connected http service gets the tabs", async () => {

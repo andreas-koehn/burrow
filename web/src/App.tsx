@@ -70,23 +70,23 @@ export default function App() {
       <Route path="/link" element={<RequireAuth><LinkClient /></RequireAuth>} />
       <Route element={<RequireAuth><Layout /></RequireAuth>}>
         <Route path="/" element={<ServicesOverview />} />
-        <Route path="/services" element={<Services />} />
+        <Route path="/services" element={<RequirePermission needs={needsOf("/services")}><Services /></RequirePermission>} />
         {/* /ai/ is the gateway's data plane and never reaches the SPA; its pages live under /gateway/. */}
         <Route path="/gateway" element={<GatewayOverview />} />
-        <Route path="/gateway/providers" element={<Providers />} />
-        <Route path="/gateway/providers/:slug" element={<ProviderDetail />} />
-        <Route path="/gateway/models" element={<GatewayModels />} />
-        <Route path="/gateway/keys" element={<GatewayKeys />} />
-        <Route path="/gateway/cache" element={<PromptCache />} />
-        <Route path="/gateway/guardrails" element={<Guardrails />} />
-        <Route path="/gateway/requests" element={<Requests />} />
-        <Route path="/gateway/requests/:serviceId/:requestId?" element={<RequestInspector />} />
+        <Route path="/gateway/providers" element={<RequirePermission needs={needsOf("/gateway/providers")}><Providers /></RequirePermission>} />
+        <Route path="/gateway/providers/:slug" element={<RequirePermission needs={needsOf("/gateway/providers")}><ProviderDetail /></RequirePermission>} />
+        <Route path="/gateway/models" element={<RequirePermission needs={needsOf("/gateway/models")}><GatewayModels /></RequirePermission>} />
+        <Route path="/gateway/keys" element={<RequirePermission needs={needsOf("/gateway/keys")}><GatewayKeys /></RequirePermission>} />
+        <Route path="/gateway/cache" element={<RequirePermission needs={needsOf("/gateway/cache")}><PromptCache /></RequirePermission>} />
+        <Route path="/gateway/guardrails" element={<RequirePermission needs={needsOf("/gateway/guardrails")}><Guardrails /></RequirePermission>} />
+        <Route path="/gateway/requests" element={<RequirePermission needs={needsOf("/gateway/requests")}><Requests /></RequirePermission>} />
+        <Route path="/gateway/requests/:serviceId/:requestId?" element={<RequirePermission needs={needsOf("/gateway/requests")}><RequestInspector /></RequirePermission>} />
         <Route path="/gateway/cost" element={<CostBudgets />} />
-        <Route path="/clients" element={<Clients />} />
-        <Route path="/clients/connect" element={<ConnectClient />} />
-        <Route path="/clients/:id" element={<ClientDetail />} />
-        <Route path="/traffic" element={<Traffic />} />
-        <Route path="/services/:id" element={<ServiceDetail />} />
+        <Route path="/clients" element={<RequirePermission needs={needsOf("/clients")}><Clients /></RequirePermission>} />
+        <Route path="/clients/connect" element={<RequirePermission needs={needsOf("/clients")}><ConnectClient /></RequirePermission>} />
+        <Route path="/clients/:id" element={<RequirePermission needs={needsOf("/clients")}><ClientDetail /></RequirePermission>} />
+        <Route path="/traffic" element={<RequirePermission needs={needsOf("/traffic")}><Traffic /></RequirePermission>} />
+        <Route path="/services/:id" element={<RequirePermission needs={needsOf("/services")}><ServiceDetail /></RequirePermission>} />
         <Route path="/services/:id/domains" element={<ServiceDomainsRedirect />} />
         {/* Settings. A page with a `needs` in lib/navigation.ts is guarded by exactly that list. */}
         <Route path="/settings" element={<SettingsIndex />} />

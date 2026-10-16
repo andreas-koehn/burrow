@@ -41,7 +41,7 @@ func Presets() []Preset {
 		}
 	}
 	return []Preset{
-		{Name: PresetReadOnly, Description: "Reads everything, changes nothing.", Permissions: readOnly},
+		{Name: PresetReadOnly, Description: "Reads everything that has a read permission (not services or budgets), changes nothing.", Permissions: readOnly},
 		{Name: PresetOperator, Description: "Runs services and the AI gateway; no users, roles, settings or backups.", Permissions: operator},
 		{Name: PresetFull, Description: "Everything its owner may do.", Permissions: AllPermissions()},
 	}

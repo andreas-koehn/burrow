@@ -40,7 +40,7 @@ create the token:
 
 | Preset | Permissions |
 |--------|-------------|
-| Read-only | every permission whose name contains `:read`, plus `metrics:read` and `mcp:tools:read` |
+| Read-only | every permission whose name contains `:read`, plus `metrics:read` and `mcp:tools:read`. It reads everything that has a read permission, which leaves out services and budgets |
 | Operator | every permission except `users:manage`, `roles:manage`, `tokens:manage:any`, `automation:tokens:manage:any`, `settings:manage` and `backup:run` |
 | Full | every permission |
 

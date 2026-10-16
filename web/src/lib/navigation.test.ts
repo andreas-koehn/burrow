@@ -85,6 +85,25 @@ describe("navigation description", () => {
       expect(auditor.can(e?.needs), id).toBe(false);
     }
   });
+  it("the user role sees Services and Clients but not Traffic, which needs audit:read", () => {
+    expect(labels("services", user)).toEqual([["", ["Overview"]], ["Connect", ["Services", "Clients"]]]);
+  });
+  it("a role that holds only audit:read sees Traffic, and no Services or Providers", () => {
+    expect(labels("services", auditor)).toEqual([["", ["Overview"]], ["Observe", ["Traffic"]]]);
+    const gateway = navigationFor("gateway", { ...auditor, hasAiGateway: true }).groups.flatMap((g) => g.entries.map((e) => e.label));
+    for (const hidden of ["Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests"]) expect(gateway).not.toContain(hidden);
+  });
+  it("each page entry declares the permissions of the API its page loads", () => {
+    const needs = Object.fromEntries(allEntries(admin).map((x) => [x.entry.id, x.entry.needs]));
+    const aiRead = ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"];
+    expect(needs).toMatchObject({
+      services: ["services:configure:own", "services:configure:any"],
+      traffic: ["audit:read"],
+      providers: ["ai:read:own", "ai:read:any", "ai:providers:manage"],
+      models: aiRead, "gateway-keys": aiRead, guardrails: aiRead, cache: aiRead,
+      requests: ["inspector:read:own", "inspector:read:any"],
+    });
+  });
   // The spec's budget is seven entries per job. The AI Gateway wireframe reaches eight with
   // Models and Gateway keys (plan gateway-models) and nine with Clients, which belongs to the
   // relay and is listed in both workspaces; nothing may go beyond that.

@@ -52,6 +52,12 @@ export interface NavContext {
 const NEEDS = {
   // The page lists clients (tunnels:read:any) and, for everyone, the tokens and the connect flow (tokens:manage:*).
   clients: [P.tunnelsReadAny, P.tokensManageOwn, P.tokensManageAny],
+  // Each is the permission set of the route the page loads (routeAccess in internal/api/access.go).
+  services: [P.servicesConfigureOwn, P.servicesConfigureAny],
+  traffic: [P.auditRead],
+  providers: [P.aiReadOwn, P.aiReadAny, P.aiProvidersManage],
+  aiRead: [P.aiReadOwn, P.aiReadAny, P.aiConfigureOwn, P.aiConfigureAny],
+  requests: [P.inspectorReadOwn, P.inspectorReadAny],
   settings: [P.settingsManage],
   users: [P.usersRead, P.usersManage],
   roles: [P.rolesRead, P.rolesManage],
@@ -75,10 +81,10 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
     groups: [
       { entries: [{ id: "services-overview", label: "Overview", paletteLabel: "Services overview", to: "/", icon: LayoutDashboard }] },
       { title: "Connect", entries: [
-        { id: "services", label: "Services", to: "/services", icon: Globe, count: "services" },
+        { id: "services", label: "Services", to: "/services", icon: Globe, count: "services", needs: NEEDS.services },
         { id: "clients", label: "Clients", to: "/clients", icon: Boxes, count: "clientsOnline", needs: NEEDS.clients },
       ] },
-      { title: "Observe", entries: [{ id: "traffic", label: "Traffic", to: "/traffic", icon: Activity }] },
+      { title: "Observe", entries: [{ id: "traffic", label: "Traffic", to: "/traffic", icon: Activity, needs: NEEDS.traffic }] },
     ],
   },
   gateway: {
@@ -90,16 +96,16 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
         { id: "gateway-clients", label: "Clients", to: "/clients", icon: Boxes, count: "clientsOnline", needs: NEEDS.clients },
       ] },
       { title: "Route", entries: [
-        { id: "providers", label: "Providers", to: "/gateway/providers", icon: Sparkles },
-        { id: "models", label: "Models", to: "/gateway/models", icon: Layers },
-        { id: "gateway-keys", label: "Gateway keys", to: "/gateway/keys", icon: KeyRound },
+        { id: "providers", label: "Providers", to: "/gateway/providers", icon: Sparkles, needs: NEEDS.providers },
+        { id: "models", label: "Models", to: "/gateway/models", icon: Layers, needs: NEEDS.aiRead },
+        { id: "gateway-keys", label: "Gateway keys", to: "/gateway/keys", icon: KeyRound, needs: NEEDS.aiRead },
       ] },
       { title: "Control", entries: [
-        { id: "guardrails", label: "Guardrails", to: "/gateway/guardrails", icon: ShieldAlert },
-        { id: "cache", label: "Prompt cache", to: "/gateway/cache", icon: Database },
+        { id: "guardrails", label: "Guardrails", to: "/gateway/guardrails", icon: ShieldAlert, needs: NEEDS.aiRead },
+        { id: "cache", label: "Prompt cache", to: "/gateway/cache", icon: Database, needs: NEEDS.aiRead },
       ] },
       { title: "Observe", entries: [
-        { id: "requests", label: "Requests", to: "/gateway/requests", icon: Search },
+        { id: "requests", label: "Requests", to: "/gateway/requests", icon: Search, needs: NEEDS.requests },
         { id: "cost", label: "Cost & budgets", to: "/gateway/cost", icon: DollarSign },
       ] },
     ],

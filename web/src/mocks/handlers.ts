@@ -1583,7 +1583,7 @@ export const handlers = [
     const cut = (list: string[]) => list.filter((p) => held.has(p));
     const notOperator = ["users:manage", "roles:manage", "tokens:manage:any", "automation:tokens:manage:any", "settings:manage", "backup:run"];
     return json([
-      { name: "read-only", description: "Reads everything, changes nothing.", permissions: cut(ALL_PERMISSIONS.filter((p) => p.includes(":read"))) },
+      { name: "read-only", description: "Reads everything that has a read permission (not services or budgets), changes nothing.", permissions: cut(ALL_PERMISSIONS.filter((p) => p.includes(":read"))) },
       { name: "operator", description: "Everything except managing users, roles, settings, backups and other people's tokens.", permissions: cut(ALL_PERMISSIONS.filter((p) => !notOperator.includes(p))) },
       { name: "full", description: "Every permission you hold.", permissions: cut([...ALL_PERMISSIONS]) },
     ]);

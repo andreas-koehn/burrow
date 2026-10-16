@@ -86,6 +86,14 @@ test.describe("a custom role", () => {
     await expect(page.getByText(/users:read/)).toBeVisible();
     await expect(page.getByText(/users:manage/)).toBeVisible();
 
+    // The Services workspace offers neither Traffic (audit:read) nor Services (services:configure:*).
+    await page.goto("/");
+    const services = page.getByRole("navigation", { name: "Services" });
+    await expect(services.getByRole("link", { name: "Overview", exact: true })).toBeVisible();
+    for (const hidden of ["Traffic", "Services"]) {
+      await expect(services.getByRole("link", { name: hidden, exact: true })).toHaveCount(0);
+    }
+
     // Settings → MCP: the address and the Claude Code snippet.
     await page.goto("/settings/mcp");
     await expect(page.getByRole("heading", { name: "Address" })).toBeVisible();

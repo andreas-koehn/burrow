@@ -46,6 +46,10 @@ describe("Settings → MCP", () => {
     expect(screen.getByText(".vscode/mcp.json")).toBeInTheDocument();
   });
 
+  it("says what a read-only token cannot list", async () => {
+    mount();
+    expect(await screen.findByText("A read-only token cannot list services or budgets; use an operator token for those.")).toBeInTheDocument();
+  });
   it("links to a read-only token", async () => {
     mount();
     const link = await screen.findByRole("link", { name: "Create a read-only token" });

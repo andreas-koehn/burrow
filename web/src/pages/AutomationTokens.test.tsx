@@ -137,7 +137,7 @@ describe("Automation tokens", () => {
     it("opens on Read-only with its description, the count and a hint for the empty name", async () => {
       const dlg = await openDialog();
       expect(within(dlg).getByRole("radio", { name: "Read-only" })).toBeChecked();
-      expect(within(dlg).getByText("Reads everything, changes nothing.")).toBeInTheDocument();
+      expect(within(dlg).getByText("Reads everything that has a read permission (not services or budgets), changes nothing.")).toBeInTheDocument();
       await waitFor(() =>
         expect(within(dlg).getByRole("button", { name: `Permissions (${readOnly.length})` })).toBeInTheDocument(),
       );

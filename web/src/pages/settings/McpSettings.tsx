@@ -162,6 +162,9 @@ export default function McpSettings() {
               "Making one needs the permission automation:tokens:manage:own; ask an admin for a token."
             )}
           </p>
+          {makesTokens && (
+            <p className="muted small">A read-only token cannot list services or budgets; use an operator token for those.</p>
+          )}
         </div>
       </section>
 

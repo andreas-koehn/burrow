@@ -48,7 +48,7 @@ describe("destinationsFor — the navigation description, flattened", () => {
   });
 
   it("a reader with the user permissions and no AI gateway gets the Services entries, no AI Gateway group, and the Personal settings", () => {
-    expect(byGroup(plain, "Services")).toEqual(["Services overview", "Services", "Clients", "Traffic"]);
+    expect(byGroup(plain, "Services")).toEqual(["Services overview", "Services", "Clients"]);
     expect(byGroup(plain, "AI Gateway")).toEqual([]);
     expect(byGroup(plain, "Settings")).toEqual(["Profile & password", "Sessions", "Automation tokens"]);
   });

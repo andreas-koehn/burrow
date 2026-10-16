@@ -102,6 +102,13 @@ describe("App routes", () => {
     expect(screen.getByTestId("path")).toHaveTextContent(/^\/settings\/profile$/);
   });
 
+  it("opening /traffic without audit:read says which permission is missing", async () => {
+    db.me = { ...db.me, role: "user", permissions: [...USER_PERMISSIONS] };
+    renderAt("/traffic");
+    expect(await screen.findByRole("heading", { name: "You cannot open this page", level: 1 })).toBeInTheDocument();
+    expect(screen.getByText(/audit:read/)).toBeInTheDocument();
+  });
+
   const settingsEntries = NAVIGATIONS.settings.groups.flatMap((g) => g.entries);
   it.each(settingsEntries.filter((e) => e.needs).map((e) => [e.to, e.needs!, e.label] as const))(
     "someone without the permissions of %s is told what is missing",
