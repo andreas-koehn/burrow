@@ -663,13 +663,18 @@ func (g *Gateway) tunnelUpstream(w http.ResponseWriter, r *http.Request, p db.AI
 }
 
 // policyAllows enforces the backing service's access mode and IP/geo policy,
-// the same for every provider kind. It writes the error response itself.
+// the same for every provider kind. It writes the error response itself. The
+// judge's own call (aigw.PurposeGuardrailJudge) has no client address: it is
+// the relay calling itself, to a model an operator with ai:configure:any
+// chose, and the IP/geo policy does not apply to it (the access mode does).
+// It covers the first target's check and every attempt's.
 func (g *Gateway) policyAllows(w http.ResponseWriter, r *http.Request, p db.AIProvider, res *proxy.Resolved) bool {
 	if res.AccessMode != "api_key" {
 		g.fail(w, r, http.StatusForbidden, "provider_unavailable", "this provider's service is not in API-key mode")
 		return false
 	}
-	if g.IPGeoDeny != nil && g.IPGeoDeny(res, r) {
+	judgeCall := aigw.PurposeFrom(r.Context()) == aigw.PurposeGuardrailJudge
+	if g.IPGeoDeny != nil && !judgeCall && g.IPGeoDeny(res, r) {
 		g.Log.Info("aigateway: ip-geo deny", "provider", p.Slug, "service_id", res.ServiceID, "remote_addr", r.RemoteAddr)
 		g.fail(w, r, http.StatusForbidden, "forbidden", "your address is not allowed to use this provider")
 		return false

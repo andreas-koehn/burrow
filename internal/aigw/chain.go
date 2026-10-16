@@ -405,7 +405,11 @@ func (c *Chain) ServeHTTP(w http.ResponseWriter, r *http.Request, svc Service, p
 // allow runs the rate limiter for one request. It returns the request with
 // the quota subjects attached, and false when the limiter already answered.
 func (c *Chain) allow(w http.ResponseWriter, r *http.Request, svc Service) (*http.Request, bool) {
-	if c.RateLimit == nil {
+	// The judge's own call is not charged to the judged service: its load is
+	// bounded by the app requests the limit admitted (at most two judge calls
+	// each), and charging it would let on_failure "refuse" turn away an app
+	// that is within its limit. It is still metered.
+	if c.RateLimit == nil || PurposeFrom(r.Context()) == PurposeGuardrailJudge {
 		return r, true
 	}
 	who := quota.Subjects{
@@ -751,7 +755,12 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// ---------------------------------------------------------------
 	judgeSettings, judgeTextFormat, judging := judgeFormat(r, kind, cfg)
 	if judging {
-		if text, ok := guardrails.RequestText(judgeTextFormat, redactedBody); ok {
+		text, ok := guardrails.RequestText(judgeTextFormat, redactedBody)
+		if !ok {
+			// Nothing to judge (an image-only request): it goes on, and the
+			// inspector says it was not judged.
+			judgeMark = notJudgedMark(&ev, guardrails.DirectionRequest)
+		} else {
 			jd := c.judge(r.Context(), svc.ID, judgeSettings, text)
 			judgeMark = c.note(r, svc, &ev, jd, guardrails.DirectionRequest)
 			if jd.refuse {
@@ -965,15 +974,30 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// With check "requests_and_answers" a whole answer is judged too, once
 	// the answer patterns let it pass (see answerGuard).
 	var answerJudgement *judgement
+	answerNoText := false
 	var judgeAnswer func(string) bool
+	var answerNotJudged func(string) bool
 	if judging && judgeSettings.ChecksAnswers() {
 		judgeAnswer = func(text string) bool {
 			jd := c.judge(r.Context(), svc.ID, judgeSettings, text)
 			answerJudgement = &jd
 			return jd.refuse
 		}
+		answerNotJudged = func(why string) bool {
+			if why != notJudgedTooLarge {
+				answerNoText = true
+				return false
+			}
+			// An answer the guard cannot hold cannot be judged: a failure.
+			jd := c.judgeFailure(svc.ID, judgeSettings, JudgeTooLarge)
+			answerJudgement = &jd
+			return jd.refuse
+		}
 	}
 	guard := c.answerGuardFor(wrapped, r, kind, cfg, judgeAnswer)
+	if guard != nil {
+		guard.notJudged = answerNotJudged
+	}
 	if guard != nil {
 		upstreamWriter = guard
 		// An answer the upstream compresses for the app cannot be read.
@@ -1020,6 +1044,9 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 			)
 			c.guardrailAnswer(r, svc, pattern, action)
 		}
+	}
+	if answerNoText {
+		judgeMark = notJudgedMark(&ev, guardrails.DirectionAnswer)
 	}
 	if answerJudgement != nil {
 		jd := *answerJudgement

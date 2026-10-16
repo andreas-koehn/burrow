@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -378,5 +379,131 @@ func TestChainJudge_GuardrailsOff(t *testing.T) {
 	svc.AIConfig.Guardrails.Enabled = false
 	if out := runChain(t, rig.chain, &leakUpstream{body: obsAnswer}, svc, obsRequest(chatHi)); out.Code != 200 || rig.judge.count() != 0 {
 		t.Fatalf("status %d, judge calls %d", out.Code, rig.judge.count())
+	}
+}
+
+// bigAnswer is a whole Chat answer larger than the inspector's capture limit,
+// the most of an answer the guard holds.
+func bigAnswer() string {
+	text := strings.Repeat("the quick brown fox jumps. ", inspector.MaxRespBodyBytes/27+2000)
+	return `{"id":"c-1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"` + text + `"},"finish_reason":"stop"}]}`
+}
+
+// An answer too large to hold cannot be judged: a failure of class
+// too_large. With refuse nothing of it has gone out, and it is withheld; with
+// allow it is delivered, and the failure is recorded.
+func TestChainJudge_AnswerTooLarge(t *testing.T) {
+	body := bigAnswer()
+	for _, onFailure := range []string{"refuse", "allow"} {
+		t.Run(onFailure, func(t *testing.T) {
+			rig := newJudgeRig(verdict("allow", "ok"))
+			out := runChain(t, rig.chain, &leakUpstream{body: body}, judgeSvc(judgeOn("requests_and_answers", onFailure)), errorShape(obsRequest(chatHi)))
+			if rig.judge.count() != 1 {
+				t.Fatalf("%d judge calls (the request only)", rig.judge.count())
+			}
+			if onFailure == "refuse" {
+				if out.Code != http.StatusBadGateway || !strings.Contains(out.Body.String(), "guardrail_judge_blocked_answer") || strings.Contains(out.Body.String(), "quick brown fox") {
+					t.Fatalf("status %d, %d bytes", out.Code, out.Body.Len())
+				}
+			} else if out.Code != 200 || out.Body.String() != body {
+				t.Fatalf("status %d, %d bytes of %d", out.Code, out.Body.Len(), len(body))
+			}
+			got := rig.hook.events()
+			if len(got) != 1 || got[0].Direction != "answer" || got[0].Verdict != aigw.JudgeFailed || got[0].Failure != aigw.JudgeTooLarge || got[0].Refused != (onFailure == "refuse") {
+				t.Fatalf("audit hook %+v", got)
+			}
+			if m := rig.entry(t).Judge; m == nil || m.Direction != "answer" || m.Verdict != "failed" || m.Failure != "too_large" {
+				t.Fatalf("inspector judge mark %+v", m)
+			}
+			if ev := rig.obs.only(t); ev.JudgeFailure != aigw.JudgeTooLarge || (onFailure == "refuse") != (ev.GuardrailTier == "judge") {
+				t.Fatalf("event %+v", ev)
+			}
+		})
+	}
+}
+
+// A request or an answer without text cannot be judged; the inspector says so.
+func TestChainJudge_NoText(t *testing.T) {
+	rig := newJudgeRig(verdict("block", "r"))
+	const imageOnly = `{"model":"m","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}]}`
+	out := runChain(t, rig.chain, &leakUpstream{body: obsAnswer}, judgeSvc(judgeOn("requests", "refuse")), obsRequest(imageOnly))
+	if out.Code != 200 || rig.judge.count() != 0 {
+		t.Fatalf("status %d, judge calls %d", out.Code, rig.judge.count())
+	}
+	if m := rig.entry(t).Judge; m == nil || m.Verdict != aigw.JudgeNotJudged || m.Reason != "no text" || m.Direction != "request" {
+		t.Fatalf("request mark %+v", m)
+	}
+	if len(rig.hook.events()) != 0 {
+		t.Fatalf("audited %+v", rig.hook.events())
+	}
+
+	rig = newJudgeRig(verdict("allow", "ok"))
+	const toolsOnly = `{"id":"c-1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"t","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`
+	out = runChain(t, rig.chain, &leakUpstream{body: toolsOnly}, judgeSvc(judgeOn("requests_and_answers", "refuse")), obsRequest(chatHi))
+	if out.Code != 200 || out.Body.String() != toolsOnly || rig.judge.count() != 1 {
+		t.Fatalf("status %d, judge calls %d", out.Code, rig.judge.count())
+	}
+	if m := rig.entry(t).Judge; m == nil || m.Verdict != aigw.JudgeNotJudged || m.Reason != "no text" || m.Direction != "answer" {
+		t.Fatalf("answer mark %+v", m)
+	}
+}
+
+// The judge's own call is not charged to the judged service's rate limit: a
+// service one request below its limit still gets that request judged and
+// served (with on_failure refuse, a judge call refused by the limit would
+// refuse the app).
+func TestChainJudge_JudgeCallNotRateLimited(t *testing.T) {
+	var mu sync.Mutex
+	charged := 0
+	const limit = 1
+	chain := aigw.NewChain(nil, nil, nil, nil, guardrails.NewEngine(), nil, nil, newMemSink(), testLog())
+	chain.RateLimit = func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			charged++
+			over := charged > limit
+			mu.Unlock()
+			if over {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	svc := judgeSvc(judgeOn("requests", "refuse"))
+	svc.AIConfig.Inspector = nil
+	chain.Loader = staticLoader{svc: svc, ok: true}
+	judgeUp := &leakUpstream{body: `{"id":"j","object":"chat.completion","model":"j","choices":[{"index":0,"message":{"role":"assistant","content":"{\"verdict\":\"allow\",\"reason\":\"ok\"}"},"finish_reason":"stop"}]}`}
+	judgeSrv := httptest.NewServer(judgeUp)
+	t.Cleanup(judgeSrv.Close)
+	rp := reverseProxyTo(t, judgeSrv.URL)
+	// The judge call goes through the same chain, as the gateway sends it.
+	chain.Judge = func(ctx context.Context, serviceID, model, policy, text string) (string, error) {
+		ctx = aigw.WithPurpose(aigw.WithoutCache(aigw.WithoutGuardrails(ctx)), aigw.PurposeGuardrailJudge)
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"j","messages":[]}`)).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		chain.DispatchMetered(rec, req, serviceID, "", "Authorization", "", false, rp)
+		if rec.Code != 200 {
+			return "", errors.New("judge call answered " + rec.Result().Status)
+		}
+		var a struct {
+			Choices []struct {
+				Message struct{ Content string } `json:"message"`
+			} `json:"choices"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &a)
+		return a.Choices[0].Message.Content, nil
+	}
+	up := &leakUpstream{body: obsAnswer}
+	upSrv := httptest.NewServer(up)
+	t.Cleanup(upSrv.Close)
+	rec := httptest.NewRecorder()
+	chain.DispatchMetered(rec, obsRequest(chatHi), "svc-judged", "", "Authorization", "", false, reverseProxyTo(t, upSrv.URL))
+	if rec.Code != 200 || up.hits.Load() != 1 || judgeUp.hits.Load() != 1 {
+		t.Fatalf("status %d, app upstream %d, judge upstream %d", rec.Code, up.hits.Load(), judgeUp.hits.Load())
+	}
+	if charged != 1 {
+		t.Fatalf("%d requests charged to the limit", charged)
 	}
 }

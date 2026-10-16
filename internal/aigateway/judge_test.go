@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/observe"
+	"github.com/ankoehn/burrow/internal/proxy"
 )
 
 type judgeMeter struct {
@@ -209,5 +211,31 @@ func TestJudge_HonoursDeadline(t *testing.T) {
 	}
 	if took := time.Since(start); took > time.Second {
 		t.Fatalf("Judge returned after %v", took)
+	}
+}
+
+// The judge call is the relay calling itself: a client-address policy on the
+// judge provider's service does not apply to it. Apps are still held to it.
+func TestJudge_SkipsClientAddressPolicy(t *testing.T) {
+	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(judgeChatAnswer(`{"verdict":"allow","reason":"ok"}`)))
+	})
+	g, _, _ := judgeGateway(t, up)
+	denied := 0
+	g.IPGeoDeny = func(*proxy.Resolved, *http.Request) bool { denied++; return true }
+	if _, err := g.Judge(context.Background(), "svc-judged", "burrow-intelligence", "p", "hello"); err != nil {
+		t.Fatalf("judge call refused by the address policy: %v", err)
+	}
+	if denied != 0 {
+		t.Fatalf("the address policy was asked %d times for the judge call", denied)
+	}
+	// An app on the same model is refused.
+	g.GatewayKeys = fakeGatewayKeys{"bgw_all": {ID: "gk-all"}}
+	rec := httptest.NewRecorder()
+	g.ServeDialect(rec, post("/v1/chat/completions", "bgw_all", `{"model":"burrow-intelligence","messages":[{"role":"user","content":"hi"}]}`), DialectOpenAI)
+	if rec.Code != http.StatusForbidden || denied == 0 {
+		t.Fatalf("app: status %d, policy asked %d times", rec.Code, denied)
 	}
 }

@@ -26,6 +26,12 @@ const (
 	messageBlockedAnswer   = "the answer was withheld by a guardrail"
 )
 
+// Why a whole answer could not be shown to the judge (answerGuard.notJudged).
+const (
+	notJudgedTooLarge = "too_large"
+	notJudgedNoText   = "no_text"
+)
+
 // maxPendingFrame bounds how much of one server-sent event the guard holds
 // while it waits for the event's end. An event larger than this is no
 // answer text a model streams; the rest of such a stream is delivered
@@ -87,6 +93,11 @@ type answerGuard struct {
 	// pass; it reports that the answer is to be withheld. nil = answers are
 	// not judged.
 	judge func(text string) (withhold bool)
+	// notJudged is told, with judge set, of a whole answer the judge cannot
+	// be shown: "too_large" (larger than max, before any of it was sent) or
+	// "no_text" (no text in it). It reports that the answer is to be
+	// withheld (only ever for too_large).
+	notJudged func(why string) (withhold bool)
 	// onStop is called once a stream was stopped, after its error event was
 	// written and flushed: the chain cancels the upstream request with it.
 	onStop func()
@@ -102,8 +113,11 @@ type answerGuard struct {
 	pattern   string
 	blocked   bool
 	midStream bool
-	// judgeBlocked: the judge withheld the answer.
+	// judgeBlocked: the judge withheld the answer. cut: it did so while
+	// the upstream was still sending (an answer too large to judge), and the
+	// upstream request was cancelled.
 	judgeBlocked bool
+	cut          bool
 }
 
 // newAnswerGuard wraps w for a response whose answers are inspected. For a
@@ -189,6 +203,18 @@ func (g *answerGuard) Write(p []byte) (int, error) {
 	case modeHeld:
 		if g.buf.Len()+len(p) <= g.max {
 			g.buf.Write(p)
+			return len(p), nil
+		}
+		if g.judge != nil && g.notJudged != nil && g.notJudged(notJudgedTooLarge) {
+			// Nothing has been sent yet: the answer is withheld, and the
+			// rest of it is dropped.
+			g.judgeBlocked, g.cut = true, true
+			g.buf.Reset()
+			g.mode = modeBlocked
+			g.writeBlocked(codeJudgeBlockedAnswer)
+			if g.onStop != nil {
+				g.onStop()
+			}
 			return len(p), nil
 		}
 		g.overCap()
@@ -315,7 +341,7 @@ func (g *answerGuard) checkFrames(frames []sse.Frame) bool {
 
 // stopped reports whether the guard stopped a stream: the response is then
 // complete as far as the app is concerned, whatever the upstream does.
-func (g *answerGuard) stopped() bool { return g.blocked && g.midStream }
+func (g *answerGuard) stopped() bool { return (g.blocked && g.midStream) || g.cut }
 
 // flushScanner runs the scanner's last full check at the end of a stream
 // and records a hit.
@@ -372,6 +398,8 @@ func (g *answerGuard) finish(aborted bool) {
 				g.writeBlocked(codeJudgeBlockedAnswer)
 				return
 			}
+		} else if g.judge != nil && g.notJudged != nil {
+			g.notJudged(notJudgedNoText)
 		}
 		g.w.WriteHeader(g.status)
 		_, _ = g.w.Write(body)

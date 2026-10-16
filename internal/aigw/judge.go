@@ -72,7 +72,14 @@ const (
 	JudgeAllow  = "allow"
 	JudgeBlock  = "block"
 	JudgeFailed = "failed"
+	// JudgeNotJudged: the judge applied but there was no text to show it (an
+	// image-only request, an answer of tool calls only). Recorded on the
+	// inspector entry and the observe event, never audited.
+	JudgeNotJudged = "not_judged"
 )
+
+// reasonNoText is the reason of a JudgeNotJudged mark.
+const reasonNoText = "no text"
 
 // The classes of a judge failure.
 const (
@@ -80,6 +87,7 @@ const (
 	JudgeError       = "error"       // the call failed (an error answer, no text, the caller left)
 	JudgeMalformed   = "malformed"   // the answer is no verdict (guardrails.ParseVerdict)
 	JudgeUnavailable = "unavailable" // there is no judge to ask
+	JudgeTooLarge    = "too_large"   // the answer was larger than the guard holds
 )
 
 // ErrJudgeUnavailable is what a judge function returns when there is no
@@ -115,14 +123,7 @@ func judgeFormat(r *http.Request, kind Kind, cfg ServiceAIConfig) (guardrails.Ju
 // judge, a timeout, an error, an answer that is no verdict) refuses when the
 // settings say so.
 func (c *Chain) judge(ctx context.Context, serviceID string, j guardrails.JudgeSettings, text string) judgement {
-	fail := func(class string) judgement {
-		c.Log.Warn("aigw: guardrail judge failed",
-			slog.String("service_id", serviceID),
-			slog.String("model", j.Model),
-			slog.String("failure", class),
-		)
-		return judgement{verdict: JudgeFailed, failure: class, refuse: j.RefusesOnFailure()}
-	}
+	fail := func(class string) judgement { return c.judgeFailure(serviceID, j, class) }
 	judgeFn := c.Judge
 	if judgeFn == nil {
 		return fail(JudgeUnavailable)
@@ -170,6 +171,24 @@ func (c *Chain) judge(ctx context.Context, serviceID string, j guardrails.JudgeS
 		return judgement{verdict: JudgeBlock, reason: v.Reason, refuse: true}
 	}
 	return judgement{verdict: JudgeAllow}
+}
+
+// judgeFailure is a failed judgement of class: it refuses when the settings
+// say so. It is logged, without the text.
+func (c *Chain) judgeFailure(serviceID string, j guardrails.JudgeSettings, class string) judgement {
+	c.Log.Warn("aigw: guardrail judge failed",
+		slog.String("service_id", serviceID),
+		slog.String("model", j.Model),
+		slog.String("failure", class),
+	)
+	return judgement{verdict: JudgeFailed, failure: class, refuse: j.RefusesOnFailure()}
+}
+
+// notJudgedMark records on the event that the judge applied to direction but
+// had no text to judge, and returns the inspector's mark for it.
+func notJudgedMark(ev *observe.ModelRequest, direction string) *inspector.JudgeMark {
+	ev.JudgeVerdict, ev.JudgeReason, ev.JudgeFailure, ev.JudgeDirection = JudgeNotJudged, reasonNoText, "", direction
+	return &inspector.JudgeMark{Direction: direction, Verdict: JudgeNotJudged, Reason: reasonNoText}
 }
 
 // note records a judgement about direction ("request" or "answer") on the

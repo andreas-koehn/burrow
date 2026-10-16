@@ -490,7 +490,7 @@ is checked, not the JSON around it; escaped characters are decoded first, so
 `sk-…` counts as `sk-…`. Tool calls, embeddings, counting tokens and
 answers that are not text (audio, images) are not inspected. Neither is an
 error answer of the provider, or an answer larger than the inspector's
-capture limit (1 MiB); the log says so once.
+capture limit (256 KiB); the log says so once.
 
 Two actions:
 
@@ -622,25 +622,60 @@ stream back would defeat streaming. Turn answer inspection on to check
 streams for secrets.
 
 A **failure** is a judge that does not answer within `timeout_ms`, a call
-that fails, or an answer that is not exactly the JSON object above (a fence
-of `` ```json `` around it is accepted). Every failure writes an audit entry
-`guardrail.judge_failed` that names the class (`timeout`, `error`,
-`malformed`, `unavailable`), never the text. Then `on_failure` decides:
+that fails, an answer that is not exactly the JSON object above (a fence of
+`` ```json `` around it is accepted), no judge to ask, or (with
+`requests_and_answers`) an answer larger than the relay holds, 256 KiB.
+Failures are audited as `guardrail.judge_failed`, naming the class
+(`timeout`, `error`, `malformed`, `unavailable`, `too_large`) and what
+`on_failure` did, never the text. Like the other guardrail entries they are
+kept to one entry per service, class, direction and gateway key per hour,
+so a judge that is down does not write an entry per request; the request
+inspector marks every judged request. Blocks are kept the same way (one
+`guardrail.refused` entry per service, direction and gateway key per hour,
+with the first block's reason); every block's reason is in the inspector.
+Then `on_failure` decides:
 
 - `allow` keeps apps running while the judge is slow or down, at the price
   that such requests go through unjudged.
-- `refuse` lets nothing unjudged through: the request is refused as if the
-  judge had blocked it (an answer is withheld). The price is that a judge
-  outage stops every request the judge would have seen.
+- `refuse` refuses the request as if the judge had blocked it, and withholds
+  an answer (one too large to judge is withheld before any of it is sent).
+  The price is that a judge outage stops every request the judge would have
+  seen.
 
 Whatever the judge does, a request never waits longer than `timeout_ms` for
 it.
 
+`refuse` covers only text the judge can see. These pass without a verdict,
+whatever `on_failure` says:
+
+- requests to other endpoints than chat, responses and messages
+  (embeddings, counting tokens, images, audio, rerank);
+- streamed answers;
+- requests and answers without text (an image-only request, an answer of
+  tool calls only); the inspector marks them "not judged: no text";
+- answers served from the response cache that were stored before the judge
+  checked answers, or while a failed judgement was allowed through.
+
 Judge calls cost like any request to that model: each one is a usage row of
 the judge model for the judged request's service, without a gateway key, and
-counts towards costs and budgets. In the request inspector a judge call
-carries `purpose: "guardrail-judge"`, and the judged request names the
-verdict (and, for a block, the reason). A call adds the judge's latency to every judged request; a small, fast model
+counts as spend in costs and budgets. Budgets do not stop judge calls, and
+the judged service's rate limits do not count them: their number is bounded
+by the requests the limits let through (one judge call for the request, and
+one more for its answer with `requests_and_answers`). Size the judge model for the
+traffic it judges; an overloaded judge shows up as timeouts, and then
+`on_failure` decides. The IP/geo policy of the judge provider's service does
+not apply to judge calls either: they are the relay calling itself, with no
+client address (its API-key access mode still does).
+
+The judge call runs under the judged service's AI configuration, without its
+guardrails, cache and system text. Its redaction rules do apply: a `drop`
+rule that matches the bundled instruction or your policy refuses every judge
+call (a failure). A replay from the request inspector runs the judge again,
+and costs a judge call.
+
+In the request inspector a judge call carries `purpose: "guardrail-judge"`,
+and the judged request names the verdict (and, for a block, the reason). A
+call adds the judge's latency to every judged request; a small, fast model
 close to the relay keeps that low.
 
 `PUT /api/v1/guardrails/settings` refuses an enabled judge without a model,
