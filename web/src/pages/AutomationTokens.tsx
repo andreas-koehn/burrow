@@ -55,6 +55,8 @@ export default function AutomationTokens() {
   const presets = presetsQ.data;
   // A relay from before presets answers 404: the dialog then posts no list and the token inherits.
   const hasPresets = presets !== undefined;
+  // Only a 404 means an older relay; any other failure must not turn into a token that inherits everything.
+  const olderRelay = presetsQ.error instanceof ApiError && presetsQ.error.status === 404;
   const held = usePermissions();
 
   const [addOpen, setAddOpen] = useState(false);
@@ -101,7 +103,8 @@ export default function AutomationTokens() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["automation", "tokens"] }),
   });
 
-  const missing = [name.trim() === "" && "Enter a name.", presetsQ.isPending && "Loading permissions…"];
+  const missing = [name.trim() === "" && "Enter a name.", presetsQ.isPending && "Loading the permission presets…",
+    presetsQ.isError && !olderRelay && "The permission presets could not be loaded. Close the dialog and try again."];
   const hint = firstMissing(missing);
 
   return (
@@ -176,7 +179,7 @@ export default function AutomationTokens() {
         {hasPresets ? (
           <>
             <div className="form-field">
-              <span id="at-access-label" className="muted small">Access</span>
+              <span className="muted small">Access</span>
               <Segmented
                 aria-label="Access"
                 value={choice}
@@ -201,7 +204,7 @@ export default function AutomationTokens() {
               />
             </Disclosure>
           </>
-        ) : presetsQ.isError ? (
+        ) : olderRelay ? (
           <p className="muted">
             The token will inherit your current permissions; the server enforces this too.
           </p>

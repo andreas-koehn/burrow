@@ -161,6 +161,7 @@ describe("Automation tokens", () => {
       await userEvent.click(within(dlg).getByRole("button", { name: /^Permissions/ }));
       for (const p of readOnly) await userEvent.click(within(dlg).getByRole("checkbox", { name: p }));
       expect(within(dlg).getByText("This token can only read its own profile.")).toBeInTheDocument();
+    // Twelve userEvent clicks, each slow under a loaded machine.
     }, 30000);
 
     it("disables a permission the reader does not hold", async () => {
@@ -183,6 +184,19 @@ describe("Automation tokens", () => {
       await userEvent.click(within(dlg).getByRole("button", { name: /^create$/i }));
       await waitFor(() => expect(posted).not.toBeNull());
       expect(posted).not.toHaveProperty("permissions");
+    });
+
+    it("does not mint when the presets fail for a reason other than 404", async () => {
+      server.use(http.get("/api/v1/automation/presets", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+      captureMint();
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: /new token/i }));
+      const dlg = await screen.findByRole("dialog");
+      await userEvent.type(within(dlg).getByLabelText(/^name$/i), "x");
+      expect(await within(dlg).findByText("The permission presets could not be loaded. Close the dialog and try again.")).toBeInTheDocument();
+      expect(within(dlg).getByRole("button", { name: /^create$/i })).toBeDisabled();
+      expect(within(dlg).queryByText(/inherit your current permissions/)).toBeNull();
+      expect(posted).toBeNull();
     });
 
     it("names the preset a token matches, else Custom with the count", async () => {
