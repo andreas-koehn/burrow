@@ -544,6 +544,54 @@ describe("Guardrails: answers, custom patterns and the judge (G07)", () => {
       expect(within(dialog).getByLabelText("Pattern")).toHaveAccessibleDescription(/not a valid regular expression/);
     });
 
+    it("does not save or close the dialog: Test is not a submit button", async () => {
+      const dialog = await openDialog();
+      await userEvent.type(within(dialog).getByLabelText("ID"), "valid-id");
+      await userEvent.type(within(dialog).getByLabelText("Pattern"), "ab+");
+      await userEvent.type(within(dialog).getByLabelText("Sample text"), "abb");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Test" }));
+      expect(await within(dialog).findByText("1 match")).toBeInTheDocument();
+      expect(puts).toHaveLength(0);
+      expect(screen.getByRole("dialog", { name: "New custom pattern" })).toBeInTheDocument();
+    });
+
+    it("shows the reason of a server message without its custom pattern prefix, on test and on save", async () => {
+      const msg = 'custom pattern "preview": not a valid regular expression (Go RE2 syntax): missing closing )';
+      server.use(
+        http.post("/api/v1/guardrails/preview", () => HttpResponse.json({ error: msg }, { status: 400 })),
+        http.put("/api/v1/guardrails/settings", () => HttpResponse.json({ error: msg.replace("preview", "x1") }, { status: 400 })),
+      );
+      const dialog = await openDialog();
+      await userEvent.type(within(dialog).getByLabelText("ID"), "x1");
+      await userEvent.type(within(dialog).getByLabelText("Pattern"), "(");
+      await userEvent.type(within(dialog).getByLabelText("Sample text"), "abc");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Test" }));
+      expect((await within(dialog).findByRole("alert")).textContent).toBe("not a valid regular expression (Go RE2 syntax): missing closing )");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+      await waitFor(() => expect(within(dialog).getByRole("alert").textContent).toBe("not a valid regular expression (Go RE2 syntax): missing closing )"));
+    });
+
+    it("drops a test result that arrives after the pattern or the sample changed", async () => {
+      let release!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      let answered = false;
+      server.use(http.post("/api/v1/guardrails/preview", async () => {
+        await held;
+        answered = true;
+        return HttpResponse.json({ matches: [{ start: 0, end: 1, text: "a" }], truncated: false });
+      }));
+      const dialog = await openDialog();
+      await userEvent.type(within(dialog).getByLabelText("Pattern"), "a");
+      await userEvent.type(within(dialog).getByLabelText("Sample text"), "a");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Test" }));
+      await userEvent.type(within(dialog).getByLabelText("Sample text"), "b");
+      release();
+      await waitFor(() => expect(answered).toBe(true));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(within(dialog).queryByText("1 match")).toBeNull();
+      expect(within(dialog).getByRole("button", { name: "Test" })).toBeEnabled();
+    });
+
     it("says when the list was cut", async () => {
       server.use(http.post("/api/v1/guardrails/preview", () => HttpResponse.json({
         matches: Array.from({ length: 100 }, (_, i) => ({ start: i, end: i + 1, text: "a" })), truncated: true,

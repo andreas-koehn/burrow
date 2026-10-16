@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button, Dialog, FormField, FormFieldGroup, Input, Select, SubmitHint } from "@/components/ds";
 import { ApiError, apiFetch } from "@/lib/api";
 import type { GuardrailCustomPattern, GuardrailDirection, GuardrailPreviewResult } from "@/lib/contract";
@@ -30,6 +30,11 @@ function fieldOfMessage(message: string): Field | null {
   return null;
 }
 
+/** A relay message without its leading `custom pattern "<id>": `: under a field only the reason is wanted. */
+function reason(message: string): string {
+  return message.replace(/^custom pattern "[^"]*":\s*/, "");
+}
+
 export interface CustomPatternDialogProps {
   /** The pattern being edited; absent for a new one. */
   pattern?: GuardrailCustomPattern;
@@ -54,6 +59,9 @@ export function CustomPatternDialog({ pattern, takenIds, onSave, onClose }: Cust
   const [sample, setSample] = useState("");
   const [tested, setTested] = useState<GuardrailPreviewResult | null>(null);
   const [testing, setTesting] = useState(false);
+  // The number of the latest test; an answer to an older one, or to a sample or pattern since changed, is dropped.
+  const testRun = useRef(0);
+  const invalidateTest = () => { testRun.current++; setTested(null); setTesting(false); };
   // A late answer to a dialog that was closed is dropped.
   const [closed, setClosed] = useState(false);
 
@@ -89,18 +97,19 @@ export function CustomPatternDialog({ pattern, takenIds, onSave, onClose }: Cust
     if (regex === "" || sample === "" || testing) return;
     setServerErr(null);
     setTesting(true);
+    const run = ++testRun.current;
     try {
       const res = await apiFetch<GuardrailPreviewResult>("/guardrails/preview", {
         method: "POST",
         body: JSON.stringify({ pattern: regex, text: sample }),
       });
-      if (!closed) setTested(res);
+      if (!closed && run === testRun.current) setTested(res);
     } catch (e) {
-      if (closed) return;
+      if (closed || run !== testRun.current) return;
       const message = e instanceof ApiError ? e.message : "Couldn't test the pattern.";
-      setServerErr({ field: fieldOfMessage(message), message });
+      setServerErr({ field: fieldOfMessage(message), message: reason(message) });
     } finally {
-      if (!closed) setTesting(false);
+      if (!closed && run === testRun.current) setTesting(false);
     }
   }
 
@@ -113,7 +122,7 @@ export function CustomPatternDialog({ pattern, takenIds, onSave, onClose }: Cust
     } catch (e) {
       if (closed) return;
       const message = e instanceof ApiError ? e.message : "Couldn't save the pattern.";
-      setServerErr({ field: fieldOfMessage(message), message });
+      setServerErr({ field: fieldOfMessage(message), message: reason(message) });
       setPending(false);
     }
   }
@@ -178,7 +187,7 @@ export function CustomPatternDialog({ pattern, takenIds, onSave, onClose }: Cust
               invalid={patternShown !== null}
               aria-describedby="cp-pattern-desc"
               value={regex}
-              onChange={(e) => { setRegex(e.target.value); setTested(null); edited("pattern"); }}
+              onChange={(e) => { setRegex(e.target.value); invalidateTest(); edited("pattern"); }}
               onBlur={() => leave("pattern")}
             />
           </FormField>
@@ -216,11 +225,11 @@ export function CustomPatternDialog({ pattern, takenIds, onSave, onClose }: Cust
             rows={3}
             spellCheck={false}
             value={sample}
-            onChange={(e) => { setSample(e.target.value); setTested(null); }}
+            onChange={(e) => { setSample(e.target.value); invalidateTest(); }}
           />
         </FormField>
         <div className="row row-center gap-2">
-          <Button variant="secondary" size="sm" disabled={regex === "" || sample === "" || testing} onClick={() => void runTest()}>
+          <Button type="button" variant="secondary" size="sm" disabled={regex === "" || sample === "" || testing} onClick={() => void runTest()}>
             {testing ? "Testing…" : "Test"}
           </Button>
           {tested && (
