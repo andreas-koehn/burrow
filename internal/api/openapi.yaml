@@ -3362,8 +3362,9 @@ paths:
       summary: Replace the pricing table (admin)
       description: |
         Replaces the whole table. It is stored in the database and outlives
-        a restart: at start-up the saved table replaces the bundled one (or
-        the file named by BURROW_PRICING_PATH).
+        a restart: at start-up the saved entries are merged over the bundled
+        table (or the file named by BURROW_PRICING_PATH); a saved entry wins
+        for its model, models only the start-up table has keep their price.
       requestBody:
         required: true
         content:

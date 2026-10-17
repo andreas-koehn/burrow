@@ -772,6 +772,9 @@ How they behave:
   prices you pay; **Add model** on the Cost page's price editor prices a model
   the table does not list yet (an image or speech model, say). Prices saved on
   the Cost page or with `PUT /api/v1/cost/pricing` are stored in the database
-  and outlive a restart: at start-up the saved table replaces the bundled one
-  (or the file named by `BURROW_PRICING_PATH`), as the save did. Costs are computed from the table in use when they are
+  and outlive a restart: at start-up the saved entries are merged over the
+  bundled table (or the file named by `BURROW_PRICING_PATH`). A saved entry
+  wins for its model; a model only the bundled table or the file has (one a
+  later release adds, say) keeps its price from there. The log names how many
+  saved entries were applied and the saved table's version. Costs are computed from the table in use when they are
   read, so a changed price also changes the cost shown for earlier requests.

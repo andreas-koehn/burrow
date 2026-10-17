@@ -124,11 +124,15 @@ func buildV04Stack(
 		return nil, err
 	}
 	costEngine := cost.New(wrapped, pricing)
-	// The table an admin saved with PUT /cost/pricing wins over the bundled
-	// or file table, as the PUT did before the restart. A stored row that
-	// does not parse is logged and the start-up table kept.
-	if err := api.ApplyStoredPricing(ctx, st, costEngine); err != nil {
+	// The entries an admin saved with PUT /cost/pricing are merged over the
+	// bundled or file table: a saved entry wins for its model, models only
+	// the start-up table has keep their price. A stored row that does not
+	// parse is logged and the start-up table kept.
+	if n, version, err := api.ApplyStoredPricing(ctx, st, costEngine); err != nil {
 		log.Warn("cost: stored price table not applied", slog.String("err", err.Error()))
+	} else if n > 0 {
+		log.Info("cost: saved prices applied over the start-up table",
+			slog.Int("entries", n), slog.String("version", version))
 	}
 	meterSink.Budgets = costEngine
 

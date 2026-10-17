@@ -26,4 +26,17 @@ func TestBuildV04Stack_AppliesStoredPricing(t *testing.T) {
 	if e, ok := p.Lookup("openai/gpt-image-1"); p.Version != "saved-by-admin" || !ok || e.PerRequestUSD != 0.04 {
 		t.Fatalf("version %q, entry %+v %v", p.Version, e, ok)
 	}
+	// The bundled entries the saved table does not name stay priced.
+	bundled, err := loadPricing("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range bundled.Entries {
+		if key == "openai/gpt-image-1" || key == "gpt-image-1" {
+			continue
+		}
+		if got, ok := p.Lookup(key); !ok || got != want {
+			t.Fatalf("bundled %s: %+v %v, want %+v", key, got, ok, want)
+		}
+	}
 }

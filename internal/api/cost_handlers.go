@@ -202,33 +202,45 @@ type SettingsReader interface {
 	GetSettings(ctx context.Context) (map[string]string, error)
 }
 
-// ApplyStoredPricing puts the price table saved with PUT /cost/pricing (see
-// costPricingKey) into engine, replacing the table it was built with (the
-// bundled one or BURROW_PRICING_PATH), as the PUT did. Nothing stored leaves
-// the engine as it is; a stored row that does not parse is an error and
-// changes nothing. cmd/server calls it at start-up.
-func ApplyStoredPricing(ctx context.Context, settings SettingsReader, engine CostEngine) error {
+// ApplyStoredPricing merges the price table saved with PUT /cost/pricing
+// (see costPricingKey) over the table engine was built with (the bundled one
+// or BURROW_PRICING_PATH): a saved entry wins for its key ("provider/model"
+// and the bare model), an entry only the start-up table has stays. So a model
+// a later release adds to pricing.yaml, or a later edit of the file, is not
+// hidden by a table saved before it. The table takes the saved version. It
+// returns how many saved entries were applied and the saved version; nothing
+// stored leaves the engine as it is (0, ""), and a stored row that does not
+// parse is an error and changes nothing. cmd/server calls it at start-up.
+func ApplyStoredPricing(ctx context.Context, settings SettingsReader, engine CostEngine) (applied int, version string, err error) {
 	if settings == nil || engine == nil {
-		return nil
+		return 0, "", nil
 	}
 	m, err := settings.GetSettings(ctx)
 	if err != nil {
-		return fmt.Errorf("read stored pricing: %w", err)
+		return 0, "", fmt.Errorf("read stored pricing: %w", err)
 	}
 	raw := m[costPricingKey]
 	if raw == "" {
-		return nil
+		return 0, "", nil
 	}
 	var in pricingResp
 	if err := json.Unmarshal([]byte(raw), &in); err != nil {
-		return fmt.Errorf("stored pricing: %w", err)
+		return 0, "", fmt.Errorf("stored pricing: %w", err)
 	}
-	pr, err := pricingFromWire(in)
+	stored, err := pricingFromWire(in)
 	if err != nil {
-		return fmt.Errorf("stored pricing: %w", err)
+		return 0, "", fmt.Errorf("stored pricing: %w", err)
 	}
-	engine.ReplacePricing(pr)
-	return nil
+	startup := engine.Pricing()
+	merged := cost.Pricing{Version: stored.Version, Entries: make(map[string]cost.Entry, len(startup.Entries)+len(stored.Entries))}
+	for k, e := range startup.Entries {
+		merged.Entries[k] = e
+	}
+	for k, e := range stored.Entries {
+		merged.Entries[k] = e
+	}
+	engine.ReplacePricing(merged)
+	return len(in.Entries), stored.Version, nil
 }
 
 // --- GET /cost/summary -------------------------------------------------------

@@ -1072,8 +1072,8 @@ func TestCostHandler_PutPricing_PersistsAcrossRestart(t *testing.T) {
 
 	// The restart: a fresh engine with the bundled table, then the stored one.
 	restarted := &fakeCostEngine{pricing: cost.Pricing{Version: "bundled", Entries: map[string]cost.Entry{"old/model": {InputPerMillion: 9}}}}
-	if err := ApplyStoredPricing(context.Background(), settings, restarted); err != nil {
-		t.Fatal(err)
+	if n, version, err := ApplyStoredPricing(context.Background(), settings, restarted); err != nil || n != 2 || version != "saved" {
+		t.Fatalf("applied %d of version %q: %v", n, version, err)
 	}
 	p := restarted.Pricing()
 	img, ok := p.Lookup("openai/gpt-image-1")
@@ -1083,18 +1083,38 @@ func TestCostHandler_PutPricing_PersistsAcrossRestart(t *testing.T) {
 	if e, ok := p.Lookup("gpt-x"); !ok || e.InputPerMillion != 1.5 {
 		t.Fatalf("bare model fallback %+v %v", e, ok)
 	}
-	if _, ok := p.Lookup("old/model"); ok {
-		t.Fatal("the stored table replaces the bundled one, as the PUT did")
+	if e, ok := p.Lookup("old/model"); !ok || e.InputPerMillion != 9 {
+		t.Fatalf("an entry only in the start-up table must stay: %+v %v", e, ok)
 	}
 
 	// Nothing stored, or a store without settings: the engine keeps its table.
 	fresh := &fakeCostEngine{pricing: cost.Pricing{Version: "bundled", Entries: map[string]cost.Entry{}}}
-	if err := ApplyStoredPricing(context.Background(), &fakeCacheSettingsStore{}, fresh); err != nil || fresh.Pricing().Version != "bundled" {
+	if _, _, err := ApplyStoredPricing(context.Background(), &fakeCacheSettingsStore{}, fresh); err != nil || fresh.Pricing().Version != "bundled" {
 		t.Fatalf("nothing stored: %v %q", err, fresh.Pricing().Version)
 	}
 	// A stored row that no longer parses is an error and changes nothing.
 	bad := &fakeCacheSettingsStore{saved: map[string]string{costPricingKey: "{"}}
-	if err := ApplyStoredPricing(context.Background(), bad, fresh); err == nil || fresh.Pricing().Version != "bundled" {
+	if _, _, err := ApplyStoredPricing(context.Background(), bad, fresh); err == nil || fresh.Pricing().Version != "bundled" {
 		t.Fatalf("bad row: %v %q", err, fresh.Pricing().Version)
+	}
+}
+
+// At start-up the saved entries are merged over the start-up table: a saved
+// entry wins for its model, and a model only the start-up table has (one a
+// later release added to pricing.yaml) keeps its price.
+func TestApplyStoredPricing_MergesOverStartupTable(t *testing.T) {
+	settings := &fakeCacheSettingsStore{saved: map[string]string{costPricingKey: `{"version":"saved","entries":[{"provider":"p","model":"a","input_per_million":1,"output_per_million":1,"per_request_usd":0}]}`}}
+	eng := &fakeCostEngine{pricing: cost.Pricing{Version: "bundled", Entries: map[string]cost.Entry{
+		"p/a": {InputPerMillion: 7}, "a": {InputPerMillion: 7},
+		"p/b": {InputPerMillion: 3}, "b": {InputPerMillion: 3},
+	}}}
+	if n, version, err := ApplyStoredPricing(context.Background(), settings, eng); err != nil || n != 1 || version != "saved" {
+		t.Fatalf("applied %d of version %q: %v", n, version, err)
+	}
+	p := eng.Pricing()
+	for key, want := range map[string]float64{"p/a": 1, "a": 1, "p/b": 3, "b": 3} {
+		if e, ok := p.Lookup(key); !ok || e.InputPerMillion != want {
+			t.Errorf("%s: %+v %v, want input %v", key, e, ok, want)
+		}
 	}
 }
