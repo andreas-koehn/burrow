@@ -78,6 +78,7 @@ func (s *SQLSink) Record(ctx context.Context, sm Sample) error {
 		TargetModel:    sm.TargetModel,
 		RequestID:      sm.RequestID,
 		LatencyMs:      sm.LatencyMs,
+		Purpose:        sm.Purpose,
 	}
 	// Cleaned and bounded here as well, whoever built the Sample: the names
 	// of what a translation dropped start as field names of a request.
@@ -103,13 +104,13 @@ func (s *SQLSink) Record(ctx context.Context, sm Sample) error {
 		   tokens_in, tokens_out, bytes_in, bytes_out,
 		   streamed, cache_hit, upstream_status, cost_usd,
 		   gateway_key_id, dialect, provider_slug, requested_model, target_model,
-		   request_id, latency_ms, translated, dropped)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   request_id, latency_ms, translated, dropped, purpose)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		row.ID, row.ServiceID, row.APIKeyID, row.Ts, row.Kind,
 		row.TokensIn, row.TokensOut, row.BytesIn, row.BytesOut,
 		row.Streamed, row.CacheHit, row.UpstreamStatus, cost,
 		row.GatewayKeyID, row.Dialect, row.ProviderSlug, row.RequestedModel, row.TargetModel,
-		row.RequestID, row.LatencyMs, row.Translated, row.Dropped,
+		row.RequestID, row.LatencyMs, row.Translated, row.Dropped, row.Purpose,
 	)
 	if err != nil {
 		log.Warn("aimeter: usage_events insert failed",

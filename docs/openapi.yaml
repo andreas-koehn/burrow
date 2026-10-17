@@ -1527,8 +1527,9 @@ components:
         (also for a provider without an AI configuration) and to every service
         with an AI configuration. A service's own guardrails section overrides
         enabled and action only when its enabled is true; a section with
-        enabled false counts as no override. answers, custom_patterns and
-        judge are always the global ones.
+        enabled false counts as no override. enabled switches the request
+        patterns only: answers, custom_patterns and judge are always the
+        global ones and run on their own switches, whatever enabled says.
       required: [enabled, action, answers, custom_patterns, judge]
       properties:
         enabled: { type: boolean }
@@ -1566,9 +1567,13 @@ components:
       type: object
       description: >
         The judge: a synthetic model that classifies the text of requests
-        (Chat Completions, Responses, Messages; after redaction, at most
-        16384 bytes) against the policy, after the patterns and before the
-        cache. It gets a bundled English instruction, then the policy, and
+        (Chat Completions, Responses, Messages, legacy completions, the media
+        and rerank endpoints; tool results included; a gateway key's system
+        text first; after redaction, at most 16384 bytes: a longer text keeps
+        its first 4096 bytes and its end, with the last user message) against
+        the policy, after the patterns and before the cache. It runs on its
+        own enabled switch, whether or not the request patterns are on, for
+        every gateway request and every service with an AI configuration. It gets a bundled English instruction, then the policy, and
         must answer {"verdict": "allow" | "block", "reason": "…"}. A block
         refuses the request with 403 guardrail_judge_refused (the reason goes
         to the audit log and the request inspector, never to the app). With
@@ -3355,6 +3360,10 @@ paths:
       operationId: costPricingUpdate
       x-burrow-permission: {kind: needs, any_of: ["cost:pricing:manage"]}
       summary: Replace the pricing table (admin)
+      description: |
+        Replaces the whole table. It is stored in the database and outlives
+        a restart: at start-up the saved table replaces the bundled one (or
+        the file named by BURROW_PRICING_PATH).
       requestBody:
         required: true
         content:
@@ -5975,7 +5984,11 @@ paths:
                   description: >
                     Text put in front of the app's own system content. At
                     most 8192 bytes, not characters; longer text is refused
-                    with 400. Left out or empty: none.
+                    with 400. Left out or empty: none. While the global
+                    request guardrails are on, a text that a request pattern
+                    (bundled or custom) matches is refused with 400 naming
+                    the pattern: the guardrails check a key's text like the
+                    app's own.
             example:
               name: laptop
               allowed_models: [burrow-simple, 'zai/*']
@@ -6023,7 +6036,9 @@ paths:
         refused. A revoked key can still be changed. Its owner or an admin's
         dashboard session may; an automation token changes the keys of its
         user only. Another user's key answers 404, like an id that does not
-        exist. The body is at most 64 KiB.
+        exist. The body is at most 64 KiB. While the global request
+        guardrails are on, a system_text that a request pattern (bundled or
+        custom) matches is refused with 400 naming the pattern.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
         required: true

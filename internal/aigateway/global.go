@@ -138,7 +138,12 @@ func (g *Gateway) ServeDialect(w http.ResponseWriter, r *http.Request, d *Dialec
 		return
 	}
 	// The model's text, then the key's: the chain puts them before the app's
-	// own system content (res.Model is zero for a direct address).
+	// own system content (res.Model is zero for a direct address). The key's
+	// text is the app's side's: the guardrails check it (the model's is the
+	// operator's and is not checked).
+	if key.SystemText != "" {
+		r = r.WithContext(aigw.WithKeySystemText(r.Context(), key.SystemText))
+	}
 	g.dispatch(w, r, d, path, res, candidates, body, key.ID, aigw.JoinSystemText(res.Model.SystemText, key.SystemText), "")
 }
 

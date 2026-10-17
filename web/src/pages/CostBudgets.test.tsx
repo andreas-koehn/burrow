@@ -784,6 +784,43 @@ describe("Cost & budgets (§4.24)", () => {
       expect(await screen.findByText("entry openai/gpt-4o: prices must be >= 0")).toBeInTheDocument();
     });
 
+    it("Add model prices a model the table does not list, and saving sends it", async () => {
+      let sent: { entries: { provider: string; model: string; per_request_usd: number; input_per_million: number }[] } | undefined;
+      server.use(http.put("/api/v1/cost/pricing", async ({ request }) => {
+        sent = await request.json() as typeof sent;
+        return new HttpResponse(null, { status: 204 });
+      }));
+      mount();
+      await screen.findByRole("table", { name: "Prices" });
+      await userEvent.click(screen.getByRole("button", { name: "Add model" }));
+      const form = screen.getByRole("group", { name: "New price" });
+      await userEvent.type(within(form).getByLabelText("Provider"), "openai");
+      await userEvent.type(within(form).getByLabelText("Model"), "gpt-image-1");
+      await userEvent.type(within(form).getByLabelText("Per request (USD)"), "0.04");
+      await userEvent.click(within(form).getByRole("button", { name: "Add" }));
+      expect(screen.getByLabelText("Per request (USD) for openai/gpt-image-1")).toHaveValue(0.04);
+      expect(screen.queryByRole("group", { name: "New price" })).toBeNull();
+      await userEvent.click(screen.getByRole("button", { name: "Save prices" }));
+      await waitFor(() => expect(sent).toBeDefined());
+      expect(sent!.entries).toHaveLength(db.pricing.entries.length + 1);
+      expect(sent!.entries.find((e) => e.model === "gpt-image-1")).toMatchObject({ provider: "openai", per_request_usd: 0.04, input_per_million: 0 });
+    });
+
+    it("Add model refuses a row without a provider or model, or one the table has", async () => {
+      mount();
+      await screen.findByRole("table", { name: "Prices" });
+      await userEvent.click(screen.getByRole("button", { name: "Add model" }));
+      const form = screen.getByRole("group", { name: "New price" });
+      await userEvent.click(within(form).getByRole("button", { name: "Add" }));
+      expect(within(form).getByText("Enter a provider and a model.")).toBeInTheDocument();
+      await userEvent.type(within(form).getByLabelText("Provider"), "openai");
+      await userEvent.type(within(form).getByLabelText("Model"), "gpt-4o");
+      await userEvent.click(within(form).getByRole("button", { name: "Add" }));
+      expect(within(form).getByText("openai/gpt-4o is in the table already.")).toBeInTheDocument();
+      await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("group", { name: "New price" })).toBeNull();
+    });
+
     it("without cost:pricing:manage the table is not offered", async () => {
       db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["budgets:manage", "quotas:read:any"] };
       mount();

@@ -62,8 +62,8 @@ func TestAnswerPatterns_HitsAndNearMisses(t *testing.T) {
 		{"openai_key", "plain " + fakeOpenAIPlain, "a task-management-application-for-teams is prose"},
 		{"openai_key", "sk-svcacct-" + strings.Repeat("Ab1-_", 8), `<div class="sk-fading-circle-container-big">`},
 		{"openai_key", "sk-admin-" + strings.Repeat("Ab1-_", 8), ".sk-cube-grid-loader-element-x { color: red }"},
-		{"openai_key", fakeOpenAI, "sk-proj-" + strings.Repeat("a", 39) + " (one short)"},
-		{"openai_key", fakeOpenAIPlain, "sk-" + strings.Repeat("a", 31) + " (one short)"},
+		{"openai_key", fakeOpenAI, "sk-proj-" + strings.Repeat("a", 19) + " (one short)"},
+		{"openai_key", fakeOpenAIPlain, "sk-" + strings.Repeat("a", 19) + " (one short)"},
 		{"anthropic_key", "use " + fakeAnthropic, "sk-ant-short"},
 		{"aws_access_key", "id=" + fakeAWS + ";", "KAKIAIOSFODNN7EXAMPLE is inside a word, AKIA alone"},
 		{"github_token", "token " + fakeGitHub, "ghp_tooShort123"},
@@ -71,7 +71,7 @@ func TestAnswerPatterns_HitsAndNearMisses(t *testing.T) {
 		{"google_api_key", "key: " + fakeGoogle, "AIzaTooShort"},
 		{"private_key_pem", fakePEM, "-----BEGIN PUBLIC KEY-----\nMIIBIjAN"},
 		{"burrow_automation_token", "bearer " + fakeAutomation, "bua_" + strings.Repeat("abcdefghij", 6)},
-		{"burrow_gateway_key", "Authorization: Bearer " + fakeGatewayKey, "bgw_" + strings.Repeat("a", 20)},
+		{"burrow_gateway_key", "Authorization: Bearer " + fakeGatewayKey, "bgw_" + strings.Repeat("a", 19)},
 	}
 	for _, c := range cases {
 		hit, id := e.InspectAnswerText(c.hit, nil)
@@ -177,6 +177,48 @@ func TestAnswerPatterns_Requires(t *testing.T) {
 			if !ok {
 				t.Errorf("%s: literal %q is not in %s", p.ID, lit, p.Regex)
 			}
+		}
+	}
+}
+
+// A secret streamed a few characters per event is found early: a block stops
+// the stream at the event that completes the shortest match, so what reached
+// the app before it is the prefix and fewer than 20 key characters.
+func TestAnswerPatterns_StreamedSecretFoundEarly(t *testing.T) {
+	e := NewEngine()
+	cases := []struct{ id, prefix, secret string }{
+		{"openai_key", "sk-proj-", fakeOpenAI},
+		{"openai_key", "sk-", fakeOpenAIPlain},
+		{"anthropic_key", "sk-ant-", fakeAnthropic},
+		{"aws_access_key", "AKIA", fakeAWS},
+		{"github_token", "ghp_", fakeGitHub},
+		{"github_token", "github_pat_", "github_pat_" + strings.Repeat("Ab3_x", 12)},
+		{"slack_token", "xoxb-", fakeSlack},
+		{"google_api_key", "AIza", fakeGoogle},
+		{"burrow_automation_token", "bua_", fakeAutomation},
+		{"burrow_gateway_key", "bgw_", fakeGatewayKey},
+	}
+	for _, c := range cases {
+		s := NewStreamScanner(e.InspectAnswerBundled, nil)
+		text := "here it is: " + c.secret + " done"
+		start := strings.Index(text, c.secret)
+		delivered := -1
+		for i := 0; i < len(text); i += 3 {
+			end := min(i+3, len(text))
+			if hit, id := s.Add(text[i:end]); hit {
+				if id != c.id {
+					t.Errorf("%s: matched %q", c.id, id)
+				}
+				delivered = max(0, i-start) // bytes of the secret sent before this event
+				break
+			}
+		}
+		if delivered < 0 {
+			t.Errorf("%s: streamed secret not found", c.id)
+			continue
+		}
+		if limit := len(c.prefix) + 20; delivered >= limit {
+			t.Errorf("%s: %d characters of the secret delivered before the hit, want fewer than %d", c.id, delivered, limit)
 		}
 	}
 }

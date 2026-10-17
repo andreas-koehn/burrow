@@ -489,7 +489,8 @@ export default function Guardrails() {
             <span>Inspect prompts for injection patterns</span>
           </div>
           <p id="injection-help" className="muted small">
-            Applies to all model traffic, unless a service turns on its own guardrails.
+            Applies to all model traffic, unless a service turns on its own guardrails. Answers and the judge have
+            switches of their own: turning this off leaves them as they are.
           </p>
           <FormField label="On detection" htmlFor="injection-action" w="md">
             <Select

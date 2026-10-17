@@ -16,6 +16,14 @@ import (
 // Postgres alike. cache_hit is INTEGER 0/1 on SQLite and BOOLEAN on Postgres;
 // "CASE WHEN cache_hit THEN 1 ELSE 0 END" counts it on both.
 
+// purposeGuardrailJudge is usage_events.purpose of a call the relay made to
+// the judge model (aigw.PurposeGuardrailJudge). Such a row is metered under
+// the judged request's service, but its request and its latency are the
+// judge model's: the provider figures below leave it out (request counts,
+// the per-minute series, the p95 that fastest routing reads); tokens and
+// cost keep it.
+const purposeGuardrailJudge = "guardrail-judge"
+
 // AIEndpointCount is the per-service trailing-24h request + cache-hit summary
 // used by the AI-endpoints list.
 type AIEndpointCount struct {
@@ -88,8 +96,8 @@ func (x *DB) AIEndpointRequests24h(ctx context.Context) (map[string]AIEndpointCo
 		       COUNT(*) AS requests,
 		       CAST(COALESCE(SUM(CASE WHEN cache_hit THEN 1 ELSE 0 END), 0) AS BIGINT) AS cache_hits
 		  FROM usage_events
-		 WHERE ts >= ?
-		 GROUP BY service_id`, since)
+		 WHERE ts >= ? AND purpose <> ?
+		 GROUP BY service_id`, since, purposeGuardrailJudge)
 	if err != nil {
 		return nil, fmt.Errorf("ai endpoint counts 24h: %w", err)
 	}
@@ -132,9 +140,9 @@ func (x *DB) AIEndpointLatencyP95(ctx context.Context) (map[string]int, error) {
 		SELECT service_id, latency_ms, COUNT(*) AS n
 		  FROM usage_events
 		 WHERE ts >= ? AND latency_ms > 0 AND NOT cache_hit
-		   AND upstream_status BETWEEN 200 AND 299
+		   AND upstream_status BETWEEN 200 AND 299 AND purpose <> ?
 		 GROUP BY service_id, latency_ms
-		 ORDER BY service_id, latency_ms`, since)
+		 ORDER BY service_id, latency_ms`, since, purposeGuardrailJudge)
 	if err != nil {
 		return nil, fmt.Errorf("ai endpoint latency 24h: %w", err)
 	}
@@ -203,13 +211,14 @@ func (x *DB) AIEndpointMetrics24h(ctx context.Context, serviceID string) (AIEndp
 	now := time.Now().UTC().Truncate(time.Second)
 	dayAgo := now.Add(-24 * time.Hour)
 
+	// Judge calls count for tokens (they are spent), not as requests.
 	row := x.sqlDB.QueryRowContext(ctx, `
-		SELECT COUNT(*),
+		SELECT CAST(COALESCE(SUM(CASE WHEN purpose <> ? THEN 1 ELSE 0 END), 0) AS BIGINT),
 		       CAST(COALESCE(SUM(tokens_in), 0) AS BIGINT),
 		       CAST(COALESCE(SUM(tokens_out), 0) AS BIGINT),
 		       CAST(COALESCE(SUM(CASE WHEN cache_hit THEN 1 ELSE 0 END), 0) AS BIGINT)
 		  FROM usage_events
-		 WHERE service_id = ? AND ts >= ?`, serviceID, dayAgo)
+		 WHERE service_id = ? AND ts >= ?`, purposeGuardrailJudge, serviceID, dayAgo)
 	if err := row.Scan(&agg.Requests, &agg.TokensIn, &agg.TokensOut, &agg.CacheHits); err != nil {
 		return agg, fmt.Errorf("ai endpoint metrics 24h: %w", err)
 	}
@@ -248,7 +257,7 @@ func (x *DB) AIEndpointMetrics24h(ctx context.Context, serviceID string) (AIEndp
 	mrows, err := x.sqlDB.QueryContext(ctx, `
 		SELECT ts
 		  FROM usage_events
-		 WHERE service_id = ? AND ts >= ?`, serviceID, now.Add(-60*time.Minute))
+		 WHERE service_id = ? AND ts >= ? AND purpose <> ?`, serviceID, now.Add(-60*time.Minute), purposeGuardrailJudge)
 	if err != nil {
 		return agg, fmt.Errorf("ai endpoint per-minute: %w", err)
 	}

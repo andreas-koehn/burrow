@@ -16,10 +16,10 @@ import (
 // What the chain is told to put before the app's system content: the model's
 // text, then the key's, whichever address the app used.
 func TestServeDialect_SystemTextInContext(t *testing.T) {
-	var got string
+	var got, gotKey string
 	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
-		got = aigw.SystemTextFrom(r.Context())
+		got, gotKey = aigw.SystemTextFrom(r.Context()), aigw.KeySystemTextFrom(r.Context())
 		w.WriteHeader(200)
 	})
 	g := globalGateway(up, &spyChain{})
@@ -42,11 +42,11 @@ func TestServeDialect_SystemTextInContext(t *testing.T) {
 		}
 		return got
 	}
-	if v := do("bgw_k", "burrow-intelligence"); v != "M\n\nK" {
-		t.Errorf("model and key: %q", v)
+	if v := do("bgw_k", "burrow-intelligence"); v != "M\n\nK" || gotKey != "K" {
+		t.Errorf("model and key: %q, key part %q", v, gotKey)
 	}
-	if v := do("bgw_none", "burrow-intelligence"); v != "M" {
-		t.Errorf("model only: %q", v)
+	if v := do("bgw_none", "burrow-intelligence"); v != "M" || gotKey != "" {
+		t.Errorf("model only: %q, key part %q", v, gotKey)
 	}
 	if v := do("bgw_k", "openrouter/google/gemini-x"); v != "K" {
 		t.Errorf("direct address with a key text: %q", v)
@@ -57,10 +57,10 @@ func TestServeDialect_SystemTextInContext(t *testing.T) {
 }
 
 func TestServe_SystemTextOfGatewayKeyOnProviderPath(t *testing.T) {
-	var got string
+	var got, gotKey string
 	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
-		got = aigw.SystemTextFrom(r.Context())
+		got, gotKey = aigw.SystemTextFrom(r.Context()), aigw.KeySystemTextFrom(r.Context())
 		w.WriteHeader(200)
 	})
 	g := directGateway(t, func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) { return up, nil }, &spyChain{})
@@ -78,8 +78,8 @@ func TestServe_SystemTextOfGatewayKeyOnProviderPath(t *testing.T) {
 		}
 		return got
 	}
-	if v := do("bgw_k"); v != "K" {
-		t.Errorf("gateway key: %q", v)
+	if v := do("bgw_k"); v != "K" || gotKey != "K" {
+		t.Errorf("gateway key: %q, key part %q", v, gotKey)
 	}
 	if v := do("sk-good"); v != "" {
 		t.Errorf("service key: %q", v)

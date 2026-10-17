@@ -675,10 +675,25 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// A request that carries WithoutGuardrails (the judge's own call) skips
 	// both tiers and the answer guard.
 	guarded := cfg.Guardrails != nil && cfg.Guardrails.Enabled && !GuardrailsSkipped(r.Context())
-	if guarded && c.Guardrails != nil && len(redactedBody) > 0 && !upload {
+	// A gateway key's system text is written by the app's side: it is
+	// checked like the app's own text (a model's system text is the
+	// operator's and is not). It is put into the body at step 5b, only on
+	// the endpoints that take system text.
+	keyText := ""
+	if SystemTextApplies(r.Method, r.URL.Path) {
+		keyText = KeySystemTextFrom(r.Context())
+	}
+	if guarded && c.Guardrails != nil && ((len(redactedBody) > 0 && !upload) || keyText != "") {
 		// The bundled request patterns, then the operator's custom ones for
-		// requests.
-		hit, pattern := c.Guardrails.InspectRequest(redactedBody, cfg.Guardrails.CustomPatterns)
+		// requests: on the body, then on the key's system text.
+		var hit bool
+		var pattern string
+		if len(redactedBody) > 0 && !upload {
+			hit, pattern = c.Guardrails.InspectRequest(redactedBody, cfg.Guardrails.CustomPatterns)
+		}
+		if !hit && keyText != "" {
+			hit, pattern = c.Guardrails.InspectRequest([]byte(keyText), cfg.Guardrails.CustomPatterns)
+		}
 		if hit {
 			mark := func(action string) *inspector.GuardrailMark {
 				return &inspector.GuardrailMark{Pattern: pattern, Direction: guardrails.DirectionRequest, Action: action}
@@ -770,14 +785,24 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// observer, never to the app.
 	// ---------------------------------------------------------------
 	judgeSettings, judgeTextFormat, judging := judgeFormat(r, kind, cfg)
+	// judgeTime is how long the request waited for the judge: the usage
+	// row's latency leaves it out (see recordMeter).
+	var judgeTime time.Duration
 	if judging {
-		text, ok := guardrails.RequestText(judgeTextFormat, redactedBody)
+		var text string
+		var ok bool
+		if !upload {
+			// The key's system text first, as the upstream will get it.
+			text, ok = guardrails.JudgeRequestText(judgeTextFormat, redactedBody, keyText)
+		}
 		if !ok {
 			// Nothing to judge (an image-only request): it goes on, and the
 			// inspector says it was not judged.
 			judgeMark = notJudgedMark(&ev, guardrails.DirectionRequest)
 		} else {
+			judgeStarted := time.Now()
 			jd := c.judge(r.Context(), svc.ID, judgeSettings, text)
+			judgeTime += time.Since(judgeStarted)
 			judgeMark = c.note(r, svc, &ev, jd, guardrails.DirectionRequest)
 			if jd.refuse {
 				ev.Outcome, ev.Status = observe.ModelGuardrailRefused, http.StatusForbidden
@@ -839,7 +864,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 				cacheHdr.Set(k, v)
 			}
 			c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, entry.Status, entry.Body, cacheHdr, 0, false, cacheStatus, fromReplay, nil, judgeMark)
-			c.recordMeter(r.Context(), &ev, svc, kind, 0, 0, int64(len(redactedBody)), int64(len(entry.Body)), false, true, entry.Status, cachedCost(), elapsed)
+			c.recordMeter(r.Context(), &ev, svc, kind, 0, 0, int64(len(redactedBody)), int64(len(entry.Body)), false, true, entry.Status, cachedCost(), elapsed, judgeTime)
 			return
 		}
 		cacheStatus = "MISS"
@@ -906,7 +931,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 					cacheHdr.Set(k, v)
 				}
 				c.captureEntry(svc, r, time.Since(started), body, redactedBody, redactHits, kind, status, exactEntry.Body, cacheHdr, 0, false, "similar", fromReplay, nil, judgeMark)
-				c.recordMeter(r.Context(), &ev, svc, kind, 0, 0, int64(len(redactedBody)), int64(len(exactEntry.Body)), false, true, status, cachedCost(), elapsed)
+				c.recordMeter(r.Context(), &ev, svc, kind, 0, 0, int64(len(redactedBody)), int64(len(exactEntry.Body)), false, true, status, cachedCost(), elapsed, judgeTime)
 				return
 			}
 		}
@@ -995,7 +1020,9 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	var answerNotJudged func(string) bool
 	if judging && judgeSettings.ChecksAnswers() {
 		judgeAnswer = func(text string) bool {
+			judgeStarted := time.Now()
 			jd := c.judge(r.Context(), svc.ID, judgeSettings, text)
+			judgeTime += time.Since(judgeStarted)
 			answerJudgement = &jd
 			return jd.refuse
 		}
@@ -1203,7 +1230,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		isStreamedResponse(wrapped.Header()), false,
 		wrapped.statusCode,
 		reportedUSD,
-		elapsed,
+		elapsed, judgeTime,
 	)
 }
 
@@ -1361,15 +1388,15 @@ func (c *Chain) guardrailAnswer(r *http.Request, svc Service, pattern, action st
 
 // answerGuardFor returns the answer guard for a request whose answer is
 // inspected or judged, nil for every other. An answer is inspected when the
-// service's guardrails are on (a service that turns them off turns answer
-// inspection and the judge off too), the request does not carry
-// WithoutGuardrails, answer inspection is on or judge is set (the judge
+// service has guardrail settings (answer inspection and the judge run on
+// their own switches, not on the request patterns' Enabled), the request
+// does not carry WithoutGuardrails, answer inspection is on or judge is set (the judge
 // checks answers), and the request is a POST to an endpoint whose answer is
 // text in a format the guardrails read: Chat Completions, Responses or
 // Messages. judge is asked about whole answers only.
 func (c *Chain) answerGuardFor(w http.ResponseWriter, r *http.Request, kind Kind, cfg ServiceAIConfig, judge func(string) bool) *answerGuard {
 	g := cfg.Guardrails
-	if g == nil || !g.Enabled || r.Method != http.MethodPost || GuardrailsSkipped(r.Context()) {
+	if g == nil || r.Method != http.MethodPost || GuardrailsSkipped(r.Context()) {
 		return nil
 	}
 	patterns := c.Guardrails != nil && g.Answers.Enabled
@@ -1522,6 +1549,10 @@ func (c *Chain) captureEntry(svc Service, r *http.Request, took time.Duration,
 // what the upstream reported for the request, nil when it reported nothing.
 // latency is the time from the request's arrival in the chain to the end of
 // the response; the caller takes it before any post-response bookkeeping.
+// judged is how much of it the request waited for the judge: the usage row's
+// latency_ms leaves it out, because routing (fastest) and the providers' p95
+// read latency_ms as the provider's time. The observer's event keeps the
+// whole latency.
 // The route is read here, not earlier, so the row names the target that
 // answered even when the gateway switched target while serving.
 //
@@ -1529,7 +1560,7 @@ func (c *Chain) captureEntry(svc Service, r *http.Request, took time.Duration,
 // are noted on it here, whether or not a row is written.
 func (c *Chain) recordMeter(ctx context.Context, ev *observe.ModelRequest, svc Service, kind Kind,
 	tokensIn, tokensOut int, bytesIn, bytesOut int64, streamed, cacheHit bool, status int, costUSD *float64,
-	latency time.Duration) {
+	latency, judged time.Duration) {
 	ev.Status, ev.Streamed, ev.Latency = status, streamed, latency
 	ev.TokensIn, ev.TokensOut, ev.ReportedCostUSD = tokensIn, tokensOut, costUSD
 	if c.Meter == nil || withoutUsage(ctx) {
@@ -1551,7 +1582,8 @@ func (c *Chain) recordMeter(ctx context.Context, ev *observe.ModelRequest, svc S
 		CacheHit:       cacheHit,
 		UpstreamStatus: status,
 		CostUSD:        costUSD,
-		LatencyMs:      latency.Milliseconds(),
+		LatencyMs:      max(latency-judged, 0).Milliseconds(),
+		Purpose:        PurposeFrom(ctx),
 	}
 	if ri, ok := RouteFrom(ctx); ok {
 		sample.GatewayKeyID, sample.Dialect, sample.ProviderSlug = ri.GatewayKeyID, ri.Dialect, ri.ProviderSlug

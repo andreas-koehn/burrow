@@ -98,17 +98,100 @@ func (j JudgeSettings) ChecksAnswers() bool {
 // RefusesOnFailure reports whether a failed judgement refuses.
 func (j JudgeSettings) RefusesOnFailure() bool { return j.OnFailure == JudgeOnFailureRefuse }
 
-// JudgedText is text cut to the first MaxJudgedText bytes, never inside a
-// character.
+// JudgedHead is how much of the start of a text longer than MaxJudgedText
+// the judge is shown, in bytes: the system text and instructions come first.
+// The rest of MaxJudgedText is the end of the text, where the latest turn
+// is.
+const JudgedHead = 4096
+
+// judgedGap stands for the text left out between the start and the end.
+const judgedGap = "\n…\n"
+
+// JudgedText is text as the judge is shown it: whole when it is at most
+// MaxJudgedText bytes, otherwise its first JudgedHead bytes and its last
+// bytes up to MaxJudgedText in all, never cut inside a character. The end of
+// a long text is never left out, so padding cannot push the part that
+// matters past the limit.
 func JudgedText(text string) string {
 	if len(text) <= MaxJudgedText {
 		return text
 	}
-	cut := MaxJudgedText
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
+	head := prefixBytes(text, JudgedHead)
+	return head + judgedGap + suffixBytes(text, MaxJudgedText-len(head)-len(judgedGap))
+}
+
+// JudgeRequestText is the text of a request (RequestText) as the judge is
+// shown it: like JudgedText, and the request's last user message is always
+// in it, whole when it fits beside the start (else its last bytes), even
+// when other messages (an assistant prefill) follow it. system, when not
+// empty, is text put before the request's own (a gateway key's system text);
+// ok is true when there is any text at all.
+func JudgeRequestText(format string, body []byte, system string) (string, bool) {
+	ps, _ := requestParts(format, body)
+	if system != "" {
+		ps = append(parts{{text: system}}, ps...)
+	}
+	if len(ps) == 0 {
+		return "", false
+	}
+	var b strings.Builder
+	userStart, userEnd := -1, -1
+	for i, p := range ps {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		if p.user {
+			userStart, userEnd = b.Len(), b.Len()+len(p.text)
+		}
+		b.WriteString(p.text)
+	}
+	full := b.String()
+	if len(full) <= MaxJudgedText {
+		return full, true
+	}
+	head := prefixBytes(full, JudgedHead)
+	budget := MaxJudgedText - len(head) - len(judgedGap)
+	tail := suffixBytes(full, budget)
+	if userStart < 0 || userStart >= len(full)-len(tail) || userEnd <= len(head) {
+		// No user message, or it is in the tail or the head already.
+		return head + judgedGap + tail, true
+	}
+	last := full[userStart:userEnd]
+	if len(last)+len(judgedGap) >= budget {
+		return head + judgedGap + suffixBytes(last, budget), true
+	}
+	// The last user message whole, then the end of what follows it.
+	after := suffixBytes(full[userEnd:], budget-len(last)-len(judgedGap))
+	return head + judgedGap + last + judgedGap + after, true
+}
+
+// prefixBytes is the longest start of s of at most n bytes that ends on a
+// character boundary.
+func prefixBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
-	return text[:cut]
+	return s[:cut]
+}
+
+// suffixBytes is the longest end of s of at most n bytes that starts on a
+// character boundary.
+func suffixBytes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if len(s) <= n {
+		return s
+	}
+	start := len(s) - n
+	for start < len(s) && !utf8.RuneStart(s[start]) {
+		start++
+	}
+	return s[start:]
 }
 
 // Verdict is what the judge decided: Block, and its reason in one sentence.

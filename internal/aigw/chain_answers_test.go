@@ -200,22 +200,23 @@ func TestChain_BlockedAnswerIsNotCached(t *testing.T) {
 	}
 }
 
-// A service whose request guardrails are off has no answer inspection.
-func TestChain_AnswersOffWhereGuardrailsAreOff(t *testing.T) {
+// Answer inspection runs on its own switch: a service whose request
+// patterns are off still has its answers inspected.
+func TestChain_AnswersOnWhereRequestGuardrailsAreOff(t *testing.T) {
 	obs, hook := &requestObserver{}, &answerHook{}
 	chain := answersChain(nil, obs, hook)
 	svc := answersSvc("svc-ans-off", guardrails.AnswerActionBlock)
 	svc.AIConfig.Guardrails.Enabled = false
 	up := &leakUpstream{body: leakAnswer()}
 	out := runChain(t, chain, up, svc, obsRequest(chatHi))
-	if out.Code != 200 || out.Body.String() != leakAnswer() {
+	if out.Code != http.StatusBadGateway || strings.Contains(out.Body.String(), leakedKey) {
 		t.Fatalf("%d %s", out.Code, out.Body.String())
 	}
-	if ev := obs.only(t); ev.GuardrailPattern != "" || ev.GuardrailDirection != "" {
+	if ev := obs.only(t); ev.GuardrailPattern != "openai_key" || ev.GuardrailDirection != "answer" {
 		t.Fatalf("event %+v", ev)
 	}
-	if len(hook.calls()) != 0 {
-		t.Fatal("hook called")
+	if len(hook.calls()) != 1 {
+		t.Fatalf("hook calls %d", len(hook.calls()))
 	}
 }
 

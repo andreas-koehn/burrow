@@ -616,3 +616,20 @@ func TestStream_LongLineIsPassedOnNotKept(t *testing.T) {
 		})
 	}
 }
+
+// A judge call's row carries its purpose; an app's request has none.
+func TestSQLSinkRecord_Purpose(t *testing.T) {
+	ctx := context.Background()
+	x := testDB(t)
+	serviceID := seedService(t, x)
+	sink := aimeter.NewSQLSink(x)
+	for key, purpose := range map[string]string{"k-judge": "guardrail-judge", "k-app": ""} {
+		if err := sink.Record(ctx, aimeter.Sample{ServiceID: serviceID, APIKeyID: key, Kind: aimeter.KindOpenAI, UpstreamStatus: 200, Purpose: purpose}); err != nil {
+			t.Fatal(err)
+		}
+		var got string
+		if err := x.DB().QueryRowContext(ctx, `SELECT purpose FROM usage_events WHERE api_key_id = ?`, key).Scan(&got); err != nil || got != purpose {
+			t.Fatalf("%s: purpose %q (%v), want %q", key, got, err, purpose)
+		}
+	}
+}

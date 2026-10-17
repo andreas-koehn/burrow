@@ -113,10 +113,17 @@ func (d Deps) GetCostPricing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, pricingTableToResp(d.CostEngine.Pricing()))
 }
 
-// PutCostPricing handles PUT /api/v1/cost/pricing — replaces the in-memory
-// pricing table. Needs cost:pricing:manage. The request body MUST match the GET response
-// shape (version + entries). On success the engine swaps the table
-// atomically and returns 204.
+// costPricingKey is the settings row that holds the price table saved with
+// PUT /cost/pricing, as the canonical JSON of the request (version and
+// entries). ApplyStoredPricing reads it back at start-up.
+const costPricingKey = "cost.pricing"
+
+// PutCostPricing handles PUT /api/v1/cost/pricing — replaces the pricing
+// table. Needs cost:pricing:manage. The request body MUST match the GET
+// response shape (version + entries). The table is stored in the settings
+// (costPricingKey), so it outlives a restart, and the engine swaps it
+// atomically; 204 on success. With no settings store the swap is in memory
+// only.
 func (d Deps) PutCostPricing(w http.ResponseWriter, r *http.Request) {
 	if d.CostEngine == nil {
 		writeErr(w, http.StatusInternalServerError, "cost engine unavailable")
@@ -133,13 +140,36 @@ func (d Deps) PutCostPricing(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if strings.TrimSpace(in.Version) == "" {
-		writeErr(w, http.StatusBadRequest, "version is required")
+	pr, err := pricingFromWire(in)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if d.Settings != nil {
+		canon, err := json.Marshal(in)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "marshal failed")
+			return
+		}
+		if err := d.Settings.SaveSettings(r.Context(), map[string]string{costPricingKey: string(canon)}); err != nil {
+			writeErr(w, http.StatusInternalServerError, "save pricing failed")
+			return
+		}
+	}
+	d.CostEngine.ReplacePricing(pr)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// pricingFromWire checks a price table in the wire shape and builds the
+// engine's table: each entry under "provider/model" and, for the first entry
+// of a model, under the bare model name. The error is written to the caller
+// as it is.
+func pricingFromWire(in pricingResp) (cost.Pricing, error) {
+	if strings.TrimSpace(in.Version) == "" {
+		return cost.Pricing{}, errors.New("version is required")
+	}
 	if len(in.Entries) == 0 {
-		writeErr(w, http.StatusBadRequest, "entries must be non-empty")
-		return
+		return cost.Pricing{}, errors.New("entries must be non-empty")
 	}
 	pr := cost.Pricing{
 		Version: in.Version,
@@ -147,14 +177,10 @@ func (d Deps) PutCostPricing(w http.ResponseWriter, r *http.Request) {
 	}
 	for i, e := range in.Entries {
 		if e.Model == "" {
-			writeErr(w, http.StatusBadRequest,
-				fmt.Sprintf("entry %d: model is required", i))
-			return
+			return cost.Pricing{}, fmt.Errorf("entry %d: model is required", i)
 		}
 		if e.InputPerMillion < 0 || e.OutputPerMillion < 0 || e.PerRequestUSD < 0 {
-			writeErr(w, http.StatusBadRequest,
-				fmt.Sprintf("entry %s/%s: prices must be >= 0", e.Provider, e.Model))
-			return
+			return cost.Pricing{}, fmt.Errorf("entry %s/%s: prices must be >= 0", e.Provider, e.Model)
 		}
 		entry := cost.Entry{
 			InputPerMillion:  e.InputPerMillion,
@@ -168,8 +194,41 @@ func (d Deps) PutCostPricing(w http.ResponseWriter, r *http.Request) {
 			pr.Entries[e.Model] = entry
 		}
 	}
-	d.CostEngine.ReplacePricing(pr)
-	w.WriteHeader(http.StatusNoContent)
+	return pr, nil
+}
+
+// SettingsReader is the read side of the settings store.
+type SettingsReader interface {
+	GetSettings(ctx context.Context) (map[string]string, error)
+}
+
+// ApplyStoredPricing puts the price table saved with PUT /cost/pricing (see
+// costPricingKey) into engine, replacing the table it was built with (the
+// bundled one or BURROW_PRICING_PATH), as the PUT did. Nothing stored leaves
+// the engine as it is; a stored row that does not parse is an error and
+// changes nothing. cmd/server calls it at start-up.
+func ApplyStoredPricing(ctx context.Context, settings SettingsReader, engine CostEngine) error {
+	if settings == nil || engine == nil {
+		return nil
+	}
+	m, err := settings.GetSettings(ctx)
+	if err != nil {
+		return fmt.Errorf("read stored pricing: %w", err)
+	}
+	raw := m[costPricingKey]
+	if raw == "" {
+		return nil
+	}
+	var in pricingResp
+	if err := json.Unmarshal([]byte(raw), &in); err != nil {
+		return fmt.Errorf("stored pricing: %w", err)
+	}
+	pr, err := pricingFromWire(in)
+	if err != nil {
+		return fmt.Errorf("stored pricing: %w", err)
+	}
+	engine.ReplacePricing(pr)
+	return nil
 }
 
 // --- GET /cost/summary -------------------------------------------------------

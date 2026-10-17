@@ -105,6 +105,9 @@ type Sample struct {
 	// Dropped is what the translation left out: names joined by JoinDropped,
 	// never values. "" when nothing was dropped or nothing was translated.
 	Dropped string
+	// Purpose says why the relay itself made the request: "guardrail-judge"
+	// for a call to the judge model; "" for an app's request.
+	Purpose string
 }
 
 // Accumulator is the read-side of a Stream: it exposes the running token

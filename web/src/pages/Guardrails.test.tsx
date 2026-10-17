@@ -293,6 +293,8 @@ describe("Guardrails: answers, custom patterns and the judge (G07)", () => {
   it("Requests: says the switch applies to all model traffic, and lists your request patterns", async () => {
     await open(/^requests/i);
     expect(screen.getByText(/applies to all model traffic, unless a service turns on its own guardrails/i)).toBeInTheDocument();
+    // The switch is the request patterns' only: it does not claim to gate the answers or the judge.
+    expect(screen.getByText(/answers and the judge have switches of their own/i)).toBeInTheDocument();
     expect(screen.queryByText(/endpoint/i)).toBeNull();
     expect(screen.getByRole("heading", { name: "Your patterns" })).toBeInTheDocument();
     const mine = screen.getByRole("list", { name: "Your patterns" });

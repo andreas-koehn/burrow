@@ -143,6 +143,9 @@ type UsageEvent struct {
 	// out; names only, never values.
 	Translated string
 	Dropped    string
+	// Purpose is why the relay itself made the request: "guardrail-judge"
+	// for a call to the judge model; "" for an app's request.
+	Purpose string
 }
 
 // CacheEntry is a row of the cache_entries table (AI response cache).

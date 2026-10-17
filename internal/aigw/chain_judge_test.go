@@ -371,13 +371,13 @@ func TestChainJudge_WithoutGuardrails(t *testing.T) {
 	}
 }
 
-// The judge is part of the guardrails: a service whose guardrails are off is
-// not judged.
-func TestChainJudge_GuardrailsOff(t *testing.T) {
+// The judge runs on its own switch: the request patterns being off does not
+// turn it off.
+func TestChainJudge_RunsWithRequestsOff(t *testing.T) {
 	rig := newJudgeRig(verdict("block", "r"))
 	svc := judgeSvc(judgeOn("requests", "refuse"))
 	svc.AIConfig.Guardrails.Enabled = false
-	if out := runChain(t, rig.chain, &leakUpstream{body: obsAnswer}, svc, obsRequest(chatHi)); out.Code != 200 || rig.judge.count() != 0 {
+	if out := runChain(t, rig.chain, &leakUpstream{body: obsAnswer}, svc, obsRequest(chatHi)); out.Code != http.StatusForbidden || rig.judge.count() != 1 {
 		t.Fatalf("status %d, judge calls %d", out.Code, rig.judge.count())
 	}
 }

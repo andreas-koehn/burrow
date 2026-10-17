@@ -21,6 +21,9 @@ const (
 	FormatSpeech        = "speech"        // POST /v1/audio/speech: input
 	FormatRerank        = "rerank"        // POST /v1/rerank: query and documents
 	FormatTranscription = "transcription" // audio uploads: multipart, no text
+	// FormatCompletions is the legacy POST /v1/completions: its "prompt" (a
+	// string or a list of strings) is read; its answers are not.
+	FormatCompletions = "completions"
 )
 
 // The text lives where the translate package's codecs read and write it:
@@ -129,22 +132,88 @@ func DeltaText(format string, frame []byte) (string, bool) {
 }
 
 // RequestText returns the text of a request: what the app wrote as system
-// text, instructions and messages, in order. ok is false when the body is no
-// request of that format or has no text.
+// text, instructions, messages and tool results, in order. ok is false when
+// the body is no request of that format or has no text.
+//
+// Tool results are text the app hands the model: a Messages "tool_result"
+// block's content (a string or text blocks), a Responses
+// "function_call_output" item's output, a Chat message of role "tool".
 func RequestText(format string, body []byte) (string, bool) {
-	var parts []string
+	parts, ok := requestParts(format, body)
+	if !ok {
+		return "", false
+	}
+	texts := make([]string, len(parts))
+	for i, p := range parts {
+		texts[i] = p.text
+	}
+	return joined(texts)
+}
+
+// textPart is one piece of a request's text; user marks the text of a
+// message of role "user" (and a prompt or input string, which is the user's).
+type textPart struct {
+	text string
+	user bool
+}
+
+// parts collects the pieces of a request's text.
+type parts []textPart
+
+func (ps *parts) add(text string, user bool) {
+	if text != "" {
+		*ps = append(*ps, textPart{text, user})
+	}
+}
+
+// addContent adds the text of a request's content field: a string, or parts
+// and blocks with a "text", and the content of "tool_result" blocks.
+func (ps *parts) addContent(raw json.RawMessage, user bool) {
+	if len(raw) == 0 {
+		return
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		ps.add(s, user)
+		return
+	}
+	var blocks []struct {
+		Type    string          `json:"type"`
+		Text    string          `json:"text"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return
+	}
+	for _, b := range blocks {
+		switch {
+		case b.Text != "":
+			ps.add(b.Text, user)
+		case b.Type == "tool_result":
+			// One level: a tool result holds a string or text blocks.
+			for _, t := range appendContent(nil, b.Content) {
+				ps.add(t, user)
+			}
+		}
+	}
+}
+
+// requestParts reads the pieces of a request's text (see RequestText).
+func requestParts(format string, body []byte) (parts, bool) {
+	var ps parts
 	switch format {
 	case FormatChat:
 		var r struct {
 			Messages []struct {
+				Role    string          `json:"role"`
 				Content json.RawMessage `json:"content"`
 			} `json:"messages"`
 		}
 		if json.Unmarshal(body, &r) != nil {
-			return "", false
+			return nil, false
 		}
 		for _, m := range r.Messages {
-			parts = appendContent(parts, m.Content)
+			ps.addContent(m.Content, m.Role == "user")
 		}
 	case FormatResponses:
 		var r struct {
@@ -152,70 +221,86 @@ func RequestText(format string, body []byte) (string, bool) {
 			Input        json.RawMessage `json:"input"`
 		}
 		if json.Unmarshal(body, &r) != nil {
-			return "", false
+			return nil, false
 		}
-		if r.Instructions != "" {
-			parts = append(parts, r.Instructions)
-		}
+		ps.add(r.Instructions, false)
 		var s string
 		var items []struct {
+			Type    string          `json:"type"`
+			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
+			Output  json.RawMessage `json:"output"`
 		}
 		switch {
 		case json.Unmarshal(r.Input, &s) == nil:
-			if s != "" {
-				parts = append(parts, s)
-			}
+			ps.add(s, true)
 		case json.Unmarshal(r.Input, &items) == nil:
 			for _, it := range items {
-				parts = appendContent(parts, it.Content)
+				if it.Type == "function_call_output" {
+					ps.addContent(it.Output, false)
+					continue
+				}
+				ps.addContent(it.Content, it.Role == "user")
 			}
 		}
 	case FormatMessages:
 		var r struct {
 			System   json.RawMessage `json:"system"`
 			Messages []struct {
+				Role    string          `json:"role"`
 				Content json.RawMessage `json:"content"`
 			} `json:"messages"`
 		}
 		if json.Unmarshal(body, &r) != nil {
-			return "", false
+			return nil, false
 		}
-		parts = appendContent(parts, r.System)
+		ps.addContent(r.System, false)
 		for _, m := range r.Messages {
-			parts = appendContent(parts, m.Content)
+			ps.addContent(m.Content, m.Role == "user")
+		}
+	case FormatCompletions:
+		var r struct {
+			Prompt json.RawMessage `json:"prompt"`
+		}
+		if json.Unmarshal(body, &r) != nil {
+			return nil, false
+		}
+		// A string or a list of strings; a prompt of token ids has no text.
+		var s string
+		var list []string
+		switch {
+		case json.Unmarshal(r.Prompt, &s) == nil:
+			ps.add(s, true)
+		case json.Unmarshal(r.Prompt, &list) == nil:
+			for _, p := range list {
+				ps.add(p, true)
+			}
 		}
 	case FormatImages:
 		var r struct {
 			Prompt string `json:"prompt"`
 		}
 		if json.Unmarshal(body, &r) != nil {
-			return "", false
+			return nil, false
 		}
-		if r.Prompt != "" {
-			parts = append(parts, r.Prompt)
-		}
+		ps.add(r.Prompt, true)
 	case FormatSpeech:
 		var r struct {
 			Input string `json:"input"`
 		}
 		if json.Unmarshal(body, &r) != nil {
-			return "", false
+			return nil, false
 		}
-		if r.Input != "" {
-			parts = append(parts, r.Input)
-		}
+		ps.add(r.Input, true)
 	case FormatRerank:
 		var r struct {
 			Query     string            `json:"query"`
 			Documents []json.RawMessage `json:"documents"`
 		}
 		if json.Unmarshal(body, &r) != nil {
-			return "", false
+			return nil, false
 		}
-		if r.Query != "" {
-			parts = append(parts, r.Query)
-		}
+		ps.add(r.Query, true)
 		for _, d := range r.Documents {
 			// A document is a string or an object with a "text".
 			var s string
@@ -224,18 +309,16 @@ func RequestText(format string, body []byte) (string, bool) {
 			}
 			switch {
 			case json.Unmarshal(d, &s) == nil:
-				if s != "" {
-					parts = append(parts, s)
-				}
-			case json.Unmarshal(d, &o) == nil && o.Text != "":
-				parts = append(parts, o.Text)
+				ps.add(s, false)
+			case json.Unmarshal(d, &o) == nil:
+				ps.add(o.Text, false)
 			}
 		}
 	default:
 		// Includes FormatTranscription: a multipart form is not read.
-		return "", false
+		return nil, false
 	}
-	return joined(parts)
+	return ps, len(ps) > 0
 }
 
 // textBlock is a content part or block: its type and its text.

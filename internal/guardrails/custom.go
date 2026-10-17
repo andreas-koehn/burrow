@@ -101,14 +101,21 @@ func (p CustomPattern) appliesTo(dir string) bool {
 }
 
 // Effective returns the guardrail settings that apply to a service, from its
-// own guardrails section (nil when it has none) and the global settings. A
-// section with enabled true overrides the global enabled and action; a
-// section with enabled false counts as no override (the dashboard writes
-// one with every AI-config save, so it does not mean the service opted
-// out). Answer inspection and custom patterns are always the global ones.
-// The result is nil when the service has no section and the global
-// guardrails are off: the service then has no guardrails at all. The result
-// is a copy; the custom patterns are shared and must not be changed.
+// own guardrails section (nil when it has none) and the global settings.
+//
+// Enabled is the switch of the request patterns only. A section with enabled
+// true overrides the global enabled and action; a section with enabled false
+// counts as no override (the dashboard writes one with every AI-config save,
+// so it does not mean the service opted out).
+//
+// Answer inspection, custom patterns and the judge are always the global
+// ones and run on their own switches (Answers.Enabled, Judge.Enabled),
+// whether or not the request patterns are on: a service cannot be exempted
+// from them.
+//
+// The result is nil when the service has no section and nothing is on
+// globally: the service then has no guardrails at all. The result is a copy;
+// the custom patterns are shared and must not be changed.
 func Effective(own *Settings, global Settings) *Settings {
 	switch {
 	case own != nil && own.Enabled:
@@ -120,7 +127,10 @@ func Effective(own *Settings, global Settings) *Settings {
 		return &s
 	case own != nil:
 		s := *own
-		s.Answers, s.CustomPatterns, s.Judge = AnswerSettings{}, nil, JudgeSettings{}
+		s.Answers, s.CustomPatterns, s.Judge = global.Answers, global.CustomPatterns, global.Judge
+		return &s
+	case global.Answers.Enabled || global.Judge.Enabled:
+		s := global
 		return &s
 	}
 	return nil

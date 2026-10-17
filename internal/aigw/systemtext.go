@@ -22,6 +22,23 @@ func SystemTextFrom(ctx context.Context) string {
 	return t
 }
 
+type keySystemTextKey struct{}
+
+// WithKeySystemText puts the gateway key's part of the system text in the
+// context (WithSystemText carries the joined text). It is written by holders
+// of ai:configure:own, the app's side, so the guardrails check it like the
+// app's own text: the request patterns and the judge see it. A model's system
+// text is the operator's and is not checked.
+func WithKeySystemText(ctx context.Context, text string) context.Context {
+	return context.WithValue(ctx, keySystemTextKey{}, text)
+}
+
+// KeySystemTextFrom returns what WithKeySystemText stored, or "".
+func KeySystemTextFrom(ctx context.Context) string {
+	t, _ := ctx.Value(keySystemTextKey{}).(string)
+	return t
+}
+
 // JoinSystemText combines a model's and a key's text: "" when both are empty,
 // one of them alone, or model + "\n\n" + key.
 func JoinSystemText(modelText, keyText string) string {

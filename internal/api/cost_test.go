@@ -1050,3 +1050,51 @@ func TestBudgetHandler_SubjectID(t *testing.T) {
 		t.Fatalf("no key store: status=%d body=%s", r.StatusCode, got)
 	}
 }
+
+// A saved price table outlives a restart: PUT stores it in the settings, and
+// a new engine built over the same settings store gets it back.
+func TestCostHandler_PutPricing_PersistsAcrossRestart(t *testing.T) {
+	settings := &fakeCacheSettingsStore{}
+	eng := &fakeCostEngine{pricing: cost.Pricing{Version: "bundled", Entries: map[string]cost.Entry{}}}
+	srv := newTestServer(Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, CostEngine: eng, Settings: settings})
+	defer srv.Close()
+	c := authedClient(t, srv)
+	body := map[string]any{"version": "saved", "entries": []map[string]any{
+		{"provider": "openai", "model": "gpt-image-1", "input_per_million": 0, "output_per_million": 0, "per_request_usd": 0.04},
+		{"provider": "openai", "model": "gpt-x", "input_per_million": 1.5, "output_per_million": 3},
+	}}
+	if r := c.put(t, "/api/v1/cost/pricing", body); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("put status %d", r.StatusCode)
+	}
+	if settings.saved[costPricingKey] == "" {
+		t.Fatalf("nothing stored: %v", settings.saved)
+	}
+
+	// The restart: a fresh engine with the bundled table, then the stored one.
+	restarted := &fakeCostEngine{pricing: cost.Pricing{Version: "bundled", Entries: map[string]cost.Entry{"old/model": {InputPerMillion: 9}}}}
+	if err := ApplyStoredPricing(context.Background(), settings, restarted); err != nil {
+		t.Fatal(err)
+	}
+	p := restarted.Pricing()
+	img, ok := p.Lookup("openai/gpt-image-1")
+	if p.Version != "saved" || !ok || img.PerRequestUSD != 0.04 {
+		t.Fatalf("version %q, image entry %+v %v", p.Version, img, ok)
+	}
+	if e, ok := p.Lookup("gpt-x"); !ok || e.InputPerMillion != 1.5 {
+		t.Fatalf("bare model fallback %+v %v", e, ok)
+	}
+	if _, ok := p.Lookup("old/model"); ok {
+		t.Fatal("the stored table replaces the bundled one, as the PUT did")
+	}
+
+	// Nothing stored, or a store without settings: the engine keeps its table.
+	fresh := &fakeCostEngine{pricing: cost.Pricing{Version: "bundled", Entries: map[string]cost.Entry{}}}
+	if err := ApplyStoredPricing(context.Background(), &fakeCacheSettingsStore{}, fresh); err != nil || fresh.Pricing().Version != "bundled" {
+		t.Fatalf("nothing stored: %v %q", err, fresh.Pricing().Version)
+	}
+	// A stored row that no longer parses is an error and changes nothing.
+	bad := &fakeCacheSettingsStore{saved: map[string]string{costPricingKey: "{"}}
+	if err := ApplyStoredPricing(context.Background(), bad, fresh); err == nil || fresh.Pricing().Version != "bundled" {
+		t.Fatalf("bad row: %v %q", err, fresh.Pricing().Version)
+	}
+}

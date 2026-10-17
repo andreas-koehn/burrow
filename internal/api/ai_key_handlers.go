@@ -21,14 +21,17 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -177,6 +180,9 @@ func (d Deps) PostAIKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !d.keyTextAllowed(w, r, in.SystemText) {
+		return
+	}
 	if d.AIGatewayKeys == nil {
 		writeErr(w, http.StatusServiceUnavailable, "gateway keys are not available on this relay")
 		return
@@ -245,6 +251,9 @@ func (d Deps) PutAIKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, msgKeyText)
 		return
 	}
+	if in.SystemText != nil && !d.keyTextAllowed(w, r, *in.SystemText) {
+		return
+	}
 	id := chi.URLParam(r, "id")
 	if d.AIGatewayKeys == nil || id == "" || len(id) > maxKeyID {
 		writeErr(w, http.StatusNotFound, msgKeyNotFound)
@@ -268,4 +277,34 @@ func (d Deps) PutAIKey(w http.ResponseWriter, r *http.Request) {
 		"system_text": in.SystemText != nil,
 	})
 	writeJSON(w, http.StatusOK, toAIKeyResp(k))
+}
+
+// keyPatterns is the guardrails engine the key handlers check system text
+// with: the bundled request patterns compiled once, the custom ones cached.
+var keyPatterns = sync.OnceValue(guardrails.NewEngine)
+
+// keyTextAllowed checks a gateway key's system text against the request
+// patterns, bundled and custom, when the global request guardrails are on,
+// and writes the 400 naming the pattern that matched. The chain checks the
+// text on every request as well (aigw.WithKeySystemText); refusing it here
+// tells the key's owner at once. A model's system text is the operator's and
+// is not checked.
+func (d Deps) keyTextAllowed(w http.ResponseWriter, r *http.Request, text string) bool {
+	if text == "" || d.Settings == nil {
+		return true
+	}
+	m, err := d.Settings.GetSettings(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "get guardrail settings failed")
+		return false
+	}
+	g := loadGuardrailsGlobal(m)
+	if !g.Enabled {
+		return true
+	}
+	if hit, id := keyPatterns().InspectRequest([]byte(text), g.CustomPatterns); hit {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("system_text matches the guardrail pattern %q", id))
+		return false
+	}
+	return true
 }

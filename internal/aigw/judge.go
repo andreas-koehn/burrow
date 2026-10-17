@@ -105,19 +105,23 @@ type judgement struct {
 }
 
 // judgeFormat returns the settings of the judge and the text format of the
-// request when the judge applies to it: the service's guardrails are on, the
-// request does not carry WithoutGuardrails, the judge is on, and the request
-// is a POST to Chat Completions, Responses or Messages.
+// request when the judge applies to it: the service has guardrail settings,
+// the judge is on (on its own switch: the request patterns' Enabled does not
+// gate it), the request does not carry WithoutGuardrails, and the request is
+// a POST to an endpoint whose request text the guardrails read: Chat
+// Completions, Responses, Messages, legacy completions, or a media or rerank
+// endpoint.
 func judgeFormat(r *http.Request, kind Kind, cfg ServiceAIConfig) (guardrails.JudgeSettings, string, bool) {
 	g := cfg.Guardrails
-	if g == nil || !g.Enabled || !g.Judge.Enabled || r.Method != http.MethodPost || GuardrailsSkipped(r.Context()) {
+	if g == nil || !g.Judge.Enabled || r.Method != http.MethodPost || GuardrailsSkipped(r.Context()) {
 		return guardrails.JudgeSettings{}, "", false
 	}
 	format := answerFormat(kind, r.URL.Path)
 	if format == "" {
-		// Media endpoints have request text only (their answers are audio,
-		// images or scores).
-		format = mediaRequestFormat(r.URL.Path)
+		// Endpoints with request text only (the answers of media endpoints
+		// are audio, images or scores; legacy completions' answers are not
+		// read).
+		format = requestOnlyFormat(r.URL.Path)
 	}
 	return g.Judge, format, format != ""
 }
@@ -218,10 +222,13 @@ func (c *Chain) note(r *http.Request, svc Service, ev *observe.ModelRequest, jd 
 	return &inspector.JudgeMark{Direction: direction, Verdict: jd.verdict, Reason: jd.reason, Failure: jd.failure}
 }
 
-// mediaRequestFormat is the guardrails text format of a media or rerank
-// request, "" for any other path.
-func mediaRequestFormat(path string) string {
+// requestOnlyFormat is the guardrails text format of a request whose answer
+// the guardrails do not read: legacy completions, media and rerank; "" for
+// any other path.
+func requestOnlyFormat(path string) string {
 	switch strings.TrimRight(path, "/") {
+	case "/v1/completions":
+		return guardrails.FormatCompletions
 	case "/v1/images/generations":
 		return guardrails.FormatImages
 	case "/v1/audio/speech":

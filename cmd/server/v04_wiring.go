@@ -124,6 +124,12 @@ func buildV04Stack(
 		return nil, err
 	}
 	costEngine := cost.New(wrapped, pricing)
+	// The table an admin saved with PUT /cost/pricing wins over the bundled
+	// or file table, as the PUT did before the restart. A stored row that
+	// does not parse is logged and the start-up table kept.
+	if err := api.ApplyStoredPricing(ctx, st, costEngine); err != nil {
+		log.Warn("cost: stored price table not applied", slog.String("err", err.Error()))
+	}
 	meterSink.Budgets = costEngine
 
 	// Webhook dispatcher — needed by the cost engine for budget.exceeded

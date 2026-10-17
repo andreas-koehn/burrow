@@ -128,20 +128,23 @@ func TestJudgedText(t *testing.T) {
 		t.Fatalf("short: %q", got)
 	}
 	exact := strings.Repeat("a", MaxJudgedText)
-	if got := JudgedText(exact + "b"); got != exact {
+	if got := JudgedText(exact); got != exact {
+		t.Fatalf("exact: %d bytes", len(got))
+	}
+	if got := JudgedText(exact + "b"); len(got) > MaxJudgedText || !strings.HasSuffix(got, "b") {
 		t.Fatalf("cut: %d bytes", len(got))
 	}
 	// The cut never splits a character.
 	text := strings.Repeat("a", MaxJudgedText-1) + "€€"
 	got := JudgedText(text)
-	if len(got) > MaxJudgedText || !utf8.ValidString(got) || len(got) != MaxJudgedText-1 {
+	if len(got) > MaxJudgedText || !utf8.ValidString(got) {
 		t.Fatalf("cut in a character: %d bytes, valid %v", len(got), utf8.ValidString(got))
 	}
 }
 
 // The judge settings are global like the answers: a service's own section
-// takes them from the global settings, and a service with guardrails off
-// has none.
+// takes them from the global settings, and they apply whether or not the
+// request patterns are on.
 func TestEffective_Judge(t *testing.T) {
 	j := JudgeSettings{Enabled: true, Model: "judge", Check: JudgeCheckRequests, TimeoutMS: 3000, OnFailure: JudgeOnFailureAllow}
 	globalOn := Settings{Enabled: true, Action: ActionLogOnly, Judge: j}
@@ -156,7 +159,11 @@ func TestEffective_Judge(t *testing.T) {
 	if got := Effective(own, globalOff); got.Judge != j {
 		t.Fatalf("own section on, global off: %+v", got.Judge)
 	}
-	if got := Effective(&Settings{Enabled: false, Judge: j}, globalOff); got.Judge.Enabled {
-		t.Fatalf("both off: %+v", got.Judge)
+	// The judge runs on its own switch, whatever the request tier's says.
+	if got := Effective(&Settings{Enabled: false}, globalOff); got.Judge != j || got.Enabled {
+		t.Fatalf("both off: %+v", got)
+	}
+	if got := Effective(nil, globalOff); got == nil || got.Judge != j || got.Enabled {
+		t.Fatalf("no section, global off: %+v", got)
 	}
 }

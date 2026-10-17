@@ -83,8 +83,8 @@ func loaderService(t *testing.T, x *db.DB, name, config string) string {
 // The guardrails a service gets from the loader: the global settings, with
 // the service's own enabled and action only when its section has enabled
 // true. A section with enabled false counts as no override. Answer
-// inspection and the custom patterns always come from the global blob,
-// whatever a section says about them.
+// inspection, the custom patterns and the judge always come from the global
+// blob, whatever a section says about them, and run on their own switches.
 func TestChainConfigLoader_GlobalGuardrails(t *testing.T) {
 	ctx := context.Background()
 	x := loaderDB(t)
@@ -112,10 +112,12 @@ func TestChainConfigLoader_GlobalGuardrails(t *testing.T) {
 	if !g.Answers.Enabled || g.Answers.Action != "block" || len(g.CustomPatterns) != 1 || g.CustomPatterns[0].ID != "ticket" {
 		t.Fatalf("answers and custom patterns not taken from the global blob: %+v", g)
 	}
-	if g := load(offSection); g == nil || g.Enabled || g.Answers.Enabled {
+	// The request patterns off: answer inspection still runs, on its own
+	// switch, for every service with an AI config.
+	if g := load(offSection); g == nil || g.Enabled || !g.Answers.Enabled || g.Answers.Action != "block" {
 		t.Fatalf("section off, global off: %+v", g)
 	}
-	if g := load(without); g != nil {
+	if g := load(without); g == nil || g.Enabled || !g.Answers.Enabled {
 		t.Fatalf("no section, global off: %+v", g)
 	}
 

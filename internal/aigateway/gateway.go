@@ -453,7 +453,9 @@ func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, p db.AIPr
 	route.SetTarget(p.Slug, model)
 	ctx := aigw.WithRoute(r.Context(), route)
 	if key.SystemText != "" {
-		ctx = aigw.WithSystemText(ctx, key.SystemText)
+		// The key's text is also marked as the key's: the guardrails check
+		// it like the app's own text.
+		ctx = aigw.WithKeySystemText(aigw.WithSystemText(ctx, key.SystemText), key.SystemText)
 	}
 	return r.WithContext(context.WithValue(ctx, allowListKey{}, key.AllowedModels)), "", true
 }

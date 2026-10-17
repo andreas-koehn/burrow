@@ -7,8 +7,8 @@ const StreamWindow = 4096
 
 // ScanTailBundled is how much of the window the bundled answer patterns are
 // checked on, together with each new delta: 512 bytes. It is longer than the
-// shortest match of every bundled pattern (the longest of those, a gateway
-// automation token, is 56 bytes; a PEM header line is under 50), so a
+// shortest match of every bundled pattern (the longest of those, a
+// fine-grained GitHub token, is 31 bytes; a PEM header line is under 50), so a
 // secret that a delta completes is still found: its
 // shortest match ends in the delta and starts within the tail. Checking the
 // tail instead of the whole window keeps the cost per delta small.
