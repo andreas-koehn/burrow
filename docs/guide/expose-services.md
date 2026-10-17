@@ -724,7 +724,8 @@ How they behave:
   without text is "not judged: no text".
 - **Inspector.** The request inspector shows method, path, model, status,
   sizes and timing. A body that is not JSON or text (audio, an upload) is not
-  stored; the inspector shows `<binary, N bytes>` instead.
+  stored; the inspector shows "Binary body, N bytes, not stored." instead (the
+  API returns `<binary, N bytes>` as the body).
 - **Cost.** One usage row per request. Tokens come from the answer's `usage`
   (for rerank also `meta.billed_units` input and output tokens; Cohere's `search_units` are not tokens) when it has them and are priced by
   tokens as for chat; there is no byte estimate for audio or images. A request
@@ -732,4 +733,7 @@ How they behave:
   (`PUT /api/v1/cost/pricing`, or `per_request_usd` in a pricing YAML); with no
   such price it costs 0 and is counted in `unpriced_requests` of
   `GET /api/v1/cost/summary`. No bundled entry sets `per_request_usd`: add the
-  prices you pay.
+  prices you pay. Prices saved on the Cost page or with `PUT /api/v1/cost/pricing`
+  hold until the relay restarts; to keep them, put them in the file named by
+  `BURROW_PRICING_PATH`. Costs are computed from the table in use when they are
+  read, so a changed price also changes the cost shown for earlier requests.

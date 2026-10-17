@@ -22,6 +22,13 @@ describe("EditGatewayKeyDialog", () => {
     expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
   });
 
+  it("the byte counter is announced politely while typing", async () => {
+    db.aiGatewayKeys[0]!.system_text = "";
+    renderDialog();
+    await userEvent.type(screen.getByLabelText("System text"), "Hi");
+    expect(screen.getByText("2 / 8192 bytes")).toHaveAttribute("aria-live", "polite");
+  });
+
   it("an empty name cannot be saved", async () => {
     renderDialog();
     await userEvent.clear(screen.getByLabelText("Name"));

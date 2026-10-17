@@ -226,7 +226,7 @@ function JudgeSection({ draft, onChange, models, canWrite, saving, onSave }: {
             value={draft.policy}
             onChange={(e) => onChange({ ...draft, policy: e.target.value })}
           />
-          <span id="judge-policy-count" className="muted small">{policyLength} of {MAX_POLICY}</span>
+          <span id="judge-policy-count" className="muted small" aria-live="polite">{policyLength} of {MAX_POLICY}</span>
         </FormField>
         <h3>What to check</h3>
         <Segmented

@@ -29,7 +29,7 @@ export function SystemTextField({ id, value, onChange, help }: SystemTextFieldPr
         aria-describedby={`${id}-count ${id}-help${tooLong ? ` ${id}-error` : ""}`}
         onChange={(e) => onChange(e.target.value)}
       />
-      <span id={`${id}-count`} className="muted small">{bytes} / {MAX_SYSTEM_TEXT_BYTES} bytes</span>
+      <span id={`${id}-count`} className="muted small" aria-live="polite">{bytes} / {MAX_SYSTEM_TEXT_BYTES} bytes</span>
       <span id={`${id}-help`} className="help">{help}</span>
     </FormField>
   );

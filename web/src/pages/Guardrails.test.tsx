@@ -454,6 +454,7 @@ describe("Guardrails: answers, custom patterns and the judge (G07)", () => {
   it("Judge: the policy has a counter up to 4000, and the help for each choice is there", async () => {
     await open(/^judge/i);
     expect(await screen.findByText("16 of 4000")).toBeInTheDocument();
+    expect(screen.getByText("16 of 4000")).toHaveAttribute("aria-live", "polite");
     expect(screen.getByText("Keeps apps running while the judge is down; each case is recorded.")).toBeInTheDocument();
     expect(screen.getByText("Nothing unjudged gets through.")).toBeInTheDocument();
     expect(screen.getByText("Default 3000.")).toBeInTheDocument();
@@ -520,6 +521,19 @@ describe("Guardrails: answers, custom patterns and the judge (G07)", () => {
       expect(await within(dialog).findByText("2 matches")).toBeInTheDocument();
       const marks = within(dialog).getAllByText((_, el) => el?.tagName === "MARK");
       expect(marks.map((m) => m.textContent)).toEqual(["ab", "abbb"]);
+    });
+
+    it("the result goes into a status region that is there before the first test, so it is announced", async () => {
+      const dialog = await openDialog();
+      const region = dialog.querySelector("#cp-test-result");
+      expect(region).not.toBeNull();
+      expect(region).toHaveAttribute("role", "status");
+      expect(region).toBeEmptyDOMElement();
+      await userEvent.type(within(dialog).getByLabelText("Pattern"), "zzz");
+      await userEvent.type(within(dialog).getByLabelText("Sample text"), "abc");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Test" }));
+      await waitFor(() => expect(dialog.querySelector("#cp-test-result")).toHaveTextContent("No match"));
+      expect(dialog.querySelector("#cp-test-result")).toBe(region);
     });
 
     it("says No match, and a changed pattern clears the old result", async () => {

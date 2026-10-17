@@ -89,9 +89,10 @@ function GuardrailNote({ entry }: { entry: InspectorEntry }) {
 }
 
 /** A body in the inspector: text as stored, or a sentence for a binary body the relay did not keep. */
-function BodyView({ body }: { body: string }) {
+function BodyView({ body, label }: { body: string; label: string }) {
   const note = binaryBodyNote(body);
-  return note ? <p className="muted">{note}</p> : <pre className="mono small">{body}</pre>;
+  // Focusable, so a body wider than the panel can be scrolled by keyboard.
+  return note ? <p className="muted">{note}</p> : <pre className="mono small" tabIndex={0} role="region" aria-label={label}>{body}</pre>;
 }
 
 export default function RequestInspector() {
@@ -329,7 +330,7 @@ export default function RequestInspector() {
                       <h3>Headers</h3>
                       <RedactedHeaders headers={detail.data.req_headers} />
                       <h3>Body</h3>
-                      <BodyView body={detail.data.req_body} />
+                      <BodyView body={detail.data.req_body} label="Request body" />
                     </>
                   ) },
                   { value: "response", label: "Response", content: (
@@ -337,7 +338,7 @@ export default function RequestInspector() {
                       <h3>Headers</h3>
                       <RedactedHeaders headers={detail.data.resp_headers} />
                       <h3>Body</h3>
-                      <BodyView body={detail.data.resp_body} />
+                      <BodyView body={detail.data.resp_body} label="Response body" />
                     </>
                   ) },
                   { value: "timing", label: "Timing", content: (

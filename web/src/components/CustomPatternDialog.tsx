@@ -232,11 +232,10 @@ export function CustomPatternDialog({ pattern, takenIds, onSave, onClose }: Cust
           <Button type="button" variant="secondary" size="sm" disabled={regex === "" || sample === "" || testing} onClick={() => void runTest()}>
             {testing ? "Testing…" : "Test"}
           </Button>
-          {tested && (
-            <span role="status">
-              {tested.matches.length === 0 ? "No match" : `${tested.matches.length} ${tested.matches.length === 1 ? "match" : "matches"}`}
-            </span>
-          )}
+          {/* Mounted before the first test: a status region inserted with its text is often not announced. */}
+          <span id="cp-test-result" role="status">
+            {tested && (tested.matches.length === 0 ? "No match" : `${tested.matches.length} ${tested.matches.length === 1 ? "match" : "matches"}`)}
+          </span>
         </div>
         {tested && tested.matches.length > 0 && (
           <ul className="mono small" aria-label="Matches">

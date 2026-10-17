@@ -312,6 +312,15 @@ describe("Request inspector (§4.23)", () => {
       expect(await screen.findByText("Binary body, 15 bytes, not stored.")).toBeInTheDocument();
     });
 
+    it("a text body can be reached and scrolled by keyboard, and is named", async () => {
+      const e = first();
+      e.req_body = '{"model":"m"}';
+      mount(`/gateway/requests/svc_ai001/${e.id}`);
+      const pre = (await screen.findByText('{"model":"m"}')).closest("pre");
+      expect(pre).toHaveAttribute("tabindex", "0");
+      expect(pre).toHaveAccessibleName("Request body");
+    });
+
     it("a body that only looks like the marker inside other text is shown as it is", async () => {
       const e = first();
       e.req_body = '{"text":"<binary, 5 bytes>"}';

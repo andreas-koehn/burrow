@@ -81,3 +81,39 @@ describe("design tokens — retention number input accent (L-misc)", () => {
     expect(css).toMatch(/\.account-page \.input\.mono\[type="number"\][^{]*\{[^}]*accent-color/);
   });
 });
+
+// WCAG 1.4.3: the label of a filled primary button (12.5px, normal weight) needs 4.5:1 against its fill.
+function oklchToLinearSrgb(l: number, c: number, h: number): [number, number, number] {
+  const a = c * Math.cos((h * Math.PI) / 180);
+  const b = c * Math.sin((h * Math.PI) / 180);
+  const l_ = (l + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m_ = (l - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s_ = (l - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  const clamp = (x: number) => Math.min(1, Math.max(0, x));
+  return [
+    clamp(4.0767416621 * l_ - 3.3077115913 * m_ + 0.2309699292 * s_),
+    clamp(-1.2684380046 * l_ + 2.6097574011 * m_ - 0.3413193965 * s_),
+    clamp(-0.0041960863 * l_ - 0.7034186147 * m_ + 1.707614701 * s_),
+  ];
+}
+function token(block: string, name: string): [number, number, number] {
+  const m = block.match(new RegExp(`--${name}:\\s*oklch\\(([\\d.]+) ([\\d.]+) ([\\d.]+)\\)`));
+  if (!m) throw new Error(`token --${name} not found`);
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+function contrast(x: [number, number, number], y: [number, number, number]): number {
+  const lum = ([r, g, b]: [number, number, number]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const [p, q] = [lum(oklchToLinearSrgb(...x)), lum(oklchToLinearSrgb(...y))];
+  return (Math.max(p, q) + 0.05) / (Math.min(p, q) + 0.05);
+}
+
+describe("design tokens — primary button label contrast (G10 review)", () => {
+  it("primary-foreground on primary reaches 4.5:1 in the light theme", () => {
+    const light = css.slice(0, css.indexOf(".dark {"));
+    expect(contrast(token(light, "primary"), token(light, "primary-foreground"))).toBeGreaterThanOrEqual(4.5);
+  });
+  it("primary-foreground on primary reaches 4.5:1 in the dark theme", () => {
+    const dark = css.slice(css.indexOf(".dark {"));
+    expect(contrast(token(dark, "primary"), token(dark, "primary-foreground"))).toBeGreaterThanOrEqual(4.5);
+  });
+});

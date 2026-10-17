@@ -27,9 +27,9 @@
   --card-foreground:      oklch(0.205 0.012 65);
 
   /* signal teal */
-  --primary:              oklch(0.545 0.108 196);
+  --primary:              oklch(0.530 0.108 196);
   --primary-foreground:   oklch(0.985 0.004 200);
-  --ring:                 oklch(0.545 0.108 196);
+  --ring:                 oklch(0.530 0.108 196);
 
   /* neutral text */
   --muted:                oklch(0.965 0.004 75);
