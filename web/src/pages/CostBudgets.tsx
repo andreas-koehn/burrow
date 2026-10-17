@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Dialog, ErrorNotice, FormField, FormFieldGroup, Input, MetricStrip, MetricTile, NotAuthorized, PageHeader, Select, SkeletonRows, SubmitHint, TableEmptyRow, firstMissing } from "@/components/ds";
 import UsageBreakdown from "@/components/UsageBreakdown";
+import { PricingEditor } from "@/components/PricingEditor";
 import { useAuth } from "@/auth/useAuth";
 import { useCan } from "@/auth/useCan";
 import { P } from "@/auth/permissions";
@@ -117,6 +118,8 @@ export default function CostBudgets() {
   const { loading: authLoading } = useAuth();
   // Every call on budgets (GET, POST, PUT, DELETE /budgets): budgets:manage. Naming a key by its id takes GET /ai/keys.
   const canBudgets = useCan(P.budgetsManage);
+  // GET and PUT /cost/pricing as an editor: cost:pricing:manage.
+  const canPricing = useCan(P.costPricingManage);
   // GET /services: services:configure:own or :any. GET /users: users:read or users:manage. Without them the id is typed.
   const canListServices = useCan([P.servicesConfigureOwn, P.servicesConfigureAny]);
   const canListUsers = useCan([P.usersRead, P.usersManage]);
@@ -318,6 +321,7 @@ export default function CostBudgets() {
   // A refused /cost/summary leaves the tiles at "—"; say why.
   const costForbidden = cost.some((q) => q.error instanceof ApiError && q.error.status === 403);
   const budgetRows = budgets.data ?? [];
+  const unpriced = cost[WINDOWS.indexOf(usageWindow)]?.data?.unpriced_requests ?? 0;
 
   return (
     <div className="cost-page">
@@ -335,6 +339,14 @@ export default function CostBudgets() {
       {costForbidden && (
         <p className="muted small" role="note">
           You can&apos;t view cost data: the spend totals need the quotas:read:any permission.
+        </p>
+      )}
+
+      {unpriced > 0 && (
+        <p className="muted small" role="note">
+          <strong>{`Not priced: ${unpriced} ${unpriced === 1 ? "request" : "requests"}`}</strong>
+          <br />
+          Requests without token counts and without a per-request price are counted at 0 USD.
         </p>
       )}
 
@@ -395,6 +407,8 @@ export default function CostBudgets() {
         </div>
       </section>
       )}
+
+      {canPricing && <PricingEditor />}
 
       {canBudgets && <Dialog
         open={addOpen}

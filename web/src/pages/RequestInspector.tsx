@@ -12,6 +12,7 @@ import { withAIConfigDefaults } from "@/lib/aiConfig";
 import { InspectorOffHint } from "@/components/InspectorOffHint";
 import { RelativeTime } from "@/components/RelativeTime";
 import { droppedNames, pairWords } from "@/lib/translation";
+import { binaryBodyNote, guardrailMarks } from "@/lib/guardrailMarks";
 
 function RedactedHeaders({ headers }: { headers: Record<string, string> }) {
   const entries = Object.entries(headers);
@@ -62,6 +63,35 @@ function TranslationNote({ entry }: { entry: InspectorEntry }) {
       </dl>
     </div>
   );
+}
+
+/** What the guardrails did to a request: the pattern, the judge's verdict and its reason in full. */
+function GuardrailNote({ entry }: { entry: InspectorEntry }) {
+  const marks = guardrailMarks(entry);
+  if (marks.length === 0) return null;
+  const label = { guardrail: "Guardrail", judge: "Judge", "judge-call": "Purpose" } as const;
+  return (
+    <div className="translation-note" role="group" aria-label="Guardrail">
+      <dl className="def-list">
+        {marks.map((m) => (
+          <div key={m.kind} className="def-row">
+            <dt className="def-key">{label[m.kind]}</dt>
+            <dd className="def-val">
+              <span>{m.text}</span>
+              {m.direction && <> <span className="muted small">{m.direction === "answer" ? "Answer" : "Request"}</span></>}
+              {m.reason && <p className="small">{m.reason}</p>}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+/** A body in the inspector: text as stored, or a sentence for a binary body the relay did not keep. */
+function BodyView({ body }: { body: string }) {
+  const note = binaryBodyNote(body);
+  return note ? <p className="muted">{note}</p> : <pre className="mono small">{body}</pre>;
 }
 
 export default function RequestInspector() {
@@ -288,6 +318,7 @@ export default function RequestInspector() {
                   Replay &amp; compare
                 </Button>
               </div>
+              <GuardrailNote entry={detail.data} />
               <TranslationNote entry={detail.data} />
               <Tabs
                 value={tab}
@@ -298,7 +329,7 @@ export default function RequestInspector() {
                       <h3>Headers</h3>
                       <RedactedHeaders headers={detail.data.req_headers} />
                       <h3>Body</h3>
-                      <pre className="mono small">{detail.data.req_body}</pre>
+                      <BodyView body={detail.data.req_body} />
                     </>
                   ) },
                   { value: "response", label: "Response", content: (
@@ -306,7 +337,7 @@ export default function RequestInspector() {
                       <h3>Headers</h3>
                       <RedactedHeaders headers={detail.data.resp_headers} />
                       <h3>Body</h3>
-                      <pre className="mono small">{detail.data.resp_body}</pre>
+                      <BodyView body={detail.data.resp_body} />
                     </>
                   ) },
                   { value: "timing", label: "Timing", content: (

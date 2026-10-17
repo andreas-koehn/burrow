@@ -406,6 +406,8 @@ export interface PricingEntry {
   model: string;
   input_per_million: number;
   output_per_million: number;
+  /** USD for one request that reports no tokens (images, speech, transcription); 0 = not priced per request. */
+  per_request_usd: number;
 }
 export interface PricingTable {
   version: string;
@@ -418,6 +420,8 @@ export interface CostSummary {
   tokens_out: number;
   top_consumers: { api_key_id: string; service_id: string; tokens_in: number; tokens_out: number; usd: number }[];
   pct_of_budget: number | null;
+  /** Requests of the window answered without token counts whose model has no per_request_usd price; counted at 0. */
+  unpriced_requests: number;
   /** Present with ?group_by=…; sorted by usd, the "" group last. */
   group_by?: CostGroupBy;
   groups?: CostGroupRow[];
@@ -495,6 +499,26 @@ export interface InspectorEntry {
   model: string;
   /** Id of the gateway key the caller presented, or "". */
   gateway_key_id: string;
+  /** Set when a guardrail pattern matched the request or its answer (never the matched text). */
+  guardrail?: GuardrailMark;
+  /** Set when the judge applied to the request or its answer; an answer's mark replaces the request's. */
+  judge?: JudgeMark;
+  /** "guardrail-judge" on the relay's own call to the judge model; absent for an app's request. */
+  purpose?: "guardrail-judge";
+}
+export interface GuardrailMark {
+  pattern: string;
+  direction: "request" | "answer";
+  /** log_only | refuse_403 | refuse_safe for a request; flag | block for an answer. */
+  action: string;
+  /** A streamed answer was stopped after part of it had been sent. */
+  mid_stream?: boolean;
+}
+export interface JudgeMark {
+  direction: "request" | "answer";
+  verdict: "allow" | "block" | "failed" | "not_judged";
+  reason?: string;
+  failure?: "timeout" | "error" | "malformed" | "unavailable" | "too_large";
 }
 /** One entry of GET /ai/requests: a captured request without its headers and bodies. */
 export type AiCapturedRequest = Omit<InspectorEntry, "req_headers" | "req_body" | "resp_headers" | "resp_body">;

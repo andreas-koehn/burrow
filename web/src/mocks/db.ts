@@ -309,10 +309,10 @@ function seed(): MockDb {
       },
     ],
     costSummary: {
-      today: { window: "today", total_usd: 1.23, tokens_in: 12000, tokens_out: 8000, top_consumers: [], pct_of_budget: 0.5 },
-      week:  { window: "week",  total_usd: 8.77, tokens_in: 80000, tokens_out: 55000, top_consumers: [], pct_of_budget: 0.4 },
-      month: { window: "month", total_usd: 32.50, tokens_in: 320000, tokens_out: 215000, top_consumers: [], pct_of_budget: 0.7 },
-      year:  { window: "year",  total_usd: 390.00, tokens_in: 3800000, tokens_out: 2550000, top_consumers: [], pct_of_budget: 0.6 },
+      today: { window: "today", total_usd: 1.23, tokens_in: 12000, tokens_out: 8000, top_consumers: [], pct_of_budget: 0.5, unpriced_requests: 0 },
+      week:  { window: "week",  total_usd: 8.77, tokens_in: 80000, tokens_out: 55000, top_consumers: [], pct_of_budget: 0.4, unpriced_requests: 0 },
+      month: { window: "month", total_usd: 32.50, tokens_in: 320000, tokens_out: 215000, top_consumers: [], pct_of_budget: 0.7, unpriced_requests: 0 },
+      year:  { window: "year",  total_usd: 390.00, tokens_in: 3800000, tokens_out: 2550000, top_consumers: [], pct_of_budget: 0.6, unpriced_requests: 0 },
     },
     aiConfigs: {
       svc_ai001: defaultAiConfig(),
@@ -401,9 +401,9 @@ function seed(): MockDb {
     pricing: {
       version: "v0.4.0",
       entries: [
-        { provider: "openai", model: "gpt-4o", input_per_million: 5, output_per_million: 15 },
-        { provider: "anthropic", model: "claude-sonnet-4-6", input_per_million: 3, output_per_million: 15 },
-        { provider: "ollama", model: "llama3.1:8b", input_per_million: 0, output_per_million: 0 },
+        { provider: "openai", model: "gpt-4o", input_per_million: 5, output_per_million: 15, per_request_usd: 0 },
+        { provider: "anthropic", model: "claude-sonnet-4-6", input_per_million: 3, output_per_million: 15, per_request_usd: 0 },
+        { provider: "ollama", model: "llama3.1:8b", input_per_million: 0, output_per_million: 0, per_request_usd: 0 },
       ],
     },
     mcpStatus: { enabled: true, endpoint: "/mcp/burrow", operations: 131 },

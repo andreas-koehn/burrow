@@ -695,4 +695,100 @@ describe("Cost & budgets (§4.24)", () => {
       }
     });
   });
+
+  describe("per-request prices", () => {
+    const help = "Requests without token counts and without a per-request price are counted at 0 USD.";
+
+    it("says how many requests are not priced, with a help line, only when there are some", async () => {
+      db.costSummary.today = { ...db.costSummary.today, unpriced_requests: 3 };
+      mount();
+      expect(await screen.findByText("Not priced: 3 requests")).toBeInTheDocument();
+      expect(screen.getByText(help)).toBeInTheDocument();
+    });
+
+    it("says 'request' for one", async () => {
+      db.costSummary.today = { ...db.costSummary.today, unpriced_requests: 1 };
+      mount();
+      expect(await screen.findByText("Not priced: 1 request")).toBeInTheDocument();
+    });
+
+    it("says nothing when every request is priced", async () => {
+      db.costSummary.today = { ...db.costSummary.today, unpriced_requests: 0 };
+      mount();
+      await screen.findByRole("table", { name: "Prices" });
+      expect(screen.queryByText(/Not priced/)).toBeNull();
+      expect(screen.queryByText(help)).toBeNull();
+    });
+
+    it("the price table has a 'Per request (USD)' column; empty means 0", async () => {
+      db.pricing.entries[0] = { ...db.pricing.entries[0]!, per_request_usd: 0.04 };
+      mount();
+      const t = await screen.findByRole("table", { name: "Prices" });
+      expect(within(t).getByRole("columnheader", { name: "Per request (USD)" })).toBeInTheDocument();
+      expect(within(t).getByLabelText("Per request (USD) for openai/gpt-4o")).toHaveValue(0.04);
+    });
+
+    it("saves the whole table with the new per_request_usd", async () => {
+      let sent: unknown;
+      server.use(http.put("/api/v1/cost/pricing", async ({ request }) => {
+        sent = await request.json();
+        return new HttpResponse(null, { status: 204 });
+      }));
+      mount();
+      const input = await screen.findByLabelText("Per request (USD) for openai/gpt-4o");
+      await userEvent.clear(input);
+      await userEvent.type(input, "0.04");
+      await userEvent.click(screen.getByRole("button", { name: "Save prices" }));
+      await waitFor(() => expect(sent).toBeDefined());
+      const body = sent as { version: string; entries: { provider: string; model: string; per_request_usd: number; input_per_million: number }[] };
+      expect(body.version).toBe("v0.4.0");
+      expect(body.entries).toHaveLength(db.pricing.entries.length);
+      expect(body.entries.find((e) => e.model === "gpt-4o")).toMatchObject({ provider: "openai", per_request_usd: 0.04, input_per_million: 5 });
+      expect(body.entries.find((e) => e.model === "llama3.1:8b")!.per_request_usd).toBe(0);
+    });
+
+    it("an empty field is sent as 0", async () => {
+      let sent: { entries: { model: string; per_request_usd: number }[] } | undefined;
+      server.use(http.put("/api/v1/cost/pricing", async ({ request }) => {
+        sent = await request.json() as typeof sent;
+        return new HttpResponse(null, { status: 204 });
+      }));
+      db.pricing.entries[0] = { ...db.pricing.entries[0]!, per_request_usd: 0.04 };
+      mount();
+      const input = await screen.findByLabelText("Per request (USD) for openai/gpt-4o");
+      await userEvent.clear(input);
+      await userEvent.click(screen.getByRole("button", { name: "Save prices" }));
+      await waitFor(() => expect(sent).toBeDefined());
+      expect(sent!.entries.find((e) => e.model === "gpt-4o")!.per_request_usd).toBe(0);
+    });
+
+    it("a negative price is refused in the field and nothing is sent", async () => {
+      let puts = 0;
+      server.use(http.put("/api/v1/cost/pricing", () => { puts += 1; return new HttpResponse(null, { status: 204 }); }));
+      mount();
+      const input = await screen.findByLabelText("Per request (USD) for openai/gpt-4o");
+      await userEvent.clear(input);
+      await userEvent.type(input, "-1");
+      await userEvent.tab();
+      expect(await screen.findByText("Enter 0 or more.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Save prices" })).toBeDisabled();
+      expect(puts).toBe(0);
+    });
+
+    it("shows the server's refusal", async () => {
+      server.use(http.put("/api/v1/cost/pricing", () => HttpResponse.json({ error: "entry openai/gpt-4o: prices must be >= 0" }, { status: 400 })));
+      mount();
+      const input = await screen.findByLabelText("Per request (USD) for openai/gpt-4o");
+      await userEvent.type(input, "1");
+      await userEvent.click(screen.getByRole("button", { name: "Save prices" }));
+      expect(await screen.findByText("entry openai/gpt-4o: prices must be >= 0")).toBeInTheDocument();
+    });
+
+    it("without cost:pricing:manage the table is not offered", async () => {
+      db.me = { id: "u_op", email: "op@acme.io", role: "operator", permissions: ["budgets:manage", "quotas:read:any"] };
+      mount();
+      await screen.findByRole("button", { name: "New budget" });
+      expect(screen.queryByRole("table", { name: "Prices" })).toBeNull();
+    });
+  });
 });

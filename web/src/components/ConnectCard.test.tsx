@@ -225,4 +225,13 @@ describe("ConnectCard", () => {
     renderApp(<ConnectCard endpoints={[{ dialect: "anthropic", base_url: "" }]} models={models} />, "/gateway/models");
     expect(screen.getByText(`${window.location.origin}/anthropic`)).toBeInTheDocument();
   });
+
+  it("OpenAI SDK and Other: one line lists the media endpoints", async () => {
+    mount();
+    const line = "Also: /v1/images/generations, /v1/audio/speech, /v1/audio/transcriptions, /v1/audio/translations, /v1/rerank";
+    await userEvent.click(screen.getByRole("tab", { name: "OpenAI SDK" }));
+    expect(screen.getByText(line)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Other" }));
+    expect(screen.getByText(line)).toBeInTheDocument();
+  });
 });

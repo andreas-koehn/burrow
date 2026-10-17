@@ -675,4 +675,52 @@ describe("Requests page", () => {
     // The list the relay does not have is not asked for again.
     expect(listCalls(spy)).toHaveLength(asked);
   });
+
+  describe("guardrail markers", () => {
+    const one = (over: Partial<InspectorEntry>) => capture("svc_ai001", [1], { provider: "ollama", ...over });
+    const cell = async () => column(await table(), 7)[0];
+
+    it.each([
+      ["a flagged request", { guardrail: { pattern: "ignore-previous", direction: "request" as const, action: "log_only" } }, "Flagged · ignore-previous"],
+      ["a refused request", { guardrail: { pattern: "ignore-previous", direction: "request" as const, action: "refuse_403" } }, "Blocked · ignore-previous"],
+      ["a flagged answer", { guardrail: { pattern: "aws-key", direction: "answer" as const, action: "flag" } }, "Flagged · aws-key"],
+      ["a blocked answer", { guardrail: { pattern: "aws-key", direction: "answer" as const, action: "block" } }, "Blocked · aws-key"],
+      ["a streamed answer stopped part way", { guardrail: { pattern: "aws-key", direction: "answer" as const, action: "block", mid_stream: true } }, "Blocked mid-answer · aws-key"],
+      ["a call to the judge model", { purpose: "guardrail-judge" as const }, "Judge call"],
+    ])("%s", async (_name, over, text) => {
+      one(over);
+      mount();
+      expect(await cell()).toBe(text);
+    });
+
+    it("a refusing judge says so and keeps its reason in the title", async () => {
+      one({ judge: { direction: "request", verdict: "block", reason: "asks for malware" } });
+      mount();
+      expect(await cell()).toBe("Judged · refused");
+      expect(screen.getByText("Judged · refused")).toHaveAttribute("title", "asks for malware");
+    });
+
+    it.each([
+      [{ direction: "request" as const, verdict: "allow" as const }, "Judged · allowed"],
+      [{ direction: "request" as const, verdict: "failed" as const, failure: "timeout" as const }, "Judge failed · timeout"],
+      [{ direction: "answer" as const, verdict: "failed" as const, failure: "too_large" as const }, "Judge failed · too large"],
+      [{ direction: "request" as const, verdict: "not_judged" as const, reason: "no text" }, "Not judged · no text"],
+    ])("a judge outcome %#", async (judge, text) => {
+      one({ judge });
+      mount();
+      expect(await cell()).toBe(text);
+    });
+
+    it("a request without a mark shows a dash, and redactions are still counted", async () => {
+      one({});
+      mount();
+      expect(await cell()).toBe("—");
+    });
+
+    it("the path of a media request is shown", async () => {
+      one({ path: "/v1/audio/speech" });
+      mount();
+      expect(await screen.findByRole("link", { name: "/v1/audio/speech" })).toBeInTheDocument();
+    });
+  });
 });

@@ -255,4 +255,68 @@ describe("Request inspector (§4.23)", () => {
     expect(await screen.findByRole("table", { name: /requests/i })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
+
+  describe("guardrail outcome and binary bodies", () => {
+    const first = () => db.inspectorEntries.svc_ai001![0]!;
+
+    it("the detail header names the pattern, the direction and the action", async () => {
+      const e = first();
+      e.guardrail = { pattern: "aws-key", direction: "answer", action: "block", mid_stream: true };
+      mount(`/gateway/requests/svc_ai001/${e.id}`);
+      const note = await screen.findByRole("group", { name: "Guardrail" });
+      expect(within(note).getByText("Blocked mid-answer · aws-key")).toBeInTheDocument();
+      expect(within(note).getByText("Answer")).toBeInTheDocument();
+    });
+
+    it("shows the judge's reason in full", async () => {
+      const e = first();
+      const reason = "The request asks for step-by-step malware development. ".repeat(4).trim();
+      e.judge = { direction: "request", verdict: "block", reason };
+      mount(`/gateway/requests/svc_ai001/${e.id}`);
+      const note = await screen.findByRole("group", { name: "Guardrail" });
+      expect(within(note).getByText("Judged · refused")).toBeInTheDocument();
+      expect(within(note).getByText(reason)).toBeInTheDocument();
+    });
+
+    it("names a judge failure by its class", async () => {
+      const e = first();
+      e.judge = { direction: "request", verdict: "failed", failure: "malformed" };
+      mount(`/gateway/requests/svc_ai001/${e.id}`);
+      const note = await screen.findByRole("group", { name: "Guardrail" });
+      expect(within(note).getByText("Judge failed · malformed")).toBeInTheDocument();
+    });
+
+    it("marks the relay's own call to the judge", async () => {
+      const e = first();
+      e.purpose = "guardrail-judge";
+      mount(`/gateway/requests/svc_ai001/${e.id}`);
+      const note = await screen.findByRole("group", { name: "Guardrail" });
+      expect(within(note).getByText("Judge call")).toBeInTheDocument();
+    });
+
+    it("has no guardrail group for a plain request", async () => {
+      mount(`/gateway/requests/svc_ai001/${first().id}`);
+      await screen.findByRole("tab", { name: /^request$/i });
+      expect(screen.queryByRole("group", { name: "Guardrail" })).toBeNull();
+    });
+
+    it("a binary request and response body say so instead of showing the marker", async () => {
+      const e = first();
+      e.path = "/v1/audio/transcriptions";
+      e.req_body = "<binary, 2048 bytes>";
+      e.resp_body = "<binary, 15 bytes>";
+      mount(`/gateway/requests/svc_ai001/${e.id}`);
+      expect(await screen.findByText("Binary body, 2048 bytes, not stored.")).toBeInTheDocument();
+      expect(screen.queryByText("<binary, 2048 bytes>")).toBeNull();
+      await userEvent.click(screen.getByRole("tab", { name: /^response$/i }));
+      expect(await screen.findByText("Binary body, 15 bytes, not stored.")).toBeInTheDocument();
+    });
+
+    it("a body that only looks like the marker inside other text is shown as it is", async () => {
+      const e = first();
+      e.req_body = '{"text":"<binary, 5 bytes>"}';
+      mount(`/gateway/requests/svc_ai001/${e.id}`);
+      expect(await screen.findByText('{"text":"<binary, 5 bytes>"}')).toBeInTheDocument();
+    });
+  });
 });

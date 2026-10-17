@@ -59,6 +59,9 @@ function OfferList({ label, list }: { label: string; list: Offer[] }) {
   );
 }
 
+/** The media and rerank paths, served on the OpenAI base URL besides chat, embeddings and responses. */
+const MEDIA_LINE = "Also: /v1/images/generations, /v1/audio/speech, /v1/audio/transcriptions, /v1/audio/translations, /v1/rerank";
+
 const DROPPED_HEADER = <>Every translated response names what was left out in its <code>Burrow-Dropped</code> header.</>;
 
 /** What a translated model loses behind an Anthropic-format provider, for apps that speak an OpenAI format. */
@@ -213,6 +216,7 @@ export function ConnectCard({ endpoints, models, canCreate = true }: ConnectCard
                   <CopyableCode text={openAiSdkPython(base("openai"), chat[0]!.name)} label="Copy Python example" />
                   <CopyableCode text={openAiSdkTypeScript(base("openai"), chat[0]!.name)} label="Copy TypeScript example" />
                   <p className="muted small">Set <code>{KEY_ENV}</code> in your shell.</p>
+                  <p className="muted small">{MEDIA_LINE}</p>
                   <OfferList label="Models for the OpenAI SDK" list={chat} />
                   {chat.some((m) => m.translated) && <p className="muted small">{DROPPED_HEADER}</p>}
                   <TowardMessagesNote list={chat} />
@@ -236,6 +240,7 @@ export function ConnectCard({ endpoints, models, canCreate = true }: ConnectCard
                       </div>
                     ))}
                   </dl>
+                  <p className="muted small">{MEDIA_LINE}</p>
                   <OfferList label="Models for other apps" list={chat} />
                   {chat.some((m) => m.translated) && <p className="muted small">{DROPPED_HEADER}</p>}
                   <TowardMessagesNote list={chat} />

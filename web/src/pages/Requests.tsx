@@ -7,6 +7,7 @@ import { withAIConfigDefaults } from "@/lib/aiConfig";
 import { useDebounced } from "@/lib/use-debounced";
 import { useUrlParams } from "@/lib/use-url-params";
 import { droppedNames, pairWords } from "@/lib/translation";
+import { guardrailMarks } from "@/lib/guardrailMarks";
 import { InspectorOffHint } from "@/components/InspectorOffHint";
 import { Badge, Button, EmptyState, ErrorNotice, PageHeader, Select, type SelectOption } from "@/components/ds";
 import { RelativeTime } from "@/components/RelativeTime";
@@ -212,7 +213,15 @@ export default function Requests() {
       header: "Guardrail",
       cell: (r) => {
         const n = (r.redactions ?? []).reduce((sum, x) => sum + x.count, 0);
-        return n > 0 ? `${n} redacted` : "—";
+        const marks = guardrailMarks(r);
+        if (n === 0 && marks.length === 0) return "—";
+        // Words carry the meaning; the judge's reason rides along as the title.
+        return (
+          <span className="format-mode">
+            {marks.map((m) => <span key={m.kind} title={m.reason}>{m.text}</span>)}
+            {n > 0 && <span>{`${n} redacted`}</span>}
+          </span>
+        );
       },
     },
     {
