@@ -673,6 +673,9 @@ func (d Deps) PutBudget(w http.ResponseWriter, r *http.Request) {
 		AlertWebhookID: in.AlertWebhookID,
 	}
 	before, getErr := d.Budgets.GetBudget(r.Context(), id)
+	if getErr != nil && !errors.Is(getErr, db.ErrNotFound) {
+		d.warn("budget could not be read for the audit entry", "id", id, "err", getErr)
+	}
 	if err := d.Budgets.UpdateBudget(r.Context(), row); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "budget not found")
@@ -702,6 +705,9 @@ func (d Deps) DeleteBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	before, getErr := d.Budgets.GetBudget(r.Context(), id)
+	if getErr != nil && !errors.Is(getErr, db.ErrNotFound) {
+		d.warn("budget could not be read for the audit entry", "id", id, "err", getErr)
+	}
 	if err := d.Budgets.DeleteBudget(r.Context(), id); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "budget not found")

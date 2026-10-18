@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"time"
 
@@ -39,7 +38,7 @@ type createTokenReq struct {
 	Name string `json:"name"`
 	// ExpiresAt (RFC 3339) is optional: in the future and at most
 	// maxClientTokenLife ahead.
-	ExpiresAt *time.Time `json:"expires_at"`
+	ExpiresAt *string `json:"expires_at"`
 }
 
 // maxClientTokenLife is how far ahead a client token may be set to expire.
@@ -57,39 +56,32 @@ type newTokenResp struct {
 func (d Deps) CreateToken(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var in createTokenReq
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		// A body that is JSON but whose expires_at does not parse as a time.
-		var syn *json.SyntaxError
-		var ute *json.UnmarshalTypeError
-		nameProblem := errors.As(err, &syn) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
-			(errors.As(err, &ute) && ute.Field == "name")
-		if !nameProblem {
-			writeErr(w, http.StatusBadRequest, "expires_at must be an RFC 3339 time")
-			return
-		}
-		writeErr(w, http.StatusBadRequest, "name is required")
-		return
-	}
-	if in.Name == "" {
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Name == "" {
 		writeErr(w, http.StatusBadRequest, "name is required")
 		return
 	}
 	now := time.Now()
-	exp := in.ExpiresAt
-	if exp != nil {
-		if !exp.After(now) {
+	var exp *time.Time
+	if in.ExpiresAt != nil {
+		at, err := time.Parse(time.RFC3339, *in.ExpiresAt)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "expires_at must be an RFC 3339 time")
+			return
+		}
+		if !at.After(now) {
 			writeErr(w, http.StatusBadRequest, "expires_at must be in the future")
 			return
 		}
-		if exp.After(now.Add(maxClientTokenLife)) {
+		if at.After(now.Add(maxClientTokenLife)) {
 			writeErr(w, http.StatusBadRequest, "expires_at must be at most 365 days ahead")
 			return
 		}
+		exp = &at
 	}
 	// A token that expires mints nothing that outlives it: the new token
 	// expires with it at the latest, and by default exactly then.
-	if cap, ok := bearerExpiry(r.Context()); ok && (exp == nil || exp.After(cap)) {
-		exp = &cap
+	if limit, ok := bearerExpiry(r.Context()); ok && (exp == nil || exp.After(limit)) {
+		exp = &limit
 	}
 	pt, err := d.Users.IssueClientTokenUntil(r.Context(), userID(r.Context()), in.Name, exp)
 	if err != nil {

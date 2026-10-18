@@ -384,6 +384,12 @@ func (s *Store) AuthenticateToken(ctx context.Context, plaintext string) (userID
 	return ct.UserID, ct.ID, ct.Name, nil
 }
 
+// ListExpiredClientTokenIDs returns the ids of the client tokens that have
+// expired at now (see db.ListExpiredClientTokenIDs).
+func (s *Store) ListExpiredClientTokenIDs(ctx context.Context, now time.Time) ([]string, error) {
+	return s.q.ListExpiredClientTokenIDs(ctx, now)
+}
+
 // RecordClientSession stores what the session that logged in with the token
 // looks like now (see db.RecordClientSession). Returns db.ErrNotFound when
 // the token was revoked meanwhile.

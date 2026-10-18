@@ -206,3 +206,23 @@ func nullableTime(t *time.Time) any {
 	}
 	return t.UTC()
 }
+
+// ListExpiredClientTokenIDs returns the ids of the client tokens whose expiry
+// is at or before now. Tokens without an expiry are left out.
+func (x *DB) ListExpiredClientTokenIDs(ctx context.Context, now time.Time) ([]string, error) {
+	rows, err := x.sqlDB.QueryContext(ctx,
+		`SELECT id FROM client_tokens WHERE expires_at IS NOT NULL AND expires_at <= ?`, now.UTC())
+	if err != nil {
+		return nil, fmt.Errorf("list expired client tokens: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan expired client token: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

@@ -36,8 +36,24 @@ func checkClientTokenExpiry(t *testing.T, x *DB, userID string) {
 	if err != nil || b.ExpiresAt != nil {
 		t.Fatalf("without expiry: %+v (%v)", b.ExpiresAt, err)
 	}
+	now := time.Now().UTC()
+	if ids, err := x.ListExpiredClientTokenIDs(ctx, now); err != nil || contains(ids, userID+"-a") || contains(ids, userID+"-b") {
+		t.Fatalf("expired now: %v (%v)", ids, err)
+	}
+	if ids, err := x.ListExpiredClientTokenIDs(ctx, exp.Add(time.Second)); err != nil || !contains(ids, userID+"-a") || contains(ids, userID+"-b") {
+		t.Fatalf("expired later: %v (%v)", ids, err)
+	}
 	all, err := x.ListClientTokensByUser(ctx, userID)
 	if err != nil || len(all) != 2 {
 		t.Fatalf("list: %v %d", err, len(all))
 	}
+}
+
+func contains(ids []string, id string) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
+		}
+	}
+	return false
 }

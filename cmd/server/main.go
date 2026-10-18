@@ -392,6 +392,47 @@ func runSessionReaper(ctx context.Context, wg *sync.WaitGroup, reaper sessionRea
 	}()
 }
 
+// expiredTokenLister lists the client tokens that have expired at a time.
+type expiredTokenLister interface {
+	ListExpiredClientTokenIDs(ctx context.Context, now time.Time) ([]string, error)
+}
+
+// runExpiredTokenSweeper ends the live sessions of client tokens that have
+// expired, every interval until ctx is done: a login with an expired token is
+// refused, but a session that was open when the expiry passed would otherwise
+// run on. Closing the sessions of a token that has none is a no-op, so tokens
+// stay in the list for as long as they exist.
+func runExpiredTokenSweeper(ctx context.Context, wg *sync.WaitGroup, tokens expiredTokenLister, sessions interface{ CloseByToken(string) int }, log *slog.Logger, interval time.Duration) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sweep := func() {
+			ids, err := tokens.ListExpiredClientTokenIDs(ctx, time.Now())
+			if err != nil {
+				if ctx.Err() == nil {
+					log.Warn("expired token sweep", "err", err)
+				}
+				return
+			}
+			for _, id := range ids {
+				if n := sessions.CloseByToken(id); n > 0 {
+					log.Info("client sessions closed: token expired", "token_id", id, "sessions", n)
+				}
+			}
+		}
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				sweep()
+			}
+		}
+	}()
+}
+
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -574,6 +615,9 @@ func newRootCmd() *cobra.Command {
 			// Tracked on reaperWg so its final flush runs before the
 			// deferred database.Close() (LIFO defer ordering).
 			runTrafficFlusher(ctx, &reaperWg, srv, st, log, 30*time.Second)
+
+			// Sessions of client tokens whose expiry has passed end within 30s.
+			runExpiredTokenSweeper(ctx, &reaperWg, st, srv, log, 30*time.Second)
 
 			spaHandler, err := web.Handler()
 			if err != nil {
