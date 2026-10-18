@@ -7,6 +7,8 @@ export interface GuardrailMarkView {
   text: string;
   /** The judge's reason, when it gave one; shown as the title in the list and in full in the detail. */
   reason?: string;
+  /** A sentence for the inspector that the list marker has no room for. */
+  detail?: string;
   /** What was inspected: the request or its answer. */
   direction?: "request" | "answer";
 }
@@ -23,18 +25,31 @@ export function guardrailMarks(e: Pick<InspectorEntry, "guardrail" | "judge" | "
     // A request is flagged by log_only and refused by the other actions; an answer by flag and block.
     const blocked = g.action !== "log_only" && g.action !== "flag";
     const word = !blocked ? "Flagged" : g.mid_stream ? "Blocked mid-answer" : "Blocked";
-    out.push({ kind: "guardrail", text: `${word} · ${g.pattern}`, direction: g.direction });
+    const fromKey = g.in === "key_system_text";
+    out.push({
+      kind: "guardrail",
+      text: `${word} · ${g.pattern}${fromKey ? " (key system text)" : ""}`,
+      detail: fromKey ? "Matched the gateway key's system text." : undefined,
+      direction: g.direction,
+    });
   }
   const j = e.judge;
   if (j) {
     let text: string;
+    let detail: string | undefined;
     switch (j.verdict) {
       case "allow": text = "Judged · allowed"; break;
       case "block": text = "Judged · refused"; break;
       case "not_judged": text = `Not judged · ${j.reason || "no text"}`; break;
-      default: text = `Judge failed · ${FAILURE[j.failure ?? ""] ?? j.failure ?? "error"}`;
+      default: {
+        const cls = FAILURE[j.failure ?? ""] ?? j.failure ?? "error";
+        text = `Judge failed · ${j.refused ? "refused" : cls}`;
+        detail = j.refused
+          ? `The judge failed (${cls}), so the request was refused.`
+          : `The judge failed (${cls}); the request was let through.`;
+      }
     }
-    out.push({ kind: "judge", text, reason: j.verdict === "block" ? j.reason : undefined, direction: j.direction });
+    out.push({ kind: "judge", text, detail, reason: j.verdict === "block" ? j.reason : undefined, direction: j.direction });
   }
   if (e.purpose === "guardrail-judge") out.push({ kind: "judge-call", text: "Judge call" });
   return out;

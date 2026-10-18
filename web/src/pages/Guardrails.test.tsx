@@ -241,6 +241,18 @@ describe("Guardrails custom rules (F9)", () => {
     expect(builtIn.textContent).toContain("[A-Za-z0-9._%+-]+@");
   });
 
+  it("a reader without ai:configure:any sees the rules but no Save, New rule or delete", async () => {
+    db.redactionRules.custom.push({ ...SEEDED });
+    db.me = { ...db.me, role: "operator", permissions: ["ai:read:own", "ai:read:any"] };
+    await openRegex();
+    const custom = await screen.findByRole("table", { name: "Custom rules" });
+    expect(within(custom).getByText("internal-id")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New rule" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /save regex/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /delete rule/i })).toBeNull();
+    expect(screen.getByRole("switch", { name: "Enable redaction" })).toBeDisabled();
+  });
+
   it("offers no delete button on built-in rules", async () => {
     await openRegex();
     const builtIn = await screen.findByRole("table", { name: "Built-in rules" });

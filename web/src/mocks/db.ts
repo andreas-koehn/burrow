@@ -94,7 +94,7 @@ export interface MockDb {
   settings: SettingsMap;
   smtpPasswordSet: boolean;
   clients: ClientDetail[];
-  tokens: { id: string; name: string; last_used: string | null; created_at: string }[];
+  tokens: { id: string; name: string; last_used: string | null; created_at: string; expires_at?: string | null }[];
   /** Last session per client token id; a token without an entry and without a live session never connected. */
   clientLastSessions: Record<string, ClientLastSession>;
   services: ServiceRow[];
@@ -203,9 +203,9 @@ function seed(): MockDb {
     // One client of each state: office-box-1 is online (the session above),
     // koehn-laptop is offline, build-server never connected.
     tokens: [
-      { id: "tok_1", name: "office-box-1", last_used: "2026-05-18T09:00:00Z", created_at: "2026-05-01T08:00:00Z" },
-      { id: "tok_2", name: "koehn-laptop", last_used: "2026-05-16T17:30:00Z", created_at: "2026-05-03T10:00:00Z" },
-      { id: "tok_3", name: "build-server", last_used: null, created_at: "2026-05-17T14:00:00Z" },
+      { id: "tok_1", name: "office-box-1", last_used: "2026-05-18T09:00:00Z", created_at: "2026-05-01T08:00:00Z", expires_at: null },
+      { id: "tok_2", name: "koehn-laptop", last_used: "2026-05-16T17:30:00Z", created_at: "2026-05-03T10:00:00Z", expires_at: null },
+      { id: "tok_3", name: "build-server", last_used: null, created_at: "2026-05-17T14:00:00Z", expires_at: null },
     ],
     clientLastSessions: {
       tok_1: { last_seen: "2026-05-18T09:00:00Z", os: "linux", arch: "amd64", client_version: "0.2.0", remote_addr: "203.0.113.7:51234", served: ["ollama", "web-staging"] },

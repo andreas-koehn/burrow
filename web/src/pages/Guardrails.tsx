@@ -430,6 +430,7 @@ export default function Guardrails() {
           <Switch
             aria-label="Enable redaction"
             checked={redactDraft.enabled}
+            disabled={!canWrite}
             onChange={(v) => setRedactDraft({ ...redactDraft, enabled: v })}
           />
           <span>Enable redaction on request/response bodies</span>
@@ -438,14 +439,16 @@ export default function Guardrails() {
         <RulesTable name="Built-in rules" rules={rules.data.built_in} />
         <div className="row row-center gap-2 subsection-head">
           <h3>Custom rules</h3>
-          <Button variant="secondary" size="sm" onClick={() => setRuleOpen(true)}>New rule</Button>
+          {canWrite && <Button variant="secondary" size="sm" onClick={() => setRuleOpen(true)}>New rule</Button>}
         </div>
-        <RulesTable name="Custom rules" rules={rules.data.custom} onDelete={setDeleteRule} />
-        <div className="actions">
-          <Button variant="primary" size="sm" disabled={saveRedact.isPending} onClick={() => saveRedact.mutate(redactDraft)}>
-            {saveRedact.isPending ? "Saving…" : "Save regex settings"}
-          </Button>
-        </div>
+        <RulesTable name="Custom rules" rules={rules.data.custom} onDelete={canWrite ? setDeleteRule : undefined} />
+        {canWrite && (
+          <div className="actions">
+            <Button variant="primary" size="sm" disabled={saveRedact.isPending} onClick={() => saveRedact.mutate(redactDraft)}>
+              {saveRedact.isPending ? "Saving…" : "Save regex settings"}
+            </Button>
+          </div>
+        )}
       </Accordion>
 
       <Accordion

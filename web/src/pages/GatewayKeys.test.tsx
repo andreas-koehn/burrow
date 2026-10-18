@@ -467,6 +467,26 @@ describe("Gateway keys page", () => {
       expect(within(mine).getByRole("button", { name: "Revoke laptop" })).toBeInTheDocument();
     });
 
+    it("a holder of ai:configure:any gets Edit and Revoke on another user's key, whatever the role", async () => {
+      otherUsersKey();
+      db.me = { ...db.me, role: "operator", permissions: ["ai:configure:any"] };
+      mount();
+      const table = await screen.findByRole("table", { name: "Gateway keys" });
+      const bob = within(table).getByRole("row", { name: /bobs-ci/ });
+      expect(within(bob).getByRole("button", { name: "Edit bobs-ci" })).toBeInTheDocument();
+      expect(within(bob).getByRole("button", { name: "Revoke bobs-ci" })).toBeInTheDocument();
+      expect(within(table).getByRole("columnheader", { name: "Owner" })).toBeInTheDocument();
+    });
+
+    it("the admin role without ai:configure:any gets no Edit or Revoke on another user's key", async () => {
+      otherUsersKey();
+      db.me = { ...db.me, role: "admin", permissions: ["ai:configure:own", "ai:read:any"] };
+      mount();
+      const table = await screen.findByRole("table", { name: "Gateway keys" });
+      const bob = within(table).getByRole("row", { name: /bobs-ci/ });
+      expect(within(bob).queryByRole("button", { name: /^(Edit|Revoke) / })).toBeNull();
+    });
+
     it("an admin gets Edit and Revoke on another user's key", async () => {
       otherUsersKey();
       mountAs("admin");

@@ -879,10 +879,17 @@ export const handlers = [
   http.get("/api/v1/tokens", ({ request }) => gate(request) ?? json(db.tokens)),
   http.post("/api/v1/tokens", async ({ request }) => {
     const g = gate(request); if (g) return g;
-    const b = await body<{ name?: string }>(request);
+    const b = await body<{ name?: string; expires_at?: string }>(request);
     if (!b?.name) return err(400, "name is required");
-    db.tokens.push({ id: `tok_${Math.random().toString(36).slice(2, 7)}`, name: b.name, last_used: null, created_at: new Date().toISOString() });
-    return json({ name: b.name, token: `bur_${Math.random().toString(36).slice(2, 18)}` }, 201);
+    let expires: string | null = null;
+    if (b.expires_at !== undefined) {
+      const t = Date.parse(b.expires_at);
+      if (isNaN(t) || t <= Date.now()) return err(400, "expires_at must be in the future");
+      if (t > Date.now() + 365 * 86_400_000) return err(400, "expires_at must be at most 365 days ahead");
+      expires = new Date(t).toISOString();
+    }
+    db.tokens.push({ id: `tok_${Math.random().toString(36).slice(2, 7)}`, name: b.name, last_used: null, created_at: new Date().toISOString(), expires_at: expires });
+    return json({ name: b.name, token: `bur_${Math.random().toString(36).slice(2, 18)}`, expires_at: expires }, 201);
   }),
 
   // ---- events (inert SSE so Clients/Connect don't error) ----
@@ -1260,7 +1267,7 @@ export const handlers = [
 
   // ---- v0.4.0 guardrails & redaction (spec §4.22) ----
   http.get("/api/v1/redaction/rules", ({ request }) =>
-    gate(request, { admin: true }) ?? json(db.redactionRules)),
+    gate(request, { admin: true, needs: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"] }) ?? json(db.redactionRules)),
   http.post("/api/v1/redaction/rules", async ({ request }) => {
     const g = gate(request, { admin: true }); if (g) return g;
     const b = await body<{ name?: string; pattern?: string; action?: RedactionRule["action"]; scope?: RedactionRule["scope"] }>(request);
@@ -1286,7 +1293,7 @@ export const handlers = [
     return noContent();
   }),
   http.get("/api/v1/redaction/settings", ({ request }) =>
-    gate(request, { admin: true }) ?? json(db.redactionSettings)),
+    gate(request, { admin: true, needs: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"] }) ?? json(db.redactionSettings)),
   http.put("/api/v1/redaction/settings", async ({ request }) => {
     const g = gate(request, { admin: true }); if (g) return g;
     const b = await body<MockDb["redactionSettings"]>(request);
@@ -1300,7 +1307,7 @@ export const handlers = [
     return json({ matches: [{ rule: "email", count: b?.sample?.includes("@") ? 1 : 0 }] });
   }),
   http.get("/api/v1/guardrails/settings", ({ request }) =>
-    gate(request, { admin: true }) ?? json(db.guardrailSettings)),
+    gate(request, { admin: true, needs: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"] }) ?? json(db.guardrailSettings)),
   http.put("/api/v1/guardrails/settings", async ({ request }) => {
     const g = gate(request, { admin: true }); if (g) return g;
     // PUT accepts the FLAT global settings; GET returns them nested under `global`.
@@ -1323,7 +1330,7 @@ export const handlers = [
     });
   }),
   http.get("/api/v1/guardrails/patterns", ({ request }) =>
-    gate(request, { admin: true }) ?? json(db.guardrailPatterns)),
+    gate(request, { admin: true, needs: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"] }) ?? json(db.guardrailPatterns)),
 
   // ---- v0.4.0 cost/pricing (spec §4.24) ----
   http.get("/api/v1/cost/pricing", ({ request }) =>
@@ -1762,9 +1769,9 @@ export const handlers = [
     const rows: AiRequestAttempt[] = db.aiAttempts[id] ?? [];
     return json([...rows].sort((a, b) => a.position - b.position));
   }),
-  // A caller sees their own keys; an admin sees all. Revoked keys stay listed.
+  // A caller sees their own keys; ai:read:any or ai:configure:any sees all. Revoked keys stay listed.
   http.get("/api/v1/ai/keys", ({ request }) =>
-    gate(request) ?? json(db.aiGatewayKeys.filter((k) => holds("ai:read:any") || k.user_id === db.me.id))),
+    gate(request) ?? json(db.aiGatewayKeys.filter((k) => holds("ai:read:any", "ai:configure:any") || k.user_id === db.me.id))),
   http.post("/api/v1/ai/keys", async ({ request }) => {
     const g = gate(request); if (g) return g;
     const b = await body<{ name?: unknown; allowed_models?: unknown; system_text?: unknown }>(request);
@@ -1801,7 +1808,7 @@ export const handlers = [
   http.put("/api/v1/ai/keys/:id", async ({ request, params }) => {
     const g = gate(request); if (g) return g;
     const k = db.aiGatewayKeys.find((x) => x.id === params.id);
-    if (!k || (db.me.role !== "admin" && k.user_id !== db.me.id)) return err(404, "key not found");
+    if (!k || (!db.me.permissions?.includes("ai:configure:any") && k.user_id !== db.me.id)) return err(404, "key not found");
     const b = await body<{ name?: unknown; system_text?: unknown }>(request);
     if (!b || typeof b !== "object") return err(400, "invalid JSON body");
     const extra = Object.keys(b).find((f) => f !== "name" && f !== "system_text");
@@ -1822,7 +1829,7 @@ export const handlers = [
     const g = gate(request); if (g) return g;
     const k = db.aiGatewayKeys.find((x) => x.id === params.id);
     // Another user's key answers like a missing one.
-    if (!k || (db.me.role !== "admin" && k.user_id !== db.me.id)) return err(404, "key not found");
+    if (!k || (!db.me.permissions?.includes("ai:configure:any") && k.user_id !== db.me.id)) return err(404, "key not found");
     k.revoked_at ??= new Date().toISOString();
     return noContent();
   }),

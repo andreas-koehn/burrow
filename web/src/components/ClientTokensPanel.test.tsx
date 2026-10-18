@@ -43,7 +43,7 @@ describe("ClientTokensPanel", () => {
     );
     setup();
     const cell = (await screen.findByText(/no tokens yet/i)).closest("td")!;
-    expect(cell.getAttribute("colspan")).toBe("4");
+    expect(cell.getAttribute("colspan")).toBe("5");
   });
 
   it("renders formatted timestamps (not raw RFC3339) for token rows", async () => {
@@ -194,5 +194,60 @@ describe("ClientTokensPanel", () => {
     expect(within(line).getByRole("link", { name: "gateway key" })).toHaveAttribute("href", "/gateway/keys");
     expect(within(line).getByRole("link", { name: "service" })).toHaveAttribute("href", "/services");
     expect(within(line).getByRole("link", { name: "automation token" })).toHaveAttribute("href", "/settings/automation");
+  });
+
+  describe("expiry", () => {
+    const listing = (rows: unknown[]) => vi.spyOn(globalThis, "fetch").mockImplementation(async (url: any, opts: any) => {
+      if (String(url).endsWith("/tokens") && opts?.method === "POST")
+        return new Response(JSON.stringify({ name: "laptop", token: "bur_X", expires_at: null }), { status: 201 }) as any;
+      return new Response(JSON.stringify(rows), { status: 200 }) as any;
+    });
+    const posts = (spy: ReturnType<typeof listing>) =>
+      spy.mock.calls.filter(([, o]) => (o as RequestInit | undefined)?.method === "POST").map(([, o]) => JSON.parse(String((o as RequestInit).body)));
+
+    it("shows the date of a token that expires and Never for one that does not", async () => {
+      listing([
+        { id: "t1", name: "temp", created_at: "2024-01-15T10:00:00Z", last_used: null, expires_at: "2099-03-04T10:00:00Z" },
+        { id: "t2", name: "forever", created_at: "2024-01-15T10:00:00Z", last_used: null, expires_at: null },
+      ]);
+      setup();
+      const temp = (await screen.findByText("temp")).closest("tr")!;
+      expect(within(temp).getByText(/^Expires 04 Mar 2099/)).toBeInTheDocument();
+      const forever = screen.getByText("forever").closest("tr")!;
+      expect(within(forever).getByText("Never")).toBeInTheDocument();
+    });
+
+    it("an expired token looks expired", async () => {
+      listing([{ id: "t1", name: "old", created_at: "2020-01-15T10:00:00Z", last_used: null, expires_at: "2021-03-04T10:00:00Z" }]);
+      setup();
+      const row = (await screen.findByText("old")).closest("tr")!;
+      expect(within(row).getByText(/^Expired 04 Mar 2021/)).toBeInTheDocument();
+      expect(row.className).toMatch(/expired/);
+    });
+
+    it("sends no expires_at by default", async () => {
+      const spy = listing([]);
+      setup();
+      await userEvent.type(await screen.findByLabelText(/token name/i), "laptop");
+      await userEvent.click(screen.getByRole("button", { name: /create/i }));
+      await screen.findByText("bur_X");
+      expect(posts(spy)).toEqual([{ name: "laptop" }]);
+    });
+
+    it.each([["30 days", 30], ["90 days", 90], ["365 days", 365]])("%s sends an expires_at about that far ahead", async (label, days) => {
+      const spy = listing([]);
+      setup();
+      await userEvent.type(await screen.findByLabelText(/token name/i), "laptop");
+      await userEvent.click(screen.getByRole("combobox", { name: "Expires" }));
+      await userEvent.click(await screen.findByRole("option", { name: label }));
+      await userEvent.click(screen.getByRole("button", { name: /create/i }));
+      await screen.findByText("bur_X");
+      const body = posts(spy)[0];
+      const ahead = (Date.parse(body.expires_at) - Date.now()) / 86_400_000;
+      expect(ahead).toBeGreaterThan(days - 0.1);
+      expect(ahead).toBeLessThan(days + 0.1);
+      // The relay refuses more than 365 days ahead: stay inside it.
+      expect(Date.parse(body.expires_at)).toBeLessThanOrEqual(Date.now() + 365 * 86_400_000);
+    });
   });
 });

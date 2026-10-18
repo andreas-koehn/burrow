@@ -79,6 +79,7 @@ function GuardrailNote({ entry }: { entry: InspectorEntry }) {
             <dd className="def-val">
               <span>{m.text}</span>
               {m.direction && <> <span className="muted small">{m.direction === "answer" ? "Answer" : "Request"}</span></>}
+              {m.detail && <p className="small">{m.detail}</p>}
               {m.reason && <p className="small">{m.reason}</p>}
             </dd>
           </div>

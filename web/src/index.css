@@ -642,6 +642,7 @@ table.data tbody td.cell-wrap { white-space: normal; overflow-wrap: anywhere; }
 table.data tbody tr:last-child td { border-bottom: none; }
 table.data tbody tr:hover td { background: var(--hover); }
 table.data tbody tr.is-hover td { background: var(--hover); }
+table.data tbody tr.is-expired td:not(.col-actions) { color: var(--muted-foreground, var(--muted)); opacity: 0.7; }
 /* The row a link names (the command palette's link to a model): the marker of
    the current navigation entry, the tint and the bar in the accent. */
 table.data tbody tr[aria-current="true"] td { background: color-mix(in oklch, var(--primary) 10%, transparent); }

@@ -513,12 +513,16 @@ export interface GuardrailMark {
   action: string;
   /** A streamed answer was stopped after part of it had been sent. */
   mid_stream?: boolean;
+  /** "key_system_text" when the pattern matched the gateway key's system text; absent for the request itself. */
+  in?: "key_system_text";
 }
 export interface JudgeMark {
   direction: "request" | "answer";
   verdict: "allow" | "block" | "failed" | "not_judged";
   reason?: string;
   failure?: "timeout" | "error" | "malformed" | "unavailable" | "too_large";
+  /** on_failure: refuse turned a failed judgement into a refusal; absent when the request went through. */
+  refused?: boolean;
 }
 /** One entry of GET /ai/requests: a captured request without its headers and bodies. */
 export type AiCapturedRequest = Omit<InspectorEntry, "req_headers" | "req_body" | "resp_headers" | "resp_body">;

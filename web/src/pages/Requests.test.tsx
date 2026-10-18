@@ -686,6 +686,7 @@ describe("Requests page", () => {
       ["a flagged answer", { guardrail: { pattern: "aws-key", direction: "answer" as const, action: "flag" } }, "Flagged · aws-key"],
       ["a blocked answer", { guardrail: { pattern: "aws-key", direction: "answer" as const, action: "block" } }, "Blocked · aws-key"],
       ["a streamed answer stopped part way", { guardrail: { pattern: "aws-key", direction: "answer" as const, action: "block", mid_stream: true } }, "Blocked mid-answer · aws-key"],
+      ["a refusal on the key's system text", { guardrail: { pattern: "ignore-previous", direction: "request" as const, action: "refuse_403", in: "key_system_text" as const } }, "Blocked · ignore-previous (key system text)"],
       ["a call to the judge model", { purpose: "guardrail-judge" as const }, "Judge call"],
     ])("%s", async (_name, over, text) => {
       one(over);
@@ -704,6 +705,7 @@ describe("Requests page", () => {
       [{ direction: "request" as const, verdict: "allow" as const }, "Judged · allowed"],
       [{ direction: "request" as const, verdict: "failed" as const, failure: "timeout" as const }, "Judge failed · timeout"],
       [{ direction: "answer" as const, verdict: "failed" as const, failure: "too_large" as const }, "Judge failed · too large"],
+      [{ direction: "request" as const, verdict: "failed" as const, failure: "timeout" as const, refused: true }, "Judge failed · refused"],
       [{ direction: "request" as const, verdict: "not_judged" as const, reason: "no text" }, "Not judged · no text"],
     ])("a judge outcome %#", async (judge, text) => {
       one({ judge });

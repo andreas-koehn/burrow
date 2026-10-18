@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
@@ -15,10 +15,70 @@ describe("Edit user dialog", () => {
     const dialog = await screen.findByRole("dialog", { name: /edit user/i });
     await userEvent.click(within(dialog).getByRole("switch", { name: /user status/i }));
     await userEvent.click(within(dialog).getByRole("button", { name: /save changes/i }));
+    const confirm = await screen.findByRole("dialog", { name: /suspend user/i });
+    await userEvent.click(within(confirm).getByRole("button", { name: /^suspend user$/i }));
     await waitFor(() => {
       const row = screen.getByText("bob@acme.io").closest("tr")!;
       expect(within(row).getByText(/suspended/i)).toBeInTheDocument();
     });
+  });
+
+  it("asks before suspending, names the user, and sends nothing on Cancel", async () => {
+    const patches: unknown[] = [];
+    server.use(http.patch("/api/v1/users/:id", async ({ request }) => { patches.push(await request.json()); return HttpResponse.json({}); }));
+    renderApp(<Users />);
+    const bobRow = (await screen.findByText("bob@acme.io")).closest("tr")!;
+    await userEvent.click(within(bobRow).getByRole("button", { name: /^edit$/i }));
+    const dialog = await screen.findByRole("dialog", { name: /edit user/i });
+    await userEvent.click(within(dialog).getByRole("switch", { name: /user status/i }));
+    await userEvent.click(within(dialog).getByRole("button", { name: /save changes/i }));
+    const confirm = await screen.findByRole("dialog", { name: /suspend user/i });
+    expect(within(confirm).getByText(/bob@acme\.io/)).toBeInTheDocument();
+    expect(patches).toEqual([]);
+    await userEvent.click(within(confirm).getByRole("button", { name: /cancel/i }));
+    expect(patches).toEqual([]);
+  });
+
+  it("saves a role change without asking", async () => {
+    const patches: unknown[] = [];
+    server.use(http.patch("/api/v1/users/:id", async ({ request }) => { patches.push(await request.json()); return HttpResponse.json({}); }));
+    renderApp(<Users />);
+    const bobRow = (await screen.findByText("bob@acme.io")).closest("tr")!;
+    await userEvent.click(within(bobRow).getByRole("button", { name: /^edit$/i }));
+    const dialog = await screen.findByRole("dialog", { name: /edit user/i });
+    await userEvent.click(within(dialog).getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(screen.queryByRole("dialog", { name: /suspend user/i })).toBeNull();
+  });
+
+  it("asks before deleting from the edit dialog, naming the user", async () => {
+    const deletes: string[] = [];
+    server.use(http.delete("/api/v1/users/:id", ({ params }) => { deletes.push(String(params.id)); return new HttpResponse(null, { status: 204 }); }));
+    const confirmSpy = vi.spyOn(window, "confirm");
+    renderApp(<Users />);
+    const bobRow = (await screen.findByText("bob@acme.io")).closest("tr")!;
+    await userEvent.click(within(bobRow).getByRole("button", { name: /^edit$/i }));
+    const dialog = await screen.findByRole("dialog", { name: /edit user/i });
+    await userEvent.click(within(dialog).getByRole("button", { name: /delete user/i }));
+    const confirm = await screen.findByRole("dialog", { name: /delete user\?/i });
+    expect(within(confirm).getByText(/bob@acme\.io/)).toBeInTheDocument();
+    expect(deletes).toEqual([]);
+    await userEvent.click(within(confirm).getByRole("button", { name: /^delete user$/i }));
+    await waitFor(() => expect(deletes).toHaveLength(1));
+    expect(confirmSpy).not.toHaveBeenCalled();
+  });
+
+  it("cancelling the delete confirmation sends nothing", async () => {
+    const deletes: string[] = [];
+    server.use(http.delete("/api/v1/users/:id", ({ params }) => { deletes.push(String(params.id)); return new HttpResponse(null, { status: 204 }); }));
+    renderApp(<Users />);
+    const bobRow = (await screen.findByText("bob@acme.io")).closest("tr")!;
+    await userEvent.click(within(bobRow).getByRole("button", { name: /^edit$/i }));
+    const dialog = await screen.findByRole("dialog", { name: /edit user/i });
+    await userEvent.click(within(dialog).getByRole("button", { name: /delete user/i }));
+    const confirm = await screen.findByRole("dialog", { name: /delete user\?/i });
+    await userEvent.click(within(confirm).getByRole("button", { name: /cancel/i }));
+    expect(deletes).toEqual([]);
   });
 
   it("disables status switch and delete for the current user (self)", async () => {

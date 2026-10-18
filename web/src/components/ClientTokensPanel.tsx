@@ -3,23 +3,36 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy } from "lucide-react";
 import { Link } from "react-router-dom";
 import { apiFetch } from "@/lib/api";
+import { formatDate } from "@/lib/format";
 import { RelativeTime } from "@/components/RelativeTime";
-import { Button, FormField, FormFieldGroup, Input, Dialog, TableEmptyRow } from "@/components/ds";
+import { Button, FormField, FormFieldGroup, Input, Select, Dialog, TableEmptyRow } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 
-interface Token { id: string; name: string; last_used: string | null; created_at: string; }
+interface Token { id: string; name: string; last_used: string | null; created_at: string; /** null when the token never expires. */ expires_at?: string | null; }
+
+// The relay accepts an expiry up to 365 days ahead.
+const EXPIRY_CHOICES = [
+  { value: "0", label: "Never" },
+  { value: "30", label: "30 days" },
+  { value: "90", label: "90 days" },
+  { value: "365", label: "365 days" },
+];
+const DAY_MS = 86_400_000;
+
+const isExpired = (t: Token) => !!t.expires_at && Date.parse(t.expires_at) <= Date.now();
 
 /** The Tokens tab of Clients: create, show once and revoke the tokens a client connects with. */
 export function ClientTokensPanel() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["tokens"], queryFn: () => apiFetch<Token[]>("/tokens"), staleTime: 30_000 });
   const [name, setName] = useState("");
+  const [days, setDays] = useState("0");
   const [plaintext, setPlaintext] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<{ id: string; name: string } | null>(null);
   const create = useMutation({
-    mutationFn: () => apiFetch<{ name: string; token: string }>("/tokens", { method: "POST", body: JSON.stringify({ name }) }),
-    onSuccess: (r) => { setPlaintext(r.token); setName(""); qc.invalidateQueries({ queryKey: ["tokens"] }); },
+    mutationFn: () => apiFetch<{ name: string; token: string }>("/tokens", { method: "POST", body: JSON.stringify(Number(days) > 0 ? { name, expires_at: new Date(Date.now() + Number(days) * DAY_MS).toISOString() } : { name }) }),
+    onSuccess: (r) => { setPlaintext(r.token); setName(""); setDays("0"); qc.invalidateQueries({ queryKey: ["tokens"] }); },
     onError: () => toast.error("Failed to create token"),
   });
   const revoke = useMutation({
@@ -44,6 +57,9 @@ export function ClientTokensPanel() {
           <FormField label="Token name" htmlFor="token-name" w="md">
             <Input id="token-name" placeholder="e.g. laptop" value={name} onChange={(e) => setName(e.target.value)} />
           </FormField>
+          <FormField label="Expires" htmlFor="token-expiry" w="sm">
+            <Select id="token-expiry" options={EXPIRY_CHOICES} value={days} onChange={setDays} />
+          </FormField>
         </FormFieldGroup>
         <div className="actions">
           <Button type="submit" variant="primary" disabled={!name || create.isPending}>Create</Button>
@@ -59,18 +75,22 @@ export function ClientTokensPanel() {
               <th>Name</th>
               <th>Created</th>
               <th>Last used</th>
+              <th>Expires</th>
               <th className="col-actions"></th>
             </tr>
           </thead>
           <tbody>
             {data && data.length === 0
-              ? <TableEmptyRow colSpan={4} title="No tokens yet.">Create one above, or use Connect a client.</TableEmptyRow>
+              ? <TableEmptyRow colSpan={5} title="No tokens yet.">Create one above, or use Connect a client.</TableEmptyRow>
               : (data ?? []).map((t) => (
-              <tr key={t.id}>
+              <tr key={t.id} className={isExpired(t) ? "is-expired" : undefined}>
                 <td className="col-name">{t.name}</td>
                 <td className="col-created"><RelativeTime value={t.created_at} /></td>
                 <td className={t.last_used ? "col-lastused" : "col-lastused null"}>
                   <RelativeTime value={t.last_used} empty="never" />
+                </td>
+                <td className="col-expires">
+                  {t.expires_at ? `${isExpired(t) ? "Expired" : "Expires"} ${formatDate(t.expires_at)}` : "Never"}
                 </td>
                 <td className="col-actions">
                   <Button

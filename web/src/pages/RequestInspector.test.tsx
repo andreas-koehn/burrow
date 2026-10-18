@@ -286,6 +286,32 @@ describe("Request inspector (§4.23)", () => {
       expect(within(note).getByText("Judge failed · malformed")).toBeInTheDocument();
     });
 
+    it("a judge failure that refused shows the class and the outcome", async () => {
+      const e = first();
+      e.judge = { direction: "request", verdict: "failed", failure: "unavailable", refused: true };
+      mount(`/gateway/requests/svc_ai001/${e.id}`);
+      const note = await screen.findByRole("group", { name: "Guardrail" });
+      expect(within(note).getByText("Judge failed · refused")).toBeInTheDocument();
+      expect(within(note).getByText(/unavailable/)).toBeInTheDocument();
+    });
+
+    it("a judge failure that let the request through says so", async () => {
+      const e = first();
+      e.judge = { direction: "request", verdict: "failed", failure: "timeout" };
+      mount(`/gateway/requests/svc_ai001/${e.id}`);
+      const note = await screen.findByRole("group", { name: "Guardrail" });
+      expect(within(note).getByText(/let through/i)).toBeInTheDocument();
+    });
+
+    it("says when the pattern matched the gateway key's system text", async () => {
+      const e = first();
+      e.guardrail = { pattern: "ignore-previous", direction: "request", action: "refuse_403", in: "key_system_text" };
+      mount(`/gateway/requests/svc_ai001/${e.id}`);
+      const note = await screen.findByRole("group", { name: "Guardrail" });
+      expect(within(note).getByText("Blocked · ignore-previous (key system text)")).toBeInTheDocument();
+      expect(within(note).getByText("Matched the gateway key's system text.")).toBeInTheDocument();
+    });
+
     it("marks the relay's own call to the judge", async () => {
       const e = first();
       e.purpose = "guardrail-judge";

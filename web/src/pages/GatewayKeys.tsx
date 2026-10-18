@@ -8,7 +8,7 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Checkbox, Dialog, Disclosure, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
 import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/auth/useAuth";
-import { useCan, useOwnsOrAdmin } from "@/auth/useCan";
+import { useCan } from "@/auth/useCan";
 import { P } from "@/auth/permissions";
 import { RelativeTime } from "@/components/RelativeTime";
 import { EditGatewayKeyDialog } from "@/components/EditGatewayKeyDialog";
@@ -235,11 +235,11 @@ export default function GatewayKeys() {
   const { user } = useAuth();
   // POST, PUT and DELETE /ai/keys: ai:configure:own or :any. The list holds other users' keys for ai:read:any.
   const canWrite = useCan([P.aiConfigureOwn, P.aiConfigureAny]);
-  // The relay lets only a key's owner or a caller whose role is admin change or revoke it
-  // (internal/store/ai_gateway_keys.go); for anyone else the key answers 404.
-  const ownsOrAdmin = useOwnsOrAdmin();
-  const mayChange = (k: AiGatewayKey) => canWrite && ownsOrAdmin(k.user_id);
-  const seesOwners = useCan(P.aiReadAny);
+  // The relay lets only a key's owner or a holder of ai:configure:any change or revoke it;
+  // for anyone else the key answers 404.
+  const configuresAny = useCan(P.aiConfigureAny);
+  const mayChange = (k: AiGatewayKey) => canWrite && (configuresAny || (user !== undefined && user !== null && user.id === k.user_id));
+  const seesOwners = useCan([P.aiReadAny, P.aiConfigureAny]);
   const keys = useQuery({
     queryKey: KEYS,
     queryFn: () => apiFetch<AiGatewayKey[]>("/ai/keys"),

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
+import { AlertTriangle } from "lucide-react";
 import { Button, Select, Switch, Badge, Dialog, FormField } from "@/components/ds";
 import type { UserAdmin, UserRole, UserStatus } from "@/lib/contract";
 import { toast } from "sonner";
@@ -12,6 +13,9 @@ export function EditUserDialog({ user, selfId, onClose }: { user: UserAdmin | nu
   const [status, setStatus] = useState<UserStatus>("active");
   const choices = useRoleChoices(user !== null, user?.role);
   const isSelf = !!user && user.id === selfId;
+
+  const [confirming, setConfirming] = useState<"suspend" | "delete" | null>(null);
+  const suspending = !!user && !isSelf && status !== user.status && status === "suspended";
 
   useEffect(() => { if (user) { setRole(user.role); setStatus(user.status); } }, [user]);
 
@@ -33,6 +37,7 @@ export function EditUserDialog({ user, selfId, onClose }: { user: UserAdmin | nu
   });
 
   return (
+    <>
     <Dialog
       open={user !== null}
       onOpenChange={(o) => { if (!o) onClose(); }}
@@ -41,7 +46,7 @@ export function EditUserDialog({ user, selfId, onClose }: { user: UserAdmin | nu
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={save.isPending} onClick={() => save.mutate()}>Save changes</Button>
+          <Button variant="primary" disabled={save.isPending} onClick={() => { if (suspending) setConfirming("suspend"); else save.mutate(); }}>Save changes</Button>
         </>
       }
     >
@@ -69,10 +74,31 @@ export function EditUserDialog({ user, selfId, onClose }: { user: UserAdmin | nu
             variant="destructive" size="sm" className="ml-auto"
             disabled={isSelf || del.isPending}
             title={isSelf ? "You can't suspend or delete your own account." : undefined}
-            onClick={() => del.mutate()}
+            onClick={() => setConfirming("delete")}
           >Delete user</Button>
         </div>
       </div>
     </Dialog>
+      <Dialog
+        open={confirming !== null}
+        onOpenChange={(o) => { if (!o) setConfirming(null); }}
+        title={confirming === "delete" ? "Delete user?" : "Suspend user?"}
+        description={confirming === "delete"
+          ? `${user?.email} will lose access immediately, and their tokens and services are removed. This cannot be undone.`
+          : `${user?.email} will be signed out and cannot sign in until the account is active again.`}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setConfirming(null)}>Cancel</Button>
+            <Button
+              variant="destructive-solid"
+              disabled={save.isPending || del.isPending}
+              onClick={() => { const c = confirming; setConfirming(null); if (c === "delete") del.mutate(); else save.mutate(); }}
+            >{confirming === "delete" ? "Delete user" : "Suspend user"}</Button>
+          </>
+        }
+      >
+        <div className="confirm-icon" aria-hidden="true"><AlertTriangle size={16} /></div>
+      </Dialog>
+    </>
   );
 }
