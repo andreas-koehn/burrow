@@ -1737,6 +1737,12 @@ components:
             direction: { type: string, enum: [request, answer] }
             action: { type: string }
             mid_stream: { type: boolean }
+            in:
+              type: string
+              enum: [key_system_text]
+              description: >
+                Present when the request pattern matched the gateway key's
+                system text rather than the request itself.
         judge:
           type: object
           description: >
@@ -1752,6 +1758,12 @@ components:
             verdict: { type: string, enum: [allow, block, failed, not_judged] }
             reason: { type: string }
             failure: { type: string, enum: [timeout, error, malformed, unavailable, too_large] }
+            refused:
+              type: boolean
+              description: >
+                True when the verdict is failed and on_failure refuse turned
+                the failure into a refusal; absent when the request was let
+                through.
         purpose:
           type: string
           enum: [guardrail-judge]
@@ -3173,7 +3185,8 @@ paths:
         characters. The message names the first bad pattern by id.
         400 as well for judge settings that break JudgeSettings: no model
         while enabled, a model that is no existing synthetic model ("judge
-        model … does not exist"), a policy longer than 4000 characters, a
+        model … does not exist", or "judge model … is disabled" for a model that
+        is switched off), a policy longer than 4000 characters, a
         timeout_ms outside 500 to 30000, or a check or on_failure outside
         their values. answers, custom_patterns and judge keep their stored
         values when the body leaves them out.

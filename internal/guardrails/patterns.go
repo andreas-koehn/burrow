@@ -35,7 +35,18 @@ type Pattern struct {
 	// (case-sensitive). The engine skips the regex when the text holds none
 	// of them, which is far cheaper than running it. Empty: always run.
 	Requires []string
+	// SecretPrefix is a regex, anchored at ^, for what the match starts with
+	// before its secret part (the literal prefix and the kind). Set, the
+	// engine drops a match whose secret part has fewer than MinSecretDistinct
+	// distinct characters: a placeholder such as "ghp_xxxxxxxxxxxxxxxxxxxx",
+	// not a key. Empty: every match counts.
+	SecretPrefix string
 }
+
+// MinSecretDistinct is how many distinct characters the secret part of a
+// bundled answer match needs to be taken for a secret. A real key of 20
+// characters or more has far more; a placeholder has one or two.
+const MinSecretDistinct = 6
 
 // Patterns is the closed list of v0.4.0 prompt-injection rules. Exactly
 // 30 entries (asserted by TestPatterns_Count) — additions are a wire

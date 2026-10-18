@@ -454,6 +454,8 @@ Good to know:
   that a request pattern (bundled or custom) matches with `400`, naming the
   pattern, while the request patterns are on. A model's text is written by
   operators (`ai:configure:any`) and is not checked.
+  In the request inspector a refusal caused by the key's text says so: the
+  mark's `in` is `key_system_text`.
 - The text is part of the cache key: two requests that differ only in system
   text never share a cached answer.
 - The request inspector shows the request as it went upstream, with the text
@@ -604,7 +606,12 @@ service's.
   dosages."
 - **check**: `requests` (the default) or `requests_and_answers`.
 - **timeout_ms**: how long the judge may take, 500 to 30000 ms, default 3000.
-- **on_failure**: `allow` (the default) or `refuse`.
+- **on_failure**: `allow` (the default) or `refuse`. The inspector's judge
+  mark says `refused: true` when a failure was turned into a refusal.
+
+A change to the guardrail settings, the judge's included, takes up to 2
+seconds to apply. The model must be enabled: saving a judge that names a
+disabled model is refused.
 
 What the judge is sent: a fixed instruction, then your policy, as the system
 message, and the text of the request as the user message. The instruction is

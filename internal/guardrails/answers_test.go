@@ -17,7 +17,7 @@ var (
 	fakeGoogle       = "AIza" + "SyA-" + strings.Repeat("x1Y2z3W4v5", 3) + "abcd"
 	fakePEM          = "-----BEGIN " + "RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA"
 	fakeAutomation   = "bua" + "_" + strings.Repeat("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 2)
-	fakeGatewayKey   = "bgw" + "_" + strings.Repeat("aZ0_-", 8) + "xyz"
+	fakeGatewayKey   = "bgw" + "_" + strings.Repeat("aZ0_-Kp", 6) + "xyz"
 	answerPatternIDs = []string{
 		"openai_key", "anthropic_key", "aws_access_key", "github_token", "slack_token",
 		"google_api_key", "private_key_pem", "burrow_automation_token", "burrow_gateway_key",
@@ -60,8 +60,8 @@ func TestAnswerPatterns_HitsAndNearMisses(t *testing.T) {
 	}{
 		{"openai_key", "your key is " + fakeOpenAI + " keep it", "the prefix sk-abcdefghij is too short"},
 		{"openai_key", "plain " + fakeOpenAIPlain, "a task-management-application-for-teams is prose"},
-		{"openai_key", "sk-svcacct-" + strings.Repeat("Ab1-_", 8), `<div class="sk-fading-circle-container-big">`},
-		{"openai_key", "sk-admin-" + strings.Repeat("Ab1-_", 8), ".sk-cube-grid-loader-element-x { color: red }"},
+		{"openai_key", "sk-svcacct-" + strings.Repeat("Ab1-_Cd", 6), `<div class="sk-fading-circle-container-big">`},
+		{"openai_key", "sk-admin-" + strings.Repeat("Ab1-_Cd", 6), ".sk-cube-grid-loader-element-x { color: red }"},
 		{"openai_key", fakeOpenAI, "sk-proj-" + strings.Repeat("a", 19) + " (one short)"},
 		{"openai_key", fakeOpenAIPlain, "sk-" + strings.Repeat("a", 19) + " (one short)"},
 		{"anthropic_key", "use " + fakeAnthropic, "sk-ant-short"},
@@ -192,7 +192,7 @@ func TestAnswerPatterns_StreamedSecretFoundEarly(t *testing.T) {
 		{"anthropic_key", "sk-ant-", fakeAnthropic},
 		{"aws_access_key", "AKIA", fakeAWS},
 		{"github_token", "ghp_", fakeGitHub},
-		{"github_token", "github_pat_", "github_pat_" + strings.Repeat("Ab3_x", 12)},
+		{"github_token", "github_pat_", "github_pat_" + strings.Repeat("Ab3_xQ", 10)},
 		{"slack_token", "xoxb-", fakeSlack},
 		{"google_api_key", "AIza", fakeGoogle},
 		{"burrow_automation_token", "bua_", fakeAutomation},
@@ -219,6 +219,53 @@ func TestAnswerPatterns_StreamedSecretFoundEarly(t *testing.T) {
 		}
 		if limit := len(c.prefix) + 20; delivered >= limit {
 			t.Errorf("%s: %d characters of the secret delivered before the hit, want fewer than %d", c.id, delivered, limit)
+		}
+	}
+}
+
+var answerPlaceholders = []string{
+	"ghp" + "_" + strings.Repeat("x", 20),
+	"ghp" + "_" + strings.Repeat("x", 36),
+	"github_pat" + "_" + strings.Repeat("0", 30),
+	"sk" + "-" + strings.Repeat("X", 24),
+	"sk" + "-proj-" + strings.Repeat("X", 24),
+	"sk" + "-ant-api03-" + strings.Repeat("x", 24),
+	"AIza" + "Sy" + strings.Repeat("0", 18),
+	"AKIA" + strings.Repeat("X", 16),
+	"xoxb" + "-" + strings.Repeat("0", 12),
+	"bua" + "_" + strings.Repeat("A", 40),
+	"bgw" + "_" + strings.Repeat("a", 40),
+	"sk" + "-" + "abababababababababababab",
+}
+
+// A placeholder (a secret part of fewer than 6 distinct characters) is no
+// secret.
+func TestAnswerPatterns_PlaceholdersAreNoSecrets(t *testing.T) {
+	e := NewEngine()
+	for _, p := range answerPlaceholders {
+		if ok, id := e.InspectAnswerBundled("set KEY=" + p + " in your env"); ok {
+			t.Errorf("placeholder %q matched %s", p, id)
+		}
+	}
+	// A real key next to a placeholder is still found.
+	if ok, _ := e.InspectAnswerBundled(answerPlaceholders[0] + " and " + fakeGitHub); !ok {
+		t.Error("real key after a placeholder not found")
+	}
+}
+
+// A placeholder streamed in pieces is never blocked, whatever has arrived;
+// a real key is, at the same early bound as before.
+func TestAnswerPatterns_PlaceholdersStreamedAreNeverBlocked(t *testing.T) {
+	e := NewEngine()
+	for _, p := range answerPlaceholders {
+		for _, step := range []int{1, 3, 7} {
+			s := NewStreamScanner(e.InspectAnswerBundled, nil)
+			text := "use " + p + " here"
+			for i := 0; i < len(text); i += step {
+				if hit, id := s.Add(text[i:min(i+step, len(text))]); hit {
+					t.Fatalf("placeholder %q (step %d) blocked as %s", p, step, id)
+				}
+			}
 		}
 	}
 }

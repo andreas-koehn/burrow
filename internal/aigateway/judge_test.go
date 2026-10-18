@@ -3,6 +3,7 @@ package aigateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -239,3 +240,26 @@ func TestJudge_SkipsClientAddressPolicy(t *testing.T) {
 		t.Fatalf("app: status %d, policy asked %d times", rec.Code, denied)
 	}
 }
+
+// A judge call no upstream answered (the gateway wrote the error itself) is
+// metered with no tokens: the byte estimate of the gateway's own error body
+// is nobody's usage.
+func TestJudge_GatewayErrorIsNotMeteredByEstimate(t *testing.T) {
+	g, meter, _ := judgeGateway(t, http.NotFoundHandler())
+	g.Direct = func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
+		return nil, errNoUpstream
+	}
+	if _, err := g.Judge(context.Background(), "svc-judged", "burrow-intelligence", "p", "hello there, judge"); err == nil {
+		t.Fatal("a gateway error was taken for an answer")
+	}
+	if len(meter.samples) == 0 {
+		t.Skip("no usage row is written for this failure")
+	}
+	for _, s := range meter.samples {
+		if s.TokensIn != 0 || s.TokensOut != 0 {
+			t.Fatalf("usage row with estimated tokens: %+v", s)
+		}
+	}
+}
+
+var errNoUpstream = errors.New("no upstream")

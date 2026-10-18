@@ -219,7 +219,8 @@ func (c *Chain) note(r *http.Request, svc Service, ev *observe.ModelRequest, jd 
 			})
 		}()
 	}
-	return &inspector.JudgeMark{Direction: direction, Verdict: jd.verdict, Reason: jd.reason, Failure: jd.failure}
+	return &inspector.JudgeMark{Direction: direction, Verdict: jd.verdict, Reason: jd.reason, Failure: jd.failure,
+		Refused: jd.verdict == JudgeFailed && jd.refuse}
 }
 
 // requestOnlyFormat is the guardrails text format of a request whose answer

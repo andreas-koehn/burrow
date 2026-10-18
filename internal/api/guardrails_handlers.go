@@ -261,8 +261,9 @@ func (d Deps) PutGuardrailSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // judgeModelExists reports whether name is an existing synthetic model, and
-// writes the 400 (or the 500 of a failed lookup) when it is not. A disabled
-// model counts: it exists, and the operator may enable it later.
+// writes the 400 (or the 500 of a failed lookup) when it is not, or when it
+// is switched off: a judge that names a disabled model would fail every
+// request.
 func (d Deps) judgeModelExists(w http.ResponseWriter, r *http.Request, name string) bool {
 	notFound := func() bool {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("judge model %q does not exist", name))
@@ -271,11 +272,16 @@ func (d Deps) judgeModelExists(w http.ResponseWriter, r *http.Request, name stri
 	if d.AIModels == nil || !store.ValidModelName(name) {
 		return notFound()
 	}
-	if _, err := d.AIModels.ModelByName(r.Context(), name); err != nil {
+	m, err := d.AIModels.ModelByName(r.Context(), name)
+	if err != nil {
 		if errors.Is(err, store.ErrModelNotFound) {
 			return notFound()
 		}
 		writeErr(w, http.StatusInternalServerError, "look up judge model failed")
+		return false
+	}
+	if !m.Enabled {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("judge model %q is disabled", name))
 		return false
 	}
 	return true

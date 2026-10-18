@@ -297,6 +297,8 @@ func (f *failover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Nothing was delivered. The error is the gateway's own, in the request's
 	// dialect; it names no provider.
 	w.Header().Set(headerAttempts, strconv.Itoa(sent))
+	// No upstream answered: the error body is the gateway's, not usage.
+	f.route.SetUpstreamUsage(0, 0)
 	if busy {
 		// The last thing tried was full, not failing: the caller is told to
 		// come back, also when the request's time ran out in that queue.
@@ -496,6 +498,11 @@ func (f *failover) attempt(w http.ResponseWriter, r *http.Request, c candidate, 
 
 		res.committed = cw.committed
 		res.sent = reached
+		if cw.committed && tw == nil && (!reached || cw.upstreamTimeout || late) {
+			// The answer is the gateway's own error (a policy, a credential,
+			// a timeout), not an upstream's: its bytes are nobody's usage.
+			f.route.SetUpstreamUsage(0, 0)
+		}
 		// Out of time: the attempt's own clock, or the upstream handler's
 		// transport giving up on the response headers.
 		gaveUp := cw.upstreamTimeout || state.Load() == attemptTimedOut

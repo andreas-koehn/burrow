@@ -14,33 +14,40 @@ package guardrails
 // stream stops. The prefix starts at a word boundary, so "task-…" is no "sk-…". The order matters where two
 // shapes overlap: an Anthropic key also has the OpenAI shape and is listed
 // first, so it is named for what it is.
+//
+// A match whose secret part (what follows the prefix and the kind, see
+// Pattern.SecretPrefix) has fewer than MinSecretDistinct distinct characters
+// is a placeholder ("ghp_xxxxxxxxxxxxxxxxxxxx") and is dropped. The rule
+// looks at the match as far as it has arrived, so a placeholder streamed in
+// pieces is never blocked, and a real key, which has that many distinct
+// characters within its first 20, is still found at the same early bound.
 var AnswerPatterns = []Pattern{
 	// Anthropic API keys: "sk-ant-api03-…", "sk-ant-admin01-…".
-	{ID: "anthropic_key", Description: "Anthropic API key", Regex: `\bsk-ant-[A-Za-z0-9_-]{20,}`, Requires: []string{"sk-ant-"}},
+	{ID: "anthropic_key", Description: "Anthropic API key", Regex: `\bsk-ant-[A-Za-z0-9_-]{20,}`, Requires: []string{"sk-ant-"}, SecretPrefix: `^sk-ant-(?:[a-z]+[0-9]+-)?`},
 	// OpenAI API keys: the project, service-account and admin keys
 	// ("sk-proj-…", "sk-svcacct-…", "sk-admin-…", 20 or more key characters
 	// after the kind) and legacy keys ("sk-" and 20 or more letters and
 	// digits, no hyphen). Hyphenated words after "sk-" (CSS classes such as
 	// "sk-fading-circle-container-big") are no key.
-	{ID: "openai_key", Description: "OpenAI API key", Regex: `\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bsk-[A-Za-z0-9]{20,}`, Requires: []string{"sk-"}},
+	{ID: "openai_key", Description: "OpenAI API key", Regex: `\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bsk-[A-Za-z0-9]{20,}`, Requires: []string{"sk-"}, SecretPrefix: `^sk-(?:(?:proj|svcacct|admin)-)?`},
 	// AWS access key ids: "AKIA" and 16 upper-case letters or digits.
-	{ID: "aws_access_key", Description: "AWS access key id", Regex: `\bAKIA[0-9A-Z]{16}\b`, Requires: []string{"AKIA"}},
+	{ID: "aws_access_key", Description: "AWS access key id", Regex: `\bAKIA[0-9A-Z]{16}\b`, Requires: []string{"AKIA"}, SecretPrefix: `^AKIA`},
 	// GitHub tokens: classic (ghp_, gho_, ghu_, ghs_, ghr_) and fine-grained
 	// (github_pat_).
-	{ID: "github_token", Description: "GitHub token", Regex: `\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})`, Requires: []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"}},
+	{ID: "github_token", Description: "GitHub token", Regex: `\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})`, Requires: []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"}, SecretPrefix: `^(?:gh[pousr]_|github_pat_)`},
 	// Slack tokens: bot, app, user, refresh and legacy (xoxb-, xoxa-, xoxp-,
 	// xoxr-, xoxs-).
-	{ID: "slack_token", Description: "Slack token", Regex: `\bxox[baprs]-[A-Za-z0-9-]{10,}`, Requires: []string{"xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-"}},
+	{ID: "slack_token", Description: "Slack token", Regex: `\bxox[baprs]-[A-Za-z0-9-]{10,}`, Requires: []string{"xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-"}, SecretPrefix: `^xox[baprs]-`},
 	// Google API keys: "AIza" and 35 characters; 20 are matched.
-	{ID: "google_api_key", Description: "Google API key", Regex: `\bAIza[0-9A-Za-z_-]{20,}`, Requires: []string{"AIza"}},
+	{ID: "google_api_key", Description: "Google API key", Regex: `\bAIza[0-9A-Za-z_-]{20,}`, Requires: []string{"AIza"}, SecretPrefix: `^AIza`},
 	// The header line of a PEM private key of any kind (RSA, EC, OPENSSH,
 	// ENCRYPTED, PKCS#8).
 	{ID: "private_key_pem", Description: "private key (PEM)", Regex: `-----BEGIN [A-Z ]*PRIVATE KEY-----`, Requires: []string{"PRIVATE KEY-----"}},
 	// Burrow automation tokens: "bua_" and 32 random bytes in unpadded
 	// standard base32 (52 characters of A-Z and 2-7), see
 	// store.generateBearerToken; 20 are matched.
-	{ID: "burrow_automation_token", Description: "Burrow automation token", Regex: `\bbua_[A-Z2-7]{20,}`, Requires: []string{"bua_"}},
+	{ID: "burrow_automation_token", Description: "Burrow automation token", Regex: `\bbua_[A-Z2-7]{20,}`, Requires: []string{"bua_"}, SecretPrefix: `^bua_`},
 	// Burrow gateway keys: "bgw_" and 32 random bytes in unpadded base64url
 	// (43 characters), see store.newGatewayKey; 20 are matched.
-	{ID: "burrow_gateway_key", Description: "Burrow gateway key", Regex: `\bbgw_[A-Za-z0-9_-]{20,}`, Requires: []string{"bgw_"}},
+	{ID: "burrow_gateway_key", Description: "Burrow gateway key", Regex: `\bbgw_[A-Za-z0-9_-]{20,}`, Requires: []string{"bgw_"}, SecretPrefix: `^bgw_`},
 }

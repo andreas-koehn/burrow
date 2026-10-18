@@ -98,7 +98,14 @@ type JudgeMark struct {
 	Verdict   string `json:"verdict"`
 	Reason    string `json:"reason,omitempty"`
 	Failure   string `json:"failure,omitempty"`
+	// Refused: on_failure "refuse" turned a failure into a refusal of the
+	// request; false when the request was let through.
+	Refused bool `json:"refused,omitempty"`
 }
+
+// GuardrailInKeySystemText is GuardrailMark.In for a match in the gateway
+// key's system text.
+const GuardrailInKeySystemText = "key_system_text"
 
 // GuardrailMark says which guardrail pattern matched a captured request and
 // what was done: the id of the pattern (never the matched text), the
@@ -111,6 +118,9 @@ type GuardrailMark struct {
 	Direction string `json:"direction"`
 	Action    string `json:"action"`
 	MidStream bool   `json:"mid_stream,omitempty"`
+	// In says where a request match was found: "key_system_text" for the
+	// gateway key's system text; empty for the request itself.
+	In string `json:"in,omitempty"`
 }
 
 // RedactionHit is one (rule, count) pair from the redactor's report.

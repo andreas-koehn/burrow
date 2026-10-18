@@ -13,6 +13,9 @@ import (
 type compiled struct {
 	Pattern
 	re *regexp.Regexp
+	// strip matches the start of a match before its secret part; nil when
+	// the pattern has no SecretPrefix.
+	strip *regexp.Regexp
 }
 
 // Engine is the prompt-injection regex tier. Construct with NewEngine
@@ -61,7 +64,12 @@ func compileBundled(ps []Pattern) []compiled {
 			// a rule.
 			panic(fmt.Sprintf("guardrails: invalid bundled regex for %q: %v", p.ID, err))
 		}
-		out = append(out, compiled{Pattern: p, re: re})
+		c := compiled{Pattern: p, re: re}
+		if p.SecretPrefix != "" {
+			// Closed pattern set, as above.
+			c.strip = regexp.MustCompile(p.SecretPrefix)
+		}
+		out = append(out, c)
 	}
 	return out
 }
@@ -127,11 +135,40 @@ func (e *Engine) InspectAnswerBundled(text string) (hit bool, id string) {
 		return false, ""
 	}
 	for i := range e.answers {
-		if e.answers[i].mayMatch(text) && e.answers[i].re.MatchString(text) {
+		if e.answers[i].mayMatch(text) && e.answers[i].matches(text) {
 			return true, e.answers[i].ID
 		}
 	}
 	return false, ""
+}
+
+// matches reports whether the pattern matches text with a secret part: a
+// match of a placeholder (fewer than MinSecretDistinct distinct characters
+// after the prefix) does not count, and the search goes on after it.
+func (c *compiled) matches(text string) bool {
+	if c.strip == nil {
+		return c.re.MatchString(text)
+	}
+	for _, loc := range c.re.FindAllStringIndex(text, -1) {
+		m := text[loc[0]:loc[1]]
+		if secretDistinct(m[len(c.strip.FindString(m)):]) >= MinSecretDistinct {
+			return true
+		}
+	}
+	return false
+}
+
+// secretDistinct counts the distinct bytes of s (a secret part is ASCII).
+func secretDistinct(s string) int {
+	var seen [256]bool
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if !seen[s[i]] {
+			seen[s[i]] = true
+			n++
+		}
+	}
+	return n
 }
 
 // mayMatch reports whether text holds one of the literals the pattern

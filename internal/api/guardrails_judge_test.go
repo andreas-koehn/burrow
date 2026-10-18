@@ -108,6 +108,30 @@ func TestGuardrailPutSettings_RefusesBadJudge(t *testing.T) {
 	}
 }
 
+// An enabled judge cannot name a model that is switched off: it would fail
+// every request.
+func TestGuardrailPutSettings_RefusesDisabledJudgeModel(t *testing.T) {
+	models := &fakeModelStore{rows: []db.AIModel{{Name: "off-model", Enabled: false}}}
+	ss := &fakeCacheSettingsStore{}
+	srv := httptest.NewServer(NewRouter(Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, Settings: ss, AIModels: models}))
+	t.Cleanup(srv.Close)
+	c := authedClient(t, srv)
+	r := c.put(t, "/api/v1/guardrails/settings", map[string]any{"action": "log_only", "judge": map[string]any{"enabled": true, "model": "off-model"}})
+	body := readBody(t, r)
+	if r.StatusCode != http.StatusBadRequest || !strings.Contains(body, `judge model \"off-model\" is disabled`) {
+		t.Fatalf("PUT %d %s", r.StatusCode, body)
+	}
+	if _, saved := ss.saved["guardrails.global"]; saved {
+		t.Fatal("saved")
+	}
+	// Switched off, the judge may keep naming it.
+	r = c.put(t, "/api/v1/guardrails/settings", map[string]any{"action": "log_only", "judge": map[string]any{"enabled": false, "model": "off-model"}})
+	if r.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT %d %s", r.StatusCode, readBody(t, r))
+	}
+	r.Body.Close()
+}
+
 // A disabled judge may name a model that is gone: saving the other settings
 // must not fail on it.
 func TestGuardrailPutSettings_DisabledJudgeModelNotLookedUp(t *testing.T) {

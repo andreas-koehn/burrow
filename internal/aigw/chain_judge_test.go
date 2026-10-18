@@ -224,7 +224,7 @@ func TestChainJudge_Failures(t *testing.T) {
 				if ev.JudgeVerdict != aigw.JudgeFailed || ev.JudgeFailure != wantClass {
 					t.Fatalf("event %+v", ev)
 				}
-				if m := rig.entry(t).Judge; m == nil || m.Verdict != "failed" || m.Failure != wantClass {
+				if m := rig.entry(t).Judge; m == nil || m.Verdict != "failed" || m.Failure != wantClass || m.Refused != (onFailure == "refuse") {
 					t.Fatalf("inspector judge mark %+v", m)
 				}
 			})

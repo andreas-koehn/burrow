@@ -688,15 +688,21 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		// requests: on the body, then on the key's system text.
 		var hit bool
 		var pattern string
+		fromKey := false // the match came from the key's system text
 		if len(redactedBody) > 0 && !upload {
 			hit, pattern = c.Guardrails.InspectRequest(redactedBody, cfg.Guardrails.CustomPatterns)
 		}
 		if !hit && keyText != "" {
 			hit, pattern = c.Guardrails.InspectRequest([]byte(keyText), cfg.Guardrails.CustomPatterns)
+			fromKey = hit
 		}
 		if hit {
+			in := ""
+			if fromKey {
+				in = inspector.GuardrailInKeySystemText
+			}
 			mark := func(action string) *inspector.GuardrailMark {
-				return &inspector.GuardrailMark{Pattern: pattern, Direction: guardrails.DirectionRequest, Action: action}
+				return &inspector.GuardrailMark{Pattern: pattern, Direction: guardrails.DirectionRequest, Action: action, In: in}
 			}
 			switch cfg.Guardrails.Action {
 			case guardrails.ActionRefuse403, "":
