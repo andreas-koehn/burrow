@@ -19,6 +19,8 @@ const EXPIRY_CHOICES = [
   { value: "365", label: "365 days" },
 ];
 const DAY_MS = 86_400_000;
+// Stay 5 minutes inside the limit so a relay clock slightly behind ours does not refuse it.
+const EXPIRY_MARGIN_MS = 5 * 60_000;
 
 const isExpired = (t: Token) => !!t.expires_at && Date.parse(t.expires_at) <= Date.now();
 
@@ -31,9 +33,9 @@ export function ClientTokensPanel() {
   const [plaintext, setPlaintext] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<{ id: string; name: string } | null>(null);
   const create = useMutation({
-    mutationFn: () => apiFetch<{ name: string; token: string }>("/tokens", { method: "POST", body: JSON.stringify(Number(days) > 0 ? { name, expires_at: new Date(Date.now() + Number(days) * DAY_MS).toISOString() } : { name }) }),
+    mutationFn: () => apiFetch<{ name: string; token: string }>("/tokens", { method: "POST", body: JSON.stringify(Number(days) > 0 ? { name, expires_at: new Date(Date.now() + Number(days) * DAY_MS - EXPIRY_MARGIN_MS).toISOString() } : { name }) }),
     onSuccess: (r) => { setPlaintext(r.token); setName(""); setDays("0"); qc.invalidateQueries({ queryKey: ["tokens"] }); },
-    onError: () => toast.error("Failed to create token"),
+    onError: (e: Error) => toast.error(e.message ? `Failed to create token: ${e.message}` : "Failed to create token"),
   });
   const revoke = useMutation({
     mutationFn: (id: string) => apiFetch(`/tokens/${id}`, { method: "DELETE" }),

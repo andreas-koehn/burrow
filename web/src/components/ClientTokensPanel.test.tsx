@@ -246,8 +246,20 @@ describe("ClientTokensPanel", () => {
       const ahead = (Date.parse(body.expires_at) - Date.now()) / 86_400_000;
       expect(ahead).toBeGreaterThan(days - 0.1);
       expect(ahead).toBeLessThan(days + 0.1);
-      // The relay refuses more than 365 days ahead: stay inside it.
-      expect(Date.parse(body.expires_at)).toBeLessThanOrEqual(Date.now() + 365 * 86_400_000);
+      // A relay clock a little behind ours must still accept it: sit 5 minutes inside the limit.
+      expect(Date.parse(body.expires_at)).toBeLessThanOrEqual(Date.now() + days * 86_400_000 - 4 * 60_000);
+    });
+
+    it("shows the API's error message when create fails", async () => {
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url: any, opts: any) => {
+        if (String(url).endsWith("/tokens") && opts?.method === "POST")
+          return new Response(JSON.stringify({ error: "expires_at must be within 365 days" }), { status: 400 }) as any;
+        return new Response("[]", { status: 200 }) as any;
+      });
+      setup();
+      await userEvent.type(await screen.findByLabelText(/token name/i), "laptop");
+      await userEvent.click(screen.getByRole("button", { name: /create/i }));
+      expect(await screen.findByText(/expires_at must be within 365 days/)).toBeInTheDocument();
     });
   });
 });
