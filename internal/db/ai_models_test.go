@@ -174,8 +174,9 @@ func checkAIModelsFollowProviderRename(t *testing.T, x *DB, userID string) {
 	if err := x.DeleteAIModel(ctx, "m1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := x.DeleteService(ctx, p.ServiceID); err != nil {
-		t.Fatalf("delete service without models: %v", err)
+	// With the model gone the provider alone still holds the service.
+	if err := x.DeleteService(ctx, p.ServiceID); !errors.Is(err, ErrServiceHasProvider) {
+		t.Fatalf("delete service without models: %v, want ErrServiceHasProvider", err)
 	}
 }
 
@@ -200,16 +201,11 @@ func checkDeleteKeepsOtherErrors(t *testing.T, x *DB, userID string,
 		Targets: []AIModelTarget{{Dialect: "openai", ProviderSlug: "zai", TargetModel: "g"}}}); err != nil {
 		t.Fatal(err)
 	}
-	p, err := x.GetAIProvider(ctx, "zai")
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, c := range []struct {
 		what, table, when string
 		del               func() error
 	}{
 		{"provider", "ai_providers", `OLD.slug = 'zai'`, func() error { return x.DeleteAIProviderAndBacking(ctx, "zai") }},
-		{"service", "services", `OLD.id = '` + p.ServiceID + `'`, func() error { return x.DeleteService(ctx, p.ServiceID) }},
 		{"user", "users", `OLD.id = '` + userID + `'`, func() error { return x.DeleteUser(ctx, userID) }},
 	} {
 		name := "burrow_test_refuse_" + c.table

@@ -265,14 +265,29 @@ func (x *DB) TouchServiceLastSeen(ctx context.Context, serviceID, tokenName stri
 	return notFoundIfNoRows(res, "touch service last_seen")
 }
 
+// ErrServiceHasProvider is returned, wrapped with the provider's slug, when
+// an AI provider points at the service that is to be deleted.
+var ErrServiceHasProvider = errors.New("service backs an AI provider")
+
 // DeleteService removes the service with the given ID.
-// ON DELETE CASCADE removes associated api_keys and access_policy rows.
-// Returns ErrNotFound if no row matched. A service behind a provider that a
-// synthetic model targets stays: the error wraps ErrProviderInUse and names
-// the models.
+// ON DELETE CASCADE removes associated api_keys and access_policy rows. The
+// budgets and rate limits scoped to the service go in the same transaction;
+// usage rows stay (they carry the id of a service that is gone).
+// Returns ErrNotFound if no row matched. A service that a provider points at
+// stays, and the check is part of the delete: a provider created meanwhile
+// cannot be deleted by cascade. The error wraps ErrServiceHasProvider and
+// names the provider; when only the models of a provider are in the way, it
+// wraps ErrProviderInUse and names the models.
 func (x *DB) DeleteService(ctx context.Context, id string) error {
-	res, err := x.sqlDB.ExecContext(ctx, `DELETE FROM services WHERE id=?`, id)
+	tx, err := x.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
+		return fmt.Errorf("begin delete service tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM services WHERE id=? AND NOT EXISTS (SELECT 1 FROM ai_providers WHERE service_id=?)`, id, id)
+	if err != nil {
+		_ = tx.Rollback()
 		return x.providerInUseOr(ctx, fmt.Errorf("delete service: %w", err), `WHERE s.id=?`, id)
 	}
 	n, err := res.RowsAffected()
@@ -280,7 +295,23 @@ func (x *DB) DeleteService(ctx context.Context, id string) error {
 		return fmt.Errorf("delete service rows affected: %w", err)
 	}
 	if n == 0 {
+		_ = tx.Rollback()
+		if p, err := x.GetAIProviderByService(ctx, id); err == nil {
+			if names, err := x.modelNamesUsing(ctx, `WHERE s.id=?`, id); err == nil && len(names) > 0 {
+				return fmt.Errorf("delete service: %w: %s", ErrProviderInUse, strings.Join(names, ", "))
+			}
+			return fmt.Errorf("delete service: %w: %s", ErrServiceHasProvider, p.Slug)
+		}
 		return fmt.Errorf("delete service: %w", ErrNotFound)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM budgets WHERE scope='service' AND subject_id=?`, id); err != nil {
+		return fmt.Errorf("delete service budgets: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM rate_limits WHERE scope='service' AND subject=?`, id); err != nil {
+		return fmt.Errorf("delete service rate limits: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete service tx: %w", err)
 	}
 	return nil
 }

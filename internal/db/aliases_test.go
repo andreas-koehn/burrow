@@ -16,6 +16,11 @@ func seedSvc(t *testing.T, x *DB, userID, name string) string {
 	if err != nil {
 		t.Fatalf("seed service: %v", err)
 	}
+	// Usage rows outlive their service (migration 0031); a database that
+	// outlives the run (Postgres) must not keep them.
+	t.Cleanup(func() {
+		_, _ = x.sqlDB.ExecContext(context.Background(), `DELETE FROM usage_events WHERE service_id=?`, s.ID)
+	})
 	return s.ID
 }
 

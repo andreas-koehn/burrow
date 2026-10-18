@@ -25,17 +25,14 @@ export function DeleteServiceDialog({ service, open, onOpenChange }: DeleteServi
 
   const remove = useMutation({
     mutationFn: () => apiFetch<void>(`/services/${encodeURIComponent(service.id)}`, { method: "DELETE" }),
-    onSuccess: async () => {
-      // The page behind the dialog must not ask for the service that is gone.
-      qc.removeQueries({ queryKey: ["service", service.id] });
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["services"] }),
-        qc.invalidateQueries({ queryKey: ["tunnels"] }),
-        qc.invalidateQueries({ queryKey: ["ai", "providers"] }),
-      ]);
+    onSuccess: () => {
       toast.success(`Service ${label} deleted.`);
       onOpenChange(false);
+      // Leave first: the page behind the dialog would ask for the service that is gone.
       navigate("/services");
+      void qc.invalidateQueries({ queryKey: ["services"] });
+      void qc.invalidateQueries({ queryKey: ["tunnels"] });
+      void qc.invalidateQueries({ queryKey: ["ai", "providers"] });
     },
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : "Couldn't delete the service."),
   });
@@ -57,8 +54,10 @@ export function DeleteServiceDialog({ service, open, onOpenChange }: DeleteServi
       }
     >
       <ErrorNotice variant="warn" role="note">
-        The URL stops working, and connected clients are disconnected. Its API keys, domains and
-        settings are deleted with it. This cannot be undone.
+        The URL stops working. Its API keys, domains and settings are deleted with it, and the
+        settings made here do not come back: a client that registers the same tunnel name later
+        creates a new service, open to everyone. A connected service cannot be deleted. This
+        cannot be undone.
       </ErrorNotice>
       {err && <ErrorNotice role="alert">{err}</ErrorNotice>}
     </Dialog>

@@ -135,7 +135,7 @@ func TestMigrate0004Through0010Schema(t *testing.T) {
 		t.Fatalf("update mtls_ca_pem: %v", err)
 	}
 
-	// cascade probe: deleting service cascades usage_events + service_ai_config.
+	// cascade probe: deleting a service cascades service_ai_config; usage_events stay (0031).
 	if _, err := d.ExecContext(ctx, `DELETE FROM services WHERE id='s1'`); err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +143,9 @@ func TestMigrate0004Through0010Schema(t *testing.T) {
 	if err := d.QueryRowContext(ctx, `SELECT count(*) FROM usage_events`).Scan(&n); err != nil {
 		t.Fatalf("count usage_events: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("usage_events not cascaded: %d", n)
+	// Migration 0031: usage rows are history and stay.
+	if n != 1 {
+		t.Fatalf("usage_events after the service went: %d, want 1", n)
 	}
 	if err := d.QueryRowContext(ctx, `SELECT count(*) FROM service_ai_config`).Scan(&n); err != nil {
 		t.Fatalf("count service_ai_config: %v", err)
@@ -237,12 +238,12 @@ func TestMigrateDriverFilter(t *testing.T) {
 		}
 	}
 
-	// Expect exactly 29 SQLite files and 29 Postgres files.
-	if len(sqliteFiles) != 29 {
-		t.Errorf("want 29 sqlite migration files, got %d: %v", len(sqliteFiles), sqliteFiles)
+	// Expect exactly 30 SQLite files and 30 Postgres files.
+	if len(sqliteFiles) != 30 {
+		t.Errorf("want 30 sqlite migration files, got %d: %v", len(sqliteFiles), sqliteFiles)
 	}
-	if len(postgresFiles) != 29 {
-		t.Errorf("want 29 postgres migration files, got %d: %v", len(postgresFiles), postgresFiles)
+	if len(postgresFiles) != 30 {
+		t.Errorf("want 30 postgres migration files, got %d: %v", len(postgresFiles), postgresFiles)
 	}
 
 	// Each SQLite file must have a matching postgres twin.

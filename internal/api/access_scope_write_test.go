@@ -93,6 +93,12 @@ func TestTokenOwnScopeWrites(t *testing.T) {
 			func() bool { return h.service(t, authzServiceID).Subdomain == "renamed" }},
 		{"gateway-only", http.MethodPut, svc + "/gateway-only", map[string]bool{"gateway_only": true}, http.StatusOK,
 			func() bool { return h.service(t, authzServiceID).GatewayOnly }},
+		// Last: it takes the service the cases above change.
+		{"delete service", http.MethodDelete, svc, nil, http.StatusNoContent,
+			func() bool {
+				_, err := db.Wrap(h.sqldb).GetServiceByID(ctx, authzServiceID)
+				return err != nil
+			}},
 	}
 	// Refusals first, so that none of them sees the change of a success.
 	for _, c := range cases {

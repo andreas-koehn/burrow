@@ -2,11 +2,16 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/cost"
 	"github.com/ankoehn/burrow/internal/db"
 )
 
@@ -23,20 +28,39 @@ type forgotten struct{ ids []string }
 
 func (f *forgotten) forget(id string) { f.ids = append(f.ids, id) }
 
+// deleteLive answers that the listed services have a live tunnel.
+type deleteLive map[string]bool
+
+func (l deleteLive) LookupByServiceID(id string) (LiveTunnelSnapshot, bool) {
+	return LiveTunnelSnapshot{Connected: l[id], SessionID: "s1"}, l[id]
+}
+
+func (deleteLive) LookupByTunnelID(string) (TunnelLocator, bool) { return TunnelLocator{}, false }
+
+// invalidated records the hostnames evicted from the certificate cache.
+type invalidated struct{ hosts []string }
+
+func (i *invalidated) InvalidateHostname(h string) { i.hosts = append(i.hosts, h) }
+
 type deleteFixture struct {
 	*authzHarness
 	aud    *stubAuditAppender
 	closed *closedServices
 	forgot *forgotten
+	live   deleteLive
+	certs  *invalidated
 }
 
 func newDeleteFixture(t *testing.T) *deleteFixture {
 	t.Helper()
-	f := &deleteFixture{aud: &stubAuditAppender{}, closed: &closedServices{}, forgot: &forgotten{}}
+	f := &deleteFixture{aud: &stubAuditAppender{}, closed: &closedServices{}, forgot: &forgotten{},
+		live: deleteLive{}, certs: &invalidated{}}
 	f.authzHarness = newAuthzHarness(t, func(d *Deps) {
 		d.AuditAppender = f.aud
 		d.ServiceSessions = f.closed
 		d.OnServiceDeleted = f.forgot.forget
+		d.LiveTunnels = f.live
+		d.CustomDomainCache = f.certs
 	})
 	return f
 }
@@ -82,6 +106,10 @@ func TestDeleteService_OwnerDeletes(t *testing.T) {
 	ev := f.aud.events[0]
 	if ev.Action != audit.ActionServiceDelete || ev.SubjectID != authzServiceID || ev.SubjectLabel != "web" || ev.ActorID != "u-user" {
 		t.Fatalf("audit event: %+v", ev)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil || payload["slug"] != "web" || payload["owner_id"] != "u-user" {
+		t.Fatalf("audit payload: %s (%v)", ev.Payload, err)
 	}
 	if len(f.closed.ids) != 1 || f.closed.ids[0] != authzServiceID {
 		t.Fatalf("sessions closed for %v", f.closed.ids)
@@ -163,13 +191,92 @@ func TestDeleteService_ProviderBlocks(t *testing.T) {
 	}
 	// A tunnel provider alone blocks.
 	check("ollama")
-	// So does a model that targets it; the message names the provider still.
+	// So does a model that targets it; the message names the model.
 	if _, err := f.st.CreateModel(ctx, db.AIModel{Name: "burrow-simple", Enabled: true,
 		Targets: []db.AIModelTarget{{Dialect: "openai", ProviderSlug: "ollama", TargetModel: "m"}}}); err != nil {
 		t.Fatal(err)
 	}
-	check("ollama")
+	check("burrow-simple")
 	if len(f.aud.events) != 0 || len(f.closed.ids) != 0 {
 		t.Fatal("side effects of a refused delete")
+	}
+}
+
+func TestDeleteService_ConnectedIs409(t *testing.T) {
+	f := newDeleteFixture(t)
+	f.live[authzServiceID] = true
+	rec := f.do(t, http.MethodDelete, "/api/v1/services/"+authzServiceID, nil, f.session(t, "user"))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("delete of a connected service: %d %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "the service is connected; stop the client or remove the tunnel from its config, then delete") {
+		t.Fatalf("message: %s", rec.Body)
+	}
+	if !f.exists(t, authzServiceID) || len(f.aud.events) != 0 || len(f.forgot.ids) != 0 {
+		t.Fatal("a refused delete changed something")
+	}
+	// Another user is not told that it is connected.
+	if rec := f.do(t, http.MethodDelete, "/api/v1/services/"+authzServiceID, nil, f.otherUser(t)); rec.Code != http.StatusNotFound {
+		t.Fatalf("another user: %d", rec.Code)
+	}
+	// Once the client is gone the delete goes through.
+	delete(f.live, authzServiceID)
+	if rec := f.do(t, http.MethodDelete, "/api/v1/services/"+authzServiceID, nil, f.session(t, "user")); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestDeleteService_EvictsCertificatesOfItsDomains(t *testing.T) {
+	f := newDeleteFixture(t)
+	x := db.Wrap(f.sqldb)
+	for _, h := range []string{"a.example.com", "b.example.com"} {
+		if _, err := x.InsertCustomDomain(context.Background(), db.ServiceCustomDomain{
+			ServiceID: authzServiceID, Hostname: h, CertPEM: "c", KeyPEM: "k", CertSHA256: "x",
+			NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A refused delete leaves the cache alone.
+	f.live[authzServiceID] = true
+	f.do(t, http.MethodDelete, "/api/v1/services/"+authzServiceID, nil, f.session(t, "user"))
+	if len(f.certs.hosts) != 0 {
+		t.Fatalf("evicted %v for a refused delete", f.certs.hosts)
+	}
+	delete(f.live, authzServiceID)
+	if rec := f.do(t, http.MethodDelete, "/api/v1/services/"+authzServiceID, nil, f.session(t, "user")); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
+	}
+	got := slices.Clone(f.certs.hosts)
+	sort.Strings(got)
+	if !slices.Equal(got, []string{"a.example.com", "b.example.com"}) {
+		t.Fatalf("evicted %v", got)
+	}
+}
+
+// Usage rows keep the id of a deleted service; the cost views read them
+// without a lookup of the service, so they answer and carry the id.
+func TestDeleteService_UsageHistoryStillReads(t *testing.T) {
+	f := &deleteFixture{aud: &stubAuditAppender{}, closed: &closedServices{}, forgot: &forgotten{}, live: deleteLive{}, certs: &invalidated{}}
+	f.authzHarness = newAuthzHarness(t, func(d *Deps) {
+		if x, ok := d.Budgets.(*db.DB); ok {
+			d.CostEngine = cost.New(x, cost.Pricing{})
+		}
+	})
+	if _, err := f.sqldb.Exec(`INSERT INTO usage_events(id, service_id, ts, kind, tokens_in, tokens_out, cost_usd) VALUES('ue1', ?, ?, 'openai', 10, 5, 0.25)`,
+		authzServiceID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	admin := f.session(t, "admin")
+	if rec := f.do(t, http.MethodDelete, "/api/v1/services/"+authzServiceID, nil, admin); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
+	}
+	rec := f.do(t, http.MethodGet, "/api/v1/cost/export?window=today", nil, admin)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), authzServiceID) {
+		t.Fatalf("export: %d %s", rec.Code, rec.Body)
+	}
+	rec = f.do(t, http.MethodGet, "/api/v1/cost/summary?window=today", nil, admin)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"total_usd":0.25`) {
+		t.Fatalf("summary: %d %s", rec.Code, rec.Body)
 	}
 }

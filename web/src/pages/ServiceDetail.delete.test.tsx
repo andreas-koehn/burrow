@@ -46,7 +46,8 @@ describe("ServiceDetail: delete service", () => {
     const dialog = await openDialog();
     expect(dialog).toHaveTextContent("grafana");
     expect(dialog).toHaveTextContent(/URL stops working/i);
-    expect(dialog).toHaveTextContent(/connected clients are disconnected/i);
+    expect(dialog).toHaveTextContent(/registers the same tunnel name later creates a new service/i);
+    expect(dialog).toHaveTextContent(/settings made here do not come back/i);
     expect(db.services.some((s) => s.id === "svc_graf01")).toBe(true);
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -64,12 +65,56 @@ describe("ServiceDetail: delete service", () => {
   });
 
   it("shows the 409 in the dialog and stays", async () => {
-    mountAt("svc_ai001");
+    server.use(http.delete("/api/v1/services/:id", () =>
+      HttpResponse.json({ error: "the service is connected; stop the client or remove the tunnel from its config, then delete" }, { status: 409 })));
+    mountAt("svc_graf01");
     const dialog = await openDialog();
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete service" }));
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/delete the provider/i);
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/the service is connected/i);
     expect(screen.queryByRole("heading", { name: "Services list" })).toBeNull();
-    expect(db.services.some((s) => s.id === "svc_ai001")).toBe(true);
+    expect(db.services.some((s) => s.id === "svc_graf01")).toBe(true);
+  });
+
+  it("is disabled, with a hint, while a client serves the service", async () => {
+    // svc_ai001 is online; take its provider away so only the client is in the way.
+    db.aiProviders = db.aiProviders.filter((p) => p.service_id !== "svc_ai001");
+    mountAt("svc_ai001");
+    const zone = await screen.findByRole("region", { name: "Danger zone" });
+    const button = within(zone).getByRole("button", { name: "Delete service" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription(/stop the client or remove the tunnel from its config/i);
+  });
+
+  it("is disabled, with a hint, while a provider uses the service", async () => {
+    const svc = db.services.find((s) => s.id === "svc_ai001")!;
+    svc.connected = false;
+    mountAt("svc_ai001");
+    const zone = await screen.findByRole("region", { name: "Danger zone" });
+    await waitFor(() => expect(within(zone).getByRole("button", { name: "Delete service" })).toBeDisabled());
+    expect(within(zone).getByRole("button", { name: "Delete service" })).toHaveAccessibleDescription(/delete the provider/i);
+  });
+
+  it("leaves the page before the service is asked for again", async () => {
+    let reads = 0;
+    let deleted = false;
+    server.use(
+      http.get("/api/v1/services/:id", ({ params }) => {
+        if (deleted) reads++;
+        const svc = db.services.find((s) => s.id === params.id);
+        return svc ? HttpResponse.json({ ...svc, api_key_count: 0, access_policy: [], status: "offline", provider_slug: "" }) : HttpResponse.json({ error: "service not found" }, { status: 404 });
+      }),
+      http.delete("/api/v1/services/:id", ({ params }) => {
+        deleted = true;
+        db.services = db.services.filter((s) => s.id !== params.id);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    mountAt("svc_graf01");
+    const dialog = await openDialog();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete service" }));
+    expect(await screen.findByRole("heading", { name: "Services list" })).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(reads).toBe(0);
   });
 
   it("shows any other failure in the dialog", async () => {

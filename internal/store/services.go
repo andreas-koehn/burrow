@@ -22,7 +22,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,7 +43,7 @@ var (
 	// ErrServiceHasProvider is returned by DeleteService, wrapped with the
 	// provider's slug, while an AI provider (tunnel or direct) points at the
 	// service.
-	ErrServiceHasProvider = errors.New("store: service backs an AI provider")
+	ErrServiceHasProvider = db.ErrServiceHasProvider
 )
 
 // ServiceView is the durable-fields representation of a service returned by
@@ -111,13 +110,6 @@ func (s *Store) canConfigure(ctx context.Context, callerID, callerRole, serviceI
 func (s *Store) DeleteService(ctx context.Context, callerID, callerRole, serviceID string) (string, error) {
 	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
 	if err != nil {
-		return "", err
-	}
-	p, err := s.q.GetAIProviderByService(ctx, serviceID)
-	switch {
-	case err == nil:
-		return "", fmt.Errorf("%w: %s", ErrServiceHasProvider, p.Slug)
-	case !errors.Is(err, db.ErrNotFound):
 		return "", err
 	}
 	if err := s.q.DeleteService(ctx, serviceID); err != nil {

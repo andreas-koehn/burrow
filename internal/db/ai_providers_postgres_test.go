@@ -121,7 +121,10 @@ func TestReportedCostAndProviderRename_Postgres(t *testing.T) {
 	t.Cleanup(func() {
 		_ = x.DeleteAIProviderAndBacking(ctx, "pg-cost")
 		_ = x.DeleteAIProviderAndBacking(ctx, "pg-cost2")
+		// Usage rows outlive their service (migration 0031).
+		_, _ = x.sqlDB.ExecContext(ctx, `DELETE FROM usage_events WHERE service_id=?`, svc.ID)
 	})
+	_, _ = x.sqlDB.ExecContext(ctx, `DELETE FROM usage_events WHERE service_id=?`, svc.ID)
 
 	quarter, zero := 0.25, 0.0
 	for id, ev := range map[string]UsageEvent{

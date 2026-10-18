@@ -14,6 +14,8 @@ func checkTokenlessRequests(t *testing.T, x *DB, userID string) {
 	t.Helper()
 	ctx := context.Background()
 	_ = x.DeleteUser(ctx, userID)
+	// Rows of services deleted by an earlier run stay (migration 0031).
+	_, _ = x.sqlDB.ExecContext(ctx, `DELETE FROM usage_events WHERE service_id NOT IN (SELECT id FROM services)`)
 	t.Cleanup(func() { _ = x.DeleteUser(ctx, userID) })
 	if err := x.CreateUser(ctx, User{ID: userID, Email: userID + "@test.invalid", PasswordHash: "h", Role: "user"}); err != nil {
 		t.Fatal(err)
@@ -22,6 +24,7 @@ func checkTokenlessRequests(t *testing.T, x *DB, userID string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _, _ = x.sqlDB.ExecContext(ctx, `DELETE FROM usage_events WHERE service_id=?`, svc.ID) })
 	cost := func(v float64) any { return v }
 	rows := []struct {
 		id        string

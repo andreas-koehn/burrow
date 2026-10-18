@@ -2509,17 +2509,21 @@ paths:
       summary: Delete the service
       description: >-
         The owner, or a holder of services:configure:any, deletes the service.
-        Its URL stops working, a client connected for it is disconnected, and
-        its API keys, access policy, domains, AI configuration and cache go
-        with it. Anyone else gets 404, as for a service that does not exist.
-        A service that an AI provider uses is refused with 409: delete the
+        Its URL stops working, and its API keys, access policy, domains, AI
+        configuration, cache, budgets and rate limits go with it. Usage and cost
+        history stay. Anyone else gets 404, as for a service that does not
+        exist. A service that a client is connected for cannot be deleted (409):
+        stop the client or remove the tunnel from its config first. A client
+        that registers the same tunnel name later creates a new service, in
+        mode open; the settings made in the dashboard do not come back. A
+        service that an AI provider uses is also refused with 409: delete the
         provider, and the models that use it, first.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       responses:
         '204': { description: Service deleted. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { description: An AI provider (or a model that uses it) still uses the service. }
+        '409': { description: A client is connected for the service, or an AI provider (or a model that uses it) still uses it. }
 
   /api/v1/services/{serviceID}/access-mode:
     put:

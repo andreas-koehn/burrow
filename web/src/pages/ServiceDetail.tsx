@@ -129,6 +129,12 @@ export default function ServiceDetail() {
   const showGatewaySwitch = svc.type === "http" && (backsProvider || svc.gateway_only);
   // The provider is named as the gateway names it; its slug stands in where the list is not readable.
   const providerSlug = svc.provider_slug ?? "";
+  // Why the service cannot be deleted now: the relay refuses both.
+  const deleteBlock = svc.connected
+    ? "The service is connected: stop the client or remove the tunnel from its config, then delete."
+    : providerSlug || backsProvider
+      ? "An AI provider uses this service: delete the provider, and the models that use it, first."
+      : null;
   const providerName = (providers.data ?? []).find((p) => p.slug === providerSlug)?.name || providerSlug;
   const hasPublicUrl = svc.type === "http" && !svc.gateway_only && !!(svc.slug || svc.url);
   // Under /svc/ a service is on the dashboard's own origin. Behind an API key no
@@ -268,10 +274,19 @@ export default function ServiceDetail() {
         <section className="danger-zone" aria-labelledby="danger-zone-title">
           <h2 id="danger-zone-title" className="danger-zone-title">Danger zone</h2>
           <div className="row row-center gap-3">
-            <p className="muted small">
-              Deleting the service stops its URL and disconnects the clients connected for it.
+            <p id="delete-service-help" className="muted small">
+              {deleteBlock ??
+                "Deleting the service stops its URL and removes its settings. A client that registers the same tunnel name later creates a new service."}
             </p>
-            <Button type="button" variant="destructive" onClick={() => setDeleting(true)}>Delete service</Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={deleteBlock !== null}
+              aria-describedby="delete-service-help"
+              onClick={() => setDeleting(true)}
+            >
+              Delete service
+            </Button>
           </div>
           <DeleteServiceDialog service={{ id: svc.id, name: label }} open={deleting} onOpenChange={setDeleting} />
         </section>

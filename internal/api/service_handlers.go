@@ -279,12 +279,22 @@ func (d Deps) GetService(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// errServiceConnected is the 409 of a delete while a client serves the service.
+const errServiceConnected = "the service is connected; stop the client or remove the tunnel from its config, then delete"
+
 // DeleteService handles DELETE /api/v1/services/{serviceID}. The owner, or a
 // role that may configure any service, deletes; anyone else gets the 404 of a
-// service that is not there. The URL stops working, a client connected for
-// the service is disconnected, and the in-memory state of the service goes.
-// A service that an AI provider points at is refused with 409: delete the
-// provider (and the models that use it) first.
+// service that is not there.
+//
+// A service that a client serves now is refused with 409: a client creates the
+// service again, in mode open and without the dashboard's settings, when it
+// registers the tunnel name next, so deleting a connected service only
+// replaces it with an open one. Likewise 409 when an AI provider uses the
+// service: delete the provider (and the models that use it) first.
+//
+// Afterwards the certificates of its custom domains leave the SNI cache, the
+// in-memory state under its id goes, and a session that connected in the
+// meantime is closed.
 func (d Deps) DeleteService(w http.ResponseWriter, r *http.Request) {
 	serviceID := chi.URLParam(r, "serviceID")
 	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
@@ -292,7 +302,34 @@ func (d Deps) DeleteService(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	name, err := d.Services.DeleteService(r.Context(), userID(r.Context()), role, serviceID)
+	uid := userID(r.Context())
+	// Reads the service with the permission check of the delete: whoever may
+	// not delete it is not told anything about it.
+	det, err := d.Services.GetService(r.Context(), uid, role, serviceID)
+	if errors.Is(err, store.ErrForbidden) || errors.Is(err, db.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "service not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if d.composeLive(serviceID).Connected {
+		writeErr(w, http.StatusConflict, errServiceConnected)
+		return
+	}
+	// The hostnames are read first: the rows go with the service.
+	var hostnames []string
+	if d.CustomDomains != nil {
+		rows, err := d.CustomDomains.ListCustomDomains(r.Context(), serviceID)
+		if err != nil {
+			d.warn("service delete: custom domains not listed", "service_id", serviceID, "err", err)
+		}
+		for _, row := range rows {
+			hostnames = append(hostnames, row.Hostname)
+		}
+	}
+	name, err := d.Services.DeleteService(r.Context(), uid, role, serviceID)
 	switch {
 	case errors.Is(err, store.ErrForbidden), errors.Is(err, db.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "service not found")
@@ -309,6 +346,12 @@ func (d Deps) DeleteService(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	if d.CustomDomainCache != nil {
+		for _, h := range hostnames {
+			d.CustomDomainCache.InvalidateHostname(h)
+		}
+	}
+	// A client that connected after the check above.
 	if d.ServiceSessions != nil {
 		if n := d.ServiceSessions.CloseByService(serviceID); n > 0 {
 			d.Log.Info("service sessions closed", "service_id", serviceID, "sessions", n)
@@ -325,6 +368,7 @@ func (d Deps) DeleteService(w http.ResponseWriter, r *http.Request) {
 			SubjectID: serviceID, SubjectLabel: name,
 			Result:   "ok",
 			SourceIP: lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
+			Payload: audit.MustJSON(map[string]string{"slug": det.Subdomain, "owner_id": det.UserID}),
 		})
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -759,11 +759,12 @@ export const handlers = [
     });
   }),
   // The owner, or a holder of services:configure:any, deletes; anyone else gets the 404 of an unknown id.
-  // A service an AI provider points at stays (409), as for the relay.
+  // A service a client serves, or an AI provider points at, stays (409), as for the relay.
   http.delete("/api/v1/services/:id", ({ request, params }) => {
     const g = gate(request); if (g) return g;
     const svc = db.services.find((s) => s.id === params.id);
     if (!svc || !canConfigure(svc)) return err(404, "service not found");
+    if (svc.connected) return err(409, "the service is connected; stop the client or remove the tunnel from its config, then delete");
     const provider = db.aiProviders.find((p) => p.service_id === svc.id);
     if (provider) {
       return err(409, `an AI provider still uses this service (${provider.slug}); delete the provider, and the models that use it, first`);
