@@ -300,3 +300,34 @@ func TestAnswerPatterns_StreamedKeyWithPlaceholderStartIsBlocked(t *testing.T) {
 		}
 	}
 }
+
+// A key padded with a placeholder run is not let past the scanner: once the
+// secret part is longer than a placeholder can be, the match counts whatever
+// its distinct characters, so it is found while its prefix is in the tail.
+func TestAnswerPatterns_PaddedKeyStreamedIsBlocked(t *testing.T) {
+	e := NewEngine()
+	real := "Ab3dE5gH7jK9mN1pQ3sT5vX7zB9cD1fG3hJ5"
+	for _, prefix := range []string{"sk-proj-", "ghp" + "_", "bgw" + "_"} {
+		text := "x " + prefix + strings.Repeat("x", 600) + real
+		if ok, _ := e.InspectAnswerBundled(text); !ok {
+			t.Fatalf("%s: padded key not blocked as a whole", prefix)
+		}
+		for _, step := range []int{1, 7} {
+			s := NewStreamScanner(e.InspectAnswerBundled, nil)
+			hit := false
+			for i := 0; i < len(text) && !hit; i += step {
+				hit, _ = s.Add(text[i:min(i+step, len(text))])
+			}
+			if !hit {
+				t.Errorf("%s step %d: padded key streamed past the scanner", prefix, step)
+			}
+		}
+	}
+	// A placeholder alone, also a long one within the cap, is still no key.
+	for _, n := range []int{20, MaxPlaceholderSecret} {
+		text := "ghp" + "_" + strings.Repeat("x", n)
+		if ok, _ := e.InspectAnswerBundled(text); ok {
+			t.Errorf("placeholder of %d characters blocked", n)
+		}
+	}
+}

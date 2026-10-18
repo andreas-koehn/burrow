@@ -287,6 +287,23 @@ func TestCreateToken_CappedByAutomationToken(t *testing.T) {
 		})
 	}
 
+	// An automation token that outlives the longest client token does not
+	// give the default: it is capped at 365 days.
+	{
+		far := time.Now().Add(2 * 365 * 24 * time.Hour).UTC().Truncate(time.Second)
+		u := &tokUsers{}
+		u.verify = func(_, _ string) (bool, error) { return true, nil }
+		auto := newFakeAutomationStore()
+		_, tok, _ := auto.MintAutomationToken(context.Background(), "u1", "admin", "ci", []string{"tokens:manage:own"}, &far)
+		srv := httptest.NewServer(NewRouter(Deps{Users: u, Automation: auto, Bearer: auto, Log: discardLog()}))
+		defer srv.Close()
+		wantStatus(t, bearerDo(t, srv, tok, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "ci"}), http.StatusCreated)
+		max := time.Now().Add(maxClientTokenLife)
+		if u.issuedExp == nil || u.issuedExp.After(max) || u.issuedExp.Before(max.Add(-time.Minute)) {
+			t.Fatalf("issued expiry = %v, want about %v", u.issuedExp, max)
+		}
+	}
+
 	// An automation token that never expires leaves the request alone.
 	u := &tokUsers{}
 	auto := newFakeAutomationStore()

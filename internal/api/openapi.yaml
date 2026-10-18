@@ -5913,6 +5913,9 @@ paths:
         keep their stored value when left out: name, enabled and translate.
         A different name renames the model. Gateway keys that name the old name in
         allowed_models are not rewritten and no longer reach the model.
+        Setting enabled to false on the model that an enabled guardrail judge
+        uses is refused with 400 (model "…" is the guardrail judge; change the
+        judge first).
       requestBody:
         required: true
         content:
@@ -5945,9 +5948,15 @@ paths:
       description: |
         Requests for the name are refused from then on. Gateway keys keep
         the name in allowed_models; it matches nothing until a model of that
-        name exists again.
+        name exists again. The model that an enabled guardrail judge uses
+        cannot be deleted: 400, as for PUT.
       responses:
         '204': { description: Model deleted. }
+        '400':
+          description: The model is the guardrail judge's; change the judge first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }

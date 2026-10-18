@@ -13,6 +13,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -426,7 +427,11 @@ func (d Deps) PutAIModel(w http.ResponseWriter, r *http.Request) {
 	if !validModelReq(w, in) {
 		return
 	}
-	m, err := d.AIModels.UpdateModel(r.Context(), old.Name, in.model(old.Enabled, old.Translate, old.SystemText, old.Routing))
+	next := in.model(old.Enabled, old.Translate, old.SystemText, old.Routing)
+	if old.Enabled && !next.Enabled && d.refuseJudgeModel(w, r, old.Name) {
+		return
+	}
+	m, err := d.AIModels.UpdateModel(r.Context(), old.Name, next)
 	if err != nil {
 		if !mapModelErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
@@ -449,6 +454,9 @@ func (d Deps) DeleteAIModel(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if d.AIModels == nil || !store.ValidModelName(name) {
 		writeErr(w, http.StatusNotFound, msgModelNotFound)
+		return
+	}
+	if d.refuseJudgeModel(w, r, name) {
 		return
 	}
 	if err := d.AIModels.DeleteModel(r.Context(), name); err != nil {
@@ -477,4 +485,23 @@ func (d Deps) GetAIGatewayInfo(w http.ResponseWriter, _ *http.Request) {
 		endpoints[1].BaseURL = "https://" + d.AuthDomain + "/anthropic"
 	}
 	writeJSON(w, http.StatusOK, map[string][]aiGatewayEndpoint{"endpoints": endpoints})
+}
+
+// refuseJudgeModel writes the 400 and reports true when name is the model of
+// an enabled guardrail judge: switching it off or deleting it would make the
+// judge fail every request.
+func (d Deps) refuseJudgeModel(w http.ResponseWriter, r *http.Request, name string) bool {
+	if d.Settings == nil {
+		return false
+	}
+	m, err := d.Settings.GetSettings(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "get guardrail settings failed")
+		return true
+	}
+	if j := loadGuardrailsGlobal(m).Judge; j.Enabled && j.Model == name {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("model %q is the guardrail judge; change the judge first", name))
+		return true
+	}
+	return false
 }

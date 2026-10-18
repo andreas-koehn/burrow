@@ -183,3 +183,45 @@ func TestInspectorEntryJSON_Judge(t *testing.T) {
 		t.Fatalf("plain entry %s", b)
 	}
 }
+
+// The model an enabled judge uses cannot be switched off or deleted.
+func TestAIModel_GuardrailJudgeModelIsProtected(t *testing.T) {
+	saved := `{"enabled":true,"action":"refuse_403","answers":{"enabled":false,"action":"flag"},"custom_patterns":[],"judge":{"enabled":%s,"model":"judge-model","check":"requests","timeout_ms":3000,"on_failure":"allow"}}`
+	for name, tc := range map[string]struct {
+		judgeEnabled string
+		wantBlocked  bool
+	}{"judge on": {"true", true}, "judge off": {"false", false}} {
+		t.Run(name, func(t *testing.T) {
+			ss := &fakeCacheSettingsStore{saved: map[string]string{"guardrails.global": strings.Replace(saved, "%s", tc.judgeEnabled, 1)}}
+			models := &fakeModelStore{rows: []db.AIModel{{Name: "judge-model", Enabled: true}, {Name: "other", Enabled: true}}}
+			srv := httptest.NewServer(NewRouter(Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, Settings: ss, AIModels: models}))
+			t.Cleanup(srv.Close)
+			c := authedClient(t, srv)
+			target := map[string]any{"provider": "p", "model": "m", "dialect": "openai"}
+			body := func(en bool) map[string]any {
+				return map[string]any{"name": "judge-model", "enabled": en, "targets": []any{target}}
+			}
+			r := c.put(t, "/api/v1/ai/models/judge-model", body(false))
+			msg := readBody(t, r)
+			if tc.wantBlocked {
+				if r.StatusCode != http.StatusBadRequest || !strings.Contains(msg, `model \"judge-model\" is the guardrail judge; change the judge first`) {
+					t.Fatalf("disable: %d %s", r.StatusCode, msg)
+				}
+				if !models.rows[0].Enabled {
+					t.Fatal("the model was disabled")
+				}
+			} else if r.StatusCode != http.StatusOK {
+				t.Fatalf("disable: %d %s", r.StatusCode, msg)
+			}
+			// Enabling it, or changing another model, is fine.
+			if r = c.put(t, "/api/v1/ai/models/other", map[string]any{"name": "other", "enabled": false, "targets": []any{target}}); r.StatusCode != http.StatusOK {
+				t.Fatalf("other model: %d %s", r.StatusCode, readBody(t, r))
+			}
+			r = c.delete(t, "/api/v1/ai/models/judge-model")
+			msg = readBody(t, r)
+			if tc.wantBlocked != (r.StatusCode == http.StatusBadRequest) || (tc.wantBlocked && !strings.Contains(msg, "is the guardrail judge")) {
+				t.Fatalf("delete: %d %s", r.StatusCode, msg)
+			}
+		})
+	}
+}

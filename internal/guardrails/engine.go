@@ -151,7 +151,10 @@ func (c *compiled) matches(text string) bool {
 	}
 	for _, loc := range c.re.FindAllStringIndex(text, -1) {
 		m := text[loc[0]:loc[1]]
-		if secretDistinct(m[len(c.strip.FindString(m)):]) >= MinSecretDistinct {
+		secret := m[len(c.strip.FindString(m)):]
+		// A longer match counts whatever it holds: padding a key with a
+		// placeholder run must not push it past the scanner's tail.
+		if len(secret) > MaxPlaceholderSecret || secretDistinct(secret) >= MinSecretDistinct {
 			return true
 		}
 	}

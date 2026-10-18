@@ -370,8 +370,10 @@ func NewRouter(d Deps) http.Handler {
 			// :any; model writes need ai:configure:any. A gateway key
 			// belongs to the user who creates it, which takes a dashboard
 			// session of a role with ai:configure; own keys are listed
-			// (ai:read or ai:configure) and revoked (ai:configure), every
-			// key by an admin's session. The handlers scope the keys.
+			// (ai:read or ai:configure) and revoked (ai:configure). A
+			// session or token whose effective permissions include
+			// ai:read:any (list) or ai:configure:any (list, revoke, change)
+			// reaches every user's keys. The handlers scope the keys.
 			r.Get("/ai/gateway", d.GetAIGatewayInfo)
 			r.Get("/ai/models", d.GetAIModels)
 			r.Get("/ai/models/{name}", d.GetAIModel)

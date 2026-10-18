@@ -201,9 +201,9 @@ var routeAccess = map[string]access{
 	"POST /api/v1/ai/models":                       needs(authz.PermAIConfigureAny),
 	"PUT /api/v1/ai/models/{name}":                 needs(authz.PermAIConfigureAny),
 	"DELETE /api/v1/ai/models/{name}":              needs(authz.PermAIConfigureAny),
-	"GET /api/v1/ai/keys":                          needs(aiRead...),      // a token sees its user's own keys
-	"DELETE /api/v1/ai/keys/{id}":                  needs(aiConfigure...), // and revokes only those
-	"PUT /api/v1/ai/keys/{id}":                     needs(aiConfigure...), // and changes only those
+	"GET /api/v1/ai/keys":                          needs(aiRead...),      // own keys; every key with ai:read:any or ai:configure:any
+	"DELETE /api/v1/ai/keys/{id}":                  needs(aiConfigure...), // revokes own keys; any key with ai:configure:any
+	"PUT /api/v1/ai/keys/{id}":                     needs(aiConfigure...), // changes own keys; any key with ai:configure:any
 	"GET /api/v1/cache/settings":                   needs(aiRead...),
 	"GET /api/v1/cache/stats":                      needs(aiRead...),
 	"PUT /api/v1/cache/settings":                   needs(authz.PermAIConfigureAny),

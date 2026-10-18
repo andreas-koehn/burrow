@@ -207,11 +207,18 @@ func nullableTime(t *time.Time) any {
 	return t.UTC()
 }
 
+// expirySweepWindow is how far back ListExpiredClientTokenIDs looks. Sessions
+// need closing once, at the sweep after the expiry; the rest is margin for a
+// relay that was down for a while.
+const expirySweepWindow = time.Hour
+
 // ListExpiredClientTokenIDs returns the ids of the client tokens whose expiry
-// is at or before now. Tokens without an expiry are left out.
+// is at or before now and less than an hour old. Tokens without an expiry,
+// and those that expired earlier, are left out.
 func (x *DB) ListExpiredClientTokenIDs(ctx context.Context, now time.Time) ([]string, error) {
 	rows, err := x.sqlDB.QueryContext(ctx,
-		`SELECT id FROM client_tokens WHERE expires_at IS NOT NULL AND expires_at <= ?`, now.UTC())
+		`SELECT id FROM client_tokens WHERE expires_at > ? AND expires_at <= ?`,
+		now.Add(-expirySweepWindow).UTC(), now.UTC())
 	if err != nil {
 		return nil, fmt.Errorf("list expired client tokens: %w", err)
 	}

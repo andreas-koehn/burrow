@@ -81,6 +81,10 @@ func (d Deps) CreateToken(w http.ResponseWriter, r *http.Request) {
 	// A token that expires mints nothing that outlives it: the new token
 	// expires with it at the latest, and by default exactly then.
 	if limit, ok := bearerExpiry(r.Context()); ok && (exp == nil || exp.After(limit)) {
+		// The default is capped like a requested time: at most 365 days.
+		if top := now.Add(maxClientTokenLife); limit.After(top) {
+			limit = top
+		}
 		exp = &limit
 	}
 	pt, err := d.Users.IssueClientTokenUntil(r.Context(), userID(r.Context()), in.Name, exp)

@@ -48,6 +48,13 @@ type Pattern struct {
 // characters or more has far more; a placeholder has one or two.
 const MinSecretDistinct = 6
 
+// MaxPlaceholderSecret is the longest secret part that can be a placeholder.
+// A longer match counts however few distinct characters it has: a key padded
+// with a placeholder run would otherwise scroll its prefix out of the
+// streaming scanner's tail before its real characters arrive. It is far
+// below ScanTailBundled.
+const MaxPlaceholderSecret = 64
+
 // Patterns is the closed list of v0.4.0 prompt-injection rules. Exactly
 // 30 entries (asserted by TestPatterns_Count) — additions are a wire
 // change. IDs are STABLE: downstream consumers (inspector trace, audit

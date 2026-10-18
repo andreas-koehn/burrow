@@ -43,8 +43,21 @@ func checkClientTokenExpiry(t *testing.T, x *DB, userID string) {
 	if ids, err := x.ListExpiredClientTokenIDs(ctx, exp.Add(time.Second)); err != nil || !contains(ids, userID+"-a") || contains(ids, userID+"-b") {
 		t.Fatalf("expired later: %v (%v)", ids, err)
 	}
+	// The sweep looks back an hour only: sessions of a token that expired
+	// earlier were closed by an earlier sweep.
+	old := time.Now().Add(-3 * time.Hour).UTC().Truncate(time.Second)
+	recent := time.Now().Add(-10 * time.Minute).UTC().Truncate(time.Second)
+	for id, at := range map[string]time.Time{userID + "-old": old, userID + "-recent": recent} {
+		at := at
+		if err := x.CreateClientToken(ctx, ClientToken{ID: id, UserID: userID, Name: id, TokenHash: id + "-h", ExpiresAt: &at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ids, err := x.ListExpiredClientTokenIDs(ctx, time.Now()); err != nil || contains(ids, userID+"-old") || !contains(ids, userID+"-recent") {
+		t.Fatalf("sweep window: %v (%v)", ids, err)
+	}
 	all, err := x.ListClientTokensByUser(ctx, userID)
-	if err != nil || len(all) != 2 {
+	if err != nil || len(all) != 4 {
 		t.Fatalf("list: %v %d", err, len(all))
 	}
 }
