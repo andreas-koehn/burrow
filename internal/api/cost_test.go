@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/cost"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
@@ -1116,5 +1117,100 @@ func TestApplyStoredPricing_MergesOverStartupTable(t *testing.T) {
 		if e, ok := p.Lookup(key); !ok || e.InputPerMillion != want {
 			t.Errorf("%s: %+v %v, want input %v", key, e, ok, want)
 		}
+	}
+}
+
+// --- budget audit ------------------------------------------------------------
+
+func budgetAuditFixture(rows ...db.Budget) (*fakeBudgetStore, *stubAuditAppender, Deps) {
+	st := newFakeBudgetStore()
+	for _, b := range rows {
+		st.rows[b.ID] = b
+	}
+	aud := &stubAuditAppender{}
+	return st, aud, Deps{
+		Log: discardLog(), Users: &fakeUserStore{role: "admin"}, Budgets: st, AuditAppender: aud,
+	}
+}
+
+func TestBudgetHandler_PostIsAudited(t *testing.T) {
+	st, aud, d := budgetAuditFixture()
+	srv := newTestServer(d)
+	defer srv.Close()
+	c := authedClient(t, srv)
+	r := c.post(t, "/api/v1/budgets", map[string]any{
+		"scope": "api_key", "subject_id": "k1", "daily_usd": 10.0, "daily_tokens": 500, "action_on_exceed": "alert_webhook",
+	})
+	var got budgetResp
+	if err := json.Unmarshal([]byte(wantStatus(t, r, http.StatusCreated)), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(aud.events) != 1 {
+		t.Fatalf("audit events = %+v, want one", aud.events)
+	}
+	ev := aud.events[0]
+	if ev.Action != audit.ActionBudgetCreate || ev.SubjectID != got.ID || ev.SubjectLabel != "api_key k1" || ev.Result != "ok" {
+		t.Fatalf("event = %+v", ev)
+	}
+	p := auditPayload(t, ev)
+	if p["daily_usd"] != 10.0 || p["daily_tokens"] != 500.0 || p["action_on_exceed"] != "alert_webhook" {
+		t.Errorf("payload = %s", ev.Payload)
+	}
+	if len(st.rows) != 1 {
+		t.Errorf("rows = %d", len(st.rows))
+	}
+}
+
+func TestBudgetHandler_PutIsAuditedWithOldAndNewLimits(t *testing.T) {
+	_, aud, d := budgetAuditFixture(db.Budget{ID: "b1", Scope: "api_key", SubjectID: "k1", DailyUSD: 10, ActionOnExceed: "alert_webhook"})
+	srv := newTestServer(d)
+	defer srv.Close()
+	c := authedClient(t, srv)
+	r := c.put(t, "/api/v1/budgets/b1", map[string]any{
+		"scope": "api_key", "subject_id": "k1", "daily_usd": 25.5, "action_on_exceed": "disable_key",
+	})
+	wantStatus(t, r, http.StatusNoContent)
+	if len(aud.events) != 1 {
+		t.Fatalf("audit events = %+v, want one", aud.events)
+	}
+	ev := aud.events[0]
+	if ev.Action != audit.ActionBudgetUpdate || ev.SubjectID != "b1" || ev.SubjectLabel != "api_key k1" {
+		t.Fatalf("event = %+v", ev)
+	}
+	p := auditPayload(t, ev)
+	prev, _ := p["previous"].(map[string]any)
+	if p["daily_usd"] != 25.5 || p["action_on_exceed"] != "disable_key" || prev["daily_usd"] != 10.0 || prev["action_on_exceed"] != "alert_webhook" {
+		t.Errorf("payload = %s", ev.Payload)
+	}
+}
+
+func TestBudgetHandler_DeleteIsAudited(t *testing.T) {
+	_, aud, d := budgetAuditFixture(db.Budget{ID: "b1", Scope: "model", SubjectID: "gpt", DailyUSD: 3, ActionOnExceed: "alert_webhook"})
+	srv := newTestServer(d)
+	defer srv.Close()
+	c := authedClient(t, srv)
+	wantStatus(t, c.delete(t, "/api/v1/budgets/b1"), http.StatusNoContent)
+	if len(aud.events) != 1 {
+		t.Fatalf("audit events = %+v, want one", aud.events)
+	}
+	ev := aud.events[0]
+	if ev.Action != audit.ActionBudgetDelete || ev.SubjectID != "b1" || ev.SubjectLabel != "model gpt" {
+		t.Fatalf("event = %+v", ev)
+	}
+	if p := auditPayload(t, ev); p["daily_usd"] != 3.0 {
+		t.Errorf("payload = %s", ev.Payload)
+	}
+}
+
+func TestBudgetHandler_FailuresAreNotAudited(t *testing.T) {
+	_, aud, d := budgetAuditFixture()
+	srv := newTestServer(d)
+	defer srv.Close()
+	c := authedClient(t, srv)
+	c.put(t, "/api/v1/budgets/nope", map[string]any{"scope": "api_key", "subject_id": "k1", "daily_usd": 1.0, "action_on_exceed": "alert_webhook"}).Body.Close()
+	c.delete(t, "/api/v1/budgets/nope").Body.Close()
+	c.post(t, "/api/v1/budgets", map[string]any{"scope": "bad"}).Body.Close()
+	if len(aud.events) != 0 {
+		t.Fatalf("audited a failure: %+v", aud.events)
 	}
 }

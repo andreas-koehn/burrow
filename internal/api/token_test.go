@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ type tokUsers struct {
 	authUsers
 	issued     string
 	issuedUID  string
+	issuedExp  *time.Time
 	tokens     []db.ClientToken
 	listedUID  string
 	revoked    string
@@ -21,9 +24,10 @@ type tokUsers struct {
 	revErr     error
 }
 
-func (u *tokUsers) IssueClientToken(_ context.Context, uid, name string) (string, error) {
+func (u *tokUsers) IssueClientTokenUntil(_ context.Context, uid, name string, exp *time.Time) (string, error) {
 	u.issued = name
 	u.issuedUID = uid
+	u.issuedExp = exp
 	return "bur_PLAINTEXT", nil
 }
 func (u *tokUsers) ListClientTokens(_ context.Context, uid string) ([]db.ClientToken, error) {
@@ -172,5 +176,125 @@ func TestListTokensEmptyIsJSONArray(t *testing.T) {
 	b := strings.TrimSpace(readBody(t, r))
 	if r.StatusCode != http.StatusOK || b != "[]" {
 		t.Fatalf("empty token list must be JSON [] (status=%d body=%q)", r.StatusCode, b)
+	}
+}
+
+func postToken(t *testing.T, u *tokUsers, body string) (int, string) {
+	t.Helper()
+	u.verify = func(_, _ string) (bool, error) { return true, nil }
+	ts := newTestServer(Deps{Users: u, Log: discardLog()})
+	defer ts.Close()
+	cl, csrf := loggedInClientWithCSRF(t, &httptestServer{ts})
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/tokens", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r := doWithCSRF(t, cl, req, csrf)
+	return r.StatusCode, readBody(t, r)
+}
+
+func TestCreateToken_ExpiresAt(t *testing.T) {
+	want := time.Now().Add(30 * 24 * time.Hour).UTC().Truncate(time.Second)
+	u := &tokUsers{}
+	code, body := postToken(t, u, `{"name":"laptop","expires_at":"`+want.Format(time.RFC3339)+`"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", code, body)
+	}
+	if u.issuedExp == nil || !u.issuedExp.Equal(want) {
+		t.Fatalf("issued expiry = %v, want %v", u.issuedExp, want)
+	}
+	if !strings.Contains(body, `"expires_at":"`+want.Format(time.RFC3339)) {
+		t.Errorf("response lacks expires_at: %s", body)
+	}
+
+	u = &tokUsers{}
+	if code, body = postToken(t, u, `{"name":"laptop"}`); code != http.StatusCreated || u.issuedExp != nil {
+		t.Fatalf("no expiry asked: status=%d exp=%v", code, u.issuedExp)
+	} else if !strings.Contains(body, `"expires_at":null`) {
+		t.Errorf("response lacks expires_at null: %s", body)
+	}
+}
+
+func TestCreateToken_ExpiresAtValidation(t *testing.T) {
+	now := time.Now().UTC()
+	for name, at := range map[string]string{
+		"past":       `"` + now.Add(-time.Hour).Format(time.RFC3339) + `"`,
+		"too far":    `"` + now.Add(366*24*time.Hour).Format(time.RFC3339) + `"`,
+		"not a date": `"tomorrow"`,
+		"a number":   `12345`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			u := &tokUsers{}
+			code, body := postToken(t, u, `{"name":"laptop","expires_at":`+at+`}`)
+			if code != http.StatusBadRequest || u.issued != "" {
+				t.Fatalf("status=%d issued=%q body=%s", code, u.issued, body)
+			}
+		})
+	}
+	// The limit itself is allowed.
+	u := &tokUsers{}
+	if code, body := postToken(t, u, `{"name":"x","expires_at":"`+now.Add(364*24*time.Hour).Format(time.RFC3339)+`"}`); code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", code, body)
+	}
+}
+
+func TestListTokens_ShowsExpiry(t *testing.T) {
+	exp := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	u := &tokUsers{tokens: []db.ClientToken{
+		{ID: "t1", Name: "a", CreatedAt: time.Now(), ExpiresAt: &exp},
+		{ID: "t2", Name: "b", CreatedAt: time.Now()},
+	}}
+	u.verify = func(_, _ string) (bool, error) { return true, nil }
+	ts := newTestServer(Deps{Users: u, Log: discardLog()})
+	defer ts.Close()
+	cl, _ := loggedInClientWithCSRF(t, &httptestServer{ts})
+	r, _ := cl.Get(ts.URL + "/api/v1/tokens")
+	body := readBody(t, r)
+	if !strings.Contains(body, `"expires_at":"`+exp.Format(time.RFC3339)) || !strings.Contains(body, `"expires_at":null`) {
+		t.Fatalf("list = %s", body)
+	}
+}
+
+// A token that expires mints a client token that expires, no later than itself.
+func TestCreateToken_CappedByAutomationToken(t *testing.T) {
+	tokenExp := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
+	sooner := tokenExp.Add(-24 * time.Hour)
+	later := tokenExp.Add(24 * time.Hour)
+	cases := []struct {
+		name string
+		body string
+		want time.Time
+	}{
+		{"default is the token's expiry", `{"name":"ci"}`, tokenExp},
+		{"later is capped", `{"name":"ci","expires_at":"` + later.Format(time.RFC3339) + `"}`, tokenExp},
+		{"sooner is kept", `{"name":"ci","expires_at":"` + sooner.Format(time.RFC3339) + `"}`, sooner},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u := &tokUsers{}
+			u.verify = func(_, _ string) (bool, error) { return true, nil }
+			auto := newFakeAutomationStore()
+			_, tok, err := auto.MintAutomationToken(context.Background(), "u1", "admin", "ci", []string{"tokens:manage:own"}, &tokenExp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := httptest.NewServer(NewRouter(Deps{Users: u, Automation: auto, Bearer: auto, Log: discardLog()}))
+			defer srv.Close()
+			var in map[string]any
+			_ = json.Unmarshal([]byte(tc.body), &in)
+			wantStatus(t, bearerDo(t, srv, tok, http.MethodPost, "/api/v1/tokens", in), http.StatusCreated)
+			if u.issuedExp == nil || !u.issuedExp.Equal(tc.want) {
+				t.Fatalf("issued expiry = %v, want %v", u.issuedExp, tc.want)
+			}
+		})
+	}
+
+	// An automation token that never expires leaves the request alone.
+	u := &tokUsers{}
+	auto := newFakeAutomationStore()
+	_, tok, _ := auto.MintAutomationToken(context.Background(), "u1", "admin", "ci", []string{"tokens:manage:own"}, nil)
+	srv := httptest.NewServer(NewRouter(Deps{Users: u, Automation: auto, Bearer: auto, Log: discardLog()}))
+	defer srv.Close()
+	wantStatus(t, bearerDo(t, srv, tok, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "ci"}), http.StatusCreated)
+	if u.issuedExp != nil {
+		t.Fatalf("issued expiry = %v, want none", u.issuedExp)
 	}
 }

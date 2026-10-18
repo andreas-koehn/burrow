@@ -418,8 +418,8 @@ func (d Deps) mayReadGatewayKeyUsage(r *http.Request, id string) bool {
 	if d.AIGatewayKeys == nil || uid == "" || id == "" {
 		return false
 	}
-	// As a non-admin: the store returns the caller's own keys only.
-	keys, err := d.AIGatewayKeys.ListGatewayKeys(r.Context(), uid, "")
+	// Not for every user: the store returns the caller's own keys only.
+	keys, err := d.AIGatewayKeys.ListGatewayKeys(r.Context(), uid, false)
 	if err != nil {
 		d.warn("gateway keys could not be read", "err", err)
 		return false

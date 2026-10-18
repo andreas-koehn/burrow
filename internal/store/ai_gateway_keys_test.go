@@ -89,39 +89,39 @@ func TestGatewayKeys(t *testing.T) {
 		}
 	}
 
-	mine, err := s.ListGatewayKeys(ctx, userA, "user")
+	mine, err := s.ListGatewayKeys(ctx, userA, false)
 	if err != nil || len(mine) != 1 || mine[0].ID != k.ID || mine[0].LastUsed == nil {
 		t.Fatalf("list own: %v %+v", err, mine)
 	}
-	none, err := s.ListGatewayKeys(ctx, admin, "user") // a caller without keys
+	none, err := s.ListGatewayKeys(ctx, admin, false) // a caller without keys
 	if err != nil || none == nil || len(none) != 0 {
 		t.Fatalf("list empty: %v %#v", err, none)
 	}
-	all, err := s.ListGatewayKeys(ctx, admin, "admin")
+	all, err := s.ListGatewayKeys(ctx, admin, true)
 	if err != nil || len(all) != 2 {
 		t.Fatalf("list all: %v %+v", err, all)
 	}
 
 	// Someone else's key looks like a missing one.
-	if err := s.RevokeGatewayKey(ctx, userB, "user", k.ID); !errors.Is(err, ErrKeyNotFound) {
+	if err := s.RevokeGatewayKey(ctx, userB, false, k.ID); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("revoke by a stranger err = %v", err)
 	}
-	if err := s.RevokeGatewayKey(ctx, userA, "user", "missing"); !errors.Is(err, ErrKeyNotFound) {
+	if err := s.RevokeGatewayKey(ctx, userA, false, "missing"); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("revoke missing err = %v", err)
 	}
 	if _, ok, _ := s.ValidateGatewayKey(ctx, plain); !ok {
 		t.Fatal("a refused revoke disabled the key")
 	}
-	if err := s.RevokeGatewayKey(ctx, userA, "user", k.ID); err != nil {
+	if err := s.RevokeGatewayKey(ctx, userA, false, k.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := s.ValidateGatewayKey(ctx, plain); ok || err != nil {
 		t.Fatalf("revoked key: ok=%v err=%v", ok, err)
 	}
-	if mine, _ := s.ListGatewayKeys(ctx, userA, "user"); len(mine) != 1 || mine[0].RevokedAt == nil {
+	if mine, _ := s.ListGatewayKeys(ctx, userA, false); len(mine) != 1 || mine[0].RevokedAt == nil {
 		t.Fatalf("revoked key in list: %+v", mine)
 	}
-	if err := s.RevokeGatewayKey(ctx, admin, "admin", k2.ID); err != nil {
+	if err := s.RevokeGatewayKey(ctx, admin, true, k2.ID); err != nil {
 		t.Fatalf("admin revoke: %v", err)
 	}
 	if _, ok, _ := s.ValidateGatewayKey(ctx, plain2); ok {
@@ -177,7 +177,7 @@ func TestRevokeGatewayKeyByID(t *testing.T) {
 	if _, ok, err := s.ValidateGatewayKey(ctx, plain); ok || err != nil {
 		t.Fatalf("revoked key: ok=%v err=%v", ok, err)
 	}
-	mine, _ := s.ListGatewayKeys(ctx, owner, "user")
+	mine, _ := s.ListGatewayKeys(ctx, owner, false)
 	if len(mine) != 1 || mine[0].RevokedAt == nil {
 		t.Fatalf("list: %+v", mine)
 	}
@@ -188,7 +188,7 @@ func TestRevokeGatewayKeyByID(t *testing.T) {
 	if len(sink.ev) != 1 {
 		t.Fatalf("revoking a revoked key was audited again: %+v", sink.ev)
 	}
-	if again, _ := s.ListGatewayKeys(ctx, owner, "user"); !again[0].RevokedAt.Equal(first) {
+	if again, _ := s.ListGatewayKeys(ctx, owner, false); !again[0].RevokedAt.Equal(first) {
 		t.Fatalf("a second revoke moved revoked_at: %v -> %v", first, again[0].RevokedAt)
 	}
 }
@@ -235,7 +235,7 @@ func TestRevokeGatewayKeyByID_Concurrent(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				if err := s.RevokeGatewayKey(ctx, owner, "user", k.ID); err != nil {
+				if err := s.RevokeGatewayKey(ctx, owner, false, k.ID); err != nil {
 					t.Error(err)
 				}
 			}()
@@ -274,19 +274,19 @@ func TestUpdateGatewayKey(t *testing.T) {
 	str := func(v string) *string { return &v }
 
 	// nil pointers change nothing.
-	got, err := s.UpdateGatewayKey(ctx, owner, "user", k.ID, nil, nil)
+	got, err := s.UpdateGatewayKey(ctx, owner, false, k.ID, nil, nil)
 	if err != nil || got.Name != "laptop" || got.SystemText != "Be brief." {
 		t.Fatalf("no-op update: %v %+v", err, got)
 	}
-	got, err = s.UpdateGatewayKey(ctx, owner, "user", k.ID, str("  desk "), nil)
+	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, str("  desk "), nil)
 	if err != nil || got.Name != "desk" || got.SystemText != "Be brief." {
 		t.Fatalf("rename: %v %+v", err, got)
 	}
-	got, err = s.UpdateGatewayKey(ctx, owner, "user", k.ID, nil, str("Answer in German."))
+	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, nil, str("Answer in German."))
 	if err != nil || got.Name != "desk" || got.SystemText != "Answer in German." {
 		t.Fatalf("text: %v %+v", err, got)
 	}
-	got, err = s.UpdateGatewayKey(ctx, owner, "user", k.ID, nil, str(""))
+	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, nil, str(""))
 	if err != nil || got.SystemText != "" {
 		t.Fatalf("clear text: %v %+v", err, got)
 	}
@@ -299,33 +299,33 @@ func TestUpdateGatewayKey(t *testing.T) {
 		"control name": {str("a\nb"), nil},
 		"long text":    {nil, str(strings.Repeat("t", MaxSystemTextBytes+1))},
 	} {
-		if _, err := s.UpdateGatewayKey(ctx, owner, "user", k.ID, c.name, c.text); !errors.Is(err, ErrInvalidKey) {
+		if _, err := s.UpdateGatewayKey(ctx, owner, false, k.ID, c.name, c.text); !errors.Is(err, ErrInvalidKey) {
 			t.Errorf("%s: err = %v, want ErrInvalidKey", name, err)
 		}
 	}
-	if _, err := s.UpdateGatewayKey(ctx, owner, "user", k.ID, nil, str(strings.Repeat("é", MaxSystemTextBytes/2))); err != nil {
+	if _, err := s.UpdateGatewayKey(ctx, owner, false, k.ID, nil, str(strings.Repeat("é", MaxSystemTextBytes/2))); err != nil {
 		t.Errorf("exactly %d bytes must pass: %v", MaxSystemTextBytes, err)
 	}
 
 	// A stranger and a missing id look alike.
-	if _, err := s.UpdateGatewayKey(ctx, other, "user", k.ID, str("x"), nil); !errors.Is(err, ErrKeyNotFound) {
+	if _, err := s.UpdateGatewayKey(ctx, other, false, k.ID, str("x"), nil); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("stranger err = %v", err)
 	}
-	if _, err := s.UpdateGatewayKey(ctx, owner, "user", "missing", str("x"), nil); !errors.Is(err, ErrKeyNotFound) {
+	if _, err := s.UpdateGatewayKey(ctx, owner, false, "missing", str("x"), nil); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("missing err = %v", err)
 	}
-	if _, err := s.UpdateGatewayKey(ctx, "", "user", k.ID, str("x"), nil); !errors.Is(err, ErrKeyNotFound) {
+	if _, err := s.UpdateGatewayKey(ctx, "", false, k.ID, str("x"), nil); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("empty caller err = %v", err)
 	}
-	if got, _ := s.UpdateGatewayKey(ctx, admin, "admin", k.ID, str("by-admin"), nil); got.Name != "by-admin" {
+	if got, _ := s.UpdateGatewayKey(ctx, admin, true, k.ID, str("by-admin"), nil); got.Name != "by-admin" {
 		t.Fatalf("admin update: %+v", got)
 	}
 
 	// A revoked key can still be renamed.
-	if err := s.RevokeGatewayKey(ctx, owner, "user", k.ID); err != nil {
+	if err := s.RevokeGatewayKey(ctx, owner, false, k.ID); err != nil {
 		t.Fatal(err)
 	}
-	got, err = s.UpdateGatewayKey(ctx, owner, "user", k.ID, str("old laptop"), nil)
+	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, str("old laptop"), nil)
 	if err != nil || got.Name != "old laptop" || got.RevokedAt == nil {
 		t.Fatalf("rename revoked: %v %+v", err, got)
 	}

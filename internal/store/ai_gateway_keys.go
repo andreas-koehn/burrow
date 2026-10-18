@@ -111,11 +111,12 @@ func (s *Store) CreateGatewayKey(ctx context.Context, userID, name string, allow
 	return toGatewayKey(stored), plaintext, nil
 }
 
-// ListGatewayKeys returns the keys the caller may see, newest first: an admin
-// sees every key, anyone else their own. Never nil.
-func (s *Store) ListGatewayKeys(ctx context.Context, callerID, callerRole string) ([]GatewayKey, error) {
+// ListGatewayKeys returns the keys the caller may see, newest first: every
+// user's when all is set (the caller holds ai:read:any or ai:configure:any,
+// which the handler decides), otherwise the caller's own. Never nil.
+func (s *Store) ListGatewayKeys(ctx context.Context, callerID string, all bool) ([]GatewayKey, error) {
 	owner := callerID
-	if callerRole == "admin" {
+	if all {
 		owner = "" // every user
 	} else if owner == "" {
 		return []GatewayKey{}, nil // "" would mean every user to the query
@@ -131,10 +132,11 @@ func (s *Store) ListGatewayKeys(ctx context.Context, callerID, callerRole string
 	return out, nil
 }
 
-// RevokeGatewayKey revokes the key at once. Its owner or an admin may do so;
+// RevokeGatewayKey revokes the key at once. Its owner may, and so may a
+// caller who manages every key (anyKey: ai:configure:any, decided by the handler);
 // for anyone else the key looks like one that does not exist. Revoking a
 // revoked key is not an error.
-func (s *Store) RevokeGatewayKey(ctx context.Context, callerID, callerRole, id string) error {
+func (s *Store) RevokeGatewayKey(ctx context.Context, callerID string, anyKey bool, id string) error {
 	k, err := s.q.GetAIGatewayKey(ctx, id)
 	if errors.Is(err, db.ErrNotFound) {
 		return ErrKeyNotFound
@@ -142,7 +144,7 @@ func (s *Store) RevokeGatewayKey(ctx context.Context, callerID, callerRole, id s
 	if err != nil {
 		return err
 	}
-	if callerRole != "admin" && (callerID == "" || k.UserID != callerID) {
+	if !anyKey && (callerID == "" || k.UserID != callerID) {
 		return ErrKeyNotFound
 	}
 	if err := s.q.RevokeAIGatewayKey(ctx, id); errors.Is(err, db.ErrNotFound) {
@@ -154,10 +156,11 @@ func (s *Store) RevokeGatewayKey(ctx context.Context, callerID, callerRole, id s
 }
 
 // UpdateGatewayKey changes the name and the system text of a key; a nil
-// pointer leaves that field as it is. Its owner or an admin may; for anyone
+// pointer leaves that field as it is. Its owner may, and so may a caller who
+// manages every key (anyKey, as for RevokeGatewayKey); for anyone
 // else the key looks like one that does not exist. A revoked key can still
 // be changed.
-func (s *Store) UpdateGatewayKey(ctx context.Context, callerID, callerRole, id string, name, systemText *string) (GatewayKey, error) {
+func (s *Store) UpdateGatewayKey(ctx context.Context, callerID string, anyKey bool, id string, name, systemText *string) (GatewayKey, error) {
 	k, err := s.q.GetAIGatewayKey(ctx, id)
 	if errors.Is(err, db.ErrNotFound) {
 		return GatewayKey{}, ErrKeyNotFound
@@ -165,7 +168,7 @@ func (s *Store) UpdateGatewayKey(ctx context.Context, callerID, callerRole, id s
 	if err != nil {
 		return GatewayKey{}, err
 	}
-	if callerRole != "admin" && (callerID == "" || k.UserID != callerID) {
+	if !anyKey && (callerID == "" || k.UserID != callerID) {
 		return GatewayKey{}, ErrKeyNotFound
 	}
 	newName, newText := k.Name, k.SystemText

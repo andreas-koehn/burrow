@@ -270,8 +270,8 @@ func (x *DB) CollectClientLogin(ctx context.Context, hash string, now time.Time,
 		return false, nil
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO client_tokens(id, user_id, name, token_hash) VALUES(?,?,?,?)`,
-		ct.ID, ct.UserID, ct.Name, ct.TokenHash); err != nil {
+		`INSERT INTO client_tokens(id, user_id, name, token_hash, expires_at) VALUES(?,?,?,?,?)`,
+		ct.ID, ct.UserID, ct.Name, ct.TokenHash, nullableTime(ct.ExpiresAt)); err != nil {
 		return false, fmt.Errorf("collect client login: insert token: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

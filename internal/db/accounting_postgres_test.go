@@ -43,6 +43,10 @@ func TestUsageAccounting_Postgres(t *testing.T) {
 	t.Run("migration 0029 down and up", func(t *testing.T) {
 		checkMigration0029DownAndUp(t, x, "0029_v0.11.0_usage_purpose.postgres.sql")
 	})
+	t.Run("migration 0030 down and up", func(t *testing.T) {
+		checkMigration0029DownAndUp(t, x, "0030_v0.11.1_client_token_expiry.postgres.sql")
+	})
+	t.Run("client token expiry", func(t *testing.T) { checkClientTokenExpiry(t, x, "u-tokexp-pg") })
 	t.Run("expired sessions", func(t *testing.T) { checkDeleteExpiredSessions(t, x, "u-sess-pg") })
 	t.Run("revoke if active", func(t *testing.T) { checkRevokeAIGatewayKeyIfActive(t, x, "u-revoke-pg") })
 	// Bound times are instants: nothing changes when the session's time zone

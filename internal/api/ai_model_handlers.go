@@ -315,7 +315,7 @@ func modelAudit(m db.AIModel) map[string]any {
 	}
 }
 
-// auditAI appends one audit event for a model or a gateway key (best-effort).
+// auditAI appends one audit event for a model, a gateway key or a budget (best-effort).
 func (d Deps) auditAI(r *http.Request, action, subjectID, subjectLabel string, payload map[string]any) {
 	if d.AuditAppender == nil {
 		return

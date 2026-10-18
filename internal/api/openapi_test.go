@@ -313,8 +313,8 @@ func (*fullDepsStub) GetUserByID(context.Context, string) (db.User, error) {
 	stubPanic("GetUserByID")
 	return db.User{}, nil
 }
-func (*fullDepsStub) IssueClientToken(context.Context, string, string) (string, error) {
-	stubPanic("IssueClientToken")
+func (*fullDepsStub) IssueClientTokenUntil(context.Context, string, string, *time.Time) (string, error) {
+	stubPanic("IssueClientTokenUntil")
 	return "", nil
 }
 func (*fullDepsStub) ListClientTokens(context.Context, string) ([]db.ClientToken, error) {
@@ -572,15 +572,15 @@ func (*fullDepsStub) CreateGatewayKey(context.Context, string, string, []string,
 	stubPanic("CreateGatewayKey")
 	return store.GatewayKey{}, "", nil
 }
-func (*fullDepsStub) ListGatewayKeys(context.Context, string, string) ([]store.GatewayKey, error) {
+func (*fullDepsStub) ListGatewayKeys(context.Context, string, bool) ([]store.GatewayKey, error) {
 	stubPanic("ListGatewayKeys")
 	return nil, nil
 }
-func (*fullDepsStub) UpdateGatewayKey(context.Context, string, string, string, *string, *string) (store.GatewayKey, error) {
+func (*fullDepsStub) UpdateGatewayKey(context.Context, string, bool, string, *string, *string) (store.GatewayKey, error) {
 	stubPanic("UpdateGatewayKey")
 	return store.GatewayKey{}, nil
 }
-func (*fullDepsStub) RevokeGatewayKey(context.Context, string, string, string) error {
+func (*fullDepsStub) RevokeGatewayKey(context.Context, string, bool, string) error {
 	stubPanic("RevokeGatewayKey")
 	return nil
 }

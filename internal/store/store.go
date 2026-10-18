@@ -275,9 +275,20 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (db.User, error) {
 // IssueClientToken generates a new client token for the given user and name,
 // persists the hash, and returns the plaintext (shown once).
 func (s *Store) IssueClientToken(ctx context.Context, userID, name string) (plaintext string, err error) {
+	return s.IssueClientTokenUntil(ctx, userID, name, nil)
+}
+
+// IssueClientTokenUntil is IssueClientToken for a token that stops working at
+// expiresAt; nil issues one that never does. The expiry is audited with the
+// mint.
+func (s *Store) IssueClientTokenUntil(ctx context.Context, userID, name string, expiresAt *time.Time) (plaintext string, err error) {
 	pt, ct, err := newClientToken(userID, name)
 	if err != nil {
 		return "", err
+	}
+	if expiresAt != nil {
+		t := expiresAt.UTC()
+		ct.ExpiresAt = &t
 	}
 	if err := s.q.CreateClientToken(ctx, ct); err != nil {
 		return "", err
@@ -285,6 +296,7 @@ func (s *Store) IssueClientToken(ctx context.Context, userID, name string) (plai
 	s.emitAudit(ctx, audit.ActionTokenMint, func(e *audit.Event) {
 		e.SubjectID = ct.ID
 		e.SubjectLabel = name
+		e.Payload = audit.MustJSON(map[string]any{"expires_at": ct.ExpiresAt})
 	})
 	return pt, nil
 }
@@ -341,7 +353,7 @@ func (s *Store) AuthenticateNamed(ctx context.Context, plaintext string) (userID
 // AuthenticateToken is like AuthenticateNamed but also returns the id of the
 // client token, which the server needs to record the session on the token
 // (RecordClientSession). Returns ErrUnauthorized for unknown/invalid tokens
-// and for the token of a suspended user.
+// for an expired token and for the token of a suspended user.
 func (s *Store) AuthenticateToken(ctx context.Context, plaintext string) (userID, tokenID, tokenName string, err error) {
 	hash := auth.HashToken(plaintext)
 	ct, err := s.q.GetClientTokenByHash(ctx, hash)
@@ -350,6 +362,10 @@ func (s *Store) AuthenticateToken(ctx context.Context, plaintext string) (userID
 	}
 	if err != nil {
 		return "", "", "", err
+	}
+	// A token past its expiry is as good as an unknown one.
+	if ct.ExpiresAt != nil && !ct.ExpiresAt.After(time.Now()) {
+		return "", "", "", ErrUnauthorized
 	}
 	// The token of a suspended user opens no session: suspending closes the
 	// live ones, and this keeps the client from coming straight back.

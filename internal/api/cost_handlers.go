@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/cost"
 	"github.com/ankoehn/burrow/internal/db"
 )
@@ -441,6 +442,22 @@ func toBudgetResp(b db.Budget, u cost.BudgetUsage) budgetResp {
 	}
 }
 
+// budgetLabel names a budget in the audit log: its scope and subject.
+func budgetLabel(b db.Budget) string {
+	return strings.TrimSpace(b.Scope + " " + b.SubjectID)
+}
+
+// budgetLimits is what a budget caps and what it does about it, for audit
+// details.
+func budgetLimits(b db.Budget) map[string]any {
+	return map[string]any{
+		"daily_usd":        b.DailyUSD,
+		"daily_tokens":     b.DailyTokens,
+		"action_on_exceed": b.ActionOnExceed,
+		"alert_webhook_id": b.AlertWebhookID,
+	}
+}
+
 // budgetUsages returns today's usage of each budget; zero usage for all when
 // there is no engine or today's usage cannot be read (logged).
 func (d Deps) budgetUsages(ctx context.Context, budgets []db.Budget) []cost.BudgetUsage {
@@ -528,7 +545,7 @@ func (d Deps) checkBudgetSubject(w http.ResponseWriter, r *http.Request, in budg
 		return true
 	}
 	if d.AIGatewayKeys != nil {
-		keys, err := d.AIGatewayKeys.ListGatewayKeys(r.Context(), userID(r.Context()), "admin")
+		keys, err := d.AIGatewayKeys.ListGatewayKeys(r.Context(), userID(r.Context()), true)
 		if err != nil {
 			d.warn("gateway keys could not be read", "err", err)
 			writeErr(w, http.StatusInternalServerError, "internal error")
@@ -603,6 +620,9 @@ func (d Deps) PostBudget(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "create budget failed")
 		return
 	}
+	payload := budgetLimits(row)
+	payload["scope"], payload["subject_id"] = row.Scope, row.SubjectID
+	d.auditAI(r, audit.ActionBudgetCreate, row.ID, budgetLabel(row), payload)
 	// Read-back so created_at reflects the SQLite default.
 	created, err := d.Budgets.GetBudget(r.Context(), row.ID)
 	if err != nil {
@@ -652,6 +672,7 @@ func (d Deps) PutBudget(w http.ResponseWriter, r *http.Request) {
 		ActionOnExceed: in.ActionOnExceed,
 		AlertWebhookID: in.AlertWebhookID,
 	}
+	before, getErr := d.Budgets.GetBudget(r.Context(), id)
 	if err := d.Budgets.UpdateBudget(r.Context(), row); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "budget not found")
@@ -660,6 +681,12 @@ func (d Deps) PutBudget(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "update budget failed")
 		return
 	}
+	payload := budgetLimits(row)
+	payload["scope"], payload["subject_id"] = row.Scope, row.SubjectID
+	if getErr == nil {
+		payload["previous"] = budgetLimits(before)
+	}
+	d.auditAI(r, audit.ActionBudgetUpdate, id, budgetLabel(row), payload)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -674,6 +701,7 @@ func (d Deps) DeleteBudget(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "budget store unavailable")
 		return
 	}
+	before, getErr := d.Budgets.GetBudget(r.Context(), id)
 	if err := d.Budgets.DeleteBudget(r.Context(), id); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "budget not found")
@@ -682,5 +710,12 @@ func (d Deps) DeleteBudget(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "delete budget failed")
 		return
 	}
+	payload, label := map[string]any{}, ""
+	if getErr == nil {
+		payload = budgetLimits(before)
+		payload["scope"], payload["subject_id"] = before.Scope, before.SubjectID
+		label = budgetLabel(before)
+	}
+	d.auditAI(r, audit.ActionBudgetDelete, id, label, payload)
 	w.WriteHeader(http.StatusNoContent)
 }

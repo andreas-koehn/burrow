@@ -81,7 +81,7 @@ type UserStore interface {
 	// GetUserByEmail is used by the login handler after VerifyUserPassword (spec F3).
 	GetUserByEmail(ctx context.Context, email string) (db.User, error)
 	GetUserByID(ctx context.Context, id string) (db.User, error)
-	IssueClientToken(ctx context.Context, userID, name string) (string, error)
+	IssueClientTokenUntil(ctx context.Context, userID, name string, expiresAt *time.Time) (string, error)
 	ListClientTokens(ctx context.Context, userID string) ([]db.ClientToken, error)
 	RevokeClientToken(ctx context.Context, id, userID string) error
 	CreateSession(ctx context.Context, userID, ua, ip string) (string, error)
@@ -313,9 +313,9 @@ type AIModelStore interface {
 // CreateGatewayKey and comes from nowhere else.
 type AIGatewayKeyStore interface {
 	CreateGatewayKey(ctx context.Context, userID, name string, allowed []string, systemText string) (store.GatewayKey, string, error)
-	ListGatewayKeys(ctx context.Context, callerID, callerRole string) ([]store.GatewayKey, error)
-	UpdateGatewayKey(ctx context.Context, callerID, callerRole, id string, name, systemText *string) (store.GatewayKey, error)
-	RevokeGatewayKey(ctx context.Context, callerID, callerRole, id string) error
+	ListGatewayKeys(ctx context.Context, callerID string, all bool) ([]store.GatewayKey, error)
+	UpdateGatewayKey(ctx context.Context, callerID string, anyKey bool, id string, name, systemText *string) (store.GatewayKey, error)
+	RevokeGatewayKey(ctx context.Context, callerID string, anyKey bool, id string) error
 }
 
 type Deps struct {

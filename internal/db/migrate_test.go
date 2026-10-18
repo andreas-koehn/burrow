@@ -237,12 +237,12 @@ func TestMigrateDriverFilter(t *testing.T) {
 		}
 	}
 
-	// Expect exactly 28 SQLite files and 28 Postgres files.
-	if len(sqliteFiles) != 28 {
-		t.Errorf("want 28 sqlite migration files, got %d: %v", len(sqliteFiles), sqliteFiles)
+	// Expect exactly 29 SQLite files and 29 Postgres files.
+	if len(sqliteFiles) != 29 {
+		t.Errorf("want 29 sqlite migration files, got %d: %v", len(sqliteFiles), sqliteFiles)
 	}
-	if len(postgresFiles) != 28 {
-		t.Errorf("want 28 postgres migration files, got %d: %v", len(postgresFiles), postgresFiles)
+	if len(postgresFiles) != 29 {
+		t.Errorf("want 29 postgres migration files, got %d: %v", len(postgresFiles), postgresFiles)
 	}
 
 	// Each SQLite file must have a matching postgres twin.

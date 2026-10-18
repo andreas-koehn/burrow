@@ -31,6 +31,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/store"
 )
@@ -110,28 +111,35 @@ func mapKeyErr(w http.ResponseWriter, err error) bool {
 // not call (the same words as the client sign-in approval).
 const msgDashboardSession = "a dashboard session is required"
 
-// keyCallerRole is the role the key store is asked with: the caller's own
-// for a dashboard session, "user" for an automation token, so that an
-// admin's token reaches the admin's own keys and no one else's.
-func (d Deps) keyCallerRole(r *http.Request) (string, error) {
-	if bearerTokenID(r.Context()) != "" {
-		return "user", nil
+// keysReach says how far the caller reaches over gateway keys: all is true
+// when the caller may read every user's keys (ai:read:any or ai:configure:any),
+// anyKey when it may also change and revoke them (ai:configure:any). Both are
+// decided by permission, never by role name. A dashboard session holds what
+// its role holds; an automation token holds what it declares and its user's
+// role still grants (effectivePerms), so an admin's token that declares only
+// :own reaches its user's own keys and no one else's.
+func (d Deps) keysReach(r *http.Request) (all, anyKey bool, err error) {
+	role, err := d.callerRoleForAuth(r)
+	if err != nil {
+		return false, false, err
 	}
-	return d.callerRole(r)
+	anyKey = effectivePerms(r.Context(), role, authz.PermAIConfigureAny)
+	all = anyKey || effectivePerms(r.Context(), role, authz.PermAIReadAny)
+	return all, anyKey, nil
 }
 
 // GetAIKeys handles GET /api/v1/ai/keys: the caller's gateway keys, newest
-// first; every user's for an admin's session.  Revoked keys are listed with
+// first; every user's for a caller with ai:read:any or ai:configure:any.  Revoked keys are listed with
 // revoked_at.
 func (d Deps) GetAIKeys(w http.ResponseWriter, r *http.Request) {
 	out := []aiKeyResp{}
 	if d.AIGatewayKeys != nil {
-		role, err := d.keyCallerRole(r)
+		all, _, err := d.keysReach(r)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		keys, err := d.AIGatewayKeys.ListGatewayKeys(r.Context(), userID(r.Context()), role)
+		keys, err := d.AIGatewayKeys.ListGatewayKeys(r.Context(), userID(r.Context()), all)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal error")
 			return
@@ -204,7 +212,7 @@ func (d Deps) PostAIKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteAIKey handles DELETE /api/v1/ai/keys/{id}: revokes the key at once.
-// Its owner or an admin's session may; anyone else's key answers 404 like an
+// Its owner or a caller with ai:configure:any may; anyone else's key answers 404 like an
 // id that does not exist.  Revoking a revoked key is a 204 too.
 func (d Deps) DeleteAIKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -212,12 +220,12 @@ func (d Deps) DeleteAIKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, msgKeyNotFound)
 		return
 	}
-	role, err := d.keyCallerRole(r)
+	_, anyKey, err := d.keysReach(r)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if err := d.AIGatewayKeys.RevokeGatewayKey(r.Context(), userID(r.Context()), role, id); err != nil {
+	if err := d.AIGatewayKeys.RevokeGatewayKey(r.Context(), userID(r.Context()), anyKey, id); err != nil {
 		if !mapKeyErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
 		}
@@ -228,7 +236,7 @@ func (d Deps) DeleteAIKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // PutAIKey handles PUT /api/v1/ai/keys/{id}: renames the key and sets its
-// system text. Its owner or an admin's session may; anyone else's key answers
+// system text. Its owner or a caller with ai:configure:any may; anyone else's key answers
 // 404 like an id that does not exist. A field left out stays as it is, an
 // empty name is refused, an empty system_text clears the text. A revoked key
 // can still be changed. The audit event says which fields changed, never the
@@ -259,12 +267,12 @@ func (d Deps) PutAIKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, msgKeyNotFound)
 		return
 	}
-	role, err := d.keyCallerRole(r)
+	_, anyKey, err := d.keysReach(r)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	k, err := d.AIGatewayKeys.UpdateGatewayKey(r.Context(), userID(r.Context()), role, id, in.Name, in.SystemText)
+	k, err := d.AIGatewayKeys.UpdateGatewayKey(r.Context(), userID(r.Context()), anyKey, id, in.Name, in.SystemText)
 	if err != nil {
 		if !mapKeyErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")

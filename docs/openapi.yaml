@@ -816,12 +816,17 @@ components:
     Token:
       type: object
       description: A client token as it is listed. The token itself is returned once, when it is created.
-      required: [id, name, last_used, created_at]
+      required: [id, name, last_used, created_at, expires_at]
       properties:
         id: { type: string }
         name: { type: string }
         last_used: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the token stops working; null for one that never does. A token past it is refused like an unknown one.
     ClientLoginRequest:
       type: object
       description: >
@@ -2302,6 +2307,17 @@ paths:
               required: [name]
               properties:
                 name: { type: string }
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: >
+                    Optional (RFC 3339). Must be in the future and at most 365
+                    days ahead, else 400. Without it the token never expires.
+                    When the caller authenticated with an automation token that
+                    has an expiry, the new token expires no later than that
+                    token: a later or missing value becomes the automation
+                    token's expiry. A token that a sign-in request approval
+                    mints has no expiry.
       responses:
         '201':
           description: Token created.
@@ -2309,10 +2325,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [name, token]
+                required: [name, token, expires_at]
                 properties:
                   name: { type: string }
                   token: { type: string, description: The client token. Shown this once. }
+                  expires_at: { type: string, format: date-time, nullable: true, description: The expiry the token got; null for none. }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -5929,9 +5946,10 @@ paths:
       x-burrow-permission: {kind: needs, any_of: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"]}
       summary: List gateway keys
       description: |
-        The caller's gateway keys, newest first; an admin's dashboard
-        session sees every user's. An automation token sees the keys of its
-        user only, also when that user is an admin. Revoked keys are listed
+        The caller's gateway keys, newest first; a caller with ai:read:any or
+        ai:configure:any sees every user's. An automation token sees every
+        user's only when it declares one of those permissions and its user's
+        role grants it, otherwise the keys of its user. Revoked keys are listed
         with revoked_at set. No entry carries the key.
       security:
         - CookieAuth: []
@@ -6034,9 +6052,9 @@ paths:
         Changes the name and the system text of a key, nothing else; the key
         itself, its owner and its allow-list stay. A field left out stays as
         it is, an empty system_text clears the text, an empty name is
-        refused. A revoked key can still be changed. Its owner or an admin's
-        dashboard session may; an automation token changes the keys of its
-        user only. Another user's key answers 404, like an id that does not
+        refused. A revoked key can still be changed. Its owner may, and so may a
+        caller with ai:configure:any (an automation token only when it
+        declares it and its user's role grants it). Another user's key answers 404, like an id that does not
         exist. The body is at most 64 KiB. While the global request
         guardrails are on, a system_text that a request pattern (bundled or
         custom) matches is refused with 400 naming the pattern.
@@ -6067,9 +6085,9 @@ paths:
       x-burrow-permission: {kind: needs, any_of: ["ai:configure:own", "ai:configure:any"]}
       summary: Revoke a gateway key
       description: |
-        The key stops working at once. Its owner or an admin's dashboard
-        session may revoke it; an automation token revokes the keys of its
-        user only. Another user's key answers 404, like an id that does not
+        The key stops working at once. Its owner may revoke it, and so may a
+        caller with ai:configure:any (an automation token only when it
+        declares it and its user's role grants it). Another user's key answers 404, like an id that does not
         exist.
         Revoking a revoked key is a 204 too.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -16,6 +17,8 @@ type tokenResp struct {
 	Name      string     `json:"name"`
 	LastUsed  *time.Time `json:"last_used"`
 	CreatedAt time.Time  `json:"created_at"`
+	// ExpiresAt is when the token stops working; null for one that never does.
+	ExpiresAt *time.Time `json:"expires_at"`
 }
 
 // ListTokens returns the caller's client tokens (never the hash).
@@ -27,35 +30,73 @@ func (d Deps) ListTokens(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]tokenResp, 0, len(ts))
 	for _, t := range ts {
-		out = append(out, tokenResp{ID: t.ID, Name: t.Name, LastUsed: t.LastUsed, CreatedAt: t.CreatedAt})
+		out = append(out, tokenResp{ID: t.ID, Name: t.Name, LastUsed: t.LastUsed, CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 type createTokenReq struct {
 	Name string `json:"name"`
+	// ExpiresAt (RFC 3339) is optional: in the future and at most
+	// maxClientTokenLife ahead.
+	ExpiresAt *time.Time `json:"expires_at"`
 }
 
-// newTokenResp is returned by CreateToken — name and the one-time plaintext.
+// maxClientTokenLife is how far ahead a client token may be set to expire.
+const maxClientTokenLife = 365 * 24 * time.Hour
+
+// newTokenResp is returned by CreateToken — name, the one-time plaintext and
+// the expiry the token got (null: never).
 type newTokenResp struct {
-	Name  string `json:"name"`
-	Token string `json:"token"`
+	Name      string     `json:"name"`
+	Token     string     `json:"token"`
+	ExpiresAt *time.Time `json:"expires_at"`
 }
 
 // CreateToken mints a new client token and returns the plaintext exactly once.
 func (d Deps) CreateToken(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var in createTokenReq
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Name == "" {
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		// A body that is JSON but whose expires_at does not parse as a time.
+		var syn *json.SyntaxError
+		var ute *json.UnmarshalTypeError
+		nameProblem := errors.As(err, &syn) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+			(errors.As(err, &ute) && ute.Field == "name")
+		if !nameProblem {
+			writeErr(w, http.StatusBadRequest, "expires_at must be an RFC 3339 time")
+			return
+		}
 		writeErr(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	pt, err := d.Users.IssueClientToken(r.Context(), userID(r.Context()), in.Name)
+	if in.Name == "" {
+		writeErr(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	now := time.Now()
+	exp := in.ExpiresAt
+	if exp != nil {
+		if !exp.After(now) {
+			writeErr(w, http.StatusBadRequest, "expires_at must be in the future")
+			return
+		}
+		if exp.After(now.Add(maxClientTokenLife)) {
+			writeErr(w, http.StatusBadRequest, "expires_at must be at most 365 days ahead")
+			return
+		}
+	}
+	// A token that expires mints nothing that outlives it: the new token
+	// expires with it at the latest, and by default exactly then.
+	if cap, ok := bearerExpiry(r.Context()); ok && (exp == nil || exp.After(cap)) {
+		exp = &cap
+	}
+	pt, err := d.Users.IssueClientTokenUntil(r.Context(), userID(r.Context()), in.Name, exp)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "issue failed")
 		return
 	}
-	writeJSON(w, http.StatusCreated, newTokenResp{Name: in.Name, Token: pt})
+	writeJSON(w, http.StatusCreated, newTokenResp{Name: in.Name, Token: pt, ExpiresAt: exp})
 }
 
 // RevokeToken deletes one of the caller's tokens and ends the sessions that

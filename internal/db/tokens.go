@@ -11,14 +11,14 @@ import (
 )
 
 const clientTokenCols = `id, user_id, name, token_hash, last_used, created_at,
-	last_seen, last_os, last_arch, last_client_version, last_remote_addr, last_served`
+	last_seen, last_os, last_arch, last_client_version, last_remote_addr, last_served, expires_at`
 
 func scanClientToken(row interface{ Scan(...any) error }) (ClientToken, error) {
 	var ct ClientToken
-	var lastUsed, lastSeen sql.NullTime
+	var lastUsed, lastSeen, expires sql.NullTime
 	var served string
 	if err := row.Scan(&ct.ID, &ct.UserID, &ct.Name, &ct.TokenHash, &lastUsed, &ct.CreatedAt,
-		&lastSeen, &ct.LastOS, &ct.LastArch, &ct.LastClientVersion, &ct.LastRemoteAddr, &served); err != nil {
+		&lastSeen, &ct.LastOS, &ct.LastArch, &ct.LastClientVersion, &ct.LastRemoteAddr, &served, &expires); err != nil {
 		return ClientToken{}, err
 	}
 	if lastUsed.Valid {
@@ -26,6 +26,9 @@ func scanClientToken(row interface{ Scan(...any) error }) (ClientToken, error) {
 	}
 	if lastSeen.Valid {
 		ct.LastSeen = &lastSeen.Time
+	}
+	if expires.Valid {
+		ct.ExpiresAt = &expires.Time
 	}
 	ct.LastServed = []string{}
 	if served != "" {
@@ -37,8 +40,8 @@ func scanClientToken(row interface{ Scan(...any) error }) (ClientToken, error) {
 // CreateClientToken inserts a new client token row.
 func (x *DB) CreateClientToken(ctx context.Context, ct ClientToken) error {
 	_, err := x.sqlDB.ExecContext(ctx,
-		`INSERT INTO client_tokens(id, user_id, name, token_hash) VALUES(?,?,?,?)`,
-		ct.ID, ct.UserID, ct.Name, ct.TokenHash,
+		`INSERT INTO client_tokens(id, user_id, name, token_hash, expires_at) VALUES(?,?,?,?,?)`,
+		ct.ID, ct.UserID, ct.Name, ct.TokenHash, nullableTime(ct.ExpiresAt),
 	)
 	if err != nil {
 		return fmt.Errorf("create client token: %w", err)
@@ -194,4 +197,12 @@ func (x *DB) DeleteClientToken(ctx context.Context, id, userID string) error {
 		return fmt.Errorf("delete client token: %w", ErrNotFound)
 	}
 	return nil
+}
+
+// nullableTime is t as an instant in UTC, or NULL for nil.
+func nullableTime(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.UTC()
 }

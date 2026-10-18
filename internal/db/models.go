@@ -29,6 +29,8 @@ type ClientToken struct {
 	ID, UserID, Name, TokenHash string
 	LastUsed                    *time.Time
 	CreatedAt                   time.Time
+	// ExpiresAt is when the token stops working; nil for one that never does.
+	ExpiresAt *time.Time
 
 	// The last session that logged in with the token (RecordClientSession).
 	// All zero for a token that never connected. The text fields come from
