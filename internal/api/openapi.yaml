@@ -5913,7 +5913,7 @@ paths:
         keep their stored value when left out: name, enabled and translate.
         A different name renames the model. Gateway keys that name the old name in
         allowed_models are not rewritten and no longer reach the model.
-        Setting enabled to false on the model that an enabled guardrail judge
+        Setting enabled to false on, or renaming, the model that an enabled guardrail judge
         uses is refused with 400 (model "…" is the guardrail judge; change the
         judge first).
       requestBody:

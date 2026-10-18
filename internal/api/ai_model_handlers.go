@@ -428,7 +428,9 @@ func (d Deps) PutAIModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := in.model(old.Enabled, old.Translate, old.SystemText, old.Routing)
-	if old.Enabled && !next.Enabled && d.refuseJudgeModel(w, r, old.Name) {
+	// Switching off or renaming the judge's model would leave the judge naming
+	// a model it cannot use.
+	if (old.Enabled && !next.Enabled || next.Name != old.Name) && d.refuseJudgeModel(w, r, old.Name) {
 		return
 	}
 	m, err := d.AIModels.UpdateModel(r.Context(), old.Name, next)

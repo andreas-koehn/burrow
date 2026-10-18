@@ -217,6 +217,19 @@ func TestAIModel_GuardrailJudgeModelIsProtected(t *testing.T) {
 			if r = c.put(t, "/api/v1/ai/models/other", map[string]any{"name": "other", "enabled": false, "targets": []any{target}}); r.StatusCode != http.StatusOK {
 				t.Fatalf("other model: %d %s", r.StatusCode, readBody(t, r))
 			}
+			// Renaming it would leave the judge naming a model that is gone.
+			if tc.wantBlocked {
+				renamed := body(true)
+				renamed["name"] = "judge-renamed"
+				r = c.put(t, "/api/v1/ai/models/judge-model", renamed)
+				msg = readBody(t, r)
+				if r.StatusCode != http.StatusBadRequest || !strings.Contains(msg, "is the guardrail judge") {
+					t.Fatalf("rename: %d %s", r.StatusCode, msg)
+				}
+				if models.rows[0].Name != "judge-model" {
+					t.Fatal("the model was renamed")
+				}
+			}
 			r = c.delete(t, "/api/v1/ai/models/judge-model")
 			msg = readBody(t, r)
 			if tc.wantBlocked != (r.StatusCode == http.StatusBadRequest) || (tc.wantBlocked && !strings.Contains(msg, "is the guardrail judge")) {
