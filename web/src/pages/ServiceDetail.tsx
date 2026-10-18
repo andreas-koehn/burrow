@@ -9,6 +9,9 @@ import { AccessModePanel } from "@/components/AccessModePanel";
 import { ApiKeysPanel } from "@/components/ApiKeysPanel";
 import { UpstreamCredentialsPanel } from "@/pages/UpstreamCredentials";
 import { ServiceClientPanel } from "@/components/ServiceClientPanel";
+import { DeleteServiceDialog } from "@/components/DeleteServiceDialog";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import { serviceState } from "@/lib/status";
 import type { ServiceDetail as ServiceDetailType, AccessMode, AiProvider } from "@/lib/contract";
 
@@ -33,6 +36,9 @@ export default function ServiceDetail() {
   const initialTab = TAB_VALUES.includes(fragment) ? fragment : "access";
   const [tab, setTab] = useState(initialTab);
   const [editSlug, setEditSlug] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  // The relay lets the owner and the holder of :any delete, as it lets them read.
+  const canDelete = useCan([P.servicesConfigureOwn, P.servicesConfigureAny]);
   const qc = useQueryClient();
 
   const { data: svc, isLoading, error, refetch } = useQuery({
@@ -258,6 +264,18 @@ export default function ServiceDetail() {
           },
         ]}
       />
+      {canDelete && (
+        <section className="danger-zone" aria-labelledby="danger-zone-title">
+          <h2 id="danger-zone-title" className="danger-zone-title">Danger zone</h2>
+          <div className="row row-center gap-3">
+            <p className="muted small">
+              Deleting the service stops its URL and disconnects the clients connected for it.
+            </p>
+            <Button type="button" variant="destructive" onClick={() => setDeleting(true)}>Delete service</Button>
+          </div>
+          <DeleteServiceDialog service={{ id: svc.id, name: label }} open={deleting} onOpenChange={setDeleting} />
+        </section>
+      )}
       <EditSlugDialog service={{ id: svc.id, name: label, slug: svc.slug }} open={editSlug} onOpenChange={setEditSlug} />
     </div>
   );

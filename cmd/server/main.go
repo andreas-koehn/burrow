@@ -963,7 +963,16 @@ func newRootCmd() *cobra.Command {
 				// Revoking a client token, suspending or deleting its user
 				// ends the sessions that are connected with it.
 				ClientSessions: srv,
-				DB:             database,
+				// Deleting a service ends the session that serves it and
+				// drops what memory holds under its id: the inspector ring
+				// and the semantic cache collection (the rows go with the
+				// service by cascade).
+				ServiceSessions: srv,
+				OnServiceDeleted: func(serviceID string) {
+					v04.InspectorMgr.Remove(serviceID)
+					_ = v05.SemanticCache.ClearService(context.Background(), serviceID)
+				},
+				DB: database,
 				// v0.3.0: service API + live tunnel lookup + auth domain.
 				Services:    st,
 				AIProviders: st,

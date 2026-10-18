@@ -38,6 +38,10 @@ type ServiceStore interface {
 	// SetServiceGatewayOnly closes or reopens every direct door of an http
 	// service; it stays reachable through the AI gateway.
 	SetServiceGatewayOnly(ctx context.Context, callerID, callerRole, serviceID string, on bool) error
+	// DeleteService removes the service and returns its name. Owner or a
+	// holder of services:configure:any; store.ErrForbidden otherwise.
+	// store.ErrServiceHasProvider and store.ErrProviderInUse refuse it.
+	DeleteService(ctx context.Context, callerID, callerRole, serviceID string) (string, error)
 	SuggestSlug(ctx context.Context) (string, error)
 }
 
@@ -354,6 +358,14 @@ type Deps struct {
 	// call it when a token is revoked and when its user is suspended or
 	// deleted. *server.Server satisfies it. nil: nothing is closed.
 	ClientSessions interface{ CloseByToken(tokenID string) int }
+	// ServiceSessions ends the live sessions that serve a service. The
+	// service delete handler calls it. *server.Server satisfies it. nil:
+	// nothing is closed.
+	ServiceSessions interface{ CloseByService(serviceID string) int }
+	// OnServiceDeleted drops the in-memory state keyed by a service id (the
+	// inspector ring, the semantic cache collection) once the service is
+	// gone. nil: nothing to drop.
+	OnServiceDeleted func(serviceID string)
 	// v0.3.0 surfaces.
 	// Services is the durable service store (api keys, access mode, policy).
 	Services ServiceStore

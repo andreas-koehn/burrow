@@ -11,6 +11,7 @@ admin DELETE /api/v1/cache/semantic/entries 204
 admin DELETE /api/v1/rate-limits/{id} 404
 admin DELETE /api/v1/redaction/rules/{id} 404
 admin DELETE /api/v1/roles/{name} 404
+admin DELETE /api/v1/services/{serviceID} 404
 admin DELETE /api/v1/services/{serviceID}/api-keys/{id} 404
 admin DELETE /api/v1/services/{serviceID}/cache/entries 204
 admin DELETE /api/v1/services/{serviceID}/domains/{did} 204
@@ -167,6 +168,7 @@ user DELETE /api/v1/cache/semantic/entries 403
 user DELETE /api/v1/rate-limits/{id} 403
 user DELETE /api/v1/redaction/rules/{id} 403
 user DELETE /api/v1/roles/{name} 403
+user DELETE /api/v1/services/{serviceID} 404
 user DELETE /api/v1/services/{serviceID}/api-keys/{id} 404
 user DELETE /api/v1/services/{serviceID}/cache/entries 204
 user DELETE /api/v1/services/{serviceID}/domains/{did} 204
@@ -323,6 +325,7 @@ cr-none DELETE /api/v1/cache/semantic/entries 403
 cr-none DELETE /api/v1/rate-limits/{id} 403
 cr-none DELETE /api/v1/redaction/rules/{id} 403
 cr-none DELETE /api/v1/roles/{name} 403
+cr-none DELETE /api/v1/services/{serviceID} 403
 cr-none DELETE /api/v1/services/{serviceID}/api-keys/{id} 403
 cr-none DELETE /api/v1/services/{serviceID}/cache/entries 403
 cr-none DELETE /api/v1/services/{serviceID}/domains/{did} 403
@@ -479,6 +482,7 @@ cr-legacy DELETE /api/v1/cache/semantic/entries 204
 cr-legacy DELETE /api/v1/rate-limits/{id} 404
 cr-legacy DELETE /api/v1/redaction/rules/{id} 404
 cr-legacy DELETE /api/v1/roles/{name} 404
+cr-legacy DELETE /api/v1/services/{serviceID} 404
 cr-legacy DELETE /api/v1/services/{serviceID}/api-keys/{id} 404
 cr-legacy DELETE /api/v1/services/{serviceID}/cache/entries 204
 cr-legacy DELETE /api/v1/services/{serviceID}/domains/{did} 204

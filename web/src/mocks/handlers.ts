@@ -758,6 +758,22 @@ export const handlers = [
       access_policy: db.serviceAccessPolicy[svc.id] ?? [],
     });
   }),
+  // The owner, or a holder of services:configure:any, deletes; anyone else gets the 404 of an unknown id.
+  // A service an AI provider points at stays (409), as for the relay.
+  http.delete("/api/v1/services/:id", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = db.services.find((s) => s.id === params.id);
+    if (!svc || !canConfigure(svc)) return err(404, "service not found");
+    const provider = db.aiProviders.find((p) => p.service_id === svc.id);
+    if (provider) {
+      return err(409, `an AI provider still uses this service (${provider.slug}); delete the provider, and the models that use it, first`);
+    }
+    db.services = db.services.filter((s) => s.id !== svc.id);
+    delete db.serviceApiKeys[svc.id];
+    delete db.serviceAccessPolicy[svc.id];
+    delete db.aiConfigs[svc.id];
+    return new HttpResponse(null, { status: 204 });
+  }),
   http.post("/api/v1/services", async ({ request }) => {
     const g = gate(request, { admin: true }); if (g) return g;
     const b = await body<{ service_id?: string; title?: string; access_mode?: string; slug?: string }>(request);

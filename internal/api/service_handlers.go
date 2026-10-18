@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -276,6 +277,63 @@ func (d Deps) GetService(w http.ResponseWriter, r *http.Request) {
 		AccessPolicy: policy,
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// DeleteService handles DELETE /api/v1/services/{serviceID}. The owner, or a
+// role that may configure any service, deletes; anyone else gets the 404 of a
+// service that is not there. The URL stops working, a client connected for
+// the service is disconnected, and the in-memory state of the service goes.
+// A service that an AI provider points at is refused with 409: delete the
+// provider (and the models that use it) first.
+func (d Deps) DeleteService(w http.ResponseWriter, r *http.Request) {
+	serviceID := chi.URLParam(r, "serviceID")
+	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	name, err := d.Services.DeleteService(r.Context(), userID(r.Context()), role, serviceID)
+	switch {
+	case errors.Is(err, store.ErrForbidden), errors.Is(err, db.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "service not found")
+		return
+	case errors.Is(err, store.ErrServiceHasProvider):
+		writeErr(w, http.StatusConflict, "an AI provider still uses this service ("+
+			errDetail(err, store.ErrServiceHasProvider)+"); delete the provider, and the models that use it, first")
+		return
+	case errors.Is(err, store.ErrProviderInUse):
+		writeErr(w, http.StatusConflict, "models still use this service's provider ("+
+			errDetail(err, store.ErrProviderInUse)+"); remove them first")
+		return
+	case err != nil:
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if d.ServiceSessions != nil {
+		if n := d.ServiceSessions.CloseByService(serviceID); n > 0 {
+			d.Log.Info("service sessions closed", "service_id", serviceID, "sessions", n)
+		}
+	}
+	if d.OnServiceDeleted != nil {
+		d.OnServiceDeleted(serviceID)
+	}
+	if d.AuditAppender != nil {
+		lc := audit.LogContextFrom(r.Context())
+		_ = d.AuditAppender.Append(r.Context(), audit.Event{
+			ActorID: lc.ActorID, ActorEmail: lc.ActorEmail,
+			Action:    audit.ActionServiceDelete,
+			SubjectID: serviceID, SubjectLabel: name,
+			Result:   "ok",
+			SourceIP: lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
+		})
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// errDetail is the text an error adds after its sentinel ("sentinel: detail").
+func errDetail(err, sentinel error) string {
+	_, detail, _ := strings.Cut(err.Error(), sentinel.Error()+": ")
+	return detail
 }
 
 type setAccessModeReq struct {

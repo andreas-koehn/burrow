@@ -2502,6 +2502,24 @@ paths:
               schema: { $ref: '#/components/schemas/ServiceDetail' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [services]
+      operationId: serviceDelete
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      summary: Delete the service
+      description: >-
+        The owner, or a holder of services:configure:any, deletes the service.
+        Its URL stops working, a client connected for it is disconnected, and
+        its API keys, access policy, domains, AI configuration and cache go
+        with it. Anyone else gets 404, as for a service that does not exist.
+        A service that an AI provider uses is refused with 409: delete the
+        provider, and the models that use it, first.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      responses:
+        '204': { description: Service deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: An AI provider (or a model that uses it) still uses the service. }
 
   /api/v1/services/{serviceID}/access-mode:
     put:

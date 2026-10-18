@@ -276,6 +276,7 @@ func NewRouter(d Deps) http.Handler {
 			r.Get("/services", d.ListServices)
 			r.Get("/services/slug-suggestion", d.GetSlugSuggestion)
 			r.Get("/services/{serviceID}", d.GetService)
+			r.Delete("/services/{serviceID}", d.DeleteService)
 			r.Put("/services/{serviceID}/slug", d.PutServiceSlug)
 			// AI providers: the providers table joined with live data of each
 			// provider's backing service. Reads follow service visibility;

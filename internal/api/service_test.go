@@ -118,6 +118,9 @@ func (f *fakeServiceStore) SetServiceGatewayOnly(_ context.Context, callerID, ro
 	f.gatewayOnlyCalls = append(f.gatewayOnlyCalls, gatewayOnlyCall{callerID, role, serviceID, on})
 	return f.gatewayOnlyErr
 }
+func (f *fakeServiceStore) DeleteService(_ context.Context, _, _, _ string) (string, error) {
+	return "", nil
+}
 func (f *fakeServiceStore) SuggestSlug(_ context.Context) (string, error) {
 	return f.suggestSlug, f.suggestErr
 }

@@ -3106,3 +3106,13 @@ button.setup-step-title:focus-visible { outline: 2px solid var(--ring); outline-
 .choice-help dt::after { content: ": "; }
 .choice-help dd { display: inline; margin: 0; }
 .choice-help > div { margin-bottom: 2px; }
+
+/* Danger zone: the destructive actions of a detail page, set apart at the bottom. */
+.danger-zone {
+  margin-top: var(--space-6, 24px);
+  padding: var(--space-4, 16px);
+  border: 1px solid color-mix(in oklch, var(--destructive) 40%, transparent);
+  border-radius: var(--radius, 8px);
+}
+.danger-zone-title { font-size: 1rem; margin: 0 0 var(--space-2, 8px); color: var(--destructive); }
+.danger-zone .row { justify-content: space-between; flex-wrap: wrap; }

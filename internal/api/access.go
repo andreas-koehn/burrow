@@ -154,6 +154,7 @@ var routeAccess = map[string]access{
 	"GET /api/v1/services":                                                      needs(servicesConfigure...),
 	"GET /api/v1/services/slug-suggestion":                                      needs(servicesConfigure...),
 	"GET /api/v1/services/{serviceID}":                                          needs(servicesConfigure...),
+	"DELETE /api/v1/services/{serviceID}":                                       needs(servicesConfigure...),
 	"PUT /api/v1/services/{serviceID}/slug":                                     needs(servicesConfigure...),
 	"PUT /api/v1/services/{serviceID}/access-mode":                              needs(servicesConfigure...),
 	"PUT /api/v1/services/{serviceID}/gateway-only":                             needs(servicesConfigure...),

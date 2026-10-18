@@ -160,10 +160,13 @@ func (h *authzHarness) apiRoutes(t *testing.T) []apiRoute {
 var routeParam = regexp.MustCompile(`\{[^}]+\}`)
 
 // path fills the parameters of a route pattern: the harness's service for
-// {serviceID}, and "nope" (nothing has that id) for every other one.
+// {serviceID}, and "nope" (nothing has that id) for every other one. Deleting
+// the service would leave the routes after it nothing to answer on, so the
+// delete route is asked about "nope" too; service_delete_test.go covers the
+// service that is there.
 func (r apiRoute) path() string {
 	return routeParam.ReplaceAllStringFunc(r.pattern, func(p string) string {
-		if p == "{serviceID}" {
+		if p == "{serviceID}" && (r.method != http.MethodDelete || r.pattern != "/api/v1/services/{serviceID}") {
 			return authzServiceID
 		}
 		return "nope"

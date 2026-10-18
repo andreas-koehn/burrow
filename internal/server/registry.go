@@ -303,6 +303,34 @@ func (r *Registry) CloseByToken(tokenID string) int {
 // its user is suspended or deleted.
 func (s *Server) CloseByToken(tokenID string) int { return s.reg.CloseByToken(tokenID) }
 
+// CloseByService ends every live session that serves a tunnel of the service
+// and returns how many there were. Like CloseByToken it closes the yamux
+// session and leaves the cleanup to the handler of the connection. An empty
+// id closes nothing.
+func (r *Registry) CloseByService(serviceID string) int {
+	if serviceID == "" {
+		return 0
+	}
+	n := 0
+	for _, cs := range r.Sessions() {
+		if cs.Yamux == nil {
+			continue
+		}
+		for _, t := range r.snapshotTunnels(cs) {
+			if t.ServiceID == serviceID {
+				_ = cs.Yamux.Close()
+				n++
+				break
+			}
+		}
+	}
+	return n
+}
+
+// CloseByService ends the live sessions that serve a service (see
+// Registry.CloseByService). The API calls it when the service is deleted.
+func (s *Server) CloseByService(serviceID string) int { return s.reg.CloseByService(serviceID) }
+
 // Tunnel returns the named tunnel for a session, or nil.
 func (r *Registry) Tunnel(cs *ClientSession, id string) *Tunnel {
 	cs.mu.Lock()

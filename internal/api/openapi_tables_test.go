@@ -38,6 +38,7 @@ var openAPIOperationIDs = map[string]string{
 	"POST /api/v1/services":                                                     "serviceCreate",
 	"GET /api/v1/services/slug-suggestion":                                      "serviceSlugSuggestionGet",
 	"GET /api/v1/services/{serviceID}":                                          "serviceGet",
+	"DELETE /api/v1/services/{serviceID}":                                       "serviceDelete",
 	"PUT /api/v1/services/{serviceID}/access-mode":                              "serviceAccessModeUpdate",
 	"PUT /api/v1/services/{serviceID}/slug":                                     "serviceSlugUpdate",
 	"PUT /api/v1/services/{serviceID}/gateway-only":                             "serviceGatewayOnlyUpdate",

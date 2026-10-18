@@ -496,6 +496,14 @@ func (m *Manager) GetOrCreate(serviceID string, maxRequests int) *Ring {
 	return r
 }
 
+// Remove drops the Ring of serviceID, with the requests it holds. A service
+// that is deleted keeps nothing here.
+func (m *Manager) Remove(serviceID string) {
+	m.mu.Lock()
+	delete(m.rings, serviceID)
+	m.mu.Unlock()
+}
+
 // Get returns the existing Ring for serviceID, or nil when none exists.
 // Useful for read-only paths (list/get/stream) that must not allocate a
 // Ring just because the URL was hit.

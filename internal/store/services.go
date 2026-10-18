@@ -22,6 +22,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,6 +41,10 @@ var (
 	// ErrDirectService is returned when a setting that only makes sense for a
 	// tunnelled service is changed on the backing row of a direct AI provider.
 	ErrDirectService = errors.New("store: service backs a direct AI provider")
+	// ErrServiceHasProvider is returned by DeleteService, wrapped with the
+	// provider's slug, while an AI provider (tunnel or direct) points at the
+	// service.
+	ErrServiceHasProvider = errors.New("store: service backs an AI provider")
 )
 
 // ServiceView is the durable-fields representation of a service returned by
@@ -90,6 +95,35 @@ func (s *Store) canConfigure(ctx context.Context, callerID, callerRole, serviceI
 		return svc, nil
 	}
 	return db.Service{}, ErrForbidden
+}
+
+// DeleteService removes a service and returns its name for the audit entry.
+// Same gate as SetServiceAccessMode: the owner, or a role that may configure
+// any service. ErrForbidden for anyone else (the API answers 404, as for a
+// service that is not there).
+//
+// A service that an AI provider points at stays: the error wraps
+// ErrServiceHasProvider and names the provider. The provider rows reference
+// the service with ON DELETE CASCADE, so deleting the service would take a
+// tunnel provider with it without a word; a direct provider's backing row is
+// deleted with its provider. A race with a new model that targets the
+// provider comes back from the database as ErrProviderInUse.
+func (s *Store) DeleteService(ctx context.Context, callerID, callerRole, serviceID string) (string, error) {
+	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
+	if err != nil {
+		return "", err
+	}
+	p, err := s.q.GetAIProviderByService(ctx, serviceID)
+	switch {
+	case err == nil:
+		return "", fmt.Errorf("%w: %s", ErrServiceHasProvider, p.Slug)
+	case !errors.Is(err, db.ErrNotFound):
+		return "", err
+	}
+	if err := s.q.DeleteService(ctx, serviceID); err != nil {
+		return "", err
+	}
+	return svc.Name, nil
 }
 
 // ListServices returns all services visible to the caller.

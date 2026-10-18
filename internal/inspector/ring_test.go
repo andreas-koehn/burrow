@@ -423,3 +423,13 @@ func TestMetadataOnlyBody(t *testing.T) {
 		t.Fatalf("got=%q want=%q", got, want)
 	}
 }
+
+func TestManagerRemoveDropsTheRing(t *testing.T) {
+	m := NewManager()
+	m.GetOrCreate("svc", 10)
+	m.Remove("svc")
+	if m.Get("svc") != nil {
+		t.Fatal("the ring is still there")
+	}
+	m.Remove("never-existed") // no panic
+}
