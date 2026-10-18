@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -243,23 +244,76 @@ func TestJudge_SkipsClientAddressPolicy(t *testing.T) {
 
 // A judge call no upstream answered (the gateway wrote the error itself) is
 // metered with no tokens: the byte estimate of the gateway's own error body
-// is nobody's usage.
+// is nobody's usage. Each case ends in a different place of the failover.
 func TestJudge_GatewayErrorIsNotMeteredByEstimate(t *testing.T) {
-	g, meter, _ := judgeGateway(t, http.NotFoundHandler())
-	g.Direct = func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
-		return nil, errNoUpstream
-	}
-	if _, err := g.Judge(context.Background(), "svc-judged", "burrow-intelligence", "p", "hello there, judge"); err == nil {
-		t.Fatal("a gateway error was taken for an answer")
-	}
-	if len(meter.samples) == 0 {
-		t.Skip("no usage row is written for this failure")
-	}
-	for _, s := range meter.samples {
-		if s.TokensIn != 0 || s.TokensOut != 0 {
-			t.Fatalf("usage row with estimated tokens: %+v", s)
+	// The upstream's transport gives up waiting: the gateway's own 504.
+	transportTimeout := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		if n, ok := w.(aiprovider.TimeoutNoter); ok {
+			n.NoteUpstreamTimeout()
 		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusGatewayTimeout)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream did not answer in time","type":"timeout"}}`))
+	})
+	// Answers only after the attempt's time is up: not the answer.
+	late := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(judgeChatAnswer(`{"verdict":"allow","reason":"late"}`)))
+	})
+	// The first target fails with a 5xx (its answer is discarded for the
+	// next target), the second is late: no upstream answer is the response.
+	var calls atomic.Int32
+	failThenLate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			_, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":{"message":"bad gateway upstream says","type":"upstream"}}`))
+			return
+		}
+		late.ServeHTTP(w, r)
+	})
+	for name, tc := range map[string]struct {
+		up     http.Handler
+		model  string
+		direct bool // Direct itself fails: the target's upstream is never reached
+	}{
+		"upstream not reached":   {up: http.NotFoundHandler(), model: "burrow-intelligence", direct: true},
+		"upstream timeout":       {up: transportTimeout, model: "judge-single"},
+		"late answer":            {up: late, model: "burrow-intelligence"},
+		"first fails, then late": {up: failThenLate, model: "burrow-intelligence"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g, meter, _ := judgeGateway(t, tc.up)
+			g.timeUnit = time.Millisecond
+			syn := g.Synthetic.(fakeSynthetic)
+			syn["judge-single"] = db.AIModel{Name: "judge-single", Enabled: true, AttemptTimeoutS: 30, TotalTimeoutS: 120000, Targets: []db.AIModelTarget{
+				{Dialect: "openai", Position: 0, ProviderSlug: "zai", TargetModel: "glm-5.1"},
+			}}
+			m := syn["burrow-intelligence"]
+			m.AttemptTimeoutS, m.TotalTimeoutS = 30, 120000
+			syn["burrow-intelligence"] = m
+			if tc.direct {
+				g.Direct = func(db.AIProvider, aiprovider.ErrorWriter) (http.Handler, error) {
+					return nil, errors.New("no upstream")
+				}
+			}
+			if _, err := g.Judge(context.Background(), "svc-judged", tc.model, "p", "hello there, judge"); err == nil {
+				t.Fatal("a gateway error was taken for an answer")
+			}
+			if len(meter.samples) == 0 {
+				t.Fatal("no usage row was written for the failed judge call")
+			}
+			for _, s := range meter.samples {
+				if s.TokensIn != 0 || s.TokensOut != 0 || s.Purpose != aigw.PurposeGuardrailJudge {
+					t.Fatalf("usage row %+v: want 0 tokens", s)
+				}
+				if s.CostUSD != nil && *s.CostUSD != 0 {
+					t.Fatalf("usage row with cost %v", *s.CostUSD)
+				}
+			}
+		})
 	}
 }
-
-var errNoUpstream = errors.New("no upstream")

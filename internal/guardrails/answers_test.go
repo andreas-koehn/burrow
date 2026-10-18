@@ -269,3 +269,34 @@ func TestAnswerPatterns_PlaceholdersStreamedAreNeverBlocked(t *testing.T) {
 		}
 	}
 }
+
+// The drop of a placeholder is not sticky: a key that starts like one (its
+// first 20 secret characters have fewer than 6 distinct ones) and goes on
+// with random characters is blocked as soon as the match has 6, before the
+// key ends.
+func TestAnswerPatterns_StreamedKeyWithPlaceholderStartIsBlocked(t *testing.T) {
+	e := NewEngine()
+	key := "ghp" + "_" + strings.Repeat("a", 20) + "Q7zK9mX2pL4vB8nR1sT5wY3"
+	for _, step := range []int{1, 3} {
+		s := NewStreamScanner(e.InspectAnswerBundled, nil)
+		text := "token: " + key + " end"
+		start := strings.Index(text, key)
+		hitAt := -1
+		for i := 0; i < len(text); i += step {
+			end := min(i+step, len(text))
+			if hit, id := s.Add(text[i:end]); hit {
+				if id != "github_token" {
+					t.Fatalf("matched %q", id)
+				}
+				hitAt = end - start // bytes of the key delivered with this event
+				break
+			}
+		}
+		if hitAt < 0 {
+			t.Fatalf("step %d: key not found", step)
+		}
+		if hitAt >= len(key) {
+			t.Errorf("step %d: blocked only after %d of %d key bytes", step, hitAt, len(key))
+		}
+	}
+}
