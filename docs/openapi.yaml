@@ -2267,7 +2267,7 @@ paths:
         answer 403 `reauth_required` outside it). Needed only while the relay
         has no services domain (`BURROW_SERVICES_DOMAIN`); with one the call
         still succeeds and the guard is off. Rate-limited like sign-in, audited
-        as `auth.reauth`; ten wrong passwords in a minute from one user, from any address, lock it for that minute (429). A dashboard session only: an automation token has no
+        as `auth.reauth`; ten wrong passwords in a minute from one session lock that session for that minute (429); other sessions of the user are not affected. A dashboard session only: an automation token has no
         window and gets 403.
       requestBody:
         required: true

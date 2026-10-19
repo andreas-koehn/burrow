@@ -485,7 +485,8 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 
 // ChangePassword verifies currentPassword, enforces minimum length on newPassword,
 // re-hashes, and persists. Returns ErrInvalidCredentials on wrong current password,
-// ErrPasswordTooShort on a short new password. Sessions are NOT rotated (MVP decision).
+// ErrPasswordTooShort on a short new password. The store does not touch sessions;
+// the API handler signs the user's other sessions out after a success.
 func (s *Store) ChangePassword(ctx context.Context, userID, currentPassword, newPassword string) error {
 	u, err := s.q.GetUserByID(ctx, userID)
 	if err != nil {

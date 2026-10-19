@@ -75,11 +75,13 @@ type AuditDB interface {
 // Logger appends events to audit_events under a SHA-256 hash chain and
 // signs NDJSON exports with the configured Ed25519 key.
 type Logger struct {
-	d       AuditDB
-	priv    ed25519.PrivateKey
-	log     *slog.Logger
-	mu      sync.Mutex
-	lastAgg map[string]time.Time // sample key -> when its row was claimed
+	// sessionRefCutoff: see RedactSubject. Set once at start-up.
+	sessionRefCutoff string
+	d                AuditDB
+	priv             ed25519.PrivateKey
+	log              *slog.Logger
+	mu               sync.Mutex
+	lastAgg          map[string]time.Time // sample key -> when its row was claimed
 	// appending holds one token: the appends of this process run one at a
 	// time (see appendRow). A channel, so a wait ends with its context.
 	appending chan struct{}
@@ -418,7 +420,7 @@ func (l *Logger) ExportNDJSON(ctx context.Context, w io.Writer, q ExportQuery) e
 		if !apply(row) {
 			return nil
 		}
-		subject, redacted := RedactSubject(row.Action, row.SubjectID)
+		subject, redacted := RedactSubject(row.Action, row.SubjectID, row.ID, l.sessionRefCutoff)
 		line := exportEventJSON{
 			ID: row.ID, Ts: row.Ts, ActorID: row.ActorID, ActorEmail: row.ActorEmail,
 			Action: row.Action, SubjectID: subject, SubjectLabel: row.SubjectLabel,
@@ -558,3 +560,7 @@ func VerifySignedExport(r io.Reader, pub ed25519.PublicKey) (ok bool, firstID, l
 	}
 	return true, firstID, lastID, "", nil
 }
+
+// SetSessionRefCutoff sets the id before which a uuid-shaped session subject is
+// a legacy raw session id (EnsureSessionRefCutoff). Call it before serving.
+func (l *Logger) SetSessionRefCutoff(c string) { l.sessionRefCutoff = c }

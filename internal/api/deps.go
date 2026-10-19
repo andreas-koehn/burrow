@@ -457,6 +457,8 @@ type Deps struct {
 	reauthClock func() time.Time
 	// reauthGuesses counts wrong passwords sent to /auth/reauth per user.
 	reauthGuesses *guessLimiter
+	// reauthUserWrong counts them per user and hour (ReauthUserCeiling).
+	reauthUserWrong *guessLimiter
 	// ClientDownloadBase is where /download/ redirects to:
 	// <base>/<tag>/<archive>. Empty means config.DefaultClientDownloadBase.
 	ClientDownloadBase string
@@ -528,6 +530,9 @@ type Deps struct {
 	// first_id/last_id within a range). *db.DB satisfies it. Nil disables
 	// the routes (handlers return 500 "audit store unavailable").
 	AuditEvents AuditQueryStore
+	// AuditSessionRefCutoff is the audit id before which uuid-shaped session
+	// subjects are raw session ids and are shown hashed (audit.RedactSubject).
+	AuditSessionRefCutoff string
 	// AuditChain is the action surface: verify, export, public-key. Wraps
 	// an *audit.Logger via NewAuditChainAdapter. cmd/server constructs it
 	// after LoadOrGenerateSigningKey wires the key. Nil disables verify /

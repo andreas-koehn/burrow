@@ -178,30 +178,6 @@ func LogServiceAPIKeyRevoke(ctx context.Context, l *Logger, c LogContext, servic
 	})
 }
 
-// LogSessionCreate logs ActionSessionCreate.
-func LogSessionCreate(ctx context.Context, l *Logger, c LogContext, sessionID, userEmail string) {
-	if l == nil {
-		return
-	}
-	_ = l.Append(ctx, Event{
-		ActorID: c.ActorID, ActorEmail: c.ActorEmail, Action: ActionSessionCreate,
-		SubjectID: sessionID, SubjectLabel: userEmail, Result: "ok",
-		SourceIP: c.SourceIP, UserAgent: c.UserAgent, RequestID: c.RequestID,
-	})
-}
-
-// LogSessionDelete logs ActionSessionDelete.
-func LogSessionDelete(ctx context.Context, l *Logger, c LogContext, sessionID, userEmail string) {
-	if l == nil {
-		return
-	}
-	_ = l.Append(ctx, Event{
-		ActorID: c.ActorID, ActorEmail: c.ActorEmail, Action: ActionSessionDelete,
-		SubjectID: sessionID, SubjectLabel: userEmail, Result: "ok",
-		SourceIP: c.SourceIP, UserAgent: c.UserAgent, RequestID: c.RequestID,
-	})
-}
-
 // LogSessionRevokeOthers logs ActionSessionRevokeOthers.
 func LogSessionRevokeOthers(ctx context.Context, l *Logger, c LogContext, userID, userEmail string, revoked int64) {
 	if l == nil {

@@ -218,6 +218,7 @@ func newRouter(d Deps) http.Handler {
 	// Routes that mint a secret or change who may do what, while no
 	// services domain keeps tunnelled apps off the dashboard's origin.
 	d.reauthGuesses = newGuessLimiter(ReauthGuessLimit, time.Minute, d.reauthClock)
+	d.reauthUserWrong = newGuessLimiter(ReauthUserCeiling, time.Hour, d.reauthClock)
 	recent := d.RequireRecentAuth
 
 	r.Route("/api/v1", func(r chi.Router) {

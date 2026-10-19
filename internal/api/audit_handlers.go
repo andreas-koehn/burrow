@@ -69,14 +69,14 @@ type auditEventResp struct {
 	Hash         string          `json:"hash"`
 }
 
-func toAuditEventResp(e db.AuditEvent) auditEventResp {
+func toAuditEventResp(e db.AuditEvent, cutoff string) auditEventResp {
 	pl := json.RawMessage(e.Payload)
 	if len(pl) == 0 {
 		pl = json.RawMessage(`{}`)
 	}
 	// Rows of older relays hold the raw session id; show its hash instead.
 	// Only the response changes: the stored row and the chain stay as they are.
-	subject, _ := audit.RedactSubject(e.Action, e.SubjectID)
+	subject, _ := audit.RedactSubject(e.Action, e.SubjectID, e.ID, cutoff)
 	return auditEventResp{
 		ID: e.ID, Ts: e.Ts, ActorID: e.ActorID, ActorEmail: e.ActorEmail,
 		Action: e.Action, SubjectID: subject, SubjectLabel: e.SubjectLabel,
@@ -151,7 +151,7 @@ func (d Deps) GetAuditEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]auditEventResp, 0, len(rows))
 	for _, e := range rows {
-		out = append(out, toAuditEventResp(e))
+		out = append(out, toAuditEventResp(e, d.AuditSessionRefCutoff))
 	}
 	writeJSON(w, http.StatusOK, out)
 }

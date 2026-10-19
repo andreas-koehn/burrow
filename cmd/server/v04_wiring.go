@@ -48,24 +48,26 @@ import (
 // inspector replayer is a thin closure that reuses the chain's Replay seam
 // — see the inspectorReplayerAdapter below.
 type v04Stack struct {
-	AuditLogger       *audit.Logger
-	AuditAppender     api.AuditAppender
-	AuditEvents       api.AuditQueryStore
-	AuditChain        api.AuditChain
-	WebhookDispatcher *webhook.Dispatcher
-	WebhookSecrets    *webhook.InMemorySecrets
-	CostEngine        *cost.Engine
-	QuotaEngine       *quota.Engine
-	CacheEngine       *exact.Cache
-	RedactEngine      *redact.Engine
-	GuardrailsEngine  *guardrails.Engine
-	InspectorMgr      *inspector.Manager
-	RouteRouter       *route.Router
-	MeterSink         *aimeter.SQLSink
-	Metrics           *metrics.Recorder
-	GeoLookup         proxy.GeoLookup
-	MCPServer         *mcpserv.Server
-	AIChain           *aigw.Chain
+	AuditLogger   *audit.Logger
+	AuditAppender api.AuditAppender
+	AuditEvents   api.AuditQueryStore
+	// AuditSessionRefCutoff: see audit.RedactSubject.
+	AuditSessionRefCutoff string
+	AuditChain            api.AuditChain
+	WebhookDispatcher     *webhook.Dispatcher
+	WebhookSecrets        *webhook.InMemorySecrets
+	CostEngine            *cost.Engine
+	QuotaEngine           *quota.Engine
+	CacheEngine           *exact.Cache
+	RedactEngine          *redact.Engine
+	GuardrailsEngine      *guardrails.Engine
+	InspectorMgr          *inspector.Manager
+	RouteRouter           *route.Router
+	MeterSink             *aimeter.SQLSink
+	Metrics               *metrics.Recorder
+	GeoLookup             proxy.GeoLookup
+	MCPServer             *mcpserv.Server
+	AIChain               *aigw.Chain
 	// GuardrailAudit writes the guardrail.refused entries; flushed at shutdown.
 	GuardrailAudit *guardrailAuditor
 	// Judge is the chain's way to the judge model: main hands it the AI
@@ -107,6 +109,13 @@ func buildV04Stack(
 		return nil, err
 	}
 	auditLogger := audit.NewLogger(wrapped, signingKey, log)
+	// Session rows written by older versions hold the raw session id; the
+	// first start of this version marks where they end (audit.RedactSubject).
+	sessionRefCutoff, err := audit.EnsureSessionRefCutoff(ctx, st)
+	if err != nil {
+		return nil, err
+	}
+	auditLogger.SetSessionRefCutoff(sessionRefCutoff)
 	// Back-fill the audit logger into the store so future store-side
 	// mutations can chain (no current callers; the setter is the seam).
 	st.SetAuditLogger(storeAuditAdapter{auditLogger})
@@ -247,27 +256,28 @@ func buildV04Stack(
 	var mcpServer *mcpserv.Server
 
 	return &v04Stack{
-		AuditLogger:       auditLogger,
-		AuditAppender:     auditLogger,
-		AuditEvents:       wrapped,
-		AuditChain:        exportAnnouncingChain{AuditChain: api.NewAuditChainAdapter(auditLogger), events: dispatcher},
-		WebhookDispatcher: dispatcher,
-		WebhookSecrets:    webhookSecrets,
-		CostEngine:        costEngine,
-		QuotaEngine:       quotaEngine,
-		CacheEngine:       cacheEngine,
-		RedactEngine:      redactEngine,
-		GuardrailsEngine:  guardrailsEngine,
-		InspectorMgr:      inspectorMgr,
-		RouteRouter:       routeRouter,
-		MeterSink:         meterSink,
-		Metrics:           metricsRec,
-		GeoLookup:         geoLookup,
-		MCPServer:         mcpServer,
-		AIChain:           aiChain,
-		GuardrailAudit:    guardrailAudit,
-		Judge:             judge,
-		Observer:          obs,
+		AuditLogger:           auditLogger,
+		AuditAppender:         auditLogger,
+		AuditEvents:           wrapped,
+		AuditSessionRefCutoff: sessionRefCutoff,
+		AuditChain:            exportAnnouncingChain{AuditChain: api.NewAuditChainAdapter(auditLogger), events: dispatcher},
+		WebhookDispatcher:     dispatcher,
+		WebhookSecrets:        webhookSecrets,
+		CostEngine:            costEngine,
+		QuotaEngine:           quotaEngine,
+		CacheEngine:           cacheEngine,
+		RedactEngine:          redactEngine,
+		GuardrailsEngine:      guardrailsEngine,
+		InspectorMgr:          inspectorMgr,
+		RouteRouter:           routeRouter,
+		MeterSink:             meterSink,
+		Metrics:               metricsRec,
+		GeoLookup:             geoLookup,
+		MCPServer:             mcpServer,
+		AIChain:               aiChain,
+		GuardrailAudit:        guardrailAudit,
+		Judge:                 judge,
+		Observer:              obs,
 	}, nil
 }
 

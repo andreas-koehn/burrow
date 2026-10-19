@@ -32,7 +32,22 @@ func TestAudit_LegacyRawSessionIDsAreRedactedOnRead(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, AuditEvents: s.x, AuditChain: s.chain}
+	// The cutoff is the first start of the fixed version: everything before it
+	// is legacy, everything after it is written hashed.
+	cutoff, err := audit.NewULID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.logger.SetSessionRefCutoff(cutoff)
+	// A uuid-shaped subject written AFTER the cutoff (a forged or tampered row)
+	// is not legacy: it is shown as stored and cannot claim the verify skip.
+	const forged = "5a5a5a5a-7d2a-4c53-9a6e-3f1d2b8a7c10"
+	if err := s.logger.Append(context.Background(), audit.Event{
+		ActorID: "u-admin", Action: audit.ActionSessionDelete, SubjectID: forged, Result: "ok",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, AuditEvents: s.x, AuditChain: s.chain, AuditSessionRefCutoff: cutoff}
 	srv := httptest.NewServer(NewRouter(d))
 	defer srv.Close()
 	c := authedClient(t, srv)
@@ -43,6 +58,9 @@ func TestAudit_LegacyRawSessionIDsAreRedactedOnRead(t *testing.T) {
 	if strings.Contains(body, raw) {
 		t.Fatalf("the list holds a raw session id: %s", body)
 	}
+	if !strings.Contains(body, forged) {
+		t.Fatalf("a row written after the cutoff was redacted")
+	}
 	var rows []auditEventResp
 	if err := json.Unmarshal([]byte(body), &rows); err != nil {
 		t.Fatal(err)
@@ -50,6 +68,9 @@ func TestAudit_LegacyRawSessionIDsAreRedactedOnRead(t *testing.T) {
 	for _, r := range rows {
 		switch r.Action {
 		case audit.ActionSessionCreate, audit.ActionSessionDelete:
+			if r.SubjectID == forged {
+				continue
+			}
 			if r.SubjectID != want {
 				t.Errorf("%s subject %q, want %q", r.Action, r.SubjectID, want)
 			}
@@ -64,6 +85,11 @@ func TestAudit_LegacyRawSessionIDsAreRedactedOnRead(t *testing.T) {
 	export := readBody(t, resp)
 	if strings.Contains(export, raw) {
 		t.Fatalf("the export holds a raw session id")
+	}
+	for _, line := range strings.Split(export, "\n") {
+		if strings.Contains(line, forged) && strings.Contains(line, "subject_redacted") {
+			t.Fatalf("a row after the cutoff claims the verification skip: %s", line)
+		}
 	}
 	if !strings.Contains(export, want) {
 		t.Fatalf("the export lacks the hashed id")

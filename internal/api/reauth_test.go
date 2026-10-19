@@ -367,18 +367,88 @@ func TestChangePassword_EndsOtherSessionsKeepsOwn(t *testing.T) {
 	}
 }
 
-// Wrong passwords to /auth/reauth are counted per user, whatever the address.
-func TestReauth_WrongPasswordsAreLimitedPerUser(t *testing.T) {
-	h := newLoginHarness(t, func(d *Deps) { d.LoginRateLimitPerIPOverride = 1000; d.LoginRateLimitGlobalOverride = 1000 })
-	c := unconfirmedClient(t, h.srv)
+// Wrong passwords to /auth/reauth are counted per session, not per user: a
+// script on the dashboard's origin can send wrong passwords as the victim, and
+// must not be able to shut the victim out on every device.
+func TestReauth_WrongPasswordsAreLimitedPerSession(t *testing.T) {
+	clk := &loginTestClock{t: time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)}
+	h := newLoginHarness(t, func(d *Deps) {
+		d.LoginRateLimitPerIPOverride = 1000
+		d.LoginRateLimitGlobalOverride = 1000
+		d.reauthClock = clk.now
+	})
+	a := unconfirmedClient(t, h.srv)
+	b := unconfirmedClient(t, h.srv) // another session of the same user
 	for i := 0; i < ReauthGuessLimit; i++ {
-		if resp := c.post(t, "/api/v1/auth/reauth", map[string]string{"password": "nope"}); resp.StatusCode != http.StatusForbidden {
+		if resp := a.post(t, "/api/v1/auth/reauth", map[string]string{"password": "nope"}); resp.StatusCode != http.StatusForbidden {
 			t.Fatalf("wrong %d: %d, want 403", i, resp.StatusCode)
 		}
 	}
-	// Even the right password is refused now, as with the wrong-code limit.
+	// A is shut out, the right password included ...
+	if resp := a.post(t, "/api/v1/auth/reauth", map[string]string{"password": "password1"}); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("A after %d wrong: %d, want 429", ReauthGuessLimit, resp.StatusCode)
+	}
+	// ... the user's other session is not.
+	b.reauth(t, "password1")
+	// And A may confirm again once its minute is over.
+	clk.add(61 * time.Second)
+	a.reauth(t, "password1")
+}
+
+// Wrong current passwords on /auth/change-password count against the same
+// per-session allowance.
+func TestChangePassword_WrongPasswordsShareTheSessionAllowance(t *testing.T) {
+	h := newLoginHarness(t, func(d *Deps) {
+		d.LoginRateLimitPerIPOverride = 1000
+		d.LoginRateLimitGlobalOverride = 1000
+	})
+	c := authedClient(t, h.srv)
+	wrong := map[string]string{"current_password": "guess", "new_password": "newpassword1"}
+	for i := 0; i < ReauthGuessLimit; i++ {
+		if resp := c.post(t, "/api/v1/auth/change-password", wrong); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("wrong %d: %d, want 401", i, resp.StatusCode)
+		}
+	}
+	right := map[string]string{"current_password": "password1", "new_password": "newpassword1"}
+	if resp := c.post(t, "/api/v1/auth/change-password", right); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("change after %d wrong: %d, want 429", ReauthGuessLimit, resp.StatusCode)
+	}
 	if resp := c.post(t, "/api/v1/auth/reauth", map[string]string{"password": "password1"}); resp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("after %d wrong: %d, want 429", ReauthGuessLimit, resp.StatusCode)
+		t.Fatalf("reauth after %d wrong change attempts: %d, want 429", ReauthGuessLimit, resp.StatusCode)
+	}
+}
+
+// A high per-user ceiling (wrong passwords per hour, all sessions) is audited
+// but never refuses a correct password.
+func TestReauth_UserCeilingAuditsAndNeverBlocks(t *testing.T) {
+	aud := &reauthAudit{}
+	h := newLoginHarness(t, func(d *Deps) {
+		d.LoginRateLimitPerIPOverride = 10000
+		d.LoginRateLimitGlobalOverride = 10000
+		d.AuditAppender = aud
+	})
+	wrongSent := 0
+	for wrongSent <= ReauthUserCeiling {
+		c := unconfirmedClient(t, h.srv) // each session may send ReauthGuessLimit wrong ones
+		for i := 0; i < ReauthGuessLimit && wrongSent <= ReauthUserCeiling; i++ {
+			c.post(t, "/api/v1/auth/reauth", map[string]string{"password": "nope"}).Body.Close()
+			wrongSent++
+		}
+	}
+	fresh := unconfirmedClient(t, h.srv)
+	fresh.reauth(t, "password1") // still accepted
+	flagged := 0
+	for _, e := range aud.rows {
+		if e.Action == "auth.reauth" && strings.Contains(string(e.Payload), "over_user_ceiling") {
+			flagged++
+		}
+	}
+	if flagged == 0 {
+		t.Fatalf("nothing audited past the ceiling: %d rows", len(aud.rows))
+	}
+	last := aud.rows[len(aud.rows)-1]
+	if last.Result != "ok" || !strings.Contains(string(last.Payload), "over_user_ceiling") {
+		t.Fatalf("the accepted confirmation past the ceiling is not flagged: %+v", last)
 	}
 }
 

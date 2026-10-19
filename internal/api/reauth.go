@@ -133,9 +133,12 @@ func (d Deps) PostReauth(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "reauth failed")
 		return
 	}
-	// Wrong passwords are also counted per user, next to the per-address limit:
-	// many addresses do not buy more guesses at one account.
-	if d.reauthGuesses.blocked(u.ID) {
+	// Wrong passwords are counted per session (this one and the password
+	// change share the count), next to the per-address limit. Not per user: a
+	// script on the dashboard's origin sends requests as the signed-in user
+	// and would otherwise lock the user out everywhere.
+	ref := sessionRef(c.Value)
+	if d.reauthGuesses.blocked(ref) {
 		w.Header().Set("Retry-After", "60")
 		writeErr(w, http.StatusTooManyRequests, "too many wrong passwords; try again in a minute")
 		return
@@ -146,7 +149,7 @@ func (d Deps) PostReauth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		d.reauthGuesses.fail(u.ID)
+		d.noteWrongPassword(ref, u.ID)
 		d.auditAuth(r, audit.ActionAuthReauth, u.ID, u.Email, "denied")
 		writeErr(w, http.StatusForbidden, "password is incorrect")
 		return
@@ -156,18 +159,39 @@ func (d Deps) PostReauth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, reauthResp{ExpiresAt: end.UTC()})
 }
 
-// ReauthGuessLimit is how many wrong passwords one user may send to
-// /auth/reauth per minute, from any addresses.
+// ReauthGuessLimit is how many wrong passwords one session may send to
+// /auth/reauth and /auth/change-password together per minute.
 const ReauthGuessLimit = 10
+
+// ReauthUserCeiling is how many wrong passwords one user's sessions together
+// may send per hour before the relay flags it in the audit log. It never
+// refuses anything: a refusal keyed by user would let a script lock the
+// user out.
+const ReauthUserCeiling = 100
+
+// noteWrongPassword counts a wrong password against the session and the user.
+func (d Deps) noteWrongPassword(sessionKey, uid string) {
+	if sessionKey != "" {
+		d.reauthGuesses.fail(sessionKey)
+	}
+	d.reauthUserWrong.fail(uid)
+}
+
+// overUserCeiling reports whether the user is past ReauthUserCeiling.
+func (d Deps) overUserCeiling(uid string) bool { return d.reauthUserWrong.blocked(uid) }
 
 func (d Deps) auditAuth(r *http.Request, action, id, email, result string) {
 	if d.AuditAppender == nil {
 		return
 	}
+	var payload json.RawMessage
+	if d.overUserCeiling(id) {
+		payload = json.RawMessage(`{"over_user_ceiling":true}`)
+	}
 	lc := audit.LogContextFrom(r.Context())
 	_ = d.AuditAppender.Append(r.Context(), audit.Event{
 		ActorID: id, ActorEmail: email, Action: action,
 		SubjectID: id, SubjectLabel: email, Result: result,
-		SourceIP: lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
+		SourceIP: lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID, Payload: payload,
 	})
 }

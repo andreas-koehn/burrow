@@ -31,8 +31,20 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := userID(r.Context())
+	// Wrong current passwords count against the session's allowance, shared
+	// with /auth/reauth (a bearer request has no session to count against).
+	key := ""
+	if c, cerr := r.Cookie(sessionCookieName); cerr == nil && c.Value != "" && bearerTokenID(r.Context()) == "" {
+		key = sessionRef(c.Value)
+	}
+	if key != "" && d.reauthGuesses.blocked(key) {
+		w.Header().Set("Retry-After", "60")
+		writeErr(w, http.StatusTooManyRequests, "too many wrong passwords; try again in a minute")
+		return
+	}
 	err := d.Users.ChangePassword(r.Context(), uid, in.CurrentPassword, in.NewPassword)
 	if errors.Is(err, store.ErrInvalidCredentials) {
+		d.noteWrongPassword(key, uid)
 		d.auditPasswordChange(r, "denied")
 		writeErr(w, http.StatusUnauthorized, "current password is incorrect")
 		return
