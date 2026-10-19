@@ -261,3 +261,39 @@ func TestPresidioTimeoutShortCircuits(t *testing.T) {
 		t.Fatalf("Analyze did not short-circuit at 250ms: elapsed=%v", elapsed)
 	}
 }
+
+// TestToolScopes: the two scopes of tool calls (D16). A rule of scope "both"
+// applies to them, a request_body or response_body rule does not, and a rule
+// may be scoped to one of them.
+func TestToolScopes(t *testing.T) {
+	eng, err := NewEngine([]Rule{
+		{ID: "c-args", Name: "zz_args", Pattern: `ARGSECRET`, Action: ActionMask, Scope: ScopeToolArguments},
+		{ID: "c-res", Name: "zz_res", Pattern: `RESSECRET`, Action: ActionMask, Scope: ScopeToolResult},
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	body := []byte(`{"to":"a@example.com","k":"AKIAIOSFODNN7EXAMPLE","x":"ARGSECRET RESSECRET"}`)
+	args, dropped, _, err := eng.Apply(body, ScopeToolArguments)
+	if err != nil || dropped != nil {
+		t.Fatalf("Apply(tool_arguments) = dropped %v, err %v", dropped, err)
+	}
+	if strings.Contains(string(args), "a@example.com") || strings.Contains(string(args), "ARGSECRET") {
+		t.Errorf("tool_arguments: both-scope and tool_arguments rules did not apply: %s", args)
+	}
+	if !strings.Contains(string(args), "RESSECRET") {
+		t.Errorf("tool_arguments: the tool_result rule applied: %s", args)
+	}
+	res, _, _, _ := eng.Apply(body, ScopeToolResult)
+	if strings.Contains(string(res), "RESSECRET") || !strings.Contains(string(res), "ARGSECRET") {
+		t.Errorf("tool_result: wrong rules applied: %s", res)
+	}
+	// request_body rules (aws_access_key drops) stay out of tool calls.
+	if !strings.Contains(string(res), "AKIAIOSFODNN7EXAMPLE") {
+		t.Errorf("a request_body rule applied to a tool result: %s", res)
+	}
+	// Body scopes do not see the tool rules.
+	if out, _, _, _ := eng.Apply([]byte("ARGSECRET"), ScopeRequestBody); string(out) != "ARGSECRET" {
+		t.Errorf("a tool_arguments rule applied to a request body: %s", out)
+	}
+}

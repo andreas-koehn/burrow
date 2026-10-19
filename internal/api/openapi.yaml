@@ -115,6 +115,14 @@ components:
       description: |
         Double-submit token for cookie-authed state-changing requests.
         Value mirrors the burrow_csrf cookie.
+    GatewayKey:
+      type: http
+      scheme: bearer
+      bearerFormat: bgw_<key>
+      description: |
+        AI gateway key (`Authorization: Bearer bgw_...`, or the same value
+        in `x-api-key`). Used by the model and tool endpoints of the
+        gateway only; it is never accepted by /api/v1.
 
   schemas:
     AIProvider:
@@ -366,7 +374,7 @@ components:
         definition changed, is pending until approved. A definition is the
         tool's name, title, description, inputSchema, outputSchema and
         annotations as the upstream sent them (untrusted text).
-      required: [name, status, current_hash, approved_hash, definition, approved_definition, hidden, rename, description_override, read_only, upstream_read_only, effective_read_only, served_name, served, guardrail_hits, updated_at]
+      required: [name, status, current_hash, approved_hash, definition, approved_definition, hidden, rename, description_override, read_only, upstream_read_only, effective_read_only, served_name, served, serve_issue, guardrail_hits, updated_at]
       properties:
         name: { type: string, description: "The upstream's own name." }
         status: { type: string, enum: [approved, pending, removed] }
@@ -386,6 +394,7 @@ components:
         effective_read_only: { type: boolean, description: 'What a read-only gateway key goes by.' }
         served_name: { type: string, description: 'The name on /mcp/<slug>: the rename, or the name.' }
         served: { type: boolean, description: 'Whether the gateway serves the tool now.' }
+        serve_issue: { type: string, enum: ['', name_conflict], description: 'Why an approved, visible tool is not served: name_conflict when another tool of the source would be served under the same name (neither is served). Empty otherwise.' }
         guardrail_hits:
           type: array
           description: Guardrail request patterns that matched the current definition.
@@ -1596,7 +1605,7 @@ components:
         name: { type: string }
         pattern: { type: string, description: A regular expression in Go (RE2) syntax. }
         action: { type: string, enum: [mask, drop, hash] }
-        scope: { type: string, enum: [request_body, response_body, both] }
+        scope: { type: string, enum: [request_body, response_body, both, tool_arguments, tool_result], description: "tool_arguments and tool_result apply to MCP tool calls on the tool gateway; both applies to them too." }
     RedactionRule:
       description: A redaction rule, built-in or custom.
       allOf:
@@ -2335,6 +2344,138 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+  /mcp/{slug}:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+        description: The tool source's slug.
+    post:
+      tags: [mcp]
+      operationId: mcpToolSource
+      x-burrow-mcp: false
+      summary: One tool source behind gateway keys (Streamable HTTP, stateless)
+      description: |
+        The tools of one tool source, for MCP clients with a gateway key.
+        Each request carries one JSON-RPC 2.0 message and is answered with
+        one JSON body; the revisions of /mcp/burrow are served and no
+        session is kept.
+
+        `tools/list` returns the approved, visible tools the key's
+        `allowed_tools` names (as `<slug>__<tool>` or `<slug>__*`, by the
+        name the tool is served under; with `tools_read_only` only tools
+        classed read-only). A call on any other name is answered like a call
+        on a tool that does not exist. Tools keep their native names here,
+        or the operator's rename. Methods beyond tools (`resources/*`,
+        `prompts/*`, …) are refused with JSON-RPC error -32601.
+
+        A `tools/call` passes the source's concurrency and requests-per-minute
+        limits and the key's rate limits (a limit hit is a JSON-RPC error
+        whose data carries `retryAfterMs`), redaction (scopes
+        `tool_arguments` and `tool_result`), the guardrail request patterns
+        on the arguments and the answer patterns on the result, a timeout
+        (the source's, at most 300 s) and a 1 MiB cap on the result. An
+        unreachable upstream, a refusal or an oversized result is a tool
+        result with `isError: true` and a short message. The call is
+        metered (`kind` mcp), captured by the backing service's inspector
+        when it is on, and audited (`mcp.gateway.call`).
+      security:
+        - GatewayKey: []
+      parameters:
+        - name: MCP-Protocol-Version
+          in: header
+          required: false
+          schema: { type: string }
+          description: The MCP revision of the request, as the client negotiated it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: A JSON-RPC 2.0 request or notification.
+      responses:
+        '200':
+          description: The JSON-RPC response; protocol errors are responses too.
+          content:
+            application/json:
+              schema: { type: object }
+        '202': { description: A notification was accepted. No body. }
+        '400': { description: Not an MCP request (malformed JSON, a JSON-RPC batch, missing Accept, unsupported revision). }
+        '401':
+          description: No valid gateway key (missing, unknown, revoked, or its owner is suspended or may no longer configure the gateway).
+          headers:
+            WWW-Authenticate:
+              description: A Bearer challenge.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Sent by a browser from another origin.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: No enabled tool source has this slug.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413': { description: Body over 1 MiB. }
+        '429':
+          description: Rate-limited per client address.
+          headers:
+            Retry-After:
+              description: Seconds until the request may be retried.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: The tool gateway is not configured on this relay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      tags: [mcp]
+      operationId: mcpToolSourceGet
+      x-burrow-mcp: false
+      summary: Not offered (the endpoint opens no server-to-client stream)
+      security:
+        - GatewayKey: []
+      responses:
+        '401':
+          description: No valid gateway key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: No enabled tool source has this slug.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '405': { description: 'Always, for a valid key and source. `Allow: POST`.' }
+    delete:
+      tags: [mcp]
+      operationId: mcpToolSourceDelete
+      x-burrow-mcp: false
+      summary: Not offered (the endpoint keeps no session to end)
+      security:
+        - GatewayKey: []
+      responses:
+        '401':
+          description: No valid gateway key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: No enabled tool source has this slug.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '405': { description: 'Always, for a valid key and source. `Allow: POST`.' }
 
   # ────────────────────────────────────────────────────────────────────────
   # Auth (login is public; everything else requires a session)
@@ -3382,7 +3523,7 @@ paths:
                 body:
                   type: string
                   description: The text to scan, at most 1 MiB. An empty text has no match.
-                scope: { type: string, enum: [request_body, response_body, both], default: request_body }
+                scope: { type: string, enum: [request_body, response_body, both, tool_arguments, tool_result], default: request_body }
       responses:
         '200':
           description: Preview result.

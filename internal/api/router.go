@@ -92,6 +92,33 @@ func (d Deps) mcpAddressLimiter() func(http.Handler) http.Handler {
 	}
 }
 
+// toolsAddressLimiter is the per-address limit in front of /mcp/<slug>, with
+// buckets of its own. Like mcpAddressLimiter it counts only a request that
+// carries a credential (a bearer token or x-api-key): that is the one that
+// costs a hash and a store lookup.
+func (d Deps) toolsAddressLimiter() func(http.Handler) http.Handler {
+	limit := d.MCPToolsRateLimitPerIP
+	if limit <= 0 {
+		limit = MCPRateLimitPerIP
+	}
+	limiter := httprate.Limit(limit, time.Minute,
+		httprate.WithKeyFuncs(httprate.KeyByIP),
+		httprate.WithLimitHandler(func(w http.ResponseWriter, _ *http.Request) {
+			writeErr(w, http.StatusTooManyRequests, "too many requests")
+		}),
+	)
+	return func(next http.Handler) http.Handler {
+		counted := limiter(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || r.Header.Get("X-Api-Key") != "" {
+				counted.ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // NewRouter builds the /api/v1 HTTP handler. With a services domain set, the
 // handler first sorts each request by host (servicesOriginSwitch).
 func NewRouter(d Deps) http.Handler {
@@ -663,6 +690,22 @@ func newRouter(d Deps) http.Handler {
 	mcpHandler = d.mcpAddressLimiter()(mcpHandler)
 	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
 		r.Method(method, mcpEndpointPath, mcpHandler)
+	}
+	// One tool source behind gateway keys (MCP gateway). Like /mcp/burrow it
+	// takes none of the /api/v1 chain: the gateway brings its own origin
+	// check, key authentication and body limit, and a per-address limit sits
+	// in front. The static /mcp/burrow route above wins over the slug
+	// ("burrow" is a reserved slug).
+	var toolsHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if d.MCPTools == nil {
+			writeErr(w, http.StatusServiceUnavailable, "the tool gateway is not configured")
+			return
+		}
+		d.MCPTools.ServeSource(w, r, chi.URLParam(r, "slug"))
+	})
+	toolsHandler = d.toolsAddressLimiter()(toolsHandler)
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
+		r.Method(method, "/mcp/{slug}", toolsHandler)
 	}
 
 	// AI data plane. Registered before the SPA catch-all. The dashboard's own

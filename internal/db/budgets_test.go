@@ -193,6 +193,9 @@ func TestSumDailyTokensQueries(t *testing.T) {
 			Kind: "openai", TokensIn: 500, TokensOut: 100},
 		{ID: "u-y", ServiceID: svc, APIKeyID: "k1", Ts: yesterday,
 			Kind: "openai", TokensIn: 999, TokensOut: 999},
+		// A tool call is no model traffic: budgets do not count it (D12).
+		{ID: "u-mcp", ServiceID: svc, APIKeyID: "k1", Ts: now,
+			Kind: "mcp", TokensIn: 7, TokensOut: 7},
 	}
 	for _, ue := range rows {
 		if _, err := x.sqlDB.ExecContext(ctx,

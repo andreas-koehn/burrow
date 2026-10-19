@@ -94,7 +94,9 @@ func ToolAllowed(allowed []string, name string) bool {
 // ToolAllowedNative is ToolAllowed for a source and a tool name given apart,
 // as on /mcp/<source> where tools keep their native names.
 func ToolAllowedNative(allowed []string, source, tool string) bool {
-	if source == "" || tool == "" || tool == "*" {
+	// source must be a slug: one holding "__" could match an entry of
+	// another source ("a__b" + "c" against "a__b__c").
+	if !ValidToolSourceSlug(source) || tool == "" || tool == "*" {
 		return false
 	}
 	for _, e := range allowed {

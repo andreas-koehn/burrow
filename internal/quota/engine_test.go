@@ -583,3 +583,31 @@ func TestDenialDescribesTheLimit(t *testing.T) {
 		t.Fatalf("day denial = %+v", d)
 	}
 }
+
+// ChargeRate applies the minute-window limits only: a tool call counts
+// against a key's rpm rate limit, while day quotas, which count usage rows
+// without tool calls, do not turn it away (D13).
+func TestChargeRate_IgnoresDayQuotas(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeLimitStore{rows: []db.RateLimit{
+		{ID: "gk-day", Scope: ScopeGatewayKey, Subject: "gk1", Dimension: DimensionRPM, Lim: 1, Burst: 1, Window: WindowDay},
+		{ID: "gk-min", Scope: ScopeGatewayKey, Subject: "gk1", Dimension: DimensionRPM, Lim: 2, Burst: 2, Window: WindowMinute},
+	}}
+	usage := &fakeDailyUsage{countByKey: map[string]int64{"gateway:gk1": 5}}
+	e := NewWithStores(store, usage)
+	if err := e.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	who := Subjects{GatewayKeyID: "gk1"}
+	if d := e.Charge(ctx, who, DimensionRPM, 1); d.Allow || d.Kind != "quota" {
+		t.Fatalf("Charge over the day quota: %+v", d)
+	}
+	for i := 0; i < 2; i++ {
+		if d := e.ChargeRate(ctx, who, DimensionRPM, 1); !d.Allow {
+			t.Fatalf("ChargeRate %d denied: %+v", i, d)
+		}
+	}
+	if d := e.ChargeRate(ctx, who, DimensionRPM, 1); d.Allow || d.Kind != "rate_limit" || d.LimitingID != "gk-min" || d.RetryAfter <= 0 {
+		t.Fatalf("third ChargeRate in the minute: %+v", d)
+	}
+}

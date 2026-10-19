@@ -255,7 +255,8 @@ func (x *DB) SumDailyTokensByService(ctx context.Context, serviceID string) (int
 }
 
 // sumDailyTokens sums today's tokens of the rows whose column equals id.
-// column is one of the constants the callers above pass, never input.
+// column is one of the constants the callers above pass, never input. Tool
+// calls (kind 'mcp') are not model traffic and are left out (D12, D13).
 func (x *DB) sumDailyTokens(ctx context.Context, column, id string) (int64, int64, error) {
 	if id == "" {
 		return 0, 0, nil
@@ -264,7 +265,8 @@ func (x *DB) sumDailyTokens(ctx context.Context, column, id string) (int64, int6
 		`SELECT CAST(COALESCE(SUM(tokens_in), 0) AS BIGINT), CAST(COALESCE(SUM(tokens_out), 0) AS BIGINT)
 		   FROM usage_events
 		  WHERE `+column+` = ?
-		    AND ts >= ?`,
+		    AND ts >= ?
+		    AND kind <> 'mcp'`,
 		id, utcDayStart(),
 	)
 	var in, out int64

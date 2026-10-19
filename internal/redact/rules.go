@@ -3,7 +3,7 @@ package redact
 // Rule is one redaction rule. The same shape is used for built-ins (this
 // file's `BuiltIn`) and for custom rules persisted under the settings key
 // "redaction.custom_rules" (JSON array). Action ∈ {mask,drop,hash};
-// Scope ∈ {request_body,response_body,both}.
+// Scope ∈ {request_body,response_body,both,tool_arguments,tool_result}.
 //
 // Wire shape (custom rules round-trip as):
 //
@@ -26,11 +26,15 @@ const (
 	ActionHash = "hash"
 )
 
-// Scope enum.
+// Scope enum. tool_arguments and tool_result are the arguments and the
+// result of an MCP tool call on the tool gateway (D16); "both" matches them
+// as well, request_body and response_body do not.
 const (
-	ScopeRequestBody  = "request_body"
-	ScopeResponseBody = "response_body"
-	ScopeBoth         = "both"
+	ScopeRequestBody   = "request_body"
+	ScopeResponseBody  = "response_body"
+	ScopeBoth          = "both"
+	ScopeToolArguments = "tool_arguments"
+	ScopeToolResult    = "tool_result"
 )
 
 // validActions / validScopes are the closed enums NewEngine validates against.
@@ -40,9 +44,11 @@ var validActions = map[string]bool{
 	ActionHash: true,
 }
 var validScopes = map[string]bool{
-	ScopeRequestBody:  true,
-	ScopeResponseBody: true,
-	ScopeBoth:         true,
+	ScopeRequestBody:   true,
+	ScopeResponseBody:  true,
+	ScopeBoth:          true,
+	ScopeToolArguments: true,
+	ScopeToolResult:    true,
 }
 
 // BuiltIn is the bundled regex pack shipped with v0.4.0. These rules are

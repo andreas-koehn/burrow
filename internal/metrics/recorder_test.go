@@ -730,6 +730,9 @@ func TestMCPToolCallMetric(t *testing.T) {
 	r.IncMCPToolCall("github", "denied")
 	r.IncMCPToolCall("burrow", "error")
 	r.IncMCPToolCall("burrow", "rate-limited!")
+	// A source label is a slug or "burrow"; anything else is "other".
+	r.IncMCPToolCall("Not A Slug", "ok")
+	r.IncMCPToolCall("a__b", "ok")
 	var buf strings.Builder
 	if err := r.WriteText(&buf); err != nil {
 		t.Fatal(err)
@@ -740,6 +743,7 @@ func TestMCPToolCallMetric(t *testing.T) {
 		`burrow_mcp_tool_calls_total{source="github",outcome="denied"} 1`,
 		`burrow_mcp_tool_calls_total{source="burrow",outcome="error"} 1`,
 		`burrow_mcp_tool_calls_total{source="burrow",outcome="other"} 1`,
+		`burrow_mcp_tool_calls_total{source="other",outcome="ok"} 2`,
 	} {
 		if !strings.Contains(out, want+"\n") {
 			t.Errorf("missing %q in:\n%s", want, out)

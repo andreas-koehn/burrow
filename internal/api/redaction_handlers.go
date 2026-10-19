@@ -93,7 +93,7 @@ type redactionPerServiceSettings struct {
 // the same scope a live request would see; defaults to "request_body".
 type redactionPreviewReq struct {
 	Body  string `json:"body"`
-	Scope string `json:"scope"` // request_body | response_body | both
+	Scope string `json:"scope"` // request_body | response_body | both | tool_arguments | tool_result
 }
 
 // redactionPreviewResp is the response shape for POST /redaction/preview.
@@ -143,7 +143,8 @@ func validateRuleReq(in redactionRuleReq) (redact.Rule, error) {
 		return redact.Rule{}, errors.New("invalid action")
 	}
 	switch in.Scope {
-	case redact.ScopeRequestBody, redact.ScopeResponseBody, redact.ScopeBoth:
+	case redact.ScopeRequestBody, redact.ScopeResponseBody, redact.ScopeBoth,
+		redact.ScopeToolArguments, redact.ScopeToolResult:
 	default:
 		return redact.Rule{}, errors.New("invalid scope")
 	}

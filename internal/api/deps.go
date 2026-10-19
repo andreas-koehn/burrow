@@ -326,6 +326,12 @@ type MCPGateway interface {
 	Invalidate(slug string)
 }
 
+// MCPToolServer serves one tool source to MCP clients behind gateway keys
+// (/mcp/<slug>). *mcpgw.Gateway satisfies it.
+type MCPToolServer interface {
+	ServeSource(w http.ResponseWriter, r *http.Request, slug string)
+}
+
 // AIModelStore is the synthetic-model surface of the management API.
 // *store.Store satisfies it.
 type AIModelStore interface {
@@ -400,6 +406,11 @@ type Deps struct {
 	// MCPGateway syncs tool sources and keeps their upstream sessions; nil =
 	// sync answers 503.
 	MCPGateway MCPGateway
+	// MCPTools serves /mcp/<slug>: the tools of one source behind gateway
+	// keys. nil = the route answers 503.
+	MCPTools MCPToolServer
+	// MCPToolsRateLimitPerIP overrides MCPRateLimitPerIP for /mcp/<slug>.
+	MCPToolsRateLimitPerIP int
 	// AILimiter tells how many requests a provider with a concurrency limit
 	// is serving now (the gateway's limiter). nil = reported as 0.
 	AILimiter interface{ InUse(slug string) int }

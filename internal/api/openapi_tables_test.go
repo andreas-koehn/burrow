@@ -198,6 +198,9 @@ var openAPIReservedOperationIDs = map[string]string{
 	// (POST mcpManagement, GET mcpManagementGet, DELETE mcpManagementDelete).
 	// An id is reserved by prefix, so the one entry covers all three.
 	"mcpManagement": "/mcp/burrow",
+	// plan mcp-gateway: one tool source behind gateway keys, three
+	// operations (mcpToolSource, mcpToolSourceGet, mcpToolSourceDelete).
+	"mcpToolSource": "/mcp/{slug}",
 }
 
 // openAPIMCPDisabled is the complete set of management-API operations that

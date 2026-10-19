@@ -403,3 +403,39 @@ func TestMCPTools_ApproveCollisionIs409(t *testing.T) {
 		t.Fatalf("approve-all with a collision: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// A sync that brings a removed tool back under a name another tool is
+// renamed to by then serves neither; the catalog flags both (T05 review).
+func TestMCPTools_NameConflictIsFlagged(t *testing.T) {
+	f := newMCPToolsFixture(t, mcptest.Opts{Tools: []mcptest.ToolSpec{mcptest.Echo("echo"), mcptest.Echo("mutate")}})
+	f.sync(t)
+	hashes := map[string]string{}
+	for n, x := range f.tools(t) {
+		hashes[n] = x.CurrentHash
+	}
+	f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/approve-all", map[string]any{"hashes": hashes}, f.admin)
+	f.up.SetTools(mcptest.Echo("mutate"))
+	f.sync(t)
+	if rec := f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/mutate", map[string]any{"rename": "echo"}, f.admin); rec.Code != http.StatusOK {
+		t.Fatalf("rename: %d %s", rec.Code, rec.Body.String())
+	}
+	f.up.SetTools(mcptest.Echo("echo"), mcptest.Echo("mutate"))
+	f.sync(t)
+	for _, n := range []string{"echo", "mutate"} {
+		x := f.tools(t)[n]
+		if x.Status != "approved" || x.Served || x.ServeIssue != "name_conflict" {
+			t.Fatalf("%s: status %s, served %v, issue %q", n, x.Status, x.Served, x.ServeIssue)
+		}
+	}
+	// The issue shows on a single tool's answer too, and goes with the rename.
+	rec := f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/mutate", map[string]any{"description_override": "x"}, f.admin)
+	if got := mcpDecode[mcpSourceToolResp](t, rec); got.ServeIssue != "name_conflict" {
+		t.Fatalf("single tool: issue %q", got.ServeIssue)
+	}
+	f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/mutate", map[string]any{"rename": ""}, f.admin)
+	for _, n := range []string{"echo", "mutate"} {
+		if x := f.tools(t)[n]; !x.Served || x.ServeIssue != "" {
+			t.Fatalf("%s after clearing the rename: served %v, issue %q", n, x.Served, x.ServeIssue)
+		}
+	}
+}

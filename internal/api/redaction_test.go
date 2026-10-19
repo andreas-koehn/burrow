@@ -388,3 +388,25 @@ func TestRedactionPerServicePopulatedFromAIConfig(t *testing.T) {
 		t.Fatalf("svc-2 should not override: %+v", got.PerService[1])
 	}
 }
+
+// TestRedactionToolScopes: a custom rule may be scoped to the arguments or
+// the result of a tool call (D16); an unknown scope is still refused.
+func TestRedactionToolScopes(t *testing.T) {
+	d := Deps{
+		Log:      discardLog(),
+		Users:    &fakeUserStore{role: "admin"},
+		Settings: &fakeCacheSettingsStore{},
+	}
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+	for scope, want := range map[string]int{"tool_arguments": http.StatusCreated, "tool_result": http.StatusCreated, "tool_everything": http.StatusBadRequest} {
+		r := c.post(t, "/api/v1/redaction/rules", map[string]any{
+			"name": "r-" + scope, "pattern": `ok`, "action": "mask", "scope": scope,
+		})
+		if r.StatusCode != want {
+			t.Errorf("scope %s: status=%d want %d", scope, r.StatusCode, want)
+		}
+		r.Body.Close()
+	}
+}

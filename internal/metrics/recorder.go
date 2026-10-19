@@ -566,11 +566,30 @@ func (r *Recorder) IncAIUpstreamError(service string, status int) {
 
 // IncMCPToolCall records one finished MCP tool call of source (a tool source's
 // slug, or "burrow"). outcome is "ok", "denied" or "error"; anything else is
-// counted as "other". The tool's name is not a label.
+// counted as "other". A source that is not a slug (1-24 of [a-z0-9-]) is
+// counted as "other" too, so a caller's text never becomes a label value.
+// The tool's name is not a label.
 func (r *Recorder) IncMCPToolCall(source, outcome string) {
+	if !sourceLabel(source) {
+		source = "other"
+	}
 	r.incCounter("burrow_mcp_tool_calls_total",
 		[]string{"source", "outcome"},
 		[]string{source, oneOf(outcome, "ok", "denied", "error")}, 1)
+}
+
+// sourceLabel reports whether s is fit as a tool source label: 1-24 of
+// [a-z0-9-], the shape of a source slug and of "burrow".
+func sourceLabel(s string) bool {
+	if s == "" || len(s) > 24 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 // SetGoroutines sets burrow_goroutines to n. Callers typically pass

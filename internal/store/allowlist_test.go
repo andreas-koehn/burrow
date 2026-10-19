@@ -72,6 +72,13 @@ func TestToolAllowedNative(t *testing.T) {
 	if ToolAllowedNative(nil, "github", "x") {
 		t.Error("an empty tool list must allow nothing")
 	}
+	// A source that is no slug cannot borrow another entry: "a__b" with
+	// tool "c" would otherwise match the entry "a__b__c".
+	for _, c := range [][3]string{{"a__b__c", "a__b", "c"}, {"a__*", "a__x", "y"}, {"Gh__*", "Gh", "x"}, {"burrow__*", "burrow", "x"}} {
+		if ToolAllowedNative([]string{c[0]}, c[1], c[2]) {
+			t.Errorf("ToolAllowedNative([%q], %q, %q) = true", c[0], c[1], c[2])
+		}
+	}
 }
 
 func TestValidToolEntry(t *testing.T) {

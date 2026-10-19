@@ -112,6 +112,10 @@ const (
 	ActionMCPSourceSync   = "mcp.source.sync"
 	ActionMCPToolApprove  = "mcp.tool.approve"
 	ActionMCPToolOverride = "mcp.tool.override"
+	// ActionMCPGatewayCall is one tools/call on the tool gateway (/mcp/<slug>):
+	// every error and refusal, and at most one ok call per key, source and
+	// minute (the gateway samples them; D30).
+	ActionMCPGatewayCall = "mcp.gateway.call"
 
 	// v0.5.0 Task 5: upstream-credential binding / unbinding.
 	ActionServiceUpstreamCredentialBind   = "service.upstream_credential.bind"
@@ -198,7 +202,7 @@ var AllActions = []string{
 	ActionAutomationTokenMint, ActionAutomationTokenRevoke,
 	ActionMCPToolCall,
 	ActionMCPSourceCreate, ActionMCPSourceUpdate, ActionMCPSourceDelete,
-	ActionMCPSourceSync, ActionMCPToolApprove, ActionMCPToolOverride,
+	ActionMCPSourceSync, ActionMCPToolApprove, ActionMCPToolOverride, ActionMCPGatewayCall,
 	ActionServiceUpstreamCredentialBind, ActionServiceUpstreamCredentialUnbind,
 	ActionServiceCustomDomainAdd, ActionServiceCustomDomainUpdate, ActionServiceCustomDomainDelete,
 	ActionServiceCustomDomainStatusChanged,

@@ -60,13 +60,19 @@ type mcpSourceToolResp struct {
 	ServedName string `json:"served_name"`
 	// Served tells whether the gateway serves the tool now.
 	Served bool `json:"served"`
+	// ServeIssue says why an approved, visible tool is not served:
+	// "name_conflict" when another tool of the source would be served under
+	// the same name (neither is served). "" otherwise.
+	ServeIssue string `json:"serve_issue"`
 	// GuardrailHits are the guardrail request patterns that matched the
 	// current definition's title, description or schemas.
 	GuardrailHits []mcpgw.GuardrailHit `json:"guardrail_hits"`
 	UpdatedAt     time.Time            `json:"updated_at"`
 }
 
-func mcpToolView(t db.MCPTool) mcpSourceToolResp {
+// mcpToolView is the wire shape of t; conflicts are the source's name
+// conflicts (mcpgw.ServedSet).
+func mcpToolView(t db.MCPTool, conflicts map[string]string) mcpSourceToolResp {
 	v := mcpSourceToolResp{
 		Name: t.Name, Status: t.Status, CurrentHash: t.CurrentHash, ApprovedHash: t.ApprovedHash,
 		Definition: rawOrNull(t.Definition), ApprovedDefinition: rawOrNull(t.ApprovedDefinition),
@@ -84,7 +90,20 @@ func mcpToolView(t db.MCPTool) mcpSourceToolResp {
 		v.EffectiveReadOnly = *t.ReadOnly
 	}
 	_, v.Served = mcpgw.Served(t)
+	if _, clash := conflicts[t.Name]; clash && v.Served {
+		v.Served, v.ServeIssue = false, mcpgw.IssueNameConflict
+	}
 	return v
+}
+
+// mcpToolViewOf is mcpToolView for one tool, with the name conflicts of its
+// source read now (none when the list cannot be read).
+func mcpToolViewOf(ctx context.Context, st MCPSourceStore, t db.MCPTool) mcpSourceToolResp {
+	var conflicts map[string]string
+	if rows, err := st.ListMCPTools(ctx, t.SourceSlug); err == nil {
+		_, conflicts = mcpgw.ServedSet(rows)
+	}
+	return mcpToolView(t, conflicts)
 }
 
 // rawOrNull returns stored JSON as is, and null for "" or text that is not
@@ -238,9 +257,10 @@ func (d Deps) GetMCPSourceTools(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	_, conflicts := mcpgw.ServedSet(tools)
 	out := make([]mcpSourceToolResp, 0, len(tools))
 	for _, t := range tools {
-		out = append(out, mcpToolView(t))
+		out = append(out, mcpToolView(t, conflicts))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -281,7 +301,7 @@ func (d Deps) PutMCPSourceTool(w http.ResponseWriter, r *http.Request) {
 	d.auditMCPTool(r, audit.ActionMCPToolOverride, slug, "ok", map[string]any{
 		"tool": name, "hidden": t.Hidden, "rename": t.Rename, "description_override": t.DescriptionOverride != "", "read_only": t.ReadOnly,
 	})
-	writeJSON(w, http.StatusOK, mcpToolView(t))
+	writeJSON(w, http.StatusOK, mcpToolViewOf(r.Context(), st, t))
 }
 
 // PostMCPSourceToolApprove handles POST
@@ -308,7 +328,7 @@ func (d Deps) PostMCPSourceToolApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.auditMCPTool(r, audit.ActionMCPToolApprove, slug, "ok", map[string]any{"tools": []string{name}, "hash": t.ApprovedHash})
-	writeJSON(w, http.StatusOK, mcpToolView(t))
+	writeJSON(w, http.StatusOK, mcpToolViewOf(r.Context(), st, t))
 }
 
 // PostMCPSourceApproveAll handles POST /api/v1/mcp/sources/{slug}/approve-all

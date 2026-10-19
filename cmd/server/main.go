@@ -955,6 +955,9 @@ func newRootCmd() *cobra.Command {
 				Log: log,
 			})
 			mcpPool.Start(ctx)
+			// The client side: /mcp/<slug> behind gateway keys, each call
+			// through the pipeline of limits, redaction and guardrails.
+			mcpTools := newMCPToolGateway(st, v04, mcpPool, log)
 			// One breaker for the relay; the status API reads its state.
 			aiBreaker := aigateway.NewBreaker()
 			// One limiter for the relay: every door to a provider shares its
@@ -1020,6 +1023,7 @@ func newRootCmd() *cobra.Command {
 				AIProviders: st,
 				MCPSources:  st,
 				MCPGateway:  mcpPool,
+				MCPTools:    mcpTools,
 				AILimiter:   aiLimiter,
 				AIBreaker:   aiBreaker,
 				AIAttempts:  st,

@@ -124,8 +124,9 @@ func (s *SQLSink) Record(ctx context.Context, sm Sample) error {
 	}
 	// Optional budget check — fires exactly once per UTC day per exceeded
 	// budget. Implemented by *cost.Engine; nil-safe so existing call sites
-	// that don't set Budgets keep their original behaviour.
-	if s.Budgets != nil {
+	// that don't set Budgets keep their original behaviour. A tool call is
+	// no model traffic: budgets do not apply to it (MCP gateway, D12).
+	if s.Budgets != nil && sm.Kind != KindMCP {
 		s.Budgets.CheckBudgetsForSample(ctx, sm.ServiceID, sm.APIKeyID, sm.GatewayKeyID, sm.RequestedModel)
 	}
 	return nil

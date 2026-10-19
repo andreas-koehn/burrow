@@ -351,6 +351,18 @@ func matchingSubject(scope string, who Subjects) (string, bool) {
 // exceeded the daily cap; on deny we report the next UTC midnight in
 // Decision.ResetAt.
 func (e *Engine) Charge(ctx context.Context, who Subjects, dim string, units int) Decision {
+	return e.charge(ctx, who, dim, units, true)
+}
+
+// ChargeRate is Charge with the minute-window rate limits only: window=day
+// quotas are not consulted. A tool call of the MCP gateway is charged this
+// way (D13): it counts against a key's rate limit, and the day quotas, which
+// count usage rows without tool calls, neither count nor refuse it.
+func (e *Engine) ChargeRate(ctx context.Context, who Subjects, dim string, units int) Decision {
+	return e.charge(ctx, who, dim, units, false)
+}
+
+func (e *Engine) charge(ctx context.Context, who Subjects, dim string, units int, withDay bool) Decision {
 	if units < 0 {
 		units = 0
 	}
@@ -393,7 +405,9 @@ func (e *Engine) Charge(ctx context.Context, who Subjects, dim string, units int
 			b := e.bucketFor(l)
 			minuteMatches = append(minuteMatches, matched{l, b})
 		case WindowDay:
-			dayMatches = append(dayMatches, l)
+			if withDay {
+				dayMatches = append(dayMatches, l)
+			}
 		}
 	}
 

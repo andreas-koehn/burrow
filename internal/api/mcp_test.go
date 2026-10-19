@@ -713,3 +713,82 @@ func TestGuide_NamesThePerAddressLimit(t *testing.T) {
 		t.Errorf("docs/guide/mcp.md does not say %q", want)
 	}
 }
+
+// toolServer records which slugs the router hands to the tool gateway.
+type toolServer struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (s *toolServer) ServeSource(w http.ResponseWriter, r *http.Request, slug string) {
+	s.mu.Lock()
+	s.seen = append(s.seen, r.Method+" "+slug)
+	s.mu.Unlock()
+	w.WriteHeader(http.StatusTeapot)
+}
+
+// /mcp/<slug> reaches the tool gateway with the slug, for the three methods
+// of MCP's HTTP transport; /mcp/burrow stays the management server, and
+// nothing else under /mcp/ reaches the gateway.
+func TestMCPToolsMount_Routing(t *testing.T) {
+	tools := &toolServer{}
+	mgmt := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
+	spa := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "<html>dashboard</html>") })
+	hs := httptest.NewServer(NewRouter(Deps{Log: discardLog(), SPA: spa, MCP: MCPInfo{Handler: mgmt}, MCPTools: tools}))
+	t.Cleanup(hs.Close)
+	do := func(method, path string) int {
+		req, _ := http.NewRequest(method, hs.URL+path, strings.NewReader("{}"))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+		if code := do(method, "/mcp/github"); code != http.StatusTeapot {
+			t.Errorf("%s /mcp/github: %d, want the tool gateway", method, code)
+		}
+	}
+	if code := do(http.MethodPost, "/mcp/burrow"); code != http.StatusAccepted {
+		t.Errorf("/mcp/burrow: %d, want the management server", code)
+	}
+	for _, c := range [][2]string{{http.MethodPut, "/mcp/github"}, {http.MethodPost, "/mcp/github/x"}, {http.MethodPost, "/mcp/github/"}} {
+		if code := do(c[0], c[1]); code == http.StatusTeapot {
+			t.Errorf("%s %s reached the tool gateway", c[0], c[1])
+		}
+	}
+	if want := "POST github,GET github,DELETE github"; strings.Join(tools.seen, ",") != want {
+		t.Errorf("gateway saw %v", tools.seen)
+	}
+}
+
+// Without a gateway the route answers 503; the per-address limit counts only
+// requests that carry a credential.
+func TestMCPToolsMount_NotConfiguredAndLimit(t *testing.T) {
+	hs := httptest.NewServer(NewRouter(Deps{Log: discardLog(), MCPToolsRateLimitPerIP: 2}))
+	t.Cleanup(hs.Close)
+	do := func(hdr, val string) int {
+		req, _ := http.NewRequest(http.MethodPost, hs.URL+"/mcp/github", strings.NewReader("{}"))
+		if hdr != "" {
+			req.Header.Set(hdr, val)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	for i := 0; i < 4; i++ {
+		if code := do("", ""); code != http.StatusServiceUnavailable {
+			t.Fatalf("no credential, request %d: %d, want 503 (never limited)", i, code)
+		}
+	}
+	if do("Authorization", "Bearer bgw_x") != http.StatusServiceUnavailable || do("X-Api-Key", "bgw_x") != http.StatusServiceUnavailable {
+		t.Fatal("the first two requests with a credential must pass the limit")
+	}
+	if code := do("X-Api-Key", "bgw_x"); code != http.StatusTooManyRequests {
+		t.Fatalf("third request with a credential: %d, want 429", code)
+	}
+}
