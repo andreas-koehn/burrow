@@ -92,7 +92,7 @@ Two extension fields appear on operations:
 | `x-burrow-mcp` | `false` keeps the operation out of the tool list of the management MCP server. An operation without the field may become a tool. |
 | `x-burrow-permission` | Reserved for the permission the operation requires. No operation carries it yet. |
 
-`x-burrow-mcp: false` is set on login, logout, password confirmation (`/auth/reauth`) and password change; on the client sign-in endpoints (discovery, start, poll, and the sign-in request lookup, approval and denial in the dashboard); on downloads and exports (backup archive, audit, cost and connection-log export); on the event streams; on backup restore and its status poll; and on the OpenAPI viewer.
+`x-burrow-mcp: false` is set on login, logout, password confirmation (`/auth/reauth`) and password change; on the client sign-in endpoints (discovery, start, poll, and the sign-in request lookup, approval and denial in the dashboard); on downloads and exports (backup archive, audit, cost and connection-log export); on the event streams; on backup restore and its status poll; on approving tools of a tool source (an agent must not approve tool text that may have been written to steer it); and on the OpenAPI viewer.
 
 The schemas are checked against the server: tests compare every JSON request and response schema with the Go type the handler decodes or writes, so a field added to the API without the spec fails the build.
 

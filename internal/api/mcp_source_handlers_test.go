@@ -190,11 +190,11 @@ func TestMCPSources_SSRFCheck(t *testing.T) {
 	}
 
 	verdict = aiprovider.ErrBlockedAddress
-	if rec := create("internal"); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), msgBaseURLPrivate) {
+	if rec := create("internal"); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), msgURLPrivate("url")) {
 		t.Fatalf("private host: %d %s", rec.Code, rec.Body.String())
 	}
 	verdict = errors.New("no such host")
-	if rec := create("nodns"); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), msgBaseURLNoDNS) {
+	if rec := create("nodns"); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), msgURLNoDNS("url")) {
 		t.Fatalf("unresolvable host: %d %s", rec.Code, rec.Body.String())
 	}
 	if len(checked) != 2 || checked[0] != "internal.example.com" {

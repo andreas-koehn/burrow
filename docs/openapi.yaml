@@ -358,6 +358,67 @@ components:
         max_concurrent: { type: integer, minimum: 0, maximum: 1000 }
         timeout_s: { type: integer, minimum: 1, maximum: 300 }
         enabled: { type: boolean }
+    MCPSourceTool:
+      type: object
+      description: >
+        One tool of a tool source as the last sync saw it. Only an approved
+        tool that is not hidden is served; a new tool, or one whose
+        definition changed, is pending until approved. A definition is the
+        tool's name, title, description, inputSchema, outputSchema and
+        annotations as the upstream sent them (untrusted text).
+      required: [name, status, current_hash, approved_hash, definition, approved_definition, hidden, rename, description_override, read_only, upstream_read_only, effective_read_only, served_name, served, guardrail_hits, updated_at]
+      properties:
+        name: { type: string, description: "The upstream's own name." }
+        status: { type: string, enum: [approved, pending, removed] }
+        current_hash: { type: string, description: 'sha256 of the current definition; send it when approving.' }
+        approved_hash: { type: string, description: 'sha256 of the approved definition; empty before the first approval.' }
+        definition: { type: object, additionalProperties: true, description: 'The current definition.' }
+        approved_definition:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: The approved definition, shown next to a changed one; null before the first approval.
+        hidden: { type: boolean }
+        rename: { type: string, description: 'The name it is served under instead; empty = its own name.' }
+        description_override: { type: string, description: 'Served instead of the approved description; empty = none.' }
+        read_only: { type: boolean, nullable: true, description: "The operator's classification; null = the upstream's readOnlyHint." }
+        upstream_read_only: { type: boolean, description: 'The readOnlyHint of the current definition.' }
+        effective_read_only: { type: boolean, description: 'What a read-only gateway key goes by.' }
+        served_name: { type: string, description: 'The name on /mcp/<slug>: the rename, or the name.' }
+        served: { type: boolean, description: 'Whether the gateway serves the tool now.' }
+        guardrail_hits:
+          type: array
+          description: Guardrail request patterns that matched the current definition.
+          items:
+            type: object
+            required: [field, pattern]
+            properties:
+              field: { type: string, enum: [title, description, input_schema, output_schema] }
+              pattern: { type: string }
+        updated_at: { type: string, format: date-time }
+    MCPSourceToolUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        hidden: { type: boolean }
+        rename:
+          type: string
+          description: A-Z, a-z, 0-9, _ and -, such that <slug>__<rename> is at most 64 characters, and not the name of another tool of the source; "" clears it.
+        description_override: { type: string, description: 'At most 8192 bytes, no control characters but tab and newline; "" clears it.' }
+        read_only: { type: boolean, nullable: true, description: "null goes back to the upstream's readOnlyHint." }
+    MCPSyncResult:
+      type: object
+      required: [added, changed, removed, tool_count, pending_count, skipped]
+      properties:
+        added: { type: integer, description: 'Tools seen for the first time, or again after they were removed.' }
+        changed: { type: integer, description: 'Tools whose definition changed (they are pending now).' }
+        removed: { type: integer, description: 'Tools the upstream no longer lists.' }
+        tool_count: { type: integer }
+        pending_count: { type: integer }
+        skipped:
+          type: array
+          items: { type: string }
+          description: Tools that were not stored (an invalid or repeated name, or a definition over 64 KiB).
     AIProviderUpstream:
       type: object
       description: >
@@ -5704,6 +5765,219 @@ paths:
         recent-confirmation rule as for creating applies.
       responses:
         '204': { description: Source deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/mcp/sources/{slug}/sync:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [mcp]
+      operationId: mcpSourceSync
+      x-burrow-permission: {kind: needs, any_of: ["mcp:sources:manage"]}
+      summary: Sync a tool source's tools now (admin)
+      description: |
+        Reads the upstream's tool list and stores it; the relay also does
+        this every 10 minutes for each enabled source. A tool seen for the
+        first time, or whose definition changed, becomes pending and is not
+        served until approved; a tool the upstream no longer lists becomes
+        removed. Titles, descriptions and schemas go through the guardrail
+        request patterns and hits are stored with the tool. A failed sync
+        keeps the tools as they were and records its reason in the source's
+        `last_sync_error`. The same recent-confirmation rule as for
+        creating a source applies.
+      responses:
+        '200':
+          description: What the sync found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MCPSyncResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: A sync of this source is already running.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: The upstream could not be read; the message says why (never a URL or credential).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: The tool gateway is not available on this relay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/mcp/sources/{slug}/tools:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [mcp]
+      operationId: mcpSourceToolsList
+      x-burrow-permission: {kind: needs, any_of: ["mcp:sources:read", "mcp:sources:manage"]}
+      summary: List the tools of a tool source
+      description: |
+        Every tool the syncs have seen, removed ones included, ordered by
+        name, with the approved definition next to a changed one and the
+        operator's overrides.
+      security:
+        - CookieAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Array of tools.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MCPSourceTool'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/mcp/sources/{slug}/tools/{name}:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    put:
+      tags: [mcp]
+      operationId: mcpSourceToolUpdate
+      x-burrow-permission: {kind: needs, any_of: ["mcp:sources:manage"]}
+      summary: Change a tool's overrides (admin)
+      description: |
+        A field that is left out keeps its value. A rename fixes a tool
+        name that is too long or not allowed on the aggregated endpoint
+        `/mcp`. The same recent-confirmation rule as for creating a source
+        applies.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MCPSourceToolUpdate' }
+            example: { rename: create_issue, read_only: false }
+      responses:
+        '200':
+          description: The tool.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MCPSourceTool' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The tool was changed by someone else at the same time (try again).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/mcp/sources/{slug}/tools/{name}/approve:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [mcp]
+      operationId: mcpSourceToolApprove
+      x-burrow-permission: {kind: needs, any_of: ["mcp:sources:manage"]}
+      x-burrow-mcp: false
+      summary: Approve a pending tool (admin)
+      description: |
+        Approves the tool's current definition, which is served from then
+        on. Send the `current_hash` you reviewed as `hash`: when the
+        upstream changed the definition since, the approval is refused with
+        409. Not offered as a management MCP tool: an agent must not approve
+        tool text that may have been written to steer it. The same
+        recent-confirmation rule as for creating a source applies.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                hash: { type: string, description: 'The current_hash that was reviewed.' }
+      responses:
+        '200':
+          description: The tool, approved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MCPSourceTool' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The tool is not pending, or its definition changed since it was reviewed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/mcp/sources/{slug}/approve-all:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [mcp]
+      operationId: mcpSourceApproveAll
+      x-burrow-permission: {kind: needs, any_of: ["mcp:sources:manage"]}
+      x-burrow-mcp: false
+      summary: Approve every pending tool of a source (admin)
+      description: |
+        Without a body every pending tool is approved. With `hashes`
+        (tool name → reviewed `current_hash`) only those tools are approved,
+        and only while their definition is still the one reviewed. Not
+        offered as a management MCP tool. The same recent-confirmation rule
+        as for creating a source applies.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                hashes:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        '200':
+          description: The tools that were approved.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approved]
+                properties:
+                  approved:
+                    type: array
+                    items: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '404': { $ref: '#/components/responses/NotFound' }

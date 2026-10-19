@@ -384,6 +384,13 @@ func newRouter(d Deps) http.Handler {
 			r.With(recent).Post("/mcp/sources", d.PostMCPSource)
 			r.With(recent).Put("/mcp/sources/{slug}", d.PutMCPSource)
 			r.With(recent).Delete("/mcp/sources/{slug}", d.DeleteMCPSource)
+			// Tools of a source: a sync calls the upstream, an approval lets
+			// upstream text reach clients.
+			r.With(recent).Post("/mcp/sources/{slug}/sync", d.PostMCPSourceSync)
+			r.Get("/mcp/sources/{slug}/tools", d.GetMCPSourceTools)
+			r.With(recent).Put("/mcp/sources/{slug}/tools/{name}", d.PutMCPSourceTool)
+			r.With(recent).Post("/mcp/sources/{slug}/tools/{name}/approve", d.PostMCPSourceToolApprove)
+			r.With(recent).Post("/mcp/sources/{slug}/approve-all", d.PostMCPSourceApproveAll)
 			r.With(recent).Put("/services/{serviceID}/access-mode", d.SetServiceAccessMode)
 			r.With(recent).Put("/services/{serviceID}/gateway-only", d.PutServiceGatewayOnly)
 			r.Get("/services/{serviceID}/api-keys", d.ListAPIKeys)

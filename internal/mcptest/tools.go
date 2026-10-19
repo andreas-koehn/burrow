@@ -6,6 +6,7 @@
 //
 //	up := mcptest.NewServer(t, mcptest.Opts{})                  // stateless, DefaultTools()
 //	up := mcptest.NewServer(t, mcptest.Opts{Stateful: true})    // Mcp-Session-Id sessions
+//	up := mcptest.NewServer(t, mcptest.Opts{TLS: true})         // https (trust via up.Client() or up.Certificate())
 //	up.URL                                                       // Streamable HTTP endpoint
 //
 // A stateless upstream keeps no session: every POST stands alone. A stateful

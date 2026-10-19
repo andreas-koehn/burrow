@@ -62,6 +62,7 @@ admin POST /api/v1/guardrails/preview 400
 admin GET /api/v1/guardrails/settings 200
 admin GET /api/v1/mcp/sources 200
 admin GET /api/v1/mcp/sources/{slug} 404
+admin GET /api/v1/mcp/sources/{slug}/tools 404
 admin GET /api/v1/mcp/status 200
 admin GET /api/v1/mcp/tools 200
 admin GET /api/v1/me 200
@@ -119,6 +120,9 @@ admin POST /api/v1/client/login/requests/{user_code}/approve 400
 admin POST /api/v1/client/login/requests/{user_code}/deny 404
 admin POST /api/v1/client/login/start 200
 admin POST /api/v1/mcp/sources 400
+admin POST /api/v1/mcp/sources/{slug}/approve-all 404
+admin POST /api/v1/mcp/sources/{slug}/sync 503
+admin POST /api/v1/mcp/sources/{slug}/tools/{name}/approve 404
 admin POST /api/v1/rate-limits 400
 admin POST /api/v1/redaction/preview 200
 admin POST /api/v1/redaction/rules 400
@@ -145,6 +149,7 @@ admin PUT /api/v1/cache/settings 204
 admin PUT /api/v1/cost/pricing 500
 admin PUT /api/v1/guardrails/settings 400
 admin PUT /api/v1/mcp/sources/{slug} 404
+admin PUT /api/v1/mcp/sources/{slug}/tools/{name} 404
 admin PUT /api/v1/rate-limits/{id} 400
 admin PUT /api/v1/redaction/rules/{id} 400
 admin PUT /api/v1/redaction/settings 204
@@ -225,6 +230,7 @@ user POST /api/v1/guardrails/preview 403
 user GET /api/v1/guardrails/settings 200
 user GET /api/v1/mcp/sources 403
 user GET /api/v1/mcp/sources/{slug} 403
+user GET /api/v1/mcp/sources/{slug}/tools 403
 user GET /api/v1/mcp/status 403
 user GET /api/v1/mcp/tools 403
 user GET /api/v1/me 200
@@ -282,6 +288,9 @@ user POST /api/v1/client/login/requests/{user_code}/approve 400
 user POST /api/v1/client/login/requests/{user_code}/deny 404
 user POST /api/v1/client/login/start 200
 user POST /api/v1/mcp/sources 403
+user POST /api/v1/mcp/sources/{slug}/approve-all 403
+user POST /api/v1/mcp/sources/{slug}/sync 403
+user POST /api/v1/mcp/sources/{slug}/tools/{name}/approve 403
 user POST /api/v1/rate-limits 403
 user POST /api/v1/redaction/preview 403
 user POST /api/v1/redaction/rules 403
@@ -308,6 +317,7 @@ user PUT /api/v1/cache/settings 403
 user PUT /api/v1/cost/pricing 403
 user PUT /api/v1/guardrails/settings 403
 user PUT /api/v1/mcp/sources/{slug} 403
+user PUT /api/v1/mcp/sources/{slug}/tools/{name} 403
 user PUT /api/v1/rate-limits/{id} 403
 user PUT /api/v1/redaction/rules/{id} 403
 user PUT /api/v1/redaction/settings 403
@@ -388,6 +398,7 @@ cr-none POST /api/v1/guardrails/preview 403
 cr-none GET /api/v1/guardrails/settings 200
 cr-none GET /api/v1/mcp/sources 403
 cr-none GET /api/v1/mcp/sources/{slug} 403
+cr-none GET /api/v1/mcp/sources/{slug}/tools 403
 cr-none GET /api/v1/mcp/status 403
 cr-none GET /api/v1/mcp/tools 403
 cr-none GET /api/v1/me 200
@@ -445,6 +456,9 @@ cr-none POST /api/v1/client/login/requests/{user_code}/approve 403
 cr-none POST /api/v1/client/login/requests/{user_code}/deny 404
 cr-none POST /api/v1/client/login/start 200
 cr-none POST /api/v1/mcp/sources 403
+cr-none POST /api/v1/mcp/sources/{slug}/approve-all 403
+cr-none POST /api/v1/mcp/sources/{slug}/sync 403
+cr-none POST /api/v1/mcp/sources/{slug}/tools/{name}/approve 403
 cr-none POST /api/v1/rate-limits 403
 cr-none POST /api/v1/redaction/preview 403
 cr-none POST /api/v1/redaction/rules 403
@@ -471,6 +485,7 @@ cr-none PUT /api/v1/cache/settings 403
 cr-none PUT /api/v1/cost/pricing 403
 cr-none PUT /api/v1/guardrails/settings 403
 cr-none PUT /api/v1/mcp/sources/{slug} 403
+cr-none PUT /api/v1/mcp/sources/{slug}/tools/{name} 403
 cr-none PUT /api/v1/rate-limits/{id} 403
 cr-none PUT /api/v1/redaction/rules/{id} 403
 cr-none PUT /api/v1/redaction/settings 403
@@ -551,6 +566,7 @@ cr-legacy POST /api/v1/guardrails/preview 400
 cr-legacy GET /api/v1/guardrails/settings 200
 cr-legacy GET /api/v1/mcp/sources 403
 cr-legacy GET /api/v1/mcp/sources/{slug} 403
+cr-legacy GET /api/v1/mcp/sources/{slug}/tools 403
 cr-legacy GET /api/v1/mcp/status 200
 cr-legacy GET /api/v1/mcp/tools 200
 cr-legacy GET /api/v1/me 200
@@ -608,6 +624,9 @@ cr-legacy POST /api/v1/client/login/requests/{user_code}/approve 400
 cr-legacy POST /api/v1/client/login/requests/{user_code}/deny 404
 cr-legacy POST /api/v1/client/login/start 200
 cr-legacy POST /api/v1/mcp/sources 403
+cr-legacy POST /api/v1/mcp/sources/{slug}/approve-all 403
+cr-legacy POST /api/v1/mcp/sources/{slug}/sync 403
+cr-legacy POST /api/v1/mcp/sources/{slug}/tools/{name}/approve 403
 cr-legacy POST /api/v1/rate-limits 400
 cr-legacy POST /api/v1/redaction/preview 200
 cr-legacy POST /api/v1/redaction/rules 400
@@ -634,6 +653,7 @@ cr-legacy PUT /api/v1/cache/settings 204
 cr-legacy PUT /api/v1/cost/pricing 403
 cr-legacy PUT /api/v1/guardrails/settings 400
 cr-legacy PUT /api/v1/mcp/sources/{slug} 403
+cr-legacy PUT /api/v1/mcp/sources/{slug}/tools/{name} 403
 cr-legacy PUT /api/v1/rate-limits/{id} 400
 cr-legacy PUT /api/v1/redaction/rules/{id} 400
 cr-legacy PUT /api/v1/redaction/settings 204

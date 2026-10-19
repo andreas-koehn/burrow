@@ -61,13 +61,15 @@ type v04Stack struct {
 	CacheEngine           *exact.Cache
 	RedactEngine          *redact.Engine
 	GuardrailsEngine      *guardrails.Engine
-	InspectorMgr          *inspector.Manager
-	RouteRouter           *route.Router
-	MeterSink             *aimeter.SQLSink
-	Metrics               *metrics.Recorder
-	GeoLookup             proxy.GeoLookup
-	MCPServer             *mcpserv.Server
-	AIChain               *aigw.Chain
+	// GlobalGuardrails returns the global guardrail settings (cached briefly).
+	GlobalGuardrails func(context.Context) guardrails.Settings
+	InspectorMgr     *inspector.Manager
+	RouteRouter      *route.Router
+	MeterSink        *aimeter.SQLSink
+	Metrics          *metrics.Recorder
+	GeoLookup        proxy.GeoLookup
+	MCPServer        *mcpserv.Server
+	AIChain          *aigw.Chain
 	// GuardrailAudit writes the guardrail.refused entries; flushed at shutdown.
 	GuardrailAudit *guardrailAuditor
 	// Judge is the chain's way to the judge model: main hands it the AI
@@ -268,6 +270,7 @@ func buildV04Stack(
 		CacheEngine:           cacheEngine,
 		RedactEngine:          redactEngine,
 		GuardrailsEngine:      guardrailsEngine,
+		GlobalGuardrails:      globalGuard.get,
 		InspectorMgr:          inspectorMgr,
 		RouteRouter:           routeRouter,
 		MeterSink:             meterSink,

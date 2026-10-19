@@ -9,6 +9,7 @@ import (
 	"reflect"
 
 	"github.com/ankoehn/burrow/internal/guardrails"
+	"github.com/ankoehn/burrow/internal/mcpgw"
 	"github.com/ankoehn/burrow/internal/redact"
 )
 
@@ -165,6 +166,11 @@ var openAPIOperationIDs = map[string]string{
 	"GET /api/v1/mcp/sources/{slug}":                                            "mcpSourceGet",
 	"PUT /api/v1/mcp/sources/{slug}":                                            "mcpSourceUpdate",
 	"DELETE /api/v1/mcp/sources/{slug}":                                         "mcpSourceDelete",
+	"POST /api/v1/mcp/sources/{slug}/sync":                                      "mcpSourceSync",
+	"GET /api/v1/mcp/sources/{slug}/tools":                                      "mcpSourceToolsList",
+	"PUT /api/v1/mcp/sources/{slug}/tools/{name}":                               "mcpSourceToolUpdate",
+	"POST /api/v1/mcp/sources/{slug}/tools/{name}/approve":                      "mcpSourceToolApprove",
+	"POST /api/v1/mcp/sources/{slug}/approve-all":                               "mcpSourceApproveAll",
 	"GET /api/v1/ai/providers/{slug}/models":                                    "providerModelsList",
 	"POST /api/v1/ai/providers/{slug}/models":                                   "providerModelCreate",
 	"DELETE /api/v1/ai/providers/{slug}/models":                                 "providerModelDelete",
@@ -198,10 +204,13 @@ var openAPIReservedOperationIDs = map[string]string{
 // carry x-burrow-mcp: false, as operationId → "METHOD path". They must never
 // become agent tools; the reason of each group is in docs/reference/api.md.
 var openAPIMCPDisabled = map[string]string{
-	"authLogin":                 "POST /api/v1/auth/login",
-	"authLogout":                "POST /api/v1/auth/logout",
-	"authReauth":                "POST /api/v1/auth/reauth",
-	"authChangePassword":        "POST /api/v1/auth/change-password",
+	"authLogin":          "POST /api/v1/auth/login",
+	"authLogout":         "POST /api/v1/auth/logout",
+	"authReauth":         "POST /api/v1/auth/reauth",
+	"authChangePassword": "POST /api/v1/auth/change-password",
+	// An agent must not approve tool text that may have been written to steer it.
+	"mcpSourceToolApprove":      "POST /api/v1/mcp/sources/{slug}/tools/{name}/approve",
+	"mcpSourceApproveAll":       "POST /api/v1/mcp/sources/{slug}/approve-all",
 	"clientDiscoveryGet":        "GET /api/v1/client/discovery",
 	"clientLoginStart":          "POST /api/v1/client/login/start",
 	"clientLoginPoll":           "POST /api/v1/client/login/poll",
@@ -281,6 +290,9 @@ var openAPIRequestBodies = map[string]openAPIRequestBody{
 	"providerUpstreamUpdate": {typ: oaType[upstreamReq]()},
 	"mcpSourceCreate":        {typ: oaType[postMCPSourceReq]()},
 	"mcpSourceUpdate":        {typ: oaType[putMCPSourceReq]()},
+	"mcpSourceToolUpdate":    {typ: oaType[putMCPToolReq]()},
+	"mcpSourceToolApprove":   {typ: oaType[approveMCPToolReq]()},
+	"mcpSourceApproveAll":    {typ: oaType[approveAllMCPToolsReq]()},
 	// PostAIProviderModel (ai_provider_handlers.go) decodes into
 	// `var in struct { ID string `json:"id"` }`.
 	// TestOpenAPI_ProviderModelBody probes the handler instead.
@@ -404,6 +416,11 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"mcpSourceCreate":        {status: "201", typ: oaType[mcpSourceResp]()},
 	"mcpSourceGet":           {status: "200", typ: oaType[mcpSourceResp]()},
 	"mcpSourceUpdate":        {status: "200", typ: oaType[mcpSourceResp]()},
+	"mcpSourceSync":          {status: "200", typ: oaType[mcpgw.SyncResult]()},
+	"mcpSourceToolsList":     {status: "200", typ: oaType[mcpSourceToolResp](), list: true},
+	"mcpSourceToolUpdate":    {status: "200", typ: oaType[mcpSourceToolResp]()},
+	"mcpSourceToolApprove":   {status: "200", typ: oaType[mcpSourceToolResp]()},
+	"mcpSourceApproveAll":    {status: "200", typ: oaType[mcpApproveAllResp]()},
 	"providerModelsList":     {status: "200", typ: oaType[aiProviderModelResp](), list: true},
 	"providerModelsSync":     {status: "200", keys: []string{"count"}},
 	"providerMetricsGet":     {status: "200", typ: oaType[endpointMetricsResp]()},

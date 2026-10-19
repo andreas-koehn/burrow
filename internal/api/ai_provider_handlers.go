@@ -705,11 +705,13 @@ func (d Deps) auditProvider(r *http.Request, action string, p db.AIProvider, pay
 // is saved. A variable so tests can shorten it.
 var upstreamHostCheckTimeout = 5 * time.Second
 
-const (
-	msgBaseURLInvalid = "base URL must be an https URL without credentials, query or fragment"
-	msgBaseURLPrivate = "base URL resolves to a private or loopback address"
-	msgBaseURLNoDNS   = "base URL host could not be resolved"
-)
+// The messages of the save-time host check; field is "base URL" for a
+// provider and "url" for a tool source.
+func msgURLInvalid(field string) string {
+	return field + " must be an https URL without credentials, query or fragment"
+}
+func msgURLPrivate(field string) string { return field + " resolves to a private or loopback address" }
+func msgURLNoDNS(field string) string   { return field + " host could not be resolved" }
 
 // upstreamHostAllowed vets the host of a direct provider's base URL when the
 // provider is saved, and writes the 400 itself. It gives the admin an early,
@@ -717,12 +719,18 @@ const (
 // the rule on every connection. With private upstreams allowed the check is
 // skipped, like the guard.
 func (d Deps) upstreamHostAllowed(w http.ResponseWriter, r *http.Request, baseURL string) bool {
+	return d.upstreamHostAllowedAs(w, r, baseURL, "base URL")
+}
+
+// upstreamHostAllowedAs is upstreamHostAllowed with the field named field in
+// the messages.
+func (d Deps) upstreamHostAllowedAs(w http.ResponseWriter, r *http.Request, baseURL, field string) bool {
 	if d.AllowPrivateUpstreams || d.HostCheck == nil {
 		return true
 	}
 	u, err := aiprovider.ValidateBaseURL(baseURL)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, msgBaseURLInvalid)
+		writeErr(w, http.StatusBadRequest, msgURLInvalid(field))
 		return false
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), upstreamHostCheckTimeout)
@@ -740,9 +748,9 @@ func (d Deps) upstreamHostAllowed(w http.ResponseWriter, r *http.Request, baseUR
 	case err == nil:
 		return true
 	case errors.Is(err, aiprovider.ErrBlockedAddress):
-		writeErr(w, http.StatusBadRequest, msgBaseURLPrivate)
+		writeErr(w, http.StatusBadRequest, msgURLPrivate(field))
 	default:
-		writeErr(w, http.StatusBadRequest, msgBaseURLNoDNS)
+		writeErr(w, http.StatusBadRequest, msgURLNoDNS(field))
 	}
 	return false
 }
@@ -887,17 +895,24 @@ func (d Deps) closeDirectDoors(r *http.Request, p db.AIProvider) {
 		d.Log.Warn("provider created, gateway-only not set", "provider", p.Slug, "service_id", p.ServiceID, "err", err)
 		return
 	}
-	if d.AuditAppender != nil {
-		lc := audit.LogContextFrom(r.Context())
-		_ = d.AuditAppender.Append(r.Context(), audit.Event{
-			ActorID: lc.ActorID, ActorEmail: lc.ActorEmail,
-			Action:    audit.ActionServiceGatewayOnlyUpdate,
-			SubjectID: p.ServiceID,
-			Result:    "ok",
-			SourceIP:  lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
-			Payload: audit.MustJSON(map[string]any{"gateway_only": true}),
-		})
+	d.auditGatewayOnly(r, p.ServiceID)
+}
+
+// auditGatewayOnly records that a service was switched to gateway-only as a
+// side effect of binding it (best-effort).
+func (d Deps) auditGatewayOnly(r *http.Request, serviceID string) {
+	if d.AuditAppender == nil {
+		return
 	}
+	lc := audit.LogContextFrom(r.Context())
+	_ = d.AuditAppender.Append(r.Context(), audit.Event{
+		ActorID: lc.ActorID, ActorEmail: lc.ActorEmail,
+		Action:    audit.ActionServiceGatewayOnlyUpdate,
+		SubjectID: serviceID,
+		Result:    "ok",
+		SourceIP:  lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
+		Payload: audit.MustJSON(map[string]any{"gateway_only": true}),
+	})
 }
 
 // postDirectProvider is the kind "direct" branch of PostAIProvider. The

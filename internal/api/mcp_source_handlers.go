@@ -226,9 +226,10 @@ func (d Deps) PostMCPSource(w http.ResponseWriter, r *http.Request) {
 	if in.Name == "" {
 		in.Name = in.Slug
 	}
+	wasGatewayOnly := false
 	switch in.Kind {
 	case "remote":
-		if !d.upstreamHostAllowed(w, r, in.URL) {
+		if !d.upstreamHostAllowedAs(w, r, in.URL, "url") {
 			return
 		}
 	case "tunnel":
@@ -237,13 +238,24 @@ func (d Deps) PostMCPSource(w http.ResponseWriter, r *http.Request) {
 		// mcp:sources:manage, and a token must also declare that it
 		// configures services.
 		role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
+		var svc store.ServiceDetail
 		if err == nil {
-			_, err = d.Services.GetService(r.Context(), userID(r.Context()), role, in.ServiceID)
+			svc, err = d.Services.GetService(r.Context(), userID(r.Context()), role, in.ServiceID)
 		}
-		if errors.Is(err, store.ErrForbidden) || (err == nil && !mayConfigureServices(r, role)) {
+		switch {
+		case errors.Is(err, store.ErrForbidden) || (err == nil && !mayConfigureServices(r, role)):
 			writeErr(w, http.StatusForbidden, "binding a service needs the right to configure it")
 			return
+		case errors.Is(err, db.ErrNotFound):
+			writeErr(w, http.StatusConflict, "a tunnel tool source needs an existing http service")
+			return
+		case err != nil:
+			// Fail closed: a check that could not run is no permission.
+			d.warn("tool source: service check failed", "service_id", in.ServiceID, "err", err)
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
 		}
+		wasGatewayOnly = svc.GatewayOnly
 	default:
 		writeErr(w, http.StatusBadRequest, "kind must be 'remote' or 'tunnel'")
 		return
@@ -261,6 +273,10 @@ func (d Deps) PostMCPSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.auditMCPSource(r, audit.ActionMCPSourceCreate, src, mcpSourceAudit(src))
+	if src.Kind == "tunnel" && !wasGatewayOnly {
+		// Binding closed the service's direct doors; say so on the service.
+		d.auditGatewayOnly(r, src.ServiceID)
+	}
 	writeJSON(w, http.StatusCreated, d.mcpSourceView(src))
 }
 
@@ -288,7 +304,7 @@ func (d Deps) PutMCPSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A tunnel source has no URL; the store refuses one with a 400 of its own.
-	if in.URL != nil && cur.Kind == "remote" && !d.upstreamHostAllowed(w, r, *in.URL) {
+	if in.URL != nil && cur.Kind == "remote" && !d.upstreamHostAllowedAs(w, r, *in.URL, "url") {
 		return
 	}
 	src, err := st.UpdateMCPSource(r.Context(), slug, store.MCPSourceUpdate{
@@ -301,6 +317,9 @@ func (d Deps) PutMCPSource(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
 		}
 		return
+	}
+	if d.MCPGateway != nil {
+		d.MCPGateway.Invalidate(slug)
 	}
 	d.auditMCPSource(r, audit.ActionMCPSourceUpdate, src, mcpSourceAudit(src))
 	writeJSON(w, http.StatusOK, d.mcpSourceView(src))
@@ -327,6 +346,9 @@ func (d Deps) DeleteMCPSource(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
 		}
 		return
+	}
+	if d.MCPGateway != nil {
+		d.MCPGateway.Invalidate(slug)
 	}
 	// The inspector ring and the like of a remote source's backing row go
 	// with it, as for any deleted service.

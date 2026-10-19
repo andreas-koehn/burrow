@@ -25,6 +25,9 @@ type Opts struct {
 	NoTools bool
 	// Authorize, if set, must return true for a request to be served; else 401.
 	Authorize func(*http.Request) bool
+	// TLS serves https with the httptest certificate; a client trusts it
+	// through Server.Client() or the certificate in Server.Certificate().
+	TLS bool
 }
 
 const maxBody = 4 << 20
@@ -64,7 +67,11 @@ func NewServer(t testing.TB, opts Opts) *Server {
 		s.tools = DefaultTools()
 	}
 	s.sdk, s.handler = s.newHandler(s.tools)
-	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
+	if opts.TLS {
+		s.Server = httptest.NewTLSServer(http.HandlerFunc(s.serve))
+	} else {
+		s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
+	}
 	t.Cleanup(s.Close)
 	return s
 }

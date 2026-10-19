@@ -343,8 +343,8 @@ the permissions; a token must declare it as well:
 | read captured requests of a service / replay them | `inspector:read:own` or `:any` / `inspector:replay:own` or `:any` |
 | read AI providers | `ai:read:own`, `ai:read:any` or `ai:providers:manage` |
 | create, change or delete AI providers and their model catalogs | `ai:providers:manage` (reaches the upstream credentials: give it like admin rights) |
-| read tool sources (`GET /mcp/sources`) | `mcp:sources:read` or `mcp:sources:manage` |
-| create, change or delete tool sources (a source sends a stored upstream credential to the address it names: give it like admin rights). A tunnel source also needs the right to configure the service it binds | `mcp:sources:manage` |
+| read tool sources and their tools (`GET /mcp/sources`, `GET /mcp/sources/{slug}/tools`) | `mcp:sources:read` or `mcp:sources:manage` |
+| create, change, sync or delete tool sources, approve their tools and change tool overrides (a source sends a stored upstream credential to the address it names: give it like admin rights). A tunnel source also needs the right to configure the service it binds | `mcp:sources:manage` |
 | read synthetic models, the gateway's endpoints, cache, redaction and guardrail settings | `ai:read:own`, `ai:read:any`, `ai:configure:own` or `ai:configure:any` |
 | change synthetic models, cache, redaction and guardrail settings | `ai:configure:any` |
 | list your own gateway keys / revoke one of them | `ai:read:…` or `ai:configure:…` / `ai:configure:own` or `ai:configure:any` |

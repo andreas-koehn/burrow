@@ -109,6 +109,9 @@ const (
 	ActionMCPSourceCreate = "mcp.source.create"
 	ActionMCPSourceUpdate = "mcp.source.update"
 	ActionMCPSourceDelete = "mcp.source.delete"
+	ActionMCPSourceSync   = "mcp.source.sync"
+	ActionMCPToolApprove  = "mcp.tool.approve"
+	ActionMCPToolOverride = "mcp.tool.override"
 
 	// v0.5.0 Task 5: upstream-credential binding / unbinding.
 	ActionServiceUpstreamCredentialBind   = "service.upstream_credential.bind"
@@ -195,6 +198,7 @@ var AllActions = []string{
 	ActionAutomationTokenMint, ActionAutomationTokenRevoke,
 	ActionMCPToolCall,
 	ActionMCPSourceCreate, ActionMCPSourceUpdate, ActionMCPSourceDelete,
+	ActionMCPSourceSync, ActionMCPToolApprove, ActionMCPToolOverride,
 	ActionServiceUpstreamCredentialBind, ActionServiceUpstreamCredentialUnbind,
 	ActionServiceCustomDomainAdd, ActionServiceCustomDomainUpdate, ActionServiceCustomDomainDelete,
 	ActionServiceCustomDomainStatusChanged,

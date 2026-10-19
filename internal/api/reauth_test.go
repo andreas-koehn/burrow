@@ -62,6 +62,12 @@ var reauthGuarded = []apiRoute{
 	{http.MethodPost, "/api/v1/mcp/sources"},
 	{http.MethodPut, "/api/v1/mcp/sources/{slug}"},
 	{http.MethodDelete, "/api/v1/mcp/sources/{slug}"},
+	// A sync calls the upstream; approvals and overrides change what
+	// clients are served.
+	{http.MethodPost, "/api/v1/mcp/sources/{slug}/sync"},
+	{http.MethodPut, "/api/v1/mcp/sources/{slug}/tools/{name}"},
+	{http.MethodPost, "/api/v1/mcp/sources/{slug}/tools/{name}/approve"},
+	{http.MethodPost, "/api/v1/mcp/sources/{slug}/approve-all"},
 }
 
 func errorOf(rec *httptest.ResponseRecorder) string {

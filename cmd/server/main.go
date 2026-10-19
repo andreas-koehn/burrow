@@ -34,6 +34,7 @@ import (
 	"github.com/ankoehn/burrow/internal/aigw"
 	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/api"
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/config"
 	"github.com/ankoehn/burrow/internal/connlog"
 	"github.com/ankoehn/burrow/internal/cost"
@@ -42,6 +43,7 @@ import (
 	"github.com/ankoehn/burrow/internal/devcert"
 	"github.com/ankoehn/burrow/internal/events"
 	"github.com/ankoehn/burrow/internal/logging"
+	"github.com/ankoehn/burrow/internal/mcpgw"
 	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/ankoehn/burrow/internal/proxy/customdomain"
 	"github.com/ankoehn/burrow/internal/retention"
@@ -932,6 +934,27 @@ func newRootCmd() *cobra.Command {
 			// One transport for all direct AI providers: it carries the
 			// address guard and the connection pool, never a credential.
 			aiUpstreamTransport := aiprovider.NewTransport(cfg.AIAllowPrivateUpstreams)
+			// The MCP gateway's upstream side: remote tool sources leave
+			// through the same guarded transport, tunnel sources through the
+			// client's tunnel. Tool syncs and calls run off the control loop.
+			mcpPool := mcpgw.New(mcpgw.Options{
+				Store: st, Vault: v05.CredVault, Remote: aiUpstreamTransport,
+				Tunnels: proxyDialerAdapter{st: st, srv: srv},
+				InspectText: func(ctx context.Context, text []byte) (bool, string) {
+					return v04.GuardrailsEngine.InspectRequest(text, v04.GlobalGuardrails(ctx).CustomPatterns)
+				},
+				OnBackgroundSync: func(slug string, res mcpgw.SyncResult) {
+					_ = v04.AuditAppender.Append(context.Background(), audit.Event{
+						Action: audit.ActionMCPSourceSync, SubjectID: slug, SubjectLabel: slug, Result: "ok",
+						Payload: audit.MustJSON(map[string]any{
+							"added": res.Added, "changed": res.Changed, "removed": res.Removed,
+							"pending": res.Pending, "skipped": len(res.Skipped), "background": true,
+						}),
+					})
+				},
+				Log: log,
+			})
+			mcpPool.Start(ctx)
 			// One breaker for the relay; the status API reads its state.
 			aiBreaker := aigateway.NewBreaker()
 			// One limiter for the relay: every door to a provider shares its
@@ -996,6 +1019,7 @@ func newRootCmd() *cobra.Command {
 				Services:    st,
 				AIProviders: st,
 				MCPSources:  st,
+				MCPGateway:  mcpPool,
 				AILimiter:   aiLimiter,
 				AIBreaker:   aiBreaker,
 				AIAttempts:  st,
@@ -1296,6 +1320,7 @@ func newRootCmd() *cobra.Command {
 				_ = proxySrv.Shutdown(shutCtx)
 			}
 			_ = apiSrv.Shutdown(shutCtx)
+			mcpPool.Close()
 			// No /ai/ request is in flight any more.
 			aiUpstreamTransport.CloseIdleConnections()
 			// What the last requests tried is written before the database closes.

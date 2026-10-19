@@ -11,6 +11,7 @@ import (
 	"github.com/ankoehn/burrow/internal/aigateway"
 	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/mcpgw"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -310,6 +311,19 @@ type MCPSourceStore interface {
 	CreateMCPSource(ctx context.Context, ownerID string, in store.MCPSourceInput) (db.MCPSource, error)
 	UpdateMCPSource(ctx context.Context, slug string, u store.MCPSourceUpdate) (db.MCPSource, error)
 	DeleteMCPSource(ctx context.Context, slug string) error
+
+	ListMCPTools(ctx context.Context, slug string) ([]db.MCPTool, error)
+	ApproveMCPTool(ctx context.Context, slug, name, hash string) (db.MCPTool, error)
+	ApproveAllMCPTools(ctx context.Context, slug string, hashes map[string]string) ([]string, error)
+	UpdateMCPToolOverrides(ctx context.Context, slug, name string, u store.MCPToolOverridesUpdate) (db.MCPTool, error)
+}
+
+// MCPGateway is the upstream side of the MCP gateway the management API
+// drives: the tool sync, and dropping a source's session after the source
+// changed. *mcpgw.Pool satisfies it.
+type MCPGateway interface {
+	Sync(ctx context.Context, slug string) (mcpgw.SyncResult, error)
+	Invalidate(slug string)
 }
 
 // AIModelStore is the synthetic-model surface of the management API.
@@ -383,6 +397,9 @@ type Deps struct {
 	AIProviders AIProviderStore
 	// MCPSources is the tool sources table behind /mcp/sources.
 	MCPSources MCPSourceStore
+	// MCPGateway syncs tool sources and keeps their upstream sessions; nil =
+	// sync answers 503.
+	MCPGateway MCPGateway
 	// AILimiter tells how many requests a provider with a concurrency limit
 	// is serving now (the gateway's limiter). nil = reported as 0.
 	AILimiter interface{ InUse(slug string) int }
