@@ -686,27 +686,32 @@ export const handlers = [
   // ---- client sign-in requests: lookup, approve, deny (session + CSRF) ----
   http.get("/api/v1/client/login/requests/:code", ({ request, params }) => {
     const found = clientLoginFor(request, String(params.code));
-    return "res" in found ? found.res : json(found.row);
+    return "res" in found ? found.res : json({ ...found.row, password_required: db.clientLoginPasswordRequired });
   }),
   http.post("/api/v1/client/login/requests/:code/approve", async ({ request, params }) => {
     const g = gate(request); if (g) return g;
     if (!mayManageClientTokens()) return err(403, "tokens:manage required");
-    const b = await body<{ token_name?: unknown }>(request);
+    const b = await body<{ token_name?: unknown; password?: unknown }>(request);
     if (!b) return err(400, "token_name is required");
+    // As on the relay: the password is checked before the request or the name.
+    if (db.clientLoginPasswordRequired) {
+      if (typeof b.password !== "string" || b.password === "") return err(400, "password required");
+      if (b.password !== "password123") return err(403, "password is incorrect");
+    }
     const name = cleanTokenName(b.token_name);
     if (name === null) return err(400, "token_name must be 1 to 120 characters without control characters");
     const found = clientLoginFor(request, String(params.code));
     if ("res" in found) return found.res;
     if (found.row.status !== "pending") return err(409, "sign-in request was already decided");
     found.row.status = "approved";
-    return json(found.row);
+    return json({ ...found.row, password_required: db.clientLoginPasswordRequired });
   }),
   http.post("/api/v1/client/login/requests/:code/deny", ({ request, params }) => {
     const found = clientLoginFor(request, String(params.code));
     if ("res" in found) return found.res;
     if (found.row.status !== "pending") return err(409, "sign-in request was already decided");
     found.row.status = "denied";
-    return json(found.row);
+    return json({ ...found.row, password_required: db.clientLoginPasswordRequired });
   }),
   http.get("/api/v1/clients/:id", ({ request, params }) => {
     const g = gate(request, { admin: true }); if (g) return g;

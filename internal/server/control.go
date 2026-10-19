@@ -245,7 +245,11 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 				var tunnelURL, dashboardURL string
 				if s.opts.AuthDomain != "" {
 					if !res.GatewayOnly {
-						tunnelURL = "https://" + s.opts.AuthDomain + "/svc/" + subdomain + "/"
+						host := s.opts.AuthDomain
+						if s.opts.ServicesDomain != "" {
+							host = s.opts.ServicesDomain
+						}
+						tunnelURL = "https://" + host + "/svc/" + subdomain + "/"
 					}
 					dashboardURL = "https://" + s.opts.AuthDomain + "/services/" + serviceID
 				}

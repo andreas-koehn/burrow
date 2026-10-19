@@ -110,6 +110,8 @@ type tunnelListerAdapter struct {
 	services   serviceModeGetter // optional; nil in unit tests
 	slugs      serviceGetter     // optional; nil in unit tests
 	authDomain string
+	// servicesDomain is BURROW_SERVICES_DOMAIN; when set, the URL is on it.
+	servicesDomain string
 }
 
 func (a tunnelListerAdapter) ListUserTunnels(userID string) []api.TunnelView {
@@ -133,8 +135,9 @@ func (a tunnelListerAdapter) ListUserTunnels(userID string) []api.TunnelView {
 	return out
 }
 
-// tunnelURL returns "https://<authDomain>/svc/<slug>/" for the durable service
-// behind a tunnel, or "" when there is no auth domain, no service row or no
+// tunnelURL returns "https://<host>/svc/<slug>/" for the durable service
+// behind a tunnel, host being the services domain when set and the auth
+// domain otherwise, or "" when there is no auth domain, no service row or no
 // slug (tcp tunnels have none).
 func (a tunnelListerAdapter) tunnelURL(serviceID string) string {
 	if a.slugs == nil || a.authDomain == "" || serviceID == "" {
@@ -144,7 +147,11 @@ func (a tunnelListerAdapter) tunnelURL(serviceID string) string {
 	if err != nil || svc.Subdomain == "" || svc.GatewayOnly {
 		return ""
 	}
-	return "https://" + a.authDomain + "/svc/" + svc.Subdomain + "/"
+	host := a.authDomain
+	if a.servicesDomain != "" {
+		host = a.servicesDomain
+	}
+	return "https://" + host + "/svc/" + svc.Subdomain + "/"
 }
 
 // serviceGetter loads the durable service row for a service id.
@@ -549,7 +556,7 @@ func newRootCmd() *cobra.Command {
 			if cfg.ACMEDomain != "" {
 				var aerr error
 				acmeMgr, aerr = acme.New(ctx, acme.Config{
-					Domains: splitAndTrim(cfg.ACMEDomain),
+					Domains: acmeDomains(cfg.ACMEDomain, cfg.ServicesDomain),
 					Email:   cfg.ACMEEmail,
 					CA:      cfg.ACMECA,
 					Storage: cfg.ACMEStorage,
@@ -582,6 +589,15 @@ func newRootCmd() *cobra.Command {
 			// Resolved before server.New: the control server tells clients the
 			// public URL of their tunnels and must use the same domain.
 			proxyAuthDomain := resolveAuthDomain(cfg.AuthDomain, cfg.ACMEDomain, acmeMgr != nil)
+			// The services domain (D26) serves /svc/ apart from the
+			// dashboard; the dashboard's host is proxyAuthDomain.
+			if err := checkServicesDomain(cfg.ServicesDomain, proxyAuthDomain); err != nil {
+				return err
+			}
+			if cfg.ServicesDomain == "" {
+				log.Info("services domain not set: tunnelled apps share the dashboard's origin; " +
+					"approving a client sign-in asks for the password. Set BURROW_SERVICES_DOMAIN to serve them on a host of their own")
+			}
 
 			srv, err := server.New(server.Options{
 				Listen: cfg.Listen, TLSCert: cfg.TLSCert, TLSKey: cfg.TLSKey,
@@ -592,6 +608,8 @@ func newRootCmd() *cobra.Command {
 				// v0.3.0: HTTP tunnel service identity + subdomain resolver.
 				Services:   serviceResolverAdapter{db: db.Wrap(database), authDomain: proxyAuthDomain},
 				AuthDomain: proxyAuthDomain,
+				// Tunnel addresses are on the services host when one is set.
+				ServicesDomain: cfg.ServicesDomain,
 				// The control handshake refuses clients older than the minimum.
 				MinClientVersion: cfg.MinClientVersion,
 				// v0.6.0: when ACME is enabled the control channel serves the
@@ -794,7 +812,8 @@ func newRootCmd() *cobra.Command {
 			proxyTLSEnabled := (cfg.HTTPProxyTLSCert != "" && cfg.HTTPProxyTLSKey != "") || acmeMgr != nil
 
 			accessChecker := proxy.NewAccessCheckerWithSessionsAndLogger(st, st, proxyAuthDomain, log)
-			gate := proxy.NewGate(st, proxyAuthDomain, effectiveSecureCookies, log)
+			gate := proxy.NewGate(st, proxyAuthDomain, effectiveSecureCookies, log,
+				proxy.WithServicesDomain(cfg.ServicesDomain), proxy.WithGateAuditLogger(v04.AuditLogger))
 			// v0.5.0 F-13: wire the connection-log sink so the proxy
 			// records one connection_logs row per closed request. The
 			// adapter shim translates proxy.ConnLogEntry into the
@@ -953,7 +972,7 @@ func newRootCmd() *cobra.Command {
 			}
 
 			apiRouter := api.NewRouter(api.Deps{
-				Users: st, Tunnels: tunnelListerAdapter{s: srv, access: st, services: st, slugs: st, authDomain: proxyAuthDomain}, Events: bus,
+				Users: st, Tunnels: tunnelListerAdapter{s: srv, access: st, services: st, slugs: st, authDomain: proxyAuthDomain, servicesDomain: cfg.ServicesDomain}, Events: bus,
 				Log: log, SecureCookies: effectiveSecureCookies, HTTPSEnabled: httpsEnabled,
 				SPA: spaHandler, TrustedProxies: cfg.TrustedProxies,
 				// Wire env override: 0 means use the api.LoginRateLimitPerIP constant.
@@ -999,6 +1018,8 @@ func newRootCmd() *cobra.Command {
 				// common case this equals cfg.AuthDomain, so composeHostname
 				// and the burrow_login-409 check are unchanged.
 				AuthDomain: proxyAuthDomain,
+				// D26: /svc/ and the gate on a host of their own, when set.
+				ServicesDomain: cfg.ServicesDomain,
 				// mTLS is only offered while the host-routed ingress runs.
 				HostRouting: cfg.HTTPProxyListen != "",
 				// feat/builtin-acme B3: single-origin /svc/{slug} tunnel routing.
@@ -1530,6 +1551,37 @@ func resolveAuthDomain(authDomain, acmeDomain string, acmeEnabled bool) string {
 		}
 	}
 	return authDomain
+}
+
+// acmeDomains is the list of names ACME obtains certificates for: the
+// comma-separated BURROW_ACME_DOMAIN, then the services domain unless it is
+// listed already. The first name stays first: it is the fallback auth domain.
+func acmeDomains(acmeDomain, servicesDomain string) []string {
+	out := splitAndTrim(acmeDomain)
+	if servicesDomain == "" {
+		return out
+	}
+	for _, d := range out {
+		if strings.EqualFold(d, servicesDomain) {
+			return out
+		}
+	}
+	return append(out, servicesDomain)
+}
+
+// checkServicesDomain refuses a services domain without a dashboard host
+// (the handoff and every redirect name it) or equal to it.
+func checkServicesDomain(servicesDomain, dashboardHost string) error {
+	if servicesDomain == "" {
+		return nil
+	}
+	if dashboardHost == "" {
+		return errors.New("BURROW_SERVICES_DOMAIN needs the dashboard's host: set BURROW_AUTH_DOMAIN or BURROW_ACME_DOMAIN")
+	}
+	if strings.EqualFold(servicesDomain, dashboardHost) {
+		return fmt.Errorf("BURROW_SERVICES_DOMAIN must differ from the dashboard's host %q", dashboardHost)
+	}
+	return nil
 }
 
 // splitAndTrim splits a comma-separated string into a slice of trimmed,

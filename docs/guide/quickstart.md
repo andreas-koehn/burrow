@@ -122,7 +122,7 @@ A service created this way is open: anyone who has the URL can use it. Add
 change the access mode in the dashboard. See
 [Expose services](/guide/expose-services#access).
 
-An open `/svc/` app shares the dashboard's origin, and its scripts can call the dashboard API as the signed-in user, so expose only apps you trust (see [Apps behind a path](/guide/expose-services#apps-behind-a-path)).
+Without a [services domain](/guide/configuration#services-domain), an open `/svc/` app shares the dashboard's origin, and its scripts can call the dashboard API as the signed-in user, so expose only apps you trust (see [Apps behind a path](/guide/expose-services#apps-behind-a-path)).
 :::
 
 Other ways to connect (a manual download, a token instead of the browser,

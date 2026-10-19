@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -90,8 +91,56 @@ func (d Deps) mcpAddressLimiter() func(http.Handler) http.Handler {
 	}
 }
 
-// NewRouter builds the /api/v1 HTTP handler.
+// NewRouter builds the /api/v1 HTTP handler. With a services domain set, the
+// handler first sorts each request by host (servicesOriginSwitch).
 func NewRouter(d Deps) http.Handler {
+	h := newRouter(d)
+	if d.ServicesDomain != "" {
+		return servicesOriginSwitch(d.ServicesDomain, h)
+	}
+	return h
+}
+
+// servicesOriginSwitch keeps the tunnelled apps and the dashboard on two
+// origins (BURROW_SERVICES_DOMAIN, spec D26):
+//   - The services host serves /svc/* and the gate's /__burrow/* and answers
+//     everything else with 404: no dashboard, API, MCP or AI endpoint is
+//     reachable on the origin a tunnelled app runs on.
+//   - Every other host (the dashboard's) answers /svc/… with 308 to the same
+//     address on the services host, and of the gate serves only the handoff
+//     that hands a dashboard session over to the services host.
+func servicesOriginSwitch(servicesDomain string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		p := r.URL.Path
+		isSvc := p == "/svc" || strings.HasPrefix(p, "/svc/")
+		isGate := strings.HasPrefix(p, "/__burrow/")
+		if strings.EqualFold(host, servicesDomain) {
+			// "/svc" alone names no service.
+			if (isSvc && p != "/svc") || isGate {
+				next.ServeHTTP(w, r)
+				return
+			}
+			http.NotFound(w, r)
+			return
+		}
+		switch {
+		case isSvc && p != "/svc":
+			// The path starts with /svc/, so the target stays on the services host.
+			//nolint:gosec // G710: the host is configuration and the path starts with /svc/; the target cannot leave the services host.
+			http.Redirect(w, r, "https://"+servicesDomain+r.URL.RequestURI(), http.StatusPermanentRedirect)
+		case isGate && p != "/__burrow/handoff":
+			http.NotFound(w, r)
+		default:
+			next.ServeHTTP(w, r)
+		}
+	})
+}
+
+func newRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	// TrustedProxyMiddleware replaces the unconditional middleware.RealIP.
 	// It only honors X-Forwarded-For / X-Real-IP when the immediate TCP peer
@@ -263,7 +312,14 @@ func NewRouter(d Deps) http.Handler {
 			// to manage client tokens, because approving creates one.
 			r.With(d.requireDashboardSession).
 				Get("/client/login/requests/{user_code}", d.GetClientLoginRequest)
-			r.With(d.requireDashboardSession).
+			// Without a services domain the approval takes the account
+			// password (D27), and wrong ones are limited per address with
+			// the same allowance as the sign-in.
+			approveLimit := func(next http.Handler) http.Handler { return next }
+			if d.ServicesDomain == "" {
+				approveLimit = loginPerIP
+			}
+			r.With(d.requireDashboardSession, approveLimit).
 				Post("/client/login/requests/{user_code}/approve", d.PostClientLoginApprove)
 			r.With(d.requireDashboardSession).
 				Post("/client/login/requests/{user_code}/deny", d.PostClientLoginDeny)
@@ -603,7 +659,7 @@ func NewRouter(d Deps) http.Handler {
 	// TunnelProxy or AuthDomain is unset the routes are simply not registered
 	// (behavior is unchanged from before this feature).
 	if d.TunnelProxy != nil && d.AuthDomain != "" {
-		sh := ServicePathHandler(d.TunnelProxy, d.AuthDomain)
+		sh := ServicePathHandler(d.TunnelProxy, d.AuthDomain, d.ServicesDomain)
 		r.Handle("/svc/{slug}", sh)
 		r.Handle("/svc/{slug}/*", sh)
 	}

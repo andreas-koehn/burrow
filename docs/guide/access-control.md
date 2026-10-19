@@ -39,6 +39,23 @@ dashboard. After sign-in the visitor returns to the service on `/svc/<slug>/`
 only; over the host-routed ingress the visitor lands on the dashboard root.
 Over the opt-in host-routed ingress `burrow_login` is therefore not supported.
 
+With a [services domain](/guide/configuration#services-domain)
+(`BURROW_SERVICES_DOMAIN`) the dashboard's session cookie never reaches the
+services host, and does not count there. The service needs a session of the
+services host instead, in the host-only cookie `burrow_svc_session`:
+
+1. The gate on the services host sends the visitor to
+   `https://<dashboard>/__burrow/handoff?return=<service address>`.
+2. The dashboard's host asks for the password if the visitor is not signed in
+   to the dashboard, then issues a one-time code (60 seconds, single use, bound
+   to the user and the return address) and sends the browser back to
+   `https://<services domain>/__burrow/callback`.
+3. The services host exchanges the code for its own session and sends the
+   visitor on to the service. Each handoff is audited as `auth.handoff`.
+
+No password is ever typed on the services host. Signing out there ends the
+services session only.
+
 **When to use:** internal tools that your team members access via a browser
 after logging in to `https://burrow.insingo.com`.
 

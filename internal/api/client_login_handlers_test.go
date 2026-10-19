@@ -394,6 +394,7 @@ func TestClientLoginRequest_Get(t *testing.T) {
 		"client_version": "0.6.0", "source_ip": "127.0.0.1", "status": "pending",
 		"suggested_token_name": "laptop.local", "age_seconds": float64(90),
 		"created_at": "2026-10-06T12:00:00Z", "expires_at": "2026-10-06T12:10:00Z",
+		"password_required": true,
 	}
 	if len(v) != len(want) {
 		t.Fatalf("view has %d fields, want %d: %s", len(v), len(want), raw)
@@ -445,7 +446,7 @@ func TestClientLogin_ApproveAndCollect(t *testing.T) {
 	}
 
 	// Approve.
-	ar := c.post(t, "/api/v1/client/login/requests/"+user+"/approve", map[string]string{"token_name": "laptop"})
+	ar := c.post(t, "/api/v1/client/login/requests/"+user+"/approve", map[string]string{"password": "password1", "token_name": "laptop"})
 	araw := readBody(t, ar)
 	if ar.StatusCode != http.StatusOK || !strings.Contains(araw, `"status":"approved"`) {
 		t.Fatalf("approve: %d %s", ar.StatusCode, araw)
@@ -457,7 +458,7 @@ func TestClientLogin_ApproveAndCollect(t *testing.T) {
 		t.Fatal("approval minted the token; the first poll after it must")
 	}
 	// Approving again changes nothing.
-	again := c.post(t, "/api/v1/client/login/requests/"+user+"/approve", map[string]string{"token_name": "other"})
+	again := c.post(t, "/api/v1/client/login/requests/"+user+"/approve", map[string]string{"password": "password1", "token_name": "other"})
 	if again.StatusCode != http.StatusConflict {
 		t.Fatalf("second approve: status %d, want 409", again.StatusCode)
 	}
@@ -541,7 +542,7 @@ func TestClientLogin_Deny(t *testing.T) {
 		!strings.Contains(string(evs[0].Payload), `"source_ip":"127.0.0.1"`) {
 		t.Fatalf("denied events %+v", evs)
 	}
-	if resp := c.post(t, "/api/v1/client/login/requests/"+user+"/approve", map[string]string{"token_name": "x"}); resp.StatusCode != http.StatusConflict {
+	if resp := c.post(t, "/api/v1/client/login/requests/"+user+"/approve", map[string]string{"password": "password1", "token_name": "x"}); resp.StatusCode != http.StatusConflict {
 		t.Fatalf("approve after deny: %d, want 409", resp.StatusCode)
 	}
 
@@ -585,7 +586,7 @@ func TestClientLoginPoll_UnknownExpiredAndMalformed(t *testing.T) {
 	}
 
 	// Approved, then expired before it was collected: 410, and no token.
-	ar := c.post(t, "/api/v1/client/login/requests/"+user+"/approve", map[string]string{"token_name": "laptop"})
+	ar := c.post(t, "/api/v1/client/login/requests/"+user+"/approve", map[string]string{"password": "password1", "token_name": "laptop"})
 	if ar.StatusCode != http.StatusOK {
 		t.Fatalf("approve: %d", ar.StatusCode)
 	}
@@ -598,7 +599,7 @@ func TestClientLoginPoll_UnknownExpiredAndMalformed(t *testing.T) {
 		t.Fatal("an expired request minted a token")
 	}
 	for _, p := range []string{"/approve", "/deny"} {
-		if resp := c.post(t, "/api/v1/client/login/requests/"+user+p, map[string]string{"token_name": "x"}); resp.StatusCode != http.StatusNotFound {
+		if resp := c.post(t, "/api/v1/client/login/requests/"+user+p, map[string]string{"password": "password1", "token_name": "x"}); resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("%s after expiry: %d, want 404", p, resp.StatusCode)
 		}
 	}
@@ -668,8 +669,8 @@ func TestClientLoginApprove_NotForgeable(t *testing.T) {
 	}
 
 	// The token name is checked before anything is changed.
-	for _, bad := range []any{nil, map[string]string{}, map[string]string{"token_name": "  "},
-		map[string]string{"token_name": "a\nb"}, map[string]string{"token_name": strings.Repeat("x", 121)}} {
+	for _, bad := range []any{nil, map[string]string{"password": "password1"}, map[string]string{"password": "password1", "token_name": "  "},
+		map[string]string{"password": "password1", "token_name": "a\nb"}, map[string]string{"password": "password1", "token_name": strings.Repeat("x", 121)}} {
 		if resp := c.post(t, "/api/v1/client/login/requests/"+user+"/approve", bad); resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("approve with body %v: %d, want 400", bad, resp.StatusCode)
 		}
@@ -716,7 +717,7 @@ func TestClientLoginApprove_NeedsTokenPermission(t *testing.T) {
 			Users: &fakeUserStore{role: tc.role}, ClientLogins: logins, Log: discardLog(),
 		}))
 		c := authedClient(t, srv)
-		resp := c.post(t, "/api/v1/client/login/requests/ABCD-EFGH/approve", map[string]string{"token_name": "laptop"})
+		resp := c.post(t, "/api/v1/client/login/requests/ABCD-EFGH/approve", map[string]string{"password": "password1", "token_name": "laptop"})
 		_ = resp.Body.Close()
 		if resp.StatusCode != tc.wantApprove {
 			t.Fatalf("role %s: approve status %d, want %d", tc.role, resp.StatusCode, tc.wantApprove)
@@ -800,7 +801,7 @@ func TestClientLoginRequests_GuessLimit(t *testing.T) {
 		case 0:
 			resp = c.get(t, path+"AAAA-AAAA")
 		case 1:
-			resp = c.post(t, path+"BBBB-BBBB/approve", map[string]string{"token_name": "x"})
+			resp = c.post(t, path+"BBBB-BBBB/approve", map[string]string{"password": "password1", "token_name": "x"})
 		case 2:
 			resp = c.post(t, path+"CCCC-CCCC/deny", nil)
 		case 3:
@@ -818,7 +819,7 @@ func TestClientLoginRequests_GuessLimit(t *testing.T) {
 			t.Fatalf("get %s after 20 wrong codes: %d, want 429", p, resp.StatusCode)
 		}
 	}
-	if resp := c.post(t, path+user+"/approve", map[string]string{"token_name": "x"}); resp.StatusCode != http.StatusTooManyRequests {
+	if resp := c.post(t, path+user+"/approve", map[string]string{"password": "password1", "token_name": "x"}); resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("approve after 20 wrong codes: %d, want 429", resp.StatusCode)
 	}
 	if resp := c.post(t, path+user+"/deny", nil); resp.StatusCode != http.StatusTooManyRequests {
@@ -849,5 +850,78 @@ func TestClientLogin_NoStore(t *testing.T) {
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("%s without a store: %d %v, want 404", p, resp.StatusCode, body)
 		}
+	}
+}
+
+// Without a services domain a /svc/ app shares the dashboard's origin and can
+// call the API as the signed-in user, so approving a client sign-in takes the
+// account password as well (D27). The request tells the page so.
+func TestClientLoginApprove_PasswordWithoutServicesDomain(t *testing.T) {
+	h := newLoginHarness(t, func(d *Deps) { d.ClientLoginStartLimitOverride = 1000 })
+	_, user := h.start(t)
+	c := authedClient(t, h.srv)
+	path := "/api/v1/client/login/requests/" + user
+
+	got := c.get(t, path)
+	if body := decodeMap(t, got); body["password_required"] != true {
+		t.Fatalf("GET: password_required %v, want true", body["password_required"])
+	}
+
+	resp := c.post(t, path+"/approve", map[string]string{"token_name": "laptop"})
+	if body := decodeMap(t, resp); resp.StatusCode != http.StatusBadRequest || body["error"] != "password required" {
+		t.Fatalf("approve without password: %d %v, want 400 password required", resp.StatusCode, body)
+	}
+	resp = c.post(t, path+"/approve", map[string]string{"token_name": "laptop", "password": "wrong-one"})
+	if body := decodeMap(t, resp); resp.StatusCode != http.StatusForbidden || !strings.Contains(fmt.Sprint(body["error"]), "password") {
+		t.Fatalf("approve with a wrong password: %d %v, want 403 about the password", resp.StatusCode, body)
+	}
+	if v, err := h.st.GetClientLogin(context.Background(), user); err != nil || v.Status != "pending" {
+		t.Fatalf("a refused approval changed the request: %+v %v", v, err)
+	}
+	if n := len(h.audit.byAction("client.login.approved")); n != 0 {
+		t.Fatalf("%d approvals audited after refusals", n)
+	}
+
+	resp = c.post(t, path+"/approve", map[string]string{"token_name": "laptop", "password": "password1"})
+	if body := decodeMap(t, resp); resp.StatusCode != http.StatusOK || body["status"] != "approved" {
+		t.Fatalf("approve with the password: %d %v", resp.StatusCode, body)
+	}
+}
+
+// Wrong passwords are limited per address like the sign-in itself.
+func TestClientLoginApprove_PasswordRateLimited(t *testing.T) {
+	h := newLoginHarness(t, func(d *Deps) {
+		d.ClientLoginStartLimitOverride = 1000
+		d.LoginRateLimitPerIPOverride = 3
+	})
+	_, user := h.start(t)
+	c := authedClient(t, h.srv) // the sign-in is the first of three
+	path := "/api/v1/client/login/requests/" + user + "/approve"
+	for i := 0; i < 2; i++ {
+		if resp := c.post(t, path, map[string]string{"token_name": "x", "password": "wrong"}); resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("wrong password %d: %d, want 403", i, resp.StatusCode)
+		}
+	}
+	if resp := c.post(t, path, map[string]string{"token_name": "x", "password": "password1"}); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("after the allowance: %d, want 429", resp.StatusCode)
+	}
+}
+
+// With a services domain the dashboard has an origin of its own, and the
+// approval needs no password.
+func TestClientLoginApprove_NoPasswordWithServicesDomain(t *testing.T) {
+	h := newLoginHarness(t, func(d *Deps) {
+		d.ClientLoginStartLimitOverride = 1000
+		d.AuthDomain, d.ServicesDomain = "burrow.example.com", "apps.example.com"
+	})
+	_, user := h.start(t)
+	c := authedClient(t, h.srv)
+	path := "/api/v1/client/login/requests/" + user
+	if body := decodeMap(t, c.get(t, path)); body["password_required"] != false {
+		t.Fatalf("GET: password_required %v, want false", body["password_required"])
+	}
+	resp := c.post(t, path+"/approve", map[string]string{"token_name": "laptop"})
+	if body := decodeMap(t, resp); resp.StatusCode != http.StatusOK || body["status"] != "approved" {
+		t.Fatalf("approve without password: %d %v, want 200", resp.StatusCode, body)
 	}
 }

@@ -974,7 +974,7 @@ func TestProxy_GatewayOnlyServiceIsNotFound(t *testing.T) {
 	}
 	// Path routing: the /svc/{slug} adapter in front of the proxy, as mounted.
 	pathRouter := chi.NewRouter()
-	pathHandler := api.ServicePathHandler(p, authDomain)
+	pathHandler := api.ServicePathHandler(p, authDomain, "")
 	pathRouter.HandleFunc("/svc/{slug}", pathHandler)
 	pathRouter.HandleFunc("/svc/{slug}/*", pathHandler)
 	doPath := func(path string, hdr map[string]string) *httptest.ResponseRecorder {

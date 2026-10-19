@@ -232,6 +232,16 @@ type clientLoginRequestResp struct {
 	AgeSeconds         int       `json:"age_seconds"`
 	CreatedAt          time.Time `json:"created_at"`
 	ExpiresAt          time.Time `json:"expires_at"`
+	// PasswordRequired tells the /link page to ask for the account password
+	// before approving (no services domain set).
+	PasswordRequired bool `json:"password_required"`
+}
+
+// clientLoginView is the answer of the three request endpoints.
+func (d Deps) clientLoginView(v store.LoginRequestView) clientLoginRequestResp {
+	out := clientLoginRequestOf(v)
+	out.PasswordRequired = d.passwordRequired()
+	return out
 }
 
 func clientLoginRequestOf(v store.LoginRequestView) clientLoginRequestResp {
@@ -297,11 +307,47 @@ func (d Deps) GetClientLoginRequest(w http.ResponseWriter, r *http.Request) {
 		d.writeClientLoginErr(w, r, err, "lookup failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, clientLoginRequestOf(v))
+	writeJSON(w, http.StatusOK, d.clientLoginView(v))
 }
 
 type clientLoginApproveReq struct {
 	TokenName string `json:"token_name"`
+	// Password is the approver's account password, required while no
+	// services domain is set (passwordRequired).
+	Password string `json:"password"`
+}
+
+// passwordRequired reports whether approving a client sign-in takes the
+// account password: while no services domain is set, a tunnelled app on the
+// dashboard's origin could otherwise approve one with the visitor's session
+// (spec D27).
+func (d Deps) passwordRequired() bool { return d.ServicesDomain == "" }
+
+// checkApproverPassword answers false after writing the refusal when the
+// approval needs the password and the body does not carry the caller's.
+func (d Deps) checkApproverPassword(w http.ResponseWriter, r *http.Request, password string) bool {
+	if !d.passwordRequired() {
+		return true
+	}
+	if password == "" {
+		writeErr(w, http.StatusBadRequest, "password required")
+		return false
+	}
+	u, err := d.Users.GetUserByID(r.Context(), userID(r.Context()))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "approve failed")
+		return false
+	}
+	ok, err := d.Users.VerifyUserPassword(r.Context(), u.Email, password)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "approve failed")
+		return false
+	}
+	if !ok {
+		writeErr(w, http.StatusForbidden, "password is incorrect")
+		return false
+	}
+	return true
 }
 
 // PostClientLoginApprove approves a pending sign-in request in the caller's
@@ -314,12 +360,15 @@ func (d Deps) PostClientLoginApprove(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "token_name is required")
 		return
 	}
+	if !d.checkApproverPassword(w, r, in.Password) {
+		return
+	}
 	v, err := d.ClientLogins.ApproveClientLogin(r.Context(), chi.URLParam(r, "user_code"), userID(r.Context()), in.TokenName)
 	if err != nil {
 		d.writeClientLoginErr(w, r, err, "approve failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, clientLoginRequestOf(v))
+	writeJSON(w, http.StatusOK, d.clientLoginView(v))
 }
 
 // PostClientLoginDeny denies a pending sign-in request.
@@ -330,7 +379,7 @@ func (d Deps) PostClientLoginDeny(w http.ResponseWriter, r *http.Request) {
 		d.writeClientLoginErr(w, r, err, "deny failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, clientLoginRequestOf(v))
+	writeJSON(w, http.StatusOK, d.clientLoginView(v))
 }
 
 // guessLimiter counts wrong user codes per user in a fixed window. At the

@@ -738,7 +738,13 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 			// visitor only ever saw the auth domain.
 			pfx := PathPrefix(pr.In.Context())
 			if pfx != "" {
-				pr.Out.Header.Set("X-Forwarded-Host", authDomain)
+				// The services host when the adapter recorded one, the
+				// dashboard's host otherwise.
+				pub := PublicHost(pr.In.Context())
+				if pub == "" {
+					pub = authDomain
+				}
+				pr.Out.Header.Set("X-Forwarded-Host", pub)
 			} else {
 				pr.Out.Header.Set("X-Forwarded-Host", label+"."+authDomain)
 			}
@@ -1295,9 +1301,12 @@ func (c *countingConn) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// burrowCookies are the dashboard's own cookies. Path-routed services share
-// the dashboard's origin, so browsers attach these to every request.
-var burrowCookies = map[string]bool{"burrow_session": true, "burrow_csrf": true}
+// burrowCookies are Burrow's own cookies. Path-routed services share the
+// dashboard's origin, so browsers attach the dashboard's two to every request;
+// on a services host (BURROW_SERVICES_DOMAIN) they attach the services
+// session instead. None of them is the upstream's business, and an upstream
+// must not be able to set one.
+var burrowCookies = map[string]bool{"burrow_session": true, "burrow_csrf": true, ServicesSessionCookie: true}
 
 // stripBurrowCookies removes the dashboard's cookies from an outbound request
 // and leaves every other cookie untouched. It filters the raw header text
@@ -1379,4 +1388,24 @@ func WithPathPrefix(ctx context.Context, prefix string) context.Context {
 func PathPrefix(ctx context.Context) string {
 	pfx, _ := ctx.Value(pathPrefixKey{}).(string)
 	return pfx
+}
+
+// publicHostKey is the context key under which the /svc/{slug} adapter
+// records the services host a path-routed request arrived on.
+type publicHostKey struct{}
+
+// WithPublicHost marks a path-routed request as served on the services host
+// (BURROW_SERVICES_DOMAIN). Like WithPathPrefix only the /svc/{slug} adapter
+// calls it, so no request header can claim it. The access checker then reads
+// the services session and sends visitors to the gate on that host, and the
+// upstream is told that host in X-Forwarded-Host.
+func WithPublicHost(ctx context.Context, host string) context.Context {
+	return context.WithValue(ctx, publicHostKey{}, host)
+}
+
+// PublicHost returns the host recorded by WithPublicHost, or "" when the
+// request is on the dashboard's host (no services domain).
+func PublicHost(ctx context.Context) string {
+	h, _ := ctx.Value(publicHostKey{}).(string)
+	return h
 }

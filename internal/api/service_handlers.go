@@ -78,7 +78,7 @@ func (d Deps) serviceView(sv store.ServiceView, providerSlug string) serviceResp
 		Name:         sv.Name,
 		Type:         sv.Type,
 		Slug:         sv.Subdomain,
-		URL:          serviceURL(sv.Subdomain, d.AuthDomain, sv.GatewayOnly),
+		URL:          d.serviceURL(sv.Subdomain, sv.GatewayOnly),
 		GatewayOnly:  sv.GatewayOnly,
 		AccessMode:   sv.AccessMode,
 		APIKeyHeader: sv.APIKeyHeader,
@@ -147,20 +147,33 @@ type accessPolicyResp struct {
 
 // serviceURL is the direct address of a service: "" for a gateway-only one,
 // which has no /svc/ address that works.
-func serviceURL(slug, authDomain string, gatewayOnly bool) string {
+func (d Deps) serviceURL(slug string, gatewayOnly bool) string {
 	if gatewayOnly {
 		return ""
 	}
-	return composeServiceURL(slug, authDomain)
+	return composeServiceURL(slug, d.servicesHost())
 }
 
-// composeServiceURL returns "https://<authDomain>/svc/<slug>/" when both parts
-// are set, and "" otherwise (tcp service, no slug yet, or no auth domain).
-func composeServiceURL(slug, authDomain string) string {
-	if slug == "" || authDomain == "" {
+// servicesHost is the host /svc/ is served on: the services domain when one
+// is set, the auth domain otherwise, and "" when there is no auth domain (the
+// /svc/ routes are then not mounted at all).
+func (d Deps) servicesHost() string {
+	if d.AuthDomain == "" {
 		return ""
 	}
-	return "https://" + authDomain + "/svc/" + slug + "/"
+	if d.ServicesDomain != "" {
+		return d.ServicesDomain
+	}
+	return d.AuthDomain
+}
+
+// composeServiceURL returns "https://<host>/svc/<slug>/" when both parts are
+// set, and "" otherwise (tcp service, no slug yet, or no host).
+func composeServiceURL(slug, host string) string {
+	if slug == "" || host == "" {
+		return ""
+	}
+	return "https://" + host + "/svc/" + slug + "/"
 }
 
 // composeLive queries the LiveTunnelLookup for live state and returns the
@@ -800,7 +813,7 @@ func (d Deps) PutServiceSlug(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"slug": in.Slug,
-		"url":  serviceURL(in.Slug, d.AuthDomain, gatewayOnly),
+		"url":  d.serviceURL(in.Slug, gatewayOnly),
 	})
 }
 

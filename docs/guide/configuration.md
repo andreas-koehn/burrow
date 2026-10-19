@@ -37,6 +37,7 @@ the other.
 - The host-routed proxy ingress, if enabled, adopts the ACME-managed certificate.
 - The control channel (`:7000`) also uses the ACME certificate; the port itself does not change.
 - `BURROW_AUTH_DOMAIN` is **not required** when ACME is on — burrowd infers the base domain from the first ACME domain.
+- `BURROW_SERVICES_DOMAIN`, when set, is added to the ACME names: one more A record, no extra configuration.
 :::
 
 #### ACME staging {#acme-staging}
@@ -215,6 +216,33 @@ BURROW_LOG_LEVEL=warn
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `BURROW_AUTH_DOMAIN` | `""` | Base domain of the relay. HTTP services are served at `https://<domain>/svc/<slug>/`. Inferred from `BURROW_ACME_DOMAIN` when ACME is on — no need to set separately. |
+| `BURROW_SERVICES_DOMAIN` | `""` | Optional second host name for the tunnelled apps, for example `apps.example.com`. Set, HTTP services are served at `https://<services domain>/svc/<slug>/` and the dashboard's host keeps nothing of them. A bare host name, different from the dashboard's. Needs `BURROW_AUTH_DOMAIN` or `BURROW_ACME_DOMAIN`. See [Services domain](#services-domain). |
+
+#### Services domain {#services-domain}
+
+Without `BURROW_SERVICES_DOMAIN`, `/svc/` apps share the dashboard's origin: a
+script on a tunnelled page can call the dashboard API as the signed-in user.
+Burrow strips its own cookies before forwarding, but that does not stop the
+browser. Set a services domain to give the apps a host of their own:
+
+- Point a second A record (for example `apps.example.com`) at the relay.
+- With ACME on, the name is added to the certificate automatically. With file
+  certificates, the certificate must cover both names.
+- The services host serves `/svc/*` and the sign-in gate `/__burrow/*`, and
+  answers everything else with 404.
+- The dashboard's host answers `/svc/…` with a permanent redirect (308) to the
+  same address on the services host, so old links keep working.
+- Every service address the relay prints (dashboard, API, the client's status
+  view) uses the services host.
+- `burrow_login` services get a session of their own on the services host, in
+  the cookie `burrow_svc_session`. Nobody signs in there: the gate sends the
+  visitor to the dashboard's host, which issues a one-time code (60 seconds,
+  single use) to a signed-in user and sends the browser back. See
+  [Access control](/guide/access-control#burrow-login).
+
+While no services domain is set, approving a client sign-in (`/link`, the page
+`burrow login` opens) asks for the account password as well, and the relay logs
+a line at start recommending a services domain.
 
 ---
 

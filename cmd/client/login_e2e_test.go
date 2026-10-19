@@ -183,7 +183,7 @@ func TestLoginBrowser_EndToEnd(t *testing.T) {
 	r := newRealRelay(t)
 	dash := r.logIn(t)
 	h, code := signInAgainst(t, r, func(userCode string) {
-		dash.decide(userCode, "approve", `{"token_name":"e2e-laptop"}`)
+		dash.decide(userCode, "approve", `{"token_name":"e2e-laptop","password":"password1"}`)
 	})
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())

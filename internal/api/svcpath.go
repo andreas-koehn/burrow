@@ -17,7 +17,11 @@ import (
 // proxy trusts only that context value, never a client-sent header. Access
 // control, connection logging, streaming, and stream dialing all come from
 // the delegated proxy handler.
-func ServicePathHandler(next http.Handler, authDomain string) http.HandlerFunc {
+//
+// publicHost is the services host (BURROW_SERVICES_DOMAIN) or "": when set,
+// the request is marked as served there (proxy.WithPublicHost), so the access
+// checker reads the services session and the upstream is told that host.
+func ServicePathHandler(next http.Handler, authDomain, publicHost string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slug := chi.URLParam(r, "slug")
 		if !auth.ValidSlug(slug) {
@@ -30,7 +34,11 @@ func ServicePathHandler(next http.Handler, authDomain string) http.HandlerFunc {
 			rest = "/" + rest
 		}
 
-		r2 := r.Clone(proxy.WithPathPrefix(r.Context(), prefix))
+		ctx := proxy.WithPathPrefix(r.Context(), prefix)
+		if publicHost != "" {
+			ctx = proxy.WithPublicHost(ctx, publicHost)
+		}
+		r2 := r.Clone(ctx)
 		r2.URL.Path = rest
 		// Preserve percent-encoding: if RawPath is set (path had encoded bytes
 		// like %2F), strip the prefix from it too; otherwise leave it empty so

@@ -220,3 +220,13 @@ func TestTunnelListerAdapterURLEmptyForGatewayOnly(t *testing.T) {
 		t.Errorf("URL = %q, want empty", got[0].URL)
 	}
 }
+
+// With a services domain the tunnel's address is on that host.
+func TestTunnelListerAdapterURLServicesDomain(t *testing.T) {
+	f := &fakeUserTunnelLister{views: []server.TunnelView{{ID: "tn-1", Type: "http", ServiceID: "svc-1"}}}
+	slugs := fakeServiceGetter{svcs: map[string]db.Service{"svc-1": {ID: "svc-1", Subdomain: "abc123"}}}
+	got := tunnelListerAdapter{s: f, slugs: slugs, authDomain: "example.com", servicesDomain: "apps.example.com"}.ListUserTunnels("u1")
+	if got[0].URL != "https://apps.example.com/svc/abc123/" {
+		t.Fatalf("URL %q, want it on the services host", got[0].URL)
+	}
+}

@@ -105,6 +105,8 @@ export interface ClientLoginRequest {
   age_seconds: number;
   created_at: string;
   expires_at: string;
+  /** Approving takes the account password: the relay has no services domain (BURROW_SERVICES_DOMAIN). */
+  password_required: boolean;
 }
 
 export interface ClientDetail extends ClientView {

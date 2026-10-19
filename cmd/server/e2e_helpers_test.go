@@ -230,6 +230,15 @@ type bootE2ECfg struct {
 	// guardrailsEnabled, when true, installs a real guardrails.Engine as the
 	// AI chain's guardrails engine (5th NewChain arg).
 	guardrailsEnabled bool
+	// servicesDomain, when set, is the services host (BURROW_SERVICES_DOMAIN)
+	// of the gate and the dashboard router.
+	servicesDomain string
+}
+
+// withServicesDomain boots the stack with a services host: /svc/ and the
+// gate move there, the dashboard origin keeps the handoff.
+func withServicesDomain(host string) bootE2EStackOption {
+	return func(c *bootE2ECfg) { c.servicesDomain = host }
 }
 
 // withConnLogSink returns a bootE2EStack option that registers a proxy
@@ -451,7 +460,7 @@ func bootE2EStack(t *testing.T, opts ...bootE2EStackOption) *e2eStack {
 	s.proxyAddr = proxyLn.Addr().String()
 	_, s.proxyPort, _ = net.SplitHostPort(s.proxyAddr)
 	checker := proxy.NewAccessCheckerWithSessionsAndLogger(st, st, e2eAuthDomain, s.log)
-	gate := proxy.NewGate(st, e2eAuthDomain, true, s.log)
+	gate := proxy.NewGate(st, e2eAuthDomain, true, s.log, proxy.WithServicesDomain(cfg.servicesDomain))
 	s.gate = gate
 	dialer := proxyDialerAdapter{st: st, srv: srv}
 	// Wire a minimal aigw.Chain with a DB-backed Loader so tests that seed
@@ -525,10 +534,11 @@ func bootE2EStack(t *testing.T, opts ...bootE2EStackOption) *e2eStack {
 	s.mainAddr = mainLn.Addr().String()
 	s.mainSrv = &http.Server{
 		Handler: api.NewRouter(api.Deps{
-			Log:         s.log,
-			AuthDomain:  e2eAuthDomain,
-			TunnelProxy: handler,
-			Gate:        gate,
+			Log:            s.log,
+			AuthDomain:     e2eAuthDomain,
+			ServicesDomain: cfg.servicesDomain,
+			TunnelProxy:    handler,
+			Gate:           gate,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

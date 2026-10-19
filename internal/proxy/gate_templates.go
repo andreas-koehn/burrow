@@ -9,6 +9,8 @@ import (
 //   - .ServiceLabel string — first DNS label of the destination service (may be empty)
 //   - .Next string        — validated next URL (hidden field; empty falls back server-side)
 //   - .AlertMessage string — non-empty triggers role="alert" error banner
+//   - .Action string       — the form's target (/__burrow/login or /__burrow/handoff)
+//   - .NextField string    — the hidden field's name (next or return)
 //
 // html/template auto-escapes all interpolated values. No template.HTML or
 // template.URL casts are used.
@@ -26,8 +28,8 @@ var loginTmpl = template.Must(template.New("login").Parse(`<!doctype html>
     {{if .AlertMessage}}
     <p role="alert" style="color:red">{{.AlertMessage}}</p>
     {{end}}
-    <form action="/__burrow/login" method="POST">
-      <input type="hidden" name="next" value="{{.Next}}">
+    <form action="{{.Action}}" method="POST">
+      <input type="hidden" name="{{.NextField}}" value="{{.Next}}">
       <div>
         <label for="email">Email</label><br>
         <input id="email" type="email" name="email" required autocomplete="username">

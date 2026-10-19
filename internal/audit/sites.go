@@ -279,3 +279,18 @@ func LogServiceUpstreamCredentialUnbind(ctx context.Context, l *Logger, c LogCon
 		Payload: mustJSON(map[string]string{"slot": slot}),
 	})
 }
+
+// LogAuthHandoff logs ActionAuthHandoff: the user c.ActorID got a session of
+// the services host through the one-time code handoff. Payload carries the
+// host and the slug of the service the visitor returns to.
+func LogAuthHandoff(ctx context.Context, l *Logger, c LogContext, host, slug string) {
+	if l == nil {
+		return
+	}
+	_ = l.Append(ctx, Event{
+		ActorID: c.ActorID, ActorEmail: c.ActorEmail, Action: ActionAuthHandoff,
+		SubjectID: c.ActorID, SubjectLabel: c.ActorEmail, Result: "ok",
+		SourceIP: c.SourceIP, UserAgent: c.UserAgent, RequestID: c.RequestID,
+		Payload: mustJSON(map[string]string{"host": host, "slug": slug}),
+	})
+}

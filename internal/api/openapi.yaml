@@ -864,7 +864,7 @@ components:
         A client sign-in request as the dashboard shows it. hostname, os, arch,
         client_version and suggested_token_name were sent by the client: treat
         them as untrusted text. Holds neither the device code nor a token.
-      required: [user_code, hostname, os, arch, client_version, source_ip, status, suggested_token_name, age_seconds, created_at, expires_at]
+      required: [user_code, hostname, os, arch, client_version, source_ip, status, suggested_token_name, age_seconds, created_at, expires_at, password_required]
       properties:
         user_code: { type: string, example: "ABCD-EFGH" }
         hostname: { type: string }
@@ -883,6 +883,13 @@ components:
           description: Seconds since the request was started, by the relay's clock.
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
+        password_required:
+          type: boolean
+          description: >
+            True when approving takes the account password (`password` in
+            the approve body): the relay has no services domain
+            (BURROW_SERVICES_DOMAIN), so tunnelled apps share the
+            dashboard's origin.
     AccessModeReq:
       type: object
       required: [access_mode]
@@ -4832,7 +4839,11 @@ paths:
         state-changing session request. Marks the pending request approved by
         the caller; the client token is minted for the caller, with
         `token_name`, when the client collects it. Audited as
-        `client.login.approved`.
+        `client.login.approved`. While the relay has no services domain
+        (BURROW_SERVICES_DOMAIN) the body must also carry the caller's
+        account `password` (400 `password required` without it, 403 for a
+        wrong one), and the route is limited per address like the sign-in;
+        `password_required` on the request says which applies.
       parameters:
         - { name: user_code, in: path, required: true, schema: { type: string }, example: "ABCD-EFGH" }
       requestBody:
@@ -4848,6 +4859,12 @@ paths:
                   minLength: 1
                   maxLength: 120
                   description: Name of the token to create; no control characters.
+                password:
+                  type: string
+                  format: password
+                  description: >
+                    The caller's account password. Required while the relay
+                    has no services domain; ignored otherwise.
       responses:
         '200':
           description: Approved.
@@ -4864,7 +4881,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '429':
-          description: Too many wrong codes.
+          description: Too many wrong codes, or too many approvals from this address (while the password is required).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

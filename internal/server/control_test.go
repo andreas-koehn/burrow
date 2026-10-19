@@ -148,6 +148,13 @@ func (f fakeResolver) Resolve(_ context.Context, _, _, _ string) (string, string
 // clientConn and clean up tunnel listeners.
 func newTestServerWithHTTP(t *testing.T, resolver ServiceResolver, authDomain string) (*Server, *Registry, *ClientSession, net.Conn) {
 	t.Helper()
+	return newTestServerWithHTTPOpts(t, resolver, authDomain, nil)
+}
+
+// newTestServerWithHTTPOpts is newTestServerWithHTTP with a hook that edits
+// the options before the control loop starts.
+func newTestServerWithHTTPOpts(t *testing.T, resolver ServiceResolver, authDomain string, edit func(*Options)) (*Server, *Registry, *ClientSession, net.Conn) {
+	t.Helper()
 	cli, srv := dialPair()
 	reg := NewRegistry()
 	cs := &ClientSession{SessionID: "s-http", UserID: "u1", Tunnels: map[string]*Tunnel{}}
@@ -162,6 +169,9 @@ func newTestServerWithHTTP(t *testing.T, resolver ServiceResolver, authDomain st
 		log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		reg:   reg,
 		ports: newPortAllocator(18100, 18199),
+	}
+	if edit != nil {
+		edit(&s.opts)
 	}
 	t.Cleanup(func() {
 		for _, tn := range reg.snapshotTunnels(cs) {
@@ -312,5 +322,19 @@ func TestHTTPTunnels(t *testing.T) {
 	}
 	if !tunnels[0].IsHTTP || tunnels[0].Subdomain != "def456" {
 		t.Fatalf("wrong tunnel in HTTPTunnels: %+v", tunnels[0])
+	}
+}
+
+// With a services domain the tunnel's public address is on that host; the
+// dashboard link stays on the dashboard's host.
+func TestRegisterHTTPTunnel_ServicesDomainURL(t *testing.T) {
+	_, _, _, cli := newTestServerWithHTTPOpts(t, fakeResolver{sub: "k7p2qx", id: "svc1"}, "tunnels.example.com",
+		func(o *Options) { o.ServicesDomain = "apps.example.com" })
+	resp := doRegister(t, cli, proto.TunnelRegister{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000"})
+	if !resp.OK || resp.URL != "https://apps.example.com/svc/k7p2qx/" {
+		t.Fatalf("url %q, want https://apps.example.com/svc/k7p2qx/ (%+v)", resp.URL, resp)
+	}
+	if resp.DashboardURL != "https://tunnels.example.com/services/svc1" {
+		t.Fatalf("dashboard url %q, want it on the dashboard's host", resp.DashboardURL)
 	}
 }

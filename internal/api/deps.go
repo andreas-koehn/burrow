@@ -405,6 +405,12 @@ type Deps struct {
 	// Empty means no auth domain is configured; burrow_login mode is rejected
 	// with 409 when this field is empty.
 	AuthDomain string
+	// ServicesDomain is BURROW_SERVICES_DOMAIN: the second host that serves
+	// /svc/* and the gate's /__burrow/* and nothing else, while the
+	// dashboard's host (AuthDomain) redirects /svc/ there and keeps only the
+	// gate's handoff. Every service address the API prints uses it. Empty
+	// keeps one host; approving a client sign-in then takes the password.
+	ServicesDomain string
 	// HostRouting reports whether the host-routed ingress is enabled. mTLS
 	// access mode needs it (a client certificate is checked during the TLS
 	// handshake of a dedicated host).

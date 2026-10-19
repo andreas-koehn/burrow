@@ -73,6 +73,16 @@ wildcard certificate is needed; HTTP tunnels are served under
 burrow.insingo.com.  300  IN  A  SERVER_IP
 ```
 
+Recommended: a second name for the tunnelled apps, so they do not share the
+dashboard's origin. Add its A record and set `BURROW_SERVICES_DOMAIN`; ACME
+obtains its certificate too, and services move to
+`https://apps.insingo.com/svc/<slug>/`. See
+[Services domain](/guide/configuration#services-domain).
+
+```
+apps.insingo.com.    300  IN  A  SERVER_IP
+```
+
 Verify propagation before starting the server:
 
 ```sh

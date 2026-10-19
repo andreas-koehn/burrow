@@ -264,6 +264,75 @@ describe("Link page: approve and deny", () => {
   });
 });
 
+describe("Link page: the password, while the relay has no services domain", () => {
+  const password = () => screen.getByLabelText("Your password");
+
+  it("asks for the password and sends it with the approval", async () => {
+    db.clientLoginPasswordRequired = true;
+    const calls = recordCalls();
+    renderAt(`/link?code=${CODE}`);
+    await screen.findByText(CODE);
+    expect(password()).toHaveAttribute("type", "password");
+    expect(password()).toHaveAttribute("autocomplete", "current-password");
+    // Nothing to approve with until the password is there.
+    expect(approve()).toBeDisabled();
+    expect(deny()).toBeEnabled();
+    await userEvent.type(password(), "password123");
+    expect(approve()).toBeEnabled();
+    await userEvent.click(approve());
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Approved.");
+    const posts = calls.filter((c) => c.method === "POST");
+    expect(JSON.parse(posts[0].body)).toEqual({ token_name: "kohns-laptop", password: "password123" });
+    expect(request().status).toBe("approved");
+  });
+
+  it("does not approve on Enter in the password field", async () => {
+    db.clientLoginPasswordRequired = true;
+    const calls = recordCalls();
+    renderAt(`/link?code=${CODE}`);
+    await screen.findByText(CODE);
+    await userEvent.type(password(), "password123{Enter}");
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(0);
+    expect(request().status).toBe("pending");
+  });
+
+  it("says so at the field when the password is wrong, and stays decidable", async () => {
+    db.clientLoginPasswordRequired = true;
+    renderAt(`/link?code=${CODE}`);
+    await screen.findByText(CODE);
+    await userEvent.type(password(), "not-it");
+    await userEvent.click(approve());
+    expect(await screen.findByText("The password is not correct.")).toBeInTheDocument();
+    expect(password()).toHaveAttribute("aria-invalid", "true");
+    expect(screen.queryByText(/Your account may not sign machines in/)).toBeNull();
+    expect(request().status).toBe("pending");
+    // Corrected, it goes through.
+    await userEvent.clear(password());
+    await userEvent.type(password(), "password123");
+    expect(screen.queryByText("The password is not correct.")).toBeNull();
+    await userEvent.click(approve());
+    expect(await screen.findByRole("status")).toHaveTextContent("Approved.");
+  });
+
+  it("shows the attempt limit as such", async () => {
+    db.clientLoginPasswordRequired = true;
+    server.use(http.post(`${REQUESTS}/approve`, () => HttpResponse.json({ error: "too many login attempts" }, { status: 429 })));
+    renderAt(`/link?code=${CODE}`);
+    await screen.findByText(CODE);
+    await userEvent.type(password(), "password123");
+    await userEvent.click(approve());
+    expect(await screen.findByRole("alert")).toHaveTextContent("Too many attempts. Wait a minute, then try again.");
+  });
+
+  it("asks for no password when the relay has a services domain", async () => {
+    renderAt(`/link?code=${CODE}`);
+    await screen.findByText(CODE);
+    expect(screen.queryByLabelText("Your password")).toBeNull();
+    expect(approve()).toBeEnabled();
+  });
+});
+
 describe("Link page: codes that lead nowhere", () => {
   it.each([
     ["unknown", "/link?code=ZZZZ-ZZZZ"],

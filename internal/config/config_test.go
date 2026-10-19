@@ -991,3 +991,32 @@ func TestClientDownloadSettings(t *testing.T) {
 		}
 	}
 }
+
+// BURROW_SERVICES_DOMAIN: off by default; a bare host name, lower-cased; never
+// the dashboard's own host, and never a URL, a port or a path.
+func TestLoadServer_ServicesDomain(t *testing.T) {
+	c, err := LoadServer(nil)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if c.ServicesDomain != "" {
+		t.Fatalf("services domain should be off by default, got %q", c.ServicesDomain)
+	}
+
+	t.Setenv("BURROW_AUTH_DOMAIN", "burrow.example.com")
+	t.Setenv("BURROW_SERVICES_DOMAIN", " Apps.Example.com ")
+	c, err = LoadServer(nil)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if c.ServicesDomain != "apps.example.com" {
+		t.Fatalf("services domain %q, want apps.example.com", c.ServicesDomain)
+	}
+
+	for _, bad := range []string{"burrow.example.com", "BURROW.example.com", "https://apps.example.com", "apps.example.com:8443", "apps.example.com/svc", "apps", "-x.example.com"} {
+		t.Setenv("BURROW_SERVICES_DOMAIN", bad)
+		if _, err := LoadServer(nil); err == nil {
+			t.Errorf("services domain %q accepted", bad)
+		}
+	}
+}

@@ -91,6 +91,13 @@ type ServerConfig struct {
 	// use this to construct per-tunnel subdomains.
 	// Env: BURROW_AUTH_DOMAIN.
 	AuthDomain string `koanf:"auth_domain"`
+	// ServicesDomain is the optional second host name that serves the
+	// tunnelled apps (/svc/*) and their sign-in gate (/__burrow/*), and
+	// nothing else (e.g. "apps.example.com"). Set, the dashboard's host
+	// answers /svc/ with a redirect to it, so a tunnelled app never shares the
+	// dashboard's origin. Empty (the default) keeps both on one host.
+	// Env: BURROW_SERVICES_DOMAIN.
+	ServicesDomain string `koanf:"services_domain"`
 
 	// ----- v0.4.0 additions (Task 24) ---------------------------------------
 
@@ -395,6 +402,8 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 		// http_proxy_tls_cert/key default to empty (no TLS; operator terminates upstream).
 		// auth_domain defaults to empty (no subdomain-routing configured).
 		"http_proxy_listen": "", "http_proxy_tls_cert": "", "http_proxy_tls_key": "", "auth_domain": "",
+		// services_domain defaults to empty: /svc/ is served on the dashboard's host.
+		"services_domain": "",
 		// v0.4.0 (Task 24) defaults. The empty-string defaults disable the
 		// associated feature (geo lookup, pricing override); mcp_listen is
 		// read and ignored.
@@ -483,6 +492,9 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 	if err := validateDatabaseConfig(&c); err != nil {
 		return nil, fmt.Errorf("invalid server config: %w", err)
 	}
+	if err := cleanServicesDomain(&c); err != nil {
+		return nil, fmt.Errorf("invalid server config: %w", err)
+	}
 	// ACME validation (v0.6.0).
 	if c.ACMEDomain != "" {
 		if c.ACMEEmail == "" {
@@ -497,6 +509,33 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 		}
 	}
 	return &c, nil
+}
+
+// hostNameRE is a DNS host name of at least two labels, lower case.
+var hostNameRE = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// cleanServicesDomain trims and lower-cases services_domain and refuses a
+// value that is not a bare host name, or that is the dashboard's own host
+// (auth_domain, or the first ACME domain when auth_domain is empty): the
+// point of the services domain is a second origin.
+func cleanServicesDomain(c *ServerConfig) error {
+	c.ServicesDomain = strings.ToLower(strings.TrimSpace(c.ServicesDomain))
+	if c.ServicesDomain == "" {
+		return nil
+	}
+	if len(c.ServicesDomain) > 253 || !hostNameRE.MatchString(c.ServicesDomain) {
+		return fmt.Errorf("services_domain %q must be a host name such as apps.example.com (no scheme, port or path)", c.ServicesDomain)
+	}
+	dashboard := strings.ToLower(strings.TrimSpace(c.AuthDomain))
+	if dashboard == "" {
+		if first, _, _ := strings.Cut(c.ACMEDomain, ","); first != "" {
+			dashboard = strings.ToLower(strings.TrimSpace(first))
+		}
+	}
+	if c.ServicesDomain == dashboard {
+		return fmt.Errorf("services_domain must differ from the dashboard's host %q", dashboard)
+	}
+	return nil
 }
 
 // LoadClient loads the client config, merging defaults < BURROW_ env < _FILE env < overrides.

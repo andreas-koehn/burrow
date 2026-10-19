@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1290,5 +1291,39 @@ func TestProxyDialerAdapter_Lookups_GatewayOnlyIsNotFoundAtOnce(t *testing.T) {
 	}
 	if res, err := (ingressDialerAdapter{a}).LookupByServiceID(context.Background(), "svc-1"); err != nil || res.GatewayOnly || res.ServiceID != "svc-1" {
 		t.Fatalf("plain ingress LookupByServiceID: %+v %v", res, err)
+	}
+}
+
+// ACME obtains the services domain too, once, after the configured names, so
+// the first ACME domain (the fallback auth domain) stays first.
+func TestACMEDomains(t *testing.T) {
+	for _, tc := range []struct {
+		acme, services string
+		want           []string
+	}{
+		{"a.example.com, b.example.com", "", []string{"a.example.com", "b.example.com"}},
+		{"a.example.com", "apps.example.com", []string{"a.example.com", "apps.example.com"}},
+		{"a.example.com,Apps.example.com", "apps.example.com", []string{"a.example.com", "Apps.example.com"}},
+	} {
+		if got := acmeDomains(tc.acme, tc.services); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("acmeDomains(%q, %q) = %q, want %q", tc.acme, tc.services, got, tc.want)
+		}
+	}
+}
+
+// A services domain needs a dashboard host to hand sessions over from, and
+// must not be that host.
+func TestCheckServicesDomain(t *testing.T) {
+	if err := checkServicesDomain("", ""); err != nil {
+		t.Fatalf("unset: %v", err)
+	}
+	if err := checkServicesDomain("apps.example.com", "burrow.example.com"); err != nil {
+		t.Fatalf("valid: %v", err)
+	}
+	if err := checkServicesDomain("apps.example.com", ""); err == nil {
+		t.Fatal("services domain without a dashboard host accepted")
+	}
+	if err := checkServicesDomain("burrow.example.com", "BURROW.example.com"); err == nil {
+		t.Fatal("services domain equal to the dashboard host accepted")
 	}
 }

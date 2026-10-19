@@ -62,8 +62,15 @@ import (
 
 	"github.com/go-chi/httprate"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/db"
 )
+
+// ServicesSessionCookie is the session cookie of the services host
+// (BURROW_SERVICES_DOMAIN): host-only there, set by the handoff callback,
+// read by the access checker for burrow_login services on that host, and
+// stripped from every upstream request like the dashboard's cookies.
+const ServicesSessionCookie = "burrow_svc_session"
 
 const (
 	gateSessionCookieName = "burrow_session"
@@ -106,6 +113,39 @@ type Gate struct {
 	secure     bool
 	log        *slog.Logger
 	mux        *http.ServeMux
+
+	// servicesDomain is BURROW_SERVICES_DOMAIN; "" keeps the single-origin
+	// behaviour. Set, see gate_services.go.
+	servicesDomain string
+	now            func() time.Time
+	audit          *audit.Logger
+	codes          *handoffCodes
+}
+
+// GateOption configures optional behaviour of NewGate.
+type GateOption func(*Gate)
+
+// WithServicesDomain puts the gate in services-origin mode: the tunnelled
+// apps and the gate live on host, the dashboard on the auth domain, and a
+// services-host session is handed over from the dashboard (gate_services.go).
+// "" leaves the gate as it is.
+func WithServicesDomain(host string) GateOption {
+	return func(g *Gate) { g.servicesDomain = strings.ToLower(host) }
+}
+
+// WithGateClock replaces the clock the handoff codes expire by (tests).
+func WithGateClock(now func() time.Time) GateOption {
+	return func(g *Gate) {
+		if now != nil {
+			g.now = now
+		}
+	}
+}
+
+// WithGateAuditLogger records each completed handoff as auth.handoff. nil
+// records nothing.
+func WithGateAuditLogger(l *audit.Logger) GateOption {
+	return func(g *Gate) { g.audit = l }
 }
 
 // NewGate constructs a Gate and registers its routes on an internal ServeMux.
@@ -115,13 +155,17 @@ type Gate struct {
 //     next-URL validation and the gate's own redirects.
 //   - secure:     when true, cookies carry Secure=true (matches dashboard flag).
 //   - log:        structured logger; must not be nil.
-func NewGate(st GateStore, authDomain string, secure bool, log *slog.Logger) http.Handler {
+func NewGate(st GateStore, authDomain string, secure bool, log *slog.Logger, opts ...GateOption) http.Handler {
 	g := &Gate{
 		st:         st,
 		authDomain: authDomain,
 		secure:     secure,
 		log:        log,
 		mux:        http.NewServeMux(),
+		now:        time.Now,
+	}
+	for _, o := range opts {
+		o(g)
 	}
 
 	// Build a per-IP rate limiter for the POST endpoints.
@@ -134,6 +178,12 @@ func NewGate(st GateStore, authDomain string, secure bool, log *slog.Logger) htt
 			http.Error(w, "too many login attempts", http.StatusTooManyRequests)
 		}),
 	)
+
+	if g.servicesDomain != "" {
+		g.codes = newHandoffCodes()
+		g.registerServicesRoutes(limiter)
+		return g
+	}
 
 	g.mux.HandleFunc("GET /__burrow/login", g.handleGetLogin)
 	g.mux.Handle("POST /__burrow/login", limiter(http.HandlerFunc(g.handlePostLogin)))
@@ -371,6 +421,10 @@ type loginData struct {
 	ServiceLabel string
 	Next         string
 	AlertMessage string
+	// Action and NextField name the form's target and its hidden field:
+	// /__burrow/login and next, or /__burrow/handoff and return.
+	Action    string
+	NextField string
 }
 
 type accessDeniedData struct {
@@ -388,17 +442,23 @@ func (g *Gate) renderLogin(w http.ResponseWriter, next, serviceLabel, alert stri
 		ServiceLabel: serviceLabel,
 		Next:         next,
 		AlertMessage: alert,
+		Action:       "/__burrow/login",
+		NextField:    "next",
 	})
 }
 
 func (g *Gate) renderAccessDenied(w http.ResponseWriter, r *http.Request, user db.User, serviceName string) {
+	gateHost := g.authDomain
+	if g.servicesDomain != "" {
+		gateHost = g.servicesDomain
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusForbidden)
 	_ = accessDeniedTmpl.Execute(w, accessDeniedData{
 		UserEmail:    user.Email,
 		UserRole:     user.Role,
 		ServiceLabel: serviceName,
-		LogoutAction: "https://" + g.authDomain + "/__burrow/logout",
+		LogoutAction: "https://" + gateHost + "/__burrow/logout",
 	})
 }
 
@@ -420,16 +480,25 @@ func (g *Gate) renderAccessDenied(w http.ResponseWriter, r *http.Request, user d
 // path on the auth domain, unparseable) returns the safe default:
 // "https://<authDomain>/".
 func (g *Gate) sanitizeNext(raw string) string {
-	fallback := "https://" + g.authDomain + "/"
-	if raw == "" {
-		return fallback
+	if next, ok := svcURLOn(raw, g.authDomain); ok {
+		return next
+	}
+	return "https://" + g.authDomain + "/"
+}
+
+// svcURLOn returns raw, without userinfo, when it is an https address on
+// exactly host whose path is canonical and under /svc/<slug> (see
+// sanitizeNext), and false otherwise.
+func svcURLOn(raw, host string) (string, bool) {
+	if raw == "" || host == "" {
+		return "", false
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" {
-		return fallback
+		return "", false
 	}
-	if u.Host != g.authDomain {
-		return fallback
+	if u.Host != host {
+		return "", false
 	}
 	// An encoded slash, dot or backslash would hide a separator or dot segment
 	// from the path.Clean check below, and browsers treat a backslash as a
@@ -437,17 +506,17 @@ func (g *Gate) sanitizeNext(raw string) string {
 	escaped := strings.ToLower(u.EscapedPath())
 	for _, bad := range []string{"%2f", "%2e", "%5c", `\`} {
 		if strings.Contains(escaped, bad) {
-			return fallback
+			return "", false
 		}
 	}
 	// "/svc" and "/svc/" clean to "/svc" and are rejected with the rest.
 	clean := path.Clean(u.Path)
 	if clean != strings.TrimSuffix(u.Path, "/") || !strings.HasPrefix(clean, "/svc/") {
-		return fallback
+		return "", false
 	}
 	// Strip userinfo for safety.
 	u.User = nil
-	return u.String()
+	return u.String(), true
 }
 
 // slugFromNext extracts the service slug from a validated next URL: the

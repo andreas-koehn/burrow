@@ -178,6 +178,10 @@ type Options struct {
 	// → hostname "k7p2qx.tunnels.example.com"). When empty, Hostname is returned
 	// as "" (degraded mode — subdomain is still assigned on the tunnel).
 	AuthDomain string
+	// ServicesDomain is BURROW_SERVICES_DOMAIN: when set, the public address
+	// of an http tunnel is https://<ServicesDomain>/svc/<slug>/ instead of
+	// one on AuthDomain. The dashboard link stays on AuthDomain.
+	ServicesDomain string
 	// ConnLog is the optional connection-log sink for control sessions.
 	// When non-nil, handleConn emits a kind=control entry on yamux session
 	// close. Wired by Task 17 (cmd/server); nil means no logging.

@@ -18,7 +18,7 @@ func TestServicePathHandler_RewritesHostAndStripsPrefix(t *testing.T) {
 		gotPrefix = proxy.PathPrefix(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
-	h := ServicePathHandler(next, "burrow.example.com")
+	h := ServicePathHandler(next, "burrow.example.com", "")
 
 	r := chi.NewRouter()
 	r.Handle("/svc/{slug}/*", h)
@@ -44,7 +44,7 @@ func TestServicePathHandler_RootPath(t *testing.T) {
 	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 	})
-	h := ServicePathHandler(proxy, "burrow.example.com")
+	h := ServicePathHandler(proxy, "burrow.example.com", "")
 	r := chi.NewRouter()
 	r.Handle("/svc/{slug}", h)
 	req := httptest.NewRequest("GET", "https://burrow.example.com/svc/abc123", nil)
@@ -59,7 +59,7 @@ func TestServicePathHandler_PreservesEncodedPath(t *testing.T) {
 	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotEscaped = r.URL.EscapedPath()
 	})
-	h := ServicePathHandler(proxy, "burrow.example.com")
+	h := ServicePathHandler(proxy, "burrow.example.com", "")
 	r := chi.NewRouter()
 	r.Handle("/svc/{slug}/*", h)
 	req := httptest.NewRequest("GET", "https://burrow.example.com/svc/abc123/foo%2Fbar", nil)
@@ -72,7 +72,7 @@ func TestServicePathHandler_PreservesEncodedPath(t *testing.T) {
 func TestServicePathHandler_RejectsInvalidSlug(t *testing.T) {
 	called := false
 	proxy := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })
-	h := ServicePathHandler(proxy, "burrow.example.com")
+	h := ServicePathHandler(proxy, "burrow.example.com", "")
 	r := chi.NewRouter()
 	r.Handle("/svc/{slug}/*", h)
 	r.Handle("/svc/{slug}", h)
@@ -116,7 +116,7 @@ func TestServicePathHandler_MarksContextWithPrefix(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPrefix = proxy.PathPrefix(r.Context())
 	})
-	h := ServicePathHandler(next, "burrow.example.com")
+	h := ServicePathHandler(next, "burrow.example.com", "")
 	r := chi.NewRouter()
 	r.Handle("/svc/{slug}/*", h)
 	req := httptest.NewRequest("GET", "https://burrow.example.com/svc/abc123/foo", nil)
@@ -134,7 +134,7 @@ func TestServicePathHandler_DoesNotWritePrefixHeader(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHeader = r.Header.Values("X-Burrow-Path-Prefix")
 	})
-	h := ServicePathHandler(next, "burrow.example.com")
+	h := ServicePathHandler(next, "burrow.example.com", "")
 	r := chi.NewRouter()
 	r.Handle("/svc/{slug}/*", h)
 	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "https://burrow.example.com/svc/abc123/foo", nil))

@@ -62,7 +62,7 @@ so. The service entry it left on the relay is open: set its access mode in the
 dashboard. `--access open` works against any relay. See
 [Access control](/guide/access-control) for what each mode does.
 
-An open `/svc/` app shares the dashboard's origin, and its scripts can call the dashboard API as the signed-in user, so expose only apps you trust (see [Apps behind a path](/guide/expose-services#apps-behind-a-path)).
+Without a [services domain](/guide/configuration#services-domain), an open `/svc/` app shares the dashboard's origin, and its scripts can call the dashboard API as the signed-in user, so expose only apps you trust (see [Apps behind a path](/guide/expose-services#apps-behind-a-path)).
 
 The examples below use `burrow.yaml` with `burrow connect --config`, which
 still works unchanged. The same files work with `burrow up` (which can also read
@@ -188,9 +188,11 @@ The relay strips the `/svc/<slug>` prefix before forwarding and rewrites
 - An app that loads assets from absolute paths (`/static/app.js`) needs
   base-path support. Look for a setting such as `--base /svc/<slug>/` or a
   "base URL" or "public path" option in the app's own configuration.
-- Path-routed apps share the dashboard's origin, so only expose apps you trust.
-  Burrow removes its own cookies before forwarding, but a page served under
-  `/svc/` can still call the dashboard API as the signed-in user.
+- Without a services domain, path-routed apps share the dashboard's origin, so
+  only expose apps you trust. Burrow removes its own cookies before
+  forwarding, but a page served under `/svc/` can still call the dashboard API
+  as the signed-in user. Set `BURROW_SERVICES_DOMAIN` to serve the apps on a
+  host of their own (see [Services domain](/guide/configuration#services-domain)).
 
 ::: info mTLS is not available on path URLs
 `/svc/<slug>/` shares the dashboard TLS handshake and cannot present a

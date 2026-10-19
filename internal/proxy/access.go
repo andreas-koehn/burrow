@@ -263,8 +263,17 @@ func (ac *accessChecker) checkBurrowLogin(ctx context.Context, res *Resolved, r 
 		return false, http.StatusInternalServerError, `{"error":"burrow_login requires auth_domain"}`, h
 	}
 
+	// On the services host the dashboard's cookies are never sent (they are
+	// host-only on the dashboard's host) and would not count if they were:
+	// only the services host's own session, set by the gate's handoff, opens
+	// a service there.
+	cookieName, gateHost := gateSessionCookieName, ac.authDomain
+	if pub := PublicHost(r.Context()); pub != "" {
+		cookieName, gateHost = ServicesSessionCookie, pub
+	}
+
 	if ac.sv != nil {
-		if c, err := r.Cookie("burrow_session"); err == nil && c.Value != "" {
+		if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
 			uid, err := ac.sv.ValidateSession(ctx, c.Value)
 			if err == nil {
 				user, err := ac.sv.GetUserByID(ctx, uid)
@@ -283,9 +292,9 @@ func (ac *accessChecker) checkBurrowLogin(ctx context.Context, res *Resolved, r 
 	// the /svc/<slug> prefix already stripped, r.RequestURI does not.
 	originalURL := "https://" + r.Host + r.RequestURI
 	if pfx := PathPrefix(r.Context()); pfx != "" {
-		originalURL = "https://" + ac.authDomain + pfx + r.URL.RequestURI()
+		originalURL = "https://" + gateHost + pfx + r.URL.RequestURI()
 	}
-	gateURL := "https://" + ac.authDomain + "/__burrow/login?next=" + url.QueryEscape(originalURL)
+	gateURL := "https://" + gateHost + "/__burrow/login?next=" + url.QueryEscape(originalURL)
 
 	h := make(http.Header)
 	h.Set("Location", gateURL)

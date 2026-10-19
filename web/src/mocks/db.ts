@@ -87,6 +87,8 @@ export interface MockDb {
   clientLogins: ClientLoginRequest[];
   /** Wrong user codes this user sent in the current minute; at 20 the request endpoints answer 429. */
   clientLoginWrongCodes: number;
+  /** The relay has no services domain: approving a sign-in takes the password ("password123"). */
+  clientLoginPasswordRequired: boolean;
   users: UserAdmin[];
   roles: RoleSummary[];
   rolePerms: Record<string, string[]>;
@@ -164,9 +166,11 @@ function seed(): MockDb {
         user_code: "BRRW-7Q4K", hostname: "kohns-laptop", os: "linux", arch: "amd64", client_version: "0.7.0",
         source_ip: "203.0.113.24", status: "pending", suggested_token_name: "kohns-laptop", age_seconds: 95,
         created_at: new Date(Date.now() - 95_000).toISOString(), expires_at: new Date(Date.now() + 505_000).toISOString(),
+        password_required: false,
       },
     ],
     clientLoginWrongCodes: 0,
+    clientLoginPasswordRequired: false,
     users: [
       { id: meId, email: "alice@acme.io", role: "admin", status: "active", last_login: "2026-05-18T09:00:00Z", created_at: "2026-01-12T08:00:00Z" },
       { id: "bur_usr_bob0002", email: "bob@acme.io", role: "user", status: "active", last_login: null, created_at: "2026-02-01T08:00:00Z" },
