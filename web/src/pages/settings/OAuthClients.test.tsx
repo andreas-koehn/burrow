@@ -3,6 +3,8 @@ import { screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
 import { db } from "@/mocks/db";
+import { http, HttpResponse } from "msw";
+import { server } from "@/mocks/server";
 import OAuthClients from "@/pages/settings/OAuthClients";
 
 const mount = () => renderApp(<OAuthClients />, "/settings/oauth-clients");
@@ -29,12 +31,29 @@ describe("Settings → OAuth clients", () => {
     expect(await within(await screen.findByRole("dialog")).findByText(c.client_id)).toBeInTheDocument();
   });
 
-  it("shows the relay's reason for a bad address and keeps the form", async () => {
+  it("names a redirect address the relay would refuse before sending anything", async () => {
+    const posts: string[] = [];
+    server.events.on("request:start", ({ request }) => { if (request.method === "POST") posts.push(request.url); });
     mount();
     await userEvent.click(await screen.findByRole("button", { name: "Add OAuth client" }));
     const dlg = await screen.findByRole("dialog");
     await userEvent.type(within(dlg).getByLabelText("Name"), "Bad");
-    await userEvent.type(within(dlg).getByLabelText("Redirect addresses"), "ftp://x");
+    const field = within(dlg).getByLabelText("Redirect addresses");
+    await userEvent.type(field, "https://ok.example/cb{Enter}http://app.example/cb");
+    expect(within(dlg).getByRole("alert")).toHaveTextContent(/line 2 \(http:\/\/app\.example\/cb\)/i);
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(within(dlg).getByRole("button", { name: "Create" })).toBeDisabled();
+    expect(posts).toEqual([]);
+    server.events.removeAllListeners();
+  });
+
+  it("shows the relay's reason for a refused address and keeps the form", async () => {
+    server.use(http.post("/api/v1/oauth/clients", () => HttpResponse.json({ error: "a redirect URI must be https" }, { status: 400 })));
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "Add OAuth client" }));
+    const dlg = await screen.findByRole("dialog");
+    await userEvent.type(within(dlg).getByLabelText("Name"), "Bad");
+    await userEvent.type(within(dlg).getByLabelText("Redirect addresses"), "https://x.example/cb");
     await userEvent.click(within(dlg).getByRole("button", { name: "Create" }));
     expect(await within(dlg).findByRole("alert")).toHaveTextContent(/must be https/);
     expect(db.oauthClients).toHaveLength(1);

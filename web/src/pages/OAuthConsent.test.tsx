@@ -67,16 +67,70 @@ describe("Consent page", () => {
     expect((await screen.findAllByRole("note")).map((n) => n.textContent).join(" ")).toMatch(/only this machine/i);
   });
 
-  it("approves read-only at /mcp/burrow by default and follows the redirect", async () => {
+  it("shows the address it returns to prominently, as strong text in the page's lead", async () => {
+    db.oauthRequests = [req()];
+    renderAt("/oauth/consent?request=r1");
+    const host = await screen.findByText("claude.example");
+    expect(host.tagName).toBe("STRONG");
+    expect(host).toHaveClass("consent-host");
+    expect(host.closest("p")).toHaveTextContent(/your browser goes to claude\.example/i);
+  });
+
+  it("offers no switch to full access when the app asked to read only, and approves read-only", async () => {
     db.oauthRequests = [req()];
     const posts = recordPosts();
     renderAt("/oauth/consent?request=r1");
-    const ro = await screen.findByRole("switch", { name: /read-only/i });
-    expect(ro).toBeChecked();
+    await screen.findByRole("heading", { name: /Claude Desktop/ });
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.getByText(/read-only access/i)).toBeInTheDocument();
     await userEvent.click(approve());
     await waitFor(() => expect(goTo).toHaveBeenCalledTimes(1));
     expect(goTo.mock.calls[0][0]).toMatch(/^https:\/\/claude\.example\/cb\?code=abc/);
     expect(posts).toEqual([{ path: "/api/v1/oauth/requests/r1/approve", body: { scopes: ["burrow:read"] } }]);
+  });
+
+  it("lets the user narrow a full-access request to read-only", async () => {
+    db.oauthRequests = [req({ scopes: ["burrow:write"] })];
+    const posts = recordPosts();
+    renderAt("/oauth/consent?request=r1");
+    await userEvent.click(await screen.findByRole("switch", { name: /read-only/i }));
+    await userEvent.click(approve());
+    await waitFor(() => expect(goTo).toHaveBeenCalled());
+    expect(posts[0].body).toEqual({ scopes: ["burrow:read"] });
+  });
+
+  it("sends one decision on a double click on Approve", async () => {
+    db.oauthRequests = [req()];
+    const posts = recordPosts();
+    renderAt("/oauth/consent?request=r1");
+    await screen.findByRole("heading", { name: /Claude Desktop/ });
+    await userEvent.dblClick(approve());
+    await waitFor(() => expect(goTo).toHaveBeenCalled());
+    expect(posts.filter((p) => p.path.endsWith("/approve"))).toHaveLength(1);
+    expect(goTo).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps both buttons disabled while the browser leaves for the app", async () => {
+    db.oauthRequests = [req()];
+    renderAt("/oauth/consent?request=r1");
+    await screen.findByRole("heading", { name: /Claude Desktop/ });
+    await userEvent.click(approve());
+    await waitFor(() => expect(goTo).toHaveBeenCalled());
+    // goTo is mocked, so the page stays: nothing may be pressed again.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(approve()).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Deny" })).toBeDisabled();
+  });
+
+  it("shows markup in the app's name as text", async () => {
+    const evil = '<img src=x onerror="window.__pwned=1"><b>Evil</b>';
+    db.oauthRequests = [req({ client_name: evil })];
+    const { container } = renderAt("/oauth/consent?request=r1");
+    const heading = await screen.findByRole("heading", { name: /wants to connect/ });
+    expect(heading.textContent).toBe(`${evil} wants to connect`);
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("b")).toBeNull();
+    expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined();
   });
 
   it("grants full access when the read-only switch is off", async () => {
@@ -167,7 +221,7 @@ describe("Consent page", () => {
   it("does not ask for a password when the relay has a services domain", async () => {
     db.oauthRequests = [req()];
     renderAt("/oauth/consent?request=r1");
-    await screen.findByRole("switch", { name: /read-only/i });
+    await screen.findByRole("heading", { name: /Claude Desktop/ });
     expect(screen.queryByLabelText("Your password")).toBeNull();
   });
 

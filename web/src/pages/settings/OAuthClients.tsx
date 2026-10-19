@@ -7,6 +7,7 @@ import { Button, Dialog, EmptyState, ErrorNotice, FormField, FormFieldGroup, Inp
 import { CopyButton } from "@/components/CopyableCode";
 import { RelativeTime } from "@/components/RelativeTime";
 import { Toaster } from "@/components/ui/sonner";
+import { validRedirectUri } from "@/lib/oauth";
 import type { OAuthClient } from "@/lib/contract";
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
@@ -17,7 +18,11 @@ function AddClientDialog({ open, onOpenChange }: { open: boolean; onOpenChange: 
   const [uris, setUris] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<OAuthClient | null>(null);
-  const addresses = uris.split("\n").map((u) => u.trim()).filter((u) => u !== "");
+  const lines = uris.split("\n").map((u) => u.trim());
+  const addresses = lines.filter((u) => u !== "");
+  // The relay's own rule, checked here first: the first line it would refuse.
+  const badLine = lines.findIndex((u) => u !== "" && !validRedirectUri(u));
+  const badText = badLine < 0 ? null : `Line ${badLine + 1} (${lines[badLine]}) is not an address the relay accepts: use https, http on a loopback address, or an app scheme such as com.example.app:/cb, without a fragment.`;
 
   const create = useMutation({
     mutationFn: () => apiFetch<OAuthClient>("/oauth/clients", {
@@ -63,7 +68,7 @@ function AddClientDialog({ open, onOpenChange }: { open: boolean; onOpenChange: 
       footer={
         <>
           <Button variant="secondary" disabled={create.isPending} onClick={() => close(false)}>Cancel</Button>
-          <Button variant="primary" disabled={create.isPending || name.trim() === "" || addresses.length === 0} onClick={() => { setError(null); create.mutate(); }}>
+          <Button variant="primary" disabled={create.isPending || name.trim() === "" || addresses.length === 0 || badLine >= 0} onClick={() => { setError(null); create.mutate(); }}>
             {create.isPending ? "Creating…" : "Create"}
           </Button>
         </>
@@ -83,11 +88,14 @@ function AddClientDialog({ open, onOpenChange }: { open: boolean; onOpenChange: 
             className="input mono resizable"
             rows={3}
             spellCheck={false}
+            aria-invalid={badLine >= 0 || undefined}
+            aria-describedby={badLine >= 0 ? "oc-uris-bad" : undefined}
             value={uris}
             onChange={(e) => setUris(e.target.value)}
           />
         </FormField>
       </FormFieldGroup>
+      {badText && <div id="oc-uris-bad"><ErrorNotice role="alert">{badText}</ErrorNotice></div>}
       {error && <ErrorNotice role="alert">{error}</ErrorNotice>}
     </Dialog>
   );

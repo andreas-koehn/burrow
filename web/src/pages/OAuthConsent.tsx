@@ -66,8 +66,16 @@ function Consent({ id }: { id: string }) {
   const [password, setPassword] = useState("");
   const [problem, setProblem] = useState("");
   const [gone, setGone] = useState(false);
+  // Set once the relay answered with the redirect: the browser is on its way
+  // to the app, so nothing on this page may be pressed again.
+  const [leaving, setLeaving] = useState(false);
   // A second click arrives before the first one has disabled the button.
   const sent = useRef(false);
+
+  function leave(r: OAuthRedirect) {
+    setLeaving(true);
+    goTo(r.redirect_url);
+  }
 
   function failed(e: unknown, what: "approve" | "deny") {
     sent.current = false;
@@ -84,12 +92,12 @@ function Consent({ id }: { id: string }) {
     // While the relay has no services domain the password is sent with the
     // decision; a recent confirmation (apiFetch's dialog) does as well.
     mutationFn: (b: OAuthApprove) => apiFetch<OAuthRedirect>(`${path}/approve`, { method: "POST", body: JSON.stringify(b) }),
-    onSuccess: (r) => goTo(r.redirect_url),
+    onSuccess: leave,
     onError: (e) => failed(e, "approve"),
   });
   const deny = useMutation({
     mutationFn: () => apiFetch<OAuthRedirect>(`${path}/deny`, { method: "POST" }),
-    onSuccess: (r) => goTo(r.redirect_url),
+    onSuccess: leave,
     onError: (e) => failed(e, "deny"),
   });
 
@@ -128,11 +136,14 @@ function Consent({ id }: { id: string }) {
   const req = lookup.data;
   const burrow = req.resource_kind === "burrow";
   const broad = burrow && isBroadScopes(req.scopes);
-  const ro = readOnly ?? (burrow ? !req.scopes.includes(SCOPE_WRITE) : true);
+  // The switch only ever narrows: an app that asked to read gets no way to
+  // write from this page.
+  const askedWrite = req.scopes.includes(SCOPE_WRITE);
+  const ro = readOnly ?? (burrow ? !askedWrite : true);
   const chosen = sources ?? req.sources.map((s) => s.slug);
   const toolsBlocked = !burrow && !req.can_grant_tools;
   const noSource = !burrow && chosen.length === 0;
-  const busy = approve.isPending || deny.isPending;
+  const busy = approve.isPending || deny.isPending || leaving;
   const needsPassword = req.password_required && password === "";
 
   function decide(what: "approve" | "deny") {
@@ -142,7 +153,7 @@ function Consent({ id }: { id: string }) {
     if (what === "deny") return deny.mutate();
     const b: OAuthApprove = {};
     if (burrow) {
-      if (broad) b.scopes = [ro ? SCOPE_READ : SCOPE_WRITE];
+      if (broad) b.scopes = [ro || !askedWrite ? SCOPE_READ : SCOPE_WRITE];
     } else {
       // Keep the relay's order of sources, whatever order the boxes were ticked in.
       b.allowed_tools = req.sources.filter((s) => chosen.includes(s.slug)).map((s) => `${s.slug}__*`);
@@ -161,11 +172,13 @@ function Consent({ id }: { id: string }) {
       <p className="signin-sub">An app asks to use this relay as you{user ? ` (${user.email})` : ""}.</p>
 
       {/* Every value below is a text node. The app chose its own name; the relay read the address. */}
+      <p className="consent-returns">
+        After you decide, your browser goes to <strong className="mono consent-host">{req.redirect_host}</strong>
+      </p>
       <div role="group" aria-labelledby="oc-facts" className="linkpage-facts">
         <p id="oc-facts" className="linkpage-facts-title">The request</p>
         <dl>
           <dt>App</dt><dd>{name}</dd>
-          <dt>Returns to</dt><dd className="mono">{req.redirect_host}</dd>
           <dt>Access to</dt><dd>{resource}</dd>
         </dl>
       </div>
@@ -180,7 +193,7 @@ function Consent({ id }: { id: string }) {
         </p>
       )}
 
-      {burrow && (broad ? (
+      {burrow && (broad ? (askedWrite ? (
         <div className="form-field">
           <label htmlFor="oc-readonly" className="checkbox-row">
             <Switch id="oc-readonly" aria-label="Read-only access" checked={ro} disabled={busy} onChange={setReadOnly} />
@@ -193,6 +206,11 @@ function Consent({ id }: { id: string }) {
           </p>
         </div>
       ) : (
+        <div role="group" aria-labelledby="oc-access" className="linkpage-facts">
+          <p id="oc-access" className="linkpage-facts-title">Read-only access</p>
+          <p className="help">The app asked to read only. It can look at everything your role can see and change nothing.</p>
+        </div>
+      )) : (
         <div role="group" aria-labelledby="oc-perms" className="linkpage-facts">
           <p id="oc-perms" className="linkpage-facts-title">Permissions asked for</p>
           <ul>{req.scopes.map((s) => <li key={s} className="mono">{s}</li>)}</ul>

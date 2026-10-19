@@ -1650,6 +1650,21 @@ a.user-chip:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* Consent page: where the browser goes after the decision, read before anything else. */
+.consent-returns {
+  margin: -8px 0 14px;
+  text-align: center;
+  font-size: 13px;
+}
+.consent-host {
+  display: block;
+  margin-top: 4px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
 .linkpage-warning,
 .linkpage-problem { margin: 0 0 14px; }
 .linkpage-problem { margin-top: 14px; }
