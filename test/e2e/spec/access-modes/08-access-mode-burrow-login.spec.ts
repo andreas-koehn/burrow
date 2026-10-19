@@ -8,9 +8,12 @@
 // runbook §6c assertion without requiring hosts-file entries.
 import { test, expect, request as playwrightRequest } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { HTTPS_INGRESS, aiHost } from "../../fixtures/env";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("08-access-mode-burrow-login: anonymous visitor gets redirected to the auth gate", async ({ page, request }) => {
   // Resolve service-id (same workaround as spec 07).

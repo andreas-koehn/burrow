@@ -17,12 +17,16 @@
 import { test, expect } from "@playwright/test";
 import type { BrowserContext } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 import { DASHBOARD_URL } from "../../fixtures/env";
+import { answerReauthDialog } from "../../fixtures/reauth";
 
 // `request` carries the admin session so we can create/delete the throwaway
 // user. The browser contexts below log in fresh as that user.
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 async function loginUser(ctx: BrowserContext, email: string, password: string) {
   const p = await ctx.newPage();
@@ -77,6 +81,8 @@ test("50-session-management: revoke a non-current session + sign out everywhere"
     const revokeBtn = sessionsTable.getByRole("button", { name: "Revoke" }).first();
     await expect(revokeBtn).toBeVisible();
     await revokeBtn.click();
+    // A fresh session without a services domain confirms its password first (T02b).
+    await answerReauthDialog(p1, password);
     await expect(p1.getByText("Session revoked")).toBeVisible({ timeout: 5_000 });
 
     // Row count drops by one after the revoke (list re-fetches on success).

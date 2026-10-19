@@ -1,9 +1,12 @@
 // test-only — never deploy this shape.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { HTTPS_INGRESS, aiHost } from "../../fixtures/env";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("07-access-mode-api-key: api_key required; correct key 200; missing 401", async ({ page, request }) => {
   // Plan-fidelity: the Configure dialog of a row in the Online view of Services (/services?live=1,

@@ -1,10 +1,13 @@
 // test-only — never deploy this shape.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH, loginAsAdmin } from "../../fixtures/auth";
+import { ensureReauth, forgetReauth } from "../../fixtures/reauth";
 import { TUNNEL_NAMES, resetAiSubdomainCache } from "../../fixtures/env";
 import { composeRestartRelay } from "../../fixtures/stack";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("20-relay-restart: all 4 clients reconnect within 60s", async ({ page }) => {
   test.setTimeout(180_000);
@@ -18,6 +21,8 @@ test("20-relay-restart: all 4 clients reconnect within 60s", async ({ page }) =>
   }
 
   composeRestartRelay();
+  // The re-authentication window lived in the old process's memory.
+  forgetReauth();
   // The relay's in-memory subdomain registry is wiped; clear cache.
   resetAiSubdomainCache();
   // Session cookie may be cleared by the restart; re-login if redirected.

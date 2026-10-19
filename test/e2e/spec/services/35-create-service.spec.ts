@@ -1,6 +1,7 @@
 // test-only — never deploy this shape.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 
 interface Service {
@@ -9,6 +10,8 @@ interface Service {
 }
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("35-create-service: pre-provision a service through the UI dialog", async ({ page, request }) => {
   // The dialog asks for one name and derives the id and the slug from it;

@@ -8,9 +8,12 @@
 // the saved services. Same end-to-end signal: one client process exposes two services.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { pingMultiTunnels } from "../../fixtures/traffic";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("03-services-burrow-yaml: client-multi exposes 2 services through one client", async ({ page, request }) => {
   await page.goto("/services?live=1");

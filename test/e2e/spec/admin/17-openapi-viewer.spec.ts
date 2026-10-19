@@ -5,8 +5,11 @@
 // and the embedded openapi.yaml endpoint responds.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("17-openapi-viewer: viewer renders embedded spec; no external CDN scripts", async ({ page, request }) => {
   // openapi.yaml should be reachable for any authenticated admin.

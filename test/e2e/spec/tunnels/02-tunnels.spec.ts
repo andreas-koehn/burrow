@@ -1,9 +1,12 @@
 // test-only — never deploy this shape.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { pingTcpTunnel } from "../../fixtures/traffic";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("02-tunnels: tcp-echo bytes_in AND bytes_out counters increment via SSE under traffic", async ({ page, request }) => {
   await page.goto("/services?live=1");

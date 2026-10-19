@@ -25,11 +25,14 @@
 //     chain will be reset." Footer: Cancel + (destructive) Restore.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 
 interface BackupRow { id: string }
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("42-backup-manage: create + verify + restore safety-gate", async ({ page, request }) => {
   // Capture the set of pre-existing backup ids so we can identify ours later.

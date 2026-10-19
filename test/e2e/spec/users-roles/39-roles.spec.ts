@@ -22,9 +22,12 @@
 // authoritative proof of success.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("39-roles: view built-in perms + create custom role", async ({ page, request }) => {
   const roleName = `uirole${Date.now()}`;

@@ -8,8 +8,11 @@
 //   - Deletion is via a confirm dialog after clicking the per-row Delete button.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("05-users-roles: create user (built-in role) + delete", async ({ page }) => {
   const email = `bob-${Date.now()}@e2e.local`;

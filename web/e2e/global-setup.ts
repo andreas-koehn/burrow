@@ -30,6 +30,19 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
       `global-setup login failed: ${res.status()} ${await res.text()}`,
     );
   }
+  // 1b. The relay runs without BURROW_SERVICES_DOMAIN, so minting secrets
+  //     and admin writes need a recent password confirmation (T02b). Open
+  //     the 10-minute window for this shared session once: the whole suite
+  //     runs inside it. It shares the sign-in rate limit, so specs confirm
+  //     again only when the relay answers reauth_required (see reauth.ts).
+  const csrf = (await apiCtx.storageState()).cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const reauth = await apiCtx.post("/api/v1/auth/reauth", {
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+    data: { password: ADMIN_PASSWORD },
+  });
+  if (!reauth.ok()) {
+    throw new Error(`global-setup reauth failed: ${reauth.status()} ${await reauth.text()}`);
+  }
   const cookies = await apiCtx.storageState();
   await apiCtx.dispose();
 

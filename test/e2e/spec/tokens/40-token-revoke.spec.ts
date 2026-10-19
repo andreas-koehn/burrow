@@ -14,8 +14,11 @@
 //     token and the row disappears. No cleanup needed (the token is gone).
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("40-token-revoke: mint then revoke via confirm dialog", async ({ page }) => {
   await page.goto("/clients?tab=tokens");

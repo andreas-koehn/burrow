@@ -35,6 +35,7 @@
 //   value) and is restored in finally{} regardless.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 
 interface RetentionResp {
@@ -48,6 +49,8 @@ const NEW_VALUE = 45; // distinct, in-range (1..365)
 const ROLLUPS_KEY = "connection_logs_rollups_retention_days";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("49-retention-save: change + save + persist + restore a retention knob", async ({ page, request }) => {
   // ---- Capture original retention values so finally{} can restore them. ----

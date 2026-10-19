@@ -29,9 +29,12 @@
 //   spec's hard, build-independent guarantee.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("51-webhook-edit-deliveries: edit dialog prefills + Send test lands a delivery row", async ({ page, request }) => {
   const name = `edithook-${Date.now()}`;

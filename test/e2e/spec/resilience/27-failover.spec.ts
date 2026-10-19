@@ -9,6 +9,7 @@ import { test, expect } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 import { COMPOSE_FILE, HTTPS_INGRESS, aiHost } from "../../fixtures/env";
 
@@ -17,6 +18,8 @@ import { COMPOSE_FILE, HTTPS_INGRESS, aiHost } from "../../fixtures/env";
 const REPO_ROOT = path.resolve(process.cwd(), "..", "..");
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 test.slow(); // container restart adds latency
 
 test("27-failover: stop primary upstream, verify failover + audit", async ({ page, request }) => {

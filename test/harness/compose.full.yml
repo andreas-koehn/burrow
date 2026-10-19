@@ -13,6 +13,10 @@ services:
     environment:
       BURROW_ADMIN_EMAIL: admin@e2e.local
       BURROW_ADMIN_PASSWORD: e2e-pass
+      # Sign-in and password confirmations (POST /auth/reauth: the stack has
+      # no services domain, so guarded writes need one) share the per-address
+      # limit, 10/min by default; the suite needs more within a minute.
+      BURROW_LOGIN_RATE_LIMIT_PER_IP: "30"
     volumes:
       - token-share:/run/burrow
       - relay-data:/data

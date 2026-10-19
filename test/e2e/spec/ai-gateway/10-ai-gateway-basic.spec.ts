@@ -5,9 +5,12 @@
 // HTTP tunnels are host-routed on :8443 only).
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { HTTPS_INGRESS, aiHost } from "../../fixtures/env";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("10-ai-gateway-basic: chat-completions SSE works via Burrow → mockoai", async ({ page, request }) => {
   // Reset the ai service to Open mode so this spec doesn't depend on prior

@@ -24,6 +24,7 @@
 
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 import { HTTPS_INGRESS, aiHost } from "../../fixtures/env";
 
@@ -31,6 +32,8 @@ interface Service { id: string; name: string; access_mode: string }
 interface AIConfig { inspector?: { enabled?: boolean; max_requests?: number } }
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("48-inspector-deep-dive: detail tabs + replay/compare controls render without error", async ({ page, request }) => {
   // Fail the test on ANY uncaught page error, on every path.

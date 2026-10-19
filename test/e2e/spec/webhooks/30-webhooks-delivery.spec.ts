@@ -15,9 +15,12 @@
 
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("30-webhooks-delivery: token.mint fires + row appears", async ({ page, request }) => {
   // 1. Add a webhook via API (tunnel.connected is a valid closed event).

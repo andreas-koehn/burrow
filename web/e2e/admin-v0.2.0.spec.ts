@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { answerReauth } from "./reauth";
 import type { Page } from "@playwright/test";
 
 // v0.2.0 admin flows against the REAL built burrowd (no MSW). Exercises the
@@ -42,7 +43,8 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   await createDlg.getByLabel("Email").fill(NEW_USER_EMAIL);
   await createDlg.getByLabel("Password").fill(NEW_USER_PASSWORD);
   await createDlg.getByRole("button", { name: "Create user", exact: true }).click();
-  await expect(page.getByText("User created", { exact: false })).toBeVisible();
+  // A fresh session without a services domain: the relay asks for the password once (T02b).
+  await answerReauth(page, page.getByText("User created", { exact: false }), ADMIN_PASSWORD);
   const newRow = page.locator("tbody tr").filter({ hasText: NEW_USER_EMAIL });
   await expect(newRow).toHaveCount(1);
   await expect(newRow.getByText("User", { exact: true })).toBeVisible();

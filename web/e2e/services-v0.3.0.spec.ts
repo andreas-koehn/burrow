@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { confirmPassword } from "./reauth";
 import type { Page } from "@playwright/test";
 
 // v0.3.0 dashboard surfaces — Services page + the new service-scoped JSON API
@@ -74,6 +75,9 @@ test("v0.3.0 API: services + api-keys + access-mode + access-policy contract", a
   const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
   expect(csrf).not.toBe("");
   const csrfHeaders = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
+  // A fresh session without a services domain: guarded writes (api-keys,
+  // access modes) need a recent password confirmation first (T02b).
+  await confirmPassword(page, ADMIN_PASSWORD);
 
   // GET /api/v1/services → 200 + JSON array. (Earlier specs in this shared
   // session may have persisted services and the real binary has no

@@ -6,9 +6,12 @@
 // one "admin") are created via the API and removed in finally.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("46-users-search-filter: email search + Role filter select; pagination controls", async ({ page, request }) => {
   const stamp = Date.now();

@@ -1,13 +1,17 @@
 // test-only — never deploy this shape.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 import { DASHBOARD_URL } from "../../fixtures/env";
+import { answerReauthDialog } from "../../fixtures/reauth";
 
 // The `request` fixture carries the admin session (storageState) so we can
 // create/delete the throwaway user via the admin API. The browser logins below
 // use fresh, isolated contexts so we never mutate the admin session's password.
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("34-account-password: user changes own password via /settings/profile, then logs in with the new one", async ({ browser, request }) => {
   const email = `pwuser-${Date.now()}@e2e.local`;
@@ -37,6 +41,8 @@ test("34-account-password: user changes own password via /settings/profile, then
     await p1.fill("#new-password", newPass);
     await p1.fill("#confirm-password", newPass);
     await p1.getByRole("button", { name: "Change password" }).click();
+    // A fresh session without a services domain confirms its password first (T02b).
+    await answerReauthDialog(p1, initPass);
     await expect(p1.getByText("Password changed successfully")).toBeVisible({ timeout: 5_000 });
     await ctx1.close();
 

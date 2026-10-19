@@ -1,6 +1,7 @@
 // test-only — never deploy this shape.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 
 interface Webhook {
@@ -9,6 +10,8 @@ interface Webhook {
 }
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("36-create-delete-webhook: create via UI (reveal secret) then delete via UI", async ({ page, request }) => {
   const name = `uihook-${Date.now()}`;

@@ -16,12 +16,15 @@
 // all configure a service first, so they never exercised this path.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 
 interface Service { id: string; name: string; access_mode: string }
 interface AiProvider { slug: string; service_id: string }
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("44-ai-gateway-pages: every AI-gateway page renders for an unconfigured api_key service", async ({ page, request }) => {
   // Resolve the seeded "ai" service.

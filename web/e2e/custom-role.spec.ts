@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import { answerReauth } from "./reauth";
 
 // Management MCP: a person with a custom role sees exactly the pages and
 // buttons their permissions open, and makes a read-only token for an MCP
@@ -108,9 +109,10 @@ test.describe("a custom role", () => {
     await dlg.getByLabel("Name").fill(`mcp-e2e-${Date.now()}`);
     await dlg.getByRole("button", { name: "Create" }).click();
 
-    // The token is shown once, with the way to an MCP client.
+    // The token is shown once, with the way to an MCP client. Minting asks the
+    // fresh session for its password first (no services domain, T02b).
     const reveal = page.getByRole("dialog", { name: "New automation token" });
-    await expect(reveal.getByText("Save this token now", { exact: false })).toBeVisible();
+    await answerReauth(page, reveal.getByText("Save this token now", { exact: false }), PASSWORD);
     await expect(reveal.locator("code").first()).toHaveText(/^bua_/);
     await expect(reveal.getByRole("link", { name: "Use it in an MCP client" })).toBeVisible();
     await reveal.getByRole("button", { name: "I've saved it" }).click();

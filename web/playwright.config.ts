@@ -59,6 +59,11 @@ export default defineConfig({
       BURROW_ADMIN_EMAIL: "e2e@example.com",
       BURROW_ADMIN_PASSWORD: "e2e-password-123",
       BURROW_HTTP_LISTEN: HTTP_LISTEN,
+      // Sign-in, password confirmations (POST /auth/reauth, T02b) and the
+      // password-bearing approvals of /link and the OAuth consent page share
+      // the per-address sign-in limit (10/min by default). The suite signs in
+      // and confirms more often than that within a minute.
+      BURROW_LOGIN_RATE_LIMIT_PER_IP: "30",
       BURROW_DATABASE_PATH: path.join(tmpDir, "e2e.db"),
       E2E_TMPDIR: tmpDir,
     },

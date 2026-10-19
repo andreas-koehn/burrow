@@ -1,12 +1,32 @@
 import { test, expect } from "@playwright/test";
+import { answerReauth, guardedRequest } from "./reauth";
 
 // Happy-path smoke test against the REAL built burrowd (no mocks).
 // Exercises: login → tunnels dashboard → token create+revoke (one-time dialog)
 //            → theme toggle (.dark class) → change-password + re-login → logout.
+//
+// The password change runs on a throwaway user: since T02b a password change
+// ends the account's other sessions, and the admin's session in
+// playwright-auth.json is shared by the specs that run after this one.
 
 const E2E_EMAIL = "e2e@example.com";
 const E2E_INITIAL_PASSWORD = "e2e-password-123";
+const PW_EMAIL = "e2e-smoke-pw@example.com";
+const PW_INITIAL_PASSWORD = "smoke-password-123";
 const E2E_NEW_PASSWORD = "e2e-password-456";
+
+test.afterAll(async ({ browser }) => {
+  const ctx = await browser.newContext({ storageState: "playwright-auth.json" });
+  const page = await ctx.newPage();
+  const res = await page.request.get("/api/v1/users");
+  if (res.ok()) {
+    const body = (await res.json()) as { users: { id: string; email: string }[] };
+    for (const u of body.users.filter((x) => x.email === PW_EMAIL)) {
+      await guardedRequest(page, "DELETE", `/api/v1/users/${u.id}`);
+    }
+  }
+  await ctx.close();
+});
 
 test("smoke: full happy-path", async ({ page }) => {
   // ── 1. Login ──────────────────────────────────────────────────────────────
@@ -42,6 +62,8 @@ test("smoke: full happy-path", async ({ page }) => {
   // Fill token name — Label htmlFor="token-name" in ClientTokensPanel.tsx
   await page.getByLabel("Token name").fill("e2e-smoke");
   await page.getByRole("button", { name: "Create" }).click();
+  // A fresh session without a services domain: minting asks for the password once (T02b).
+  await answerReauth(page, page.getByRole("heading", { name: "Copy your token now" }), E2E_INITIAL_PASSWORD);
 
   // One-time dialog: DialogTitle="Copy your token now"; the revealed token
   // lives in the design-system reveal panel `.reveal-once .key-row .v`
@@ -93,16 +115,27 @@ test("smoke: full happy-path", async ({ page }) => {
   await themeToggle.click();
   await expect(htmlHandle).not.toHaveClass(/dark/);
 
-  // ── 5. Account: change password ──────────────────────────────────────────
+  // ── 5. Account: change password (as a throwaway user) ────────────────────
+  const created = await guardedRequest(page, "POST", "/api/v1/users", { email: PW_EMAIL, password: PW_INITIAL_PASSWORD, role: "user" });
+  expect(created.status(), await created.text()).toBe(201);
+  await page.getByRole("button", { name: "Log out" }).click();
+  await expect(page).toHaveURL(/\/login/);
+  await page.getByLabel("Email").fill(PW_EMAIL);
+  await page.getByLabel("Password").fill(PW_INITIAL_PASSWORD);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+
   // The user chip at the foot of the sidebar leads to the profile page.
   await page.getByRole("link", { name: /^Your profile/ }).click();
   await expect(page.getByRole("heading", { name: "Change password" })).toBeVisible();
 
   // Labels from Account.tsx: htmlFor="current-password" / "new-password" / "confirm-password"
-  await page.getByLabel("Current password", { exact: true }).fill(E2E_INITIAL_PASSWORD);
+  await page.getByLabel("Current password", { exact: true }).fill(PW_INITIAL_PASSWORD);
   await page.getByLabel("New password", { exact: true }).fill(E2E_NEW_PASSWORD);
   await page.getByLabel("Confirm new password", { exact: true }).fill(E2E_NEW_PASSWORD);
   await page.getByRole("button", { name: "Change password" }).click();
+  // A fresh session without a services domain: the change asks for the password first (T02b).
+  await answerReauth(page, page.getByText("Password changed successfully", { exact: false }), PW_INITIAL_PASSWORD);
 
   // Success toast from Account.tsx: toast.success("Password changed successfully")
   await expect(
@@ -114,7 +147,7 @@ test("smoke: full happy-path", async ({ page }) => {
   await expect(page).toHaveURL(/\/login/);
 
   // Re-login with the NEW password to prove it persisted
-  await page.getByLabel("Email").fill(E2E_EMAIL);
+  await page.getByLabel("Email").fill(PW_EMAIL);
   await page.getByLabel("Password").fill(E2E_NEW_PASSWORD);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();

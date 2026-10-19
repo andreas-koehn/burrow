@@ -23,6 +23,7 @@
 //     assert aria-checked changes, then restore it in finally{}.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 
 type SettingsMap = Record<string, string>;
@@ -34,6 +35,8 @@ const SMTP_TEXT_KEYS = ["smtp.host", "smtp.port", "smtp.username", "smtp.from"];
 const ROLLUP_KEY = "connection_logs.rollup_include_top_ips";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("48-settings-smtp: SMTP save + test-email flow + privacy toggle", async ({ page, request }) => {
   // ---- Capture original settings so we can restore the relay's prior state. ----

@@ -8,10 +8,13 @@
 
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
+import { ensureReauth } from "../../fixtures/reauth";
 import { HTTPS_INGRESS, aiHost } from "../../fixtures/env";
 import { adminHeaders } from "../../fixtures/api";
 
 test.use({ storageState: AUTH_STORAGE_PATH });
+// No services domain: guarded writes need a recent password confirmation (T02b).
+test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("25-quota-rate-limit: 429 + audit row", async ({ page, request }) => {
   // The requests below are anonymous, so the "ai" service must be in Open
