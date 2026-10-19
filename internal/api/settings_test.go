@@ -111,3 +111,23 @@ func TestSettingsGetServicesDomain(t *testing.T) {
 		srv.Close()
 	}
 }
+
+// Every signed-in caller learns the services domain from /me, not only a
+// holder of settings:manage: the Services pages print tunnel addresses and
+// warn about the shared origin for anyone (T14).
+func TestMeServicesDomain(t *testing.T) {
+	for _, domain := range []string{"", "apps.example.com"} {
+		d := Deps{Log: discardLog(), Settings: &fakeSettings{}, Users: &fakeUserStore{role: "user"}, ServicesDomain: domain}
+		srv := httptest.NewServer(NewRouter(d))
+		c := authedClient(t, srv)
+		r := c.get(t, "/api/v1/me")
+		var got map[string]any
+		json.NewDecoder(r.Body).Decode(&got)
+		r.Body.Close()
+		v, ok := got["services_domain"]
+		if !ok || v != domain {
+			t.Errorf("domain %q: /me services_domain = %v (present %v)", domain, v, ok)
+		}
+		srv.Close()
+	}
+}

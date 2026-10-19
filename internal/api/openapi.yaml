@@ -1285,11 +1285,17 @@ components:
       allOf:
         - $ref: '#/components/schemas/SessionUser'
         - type: object
-          required: [permissions]
+          required: [permissions, services_domain]
           properties:
             permissions:
               type: array
               items: { type: string }
+            services_domain:
+              type: string
+              description: >
+                BURROW_SERVICES_DOMAIN, the second host name that serves
+                tunnelled apps under /svc/; "" when unset (they share the
+                dashboard's origin). Given to every signed-in caller.
     Client:
       type: object
       description: One live client, that is one control session of a connected burrow client.

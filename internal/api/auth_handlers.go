@@ -86,6 +86,10 @@ func (d Deps) Logout(w http.ResponseWriter, r *http.Request) {
 type meResp struct {
 	userResp
 	Permissions []string `json:"permissions"`
+	// ServicesDomain is BURROW_SERVICES_DOMAIN ("" when unset). Every
+	// signed-in caller gets it: the Services pages print tunnel addresses
+	// and the shared-origin warning from it.
+	ServicesDomain string `json:"services_domain"`
 }
 
 // Me returns the authenticated user's public profile and effective permissions.
@@ -101,5 +105,5 @@ func (d Deps) Me(w http.ResponseWriter, r *http.Request) {
 			perms = append(perms, string(p))
 		}
 	}
-	writeJSON(w, http.StatusOK, meResp{userResp{ID: u.ID, Email: u.Email, Role: u.Role}, perms})
+	writeJSON(w, http.StatusOK, meResp{userResp{ID: u.ID, Email: u.Email, Role: u.Role}, perms, d.ServicesDomain})
 }

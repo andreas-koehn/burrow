@@ -80,7 +80,7 @@ export interface AiProviderRow {
 }
 
 export interface MockDb {
-  me: { id: string; email: string; role: string; permissions?: string[] };
+  me: { id: string; email: string; role: string; permissions?: string[]; services_domain?: string };
   csrf: string;
   connectServer: string;
   /** GET /client/discovery */
