@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/db"
 )
 
@@ -400,5 +401,42 @@ func TestAuthenticateTokenReturnsTheTokenID(t *testing.T) {
 	}
 	if err := s.RecordClientSession(ctx, "no-such-token", rec); !errors.Is(err, db.ErrNotFound) {
 		t.Fatalf("record for a revoked token err = %v, want db.ErrNotFound", err)
+	}
+}
+
+// The audit rows of a session name it by a hash, never by the session id,
+// which is the value of the session cookie.
+func TestSessionAuditRowsDoNotHoldTheSessionID(t *testing.T) {
+	s := newStore(t)
+	sink := &auditSink{}
+	s.SetAuditLogger(sink)
+	ctx := context.Background()
+	u := mustCreateUser(t, s, "sess@x", "user")
+	sid, err := s.CreateSession(ctx, u.ID, "ua", "192.0.2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteSession(ctx, sid); err != nil {
+		t.Fatal(err)
+	}
+	sid2, _ := s.CreateSession(ctx, u.ID, "ua", "192.0.2.1")
+	if err := s.RevokeSession(ctx, sid2, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, e := range sink.ev {
+		if e.Action != audit.ActionSessionCreate && e.Action != audit.ActionSessionDelete {
+			continue
+		}
+		seen++
+		if e.SubjectID == sid || e.SubjectID == sid2 {
+			t.Errorf("%s holds the raw session id", e.Action)
+		}
+		if e.SubjectID != audit.SessionRef(sid) && e.SubjectID != audit.SessionRef(sid2) {
+			t.Errorf("%s subject %q is not the hash of a session", e.Action, e.SubjectID)
+		}
+	}
+	if seen != 4 {
+		t.Fatalf("%d session rows, want 4", seen)
 	}
 }

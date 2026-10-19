@@ -437,9 +437,10 @@ func (s *Store) CreateSession(ctx context.Context, userID, ua, ip string) (id st
 	// session.create is unusual: the actor *is* the new session's user (a
 	// just-completed login). The api/Login handler has not yet stuffed an
 	// audit.LogContext, so we fill ActorID/SourceIP/UserAgent from the
-	// arguments we already have. SubjectID = sessionID (the new session).
+	// arguments we already have. SubjectID = the hash of the session id (the
+	// id is the session cookie's value and must not reach the audit log).
 	s.emitAudit(ctx, audit.ActionSessionCreate, func(e *audit.Event) {
-		e.SubjectID = id
+		e.SubjectID = audit.SessionRef(id)
 		if e.ActorID == "" {
 			e.ActorID = userID
 		}
@@ -477,7 +478,7 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 		return err
 	}
 	s.emitAudit(ctx, audit.ActionSessionDelete, func(e *audit.Event) {
-		e.SubjectID = id
+		e.SubjectID = audit.SessionRef(id)
 	})
 	return nil
 }
@@ -868,7 +869,7 @@ func (s *Store) RevokeSession(ctx context.Context, id, userID string) error {
 		return err
 	}
 	s.emitAudit(ctx, audit.ActionSessionDelete, func(e *audit.Event) {
-		e.SubjectID = id
+		e.SubjectID = audit.SessionRef(id)
 	})
 	return nil
 }

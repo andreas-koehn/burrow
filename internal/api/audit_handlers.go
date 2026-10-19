@@ -74,9 +74,12 @@ func toAuditEventResp(e db.AuditEvent) auditEventResp {
 	if len(pl) == 0 {
 		pl = json.RawMessage(`{}`)
 	}
+	// Rows of older relays hold the raw session id; show its hash instead.
+	// Only the response changes: the stored row and the chain stay as they are.
+	subject, _ := audit.RedactSubject(e.Action, e.SubjectID)
 	return auditEventResp{
 		ID: e.ID, Ts: e.Ts, ActorID: e.ActorID, ActorEmail: e.ActorEmail,
-		Action: e.Action, SubjectID: e.SubjectID, SubjectLabel: e.SubjectLabel,
+		Action: e.Action, SubjectID: subject, SubjectLabel: e.SubjectLabel,
 		Result: e.Result, SourceIP: e.SourceIP, UserAgent: e.UserAgent,
 		RequestID: e.RequestID, Payload: pl, PrevHash: e.PrevHash, Hash: e.Hash,
 	}

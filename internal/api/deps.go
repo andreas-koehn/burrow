@@ -455,6 +455,8 @@ type Deps struct {
 	// NewRouter creates it; reauthClock is its clock in tests (nil: time.Now).
 	reauth      *reauthWindows
 	reauthClock func() time.Time
+	// reauthGuesses counts wrong passwords sent to /auth/reauth per user.
+	reauthGuesses *guessLimiter
 	// ClientDownloadBase is where /download/ redirects to:
 	// <base>/<tag>/<archive>. Empty means config.DefaultClientDownloadBase.
 	ClientDownloadBase string

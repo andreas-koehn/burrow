@@ -203,6 +203,7 @@ func bootWHStack(t *testing.T) *e2eWHStack {
 	if csrf == "" {
 		t.Fatal("no CSRF cookie after login")
 	}
+	confirmPassword(t, hc, hsrv.URL, csrf, adminPass)
 
 	return &e2eWHStack{
 		dbPath:     dbPath,

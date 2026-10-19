@@ -7,6 +7,7 @@ import { renderApp } from "@/mocks/test-utils";
 import { resetDb, db } from "@/mocks/db";
 import { Route, Routes } from "react-router-dom";
 import { CustomDomainsPanel } from "./CustomDomains";
+import { ReauthDialog } from "@/components/ReauthDialog";
 import type { CustomDomainStatus } from "@/lib/contract";
 
 // Wrap in a route so we can supply serviceId from the URL
@@ -136,6 +137,35 @@ describe("CustomDomainsPanel", () => {
 
     // New hostname should appear in the list
     await screen.findByText("new.example.com");
+  });
+
+  it("Add asks for the password first when the relay wants it, then goes through (shared dialog)", async () => {
+    let tries = 0;
+    server.use(http.post("/api/v1/services/:id/domains", () => {
+      tries += 1;
+      return tries === 1
+        ? HttpResponse.json({ error: "reauth_required" }, { status: 403 })
+        : HttpResponse.json({ id: "dom_new", service_id: "svc_ai001", hostname: "new.example.com", status: "pending" }, { status: 201 });
+    }));
+    renderApp(
+      <>
+        <Routes><Route path="/services/:id" element={<CustomDomainsPanel serviceId="svc_ai001" />} /></Routes>
+        <ReauthDialog />
+      </>,
+      "/services/svc_ai001",
+    );
+    await screen.findByText("foo.example.com");
+    await userEvent.click(screen.getByRole("button", { name: "New domain" }));
+    const add = await screen.findByRole("dialog", { name: /custom domain/i });
+    await userEvent.type(within(add).getByLabelText(/hostname/i), "new.example.com");
+    await userEvent.type(within(add).getByLabelText("Certificate (PEM)"), "-----BEGIN CERTIFICATE-----\nDATA\n-----END CERTIFICATE-----");
+    await userEvent.type(within(add).getByLabelText("Private key (PEM)"), "-----BEGIN PRIVATE KEY-----\nDATA\n-----END PRIVATE KEY-----");
+    await userEvent.click(within(add).getByRole("button", { name: /add$/i }));
+
+    const confirm = await screen.findByRole("dialog", { name: "Confirm your password" });
+    await userEvent.type(within(confirm).getByLabelText("Your password"), "password123{Enter}");
+    await waitFor(() => expect(tries).toBe(2));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   it("Delete row → confirms then DELETE /services/:id/domains/:did", async () => {

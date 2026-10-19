@@ -2,7 +2,14 @@ export class ApiError extends Error {
   status: number;
   /** Set for the errors the client itself raises; the relay's own errors have none. */
   code?: string;
-  constructor(status: number, message: string, code?: string) { super(message); this.status = status; this.code = code; }
+  /** The parsed JSON body of the relay's error answer, when it had one (e.g. a rejection `reason`). */
+  body?: unknown;
+  constructor(status: number, message: string, code?: string, body?: unknown) {
+    super(message);
+    this.status = status;
+    this.code = code;
+    this.body = body;
+  }
 }
 
 /** The error code of a route that needs the password confirmed first (POST /auth/reauth). */
@@ -82,7 +89,12 @@ async function send<T>(path: string, opts: RequestInit, retry: boolean): Promise
     const errMsg = (typeof body === "object" && body !== null && "error" in body && typeof (body as Record<string, unknown>).error === "string")
       ? (body as Record<string, unknown>).error as string
       : res.statusText;
-    throw new ApiError(res.status, errMsg);
+    // The confirmation was asked for and the relay still wants it (or no
+    // dialog is mounted): say what to do instead of showing the error code.
+    if (res.status === 403 && errMsg === REAUTH_REQUIRED) {
+      throw new ApiError(403, "Confirm your password to do this, then try again.", REAUTH_REQUIRED, body);
+    }
+    throw new ApiError(res.status, errMsg, undefined, body);
   }
   return body as T;
 }

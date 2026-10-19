@@ -74,6 +74,7 @@ func (d Deps) Login(w http.ResponseWriter, r *http.Request) {
 func (d Deps) Logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
 		_ = d.Users.DeleteSession(r.Context(), c.Value)
+		d.reauth.forget(sessionRef(c.Value))
 	}
 	clearSessionCookie(w, d.SecureCookies)
 	clearCSRFCookie(w, d.SecureCookies)

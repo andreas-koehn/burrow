@@ -155,6 +155,10 @@ const (
 	// window in which secret-minting routes are allowed (no services domain).
 	// Result is "ok" or "denied"; the entry never holds the password.
 	ActionAuthReauth = "auth.reauth"
+
+	// A user changed their own password (result "ok") or tried to and gave the
+	// wrong current one (result "denied"). Never holds a password.
+	ActionAuthPasswordChange = "auth.password_change"
 )
 
 // AllActions is the closed set of every audit action Burrow defines, in a
@@ -192,7 +196,7 @@ var AllActions = []string{
 	ActionConnectionSessionSummary, ActionAICachePromoted, ActionAIUpstreamError,
 	ActionClientLoginApproved, ActionClientLoginDenied,
 	ActionRedactionSettingsUpdate,
-	ActionAuthHandoff, ActionAuthReauth,
+	ActionAuthHandoff, ActionAuthReauth, ActionAuthPasswordChange,
 }
 
 // aggregatedActions is the set of actions that are sample-rated at 1/hour

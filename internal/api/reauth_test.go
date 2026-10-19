@@ -35,6 +35,29 @@ var reauthGuarded = []apiRoute{
 	{http.MethodPost, "/api/v1/backups/restore"},
 	{http.MethodDelete, "/api/v1/sessions/{id}"},
 	{http.MethodPost, "/api/v1/sessions/revoke-all"},
+	// Fix round 1.
+	{http.MethodPost, "/api/v1/auth/change-password"},
+	{http.MethodPost, "/api/v1/ai/providers"},
+	{http.MethodPut, "/api/v1/ai/providers/{slug}"},
+	{http.MethodPut, "/api/v1/ai/providers/{slug}/upstream"},
+	{http.MethodPost, "/api/v1/ai/providers/{slug}/models/sync"},
+	{http.MethodPut, "/api/v1/services/{serviceID}/upstream-credential"},
+	{http.MethodDelete, "/api/v1/services/{serviceID}/upstream-credential"},
+	{http.MethodPut, "/api/v1/tunnels/{id}/access-mode"},
+	{http.MethodPut, "/api/v1/services/{serviceID}/access-mode"},
+	{http.MethodPut, "/api/v1/services/{serviceID}/access-policy"},
+	{http.MethodPut, "/api/v1/services/{serviceID}/ip-geo"},
+	{http.MethodPut, "/api/v1/services/{serviceID}/gateway-only"},
+	{http.MethodPut, "/api/v1/redaction/settings"},
+	{http.MethodPost, "/api/v1/redaction/rules"},
+	{http.MethodPut, "/api/v1/redaction/rules/{id}"},
+	{http.MethodDelete, "/api/v1/redaction/rules/{id}"},
+	{http.MethodPost, "/api/v1/webhooks"},
+	{http.MethodPut, "/api/v1/webhooks/{id}"},
+	{http.MethodPut, "/api/v1/settings/retention"},
+	{http.MethodPost, "/api/v1/services/{serviceID}/domains"},
+	{http.MethodPut, "/api/v1/services/{serviceID}/domains/{did}"},
+	{http.MethodPost, "/api/v1/settings/test-email"},
 }
 
 func errorOf(rec *httptest.ResponseRecorder) string {
@@ -49,9 +72,11 @@ func errorOf(rec *httptest.ResponseRecorder) string {
 // inside it none does.
 func TestReauth_GuardedRoutes(t *testing.T) {
 	h := newAuthzHarness(t)
-	cold := h.sessionUnconfirmed(t, "admin")
-	warm := h.session(t, "admin")
 	for _, r := range reauthGuarded {
+		// Fresh sessions per route: revoke-all and the password change end the
+		// user's other sessions.
+		cold := h.sessionUnconfirmed(t, "admin")
+		warm := h.session(t, "admin")
 		if _, ok := routeAccess[r.key()]; !ok {
 			t.Fatalf("%s is not a route", r.key())
 		}
@@ -284,5 +309,114 @@ func TestReauth_SessionsListHashesTheIDs(t *testing.T) {
 	// The cookie value itself names nothing.
 	if resp := a.delete(t, "/api/v1/sessions/"+cookieOf(a)); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("revoke by cookie value: %d, want 404", resp.StatusCode)
+	}
+}
+
+// POST /auth/change-password is an account-takeover action: it is limited
+// like sign-in, needs the confirmation window, audits wrong attempts, and a
+// success ends the user's other sessions.
+func TestChangePassword_GuessingIsLimitedAuditedAndConfirmed(t *testing.T) {
+	aud := &reauthAudit{}
+	h := newLoginHarness(t, func(d *Deps) {
+		d.AuditAppender = aud
+		d.Sessions = d.Users.(SessionStore)
+		d.LoginRateLimitPerIPOverride = 6
+	})
+	c := unconfirmedClient(t, h.srv) // 1 of 6
+	body := map[string]string{"current_password": "password1", "new_password": "newpassword1"}
+	if resp := c.post(t, "/api/v1/auth/change-password", body); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unconfirmed: %d, want 403 reauth_required", resp.StatusCode) // 2 of 6
+	}
+	c.reauth(t, "password1") // 3 of 6
+	wrong := map[string]string{"current_password": "guess", "new_password": "newpassword1"}
+	for i := 0; i < 2; i++ { // 4, 5
+		if resp := c.post(t, "/api/v1/auth/change-password", wrong); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("wrong current password: %d, want 401", resp.StatusCode)
+		}
+	}
+	denied := 0
+	for _, e := range aud.rows {
+		if e.Action == "auth.password_change" && e.Result == "denied" {
+			denied++
+		}
+	}
+	if denied != 2 {
+		t.Fatalf("%d denied attempts audited, want 2: %+v", denied, aud.rows)
+	}
+	if resp := c.post(t, "/api/v1/auth/change-password", wrong); resp.StatusCode != http.StatusUnauthorized { // 6
+		t.Fatalf("sixth: %d", resp.StatusCode)
+	}
+	if resp := c.post(t, "/api/v1/auth/change-password", body); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("guessing is not limited: %d, want 429", resp.StatusCode)
+	}
+}
+
+func TestChangePassword_EndsOtherSessionsKeepsOwn(t *testing.T) {
+	h := newLoginHarness(t, func(d *Deps) { d.Sessions = d.Users.(SessionStore) })
+	mine := authedClient(t, h.srv)
+	other := authedClient(t, h.srv)
+	resp := mine.post(t, "/api/v1/auth/change-password", map[string]string{"current_password": "password1", "new_password": "newpassword1"})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("change: %d %s", resp.StatusCode, readBody(t, resp))
+	}
+	if r := other.get(t, "/api/v1/me"); r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("other session after a password change: %d, want 401", r.StatusCode)
+	}
+	if r := mine.get(t, "/api/v1/me"); r.StatusCode != http.StatusOK {
+		t.Fatalf("own session after a password change: %d, want 200", r.StatusCode)
+	}
+}
+
+// Wrong passwords to /auth/reauth are counted per user, whatever the address.
+func TestReauth_WrongPasswordsAreLimitedPerUser(t *testing.T) {
+	h := newLoginHarness(t, func(d *Deps) { d.LoginRateLimitPerIPOverride = 1000; d.LoginRateLimitGlobalOverride = 1000 })
+	c := unconfirmedClient(t, h.srv)
+	for i := 0; i < ReauthGuessLimit; i++ {
+		if resp := c.post(t, "/api/v1/auth/reauth", map[string]string{"password": "nope"}); resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("wrong %d: %d, want 403", i, resp.StatusCode)
+		}
+	}
+	// Even the right password is refused now, as with the wrong-code limit.
+	if resp := c.post(t, "/api/v1/auth/reauth", map[string]string{"password": "password1"}); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("after %d wrong: %d, want 429", ReauthGuessLimit, resp.StatusCode)
+	}
+}
+
+// A request with a bearer token and a session cookie is the token's: its
+// permissions decide, and the cookie's confirmation (or lack of it) does not.
+func TestReauth_BearerWithCookieActsAsTheBearer(t *testing.T) {
+	h := newAuthzHarness(t)
+	cookie := h.sessionUnconfirmed(t, "admin")
+	route := apiRoute{http.MethodPost, "/api/v1/users"}
+	call := func(perms ...string) *httptest.ResponseRecorder {
+		tok := h.token(t, "admin", perms...)
+		return h.call(t, route, func(r *http.Request) { cookie(r); tok(r) })
+	}
+	// A token without the permission is refused by the gate, not asked to confirm.
+	if rec := call(); rec.Code != http.StatusForbidden || errorOf(rec) == "reauth_required" {
+		t.Fatalf("token without users:manage + cold cookie: %d %s", rec.Code, rec.Body.String())
+	}
+	// A token with it gets through the guard whatever the cookie did.
+	if rec := call("users:manage"); errorOf(rec) == "reauth_required" || rec.Code == http.StatusForbidden {
+		t.Fatalf("token with users:manage + cold cookie: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Logging out closes the window of the session.
+func TestReauth_LogoutClosesTheWindow(t *testing.T) {
+	h := newAuthzHarness(t)
+	auth := h.session(t, "admin")
+	probe := httptest.NewRequest(http.MethodGet, "/", nil)
+	auth(probe)
+	ck, _ := probe.Cookie(sessionCookieName)
+	ref := sessionRef(ck.Value)
+	if !h.reauth.active(ref) {
+		t.Fatal("the window should be open")
+	}
+	if rec := h.call(t, apiRoute{http.MethodPost, "/api/v1/auth/logout"}, auth); rec.Code != http.StatusNoContent {
+		t.Fatalf("logout: %d", rec.Code)
+	}
+	if h.reauth.active(ref) {
+		t.Fatal("the window outlived the logout")
 	}
 }

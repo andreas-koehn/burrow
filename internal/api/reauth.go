@@ -1,8 +1,6 @@
 package api
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -19,14 +17,9 @@ const ReauthWindow = 10 * time.Minute
 // window. The dashboard answers it with its password dialog.
 const reauthRequired = "reauth_required"
 
-// sessionRef is the public, non-secret name of a session: a hash of the
-// session id (the cookie value). It names a session in the API and keys the
-// re-authentication windows, so the cookie value itself never leaves the
-// browser's cookie jar.
-func sessionRef(sid string) string {
-	sum := sha256.Sum256([]byte("burrow-session-ref\x00" + sid))
-	return hex.EncodeToString(sum[:16])
-}
+// sessionRef names a session in the API and keys the re-authentication
+// windows; see audit.SessionRef.
+func sessionRef(sid string) string { return audit.SessionRef(sid) }
 
 // reauthWindows remembers, in memory, which sessions confirmed their password
 // recently. A restart closes every window, which is the safe direction.
@@ -56,6 +49,18 @@ func (w *reauthWindows) open(ref string) time.Time {
 	end := now.Add(ReauthWindow)
 	w.until[ref] = end
 	return end
+}
+
+// forget closes the windows of the given sessions.
+func (w *reauthWindows) forget(refs ...string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, r := range refs {
+		delete(w.until, r)
+	}
 }
 
 // active reports whether the session's window is still open. A nil value has
@@ -128,28 +133,40 @@ func (d Deps) PostReauth(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "reauth failed")
 		return
 	}
+	// Wrong passwords are also counted per user, next to the per-address limit:
+	// many addresses do not buy more guesses at one account.
+	if d.reauthGuesses.blocked(u.ID) {
+		w.Header().Set("Retry-After", "60")
+		writeErr(w, http.StatusTooManyRequests, "too many wrong passwords; try again in a minute")
+		return
+	}
 	ok, err := d.Users.VerifyUserPassword(r.Context(), u.Email, in.Password)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "reauth failed")
 		return
 	}
 	if !ok {
-		d.auditReauth(r, u.ID, u.Email, "denied")
+		d.reauthGuesses.fail(u.ID)
+		d.auditAuth(r, audit.ActionAuthReauth, u.ID, u.Email, "denied")
 		writeErr(w, http.StatusForbidden, "password is incorrect")
 		return
 	}
 	end := d.reauth.open(sessionRef(c.Value))
-	d.auditReauth(r, u.ID, u.Email, "ok")
+	d.auditAuth(r, audit.ActionAuthReauth, u.ID, u.Email, "ok")
 	writeJSON(w, http.StatusOK, reauthResp{ExpiresAt: end.UTC()})
 }
 
-func (d Deps) auditReauth(r *http.Request, id, email, result string) {
+// ReauthGuessLimit is how many wrong passwords one user may send to
+// /auth/reauth per minute, from any addresses.
+const ReauthGuessLimit = 10
+
+func (d Deps) auditAuth(r *http.Request, action, id, email, result string) {
 	if d.AuditAppender == nil {
 		return
 	}
 	lc := audit.LogContextFrom(r.Context())
 	_ = d.AuditAppender.Append(r.Context(), audit.Event{
-		ActorID: id, ActorEmail: email, Action: audit.ActionAuthReauth,
+		ActorID: id, ActorEmail: email, Action: action,
 		SubjectID: id, SubjectLabel: email, Result: result,
 		SourceIP: lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
 	})

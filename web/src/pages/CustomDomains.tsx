@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, ApiError } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
 import { Badge, Button, ErrorNotice, FormFieldGroup, Input, Dialog, SkeletonRows, TableEmptyRow } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
@@ -83,27 +83,20 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
   // Capture rejection reason in mutationFn and surface it as a verbatim inline alert.
   const addDomainWithRejection = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`/api/v1/services/${serviceId}/domains`, {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": (() => {
-            const m = document.cookie.split(";").find((c) => c.trim().startsWith("burrow_csrf="));
-            return m ? m.trim().slice("burrow_csrf=".length) : "";
-          })(),
-        },
-        body: JSON.stringify({ hostname, cert_pem: pem.cert_pem, key_pem: pem.key_pem }),
-      });
-      if (res.status === 400) {
-        const j = await res.json() as Partial<CustomDomainRejection>;
-        if (j.reason && j.reason in REJECTION_MESSAGES) {
-          throw new DomainRejectionError(REJECTION_MESSAGES[j.reason]);
+      // apiFetch, so that a missing password confirmation opens the shared dialog.
+      try {
+        return await apiFetch<CustomDomain>(`/services/${serviceId}/domains`, {
+          method: "POST",
+          body: JSON.stringify({ hostname, cert_pem: pem.cert_pem, key_pem: pem.key_pem }),
+        });
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 400) {
+          const j = (e.body ?? {}) as Partial<CustomDomainRejection>;
+          if (j.reason && j.reason in REJECTION_MESSAGES) throw new DomainRejectionError(REJECTION_MESSAGES[j.reason]);
+          throw new Error(e.message || "Bad request", { cause: e });
         }
-        throw new Error((j as { error?: string }).error ?? "Bad request");
+        throw e;
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json() as Promise<CustomDomain>;
     },
     onSuccess: () => {
       closeAdd();

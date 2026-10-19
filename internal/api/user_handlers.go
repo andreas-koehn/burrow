@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/store"
@@ -29,8 +30,10 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "current_password and new_password are required")
 		return
 	}
-	err := d.Users.ChangePassword(r.Context(), userID(r.Context()), in.CurrentPassword, in.NewPassword)
+	uid := userID(r.Context())
+	err := d.Users.ChangePassword(r.Context(), uid, in.CurrentPassword, in.NewPassword)
 	if errors.Is(err, store.ErrInvalidCredentials) {
+		d.auditPasswordChange(r, "denied")
 		writeErr(w, http.StatusUnauthorized, "current password is incorrect")
 		return
 	}
@@ -42,7 +45,41 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "change password failed")
 		return
 	}
+	d.auditPasswordChange(r, "ok")
+	d.endOtherSessions(r, uid)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// auditPasswordChange records an attempt to change the caller's password.
+func (d Deps) auditPasswordChange(r *http.Request, result string) {
+	email := ""
+	if d.Users != nil {
+		if u, err := d.Users.GetUserByID(r.Context(), userID(r.Context())); err == nil {
+			email = u.Email
+		}
+	}
+	d.auditAuth(r, audit.ActionAuthPasswordChange, userID(r.Context()), email, result)
+}
+
+// endOtherSessions signs the user out of every session but the caller's own
+// and closes their re-authentication windows: whoever held the old password
+// loses the sessions it opened.
+func (d Deps) endOtherSessions(r *http.Request, uid string) {
+	if d.Sessions == nil {
+		return
+	}
+	keep := ""
+	if c, err := r.Cookie(sessionCookieName); err == nil {
+		keep = c.Value
+	}
+	if ss, err := d.Sessions.ListSessions(r.Context(), uid); err == nil {
+		for _, s := range ss {
+			if s.ID != keep {
+				d.reauth.forget(sessionRef(s.ID))
+			}
+		}
+	}
+	_, _ = d.Sessions.RevokeOtherSessions(r.Context(), uid, keep)
 }
 
 // userAdminResp is returned by admin user endpoints (never password_hash).

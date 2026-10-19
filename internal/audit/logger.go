@@ -372,6 +372,10 @@ type exportEventJSON struct {
 	Payload      json.RawMessage `json:"payload"`
 	PrevHash     string          `json:"prev_hash"`
 	Hash         string          `json:"hash"`
+	// SubjectRedacted marks a row whose subject_id was a raw session id and is
+	// shown as its hash (RedactSubject); VerifySignedExport cannot recompute
+	// the hash of such a row.
+	SubjectRedacted bool `json:"subject_redacted,omitempty"`
 }
 
 // ExportNDJSON streams matching audit_events to w as NDJSON. The final
@@ -414,10 +418,12 @@ func (l *Logger) ExportNDJSON(ctx context.Context, w io.Writer, q ExportQuery) e
 		if !apply(row) {
 			return nil
 		}
+		subject, redacted := RedactSubject(row.Action, row.SubjectID)
 		line := exportEventJSON{
 			ID: row.ID, Ts: row.Ts, ActorID: row.ActorID, ActorEmail: row.ActorEmail,
-			Action: row.Action, SubjectID: row.SubjectID, SubjectLabel: row.SubjectLabel,
-			Result: row.Result, SourceIP: row.SourceIP, UserAgent: row.UserAgent,
+			Action: row.Action, SubjectID: subject, SubjectLabel: row.SubjectLabel,
+			SubjectRedacted: redacted,
+			Result:          row.Result, SourceIP: row.SourceIP, UserAgent: row.UserAgent,
 			RequestID: row.RequestID, Payload: json.RawMessage(row.Payload),
 			PrevHash: row.PrevHash, Hash: row.Hash,
 		}
@@ -520,6 +526,14 @@ func VerifySignedExport(r io.Reader, pub ed25519.PublicKey) (ok bool, firstID, l
 		lastID = ev.ID
 		if ev.PrevHash != expected {
 			return false, firstID, lastID, ev.ID, nil
+		}
+		if ev.SubjectRedacted {
+			// The export shows the hash of a raw session id (RedactSubject), so
+			// this row's hash cannot be recomputed from what is in the file. The
+			// link to its predecessor was checked above and the signature covers
+			// the line; the relay's own verify checks the stored row.
+			expected = ev.Hash
+			continue
 		}
 		canon, cerr := Canonical(Event{
 			ID: ev.ID, ActorID: ev.ActorID, ActorEmail: ev.ActorEmail,

@@ -158,14 +158,14 @@ describe("reauth_required", () => {
     const f = vi.spyOn(globalThis, "fetch").mockResolvedValue(refused() as any);
     const handler = vi.fn().mockResolvedValue(undefined);
     setReauthHandler(handler);
-    await expect(apiFetch("/tokens", { method: "POST" })).rejects.toMatchObject({ status: 403, message: "reauth_required" });
+    await expect(apiFetch("/tokens", { method: "POST" })).rejects.toMatchObject({ status: 403, message: "Confirm your password to do this, then try again.", code: "reauth_required" });
     expect(handler).toHaveBeenCalledTimes(1);
     expect(f).toHaveBeenCalledTimes(2);
   });
 
   it("is an ordinary 403 without a handler", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(refused() as any);
-    await expect(apiFetch("/tokens", { method: "POST" })).rejects.toMatchObject({ status: 403, message: "reauth_required" });
+    await expect(apiFetch("/tokens", { method: "POST" })).rejects.toMatchObject({ status: 403, message: "Confirm your password to do this, then try again.", code: "reauth_required" });
   });
 
   it("leaves other 403s alone", async () => {

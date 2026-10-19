@@ -217,6 +217,7 @@ func newRouter(d Deps) http.Handler {
 	}
 	// Routes that mint a secret or change who may do what, while no
 	// services domain keeps tunnelled apps off the dashboard's origin.
+	d.reauthGuesses = newGuessLimiter(ReauthGuessLimit, time.Minute, d.reauthClock)
 	recent := d.RequireRecentAuth
 
 	r.Route("/api/v1", func(r chi.Router) {
@@ -302,7 +303,9 @@ func newRouter(d Deps) http.Handler {
 			r.Use(RequireCSRF)
 			r.Use(middleware.Timeout(JSONHandlerTimeout))
 			r.Post("/auth/logout", d.Logout)
-			r.Post("/auth/change-password", d.ChangePassword)
+			// The current password is guessable here, so: the sign-in limits, and
+			// the confirmation window while no services domain separates the apps.
+			r.With(loginPerIP, loginGlobal, recent).Post("/auth/change-password", d.ChangePassword)
 			// Confirms the password and opens the window RequireRecentAuth
 			// checks. Rate-limited like sign-in.
 			r.With(loginPerIP, loginGlobal).Post("/auth/reauth", d.PostReauth)
@@ -350,7 +353,7 @@ func newRouter(d Deps) http.Handler {
 			r.Get("/sessions", d.ListSessions)
 			r.With(recent).Delete("/sessions/{id}", d.RevokeSession)
 			r.With(recent).Post("/sessions/revoke-all", d.RevokeAllSessions)
-			r.Put("/tunnels/{id}/access-mode", d.SetAccessMode)
+			r.With(recent).Put("/tunnels/{id}/access-mode", d.SetAccessMode)
 			// v0.3.0: service-scoped routes (owner-gated via store authz).
 			r.Get("/services", d.ListServices)
 			r.Get("/services/slug-suggestion", d.GetSlugSuggestion)
@@ -363,23 +366,23 @@ func newRouter(d Deps) http.Handler {
 			r.Get("/ai/providers", d.GetAIProviders)
 			r.Get("/ai/providers/{slug}", d.GetAIProvider)
 			r.Get("/ai/providers/{slug}/metrics", d.GetAIProviderMetrics)
-			r.Post("/ai/providers", d.PostAIProvider)
-			r.Put("/ai/providers/{slug}", d.PutAIProvider)
+			r.With(recent).Post("/ai/providers", d.PostAIProvider)
+			r.With(recent).Put("/ai/providers/{slug}", d.PutAIProvider)
 			r.Delete("/ai/providers/{slug}", d.DeleteAIProvider)
 			// Direct providers: upstream settings and the model catalog.
 			// The sync makes an outbound call, so it needs the same permission.
-			r.Put("/ai/providers/{slug}/upstream", d.PutAIProviderUpstream)
+			r.With(recent).Put("/ai/providers/{slug}/upstream", d.PutAIProviderUpstream)
 			r.Get("/ai/providers/{slug}/models", d.GetAIProviderModels)
-			r.Post("/ai/providers/{slug}/models/sync", d.PostAIProviderModelsSync)
+			r.With(recent).Post("/ai/providers/{slug}/models/sync", d.PostAIProviderModelsSync)
 			r.Post("/ai/providers/{slug}/models", d.PostAIProviderModel)
 			r.Delete("/ai/providers/{slug}/models", d.DeleteAIProviderModel)
-			r.Put("/services/{serviceID}/access-mode", d.SetServiceAccessMode)
-			r.Put("/services/{serviceID}/gateway-only", d.PutServiceGatewayOnly)
+			r.With(recent).Put("/services/{serviceID}/access-mode", d.SetServiceAccessMode)
+			r.With(recent).Put("/services/{serviceID}/gateway-only", d.PutServiceGatewayOnly)
 			r.Get("/services/{serviceID}/api-keys", d.ListAPIKeys)
 			r.With(recent).Post("/services/{serviceID}/api-keys", d.CreateAPIKey)
 			r.Delete("/services/{serviceID}/api-keys/{id}", d.DeleteAPIKey)
 			r.Get("/services/{serviceID}/access-policy", d.GetAccessPolicy)
-			r.Put("/services/{serviceID}/access-policy", d.SetAccessPolicy)
+			r.With(recent).Put("/services/{serviceID}/access-policy", d.SetAccessPolicy)
 			// v0.4.0 Task 4: exact-match prompt cache JSON API.
 			// The GET endpoints need ai:read or ai:configure, :own or
 			// :any; the PUT and global DELETE need ai:configure:any; the
@@ -405,16 +408,16 @@ func newRouter(d Deps) http.Handler {
 			// ensureCredentialAccess.
 			r.Get("/upstream-credentials/slots", d.GetUpstreamCredentialSlots)
 			r.Get("/services/{serviceID}/upstream-credential", d.GetServiceUpstreamCredential)
-			r.Put("/services/{serviceID}/upstream-credential", d.PutServiceUpstreamCredential)
-			r.Delete("/services/{serviceID}/upstream-credential", d.DeleteServiceUpstreamCredential)
+			r.With(recent).Put("/services/{serviceID}/upstream-credential", d.PutServiceUpstreamCredential)
+			r.With(recent).Delete("/services/{serviceID}/upstream-credential", d.DeleteServiceUpstreamCredential)
 			// v0.5.0 Task 7: custom domain CRUD (spec D.2 / D.3).
 			// Permission: services:configure:any OR (owner AND
 			// services:configure:own). Enforced inside handlers via
 			// ensureCustomDomainAccess.
 			r.Get("/services/{serviceID}/domains", d.ListCustomDomains)
-			r.Post("/services/{serviceID}/domains", d.PostCustomDomain)
+			r.With(recent).Post("/services/{serviceID}/domains", d.PostCustomDomain)
 			r.Get("/services/{serviceID}/domains/{did}", d.GetCustomDomain)
-			r.Put("/services/{serviceID}/domains/{did}", d.PutCustomDomain)
+			r.With(recent).Put("/services/{serviceID}/domains/{did}", d.PutCustomDomain)
 			r.Delete("/services/{serviceID}/domains/{did}", d.DeleteCustomDomain)
 			// v0.5.0 Task 8: per-tunnel connection logs (spec E.2).
 			// All three routes need audit:read. /export streams ndjson or csv; no CSRF needed
@@ -429,11 +432,11 @@ func newRouter(d Deps) http.Handler {
 			// mutations (POST/PUT/DELETE rules, PUT settings, POST preview)
 			// need ai:configure:any, same pattern as the cache routes.
 			r.Get("/redaction/rules", d.GetRedactionRules)
-			r.Post("/redaction/rules", d.PostRedactionRule)
-			r.Put("/redaction/rules/{id}", d.PutRedactionRule)
-			r.Delete("/redaction/rules/{id}", d.DeleteRedactionRule)
+			r.With(recent).Post("/redaction/rules", d.PostRedactionRule)
+			r.With(recent).Put("/redaction/rules/{id}", d.PutRedactionRule)
+			r.With(recent).Delete("/redaction/rules/{id}", d.DeleteRedactionRule)
 			r.Get("/redaction/settings", d.GetRedactionSettings)
-			r.Put("/redaction/settings", d.PutRedactionSettings)
+			r.With(recent).Put("/redaction/settings", d.PutRedactionSettings)
 			r.Post("/redaction/preview", d.PostRedactionPreview)
 			// v0.4.0 Task 6: prompt-injection guardrails JSON API.
 			// GET endpoints (settings and the bundled-pattern list) need
@@ -524,8 +527,8 @@ func newRouter(d Deps) http.Handler {
 			// signing_secret plaintext is returned exactly once in the
 			// POST response — never in GET / list responses.
 			r.Get("/webhooks", d.GetWebhooks)
-			r.Post("/webhooks", d.PostWebhook)
-			r.Put("/webhooks/{id}", d.PutWebhook)
+			r.With(recent).Post("/webhooks", d.PostWebhook)
+			r.With(recent).Put("/webhooks/{id}", d.PutWebhook)
 			r.Delete("/webhooks/{id}", d.DeleteWebhook)
 			r.Post("/webhooks/{id}/test", d.PostWebhookTest)
 			r.Post("/webhooks/{id}/pause", d.PostWebhookPause)
@@ -555,7 +558,7 @@ func newRouter(d Deps) http.Handler {
 			// the per-service routes ensureIPGeoServiceAccess checks the
 			// owner for :own. /geo/status is the global flag.
 			r.Get("/services/{serviceID}/ip-geo", d.GetServiceIPGeo)
-			r.Put("/services/{serviceID}/ip-geo", d.PutServiceIPGeo)
+			r.With(recent).Put("/services/{serviceID}/ip-geo", d.PutServiceIPGeo)
 			r.Get("/geo/status", d.GetGeoStatus)
 			// v0.4.0 Task 15: editable custom roles + permission matrix
 			// (spec Part I). The permission catalog is open to who reads or
@@ -582,10 +585,10 @@ func newRouter(d Deps) http.Handler {
 				r.Get("/roles/{name}", d.GetRole)
 				r.Get("/settings", d.GetSettings)
 				r.With(recent).Put("/settings", d.SaveSettings)
-				r.Post("/settings/test-email", d.SendTestEmail)
+				r.With(recent).Post("/settings/test-email", d.SendTestEmail)
 				// v0.5.0 Task 9: retention settings (settings:manage).
 				r.Get("/settings/retention", d.GetRetentionSettings)
-				r.Put("/settings/retention", d.PutRetentionSettings)
+				r.With(recent).Put("/settings/retention", d.PutRetentionSettings)
 				r.Get("/clients", d.ListClients)
 				// Before /clients/{sessionID}: "known" is no session id.
 				r.Get("/clients/known", d.ListKnownClients)

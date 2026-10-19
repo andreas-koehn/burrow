@@ -23,6 +23,7 @@ type auditTestStack struct {
 	x      *db.DB
 	logger *audit.Logger
 	chain  AuditChain
+	pub    ed25519.PublicKey
 }
 
 func newAuditTestStack(t *testing.T) *auditTestStack {
@@ -36,12 +37,12 @@ func newAuditTestStack(t *testing.T) *auditTestStack {
 	}
 	x := db.Wrap(sqldb)
 	t.Cleanup(func() { _ = x.Close() })
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	l := audit.NewLogger(x, priv, discardLog())
-	return &auditTestStack{x: x, logger: l, chain: NewAuditChainAdapter(l)}
+	return &auditTestStack{x: x, logger: l, chain: NewAuditChainAdapter(l), pub: pub}
 }
 
 func (s *auditTestStack) appendN(t *testing.T, n int) {

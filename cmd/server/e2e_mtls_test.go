@@ -438,6 +438,7 @@ func startAPIForMTLSTest(t *testing.T, s *e2eStack) (*httptest.Server, *mtlsAPIC
 	if csrf == "" {
 		t.Fatal("login did not set burrow_csrf cookie")
 	}
+	confirmPassword(t, hc, apiSrv.URL, csrf, e2eAdminPassword)
 	return apiSrv, &mtlsAPIClient{hc: hc, csrf: csrf}
 }
 
