@@ -50,6 +50,8 @@ import (
 	"testing"
 	"time"
 
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/ankoehn/burrow/internal/client"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/devcert"
@@ -623,6 +625,18 @@ func (r *obsRelay) obsTraffic() {
 	}
 	if code, body := r.admin(http.MethodPut, "/api/v1/settings/retention", map[string]int{"audit_retention_days": 400}); code != http.StatusNoContent {
 		t.Fatalf("retention settings: %d %s", code, body)
+	}
+
+	// A tool call on the management MCP server: counted per source.
+	var minted struct {
+		Plaintext string `json:"plaintext"`
+	}
+	r.mustAdmin(http.MethodPost, "/api/v1/automation/tokens", map[string]any{
+		"name": "obs-mcp", "permissions": []string{"services:configure:own"},
+	}, http.StatusCreated, &minted)
+	mcpSession := mcpConnect(t, r.base+"/mcp/burrow", minted.Plaintext, "2026-07-28")
+	if res, err := mcpSession.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "services_list", Arguments: map[string]any{}}); err != nil || res.IsError {
+		t.Fatalf("management tool call: %v %+v", err, res)
 	}
 
 	// The client goes away and comes back with the same token.
@@ -1250,6 +1264,8 @@ func TestServe_SamplesSayWhatHappened(t *testing.T) {
 		`burrow_ai_failover_events_total{service="` + llm + `",from="obs-llm",to="obs-llm2",cross_provider="true"}`,
 		`burrow_ai_upstream_errors_total{service="` + llm + `",status="5xx"}`,
 		`burrow_ai_credential_injections_total{service="` + llm + `",slot="OBS"}`,
+		// The management tool call.
+		`burrow_mcp_tool_calls_total{source="burrow",outcome="ok"}`,
 		// What a scrape reads.
 		`burrow_db_backend{driver="sqlite"}`,
 	}

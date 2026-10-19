@@ -380,11 +380,36 @@ func TestObserver_NilAndEmpty(t *testing.T) {
 			Metered: true, SemanticPromoted: true, Outcome: observe.ModelGuardrailRefused,
 			Redactions: []observe.Redaction{{Rule: "email"}}, Attempts: []observe.Attempt{{Failed: true}},
 		})
+		o.ObserveToolCall(observe.ToolCall{Source: "github", Tool: "t", Outcome: "ok"})
 		if err := o.Flush(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 		o.stop()
 		o.stop()
+	}
+}
+
+// A tool call is counted per source and outcome, and the tool's name appears
+// in no label; the observer satisfies the interface the MCP servers take.
+func TestObserver_ToolCall(t *testing.T) {
+	o, rec, em, _ := newTestObserver(t)
+	var _ observe.ToolCallObserver = o
+	o.ObserveToolCall(observe.ToolCall{Server: "gateway", Source: "github", Tool: "create_issue", GatewayKeyID: "gk1", UserID: "u1", Outcome: "ok", Status: 200, Duration: 12 * time.Millisecond, LatencyMs: 12})
+	o.ObserveToolCall(observe.ToolCall{Server: "gateway", Source: "github", Tool: "delete_repo", GatewayKeyID: "gk1", UserID: "u1", Outcome: "denied"})
+	o.ObserveToolCall(observe.ToolCall{Server: "management", Source: "burrow", Tool: "list_services", TokenID: "t1", UserID: "u1", Outcome: "ok"})
+	o.ObserveToolCall(observe.ToolCall{Server: "management", Source: "burrow", Tool: "list_services", TokenID: "t1", UserID: "u1", Outcome: "ok"})
+	text := expo(t, rec)
+	wantLines(t, text,
+		`burrow_mcp_tool_calls_total{source="github",outcome="ok"} 1`,
+		`burrow_mcp_tool_calls_total{source="github",outcome="denied"} 1`,
+		`burrow_mcp_tool_calls_total{source="burrow",outcome="ok"} 2`,
+	)
+	if strings.Contains(text, "create_issue") || strings.Contains(text, "delete_repo") || strings.Contains(text, "list_services") {
+		t.Errorf("a tool name reached the exposition:\n%s", grepBurrow(text, "burrow_mcp"))
+	}
+	// A tool call needs no webhook event.
+	if len(em.events) != 0 {
+		t.Errorf("events = %+v", em.events)
 	}
 }
 

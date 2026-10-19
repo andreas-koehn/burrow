@@ -32,22 +32,26 @@ type fakeKeyStore struct {
 	updCaller              string
 	updAny                 bool
 	updID                  string
-	updName, updText       *string
+	upd                    store.GatewayKeyUpdate
+	lastIn                 store.NewGatewayKey
 	listCaller             string
 	listAll                bool
 	revokeCaller, revokeID string
 	revokeAny              bool
 }
 
-func (f *fakeKeyStore) CreateGatewayKey(_ context.Context, userID, name string, allowed []string, systemText string) (store.GatewayKey, string, error) {
+func (f *fakeKeyStore) CreateGatewayKeyFrom(_ context.Context, userID string, in store.NewGatewayKey) (store.GatewayKey, string, error) {
+	name, allowed, systemText := in.Name, in.AllowedModels, in.SystemText
 	f.creates++
+	f.lastIn = in
 	f.lastUser, f.lastName, f.lastAllowed, f.lastText = userID, name, allowed, systemText
 	if f.err != nil {
 		return store.GatewayKey{}, "", f.err
 	}
 	k := store.GatewayKey{
 		ID: fmt.Sprintf("key-%d", f.creates), Name: name, KeyPrefix: testGatewayKey[:8], UserID: userID,
-		AllowedModels: append([]string{}, allowed...), SystemText: systemText, CreatedAt: time.Unix(1_700_000_000, 0).UTC(),
+		AllowedModels: append([]string{}, allowed...), SystemText: systemText,
+		AllowedTools: append([]string{}, in.AllowedTools...), ToolsReadOnly: in.ToolsReadOnly, CreatedAt: time.Unix(1_700_000_000, 0).UTC(),
 	}
 	f.rows = append(f.rows, k)
 	return k, testGatewayKey, nil
@@ -77,19 +81,28 @@ func (f *fakeKeyStore) RevokeGatewayKey(_ context.Context, callerID string, anyK
 	return store.ErrKeyNotFound
 }
 
-func (f *fakeKeyStore) UpdateGatewayKey(_ context.Context, callerID string, anyKey bool, id string, name, systemText *string) (store.GatewayKey, error) {
+func (f *fakeKeyStore) UpdateGatewayKey(_ context.Context, callerID string, anyKey bool, id string, u store.GatewayKeyUpdate) (store.GatewayKey, error) {
 	f.updates++
-	f.updCaller, f.updAny, f.updID, f.updName, f.updText = callerID, anyKey, id, name, systemText
+	f.updCaller, f.updAny, f.updID, f.upd = callerID, anyKey, id, u
 	if f.err != nil {
 		return store.GatewayKey{}, f.err
 	}
 	for i, k := range f.rows {
 		if k.ID == id && (anyKey || k.UserID == callerID) {
-			if name != nil {
-				f.rows[i].Name = *name
+			if u.Name != nil {
+				f.rows[i].Name = *u.Name
 			}
-			if systemText != nil {
-				f.rows[i].SystemText = *systemText
+			if u.SystemText != nil {
+				f.rows[i].SystemText = *u.SystemText
+			}
+			if u.AllowedModels != nil {
+				f.rows[i].AllowedModels = append([]string{}, *u.AllowedModels...)
+			}
+			if u.AllowedTools != nil {
+				f.rows[i].AllowedTools = append([]string{}, *u.AllowedTools...)
+			}
+			if u.ToolsReadOnly != nil {
+				f.rows[i].ToolsReadOnly = *u.ToolsReadOnly
 			}
 			return f.rows[i], nil
 		}
@@ -488,8 +501,8 @@ func TestPutKey(t *testing.T) {
 		f := newKeyFixture("user")
 		f.ks.rows = rows()
 		body := wantStatus(t, f.serve(t).put(t, "/api/v1/ai/keys/k-mine", map[string]any{"system_text": ""}), http.StatusOK)
-		if f.ks.updName != nil || f.ks.updText == nil || *f.ks.updText != "" || !strings.Contains(body, `"name":"mine"`) || !strings.Contains(body, `"system_text":""`) {
-			t.Errorf("name %v text %v body %s", f.ks.updName, f.ks.updText, body)
+		if f.ks.upd.Name != nil || f.ks.upd.SystemText == nil || *f.ks.upd.SystemText != "" || !strings.Contains(body, `"name":"mine"`) || !strings.Contains(body, `"system_text":""`) {
+			t.Errorf("name %v text %v body %s", f.ks.upd.Name, f.ks.upd.SystemText, body)
 		}
 	})
 
@@ -524,7 +537,12 @@ func TestPutKey(t *testing.T) {
 			"control name":   map[string]any{"name": "a\nb"},
 			"long text":      map[string]any{"system_text": strings.Repeat("a", 8193)},
 			"unknown field":  map[string]any{"user_id": "x"},
-			"allowed models": map[string]any{"allowed_models": []string{"a"}},
+			"bad models":     map[string]any{"allowed_models": []string{"*/x"}},
+			"bad tools":      map[string]any{"allowed_tools": []string{"github"}},
+			"bare star tool": map[string]any{"allowed_tools": []string{"*"}},
+			"reserved tool":  map[string]any{"allowed_tools": []string{"burrow__x"}},
+			"many tools":     map[string]any{"allowed_tools": manyTools()},
+			"read only type": map[string]any{"tools_read_only": "yes"},
 			"not json":       "nope",
 		} {
 			t.Run(name, func(t *testing.T) {
@@ -628,5 +646,98 @@ func TestKeyRoutes_RightsFollowPermissions(t *testing.T) {
 		}
 		wantStatus(t, c.delete(t, "/api/v1/ai/keys/k-other"), http.StatusNotFound)
 		wantStatus(t, c.put(t, "/api/v1/ai/keys/k-other", map[string]any{"name": "x"}), http.StatusNotFound)
+	})
+}
+
+func manyTools() []string {
+	out := make([]string, 65)
+	for i := range out {
+		out[i] = fmt.Sprintf("src__tool%d", i)
+	}
+	return out
+}
+
+func TestPostKey_Tools(t *testing.T) {
+	f := newKeyFixture("user")
+	c := f.serve(t)
+	body := wantStatus(t, c.post(t, "/api/v1/ai/keys", map[string]any{
+		"name": "agent", "allowed_tools": []string{"github__*", "jira__create_issue"}, "tools_read_only": true,
+	}), http.StatusCreated)
+	var got map[string]any
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got["allowed_tools"]) != "[github__* jira__create_issue]" || got["tools_read_only"] != true {
+		t.Errorf("response = %s", body)
+	}
+	if fmt.Sprint(f.ks.lastIn.AllowedTools) != "[github__* jira__create_issue]" || !f.ks.lastIn.ToolsReadOnly {
+		t.Errorf("store received %+v", f.ks.lastIn)
+	}
+	p := auditPayload(t, f.aud.events[0])
+	if fmt.Sprint(p["allowed_tools"]) != "[github__* jira__create_issue]" || p["tools_read_only"] != true {
+		t.Errorf("audit payload = %v", p)
+	}
+	// Left out: no tools, not read-only.
+	plain := wantStatus(t, f.serve(t).post(t, "/api/v1/ai/keys", map[string]any{"name": "plain"}), http.StatusCreated)
+	if !strings.Contains(plain, `"allowed_tools":[]`) || !strings.Contains(plain, `"tools_read_only":false`) {
+		t.Errorf("default response = %s", plain)
+	}
+	// A bad entry never reaches the store.
+	n := f.ks.creates
+	wantStatus(t, f.serve(t).post(t, "/api/v1/ai/keys", map[string]any{"name": "x", "allowed_tools": []string{"github"}}), http.StatusBadRequest)
+	wantStatus(t, f.serve(t).post(t, "/api/v1/ai/keys", map[string]any{"name": "x", "allowed_tools": manyTools()}), http.StatusBadRequest)
+	if f.ks.creates != n {
+		t.Error("the store was called for a bad tool list")
+	}
+}
+
+func TestPutKey_AllowLists(t *testing.T) {
+	rows := func() []store.GatewayKey {
+		return []store.GatewayKey{
+			{ID: "k-mine", Name: "mine", UserID: "u-self", AllowedModels: []string{"zai/*"}, AllowedTools: []string{"gh__*"}, ToolsReadOnly: true},
+			{ID: "k-other", Name: "theirs", UserID: "u-other"},
+		}
+	}
+	t.Run("sets all three and audits the changes", func(t *testing.T) {
+		f := newKeyFixture("user")
+		f.ks.rows = rows()
+		body := wantStatus(t, f.serve(t).put(t, "/api/v1/ai/keys/k-mine", map[string]any{
+			"allowed_models": []string{"burrow-simple"}, "allowed_tools": []string{"jira__*", "gh__list"}, "tools_read_only": false,
+		}), http.StatusOK)
+		var got map[string]any
+		if err := json.Unmarshal([]byte(body), &got); err != nil {
+			t.Fatal(err)
+		}
+		if fmt.Sprint(got["allowed_models"]) != "[burrow-simple]" || fmt.Sprint(got["allowed_tools"]) != "[jira__* gh__list]" || got["tools_read_only"] != false || got["name"] != "mine" {
+			t.Errorf("body = %s", body)
+		}
+		p := auditPayload(t, f.aud.events[0])
+		if fmt.Sprint(p["allowed_models"]) != "[burrow-simple]" || fmt.Sprint(p["allowed_tools"]) != "[jira__* gh__list]" || p["tools_read_only"] != false {
+			t.Errorf("audit payload = %v", p)
+		}
+	})
+	t.Run("a field left out stays; an empty list clears", func(t *testing.T) {
+		f := newKeyFixture("user")
+		f.ks.rows = rows()
+		c := f.serve(t)
+		wantStatus(t, c.put(t, "/api/v1/ai/keys/k-mine", map[string]any{"name": "desk"}), http.StatusOK)
+		if f.ks.upd.AllowedModels != nil || f.ks.upd.AllowedTools != nil || f.ks.upd.ToolsReadOnly != nil {
+			t.Errorf("absent fields reached the store as changes: %+v", f.ks.upd)
+		}
+		p := auditPayload(t, f.aud.events[0])
+		for _, k := range []string{"allowed_models", "allowed_tools", "tools_read_only"} {
+			if _, has := p[k]; has {
+				t.Errorf("audit payload names %s although it did not change: %v", k, p)
+			}
+		}
+		body := wantStatus(t, c.put(t, "/api/v1/ai/keys/k-mine", map[string]any{"allowed_tools": []string{}, "allowed_models": []string{}}), http.StatusOK)
+		if f.ks.upd.AllowedTools == nil || f.ks.upd.AllowedModels == nil || !strings.Contains(body, `"allowed_tools":[]`) || !strings.Contains(body, `"allowed_models":[]`) {
+			t.Errorf("clear: %+v %s", f.ks.upd, body)
+		}
+	})
+	t.Run("another user's key", func(t *testing.T) {
+		f := newKeyFixture("user")
+		f.ks.rows = rows()
+		wantStatus(t, f.serve(t).put(t, "/api/v1/ai/keys/k-other", map[string]any{"allowed_tools": []string{"gh__*"}}), http.StatusNotFound)
 	})
 }

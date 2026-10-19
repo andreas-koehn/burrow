@@ -13,6 +13,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/auth"
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 )
 
@@ -25,6 +26,8 @@ type GatewayKey struct {
 	UserID        string
 	AllowedModels []string // never nil; empty = every model
 	SystemText    string   // put in front of the app's system content; empty = none
+	AllowedTools  []string // never nil; "<source>__<tool>" and "<source>__*"; empty = no tools
+	ToolsReadOnly bool     // only tools the operator classed read-only
 	LastUsed      *time.Time
 	CreatedAt     time.Time
 	RevokedAt     *time.Time
@@ -44,6 +47,7 @@ const (
 	gatewayKeyShown      = 8                          // characters kept for display
 	maxGatewayKeyName    = 120
 	maxGatewayKeyAllowed = 64
+	maxGatewayKeyTools   = 64
 )
 
 const msgSystemTextLong = "system_text is longer than 8192 bytes"
@@ -63,35 +67,91 @@ func toGatewayKey(k db.AIGatewayKey) GatewayKey {
 	return GatewayKey{
 		ID: k.ID, Name: k.Name, KeyPrefix: k.KeyPrefix, UserID: k.UserID,
 		AllowedModels: append([]string{}, k.AllowedModels...), SystemText: k.SystemText,
+		AllowedTools: append([]string{}, k.AllowedTools...), ToolsReadOnly: k.ToolsReadOnly,
 		LastUsed: k.LastUsed, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt,
 	}
 }
 
-// CreateGatewayKey makes a gateway key owned by userID. The plaintext is
-// returned here and nowhere else: the database keeps its hash. allowed
-// restricts the key to those models (see ValidAllowEntry); empty means all.
-// systemText is put in front of the system content of the key's requests.
-func (s *Store) CreateGatewayKey(ctx context.Context, userID, name string, allowed []string, systemText string) (GatewayKey, string, error) {
-	name = strings.TrimSpace(name)
-	if name == "" || len(name) > maxGatewayKeyName || hasControl(name) {
-		return GatewayKey{}, "", invalidKey("name must be 1-120 characters without control characters")
-	}
-	if len([]byte(systemText)) > MaxSystemTextBytes {
-		return GatewayKey{}, "", invalidKey(msgSystemTextLong)
-	}
+// checkAllowedModels validates a model allow-list and returns it without
+// duplicates, never nil.
+func checkAllowedModels(allowed []string) ([]string, error) {
 	if len(allowed) > maxGatewayKeyAllowed {
-		return GatewayKey{}, "", invalidKey("at most 64 allowed models")
+		return nil, invalidKey("at most 64 allowed models")
 	}
 	entries := make([]string, 0, len(allowed))
 	seen := make(map[string]bool, len(allowed))
 	for _, e := range allowed {
 		if !ValidAllowEntry(e) {
-			return GatewayKey{}, "", invalidKey(`an allowed model must be a model name, "<provider>/<model>" or "<provider>/*"`)
+			return nil, invalidKey(`an allowed model must be a model name, "<provider>/<model>" or "<provider>/*"`)
 		}
 		if !seen[e] {
 			seen[e] = true
 			entries = append(entries, e)
 		}
+	}
+	return entries, nil
+}
+
+// checkAllowedTools validates a tool allow-list and returns it without
+// duplicates, never nil.
+func checkAllowedTools(allowed []string) ([]string, error) {
+	if len(allowed) > maxGatewayKeyTools {
+		return nil, invalidKey("at most 64 allowed tools")
+	}
+	entries := make([]string, 0, len(allowed))
+	seen := make(map[string]bool, len(allowed))
+	for _, e := range allowed {
+		if !ValidToolEntry(e) {
+			return nil, invalidKey(`an allowed tool must be "<source>__<tool>" or "<source>__*"`)
+		}
+		if !seen[e] {
+			seen[e] = true
+			entries = append(entries, e)
+		}
+	}
+	return entries, nil
+}
+
+// NewGatewayKey is what CreateGatewayKeyFrom makes a key of.
+type NewGatewayKey struct {
+	Name string
+	// AllowedModels restricts the key to those models (see ValidAllowEntry);
+	// empty means all.
+	AllowedModels []string
+	// AllowedTools lists the tools the key may call (see ValidToolEntry);
+	// empty means none.
+	AllowedTools  []string
+	ToolsReadOnly bool
+	// SystemText is put in front of the system content of the key's requests.
+	SystemText string
+}
+
+// CreateGatewayKey makes a gateway key owned by userID that may call no tools.
+// The plaintext is returned here and nowhere else: the database keeps its
+// hash. allowed restricts the key to those models (see ValidAllowEntry); empty
+// means all. systemText is put in front of the system content of the key's
+// requests.
+func (s *Store) CreateGatewayKey(ctx context.Context, userID, name string, allowed []string, systemText string) (GatewayKey, string, error) {
+	return s.CreateGatewayKeyFrom(ctx, userID, NewGatewayKey{Name: name, AllowedModels: allowed, SystemText: systemText})
+}
+
+// CreateGatewayKeyFrom is CreateGatewayKey with the tool allow-list and the
+// read-only switch.
+func (s *Store) CreateGatewayKeyFrom(ctx context.Context, userID string, in NewGatewayKey) (GatewayKey, string, error) {
+	name := strings.TrimSpace(in.Name)
+	if name == "" || len(name) > maxGatewayKeyName || hasControl(name) {
+		return GatewayKey{}, "", invalidKey("name must be 1-120 characters without control characters")
+	}
+	if len([]byte(in.SystemText)) > MaxSystemTextBytes {
+		return GatewayKey{}, "", invalidKey(msgSystemTextLong)
+	}
+	models, err := checkAllowedModels(in.AllowedModels)
+	if err != nil {
+		return GatewayKey{}, "", err
+	}
+	tools, err := checkAllowedTools(in.AllowedTools)
+	if err != nil {
+		return GatewayKey{}, "", err
 	}
 	plaintext, err := newGatewayKey()
 	if err != nil {
@@ -100,7 +160,8 @@ func (s *Store) CreateGatewayKey(ctx context.Context, userID, name string, allow
 	id := uuid.NewString()
 	if err := s.q.CreateAIGatewayKey(ctx, db.AIGatewayKey{
 		ID: id, Name: name, KeyHash: auth.HashToken(plaintext), KeyPrefix: plaintext[:gatewayKeyShown],
-		UserID: userID, AllowedModels: entries, SystemText: systemText,
+		UserID: userID, AllowedModels: models, SystemText: in.SystemText,
+		AllowedTools: tools, ToolsReadOnly: in.ToolsReadOnly,
 	}); err != nil {
 		return GatewayKey{}, "", err
 	}
@@ -155,12 +216,20 @@ func (s *Store) RevokeGatewayKey(ctx context.Context, callerID string, anyKey bo
 	return nil
 }
 
-// UpdateGatewayKey changes the name and the system text of a key; a nil
-// pointer leaves that field as it is. Its owner may, and so may a caller who
-// manages every key (anyKey, as for RevokeGatewayKey); for anyone
-// else the key looks like one that does not exist. A revoked key can still
-// be changed.
-func (s *Store) UpdateGatewayKey(ctx context.Context, callerID string, anyKey bool, id string, name, systemText *string) (GatewayKey, error) {
+// GatewayKeyUpdate is a change to a key. A nil field leaves that field as it
+// is; a non-nil allow-list replaces the list (an empty one clears it).
+type GatewayKeyUpdate struct {
+	Name          *string
+	SystemText    *string
+	AllowedModels *[]string
+	AllowedTools  *[]string
+	ToolsReadOnly *bool
+}
+
+// UpdateGatewayKey applies u to a key. Its owner may, and so may a caller who
+// manages every key (anyKey, as for RevokeGatewayKey); for anyone else the key
+// looks like one that does not exist. A revoked key can still be changed.
+func (s *Store) UpdateGatewayKey(ctx context.Context, callerID string, anyKey bool, id string, u GatewayKeyUpdate) (GatewayKey, error) {
 	k, err := s.q.GetAIGatewayKey(ctx, id)
 	if errors.Is(err, db.ErrNotFound) {
 		return GatewayKey{}, ErrKeyNotFound
@@ -171,25 +240,36 @@ func (s *Store) UpdateGatewayKey(ctx context.Context, callerID string, anyKey bo
 	if !anyKey && (callerID == "" || k.UserID != callerID) {
 		return GatewayKey{}, ErrKeyNotFound
 	}
-	newName, newText := k.Name, k.SystemText
-	if name != nil {
-		newName = strings.TrimSpace(*name)
-		if newName == "" || len(newName) > maxGatewayKeyName || hasControl(newName) {
+	if u.Name != nil {
+		k.Name = strings.TrimSpace(*u.Name)
+		if k.Name == "" || len(k.Name) > maxGatewayKeyName || hasControl(k.Name) {
 			return GatewayKey{}, invalidKey("name must be 1-120 characters without control characters")
 		}
 	}
-	if systemText != nil {
-		if len([]byte(*systemText)) > MaxSystemTextBytes {
+	if u.SystemText != nil {
+		if len([]byte(*u.SystemText)) > MaxSystemTextBytes {
 			return GatewayKey{}, invalidKey(msgSystemTextLong)
 		}
-		newText = *systemText
+		k.SystemText = *u.SystemText
 	}
-	if err := s.q.UpdateAIGatewayKey(ctx, id, newName, newText); errors.Is(err, db.ErrNotFound) {
+	if u.AllowedModels != nil {
+		if k.AllowedModels, err = checkAllowedModels(*u.AllowedModels); err != nil {
+			return GatewayKey{}, err
+		}
+	}
+	if u.AllowedTools != nil {
+		if k.AllowedTools, err = checkAllowedTools(*u.AllowedTools); err != nil {
+			return GatewayKey{}, err
+		}
+	}
+	if u.ToolsReadOnly != nil {
+		k.ToolsReadOnly = *u.ToolsReadOnly
+	}
+	if err := s.q.UpdateAIGatewayKey(ctx, k); errors.Is(err, db.ErrNotFound) {
 		return GatewayKey{}, ErrKeyNotFound
 	} else if err != nil {
 		return GatewayKey{}, err
 	}
-	k.Name, k.SystemText = newName, newText
 	return toGatewayKey(k), nil
 }
 
@@ -227,9 +307,11 @@ func (s *Store) RevokeGatewayKeyByID(ctx context.Context, id, budgetID string) (
 }
 
 // ValidateGatewayKey looks the presented key up by its hash. ok is false for
-// a key that is malformed, unknown or revoked. Nothing is cached: every call
-// reads the row, so a revoked key fails on the next request. The presented
-// value never appears in an error.
+// a key that is malformed, unknown or revoked, and for one whose owner is
+// gone, suspended, or no longer holds ai:configure:own or ai:configure:any:
+// such a key looks like an unknown one. Nothing is cached: every call reads
+// the key and its owner, so a revoked key or a suspended owner fails on the
+// next request. The presented value never appears in an error.
 func (s *Store) ValidateGatewayKey(ctx context.Context, presented string) (GatewayKey, bool, error) {
 	if len(presented) != gatewayKeyLen || !strings.HasPrefix(presented, gatewayKeyPrefix) {
 		return GatewayKey{}, false, nil
@@ -242,6 +324,17 @@ func (s *Store) ValidateGatewayKey(ctx context.Context, presented string) (Gatew
 		return GatewayKey{}, false, err
 	}
 	if k.RevokedAt != nil {
+		return GatewayKey{}, false, nil
+	}
+	owner, err := s.q.GetUserByID(ctx, k.UserID)
+	if errors.Is(err, db.ErrNotFound) {
+		return GatewayKey{}, false, nil
+	}
+	if err != nil {
+		return GatewayKey{}, false, err
+	}
+	mayConfigure := authz.Can(owner.Role, authz.PermAIConfigureOwn) || authz.Can(owner.Role, authz.PermAIConfigureAny)
+	if owner.Status == "suspended" || !mayConfigure {
 		return GatewayKey{}, false, nil
 	}
 	_ = s.q.TouchAIGatewayKey(ctx, k.ID) // best effort; a failed touch does not fail the request

@@ -36,6 +36,7 @@ func TestUsageAccounting_Postgres(t *testing.T) {
 	x := Wrap(b.DB())
 	t.Cleanup(func() { _ = x.Close() })
 	t.Run("usage accounting", func(t *testing.T) { checkUsageAccounting(t, x, "u-acct-pg") })
+	t.Run("day quotas ignore tool calls", func(t *testing.T) { checkDayQuotaIgnoresToolCalls(t, x, "u-mcpq-pg") })
 	t.Run("ai endpoint metrics", func(t *testing.T) { checkAIEndpointMetrics(t, x, "u-metrics-pg") })
 	t.Run("ai endpoint latency", func(t *testing.T) { checkAIEndpointLatency(t, x, "u-lat-pg") })
 	t.Run("ai endpoint latency against a sort", func(t *testing.T) { checkAIEndpointLatencyAgainstSort(t, x, "u-lat-sort-pg") })

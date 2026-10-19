@@ -161,10 +161,23 @@ const toolTimeout = 30 * time.Second
 // router's recovery, so a panic here would end the process. It is caught.
 func (s *Server) callHandler(tok *authedToken, auditName string, run func(ctx context.Context, args map[string]any) (*mcp.CallToolResult, string, string)) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (res *mcp.CallToolResult, _ error) {
+		started := time.Now()
+		// finish tells the observer and writes the audit row. The observer
+		// comes first and is told once: an audit sink that panics ends in the
+		// recover below, which must not report the call again.
+		observed := false
+		finish := func(tool, word string) {
+			observed = true
+			s.observeTool(tok, tool, word, time.Since(started))
+			s.emitToolAudit(ctx, tok, tool, word)
+		}
 		defer func() {
 			if p := recover(); p != nil {
 				// The deferred function must not panic again: a failing audit
 				// sink is contained here.
+				if !observed {
+					s.observeTool(tok, auditName, "error", time.Since(started))
+				}
 				s.safeAudit(ctx, tok, auditName, "error")
 				// The panic value can quote data (an index, a key): its type
 				// and the stack, which holds no argument values.
@@ -176,7 +189,7 @@ func (s *Server) callHandler(tok *authedToken, auditName string, run func(ctx co
 		if raw := bytes.TrimSpace(req.Params.Arguments); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
 			if raw[0] != '{' || json.Unmarshal(raw, &args) != nil || args == nil {
 				s.log.Debug("mcp tool call", "tool", auditName, "result", "error", "reason", "arguments are not an object")
-				s.emitToolAudit(ctx, tok, auditName, "error")
+				finish(auditName, "error")
 				return errorResult(errors.New("arguments must be an object")), nil
 			}
 		}
@@ -194,13 +207,13 @@ func (s *Server) callHandler(tok *authedToken, auditName string, run func(ctx co
 		}
 		if errors.Is(callCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 			// The log names the tool and the deadline, never an argument.
-			s.emitToolAudit(ctx, tok, auditName, "error")
+			finish(auditName, "error")
 			s.log.Warn("mcp tool call failed", "tool", auditName, "reason", "deadline exceeded", "deadline", limit.String())
 			return errorResult(errors.New("timed out")), nil
 		}
 		// The tool and the outcome, never an argument or the answer.
 		s.log.Debug("mcp tool call", "tool", auditName, "result", word)
-		s.emitToolAudit(ctx, tok, auditName, word)
+		finish(auditName, word)
 		return res, nil
 	}
 }
@@ -249,6 +262,7 @@ func (s *Server) auditHidden(tok *authedToken) mcp.Middleware {
 			if method == "tools/call" {
 				if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && p != nil {
 					if op, known := s.curatedByName[p.Name]; known && !tok.mayUse(op) {
+						s.observeTool(tok, p.Name, "denied", 0)
 						s.emitToolAudit(ctx, tok, p.Name, "denied")
 					}
 				}

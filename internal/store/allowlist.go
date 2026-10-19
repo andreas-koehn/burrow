@@ -1,6 +1,9 @@
 package store
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // maxAllowEntry bounds one allow-list entry: a provider slug, "/" and a
 // model id of the length the model catalog accepts, with room to spare.
@@ -40,6 +43,62 @@ func ModelAllowed(allowed []string, name string) bool {
 			return true
 		}
 		if direct && model != "" && e == provider+"/*" {
+			return true
+		}
+	}
+	return false
+}
+
+// maxToolEntry bounds one tool allow-list entry: a source slug (at most 24
+// characters), "__" and a tool name.
+const maxToolEntry = 160
+
+// toolSourceRe is a tool source's slug: 1-24 characters of [a-z0-9-].
+var toolSourceRe = regexp.MustCompile(`^[a-z0-9-]{1,24}$`)
+
+// ValidToolSourceSlug reports whether s can name a tool source: 1-24
+// characters of [a-z0-9-], not one of the reserved "burrow" and "v1".
+func ValidToolSourceSlug(s string) bool {
+	return toolSourceRe.MatchString(s) && s != "burrow" && s != "v1"
+}
+
+// ValidToolEntry reports whether entry is a well-formed tool allow-list entry:
+// "<source>__<tool>" or "<source>__*". A source slug has no underscore, so the
+// first "__" ends it and the tool name after it may contain more.
+func ValidToolEntry(entry string) bool {
+	if len(entry) > maxToolEntry {
+		return false
+	}
+	source, tool, ok := strings.Cut(entry, "__")
+	if !ok || !ValidToolSourceSlug(source) || tool == "" {
+		return false
+	}
+	if tool == "*" {
+		return true
+	}
+	return !strings.ContainsAny(tool, "* ") && !hasControl(tool)
+}
+
+// ToolAllowed reports whether a key restricted to allowed may call the tool
+// name, given as "<source>__<tool>" (the name on the aggregated /mcp
+// endpoint). Entries are exact names or "<source>__*". Unlike ModelAllowed an
+// empty list allows nothing.
+func ToolAllowed(allowed []string, name string) bool {
+	source, tool, ok := strings.Cut(name, "__")
+	if !ok {
+		return false
+	}
+	return ToolAllowedNative(allowed, source, tool)
+}
+
+// ToolAllowedNative is ToolAllowed for a source and a tool name given apart,
+// as on /mcp/<source> where tools keep their native names.
+func ToolAllowedNative(allowed []string, source, tool string) bool {
+	if source == "" || tool == "" || tool == "*" {
+		return false
+	}
+	for _, e := range allowed {
+		if e == source+"__"+tool || e == source+"__*" {
 			return true
 		}
 	}

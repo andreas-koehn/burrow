@@ -71,8 +71,8 @@ const (
 	tunnelEventsPerMinute = 60
 )
 
-// observer implements server.Observer, proxy.Observer and
-// aigw.RequestObserver. A nil *observer does nothing.
+// observer implements server.Observer, proxy.Observer,
+// aigw.RequestObserver and observe.ToolCallObserver. A nil *observer does nothing.
 type observer struct {
 	observerParts
 	log *slog.Logger
@@ -345,6 +345,22 @@ func upstreamErrorText(status int) string {
 		return "no_response"
 	}
 	return "http_" + strconv.Itoa(status)
+}
+
+// ---------------------------------------------------------------------------
+// MCP tool calls (observe.ToolCallObserver)
+// ---------------------------------------------------------------------------
+
+// ObserveToolCall counts one finished tools/call per source and outcome. The
+// tool's name is not a label.
+func (o *observer) ObserveToolCall(e observe.ToolCall) {
+	if o == nil {
+		return
+	}
+	defer o.recovered("tool_call", e.Outcome)
+	if o.Recorder != nil {
+		o.Recorder.IncMCPToolCall(e.Source, e.Outcome)
+	}
 }
 
 // ---------------------------------------------------------------------------

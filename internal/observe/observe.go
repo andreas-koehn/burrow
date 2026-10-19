@@ -229,16 +229,31 @@ type Attempt struct {
 	Sent bool
 }
 
-// ToolCall is one finished MCP tool call. Nothing produces it yet: it is the
-// event type the MCP server hands to its observer when it grows one, declared
-// here so that all four observation points speak the same vocabulary.
-//
-//	type ToolCallObserver interface{ ObserveToolCall(observe.ToolCall) }
+// ToolCall is one finished MCP tool call, on the management server or on a
+// tool source behind a gateway key. The server that ran it hands it to its
+// ToolCallObserver.
 type ToolCall struct {
-	Server   string // which MCP server: "management", or the slug of a gateway target
-	Tool     string // the tool's name as the caller or an upstream gave it: never a label
-	TokenID  string // the id of the automation token's row
-	UserID   string
-	Outcome  string // "ok", "denied" or "error"
+	// Server is which MCP server answered: "management" for /mcp/burrow, or
+	// "gateway" for /mcp and /mcp/<slug>.
+	Server string
+	// Source is the slug of the tool source the call went to; "burrow" for the
+	// management server. It is a metric label, so its set is bounded.
+	Source  string
+	Tool    string // the tool's name as the caller or an upstream gave it: never a label
+	TokenID string // the id of the automation token's row; empty for a gateway call
+	// GatewayKeyID is the gateway key that made the call; empty for a call made
+	// with an automation token or an OAuth grant.
+	GatewayKeyID string
+	UserID       string
+	Outcome      string // "ok", "denied" or "error"
+	// Status is the upstream's HTTP status for a gateway call, 0 when the call
+	// never reached an upstream or the upstream gave none.
+	Status   int
 	Duration time.Duration
+	// LatencyMs is Duration in whole milliseconds.
+	LatencyMs int64
 }
+
+// ToolCallObserver receives one ToolCall per finished tools/call. It is called
+// on the goroutine of the call and must not block.
+type ToolCallObserver interface{ ObserveToolCall(ToolCall) }

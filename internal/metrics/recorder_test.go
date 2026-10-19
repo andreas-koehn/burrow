@@ -50,6 +50,8 @@ var allMetricNames = []string{
 	// Upstream-credential injection (v0.5.0, spec Part K).
 	"burrow_ai_credential_injections_total",
 	"burrow_ai_credential_misses_total",
+	// MCP tool calls (v0.12.0).
+	"burrow_mcp_tool_calls_total",
 	// Custom domains (v0.5.0, spec Part K).
 	"burrow_custom_domain_count",
 	// Connection logs (v0.5.0, spec Part K).
@@ -299,6 +301,8 @@ func TestWriteTextClosedSetPresent(t *testing.T) {
 	// v0.5.0 — upstream-credential injection.
 	r.IncAICredentialInjections("svc", "OPENAI_API_KEY")
 	r.IncAICredentialMisses("svc")
+	// v0.12.0 — MCP tool calls.
+	r.IncMCPToolCall("burrow", "ok")
 	// v0.5.0 — custom domains.
 	r.SetCustomDomainCount(3)
 	// v0.5.0 — connection logs.
@@ -714,5 +718,34 @@ func TestCollectorsRunOnWriteText(t *testing.T) {
 		if got == nil || len(got.Samples) != 1 || got.Samples[0].Value != strconv.Itoa(want) {
 			t.Fatalf("scrape %d: burrow_custom_domain_count = %+v", want, got)
 		}
+	}
+}
+
+// A tool call is counted per source and outcome. The tool is never a label,
+// and an outcome outside the closed set is "other".
+func TestMCPToolCallMetric(t *testing.T) {
+	r := New()
+	r.IncMCPToolCall("github", "ok")
+	r.IncMCPToolCall("github", "ok")
+	r.IncMCPToolCall("github", "denied")
+	r.IncMCPToolCall("burrow", "error")
+	r.IncMCPToolCall("burrow", "rate-limited!")
+	var buf strings.Builder
+	if err := r.WriteText(&buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		`burrow_mcp_tool_calls_total{source="github",outcome="ok"} 2`,
+		`burrow_mcp_tool_calls_total{source="github",outcome="denied"} 1`,
+		`burrow_mcp_tool_calls_total{source="burrow",outcome="error"} 1`,
+		`burrow_mcp_tool_calls_total{source="burrow",outcome="other"} 1`,
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `tool="`) {
+		t.Error("a tool label appeared")
 	}
 }

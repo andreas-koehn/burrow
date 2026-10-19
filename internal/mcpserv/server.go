@@ -58,6 +58,7 @@ import (
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/observe"
 )
 
 // EndpointPath is where the API router mounts the server on the main address.
@@ -135,6 +136,9 @@ type Server struct {
 	// api is the relay's router (SetAPIHandler); nil until it is set.
 	api atomic.Pointer[http.Handler]
 
+	// observer receives one observe.ToolCall per tools/call; nil = none.
+	observer observe.ToolCallObserver
+
 	rateLimit int
 	// toolTimeout overrides the package constant of that name; tests only.
 	toolTimeout time.Duration
@@ -163,6 +167,40 @@ func (s *Server) SetAuditAppender(a AuditAppender) {
 		return
 	}
 	s.audit = a
+}
+
+// SetObserver installs the observer of finished tool calls. Each tools/call on
+// a known tool is reported once, with source "burrow", the token and its user,
+// the outcome (ok, denied or error) and how long it took; never an argument or
+// the answer. Nil disables it. Like SetAuditAppender, call it at startup.
+func (s *Server) SetObserver(o observe.ToolCallObserver) {
+	if s == nil {
+		return
+	}
+	s.observer = o
+}
+
+// observeTool reports a finished call to the observer. result is the word the
+// audit row carries: ok and dry_run count as ok, denied as denied, anything
+// else as error.
+func (s *Server) observeTool(tok *authedToken, tool, result string, took time.Duration) {
+	if s == nil || s.observer == nil || tok == nil {
+		return
+	}
+	// The observer is not ours: a panic in it must not cost the call its
+	// audit row or its answer.
+	defer func() { _ = recover() }()
+	outcome := "error"
+	switch result {
+	case "ok", "dry_run":
+		outcome = "ok"
+	case "denied":
+		outcome = "denied"
+	}
+	s.observer.ObserveToolCall(observe.ToolCall{
+		Server: "management", Source: "burrow", Tool: tool, TokenID: tok.tokenID, UserID: tok.userID,
+		Outcome: outcome, Duration: took, LatencyMs: took.Milliseconds(),
+	})
 }
 
 // emitToolAudit appends one mcp.tool.call row recording the (tool, result)

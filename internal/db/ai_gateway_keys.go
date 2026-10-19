@@ -18,18 +18,23 @@ type AIGatewayKey struct {
 	UserID        string
 	AllowedModels []string // never nil after a read; empty = all models
 	SystemText    string   // put in front of the app's system content; empty = none
+	// AllowedTools holds "<source>__<tool>" and "<source>__*" entries; never
+	// nil after a read. Empty = no tools.
+	AllowedTools []string
+	// ToolsReadOnly limits the key to tools classed read-only.
+	ToolsReadOnly bool
 	LastUsed      *time.Time
 	CreatedAt     time.Time
 	RevokedAt     *time.Time
 }
 
-const aiGatewayKeyCols = `id, name, key_hash, key_prefix, user_id, allowed_models, system_text, last_used, created_at, revoked_at`
+const aiGatewayKeyCols = `id, name, key_hash, key_prefix, user_id, allowed_models, system_text, allowed_tools, tools_read_only, last_used, created_at, revoked_at`
 
 func scanAIGatewayKey(row interface{ Scan(...any) error }) (AIGatewayKey, error) {
 	var k AIGatewayKey
-	var allowed string
+	var allowed, tools string
 	var lastUsed, revoked sql.NullTime
-	if err := row.Scan(&k.ID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.UserID, &allowed, &k.SystemText, &lastUsed, &k.CreatedAt, &revoked); err != nil {
+	if err := row.Scan(&k.ID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.UserID, &allowed, &k.SystemText, &tools, &k.ToolsReadOnly, &lastUsed, &k.CreatedAt, &revoked); err != nil {
 		return k, err
 	}
 	k.AllowedModels = []string{}
@@ -39,6 +44,15 @@ func scanAIGatewayKey(row interface{ Scan(...any) error }) (AIGatewayKey, error)
 		}
 		if k.AllowedModels == nil {
 			k.AllowedModels = []string{}
+		}
+	}
+	k.AllowedTools = []string{}
+	if tools != "" {
+		if err := json.Unmarshal([]byte(tools), &k.AllowedTools); err != nil {
+			return k, fmt.Errorf("ai gateway key %s: allowed_tools: %w", k.ID, err)
+		}
+		if k.AllowedTools == nil {
+			k.AllowedTools = []string{}
 		}
 	}
 	if lastUsed.Valid {
@@ -58,9 +72,13 @@ func (x *DB) CreateAIGatewayKey(ctx context.Context, k AIGatewayKey) error {
 	if err != nil {
 		return fmt.Errorf("create ai gateway key: %w", err)
 	}
+	tools, err := json.Marshal(append([]string{}, k.AllowedTools...))
+	if err != nil {
+		return fmt.Errorf("create ai gateway key: %w", err)
+	}
 	if _, err := x.sqlDB.ExecContext(ctx,
-		`INSERT INTO ai_gateway_keys(id, name, key_hash, key_prefix, user_id, allowed_models, system_text) VALUES(?,?,?,?,?,?,?)`,
-		k.ID, k.Name, k.KeyHash, k.KeyPrefix, k.UserID, string(allowed), k.SystemText); err != nil {
+		`INSERT INTO ai_gateway_keys(id, name, key_hash, key_prefix, user_id, allowed_models, system_text, allowed_tools, tools_read_only) VALUES(?,?,?,?,?,?,?,?,?)`,
+		k.ID, k.Name, k.KeyHash, k.KeyPrefix, k.UserID, string(allowed), k.SystemText, string(tools), k.ToolsReadOnly); err != nil {
 		return fmt.Errorf("create ai gateway key: %w", err)
 	}
 	return nil
@@ -113,11 +131,21 @@ func (x *DB) ListAIGatewayKeys(ctx context.Context, userID string) ([]AIGatewayK
 	return out, rows.Err()
 }
 
-// UpdateAIGatewayKey replaces the name and the system text of the key, revoked
+// UpdateAIGatewayKey replaces the editable fields of the key (name, system
+// text, both allow-lists and the read-only switch) with the values in k, revoked
 // or not; ErrNotFound when there is no such key.
-func (x *DB) UpdateAIGatewayKey(ctx context.Context, id, name, systemText string) error {
+func (x *DB) UpdateAIGatewayKey(ctx context.Context, k AIGatewayKey) error {
+	allowed, err := json.Marshal(append([]string{}, k.AllowedModels...))
+	if err != nil {
+		return fmt.Errorf("update ai gateway key: %w", err)
+	}
+	tools, err := json.Marshal(append([]string{}, k.AllowedTools...))
+	if err != nil {
+		return fmt.Errorf("update ai gateway key: %w", err)
+	}
 	res, err := x.sqlDB.ExecContext(ctx,
-		`UPDATE ai_gateway_keys SET name=?, system_text=? WHERE id=?`, name, systemText, id)
+		`UPDATE ai_gateway_keys SET name=?, system_text=?, allowed_models=?, allowed_tools=?, tools_read_only=? WHERE id=?`,
+		k.Name, k.SystemText, string(allowed), string(tools), k.ToolsReadOnly, k.ID)
 	if err != nil {
 		return fmt.Errorf("update ai gateway key: %w", err)
 	}

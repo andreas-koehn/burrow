@@ -314,11 +314,11 @@ type AIModelStore interface {
 
 // AIGatewayKeyStore is the gateway-key surface of the management API.
 // *store.Store satisfies it. The plaintext key is the second result of
-// CreateGatewayKey and comes from nowhere else.
+// CreateGatewayKeyFrom and comes from nowhere else.
 type AIGatewayKeyStore interface {
-	CreateGatewayKey(ctx context.Context, userID, name string, allowed []string, systemText string) (store.GatewayKey, string, error)
+	CreateGatewayKeyFrom(ctx context.Context, userID string, in store.NewGatewayKey) (store.GatewayKey, string, error)
 	ListGatewayKeys(ctx context.Context, callerID string, all bool) ([]store.GatewayKey, error)
-	UpdateGatewayKey(ctx context.Context, callerID string, anyKey bool, id string, name, systemText *string) (store.GatewayKey, error)
+	UpdateGatewayKey(ctx context.Context, callerID string, anyKey bool, id string, u store.GatewayKeyUpdate) (store.GatewayKey, error)
 	RevokeGatewayKey(ctx context.Context, callerID string, anyKey bool, id string) error
 }
 

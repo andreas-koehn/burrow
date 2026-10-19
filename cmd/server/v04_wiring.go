@@ -373,7 +373,8 @@ func (a cacheServiceLookupAdapter) ListAllServiceAIConfigs(_ context.Context) ([
 // are those of the REST API.
 //
 // The audit logger is wired into the server so every tools/call dispatch
-// emits one mcp.tool.call audit row.
+// emits one mcp.tool.call audit row, and the observer counts it in
+// burrow_mcp_tool_calls_total with source "burrow".
 func BuildMCPServer(st *store.Store, stack *v04Stack, spec []byte, log *slog.Logger) (*mcpserv.Server, error) {
 	srv, err := mcpserv.New(mcpBearerAdapter{s: st}, st, spec, log)
 	if err != nil {
@@ -381,6 +382,9 @@ func BuildMCPServer(st *store.Store, stack *v04Stack, spec []byte, log *slog.Log
 	}
 	if stack.AuditLogger != nil {
 		srv.SetAuditAppender(stack.AuditLogger)
+	}
+	if stack.Observer != nil {
+		srv.SetObserver(stack.Observer)
 	}
 	return srv, nil
 }

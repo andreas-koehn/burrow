@@ -248,6 +248,7 @@ Requests to the model gateway (`/openai`, `/anthropic`, `/ai/…`) are not proxi
 | `burrow_ai_semantic_index_bytes` | `service` | its size on disk, refreshed after a promotion |
 | `burrow_ai_credential_injections_total` | `service`, `slot` | upstream credentials put on a request. `slot` is the name of the credential slot the operator bound (the suffix of the environment variable that holds the key, never the key) |
 | `burrow_ai_credential_misses_total` | `service` | requests where the slot was bound but its environment variable was missing |
+| `burrow_mcp_tool_calls_total` | `source`, `outcome` | finished MCP tool calls. `source` is the slug of a tool source, or `burrow` for the management server; `outcome` is `ok`, `denied` or `error`. The tool's name is never a label |
 | `burrow_db_backend` | `driver` | always 1; `sqlite` or `postgres` |
 | `burrow_db_pool_active` | none | database connections in use, read at each scrape |
 | `burrow_db_pool_idle` | none | idle connections |

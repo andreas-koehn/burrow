@@ -3,7 +3,8 @@ package api
 // ai_key_handlers.go — /ai/keys: gateway keys.
 //
 // A gateway key opens the dialect endpoints (/openai/v1, /anthropic) and the
-// provider paths, optionally restricted to a list of models.  It belongs to
+// provider paths, optionally restricted to a list of models, and opens the MCP
+// tools its allow-list names (none by default).  It belongs to
 // the user who created it.  The key itself leaves the relay once, in the
 // answer to its creation: the database keeps a hash, and no other response,
 // audit event or log line carries it.
@@ -45,6 +46,8 @@ type aiKeyResp struct {
 	UserID        string     `json:"user_id"`
 	AllowedModels []string   `json:"allowed_models"` // empty = every model
 	SystemText    string     `json:"system_text"`    // put in front of the app's system content
+	AllowedTools  []string   `json:"allowed_tools"`  // "<source>__<tool>" or "<source>__*"; empty = no tools
+	ToolsReadOnly bool       `json:"tools_read_only"`
 	LastUsed      *time.Time `json:"last_used"`
 	CreatedAt     time.Time  `json:"created_at"`
 	RevokedAt     *time.Time `json:"revoked_at"`
@@ -60,6 +63,7 @@ func toAIKeyResp(k store.GatewayKey) aiKeyResp {
 	return aiKeyResp{
 		ID: k.ID, Name: k.Name, KeyPrefix: k.KeyPrefix, UserID: k.UserID,
 		AllowedModels: append([]string{}, k.AllowedModels...), SystemText: k.SystemText,
+		AllowedTools: append([]string{}, k.AllowedTools...), ToolsReadOnly: k.ToolsReadOnly,
 		LastUsed: k.LastUsed, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt,
 	}
 }
@@ -69,14 +73,20 @@ func toAIKeyResp(k store.GatewayKey) aiKeyResp {
 type postAIKeyReq struct {
 	Name          string   `json:"name"`
 	AllowedModels []string `json:"allowed_models"`
+	AllowedTools  []string `json:"allowed_tools"`
+	ToolsReadOnly bool     `json:"tools_read_only"`
 	SystemText    string   `json:"system_text"`
 }
 
 // putAIKeyReq is the body of PUT /ai/keys/{id}. A field left out stays as it
-// is; the key, its owner and its allow-list cannot be changed.
+// is; an allow-list that is given replaces the list, and an empty one clears
+// it. The key and its owner cannot be changed.
 type putAIKeyReq struct {
-	Name       *string `json:"name"`
-	SystemText *string `json:"system_text"`
+	Name          *string   `json:"name"`
+	SystemText    *string   `json:"system_text"`
+	AllowedModels *[]string `json:"allowed_models"`
+	AllowedTools  *[]string `json:"allowed_tools"`
+	ToolsReadOnly *bool     `json:"tools_read_only"`
 }
 
 const (
@@ -88,6 +98,8 @@ const (
 	msgKeyName     = "name must be 1-120 characters without control characters"
 	msgKeyAllowed  = `an allowed model must be a model name, "<provider>/<model>" or "<provider>/*"`
 	msgKeyTooMany  = "at most 64 allowed models"
+	msgKeyTool     = `an allowed tool must be "<source>__<tool>" or "<source>__*"`
+	msgKeyTools    = "at most 64 allowed tools"
 	msgKeyText     = "system_text is longer than 8192 bytes"
 	msgKeyNotFound = "key not found"
 )
@@ -126,6 +138,32 @@ func (d Deps) keysReach(r *http.Request) (all, anyKey bool, err error) {
 	anyKey = effectivePerms(r.Context(), role, authz.PermAIConfigureAny)
 	all = anyKey || effectivePerms(r.Context(), role, authz.PermAIReadAny)
 	return all, anyKey, nil
+}
+
+// checkKeyAllowLists answers 400 and reports false when a model or tool
+// allow-list is malformed or too long. A nil list is not checked.
+func checkKeyAllowLists(w http.ResponseWriter, models, tools []string) bool {
+	if len(models) > maxKeyAllowed {
+		writeErr(w, http.StatusBadRequest, msgKeyTooMany)
+		return false
+	}
+	for _, e := range models {
+		if !store.ValidAllowEntry(e) {
+			writeErr(w, http.StatusBadRequest, msgKeyAllowed)
+			return false
+		}
+	}
+	if len(tools) > maxKeyAllowed {
+		writeErr(w, http.StatusBadRequest, msgKeyTools)
+		return false
+	}
+	for _, e := range tools {
+		if !store.ValidToolEntry(e) {
+			writeErr(w, http.StatusBadRequest, msgKeyTool)
+			return false
+		}
+	}
+	return true
 }
 
 // GetAIKeys handles GET /api/v1/ai/keys: the caller's gateway keys, newest
@@ -178,15 +216,8 @@ func (d Deps) PostAIKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, msgKeyText)
 		return
 	}
-	if len(in.AllowedModels) > maxKeyAllowed {
-		writeErr(w, http.StatusBadRequest, msgKeyTooMany)
+	if !checkKeyAllowLists(w, in.AllowedModels, in.AllowedTools) {
 		return
-	}
-	for _, e := range in.AllowedModels {
-		if !store.ValidAllowEntry(e) {
-			writeErr(w, http.StatusBadRequest, msgKeyAllowed)
-			return
-		}
 	}
 	if !d.keyTextAllowed(w, r, in.SystemText) {
 		return
@@ -195,7 +226,9 @@ func (d Deps) PostAIKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "gateway keys are not available on this relay")
 		return
 	}
-	k, plaintext, err := d.AIGatewayKeys.CreateGatewayKey(r.Context(), userID(r.Context()), name, in.AllowedModels, in.SystemText)
+	k, plaintext, err := d.AIGatewayKeys.CreateGatewayKeyFrom(r.Context(), userID(r.Context()), store.NewGatewayKey{
+		Name: name, AllowedModels: in.AllowedModels, AllowedTools: in.AllowedTools, ToolsReadOnly: in.ToolsReadOnly, SystemText: in.SystemText,
+	})
 	if err != nil {
 		if !mapKeyErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
@@ -203,10 +236,12 @@ func (d Deps) PostAIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.auditAI(r, audit.ActionAIGatewayKeyCreate, k.ID, k.Name, map[string]any{
-		"name":           k.Name,
-		"allowed_models": k.AllowedModels,
-		"key_prefix":     k.KeyPrefix,
-		"system_text":    len(k.SystemText) > 0,
+		"name":            k.Name,
+		"allowed_models":  k.AllowedModels,
+		"allowed_tools":   k.AllowedTools,
+		"tools_read_only": k.ToolsReadOnly,
+		"key_prefix":      k.KeyPrefix,
+		"system_text":     len(k.SystemText) > 0,
 	})
 	writeJSON(w, http.StatusCreated, aiKeyCreatedResp{aiKeyResp: toAIKeyResp(k), Key: plaintext})
 }
@@ -235,12 +270,13 @@ func (d Deps) DeleteAIKey(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// PutAIKey handles PUT /api/v1/ai/keys/{id}: renames the key and sets its
-// system text. Its owner or a caller with ai:configure:any may; anyone else's key answers
+// PutAIKey handles PUT /api/v1/ai/keys/{id}: renames the key, sets its system
+// text and replaces its model and tool allow-lists and its read-only switch. Its owner or a caller with ai:configure:any may; anyone else's key answers
 // 404 like an id that does not exist. A field left out stays as it is, an
-// empty name is refused, an empty system_text clears the text. A revoked key
-// can still be changed. The audit event says which fields changed, never the
-// text.
+// empty name is refused, an empty system_text clears the text, an empty
+// allow-list clears the list (all models, no tools). A revoked key
+// can still be changed. The audit event says which fields changed and carries the
+// new allow-lists, never the text.
 func (d Deps) PutAIKey(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxKeyBody)
 	var in putAIKeyReq
@@ -259,6 +295,16 @@ func (d Deps) PutAIKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, msgKeyText)
 		return
 	}
+	var models, tools []string
+	if in.AllowedModels != nil {
+		models = *in.AllowedModels
+	}
+	if in.AllowedTools != nil {
+		tools = *in.AllowedTools
+	}
+	if !checkKeyAllowLists(w, models, tools) {
+		return
+	}
 	if in.SystemText != nil && !d.keyTextAllowed(w, r, *in.SystemText) {
 		return
 	}
@@ -272,18 +318,32 @@ func (d Deps) PutAIKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	k, err := d.AIGatewayKeys.UpdateGatewayKey(r.Context(), userID(r.Context()), anyKey, id, in.Name, in.SystemText)
+	k, err := d.AIGatewayKeys.UpdateGatewayKey(r.Context(), userID(r.Context()), anyKey, id, store.GatewayKeyUpdate{
+		Name: in.Name, SystemText: in.SystemText, AllowedModels: in.AllowedModels, AllowedTools: in.AllowedTools, ToolsReadOnly: in.ToolsReadOnly,
+	})
 	if err != nil {
 		if !mapKeyErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
 		}
 		return
 	}
-	d.auditAI(r, audit.ActionAIGatewayKeyUpdate, k.ID, k.Name, map[string]any{
+	// The allow-lists are not secret: the event carries the new lists, so that
+	// it shows what a key was widened to.
+	changes := map[string]any{
 		"name":        k.Name,
 		"renamed":     in.Name != nil,
 		"system_text": in.SystemText != nil,
-	})
+	}
+	if in.AllowedModels != nil {
+		changes["allowed_models"] = k.AllowedModels
+	}
+	if in.AllowedTools != nil {
+		changes["allowed_tools"] = k.AllowedTools
+	}
+	if in.ToolsReadOnly != nil {
+		changes["tools_read_only"] = k.ToolsReadOnly
+	}
+	d.auditAI(r, audit.ActionAIGatewayKeyUpdate, k.ID, k.Name, changes)
 	writeJSON(w, http.StatusOK, toAIKeyResp(k))
 }
 

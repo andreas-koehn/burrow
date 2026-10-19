@@ -574,7 +574,7 @@ components:
       description: >
         A gateway key as every response but its creation shows it. The key
         itself is stored as a hash and is never returned again.
-      required: [id, name, key_prefix, user_id, allowed_models, system_text, last_used, created_at, revoked_at]
+      required: [id, name, key_prefix, user_id, allowed_models, allowed_tools, tools_read_only, system_text, last_used, created_at, revoked_at]
       properties:
         id: { type: string }
         name: { type: string, maxLength: 120 }
@@ -596,6 +596,19 @@ components:
             The models the key may use; empty means every model. An entry is
             a synthetic model name, "<provider>/<model>" or "<provider>/*".
           items: { type: string, maxLength: 264 }
+        allowed_tools:
+          type: array
+          maxItems: 64
+          description: >
+            The MCP tools the key may call; empty means none, the opposite of
+            allowed_models. An entry is "<source>__<tool>" or "<source>__*",
+            where the source is a tool source's slug (1-24 characters of
+            a-z, 0-9 and "-").
+          items: { type: string, maxLength: 160 }
+        tools_read_only:
+          type: boolean
+          description: >
+            The key reaches only the tools its operator classed as read-only.
         last_used: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
         revoked_at: { type: string, format: date-time, nullable: true }
@@ -603,8 +616,26 @@ components:
       type: object
       description: >
         The body of PUT /api/v1/ai/keys/{id}. A field left out stays as it
-        is.
+        is; an allow-list that is given replaces the list, and an empty one
+        clears it.
       properties:
+        allowed_models:
+          type: array
+          maxItems: 64
+          description: >
+            Replaces the model allow-list; empty means every model. An entry
+            is a synthetic model name, "<provider>/<model>" or "<provider>/*".
+          items: { type: string, maxLength: 264 }
+        allowed_tools:
+          type: array
+          maxItems: 64
+          description: >
+            Replaces the tool allow-list; empty means no tools. An entry is
+            "<source>__<tool>" or "<source>__*".
+          items: { type: string, maxLength: 160 }
+        tools_read_only:
+          type: boolean
+          description: Limits the key to tools classed read-only, or lifts the limit.
         name:
           type: string
           minLength: 1
@@ -6020,7 +6051,7 @@ paths:
         Creates a key owned by the caller. The response carries the key
         ("bgw_" and 43 characters) and is the only one that ever does: the
         relay stores a hash. It is sent with Cache-Control: no-store. The
-        body is at most 64 KiB and has no other fields than the three below.
+        body is at most 64 KiB and has no other fields than the five below.
       requestBody:
         required: true
         content:
@@ -6042,6 +6073,17 @@ paths:
                     model name, "<provider>/<model>" or "<provider>/*"; it
                     need not name something that exists.
                   items: { type: string, maxLength: 264 }
+                allowed_tools:
+                  type: array
+                  maxItems: 64
+                  description: >
+                    The MCP tools the key may call. Left out or empty: none.
+                    An entry is "<source>__<tool>" or "<source>__*".
+                  items: { type: string, maxLength: 160 }
+                tools_read_only:
+                  type: boolean
+                  description: >
+                    Limit the key to tools classed read-only. Left out: false.
                 system_text:
                   type: string
                   description: >
@@ -6091,12 +6133,13 @@ paths:
       tags: [models]
       operationId: gatewayKeyUpdate
       x-burrow-permission: {kind: needs, any_of: ["ai:configure:own", "ai:configure:any"]}
-      summary: Rename a gateway key or set its system text
+      summary: Change a gateway key
       description: |
-        Changes the name and the system text of a key, nothing else; the key
-        itself, its owner and its allow-list stay. A field left out stays as
-        it is, an empty system_text clears the text, an empty name is
-        refused. A revoked key can still be changed. Its owner may, and so may a
+        Changes the name, the system text, the model and tool allow-lists and
+        the read-only switch of a key; the key itself and its owner stay. A
+        field left out stays as it is, an empty system_text clears the text,
+        an empty allow-list clears that list (every model, no tools), an
+        empty name is refused. A revoked key can still be changed. Its owner may, and so may a
         caller with ai:configure:any (an automation token only when it
         declares it and its user's role grants it). Another user's key answers 404, like an id that does not
         exist. The body is at most 64 KiB. While the global request

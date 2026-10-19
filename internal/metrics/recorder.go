@@ -116,6 +116,11 @@ var closedSet = []metricDef{
 		help:   "Total AI upstream errors. status is a class (1xx..5xx) or none; for an upstream the gateway tried, none means it gave no response; for a proxied model service it is the class of what the visitor received.",
 		labels: []string{"service", "status"}},
 
+	// MCP tool calls (v0.12.0).
+	{name: "burrow_mcp_tool_calls_total", kind: kindCounter,
+		help:   "Total MCP tool calls. source is the slug of a tool source, or burrow for the management server; outcome is ok, denied or error. The tool is never a label.",
+		labels: []string{"source", "outcome"}},
+
 	// Internal.
 	{name: "burrow_goroutines", kind: kindGauge,
 		help:   "Live goroutine count (sampled at scrape time).",
@@ -557,6 +562,15 @@ func (r *Recorder) IncAIUpstreamError(service string, status int) {
 	r.incCounter("burrow_ai_upstream_errors_total",
 		[]string{"service", "status"},
 		[]string{service, StatusClass(status)}, 1)
+}
+
+// IncMCPToolCall records one finished MCP tool call of source (a tool source's
+// slug, or "burrow"). outcome is "ok", "denied" or "error"; anything else is
+// counted as "other". The tool's name is not a label.
+func (r *Recorder) IncMCPToolCall(source, outcome string) {
+	r.incCounter("burrow_mcp_tool_calls_total",
+		[]string{"source", "outcome"},
+		[]string{source, oneOf(outcome, "ok", "denied", "error")}, 1)
 }
 
 // SetGoroutines sets burrow_goroutines to n. Callers typically pass

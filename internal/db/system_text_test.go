@@ -138,13 +138,13 @@ func checkAIGatewayKeySystemText(t *testing.T, x *DB, userID string) {
 	if k, err := x.GetAIGatewayKeyByHash(ctx, "gkst-h2"); err != nil || k.SystemText != "" {
 		t.Fatalf("by hash: %v %+v", err, k)
 	}
-	if err := x.UpdateAIGatewayKey(ctx, "gkst1", "renamed", "Other."); err != nil {
+	if err := x.UpdateAIGatewayKey(ctx, AIGatewayKey{ID: "gkst1", Name: "renamed", SystemText: "Other.", AllowedTools: []string{"gh__*"}, ToolsReadOnly: true}); err != nil {
 		t.Fatal(err)
 	}
-	if k, _ := x.GetAIGatewayKey(ctx, "gkst1"); k.Name != "renamed" || k.SystemText != "Other." {
+	if k, _ := x.GetAIGatewayKey(ctx, "gkst1"); k.Name != "renamed" || k.SystemText != "Other." || len(k.AllowedTools) != 1 || !k.ToolsReadOnly {
 		t.Fatalf("after update: %+v", k)
 	}
-	if err := x.UpdateAIGatewayKey(ctx, "missing", "x", ""); err != ErrNotFound {
+	if err := x.UpdateAIGatewayKey(ctx, AIGatewayKey{ID: "missing", Name: "x"}); err != ErrNotFound {
 		t.Fatalf("update missing = %v, want ErrNotFound", err)
 	}
 	list, err := x.ListAIGatewayKeys(ctx, userID)

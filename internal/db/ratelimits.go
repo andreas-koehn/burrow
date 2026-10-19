@@ -139,6 +139,9 @@ func usageKeyColumn(subject string) (column, id string) {
 	return "api_key_id", subject
 }
 
+// Tool calls (kind 'mcp') are not model requests and never count against a
+// day-window quota.
+//
 // sumDailyUsageSQL sums the bytes of the rows whose column equals the first
 // parameter since the second (a time). Each column it is called with has an
 // index (column, ts): service_id, api_key_id, gateway_key_id, requested_model.
@@ -146,7 +149,8 @@ func sumDailyUsageSQL(column string) string {
 	return `SELECT CAST(COALESCE(SUM(bytes_in), 0) + COALESCE(SUM(bytes_out), 0) AS BIGINT)
 		   FROM usage_events
 		  WHERE ` + column + ` = ?
-		    AND ts >= ?`
+		    AND ts >= ?
+		    AND kind <> 'mcp'`
 }
 
 // sumDailyUsage returns today's byte estimate of the rows whose column equals
@@ -171,7 +175,8 @@ func (x *DB) countDailyUsage(ctx context.Context, column, id string) (int64, err
 	row := x.sqlDB.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM usage_events
 		  WHERE `+column+` = ?
-		    AND ts >= ?`,
+		    AND ts >= ?
+		    AND kind <> 'mcp'`,
 		id, utcDayStart(),
 	)
 	var n int64

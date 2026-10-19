@@ -274,19 +274,19 @@ func TestUpdateGatewayKey(t *testing.T) {
 	str := func(v string) *string { return &v }
 
 	// nil pointers change nothing.
-	got, err := s.UpdateGatewayKey(ctx, owner, false, k.ID, nil, nil)
+	got, err := s.UpdateGatewayKey(ctx, owner, false, k.ID, GatewayKeyUpdate{})
 	if err != nil || got.Name != "laptop" || got.SystemText != "Be brief." {
 		t.Fatalf("no-op update: %v %+v", err, got)
 	}
-	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, str("  desk "), nil)
+	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, GatewayKeyUpdate{Name: str("  desk ")})
 	if err != nil || got.Name != "desk" || got.SystemText != "Be brief." {
 		t.Fatalf("rename: %v %+v", err, got)
 	}
-	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, nil, str("Answer in German."))
+	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, GatewayKeyUpdate{SystemText: str("Answer in German.")})
 	if err != nil || got.Name != "desk" || got.SystemText != "Answer in German." {
 		t.Fatalf("text: %v %+v", err, got)
 	}
-	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, nil, str(""))
+	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, GatewayKeyUpdate{SystemText: str("")})
 	if err != nil || got.SystemText != "" {
 		t.Fatalf("clear text: %v %+v", err, got)
 	}
@@ -299,25 +299,25 @@ func TestUpdateGatewayKey(t *testing.T) {
 		"control name": {str("a\nb"), nil},
 		"long text":    {nil, str(strings.Repeat("t", MaxSystemTextBytes+1))},
 	} {
-		if _, err := s.UpdateGatewayKey(ctx, owner, false, k.ID, c.name, c.text); !errors.Is(err, ErrInvalidKey) {
+		if _, err := s.UpdateGatewayKey(ctx, owner, false, k.ID, GatewayKeyUpdate{Name: c.name, SystemText: c.text}); !errors.Is(err, ErrInvalidKey) {
 			t.Errorf("%s: err = %v, want ErrInvalidKey", name, err)
 		}
 	}
-	if _, err := s.UpdateGatewayKey(ctx, owner, false, k.ID, nil, str(strings.Repeat("é", MaxSystemTextBytes/2))); err != nil {
+	if _, err := s.UpdateGatewayKey(ctx, owner, false, k.ID, GatewayKeyUpdate{SystemText: str(strings.Repeat("é", MaxSystemTextBytes/2))}); err != nil {
 		t.Errorf("exactly %d bytes must pass: %v", MaxSystemTextBytes, err)
 	}
 
 	// A stranger and a missing id look alike.
-	if _, err := s.UpdateGatewayKey(ctx, other, false, k.ID, str("x"), nil); !errors.Is(err, ErrKeyNotFound) {
+	if _, err := s.UpdateGatewayKey(ctx, other, false, k.ID, GatewayKeyUpdate{Name: str("x")}); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("stranger err = %v", err)
 	}
-	if _, err := s.UpdateGatewayKey(ctx, owner, false, "missing", str("x"), nil); !errors.Is(err, ErrKeyNotFound) {
+	if _, err := s.UpdateGatewayKey(ctx, owner, false, "missing", GatewayKeyUpdate{Name: str("x")}); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("missing err = %v", err)
 	}
-	if _, err := s.UpdateGatewayKey(ctx, "", false, k.ID, str("x"), nil); !errors.Is(err, ErrKeyNotFound) {
+	if _, err := s.UpdateGatewayKey(ctx, "", false, k.ID, GatewayKeyUpdate{Name: str("x")}); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("empty caller err = %v", err)
 	}
-	if got, _ := s.UpdateGatewayKey(ctx, admin, true, k.ID, str("by-admin"), nil); got.Name != "by-admin" {
+	if got, _ := s.UpdateGatewayKey(ctx, admin, true, k.ID, GatewayKeyUpdate{Name: str("by-admin")}); got.Name != "by-admin" {
 		t.Fatalf("admin update: %+v", got)
 	}
 
@@ -325,12 +325,201 @@ func TestUpdateGatewayKey(t *testing.T) {
 	if err := s.RevokeGatewayKey(ctx, owner, false, k.ID); err != nil {
 		t.Fatal(err)
 	}
-	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, str("old laptop"), nil)
+	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, GatewayKeyUpdate{Name: str("old laptop")})
 	if err != nil || got.Name != "old laptop" || got.RevokedAt == nil {
 		t.Fatalf("rename revoked: %v %+v", err, got)
 	}
 
 	if _, _, err := s.CreateGatewayKey(ctx, owner, "x", nil, strings.Repeat("t", MaxSystemTextBytes+1)); !errors.Is(err, ErrInvalidKey) {
 		t.Fatalf("create with long text err = %v", err)
+	}
+}
+
+// A key is only as good as its owner: it stops working when the owner is
+// suspended or gone, or when the owner's role no longer grants
+// ai:configure:own or :any. The refusal is the one an unknown key gets.
+func TestValidateGatewayKey_Owner(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	valid := func(plain string) bool {
+		t.Helper()
+		_, ok, err := s.ValidateGatewayKey(ctx, plain)
+		if err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		return ok
+	}
+	mint := func(owner string) string {
+		t.Helper()
+		_, plain, err := s.CreateGatewayKey(ctx, owner, "ci", nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plain
+	}
+
+	t.Run("suspended and reactivated", func(t *testing.T) {
+		u := mustCreateUser(t, s, "own-susp@x", "user")
+		plain := mint(u.ID)
+		if !valid(plain) {
+			t.Fatal("a key of an active owner was refused")
+		}
+		if err := s.SetUserStatus(ctx, u.ID, "suspended"); err != nil {
+			t.Fatal(err)
+		}
+		if valid(plain) {
+			t.Fatal("a key of a suspended owner was accepted")
+		}
+		if err := s.SetUserStatus(ctx, u.ID, "active"); err != nil {
+			t.Fatal(err)
+		}
+		if !valid(plain) {
+			t.Fatal("a key stays refused after its owner is active again")
+		}
+	})
+
+	t.Run("owner gone", func(t *testing.T) {
+		u := mustCreateUser(t, s, "own-gone@x", "user")
+		plain := mint(u.ID)
+		if err := s.DeleteUser(ctx, u.ID); err != nil {
+			t.Fatal(err)
+		}
+		if valid(plain) {
+			t.Fatal("a key whose owner is missing was accepted")
+		}
+	})
+
+	t.Run("role without the permission", func(t *testing.T) {
+		if err := s.CreateRole(ctx, "viewer-only", "", []string{"ai:read:own"}, false); err != nil {
+			t.Fatal(err)
+		}
+		u := mustCreateUser(t, s, "own-role@x", "user")
+		plain := mint(u.ID)
+		if !valid(plain) {
+			t.Fatal("a key of a user role was refused")
+		}
+		if err := s.UpdateUserRole(ctx, u.ID, "viewer-only"); err != nil {
+			t.Fatal(err)
+		}
+		if valid(plain) {
+			t.Fatal("a key whose owner lost ai:configure was accepted")
+		}
+		if err := s.CreateRole(ctx, "keeper", "", []string{"ai:configure:own"}, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.UpdateUserRole(ctx, u.ID, "keeper"); err != nil {
+			t.Fatal(err)
+		}
+		if !valid(plain) {
+			t.Fatal("a key of a custom role with ai:configure:own was refused")
+		}
+		if err := s.CreateRole(ctx, "any-keeper", "", []string{"ai:configure:any"}, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.UpdateUserRole(ctx, u.ID, "any-keeper"); err != nil {
+			t.Fatal(err)
+		}
+		if !valid(plain) {
+			t.Fatal("a key of a custom role with ai:configure:any was refused")
+		}
+	})
+
+	t.Run("admin", func(t *testing.T) {
+		if u := mustCreateUser(t, s, "own-admin@x", "admin"); !valid(mint(u.ID)) {
+			t.Fatal("a key of an admin was refused")
+		}
+	})
+}
+
+// A key's allow-lists and read-only switch can be set at creation and changed
+// afterwards; a field left out stays as it is.
+func TestGatewayKeyTools(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, s, "gkt-owner@x", "user").ID
+	other := mustCreateUser(t, s, "gkt-other@x", "user").ID
+
+	// A key made the old way may call no tools.
+	k0, _, err := s.CreateGatewayKey(ctx, owner, "old", nil, "")
+	if err != nil || k0.AllowedTools == nil || len(k0.AllowedTools) != 0 || k0.ToolsReadOnly {
+		t.Fatalf("default key: %v %+v", err, k0)
+	}
+
+	k, plain, err := s.CreateGatewayKeyFrom(ctx, owner, NewGatewayKey{
+		Name: "agent", AllowedModels: []string{"zai/*"}, AllowedTools: []string{"github__*", "jira__x", "github__*"}, ToolsReadOnly: true,
+	})
+	if err != nil || fmt.Sprint(k.AllowedTools) != "[github__* jira__x]" || !k.ToolsReadOnly || fmt.Sprint(k.AllowedModels) != "[zai/*]" {
+		t.Fatalf("create: %v %+v", err, k)
+	}
+	if got, ok, err := s.ValidateGatewayKey(ctx, plain); err != nil || !ok || fmt.Sprint(got.AllowedTools) != "[github__* jira__x]" || !got.ToolsReadOnly {
+		t.Fatalf("validate carries the tool fields: %v %v %+v", err, ok, got)
+	}
+
+	models := func(v ...string) *[]string { return &v }
+	yes := true
+	no := false
+
+	// Nothing given: nothing changes.
+	got, err := s.UpdateGatewayKey(ctx, owner, false, k.ID, GatewayKeyUpdate{})
+	if err != nil || fmt.Sprint(got.AllowedTools) != "[github__* jira__x]" || !got.ToolsReadOnly || fmt.Sprint(got.AllowedModels) != "[zai/*]" {
+		t.Fatalf("no-op: %v %+v", err, got)
+	}
+	// Models only.
+	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, GatewayKeyUpdate{AllowedModels: models("burrow-simple", "burrow-simple")})
+	if err != nil || fmt.Sprint(got.AllowedModels) != "[burrow-simple]" || fmt.Sprint(got.AllowedTools) != "[github__* jira__x]" {
+		t.Fatalf("models: %v %+v", err, got)
+	}
+	// Tools and the switch.
+	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, GatewayKeyUpdate{AllowedTools: models("fs__read"), ToolsReadOnly: &no})
+	if err != nil || fmt.Sprint(got.AllowedTools) != "[fs__read]" || got.ToolsReadOnly || fmt.Sprint(got.AllowedModels) != "[burrow-simple]" {
+		t.Fatalf("tools: %v %+v", err, got)
+	}
+	// An empty list clears: no tools, every model.
+	got, err = s.UpdateGatewayKey(ctx, owner, false, k.ID, GatewayKeyUpdate{AllowedTools: models(), AllowedModels: models(), ToolsReadOnly: &yes})
+	if err != nil || len(got.AllowedTools) != 0 || got.AllowedTools == nil || len(got.AllowedModels) != 0 || !got.ToolsReadOnly {
+		t.Fatalf("clear: %v %+v", err, got)
+	}
+	stored, _ := s.q.GetAIGatewayKey(ctx, k.ID)
+	if len(stored.AllowedTools) != 0 || !stored.ToolsReadOnly || len(stored.AllowedModels) != 0 {
+		t.Fatalf("stored: %+v", stored)
+	}
+
+	// Validation as at creation; nothing is changed by a refused update.
+	many := make([]string, 65)
+	for i := range many {
+		many[i] = fmt.Sprintf("s__t%d", i)
+	}
+	manyModels := make([]string, 65)
+	for i := range manyModels {
+		manyModels[i] = fmt.Sprintf("m%d", i)
+	}
+	for name, u := range map[string]GatewayKeyUpdate{
+		"bad tool":     {AllowedTools: models("github")},
+		"bare star":    {AllowedTools: models("*")},
+		"too many":     {AllowedTools: &many},
+		"bad model":    {AllowedModels: models("*/x")},
+		"many models":  {AllowedModels: &manyModels},
+		"good and bad": {AllowedTools: models("gh__a", "Gh__b")},
+	} {
+		if _, err := s.UpdateGatewayKey(ctx, owner, false, k.ID, u); !errors.Is(err, ErrInvalidKey) {
+			t.Errorf("%s: err = %v, want ErrInvalidKey", name, err)
+		}
+	}
+	for name, n := range map[string]NewGatewayKey{
+		"create bad tool": {Name: "x", AllowedTools: []string{"nope"}},
+		"create reserved": {Name: "x", AllowedTools: []string{"burrow__*"}},
+	} {
+		if _, _, err := s.CreateGatewayKeyFrom(ctx, owner, n); !errors.Is(err, ErrInvalidKey) {
+			t.Errorf("%s: err = %v, want ErrInvalidKey", name, err)
+		}
+	}
+	stored, _ = s.q.GetAIGatewayKey(ctx, k.ID)
+	if len(stored.AllowedTools) != 0 || !stored.ToolsReadOnly {
+		t.Fatalf("a refused update changed the key: %+v", stored)
+	}
+
+	// A stranger cannot, and cannot tell a key from a missing one.
+	if _, err := s.UpdateGatewayKey(ctx, other, false, k.ID, GatewayKeyUpdate{AllowedTools: models("gh__*")}); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("stranger err = %v", err)
 	}
 }
