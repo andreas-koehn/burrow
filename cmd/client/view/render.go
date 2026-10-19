@@ -213,9 +213,14 @@ func service(s Service, w int) []row {
 	if public == "" {
 		public = "…" // the relay has not confirmed it yet
 	}
+	shown := local
+	if s.MCP {
+		// The bridge's address says nothing; what it serves does.
+		shown = mcpLabel(s)
+	}
 	var rows []row
 	indent := 2 + length(name) + 3
-	if one := "  " + name + "   " + public + "  →  " + local; length(one) <= w {
+	if one := "  " + name + "   " + public + "  →  " + shown; length(one) <= w {
 		rows = append(rows, row{text: one})
 	} else {
 		// Too narrow for one line: one line each, and the public address may
@@ -223,7 +228,7 @@ func service(s Service, w int) []row {
 		indent = 2
 		rows = append(rows, row{text: "  " + name})
 		rows = append(rows, row{text: place(2, public, w)})
-		rows = append(rows, row{text: "  → " + local})
+		rows = append(rows, row{text: "  → " + shown})
 	}
 
 	counts := fmt.Sprintf("%d open, %d total", s.Open, s.Total)
@@ -284,6 +289,24 @@ func service(s Service, w int) []row {
 		}
 	}
 	return rows
+}
+
+// mcpLabel is what stands for the local address of an MCP service.
+func mcpLabel(s Service) string {
+	switch {
+	case !s.ToolsKnown:
+		return "MCP · starting"
+	case s.Tools == 1:
+		return withDown("MCP · 1 tool", s.MCPDown)
+	}
+	return withDown(fmt.Sprintf("MCP · %d tools", s.Tools), s.MCPDown)
+}
+
+func withDown(label string, down bool) string {
+	if down {
+		return label + " · restarting"
+	}
+	return label
 }
 
 // accessLabel names a relay access mode for a person. A mode without a name

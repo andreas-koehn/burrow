@@ -33,6 +33,12 @@ type rawService struct {
 	// Slug and Access are read by `burrow up` only (see loadFileConfig).
 	Slug   string `yaml:"slug"`
 	Access string `yaml:"access"`
+	// Command, Args, Env and URL describe the local MCP server of a service
+	// of type mcp (`burrow up` only).
+	Command string            `yaml:"command"`
+	Args    []string          `yaml:"args"`
+	Env     map[string]string `yaml:"env"`
+	URL     string            `yaml:"url"`
 }
 
 // LoadFileConfig reads and validates a burrow.yaml file at path for
@@ -122,16 +128,50 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 		if svc.Name == "" {
 			return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d]: name is required", i)
 		}
-		if svc.Local == "" {
-			return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: local is required", i, svc.Name)
-		}
 		// Default type to tcp.
 		typ := svc.Type
 		if typ == "" {
 			typ = "tcp"
 		}
+		if typ == "mcp" {
+			if complete {
+				return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: type mcp is run by `burrow up`, not by `burrow connect`", i, svc.Name)
+			}
+			mcp, err := mcpFromFile(svc)
+			if err != nil {
+				return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: %w", i, svc.Name, err)
+			}
+			if svc.Slug != "" && !ValidSlug(svc.Slug) {
+				return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: slug %s", i, svc.Name, SlugRule)
+			}
+			spec := TunnelSpec{Name: svc.Name, Type: "http", Slug: svc.Slug, MCP: mcp}
+			if svc.Access != "" {
+				mode, ok := AccessMode(svc.Access)
+				if !ok {
+					return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: access %s", i, svc.Name, AccessRule)
+				}
+				spec.Access = mode
+			}
+			tunnels = append(tunnels, spec)
+			continue
+		}
+		if svc.Local == "" {
+			return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: local is required", i, svc.Name)
+		}
 		if typ != "tcp" && typ != "http" {
-			return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: unknown type %q: must be tcp or http", i, svc.Name, typ)
+			return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: unknown type %q: must be tcp, http or mcp", i, svc.Name, typ)
+		}
+		// The keys of an MCP server belong to type mcp. `connect --config`
+		// reads past them like any key it does not know.
+		if !complete {
+			for _, k := range []struct {
+				key string
+				set bool
+			}{{"command", svc.Command != ""}, {"args", len(svc.Args) > 0}, {"env", len(svc.Env) > 0}, {"url", svc.URL != ""}} {
+				if k.set {
+					return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: %s applies to type mcp", i, svc.Name, k.key)
+				}
+			}
 		}
 		// remote is only propagated for tcp; ignored for http.
 		remotePort := 0

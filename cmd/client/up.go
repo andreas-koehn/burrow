@@ -66,7 +66,7 @@ func runUp(cmd *cobra.Command, d deps) error {
 	if err != nil {
 		return err
 	}
-	return foreground(cmd, d, creds, fc.Tunnels, g)
+	return foregroundWithBridges(cmd, d, creds, fc.Tunnels, g)
 }
 
 // newUpCmd builds `burrow up`.

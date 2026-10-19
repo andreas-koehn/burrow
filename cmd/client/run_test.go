@@ -49,6 +49,9 @@ type harness struct {
 	cfgPath     string // where the user config lives when --config is not given
 	runs        []runCall
 	runErr      error
+	// onRun, when set, is what the client does instead of returning runErr
+	// at once: it sees the context and the tunnels of the run.
+	onRun func(ctx context.Context, tunnels []client.TunnelSpec) error
 	// discover answers a discovery request; nil stands for a relay of this
 	// client's version whose control endpoint is <relay host>:7000.
 	discover func(relay string, g globalFlags) (client.Discovery, error)
@@ -107,8 +110,11 @@ func (h *harness) deps() deps {
 			return h.cfgPath, nil
 		},
 		getenv: func(k string) string { return h.env[k] },
-		run: func(_ context.Context, creds client.Credentials, tunnels []client.TunnelSpec, g globalFlags) error {
+		run: func(ctx context.Context, creds client.Credentials, tunnels []client.TunnelSpec, g globalFlags) error {
 			h.runs = append(h.runs, runCall{creds, tunnels, g})
+			if h.onRun != nil {
+				return h.onRun(ctx, tunnels)
+			}
 			return h.runErr
 		},
 		isTerminal:   func() bool { return h.terminal },

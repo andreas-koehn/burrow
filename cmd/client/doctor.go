@@ -527,6 +527,10 @@ func (r *doctorRun) checkLocal() {
 		return
 	}
 	for _, t := range tunnels {
+		if t.MCP != nil {
+			r.skip(checkLocal, t.Name+": a local MCP server, started by `burrow up`")
+			continue
+		}
 		label := t.Name + " → " + t.LocalAddr
 		r.netCheck(checkLocal, func(ctx context.Context) {
 			if r.d.probe(ctx, t.LocalAddr) {

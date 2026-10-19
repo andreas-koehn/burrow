@@ -32,6 +32,11 @@ type TunnelSpec struct {
 	// them only when it creates the service. "" = no wish, nothing is sent.
 	Slug   string
 	Access string
+	// MCP is set for the local MCP server of `burrow mcp` or of a burrow.yaml
+	// service of type mcp. Such a tunnel is an ordinary http tunnel: the
+	// command that runs it starts a bridge (internal/client/mcpbridge) and
+	// sets LocalAddr to the bridge's address before the client starts.
+	MCP *MCPSpec
 }
 
 // Options configures a Client.

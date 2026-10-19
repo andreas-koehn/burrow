@@ -30,6 +30,7 @@ export default defineConfig({
             { text: 'Expose services', link: '/guide/expose-services' },
             { text: 'Access control & security', link: '/guide/access-control' },
             { text: 'Manage from an agent (MCP)', link: '/guide/mcp' },
+            { text: 'Tool sources (burrow mcp)', link: '/guide/tool-sources' },
             { text: 'Configuration', link: '/guide/configuration' },
             { text: 'Operations', link: '/guide/operations' },
             { text: 'Troubleshooting', link: '/guide/troubleshooting' },

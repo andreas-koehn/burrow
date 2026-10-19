@@ -45,6 +45,12 @@ type Service struct {
 	Open, Total               int
 	Recent                    []Line // newest last, at most 10
 	LocalDown                 bool
+	// MCP marks the local MCP server of `burrow mcp`: Local is then its
+	// bridge, and the view shows the tools instead.
+	MCP        bool
+	Tools      int  // tools the bridge serves
+	ToolsKnown bool // the bridge has reported at least once
+	MCPDown    bool // the local server does not answer; the bridge restarts it
 }
 
 // Line is one recent request or connection.
@@ -86,10 +92,21 @@ func NewStore(relay, version string, specs []client.TunnelSpec) *Store {
 		base:     map[int]int{},
 		summed:   map[int]bool{},
 	}
-	for _, sp := range specs {
-		s.m.Services = append(s.m.Services, Service{Name: sp.Name, Type: sp.Type, Local: sp.LocalAddr})
+	for i, sp := range specs {
+		s.m.Services = append(s.m.Services, Service{Name: sp.Name, Type: sp.Type, Local: sp.LocalAddr, MCP: sp.MCP != nil})
+		if sp.MCP != nil {
+			sp.MCP.Status.OnChange(func(tools int, running bool) { s.setTools(i, tools, running) })
+		}
 	}
 	return s
+}
+
+// setTools records what the bridge of service i reports.
+func (s *Store) setTools(i, tools int, running bool) {
+	s.update(func() {
+		sv := &s.m.Services[i]
+		sv.Tools, sv.ToolsKnown, sv.MCPDown = tools, true, !running
+	})
 }
 
 // Snapshot returns a copy of the current model.

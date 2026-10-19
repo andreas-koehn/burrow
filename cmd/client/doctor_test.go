@@ -362,6 +362,22 @@ func TestDoctor_LocalTargets(t *testing.T) {
 	}
 }
 
+// A local MCP server has no address to try: `burrow up` starts it.
+func TestDoctor_MCPServicesAreNotProbed(t *testing.T) {
+	d := goodDeps(t)
+	d.services = func() (string, []client.TunnelSpec, bool, error) {
+		return "burrow.yaml", []client.TunnelSpec{{Name: "files", Type: "http", MCP: &client.MCPSpec{Command: []string{"npx"}}}}, true, nil
+	}
+	d.probe = func(_ context.Context, addr string) bool {
+		t.Errorf("probed %q for an MCP service", addr)
+		return false
+	}
+	r := find(t, runDoctor(context.Background(), d), checkLocal)
+	if r.status != "skip" || !strings.Contains(r.detail, "files") || !strings.Contains(r.detail, "MCP") {
+		t.Fatalf("%+v", r)
+	}
+}
+
 func TestDoctor_HangingNetworkFinishesInTime(t *testing.T) {
 	block := func(ctx context.Context) { <-ctx.Done() }
 	d := goodDeps(t)

@@ -276,6 +276,7 @@ func newRoot(d deps) *cobra.Command {
 		newLogoutCmd(d),
 		newExposeCmd(d, "http"),
 		newExposeCmd(d, "tcp"),
+		newMCPCmd(d),
 		newUpCmd(d),
 		newStatusCmd(d),
 		newDoctorCmd(d),
