@@ -956,9 +956,28 @@ func newRootCmd() *cobra.Command {
 				Log: log,
 			})
 			mcpPool.Start(ctx)
-			// The client side: /mcp/<slug> behind gateway keys, each call
-			// through the pipeline of limits, redaction and guardrails.
-			mcpTools := newMCPToolGateway(st, v04, mcpPool, log)
+			// The OAuth authorization server for MCP clients. Its issuer is
+			// the dashboard's https origin (BURROW_AUTH_DOMAIN, or the first
+			// ACME domain), https also behind a TLS-terminating proxy.
+			// Without one it is off: its endpoints answer 404, except to a
+			// request sent to a loopback host (development).
+			oauthIssuer := ""
+			if proxyAuthDomain != "" {
+				oauthIssuer = "https://" + proxyAuthDomain
+			} else {
+				log.Warn("oauth: authorization server off (served on loopback hosts only): no public name; set BURROW_AUTH_DOMAIN or BURROW_ACME_DOMAIN")
+			}
+			oauthServer := oauth.New(oauth.Config{
+				Store: db.Wrap(database), Issuer: oauthIssuer, Audit: v04.AuditAppender, Log: log,
+			})
+
+			// The management server and the tool gateway take its access
+			// tokens, each at its own resource.
+			v04.MCPServer.SetOAuth(oauthServer)
+			// The client side: /mcp/<slug> and /mcp behind gateway keys and
+			// OAuth grants, each call through the pipeline of limits,
+			// redaction and guardrails.
+			mcpTools := newMCPToolGateway(st, v04, mcpPool, oauthServer, log)
 			// One breaker for the relay; the status API reads its state.
 			aiBreaker := aigateway.NewBreaker()
 			// One limiter for the relay: every door to a provider shares its
@@ -997,21 +1016,6 @@ func newRootCmd() *cobra.Command {
 				// consumer of proxyTLSCfg observe the hook.
 				proxyTLSCfg.GetConfigForClient = proxyHandler.GetConfigForClient
 			}
-
-			// The OAuth authorization server for MCP clients. Its issuer is
-			// the dashboard's https origin (BURROW_AUTH_DOMAIN, or the first
-			// ACME domain), https also behind a TLS-terminating proxy.
-			// Without one it is off: its endpoints answer 404, except to a
-			// request sent to a loopback host (development).
-			oauthIssuer := ""
-			if proxyAuthDomain != "" {
-				oauthIssuer = "https://" + proxyAuthDomain
-			} else {
-				log.Warn("oauth: authorization server off (served on loopback hosts only): no public name; set BURROW_AUTH_DOMAIN or BURROW_ACME_DOMAIN")
-			}
-			oauthServer := oauth.New(oauth.Config{
-				Store: db.Wrap(database), Issuer: oauthIssuer, Audit: v04.AuditAppender, Log: log,
-			})
 
 			apiRouter := api.NewRouter(api.Deps{
 				Users: st, Tunnels: tunnelListerAdapter{s: srv, access: st, services: st, slugs: st, authDomain: proxyAuthDomain, servicesDomain: cfg.ServicesDomain}, Events: bus,

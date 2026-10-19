@@ -66,6 +66,18 @@ func (d Deps) mountOAuthEndpoints(r chi.Router) {
 		Post("/oauth/token", d.oauthEndpoint(func(s *oauth.Server) http.HandlerFunc { return s.Token }))
 	r.With(oauthLimiter(OAuthTokenRatePerIP), d.withAuditContext).
 		Post("/oauth/revoke", d.oauthEndpoint(func(s *oauth.Server) http.HandlerFunc { return s.Revoke }))
+	// The protected resource metadata (RFC 9728) of the MCP endpoints, at the
+	// paths a client derives from an endpoint's URL, and of the origin.
+	prm := func(path func(*http.Request) string) http.HandlerFunc {
+		return d.oauthEndpoint(func(s *oauth.Server) http.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) { s.ProtectedResource(w, r, path(r)) }
+		})
+	}
+	r.Get(oauth.ProtectedResourcePath, prm(func(*http.Request) string { return "" }))
+	r.Get(oauth.ProtectedResourcePath+oauth.PathGateway, prm(func(*http.Request) string { return oauth.PathGateway }))
+	r.Get(oauth.ProtectedResourcePath+oauth.PathGateway+"/{slug}", prm(func(r *http.Request) string {
+		return oauth.PathGateway + "/" + chi.URLParam(r, "slug")
+	}))
 }
 
 // requireOAuth answers 404 while no authorization server is configured and

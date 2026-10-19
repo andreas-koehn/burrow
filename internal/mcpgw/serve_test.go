@@ -78,6 +78,8 @@ type gwFixture struct {
 	quota  *quota.Engine
 	policy Policy
 	pmu    sync.Mutex
+	// oauth checks OAuth access tokens; nil = gateway keys only.
+	oauth OAuthTokens
 }
 
 // newGWFixture serves source "gh" (remote, at up) through a Gateway, with
@@ -111,7 +113,7 @@ func (g *gwFixture) newGateway(t *testing.T, eng *redact.Engine) {
 			defer g.pmu.Unlock()
 			return g.policy
 		},
-		Meter: g.rec, Inspector: g.insp, Audit: g.rec, Observer: g.rec,
+		Meter: g.rec, Inspector: g.insp, Audit: g.rec, Observer: g.rec, OAuth: g.oauth,
 	})
 	if g.srv != nil {
 		g.srv.Close()

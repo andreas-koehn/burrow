@@ -95,6 +95,9 @@ type inspectorEntryJSON struct {
 	Provider     string `json:"provider"`
 	Model        string `json:"model"`
 	GatewayKeyID string `json:"gateway_key_id"`
+	// OAuthGrantID names the OAuth grant whose access token made a tool call
+	// (GatewayKeyID is then ""); absent otherwise.
+	OAuthGrantID string `json:"oauth_grant_id,omitempty"`
 	// Guardrail is set when a guardrail pattern matched the request or its
 	// answer.
 	Guardrail *inspector.GuardrailMark `json:"guardrail,omitempty"`
@@ -136,6 +139,7 @@ func inspectorEntryToJSON(e inspector.Entry) inspectorEntryJSON {
 		Provider:     e.Provider,
 		Model:        e.Model,
 		GatewayKeyID: e.GatewayKeyID,
+		OAuthGrantID: e.OAuthGrantID,
 		Guardrail:    e.Guardrail,
 		Judge:        e.Judge,
 		Purpose:      e.Purpose,

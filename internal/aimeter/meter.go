@@ -87,6 +87,9 @@ type Sample struct {
 	// GatewayKeyID is the gateway key that made the request; "" when it did
 	// not come through a gateway key.
 	GatewayKeyID string
+	// OAuthGrantID is the OAuth grant whose access token made a tool call;
+	// "" otherwise. A grant's call names no gateway key.
+	OAuthGrantID string
 	// Dialect is the API format the caller spoke ("openai" or "anthropic").
 	Dialect string
 	// ProviderSlug is the provider that answered.

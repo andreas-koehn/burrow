@@ -11,8 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 
 	"github.com/ankoehn/burrow/internal/audit"
@@ -22,9 +24,8 @@ import (
 )
 
 // oauthHarness is the router with an authorization server over a real store,
-// an admin "admin@x" who can sign in, a tool source "github", and a fake
-// protected-resource document for /mcp/burrow (the resource side is not part
-// of the authorization server).
+// an admin "admin@x" who can sign in, a tool source "github", and the
+// management MCP server at /mcp/burrow taking the server's access tokens.
 type oauthHarness struct {
 	srv   *httptest.Server
 	st    *store.Store
@@ -69,15 +70,15 @@ func newOAuthHarness(t *testing.T, cfg func(*oauth.Config), mod func(*Deps)) *oa
 		mod(&deps)
 	}
 	h := &oauthHarness{st: st, x: x, oauth: as, audit: al, admin: u.ID}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/.well-known/oauth-protected-resource/mcp/burrow", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"resource": h.srv.URL + "/mcp/burrow", "authorization_servers": []string{h.srv.URL},
-			"scopes_supported": []string{"burrow:read", "burrow:write"},
-		})
-	})
-	mux.Handle("/", NewRouter(deps))
-	h.srv = httptest.NewServer(mux)
+	// The management MCP server, taking the server's access tokens and
+	// replaying through the router.
+	mcpSrv := newMCPServer(t, mcpTokens{}, mcpTokens{})
+	mcpSrv.SetOAuth(as)
+	deps.MCP = MCPInfo{Enabled: true, Server: mcpSrv, Handler: mcpSrv}
+	deps.Bearer = NewStoreBearerStore(st)
+	router := NewRouter(deps)
+	mcpSrv.SetAPIHandler(router)
+	h.srv = httptest.NewServer(router)
 	t.Cleanup(h.srv.Close)
 	return h
 }
@@ -570,5 +571,136 @@ func TestOAuth_RoutesOffWithoutIssuer(t *testing.T) {
 	h.router.ServeHTTP(out, req)
 	if out.Code != http.StatusNotFound {
 		t.Fatalf("metadata with Host localhost from a remote peer: %d", out.Code)
+	}
+}
+
+// The SDK's own MCP client, given only the URL of /mcp/burrow: the 401
+// challenge leads it to the protected resource metadata, the authorization
+// server and the consent; then its access token lists and calls the tools as
+// the user who approved, and the same token is refused at the REST API and at
+// another resource.
+func TestOAuth_SDKClientReachesTheManagementServer(t *testing.T) {
+	h := newOAuthHarness(t, nil, nil)
+	c := authedClient(t, h.srv)
+	r := c.post(t, "/api/v1/oauth/clients", map[string]any{"name": "Agent", "redirect_uris": []string{"http://127.0.0.1:43210/callback"}})
+	var cl struct {
+		ClientID string `json:"client_id"`
+	}
+	if r.StatusCode != http.StatusCreated || json.Unmarshal([]byte(readBody(t, r)), &cl) != nil {
+		t.Fatalf("create client: %d", r.StatusCode)
+	}
+	handler, err := auth.NewAuthorizationCodeHandler(&auth.AuthorizationCodeHandlerConfig{
+		PreregisteredClient: &oauthex.ClientCredentials{ClientID: cl.ClientID, Issuer: h.srv.URL},
+		RedirectURL:         "http://127.0.0.1:43210/callback",
+		AuthorizationCodeFetcher: func(_ context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+			back := h.consent(t, c, args.URL, map[string]any{"scopes": []string{"burrow:write"}})
+			q := back.Query()
+			return &auth.AuthorizationResult{Code: q.Get("code"), State: q.Get("state"), Iss: q.Get("iss")}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "oauth-e2e", Version: "0"}, nil).Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint: h.srv.URL + "/mcp/burrow", OAuthHandler: handler, DisableStandaloneSSE: true, MaxRetries: -1,
+	}, nil)
+	if err != nil {
+		t.Fatalf("connect with OAuth: %v", err)
+	}
+	defer cs.Close()
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "me_get", Arguments: map[string]any{}})
+	if err != nil || res.IsError {
+		t.Fatalf("me_get: %v %+v", err, res)
+	}
+	if text := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(text, `"email":"admin@x"`) {
+		t.Fatalf("me_get = %s", text)
+	}
+	ts, err := handler.TokenSource(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := ts.Token()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/v1/me", "/mcp", "/mcp/github"} {
+		req, _ := http.NewRequest(http.MethodPost, h.srv.URL+path, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		if strings.HasPrefix(path, "/api/") {
+			req, _ = http.NewRequest(http.MethodGet, h.srv.URL+path, nil)
+		}
+		req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		// /mcp and /mcp/github answer 503 here (no tool gateway is wired);
+		// what matters is that nothing answers 2xx with this token.
+		if resp.StatusCode/100 == 2 {
+			t.Errorf("%s with the /mcp/burrow token: %d", path, resp.StatusCode)
+		}
+	}
+	// Revoking the grant ends the token at once.
+	grants, _ := h.oauth.ListGrants(ctx, h.admin)
+	if len(grants) != 1 {
+		t.Fatalf("grants: %+v", grants)
+	}
+	if _, err := h.oauth.RevokeGrant(ctx, grants[0].ID, h.admin); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, h.srv.URL+"/mcp/burrow", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(resp.Header.Get("WWW-Authenticate"), `error="invalid_token"`) {
+		t.Fatalf("revoked grant: %d %q", resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
+	}
+}
+
+// The protected resource metadata through the router: the root document,
+// /mcp/burrow, /mcp and a source; 404 for an unknown source and without an
+// authorization server.
+func TestOAuth_ProtectedResourceMetadataRoutes(t *testing.T) {
+	h := newOAuthHarness(t, nil, nil)
+	for path, resource := range map[string]string{
+		"/.well-known/oauth-protected-resource":            h.srv.URL,
+		"/.well-known/oauth-protected-resource/mcp/burrow": h.srv.URL + "/mcp/burrow",
+		"/.well-known/oauth-protected-resource/mcp":        h.srv.URL + "/mcp",
+		"/.well-known/oauth-protected-resource/mcp/github": h.srv.URL + "/mcp/github",
+	} {
+		resp, err := http.Get(h.srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		_ = json.Unmarshal([]byte(readBody(t, resp)), &m)
+		if resp.StatusCode != http.StatusOK || m["resource"] != resource {
+			t.Errorf("%s: %d %v", path, resp.StatusCode, m)
+		}
+	}
+	resp, err := http.Get(h.srv.URL + "/.well-known/oauth-protected-resource/mcp/nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown source: %d", resp.StatusCode)
+	}
+	off := httptest.NewServer(NewRouter(Deps{Log: discardLog()}))
+	t.Cleanup(off.Close)
+	resp, err = http.Get(off.URL + "/.well-known/oauth-protected-resource/mcp/burrow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("without an authorization server: %d", resp.StatusCode)
 	}
 }

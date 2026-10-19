@@ -598,6 +598,29 @@ func TestInspectorListCarriesProviderModelKey(t *testing.T) {
 			t.Errorf("entry without a route: %q = %v (present %v), want an empty string", k, v, ok)
 		}
 	}
+	// oauth_grant_id is there only for a tool call made with an OAuth grant.
+	if _, ok := full["oauth_grant_id"]; ok {
+		t.Errorf("a key's entry names a grant: %v", full["oauth_grant_id"])
+	}
+}
+
+// A tool call made with an OAuth grant names the grant and no gateway key.
+func TestInspectorList_OAuthGrantEntry(t *testing.T) {
+	d, mgr := inspectorDeps("admin", map[string]string{"svc1": "u-self"}, nil)
+	mgr.GetOrCreate("svc1", 10).Capture(inspector.Entry{
+		ID: "g1", ServiceID: "svc1", TS: time.Now().UTC(), Method: "POST", Path: "/mcp/gh", Status: 200,
+		MCP: &inspector.MCPInfo{Method: "tools/call", Tool: "echo"}, Provider: "gh", Model: "echo", OAuthGrantID: "grant-1",
+	})
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+	var got []map[string]any
+	if err := json.Unmarshal([]byte(readBody(t, c.get(t, "/api/v1/services/svc1/inspector/requests"))), &got); err != nil || len(got) != 1 {
+		t.Fatalf("entries: %v %v", got, err)
+	}
+	if got[0]["oauth_grant_id"] != "grant-1" || got[0]["gateway_key_id"] != "" {
+		t.Fatalf("entry: oauth_grant_id=%v gateway_key_id=%v", got[0]["oauth_grant_id"], got[0]["gateway_key_id"])
+	}
 }
 
 // ---------------------------------------------------------------------------

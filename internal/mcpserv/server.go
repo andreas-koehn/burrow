@@ -6,17 +6,23 @@
 // 2025-03-26 (sdk.go). The package is an http.Handler; the API router mounts
 // it at /mcp/burrow on the main address.
 //
-// Auth: every request MUST carry "Authorization: Bearer bua_<token>" where
-// the token is an automation bearer. Sessions / cookies are NOT honored
-// here — the endpoint is for non-browser (LLM-client) automation, and a
-// request a browser sends from another origin is refused before the token
-// is looked at.
+// Auth: every request MUST carry "Authorization: Bearer <token>" where the
+// token is an automation bearer (bua_) or, when an authorization server is
+// installed (SetOAuth), an OAuth access token (boa_) issued for this
+// endpoint. Sessions / cookies are NOT honored here — the endpoint is for
+// non-browser (LLM-client) automation, and a request a browser sends from
+// another origin is refused before the token is looked at. A 401 carries the
+// challenge of the authorization server (the address of the protected
+// resource metadata), or a bare "Bearer" without one.
 //
 // Tools: the operations of the OpenAPI document (registry.go) are the tools.
 // A short list of them (curated.go) is offered as tools of their own. A call
 // is replayed as an HTTP request through the relay's own router with the
 // caller's Authorization header (dispatch.go), so the permission gate, the
-// validation, the handler and the audit rows are those of the REST call. A
+// validation, the handler and the audit rows are those of the REST call. The
+// REST API never accepts an OAuth token over HTTP: the call of an OAuth
+// token is replayed without an Authorization header, its identity in an
+// in-process context marker that only this package can set (oauth.go). A
 // token is shown the tools whose x-burrow-permission it satisfies (mayUse),
 // the same rule the API's gate applies: the token declares the permission
 // AND the role of its user grants it now.
@@ -58,6 +64,7 @@ import (
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/oauth"
 	"github.com/ankoehn/burrow/internal/observe"
 )
 
@@ -138,6 +145,8 @@ type Server struct {
 
 	// observer receives one observe.ToolCall per tools/call; nil = none.
 	observer observe.ToolCallObserver
+	// oauth checks OAuth access tokens; nil = only automation tokens.
+	oauth OAuthTokens
 
 	rateLimit int
 	// toolTimeout overrides the package constant of that name; tests only.
@@ -198,7 +207,7 @@ func (s *Server) observeTool(tok *authedToken, tool, result string, took time.Du
 		outcome = "denied"
 	}
 	s.observer.ObserveToolCall(observe.ToolCall{
-		Server: "management", Source: "burrow", Tool: tool, TokenID: tok.tokenID, UserID: tok.userID,
+		Server: "management", Source: "burrow", Tool: tool, TokenID: tok.tokenID, OAuthGrantID: tok.grantID, UserID: tok.userID,
 		Outcome: outcome, Duration: took, LatencyMs: took.Milliseconds(),
 	})
 }
@@ -291,7 +300,7 @@ func New(bearer BearerStore, users UserLookup, spec []byte, log *slog.Logger, op
 	s.toolList = append(s.toolList, genericDescriptors()...)
 	limit := httprate.Limit(s.rateLimit, s.rateWindow,
 		httprate.WithKeyFuncs(func(r *http.Request) (string, error) {
-			return tokenFrom(r.Context()).tokenID, nil
+			return tokenFrom(r.Context()).subject(), nil
 		}),
 		httprate.WithLimitHandler(func(w http.ResponseWriter, _ *http.Request) {
 			writeHTTPError(w, http.StatusTooManyRequests, "rate limit exceeded")
@@ -394,7 +403,7 @@ func (s *Server) requireBearer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok, err := s.authenticate(r)
 		if err != nil {
-			writeAuthErr(w, err)
+			s.writeAuthErr(w, r, err)
 			return
 		}
 		ctx := audit.WithLogContext(withToken(r.Context(), tok), auditContext(r, tok))
@@ -465,7 +474,8 @@ func auditText(s string) string {
 // that is refused with 429 costs no write.
 func (s *Server) touchBearer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if tok := tokenFrom(r.Context()); tok != nil {
+		// An OAuth grant's last use is recorded by the authorization server.
+		if tok := tokenFrom(r.Context()); tok != nil && tok.tokenID != "" {
 			_ = s.bearer.TouchBearer(r.Context(), tok.tokenID)
 		}
 		next.ServeHTTP(w, r)
@@ -478,13 +488,17 @@ func (s *Server) touchBearer(next http.Handler) http.Handler {
 // request. .can() implements the AND of (token declares perm) AND (user's
 // current role grants perm) — the same shape as api.effectivePerms.
 type authedToken struct {
-	tokenID string
-	userID  string
-	email   string // for the audit trail
-	role    string
-	perms   []string
-	// bearer is the request's whole Authorization value; a tool call sends
-	// it on to the API.
+	// tokenID is the automation token's row; "" for an OAuth access token,
+	// which has grantID (its grant) and expiresAt instead.
+	tokenID   string
+	grantID   string
+	expiresAt time.Time
+	userID    string
+	email     string // for the audit trail
+	role      string
+	perms     []string
+	// bearer is the request's whole Authorization value; a tool call of an
+	// automation token sends it on to the API. Empty for an OAuth token.
 	bearer string
 	// remoteAddr and userAgent are the request's, for the API request of a
 	// tool call.
@@ -493,6 +507,15 @@ type authedToken struct {
 	// host is the Host of the MCP request: handlers that build addresses from
 	// r.Host see the relay's name, not the replay's placeholder.
 	host string
+}
+
+// subject is what the per-token rate limit counts by: the automation token,
+// or the OAuth grant.
+func (t *authedToken) subject() string {
+	if t.grantID != "" {
+		return "oauth:" + t.grantID
+	}
+	return t.tokenID
 }
 
 // mayUse reports whether the token may call op: the same decision the
@@ -548,6 +571,9 @@ func (s *Server) authenticate(r *http.Request) (*authedToken, error) {
 		return nil, errAuthMissing
 	}
 	plain := strings.TrimPrefix(auth, "Bearer ")
+	if s.oauth != nil && strings.HasPrefix(plain, oauth.AccessTokenPrefix) {
+		return s.authenticateOAuth(r, plain)
+	}
 	if !strings.HasPrefix(plain, "bua_") {
 		return nil, errAuthInvalid
 	}
@@ -587,6 +613,31 @@ func (s *Server) authenticate(r *http.Request) (*authedToken, error) {
 	}, nil
 }
 
+// authenticateOAuth resolves an OAuth access token. The authorization server
+// checks it at every use: issued for this endpoint, not expired, grant not
+// revoked, user present and not suspended; its permissions are the scopes
+// intersected with the user's role now (mayUse intersects again).
+func (s *Server) authenticateOAuth(r *http.Request, plain string) (*authedToken, error) {
+	v, err := s.oauth.VerifyAccessToken(r, plain, EndpointPath)
+	if errors.Is(err, oauth.ErrInvalidToken) {
+		return nil, errAuthInvalid
+	}
+	if err != nil {
+		return nil, errAuthInternal
+	}
+	return &authedToken{
+		grantID:    v.GrantID,
+		expiresAt:  v.ExpiresAt,
+		userID:     v.User.ID,
+		email:      v.User.Email,
+		role:       v.User.Role,
+		perms:      v.Permissions,
+		remoteAddr: r.RemoteAddr,
+		userAgent:  r.UserAgent(),
+		host:       r.Host,
+	}, nil
+}
+
 // Sentinel auth errors — internal to the package, never wire-visible.
 var (
 	errAuthMissing  = errors.New("missing bearer token")
@@ -595,9 +646,11 @@ var (
 )
 
 // writeAuthErr renders a bearer-auth failure as HTTP 401 with a JSON body
-// and the challenge an MCP client expects. 500 is used only for internal
-// lookup faults.
-func writeAuthErr(w http.ResponseWriter, err error) {
+// and the challenge an MCP client expects: the authorization server's (the
+// metadata address and the default scope, error="invalid_token" when a
+// credential was presented), else a bare "Bearer". 500 is used only for
+// internal lookup faults.
+func (s *Server) writeAuthErr(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, errAuthInternal) {
 		writeHTTPError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -605,7 +658,11 @@ func writeAuthErr(w http.ResponseWriter, err error) {
 	// Missing OR invalid bearer both render identically — never tell
 	// an unauthenticated caller whether the token "would" have been
 	// valid.
-	w.Header().Set("WWW-Authenticate", "Bearer")
+	challenge := "Bearer"
+	if s.oauth != nil {
+		challenge = s.oauth.Challenge(r, EndpointPath, !errors.Is(err, errAuthMissing))
+	}
+	w.Header().Set("WWW-Authenticate", challenge)
 	writeHTTPError(w, http.StatusUnauthorized, "invalid bearer token")
 }
 

@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -25,7 +26,9 @@ import (
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/inspector"
 	"github.com/ankoehn/burrow/internal/mcpgw"
+	"github.com/ankoehn/burrow/internal/mcpserv"
 	"github.com/ankoehn/burrow/internal/mcptest"
+	"github.com/ankoehn/burrow/internal/oauth"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -33,6 +36,11 @@ type mcpGWEnv struct {
 	*gwEnv
 	st   *store.Store
 	pool *mcpgw.Pool
+	// oauth is the authorization server whose access tokens /mcp/burrow,
+	// /mcp and /mcp/<slug> take, as main wires it. It has no configured
+	// issuer: the test server's loopback origin is its issuer.
+	oauth *oauth.Server
+	mgmt  *mcpserv.Server
 }
 
 // bootMCPGatewayE2E boots the relay with the tool gateway wired as main
@@ -49,10 +57,19 @@ func bootMCPGatewayE2E(t *testing.T, tunnels tunnelStreamOpener, remote *mcptest
 		t.Cleanup(tr.CloseIdleConnections)
 		pool := mcpgw.New(mcpgw.Options{Store: st, Vault: deps.CredentialVault, Remote: tr, Tunnels: proxyDialerAdapter{st: st, srv: tunnels}})
 		t.Cleanup(pool.Close)
-		tools := newMCPToolGateway(st, v04, pool, discardLog())
+		as := oauth.New(oauth.Config{Store: db.Wrap(deps.DB.(*sql.DB)), Audit: v04.AuditAppender, Log: discardLog()})
+		mgmt, err := BuildMCPServer(st, v04, api.OpenAPIDocument(), discardLog())
+		if err != nil {
+			t.Fatalf("BuildMCPServer: %v", err)
+		}
+		mgmt.SetOAuth(as)
+		tools := newMCPToolGateway(st, v04, pool, as, discardLog())
 		deps.MCPSources, deps.MCPGateway, deps.MCPTools = st, mcpGatewayParts{Pool: pool, tools: tools}, tools
-		env.st, env.pool = st, pool
+		deps.OAuth, deps.MCP = as, api.MCPInfo{Enabled: true, Server: mgmt, Handler: mgmt}
+		env.st, env.pool, env.oauth, env.mgmt = st, pool, as, mgmt
 	})
+	// The management server replays its calls through the router.
+	env.mgmt.SetAPIHandler(env.srv.Config.Handler)
 	return env
 }
 

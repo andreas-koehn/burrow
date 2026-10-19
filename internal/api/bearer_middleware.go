@@ -32,6 +32,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/mcpserv"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -112,6 +113,13 @@ func sha256Hex(s string) string {
 func RequireBearerOrSession(bs BearerStore, us UserStore) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// A tool call of /mcp/burrow made with an OAuth access token,
+			// replayed in-process: the MCP server checked the token and put
+			// its identity into the context. No HTTP request can carry it.
+			if id, ok := mcpserv.ReplayIdentityFrom(r.Context()); ok {
+				replayedOAuthCall(w, r, next, us, id)
+				return
+			}
 			auth := r.Header.Get("Authorization")
 			if !strings.HasPrefix(auth, "Bearer ") {
 				next.ServeHTTP(w, r)
@@ -165,6 +173,37 @@ func RequireBearerOrSession(bs BearerStore, us UserStore) func(http.Handler) htt
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// replayedOAuthCall authenticates a replayed /mcp/burrow tool call of an
+// OAuth access token like an automation token: the user is read again (gone
+// or suspended: 401), the token id is "oauth:<grant id>", the declared
+// permissions are those the scopes stood for, intersected with the role
+// now by effectivePerms, and the access token's expiry bounds what the call
+// may mint. The token itself never reaches the API: over HTTP only bua_
+// bearers are accepted.
+func replayedOAuthCall(w http.ResponseWriter, r *http.Request, next http.Handler, us UserStore, id mcpserv.ReplayIdentity) {
+	if us == nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	u, err := us.GetUserByID(r.Context(), id.UserID)
+	if errors.Is(err, db.ErrNotFound) || (err == nil && u.Status == "suspended") {
+		writeErr(w, http.StatusUnauthorized, "invalid bearer token")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	ctx := context.WithValue(r.Context(), userIDKey, u.ID)
+	ctx = context.WithValue(ctx, bearerTokenIDKey, "oauth:"+id.GrantID)
+	ctx = context.WithValue(ctx, bearerPermsKey, id.Permissions)
+	ctx = context.WithValue(ctx, callerRoleKey, u.Role)
+	if !id.ExpiresAt.IsZero() {
+		ctx = context.WithValue(ctx, bearerExpiresKey, id.ExpiresAt)
+	}
+	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
 // effectivePerms reports whether the request's caller is allowed to exercise

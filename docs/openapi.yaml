@@ -125,6 +125,19 @@ components:
         AI gateway key (`Authorization: Bearer bgw_...`, or the same value
         in `x-api-key`). Used by the model and tool endpoints of the
         gateway only; it is never accepted by /api/v1.
+    OAuthAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: boa_<token>
+      description: |
+        OAuth access token from Burrow's authorization server
+        (`Authorization: Bearer boa_...`, never in `x-api-key`), issued for
+        exactly one MCP endpoint (its resource): `/mcp/burrow`, `/mcp` or
+        `/mcp/<slug>`, and accepted there only. Each use checks the token,
+        its grant (not revoked), the endpoint, and the user as they are now
+        (not suspended; at a gateway endpoint the role must still grant
+        `ai:configure:own` or `ai:configure:any`). It is never accepted by
+        /api/v1.
 
   schemas:
     AIProvider:
@@ -2060,6 +2073,11 @@ components:
         gateway_key_id:
           type: string
           description: Id of the gateway key the caller presented, or empty.
+        oauth_grant_id:
+          type: string
+          description: >
+            Id of the OAuth grant whose access token made a tool call
+            (gateway_key_id is then empty). Absent otherwise.
     InspectorReplayRequest:
       type: object
       description: >
@@ -2251,6 +2269,19 @@ components:
         db_sha256: { type: string }
 
   responses:
+    ProtectedResourceMetadata:
+      description: The protected resource metadata document (CORS `*`).
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [resource, authorization_servers, scopes_supported]
+            properties:
+              resource: { type: string }
+              authorization_servers: { type: array, items: { type: string } }
+              scopes_supported: { type: array, items: { type: string } }
+              bearer_methods_supported: { type: array, items: { type: string } }
+              resource_name: { type: string }
     Unauthorized:
       description: Missing / invalid session or bearer token.
       content:
@@ -2343,11 +2374,24 @@ paths:
 
         `tools/list` returns only the tools the token may call. `tools/call`
         on any other name is answered like a call on a tool that does not
-        exist. The session cookie is not accepted. At most 300 requests per
+        exist. The session cookie is not accepted.
+
+        The token is an automation token (`bua_`) or an OAuth access token
+        (`boa_`) issued for this endpoint. An OAuth token's permissions are
+        its scopes (`burrow:read`, the role's read permissions;
+        `burrow:write`, all of the role's; or permission strings)
+        intersected with the user's role now. A tool call is replayed
+        through the JSON API in-process, as the token's user; the JSON API
+        itself never accepts an OAuth token. A 401 carries `WWW-Authenticate:
+        Bearer resource_metadata="<issuer>/.well-known/oauth-protected-resource/mcp/burrow",
+        scope="burrow:read"`, with `error="invalid_token"` when a token was
+        presented and refused (a bare `Bearer` while the authorization server
+        is off). At most 300 requests per
         token and minute and 1200 per client address and minute (the address
         limit applies before the token is looked at); bodies up to 1 MiB.
       security:
         - BearerAuth: []
+        - OAuthAccessToken: []
       parameters:
         - name: MCP-Protocol-Version
           in: header
@@ -2393,6 +2437,7 @@ paths:
       summary: Not offered (the endpoint opens no server-to-client stream)
       security:
         - BearerAuth: []
+        - OAuthAccessToken: []
       responses:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '405': { description: 'Always. `Allow: POST`.' }
@@ -2412,6 +2457,7 @@ paths:
       summary: Not offered (the endpoint keeps no session to end)
       security:
         - BearerAuth: []
+        - OAuthAccessToken: []
       responses:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403':
@@ -2457,8 +2503,17 @@ paths:
         of methods beyond tools, and the same answers for a tool that is not
         allowed or does not exist. A call is attributed to the source the
         name belongs to. `tools/list` is marked `cacheScope: private`, `ttlMs: 0`.
+
+        An OAuth access token issued for `/mcp` is accepted in place of a key;
+        its grant's `allowed_tools` and `tools_read_only` act like a key's,
+        and its calls are attributed to the grant (`oauth_grant_id`), not to a
+        gateway key. A 401 carries `WWW-Authenticate: Bearer
+        resource_metadata="<issuer>/.well-known/oauth-protected-resource/mcp",
+        scope="mcp:tools"`, with `error="invalid_token"` when a credential was
+        presented and refused.
       security:
         - GatewayKey: []
+        - OAuthAccessToken: []
       parameters:
         - name: MCP-Protocol-Version
           in: header
@@ -2516,6 +2571,7 @@ paths:
       summary: Not offered (the endpoint opens no server-to-client stream)
       security:
         - GatewayKey: []
+        - OAuthAccessToken: []
       responses:
         '401':
           description: No valid gateway key.
@@ -2530,6 +2586,7 @@ paths:
       summary: Not offered (the endpoint keeps no session to end)
       security:
         - GatewayKey: []
+        - OAuthAccessToken: []
       responses:
         '401':
           description: No valid gateway key.
@@ -2578,8 +2635,21 @@ paths:
         result with `isError: true` and a short message. The call is
         metered (`kind` mcp), captured by the backing service's inspector
         when it is on, and audited (`mcp.gateway.call`).
+
+        An OAuth access token issued for `/mcp/<slug>` (this source) is
+        accepted in place of a key, and nowhere else; its grant's
+        `allowed_tools` and `tools_read_only` act like a key's, its calls
+        count against the backing service's and global rate limits, and they
+        are attributed to the grant (`oauth_grant_id` on the usage row, the
+        inspector entry and the audit row), not to a gateway key. A 401
+        carries `WWW-Authenticate: Bearer
+        resource_metadata="<issuer>/.well-known/oauth-protected-resource/mcp/<slug>",
+        scope="mcp:tools"`, with `error="invalid_token"` when a credential was
+        presented and refused (a bare `Bearer` while the authorization server
+        is off).
       security:
         - GatewayKey: []
+        - OAuthAccessToken: []
       parameters:
         - name: MCP-Protocol-Version
           in: header
@@ -2642,6 +2712,7 @@ paths:
       summary: Not offered (the endpoint opens no server-to-client stream)
       security:
         - GatewayKey: []
+        - OAuthAccessToken: []
       responses:
         '401':
           description: No valid gateway key.
@@ -2661,6 +2732,7 @@ paths:
       summary: Not offered (the endpoint keeps no session to end)
       security:
         - GatewayKey: []
+        - OAuthAccessToken: []
       responses:
         '401':
           description: No valid gateway key.
@@ -2717,6 +2789,57 @@ paths:
                   authorization_response_iss_parameter_supported: { type: boolean }
                   resource_indicators_supported: { type: boolean }
         '404': { description: The relay runs without an authorization server. }
+  /.well-known/oauth-protected-resource:
+    get:
+      tags: [oauth]
+      operationId: oauthProtectedResourceGet
+      x-burrow-mcp: false
+      security: []
+      summary: Protected resource metadata of the origin (RFC 9728)
+      description: >
+        Public. The document for the origin itself (`resource` is the
+        issuer). MCP clients use the document of the endpoint they connect
+        to, at the path the 401 challenge names. 404 while the authorization
+        server is off.
+      responses:
+        '200': { $ref: '#/components/responses/ProtectedResourceMetadata' }
+        '404': { description: The relay runs without an authorization server. }
+  /.well-known/oauth-protected-resource/mcp:
+    get:
+      tags: [oauth]
+      operationId: oauthProtectedResourceGatewayGet
+      x-burrow-mcp: false
+      security: []
+      summary: Protected resource metadata of /mcp (RFC 9728)
+      description: >
+        Public. `resource` is `<issuer>/mcp`, `authorization_servers` the
+        issuer, `scopes_supported` `mcp:tools`. 404 while the authorization
+        server is off.
+      responses:
+        '200': { $ref: '#/components/responses/ProtectedResourceMetadata' }
+        '404': { description: The relay runs without an authorization server. }
+  /.well-known/oauth-protected-resource/mcp/{slug}:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+        description: '`burrow` for the management server, else a tool source''s slug.'
+    get:
+      tags: [oauth]
+      operationId: oauthProtectedResourceSourceGet
+      x-burrow-mcp: false
+      security: []
+      summary: Protected resource metadata of /mcp/burrow or /mcp/<slug> (RFC 9728)
+      description: >
+        Public. `resource` is `<issuer>/mcp/<slug>`, `authorization_servers`
+        the issuer; `scopes_supported` is `burrow:read`, `burrow:write` for
+        the management server and `mcp:tools` for a tool source. 404 for an
+        unknown or disabled tool source and while the authorization server
+        is off.
+      responses:
+        '200': { $ref: '#/components/responses/ProtectedResourceMetadata' }
+        '404': { description: No such resource, or the relay runs without an authorization server. }
   /oauth/authorize:
     get:
       tags: [oauth]
@@ -6593,12 +6716,12 @@ paths:
         A gateway key's allow-list names a tool by the name it is served
         under, so a rename can give the tool to keys whose allow-list
         already names the new name (and take it from keys that name the old
-        one). When the body carries `rename`, the answer counts the active
-        keys of every user that name `<slug>__<new served name>` exactly in
-        `keys_matching_rename_count`. A caller who also holds `ai:read:any`
-        gets those keys in `keys_matching_rename` (id, name, prefix, owner),
-        so the dashboard can warn; any other caller gets the count only.
-        Keys with `<slug>__*` had the tool before and are not counted.
+        one). When the body carries `rename` and the caller also holds
+        `ai:read:any`, the answer lists the active keys of every user that
+        name `<slug>__<new served name>` exactly in `keys_matching_rename`
+        (id, name, prefix, owner), so the dashboard can warn. Any other
+        caller is told nothing about the keys, not even how many there are.
+        Keys with `<slug>__*` had the tool before and are not listed.
       requestBody:
         required: true
         content:
@@ -6607,7 +6730,7 @@ paths:
             example: { rename: create_issue, read_only: false }
       responses:
         '200':
-          description: The tool, with keys_matching_rename_count (and keys_matching_rename for a caller with ai:read:any) when the body carried a rename.
+          description: The tool, with keys_matching_rename for a caller with ai:read:any when the body carried a rename.
           content:
             application/json:
               schema:
@@ -6615,9 +6738,6 @@ paths:
                   - $ref: '#/components/schemas/MCPSourceTool'
                   - type: object
                     properties:
-                      keys_matching_rename_count:
-                        type: integer
-                        description: How many active gateway keys, of any user, have an allow-list that names the new served name exactly. Present whenever the body carried rename.
                       keys_matching_rename:
                         type: array
                         description: Those keys. Only present when the body carried rename and the caller holds ai:read:any (it shows other users' keys).

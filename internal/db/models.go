@@ -132,7 +132,10 @@ type UsageEvent struct {
 	CostUSD *float64
 	// How the gateway routed the request; all "" for traffic that did not
 	// come through a gateway key.
-	GatewayKeyID   string
+	GatewayKeyID string
+	// OAuthGrantID is the OAuth grant whose access token made a tool call
+	// (GatewayKeyID is then ""); "" for every other row.
+	OAuthGrantID   string
 	Dialect        string // openai|anthropic
 	ProviderSlug   string
 	RequestedModel string

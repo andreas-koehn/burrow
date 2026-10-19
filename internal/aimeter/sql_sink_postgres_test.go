@@ -26,4 +26,5 @@ func TestSQLSink_Postgres(t *testing.T) {
 	x := db.Wrap(b.DB())
 	t.Cleanup(func() { _ = x.Close() })
 	t.Run("translation", func(t *testing.T) { checkSinkTranslation(t, x, "u-sink-tr-pg") })
+	t.Run("oauth grant", func(t *testing.T) { checkSinkGrant(t, x, "u-sink-grant-pg") })
 }

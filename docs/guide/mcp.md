@@ -154,8 +154,19 @@ the server starts and keeps it in its secret store:
 ### Any other client
 
 Any client that speaks MCP's Streamable HTTP transport and can send a header
-works: point it at the URL and add `Authorization: Bearer bua_…`. Clients that
-can only sign in through OAuth cannot connect yet.
+works: point it at the URL and add `Authorization: Bearer bua_…`.
+
+### Clients that sign in with OAuth
+
+A client that supports MCP authorization needs only the URL. Without a token
+it is answered `401` with `WWW-Authenticate: Bearer resource_metadata="…"`,
+finds Burrow's authorization server from there, and sends you to the
+dashboard to approve it. Its token is good at `/mcp/burrow` only. What it may
+do is the scope you approve (`burrow:read`: the read permissions of your
+role; `burrow:write`: everything your role may do), and never more than your
+role grants at the moment of each call. Revoking the connected app ends the
+token at once. OAuth needs a public name for the relay (`BURROW_AUTH_DOMAIN`
+or `BURROW_ACME_DOMAIN`); without one the relay takes automation tokens only.
 
 ---
 
@@ -280,7 +291,7 @@ where that is acceptable, or leave their permission off the token.
 | Protocol | MCP revisions `2026-07-28` (stateless, no handshake), `2025-11-25`, `2025-06-18` and `2025-03-26` over Streamable HTTP. An `initialize` for `2024-11-05` is answered with a revision the server offers. Not the older HTTP+SSE transport, not stdio. |
 | Sessions | None. Every request stands alone; `Mcp-Session-Id` is ignored and there is no event stream to hold open. |
 | Features | Tools only. No resources, no prompts. Every call is an API call under the same permissions and the same audit as the REST API. |
-| Sign-in | A static token in a header. No OAuth. |
+| Sign-in | An automation token in a header, or an OAuth access token issued for `/mcp/burrow`. The JSON API itself never accepts an OAuth token. |
 
 ### Browsers
 

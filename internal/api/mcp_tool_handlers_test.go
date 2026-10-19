@@ -512,7 +512,6 @@ func TestMCPTools_RenameListsKeysItWidensTo(t *testing.T) {
 		Keys       *[]struct {
 			ID, Name, KeyPrefix string
 		} `json:"keys_matching_rename"`
-		Count *int `json:"keys_matching_rename_count"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK || got.Keys == nil {
 		t.Fatalf("rename: %d %s", rec.Code, rec.Body.String())
@@ -520,24 +519,20 @@ func TestMCPTools_RenameListsKeysItWidensTo(t *testing.T) {
 	if len(*got.Keys) != 1 || (*got.Keys)[0].ID != named.ID || (*got.Keys)[0].Name != "named" || got.ServedName != "say" {
 		t.Fatalf("keys_matching_rename = %+v", *got.Keys)
 	}
-	if got.Count == nil || *got.Count != 1 {
-		t.Fatalf("keys_matching_rename_count = %v, want 1", got.Count)
+	// No count of other users' keys, for anybody: the number alone tells a
+	// caller without ai:read:any something about every user's keys.
+	if strings.Contains(rec.Body.String(), "keys_matching_rename_count") {
+		t.Fatalf("the answer counts keys: %s", rec.Body.String())
 	}
 	// A caller who manages sources but does not hold ai:read:any (a token that
-	// declares only mcp:sources:manage) gets the number, not whose keys.
+	// declares only mcp:sources:manage) learns nothing about the keys.
 	manage := f.token(t, "admin", "mcp:sources:manage")
 	rec = f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/echo", map[string]any{"rename": "say"}, manage)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("rename with a narrow token: %d %s", rec.Code, rec.Body.String())
 	}
-	if strings.Contains(rec.Body.String(), "keys_matching_rename\"") || strings.Contains(rec.Body.String(), "named") || strings.Contains(rec.Body.String(), named.ID) {
-		t.Fatalf("a caller without ai:read:any is shown the keys: %s", rec.Body.String())
-	}
-	var narrow struct {
-		Count *int `json:"keys_matching_rename_count"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &narrow); err != nil || narrow.Count == nil || *narrow.Count != 1 {
-		t.Fatalf("count for a caller without ai:read:any: %s", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "keys_matching_rename") || strings.Contains(rec.Body.String(), "named") || strings.Contains(rec.Body.String(), named.ID) {
+		t.Fatalf("a caller without ai:read:any is told about the keys: %s", rec.Body.String())
 	}
 	// With ai:read:any declared as well, the list is there.
 	both := f.token(t, "admin", "mcp:sources:manage", "ai:read:any")

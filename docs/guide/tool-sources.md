@@ -13,7 +13,12 @@ This page covers local sources. Callers reach every source's tools the same
 way: at `/mcp/<source>` with the tools' own names, or at `/mcp` together with
 the tools of every other source, named `<source>__<tool>`. They authenticate
 with a gateway key whose tools allow-list names the source (for example
-`files__*`).
+`files__*`), or, if the client supports MCP authorization, with an OAuth
+token: given only the URL, the client is sent to the dashboard, where you
+choose the sources it may use (read-only tools by default). That choice works
+like a key's allow-list, the token is good only at the URL it was issued for,
+and it stops working when you revoke the connected app, when your account is
+suspended, or when your role no longer allows configuring the AI gateway.
 
 ---
 
@@ -174,10 +179,10 @@ announces a change.
   refuse tool calls.
 - **A rename changes who may call a tool.** A key's allow-list names a tool
   by the name it is served under. When you rename a tool, keys that list the
-  old name lose it and keys that already list the new name gain it. The
-  answer to the rename counts those keys (`keys_matching_rename_count`).
-  Only a caller who also holds `ai:read:any` is told which keys they are
-  (`keys_matching_rename`), because that list shows other users' keys.
+  old name lose it and keys that already list the new name gain it. Only a
+  caller who also holds `ai:read:any` is told which keys they are
+  (`keys_matching_rename`), because that list shows other users' keys; any
+  other caller is told nothing about them.
 - **One endpoint for every source.** `/mcp` lists the tools of every enabled
   source the key may use, as `<source>__<tool>` (a renamed tool by its new
   name), ordered by that name. The key's allow-list matches exactly that name,

@@ -244,6 +244,9 @@ type ToolCall struct {
 	// GatewayKeyID is the gateway key that made the call; empty for a call made
 	// with an automation token or an OAuth grant.
 	GatewayKeyID string
+	// OAuthGrantID is the OAuth grant whose access token made the call; empty
+	// for a call made with an automation token or a gateway key.
+	OAuthGrantID string
 	UserID       string
 	Outcome      string // "ok", "denied" or "error"
 	// Status is the upstream's HTTP status for a gateway call, 0 when the call

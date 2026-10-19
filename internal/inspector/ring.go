@@ -77,6 +77,9 @@ type Entry struct {
 	Provider     string `json:"provider"`
 	Model        string `json:"model"`
 	GatewayKeyID string `json:"gateway_key_id"`
+	// OAuthGrantID is the OAuth grant whose access token made a tool call
+	// (GatewayKeyID is then ""); "" otherwise.
+	OAuthGrantID string `json:"oauth_grant_id,omitempty"`
 	// Guardrail is set when a guardrail pattern matched the request or the
 	// answer; nil otherwise.
 	Guardrail *GuardrailMark `json:"guardrail,omitempty"`

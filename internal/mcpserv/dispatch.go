@@ -275,11 +275,18 @@ func (s *Server) send(ctx context.Context, tok *authedToken, op Operation, targe
 	// request must not reach the router, which would take it for the
 	// context of a mounted sub-router.
 	ctx = context.WithValue(ctx, chi.RouteCtxKey, nil)
+	// An OAuth token never goes to the API: the API accepts none over HTTP.
+	// The call acts as the token's grant through the in-process marker.
+	if tok.grantID != "" {
+		ctx = withReplayIdentity(ctx, ReplayIdentity{GrantID: tok.grantID, UserID: tok.userID, Permissions: tok.perms, ExpiresAt: tok.expiresAt})
+	}
 	req, err := http.NewRequestWithContext(ctx, op.Method, apiBase+target, bytes.NewReader(body))
 	if err != nil {
 		return errorResult(fmt.Errorf("the request cannot be built: %w", err)), "error"
 	}
-	req.Header.Set("Authorization", tok.bearer)
+	if tok.grantID == "" {
+		req.Header.Set("Authorization", tok.bearer)
+	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

@@ -382,27 +382,14 @@ type AccessToken struct {
 // It records the grant's last use (at most once a minute). The caller checks
 // the audience (Resource) and the user's role and status.
 func (s *Server) LookupAccessToken(ctx context.Context, plain string) (AccessToken, error) {
-	if !strings.HasPrefix(plain, AccessTokenPrefix) {
-		return AccessToken{}, ErrInvalidToken
-	}
-	t, g, err := s.store.GetOAuthToken(ctx, hashSecret(plain))
-	if errors.Is(err, db.ErrNotFound) {
-		return AccessToken{}, ErrInvalidToken
-	}
+	t, g, err := s.accessToken(ctx, plain)
 	if err != nil {
 		return AccessToken{}, err
 	}
-	now := s.now()
-	if t.Kind != "access" || g.RevokedAt != nil || !now.Before(t.ExpiresAt) {
-		return AccessToken{}, ErrInvalidToken
-	}
-	if err := s.store.TouchOAuthGrant(ctx, g.ID, now); err != nil {
+	if err := s.store.TouchOAuthGrant(ctx, g.ID, s.now()); err != nil {
 		s.log.Warn("oauth: touch grant", "err", err)
 	}
-	return AccessToken{
-		GrantID: g.ID, ClientID: g.ClientID, ClientName: g.ClientName, UserID: g.UserID, Resource: g.Resource,
-		Scopes: g.Scopes, AllowedTools: g.AllowedTools, ToolsReadOnly: g.ToolsReadOnly, ExpiresAt: t.ExpiresAt,
-	}, nil
+	return accessTokenOf(t, g), nil
 }
 
 // auditEvent appends one event; the actor is the grant's user (the client

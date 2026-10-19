@@ -26,10 +26,10 @@ type aggregatedTool struct {
 }
 
 // ServeAggregated serves /mcp. The order is that of ServeSource: origin
-// check, the gateway key (401), the body, then the SDK. There is no source to
+// check, the gateway key or OAuth token (401), the body, then the SDK. There is no source to
 // be unknown: a key that names nothing sees an empty list.
 func (g *Gateway) ServeAggregated(w http.ResponseWriter, r *http.Request) {
-	caller, ok := g.perimeter(w, r)
+	caller, ok := g.perimeter(w, r, "/mcp")
 	if !ok {
 		return
 	}

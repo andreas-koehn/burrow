@@ -633,3 +633,47 @@ func TestSQLSinkRecord_Purpose(t *testing.T) {
 		}
 	}
 }
+
+func TestSQLSinkRecord_OAuthGrant(t *testing.T) { checkSinkGrant(t, testDB(t), "u-sink-grant") }
+
+// checkSinkGrant: a tool call made with an OAuth grant's access token is
+// stored under the grant, with no gateway key; other rows name no grant. It
+// runs against SQLite here and against a live Postgres in the
+// postgres-tagged test.
+func checkSinkGrant(t *testing.T, x *db.DB, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	_ = x.DeleteUser(ctx, userID)
+	if err := x.CreateUser(ctx, db.User{ID: userID, Email: userID + "@test.invalid", PasswordHash: "h", Role: "admin"}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	t.Cleanup(func() { _ = x.DeleteUser(ctx, userID) })
+	svc, err := x.GetOrCreateService(ctx, userID, "svc-"+userID, "http")
+	if err != nil {
+		t.Fatalf("seed service: %v", err)
+	}
+	sink := aimeter.NewSQLSink(x)
+	for _, s := range []aimeter.Sample{
+		{ServiceID: svc.ID, RequestID: "r-grant", Kind: aimeter.KindMCP, UpstreamStatus: 200, OAuthGrantID: "grant-1", ProviderSlug: "gh", RequestedModel: "echo"},
+		{ServiceID: svc.ID, RequestID: "r-key", Kind: aimeter.KindMCP, UpstreamStatus: 200, GatewayKeyID: "gk-1", ProviderSlug: "gh", RequestedModel: "echo"},
+	} {
+		if err := sink.Record(ctx, s); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	read := func(requestID string) (grant, key string) {
+		t.Helper()
+		if err := x.DB().QueryRowContext(ctx,
+			`SELECT oauth_grant_id, gateway_key_id FROM usage_events WHERE service_id = ? AND request_id = ?`, svc.ID, requestID).
+			Scan(&grant, &key); err != nil {
+			t.Fatalf("select %s: %v", requestID, err)
+		}
+		return grant, key
+	}
+	if g, k := read("r-grant"); g != "grant-1" || k != "" {
+		t.Fatalf("grant row: grant %q key %q", g, k)
+	}
+	if g, k := read("r-key"); g != "" || k != "gk-1" {
+		t.Fatalf("key row: grant %q key %q", g, k)
+	}
+}

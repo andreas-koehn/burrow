@@ -96,16 +96,22 @@ func TestServe_ClientLoginIsWired(t *testing.T) {
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("POST /api/v1/client/login/start: status %d, want 200", resp.StatusCode)
 			}
-			// The MCP server is mounted on the same address: a POST without a
-			// token is challenged. 503 would mean MCPInfo.Handler is not wired.
-			mresp, merr := http.Post("http://"+httpAddr+"/mcp/burrow", "application/json", strings.NewReader("{}"))
-			if merr != nil {
-				t.Fatalf("POST /mcp/burrow: %v", merr)
-			}
-			_ = mresp.Body.Close()
-			if mresp.StatusCode != http.StatusUnauthorized || mresp.Header.Get("WWW-Authenticate") != "Bearer" {
-				t.Fatalf("POST /mcp/burrow without a token: status %d, WWW-Authenticate %q; want 401 \"Bearer\" (the MCP handler is not wired into the router)",
-					mresp.StatusCode, mresp.Header.Get("WWW-Authenticate"))
+			// The MCP servers are mounted on the same address: a POST without
+			// a token is challenged with the address of the endpoint's
+			// protected resource metadata. 503 would mean a handler is not
+			// wired; a bare "Bearer" that the authorization server is not
+			// handed to it.
+			for path, scope := range map[string]string{"/mcp/burrow": "burrow:read", "/mcp": "mcp:tools"} {
+				mresp, merr := http.Post("http://"+httpAddr+path, "application/json", strings.NewReader("{}"))
+				if merr != nil {
+					t.Fatalf("POST %s: %v", path, merr)
+				}
+				_ = mresp.Body.Close()
+				want := `Bearer resource_metadata="https://relay.test/.well-known/oauth-protected-resource` + path + `", scope="` + scope + `"`
+				if mresp.StatusCode != http.StatusUnauthorized || mresp.Header.Get("WWW-Authenticate") != want {
+					t.Fatalf("POST %s without a token: status %d, WWW-Authenticate %q; want 401 %q",
+						path, mresp.StatusCode, mresp.Header.Get("WWW-Authenticate"), want)
+				}
 			}
 			assertMCPKnowsTheAuthDomain(t, "http://"+httpAddr)
 			return

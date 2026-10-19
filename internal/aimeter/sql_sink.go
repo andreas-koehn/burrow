@@ -72,6 +72,7 @@ func (s *SQLSink) Record(ctx context.Context, sm Sample) error {
 		CacheHit:       sm.CacheHit,
 		UpstreamStatus: sm.UpstreamStatus,
 		GatewayKeyID:   sm.GatewayKeyID,
+		OAuthGrantID:   sm.OAuthGrantID,
 		Dialect:        sm.Dialect,
 		ProviderSlug:   sm.ProviderSlug,
 		RequestedModel: sm.RequestedModel,
@@ -104,13 +105,13 @@ func (s *SQLSink) Record(ctx context.Context, sm Sample) error {
 		   tokens_in, tokens_out, bytes_in, bytes_out,
 		   streamed, cache_hit, upstream_status, cost_usd,
 		   gateway_key_id, dialect, provider_slug, requested_model, target_model,
-		   request_id, latency_ms, translated, dropped, purpose)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   request_id, latency_ms, translated, dropped, purpose, oauth_grant_id)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		row.ID, row.ServiceID, row.APIKeyID, row.Ts, row.Kind,
 		row.TokensIn, row.TokensOut, row.BytesIn, row.BytesOut,
 		row.Streamed, row.CacheHit, row.UpstreamStatus, cost,
 		row.GatewayKeyID, row.Dialect, row.ProviderSlug, row.RequestedModel, row.TargetModel,
-		row.RequestID, row.LatencyMs, row.Translated, row.Dropped, row.Purpose,
+		row.RequestID, row.LatencyMs, row.Translated, row.Dropped, row.Purpose, row.OAuthGrantID,
 	)
 	if err != nil {
 		log.Warn("aimeter: usage_events insert failed",

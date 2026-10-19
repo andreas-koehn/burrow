@@ -1,7 +1,9 @@
 package mcpgw
 
 // serve.go — the client side of the MCP gateway: /mcp/<slug> behind gateway
-// keys (D3, D4, D7, D8, D12, D13, D16).
+// keys and OAuth grants (D3, D4, D7, D8, D12, D13, D16, D22, D23). A grant
+// carries an allow-list and a read-only switch like a key's; below, "key"
+// stands for either.
 //
 // Each request gets its own mcp.Server holding only the tools the key may
 // call: approved, not hidden, served under an unambiguous name (ServedSet),
@@ -51,6 +53,7 @@ import (
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/inspector"
+	"github.com/ankoehn/burrow/internal/oauth"
 	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/quota"
 	"github.com/ankoehn/burrow/internal/redact"
@@ -140,6 +143,16 @@ type GatewayOptions struct {
 	Log       *slog.Logger
 	// MaxResultBytes overrides MaxResultBytes (tests).
 	MaxResultBytes int
+	// OAuth checks OAuth access tokens (*oauth.Server); nil = gateway keys
+	// only.
+	OAuth OAuthTokens
+}
+
+// OAuthTokens checks OAuth access tokens and words the 401 challenge
+// (*oauth.Server).
+type OAuthTokens interface {
+	VerifyAccessToken(r *http.Request, plain, path string) (oauth.Verified, error)
+	Challenge(r *http.Request, path string, invalid bool) string
 }
 
 // Gateway serves tool sources to MCP clients. Safe for concurrent use.
@@ -188,10 +201,13 @@ func NewGateway(opts GatewayOptions) *Gateway {
 
 type ctxKeyServer struct{}
 
-// Caller is who makes a call: a gateway key, by its allow-list.
+// Caller is who makes a call: a gateway key, or an OAuth grant (D23), by
+// its allow-list. Exactly one of GatewayKeyID and GrantID is set.
 type Caller struct {
 	GatewayKeyID string
-	UserID       string
+	// GrantID is the OAuth grant whose access token was presented.
+	GrantID string
+	UserID  string
 	// AllowedTools holds "<source>__<tool>" and "<source>__*"; empty = none.
 	AllowedTools []string
 	// ReadOnly: only tools the operator classed read-only.
@@ -243,22 +259,63 @@ func clean(s string, n int) string {
 // presentedKey reads the key as the AI gateway does: a bearer token, else
 // x-api-key.
 func presentedKey(r *http.Request) string {
-	const scheme = "Bearer "
-	if auth := strings.TrimSpace(r.Header.Get("Authorization")); len(auth) > len(scheme) && strings.EqualFold(auth[:len(scheme)], scheme) {
-		return strings.TrimSpace(auth[len(scheme):])
+	if tok, ok := bearerToken(r); ok {
+		return tok
 	}
 	return strings.TrimSpace(r.Header.Get("X-Api-Key"))
 }
 
-// errUnauthorized: no valid credential.
-var errUnauthorized = errors.New("a valid gateway key is required")
+// bearerToken is the token of an Authorization header with the Bearer
+// scheme (any case, any spacing).
+func bearerToken(r *http.Request) (string, bool) {
+	const scheme = "Bearer "
+	if auth := strings.TrimSpace(r.Header.Get("Authorization")); len(auth) > len(scheme) && strings.EqualFold(auth[:len(scheme)], scheme) {
+		return strings.TrimSpace(auth[len(scheme):]), true
+	}
+	return "", false
+}
 
-// Authenticate returns the caller of r: a gateway key whose owner may still
-// configure the gateway (ValidateGatewayKey). It returns errUnauthorized for
-// a missing, malformed, unknown or revoked key and for one whose owner is
-// suspended, gone or demoted, all alike; other errors are the store's.
-func (g *Gateway) Authenticate(r *http.Request) (Caller, error) {
+// errUnauthorized: no valid credential; errNoCredential: none at all (the
+// challenge then carries no error code).
+var (
+	errUnauthorized = errors.New("a valid gateway key is required")
+	errNoCredential = fmt.Errorf("no credential: %w", errUnauthorized)
+)
+
+// subject names the caller in limits and audit samples.
+func (c Caller) subject() string {
+	if c.GrantID != "" {
+		return "oauth:" + c.GrantID
+	}
+	return c.GatewayKeyID
+}
+
+// Authenticate returns the caller of r at the endpoint path ("/mcp" or
+// "/mcp/<slug>"): a gateway key whose owner may still configure the gateway
+// (ValidateGatewayKey), or an OAuth access token issued for exactly this
+// endpoint whose grant and user the authorization server checks now
+// (VerifyAccessToken, D22, D23, D28a). An OAuth token is read from the
+// Authorization header only. It returns errUnauthorized for a missing,
+// malformed, unknown, revoked or expired credential, a token of another
+// endpoint, and an owner who is suspended, gone or demoted, all alike;
+// other errors are the store's.
+func (g *Gateway) Authenticate(r *http.Request, path string) (Caller, error) {
+	if g.opts.OAuth != nil {
+		if plain, ok := bearerToken(r); ok && strings.HasPrefix(plain, oauth.AccessTokenPrefix) {
+			v, err := g.opts.OAuth.VerifyAccessToken(r, plain, path)
+			if errors.Is(err, oauth.ErrInvalidToken) {
+				return Caller{}, errUnauthorized
+			}
+			if err != nil {
+				return Caller{}, err
+			}
+			return Caller{GrantID: v.GrantID, UserID: v.User.ID, AllowedTools: v.AllowedTools, ReadOnly: v.ToolsReadOnly}, nil
+		}
+	}
 	presented := presentedKey(r)
+	if presented == "" {
+		return Caller{}, errNoCredential
+	}
 	if g.opts.Keys == nil || !strings.HasPrefix(presented, "bgw_") {
 		return Caller{}, errUnauthorized
 	}
@@ -278,22 +335,30 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-// perimeter is the start of every request: a browser on another origin is
-// refused (403), then the gateway key is checked (401 with a Bearer
-// challenge). It answers and returns false when the request goes no further.
-func (g *Gateway) perimeter(w http.ResponseWriter, r *http.Request) (Caller, bool) {
+// perimeter is the start of every request at the endpoint path: a browser
+// on another origin is refused (403), then the credential is checked (401
+// with the challenge of the authorization server: the address of the
+// endpoint's protected resource metadata and the default scope, with
+// error="invalid_token" when a credential was presented; a bare "Bearer"
+// without an authorization server). It answers and returns false when the
+// request goes no further.
+func (g *Gateway) perimeter(w http.ResponseWriter, r *http.Request, path string) (Caller, bool) {
 	if err := g.origin.Check(r); err != nil {
 		writeJSONError(w, http.StatusForbidden, "cross-origin request refused")
 		return Caller{}, false
 	}
-	caller, err := g.Authenticate(r)
+	caller, err := g.Authenticate(r, path)
 	if errors.Is(err, errUnauthorized) {
-		w.Header().Set("WWW-Authenticate", "Bearer")
+		challenge := "Bearer"
+		if g.opts.OAuth != nil {
+			challenge = g.opts.OAuth.Challenge(r, path, !errors.Is(err, errNoCredential))
+		}
+		w.Header().Set("WWW-Authenticate", challenge)
 		writeJSONError(w, http.StatusUnauthorized, errUnauthorized.Error())
 		return Caller{}, false
 	}
 	if err != nil {
-		g.log.Error("mcp gateway: gateway key validation failed", "err", err)
+		g.log.Error("mcp gateway: credential validation failed", "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal error")
 		return Caller{}, false
 	}
@@ -305,7 +370,7 @@ func (g *Gateway) perimeter(w http.ResponseWriter, r *http.Request) (Caller, boo
 // an unknown or disabled one), the body (413 over 1 MiB, 400 for a JSON-RPC
 // batch), then the SDK.
 func (g *Gateway) ServeSource(w http.ResponseWriter, r *http.Request, slug string) {
-	caller, ok := g.perimeter(w, r)
+	caller, ok := g.perimeter(w, r, "/mcp/"+slug)
 	if !ok {
 		return
 	}
@@ -939,12 +1004,17 @@ func (l *sourceLimits) release() {
 // source's rpm. It returns the function that gives the place back, or the
 // limit error.
 func (g *Gateway) admit(ctx context.Context, req CallRequest) (func(), error) {
-	if g.opts.Limits != nil && req.Caller.GatewayKeyID != "" {
-		d := g.opts.Limits.ChargeRate(ctx, quota.Subjects{
-			APIKeyID:     gatewayKeySubject + req.Caller.GatewayKeyID,
-			GatewayKeyID: req.Caller.GatewayKeyID,
-			ServiceID:    req.Source.ServiceID,
-		}, quota.DimensionRPM, 1)
+	// A key's call is charged to the key's limits; a grant's to none of a
+	// key's. Both count against the backing service's and global limits.
+	who := quota.Subjects{ServiceID: req.Source.ServiceID}
+	switch {
+	case req.Caller.GatewayKeyID != "":
+		who.APIKeyID, who.GatewayKeyID = gatewayKeySubject+req.Caller.GatewayKeyID, req.Caller.GatewayKeyID
+	case req.Caller.GrantID != "":
+		who.APIKeyID = oauthGrantSubject + req.Caller.GrantID
+	}
+	if g.opts.Limits != nil && who.APIKeyID != "" {
+		d := g.opts.Limits.ChargeRate(ctx, who, quota.DimensionRPM, 1)
 		if !d.Allow {
 			return nil, limitError("rate limit reached", "rate_limit", time.Duration(max(d.RetryAfter, 1))*time.Second)
 		}
@@ -965,6 +1035,10 @@ func (g *Gateway) admit(ctx context.Context, req CallRequest) (func(), error) {
 // the AI chain does (aigw.GatewayKeySubjectPrefix).
 const gatewayKeySubject = "gw:"
 
+// oauthGrantSubject prefixes an OAuth grant id there: no api_key limit names
+// it, so only the service's and global limits apply to a grant's calls.
+const oauthGrantSubject = "oauth:"
+
 // ----- records ---------------------------------------------------------------
 
 // finish writes what a call leaves behind: the usage row, the inspector
@@ -977,7 +1051,7 @@ func (g *Gateway) finish(ctx context.Context, req CallRequest, rec *callRecord, 
 		_ = g.opts.Meter.Record(ctx, aimeter.Sample{
 			ServiceID: src.ServiceID, Kind: aimeter.KindMCP,
 			BytesIn: rec.bytesIn, BytesOut: rec.bytesOut, UpstreamStatus: rec.status,
-			GatewayKeyID: req.Caller.GatewayKeyID, ProviderSlug: src.Slug,
+			GatewayKeyID: req.Caller.GatewayKeyID, OAuthGrantID: req.Caller.GrantID, ProviderSlug: src.Slug,
 			RequestedModel: req.Tool.Name, TargetModel: req.Tool.Native,
 			RequestID: req.Info.RequestID, LatencyMs: took.Milliseconds(),
 		})
@@ -985,7 +1059,12 @@ func (g *Gateway) finish(ctx context.Context, req CallRequest, rec *callRecord, 
 	if rec.policy.Inspect && g.opts.Inspector != nil {
 		g.capture(req, rec, took)
 	}
-	payload := map[string]any{"tool": req.Tool.Name, "gateway_key_id": req.Caller.GatewayKeyID, "status": rec.status, "latency_ms": took.Milliseconds()}
+	payload := map[string]any{"tool": req.Tool.Name, "status": rec.status, "latency_ms": took.Milliseconds()}
+	if req.Caller.GrantID != "" {
+		payload["oauth_grant_id"] = req.Caller.GrantID
+	} else {
+		payload["gateway_key_id"] = req.Caller.GatewayKeyID
+	}
 	if req.Tool.Native != req.Tool.Name {
 		payload["native_tool"] = req.Tool.Native
 	}
@@ -995,7 +1074,7 @@ func (g *Gateway) finish(ctx context.Context, req CallRequest, rec *callRecord, 
 	if rec.guardrail != nil {
 		payload["guardrail"] = map[string]string{"pattern": rec.guardrail.Pattern, "direction": rec.guardrail.Direction, "action": rec.guardrail.Action}
 	}
-	if !rec.limited || g.sample("limit", req.Caller.GatewayKeyID, src.Slug) {
+	if !rec.limited || g.sample("limit", req.Caller.subject(), src.Slug) {
 		g.appendAudit(ctx, req.Caller, src, req.Info, rec.outcome, payload)
 	}
 	g.observe(req.Caller, src, req.Tool.Name, rec.outcome, rec.status, took)
@@ -1027,7 +1106,7 @@ func (g *Gateway) capture(req CallRequest, rec *callRecord, took time.Duration) 
 		Truncated: reqTrunc || respTrunc, BytesOmitted: reqOmitted + respOmitted,
 		Redactions: hits, Dropped: []string{}, RemoteIP: req.Info.RemoteIP, TraceID: req.Info.RequestID,
 		MCP:      &inspector.MCPInfo{Method: "tools/call", Tool: req.Tool.Name, Params: params},
-		Provider: req.Source.Slug, Model: req.Tool.Name, GatewayKeyID: req.Caller.GatewayKeyID,
+		Provider: req.Source.Slug, Model: req.Tool.Name, GatewayKeyID: req.Caller.GatewayKeyID, OAuthGrantID: req.Caller.GrantID,
 		Guardrail: rec.guardrail,
 	})
 }
@@ -1039,7 +1118,7 @@ func (g *Gateway) appendAudit(ctx context.Context, c Caller, src db.MCPSource, i
 	if g.opts.Audit == nil {
 		return
 	}
-	if outcome == outcomeOK && !g.sample("ok", c.GatewayKeyID, src.Slug) {
+	if outcome == outcomeOK && !g.sample("ok", c.subject(), src.Slug) {
 		return
 	}
 	defer func() {
@@ -1087,7 +1166,7 @@ func (g *Gateway) observe(c Caller, src db.MCPSource, tool, outcome string, stat
 	}
 	defer func() { _ = recover() }()
 	g.opts.Observer.ObserveToolCall(observe.ToolCall{
-		Server: "gateway", Source: src.Slug, Tool: tool, GatewayKeyID: c.GatewayKeyID, UserID: c.UserID,
+		Server: "gateway", Source: src.Slug, Tool: tool, GatewayKeyID: c.GatewayKeyID, OAuthGrantID: c.GrantID, UserID: c.UserID,
 		Outcome: outcome, Status: status, Duration: took, LatencyMs: took.Milliseconds(),
 	})
 }

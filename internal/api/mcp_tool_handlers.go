@@ -328,10 +328,9 @@ func (d Deps) PutMCPSourceTool(w http.ResponseWriter, r *http.Request) {
 			d.Log.Warn("tool rename: keys not read", "source", slug, "err", err)
 			keys = []mcpKeyRef{}
 		}
-		// Who owns the keys is for the caller who may read every user's keys
-		// (ai:read:any); mcp:sources:manage alone gets the number.
-		n := len(keys)
-		out.KeysMatchingRenameCount = &n
+		// The keys are for the caller who may read every user's keys
+		// (ai:read:any). mcp:sources:manage alone learns nothing about them,
+		// not even how many there are.
 		if d.mayReadAllKeys(r) {
 			out.KeysMatchingRename = &keys
 		}
@@ -350,9 +349,6 @@ type putMCPToolResp struct {
 	// rename, and only for a caller who also holds ai:read:any: the list
 	// shows other users' keys.
 	KeysMatchingRename *[]mcpKeyRef `json:"keys_matching_rename,omitempty"`
-	// KeysMatchingRenameCount is the number of those keys, for every caller
-	// that renames. Only present when the body changed the rename.
-	KeysMatchingRenameCount *int `json:"keys_matching_rename_count,omitempty"`
 }
 
 // mcpKeyRef names a gateway key without its secret.
