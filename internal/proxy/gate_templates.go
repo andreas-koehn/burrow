@@ -11,6 +11,7 @@ import (
 //   - .AlertMessage string — non-empty triggers role="alert" error banner
 //   - .Action string       — the form's target (/__burrow/login or /__burrow/handoff)
 //   - .NextField string    — the hidden field's name (next or return)
+//   - .Nonce string        — the handoff's nonce hash (hidden field), or empty
 //
 // html/template auto-escapes all interpolated values. No template.HTML or
 // template.URL casts are used.
@@ -30,6 +31,7 @@ var loginTmpl = template.Must(template.New("login").Parse(`<!doctype html>
     {{end}}
     <form action="{{.Action}}" method="POST">
       <input type="hidden" name="{{.NextField}}" value="{{.Next}}">
+      {{if .Nonce}}<input type="hidden" name="nonce" value="{{.Nonce}}">{{end}}
       <div>
         <label for="email">Email</label><br>
         <input id="email" type="email" name="email" required autocomplete="username">

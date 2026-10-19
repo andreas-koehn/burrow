@@ -425,6 +425,9 @@ type loginData struct {
 	// /__burrow/login and next, or /__burrow/handoff and return.
 	Action    string
 	NextField string
+	// Nonce is the handoff's nonce hash, sent along as a hidden field; empty
+	// on the services-less login form.
+	Nonce string
 }
 
 type accessDeniedData struct {

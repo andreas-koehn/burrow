@@ -76,7 +76,7 @@ func TestE2EServicesOrigin_BurrowLoginHandoff(t *testing.T) {
 		t.Fatalf("handoff without a session: %d %s", resp.StatusCode, body)
 	}
 	resp, err = hc.PostForm("https://"+e2eAuthDomain+"/__burrow/handoff", url.Values{
-		"email": {e2eAdminEmail}, "password": {e2eAdminPassword}, "return": {svcURL},
+		"email": {e2eAdminEmail}, "password": {e2eAdminPassword}, "return": {svcURL}, "nonce": {handoff.Query().Get("nonce")},
 	})
 	must(t, err, "POST handoff")
 	_ = readAllString(t, resp)
@@ -88,6 +88,20 @@ func TestE2EServicesOrigin_BurrowLoginHandoff(t *testing.T) {
 	if cb.Host != e2eServicesHost || cb.Path != "/__burrow/callback" {
 		t.Fatalf("POST handoff Location %s, want the callback", cb)
 	}
+	// The callback link alone, in a browser that did not start this login
+	// (no nonce cookie), is refused: no login CSRF with somebody else's code.
+	other := s.pathClient(t)
+	resp, err = other.Get(cb.String())
+	must(t, err, "GET callback elsewhere")
+	_ = readAllString(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("callback in another browser: status %d, want 400", resp.StatusCode)
+	}
+	// That spent the code: this browser starts again from the service.
+	gate = next(svcURL, http.StatusFound, e2eServicesHost, "/__burrow/login")
+	handoff = next(gate.String(), http.StatusFound, e2eAuthDomain, "/__burrow/handoff")
+	// Signed in to the dashboard now, the handoff issues the code at once.
+	cb = next(handoff.String(), http.StatusFound, e2eServicesHost, "/__burrow/callback")
 	if final := next(cb.String(), http.StatusFound, e2eServicesHost, "/svc/"+s.subdomain+"/protected"); final.String() != svcURL {
 		t.Fatalf("callback Location %s, want %s", final, svcURL)
 	}

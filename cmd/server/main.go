@@ -591,7 +591,7 @@ func newRootCmd() *cobra.Command {
 			proxyAuthDomain := resolveAuthDomain(cfg.AuthDomain, cfg.ACMEDomain, acmeMgr != nil)
 			// The services domain (D26) serves /svc/ apart from the
 			// dashboard; the dashboard's host is proxyAuthDomain.
-			if err := checkServicesDomain(cfg.ServicesDomain, proxyAuthDomain); err != nil {
+			if err := checkServicesDomain(cfg.ServicesDomain, proxyAuthDomain, cfg.HTTPProxyListen != ""); err != nil {
 				return err
 			}
 			if cfg.ServicesDomain == "" {
@@ -1570,8 +1570,10 @@ func acmeDomains(acmeDomain, servicesDomain string) []string {
 }
 
 // checkServicesDomain refuses a services domain without a dashboard host
-// (the handoff and every redirect name it) or equal to it.
-func checkServicesDomain(servicesDomain, dashboardHost string) error {
+// (the handoff and every redirect name it) or equal to it, and one under the
+// dashboard's host while the host-routed ingress runs: that ingress reads
+// <label>.<auth domain> as the service with slug <label>.
+func checkServicesDomain(servicesDomain, dashboardHost string, hostRouting bool) error {
 	if servicesDomain == "" {
 		return nil
 	}
@@ -1580,6 +1582,12 @@ func checkServicesDomain(servicesDomain, dashboardHost string) error {
 	}
 	if strings.EqualFold(servicesDomain, dashboardHost) {
 		return fmt.Errorf("BURROW_SERVICES_DOMAIN must differ from the dashboard's host %q", dashboardHost)
+	}
+	if hostRouting && strings.HasSuffix(strings.ToLower(servicesDomain), "."+strings.ToLower(dashboardHost)) {
+		return fmt.Errorf("BURROW_SERVICES_DOMAIN %q lies under %q while the host-routed ingress (BURROW_HTTP_PROXY_LISTEN) is on; "+
+			"that ingress serves <slug>.%s as the service with that slug, so the services host would collide with a service name. "+
+			"Choose a services domain outside %q (for example apps.example.com) or turn the host-routed ingress off",
+			servicesDomain, dashboardHost, dashboardHost, dashboardHost)
 	}
 	return nil
 }

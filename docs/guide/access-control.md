@@ -44,17 +44,22 @@ With a [services domain](/guide/configuration#services-domain)
 services host, and does not count there. The service needs a session of the
 services host instead, in the host-only cookie `burrow_svc_session`:
 
-1. The gate on the services host sends the visitor to
+1. The gate on the services host gives the browser a short-lived nonce cookie
+   (`burrow_svc_nonce`, two minutes) and sends the visitor to
    `https://<dashboard>/__burrow/handoff?return=<service address>`.
 2. The dashboard's host asks for the password if the visitor is not signed in
    to the dashboard, then issues a one-time code (60 seconds, single use, bound
-   to the user and the return address) and sends the browser back to
-   `https://<services domain>/__burrow/callback`.
-3. The services host exchanges the code for its own session and sends the
-   visitor on to the service. Each handoff is audited as `auth.handoff`.
+   to the user, the return address and that browser's nonce) and sends the
+   browser back to `https://<services domain>/__burrow/callback`.
+3. The services host exchanges the code for its own session, but only in the
+   browser holding the nonce: a callback link passed to somebody else is
+   refused. A previous services session of that browser is ended. The visitor
+   goes on to the service. Each handoff is audited as `auth.handoff`.
 
 No password is ever typed on the services host. Signing out there ends the
-services session only.
+services session only, and signing out of the dashboard does not end it: the
+services session lasts until it expires (seven days) or is revoked under
+Sessions.
 
 **When to use:** internal tools that your team members access via a browser
 after logging in to `https://burrow.insingo.com`.

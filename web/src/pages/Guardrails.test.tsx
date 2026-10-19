@@ -519,10 +519,15 @@ describe("Guardrails: answers, custom patterns and the judge (G07)", () => {
   });
 
   describe("testing a pattern against a sample text", () => {
+    // The dialog moves the focus to its first field on a 50 ms timer. Waiting
+    // for it keeps every test on the path a person takes: the ID field has
+    // the focus, and leaving it empty shows its own error.
     async function openDialog() {
       await open(/^custom patterns/i);
       await userEvent.click(await screen.findByRole("button", { name: "Add pattern" }));
-      return screen.findByRole("dialog", { name: "New custom pattern" });
+      const dialog = await screen.findByRole("dialog", { name: "New custom pattern" });
+      await waitFor(() => expect(within(dialog).getByLabelText("ID")).toHaveFocus());
+      return dialog;
     }
 
     it("lists the matches as marked snippets with a count", async () => {
@@ -568,7 +573,8 @@ describe("Guardrails: answers, custom patterns and the judge (G07)", () => {
       await userEvent.type(within(dialog).getByLabelText("Pattern"), "(");
       await userEvent.type(within(dialog).getByLabelText("Sample text"), "abc");
       await userEvent.click(within(dialog).getByRole("button", { name: "Test" }));
-      expect(await within(dialog).findByRole("alert")).toHaveTextContent("not a valid regular expression");
+      // The empty ID has an alert of its own; this one is the pattern's.
+      expect(await within(dialog).findByText(/not a valid regular expression/)).toHaveAttribute("role", "alert");
       expect(within(dialog).getByLabelText("Pattern")).toHaveAccessibleDescription(/not a valid regular expression/);
     });
 

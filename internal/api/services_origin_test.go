@@ -89,7 +89,7 @@ func TestServicesOrigin_DashboardRedirectsSvc(t *testing.T) {
 // The services host serves the tunnelled apps, marked as on that host.
 func TestServicesOrigin_ServicesHostServesSvc(t *testing.T) {
 	rec, h := originRouter(t, originSvc)
-	for _, host := range []string{originSvc, originSvc + ":443", "APPS.example.com"} {
+	for _, host := range []string{originSvc, originSvc + ":443", "APPS.example.com", originSvc + ".", originSvc + ".:443"} {
 		*rec = originRecorder{}
 		req := httptest.NewRequest("GET", "/svc/grafana/x?q=1", nil)
 		req.Host = host
@@ -110,18 +110,52 @@ func TestServicesOrigin_ServicesHostServesSvc(t *testing.T) {
 func TestServicesOrigin_ServicesHostServesNothingElse(t *testing.T) {
 	rec, h := originRouter(t, originSvc)
 	for _, target := range []string{"/", "/link", "/login", "/api/v1/me", "/api/v1/auth/login", "/healthz", "/metrics",
-		"/mcp/burrow", "/openai/v1/models", "/install.sh", "/svc", "/svcx/a", "/assets/index.js"} {
+		"/mcp/burrow", "/openai/v1/models", "/install.sh", "/svc", "/svcx/a", "/assets/index.js",
+		// Encoded forms of the two prefixes: chi routes on the raw path, so
+		// they would reach the dashboard's catch-all.
+		"/%73vc/x", "/svc%2Fx", "/%5F_burrow/x", "/%5f%5fburrow/login", "/__burrow%2Flogin",
+		// Dot segments in the gate's prefix.
+		"/__burrow/../api/v1/me", "/__burrow/%2e%2e/api/v1/me"} {
 		for _, method := range []string{"GET", "POST"} {
-			rec.hit = ""
-			rr := originDo(h, method, originSvc, target)
-			if rr.Code != http.StatusNotFound || rec.hit != "" {
-				t.Errorf("%s %s on the services host: status %d hit %q, want 404 from nobody", method, target, rr.Code, rec.hit)
+			for _, host := range []string{originSvc, originSvc + ".", "APPS.example.com.:443"} {
+				rec.hit = ""
+				rr := originDo(h, method, host, target)
+				if rr.Code != http.StatusNotFound || rec.hit != "" {
+					t.Errorf("%s %s on %s: status %d hit %q, want 404 from nobody", method, target, host, rr.Code, rec.hit)
+				}
 			}
+		}
+	}
+	// A dot segment after /svc/<slug> never leaves the tunnel proxy, and one
+	// in place of the slug names no service.
+	for _, target := range []string{"/svc/../api/v1/me", "/svc/%2e%2e/api/v1/me"} {
+		rec.hit = ""
+		if rr := originDo(h, "GET", originSvc, target); rr.Code != http.StatusNotFound || rec.hit != "" {
+			t.Errorf("GET %s on the services host: status %d hit %q, want 404", target, rr.Code, rec.hit)
 		}
 	}
 	rec.hit = ""
 	if rr := originDo(h, "GET", originSvc, "/__burrow/login?next=x"); rec.hit != "gate" || rr.Code != http.StatusAccepted {
 		t.Fatalf("gate on the services host: status %d hit %q", rr.Code, rec.hit)
+	}
+}
+
+// The dashboard's host redirects only a raw /svc/ prefix; an encoded one is
+// an ordinary dashboard path, never a 308 or the tunnel proxy.
+func TestServicesOrigin_DashboardEncodedSvcIsNotRedirected(t *testing.T) {
+	rec, h := originRouter(t, originSvc)
+	for _, target := range []string{"/%73vc/x", "/svc%2Fx"} {
+		rec.hit = ""
+		rr := originDo(h, "GET", originDash, target)
+		if rr.Code == http.StatusPermanentRedirect || rec.hit == "tunnel" {
+			t.Errorf("GET %s on the dashboard's host: status %d hit %q", target, rr.Code, rec.hit)
+		}
+	}
+	for _, target := range []string{"/%5F_burrow/handoff", "/__burrow/handoff/../login", "/__burrow%2Fhandoff"} {
+		rec.hit = ""
+		if rr := originDo(h, "GET", originDash, target); rec.hit == "gate" {
+			t.Errorf("GET %s on the dashboard's host reached the gate (status %d)", target, rr.Code)
+		}
 	}
 }
 

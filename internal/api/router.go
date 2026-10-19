@@ -3,6 +3,7 @@ package api
 import (
 	"net"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -110,17 +111,18 @@ func NewRouter(d Deps) http.Handler {
 //     address on the services host, and of the gate serves only the handoff
 //     that hands a dashboard session over to the services host.
 func servicesOriginSwitch(servicesDomain string, next http.Handler) http.Handler {
+	servicesDomain = canonicalHost(servicesDomain)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		p := r.URL.Path
-		isSvc := p == "/svc" || strings.HasPrefix(p, "/svc/")
-		isGate := strings.HasPrefix(p, "/__burrow/")
-		if strings.EqualFold(host, servicesDomain) {
-			// "/svc" alone names no service.
-			if (isSvc && p != "/svc") || isGate {
+		// The decision is made on the raw path, the one chi routes on: a
+		// percent-encoded prefix (/%73vc/, /svc%2F, /%5F_burrow/) is not
+		// /svc/ or the gate to the router, and must not count as one here.
+		raw := r.URL.EscapedPath()
+		isSvc := strings.HasPrefix(raw, "/svc/")
+		isGate := strings.HasPrefix(raw, "/__burrow/")
+		if canonicalHost(r.Host) == servicesDomain {
+			// The gate's own routes are plain: no escapes, no dot segments.
+			plainGate := isGate && raw == r.URL.Path && path.Clean(raw) == raw
+			if isSvc || plainGate {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -128,16 +130,25 @@ func servicesOriginSwitch(servicesDomain string, next http.Handler) http.Handler
 			return
 		}
 		switch {
-		case isSvc && p != "/svc":
-			// The path starts with /svc/, so the target stays on the services host.
+		case isSvc:
+			// The raw path starts with /svc/, so the target stays on the services host.
 			//nolint:gosec // G710: the host is configuration and the path starts with /svc/; the target cannot leave the services host.
 			http.Redirect(w, r, "https://"+servicesDomain+r.URL.RequestURI(), http.StatusPermanentRedirect)
-		case isGate && p != "/__burrow/handoff":
+		case isGate && raw != "/__burrow/handoff":
 			http.NotFound(w, r)
 		default:
 			next.ServeHTTP(w, r)
 		}
 	})
+}
+
+// canonicalHost is a Host value as a name: without port, without the
+// trailing dot of a fully qualified name, lower case.
+func canonicalHost(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.ToLower(strings.TrimSuffix(host, "."))
 }
 
 func newRouter(d Deps) http.Handler {

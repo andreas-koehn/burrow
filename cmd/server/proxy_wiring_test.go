@@ -1314,16 +1314,24 @@ func TestACMEDomains(t *testing.T) {
 // A services domain needs a dashboard host to hand sessions over from, and
 // must not be that host.
 func TestCheckServicesDomain(t *testing.T) {
-	if err := checkServicesDomain("", ""); err != nil {
+	if err := checkServicesDomain("", "", true); err != nil {
 		t.Fatalf("unset: %v", err)
 	}
-	if err := checkServicesDomain("apps.example.com", "burrow.example.com"); err != nil {
+	if err := checkServicesDomain("apps.example.com", "burrow.example.com", true); err != nil {
 		t.Fatalf("valid: %v", err)
 	}
-	if err := checkServicesDomain("apps.example.com", ""); err == nil {
+	if err := checkServicesDomain("apps.example.com", "", false); err == nil {
 		t.Fatal("services domain without a dashboard host accepted")
 	}
-	if err := checkServicesDomain("burrow.example.com", "BURROW.example.com"); err == nil {
+	if err := checkServicesDomain("burrow.example.com", "BURROW.example.com", false); err == nil {
 		t.Fatal("services domain equal to the dashboard host accepted")
+	}
+	// Under the auth domain it is a service label to the host-routed ingress.
+	err := checkServicesDomain("apps.burrow.example.com", "burrow.example.com", true)
+	if err == nil || !strings.Contains(err.Error(), "BURROW_HTTP_PROXY_LISTEN") {
+		t.Fatalf("services domain under the auth domain with host routing: %v", err)
+	}
+	if err := checkServicesDomain("apps.burrow.example.com", "burrow.example.com", false); err != nil {
+		t.Fatalf("under the auth domain without host routing: %v", err)
 	}
 }

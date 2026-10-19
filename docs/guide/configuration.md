@@ -240,6 +240,13 @@ browser. Set a services domain to give the apps a host of their own:
   single use) to a signed-in user and sends the browser back. See
   [Access control](/guide/access-control#burrow-login).
 
+With the host-routed ingress on (`BURROW_HTTP_PROXY_LISTEN`), the services
+domain must not lie under the auth domain: that ingress serves
+`<slug>.<auth domain>` as the service with that slug, so `apps.<auth domain>`
+would collide with a service named `apps`. The relay refuses to start with such
+a combination; pick a name outside the auth domain (for example
+`apps.example.com` next to `burrow.example.com`).
+
 While no services domain is set, approving a client sign-in (`/link`, the page
 `burrow login` opens) asks for the account password as well, and the relay logs
 a line at start recommending a services domain.
