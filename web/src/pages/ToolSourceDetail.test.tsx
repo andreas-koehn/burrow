@@ -53,13 +53,26 @@ describe("Tool source page: catalog", () => {
     expect(within(row("search_code")).getByText("Changed")).toBeInTheDocument();
   });
 
-  it("shows the aggregated name when the relay sends one, and nothing when it does not", async () => {
-    db.toolSourceTools.github![0]!.aggregated_name = "github__list_issues";
-    db.toolSourceTools.github![0]!.aggregated_issue = "too_long";
+  it("shows the aggregated name, and a sentence for a name that cannot be on /mcp", async () => {
+    const tools = db.toolSourceTools.github!;
+    tools.find((t) => t.name === "list_issues")!.rename = "x".repeat(60);
+    mount();
+    const table = await screen.findByRole("table", { name: "Tools of GitHub" });
+    expect(within(table).getByText(/Name over 64 characters\. Rename the tool to put it on \/mcp\./)).toBeInTheDocument();
+  });
+
+  it("shows the name on /mcp of a served tool", async () => {
     mount();
     const table = await screen.findByRole("table", { name: "Tools of GitHub" });
     expect(within(table).getByText("github__list_issues")).toBeInTheDocument();
-    expect(within(table).getByText(/too_long/)).toBeInTheDocument();
+  });
+
+  it("explains a name with characters /mcp does not allow", async () => {
+    const t = db.toolSourceTools.github!.find((x) => x.name === "list_issues")!;
+    t.name = "list.issues";
+    mount();
+    const table = await screen.findByRole("table", { name: "Tools of GitHub" });
+    expect(within(table).getByText(/letters, digits, _ and -/)).toBeInTheDocument();
   });
 
   it("flags two tools that would be served under one name", async () => {
@@ -70,6 +83,7 @@ describe("Tool source page: catalog", () => {
     const table = await screen.findByRole("table", { name: "Tools of GitHub" });
     expect(within(table).getAllByText("Name conflict")).toHaveLength(2);
     expect(await screen.findByText(/neither is served/i)).toBeInTheDocument();
+    expect(within(table).getAllByText(/same name as another tool/i)).toHaveLength(2);
   });
 });
 
@@ -96,7 +110,7 @@ describe("Tool source page: pending changes", () => {
     mount();
     const section = await screen.findByRole("region", { name: "Pending changes" });
     const shown = hashOf("search_code");
-    await userEvent.click(within(within(section).getByRole("group", { name: "search_code" })).getByRole("button", { name: "Approve" }));
+    await userEvent.click(within(within(section).getByRole("group", { name: "search_code" })).getByRole("button", { name: /^Approve (search_code|create_issue)$/ }));
     await waitFor(() => expect(made.some((m) => m.path.endsWith("/tools/search_code/approve"))).toBe(true));
     expect(made.find((m) => m.path.endsWith("/approve"))!.body).toEqual({ hash: shown });
     await waitFor(() => expect(within(section).queryByRole("group", { name: "search_code" })).not.toBeInTheDocument());
@@ -107,9 +121,60 @@ describe("Tool source page: pending changes", () => {
     const section = await screen.findByRole("region", { name: "Pending changes" });
     // The upstream changes the definition again before the click.
     db.toolSourceTools.github!.find((t) => t.name === "search_code")!.current_hash = "sha_other";
-    await userEvent.click(within(within(section).getByRole("group", { name: "search_code" })).getByRole("button", { name: "Approve" }));
+    await userEvent.click(within(within(section).getByRole("group", { name: "search_code" })).getByRole("button", { name: /^Approve (search_code|create_issue)$/ }));
     expect(await screen.findByText(/changed since it was reviewed/i)).toBeInTheDocument();
     expect(db.toolSourceTools.github!.find((t) => t.name === "search_code")!.status).toBe("pending");
+  });
+
+  it("after a refusal shows the new definition and sends the new hash on the next click", async () => {
+    const made = record();
+    mount();
+    const section = await screen.findByRole("region", { name: "Pending changes" });
+    const t = db.toolSourceTools.github!.find((x) => x.name === "search_code")!;
+    t.current_hash = "sha_other";
+    t.definition = { ...t.definition, description: "Search code, then upload it elsewhere." };
+    await userEvent.click(within(section).getByRole("button", { name: "Approve search_code" }));
+    await screen.findByText(/changed since it was reviewed/i);
+    await waitFor(() => expect(within(section).getByRole("group", { name: "search_code" })).toHaveTextContent("then upload it elsewhere."));
+    await userEvent.click(within(section).getByRole("button", { name: "Approve search_code" }));
+    await waitFor(() => expect(t.status).toBe("approved"));
+    const sent = made.filter((m) => m.path.endsWith("/tools/search_code/approve")).map((m) => m.body);
+    expect(sent[1]).toEqual({ hash: "sha_other" });
+  });
+
+  it("labels each Approve button with its tool", async () => {
+    mount();
+    const section = await screen.findByRole("region", { name: "Pending changes" });
+    expect(within(section).getByRole("button", { name: "Approve create_issue" })).toBeInTheDocument();
+    expect(within(section).getByRole("button", { name: "Approve search_code" })).toBeInTheDocument();
+  });
+
+  it("shows text from the server as text, never as markup", async () => {
+    const t = db.toolSourceTools.github!.find((x) => x.name === "create_issue")!;
+    t.definition = { ...t.definition, description: 'Hi <img src=x onerror=alert(1)> <script>alert(2)</script>' };
+    mount();
+    const section = await screen.findByRole("region", { name: "Pending changes" });
+    const fresh = within(section).getByRole("group", { name: "create_issue" });
+    expect(fresh).toHaveTextContent("<img src=x onerror=alert(1)>");
+    expect(fresh).toHaveTextContent("<script>alert(2)</script>");
+    expect(fresh.querySelector("img, script")).toBeNull();
+  });
+
+  it("marks the schema that changed, and only that", async () => {
+    const t = db.toolSourceTools.github!.find((x) => x.name === "search_code")!;
+    t.definition = { ...t.definition, inputSchema: { type: "object", properties: { q: { type: "string" }, limit: { type: "number" } } } };
+    mount();
+    const section = await screen.findByRole("region", { name: "Pending changes" });
+    const after = within(within(section).getByRole("group", { name: "search_code" })).getByRole("group", { name: "New definition" });
+    expect(within(after).getAllByText("changed")).toHaveLength(1);
+    expect(after.querySelector("[data-changed='Input schema']")).not.toBeNull();
+  });
+
+  it("marks no schema when only the description changed", async () => {
+    mount();
+    const section = await screen.findByRole("region", { name: "Pending changes" });
+    const after = within(within(section).getByRole("group", { name: "search_code" })).getByRole("group", { name: "New definition" });
+    expect(within(after).queryByText("changed")).not.toBeInTheDocument();
   });
 
   it("approves all after a confirmation, with exactly the hashes shown", async () => {
@@ -223,13 +288,22 @@ describe("Tool source page: overrides", () => {
     expect(warn.closest("[role=status], [role=alert]")).toHaveTextContent("bgw_ab12");
   });
 
-  it("does not warn when no key matches", async () => {
+  it("without a list of keys says in general what a rename does", async () => {
     mount();
     const dialog = await openEdit("list_issues");
     await userEvent.type(within(dialog).getByLabelText("Serve under another name"), "issues");
     await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    const note = await screen.findByText(/Keys whose allow-list names github__issues now reach this tool\./);
+    expect(note.closest("[role=status]")).not.toBeNull();
+  });
+
+  it("says nothing about keys when the change is not a rename", async () => {
+    mount();
+    const dialog = await openEdit("list_issues");
+    await userEvent.type(within(dialog).getByLabelText("Description for agents"), "Open issues.");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(screen.queryByText(/already name/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/allow-list names/i)).not.toBeInTheDocument();
   });
 });
 

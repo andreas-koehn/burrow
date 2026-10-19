@@ -32,6 +32,7 @@ export function LocalToolSourceDialog({ open, onOpenChange }: LocalToolSourceDia
   return open ? <Flow onOpenChange={onOpenChange} /> : null;
 }
 
+const STILL_WAITING_MS = 60_000;
 const INSTALL_ONLY = ["install", "login"] as const;
 
 function Flow({ onOpenChange }: Pick<LocalToolSourceDialogProps, "onOpenChange">) {
@@ -78,7 +79,7 @@ function Flow({ onOpenChange }: Pick<LocalToolSourceDialogProps, "onOpenChange">
           });
         } catch (e) {
           if (!(e instanceof ApiError)) setFormErr("Couldn't create the service.");
-          else if (e.status === 403) setFormErr("Adding a tool source needs the permission to manage tool sources.");
+          else if (e.status === 403) setFormErr("Creating the service needs the permission to configure services.");
           else if (e.status === 409) setNameErr(`A service named ${slug} already exists. Choose another name.`);
           else setFormErr(e.message);
           return null;
@@ -169,6 +170,8 @@ function Flow({ onOpenChange }: Pick<LocalToolSourceDialogProps, "onOpenChange">
             value={name}
             maxLength={120}
             required
+            // The service is named after it: once it exists the name stays.
+            disabled={service !== null}
             autoComplete="off"
             invalid={nameMessage !== null}
             aria-describedby="ls-name-desc"
@@ -249,6 +252,14 @@ function RunStep({ source, program, showInstall, hasClient, onNewMachine, newMac
   }, [online, sync]);
 
   const command = burrowMcpCommand(slug, program);
+  // A minute without a client: say what to check, and keep asking.
+  const [waitedLong, setWaitedLong] = useState(false);
+  useEffect(() => {
+    if (online) return;
+    const t = setTimeout(() => setWaitedLong(true), STILL_WAITING_MS);
+    return () => clearTimeout(t);
+  }, [online]);
+
   const noun = (n: number) => (n === 1 ? "1 tool" : `${n} tools`);
   const said = result !== null ? (
     <>
@@ -274,6 +285,7 @@ function RunStep({ source, program, showInstall, hasClient, onNewMachine, newMac
     <>
       <span className="spinner" aria-hidden="true" />
       <span className="muted">Waiting for the client…</span>
+      {waitedLong && <span className="muted small">Still waiting? Check that the burrow mcp command is running and signed in.</span>}
     </>
   );
 

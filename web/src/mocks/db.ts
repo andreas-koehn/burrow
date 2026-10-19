@@ -736,7 +736,7 @@ function seedTool(
     name, status: how === "approved" ? "approved" : "pending",
     current_hash: mockToolHash(definition), approved_hash: approvedDef ? mockToolHash(approvedDef) : "",
     definition, approved_definition: approvedDef, hidden: false, rename: "", description_override: "", read_only: null,
-    upstream_read_only: ro, effective_read_only: ro, served_name: name, served: how === "approved", serve_issue: "",
+    upstream_read_only: ro, effective_read_only: ro, served_name: name, served: how === "approved", serve_issue: "", aggregated_name: null, aggregated_issue: "",
     guardrail_hits: hits, updated_at: "2026-10-19T08:00:00Z",
   };
 }

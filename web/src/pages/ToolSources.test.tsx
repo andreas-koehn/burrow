@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { screen, within, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { act, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { Route, Routes, useLocation } from "react-router-dom";
@@ -129,6 +129,21 @@ describe("Add remote source", () => {
     expect(posts).toEqual([]);
   });
 
+  it("checks the credential slot", async () => {
+    const posts = recordPosts();
+    const dialog = await open();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Docs");
+    await userEvent.type(within(dialog).getByLabelText("URL"), "https://docs.example/mcp");
+    await userEvent.type(within(dialog).getByLabelText("Credential slot"), "my-slot");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/capital letters, digits or _/);
+    expect(within(dialog).getByRole("button", { name: "Add source" })).toBeDisabled();
+    await userEvent.clear(within(dialog).getByLabelText("Credential slot"));
+    await userEvent.type(within(dialog).getByLabelText("Credential slot"), "my_slot");
+    expect(within(dialog).getByLabelText("Credential slot")).toHaveValue("MY_SLOT");
+    expect(within(dialog).getByRole("button", { name: "Add source" })).toBeEnabled();
+    expect(posts).toEqual([]);
+  });
+
   it("refuses a name that makes a reserved slug", async () => {
     const dialog = await open();
     await userEvent.type(within(dialog).getByLabelText("Name"), "burrow");
@@ -227,6 +242,51 @@ describe("Add local source", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Read the tools again" }));
     expect(await within(dialog).findByText("1 tool found, 1 to approve")).toBeInTheDocument();
   }, 15000);
+
+  it("locks the name once the service exists, and a retry makes the source only", async () => {
+    let calls = 0;
+    server.use(http.post("/api/v1/mcp/sources", () => {
+      calls++;
+      return calls === 1 ? HttpResponse.json({ error: "try later" }, { status: 500 }) : HttpResponse.json({ ...db.toolSources[0]!, slug: "notes", name: "Notes", service_id: "notes" }, { status: 201 });
+    }));
+    const posts = recordPosts();
+    const dialog = await open();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Notes");
+    await userEvent.type(within(dialog).getByLabelText("Command or address"), "node notes.js");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Continue" }));
+    expect(await within(dialog).findByText(/Retry creates the tool source only/, {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Name")).toBeDisabled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    await screen.findByText("Run this on the machine", {}, { timeout: 4000 });
+    expect(posts.filter((p) => p.path === "/services")).toHaveLength(1);
+    expect(posts.filter((p) => p.path === "/mcp/sources")).toHaveLength(2);
+  });
+
+  it("says what permission creating the service needs", async () => {
+    server.use(http.post("/api/v1/services", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })));
+    const dialog = await open();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Notes");
+    await userEvent.type(within(dialog).getByLabelText("Command or address"), "node notes.js");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Continue" }));
+    expect(await within(dialog).findByText(/Creating the service needs the permission to configure services/, {}, { timeout: 4000 })).toBeInTheDocument();
+  });
+
+  it("after a minute of waiting suggests what to check, and keeps polling", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let dialog = await open();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "Notes");
+      await userEvent.type(within(dialog).getByLabelText("Command or address"), "node notes.js");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Continue" }));
+      dialog = await next();
+      expect(within(dialog).queryByText(/Still waiting\?/)).not.toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+      expect(within(dialog).getByText(/Still waiting\? Check that the burrow mcp command is running and signed in\./)).toBeInTheDocument();
+      expect(within(dialog).getByText("Waiting for the client…")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 20000);
 
   it("keeps what was made when the source cannot be created", async () => {
     const dialog = await open();

@@ -9,8 +9,8 @@ export interface ToolOverridesDialogProps {
   slug: string;
   tool: ToolSourceTool | null;
   onClose: () => void;
-  /** The change was saved; `keys` are the active keys that already name the new served name (the relay sends them with a rename). */
-  onSaved: (tool: ToolSourceTool, keys: ToolRenameKey[]) => void;
+  /** The change was saved; `keys` are the active keys that already name the new served name (the relay sends them to a caller who may see other users' keys); `renamed` says the body carried a new name. */
+  onSaved: (tool: ToolSourceTool, keys: ToolRenameKey[], renamed: boolean) => void;
 }
 
 /** What the operator may change about one tool: hide it, rename it, reword it, classify it. */
@@ -54,7 +54,7 @@ function Form({ slug, tool, onClose, onSaved }: Omit<ToolOverridesDialogProps, "
       await qc.invalidateQueries({ queryKey: ["mcp", "sources"] });
       // Only a rename brings the list; an answer without it says nothing.
       const keys = Array.isArray(saved?.keys_matching_rename) ? saved.keys_matching_rename : [];
-      onSaved(saved, keys);
+      onSaved(saved, keys, body.rename !== undefined && body.rename !== "");
       onClose();
     },
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : "Couldn't save the changes."),

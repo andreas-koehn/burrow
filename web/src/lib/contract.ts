@@ -1029,9 +1029,10 @@ export interface ToolSourceTool {
   serve_issue: "" | "name_conflict";
   guardrail_hits: ToolGuardrailHit[];
   updated_at: string;
-  /** Later additions (the aggregated endpoint): shown when present, ignored when absent. */
-  aggregated_name?: string;
-  aggregated_issue?: string;
+  /** <slug>__<served_name> on /mcp; null when the tool is not served or the name is unusable there. */
+  aggregated_name: string | null;
+  /** Why a served tool, or one in a name conflict, is left off /mcp. */
+  aggregated_issue: "" | "name_too_long" | "name_invalid" | "name_conflict";
 }
 
 export interface ToolSourceToolUpdate {

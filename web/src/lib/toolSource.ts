@@ -103,3 +103,18 @@ export function burrowYamlSnippet(slug: string, commandOrUrl: string): string {
   const argsLine = args.length > 0 ? `    args: [${args.map(yamlStr).join(", ")}]\n` : "";
   return `${head}    command: ${yamlStr(command)}\n${argsLine}`;
 }
+
+/** Why a tool is not on /mcp, as a sentence (aggregated_issue of the relay). */
+export function aggregatedIssueText(issue: string): string {
+  switch (issue) {
+    case "name_too_long": return "Name over 64 characters. Rename the tool to put it on /mcp.";
+    case "name_invalid": return "Name has characters other than letters, digits, _ and -. Rename the tool to put it on /mcp.";
+    case "name_conflict": return "Not on /mcp: its name clashes with another tool. Rename one of them.";
+    default: return issue;
+  }
+}
+
+/** Why an approved tool is not served at all (serve_issue of the relay), as a sentence. */
+export function serveIssueText(issue: string): string {
+  return issue === "name_conflict" ? "Served under the same name as another tool. Rename one of them." : issue;
+}

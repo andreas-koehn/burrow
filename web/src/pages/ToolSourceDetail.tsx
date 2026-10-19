@@ -12,7 +12,7 @@ import { ToolDefinitionView } from "@/components/ToolDefinitionView";
 import { ToolOverridesDialog } from "@/components/ToolOverridesDialog";
 import { useCan } from "@/auth/useCan";
 import { P } from "@/auth/permissions";
-import { sourceStatus, toolStatus } from "@/lib/toolSource";
+import { aggregatedIssueText, serveIssueText, sourceStatus, toolStatus } from "@/lib/toolSource";
 import type { ToolApproveAllResult, ToolRenameKey, ToolSource, ToolSourceTool, ToolSyncResult } from "@/lib/contract";
 
 const BACK = { to: "/gateway/tools", label: "Tools" } as const;
@@ -33,7 +33,7 @@ export default function ToolSourceDetail() {
   const [actionErr, setActionErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [conflictNote, setConflictNote] = useState<string | null>(null);
-  const [renameKeys, setRenameKeys] = useState<{ name: string; keys: ToolRenameKey[] } | null>(null);
+  const [renamed, setRenamed] = useState<{ name: string; keys: ToolRenameKey[] } | null>(null);
   const [editing, setEditing] = useState<ToolSourceTool | null>(null);
   // The pending tools as the approve-all dialog showed them: the hashes sent are exactly these.
   const [confirmAll, setConfirmAll] = useState<ToolSourceTool[] | null>(null);
@@ -41,7 +41,7 @@ export default function ToolSourceDetail() {
   const [deleteErr, setDeleteErr] = useState<string | null>(null);
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["mcp", "sources"] });
-  function clearNotes() { setActionErr(null); setInfo(null); setConflictNote(null); setRenameKeys(null); }
+  function clearNotes() { setActionErr(null); setInfo(null); setConflictNote(null); setRenamed(null); }
 
   const sync = useMutation({
     mutationFn: () => apiFetch<ToolSyncResult>(`${base}/sync`, { method: "POST" }),
@@ -166,12 +166,16 @@ export default function ToolSourceDetail() {
         {actionErr && <ErrorNotice>{actionErr}</ErrorNotice>}
         {info && <ErrorNotice variant="info" role="status">{info}</ErrorNotice>}
         {conflictNote && <ErrorNotice variant="warn" role="status">{conflictNote}</ErrorNotice>}
-        {renameKeys && (
-          <ErrorNotice variant="warn" role="status" title={`Keys that already name ${src.slug}__${renameKeys.name}`}>
+        {renamed && (renamed.keys.length > 0 ? (
+          <ErrorNotice variant="warn" role="status" title={`Keys that already name ${src.slug}__${renamed.name}`}>
             They now reach this tool:{" "}
-            {renameKeys.keys.map((k) => `${k.name} (${k.key_prefix})`).join(", ")}. If that is not meant, rename it again.
+            {renamed.keys.map((k) => `${k.name} (${k.key_prefix})`).join(", ")}. If that is not meant, rename it again.
           </ErrorNotice>
-        )}
+        ) : (
+          <ErrorNotice variant="warn" role="status">
+            Keys whose allow-list names {src.slug}__{renamed.name} now reach this tool.
+          </ErrorNotice>
+        ))}
         {conflicts.length > 0 && (
           <ErrorNotice variant="warn">
             {conflicts.map((t) => t.name).join(", ")} would be served under the same name, so neither is served. Rename one of them.
@@ -227,10 +231,11 @@ export default function ToolSourceDetail() {
                         <td className="col-name">
                           <div className="mono">{t.name}</div>
                           {t.served_name !== t.name && <div className="muted small">served as <span className="mono">{t.served_name}</span></div>}
+                          {t.serve_issue !== "" && <div className="muted small">{serveIssueText(t.serve_issue)}</div>}
                         </td>
                         <td>
                           {t.aggregated_name ? <span className="mono">{t.aggregated_name}</span> : <span className="muted">—</span>}
-                          {t.aggregated_issue ? <div className="muted small">{t.aggregated_issue}</div> : null}
+                          {t.aggregated_issue && t.aggregated_issue !== "name_conflict" ? <div className="muted small">{aggregatedIssueText(t.aggregated_issue)}</div> : null}
                         </td>
                         <td>
                           {t.effective_read_only ? "Read-only" : "Can change things"}
@@ -261,10 +266,11 @@ export default function ToolSourceDetail() {
           slug={src.slug}
           tool={editing}
           onClose={() => setEditing(null)}
-          onSaved={(saved, keys) => {
+          onSaved={(saved, keys, wasRename) => {
             clearNotes();
             toast.success("Saved.");
-            if (keys.length > 0) setRenameKeys({ name: saved.served_name, keys });
+            // A rename changes which keys reach the tool: the relay lists them for a caller who may see them, the note covers the rest.
+            if (wasRename) setRenamed({ name: saved.served_name, keys });
           }}
         />
       )}
@@ -334,7 +340,7 @@ function PendingTool({ tool, canManage, busy, onApprove }: { tool: ToolSourceToo
           <span className="mono"><strong>{tool.name}</strong></span>
           <Badge kind="status-idle">{fresh ? "New" : "Changed"}</Badge>
         </div>
-        {canManage && <Button variant="primary" size="sm" disabled={busy} onClick={onApprove}>Approve</Button>}
+        {canManage && <Button variant="primary" size="sm" aria-label={`Approve ${tool.name}`} disabled={busy} onClick={onApprove}>Approve</Button>}
       </div>
       {tool.guardrail_hits.map((h, i) => (
         <ErrorNotice key={i} variant="warn" role="note">

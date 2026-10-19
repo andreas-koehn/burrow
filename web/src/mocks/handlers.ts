@@ -57,14 +57,21 @@ function servedNameTaken(tools: ToolSourceTool[], t: ToolSourceTool): boolean {
   const name = t.rename || t.name;
   return tools.some((x) => x !== t && x.status === "approved" && !x.hidden && (x.rename || x.name) === name);
 }
-function toolWire(tools: ToolSourceTool[], t: ToolSourceTool): ToolSourceTool {
+function toolWire(slug: string, tools: ToolSourceTool[], t: ToolSourceTool): ToolSourceTool {
   const served_name = t.rename || t.name;
   const upstream_read_only = (t.definition.annotations as { readOnlyHint?: boolean } | undefined)?.readOnlyHint === true;
   const visible = t.status === "approved" && !t.hidden;
   const clash = visible && tools.some((x) => x !== t && x.status === "approved" && !x.hidden && (x.rename || x.name) === served_name);
+  // D11: <slug>__<name> within 64 characters of [A-Za-z0-9_-], else the tool is on /mcp/<slug> only.
+  const aggregated = `${slug}__${served_name}`;
+  const issue: ToolSourceTool["aggregated_issue"] = clash ? "name_conflict"
+    : !visible ? ""
+    : !/^[A-Za-z0-9_-]+$/.test(aggregated) ? "name_invalid"
+    : aggregated.length > 64 ? "name_too_long" : "";
   return {
     ...t, served_name, upstream_read_only, effective_read_only: t.read_only ?? upstream_read_only,
     served: visible && !clash, serve_issue: clash ? "name_conflict" : "",
+    aggregated_name: visible && !clash && issue === "" ? aggregated : null, aggregated_issue: issue,
   };
 }
 
@@ -2184,7 +2191,7 @@ export const handlers = [
         tools.push({
           name, status: "pending", current_hash: hash, approved_hash: "", definition: def, approved_definition: null, hidden: false,
           rename: "", description_override: "", read_only: null, upstream_read_only: false, effective_read_only: false,
-          served_name: name, served: false, serve_issue: "", guardrail_hits: hit, updated_at: new Date().toISOString(),
+          served_name: name, served: false, serve_issue: "", aggregated_name: null, aggregated_issue: "", guardrail_hits: hit, updated_at: new Date().toISOString(),
         });
         result.added++;
       } else if (have.current_hash !== hash || have.status === "removed") {
@@ -2207,7 +2214,7 @@ export const handlers = [
     const s = db.toolSources.find((x) => x.slug === params.slug);
     if (!s) return err(404, "tool source not found");
     const tools = db.toolSourceTools[s.slug] ?? [];
-    return json([...tools].sort((a, b) => a.name.localeCompare(b.name)).map((t) => toolWire(tools, t)));
+    return json([...tools].sort((a, b) => a.name.localeCompare(b.name)).map((t) => toolWire(String(params.slug), tools, t)));
   }),
   http.put("/api/v1/mcp/sources/:slug/tools/:name", async ({ request, params }) => {
     const g = gate(request, { admin: true, needs: ["mcp:sources:manage"] }); if (g) return g;
@@ -2229,8 +2236,8 @@ export const handlers = [
     if (b.description_override !== undefined) t.description_override = b.description_override;
     if (b.read_only !== undefined) t.read_only = b.read_only;
     t.updated_at = new Date().toISOString();
-    const keys = b.rename ? (db.toolRenameAffected[b.rename] ?? []) : undefined;
-    return json({ ...toolWire(tools, t), ...(keys ? { keys_matching_rename: keys } : {}) });
+    const keys = b.rename ? db.toolRenameAffected[b.rename] : undefined;
+    return json({ ...toolWire(String(params.slug), tools, t), ...(keys ? { keys_matching_rename: keys } : {}) });
   }),
   http.post("/api/v1/mcp/sources/:slug/tools/:name/approve", async ({ request, params }) => {
     const g = gate(request, { admin: true, needs: ["mcp:sources:manage"] }); if (g) return g;
@@ -2244,7 +2251,7 @@ export const handlers = [
     if (servedNameTaken(tools, t)) return err(409, `another tool is served under the name ${t.rename || t.name}`);
     approveTool(t);
     refreshCounts(String(params.slug));
-    return json(toolWire(tools, t));
+    return json(toolWire(String(params.slug), tools, t));
   }),
   http.post("/api/v1/mcp/sources/:slug/approve-all", async ({ request, params }) => {
     const g = gate(request, { admin: true, needs: ["mcp:sources:manage"] }); if (g) return g;

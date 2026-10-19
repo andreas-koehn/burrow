@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Badge } from "@/components/ds";
 import { diffWords } from "@/lib/textDiff";
 import type { ToolDefinition } from "@/lib/contract";
 
@@ -14,11 +15,12 @@ export interface ToolDefinitionViewProps {
 
 const json = (v: unknown) => JSON.stringify(v, null, 2);
 
-function Block({ title, value }: { title: string; value: unknown }) {
+function Block({ title, value, was }: { title: string; value: unknown; was?: { value: unknown } }) {
   if (value === undefined || value === null) return null;
+  const changed = was !== undefined && json(was.value) !== json(value);
   return (
-    <div>
-      <div className="section-label">{title}</div>
+    <div data-changed={changed ? title : undefined}>
+      <div className="section-label">{title}{changed && <Badge kind="status-idle" nodot className="diff-badge">changed</Badge>}</div>
       {/* Focusable so the keyboard can scroll a long schema. */}
       <pre className="cmd-block" tabIndex={0} role="group" aria-label={title}><code>{json(value)}</code></pre>
     </div>
@@ -50,9 +52,9 @@ export function ToolDefinitionView({ label, definition, other, side }: ToolDefin
       )}
       {/* The text is the upstream's, shown as text: never as markup. */}
       <p className="tool-description" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: 0 }}>{text}</p>
-      <Block title="Input schema" value={definition.inputSchema} />
-      <Block title="Output schema" value={definition.outputSchema} />
-      <Block title="Annotations" value={definition.annotations} />
+      <Block title="Input schema" value={definition.inputSchema} was={side === "new" && other ? { value: other.inputSchema } : undefined} />
+      <Block title="Output schema" value={definition.outputSchema} was={side === "new" && other ? { value: other.outputSchema } : undefined} />
+      <Block title="Annotations" value={definition.annotations} was={side === "new" && other ? { value: other.annotations } : undefined} />
     </div>
   );
 }
