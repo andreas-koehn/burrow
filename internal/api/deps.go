@@ -450,6 +450,11 @@ type Deps struct {
 	// it; clientLoginGuessClock is its clock in tests (nil: time.Now).
 	clientLoginGuesses    *guessLimiter
 	clientLoginGuessClock func() time.Time
+
+	// reauth holds the re-authentication windows (RequireRecentAuth).
+	// NewRouter creates it; reauthClock is its clock in tests (nil: time.Now).
+	reauth      *reauthWindows
+	reauthClock func() time.Time
 	// ClientDownloadBase is where /download/ redirects to:
 	// <base>/<tag>/<archive>. Empty means config.DefaultClientDownloadBase.
 	ClientDownloadBase string

@@ -213,6 +213,7 @@ func TestAllowListIsExactlyThis(t *testing.T) {
 		"POST /api/v1/auth/change-password",
 		"POST /api/v1/auth/login",
 		"POST /api/v1/auth/logout",
+		"POST /api/v1/auth/reauth",
 		"POST /api/v1/client/login/poll",
 		"POST /api/v1/client/login/start",
 	}

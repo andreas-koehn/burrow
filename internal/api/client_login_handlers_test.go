@@ -855,11 +855,12 @@ func TestClientLogin_NoStore(t *testing.T) {
 
 // Without a services domain a /svc/ app shares the dashboard's origin and can
 // call the API as the signed-in user, so approving a client sign-in takes the
-// account password as well (D27). The request tells the page so.
+// account password as well (D27): the inline field, or a recent confirmation
+// of it (T02b). The request tells the page so.
 func TestClientLoginApprove_PasswordWithoutServicesDomain(t *testing.T) {
 	h := newLoginHarness(t, func(d *Deps) { d.ClientLoginStartLimitOverride = 1000 })
 	_, user := h.start(t)
-	c := authedClient(t, h.srv)
+	c := unconfirmedClient(t, h.srv)
 	path := "/api/v1/client/login/requests/" + user
 
 	got := c.get(t, path)
@@ -868,8 +869,8 @@ func TestClientLoginApprove_PasswordWithoutServicesDomain(t *testing.T) {
 	}
 
 	resp := c.post(t, path+"/approve", map[string]string{"token_name": "laptop"})
-	if body := decodeMap(t, resp); resp.StatusCode != http.StatusBadRequest || body["error"] != "password required" {
-		t.Fatalf("approve without password: %d %v, want 400 password required", resp.StatusCode, body)
+	if body := decodeMap(t, resp); resp.StatusCode != http.StatusForbidden || body["error"] != "reauth_required" {
+		t.Fatalf("approve without password: %d %v, want 403 reauth_required", resp.StatusCode, body)
 	}
 	resp = c.post(t, path+"/approve", map[string]string{"token_name": "laptop", "password": "wrong-one"})
 	if body := decodeMap(t, resp); resp.StatusCode != http.StatusForbidden || !strings.Contains(fmt.Sprint(body["error"]), "password") {
@@ -888,6 +889,23 @@ func TestClientLoginApprove_PasswordWithoutServicesDomain(t *testing.T) {
 	}
 }
 
+// A session that confirmed its password (POST /auth/reauth) approves without
+// the field; the window is the whole mechanism.
+func TestClientLoginApprove_RecentConfirmationReplacesThePasswordField(t *testing.T) {
+	h := newLoginHarness(t, func(d *Deps) { d.ClientLoginStartLimitOverride = 1000 })
+	_, user := h.start(t)
+	c := unconfirmedClient(t, h.srv)
+	path := "/api/v1/client/login/requests/" + user + "/approve"
+	if resp := c.post(t, path, map[string]string{"token_name": "laptop"}); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("before confirming: %d, want 403", resp.StatusCode)
+	}
+	c.reauth(t, "password1")
+	resp := c.post(t, path, map[string]string{"token_name": "laptop"})
+	if body := decodeMap(t, resp); resp.StatusCode != http.StatusOK || body["status"] != "approved" {
+		t.Fatalf("after confirming: %d %v, want 200 approved", resp.StatusCode, body)
+	}
+}
+
 // Wrong passwords are limited per address like the sign-in itself.
 func TestClientLoginApprove_PasswordRateLimited(t *testing.T) {
 	h := newLoginHarness(t, func(d *Deps) {
@@ -895,7 +913,7 @@ func TestClientLoginApprove_PasswordRateLimited(t *testing.T) {
 		d.LoginRateLimitPerIPOverride = 3
 	})
 	_, user := h.start(t)
-	c := authedClient(t, h.srv) // the sign-in is the first of three
+	c := unconfirmedClient(t, h.srv) // the sign-in is the first of three
 	path := "/api/v1/client/login/requests/" + user + "/approve"
 	for i := 0; i < 2; i++ {
 		if resp := c.post(t, path, map[string]string{"token_name": "x", "password": "wrong"}); resp.StatusCode != http.StatusForbidden {

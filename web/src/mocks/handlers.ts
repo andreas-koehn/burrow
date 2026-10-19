@@ -482,6 +482,15 @@ export const handlers = [
   // ---- auth / identity ----
   http.get("/api/v1/me", ({ request }) => gate(request) ?? json(db.me)),
   http.post("/api/v1/auth/logout", ({ request }) => gate(request) ?? noContent()),
+  // Confirms the password and opens the window of the guarded routes ("password123").
+  http.post("/api/v1/auth/reauth", async ({ request }) => {
+    const g = gate(request); if (g) return g;
+    const b = await body<{ password?: unknown }>(request);
+    if (!b || typeof b.password !== "string" || b.password === "") return err(400, "password required");
+    if (b.password !== "password123") return err(403, "password is incorrect");
+    db.reauthConfirmed = true;
+    return json({ expires_at: new Date(Date.now() + 600_000).toISOString() });
+  }),
   http.post("/api/v1/auth/change-password", async ({ request }) => {
     const g = gate(request); if (g) return g;
     const b = await body<{ current_password?: string; new_password?: string }>(request);
@@ -693,10 +702,14 @@ export const handlers = [
     if (!mayManageClientTokens()) return err(403, "tokens:manage required");
     const b = await body<{ token_name?: unknown; password?: unknown }>(request);
     if (!b) return err(400, "token_name is required");
-    // As on the relay: the password is checked before the request or the name.
+    // As on the relay: the password (inline, or confirmed with POST /auth/reauth)
+    // is checked before the request or the name.
     if (db.clientLoginPasswordRequired) {
-      if (typeof b.password !== "string" || b.password === "") return err(400, "password required");
-      if (b.password !== "password123") return err(403, "password is incorrect");
+      if (typeof b.password === "string" && b.password !== "") {
+        if (b.password !== "password123") return err(403, "password is incorrect");
+      } else if (!db.reauthConfirmed) {
+        return err(403, "reauth_required");
+      }
     }
     const name = cleanTokenName(b.token_name);
     if (name === null) return err(400, "token_name must be 1 to 120 characters without control characters");

@@ -1,6 +1,35 @@
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
+  /** Set for the errors the client itself raises; the relay's own errors have none. */
+  code?: string;
+  constructor(status: number, message: string, code?: string) { super(message); this.status = status; this.code = code; }
+}
+
+/** The error code of a route that needs the password confirmed first (POST /auth/reauth). */
+export const REAUTH_REQUIRED = "reauth_required";
+/** Code of the ApiError a call is rejected with when the person closes the password dialog. */
+export const REAUTH_CANCELLED = "reauth_cancelled";
+
+/**
+ * Asks the person for their password and confirms it with the relay. Resolves
+ * once the window is open; rejects (with an ApiError whose code is
+ * REAUTH_CANCELLED) when they give up. Registered once by the app's
+ * ReauthDialog; without one a call that needs it fails with the relay's 403.
+ */
+export type ReauthHandler = () => Promise<void>;
+let reauthHandler: ReauthHandler | null = null;
+export function setReauthHandler(h: ReauthHandler | null): void { reauthHandler = h; }
+
+// needsReauth: the answer is the relay's "confirm your password first". The
+// confirmation call itself never loops back into the dialog.
+async function needsReauth(path: string, res: Response): Promise<boolean> {
+  if (res.status !== 403 || reauthHandler === null || path === "/auth/reauth") return false;
+  try {
+    const body = JSON.parse(await res.clone().text()) as unknown;
+    return typeof body === "object" && body !== null && (body as Record<string, unknown>).error === REAUTH_REQUIRED;
+  } catch {
+    return false;
+  }
 }
 
 // csrfSafeMethods are HTTP methods that do not change state; they do not need
@@ -17,6 +46,12 @@ function getCsrfToken(): string {
 }
 
 export async function apiFetch<T = unknown>(path: string, opts: RequestInit = {}): Promise<T> {
+  return send<T>(path, opts, true);
+}
+
+// send makes the call. When the relay answers reauth_required and `retry` is
+// set, it shows the shared password dialog and repeats the call once.
+async function send<T>(path: string, opts: RequestInit, retry: boolean): Promise<T> {
   const method = (opts.method ?? "GET").toUpperCase();
   const csrfHeaders: Record<string, string> = {};
   if (!csrfSafeMethods.has(method)) {
@@ -33,6 +68,10 @@ export async function apiFetch<T = unknown>(path: string, opts: RequestInit = {}
   });
   if (res.status === 401) {
     throw new ApiError(401, "unauthorized");
+  }
+  if (retry && (await needsReauth(path, res))) {
+    await reauthHandler!();
+    return send<T>(path, opts, false);
   }
   const text = await res.text();
   let body: unknown = null;
@@ -54,8 +93,13 @@ export async function apiFetch<T = unknown>(path: string, opts: RequestInit = {}
 // discards the body, so the button appears to do nothing. GET-only (the
 // server export/download routes are all GET, which is CSRF-safe).
 export async function downloadFile(path: string, fallbackName: string): Promise<void> {
-  const res = await fetch("/api/v1" + path, { credentials: "include" });
+  let res = await fetch("/api/v1" + path, { credentials: "include" });
   if (res.status === 401) throw new ApiError(401, "unauthorized");
+  if (await needsReauth(path, res)) {
+    await reauthHandler!();
+    res = await fetch("/api/v1" + path, { credentials: "include" });
+    if (res.status === 401) throw new ApiError(401, "unauthorized");
+  }
   if (!res.ok) {
     let msg = res.statusText;
     try {

@@ -2,6 +2,8 @@
 
 Burrow exposes a JSON REST API at `/api/v1`. Every dashboard action—creating services, minting tokens, configuring access policy, reviewing the audit log—is available through the same API the UI uses.
 
+While the relay has no [services domain](/guide/configuration#services-domain), a dashboard session must confirm its password before it calls a route that mints a secret or changes who may do what: `POST /auth/reauth` with `{"password": "…"}` opens a ten-minute window for that session. Outside it those routes answer `403 {"error":"reauth_required"}` (they are marked in the OpenAPI description); automation tokens are exempt. A session's `id` in `GET /sessions` is a hash, not the cookie value.
+
 The API is served on the same port as the dashboard: `:8080` by default, or `:443` when [ACME is enabled](/guide/deploy#built-in-acme).
 
 ---
@@ -90,7 +92,7 @@ Two extension fields appear on operations:
 | `x-burrow-mcp` | `false` keeps the operation out of the tool list of the management MCP server. An operation without the field may become a tool. |
 | `x-burrow-permission` | Reserved for the permission the operation requires. No operation carries it yet. |
 
-`x-burrow-mcp: false` is set on login, logout and password change; on the client sign-in endpoints (discovery, start, poll, and the sign-in request lookup, approval and denial in the dashboard); on downloads and exports (backup archive, audit, cost and connection-log export); on the event streams; on backup restore and its status poll; and on the OpenAPI viewer.
+`x-burrow-mcp: false` is set on login, logout, password confirmation (`/auth/reauth`) and password change; on the client sign-in endpoints (discovery, start, poll, and the sign-in request lookup, approval and denial in the dashboard); on downloads and exports (backup archive, audit, cost and connection-log export); on the event streams; on backup restore and its status poll; and on the OpenAPI viewer.
 
 The schemas are checked against the server: tests compare every JSON request and response schema with the Go type the handler decodes or writes, so a field added to the API without the spec fails the build.
 

@@ -124,6 +124,7 @@ var routeAccess = map[string]access{
 	// Self-service: about the caller's own account, with nothing to scope.
 	"POST /api/v1/auth/logout":          self(),
 	"POST /api/v1/auth/change-password": self(), // asks for the current password
+	"POST /api/v1/auth/reauth":          self(), // confirms the password; opens the window of RequireRecentAuth
 	"GET /api/v1/me":                    self(),
 
 	// --- Dashboard sessions only ----------------------------------------

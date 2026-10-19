@@ -115,10 +115,21 @@ type authClient struct {
 	csrf string
 }
 
-// authedClient logs in against srv (POST /api/v1/auth/login) and returns a
-// client whose jar holds the session/CSRF cookies. Deps.Users must be a
+// authedClient logs in against srv and confirms the password (POST
+// /auth/reauth), so the routes behind RequireRecentAuth are open to it. Use
+// unconfirmedClient for a session that has not confirmed. Deps.Users must be a
 // fakeUserStore (or anything that lets login succeed).
 func authedClient(t *testing.T, srv *httptest.Server) *authClient {
+	t.Helper()
+	c := unconfirmedClient(t, srv)
+	c.reauth(t, "password1")
+	return c
+}
+
+// unconfirmedClient logs in against srv (POST /api/v1/auth/login) and returns a
+// client whose jar holds the session/CSRF cookies, without confirming the
+// password.
+func unconfirmedClient(t *testing.T, srv *httptest.Server) *authClient {
 	t.Helper()
 	jar, err := cookiejarNew()
 	if err != nil {
@@ -145,6 +156,16 @@ func authedClient(t *testing.T, srv *httptest.Server) *authClient {
 		t.Fatal("authedClient: no CSRF cookie after login")
 	}
 	return c
+}
+
+// reauth confirms the password; it fails the test when the relay refuses.
+func (c *authClient) reauth(t *testing.T, password string) {
+	t.Helper()
+	resp := c.do(t, http.MethodPost, "/api/v1/auth/reauth", map[string]string{"password": password})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("reauth status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	_ = resp.Body.Close()
 }
 
 func (c *authClient) do(t *testing.T, method, path string, body any) *http.Response {

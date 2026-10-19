@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,18 +46,28 @@ func TestSessionEndpoints(t *testing.T) {
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("list sessions status=%d", r.StatusCode)
 	}
+	raw := readBody(t, r)
 	var ls []sessionResp
-	json.NewDecoder(r.Body).Decode(&ls)
-	r.Body.Close()
-	if len(ls) != 1 || ls[0].ID != "s1" {
-		t.Fatalf("sessions: %+v", ls)
+	if err := json.Unmarshal([]byte(raw), &ls); err != nil {
+		t.Fatal(err)
+	}
+	// The id is a hash of the session id, never the session id (the cookie
+	// value) itself.
+	if len(ls) != 1 || ls[0].ID != sessionRef("s1") || ls[0].ID == "s1" || strings.Contains(raw, `"s1"`) {
+		t.Fatalf("sessions: %s", raw)
 	}
 
-	if r := c.delete(t, "/api/v1/sessions/s1"); r.StatusCode != http.StatusNoContent {
+	if r := c.delete(t, "/api/v1/sessions/"+ls[0].ID); r.StatusCode != http.StatusNoContent {
 		t.Fatalf("revoke status=%d", r.StatusCode)
 	}
-	if r := c.delete(t, "/api/v1/sessions/missing"); r.StatusCode != http.StatusNotFound {
-		t.Fatalf("revoke missing status=%d want 404", r.StatusCode)
+	if len(fs.revoked) != 1 || fs.revoked[0] != "s1" {
+		t.Fatalf("revoked %v, want the session behind the hash", fs.revoked)
+	}
+	// The raw id names nothing any more; neither does an unknown hash.
+	for _, id := range []string{"s1", "missing", sessionRef("s2")} {
+		if r := c.delete(t, "/api/v1/sessions/"+id); r.StatusCode != http.StatusNotFound {
+			t.Fatalf("revoke %q status=%d want 404", id, r.StatusCode)
+		}
 	}
 
 	r = c.post(t, "/api/v1/sessions/revoke-all", nil)

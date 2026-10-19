@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { apiFetch, ApiError } from "./api";
+import { apiFetch, downloadFile, ApiError, setReauthHandler, REAUTH_CANCELLED } from "./api";
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  setReauthHandler(null);
   // Reset document.cookie between tests.
   // In jsdom, individual cookie pairs can be cleared by setting them expired.
   if (typeof document !== "undefined") {
@@ -126,5 +127,71 @@ describe("apiFetch", () => {
       // Caller's extra header is merged in alongside the defaults.
       expect(headers["X-Custom"]).toBe("my-value");
     });
+  });
+});
+
+describe("reauth_required", () => {
+  const refused = () => new Response(JSON.stringify({ error: "reauth_required" }), { status: 403 });
+  const ok = (body: unknown = { done: 1 }) => new Response(JSON.stringify(body), { status: 200 });
+
+  it("asks the handler, then repeats the call once with the same request", async () => {
+    const f = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(refused() as any).mockResolvedValueOnce(ok() as any);
+    const handler = vi.fn().mockResolvedValue(undefined);
+    setReauthHandler(handler);
+    const out = await apiFetch("/tokens", { method: "POST", body: JSON.stringify({ name: "x" }) });
+    expect(out).toEqual({ done: 1 });
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(f).toHaveBeenCalledTimes(2);
+    const [[, a], [, b]] = f.mock.calls as [string, RequestInit][];
+    expect(b.body).toBe(a.body);
+    expect(b.method).toBe("POST");
+  });
+
+  it("rejects the original call when the handler gives up, and does not repeat it", async () => {
+    const f = vi.spyOn(globalThis, "fetch").mockResolvedValue(refused() as any);
+    setReauthHandler(() => Promise.reject(new ApiError(403, "Password confirmation cancelled.", REAUTH_CANCELLED)));
+    await expect(apiFetch("/tokens", { method: "POST" })).rejects.toMatchObject({ status: 403, code: REAUTH_CANCELLED });
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks only once per call: a second refusal after the repeat is an ordinary error", async () => {
+    const f = vi.spyOn(globalThis, "fetch").mockResolvedValue(refused() as any);
+    const handler = vi.fn().mockResolvedValue(undefined);
+    setReauthHandler(handler);
+    await expect(apiFetch("/tokens", { method: "POST" })).rejects.toMatchObject({ status: 403, message: "reauth_required" });
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+
+  it("is an ordinary 403 without a handler", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(refused() as any);
+    await expect(apiFetch("/tokens", { method: "POST" })).rejects.toMatchObject({ status: 403, message: "reauth_required" });
+  });
+
+  it("leaves other 403s alone", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ error: "users:manage required" }), { status: 403 }) as any);
+    const handler = vi.fn().mockResolvedValue(undefined);
+    setReauthHandler(handler);
+    await expect(apiFetch("/users", { method: "POST" })).rejects.toMatchObject({ status: 403, message: "users:manage required" });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("never sends the confirmation call itself through the dialog", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(refused() as any);
+    const handler = vi.fn().mockResolvedValue(undefined);
+    setReauthHandler(handler);
+    await expect(apiFetch("/auth/reauth", { method: "POST" })).rejects.toMatchObject({ status: 403 });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("serves a download the same way", async () => {
+    const f = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(refused() as any)
+      .mockResolvedValueOnce(new Response("data", { status: 200 }) as any);
+    const handler = vi.fn().mockResolvedValue(undefined);
+    setReauthHandler(handler);
+    await downloadFile("/backups/b1/download", "b.tar.gz");
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(f).toHaveBeenCalledTimes(2);
   });
 });

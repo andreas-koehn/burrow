@@ -89,6 +89,8 @@ export interface MockDb {
   clientLoginWrongCodes: number;
   /** The relay has no services domain: approving a sign-in takes the password ("password123"). */
   clientLoginPasswordRequired: boolean;
+  /** The session confirmed its password (POST /auth/reauth); the guarded routes are open. */
+  reauthConfirmed: boolean;
   users: UserAdmin[];
   roles: RoleSummary[];
   rolePerms: Record<string, string[]>;
@@ -171,6 +173,7 @@ function seed(): MockDb {
     ],
     clientLoginWrongCodes: 0,
     clientLoginPasswordRequired: false,
+    reauthConfirmed: false,
     users: [
       { id: meId, email: "alice@acme.io", role: "admin", status: "active", last_login: "2026-05-18T09:00:00Z", created_at: "2026-01-12T08:00:00Z" },
       { id: "bur_usr_bob0002", email: "bob@acme.io", role: "user", status: "active", last_login: null, created_at: "2026-02-01T08:00:00Z" },

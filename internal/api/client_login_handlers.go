@@ -312,8 +312,10 @@ func (d Deps) GetClientLoginRequest(w http.ResponseWriter, r *http.Request) {
 
 type clientLoginApproveReq struct {
 	TokenName string `json:"token_name"`
-	// Password is the approver's account password, required while no
-	// services domain is set (passwordRequired).
+	// Password is the approver's account password. Kept for clients that
+	// send it inline; the dashboard confirms it once (POST /auth/reauth)
+	// instead. While no services domain is set (passwordRequired) either the
+	// field or a recent confirmation is required.
 	Password string `json:"password"`
 }
 
@@ -324,13 +326,18 @@ type clientLoginApproveReq struct {
 func (d Deps) passwordRequired() bool { return d.ServicesDomain == "" }
 
 // checkApproverPassword answers false after writing the refusal when the
-// approval needs the password and the body does not carry the caller's.
+// approval needs the password and the caller gave neither the password in the
+// body nor a recent confirmation of it (RequireRecentAuth's window). A
+// password in the body is checked even inside the window.
 func (d Deps) checkApproverPassword(w http.ResponseWriter, r *http.Request, password string) bool {
 	if !d.passwordRequired() {
 		return true
 	}
 	if password == "" {
-		writeErr(w, http.StatusBadRequest, "password required")
+		if d.recentAuth(r) {
+			return true
+		}
+		writeErr(w, http.StatusForbidden, reauthRequired)
 		return false
 	}
 	u, err := d.Users.GetUserByID(r.Context(), userID(r.Context()))

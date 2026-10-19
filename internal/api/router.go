@@ -212,6 +212,12 @@ func newRouter(d Deps) http.Handler {
 	loginStartLimit, loginPollLimit := d.clientLoginRateLimiters()
 	// d is a copy: the counter of wrong user codes belongs to this router.
 	d.clientLoginGuesses = newGuessLimiter(ClientLoginGuessLimit, time.Minute, d.clientLoginGuessClock)
+	if d.reauth == nil { // tests hand in windows they can open
+		d.reauth = newReauthWindows(d.reauthClock)
+	}
+	// Routes that mint a secret or change who may do what, while no
+	// services domain keeps tunnelled apps off the dashboard's origin.
+	recent := d.RequireRecentAuth
 
 	r.Route("/api/v1", func(r chi.Router) {
 		// Test-only: under -tags=integration, registers
@@ -297,16 +303,19 @@ func newRouter(d Deps) http.Handler {
 			r.Use(middleware.Timeout(JSONHandlerTimeout))
 			r.Post("/auth/logout", d.Logout)
 			r.Post("/auth/change-password", d.ChangePassword)
+			// Confirms the password and opens the window RequireRecentAuth
+			// checks. Rate-limited like sign-in.
+			r.With(loginPerIP, loginGlobal).Post("/auth/reauth", d.PostReauth)
 			// v0.4.0 Task 20: backup / restore JSON API (spec Part L.3).
 			// All routes need backup:run. The download streams application/x-gzip;
 			// every other route is JSON. POST /backups/restore is multipart and
 			// takes every permission: it swaps the database.
 			r.Get("/backups", d.GetBackups)
 			r.Post("/backups", d.PostBackup)
-			r.Get("/backups/{id}/download", d.GetBackupDownload)
+			r.With(recent).Get("/backups/{id}/download", d.GetBackupDownload)
 			r.Post("/backups/{id}/verify", d.PostBackupVerify)
 			r.Delete("/backups/{id}", d.DeleteBackup)
-			r.Post("/backups/restore", d.PostBackupRestore)
+			r.With(recent).Post("/backups/restore", d.PostBackupRestore)
 			r.Get("/backups/restores/{id}", d.GetBackupRestoreStatus)
 			r.Get("/me", d.Me)
 			// /clients/connect-info needs the permission to manage client
@@ -315,7 +324,7 @@ func newRouter(d Deps) http.Handler {
 			// mint the token it hands out.
 			r.Get("/clients/connect-info", d.GetConnectInfo)
 			r.Get("/tokens", d.ListTokens)
-			r.Post("/tokens", d.CreateToken)
+			r.With(recent).Post("/tokens", d.CreateToken)
 			r.Delete("/tokens/{id}", d.RevokeToken)
 			// Client sign-in, the dashboard's side. State-changing session
 			// requests like any other here: session, then CSRF. A cookie
@@ -327,6 +336,8 @@ func newRouter(d Deps) http.Handler {
 			// Without a services domain the approval takes the account
 			// password (D27), and wrong ones are limited per address with
 			// the same allowance as the sign-in.
+			// The password is the inline field or a recent confirmation
+			// (RequireRecentAuth's window), checked by the handler.
 			approveLimit := func(next http.Handler) http.Handler { return next }
 			if d.ServicesDomain == "" {
 				approveLimit = loginPerIP
@@ -337,8 +348,8 @@ func newRouter(d Deps) http.Handler {
 				Post("/client/login/requests/{user_code}/deny", d.PostClientLoginDeny)
 			r.Get("/tunnels", d.ListTunnels)
 			r.Get("/sessions", d.ListSessions)
-			r.Delete("/sessions/{id}", d.RevokeSession)
-			r.Post("/sessions/revoke-all", d.RevokeAllSessions)
+			r.With(recent).Delete("/sessions/{id}", d.RevokeSession)
+			r.With(recent).Post("/sessions/revoke-all", d.RevokeAllSessions)
 			r.Put("/tunnels/{id}/access-mode", d.SetAccessMode)
 			// v0.3.0: service-scoped routes (owner-gated via store authz).
 			r.Get("/services", d.ListServices)
@@ -365,7 +376,7 @@ func newRouter(d Deps) http.Handler {
 			r.Put("/services/{serviceID}/access-mode", d.SetServiceAccessMode)
 			r.Put("/services/{serviceID}/gateway-only", d.PutServiceGatewayOnly)
 			r.Get("/services/{serviceID}/api-keys", d.ListAPIKeys)
-			r.Post("/services/{serviceID}/api-keys", d.CreateAPIKey)
+			r.With(recent).Post("/services/{serviceID}/api-keys", d.CreateAPIKey)
 			r.Delete("/services/{serviceID}/api-keys/{id}", d.DeleteAPIKey)
 			r.Get("/services/{serviceID}/access-policy", d.GetAccessPolicy)
 			r.Put("/services/{serviceID}/access-policy", d.SetAccessPolicy)
@@ -450,8 +461,8 @@ func newRouter(d Deps) http.Handler {
 			r.Put("/ai/models/{name}", d.PutAIModel)
 			r.Delete("/ai/models/{name}", d.DeleteAIModel)
 			r.Get("/ai/keys", d.GetAIKeys)
-			r.Post("/ai/keys", d.PostAIKey)
-			r.Put("/ai/keys/{id}", d.PutAIKey)
+			r.With(recent).Post("/ai/keys", d.PostAIKey)
+			r.With(recent).Put("/ai/keys/{id}", d.PutAIKey)
 			r.Delete("/ai/keys/{id}", d.DeleteAIKey)
 			// The captured requests of every provider in one list. The
 			// handler gates it like the per-service inspector list:
@@ -529,7 +540,7 @@ func newRouter(d Deps) http.Handler {
 			// plaintext bearer secret EXACTLY ONCE; GET responses redact it.
 			r.Get("/automation/presets", d.GetAutomationPresets)
 			r.Get("/automation/tokens", d.GetAutomationTokens)
-			r.Post("/automation/tokens", d.PostAutomationToken)
+			r.With(recent).Post("/automation/tokens", d.PostAutomationToken)
 			r.Delete("/automation/tokens/{id}", d.DeleteAutomationToken)
 			// v0.4.0 Task 23: `burrowd mcp` dashboard surface (spec Part P).
 			// Two read-only endpoints expose the listener config + closed
@@ -555,22 +566,22 @@ func newRouter(d Deps) http.Handler {
 			// roles:manage so a curator role can edit non-builtin
 			// definitions without full admin escalation.
 			r.Get("/roles/permissions", d.GetRolePermissions)
-			r.Post("/roles", d.PostRole)
-			r.Put("/roles/{name}", d.PutRole)
-			r.Delete("/roles/{name}", d.DeleteRole)
+			r.With(recent).Post("/roles", d.PostRole)
+			r.With(recent).Put("/roles/{name}", d.PutRole)
+			r.With(recent).Delete("/roles/{name}", d.DeleteRole)
 			// What only the admin role could call before the permission
 			// gate: users (users:read / users:manage), role reads, settings
 			// (settings:manage), live clients (tunnels:read:any) and service
 			// pre-provisioning (services:configure:any).
 			r.Group(func(r chi.Router) {
 				r.Get("/users", d.AdminListUsers)
-				r.Post("/users", d.AdminCreateUser)
-				r.Patch("/users/{id}", d.AdminUpdateUser)
-				r.Delete("/users/{id}", d.AdminDeleteUser)
+				r.With(recent).Post("/users", d.AdminCreateUser)
+				r.With(recent).Patch("/users/{id}", d.AdminUpdateUser)
+				r.With(recent).Delete("/users/{id}", d.AdminDeleteUser)
 				r.Get("/roles", d.ListRoles)
 				r.Get("/roles/{name}", d.GetRole)
 				r.Get("/settings", d.GetSettings)
-				r.Put("/settings", d.SaveSettings)
+				r.With(recent).Put("/settings", d.SaveSettings)
 				r.Post("/settings/test-email", d.SendTestEmail)
 				// v0.5.0 Task 9: retention settings (settings:manage).
 				r.Get("/settings/retention", d.GetRetentionSettings)

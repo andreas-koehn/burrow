@@ -95,8 +95,9 @@ your terminal, and approve. The token is created at that moment and stored on
 this machine; you never copy it. The request expires after ten minutes.
 
 While the relay has no [services domain](/guide/configuration#services-domain),
-the page also asks for your account password before it approves: tunnelled apps
-then share the dashboard's address, and the password is what they cannot supply.
+Approve opens a "Confirm your password" dialog (unless you confirmed it in the
+last ten minutes): tunnelled apps then share the dashboard's address, and the
+password is what they cannot supply.
 
 Approving a sign-in needs an admin account, or a role with the
 `tokens:manage:own` or `tokens:manage:any` permission. The token belongs to the

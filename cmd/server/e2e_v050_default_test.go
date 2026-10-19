@@ -271,6 +271,7 @@ func buildV050EnvOnDB(t *testing.T, sqldb *sql.DB, driver, urlRedacted string) *
 	if csrf == "" {
 		t.Fatal("no CSRF cookie after login")
 	}
+	confirmPassword(t, hc, hsrv.URL, csrf, adminPass)
 
 	env := &v050Env{
 		dbPath:    urlRedacted,

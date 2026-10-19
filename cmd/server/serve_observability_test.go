@@ -250,6 +250,7 @@ func bootObsRelay(t *testing.T) *obsRelay {
 	if r.csrf == "" {
 		t.Fatal("no CSRF cookie after login")
 	}
+	confirmPassword(t, r.hc, r.base, r.csrf, obsAdminPass)
 
 	r.hook = newObsHook(t)
 	r.mustAdmin(http.MethodPost, "/api/v1/webhooks", map[string]any{

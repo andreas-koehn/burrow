@@ -223,7 +223,12 @@ BURROW_LOG_LEVEL=warn
 Without `BURROW_SERVICES_DOMAIN`, `/svc/` apps share the dashboard's origin: a
 script on a tunnelled page can call the dashboard API as the signed-in user.
 Burrow strips its own cookies before forwarding, but that does not stop the
-browser. Set a services domain to give the apps a host of their own:
+browser. Until you set one, the relay asks for your account password again
+(a "Confirm your password" dialog, valid for ten minutes) before it mints a
+secret or changes who may do what: client and automation tokens, service API
+keys, gateway keys, users and roles, settings, backups and restores, ending
+sessions, and approving a client sign-in. Automation tokens are not asked. Set a
+services domain to give the apps a host of their own, and the dialog goes away:
 
 - Point a second A record (for example `apps.example.com`) at the relay.
 - With ACME on, the name is added to the certificate automatically. With file

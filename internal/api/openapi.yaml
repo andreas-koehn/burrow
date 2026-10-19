@@ -836,7 +836,9 @@ components:
       type: object
       required: [id, ip, user_agent, created_at, expires_at, current]
       properties:
-        id: { type: string }
+        id:
+          type: string
+          description: A hash of the session, never the session cookie itself. `DELETE /sessions/{id}` takes it.
         ip: { type: string }
         user_agent: { type: string }
         created_at: { type: string, format: date-time }
@@ -2037,6 +2039,18 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    ForbiddenOrReauth:
+      description: |
+        The caller lacks permission, or the route needs a recent password
+        confirmation. While the relay has no services domain
+        (`BURROW_SERVICES_DOMAIN`), this route answers 403
+        `{"error":"reauth_required"}` to a dashboard session that has not
+        confirmed its password in the last ten minutes: call
+        `POST /api/v1/auth/reauth`, then repeat the request. Automation
+        tokens are exempt.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
     NotFound:
       description: Resource not found.
       content:
@@ -2240,6 +2254,45 @@ paths:
         '204': { description: Session cleared. }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /api/v1/auth/reauth:
+    post:
+      tags: [auth]
+      operationId: authReauth
+      x-burrow-permission: {kind: self, any_of: []}
+      x-burrow-mcp: false
+      summary: Confirm the caller's password
+      description: |
+        Opens a ten-minute window in which the current dashboard session may
+        call the routes that mint a secret or change who may do what (they
+        answer 403 `reauth_required` outside it). Needed only while the relay
+        has no services domain (`BURROW_SERVICES_DOMAIN`); with one the call
+        still succeeds and the guard is off. Rate-limited like sign-in, audited
+        as `auth.reauth`. A dashboard session only: an automation token has no
+        window and gets 403.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: The window is open.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [expires_at]
+                properties:
+                  expires_at: { type: string, format: date-time }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { description: Too many attempts. }
+
   /api/v1/auth/change-password:
     post:
       tags: [auth]
@@ -2303,6 +2356,7 @@ paths:
       summary: Revoke one of the caller's sessions
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '204': { description: Session revoked. }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -2314,6 +2368,7 @@ paths:
       x-burrow-destructive: true
       summary: Revoke every session except the current one
       responses:
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '200':
           description: Count of sessions revoked.
           content:
@@ -2369,6 +2424,7 @@ paths:
                     token's expiry. A token that a sign-in request approval
                     mints has no expiry.
       responses:
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '201':
           description: Token created.
           content:
@@ -2686,6 +2742,7 @@ paths:
               properties:
                 name: { type: string }
       responses:
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '201':
           description: Key created.
           content:
@@ -4029,7 +4086,7 @@ paths:
                     type: string
                     description: The bearer token ("bua_" and the secret). Shown this once.
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
 
   /api/v1/automation/tokens/{id}:
     delete:
@@ -4102,6 +4159,7 @@ paths:
       summary: Stream a backup archive
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '200':
           description: gzipped tarball.
           content:
@@ -4168,7 +4226,7 @@ paths:
                   restore_id: { type: string }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
 
   /api/v1/backups/restores/{id}:
     get:
@@ -4234,7 +4292,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RoleDetail' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
 
   /api/v1/roles/permissions:
     get:
@@ -4299,7 +4357,7 @@ paths:
       responses:
         '204': { description: Updated. }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
     delete:
       tags: [roles]
       operationId: roleDelete
@@ -4313,7 +4371,7 @@ paths:
       responses:
         '204': { description: Deleted. }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
 
   # ────────────────────────────────────────────────────────────────────────
   # Users (admin)
@@ -4373,7 +4431,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/User' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
 
   /api/v1/users/{id}:
     patch:
@@ -4399,7 +4457,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
     delete:
       tags: [users]
       operationId: userDelete
@@ -4409,7 +4467,7 @@ paths:
       responses:
         '204': { description: Deleted. }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '409':
           description: >
             The user owns the service behind a provider that a synthetic
@@ -4450,7 +4508,7 @@ paths:
         '204': { description: Updated. }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
 
   /api/v1/settings/test-email:
     post:
@@ -4840,10 +4898,11 @@ paths:
         the caller; the client token is minted for the caller, with
         `token_name`, when the client collects it. Audited as
         `client.login.approved`. While the relay has no services domain
-        (BURROW_SERVICES_DOMAIN) the body must also carry the caller's
-        account `password` (400 `password required` without it, 403 for a
-        wrong one), and the route is limited per address like the sign-in;
-        `password_required` on the request says which applies.
+        (BURROW_SERVICES_DOMAIN) the session must have confirmed its password
+        in the last ten minutes (`POST /api/v1/auth/reauth`; 403
+        `reauth_required` otherwise). A body `password` is still accepted
+        instead: 403 for a wrong one. The route is limited per address like
+        the sign-in; `password_required` on the request says which applies.
       parameters:
         - { name: user_code, in: path, required: true, schema: { type: string }, example: "ABCD-EFGH" }
       requestBody:
@@ -4863,8 +4922,9 @@ paths:
                   type: string
                   format: password
                   description: >
-                    The caller's account password. Required while the relay
-                    has no services domain; ignored otherwise.
+                    The caller's account password. Accepted instead of a
+                    recent `POST /auth/reauth` while the relay has no
+                    services domain; ignored otherwise.
       responses:
         '200':
           description: Approved.
@@ -4873,7 +4933,7 @@ paths:
               schema: { $ref: '#/components/schemas/ClientLoginRequest' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: The request was approved or denied already; nothing changed.
@@ -6140,7 +6200,10 @@ paths:
         '403':
           description: >
             The caller is an automation token ("a dashboard session is
-            required").
+            required"), or, while the relay has no services domain, the
+            session has not confirmed its password in the last ten minutes
+            (`{"error":"reauth_required"}`; call `POST /api/v1/auth/reauth`
+            and repeat).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -6171,6 +6234,7 @@ paths:
             example:
               system_text: Answer in German.
       responses:
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '200':
           description: The key as it is now. It does not carry the key itself.
           content:

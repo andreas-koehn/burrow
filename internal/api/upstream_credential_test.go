@@ -62,6 +62,9 @@ type stubAuditAppender struct {
 }
 
 func (s *stubAuditAppender) Append(_ context.Context, e audit.Event) error {
+	if e.Action == audit.ActionAuthReauth {
+		return nil // the test client's own password confirmation (authedClient)
+	}
 	s.events = append(s.events, e)
 	return nil
 }

@@ -54,6 +54,7 @@ type authzHarness struct {
 	router chi.Router
 	st     *store.Store
 	sqldb  *sql.DB
+	reauth *reauthWindows
 }
 
 // harnessOwners answers the service lookups of the cache and inspector
@@ -131,7 +132,10 @@ func newAuthzHarness(t *testing.T, mods ...func(*Deps)) *authzHarness {
 	for _, mod := range mods {
 		mod(&d)
 	}
-	return &authzHarness{router: NewRouter(d).(chi.Router), st: st, sqldb: sqldb}
+	if d.reauth == nil {
+		d.reauth = newReauthWindows(d.reauthClock)
+	}
+	return &authzHarness{router: NewRouter(d).(chi.Router), st: st, sqldb: sqldb, reauth: d.reauth}
 }
 
 // apiRoute is one route of the JSON API as chi reports it.
@@ -239,12 +243,26 @@ func (h *authzHarness) do(t *testing.T, method, path string, body any, auth func
 }
 
 // session returns the credentials of a fresh dashboard session of the role's
-// user: the session cookie and the CSRF pair.
+// user: the session cookie and the CSRF pair. The session has confirmed its
+// password (RequireRecentAuth); sessionUnconfirmed has not.
 func (h *authzHarness) session(t *testing.T, role string) func(*http.Request) {
+	t.Helper()
+	return h.sessionWith(t, role, true)
+}
+
+func (h *authzHarness) sessionUnconfirmed(t *testing.T, role string) func(*http.Request) {
+	t.Helper()
+	return h.sessionWith(t, role, false)
+}
+
+func (h *authzHarness) sessionWith(t *testing.T, role string, confirmed bool) func(*http.Request) {
 	t.Helper()
 	sid, err := h.st.CreateSession(context.Background(), "u-"+role, "authz-test", "192.0.2.1")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if confirmed {
+		h.reauth.open(sessionRef(sid))
 	}
 	return func(req *http.Request) {
 		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sid})

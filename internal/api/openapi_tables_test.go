@@ -24,6 +24,7 @@ var openAPIOperationIDs = map[string]string{
 	"GET /metrics":                                                              "metricsGet",
 	"POST /api/v1/auth/login":                                                   "authLogin",
 	"POST /api/v1/auth/logout":                                                  "authLogout",
+	"POST /api/v1/auth/reauth":                                                  "authReauth",
 	"POST /api/v1/auth/change-password":                                         "authChangePassword",
 	"GET /api/v1/me":                                                            "meGet",
 	"GET /api/v1/sessions":                                                      "sessionsList",
@@ -194,6 +195,7 @@ var openAPIReservedOperationIDs = map[string]string{
 var openAPIMCPDisabled = map[string]string{
 	"authLogin":                 "POST /api/v1/auth/login",
 	"authLogout":                "POST /api/v1/auth/logout",
+	"authReauth":                "POST /api/v1/auth/reauth",
 	"authChangePassword":        "POST /api/v1/auth/change-password",
 	"clientDiscoveryGet":        "GET /api/v1/client/discovery",
 	"clientLoginStart":          "POST /api/v1/client/login/start",
@@ -239,6 +241,7 @@ type openAPIRequestBody struct {
 var openAPIRequestBodies = map[string]openAPIRequestBody{
 	// auth, sessions, tokens, clients, users, roles (O03)
 	"authLogin":                 {typ: oaType[loginReq]()},
+	"authReauth":                {typ: oaType[reauthReq]()},
 	"authChangePassword":        {typ: oaType[changePasswordReq]()},
 	"clientTokenCreate":         {typ: oaType[createTokenReq]()},
 	"clientLoginStart":          {typ: oaType[clientLoginStartReq]()},
@@ -332,6 +335,7 @@ type openAPIResponseBody struct {
 var openAPIResponses = map[string]openAPIResponseBody{
 	// auth, sessions, tokens, clients, users, roles (O03)
 	"authLogin":            {status: "200", typ: oaType[userResp]()},
+	"authReauth":           {status: "200", typ: oaType[reauthResp]()},
 	"meGet":                {status: "200", typ: oaType[meResp]()},
 	"sessionsList":         {status: "200", typ: oaType[sessionResp](), list: true},
 	"sessionsRevokeAll":    {status: "200", keys: []string{"revoked"}},

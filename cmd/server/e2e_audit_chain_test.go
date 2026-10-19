@@ -174,6 +174,7 @@ func bootAuditChainStack(t *testing.T) *auditChainStack {
 	if stack.csrf == "" {
 		t.Fatal("no CSRF cookie after login")
 	}
+	confirmPassword(t, stack.hc, stack.srv.URL, stack.csrf, adminPass)
 	return stack
 }
 

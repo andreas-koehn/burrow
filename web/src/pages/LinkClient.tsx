@@ -3,7 +3,7 @@ import type { FormEvent, ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
-import { apiFetch, ApiError } from "@/lib/api";
+import { apiFetch, ApiError, REAUTH_CANCELLED } from "@/lib/api";
 import { useAuth } from "@/auth/useAuth";
 import { Button, FormField, Input } from "@/components/ds";
 import { BurrowMark } from "@/pages/Login";
@@ -12,7 +12,6 @@ import type { ClientLoginRequest } from "@/lib/contract";
 const INVALID_CODE = "This code is not valid or has expired. Run burrow login again.";
 const TOO_MANY = "Too many wrong codes. Wait a minute, then try again.";
 const TOO_MANY_ATTEMPTS = "Too many attempts. Wait a minute, then try again.";
-const WRONG_PASSWORD = "The password is not correct.";
 const TOKEN_NAME_MAX = 120;
 // The longest piece of text from the client that is shown; the rest is cut.
 const SHOWN_MAX = 128;
@@ -165,8 +164,6 @@ function Request({ code }: { code: string }) {
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [nameError, setNameError] = useState("");
-  const [password, setPassword] = useState("");
-  const [passwordError, setPasswordError] = useState("");
   const [problem, setProblem] = useState("");
   // A second click arrives before the first one has disabled the button.
   const sent = useRef(false);
@@ -182,11 +179,11 @@ function Request({ code }: { code: string }) {
       case 429:
         return setProblem(/wrong codes/i.test(e.message) ? TOO_MANY : TOO_MANY_ATTEMPTS);
       case 403:
+        // The person closed the password dialog (see ReauthDialog).
+        if (e.code === REAUTH_CANCELLED) return setProblem("Approving needs your password. Press Approve to enter it.");
         if (/csrf/i.test(e.message)) return setProblem("This page is out of date. Reload it, then try again.");
-        if (what === "approve" && /password/i.test(e.message)) return setPasswordError(WRONG_PASSWORD);
         return setOutcome("forbidden");
       case 400:
-        if (what === "approve" && /password/i.test(e.message)) return setPasswordError("Enter your password.");
         if (what === "approve") return setNameError(e.message);
         return setProblem(`Could not ${what} the request: ${e.message}`);
       default:
@@ -195,11 +192,12 @@ function Request({ code }: { code: string }) {
   }
 
   const approve = useMutation({
-    // The password goes along only when the relay asks for it.
-    mutationFn: (v: { tokenName: string; password?: string }) =>
+    // While the relay has no services domain it asks for the password first;
+    // apiFetch shows the shared dialog for it and repeats the call.
+    mutationFn: (tokenName: string) =>
       apiFetch<ClientLoginRequest>(`${path}/approve`, {
         method: "POST",
-        body: JSON.stringify(v.password === undefined ? { token_name: v.tokenName } : { token_name: v.tokenName, password: v.password }),
+        body: JSON.stringify({ token_name: tokenName }),
       }),
     onSuccess: () => setOutcome("approved"),
     onError: (e) => failed(e, "approve"),
@@ -296,15 +294,13 @@ function Request({ code }: { code: string }) {
   const tooLong = [...trimmed].length > TOKEN_NAME_MAX;
   const busy = approve.isPending || deny.isPending;
   const fieldError = tooLong ? `At most ${TOKEN_NAME_MAX} characters.` : nameError;
-  const needsPassword = req.password_required;
 
   function decide(what: "approve" | "deny") {
     if (sent.current) return;
     sent.current = true;
     setProblem("");
     setNameError("");
-    setPasswordError("");
-    if (what === "approve") approve.mutate(needsPassword ? { tokenName: trimmed, password } : { tokenName: trimmed });
+    if (what === "approve") approve.mutate(trimmed);
     else deny.mutate();
   }
 
@@ -362,34 +358,12 @@ function Request({ code }: { code: string }) {
         />
       </FormField>
 
-      {/* While the relay has no services domain, a tunnelled app shares this page's
-          address and could press Approve with the session; the password it cannot know. */}
-      {needsPassword && (
-        <FormField
-          label="Your password"
-          htmlFor="link-password"
-          help="This relay asks for your account password before it signs a machine in."
-          error={passwordError || undefined}
-        >
-          <Input
-            id="link-password"
-            name="password"
-            type="password"
-            autoComplete="current-password"
-            invalid={passwordError !== ""}
-            disabled={busy}
-            value={password}
-            onChange={(e) => { setPassword(e.target.value); setPasswordError(""); }}
-          />
-        </FormField>
-      )}
-
       {problem && <p role="alert" className="notice-inline error linkpage-problem"><span className="body">{problem}</span></p>}
 
       {/* Two plain buttons, no form: Enter in the fields above decides nothing. */}
       <div className="linkpage-actions">
         <Button type="button" variant="secondary" disabled={busy} onClick={() => decide("deny")}>Deny</Button>
-        <Button type="button" variant="primary" disabled={busy || trimmed === "" || tooLong || (needsPassword && password === "")} onClick={() => decide("approve")}>Approve</Button>
+        <Button type="button" variant="primary" disabled={busy || trimmed === "" || tooLong} onClick={() => decide("approve")}>Approve</Button>
       </div>
     </>
   );

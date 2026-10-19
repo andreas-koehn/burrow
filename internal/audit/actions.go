@@ -150,6 +150,11 @@ const (
 	// (BURROW_SERVICES_DOMAIN) by a one-time code. The entry names the host
 	// and the service slug of the return address, never the code or session.
 	ActionAuthHandoff = "auth.handoff"
+
+	// A signed-in user confirmed the account password to open the ten-minute
+	// window in which secret-minting routes are allowed (no services domain).
+	// Result is "ok" or "denied"; the entry never holds the password.
+	ActionAuthReauth = "auth.reauth"
 )
 
 // AllActions is the closed set of every audit action Burrow defines, in a
@@ -187,7 +192,7 @@ var AllActions = []string{
 	ActionConnectionSessionSummary, ActionAICachePromoted, ActionAIUpstreamError,
 	ActionClientLoginApproved, ActionClientLoginDenied,
 	ActionRedactionSettingsUpdate,
-	ActionAuthHandoff,
+	ActionAuthHandoff, ActionAuthReauth,
 }
 
 // aggregatedActions is the set of actions that are sample-rated at 1/hour

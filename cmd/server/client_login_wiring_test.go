@@ -173,6 +173,7 @@ func assertMCPKnowsTheAuthDomain(t *testing.T, base string) {
 	if csrf == "" {
 		t.Fatal("login set no burrow_csrf cookie")
 	}
+	do("/api/v1/auth/reauth", map[string]string{"password": serveTestAdminPassword}, http.StatusOK)
 	const serviceID = "mcp-auth-domain"
 	do("/api/v1/services", map[string]string{"service_id": serviceID, "title": "wiring"}, http.StatusCreated)
 	minted := do("/api/v1/automation/tokens", map[string]any{

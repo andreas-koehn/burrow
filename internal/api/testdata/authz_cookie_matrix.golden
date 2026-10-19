@@ -105,6 +105,7 @@ admin POST /api/v1/audit/verify 500
 admin POST /api/v1/auth/change-password 400
 admin POST /api/v1/auth/login 400
 admin POST /api/v1/auth/logout 204
+admin POST /api/v1/auth/reauth 400
 admin POST /api/v1/automation/tokens 400
 admin POST /api/v1/backups 500
 admin POST /api/v1/backups/restore 400
@@ -262,6 +263,7 @@ user POST /api/v1/audit/verify 403
 user POST /api/v1/auth/change-password 400
 user POST /api/v1/auth/login 400
 user POST /api/v1/auth/logout 204
+user POST /api/v1/auth/reauth 400
 user POST /api/v1/automation/tokens 400
 user POST /api/v1/backups 403
 user POST /api/v1/backups/restore 403
@@ -419,6 +421,7 @@ cr-none POST /api/v1/audit/verify 403
 cr-none POST /api/v1/auth/change-password 400
 cr-none POST /api/v1/auth/login 400
 cr-none POST /api/v1/auth/logout 204
+cr-none POST /api/v1/auth/reauth 400
 cr-none POST /api/v1/automation/tokens 403
 cr-none POST /api/v1/backups 403
 cr-none POST /api/v1/backups/restore 403
@@ -576,6 +579,7 @@ cr-legacy POST /api/v1/audit/verify 500
 cr-legacy POST /api/v1/auth/change-password 400
 cr-legacy POST /api/v1/auth/login 400
 cr-legacy POST /api/v1/auth/logout 204
+cr-legacy POST /api/v1/auth/reauth 400
 cr-legacy POST /api/v1/automation/tokens 400
 cr-legacy POST /api/v1/backups 500
 cr-legacy POST /api/v1/backups/restore 400

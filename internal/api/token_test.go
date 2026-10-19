@@ -60,6 +60,14 @@ func loggedInClientWithCSRF(t *testing.T, ts *httptestServer) (*http.Client, str
 			csrfToken = c.Value
 		}
 	}
+	// Confirm the password so the routes of RequireRecentAuth are open. A
+	// fake store that refuses "pw" leaves the session unconfirmed.
+	rq, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/auth/reauth", strings.NewReader(`{"password":"pw"}`))
+	rq.Header.Set("Content-Type", "application/json")
+	rq.Header.Set("X-CSRF-Token", csrfToken)
+	if rr, err := cl.Do(rq); err == nil {
+		rr.Body.Close()
+	}
 	return cl, csrfToken
 }
 

@@ -311,7 +311,31 @@ func bootGatewayE2EDeps(t *testing.T, tunnels tunnelStreamOpener, more func(st *
 	if csrf == "" {
 		t.Fatal("no CSRF cookie after login")
 	}
+	confirmPassword(t, hc, srv.URL, csrf, adminPass)
 	return &gwEnv{srv: srv, hc: hc, plain: &http.Client{Timeout: 60 * time.Second}, csrf: csrf, sqldb: sqldb, up: up, v04: v04, adminEmail: adminEmail}
+}
+
+// confirmPassword opens the re-authentication window of the logged-in session
+// (POST /auth/reauth), which the routes that mint secrets need while the relay
+// has no services domain.
+func confirmPassword(t *testing.T, hc *http.Client, base, csrf, password string) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"password": password})
+	req, err := http.NewRequest(http.MethodPost, base+"/api/v1/auth/reauth", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatalf("reauth: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("reauth status=%d body=%s", resp.StatusCode, b)
+	}
 }
 
 // admin sends a management request as the admin session.
