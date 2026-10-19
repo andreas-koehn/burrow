@@ -186,6 +186,7 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
           onReadOnlyChange={setToolsReadOnly}
         />
       </Disclosure>
+      {!(toolsOpen || tools.length > 0) && <p className="muted small">No tools unless you add them.</p>}
       {formErr && <ErrorNotice>{formErr}</ErrorNotice>}
     </Dialog>
   );
@@ -303,13 +304,13 @@ export default function GatewayKeys() {
                       )}
                   </td>
                   <td>
-                    {k.allowed_tools.length === 0
+                    {(k.allowed_tools ?? []).length === 0
                       ? "none"
                       : (
-                        <span title={k.allowed_tools.join(", ")}>
-                          {k.allowed_tools.length === 1 ? "1 entry" : `${k.allowed_tools.length} entries`}
+                        <span title={(k.allowed_tools ?? []).join(", ")}>
+                          {(k.allowed_tools ?? []).length === 1 ? "1 entry" : `${(k.allowed_tools ?? []).length} entries`}
                           {k.tools_read_only && " · read-only"}
-                          <span className="visually-hidden">: {k.allowed_tools.join(", ")}</span>
+                          <span className="visually-hidden">: {(k.allowed_tools ?? []).join(", ")}</span>
                         </span>
                       )}
                   </td>

@@ -208,7 +208,7 @@ describe("GatewayOverview", () => {
     await userEvent.click(within(list).getByRole("button", { name: "Send the first request" }));
     const last = within(list).getAllByRole("listitem")[3]!;
     expect(within(last).getByText(/create a model first/i)).toBeInTheDocument();
-    expect(within(last).queryByRole("tab")).toBeNull();
+    expect(within(last).queryByRole("tab", { name: "Codex" })).toBeNull();
     expect(screen.queryByRole("table", { name: "Providers" })).toBeNull();
   });
 

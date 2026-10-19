@@ -47,7 +47,7 @@ describe("KeyToolsField", () => {
   it("refuses a pattern that is not <source>__<tool> or <source>__*", async () => {
     renderApp(<Harness />, "/gateway/keys");
     const input = screen.getByLabelText("Tool pattern");
-    for (const bad of ["read_file", "GitHub__x", "github__", "git__hub__*x y"]) {
+    for (const bad of ["read_file", "GitHub__x", "github__", "git__hub__*x y", "src__read_*", "burrow__x", "v1__x"]) {
       await userEvent.clear(input);
       await userEvent.type(input, bad);
       await userEvent.click(screen.getByRole("button", { name: "Add pattern" }));

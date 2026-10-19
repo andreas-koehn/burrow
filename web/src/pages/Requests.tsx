@@ -351,9 +351,9 @@ export default function Requests() {
         }
         empty={empty}
       />
-      {(rows?.length ?? 0) >= LIMIT && (
+      {(listed?.length ?? 0) >= LIMIT && (
         <p className="muted small">
-          Showing the newest {LIMIT} requests that match. Use the filter to find older ones.
+          {`Showing the newest ${LIMIT} requests that match. ${kind ? `The Kind filter applies to the newest ${LIMIT} requests only. ` : ""}Use the filter to find older ones.`}
         </p>
       )}
     </div>

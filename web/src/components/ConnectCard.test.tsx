@@ -192,7 +192,8 @@ describe("ConnectCard", () => {
   it("explains what to do when there are no models at all", () => {
     mount([]);
     expect(screen.getByText(/create a model first/i)).toBeInTheDocument();
-    expect(screen.queryByRole("tab")).toBeNull();
+    // No model tabs; only the MCP clients are offered.
+    expect(screen.queryByRole("tab", { name: "Codex" })).toBeNull();
   });
 
   it("without a gateway key: offers to create one, on every tab", async () => {
@@ -265,5 +266,16 @@ describe("ConnectCard: MCP tab", () => {
   it("says a key sees only the tools it is allowed, and none by default", async () => {
     await openMcp();
     expect(screen.getByText(/A key reaches only the tools it lists; a key with no tools reaches none\./)).toBeInTheDocument();
+  });
+});
+
+describe("ConnectCard: MCP without models", () => {
+  it("still offers the MCP connection when there is no model", () => {
+    mount([]);
+    expect(screen.getByRole("heading", { name: "Connect a client" })).toBeInTheDocument();
+    expect(screen.getByText(/Create a model first/)).toBeInTheDocument();
+    expect(screen.getByText("https://b.example.com/mcp")).toBeInTheDocument();
+    expect(screen.getByRole("tablist", { name: "MCP clients" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy Claude Code command for sign-in" })).toBeInTheDocument();
   });
 });

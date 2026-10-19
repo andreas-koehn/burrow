@@ -386,6 +386,30 @@ describe("Request inspector: MCP tool calls", () => {
     expect(within(panel).getByText("The tool reported an error.")).toBeInTheDocument();
   });
 
+  it("a tool call cannot be replayed: its side effects would run again", async () => {
+    const e = toolEntry();
+    mount(`/gateway/requests/svc_ai001/${e.id}`);
+    await screen.findByRole("group", { name: "MCP call" });
+    expect(screen.queryByRole("button", { name: "Open replay dialog" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Replay/ })).toBeNull();
+  });
+
+  it("an ordinary request can be replayed", async () => {
+    const e = db.inspectorEntries.svc_ai001![1]!;
+    e.mcp = undefined;
+    mount(`/gateway/requests/svc_ai001/${e.id}`);
+    expect(await screen.findByRole("button", { name: "Open replay dialog" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Replay & compare/ })).toBeInTheDocument();
+  });
+
+  it("reads the result from an SSE data: body", async () => {
+    const e = toolEntry();
+    e.resp_body = 'event: message\ndata: {"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"via sse"}],"isError":false}}\n\n';
+    mount(`/gateway/requests/svc_ai001/${e.id}`);
+    const panel = await screen.findByRole("group", { name: "MCP call" });
+    expect(within(panel).getByRole("region", { name: "Result" })).toHaveTextContent("via sse");
+  });
+
   it("an ordinary request has no MCP panel", async () => {
     const e = db.inspectorEntries.svc_ai001![1]!;
     e.mcp = undefined;

@@ -511,6 +511,7 @@ describe("Gateway keys: tools", () => {
     await userEvent.type(within(dialog).getByLabelText("Name"), "agent");
     // Closed until asked for, so the default state stays short.
     expect(within(dialog).queryByLabelText("Tool pattern")).toBeNull();
+    expect(within(dialog).getByText("No tools unless you add them.")).toBeInTheDocument();
     await userEvent.click(within(dialog).getByRole("button", { name: "Tools" }));
     expect(within(dialog).getByText(/No tools selected\. A key without tools cannot call any tool\./)).toBeInTheDocument();
     await userEvent.click(await within(dialog).findByRole("combobox", { name: "Tool source" }));
@@ -549,5 +550,15 @@ describe("Gateway keys: tools", () => {
     expect(laptop).toHaveTextContent("2 entries");
     expect(laptop).toHaveTextContent("read-only");
     expect(within(table).getByRole("row", { name: /no-tools/ })).toHaveTextContent("none");
+  });
+});
+
+describe("Gateway keys: older relay", () => {
+  it("a key without tool fields reads as no tools", async () => {
+    const k = db.aiGatewayKeys[0]! as unknown as Record<string, unknown>;
+    delete k.allowed_tools; delete k.tools_read_only;
+    mount();
+    const table = await screen.findByRole("table", { name: "Gateway keys" });
+    expect(within(table).getByRole("row", { name: /laptop/ })).toHaveTextContent("none");
   });
 });

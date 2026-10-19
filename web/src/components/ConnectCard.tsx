@@ -185,11 +185,16 @@ export function ConnectCard({ endpoints, models, canCreate = true }: ConnectCard
     <section className="card provider-connect connect-card" aria-labelledby={titleId}>
       <h2 id={titleId}>Connect a client</h2>
       {models.length === 0 ? (
-        <p className="muted">
-          {canCreate
-            ? "Create a model first, then come back for a ready configuration."
-            : "There is no model to ask for yet. Ask an administrator to create a model, then come back for a ready configuration."}
-        </p>
+        <>
+          <p className="muted">
+            {canCreate
+              ? "Create a model first, then come back for a ready configuration."
+              : "There is no model to ask for yet. Ask an administrator to create a model, then come back for a ready configuration."}
+          </p>
+          {/* Tools need no model. */}
+          <h3 className="small">MCP</h3>
+          <McpTab url={mcpUrl} />
+        </>
       ) : (
         <Tabs
           value={tab}

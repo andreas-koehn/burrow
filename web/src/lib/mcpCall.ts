@@ -22,10 +22,17 @@ export function toolArguments(params: unknown): string {
   return params === undefined ? "" : pretty(params);
 }
 
+/** The JSON of a body that is plain JSON or an SSE stream: the last "data:" line that holds an object. */
+function jsonOf(body: string): string {
+  if (!/^\s*(event|data|id|retry):/.test(body)) return body;
+  const data = body.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim());
+  return data.length > 0 ? data[data.length - 1]! : body;
+}
+
 /** The result of a captured answer (a JSON-RPC response, possibly an SSE-less JSON body). */
 export function toolResult(body: string): ToolResult {
   try {
-    const msg = JSON.parse(body) as { result?: { isError?: boolean }; error?: unknown };
+    const msg = JSON.parse(jsonOf(body)) as { result?: { isError?: boolean }; error?: unknown };
     if (msg.result !== undefined) return { text: pretty(msg.result), isError: msg.result?.isError === true };
     if (msg.error !== undefined) return { text: pretty(msg.error), isError: true };
   } catch { /* not JSON: shown as it is below */ }

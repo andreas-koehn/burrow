@@ -335,7 +335,8 @@ export default function RequestInspector() {
             <p className="muted">Select a request to inspect.</p>
           ) : (
             <>
-              <div className="detail-toolbar">
+              {/* A tool call is not replayed: its side effects would run again. */}
+              {!isToolCall(detail.data) && <div className="detail-toolbar">
                 <Button
                   variant="secondary"
                   size="sm"
@@ -347,7 +348,7 @@ export default function RequestInspector() {
                 <Button variant="secondary" size="sm" onClick={() => { compare.mutate(); setCompareOpen(true); }}>
                   Replay &amp; compare
                 </Button>
-              </div>
+              </div>}
               <GuardrailNote entry={detail.data} />
               <TranslationNote entry={detail.data} />
               <McpCallNote entry={detail.data} />

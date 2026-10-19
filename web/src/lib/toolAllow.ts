@@ -3,17 +3,22 @@
 export const MAX_TOOL_ENTRIES = 64;
 export const MAX_TOOL_ENTRY_LENGTH = 160;
 
-/** "<source>__<tool>" or "<source>__*"; the source is a slug of 1-24 characters of a-z, 0-9 and "-". */
-const ENTRY = /^[a-z0-9-]{1,24}__\S+$/;
 
-/** An empty string when the entry is usable, else the reason. */
+const RESERVED = new Set(["burrow", "v1"]);
+const hasControl = (s: string) => Array.from(s).some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f);
+const SOURCE = /^[a-z0-9-]{1,24}$/;
+const bytes = (s: string) => new TextEncoder().encode(s).length;
+
+/** An empty string when the entry is usable (the store's ValidToolEntry), else the reason. */
 export function toolEntryProblem(entry: string): string {
-  if (entry.length > MAX_TOOL_ENTRY_LENGTH) return `An entry is at most ${MAX_TOOL_ENTRY_LENGTH} characters.`;
+  if (bytes(entry) > MAX_TOOL_ENTRY_LENGTH) return `An entry is at most ${MAX_TOOL_ENTRY_LENGTH} bytes.`;
   const at = entry.indexOf("__");
+  const source = at < 0 ? "" : entry.slice(0, at);
   const tool = at < 0 ? "" : entry.slice(at + 2);
   // A "*" stands for all tools of the source and nothing else: no "src__read_*".
-  if (!ENTRY.test(entry) || (tool.includes("*") && tool !== "*")) {
-    return "Use <source>__<tool> for one tool or <source>__* for all tools of a source. The source is a slug (a-z, 0-9, -).";
+  const toolOk = tool === "*" || (tool !== "" && !/[* ]/.test(tool) && !hasControl(tool));
+  if (!SOURCE.test(source) || RESERVED.has(source) || !toolOk) {
+    return "Use <source>__<tool> for one tool or <source>__* for all tools of a source. The source is a slug (a-z, 0-9, -), not burrow or v1.";
   }
   return "";
 }

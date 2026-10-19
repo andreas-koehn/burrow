@@ -776,4 +776,17 @@ describe("Requests page: tool calls", () => {
     mount("/gateway/requests?kind=tools");
     expect(await screen.findByText("No requests match these filters.")).toBeInTheDocument();
   });
+
+  it("the footer counts the newest 100 before the Kind filter and says the filter applies to them", async () => {
+    capture("svc_ai001", Array.from({ length: 100 }, (_, i) => i + 1), { provider: "ollama", model: "burrow-simple" });
+    mount("/gateway/requests?kind=tools");
+    expect(await screen.findByText(/The Kind filter applies to the newest 100 requests/)).toBeInTheDocument();
+  });
+
+  it("no footer when fewer than 100 came back, whatever the filter", async () => {
+    capture("svc_ai001", [1, 2], { provider: "ollama", model: "burrow-simple" });
+    mount("/gateway/requests?kind=tools");
+    await screen.findByText("No requests match these filters.");
+    expect(screen.queryByText(/newest 100/)).toBeNull();
+  });
 });
