@@ -418,6 +418,12 @@ func (p *Pool) acquire(ctx context.Context, e *entry, src db.MCPSource) (cs *mcp
 		return nil, false, &backingOff{cause: last}
 	}
 	cs, err = p.connect(ctx, src)
+	if err == nil && p.isClosed() {
+		// Closed while connecting: close the new session here, not under
+		// e.mu (closing may wait on the upstream).
+		p.closeLater(cs)
+		return nil, false, ErrClosed
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err != nil {
@@ -434,10 +440,6 @@ func (p *Pool) acquire(ctx context.Context, e *entry, src db.MCPSource) (cs *mcp
 		return cs, false, nil
 	}
 	e.stateless = false
-	if p.isClosed() {
-		p.closeLater(cs)
-		return nil, false, ErrClosed
-	}
 	if e.dead {
 		// The source was changed while this connect ran: serve this one call
 		// and close the session after it.
@@ -566,6 +568,19 @@ func (t *upstreamRT) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.base.RoundTrip(out)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusNotFound && req.Header.Get("Mcp-Session-Id") != "" {
+		// The upstream no longer knows the session (§2.5.3), whatever its
+		// body says. Some servers send a JSON-RPC error with the 404, which
+		// the SDK would report as an ordinary JSON-RPC error and keep the
+		// dead session; without the body it reports ErrSessionMissing, the
+		// session is dropped and the call, which the upstream did not act
+		// on, is sent again on a new one.
+		_ = resp.Body.Close()
+		resp.Body = http.NoBody
+		resp.ContentLength = 0
+		resp.Header.Del("Content-Type")
+		return resp, nil
 	}
 	resp.Body = &cappedBody{rc: resp.Body, left: t.max}
 	return resp, nil

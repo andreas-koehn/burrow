@@ -640,3 +640,76 @@ func TestPool_UseAfterCloseFails(t *testing.T) {
 	// A drop after Close closes at once instead of joining the wait group.
 	f.pool.closeLater(nil)
 }
+
+// A stateful upstream that answers a stale session with 404 and a JSON-RPC
+// body (as the TypeScript SDK does) gets a new session, and the call is
+// sent again on it.
+func TestCallTool_StaleSession404WithJSONRPCBody(t *testing.T) {
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","error":{"code":-32001,"message":"Session not found"},"id":null}`,
+		`{"jsonrpc":"2.0","error":{"code":-32001,"message":"Session not found"},"id":1}`,
+	} {
+		t.Run(body[len(body)-8:], func(t *testing.T) { staleSession404(t, body) })
+	}
+}
+
+func staleSession404(t *testing.T, body string) {
+	sdk := mcptest.NewSDKServer("ts-like", nil, nil)
+	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return sdk },
+		&mcp.StreamableHTTPOptions{JSONResponse: true, DisableLocalhostProtection: true})
+	var mu sync.Mutex
+	stale := map[string]bool{}
+	var sessions []string
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.Header.Get("Mcp-Session-Id")
+		mu.Lock()
+		gone := stale[id]
+		mu.Unlock()
+		if id != "" && gone {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, body)
+			return
+		}
+		if r.Method == http.MethodPost && strings.Contains(readPeek(r), `"tools/call"`) {
+			mu.Lock()
+			sessions = append(sessions, id)
+			mu.Unlock()
+		}
+		h.ServeHTTP(w, r)
+	}))
+	defer up.Close()
+	st, uid := newStore(t)
+	tr := aiprovider.NewTransport(true)
+	tr.TLSClientConfig = up.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	p := New(Options{Store: st, Remote: tr})
+	defer p.Close()
+	src, err := st.CreateMCPSource(context.Background(), uid, store.MCPSourceInput{Slug: "ts", Name: "ts", Kind: "remote", URL: up.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := echo(t, p, src, "a"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	for _, s := range sessions {
+		stale[s] = true
+	}
+	mu.Unlock()
+	res, err := echo(t, p, src, "b")
+	if err != nil || resultText(res) != "echo: b" {
+		t.Fatalf("call after the stale-session 404: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sessions) != 2 || sessions[0] == sessions[1] {
+		t.Fatalf("tools/call sessions %v, want two different ones", sessions)
+	}
+}
+
+// readPeek reads the request body and puts it back.
+func readPeek(r *http.Request) string {
+	b, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(b))
+	return string(b)
+}

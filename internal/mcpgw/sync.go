@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"sort"
 	"strings"
 	"time"
 
@@ -215,10 +216,15 @@ func jsonText(raw json.RawMessage) []byte {
 				walk(e)
 			}
 		case map[string]any:
-			for k, e := range x {
+			keys := make([]string, 0, len(x))
+			for k := range x {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys) // the same text, and the same first hit, every sync
+			for _, k := range keys {
 				b.WriteString(k)
 				b.WriteByte('\n')
-				walk(e)
+				walk(x[k])
 			}
 		}
 	}
