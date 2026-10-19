@@ -10,9 +10,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/mcpgw"
 	"github.com/ankoehn/burrow/internal/mcptest"
 	"github.com/ankoehn/burrow/internal/store"
@@ -506,18 +508,33 @@ func TestMCPTools_RenameListsKeysItWidensTo(t *testing.T) {
 	if err := f.st.RevokeGatewayKey(ctx, "u-user", false, revoked.ID); err != nil {
 		t.Fatal(err)
 	}
+	// OAuth grants name tools like keys: the live one naming gh__say is
+	// listed; a revoked one, one with gh__* and one naming another tool are not.
+	x := db.Wrap(f.sqldb)
+	storeGrant(t, x, "g-named", "u-user", "https://relay.test/mcp", []string{"gh__say"})
+	storeGrant(t, x, "g-wild", "u-user", "https://relay.test/mcp/gh", []string{"gh__*"})
+	storeGrant(t, x, "g-other", "u-admin", "https://relay.test/mcp", []string{"gh__echo"})
+	storeGrant(t, x, "g-gone", "u-admin", "https://relay.test/mcp", []string{"gh__say"})
+	if err := x.RevokeOAuthGrant(ctx, "g-gone", time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	rec := f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/echo", map[string]any{"rename": "say"}, f.admin)
 	var got struct {
 		ServedName string `json:"served_name"`
 		Keys       *[]struct {
 			ID, Name, KeyPrefix string
 		} `json:"keys_matching_rename"`
+		Grants *[]map[string]any `json:"grants_matching_rename"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK || got.Keys == nil {
 		t.Fatalf("rename: %d %s", rec.Code, rec.Body.String())
 	}
 	if len(*got.Keys) != 1 || (*got.Keys)[0].ID != named.ID || (*got.Keys)[0].Name != "named" || got.ServedName != "say" {
 		t.Fatalf("keys_matching_rename = %+v", *got.Keys)
+	}
+	if got.Grants == nil || len(*got.Grants) != 1 || (*got.Grants)[0]["id"] != "g-named" ||
+		(*got.Grants)[0]["client_name"] != "Client g-named" || (*got.Grants)[0]["user_id"] != "u-user" || len((*got.Grants)[0]) != 3 {
+		t.Fatalf("grants_matching_rename = %v", got.Grants)
 	}
 	// No count of other users' keys, for anybody: the number alone tells a
 	// caller without ai:read:any something about every user's keys.
@@ -531,8 +548,9 @@ func TestMCPTools_RenameListsKeysItWidensTo(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("rename with a narrow token: %d %s", rec.Code, rec.Body.String())
 	}
-	if strings.Contains(rec.Body.String(), "keys_matching_rename") || strings.Contains(rec.Body.String(), "named") || strings.Contains(rec.Body.String(), named.ID) {
-		t.Fatalf("a caller without ai:read:any is told about the keys: %s", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "keys_matching_rename") || strings.Contains(rec.Body.String(), "grants_matching_rename") ||
+		strings.Contains(rec.Body.String(), "named") || strings.Contains(rec.Body.String(), named.ID) {
+		t.Fatalf("a caller without ai:read:any is told about the keys or grants: %s", rec.Body.String())
 	}
 	// With ai:read:any declared as well, the list is there.
 	both := f.token(t, "admin", "mcp:sources:manage", "ai:read:any")
@@ -541,7 +559,7 @@ func TestMCPTools_RenameListsKeysItWidensTo(t *testing.T) {
 		t.Fatalf("a caller with ai:read:any is not shown the keys: %s", rec.Body.String())
 	}
 	rec = f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/echo", map[string]any{"hidden": false}, f.admin)
-	if strings.Contains(rec.Body.String(), "keys_matching_rename") {
+	if strings.Contains(rec.Body.String(), "keys_matching_rename") || strings.Contains(rec.Body.String(), "grants_matching_rename") {
 		t.Fatalf("no rename, yet the field is there: %s", rec.Body.String())
 	}
 }

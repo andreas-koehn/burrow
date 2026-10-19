@@ -2078,6 +2078,13 @@ components:
           description: >
             Id of the OAuth grant whose access token made a tool call
             (gateway_key_id is then empty). Absent otherwise.
+        kind:
+          type: string
+          enum: [mcp]
+          description: '`mcp` for a tool call (the `mcp` method is tools/call); absent for a model request.'
+        source:
+          type: string
+          description: The slug of the tool source a tool call went to (also in provider); absent for a model request.
     InspectorReplayRequest:
       type: object
       description: >
@@ -2834,9 +2841,12 @@ paths:
       description: >
         Public. `resource` is `<issuer>/mcp/<slug>`, `authorization_servers`
         the issuer; `scopes_supported` is `burrow:read`, `burrow:write` for
-        the management server and `mcp:tools` for a tool source. 404 for an
-        unknown or disabled tool source and while the authorization server
-        is off.
+        the management server and `mcp:tools` for a tool source.
+        `resource_name` is generic ("Burrow tools"): the source's name is not
+        shown. 404 for an unknown or disabled tool source and while the
+        authorization server is off; that an unauthenticated caller can tell
+        which slugs exist this way is accepted (the MCP endpoint itself tells
+        the same to any credential holder).
       responses:
         '200': { $ref: '#/components/responses/ProtectedResourceMetadata' }
         '404': { description: No such resource, or the relay runs without an authorization server. }
@@ -6605,8 +6615,11 @@ paths:
         service goes with it, and with that its usage settings and
         inspector history; the vault slot is configured on the relay and is
         not touched. For a tunnel source the service and its tunnel are
-        kept, only unbound (its gateway-only flag stays as it is). The same
-        recent-confirmation rule as for creating applies.
+        kept, only unbound (its gateway-only flag stays as it is). The OAuth
+        grants issued for `/mcp/<slug>` are revoked first, so a later source
+        of the same slug is not reached by them (grants for `/mcp` keep their
+        `<slug>__…` entries). The same recent-confirmation rule as for
+        creating applies.
       responses:
         '204': { description: Source deleted. }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -6719,9 +6732,11 @@ paths:
         one). When the body carries `rename` and the caller also holds
         `ai:read:any`, the answer lists the active keys of every user that
         name `<slug>__<new served name>` exactly in `keys_matching_rename`
-        (id, name, prefix, owner), so the dashboard can warn. Any other
-        caller is told nothing about the keys, not even how many there are.
-        Keys with `<slug>__*` had the tool before and are not listed.
+        (id, name, prefix, owner), and the live OAuth grants that name it the
+        same way in `grants_matching_rename` (id, client name, owner), so the
+        dashboard can warn. Any other caller is told nothing about the keys
+        or grants, not even how many there are. Keys and grants with
+        `<slug>__*` had the tool before and are not listed.
       requestBody:
         required: true
         content:
@@ -6730,7 +6745,7 @@ paths:
             example: { rename: create_issue, read_only: false }
       responses:
         '200':
-          description: The tool, with keys_matching_rename for a caller with ai:read:any when the body carried a rename.
+          description: The tool, with keys_matching_rename and grants_matching_rename for a caller with ai:read:any when the body carried a rename.
           content:
             application/json:
               schema:
@@ -6748,6 +6763,16 @@ paths:
                             id: { type: string }
                             name: { type: string }
                             key_prefix: { type: string }
+                            user_id: { type: string }
+                      grants_matching_rename:
+                        type: array
+                        description: The live OAuth grants, of any user, whose allow-list names the new served name exactly. Present on the same terms as keys_matching_rename.
+                        items:
+                          type: object
+                          required: [id, client_name, user_id]
+                          properties:
+                            id: { type: string }
+                            client_name: { type: string }
                             user_id: { type: string }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -7658,6 +7683,14 @@ paths:
         their own services with inspector:read:own. Another user's requests
         are never listed for a caller without inspector:read:any.
 
+        Tool calls of the MCP gateway are listed too (`kind: mcp`, `source`
+        the tool source's slug, also in `provider`; `mcp` with method, tool
+        and the redacted arguments; `gateway_key_id` or `oauth_grant_id`).
+        They are captured on the ring of the source's backing service while
+        its inspector is enabled, and follow the same rule on that service;
+        in addition the source must be one the caller may read: with
+        mcp:sources:read, or when the backing service is the caller's own.
+
         Headers and bodies are left out. The entry's service_id and id name
         the request on /api/v1/services/{service_id}/inspector/requests/{id},
         which has them.
@@ -7678,6 +7711,10 @@ paths:
           in: query
           description: Id of a gateway key, exact. An unknown id answers an empty list.
           schema: { type: string }
+        - name: kind
+          in: query
+          description: '`models` for model requests only, `tools` for tool calls only; absent for both. Anything else is 400.'
+          schema: { type: string, enum: [models, tools] }
         - name: q
           in: query
           description: Text the method, path, provider or model contains (case-sensitive).

@@ -179,10 +179,14 @@ announces a change.
   refuse tool calls.
 - **A rename changes who may call a tool.** A key's allow-list names a tool
   by the name it is served under. When you rename a tool, keys that list the
-  old name lose it and keys that already list the new name gain it. Only a
-  caller who also holds `ai:read:any` is told which keys they are
-  (`keys_matching_rename`), because that list shows other users' keys; any
-  other caller is told nothing about them.
+  old name lose it and keys that already list the new name gain it. The same
+  goes for the tools chosen for an OAuth connected app. Only a caller who also
+  holds `ai:read:any` is told which keys and connected apps they are
+  (`keys_matching_rename`, `grants_matching_rename`), because those lists show
+  other users' keys and apps; any other caller is told nothing about them.
+- **Deleting a source ends its connected apps.** OAuth grants issued for
+  `/mcp/<source>` are revoked when the source is deleted, so a new source with
+  the same slug starts without them.
 - **One endpoint for every source.** `/mcp` lists the tools of every enabled
   source the key may use, as `<source>__<tool>` (a renamed tool by its new
   name), ordered by that name. The key's allow-list matches exactly that name,

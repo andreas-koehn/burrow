@@ -328,6 +328,7 @@ func (d Deps) PutMCPSource(w http.ResponseWriter, r *http.Request) {
 // DeleteMCPSource handles DELETE /api/v1/mcp/sources/{slug}
 // (mcp:sources:manage). The source's tools go with it; a remote source's
 // hidden backing service goes too, a tunnel source's service is only unbound.
+// The OAuth grants issued for /mcp/<slug> are revoked.
 func (d Deps) DeleteMCPSource(w http.ResponseWriter, r *http.Request) {
 	st, ok := d.mcpSources(w)
 	if !ok {
@@ -340,6 +341,16 @@ func (d Deps) DeleteMCPSource(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
 		}
 		return
+	}
+	// The OAuth grants issued for /mcp/<slug> end first: if that fails the
+	// source stays, so no later source of the same slug inherits them.
+	revoked := 0
+	if d.OAuth != nil {
+		if revoked, err = d.OAuth.RevokeResourceGrants(r.Context(), "/mcp/"+slug); err != nil {
+			d.Log.Error("delete tool source: revoke its oauth grants", "source", slug, "err", err)
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 	}
 	if err := st.DeleteMCPSource(r.Context(), slug); err != nil {
 		if !mapMCPSourceErr(w, err) {
@@ -355,6 +366,6 @@ func (d Deps) DeleteMCPSource(w http.ResponseWriter, r *http.Request) {
 	if cur.Kind == "remote" && d.OnServiceDeleted != nil {
 		d.OnServiceDeleted(cur.ServiceID)
 	}
-	d.auditMCPSource(r, audit.ActionMCPSourceDelete, cur, map[string]any{"kind": cur.Kind, "service_id": cur.ServiceID})
+	d.auditMCPSource(r, audit.ActionMCPSourceDelete, cur, map[string]any{"kind": cur.Kind, "service_id": cur.ServiceID, "oauth_grants_revoked": revoked})
 	w.WriteHeader(http.StatusNoContent)
 }

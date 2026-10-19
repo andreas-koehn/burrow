@@ -114,8 +114,11 @@ func (s *Server) ProtectedResource(w http.ResponseWriter, r *http.Request, path 
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
+		// A generic name: the document is public, and the operator's name
+		// of a source is not for unauthenticated callers. That the slug
+		// exists (200 vs 404) is visible, and accepted.
 		meta.ScopesSupported = []string{ScopeMCPTools}
-		meta.ResourceName = "Burrow tools: " + src.Name
+		meta.ResourceName = "Burrow tools"
 	default:
 		if path != "" {
 			http.NotFound(w, r)

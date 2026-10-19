@@ -39,8 +39,10 @@ type ReplayIdentity struct {
 	GrantID     string
 	UserID      string
 	Permissions []string
-	// ExpiresAt is the access token's expiry: nothing the call mints may
-	// outlive it.
+	// ExpiresAt is the access token's expiry: a token the call mints
+	// (automation or client token) expires no later. Other things it
+	// creates (service API keys, webhooks, users) outlive the token and the
+	// grant, as with an automation token.
 	ExpiresAt time.Time
 }
 

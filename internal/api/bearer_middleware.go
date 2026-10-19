@@ -179,8 +179,8 @@ func RequireBearerOrSession(bs BearerStore, us UserStore) func(http.Handler) htt
 // OAuth access token like an automation token: the user is read again (gone
 // or suspended: 401), the token id is "oauth:<grant id>", the declared
 // permissions are those the scopes stood for, intersected with the role
-// now by effectivePerms, and the access token's expiry bounds what the call
-// may mint. The token itself never reaches the API: over HTTP only bua_
+// now by effectivePerms, and the access token's expiry bounds the tokens the
+// call may mint (other things it creates outlive it, as with bua_). The token itself never reaches the API: over HTTP only bua_
 // bearers are accepted.
 func replayedOAuthCall(w http.ResponseWriter, r *http.Request, next http.Handler, us UserStore, id mcpserv.ReplayIdentity) {
 	if us == nil {

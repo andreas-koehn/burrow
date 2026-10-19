@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,28 @@ type oauthHarness struct {
 	oauth *oauth.Server
 	audit *loginAudit
 	admin string
+	// prmServed counts the protected resource metadata documents served
+	// (200), by path.
+	prmMu     sync.Mutex
+	prmServed map[string]int
+}
+
+// prmHits is how often the document at path was served.
+func (h *oauthHarness) prmHits(path string) int {
+	h.prmMu.Lock()
+	defer h.prmMu.Unlock()
+	return h.prmServed[path]
+}
+
+// statusRecorder remembers the status of an answer.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
 }
 
 func newOAuthHarness(t *testing.T, cfg func(*oauth.Config), mod func(*Deps)) *oauthHarness {
@@ -78,7 +101,20 @@ func newOAuthHarness(t *testing.T, cfg func(*oauth.Config), mod func(*Deps)) *oa
 	deps.Bearer = NewStoreBearerStore(st)
 	router := NewRouter(deps)
 	mcpSrv.SetAPIHandler(router)
-	h.srv = httptest.NewServer(router)
+	h.prmServed = map[string]int{}
+	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, oauth.ProtectedResourcePath) {
+			router.ServeHTTP(w, r)
+			return
+		}
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		router.ServeHTTP(rec, r)
+		if rec.status == http.StatusOK {
+			h.prmMu.Lock()
+			h.prmServed[r.URL.Path]++
+			h.prmMu.Unlock()
+		}
+	}))
 	t.Cleanup(h.srv.Close)
 	return h
 }
@@ -610,6 +646,11 @@ func TestOAuth_SDKClientReachesTheManagementServer(t *testing.T) {
 		t.Fatalf("connect with OAuth: %v", err)
 	}
 	defer cs.Close()
+	// The client found the authorization server through the path-inserted
+	// metadata the 401 challenge named, not through its fallback.
+	if n := h.prmHits("/.well-known/oauth-protected-resource/mcp/burrow"); n == 0 {
+		t.Fatal("the client never fetched the protected resource metadata of /mcp/burrow")
+	}
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "me_get", Arguments: map[string]any{}})
 	if err != nil || res.IsError {
 		t.Fatalf("me_get: %v %+v", err, res)
@@ -702,5 +743,47 @@ func TestOAuth_ProtectedResourceMetadataRoutes(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("without an authorization server: %d", resp.StatusCode)
+	}
+}
+
+// An access token is refused at the resource once it has expired (1 h),
+// with error="invalid_token"; before that it is served.
+func TestOAuth_ExpiredAccessTokenRefusedAtTheResource(t *testing.T) {
+	var mu sync.Mutex
+	now := time.Now()
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	h := newOAuthHarness(t, func(c *oauth.Config) { c.Now = clock }, nil)
+	c := authedClient(t, h.srv)
+	r := c.post(t, "/api/v1/oauth/clients", map[string]any{"name": "CLI", "redirect_uris": []string{"http://127.0.0.1:43210/callback"}})
+	var cl struct {
+		ClientID string `json:"client_id"`
+	}
+	_ = json.Unmarshal([]byte(readBody(t, r)), &cl)
+	handler := h.sdkAuthorize(t, &auth.AuthorizationCodeHandlerConfig{
+		PreregisteredClient: &oauthex.ClientCredentials{ClientID: cl.ClientID, Issuer: h.srv.URL},
+		RedirectURL:         "http://127.0.0.1:43210/callback",
+	}, c)
+	access, _ := h.checkSDKToken(t, handler, cl.ClientID)
+	post := func() *http.Response {
+		req, _ := http.NewRequest(http.MethodPost, h.srv.URL+"/mcp/burrow", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("MCP-Protocol-Version", "2025-06-18")
+		req.Header.Set("Authorization", "Bearer "+access)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp
+	}
+	if resp := post(); resp.StatusCode != http.StatusOK {
+		t.Fatalf("fresh token: %d", resp.StatusCode)
+	}
+	mu.Lock()
+	now = now.Add(oauth.AccessTokenTTL)
+	mu.Unlock()
+	if resp := post(); resp.StatusCode != http.StatusUnauthorized || !strings.Contains(resp.Header.Get("WWW-Authenticate"), `error="invalid_token"`) {
+		t.Fatalf("expired token: %d %q", resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
 	}
 }

@@ -205,3 +205,55 @@ func TestReplayMarker_MintsNothingThatOutlivesTheToken(t *testing.T) {
 		t.Fatalf("a token within the hour: %s", text)
 	}
 }
+
+// storeGrant writes a grant (no tokens) for the tests of the source API.
+func storeGrant(t *testing.T, x *db.DB, id, userID, resource string, tools []string) {
+	t.Helper()
+	if err := x.CreateOAuthGrant(context.Background(), db.OAuthGrant{
+		ID: id, ClientID: "bcl_x", ClientName: "Client " + id, UserID: userID, Resource: resource,
+		Scopes: []string{"mcp:tools"}, AllowedTools: tools,
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func grantRevoked(t *testing.T, x *db.DB, id string) bool {
+	t.Helper()
+	g, err := x.GetOAuthGrant(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g.RevokedAt != nil
+}
+
+// Deleting a tool source revokes the grants issued for /mcp/<slug> (whatever
+// origin they were issued under), so a later source of the same slug is not
+// reached by them. Grants for /mcp and for other sources stay.
+func TestMCPSources_DeleteRevokesTheSourcesGrants(t *testing.T) {
+	f := newMCPSourceFixture(t)
+	admin := f.session(t, "admin")
+	if rec := f.do(t, http.MethodPost, "/api/v1/mcp/sources", map[string]any{
+		"slug": "github", "kind": "remote", "url": "https://mcp.example.com/mcp", "credential_slot": "GH_MCP",
+	}, admin); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	x := db.Wrap(f.sqldb)
+	storeGrant(t, x, "g-src", "u-admin", "https://relay.test/mcp/github", []string{"github__*"})
+	storeGrant(t, x, "g-old", "u-user", "https://old.example/mcp/github", []string{"github__*"})
+	storeGrant(t, x, "g-other", "u-admin", "https://relay.test/mcp/githubx", []string{"githubx__*"})
+	storeGrant(t, x, "g-agg", "u-admin", "https://relay.test/mcp", []string{"github__*"})
+	if rec := f.do(t, http.MethodDelete, "/api/v1/mcp/sources/github", nil, admin); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body.String())
+	}
+	for id, want := range map[string]bool{"g-src": true, "g-old": true, "g-other": false, "g-agg": false} {
+		if got := grantRevoked(t, x, id); got != want {
+			t.Errorf("%s revoked = %v, want %v", id, got, want)
+		}
+	}
+	last := f.aud.events[len(f.aud.events)-1]
+	var p map[string]any
+	_ = json.Unmarshal(last.Payload, &p)
+	if last.Action != "mcp.source.delete" || p["oauth_grants_revoked"] != float64(2) {
+		t.Fatalf("audit %s %v", last.Action, p)
+	}
+}

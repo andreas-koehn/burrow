@@ -165,7 +165,11 @@ dashboard to approve it. Its token is good at `/mcp/burrow` only. What it may
 do is the scope you approve (`burrow:read`: the read permissions of your
 role; `burrow:write`: everything your role may do), and never more than your
 role grants at the moment of each call. Revoking the connected app ends the
-token at once. OAuth needs a public name for the relay (`BURROW_AUTH_DOMAIN`
+token at once. An automation or client token minted through it expires no
+later than the access token (1 hour). Everything else it creates through the
+API, such as service API keys, webhooks or users, outlives the token and the
+connected app, as with an automation token: review or delete those
+separately. OAuth needs a public name for the relay (`BURROW_AUTH_DOMAIN`
 or `BURROW_ACME_DOMAIN`); without one the relay takes automation tokens only.
 
 ---

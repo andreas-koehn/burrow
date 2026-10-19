@@ -98,6 +98,11 @@ type inspectorEntryJSON struct {
 	// OAuthGrantID names the OAuth grant whose access token made a tool call
 	// (GatewayKeyID is then ""); absent otherwise.
 	OAuthGrantID string `json:"oauth_grant_id,omitempty"`
+	// Kind is "mcp" for a tool call (an entry whose MCP method is
+	// tools/call), absent for a model request. Source is then the slug of the
+	// tool source the call went to (also in Provider).
+	Kind   string `json:"kind,omitempty"`
+	Source string `json:"source,omitempty"`
 	// Guardrail is set when a guardrail pattern matched the request or its
 	// answer.
 	Guardrail *inspector.GuardrailMark `json:"guardrail,omitempty"`
@@ -146,6 +151,9 @@ func inspectorEntryToJSON(e inspector.Entry) inspectorEntryJSON {
 	}
 	if out.Dropped == nil {
 		out.Dropped = []string{}
+	}
+	if isToolCall(e) {
+		out.Kind, out.Source = "mcp", e.Provider
 	}
 	if len(e.ReqBody) > 0 {
 		out.ReqBody, out.ReqBodyEnc = encodeBody(e.ReqBody)
@@ -333,14 +341,19 @@ const (
 )
 
 // GetAIRequests handles GET /api/v1/ai/requests: the captured requests of
-// every provider, one list, newest first.
-// Query params: provider (slug of the provider that answered), model,
-// gateway_key (a gateway key's id), all three exact; q, status, since, until
-// as on the per-service list; limit (1 and up, default 200, cut to 1000).
+// every provider and the tool calls of every tool source, one list, newest
+// first.
+// Query params: provider (slug of the provider that answered, or of the tool
+// source), model, gateway_key (a gateway key's id), all three exact; kind
+// (models, tools, or absent for both); q, status, since, until as on the
+// per-service list; limit (1 and up, default 200, cut to 1000).
 //
 // The caller gets the entries of the providers whose inspector they may read:
 // every provider with inspector:read:any, their own services' providers with
 // inspector:read:own (the rule of requireInspectorRead), 403 with neither.
+// The tool calls of a source are on its backing service's ring and follow the
+// same rule, and the source must be one the caller may read: with
+// mcp:sources:read, or when its backing service is theirs.
 //
 // An entry comes without headers and bodies: the list can span every
 // provider, the per-service detail endpoint has them. An entry that names no
@@ -376,6 +389,11 @@ func (d Deps) GetAIRequests(w http.ResponseWriter, r *http.Request) {
 	q.Model = vals.Get("model")
 	q.GatewayKeyID = vals.Get("gateway_key")
 	provider := vals.Get("provider")
+	kind := vals.Get("kind")
+	if kind != "" && kind != "models" && kind != "tools" {
+		writeErr(w, http.StatusBadRequest, "invalid kind: models or tools")
+		return
+	}
 
 	out := []inspectorEntryJSON{}
 	if d.InspectorRings == nil {
@@ -388,7 +406,11 @@ func (d Deps) GetAIRequests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var entries []inspector.Entry
+	read := map[string]bool{} // service ids whose ring was read
 	for _, p := range views {
+		if kind == "tools" {
+			break
+		}
 		if !readAny {
 			owns, ok := d.ownsInspectedService(w, r, p.ServiceID)
 			if !ok {
@@ -404,12 +426,20 @@ func (d Deps) GetAIRequests(w http.ResponseWriter, r *http.Request) {
 		if ring == nil {
 			continue
 		}
+		read[p.ServiceID] = true
 		for _, e := range providerEntries(ring, p.Slug, q) {
-			if provider != "" && e.Provider != provider {
+			if (provider != "" && e.Provider != provider) || (kind == "models" && isToolCall(e)) {
 				continue
 			}
 			entries = append(entries, e)
 		}
+	}
+	if kind != "models" {
+		tools, ok := d.toolCallEntries(w, r, role, readAny, q, provider, read)
+		if !ok {
+			return
+		}
+		entries = append(entries, tools...)
 	}
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].TS.After(entries[j].TS) })
 	if len(entries) > limit {
@@ -421,6 +451,60 @@ func (d Deps) GetAIRequests(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+
+// toolCallEntries lists the tool calls on the backing-service rings of the
+// tool sources the caller may read (GetAIRequests), skipping rings in read.
+// An entry that names no source is one of the source whose ring holds it.
+// ok is false when a lookup failed and the response has been written.
+func (d Deps) toolCallEntries(w http.ResponseWriter, r *http.Request, role string, readAny bool, q inspector.ListQuery, provider string, read map[string]bool) ([]inspector.Entry, bool) {
+	if d.MCPSources == nil {
+		return nil, true
+	}
+	sources, err := d.MCPSources.ListMCPSources(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return nil, false
+	}
+	readSources := effectivePerms(r.Context(), role, authz.PermMcpSourcesRead)
+	var out []inspector.Entry
+	for _, src := range sources {
+		if read[src.ServiceID] {
+			continue
+		}
+		read[src.ServiceID] = true
+		// The owner of the backing service reads it either way; anyone
+		// else needs both inspector:read:any and mcp:sources:read.
+		if !readAny || !readSources {
+			owns, ok := d.ownsInspectedService(w, r, src.ServiceID)
+			if !ok {
+				return nil, false
+			}
+			if !owns {
+				continue
+			}
+		}
+		ring := d.InspectorRings.Get(src.ServiceID)
+		if ring == nil {
+			continue
+		}
+		for _, e := range ring.List(q) {
+			if !isToolCall(e) {
+				continue
+			}
+			if e.Provider == "" {
+				e.Provider = src.Slug
+			}
+			if provider != "" && e.Provider != provider {
+				continue
+			}
+			out = append(out, e)
+		}
+	}
+	return out, true
+}
+
+// isToolCall reports whether a captured entry is an MCP tool call.
+func isToolCall(e inspector.Entry) bool { return e.MCP != nil && e.MCP.Method == "tools/call" }
 
 // providerEntries lists the entries of the ring of provider slug that match
 // q, in no order, each naming a provider: an entry that names none gets slug.

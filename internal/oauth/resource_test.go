@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/authz"
 )
@@ -278,7 +279,7 @@ func TestProtectedResource(t *testing.T) {
 		{"", "burrow:read burrow:write mcp:tools", "Burrow"},
 		{"/mcp/burrow", "burrow:read burrow:write", "Burrow management"},
 		{"/mcp", "mcp:tools", "Burrow tools"},
-		{"/mcp/github", "mcp:tools", "Burrow tools: GitHub"},
+		{"/mcp/github", "mcp:tools", "Burrow tools"},
 	} {
 		rec, m := get(c.path)
 		var scopes []string
@@ -297,5 +298,19 @@ func TestProtectedResource(t *testing.T) {
 		if rec, _ := get(p); rec.Code != http.StatusNotFound {
 			t.Errorf("%q: %d", p, rec.Code)
 		}
+	}
+}
+
+// An expired access token is refused at its own resource.
+func TestVerifyAccessToken_Expired(t *testing.T) {
+	h := newHarness(t)
+	tok := h.tokenAt(t, "/mcp", "mcp:tools", "u-user", "user")
+	h.clk.add(AccessTokenTTL - time.Second)
+	if _, err := h.s.VerifyAccessToken(mcpRequest(), tok, "/mcp"); err != nil {
+		t.Fatalf("before expiry: %v", err)
+	}
+	h.clk.add(time.Second)
+	if _, err := h.s.VerifyAccessToken(mcpRequest(), tok, "/mcp"); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("expired: %v", err)
 	}
 }

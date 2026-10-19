@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/inspector"
 	"github.com/ankoehn/burrow/internal/store"
@@ -1142,5 +1143,130 @@ func TestAIRequestsLimit(t *testing.T) {
 		t.Errorf("per-service limit=0: status %d", r.StatusCode)
 	} else {
 		r.Body.Close()
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/ai/requests: tool calls from the tool sources' rings
+// ---------------------------------------------------------------------------
+
+// aiSources is a tool source store that lists the given sources.
+type aiSources struct {
+	MCPSourceStore
+	rows []db.MCPSource
+}
+
+func (s aiSources) ListMCPSources(context.Context) ([]db.MCPSource, error) { return s.rows, nil }
+
+// toolRequestsDeps adds two tool sources to aiRequestsDeps: "gh" (backing
+// service svc-gh) and "notes" (svc-notes), each with one tool call: t1 by an
+// OAuth grant, t2 by a gateway key.
+func toolRequestsDeps(role string, owners map[string]string) (Deps, *recordingRings) {
+	d, rings := aiRequestsDeps(role, owners)
+	d.MCPSources = aiSources{rows: []db.MCPSource{
+		{Slug: "gh", Name: "GitHub", Kind: "remote", ServiceID: "svc-gh", Enabled: true},
+		{Slug: "notes", Name: "Notes", Kind: "tunnel", ServiceID: "svc-notes", Enabled: true},
+	}}
+	seedTwoProviders(rings)
+	at := func(n int) time.Time { return aiRequestsT0.Add(time.Duration(n)*time.Minute + 30*time.Second) }
+	rings.seed("svc-gh", inspector.Entry{ID: "t1", TS: at(0), Method: "POST", Path: "/mcp/gh", Status: 200, DurationMs: 12,
+		MCP: &inspector.MCPInfo{Method: "tools/call", Tool: "echo", Params: json.RawMessage(`{"text":"x"}`)}, Provider: "gh", Model: "echo", OAuthGrantID: "g1"})
+	rings.seed("svc-notes", inspector.Entry{ID: "t2", TS: at(2), Method: "POST", Path: "/mcp", Status: 502, DurationMs: 40,
+		MCP: &inspector.MCPInfo{Method: "tools/call", Tool: "notes__read"}, Provider: "notes", Model: "notes__read", GatewayKeyID: "gk9"})
+	return d, rings
+}
+
+func aiRequestMaps(t *testing.T, c *authClient, query string) ([]map[string]any, string) {
+	t.Helper()
+	r := c.get(t, "/api/v1/ai/requests?"+query)
+	body := readBody(t, r)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("GET ?%s: %d %s", query, r.StatusCode, body)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, len(got))
+	for i, e := range got {
+		ids[i], _ = e["id"].(string)
+	}
+	return got, strings.Join(ids, ",")
+}
+
+// Tool calls are merged in, newest first; kind=tools and kind=models split
+// them; a tool-call entry says what it is, where it went and who made it.
+func TestAIRequests_ToolCallsAndKind(t *testing.T) {
+	d, _ := toolRequestsDeps("admin", map[string]string{"svc-gh": "u-other"})
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+	if _, ids := aiRequestMaps(t, c, ""); ids != "o3,t2,z2,o1,t1,z0" {
+		t.Fatalf("all: %s", ids)
+	}
+	got, ids := aiRequestMaps(t, c, "kind=tools")
+	if ids != "t2,t1" {
+		t.Fatalf("tools: %s", ids)
+	}
+	if _, ids := aiRequestMaps(t, c, "kind=models"); ids != "o3,z2,o1,z0" {
+		t.Fatalf("models: %s", ids)
+	}
+	t1 := got[1]
+	mcp, _ := t1["mcp"].(map[string]any)
+	if t1["kind"] != "mcp" || t1["source"] != "gh" || t1["provider"] != "gh" || t1["oauth_grant_id"] != "g1" || t1["gateway_key_id"] != "" ||
+		t1["status"] != float64(200) || t1["duration_ms"] != float64(12) || t1["service_id"] != "svc-gh" ||
+		mcp["method"] != "tools/call" || mcp["tool"] != "echo" || mcp["params"] == nil {
+		t.Fatalf("tool entry: %v", t1)
+	}
+	if t2 := got[0]; t2["gateway_key_id"] != "gk9" || t2["oauth_grant_id"] != nil || t2["source"] != "notes" {
+		t.Fatalf("key's tool entry: %v", t2)
+	}
+	all, _ := aiRequestMaps(t, c, "kind=models")
+	for _, e := range all {
+		if e["kind"] != nil || e["source"] != nil {
+			t.Fatalf("a model request says kind/source: %v", e)
+		}
+	}
+	r := c.get(t, "/api/v1/ai/requests?kind=prompts")
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("kind=prompts: %d", r.StatusCode)
+	}
+	_ = r.Body.Close()
+	// The per-service detail answers for a tool call too.
+	r = c.get(t, "/api/v1/services/svc-gh/inspector/requests/t1")
+	detail := readBody(t, r)
+	if r.StatusCode != http.StatusOK || !strings.Contains(detail, `"oauth_grant_id":"g1"`) || !strings.Contains(detail, `"tool":"echo"`) || !strings.Contains(detail, `"kind":"mcp"`) {
+		t.Fatalf("detail: %d %s", r.StatusCode, detail)
+	}
+}
+
+// Who sees a tool call: the inspector rule of model requests (any, or the
+// owner of the service the entry is on), and the source must be one the
+// caller may read: mcp:sources:read, or the backing service is theirs.
+func TestAIRequests_ToolCallsFollowTheInspectorRule(t *testing.T) {
+	// A user owns the notes source's service, not gh's.
+	d, _ := toolRequestsDeps("user", map[string]string{"svc-notes": "u-self", "svc-ollama": "u-self", "svc-zai": "u-self"})
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	if _, ids := aiRequestMaps(t, authedClient(t, srv), "kind=tools"); ids != "t2" {
+		t.Fatalf("user: %s", ids)
+	}
+	// inspector:read:any without mcp:sources:read reads no tool source.
+	authz.SetRoles(map[string][]authz.Permission{
+		"inspector-all": {authz.PermInspectorReadAny},
+		"tools-reader":  {authz.PermInspectorReadAny, authz.PermMcpSourcesRead},
+	})
+	t.Cleanup(func() { authz.SetRoles(nil) })
+	d, _ = toolRequestsDeps("inspector-all", map[string]string{})
+	srv2 := httptest.NewServer(NewRouter(d))
+	defer srv2.Close()
+	if _, ids := aiRequestMaps(t, authedClient(t, srv2), "kind=tools"); ids != "" {
+		t.Fatalf("inspector-all: %s", ids)
+	}
+	d, _ = toolRequestsDeps("tools-reader", map[string]string{})
+	srv3 := httptest.NewServer(NewRouter(d))
+	defer srv3.Close()
+	if _, ids := aiRequestMaps(t, authedClient(t, srv3), "kind=tools"); ids != "t2,t1" {
+		t.Fatalf("tools-reader: %s", ids)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"unicode"
 
@@ -106,4 +107,27 @@ func (s *Server) RevokeGrant(ctx context.Context, id, ownerID string) (db.OAuthG
 		return db.OAuthGrant{}, err
 	}
 	return g, nil
+}
+
+// RevokeResourceGrants revokes every live grant issued for the MCP endpoint
+// path ("/mcp/<slug>"), whatever origin it was issued under, and returns how
+// many it revoked. Deleting a tool source calls it, so that a later source
+// of the same slug is not reached by grants given for the old one.
+func (s *Server) RevokeResourceGrants(ctx context.Context, path string) (int, error) {
+	grants, err := s.store.ListOAuthGrants(ctx, "")
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, g := range grants {
+		u, err := url.Parse(g.Resource)
+		if err != nil || strings.TrimSuffix(u.Path, "/") != path {
+			continue
+		}
+		if err := s.store.RevokeOAuthGrant(ctx, g.ID, s.now()); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }

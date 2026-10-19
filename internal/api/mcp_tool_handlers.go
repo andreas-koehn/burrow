@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -333,6 +334,12 @@ func (d Deps) PutMCPSourceTool(w http.ResponseWriter, r *http.Request) {
 		// not even how many there are.
 		if d.mayReadAllKeys(r) {
 			out.KeysMatchingRename = &keys
+			grants, err := d.grantsNaming(r.Context(), slug, out.ServedName)
+			if err != nil {
+				d.Log.Warn("tool rename: grants not read", "source", slug, "err", err)
+				grants = []mcpGrantRef{}
+			}
+			out.GrantsMatchingRename = &grants
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -349,6 +356,16 @@ type putMCPToolResp struct {
 	// rename, and only for a caller who also holds ai:read:any: the list
 	// shows other users' keys.
 	KeysMatchingRename *[]mcpKeyRef `json:"keys_matching_rename,omitempty"`
+	// GrantsMatchingRename lists the live OAuth grants, of every user, whose
+	// allow-list names the new served name exactly, on the same terms.
+	GrantsMatchingRename *[]mcpGrantRef `json:"grants_matching_rename,omitempty"`
+}
+
+// mcpGrantRef names an OAuth grant.
+type mcpGrantRef struct {
+	ID         string `json:"id"`
+	ClientName string `json:"client_name"`
+	UserID     string `json:"user_id"`
 }
 
 // mcpKeyRef names a gateway key without its secret.
@@ -392,6 +409,26 @@ func (d Deps) keysNaming(ctx context.Context, slug, served string) ([]mcpKeyRef,
 				out = append(out, mcpKeyRef{ID: k.ID, Name: k.Name, KeyPrefix: k.KeyPrefix, UserID: k.UserID})
 				break
 			}
+		}
+	}
+	return out, nil
+}
+
+// grantsNaming returns the live OAuth grants of every user whose allow-list
+// holds "<slug>__<served>".
+func (d Deps) grantsNaming(ctx context.Context, slug, served string) ([]mcpGrantRef, error) {
+	out := []mcpGrantRef{}
+	if d.OAuth == nil {
+		return out, nil
+	}
+	grants, err := d.OAuth.ListGrants(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	entry := slug + "__" + served
+	for _, g := range grants {
+		if slices.Contains(g.AllowedTools, entry) {
+			out = append(out, mcpGrantRef{ID: g.ID, ClientName: g.ClientName, UserID: g.UserID})
 		}
 	}
 	return out, nil
